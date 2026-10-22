@@ -132,6 +132,37 @@ describe("chatPersistenceService", () => {
     expect(loaded.messages[0]?.content).toBe('accepted');
     expect(loaded.messages[0]?.generation_attempts).toEqual(attempts);
   });
+  for (const source of ['list', 'bootstrap'] as const) it(`preserves native results and final empty responses while omitting empty checkpoints: ${source}`, async () => {
+    const nativeState = { provider: 'chatgpt' as const, response_id: 'response', output_items: [
+      { type: 'function_call_output', call_id: 'call', output: 'Useful result' },
+    ] };
+    const rows = [
+      dbMessage({ id: 'placeholder', content: '' }),
+      dbMessage({ id: 'checkpoint', content: '', generation_attempts_json: JSON.stringify([
+        { id: 'attempt', status: 'abandoned', rawText: 'Discarded generation', acceptedText: '', costUsd: null },
+      ]), provider_turn_state_json: JSON.stringify({ provider: 'chatgpt', response_id: 'checkpoint', output_items: [] }) }),
+      dbMessage({ id: 'empty-final', content: '', completion_reason: 'completed' }),
+      dbMessage({ id: 'input-result', content: '', provider_input_items_json: JSON.stringify(nativeState.output_items) }),
+      dbMessage({ id: 'native-result', content: '', provider_turn_state_json: JSON.stringify(nativeState) }),
+      dbMessage({ id: 'tool-trace', content: '', tool_traces_json: JSON.stringify([
+        { tool_call_id: 'call', tool_name: 'read_file', status: 'done', summary: 'Useful result' },
+      ]) }),
+      dbMessage({ id: 'invalid-native-state', content: '', provider_turn_state_json: JSON.stringify({ provider: 'unknown', output_items: nativeState.output_items }) }),
+    ];
+    const persistence = adapters({ ipc: {
+      listMessages: async () => rows,
+      getChatBootstrapSnapshot: async () => ({ conversations: [dbConversation()], messages_by_conversation_id: { 'conv-1': rows } }),
+    } });
+    const loaded = source === 'list'
+      ? await loadConversationMessages(persistence, { conversationId: 'conv-1', conversations: [] })
+      : (await loadChatBootstrapSnapshot(persistence)).messages;
+    expect(loaded.map(message => message.id)).toEqual(['empty-final', 'input-result', 'native-result', 'tool-trace']);
+    expect(loaded.find(message => message.id === 'empty-final')?.completion_reason).toBe('completed');
+    expect(loaded.find(message => message.id === 'input-result')?.provider_input_items).toEqual(nativeState.output_items);
+    expect(loaded.find(message => message.id === 'native-result')?.provider_turn_state).toEqual(nativeState);
+    expect(loaded.find(message => message.id === 'tool-trace')?.tool_traces).toHaveLength(1);
+  });
+
   it("loads bootstrap snapshots and maps conversations/messages", async () => {
     const snapshot: DbChatBootstrapSnapshot = {
       conversations: [dbConversation({ message_count: 1 })],
@@ -392,6 +423,15 @@ describe("chatPersistenceService", () => {
       providerTurnState: undefined,
       completionReason: "tool_turn_limit",
     });
+  });
+
+  it("records a final save for transports without a reason and never certifies progress", async () => {
+    const updateMessage = mock<ChatPersistenceIpc["updateMessage"]>(async () => {});
+    const ipc = baseIpc({ updateMessage }); const persistence = { ...adapters(), ipc };
+    await persistAssistantPartialResult(persistence, chatMessage({ content: "Progress", completion_reason: "completed" }));
+    expect(updateMessage.mock.calls.at(-1)?.[2]?.completionReason).toBeUndefined();
+    await persistAssistantCompletionResult(persistence, { assistantMessageId: "message-1", result: { visibleContent: "" } });
+    expect(ipc.updateMessage).toHaveBeenLastCalledWith("message-1", "", expect.objectContaining({ completionReason: "completed" }));
   });
 
   it("serializes partial and final writes for one assistant message", async () => {

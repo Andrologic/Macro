@@ -1,9 +1,11 @@
+pub mod agsdl_execution;
 pub mod ai;
 mod external_apps;
 pub mod fs;
 pub mod git;
 pub mod goal_audit;
 pub mod goal_auditor_read;
+pub mod http_resources;
 pub mod mcp;
 pub mod repository_instructions;
 pub mod skills;
@@ -583,6 +585,7 @@ pub struct DbPrepareConversationReplayParams {
     replay_id: String,
     content: String,
     hidden_context: Option<String>,
+    context_refs_json: Option<String>,
     provider_input_items_json: Option<String>,
     code_checkpoints_json: Option<String>,
     delete_context_compaction_state: bool,
@@ -604,6 +607,7 @@ pub async fn db_prepare_conversation_replay(
             replay_id: &params.replay_id,
             content: &params.content,
             hidden_context: params.hidden_context,
+            context_refs_json: params.context_refs_json,
             provider_input_items_json: params.provider_input_items_json,
             code_checkpoints_json: params.code_checkpoints_json,
             delete_context_compaction_state: params.delete_context_compaction_state,
@@ -834,7 +838,7 @@ fn provider_is_enabled(
         }
 }
 
-async fn configured_provider_configs(
+pub(crate) async fn configured_provider_configs(
     manager: &ConfigManager,
     pool: &SqlitePool,
 ) -> CommandResult<Vec<ProviderConfig>> {
@@ -1055,13 +1059,26 @@ async fn configured_provider_models(
             .await
             .map_err(CommandError::from)?
     };
+    let document = manager
+        .effective_user_document(ConfigDocumentKind::Providers)
+        .await;
+    Ok(apply_configured_model_definitions(
+        provider_id,
+        stored_models,
+        &document,
+    ))
+}
+
+/// Apply the same effective manual definitions and overrides for Chat and the execution host.
+pub(crate) fn apply_configured_model_definitions(
+    provider_id: &str,
+    stored_models: Vec<AiModel>,
+    document: &Value,
+) -> Vec<AiModel> {
     let mut models = stored_models
         .into_iter()
         .filter(|model| !model.is_manual)
         .collect::<Vec<_>>();
-    let document = manager
-        .effective_user_document(ConfigDocumentKind::Providers)
-        .await;
     let now = chrono::Utc::now().to_rfc3339();
     if let Some(manual_models) = document.get("manualModels").and_then(Value::as_object) {
         for (stable_id, definition) in manual_models {
@@ -1151,7 +1168,7 @@ async fn configured_provider_models(
         }
     }
     models.sort_by(|left, right| left.name.cmp(&right.name));
-    Ok(models)
+    models
 }
 
 #[derive(Debug, Clone, Deserialize)]

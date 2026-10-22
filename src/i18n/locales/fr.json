@@ -45,8 +45,17 @@
     "no": "Non"
   },
   "speech": {
-    "button": { "start": "Démarrer la dictée", "stop": "Arrêter la dictée", "transcribing": "Audio envoyé · Transcription en cours", "enhancing": "Transcription reçue · Nettoyage en cours" },
-    "recording": { "active": "Enregistrement en cours", "stopAndInsert": "Arrêter et insérer la transcription", "stopAndSend": "Arrêter, transcrire et envoyer" },
+    "button": {
+      "start": "Démarrer la dictée",
+      "stop": "Arrêter la dictée",
+      "transcribing": "Audio envoyé · Transcription en cours",
+      "enhancing": "Transcription reçue · Nettoyage en cours"
+    },
+    "recording": {
+      "active": "Enregistrement en cours",
+      "stopAndInsert": "Arrêter et insérer la transcription",
+      "stopAndSend": "Arrêter, transcrire et envoyer"
+    },
     "errors": {
       "title": "Dictée indisponible",
       "provider-missing": "Configurez et sélectionnez d’abord un fournisseur vocal.",
@@ -125,7 +134,10 @@
       "skipped": "Récupération automatique de @macro ignorée",
       "blockedConflictDescription": "Macro a trouvé des conflits non résolus dans l'espace de travail des métadonnées et n'a pas appliqué la récupération automatique.",
       "blockedDirtyDescription": "Macro a trouvé des modifications locales dans l'espace de travail des métadonnées et n'a pas appliqué la récupération automatique."
-    }
+    },
+    "browserRuntimeSessionReplacedTitle": "Cette session du navigateur n’est plus connectée à Macro.",
+    "browserRuntimeSessionReplacedDescription": "Un autre onglet du navigateur a pris le contrôle du runtime de bureau. Rechargez cet onglet pour continuer.",
+    "browserRuntimeSessionReplacedReload": "Recharger l’onglet"
   },
   "shutdown": {
     "activeWorkSingle": "Une tâche est encore en cours. Fermer Macro interrompra son travail.",
@@ -256,7 +268,8 @@
     "toggleLeftPanel": "Basculer le panneau gauche",
     "toggleRightPanel": "Basculer le panneau droit",
     "settings": "Paramètres",
-    "account": "Compte"
+    "account": "Compte",
+    "operate": "Operate"
   },
   "onboarding": {
     "open": "Ouvrir l'onboarding",
@@ -312,10 +325,11 @@
       },
       "architect-strategy": {
         "title": "Stratégie et branches",
-        "body": "Le panneau droit montre la stratégie. Le switch Graph / Branches aide à passer d'une vue dépendances à une vue exécution Git.",
+        "body": "Le panneau droit montre la stratégie. Le sélecteur Graph / Branches permet de passer des dépendances à l’exécution Git.",
         "points": [
           "Graph : dépendances et ordre logique.",
-          "Branches : travail regroupé par branche fonctionnelle."
+          "Branches : travail regroupé par branche fonctionnelle.",
+          "Ouvrir l'explorateur de graphiques affiche une vue agrandie de la stratégie."
         ]
       },
       "architect-validate": {
@@ -351,16 +365,16 @@
         "body": "Le panneau gauche gère l'historique : nouveau chat, recherche, multi-sélection, épinglage, archive, export et suppression."
       },
       "chat-toolbox": {
-        "title": "Toolbox",
+        "title": "Boîte à outils",
         "body": "Le panneau droit est la boîte à contexte. Tu peux joindre des fichiers, ajouter une URL, coller du texte, activer des outils et retrouver les sources citées."
       },
       "chat-models": {
         "title": "Fournisseur, modèle et raisonnement",
-        "body": "Ces menus choisissent le fournisseur IA, le modèle et l'effort de raisonnement. Si un bouton est désactivé, il faut souvent configurer une clé dans Settings."
+        "body": "Ces menus choisissent le fournisseur IA, le modèle et l'effort de raisonnement. Si un bouton est désactivé, il faut souvent configurer une clé dans Paramètres."
       },
       "composer": {
-        "title": "Composer et envoyer",
-        "body": "Le composer accepte texte, mentions et images collées. Le bouton flèche envoie, ou stoppe la génération quand une réponse est en cours."
+        "title": "Rédiger et envoyer",
+        "body": "La zone de rédaction accepte du texte, des mentions et des images collées. La flèche envoie le message. Pendant un tour actif, elle permet d’orienter ce tour ou de mettre le message en file pour le suivant. Le bouton Arrêter interrompt le tour actif."
       },
       "footer": {
         "title": "Barre Git et notifications",
@@ -378,6 +392,46 @@
     "cpu": "Processeur",
     "memory": "Mémoire",
     "sync": {
+      "failure": {
+        "missing_origin": {
+          "title": "Aucun remote configuré",
+          "body": "Ajoutez l’URL du remote origin pour synchroniser ce dépôt. Vous pouvez aussi continuer à travailler localement."
+        },
+        "missing_upstream": {
+          "title": "Aucune branche de suivi configurée",
+          "body": "Publiez la branche de code sur origin pour définir sa branche de suivi, puis réessayez. La publication envoie vos commits locaux au dépôt distant."
+        },
+        "remote_unavailable": {
+          "title": "Dépôt distant inaccessible",
+          "body": "Vérifiez l’URL du remote origin et vos droits d’accès, puis réessayez. Corrigez l’URL d’un remote existant dans votre client Git."
+        },
+        "auth": {
+          "title": "Authentification Git nécessaire",
+          "body": "Vérifiez vos identifiants Git et vos droits d’accès au dépôt, puis réessayez."
+        },
+        "network": {
+          "title": "Connexion au dépôt distant impossible",
+          "body": "Vérifiez votre connexion et l’URL du remote origin, puis réessayez."
+        },
+        "local_changes": {
+          "title": "Des fichiers locaux empêchent le pull",
+          "body": "Conservez vos modifications. Relisez-les ou mettez-les de côté avant de réessayer le pull."
+        },
+        "divergence": {
+          "title": "Les branches ont divergé",
+          "body": "Actualisez l’état de la branche et choisissez une fusion ou un rebase pour intégrer les commits distants."
+        },
+        "unknown": {
+          "title": "La synchronisation Git a échoué",
+          "body": "Consultez les détails techniques, corrigez le problème signalé, puis réessayez."
+        }
+      },
+      "publishCodeBranch": "Publier la branche de code",
+      "configureAndRetry": "Configurer et réessayer",
+      "remoteConfigurationFailed": "La configuration du remote a échoué. Vérifiez l’URL et les détails techniques.",
+      "originUrl": "URL du remote origin",
+      "metadataNeedsAttention": "La synchronisation du code est terminée. Celle des métadonnées demande une intervention.",
+      "reviewRecovery": "Examiner la reprise",
       "done": "Terminé.",
       "macroClean": "@macro clean",
       "macroPending": "@macro pending",
@@ -473,6 +527,8 @@
       "from": "depuis",
       "preflightAvailable": "Synchronisation disponible",
       "preflightConflicts": "Conflits détectés",
+      "preflightUnavailable": "Indisponible",
+      "conflictContextChanged": "La branche a changé. Actualisez avant d’ouvrir l’assistant.",
       "preflightBlockedByLocalChanges": "Bloqué par des changements locaux",
       "preflightChecking": "Vérification de la synchronisation",
       "preflightFailed": "Échec de la vérification",
@@ -500,9 +556,12 @@
       "localChangesBadge": "changements locaux",
       "mergeInProgressBadge": "fusion en cours",
       "conflictedFiles": "{{count}} fichiers en conflit",
+      "conflictedFiles_one": "{{count}} fichier en conflit",
+      "conflictedFiles_other": "{{count}} fichiers en conflit",
       "stashAndRetry": "Mettre de côté et réessayer",
       "discardLocalChanges": "Supprimer les changements locaux",
-      "openConflictAssistant": "Ouvrir l’assistant de conflits",
+      "openConflictAssistant": "Ouvrir l’assistant de conflit en mode Implement",
+      "conflictReadOnly": "Inspection des conflits en lecture seule",
       "abortMerge": "Annuler la fusion",
       "fastForwardBlockedMergeInProgress": "L’avance rapide est bloquée pendant une fusion.",
       "fastForwardBlockedLocalCommits": "L’avance rapide est bloquée par des commits locaux.",
@@ -521,6 +580,7 @@
       "allRepositories": "Tous les dépôts",
       "gitScope": "Portée Git",
       "selectRepository": "Sélectionner un dépôt",
+      "noRepository": "Aucun dépôt Git sélectionné",
       "selectFolder": "Sélectionner un dossier Git",
       "folderNotGit": "Ce dossier n’est pas un dépôt Git.",
       "folderSelectionFailed": "Impossible de sélectionner ce dossier."
@@ -566,6 +626,7 @@
     "queueSaveFailed": "Impossible d’enregistrer les messages en file d’attente. Gardez cette session ouverte et réessayez.",
     "queuePlanUnavailable": "Le plan d’origine n’est pas disponible pour ce message en file d’attente.",
     "queueContextChanged": "La cible du message en file d’attente a changé. Restaurez son contexte d’origine avant de réessayer.",
+    "sendImagesSaveFailed": "Le message n’a pas pu être enregistré avec ses images. Réessayez depuis le brouillon.",
     "queueImagesSaveFailed": "Le message est enregistré, mais ses images doivent encore l’être. Réessayez l’envoi en file d’attente.",
     "queueRecoveryTitle": "Des messages en file d’attente nécessitent votre attention",
     "queueRecoveryDescription": "{{count}} message(s) en file d’attente sont conservé(s). Réessayer les reprend dans leur contexte d’origine.",
@@ -576,6 +637,10 @@
     "queueAlreadySent": "Ce message est déjà enregistré. Réessayez plutôt la récupération.",
     "queueEditInProgress": "Attendez la fin de la modification du message en attente.",
     "queueEmptyMessage": "Le message en attente ne peut pas être vide.",
+    "queueAssistantInterrupted": "Cette instruction enregistrée a peut-être commencé à être exécutée. Vérifiez la réponse et les effets des outils, puis retirez cette entrée de récupération avant de continuer manuellement.",
+    "steerImagesSaveFailed": "La direction et ses images n’ont pas pu être enregistrées. Réessayez le brouillon.",
+    "steerTurnEnded": "La direction est enregistrée, mais son tour s’est terminé avant sa transmission. Vérifiez-la avant de continuer.",
+    "goalExecutorContextUnavailable": "Le contexte d’exécution du but est indisponible. Envoyez un message dans cette conversation avant de reprendre.",
     "queueInterrupted": "L’envoi en file d’attente a été interrompu. Son contenu est conservé.",
     "queueUnavailable": "Cette conversation ne peut plus accepter de messages en file d’attente.",
     "secondaryAction": "Autre action",
@@ -615,6 +680,7 @@
     "noProvidersConfigured": "Aucun provider configuré",
     "providerRestoreUnavailable": "Le fournisseur ou le modèle utilisé précédemment par cette conversation n’est plus disponible. Sélectionnez-en un autre pour continuer.",
     "runtimeErrorFallback": "Macro n’a pas pu terminer cette action. Consultez les détails, puis réessayez.",
+    "conversationSourceEmpty": "La conversation sélectionnée ne contient aucun texte terminé à citer. Retirez cette source ou choisissez une autre conversation, puis réessayez l’envoi.",
     "noEnabledModels": "Aucun modèle activé. Activez-en dans Settings.",
     "selectProviderFirst": "Sélectionnez d'abord un provider",
     "agentTypeBuild": "Build",
@@ -622,7 +688,7 @@
     "deselectConversation": "Désélectionner la conversation",
     "selectConversation": "Sélectionnez une conversation",
     "unpinConversation": "Désépingler",
-    "pinConversation": "Épingle",
+    "pinConversation": "Épingler",
     "exportConversationFailed": "Impossible d’exporter la conversation.",
     "exportJson": "Exporter en JSON",
     "exportMarkdown": "Exporter en Markdown",
@@ -678,7 +744,11 @@
     "generationAttempts_one": "{{count}} tentative de génération",
     "generationAttempts_other": "{{count}} tentatives de génération",
     "generationAttemptNumber": "Tentative {{number}}",
-    "generationAttemptStatus": { "completed": "terminée", "partial": "partielle", "abandoned": "abandonnée" },
+    "generationAttemptStatus": {
+      "completed": "terminée",
+      "partial": "partielle",
+      "abandoned": "abandonnée"
+    },
     "generationAttemptCostUnknown": "coût inconnu",
     "generationAttemptCost": "{{amount}} $",
     "generationAttemptRawText": "Texte de la tentative",
@@ -687,6 +757,7 @@
     "toolDenied": "refusé",
     "toolApprovalRecoveryWarning": "Certaines demandes d’outil enregistrées n’ont pas pu être restaurées. Leurs données ont été conservées. Vous pouvez fermer cet avertissement et continuer à discuter.",
     "toolApprovalResumeCancelled": "Le nouveau tour n’a pas démarré. Vous pouvez reprendre à nouveau.",
+    "sourcePassageEditApproval": "Modifier un passage enregistré",
     "toolApprovalInterrupted": "Cette demande d’outil a été interrompue.",
     "toolApprovalInterruptedHint": "La reprise démarre un nouveau tour qui vérifie le workspace actuel et redemande une approbation si nécessaire. La demande initiale reste dans l’historique.",
     "toolApprovalResume": "Reprendre dans un nouveau tour",
@@ -779,10 +850,19 @@
       "binaryFileRejected": "{{file}} contient des données binaires ou UTF-8 non valides.",
       "conversationRequired": "Sélectionnez une tâche ou un plan avant de joindre des fichiers.",
       "urlPreviewFailedTitle": "Impossible de récupérer l’aperçu de l’URL",
+      "urlPreviewBlockedDescription": "Pour des raisons de sécurité, les aperçus ne peuvent pas accéder aux adresses réseau locales, privées, réservées ou link-local. Utilise une URL publique.",
       "clipboardEmptyTitle": "Le presse-papiers est vide",
       "clipboardReadFailedTitle": "Impossible de lire le presse-papiers",
       "previewUnavailable": "Aperçu indisponible",
       "removeFromContext": "Retirer du contexte",
+      "toolDescriptions": {
+        "web_search": "Rechercher des informations sur le Web avec des citations",
+        "web_fetch": "Récupérer et lire directement une URL précise",
+        "question": "Poser une question bloquante structurée avec des réponses guidées",
+        "read_file": "Lire les fichiers joints et les documents de contexte de cette conversation",
+        "terminal_create_session": "Exécuter sur l’ordinateur des commandes approuvées individuellement",
+        "mark_source_passage": "Suivre les passages intéressants et ceux utilisés par l’IA"
+      },
       "toolsUnavailableWarning": "Les tools ne sont pas disponibles pour le provider ou le modèle actuellement sélectionné. Sélectionnez un modèle compatible avec le tool calling natif pour les activer.",
       "builtInTools": "Outils intégrés",
       "noToolsEnabled": "Aucun outil activé",
@@ -792,6 +872,8 @@
       "webFetchDisabledTooltip": "Activez Web Fetch dans Paramètres > Outils > Recherche sur le Web",
       "nativeToolTooltip": "Le modèle sélectionné ne prend pas en charge les appels d'outils natifs.",
       "sourceSummary": "{{interesting}} trouvé • {{used}} utilisé • {{total}} passages",
+      "sourceSummary_one": "{{interesting}} trouvé • {{used}} utilisé • {{total}} passage",
+      "sourceSummary_other": "{{interesting}} trouvé • {{used}} utilisé • {{total}} passages",
       "collectionDisabledTitle": "Collecte désactivée",
       "collectionDisabledDescription": "Activez l'outil Sources pour enregistrer de nouveaux passages.",
       "sourceSearchPlaceholder": "Sources de recherche",
@@ -965,7 +1047,13 @@
           "belowThresholdDetail": "Le contexte est sous le seuil de compactage utile"
         }
       }
-    }
+    },
+    "queueWriteInProgress": "Cette instruction est encore en cours d'enregistrement. Attendez la fin de sa sauvegarde avant de réessayer.",
+    "queueDirectionDeleted": "Cette instruction a été invalidée par une suppression ou une réexécution. Retirez cette entrée de récupération avant de continuer manuellement.",
+    "directionContextUnavailable": "Le contexte du tour actif est indisponible. Attendez sa fin avant d'envoyer un message.",
+    "providerErrorTitle": "Le modèle n’a pas pu terminer cette demande.",
+    "providerErrorRetry": "Réessaie dans quelques instants.",
+    "providerErrorSettings": "Vérifie les paramètres du modèle avant de réessayer."
   },
   "skills": {
     "importDialogTitle": "Sélectionner un dossier de skill",
@@ -1079,7 +1167,7 @@
       "skills": "Gérer les skills réutilisables et leurs sources",
       "prompts": "Personnaliser les prompts système utilisés par Macro",
       "architect": "Configurer les modèles de nommage des cibles et des branches d’Architect",
-      "shortcuts": "Configurer les raccourcis clavier et les raccourcis clavier",
+      "shortcuts": "Configurer les raccourcis clavier",
       "diagnostics": "Générer et vérifier un rapport d’assistance local",
       "providers": "Configurer les clés API et les points de terminaison",
       "models": "Gérer les paramètres des modèles disponibles",
@@ -1173,6 +1261,10 @@
       "maxTurnsLabel": "Tours agent max",
       "maxTurnsDescription": "Nombre maximal de cycles IA/outils avant que Macro arrête la boucle agent et affiche une notice dans le chat."
     },
+    "themeDark": "Sombre",
+    "themeLight": "Clair",
+    "notificationChannelsUnsupportedDesc": "Les notifications de bureau sont indisponibles dans cet environnement. Choisissez les notifications intégrées ou désactivez la diffusion.",
+    "desktopNotificationsUnsupportedHint": "Les notifications de bureau sont indisponibles dans cet environnement. Macro utilise les notifications intégrées à l’application.",
     "theme": "Thème",
     "zoom": "Zoomer",
     "zoom_auto": "Automatique",
@@ -1411,6 +1503,9 @@
     "parentFolderRequired": "Le dossier parent est obligatoire",
     "folderNameRequired": "Le nom du dossier doit être un seul nom de dossier",
     "repoPathRequired": "Choisissez d’abord le dossier d’un projet existant",
+    "folderNotFound": "Ce dossier n’existe pas. Choisissez un dossier existant.",
+    "pathNotDirectory": "Ce chemin ne désigne pas un dossier. Choisissez un dossier existant.",
+    "folderCheckFailed": "Impossible de lire ce dossier. Vérifiez le chemin et les droits d’accès.",
     "projectPathRequired": "Le chemin du projet est obligatoire",
     "duplicateSubprojectName": "Un projet portant ce nom existe déjà dans ce groupe",
     "localFolder": "Dossier local",
@@ -1424,6 +1519,7 @@
     "attachedReposCount_one": "{{count}} projet dans ce groupe",
     "attachedReposCount_other": "{{count}} projets dans ce groupe",
     "folderAlreadyAttached": "Ce dossier est déjà attaché à {{name}}.",
+    "folderAlreadyAttachedInWorkspace": "Ce dossier est déjà attaché à un projet de cet espace de travail.",
     "folderAlreadyAttachedNamed": "Ce dossier est déjà attaché à \"{{name}}\"",
     "saveFailed": "Échec de l'enregistrement du projet",
     "createProject": "Créer un projet",
@@ -1544,6 +1640,8 @@
     "projectGitPrepared": "Git est maintenant prêt pour {{projectName}}.",
     "projectDirectEditEnabled": "{{projectName}} peut maintenant être modifié sans Git.",
     "projectDirectEditDisabled": "{{projectName}} est maintenant en lecture seule jusqu'à l'initialisation de Git.",
+    "gitFlowInvalidBranch": "Saisissez un nom de branche Git valide.",
+    "projectActions": "Actions pour {{name}}",
     "gitFlowSaved": "Paramètres du workflow Git enregistrés.",
     "readOnlyImpactTitle": "Passer en lecture seule ?",
     "readOnlyImpactDescription": "Macro retirera ce projet des cibles éditables des plans et des tâches, mais le gardera disponible pour le contexte et la lecture.",
@@ -1634,7 +1732,7 @@
       "nameLabel": "Nom du plan",
       "nameRequired": "Le nom du plan est obligatoire.",
       "namePlaceholder": "par ex. Révision de l'authentification",
-      "labelLabel": "Etiquette du plan",
+      "labelLabel": "Étiquette du plan",
       "labelRequired": "L’étiquette du plan est requise.",
       "labelPlaceholder": "par ex. Révision de l'authentification",
       "descriptionLabel": "Descriptif",
@@ -1650,7 +1748,76 @@
       "hotfixEmptyHint": "Décrivez le bug de production. Macro déduira les projets, proposera un slug de hotfix et des versions de patch, puis vous demandera de confirmer.",
       "bugfixEmptyHint": "Décrivez le bug. Macro déduira les projets et proposera un slug de bugfix avant de vous demander de confirmer."
     },
+    "planIcon": {
+      "title": "Choisir une icône",
+      "reset": "Icône par défaut",
+      "options": {
+        "sparkles": "Étincelles",
+        "workflow": "Workflow",
+        "network": "Réseau",
+        "layers": "Calques",
+        "pencil-ruler": "Conception",
+        "code": "Code",
+        "terminal": "Terminal",
+        "flag": "Drapeau",
+        "target": "Cible",
+        "zap": "Éclair",
+        "shield": "Bouclier",
+        "tool": "Outils",
+        "cpu": "Processeur",
+        "database": "Base de données",
+        "globe": "Globe",
+        "cloud": "Nuage",
+        "message-square": "Conversation",
+        "book-open": "Livre",
+        "folder": "Dossier",
+        "folder-open": "Dossier ouvert",
+        "file": "Fichier",
+        "file-code": "Fichier de code",
+        "file-text": "Document",
+        "git-branch": "Branche",
+        "git-commit": "Commit",
+        "git-merge": "Fusion",
+        "git-compare": "Comparaison",
+        "history": "Historique",
+        "list-todo": "Checklist",
+        "check-square": "Case cochée",
+        "clipboard": "Presse-papiers",
+        "clock": "Horloge",
+        "milestone": "Jalon",
+        "compass": "Boussole",
+        "map": "Carte",
+        "folder-tree": "Arborescence",
+        "server": "Serveur",
+        "hard-drive": "Stockage",
+        "user": "Utilisateur",
+        "lock": "Cadenas",
+        "eye": "Œil",
+        "palette": "Palette",
+        "image": "Image",
+        "camera": "Appareil photo",
+        "mic": "Microphone",
+        "bell": "Cloche",
+        "settings": "Réglages",
+        "layout-grid": "Grille"
+      }
+    },
     "projectNavigator": {
+      "newBlueprint": "Nouveau blueprint",
+      "blueprintCreatedAtRoot": "Blueprint créé à la racine du projet. Son classement dans le dossier n’a pas pu être enregistré.",
+      "newSubfolder": "Nouveau sous-dossier",
+      "newFolder": "Nouveau dossier",
+      "renameFolder": "Renommer le dossier",
+      "folderActions": "Actions du dossier {{name}}",
+      "removeFolder": "Retirer le dossier",
+      "removeFolderHelp": "Le contenu est conservé dans le dossier parent.",
+      "emptyFolder": "Glissez un blueprint ici",
+      "moveToFolder": "Déplacer vers…",
+      "projectRoot": "Racine du projet",
+      "folderNameError": "Choisissez un nom de dossier différent.",
+      "folderSaveError": "Impossible de conserver l’organisation des dossiers.",
+      "macroBlueprints": "Bibliothèque Macro",
+      "newMacroBlueprint": "Nouveau blueprint Macro",
       "title": "Projets",
       "searchPlans": "Rechercher des plans...",
       "noSearchResults": "Aucun plan ne correspond à cette recherche.",
@@ -1789,15 +1956,13 @@
       "targetBranch": "Cible : {{branchName}}"
     },
     "planNamingRecovery": {
-      "title": "Nom de plan encore requis",
-      "description": "Macro n'a pas pu générer un nom de plan à partir du premier message après trois tentatives. Réessayez avec l'IA ou nommez le plan manuellement.",
+      "title": "Nom du plan non généré",
+      "description": "Le plan garde son nom par défaut.",
       "retryAi": "Réessayer avec l'IA",
-      "retryingAi": "Nouvelle tentative avec l'IA...",
       "nameManually": "Nommer manuellement",
       "manualTitle": "Nommer ce plan",
       "manualDescription": "Saisissez le nom de plan à utiliser pour cette conversation.",
       "saveManualName": "Enregistrer le nom du plan",
-      "back": "Retour",
       "manualPlaceholder": "ex. Rafraîchissement du checkout"
     },
     "strategy": "Stratégie",
@@ -1816,6 +1981,11 @@
     "noStrategyDescription": "Discutez du plan dans le chat Architect, puis utilisez Générer la stratégie pour créer ce graphe.",
     "noBranchesMatchingFilters": "Aucune branche ne correspond aux filtres actuels.",
     "planCompleted": "Plan terminé",
+    "newPlanPlaceholder": "Nouveau plan",
+    "planValidationBranchesCreated_one": "Plan validé. {{count}} branche préparée.",
+    "planValidationBranchesCreated_other": "Plan validé. {{count}} branches préparées.",
+    "planValidationBranchesCurrent": "Plan validé. Les branches sont déjà à jour.",
+    "finalizationTaskTitle": "Finaliser le plan : {{name}}",
     "planValidated": "Plan validé",
     "validatingPlan": "Validation...",
     "noActivePlan": "Aucun plan actif",
@@ -1898,6 +2068,7 @@
     "totalChanges": "changements totaux"
   },
   "providers": {
+    "backToProviders": "Retour aux fournisseurs",
     "macroAi": {
       "included": "IA incluse avec la bêta de Macro",
       "dropdownNotice": "IA incluse avec la bêta"
@@ -1914,6 +2085,13 @@
     "emptyDescription": "Ajoutez un fournisseur pour connecter Macro à un service d’IA.",
     "configuredTitle": "Providers configurés",
     "unconfiguredTitle": "Providers à configurer",
+    "connectionModelsFound_one": "Connexion réussie. {{count}} modèle trouvé.",
+    "connectionModelsFound_other": "Connexion réussie. {{count}} modèles trouvés.",
+    "connectionLmStudioModelsFound_one": "Connexion réussie. {{count}} modèle LM Studio trouvé.",
+    "connectionLmStudioModelsFound_other": "Connexion réussie. {{count}} modèles LM Studio trouvés.",
+    "connectionModelVerified": "Connexion réussie avec le modèle {{model}}.",
+    "connectionModelsFound_zero": "Connexion réussie. {{count}} modèles trouvés.",
+    "connectionLmStudioModelsFound_zero": "Connexion réussie. {{count}} modèles LM Studio trouvés.",
     "testSaveFirst": "Enregistrez le provider avant de le tester.",
     "testConnection": "Tester la connexion",
     "saveProvider": "Enregistrer le provider",
@@ -2126,10 +2304,17 @@
       "deleteFailed": "Impossible de supprimer le serveur MCP.",
       "toggleFailed": "Impossible de mettre à jour le serveur MCP.",
       "transportHint": "Utilisez stdio pour les serveurs locaux ou Streamable HTTP pour les serveurs distants historiques et sans état.",
-      "transport": { "stdio": "Stdio local", "streamableHttp": "Streamable HTTP" },
+      "transport": {
+        "stdio": "Stdio local",
+        "streamableHttp": "Streamable HTTP"
+      },
       "urlPlaceholder": "https://exemple.com/mcp",
       "headersPlaceholder": "Authorization=Bearer jeton\nX-API-Key=valeur",
-      "protocol": { "auto": "Détection automatique", "legacy": "Session historique", "modern": "Moderne sans état" },
+      "protocol": {
+        "auto": "Détection automatique",
+        "legacy": "Session historique",
+        "modern": "Moderne sans état"
+      },
       "oauth": {
         "enable": "Utiliser OAuth",
         "scopes": "Portées séparées par des espaces",
@@ -2184,51 +2369,200 @@
     "hideDetails": "Masquer les détails",
     "showDetails": "Afficher les détails",
     "degraded": {
-      "fallback": { "title": "Une intervention est nécessaire", "body": "Macro n’a pas pu terminer cette action de manière sûre.", "nextStep": "Consultez les détails, corrigez la situation bloquante, puis réessayez.", "dynamic": "{{message}}" },
-      "worktree": {
-        "checkedOut": { "title": "Macro n’a pas pu préparer l’espace de travail de la tâche", "body": "La branche nécessaire à cette tâche est encore ouverte dans le dépôt principal avec des modifications locales.", "nextStep": "Validez, remisez ou abandonnez ces modifications locales, puis relancez la tâche." },
-        "missingBase": { "title": "Macro n’a pas trouvé la branche de base", "body": "Cette tâche nécessite une branche de base avant la création de son worktree.", "nextStep": "Créez la branche ou mettez à jour les réglages du flux Git du projet, puis réessayez." },
-        "fallback": { "title": "Macro n’a pas pu préparer l’espace de travail de la tâche", "body": "L’espace de travail de la tâche n’est pas encore prêt ; Macro ne peut donc pas consulter ni modifier les fichiers de manière sûre.", "nextStep": "Relancez la tâche. Si l’échec persiste, ouvrez les réglages Git du projet et vérifiez l’état du dépôt." }
+      "fallback": {
+        "title": "Une intervention est nécessaire",
+        "body": "Macro n’a pas pu terminer cette action de manière sûre.",
+        "nextStep": "Consultez les détails, corrigez la situation bloquante, puis réessayez.",
+        "dynamic": "{{message}}"
       },
-      "readOnly": { "title": "Ce projet est disponible en lecture seule", "body": "Ce projet peut servir de contexte, mais Macro ne peut pas encore y créer de branches, de worktrees, de commits ni de fusions.", "namedBody": "{{projectName}} peut servir de contexte, mais Macro ne peut pas encore y créer de branches, de worktrees, de commits ni de fusions.", "missingGitNextStep": "Initialisez Git pour ce projet, puis activez le travail modifiable.", "settingsNextStep": "Ouvrez les réglages du projet et vérifiez que le flux Git est prêt." },
+      "worktree": {
+        "checkedOut": {
+          "title": "Macro n’a pas pu préparer l’espace de travail de la tâche",
+          "body": "La branche nécessaire à cette tâche est encore ouverte dans le dépôt principal avec des modifications locales.",
+          "nextStep": "Validez, remisez ou abandonnez ces modifications locales, puis relancez la tâche."
+        },
+        "missingBase": {
+          "title": "Macro n’a pas trouvé la branche de base",
+          "body": "Cette tâche nécessite une branche de base avant la création de son worktree.",
+          "nextStep": "Créez la branche ou mettez à jour les réglages du flux Git du projet, puis réessayez."
+        },
+        "fallback": {
+          "title": "Macro n’a pas pu préparer l’espace de travail de la tâche",
+          "body": "L’espace de travail de la tâche n’est pas encore prêt ; Macro ne peut donc pas consulter ni modifier les fichiers de manière sûre.",
+          "nextStep": "Relancez la tâche. Si l’échec persiste, ouvrez les réglages Git du projet et vérifiez l’état du dépôt."
+        }
+      },
+      "readOnly": {
+        "title": "Ce projet est disponible en lecture seule",
+        "body": "Ce projet peut servir de contexte, mais Macro ne peut pas encore y créer de branches, de worktrees, de commits ni de fusions.",
+        "namedBody": "{{projectName}} peut servir de contexte, mais Macro ne peut pas encore y créer de branches, de worktrees, de commits ni de fusions.",
+        "missingGitNextStep": "Initialisez Git pour ce projet, puis activez le travail modifiable.",
+        "settingsNextStep": "Ouvrez les réglages du projet et vérifiez que le flux Git est prêt."
+      },
       "replica": {
-        "missing": { "titleSingular": "Les métadonnées du plan manquent dans {{count}} dépôt", "titlePlural": "Les métadonnées du plan manquent dans {{count}} dépôts", "body": "Macro a besoin de toutes les répliques attendues des métadonnées du plan avant de pouvoir le mettre à jour de manière sûre.", "nextStep": "Réparez les métadonnées du plan, puis réessayez." },
-        "diverged": { "title": "Les métadonnées du plan diffèrent entre les dépôts", "body": "Macro a trouvé plusieurs versions de ces métadonnées et doit choisir une copie canonique avant de continuer.", "nextStep": "Effectuez la réparation à partir de la réplique la plus récente, sauf si vous avez volontairement besoin d’une copie plus ancienne." }
+        "missing": {
+          "titleSingular": "Les métadonnées du plan manquent dans {{count}} dépôt",
+          "titlePlural": "Les métadonnées du plan manquent dans {{count}} dépôts",
+          "body": "Macro a besoin de toutes les répliques attendues des métadonnées du plan avant de pouvoir le mettre à jour de manière sûre.",
+          "nextStep": "Réparez les métadonnées du plan, puis réessayez."
+        },
+        "diverged": {
+          "title": "Les métadonnées du plan diffèrent entre les dépôts",
+          "body": "Macro a trouvé plusieurs versions de ces métadonnées et doit choisir une copie canonique avant de continuer.",
+          "nextStep": "Effectuez la réparation à partir de la réplique la plus récente, sauf si vous avez volontairement besoin d’une copie plus ancienne."
+        }
       },
       "gitFlow": {
-        "repositoryDirty": { "title": "Le dépôt contient des modifications locales", "body": "Macro ne peut pas terminer cette fusion tant que le dépôt cible contient des modifications non validées sans rapport.", "nextStep": "Validez, remisez ou abandonnez les modifications locales, puis relancez la fusion." },
-        "mergeInProgress": { "title": "Une fusion est déjà en cours", "body": "Macro a trouvé une fusion inachevée dans ce dépôt.", "nextStep": "Terminez ou annulez la fusion existante, puis réessayez." },
-        "conflict": { "title": "Résolvez ces conflits avant de terminer", "body": "Le plan ne peut pas encore être fusionné proprement.", "filesNextStep": "Résolvez les fichiers indiqués, puis relancez la fusion.", "blockersNextStep": "Résolvez les blocages de fusion, puis réessayez." }
+        "repositoryDirty": {
+          "title": "Le dépôt contient des modifications locales",
+          "body": "Macro ne peut pas terminer cette fusion tant que le dépôt cible contient des modifications non validées sans rapport.",
+          "nextStep": "Validez, remisez ou abandonnez les modifications locales, puis relancez la fusion."
+        },
+        "mergeInProgress": {
+          "title": "Une fusion est déjà en cours",
+          "body": "Macro a trouvé une fusion inachevée dans ce dépôt.",
+          "nextStep": "Terminez ou annulez la fusion existante, puis réessayez."
+        },
+        "conflict": {
+          "title": "Résolvez ces conflits avant de terminer",
+          "body": "Le plan ne peut pas encore être fusionné proprement.",
+          "filesNextStep": "Résolvez les fichiers indiqués, puis relancez la fusion.",
+          "blockersNextStep": "Résolvez les blocages de fusion, puis réessayez."
+        }
       },
       "metadata": {
-        "clean": { "title": "Les métadonnées @macro sont à jour", "body": "Aucune action n’est nécessaire." },
-        "dirty": { "title": "Les métadonnées @macro comportent des modifications locales", "body": "Macro doit enregistrer les modifications des métadonnées avant la synchronisation.", "nextStep": "Enregistrez les métadonnées @macro, puis relancez la synchronisation." },
-        "ahead": { "title": "Les métadonnées @macro sont prêtes à être publiées", "body": "Votre branche locale de métadonnées contient des changements absents du dépôt distant.", "nextStep": "Poussez @macro lorsque vous êtes prêt." },
-        "behind": { "title": "Les métadonnées @macro sont en retard sur le dépôt distant", "body": "Les métadonnées distantes contiennent des mises à jour absentes localement.", "nextStep": "Récupérez @macro, puis relancez votre action." },
-        "diverged": { "title": "Les métadonnées @macro ont divergé", "body": "Les métadonnées locales et distantes ont toutes deux changé.", "nextStep": "Récupérez @macro, résolvez les éventuels conflits, puis poussez les changements." },
-        "mergeConflict": { "title": "Les métadonnées @macro comportent des conflits", "body": "La branche de métadonnées contient des fichiers en conflit non résolus.", "nextStep": "Résolvez les fichiers de métadonnées en conflit, puis relancez la même étape de synchronisation." },
-        "missingOrigin": { "title": "Le dépôt distant de @macro n’est pas configuré", "body": "Macro ne peut pas synchroniser les métadonnées, car le dépôt n’a pas de remote origin.", "nextStep": "Configurez le dépôt Git distant, puis réessayez." },
-        "missingUpstream": { "title": "@macro n’a pas de branche de suivi distante", "body": "La branche de métadonnées existe localement, mais n’est pas encore liée à une branche distante.", "nextStep": "Poussez @macro pour la publier, ou ignorez cet avertissement pour conserver les métadonnées localement." },
-        "authRequired": { "title": "Une authentification Git est requise", "body": "Macro ne peut pas joindre le dépôt distant de métadonnées avec les identifiants actuels.", "nextStep": "Configurez l’authentification Git, puis réessayez." },
-        "networkError": { "title": "La synchronisation des métadonnées n’a pas pu joindre le dépôt distant", "body": "Le réseau ou le service distant est actuellement indisponible.", "nextStep": "Vérifiez votre connexion, puis réessayez." },
-        "unknownError": { "title": "La synchronisation des métadonnées Macro a échoué", "body": "Macro n’a pas pu terminer la synchronisation des métadonnées de manière sûre.", "nextStep": "Relancez la synchronisation. Si elle échoue encore, consultez les détails techniques." }
+        "clean": {
+          "title": "Les métadonnées @macro sont à jour",
+          "body": "Aucune action n’est nécessaire."
+        },
+        "dirty": {
+          "title": "Les métadonnées @macro comportent des modifications locales",
+          "body": "Macro doit enregistrer les modifications des métadonnées avant la synchronisation.",
+          "nextStep": "Enregistrez les métadonnées @macro, puis relancez la synchronisation."
+        },
+        "ahead": {
+          "title": "Les métadonnées @macro sont prêtes à être publiées",
+          "body": "Votre branche locale de métadonnées contient des changements absents du dépôt distant.",
+          "nextStep": "Poussez @macro lorsque vous êtes prêt."
+        },
+        "behind": {
+          "title": "Les métadonnées @macro sont en retard sur le dépôt distant",
+          "body": "Les métadonnées distantes contiennent des mises à jour absentes localement.",
+          "nextStep": "Récupérez @macro, puis relancez votre action."
+        },
+        "diverged": {
+          "title": "Les métadonnées @macro ont divergé",
+          "body": "Les métadonnées locales et distantes ont toutes deux changé.",
+          "nextStep": "Récupérez @macro, résolvez les éventuels conflits, puis poussez les changements."
+        },
+        "mergeConflict": {
+          "title": "Les métadonnées @macro comportent des conflits",
+          "body": "La branche de métadonnées contient des fichiers en conflit non résolus.",
+          "nextStep": "Résolvez les fichiers de métadonnées en conflit, puis relancez la même étape de synchronisation."
+        },
+        "missingOrigin": {
+          "title": "Le dépôt distant de @macro n’est pas configuré",
+          "body": "Macro ne peut pas synchroniser les métadonnées, car le dépôt n’a pas de remote origin.",
+          "nextStep": "Configurez le dépôt Git distant, puis réessayez."
+        },
+        "missingUpstream": {
+          "title": "@macro n’a pas de branche de suivi distante",
+          "body": "La branche de métadonnées existe localement, mais n’est pas encore liée à une branche distante.",
+          "nextStep": "Poussez @macro pour la publier, ou ignorez cet avertissement pour conserver les métadonnées localement."
+        },
+        "authRequired": {
+          "title": "Une authentification Git est requise",
+          "body": "Macro ne peut pas joindre le dépôt distant de métadonnées avec les identifiants actuels.",
+          "nextStep": "Configurez l’authentification Git, puis réessayez."
+        },
+        "networkError": {
+          "title": "La synchronisation des métadonnées n’a pas pu joindre le dépôt distant",
+          "body": "Le réseau ou le service distant est actuellement indisponible.",
+          "nextStep": "Vérifiez votre connexion, puis réessayez."
+        },
+        "unknownError": {
+          "title": "La synchronisation des métadonnées Macro a échoué",
+          "body": "Macro n’a pas pu terminer la synchronisation des métadonnées de manière sûre.",
+          "nextStep": "Relancez la synchronisation. Si elle échoue encore, consultez les détails techniques."
+        }
       },
       "service": {
-        "gitObjectMissing": { "title": "La révision Git est suspendue", "body": "Un objet Git nécessaire à cette révision est indisponible. Macro n’a modifié aucun fichier de travail.", "bodyUncertain": "Git n’a pas pu lire un objet nécessaire à cette opération. Consultez les détails techniques avant de réessayer.", "nextStep": "Réessayez pour demander de nouveau l’objet à Git. Ouvrez les détails techniques pour consulter l’opération, l’identifiant de l’objet et la sortie Git expurgée." },
-        "directModeConfigurationRequired": { "title": "Le mode de review doit être configuré", "body": "Ce projet n’est pas un dépôt Git, mais les métadonnées de la tâche ne permettent pas une review directe. Macro n’a lancé aucune review Git et n’a modifié aucun fichier de travail.", "nextStep": "Configurez Git pour ce projet, ou recréez la tâche en mode direct. Les détails techniques indiquent le mode enregistré." },
-        "directCheckpointMissing": { "title": "Le point de contrôle de révision Macro est indisponible", "body": "Le point de contrôle interne de ce projet sans Git est absent. Macro n’a modifié aucun fichier de travail.", "nextStep": "Réessayez après une nouvelle préparation de la tâche. Ouvrez les détails techniques pour consulter l’identifiant du point de contrôle." },
-        "directCheckpointCorrupt": { "title": "Le point de contrôle de révision Macro est endommagé", "body": "Le point de contrôle interne de ce projet sans Git est incomplet. Macro l’a conservé et n’a modifié aucun fichier de travail.", "nextStep": "Réessayez une fois. Ne réinitialisez pas le point de contrôle si l’historique accepté doit être préservé. Ouvrez les détails techniques pour le diagnostic." },
-        "directCheckpointProjectMismatch": { "title": "Le point de contrôle de révision Macro appartient à un autre chemin de projet", "body": "L’identité enregistrée du point de contrôle ne correspond pas au chemin actuel de ce projet. Macro a conservé le point de contrôle et n’a modifié aucun fichier de travail.", "nextStep": "Vérifiez le chemin enregistré du projet ou rouvrez le projet d’origine. Consultez les détails techniques pour identifier le point de contrôle avant de corriger ses métadonnées." },
-        "resourcePressure": { "title": "Macro est temporairement surchargé", "body": "Le système a trop de fichiers ouverts ; Macro a donc suspendu les actualisations automatiques des dépôts avant de réessayer.", "nextStep": "Patientez un instant, puis réessayez. Si le problème persiste, fermez des fenêtres de projet ou des terminaux supplémentaires." },
-        "replicaRepair": { "title": "Les métadonnées du plan doivent être réparées", "body": "Macro a trouvé des métadonnées de plan incohérentes et doit réparer la copie canonique avant de continuer.", "nextStep": "Réparez les métadonnées du plan, puis réessayez." },
-        "metadataMissing": { "title": "Les métadonnées du plan sont incomplètes", "body": "Macro a trouvé une tâche ou une conversation qui pointe vers des métadonnées de plan manquantes ou seulement partiellement enregistrées.", "nextStep": "Réparez les liens des métadonnées, puis réessayez." },
-        "workspaceUnavailable": { "title": "L’état de l’espace de travail est temporairement indisponible", "body": "Macro n’a pas pu lire l’état de l’espace de travail nécessaire à cette action.", "nextStep": "Réessayez après la fin de la mise à jour de l’espace de travail. Si le problème persiste, rouvrez le projet." },
-        "gitNotReady": { "title": "Ce projet n’est pas prêt pour les modifications", "body": "Macro peut toujours utiliser ce projet comme contexte, mais ne peut pas y écrire tant que Git n’est pas prêt.", "nextStep": "Ouvrez les réglages du projet et terminez la configuration de Git." },
-        "fallback": { "title": "Une intervention est nécessaire", "nextStep": "Consultez les détails, corrigez la situation bloquante, puis réessayez." }
+        "gitObjectMissing": {
+          "title": "La révision Git est suspendue",
+          "body": "Un objet Git nécessaire à cette révision est indisponible. Macro n’a modifié aucun fichier de travail.",
+          "bodyUncertain": "Git n’a pas pu lire un objet nécessaire à cette opération. Consultez les détails techniques avant de réessayer.",
+          "nextStep": "Réessayez pour demander de nouveau l’objet à Git. Ouvrez les détails techniques pour consulter l’opération, l’identifiant de l’objet et la sortie Git expurgée."
+        },
+        "directModeConfigurationRequired": {
+          "title": "Le mode de review doit être configuré",
+          "body": "Ce projet n’est pas un dépôt Git, mais les métadonnées de la tâche ne permettent pas une review directe. Macro n’a lancé aucune review Git et n’a modifié aucun fichier de travail.",
+          "nextStep": "Configurez Git pour ce projet, ou recréez la tâche en mode direct. Les détails techniques indiquent le mode enregistré."
+        },
+        "directCheckpointMissing": {
+          "title": "Le point de contrôle de révision Macro est indisponible",
+          "body": "Le point de contrôle interne de ce projet sans Git est absent. Macro n’a modifié aucun fichier de travail.",
+          "nextStep": "Réessayez après une nouvelle préparation de la tâche. Ouvrez les détails techniques pour consulter l’identifiant du point de contrôle."
+        },
+        "directCheckpointCorrupt": {
+          "title": "Le point de contrôle de révision Macro est endommagé",
+          "body": "Le point de contrôle interne de ce projet sans Git est incomplet. Macro l’a conservé et n’a modifié aucun fichier de travail.",
+          "nextStep": "Réessayez une fois. Ne réinitialisez pas le point de contrôle si l’historique accepté doit être préservé. Ouvrez les détails techniques pour le diagnostic."
+        },
+        "directCheckpointProjectMismatch": {
+          "title": "Le point de contrôle de révision Macro appartient à un autre chemin de projet",
+          "body": "L’identité enregistrée du point de contrôle ne correspond pas au chemin actuel de ce projet. Macro a conservé le point de contrôle et n’a modifié aucun fichier de travail.",
+          "nextStep": "Vérifiez le chemin enregistré du projet ou rouvrez le projet d’origine. Consultez les détails techniques pour identifier le point de contrôle avant de corriger ses métadonnées."
+        },
+        "resourcePressure": {
+          "title": "Macro est temporairement surchargé",
+          "body": "Le système a trop de fichiers ouverts ; Macro a donc suspendu les actualisations automatiques des dépôts avant de réessayer.",
+          "nextStep": "Patientez un instant, puis réessayez. Si le problème persiste, fermez des fenêtres de projet ou des terminaux supplémentaires."
+        },
+        "replicaRepair": {
+          "title": "Les métadonnées du plan doivent être réparées",
+          "body": "Macro a trouvé des métadonnées de plan incohérentes et doit réparer la copie canonique avant de continuer.",
+          "nextStep": "Réparez les métadonnées du plan, puis réessayez."
+        },
+        "metadataMissing": {
+          "title": "Les métadonnées du plan sont incomplètes",
+          "body": "Macro a trouvé une tâche ou une conversation qui pointe vers des métadonnées de plan manquantes ou seulement partiellement enregistrées.",
+          "nextStep": "Réparez les liens des métadonnées, puis réessayez."
+        },
+        "conflictAssistantContextChanged": {
+          "title": "Le contexte Git a changé",
+          "body": "Le contexte Git sélectionné a changé pendant l’ouverture de l’assistant.",
+          "nextStep": "Actualisez la vue Git et rouvrez l’assistant."
+        },
+        "workspaceUnavailable": {
+          "title": "L’état de l’espace de travail est temporairement indisponible",
+          "body": "Macro n’a pas pu lire l’état de l’espace de travail nécessaire à cette action.",
+          "nextStep": "Réessayez après la fin de la mise à jour de l’espace de travail. Si le problème persiste, rouvrez le projet."
+        },
+        "gitNotReady": {
+          "title": "Ce projet n’est pas prêt pour les modifications",
+          "body": "Macro peut toujours utiliser ce projet comme contexte, mais ne peut pas y écrire tant que Git n’est pas prêt.",
+          "nextStep": "Ouvrez les réglages du projet et terminez la configuration de Git."
+        },
+        "fallback": {
+          "title": "Une intervention est nécessaire",
+          "nextStep": "Consultez les détails, corrigez la situation bloquante, puis réessayez."
+        }
       }
     }
   },
-  "prompts": { "title": "Prompts système", "description": "Personnalisez les prompts de base des modes et les profils internes utilisés pendant la planification, la revue et l’audit du dépôt.", "restoreAll": "Tout restaurer", "saveFailed": "Impossible d’enregistrer les prompts système." },
+  "prompts": {
+    "editors": {
+      "promptArchitect": {
+        "label": "Mode Architect",
+        "description": "Invite système de base pour les conversations Architect."
+      }
+    },
+    "loadFailed": "Impossible de charger les invites système. Réessayez avant d’enregistrer.",
+    "title": "Prompts système",
+    "description": "Personnalisez les prompts de base des modes et les profils internes utilisés pendant la planification, la revue et l’audit du dépôt.",
+    "restoreAll": "Tout restaurer",
+    "saveFailed": "Impossible d’enregistrer les prompts système."
+  },
   "toast": {
     "languageChanged": "La langue a été modifiée en {{language}}",
     "settingsSaved": "Paramètres enregistrés",
@@ -2585,7 +2919,17 @@
     "artifactSaveFailed": "Impossible d’enregistrer l’artefact de vérification de l’objectif",
     "artifactTitle": "Vérification de l’objectif",
     "queueTrackingFailed": "Impossible de suivre le tour de l’objectif en file d’attente",
-    "artifactStatus": { "achieved": "Atteint", "continue": "À poursuivre", "needs_user": "Réponse nécessaire", "cannot_progress": "Progression impossible", "applied": "Appliqué", "failed": "Échec", "cancelled": "Annulé", "stale": "Périmé", "timed_out": "Délai dépassé" },
+    "artifactStatus": {
+      "achieved": "Atteint",
+      "continue": "À poursuivre",
+      "needs_user": "Réponse nécessaire",
+      "cannot_progress": "Progression impossible",
+      "applied": "Appliqué",
+      "failed": "Échec",
+      "cancelled": "Annulé",
+      "stale": "Périmé",
+      "timed_out": "Délai dépassé"
+    },
     "reason": {
       "reviewInterrupted": "La vérification précédente a été interrompue. Reprenez pour lancer un nouveau tour de l’agent.",
       "executorInterrupted": "Le tour précédent de l’agent a été interrompu. Reprenez pour continuer.",
@@ -2647,16 +2991,26 @@
     "slashMenuLabel": "Insérer un contexte ou une commande"
   },
   "backup": {
+    "confirmReplace": "Préparer le remplacement",
+    "destination": "Destination de la nouvelle archive",
+    "source": "Archive à restaurer",
+    "scheduledTitle": "Opération préparée",
+    "desktopRequired": "Ouvrez Macro sur ordinateur pour sauvegarder ou restaurer ses données locales.",
+    "restoreHelp": "Remplacer les données locales par une archive. Conserver le profil précédent pour récupération.",
+    "exportHelp": "Enregistrer les données locales dans une nouvelle archive au prochain démarrage.",
+    "limits": "Taille maximale : 256 Mio. Restaurez avec la même version de Macro. Les chemins des projets restent ceux enregistrés ; la restauration ne réassocie pas les projets déplacés et ne fusionne pas les profils.",
+    "limitsTitle": "Compatibilité, limites et données privées",
+    "exclusions": "Les dossiers des projets et leur historique Git sont exclus, ainsi que les identifiants des fournisseurs. Conservez une copie séparée de vos projets.",
     "title": "Sauvegarde et restauration",
-    "scope": "Profil local : conversations, pièces jointes enregistrées, checkpoints de code, brouillons et préférences globales. Les dossiers des projets et leurs métadonnées Git sont exclus. Conservez une copie séparée de vos projets. Archive limitée à 256 Mio ; restauration avec la même version de Macro.",
-    "secrets": "Les identifiants des fournisseurs, les variables d’environnement et les en-têtes MCP sont exclus des exports portables. Reconnectez les fournisseurs après restauration. Les conversations et fichiers restent des données privées ; conservez l’archive en lieu sûr.",
+    "scope": "Données locales de Macro : conversations, pièces jointes enregistrées, checkpoints de code, brouillons, instructions en file, réponses de secours et préférences générales.",
+    "secrets": "Les exports excluent les identifiants des fournisseurs, les variables d’environnement et les en-têtes MCP. Les identifiants déjà présents sur cette installation y restent. Sur une autre installation, reconnectez les fournisseurs. Les conversations et fichiers peuvent contenir des données privées ; protégez l’archive.",
     "recovery": "Récupération nécessaire. Les données originales sont conservées.",
     "path": "Chemin absolu du fichier de sauvegarde local",
     "export": "Préparer une sauvegarde",
     "restore": "Restaurer une sauvegarde",
     "confirmTitle": "Confirmer l’opération sur le profil",
-    "confirmRestore": "Au prochain démarrage, cette archive remplacera votre profil local. Macro la valide d’abord et conserve le profil précédent pour récupération. Arrêtez les tâches en cours et quittez immédiatement après confirmation. Restaurer ce fichier ?",
-    "confirmExport": "Arrêtez les tâches en cours avant de continuer. Macro créera l’archive au prochain démarrage, avant l’ouverture de la base et de la configuration. Préparer cette sauvegarde ?",
+    "confirmRestore": "Au prochain démarrage, cette archive remplacera les données locales de Macro sans fusion. Macro la vérifie et conserve une copie de récupération des données remplacées. Les instructions en file restent en pause. Arrêtez les tâches en cours, puis quittez immédiatement après confirmation et rouvrez Macro.",
+    "confirmExport": "Arrêtez les tâches en cours. Macro créera cette archive au prochain démarrage. Choisissez un nouveau fichier ; les archives existantes ne sont jamais écrasées. Après confirmation, quittez sans modifier la session, puis rouvrez Macro.",
     "confirm": "Confirmer",
     "scheduled": "Opération préparée. Quittez complètement Macro, puis rouvrez-le. Ne modifiez plus cette session avant de quitter.",
     "resultExported": "Sauvegarde enregistrée.",
@@ -2666,6 +3020,11 @@
     "resultInvalidRequest": "La demande en attente était invalide et a été isolée. Votre profil n’a pas été modifié.",
     "resultLegacy": "Le résultat d’une version précédente est disponible dans les détails du diagnostic.",
     "diagnostics": "Détails du diagnostic",
+    "sessionReplacedTitle": "Session ouverte dans un autre onglet",
+    "sessionReplacedHint": "Rechargez cet onglet pour continuer à utiliser Macro ici.",
+    "sessionReplacedReload": "Recharger",
+    "runtimeUnavailableTitle": "Moteur de bureau indisponible",
+    "runtimeUnavailableHint": "Macro redémarre ou n’est pas lancé. Réessayez lorsque le moteur de bureau est prêt.",
     "startupTitle": "Récupération du profil nécessaire",
     "startupRecovery": "La restauration des données du navigateur n’a pas pu se terminer. L’archive native de récupération est conservée. Consultez le diagnostic, libérez du stockage local si nécessaire, puis redémarrez Macro pour réessayer."
   }

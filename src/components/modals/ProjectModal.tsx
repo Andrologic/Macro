@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useEffect, useId, useMemo, useRef, useState } from 'react';
 import { open } from '../../services/tauriDialog';
 import { useTranslation } from 'react-i18next';
 import { useAppStore } from '../../stores/useAppStore';
@@ -27,6 +27,7 @@ import {
   hasProjectSetupRisks,
 } from './projectGitSetup';
 import {
+  validateExistingProjectDirectory,
   advanceProjectSetupPrompt,
   buildDeclinedProjectSetupPayload,
   buildPendingGitFlowConfirmation,
@@ -34,6 +35,7 @@ import {
   buildPendingProjectSetupPrompt,
   buildProjectWithGitSetupPayload,
   findProjectByPath,
+  getProjectCreationErrorMessage,
   getAcceptedActionsAfterConfirmingPrompt,
   getAcceptedActionsAfterDecliningPrompt,
   getActiveProjectSetupPrompt,
@@ -57,6 +59,8 @@ import type {
 
 export const ProjectModal: React.FC = () => {
   const { t } = useTranslation();
+  const formId = useId();
+  const [pathError, setPathError] = useState('');
   const {
     projectModalOpen,
     projectModalGroupId,
@@ -81,6 +85,7 @@ export const ProjectModal: React.FC = () => {
   const [newGroupName, setNewGroupName] = useState('');
   const [selectedNewGroupProjectIds, setSelectedNewGroupProjectIds] = useState<string[]>([]);
   const [error, setError] = useState('');
+  const [errorField, setErrorField] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [pendingGitFlowConfirmation, setPendingGitFlowConfirmation] =
     useState<PendingGitFlowConfirmation | null>(null);
@@ -115,6 +120,7 @@ export const ProjectModal: React.FC = () => {
     setNewGroupName('');
     setSelectedNewGroupProjectIds([]);
     setError('');
+    setPathError('');
     setIsSubmitting(false);
     setPendingGitFlowConfirmation(null);
     setPendingProjectSetupPrompt(null);
@@ -128,6 +134,10 @@ export const ProjectModal: React.FC = () => {
   const isWslPath = isWslProjectPath(activeProjectPath);
   const isCancellingProjectAdd = projectAddOperation?.status === 'cancelling';
   const duplicatePathProject = findProjectByPath(projectGroups, activeProjectPath, standaloneProjects);
+  const folderError = duplicatePathProject
+    ? t('project.folderAlreadyAttached', 'This folder is already attached to {{name}}.', { name: duplicatePathProject.name })
+    : pathError;
+  const folderErrorId = `${formId}-folder-error`;
   const derivedExistingRepoName = inferProjectNameFromPath(subProjectPath);
   const derivedProjectName = isCreatingNewRepo ? repoName.trim() : derivedExistingRepoName;
   const submitLabel = isSubmitting
@@ -163,6 +173,7 @@ export const ProjectModal: React.FC = () => {
   const setSourceModeAndClearError = (value: string) => {
     setSourceMode(value as ProjectModalSourceMode);
     setError('');
+    setPathError('');
   };
 
   const setDestinationModeAndClearError = (value: string) => {
@@ -172,6 +183,7 @@ export const ProjectModal: React.FC = () => {
       setTargetGroupId(preselectedGroup.id);
     }
     setError('');
+    setPathError('');
   };
 
   const createProjectAddRequestId = () =>
@@ -209,6 +221,7 @@ export const ProjectModal: React.FC = () => {
         : [...current, projectId]
     );
     setError('');
+    setPathError('');
   };
 
   const createSelectedGroupForProject = async (project: Project) => {
@@ -301,6 +314,7 @@ export const ProjectModal: React.FC = () => {
       setSubProjectPath(selectedPath);
     }
     setError('');
+    setPathError('');
   };
 
   const handleConfirmRareGitFlow = async () => {
@@ -313,6 +327,7 @@ export const ProjectModal: React.FC = () => {
     }
 
     setError('');
+    setPathError('');
     setIsSubmitting(true);
     try {
       await persistProject({
@@ -323,7 +338,7 @@ export const ProjectModal: React.FC = () => {
         }),
       });
     } catch (submitError: unknown) {
-      setError(toServiceError(submitError).message || t('project.saveFailed', 'Failed to save project'));
+      setError(getProjectCreationErrorMessage(submitError, t));
     } finally {
       setIsSubmitting(false);
     }
@@ -335,6 +350,7 @@ export const ProjectModal: React.FC = () => {
     }
 
     setError('');
+    setPathError('');
     const nextPromptState = advanceProjectSetupPrompt(
       pendingProjectSetupPrompt,
       activeProjectSetupPrompt
@@ -376,7 +392,7 @@ export const ProjectModal: React.FC = () => {
       closeProjectModal();
       clearProjectAddRequestId(requestId);
     } catch (submitError: unknown) {
-      setError(toServiceError(submitError).message || t('project.saveFailed', 'Failed to save project'));
+      setError(getProjectCreationErrorMessage(submitError, t));
     } finally {
       setIsSubmitting(false);
     }
@@ -388,6 +404,7 @@ export const ProjectModal: React.FC = () => {
     }
 
     setError('');
+    setPathError('');
     setIsSubmitting(true);
     try {
       const payload = buildDeclinedProjectSetupPayload(
@@ -424,7 +441,7 @@ export const ProjectModal: React.FC = () => {
 
       await persistProject(payload);
     } catch (submitError: unknown) {
-      setError(toServiceError(submitError).message || t('project.saveFailed', 'Failed to save project'));
+      setError(getProjectCreationErrorMessage(submitError, t));
     } finally {
       setIsSubmitting(false);
     }
@@ -441,6 +458,7 @@ export const ProjectModal: React.FC = () => {
     }
 
     setError('');
+    setPathError('');
     setIsSubmitting(true);
     try {
       const payload = buildDeclinedProjectSetupPayload(
@@ -450,7 +468,7 @@ export const ProjectModal: React.FC = () => {
       setPendingProjectSetupPrompt(null);
       await persistProject({ ...payload, directEdit: true });
     } catch (submitError: unknown) {
-      setError(toServiceError(submitError).message || t('project.saveFailed', 'Failed to save project'));
+      setError(getProjectCreationErrorMessage(submitError, t));
     } finally {
       setIsSubmitting(false);
     }
@@ -459,6 +477,9 @@ export const ProjectModal: React.FC = () => {
   const handleSubmit = async () => {
     if (isSubmitting) return;
     setError('');
+    setErrorField(null);
+    setPathError('');
+    if (duplicatePathProject) return;
 
     const trimmedRepoName = repoName.trim();
     const trimmedParentPath = parentPath.trim();
@@ -472,6 +493,7 @@ export const ProjectModal: React.FC = () => {
     }
 
     if (isCreatingNewGroup && !newGroupName.trim()) {
+      setErrorField('newGroupName');
       setError(t('project.globalProjectRequired', 'Group name is required'));
       return;
     }
@@ -482,26 +504,31 @@ export const ProjectModal: React.FC = () => {
     }
 
     if (isCreatingNewRepo && !trimmedRepoName) {
+      setErrorField('repoName');
       setError(t('project.repoNameRequired', 'Project name is required'));
       return;
     }
 
     if (isCreatingNewRepo && !trimmedParentPath) {
+      setErrorField('parentPath');
       setError(t('project.parentFolderRequired', 'Parent folder is required'));
       return;
     }
 
     if (isCreatingNewRepo && !isValidProjectFolderName(trimmedFolderName)) {
+      setErrorField('folderName');
       setError(t('project.folderNameRequired', 'Folder name must be a single folder name'));
       return;
     }
 
     if (!isCreatingNewRepo && !derivedProjectName) {
+      setErrorField('subProjectPath');
       setError(t('project.repoPathRequired', 'Choose an existing project folder first'));
       return;
     }
 
     if (!trimmedActiveProjectPath) {
+      setErrorField('subProjectPath');
       setError(t('project.projectPathRequired', 'Project path is required'));
       return;
     }
@@ -512,15 +539,6 @@ export const ProjectModal: React.FC = () => {
           'project.duplicateSubprojectName',
           'A project with this name already exists in this group'
         )
-      );
-      return;
-    }
-
-    if (duplicatePathProject) {
-      setError(
-        t('project.folderAlreadyAttachedNamed', 'This folder is already attached to "{{name}}"', {
-          name: duplicatePathProject.name,
-        })
       );
       return;
     }
@@ -541,7 +559,7 @@ export const ProjectModal: React.FC = () => {
         closeProjectModal();
         clearProjectAddRequestId(requestId);
       } catch (submitError: unknown) {
-        setError(toServiceError(submitError).message || t('project.saveFailed', 'Failed to save project'));
+        setError(getProjectCreationErrorMessage(submitError, t));
       } finally {
         setIsSubmitting(false);
       }
@@ -557,9 +575,20 @@ export const ProjectModal: React.FC = () => {
 
     try {
       setIsSubmitting(true);
+      try {
+        await validateExistingProjectDirectory(trimmedSubProjectPath);
+      } catch (validationError) {
+        const code = toServiceError(validationError).code;
+        setPathError(code === 'FilesystemNotFound'
+          ? t('project.folderNotFound', 'This folder does not exist. Choose an existing folder.')
+          : code === 'FilesystemIsFile'
+            ? t('project.pathNotDirectory', 'This path is not a folder. Choose an existing folder.')
+            : t('project.folderCheckFailed', 'Unable to read this folder. Check the path and access permissions.'));
+        return;
+      }
       await continueProjectCreation(createPayload, trimmedSubProjectPath || undefined);
     } catch (submitError: unknown) {
-      setError(toServiceError(submitError).message || t('project.saveFailed', 'Failed to save project'));
+      setError(getProjectCreationErrorMessage(submitError, t));
     } finally {
       setIsSubmitting(false);
     }
@@ -622,11 +651,14 @@ export const ProjectModal: React.FC = () => {
                 <>
                   <div className="grid gap-4 min-[520px]:grid-cols-2">
                     <div>
-                      <label className="block text-sm text-muted-foreground mb-2">
+                      <label className="block text-sm text-muted-foreground mb-2" htmlFor={`${formId}-repoName`}>
                         {t('project.repoName', 'Project name')} <span className="text-red-400">*</span>
                       </label>
                       <input
+                        id={`${formId}-repoName`}
                         type="text"
+                        aria-invalid={Boolean((error && errorField === 'repoName'))}
+                        aria-describedby={error && errorField === 'repoName' ? `${formId}-form-error` : undefined}
                         value={repoName}
                         onChange={(event) => {
                           const nextName = event.target.value;
@@ -635,6 +667,7 @@ export const ProjectModal: React.FC = () => {
                             setFolderName(slugifyProjectFolderName(nextName));
                           }
                           setError('');
+                          setPathError('');
                         }}
                         placeholder={t('project.repoNamePlaceholder', 'e.g. Backend API')}
                         className="w-full bg-muted border border-border rounded-xl px-3 py-2.5 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:border-primary"
@@ -642,16 +675,20 @@ export const ProjectModal: React.FC = () => {
                     </div>
 
                     <div>
-                      <label className="block text-sm text-muted-foreground mb-2">
+                      <label className="block text-sm text-muted-foreground mb-2" htmlFor={`${formId}-folderName`}>
                         {t('project.folderName', 'Folder name')} <span className="text-red-400">*</span>
                       </label>
                       <input
+                        id={`${formId}-folderName`}
                         type="text"
+                        aria-invalid={Boolean((error && errorField === 'folderName') || folderError)}
+                        aria-describedby={error && errorField === 'folderName' ? `${formId}-form-error` : folderError ? folderErrorId : undefined}
                         value={folderName}
                         onChange={(event) => {
                           setFolderName(event.target.value);
                           setFolderNameTouched(true);
                           setError('');
+                          setPathError('');
                         }}
                         placeholder={t('project.folderNamePlaceholder', 'backend-api')}
                         className="w-full bg-muted border border-border rounded-xl px-3 py-2.5 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:border-primary"
@@ -660,16 +697,20 @@ export const ProjectModal: React.FC = () => {
                   </div>
 
                   <div>
-                    <label className="block text-sm text-muted-foreground mb-2">
+                    <label className="block text-sm text-muted-foreground mb-2" htmlFor={`${formId}-parentPath`}>
                       {t('project.parentFolder', 'Parent folder')} <span className="text-red-400">*</span>
                     </label>
                     <div className="flex gap-2">
                       <input
+                        id={`${formId}-parentPath`}
                         type="text"
+                        aria-invalid={Boolean((error && errorField === 'parentPath') || folderError)}
+                        aria-describedby={error && errorField === 'parentPath' ? `${formId}-form-error` : folderError ? folderErrorId : undefined}
                         value={parentPath}
                         onChange={(event) => {
                           setParentPath(event.target.value);
                           setError('');
+                          setPathError('');
                         }}
                         placeholder={t('project.parentFolderPlaceholder', 'e.g. C:/dev/mobile-suite')}
                         className="min-w-0 flex-1 bg-muted border border-border rounded-xl px-3 py-2.5 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:border-primary"
@@ -693,16 +734,20 @@ export const ProjectModal: React.FC = () => {
                 </>
               ) : (
                 <div>
-                  <label className="block text-sm text-muted-foreground mb-2">
+                  <label className="block text-sm text-muted-foreground mb-2" htmlFor={`${formId}-subProjectPath`}>
                     {t('project.existingRepoFolder', 'Existing project folder')} <span className="text-red-400">*</span>
                   </label>
                   <div className="flex gap-2">
                     <input
+                      id={`${formId}-subProjectPath`}
                       type="text"
+                      aria-invalid={Boolean((error && errorField === 'subProjectPath') || folderError)}
+                      aria-describedby={error && errorField === 'subProjectPath' ? `${formId}-form-error` : folderError ? folderErrorId : undefined}
                       value={subProjectPath}
                       onChange={(event) => {
                         setSubProjectPath(event.target.value);
                         setError('');
+                        setPathError('');
                       }}
                       placeholder={t('project.localFolderPlaceholder', 'e.g. C:/dev/mobile-suite/backend')}
                       className="min-w-0 flex-1 bg-muted border border-border rounded-xl px-3 py-2.5 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:border-primary"
@@ -722,9 +767,9 @@ export const ProjectModal: React.FC = () => {
 
               <div className="border-t border-border pt-4">
                 <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
-	                  <label className="block text-sm text-muted-foreground">
+	                  <span className="block text-sm text-muted-foreground">
 	                    {t('project.destination', 'Destination')}
-	                  </label>
+	                  </span>
 	                  <div className="inline-flex rounded-lg border border-border bg-muted/30 p-0.5">
 	                    <button
 	                      type="button"
@@ -766,31 +811,37 @@ export const ProjectModal: React.FC = () => {
                 </div>
 
 	                {isAttachingToExistingGroup ? (
-	                  <div>
+	                  <label>
+                    <span className="mb-2 block text-sm text-muted-foreground">{t('project.existingGlobalProject', 'Existing group')}</span>
                     <GroupCombobox
                       projectGroups={projectGroups.map((group) => ({ id: group.id, name: group.name }))}
                       selectedGroupId={targetGroupId}
                       onSelect={(groupId) => {
                         setTargetGroupId(groupId);
                         setError('');
+                        setPathError('');
                       }}
                       placeholder={t('project.chooseGlobalProject', 'Choose a group...')}
                     />
-                  </div>
+                  </label>
 	                ) : null}
 
                 {isCreatingNewGroup ? (
                   <div className="space-y-3">
                     <div>
-                      <label className="mb-2 block text-sm text-muted-foreground">
+                      <label className="mb-2 block text-sm text-muted-foreground" htmlFor={`${formId}-newGroupName`}>
                         {t('project.globalProjectName', 'Group name')} <span className="text-red-400">*</span>
                       </label>
                       <input
+                        id={`${formId}-newGroupName`}
                         type="text"
+                        aria-invalid={Boolean(error && errorField === 'newGroupName')}
+                        aria-describedby={error && errorField === 'newGroupName' ? `${formId}-form-error` : undefined}
                         value={newGroupName}
                         onChange={(event) => {
                           setNewGroupName(event.target.value);
                           setError('');
+                          setPathError('');
                         }}
                         placeholder={t('project.globalProjectPlaceholder', 'e.g. Mobile Suite')}
                         className="w-full rounded-lg border border-border bg-muted px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground focus:border-primary focus:outline-none"
@@ -864,17 +915,15 @@ export const ProjectModal: React.FC = () => {
                 )}
               </div>
 
-              {duplicatePathProject && (
-                <div className="rounded-xl border border-red-500/20 bg-red-500/10 px-3 py-2 text-sm text-red-300">
-                  {t('project.folderAlreadyAttached', 'This folder is already attached to {{name}}.', {
-                    name: duplicatePathProject.name,
-                  })}
+              {folderError && (
+                <div id={folderErrorId} role="alert" className="rounded-xl border border-red-500/20 bg-red-500/10 px-3 py-2 text-sm text-red-300">
+                  {folderError}
                 </div>
               )}
             </div>
 
             {error && (
-              <div className="flex items-center gap-2 rounded-xl border border-red-500/20 bg-red-500/10 px-3 py-2.5 text-sm text-red-400">
+              <div id={`${formId}-form-error`} role="alert" className="flex items-center gap-2 rounded-xl border border-red-500/20 bg-red-500/10 px-3 py-2.5 text-sm text-red-400">
                 <Icon name="alert-circle" size={14} />
                 <span>{error}</span>
               </div>
@@ -921,12 +970,14 @@ export const ProjectModal: React.FC = () => {
           errorMessage={pendingGitFlowValidationError ? null : error}
           onChangeMainBranch={(mainBranch) => {
             setError('');
+            setPathError('');
             setPendingGitFlowConfirmation((prev) =>
               prev ? { ...prev, mainBranch } : prev
             );
           }}
           onChangeBaseBranch={(baseBranch) => {
             setError('');
+            setPathError('');
             setPendingGitFlowConfirmation((prev) =>
               prev ? { ...prev, baseBranch } : prev
             );

@@ -31,6 +31,10 @@ export interface ChatSendInput {
   contextRefs?: ChatMessage['context_refs'];
   /** Stable identity used to reconcile a deferred send after a restart. */
   submissionTurnId?: string;
+  /** Resume preparation for this durable user message, without appending it again. */
+  persistedUserMessage?: ChatMessage;
+  /** Predetermined identity for a durable direction whose DB acknowledgement may be lost. */
+  userMessageId?: string;
 }
 
 export interface ArchitectPlanAtSend { planId: string; targetBranch: string }
@@ -70,7 +74,7 @@ export interface SendLease {
 }
 
 export type ChatSendOwner = Pick<ChatTurnRuntime,
-  'read' | 'set' | 'update' | 'latestSession' | 'rememberSession' | 'transfer' | 'forgetSession'>;
+  'read' | 'set' | 'update' | 'latestSession' | 'rememberSession' | 'transfer' | 'forgetSession' | 'track'>;
 
 export interface SendTask {
   task_source?: string;
@@ -96,6 +100,12 @@ export interface ChatSendPorts<Task extends SendTask, Recovery, Launch> {
   messages: {
     persistence: ChatPersistenceAdapters;
     onUserPersisted?(message: ChatMessage): void;
+    beforeAssistantStart?(assistantMessage: ChatMessage): void;
+    canDeleteAfter?(conversationId: string): boolean;
+    readUser?(conversationId: string, messageId: string): Promise<ChatMessage | undefined>;
+    onAssistantStarted?(): void;
+    /** Must fail before writing text or acknowledging the composer. */
+    saveImages?(messageId: string, images: SendImage[]): void;
     ensureLoaded(conversationId: string): Promise<void>;
     list(conversationId: string): readonly ChatMessage[];
     hasInterruptedApproval(conversationId: string): boolean;
@@ -106,6 +116,7 @@ export interface ChatSendPorts<Task extends SendTask, Recovery, Launch> {
     isDeleted(conversationId: string): boolean;
     createSessionId(): string;
     createTurnId(): string;
+    onTurnCaptured?(conversationId: string, lease: SendLease): void;
     hasPendingArchitectConversation(conversationId: string): boolean;
     materializeArchitectConversation(conversationId: string): Promise<string>;
     bindArchitectConversation(params: { architectPlan: ArchitectPlanAtSend; conversationId: string }): Promise<boolean>;

@@ -1,3 +1,4 @@
+import { StreamStopUnconfirmedError, cancelStreamReader, combineStreamErrors, withStreamCleanup } from "./streamCancellation";
 import {
   ProviderRuntimeError,
 } from './providerErrors';
@@ -52,89 +53,90 @@ export const fetchWithTimeout = async (
   let timeoutId: ReturnType<typeof globalThis.setTimeout> | undefined;
   let abortHandler: (() => void) | undefined;
 
-  try {
-    if (outerSignal?.aborted) {
-      throw new DOMException('Aborted', 'AbortError');
-    }
+  return withStreamCleanup(async () => {
+    try {
+      if (outerSignal?.aborted) {
+        throw new DOMException('Aborted', 'AbortError');
+      }
 
-    abortHandler = () => controller.abort(outerSignal?.reason);
-    outerSignal?.addEventListener('abort', abortHandler, { once: true });
-    timeoutId = globalThis.setTimeout(() => {
-      controller.abort(new Error('Provider request timed out'));
-    }, timeoutMs);
+      abortHandler = () => controller.abort(outerSignal?.reason);
+      outerSignal?.addEventListener('abort', abortHandler, { once: true });
+      timeoutId = globalThis.setTimeout(() => {
+        controller.abort(new Error('Provider request timed out'));
+      }, timeoutMs);
 
-    assertSecureProviderEndpoint(url);
-    return await tauriFetch(url, {
-      ...init,
-      signal: controller.signal,
-      maxRedirections: 0,
-    });
-  } catch (error) {
-    if (outerSignal?.aborted) {
-      throw new DOMException('Aborted', 'AbortError');
-    }
-    if (controller.signal.aborted) {
-      throw new ProviderRuntimeError('Provider request timed out', {
+      assertSecureProviderEndpoint(url);
+      return await tauriFetch(url, {
+        ...init,
+        signal: controller.signal,
+        maxRedirections: 0,
+      });
+    } catch (error) {
+      if (error instanceof StreamStopUnconfirmedError) throw error;
+      if (outerSignal?.aborted) {
+        throw new DOMException('Aborted', 'AbortError');
+      }
+      if (controller.signal.aborted) {
+        throw new ProviderRuntimeError('Provider request timed out', {
+          kind: 'network',
+          retryable: true,
+          cause: error,
+        });
+      }
+      throw new ProviderRuntimeError(error instanceof Error ? error.message : String(error), {
         kind: 'network',
         retryable: true,
         cause: error,
       });
     }
-    throw new ProviderRuntimeError(error instanceof Error ? error.message : String(error), {
-      kind: 'network',
-      retryable: true,
-      cause: error,
-    });
-  } finally {
+  }, () => {
     if (timeoutId !== undefined) {
       globalThis.clearTimeout(timeoutId);
     }
     if (abortHandler) {
       outerSignal?.removeEventListener('abort', abortHandler);
     }
-  }
+  });
 };
+
+export { cancelStreamReader } from './streamCancellation';
 
 export const readStreamChunkWithIdleTimeout = async (
   reader: ReadableStreamDefaultReader<Uint8Array>,
   timeoutMs: number,
   signal?: AbortSignal
 ): ReturnType<ReadableStreamDefaultReader<Uint8Array>['read']> => {
-  if (signal?.aborted) {
-    throw new DOMException('Aborted', 'AbortError');
-  }
-
   let timeoutId: ReturnType<typeof globalThis.setTimeout> | undefined;
   let abortHandler: (() => void) | undefined;
-  try {
-    const idleTimeout = new Promise<never>((_, reject) => {
-      timeoutId = globalThis.setTimeout(() => {
-        const error = new ProviderRuntimeError('Provider stream stalled before sending more data', {
-          kind: 'stream_idle_timeout',
-          retryable: true,
-        });
-        reject(error);
-        void reader.cancel().catch(() => {
-          // Ignore cancellation errors while closing an idle stream.
-        });
-      }, timeoutMs);
-    });
-    const abort = new Promise<never>((_, reject) => {
-      abortHandler = () => {
-        void reader.cancel().catch(() => {
-          // Ignore cancellation errors while aborting a stream.
-        });
-        reject(new DOMException('Aborted', 'AbortError'));
-      };
-      signal?.addEventListener('abort', abortHandler, { once: true });
-    });
-    return await Promise.race([reader.read(), idleTimeout, abort]);
-  } finally {
-    if (timeoutId !== undefined) {
-      globalThis.clearTimeout(timeoutId);
+  let cancellation: Promise<never> | undefined;
+  return withStreamCleanup(async () => {
+    let interrupt!: (reason: unknown) => void;
+    const interrupted = new Promise<never>((_, reject) => { interrupt = reject; });
+    const cancel = (reason: Error) => {
+      if (cancellation) return;
+      cancellation = (async () => { await cancelStreamReader(reader); throw reason; })();
+      void cancellation.catch(interrupt);
+    };
+    timeoutId = globalThis.setTimeout(() => cancel(new ProviderRuntimeError('Provider stream stalled before sending more data', {
+      kind: 'stream_idle_timeout', retryable: true,
+    })), timeoutMs);
+    abortHandler = () => cancel(new DOMException('Aborted', 'AbortError'));
+    signal?.addEventListener('abort', abortHandler, { once: true });
+    if (signal?.aborted) abortHandler();
+    try {
+      const result = await Promise.race([reader.read(), interrupted]);
+      // cancel() may resolve the JS read before its physical cleanup finishes.
+      if (cancellation) await cancellation;
+      return result;
+    } catch (error) {
+      if (cancellation) {
+        try { await cancellation; }
+        catch (secondary) { throw combineStreamErrors(error, secondary); }
+      }
+      throw error;
     }
-    if (abortHandler) {
-      signal?.removeEventListener('abort', abortHandler);
-    }
-  }
+  }, () => {
+    if (timeoutId !== undefined) globalThis.clearTimeout(timeoutId);
+    if (abortHandler) signal?.removeEventListener('abort', abortHandler);
+  });
 };

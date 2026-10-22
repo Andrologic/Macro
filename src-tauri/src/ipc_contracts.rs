@@ -1,6 +1,31 @@
 //! Authoritative native wire contracts grouped by domain.
 //! These reexports expose data shapes, not application execution or transport authority.
 
+pub mod execution {
+    pub use crate::agsdl_host_capture::{
+        ExecutionExternalDelivery, ExecutionPreflight, ExecutionPreflightRequest,
+    };
+    pub use crate::agsdl_host_catalogue::{
+        NativeModelCatalogue, NativeModelChoice, NativeModelEdition, UnavailableProvider,
+    };
+    pub use crate::agsdl_host_compiler::HostCompileJob;
+    pub use crate::agsdl_host_tasks::{PublicTaskTarget, ResolveCardTask, ResolvedCardTask};
+    pub use crate::agsdl_host_tools::{HostToolInvocation, HostToolReceipt};
+    pub use crate::db::agsdl_execution::approvals::{
+        ApprovalDecision, ApprovalPage, ApprovalScope, PublicApproval,
+    };
+    pub use crate::db::agsdl_execution::diagnostics::{
+        DiagnosticRequest, PublicExecutionDiagnostic,
+    };
+    pub use crate::db::agsdl_execution::discovery::{RunListRequest, RunPage};
+    pub use crate::db::agsdl_execution::dto::*;
+    pub use crate::db::agsdl_execution::inspection::{HostAdmission, HostInspection};
+    pub use crate::db::agsdl_execution::intents::*;
+    pub use crate::db::agsdl_execution::prepared::{Prepare, Validation};
+    pub use crate::db::agsdl_execution::public::*;
+    pub use crate::db::agsdl_execution::responses::{Closure, Emission};
+}
+
 pub mod db {
     pub use crate::commands::goal_auditor_read::GoalAuditorReadInput;
     pub use crate::db::conversation_goals::{
@@ -76,6 +101,7 @@ pub mod chat {
         AiProjectMount, AiStreamChunkEvent, AiStreamDoneEvent, AiStreamErrorEvent,
         AiStreamTimelineEvent, AiStreamToolTraceEvent, AiToolCall, AiToolCallFunction, AiToolTrace,
     };
+    pub use crate::commands::http_resources::WebviewResourceRelease;
 }
 
 pub mod copilot {

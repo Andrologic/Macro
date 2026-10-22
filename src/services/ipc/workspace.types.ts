@@ -99,7 +99,7 @@ export type ProjectIconResolutionDto = NativeProjectIconResolutionDto;
 export type WorkspaceArchitectPlanReplicaDto = OptionalFields<NativeWorkspaceArchitectPlanReplicaDto, "updatedAt" | "missing">;
 
 /** Frontend compatibility: preserves adapted fields and omission rules. */
-export type WorkspaceArchitectPlanSummaryDto = OptionalFields<OmitFields<NativeWorkspaceArchitectPlanSummaryDto, "gitFlowPlan" | "executionModesByProjectId" | "replicas">,
+export type WorkspaceArchitectPlanSummaryDto = OptionalFields<OmitFields<NativeWorkspaceArchitectPlanSummaryDto, "gitFlowPlan" | "executionModesByProjectId" | "replicas" | "hasAgsdl">,
   | "label"
   | "planKind"
   | "archivedAt"
@@ -122,6 +122,7 @@ export type WorkspaceArchitectPlanSummaryDto = OptionalFields<OmitFields<NativeW
   gitFlowPlan?: unknown;
   executionModesByProjectId?: Record<string, "git" | "direct"> | null;
   replicas?: WorkspaceArchitectPlanReplicaDto[];
+  hasAgsdl?: boolean;
 };
 
 /** Frontend compatibility: preserves adapted fields and omission rules. */
@@ -131,6 +132,7 @@ export type WorkspaceArchitectPlanRecordDto = OptionalFields<OmitFields<NativeWo
   | "nodes"
   | "predictedBranches"
   | "replicas"
+  | "agsdl"
 >,
   | "label"
   | "planKind"
@@ -154,6 +156,7 @@ export type WorkspaceArchitectPlanRecordDto = OptionalFields<OmitFields<NativeWo
   nodes: PlanNode[];
   predictedBranches: PredictedBranch[];
   replicas?: WorkspaceArchitectPlanReplicaDto[];
+  agsdl?: import("../../types/agsdl").AgsdlEditorDocument | null;
 };
 
 export type WorkspaceArchitectPlanRuntimeStatusDto = NativeWorkspaceArchitectPlanRuntimeStatusDto;

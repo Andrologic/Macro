@@ -69,13 +69,16 @@ describe("goal auditor provider resolver", () => {
     useProviderStore.setState({ resolveProviderApiKey });
     const resolve = createStoreGoalAuditProviderResolver({ providerId: "frozen", modelId: "model" });
     const controller = new AbortController();
-    const aborted = resolve(input(), controller.signal);
+    const aborted = Promise.resolve(resolve(input(), controller.signal));
+    let settled = false;
+    void aborted.then(() => { settled = true; }, () => { settled = true; });
     controller.abort();
-    await expect(Promise.race([
-      aborted,
-      new Promise((_, reject) => setTimeout(() => reject(new Error("Abort stalled")), 100)),
-    ])).rejects.toHaveProperty("name", "AbortError");
+    // The native key operation already started; Goal keeps the child slot until it ends.
+    await new Promise<void>((done) => setTimeout(done, 20));
+    expect(settled).toBe(false);
     finish("key");
+    // Its late key is then revoked rather than used.
+    await expect(aborted).rejects.toHaveProperty("name", "AbortError");
 
     const changed = resolve(input(), new AbortController().signal);
     useProviderStore.setState({ providerConfigs: [{ ...config("frozen"), baseUrl: "https://changed.invalid/v1" }, config("ui")] });

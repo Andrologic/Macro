@@ -1,6 +1,9 @@
 //! Development-only benchmark compiling the actual private database modules.
 //! No Tauri app, global config manager, secrets initialization or provider calls.
 #![allow(dead_code, unused_imports)]
+// The library runs the shared DB unit tests. This executable is checked through
+// its --self-test mode, without compiling those tests a second time here.
+#![cfg(not(test))]
 #[path = "../src/db/mod.rs"]
 mod db;
 #[path = "../src/ai/macro_ai.rs"]
@@ -11,6 +14,9 @@ mod ai {
 #[path = "../src/secrets/mod.rs"]
 mod secrets;
 pub use macro_lib::config;
+mod agsdl_host_capture {
+    pub use macro_lib::ipc_contracts::execution::ExecutionExternalDelivery;
+}
 
 use db::models::{CreateConversationInput, CreateMessageInput, ImportMessageInput};
 use db::repository;

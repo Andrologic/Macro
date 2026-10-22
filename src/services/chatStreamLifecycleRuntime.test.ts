@@ -1,4 +1,12 @@
 import { describe, expect, mock, test } from "bun:test";
+import { StreamStopUnconfirmedError } from "./ai/streamCancellation";
+import { runAssistantStream } from "./chatStreamOrchestrator";
+import { createChatTurnRuntime } from "./chatTurnRuntime";
+import { executeChatAgentTerminal } from "./chatAgentTerminal";
+import { invokeToolHandler } from "./ai/toolCallRunner";
+import { EMPTY_CONVERSATION_RUNTIME } from "../domains/chat/runtimeState";
+import type { ConversationRuntimeState } from "../types";
+import type { TerminalSessionDto } from "./tauriIpc";
 import type { AppMode, ChatMessage } from "../types";
 import type { ChatStreamTokenControls } from "./chatStreamOrchestrator";
 import {
@@ -372,10 +380,31 @@ describe("createChatStreamLifecycleRuntime", () => {
 
     expect(events).toContain("task-failed");
     expect(events).toContain("persist-partial");
+    expect(events.filter(event => event === "metadata")).toHaveLength(1);
+    expect(events.indexOf("metadata")).toBeGreaterThan(events.indexOf("persist-partial"));
     expect(events).toContain("stream-error:transcript:assistant-1");
     expect(events).not.toContain("remove-placeholder");
     expect(getMessage().content).toContain("partial");
     expect(getMessage().content).toContain("Erreur du provider");
+  });
+
+  test("does not publish partial metadata after persistence fails or its turn departs", async () => {
+    for (const departed of [false, true]) {
+      const { runtime, events } = makeRuntime({
+        message: makeMessage({ content: "partial" }),
+        modeAtSend: "Architect",
+        overrides: {
+          isTurnCurrent: () => !departed,
+          persistAssistantPartialStreamResult: mock(async () => {
+            if (!departed) throw new Error("SQLite unavailable");
+          }),
+        },
+      });
+      await runtime.onError(Object.assign(new Error("provider unavailable"), {
+        providerError: true, kind: "network", retryable: true,
+      }), makeControls());
+      expect(events).not.toContain("metadata");
+    }
   });
 
   test("macro error after progress preserves the partial assistant message", async () => {
@@ -468,4 +497,71 @@ describe("createChatStreamLifecycleRuntime", () => {
       ),
     ).toBe(true);
   });
+});
+
+
+test("a real replay rollback failure after a lost terminal receipt retains Chat admission", async () => {
+  const controller = new AbortController();
+  let state: ConversationRuntimeState = { ...EMPTY_CONVERSATION_RUNTIME, phase: "streaming", sessionId: "session-1", turnId: "turn-1", assistantMessageId: "assistant-1", abortController: controller };
+  const settled = mock(() => {});
+  const owner = createChatTurnRuntime({
+    state: { read: () => state, project: (_id, next) => { state = next ?? EMPTY_CONVERSATION_RUNTIME; }, isDeleted: () => false },
+    cancelTransport: async () => {}, settled,
+  });
+  const rollbackFailure = new Error("Replay rollback failed");
+  const { runtime: lifecycle, adapters } = makeRuntime({ modeAtSend: "Chat", overrides: {
+    recoverReplayBeforeProgress: async () => {
+      // Recovery can clear the UI projection before its durable rollback fails.
+      state = EMPTY_CONVERSATION_RUNTIME;
+      throw rollbackFailure;
+    },
+  } });
+  const session = { id: "terminal", project_id: null, status: "idle" } as TerminalSessionDto;
+  const terminal = { cachedSession: () => session, createSession: async () => session, readSession: async () => session,
+    runCommand: async () => { throw new Error("Run receipt lost"); }, killSession: async () => session };
+  let receipt: StreamStopUnconfirmedError | undefined;
+  const stream = runAssistantStream({
+    sessionId: "session-1", providerId: "provider", providerType: "copilot", modelId: "fixture", baseUrl: "https://example.invalid", messages: [], signal: controller.signal, lifecycle,
+    streamChatImpl: async options => {
+      try {
+        await invokeToolHandler(() => executeChatAgentTerminal(terminal, "terminal_run", { session_id: "terminal", command: "synthetic" }, controller.signal), "terminal_run", {}, "call", controller.signal);
+      } catch (error) {
+        receipt = error as StreamStopUnconfirmedError;
+        options.onError(receipt);
+        throw receipt;
+      }
+    },
+  });
+  void stream.catch(() => {});
+  owner.track("conversation-1", stream);
+  await expect(stream).rejects.toBeInstanceOf(StreamStopUnconfirmedError);
+  expect(receipt?.secondaryErrors).toContain(rollbackFailure);
+  expect(adapters.tryRecoverFromOverflow).not.toHaveBeenCalled();
+  await expect(owner.stop("conversation-1")).rejects.toBeInstanceOf(StreamStopUnconfirmedError);
+  expect(receipt?.stopped).toBe(false);
+  expect(settled).not.toHaveBeenCalled();
+  expect(() => owner.assertCanSend("conversation-1", { available: true, hasUnsavedResponse: false })).toThrow("already running");
+});
+
+
+test("a cleanup error mentioning context overflow cannot trigger provider recovery", async () => {
+  const { runtime, adapters } = makeRuntime({ modeAtSend: "Chat" });
+  await runtime.onError(new StreamStopUnconfirmedError("maximum context length: local cleanup receipt missing"), makeControls());
+  expect(adapters.tryRecoverFromOverflow).not.toHaveBeenCalled();
+});
+
+
+describe("direction retirement after assistant persistence", () => {
+  for (const outcome of ['success', 'failure', 'aborted', 'incomplete'] as const) {
+    test(`requires confirmed persistence and a normal response: ${outcome}`, async () => {
+      const confirmed = mock(() => undefined);
+      const h = makeRuntime({ overrides: {
+        persistAssistantStreamResult: async () => { if (outcome === 'failure') throw new Error('DB unavailable'); },
+        isAbortSignalAborted: () => outcome === 'aborted', onAssistantPersisted: confirmed,
+      } });
+      await h.runtime.onComplete({ visibleContent: 'Saved response', toolTraces: [],
+        completionReason: outcome === 'incomplete' ? 'incomplete' : 'completed' }, makeControls());
+      expect(confirmed).toHaveBeenCalledTimes(outcome === 'success' ? 1 : 0);
+    });
+  }
 });

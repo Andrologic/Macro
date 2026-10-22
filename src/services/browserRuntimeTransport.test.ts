@@ -1,5 +1,6 @@
 import { afterAll, beforeAll, expect, test } from 'bun:test';
 import { readFileSync } from 'node:fs';
+import { BROWSER_RUNTIME_SESSION_REPLACED_EVENT } from './browserRuntimeEvents';
 
 type Listener = (event: { code?: number; data?: string; reason?: string }) => void;
 
@@ -240,6 +241,11 @@ test('préserve les octets audio et les en-têtes des invocations binaires', asy
 });
 
 test('arrête définitivement la reconnexion quand un autre onglet prend la session', async () => {
+  const originalWindow = Object.getOwnPropertyDescriptor(globalThis, 'window');
+  const dispatched: string[] = [];
+  Object.defineProperty(globalThis, 'window', { configurable: true, value: {
+    dispatchEvent: (event: Event) => { dispatched.push(event.type); return true; },
+  } });
   const originalSetTimeout = globalThis.setTimeout;
   const originalClearTimeout = globalThis.clearTimeout;
   let nextTimerId = 0;
@@ -269,11 +275,14 @@ test('arrête définitivement la reconnexion quand un autre onglet prend la sess
     await expect(transport.invokeBrowserRuntime('git_status')).rejects.toMatchObject({
       code: 'BROWSER_RUNTIME_SESSION_REPLACED',
     });
+    expect(dispatched).toEqual([BROWSER_RUNTIME_SESSION_REPLACED_EVENT]);
     expect(scheduled).toHaveLength(0);
     for (const callback of scheduled.values()) callback();
     expect(FakeWebSocket.instances).toHaveLength(connectionCount);
     unlisten();
   } finally {
+    if (originalWindow) Object.defineProperty(globalThis, 'window', originalWindow);
+    else Reflect.deleteProperty(globalThis, 'window');
     globalThis.setTimeout = originalSetTimeout;
     globalThis.clearTimeout = originalClearTimeout;
   }

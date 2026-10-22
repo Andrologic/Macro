@@ -41,19 +41,35 @@ completed run output and goal revision in one transaction. A new claim requires
 goals are terminal, though they can be replaced by a new goal. The migration
 does not decide when the UI should start an audit.
 
-Version 10 rebuilds message search against the `message_search_content` view.
-Its correlated projection strips assistant thinking blocks, including interrupted
-blocks, and leaves the original messages and user-authored examples intact.
-The index and its insert/update/delete triggers use that same projection.
-Updates remove the old index content before changing the row, then add the new
-content, including when the role changes. A deterministic FTS rebuild uses the
-view too. Migration, backfill and version stamp commit atomically; no rebuild
-runs on later openings. Backup validation still accepts the prior canonical
-search schema for archives without version 10 and rejects altered objects.
+Version 10 was published independently on two branches. Its recorded name is
+part of the migration identity and remains unchanged, including its timestamp:
+
+- `010_visible_message_search` rebuilds message search against the
+  `message_search_content` view. Its projection strips assistant thinking blocks
+  while preserving original transcripts and user examples. Index maintenance and
+  rebuilds use that same projection.
+- `010_tool_results` adds validated JSON results to the tool journal. Versions
+  11 through 14 then add the durable AgSDL execution, host, UI intent and process
+  receipt tables.
+
+Version 15, `015_parallel_v10_reconciliation`, joins these published histories.
+The runner checks the name recorded for version 10 before schema work. Unknown
+names fail without mutation. A database carrying the visible-search variant
+receives the tool-result schema before any pending AgSDL migrations; a database
+carrying the tool-result variant receives the visible-search migration after
+the AgSDL migrations. A new database follows the tool-result variant. Both paths
+record version 15 only after their missing work succeeds. The published SQL and
+historical stamps are preserved. All work commits in the existing transaction,
+so a failure restores the original schema, data and migration history.
+
+Later openings perform no DDL or FTS rebuild. Backup validation also reads the
+version-10 name and compares each historical archive against its own canonical
+schema before migration. It accepts both published histories and the joined
+schema, while continuing to reject altered tables, indexes and triggers.
 
 The supported inputs are:
 
-- An empty database, initialized with version 1 and upgraded through version 10.
+- An empty database, initialized with version 1 and upgraded through version 15.
 - An unversioned database with historical runtime tables, adopted through the
   legacy path. Missing tables and known additive columns are supplied by the
   frozen compatibility helpers. Existing extra columns, tables, indexes and
@@ -65,9 +81,10 @@ The supported inputs are:
   recorded only after their completion and its checks.
 - A version 7 database, upgraded to version 8 without rebuilding its tool journal.
 - A version 8 database, upgraded to version 9 without rebuilding its run journal.
-- A version 9 database, upgraded to version 10 by rebuilding only the derived
-  search index.
-- A version 10 database, reopened without compatibility helpers, DDL, timestamp
+- Either published version 10 database, or an AgSDL database through version
+  14, upgraded to the joined version 15 without replacing historical stamps or
+  existing tool results and engine records.
+- A version 15 database, reopened without compatibility helpers, DDL, timestamp
   backfills or FTS rebuilds. Default provider seeding retains its existing
   startup behavior and is separate from schema migration.
 

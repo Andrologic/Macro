@@ -3,4 +3,8 @@ import type { AiToolCall } from "./AiToolCall";
 import type { AiToolTrace } from "./AiToolTrace";
 import type { JsonValue } from "./serde_json/JsonValue";
 
-export type AiStreamDoneEvent = { request_id: string, output_text: string, tool_calls: Array<AiToolCall>, response_id?: string, output_items?: Array<JsonValue>, provider_input_items?: Array<JsonValue>, provider_turn_state?: JsonValue, reasoning_summary?: string, tool_traces?: Array<AiToolTrace>, hidden_context?: string, accepted_submission_ids?: Array<string>, completion_reason?: string, };
+export type AiStreamDoneEvent = { request_id: string, output_text: string,
+/**
+ * Provider-visible text without reasoning, when the transport separates it.
+ */
+visible_text?: string, tool_calls: Array<AiToolCall>, response_id?: string, output_items?: Array<JsonValue>, provider_input_items?: Array<JsonValue>, provider_turn_state?: JsonValue, reasoning_summary?: string, tool_traces?: Array<AiToolTrace>, hidden_context?: string, accepted_submission_ids?: Array<string>, completion_reason?: string, };

@@ -1,3 +1,11 @@
+import { captureAgsdlChatContext, getAgsdlContext, replaceAgsdlChatContext, legacyAgsdlReference, serializeAgsdlChatContext, readAgsdlChatSelection, isAgsdlChatContextCurrent } from "../../stores/agsdl/chatContext";
+import { createComposerTransaction } from "../../services/chat/composerTransaction";
+import { COMPOSER_REFERENCE_PATTERN, resolveReference, referenceText } from "../../services/chat/composerReferenceText";
+import { captureComposerSnapshot, hasMultipleAgsdlContexts, rebindAgsdlContextRefs, sameComposerSnapshot, persistableContextRefs } from "../../services/chat/composerSubmission";
+import type { ContextRefKind } from "../../types";
+import { useAgsdlTranslation } from "../agsdl/useAgsdlTranslation";
+import { AgsdlSentSelection } from "../agsdl/AgsdlChatSelection";
+import { getPlanFinalizationTaskDisplayTitle } from '../../services/planFinalization';
 import { useShortcutBinding } from '../../hooks/useShortcutBinding';
 import React, {
   Suspense,
@@ -40,6 +48,7 @@ import { useSpeechToTextStore } from '../../stores/useSpeechToTextStore';
 import { useShortcutsStore } from '../../stores/useShortcutsStore';
 import { formatBindingForDisplay } from '../../shortcuts/utils';
 import { useTaskStore } from '../../stores/useTaskStore';
+import type { CatalogedImplementTask } from '../../services/implementTaskCatalog';
 import { Icon, type IconName } from '../ui/Icon';
 import { SpinnerIcon } from '../ui/SpinnerIcon';
 import { cn } from '../../utils/cn';
@@ -68,7 +77,6 @@ import {
   resolveProjectWorkspaceState,
 } from '../../services/projectWorkspaceState';
 import { ARCHITECT_GENERATE_STRATEGY_BUTTON_PROMPT_SUFFIX } from '../../services/architectChat';
-import { isArchitectPlanStrategyMutationLocked } from '../../services/architectPlanService';
 import { getArchitectPlanPrimaryName } from '../../services/architectPlanPresentation';
 import { resolveActiveConversationQuestionnaire } from '../../services/chatQuestionnaires';
 import { getServiceRuntimeCapabilities } from '../../services';
@@ -76,6 +84,7 @@ import {
   clearConflictAssistantInternalAgentProfile,
   getConflictAssistantInternalAgentProfile,
 } from '../../services/conflictAssistantService';
+import { getConflictAssistantContext, isConflictAssistantContextAllowed } from '../../services/conflictAssistantContext';
 import { useVirtualMessages } from '../../hooks/useVirtualList';
 import { usePerformanceMonitor } from '../../hooks/usePerformanceMonitor';
 import LazyComposerEditor, { type ComposerEditorHandle } from './composer/LazyComposerEditor';
@@ -107,7 +116,7 @@ import {
 } from './CompactionTranscriptUi';
 import { useAgentCodeReplayConfirmation } from './useAgentCodeReplayConfirmation';
 import { notify } from '../ui/toastService';
-import { toServiceError } from '../../services/contracts/errors';
+import { toServiceError, type ServiceError } from '../../services/contracts/errors';
 import { parseConversationGoalCommand } from '../../services/conversationGoalCommand';
 import { conversationGoalProductFlow } from '../../composition/goalProductComposition';
 import { isTauriAvailable } from '../../services/ipc/runtime';
@@ -147,6 +156,8 @@ const QuestionnaireResponseSummary = React.lazy(() =>
     default: module.QuestionnaireResponseSummary,
   })),
 );
+const TaskExecutionGraphDialog = React.lazy(() => import('../tasks/TaskExecutionGraphDialog'));
+
 const ImplementTaskTodoDropdown = React.lazy(() =>
   import('./ImplementTaskTodoDropdown').then((module) => ({
     default: module.ImplementTaskTodoDropdown,
@@ -165,11 +176,6 @@ const AgentCodeReplayConfirmModal = React.lazy(() =>
 const ImagePreviewModal = React.lazy(() =>
   import('../modals/ImagePreviewModal').then((module) => ({
     default: module.ImagePreviewModal,
-  })),
-);
-const ArchitectPlanNamingRecoveryModal = React.lazy(() =>
-  import('../architect/ArchitectPlanNamingRecoveryModal').then((module) => ({
-    default: module.ArchitectPlanNamingRecoveryModal,
   })),
 );
 const PlanFormModal = React.lazy(() =>
@@ -453,7 +459,7 @@ interface ChatMessageRowProps {
   standaloneLaunchProgress?: StandaloneTaskLaunchProgress | null;
 }
 
-const USER_CONTEXT_MENTION_PATTERN = /\[(skill|file|source):\s*([^\]]+)\]/gi;
+const USER_CONTEXT_MENTION_PATTERN = COMPOSER_REFERENCE_PATTERN;
 
 interface SavedComposerDraft {
   savedDraftText: string;
@@ -468,20 +474,11 @@ const composerDraftMatchesSavedDraft = (
   draft: ComposerDraft | null,
   savedDraft: SavedComposerDraft,
 ): boolean =>
-  Boolean(
-    draft &&
-    draft.text === savedDraft.savedDraftText &&
-    draft.images.length === savedDraft.savedDraftImages.length &&
-    draft.images.every((image, index) => {
-      const savedImage = savedDraft.savedDraftImages[index];
-      return savedImage?.id === image.id && savedImage.dataUrl === image.dataUrl;
-    }) &&
-    draft.contextRefs.length === savedDraft.savedDraftContextRefs.length &&
-    draft.contextRefs.every((ref, index) => {
-      const savedRef = savedDraft.savedDraftContextRefs[index];
-      return savedRef?.id === ref.id && savedRef.kind === ref.kind;
-    }),
-  );
+  Boolean(draft && sameComposerSnapshot(draft, {
+    text: savedDraft.savedDraftText,
+    images: savedDraft.savedDraftImages,
+    contextRefs: savedDraft.savedDraftContextRefs,
+  }));
 
 interface ComposerEditSession extends SavedComposerDraft {
   messageId: string;
@@ -508,6 +505,7 @@ const EMPTY_COMPOSER_DRAFT_SNAPSHOT: ComposerDraftSnapshot = {
 const buildSnapshotContextRefData = (
   ref: PersistedContextReference,
 ): ContextReference['data'] => {
+  if (ref.kind === 'agsdl' && ref.agsdl) return ref.agsdl;
   if (ref.kind === 'conversation') {
     return { conversationId: ref.conversationId ?? ref.id };
   }
@@ -590,7 +588,7 @@ const cloneContextRefs = (
         kind: ref.kind,
         title: ref.title,
         subtitle: ref.subtitle,
-        data: 'data' in ref ? ref.data : buildSnapshotContextRefData(ref),
+        data: structuredClone('data' in ref ? ref.data : buildSnapshotContextRefData(ref)),
       }))
     : [];
 
@@ -617,11 +615,21 @@ const resolveAssistantActivityAnchorId = (
   return latestMessage?.role === 'assistant' ? latestMessage.id : null;
 };
 
-const UserMessageContent: React.FC<{ content: string }> = ({ content }) => {
+const UserMessageContent: React.FC<{ content: string; hiddenContext?: string; contextRefs?: PersistedContextReference[] }> = ({ content, hiddenContext, contextRefs }) => {
+  const attached = contextRefs?.find(ref => ref.kind === "agsdl")?.agsdl;
+  const selection = attached
+    ? { title: attached.title, review: Boolean(attached.diagnostic) }
+    : readAgsdlChatSelection(hiddenContext);
+  const hasInlineSelection = Boolean(selection) && [...content.matchAll(new RegExp(COMPOSER_REFERENCE_PATTERN))].some(match =>
+    match[1].toLowerCase() === 'agsdl' && (attached
+      ? resolveReference(match, contextRefs)?.id === attached.id
+      : !match[3] && match[2].trim() === selection?.title),
+  );
   const lines = content.split('\n');
 
   return (
     <div data-user-message-content="true" className="break-words leading-[1.35]">
+      {selection && !hasInlineSelection && <AgsdlSentSelection {...selection} />}
       {lines.map((line, lineIndex) => {
         const parts: React.ReactNode[] = [];
         let lastIndex = 0;
@@ -633,15 +641,11 @@ const UserMessageContent: React.FC<{ content: string }> = ({ content }) => {
             parts.push(line.slice(lastIndex, match.index));
           }
 
-          const rawKind = match[1]?.toLocaleLowerCase();
-          const kind = rawKind === 'file'
-            ? 'file'
-            : rawKind === 'source'
-            ? 'source'
-            : 'skill';
-          const title = match[2]?.trim() ?? '';
+          const kind = match[1].toLowerCase() as ContextRefKind;
+          const ref = resolveReference(match, contextRefs);
+          const title = ref?.title ?? match[2]?.trim() ?? '';
           parts.push(
-            <ContextReferenceChip
+            !ref && match[3] ? title : <ContextReferenceChip
               key={`${lineIndex}-${match.index}-${title}`}
               kind={kind}
               title={title}
@@ -960,7 +964,7 @@ const ChatMessageRowBase: React.FC<ChatMessageRowProps> = ({
                 </Suspense>
               ) : (
                 <>
-                  <UserMessageContent content={message.content} />
+                  <UserMessageContent content={message.content} hiddenContext={message.hidden_context} contextRefs={message.context_refs} />
                   {message.role === 'user' && citedConversations.length > 0 && (
                     <details className="mt-2 rounded-md border border-border/60 bg-background/40 px-2 py-1.5 text-xs">
                       <summary className="cursor-pointer text-muted-foreground">
@@ -1169,6 +1173,7 @@ function useMessageAction<Args extends unknown[], Result>(handler: (...args: Arg
 }
 
 const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
+  const { t: agsdlT } = useAgsdlTranslation();
   const { t } = useTranslation();
   const runtimeCapabilities = getServiceRuntimeCapabilities();
   const {
@@ -1183,8 +1188,6 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     getProjectById,
     activeArchitectPlanId,
     activePlanContext,
-    planNodes,
-    predictedBranches,
     openProjectModal,
     setLeftPanelOpen,
   } = useAppStore(useShallow((state) => ({
@@ -1199,8 +1202,6 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     getProjectById: state.getProjectById,
     activeArchitectPlanId: state.activeArchitectPlanId,
     activePlanContext: state.activePlanContext,
-    planNodes: state.planNodes,
-    predictedBranches: state.predictedBranches,
     openProjectModal: state.openProjectModal,
     setLeftPanelOpen: state.setLeftPanelOpen,
   })));
@@ -1237,8 +1238,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     getMessageImages,
     setMessageImages,
     architectPlanNamingRecovery,
-    setArchitectPlanNamingRecoveryStage,
-    retryArchitectPlanNamingRecovery,
+    dismissArchitectPlanNamingRecovery = () => undefined,
     submitArchitectPlanManualName,
     composerContextRefs,
     skillTurnFeedbackByMessageId,
@@ -1264,10 +1264,15 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     clearComposerDraftForContext = () => undefined,
     migrateComposerDraftContext = () => undefined,
     replaceComposerContextRefs = () => undefined,
+    resolveComposerDraftConversationId = (conversationId: string) => conversationId,
+    draftConversationId,
   } = useChatStore(useShallow((state) => ({
     conversations: state.conversations,
     messages: state.messages,
     selectedConversationId: state.selectedConversationId,
+    draftConversationId: state.selectedConversationId
+      ? state.resolveComposerDraftConversationId?.(state.selectedConversationId) ?? state.selectedConversationId
+      : null,
     activeContextKey: state.activeContextKey,
     selectedConversationContextKey: state.selectedConversationContextKey,
     selectedConversationRuntime: state.selectedConversationId
@@ -1301,9 +1306,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     getMessageImages: state.getMessageImages,
     setMessageImages: state.setMessageImages,
     architectPlanNamingRecovery: state.architectPlanNamingRecovery,
-    setArchitectPlanNamingRecoveryStage:
-      state.setArchitectPlanNamingRecoveryStage,
-    retryArchitectPlanNamingRecovery: state.retryArchitectPlanNamingRecovery,
+    dismissArchitectPlanNamingRecovery: state.dismissArchitectPlanNamingRecovery,
     submitArchitectPlanManualName: state.submitArchitectPlanManualName,
     composerContextRefs: state.composerContextRefs,
     skillTurnFeedbackByMessageId: state.skillTurnFeedbackByMessageId,
@@ -1332,6 +1335,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     getComposerDraftForContext: state.getComposerDraftForContext,
     clearComposerDraftForContext: state.clearComposerDraftForContext,
     migrateComposerDraftContext: state.migrateComposerDraftContext,
+    resolveComposerDraftConversationId: state.resolveComposerDraftConversationId,
     replaceComposerContextRefs: state.replaceComposerContextRefs,
   })));
   const { mark: markPerformance } = usePerformanceMonitor();
@@ -1376,6 +1380,16 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
   useEffect(() => {
     setOpenModelSelector(null);
   }, [selectedConversationId, selectedProviderId, selectedModelId]);
+  const [composerSubmissionErrors, setComposerSubmissionErrors] =
+    useState<Partial<Record<string, ServiceError>>>({});
+  const clearComposerSubmissionError = useCallback((contextKey: string) => {
+    setComposerSubmissionErrors((current) => {
+      if (!current[contextKey]) return current;
+      const next = { ...current };
+      delete next[contextKey];
+      return next;
+    });
+  }, []);
   const [composerEditSession, setComposerEditSession] =
     useState<ComposerEditSession | null>(null);
   const [goalComposerEditSession, setGoalComposerEditSession] =
@@ -1396,18 +1410,20 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
   const composerFileInputRef = useRef<HTMLInputElement>(null);
   const pendingSpeechInsertionRef = useRef<SpeechComposerInsertion | null>(null);
   const activeTurnSubmissionInFlightRef = useRef(false);
+  const runtimeCaptureInFlightRef = useRef(false);
   const contextRefreshInFlightRef = useRef(false);
   const wasContextStreamingRef = useRef(false);
   const standaloneTaskBuildResetRef = useRef<string | null>(null);
 
+  const [executionGraphTask, setExecutionGraphTask] = useState<CatalogedImplementTask | null>(null);
   const [previewImage, setPreviewImage] = useState<MessageImageAttachment | null>(null);
   const [promptHistoryIndex, setPromptHistoryIndex] = useState<number | null>(null);
   const [draftBeforeHistory, setDraftBeforeHistory] = useState<ComposerDraftSnapshot>(
     EMPTY_COMPOSER_DRAFT_SNAPSHOT
   );
   const pendingPromptHistoryTextRef = useRef<string | null>(null);
-  const composerDraftContextKey = selectedConversationId
-    ? `conversation:${selectedConversationId}`
+  const composerDraftContextKey = draftConversationId
+    ? `conversation:${draftConversationId}`
     : activeContextKey
       ? `context:${activeContextKey}`
       : `mode:${mode}`;
@@ -1418,6 +1434,12 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
   const renderedComposerDraftContextKeyRef = useRef(composerDraftContextKey);
   const skipComposerDraftPersistenceRef = useRef(false);
   const pendingSentComposerDraftContextKeysRef = useRef(new Set<string>());
+  // A first Architect draft moves to its conversation once the plan references it.
+  const isComposerDraftHandoff = useCallback((fromKey: string | null, toKey: string) =>
+    Boolean(fromKey?.startsWith('conversation:')) &&
+    `conversation:${resolveComposerDraftConversationId(fromKey!.slice('conversation:'.length))}` === toKey,
+  [resolveComposerDraftConversationId]);
+  const composerDraftRevisionRef = useRef(0);
   const latestComposerDraftRef = useRef({
     text: '',
     images: [] as MessageImageAttachment[],
@@ -1663,42 +1685,6 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     setManualCompactionPhase('idle');
   }, [selectedConversationId]);
 
-  useEffect(() => {
-    if (!selectedConversationId) return;
-    let cancelled = false;
-
-    // The LazyComposerEditor loads its underlying editor module
-    // asynchronously. composerEditorRef.current may be null on the first
-    // render. We peek (read) the draft without consuming it, then retry
-    // until the editor is ready, and only then acknowledge (consume) it.
-    const tryApplyDraft = (attemptsLeft: number) => {
-      if (cancelled) return;
-      const handle = composerEditorRef.current;
-      const draft = peekComposerDraft(selectedConversationId);
-      if (draft === null) {
-        return;
-      }
-      if (handle) {
-        handle.setText(draft);
-        handle.focus();
-        acknowledgeComposerDraft(selectedConversationId);
-        return;
-      }
-      if (attemptsLeft <= 0) {
-        // Editor never came up. Drop the draft so we don't leak it.
-        acknowledgeComposerDraft(selectedConversationId);
-        return;
-      }
-      window.setTimeout(() => tryApplyDraft(attemptsLeft - 1), 50);
-    };
-
-    tryApplyDraft(10);
-
-    return () => {
-      cancelled = true;
-    };
-  }, [selectedConversationId, peekComposerDraft, acknowledgeComposerDraft]);
-
   const isStreaming = isContextStreaming;
   const isTranscriptActivityActive =
     isContextStreaming ||
@@ -1799,7 +1785,9 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
       !selectedConversationRuntime.lastErrorDisplayTarget)
       ? selectedConversationRuntime.lastError
       : null;
-  const composerError = composerRuntimeError ?? lastError;
+  const composerError = composerRuntimeError ?? lastError ??
+    composerSubmissionErrors[composerDraftContextKey];
+  const composerErrorMessage = composerError ? toServiceError(composerError).message : null;
 
   const promptHistory = useMemo(() => {
     return currentMessages
@@ -1852,13 +1840,34 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
 
   useLayoutEffect(() => {
     if (renderedComposerDraftContextKeyRef.current === composerDraftContextKey) return;
+    const handoff = isComposerDraftHandoff(renderedComposerDraftContextKeyRef.current, composerDraftContextKey);
     renderedComposerDraftContextKeyRef.current = composerDraftContextKey;
+    if (handoff) return;
+    composerDraftRevisionRef.current += 1;
     goalComposerEditSessionRef.current = null;
-  }, [composerDraftContextKey]);
+  }, [composerDraftContextKey, isComposerDraftHandoff]);
 
   useEffect(() => {
     const previousContextKey = activeComposerDraftContextKeyRef.current;
     if (previousContextKey === composerDraftContextKey) return;
+
+    if (isComposerDraftHandoff(previousContextKey, composerDraftContextKey)) {
+      // Same composer and draft under the conversation's own key; nothing to reload.
+      const fromConversationId = previousContextKey!.slice('conversation:'.length);
+      migrateComposerDraftContext(previousContextKey!, composerDraftContextKey);
+      if (pendingSentComposerDraftContextKeysRef.current.delete(previousContextKey!)) {
+        pendingSentComposerDraftContextKeysRef.current.add(composerDraftContextKey);
+      }
+      const refs = latestComposerDraftRef.current.contextRefs;
+      const reboundRefs = selectedConversationId
+        ? rebindAgsdlContextRefs(refs, fromConversationId, selectedConversationId)
+        : refs;
+      if (reboundRefs.some((ref, index) => ref !== refs[index])) {
+        replaceComposerContextRefs(reboundRefs, selectedConversationId);
+      }
+      activeComposerDraftContextKeyRef.current = composerDraftContextKey;
+      return;
+    }
 
     if (previousContextKey) {
       const draftToSave = composerEditSession
@@ -1894,16 +1903,26 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     )
       ? null
       : getComposerDraftForContext(composerDraftContextKey);
+    const pendingDraft = selectedConversationId
+      ? peekComposerDraft(selectedConversationId)
+      : null;
     skipComposerDraftPersistenceRef.current = true;
     activeComposerDraftContextKeyRef.current = composerDraftContextKey;
-    if (!previousContextKey && !savedNextDraft) {
+    if (!previousContextKey && !savedNextDraft && pendingDraft === null) {
       return;
     }
-    const nextDraft = savedNextDraft ?? {
-      text: '',
-      images: [],
-      contextRefs: [],
+    // One restoration owns the text. A newly prepared prompt takes precedence
+    // over local text while retaining the saved images and context references.
+    const nextDraft = {
+      ...savedNextDraft,
+      text: pendingDraft ?? savedNextDraft?.text ?? '',
+      images: savedNextDraft?.images ?? [],
+      contextRefs: savedNextDraft?.contextRefs ?? [],
     };
+    if (pendingDraft !== null) {
+      pendingSentComposerDraftContextKeysRef.current.delete(composerDraftContextKey);
+      saveComposerDraftForContext(composerDraftContextKey, nextDraft);
+    }
     setComposerEditSession(null);
     goalComposerEditSessionRef.current = null;
     setGoalComposerEditSession(null);
@@ -1921,10 +1940,15 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
 
     let cancelled = false;
     const applyText = (attemptsLeft: number) => {
-      if (cancelled) return;
+      if (cancelled || renderedComposerDraftContextKeyRef.current !== composerDraftContextKey) return;
       const editor = composerEditorRef.current;
       if (editor) {
         editor.setText(nextDraft.text, nextDraft.contextRefs);
+        if (pendingDraft !== null && selectedConversationId &&
+            peekComposerDraft(selectedConversationId) === pendingDraft) {
+          editor.focus();
+          acknowledgeComposerDraft(selectedConversationId);
+        }
         return;
       }
       if (attemptsLeft > 0) {
@@ -1940,18 +1964,20 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     composerEditSession,
     goalComposerEditSession,
     getComposerDraftForContext,
+    isComposerDraftHandoff,
+    migrateComposerDraftContext,
+    peekComposerDraft,
+    acknowledgeComposerDraft,
     replaceComposerContextRefs,
     resetPromptHistoryNavigation,
     saveComposerDraftForContext,
     selectedConversationId,
   ]);
 
-  useEffect(() => {
-    latestComposerDraftRef.current = {
-      text: inputValue,
-      images: [...composerImages],
-      contextRefs: cloneContextRefs(composerContextRefs),
-    };
+  useLayoutEffect(() => {
+    const next = { text: inputValue, images: [...composerImages], contextRefs: cloneContextRefs(composerContextRefs) };
+    if (!sameComposerSnapshot(latestComposerDraftRef.current, next)) composerDraftRevisionRef.current += 1;
+    latestComposerDraftRef.current = next;
   }, [composerContextRefs, composerImages, inputValue]);
 
   useEffect(() => {
@@ -2180,7 +2206,22 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
   );
   const isImplementComposerInKickoffMode =
     selectedTaskRequiresKickoff && currentMessages.length === 0;
-  const isImplementTaskSelectionMissing = mode === 'Implement' && !selectedTask;
+  const conflictAssistantContext = useMemo(
+    () => selectedConversationId ? getConflictAssistantContext(selectedConversationId) : undefined,
+    [selectedConversationId]
+  );
+  const hasVerifiedConflictContext = useMemo(() => isConflictAssistantContextAllowed(conflictAssistantContext, {
+    mode, selectedTaskId, selectedProjectId, selectedGroupId, selectedConversationId,
+    conversation: currentConversation ? {
+      id: currentConversation.id, scope_mode: currentConversation.scope_mode, task_id: currentConversation.task_id,
+      project_id: currentConversation.project_id, group_id: currentConversation.group_id,
+    } : null,
+    projects: [...standaloneProjects, ...projectGroups.flatMap(group => group.projects)],
+    groups: projectGroups,
+  }), [conflictAssistantContext, mode, selectedTaskId, selectedProjectId, selectedGroupId,
+    selectedConversationId, currentConversation, standaloneProjects, projectGroups]);
+  const isImplementTaskSelectionMissing = mode === 'Implement' && !selectedTask && !hasVerifiedConflictContext;
+  const isConflictContextInvalid = Boolean(conflictAssistantContext) && !hasVerifiedConflictContext;
   const isSelectedConversationArchived = useConversationArchiveStore((state) =>
     mode === 'Chat' && selectedConversationId
       ? state.archivedConversationIds.has(selectedConversationId)
@@ -2196,6 +2237,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     isModeProjectWorkspaceMissing ||
     isArchitectPlanSelectionMissing ||
     isImplementTaskSelectionMissing ||
+    isConflictContextInvalid ||
     isSelectedTaskDependencyBlocked ||
     isConversationArchivePending ||
     isSelectedConversationArchived ||
@@ -2256,7 +2298,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
   const modeHeader = useMemo(() => {
     if (mode === 'Architect') {
       return {
-        icon: 'compass' as const,
+        icon: import.meta.env.DEV && import.meta.env.VITE_MACRO_DEMO === '1' ? 'pencil-ruler' as const : 'compass' as const,
         title: `${t('header.architect', 'Architect')} - ${projectScopeLabel || t('header.selectProject', 'Select Project')}`,
         subtitle:
           isModeProjectWorkspaceMissing
@@ -2272,8 +2314,8 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
 
     if (mode === 'Implement') {
       return {
-        icon: 'check-square' as const,
-        title: `${t('header.implement', 'Implement')} - ${selectedTask?.title || t('implement.selectTaskShort', 'Select a task')}`,
+        icon: import.meta.env.DEV && import.meta.env.VITE_MACRO_DEMO === '1' ? 'workflow' as const : 'check-square' as const,
+        title: `${t(import.meta.env.DEV && import.meta.env.VITE_MACRO_DEMO === '1' ? 'header.operate' : 'header.implement', 'Implement')} - ${(selectedTask ? getPlanFinalizationTaskDisplayTitle(selectedTask, t) : null) || (hasVerifiedConflictContext ? currentConversation?.title : null) || t('implement.selectTaskShort', 'Select a task')}`,
         subtitle: null,
       };
     }
@@ -2285,13 +2327,14 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     };
   }, [
     currentConversation?.title,
+    hasVerifiedConflictContext,
     activePlanContext,
     focusedProjectName,
     isModeProjectWorkspaceMissing,
     mode,
     projectScopeLabel,
     selectedGlobalProjectName,
-    selectedTask?.title,
+    selectedTask,
     t,
   ]);
 
@@ -2433,55 +2476,6 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     }
     return t('chat.typeMessage');
   }, [activePlanContext, mode, t]);
-
-  const hasUserArchitectMessage = useMemo(
-    () =>
-      mode === 'Architect' &&
-      currentMessages.some(
-        (message) =>
-          message.role === 'user' && message.content.trim().length > 0
-      ),
-    [currentMessages, mode]
-  );
-
-  const hasExistingStrategy = useMemo(() => {
-    if (!activeArchitectPlanId) return false;
-    return planNodes.length > 0 || predictedBranches.length > 0;
-  }, [activeArchitectPlanId, planNodes.length, predictedBranches.length]);
-  const isStrategyMutationLocked =
-    mode === 'Architect' &&
-    isArchitectPlanStrategyMutationLocked(activePlanContext?.status);
-  const architectStrategyProgressAction = useMemo<ArchitectStrategyProgressAction | null>(() => {
-    if (mode !== 'Architect') return null;
-    if (!activeArchitectPlanId) return null;
-    if (!hasUserArchitectMessage) return null;
-    return hasExistingStrategy ? 'regenerate-strategy' : 'generate-strategy';
-  }, [
-    activeArchitectPlanId,
-    hasExistingStrategy,
-    hasUserArchitectMessage,
-    mode,
-  ]);
-  const isArchitectStrategyProgressDisabled =
-    isModeProjectWorkspaceMissing ||
-    !activeArchitectPlanId ||
-    isConversationPending ||
-    isConversationMutationPending ||
-    isStrategyMutationLocked;
-  const architectButtonActions = useMemo(() => buildArchitectButtonActions(t), [t]);
-  const architectStrategyProgressButton = useMemo<ArchitectToolbarButton | null>(() => {
-    if (!architectStrategyProgressAction) return null;
-    return architectButtonActions[architectStrategyProgressAction];
-  }, [architectButtonActions, architectStrategyProgressAction]);
-  const architectStrategyUnavailableTitle = isModeProjectWorkspaceMissing
-    ? workspaceState.kind === 'noProjectAvailable'
-      ? t('project.emptyWorkspaceTitle', 'Ajoutez un projet pour commencer avec Macro.')
-      : t('project.noProjectSelectedTitle', 'Sélectionnez un projet pour continuer.')
-    : !activeArchitectPlanId
-      ? t('architect.generateStrategySelectPlan', 'Select an active plan first')
-      : isStrategyMutationLocked
-        ? t('architect.strategyLockedAfterValidation', 'Strategy is locked after plan validation.')
-        : null;
 
   // Scroll magnetism: auto-scroll while assistant work can append visible status rows.
   const { scrollContainerRef, separatorState } = useScrollMagnet(
@@ -2634,6 +2628,15 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     if (!selectedProviderId || !selectedModelId) return false;
     if (startingExecutionRef.current) return false;
 
+    const kickoffSnapshot = captureComposerSnapshot(latestComposerDraftRef.current);
+    if (hasMultipleAgsdlContexts(kickoffSnapshot.contextRefs)) {
+      notify.warning(agsdlT("agsdl.multipleChatSelections"));
+      return false;
+    }
+    if (getAgsdlContext(kickoffSnapshot.contextRefs)) {
+      notify.warning(agsdlT("agsdl.staleChatSelection"));
+      return false;
+    }
     startingExecutionRef.current = true;
     let conversationId: string | null = null;
     let activatedGoal: Awaited<ReturnType<typeof conversationGoalProductFlow.activate>> | null = null;
@@ -2669,12 +2672,12 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
         branchName: selectedTask.branch_name,
         dependencies: selectedTask.dependencies,
         estimatedChanges: selectedTask.estimated_changes,
-        notes: params?.notesOverride ?? composerEditorRef.current?.getTextContent() ?? '',
+        notes: params?.notesOverride ?? kickoffSnapshot.text,
       });
       const sentDraft: SavedComposerDraft = {
-        savedDraftText: latestComposerDraftRef.current.text,
-        savedDraftImages: [...latestComposerDraftRef.current.images],
-        savedDraftContextRefs: cloneContextRefs(latestComposerDraftRef.current.contextRefs),
+        savedDraftText: kickoffSnapshot.text,
+        savedDraftImages: kickoffSnapshot.images,
+        savedDraftContextRefs: kickoffSnapshot.contextRefs,
       };
       saveComposerDraftForContext(composerDraftContextKey, {
         text: sentDraft.savedDraftText,
@@ -2690,6 +2693,8 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
         conversationId,
         content,
         taskId: selectedTask.id,
+        images: kickoffSnapshot.images,
+        contextRefs: persistableContextRefs(kickoffSnapshot.contextRefs) ?? [],
       });
       if (activatedGoal) {
         if (result.status === 'sent' && result.assistantMessageId) {
@@ -2745,6 +2750,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
       startingExecutionRef.current = false;
     }
   }, [
+    agsdlT,
     ensureConversation,
     clearComposerDraftForContext,
     clearComposerContextRefs,
@@ -2977,6 +2983,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
   };
 
   const removeComposerImage = (imageId: string) => {
+    clearComposerSubmissionError(composerDraftContextKey);
     if (composerError) {
       clearConversationRuntimeError(selectedConversationId ?? '');
       clearLastError();
@@ -3023,15 +3030,60 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     applySavedComposerDraft(session);
   }, [applySavedComposerDraft]);
 
+
   const sendComposerMessage = async (
     textOverride?: string,
     activeBehaviorOverride?: 'steer' | 'queue',
   ) => {
     if (isComposerDisabled || activeQuestionnaire || attachmentImportInFlightRef.current) return;
-    if (activeTurnSubmissionInFlightRef.current) return;
+    if (activeTurnSubmissionInFlightRef.current || runtimeCaptureInFlightRef.current) return;
     if (isArchitectPlanSelectionMissing) return;
     if (mode === 'Architect' && isWorkspaceMissing) return;
-    const text = (textOverride ?? composerEditorRef.current?.getTextContent() ?? '').trim();
+    const transaction = createComposerTransaction({
+      contextKey: composerDraftContextKey,
+      revision: composerDraftRevisionRef.current,
+      draft: {
+        text: textOverride ?? composerEditorRef.current?.getTextContent() ?? '',
+        images: composerImages,
+        contextRefs: composerContextRefs,
+      },
+    });
+    const snapshot = transaction.snapshot;
+    const text = snapshot.text.trim();
+    const currentComposerState = () => ({
+      contextKey: activeComposerDraftContextKeyRef.current,
+      revision: composerDraftRevisionRef.current,
+      draft: latestComposerDraftRef.current,
+    });
+    const ownsUnchangedComposer = () => transaction.canClear(currentComposerState());
+    const capturedRefs = persistableContextRefs(snapshot.contextRefs);
+    if (hasMultipleAgsdlContexts(snapshot.contextRefs)) {
+      notify.warning(agsdlT("agsdl.multipleChatSelections"));
+      return;
+    }
+    const draftAgsdlContext = getAgsdlContext(snapshot.contextRefs);
+    // A selection attached before the plan's conversation existed belongs to the created one.
+    const agsdlContext = draftAgsdlContext && selectedConversationId &&
+      draftAgsdlContext.contextKind !== 'runtime' &&
+      draftAgsdlContext.conversationId !== selectedConversationId &&
+      resolveComposerDraftConversationId(draftAgsdlContext.conversationId) === resolveComposerDraftConversationId(selectedConversationId)
+      ? { ...draftAgsdlContext, conversationId: selectedConversationId }
+      : draftAgsdlContext;
+
+    if (agsdlContext && (mode !== 'Architect' || agsdlContext.conversationId !== selectedConversationId || agsdlContext.planId !== activeArchitectPlanId || agsdlContext.branchName !== activePlanContext?.targetBranch || !isAgsdlChatContextCurrent(agsdlContext))) {
+      notify.warning(agsdlT("agsdl.staleChatSelection"));
+      return;
+    }
+    let runtimeCapture: Awaited<ReturnType<typeof captureAgsdlChatContext>>;
+    try {
+      runtimeCaptureInFlightRef.current = agsdlContext?.contextKind === "runtime";
+      runtimeCapture = agsdlContext?.contextKind === "runtime" ? await captureAgsdlChatContext(agsdlContext, selectedConversationId, ownsUnchangedComposer,
+        composerEditSession ? currentMessages.find(message => message.id === composerEditSession.messageId)?.hidden_context : undefined) : undefined;
+      if (agsdlContext?.contextKind === 'runtime' && !ownsUnchangedComposer()) return;
+    } catch (error) {
+      notify.error(agsdlT("agsdl.staleChatSelection"), { description: toServiceError(error).message });
+      return;
+    } finally { runtimeCaptureInFlightRef.current = false; }
     if (isBusySending) {
       if (!selectedConversationId || !text) return;
       activeTurnSubmissionInFlightRef.current = true;
@@ -3057,6 +3109,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
           await conversationGoalProductFlow.reserveUserTurn(submittedConversationId);
           goalTurnReserved = true;
         }
+        if (agsdlContext?.contextKind === "runtime" && !ownsUnchangedComposer()) return;
         const internalAgentProfile = getConflictAssistantInternalAgentProfile(
           submittedConversationId,
         );
@@ -3064,8 +3117,10 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
           {
             conversationId: submittedConversationId,
             content: text,
+            hiddenContext: serializeAgsdlChatContext(agsdlContext, runtimeCapture),
+            contextRefs: capturedRefs ?? [],
             taskId: implementTaskIdForSend,
-            images: [...composerImages],
+            images: snapshot.images,
             composerContextRefs: submittedDraft.savedDraftContextRefs,
             ...(internalAgentProfile ? { internalAgentProfile } : {}),
           },
@@ -3117,7 +3172,11 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
         kind: 'edit',
         messageId: composerEditSession.messageId,
         content: text,
-        images: [...composerImages],
+        images: snapshot.images,
+        contextRefs: capturedRefs ?? [],
+        hiddenContext: replaceAgsdlChatContext(currentMessages.find(message => message.id === composerEditSession.messageId)?.hidden_context, agsdlContext, runtimeCapture),
+        providerInputItems: currentMessages.find(message => message.id === composerEditSession.messageId)?.provider_input_items,
+        replaceStructuredFields: true,
       });
       return;
     }
@@ -3147,6 +3206,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
       return;
     }
     if ((!text && composerImages.length === 0 && composerContextRefs.length === 0) || isBusySending) return;
+    clearComposerSubmissionError(composerDraftContextKey);
     if (!goalComposerEditSession) {
       saveComposerDraftForContext(composerDraftContextKey, {
         text,
@@ -3156,10 +3216,15 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     }
     const conversationId = await ensureConversation();
     if (!conversationId) return;
-    const conversationDraftKey = `conversation:${conversationId}`;
+    if (agsdlContext && (mode !== 'Architect' || agsdlContext.conversationId !== selectedConversationId || agsdlContext.planId !== activeArchitectPlanId || agsdlContext.branchName !== activePlanContext?.targetBranch || !isAgsdlChatContextCurrent(agsdlContext))) {
+      notify.warning(agsdlT("agsdl.staleChatSelection"));
+      return;
+    }
+    if (agsdlContext?.contextKind === 'runtime' && (conversationId !== agsdlContext.conversationId || !ownsUnchangedComposer())) return;
+    const conversationDraftKey = `conversation:${resolveComposerDraftConversationId(conversationId)}`;
     migrateComposerDraftContext(composerDraftContextKey, conversationDraftKey);
     const content = goalCommand?.kind === 'activate' ? goalCommand.objective : text;
-    const imagesForMessage = [...composerImages];
+    const imagesForMessage = snapshot.images;
     const internalAgentProfile =
       getConflictAssistantInternalAgentProfile(conversationId);
     let trackedGoal: import('../../types').ConversationGoalRecord | null = null;
@@ -3197,56 +3262,48 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     const sentDraft: SavedComposerDraft = {
       savedDraftText: text,
       savedDraftImages: imagesForMessage,
-      savedDraftContextRefs: cloneContextRefs(composerContextRefs),
+      savedDraftContextRefs: snapshot.contextRefs,
     };
-    const clearsComposerImmediately = !goalComposerEditSession;
+    const clearsComposerImmediately = !goalComposerEditSession && ownsUnchangedComposer();
     const pendingDraftContextKeys = [composerDraftContextKey, conversationDraftKey];
+    // A first Architect send can move its draft to the created conversation while it runs.
+    const sentConversationDraftKey = () => `conversation:${resolveComposerDraftConversationId(conversationId)}`;
     const finishPendingDraft = (confirmed: boolean) => {
-      pendingDraftContextKeys.forEach((contextKey) => {
+      const draftKey = sentConversationDraftKey();
+      [...pendingDraftContextKeys, draftKey].forEach((contextKey) => {
         pendingSentComposerDraftContextKeysRef.current.delete(contextKey);
       });
       const activeDraftContext = activeComposerDraftContextKeyRef.current;
       const latestDraft = latestComposerDraftRef.current;
       if (
         (activeDraftContext === composerDraftContextKey ||
-          activeDraftContext === conversationDraftKey) &&
+          activeDraftContext === conversationDraftKey ||
+          activeDraftContext === draftKey) &&
         !isComposerDraftEmpty(latestDraft)
       ) {
         saveComposerDraftForContext(activeDraftContext, latestDraft);
         return;
       }
-      const storedDraft = getComposerDraftForContext(conversationDraftKey);
+      const storedDraft = getComposerDraftForContext(draftKey);
       if (confirmed) {
         if (composerDraftMatchesSavedDraft(storedDraft, sentDraft)) {
           clearComposerDraftForContext(composerDraftContextKey);
           clearComposerDraftForContext(conversationDraftKey);
+          clearComposerDraftForContext(draftKey);
         }
         return;
       }
       if (storedDraft && !composerDraftMatchesSavedDraft(storedDraft, sentDraft)) return;
-      saveComposerDraftForContext(conversationDraftKey, {
+      saveComposerDraftForContext(draftKey, {
         text: sentDraft.savedDraftText,
         images: sentDraft.savedDraftImages,
         contextRefs: sentDraft.savedDraftContextRefs,
       });
     };
     const restoreSentDraft = () => {
+      if (transaction.accepted) { finishPendingDraft(true); return; }
       finishPendingDraft(false);
-      const activeDraftContext = activeComposerDraftContextKeyRef.current;
-      if (
-        activeDraftContext !== composerDraftContextKey &&
-        activeDraftContext !== conversationDraftKey
-      ) {
-        return;
-      }
-      const latestDraft = latestComposerDraftRef.current;
-      if (
-        latestDraft.text.length > 0 ||
-        latestDraft.images.length > 0 ||
-        latestDraft.contextRefs.length > 0
-      ) {
-        return;
-      }
+      if (!transaction.canRestore(currentComposerState(), sentConversationDraftKey())) return;
       applySavedComposerDraft(sentDraft);
     };
 
@@ -3261,9 +3318,13 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
         else if (pendingGoalEdit) pendingGoalEdit = current;
       }
       if (goalComposerEditSession && !pendingGoalEdit) return;
+      if (agsdlContext?.contextKind === "runtime" && !ownsUnchangedComposer()) return;
       const sendPromise = sendMessage({
+        onUserMessagePublished: () => { transaction.accept(); finishPendingDraft(true); },
         conversationId,
         content,
+        hiddenContext: serializeAgsdlChatContext(agsdlContext?.conversationId === conversationId ? agsdlContext : undefined, runtimeCapture),
+        contextRefs: capturedRefs ?? [],
         taskId: implementTaskIdForSend,
         images: imagesForMessage,
         ...(internalAgentProfile ? { internalAgentProfile } : {}),
@@ -3281,6 +3342,8 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
           images: [],
           contextRefs: [],
         };
+        composerDraftRevisionRef.current += 1;
+        transaction.markCleared(composerDraftRevisionRef.current);
         resetPromptHistoryNavigation();
       }
       const result = await sendPromise;
@@ -3333,7 +3396,12 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
         await conversationGoalProductFlow.status(conversationId, 'error', toServiceError(error).message, trackedGoal);
       }
       if (clearsComposerImmediately) restoreSentDraft();
-      // Keep the draft intact. The visible error feedback comes from the chat store.
+      // Source prevalidation can reject before the chat store publishes a runtime error.
+      const submissionError = toServiceError(error);
+      setComposerSubmissionErrors((current) => ({
+        ...current,
+        [sentConversationDraftKey()]: submissionError,
+      }));
     } finally {
       if (userTurnReserved) conversationGoalProductFlow.releaseUserTurn(conversationId);
     }
@@ -3517,32 +3585,6 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     setActiveQuestionnaireStep(activeQuestionnaire.conversationId, stepIndex);
   };
 
-  const sendArchitectButtonAction = async (actionId: ArchitectStrategyProgressAction) => {
-    if (
-      mode !== 'Architect' ||
-      !activeArchitectPlanId ||
-      isConversationMutationPending ||
-      isConversationPending
-    ) return;
-    if (isStrategyMutationLocked) return;
-    const conversationId = await ensureConversation();
-    if (!conversationId) return;
-
-    try {
-      await sendMessage({
-        conversationId,
-        content: architectButtonActions[actionId].fullPrompt,
-      });
-    } catch {
-      // The store exposes the visible error state.
-    }
-  };
-
-  const handleArchitectStrategyProgressAction = () => {
-    if (!architectStrategyProgressAction) return;
-    void sendArchitectButtonAction(architectStrategyProgressAction);
-  };
-
   const handleEditStart = useMessageAction((message: ChatMessage) => {
     if (
       composerEditSession ||
@@ -3565,8 +3607,15 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
       return;
     }
 
-    const content = message.content;
+    let content = message.content;
     const messageContextRefs = cloneContextRefs(message.context_refs);
+    if (!messageContextRefs.some(ref => ref.kind === 'agsdl')) {
+      const legacy = legacyAgsdlReference(message.hidden_context, message.conversation_id, message.id);
+      if (legacy) {
+        messageContextRefs.push(legacy);
+        content = `${referenceText(legacy.kind, legacy.id, legacy.title)} ${content}`;
+      }
+    }
     const draftText = composerEditorRef.current?.getTextContent() ?? inputValue;
     const session: ComposerEditSession = {
       messageId: message.id,
@@ -3576,7 +3625,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
       savedDraftContextRefs: [...composerContextRefs],
     };
     setComposerEditSession(session);
-    clearComposerContextRefs();
+    replaceComposerContextRefs(messageContextRefs, selectedConversationId);
     setComposerImages(getMessageImages(message.id));
     setInputValue(content);
     setPromptHistoryIndex(null);
@@ -3833,7 +3882,23 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
           data-chat-conversation-header
         >
           <div className="flex items-center gap-3 min-w-0">
-            {canShowImplementTaskTodoDropdown ? (
+            {mode === 'Implement' && selectedTask ? (
+              <button
+                type="button"
+                onClick={() => setExecutionGraphTask(selectedTask)}
+                aria-label={t('implement.viewExecutionGraph', 'View workflow')}
+                title={t('implement.viewExecutionGraph', 'View workflow')}
+                aria-haspopup="dialog"
+                className="h-8 w-8 rounded-xl bg-primary/10 border border-primary/20 flex items-center justify-center shrink-0 transition-colors hover:bg-primary/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/50"
+              >
+                <Icon name={modeHeader.icon} size={14} className="text-primary" />
+              </button>
+            ) : (
+              <div className="h-8 w-8 rounded-xl bg-primary/10 border border-primary/20 flex items-center justify-center shrink-0">
+                <Icon name={modeHeader.icon} size={14} className="text-primary" />
+              </div>
+            )}
+            {canShowImplementTaskTodoDropdown && (
               <Suspense fallback={null}>
                 <ImplementTaskTodoDropdown
                   taskTitle={modeHeader.title}
@@ -3843,14 +3908,14 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
                   rootRef={taskTodoDropdownRef}
                 />
               </Suspense>
-            ) : (
-              <div className="h-8 w-8 rounded-xl bg-primary/10 border border-primary/20 flex items-center justify-center shrink-0">
-                <Icon name={modeHeader.icon} size={14} className="text-primary" />
-              </div>
             )}
             <div className="min-w-0">
               <h1 className="text-sm font-medium text-foreground truncate">{modeHeader.title}</h1>
-              {mode === 'Implement' && selectedTaskContextItems.length > 0 ? (
+              {hasVerifiedConflictContext && conflictAssistantContext ? (
+                <div className="mt-0.5 truncate text-xs text-muted-foreground" data-testid="conflict-assistant-context">
+                  {t('footer.sync.conflictReadOnly', 'Read-only conflict inspection')} · {conflictAssistantContext.kind === 'metadata' ? '@macro' : t('footer.sync.remoteNeededCode', 'code')} · {conflictAssistantContext.repositories.map(repo => `${projectNameById.get(repo.projectId) ?? repo.projectId}: ${repo.branch}`).join(', ')}
+                </div>
+              ) : mode === 'Implement' && selectedTaskContextItems.length > 0 ? (
                 <div
                   className="mt-0.5 flex min-w-0 items-center gap-1 overflow-hidden text-xs text-muted-foreground"
                   data-testid="implement-active-task-context"
@@ -3962,7 +4027,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
             <div className="flex items-center justify-center h-full">
               <div className="text-center space-y-4">
                 <div className="w-16 h-16 mx-auto rounded-xl bg-card border border-border flex items-center justify-center">
-                  <Icon name="compass" size={24} className="text-muted-foreground" />
+                  <Icon name={import.meta.env.DEV && import.meta.env.VITE_MACRO_DEMO === '1' ? 'pencil-ruler' : 'compass'} size={24} className="text-muted-foreground" />
                 </div>
                 <p className="text-muted-foreground text-sm">
                   {missingArchitectPlanMessage}
@@ -4129,11 +4194,13 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
                 className="shadow-lg shadow-black/15 backdrop-blur"
                 compact
                 presentation={presentServiceError(composerError, {
-                  fallbackBody: composerError === 'No available provider or model could be restored for this conversation.'
+                  fallbackBody: composerErrorMessage === 'No available provider or model could be restored for this conversation.'
                     ? t(
                         'chat.providerRestoreUnavailable',
                         'The provider or model previously used by this conversation is no longer available. Select another one to continue.'
                       )
+                    : composerErrorMessage === 'The selected conversation has no completed text to cite.'
+                      ? t('chat.conversationSourceEmpty', 'The selected conversation has no completed text to cite. Remove this source or choose another conversation, then send again.')
                     : t('chat.runtimeErrorFallback', 'Macro could not complete this action. Review the details, then try again.'),
                 })}
               />
@@ -4314,33 +4381,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
                   onOpenChange={(open) => setOpenModelSelector((current) => open ? 'reasoning' : current === 'reasoning' ? null : current)}
                 />
               </div>
-              {mode === 'Architect' && architectStrategyProgressButton && (
-                  <div className="flex items-center gap-2">
-                    {architectStrategyProgressButton ? (
-                      <button
-                        type="button"
-                        onClick={handleArchitectStrategyProgressAction}
-                        data-tour-id={
-                          architectStrategyProgressAction === 'generate-strategy' ||
-                          architectStrategyProgressAction === 'regenerate-strategy'
-                            ? 'architect-generate-strategy'
-                            : 'architect-progress-action'
-                        }
-                        disabled={isArchitectStrategyProgressDisabled}
-                        className={cn(
-                          'inline-flex items-center gap-1.5 px-3 h-8 rounded-md text-xs font-medium border transition-colors',
-                          isArchitectStrategyProgressDisabled
-                            ? 'border-border text-muted-foreground bg-card/40 cursor-not-allowed'
-                            : 'border-primary/30 bg-primary/10 text-primary hover:bg-primary hover:text-primary-foreground'
-                        )}
-                        title={architectStrategyUnavailableTitle ?? architectStrategyProgressButton.title}
-                      >
-                        <Icon name={architectStrategyProgressButton.icon} size={12} />
-                        {architectStrategyProgressButton.label}
-                      </button>
-                    ) : null}
-                  </div>
-              )}
+
             </div>
 
             {selectedTask && !isSelectedTaskDependencyBlocked && selectedTaskRequiresKickoff && currentMessages.length === 0 && (
@@ -4501,6 +4542,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
                   >
                     <Suspense fallback={<ComposerFallbackStatus />}>
                       <LazyComposerEditor
+                        historyKey={`${composerDraftContextKey}:${composerEditSession?.messageId ?? "draft"}`}
                         ref={composerEditorRef}
                         editable={!!selectedProviderId && !!selectedModelId && !isComposerDisabled}
                         readOnly={isSpeechEnhancing}
@@ -4537,8 +4579,9 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
                               ? t('chat.selectProvider')
                               : t('chat.typeMessage')
                         }
-                        onTextChange={(text) => {
-                          if (composerError) {
+                        onTextChange={(text, origin) => {
+                          if (origin !== 'programmatic' && composerError) {
+                            clearComposerSubmissionError(composerDraftContextKey);
                             clearConversationRuntimeError(selectedConversationId ?? '');
                             clearLastError();
                           }
@@ -4664,6 +4707,15 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
         </Suspense>
       )}
 
+      {executionGraphTask && (
+        <Suspense fallback={null}>
+          <TaskExecutionGraphDialog
+            task={executionGraphTask}
+            onClose={() => setExecutionGraphTask(null)}
+          />
+        </Suspense>
+      )}
+
       {previewImage && (
         <Suspense fallback={null}>
           <ImagePreviewModal
@@ -4673,37 +4725,6 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
           />
         </Suspense>
       )}
-
-      {mode === 'Architect' &&
-        architectPlanNamingRecovery?.stage === 'choice' && (
-          <Suspense fallback={null}>
-            <ArchitectPlanNamingRecoveryModal
-              title={t(
-                'architect.planNamingRecovery.title',
-                'Plan name still needed'
-              )}
-              description={t(
-                'architect.planNamingRecovery.description',
-                'Macro could not generate a plan name from the first message after three attempts. Retry with AI or name the plan manually.'
-              )}
-              retryLabel={t('architect.planNamingRecovery.retryAi', 'Retry AI')}
-              manualLabel={t(
-                'architect.planNamingRecovery.nameManually',
-                'Name manually'
-              )}
-              retryingLabel={t(
-                'architect.planNamingRecovery.retryingAi',
-                'Retrying AI...'
-              )}
-              error={architectPlanNamingRecovery.error}
-              isLoading={architectPlanNamingRecovery.isSubmitting}
-              onRetry={() => {
-                void retryArchitectPlanNamingRecovery();
-              }}
-              onManual={() => setArchitectPlanNamingRecoveryStage('manual')}
-            />
-          </Suspense>
-        )}
 
       {mode === 'Architect' &&
         architectPlanNamingRecovery?.stage === 'manual' && (
@@ -4723,7 +4744,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
                 'architect.planNamingRecovery.saveManualName',
                 'Save plan name'
               )}
-              cancelLabel={t('architect.planNamingRecovery.back', 'Back')}
+              cancelLabel={t('common.cancel', 'Cancel')}
               requireValue
               placeholder={t(
                 'architect.planNamingRecovery.manualPlaceholder',
@@ -4734,7 +4755,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
               onConfirm={(value) => {
                 void submitArchitectPlanManualName(value);
               }}
-              onClose={() => setArchitectPlanNamingRecoveryStage('choice')}
+              onClose={dismissArchitectPlanNamingRecovery}
             />
           </Suspense>
         )}

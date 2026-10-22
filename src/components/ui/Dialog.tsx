@@ -27,6 +27,9 @@ interface OpenDialogEntry {
 }
 
 type EscapeHandler = () => boolean | void;
+type FocusTarget = HTMLElement | SVGElement;
+const isFocusTarget = (element: Element | null): element is FocusTarget =>
+  element instanceof HTMLElement || element instanceof SVGElement;
 
 interface DialogContextValue {
   zIndex: number;
@@ -65,18 +68,18 @@ const readDialogZIndex = (className: string): number => {
   return zIndex;
 };
 
-const getFocusableElements = (container: HTMLElement): HTMLElement[] =>
-  Array.from(container.querySelectorAll<HTMLElement>(FOCUSABLE_SELECTOR)).filter(
-    (element) => !element.hasAttribute('hidden')
+const getFocusableElements = (container: HTMLElement): FocusTarget[] =>
+  Array.from(container.querySelectorAll(FOCUSABLE_SELECTOR)).filter(
+    (element): element is FocusTarget => isFocusTarget(element) && !element.hasAttribute('hidden')
   );
 
-const getDialogFocusableElements = (entry: OpenDialogEntry, panel: HTMLElement): HTMLElement[] => [
+const getDialogFocusableElements = (entry: OpenDialogEntry, panel: HTMLElement): FocusTarget[] => [
   ...getFocusableElements(panel),
   ...Array.from(entry.portals).flatMap(getFocusableElements),
 ];
 
 const restoreFocusAfterDialogClose = (
-  previousFocus: HTMLElement | null,
+  previousFocus: FocusTarget | null,
 ): void => {
   const topmostDialog = getTopmostDialog();
   if (!topmostDialog) {
@@ -137,6 +140,8 @@ export interface DialogProps {
   backdropClassName?: string;
   panelClassName?: string;
   initialFocusRef?: React.RefObject<HTMLElement | null>;
+  /** Opener to restore when async preparation loses focus before the dialog mounts. */
+  returnFocusRef?: React.RefObject<HTMLElement | null>;
   closeOnBackdropClick?: boolean;
   ariaDescribedBy?: string;
 }
@@ -149,6 +154,7 @@ export const Dialog: React.FC<DialogProps> = ({
   backdropClassName = 'fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4',
   panelClassName = 'flex w-full justify-center',
   initialFocusRef,
+  returnFocusRef,
   closeOnBackdropClick = false,
   ariaDescribedBy,
 }) => {
@@ -161,8 +167,9 @@ export const Dialog: React.FC<DialogProps> = ({
     : Math.max(requestedZIndex, parentDialogZIndex + 1);
   const rootRef = useRef<HTMLDivElement>(null);
   const panelRef = useRef<HTMLDivElement>(null);
-  const previousFocusRef = useRef<HTMLElement | null>(null);
+  const previousFocusRef = useRef<FocusTarget | null>(null);
   const onCloseRef = useRef(onClose);
+  const returnFocusRefRef = useRef(returnFocusRef);
   const escapeHandlersRef = useRef<Set<EscapeHandler>>(new Set());
   const portalsRef = useRef<Set<HTMLElement>>(new Set());
 
@@ -190,16 +197,16 @@ export const Dialog: React.FC<DialogProps> = ({
 
   useEffect(() => {
     onCloseRef.current = onClose;
-  }, [onClose]);
+    returnFocusRefRef.current = returnFocusRef;
+  }, [onClose, returnFocusRef]);
 
   useEffect(() => {
     const root = rootRef.current;
     const panel = panelRef.current;
     if (!root || !panel) return;
 
-    previousFocusRef.current = document.activeElement instanceof HTMLElement
-      ? document.activeElement
-      : null;
+    const activeElement = document.activeElement;
+    previousFocusRef.current = isFocusTarget(activeElement) ? activeElement : null;
     openDialogs.set(root, {
       order: dialogOrder,
       zIndex: effectiveZIndex,
@@ -259,7 +266,11 @@ export const Dialog: React.FC<DialogProps> = ({
       document.removeEventListener('keydown', handleKeyDown, true);
       openDialogs.delete(root);
       synchronizeBackgroundInertness();
-      restoreFocusAfterDialogClose(previousFocusRef.current);
+      const returnFocusTarget = returnFocusRefRef.current?.current ?? null;
+      const canReturnToTarget = returnFocusTarget?.isConnected &&
+        !returnFocusTarget.matches(':disabled') &&
+        !returnFocusTarget.closest('[inert], [hidden]');
+      restoreFocusAfterDialogClose(canReturnToTarget ? returnFocusTarget : previousFocusRef.current);
     };
   }, [dialogOrder, effectiveZIndex, initialFocusRef]);
 

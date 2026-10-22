@@ -1,0 +1,11 @@
+.agsdl-save-modal { width: min(480px, 100%); }
+.agsdl-save-destinations { display: flex; gap: 6px; margin-bottom: 20px; }
+.agsdl-save-destinations button { flex: 1; display: flex; flex-direction: column; align-items: center; gap: 8px; padding: 12px 6px; border: 1px solid rgb(var(--border)); border-radius: 7px; font-size: 12px; }
+.agsdl-save-destinations button[aria-pressed=true] { color: rgb(var(--primary)); border-color: rgb(var(--primary)); background: rgb(var(--primary) / .07); }
+.agsdl-save-destinations button:hover:not(:disabled) { background: rgb(var(--muted)); }
+.agsdl-save-destinations button:focus-visible { outline: 2px solid rgb(var(--primary)); outline-offset: 2px; }
+.agsdl-save-status { display: flex; gap: 10px; align-items: flex-start; padding: 8px 0; }
+.agsdl-save-status > svg { color: rgb(var(--muted-foreground)); flex: none; }
+.agsdl-save-status strong { font-size: 13px; font-weight: 500; }
+.agsdl-save-status p { color: rgb(var(--muted-foreground)); font-size: 12px; margin: 5px 0 0; line-height: 1.5; }
+.agsdl-save-result { display: flex; align-items: center; gap: 7px; font-size: 12px; color: rgb(var(--primary)); }

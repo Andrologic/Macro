@@ -24,3 +24,30 @@ describe('provider endpoint security', () => {
     await expect(readBoundedProviderError(response, 1)).rejects.toThrow('timed out');
   });
 });
+
+describe('bounded error response ownership', () => {
+  for (const phase of ['truncation', 'timeout'] as const) {
+    it(`waits for physical cleanup on ${phase} and preserves a missing receipt`, async () => {
+      let release!: () => void;
+      let cancelled!: () => void;
+      const cleanup = new Promise<void>((resolve) => { release = resolve; });
+      const started = new Promise<void>((resolve) => { cancelled = resolve; });
+      const { StreamStopUnconfirmedError } = await import('./ai/streamCancellation');
+      const owner = new StreamStopUnconfirmedError('Synthetic missing cleanup receipt');
+      const response = new Response(new ReadableStream({
+        start(controller) {
+          if (phase === 'truncation') controller.enqueue(new Uint8Array(32 * 1024));
+        },
+        async cancel() { cancelled(); await cleanup; throw owner; },
+      }), { status: 500 });
+      let ended = false;
+      const pending = readBoundedProviderError(response, phase === 'timeout' ? 1 : 1_000);
+      void pending.then(() => { ended = true; }, () => { ended = true; });
+      await started;
+      await Promise.resolve();
+      expect(ended).toBe(false);
+      release();
+      await expect(pending).rejects.toBe(owner);
+    });
+  }
+});

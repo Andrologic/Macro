@@ -19,6 +19,16 @@ const useAppStore = create<{
 }));
 mock.module('../../stores/useAppStore', () => ({ useAppStore }));
 mock.module('../../hooks/useAppVersion', () => ({ useAppVersion: () => 'test' }));
+let storedPrompts = { promptArchitect: 'Saved Architect prompt', promptChat: 'Saved Chat prompt' };
+const loadPrompts = mock(async () => ({ ...storedPrompts }));
+const savePrompts = mock(async (values: typeof storedPrompts) => { storedPrompts = { ...values }; });
+const preferences = await import('../../services/preferences');
+mock.module('../../services/preferences', () => ({
+  ...preferences,
+  loadPersistedPreference: async (key: string) => (await loadPrompts())[key as keyof typeof storedPrompts],
+  savePreferences: savePrompts,
+}));
+const { PromptsView } = await import('./views/PromptsView');
 const { SettingsModal } = await import('./SettingsModal');
 let root: Root;
 let container: HTMLDivElement;
@@ -30,6 +40,10 @@ const entry = (id: string, order = 0): SettingsContribution => ({
 });
 
 beforeEach(() => {
+  storedPrompts = { promptArchitect: 'Saved Architect prompt', promptChat: 'Saved Chat prompt' };
+  savePrompts.mockClear();
+  savePrompts.mockImplementation(async (values) => { storedPrompts = { ...values }; });
+  loadPrompts.mockImplementation(async () => ({ ...storedPrompts }));
   builtinIds.forEach((id) => settingsRegistry.setActive(id, false));
   useAppStore.setState({ settingsOpen: true, activeSettingsTab: 'test.a' });
   container = document.createElement('div');
@@ -102,4 +116,153 @@ describe('settings contributions', () => {
     await render();
     expect(document.body.querySelector('[data-testid="test.a"]')).not.toBeNull();
   });
+});
+
+describe('prompt drafts in the settings window', () => {
+  const field = () => document.body.querySelector<HTMLTextAreaElement>('#promptArchitect')!;
+  const saveButton = () => [...document.body.querySelectorAll('button')].find((node) => node.textContent?.includes('Save Changes') || node.textContent === 'Saved')!;
+  const openPrompts = async () => {
+    settingsRegistry.register({ ...entry('test.a'), load: undefined, component: PromptsView });
+    settingsRegistry.register(entry('test.b'));
+    await render();
+  };
+  const edit = async (value = 'Unsaved draft été') => {
+    await act(async () => {
+      const input = field();
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')!.set!.call(input, value);
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+  };
+
+  it('keeps typed drafts and the save action across internal navigation without saving', async () => {
+    await openPrompts();
+    await edit();
+    expect(saveButton().disabled).toBe(false);
+    await act(async () => button('test.b').click());
+    expect(document.body.querySelector('textarea')).toBeNull();
+    await act(async () => button('test.a').click());
+    expect(field().value).toBe('Unsaved draft été');
+    expect(saveButton().disabled).toBe(false);
+    expect(savePrompts).not.toHaveBeenCalled();
+    await act(async () => saveButton().click());
+    expect(storedPrompts.promptArchitect).toBe('Unsaved draft été');
+    expect([...document.body.querySelectorAll('button')].find((node) => node.textContent === 'Saved')?.disabled).toBe(true);
+    await act(async () => button('test.b').click());
+    await act(async () => button('test.a').click());
+    expect(field().value).toBe('Unsaved draft été');
+    expect(saveButton().disabled).toBe(true);
+  });
+
+  it('keeps edits made before preferences finish loading and hydrates untouched prompts', async () => {
+    let resolveLoad!: (value: typeof storedPrompts) => void;
+    const loading = new Promise<typeof storedPrompts>((resolve) => { resolveLoad = resolve; });
+    loadPrompts.mockImplementation(() => loading);
+    await openPrompts();
+    await edit();
+    await act(async () => button('test.b').click());
+    await act(async () => resolveLoad({ ...storedPrompts }));
+    await act(async () => button('test.a').click());
+    expect(field().value).toBe('Unsaved draft été');
+    expect(document.body.querySelector<HTMLTextAreaElement>('#promptChat')?.value).toBe('Saved Chat prompt');
+    expect(saveButton().disabled).toBe(false);
+  });
+
+  it('blocks save until hydration and preserves untouched persisted prompts', async () => {
+    let finish!: (value: typeof storedPrompts) => void;
+    const initial = { ...storedPrompts };
+    const loading = new Promise<typeof storedPrompts>((resolve) => { finish = resolve; });
+    loadPrompts.mockImplementation(() => loading);
+    await openPrompts();
+    await edit();
+    expect(saveButton().disabled).toBe(true);
+    await act(async () => saveButton().click());
+    expect(savePrompts).not.toHaveBeenCalled();
+    await act(async () => finish(initial));
+    await act(async () => saveButton().click());
+    expect(storedPrompts.promptArchitect).toBe('Unsaved draft été');
+    expect(storedPrompts.promptChat).toBe(initial.promptChat);
+  });
+
+  it('blocks save after a failed read and retries without discarding a typed draft', async () => {
+    loadPrompts.mockImplementation(async () => { throw new Error('Read failed'); });
+    await openPrompts();
+    await edit();
+    expect(document.body.querySelector('[role="alert"]')?.textContent).toContain('Unable to load system prompts');
+    expect(saveButton().disabled).toBe(true);
+    await act(async () => saveButton().click());
+    expect(savePrompts).not.toHaveBeenCalled();
+    loadPrompts.mockImplementation(async () => ({ ...storedPrompts }));
+    await act(async () => [...document.body.querySelectorAll('button')].find((node) => node.textContent === 'Retry')!.click());
+    expect(document.body.querySelector('[role="alert"]')).toBeNull();
+    expect(field().value).toBe('Unsaved draft été');
+    await act(async () => saveButton().click());
+    expect(storedPrompts.promptChat).toBe('Saved Chat prompt');
+  });
+
+  it('keeps one save pending across navigation and preserves edits made during that save', async () => {
+    let finish!: () => void;
+    savePrompts.mockImplementationOnce((values) => new Promise<void>((resolve) => {
+      finish = () => { storedPrompts = { ...values }; resolve(); };
+    }));
+    await openPrompts();
+    await edit('Draft A');
+    await act(async () => saveButton().click());
+    await act(async () => button('test.b').click());
+    await act(async () => button('test.a').click());
+    expect(saveButton().disabled).toBe(true);
+    await edit('Draft B');
+    await act(async () => saveButton().click());
+    expect(savePrompts).toHaveBeenCalledTimes(1);
+    await act(async () => finish());
+    expect(storedPrompts.promptArchitect).toBe('Draft A');
+    expect(field().value).toBe('Draft B');
+    expect(saveButton().disabled).toBe(false);
+    await act(async () => saveButton().click());
+    expect(storedPrompts.promptArchitect).toBe('Draft B');
+  });
+
+  it('waits for a save from the closed window before hydrating the reopened window', async () => {
+    let finish!: () => void;
+    savePrompts.mockImplementationOnce((values) => new Promise<void>((resolve) => {
+      finish = () => { storedPrompts = { ...values }; resolve(); };
+    }));
+    await openPrompts();
+    await edit('Saving draft');
+    await act(async () => saveButton().click());
+    await act(async () => document.body.querySelector<HTMLButtonElement>('button[aria-label="Close"]')!.click());
+    await act(async () => useAppStore.setState({ settingsOpen: true }));
+    expect(saveButton().disabled).toBe(true);
+    await act(async () => finish());
+    expect(field().value).toBe('Saving draft');
+    expect(saveButton().disabled).toBe(true);
+  });
+
+  it('retains the dirty draft after a rejected save and allows retry', async () => {
+    savePrompts.mockImplementationOnce(async () => { throw new Error('Write failed'); });
+    await openPrompts();
+    await edit();
+    await act(async () => saveButton().click());
+    await act(async () => button('test.b').click());
+    await act(async () => button('test.a').click());
+    expect(field().value).toBe('Unsaved draft été');
+    expect(saveButton().disabled).toBe(false);
+    await act(async () => saveButton().click());
+    expect(storedPrompts.promptArchitect).toBe('Unsaved draft été');
+  });
+
+  for (const closeWith of ['button', 'escape'] as const) {
+    it(`discards unsaved drafts on close by ${closeWith} and reloads saved values on reopening`, async () => {
+      await openPrompts();
+      await edit();
+      await act(async () => {
+        if (closeWith === 'button') document.body.querySelector<HTMLButtonElement>('button[aria-label="Close"]')!.click();
+        else document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+      });
+      expect(useAppStore.getState().settingsOpen).toBe(false);
+      await act(async () => useAppStore.setState({ settingsOpen: true }));
+      expect(field().value).toBe('Saved Architect prompt');
+      expect(saveButton().disabled).toBe(true);
+      expect(savePrompts).not.toHaveBeenCalled();
+    });
+  }
 });

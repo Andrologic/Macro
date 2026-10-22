@@ -30,7 +30,20 @@ const TECHNICAL_LITERAL_ALLOWLIST = new Set([
   // These exact English provider errors do not contain French accent omissions.
   'Goal auditor provider selection conflicts with its authorization.',
   'Invalid goal auditor provider selection.',
+  'Runtime selection owner differs from the conversation',
+  'Runtime selection owner or draft changed before acceptance',
+  'Only one AgSDL selection may be sent.',
+  'Invalid runtime selection',
+  'Runtime selection destination differs',
+  '${selectionBlocks().source}' + String.raw`(?:\\r?\\n(?:Use agsdl_get|This AgSDL selection)[^\\r\\n]*)?`,
 ]);
+// These English protocol instructions contain words shared with French.
+const ENGLISH_PROTOCOL_PREFIXES = [
+  'A source has exactly value or uri,',
+  'A Join requires an existing direct fork',
+  'An Approval requires an existing protected Call',
+  'This AgSDL selection is an immutable historical runtime capture.',
+];
 
 // A kind comparison uses a tagged union identifier rather than user-facing copy.
 const isKindComparison = (prefix: string): boolean => /\.kind\s*(?:===|!==)\s*$/.test(prefix);
@@ -121,7 +134,7 @@ describe('french hardcoded copy', () => {
           if (isTechnicalCssLiteral(literal)) {
             continue;
           }
-          if (TECHNICAL_LITERAL_ALLOWLIST.has(literal)) {
+          if (TECHNICAL_LITERAL_ALLOWLIST.has(literal) || ENGLISH_PROTOCOL_PREFIXES.some(prefix => literal.startsWith(prefix))) {
             continue;
           }
 

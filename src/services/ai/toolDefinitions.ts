@@ -1,3 +1,4 @@
+import { isNativeToolAlias } from '../../shared/nativeToolAlias';
 import type { WebSearchOptions } from '../webSearch';
 import { isMacroToolCopilotBuiltInOverride, type JsonSchema, type MacroToolRegistryEntry, requireMacroToolRegistryEntry, toFunctionToolShape } from '../../shared/macroToolRegistry';
 import { toMCPFunctionToolShape } from '../mcp';
@@ -50,6 +51,10 @@ export const TERMINAL_KILL_TOOL = toFunctionToolShape(requireMacroToolRegistryEn
 export const GENERATE_PLAN_TOOL = toFunctionToolShape(
   requireMacroToolRegistryEntry('strategy_generate')
 );
+const agsdlToolShape = (id: 'agsdl_get' | 'agsdl_update') =>
+  toFunctionToolShape(requireMacroToolRegistryEntry(id));
+export const AGSDL_GET_TOOL = agsdlToolShape('agsdl_get');
+export const AGSDL_UPDATE_TOOL = agsdlToolShape('agsdl_update');
 export const CREATE_PLAN_TOOL = toFunctionToolShape(requireMacroToolRegistryEntry('plan_create'));
 export const LIST_PLANS_TOOL = toFunctionToolShape(requireMacroToolRegistryEntry('plan_list'));
 export const GET_PLAN_TOOL = toFunctionToolShape(requireMacroToolRegistryEntry('plan_get'));
@@ -183,6 +188,8 @@ export const collectAllowedTools = (params: {
   }
   if (allowedTools.has('web_fetch') && enableWebFetch) tools.push(WEB_FETCH_TOOL);
   if (allowedTools.has('strategy_generate')) tools.push(GENERATE_PLAN_TOOL);
+  if (allowedTools.has('agsdl_get')) tools.push(AGSDL_GET_TOOL);
+  if (allowedTools.has('agsdl_update')) tools.push(AGSDL_UPDATE_TOOL);
   if (allowedTools.has('plan_create')) tools.push(CREATE_PLAN_TOOL);
   if (allowedTools.has('plan_list')) tools.push(LIST_PLANS_TOOL);
   if (allowedTools.has('plan_get')) tools.push(GET_PLAN_TOOL);
@@ -241,3 +248,48 @@ export const normalizeNativeProviderTools = (
   providerType.trim().toLowerCase() === 'copilot'
     ? withCopilotBuiltInToolOverrides(tools)
     : tools;
+
+/** Publication is consumed by the authenticated host before ordinary argument parsing. */
+export const NATIVE_PUBLICATION_TOOL_ID = 'macro_agsdl_publish';
+export function buildNativePublicationTool(choices: readonly string[]): unknown {
+  if (choices.some(choice => !choice) || new Set(choices).size !== choices.length) {
+    throw new Error('Captured publication choices are invalid.');
+  }
+  return {
+    type: 'function',
+    function: {
+      name: NATIVE_PUBLICATION_TOOL_ID,
+      description: 'Publish declared inline results and the selected decision for this activation. Visible assistant text is collected separately.',
+      parameters: {
+        type: 'object',
+        properties: {
+          results: { type: 'object', description: 'Named AgSDL inline Content Source values, as declared by the Agent interface.' },
+          ...(choices.length ? { choice: { type: 'string', enum: [...choices] } } : {}),
+        },
+        required: choices.length ? ['choice'] : [],
+        additionalProperties: false,
+      },
+    },
+  };
+}
+
+/** Presentation only. The native dispatcher still checks the captured binding and scope. */
+export function buildNativeAliasedTools(
+  aliases: readonly { readonly name: string; readonly toolId: string }[],
+  allowedCanonicalIds: ReadonlySet<string>,
+): { tools: unknown[]; names: Set<string>; schemas: Map<string, JsonSchema> } {
+  const names = new Set<string>();
+  const schemas = new Map<string, JsonSchema>();
+  const tools = aliases.map(({ name, toolId }) => {
+    if (!isNativeToolAlias(name) || name === NATIVE_PUBLICATION_TOOL_ID || names.has(name)) {
+      throw new Error('Captured tool alias is unsupported by the transport, reserved or ambiguous.');
+    }
+    if (!allowedCanonicalIds.has(toolId)) throw new Error('Captured tool alias exceeds the admitted catalogue.');
+    const entry = requireMacroToolRegistryEntry(toolId);
+    names.add(name);
+    schemas.set(name, cloneJsonSchema(entry.parameters));
+    // Use the same schema conversion as ordinary Macro tools. Only the model-facing name changes.
+    return toFunctionToolShape({ ...entry, id: name });
+  });
+  return { tools, names, schemas };
+}

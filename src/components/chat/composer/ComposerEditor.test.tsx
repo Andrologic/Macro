@@ -8,6 +8,7 @@ import {
 } from '../../../test-utils/reactI18nextMock';
 import type { ComposerEditorHandle } from './ComposerEditor';
 import { consumeComposerImagePaste } from './composerPaste';
+import { referenceText } from '../../../services/chat/composerReferenceText';
 import type { ProjectGroup, SkillManifest, SkillSettings, WorkspaceFileReference } from '../../../types';
 
 const translationMock = createTranslationMock({});
@@ -117,7 +118,7 @@ const projectGroups: ProjectGroup[] = [{
 }];
 
 const installStoreMock = () => {
-  removeComposerContextRef = mock(() => undefined);
+  removeComposerContextRef = mock((id: string, kind: string) => { composerContextRefs = composerContextRefs.filter(ref => ref.id !== id || ref.kind !== kind); });
   addComposerContextRef = mock((ref: (typeof composerContextRefs)[number]) => {
     if (!composerContextRefs.some((existing) => existing.id === ref.id && existing.kind === ref.kind)) {
       composerContextRefs = [...composerContextRefs, ref];
@@ -229,9 +230,6 @@ const installStoreMock = () => {
   mock.module('../../../services/workspaceFileSearch', () => ({
     searchWorkspaceFiles: searchWorkspaceFilesMock,
   }));
-  mock.module('./ComposerHistoryPlugin', () => ({
-    ComposerHistoryPlugin: () => null,
-  }));
 };
 
 describe('ComposerEditor context references', () => {
@@ -295,6 +293,115 @@ describe('ComposerEditor context references', () => {
     container?.remove();
     document.body.innerHTML = '';
     mock.restore();
+  });
+
+  it('restores reference data when undoing a chip removal with the real history plugin', async () => {
+    const ref = { id: 'undo-file', kind: 'file' as const, title: 'README.md', data: { id: 'undo-file', path: '/repo/README.md', relativePath: 'README.md', projectId: 'project-1', projectName: 'Web' } };
+    composerContextRefs = [ref];
+    const handle = React.createRef<ComposerEditorHandle>();
+    await act(async () => root.render(<ComposerEditor ref={handle} editable placeholder="Message" onTextChange={() => {}} onSend={() => {}} />));
+    await act(async () => handle.current?.setText('[file: README.md] Please inspect', [ref]));
+    const editor = container.querySelector<HTMLElement>('[contenteditable="true"]')!;
+    await act(async () => editor.querySelector<HTMLButtonElement>('button')!.dispatchEvent(new window.MouseEvent('mousedown', { bubbles: true })));
+    expect(composerContextRefs).toEqual([]);
+    await act(async () => {
+      editor.focus();
+      editor.dispatchEvent(new window.KeyboardEvent('keydown', { key: 'z', code: 'KeyZ', ctrlKey: true, bubbles: true, cancelable: true }));
+    });
+    expect(editor.textContent).toContain('README.md');
+    expect(composerContextRefs).toEqual([ref]);
+  });
+
+  it('keeps shared context until the last duplicate chip is removed', async () => {
+    const ref = { id: 'shared', kind: 'file' as const, title: 'README', data: buildFile('README') };
+    composerContextRefs = [ref];
+    const handle = React.createRef<ComposerEditorHandle>();
+    await act(async () => root.render(<ComposerEditor ref={handle} editable placeholder="Message" onTextChange={() => {}} onSend={() => {}} />));
+    await act(async () => handle.current?.setText('[file: README] and [file: README]', [ref]));
+    const remove = async () => act(async () => {
+      container.querySelector<HTMLButtonElement>('[data-context-reference-kind="file"] button')!
+        .dispatchEvent(new window.MouseEvent('mousedown', { bubbles: true }));
+    });
+    await remove();
+    expect(composerContextRefs).toEqual([ref]);
+    await remove();
+    expect(composerContextRefs).toEqual([]);
+  });
+
+  it('renders an unavailable stable reference as plain text without attaching a namesake', async () => {
+    const ref = { id: 'different', kind: 'file' as const, title: 'README', data: buildFile('README') };
+    composerContextRefs = [ref];
+    const handle = React.createRef<ComposerEditorHandle>();
+    await act(async () => root.render(<ComposerEditor ref={handle} editable placeholder="Message" onTextChange={() => {}} onSend={() => {}} />));
+    await act(async () => handle.current?.setText('[file: README](macro-context://file/missing)', [ref]));
+    expect(container.querySelector('[data-context-reference-kind="file"]')).toBeNull();
+    expect(handle.current?.getTextContent()).toBe('README');
+  });
+
+  it('copies and pastes an internal reference with its context metadata', async () => {
+    const ref = { id: 'pasted', kind: 'file' as const, title: 'README', data: buildFile('README') };
+    const handle = React.createRef<ComposerEditorHandle>();
+    await act(async () => root.render(<ComposerEditor ref={handle} editable placeholder="Message" onTextChange={() => {}} onSend={() => {}} />));
+    composerContextRefs = [ref];
+    await act(async () => handle.current?.setText('[file: README]', [ref]));
+    const clipboard = new Map<string, string>();
+    await act(async () => {
+      const editor = container.querySelector<HTMLElement>('[contenteditable="true"]')!;
+      editor.focus();
+      editor.dispatchEvent(new window.KeyboardEvent('keydown', { key: 'a', code: 'KeyA', ctrlKey: true, bubbles: true, cancelable: true }));
+      const event = new window.Event('copy', { bubbles: true, cancelable: true });
+      Object.defineProperty(event, 'clipboardData', { value: {
+        setData: (type: string, value: string) => clipboard.set(type, value),
+      } });
+      editor.dispatchEvent(event);
+    });
+    expect(clipboard.get('text/plain')).toBe('README');
+    expect(clipboard.get('application/x-lexical-editor')).toContain('"reference"');
+    await act(async () => handle.current?.clear());
+    composerContextRefs = [];
+    await act(async () => handle.current?.setText(''));
+    await act(async () => {
+      const editor = container.querySelector<HTMLElement>('[contenteditable="true"]')!;
+      editor.focus();
+      const event = new window.Event('paste', { bubbles: true, cancelable: true });
+      Object.defineProperty(event, 'clipboardData', { value: {
+        getData: (type: string) => clipboard.get(type) ?? '',
+        types: ['application/x-lexical-editor'],
+      } });
+      editor.dispatchEvent(event);
+    });
+    expect(container.querySelector('[data-context-reference-kind="file"]')).not.toBeNull();
+    expect(composerContextRefs).toEqual([ref]);
+    expect(handle.current?.getTextContent()).toContain('macro-context://file/pasted');
+  });
+
+  it('does not undo a cleared submission back into the composer', async () => {
+    const handle = React.createRef<ComposerEditorHandle>();
+    await act(async () => root.render(<ComposerEditor ref={handle} editable placeholder="Message" onTextChange={() => {}} onSend={() => {}} />));
+    await act(async () => handle.current?.setText('Already sent'));
+    await act(async () => handle.current?.clear());
+    const editor = container.querySelector<HTMLElement>('[contenteditable="true"]')!;
+    await act(async () => {
+      editor.focus();
+      editor.dispatchEvent(new window.KeyboardEvent('keydown', { key: 'z', code: 'KeyZ', ctrlKey: true, bubbles: true, cancelable: true }));
+    });
+    expect(handle.current?.getTextContent()).toBe('');
+    expect(editor.textContent).not.toContain('Already sent');
+  });
+
+  it('uses the shared reference node for AgSDL and preserves its metadata', async () => {
+    const context = { id: 'inline-system', conversationId: 'conv-1', planId: 'plan-1', branchName: 'develop', document: 'agsdl' as const, version: 'v1', persistedRevision: 1, path: '', title: 'Release' };
+    const ref = { id: context.id, kind: 'agsdl' as const, title: context.title, data: context };
+    const editorRef = React.createRef<ComposerEditorHandle>();
+    await act(async () => root.render(<ComposerEditor ref={editorRef} editable placeholder="Message" onTextChange={() => {}} onSend={() => {}} />));
+    await act(async () => editorRef.current?.setText('[agsdl: Release] Keep this draft', [ref]));
+    const editor = container.querySelector('[contenteditable="true"]')!;
+    expect(editor.textContent).toContain('Release');
+    expect(editor.textContent).toContain('Keep this draft');
+    expect(editor.querySelector('[data-context-reference-kind="agsdl"]')).not.toBeNull();
+    await act(async () => editor.querySelector<HTMLButtonElement>('button')!.dispatchEvent(new window.MouseEvent('mousedown', { bubbles: true })));
+    expect(removeComposerContextRef).toHaveBeenCalledWith(context.id, 'agsdl');
+    expect(editorRef.current?.getTextContent()).toContain('Keep this draft');
   });
 
   it('round-trips bracketed skill text through a message-edit chip', async () => {
@@ -620,7 +727,7 @@ describe('ComposerEditor context references', () => {
       root.render(renderComposer());
       await Promise.resolve();
     });
-    expect(editorRef.current?.getTextContent()).toBe(savedText);
+    expect(editorRef.current?.getTextContent()).toBe(`${referenceText(ref.kind, ref.id, ref.title)} `);
     expect(container.querySelectorAll('[data-context-reference-kind="conversation"]').length).toBe(1);
     expect(composerContextRefs).toEqual([ref]);
   });

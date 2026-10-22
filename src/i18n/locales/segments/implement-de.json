@@ -1,4 +1,13 @@
 {
+  "viewExecutionGraph": "Workflow anzeigen",
+  "executionGraph": "Workflow-Ausführung",
+  "workflowGraph": "Workflow-Graph",
+  "executionGraphError": "Der Workflow konnte nicht geladen werden.",
+  "executionGraphEmpty": "Mit dieser Aufgabe ist keine AgSDL-Ausführung verknüpft.",
+  "openGraphTask": "Aufgabe öffnen",
+  "taskFilters": "Aufgaben filtern",
+  "tasksWithoutInteraction": "Ohne Interaktion",
+  "blockedTasks": "Blockierte Aufgaben",
   "startReview": "Review starten",
   "startReviewBusy": "Beenden Sie den aktuellen Durchlauf oder klären Sie die Werkzeugfreigabe, bevor Sie das Review starten.",
   "startReviewUnavailable": "Diese Aufgabe kann im aktuellen Zustand nicht ins Review wechseln.",
@@ -24,9 +33,9 @@
   "selectTaskForValidation": "Wählen Sie eine Aufgabe aus, um Änderungen zu validieren",
   "activeCount": "{{count}} aktiv",
   "noTasks": "Noch keine Aufgaben",
+  "otherTasks": "Andere Aufgaben",
   "readyTasks": "Bereite Aufgaben",
   "noReadyTasks": "Derzeit ist keine Aufgabe ausführbar.",
-  "blockedTasks": "Blockierte Aufgaben",
   "failedTasks": "Fehlgeschlagene Aufgaben",
   "noBlockedTasks": "Keine abhängigkeitsblockierte Aufgabe.",
   "blockedBy": "Gesperrt durch: {{tasks}}",
@@ -331,8 +340,6 @@
   "clearStatusFilter": "Alle Status anzeigen",
   "allStatuses": "Alle Status",
   "planFilterStandalone": "Kein Plan / Standalone",
-  "standaloneBadge": "Eigenständig",
-  "taskKindPending": "Agentenklassifizierung",
   "taskKindFeature": "Feature",
   "taskKindDirectEdit": "Direkte Bearbeitung",
   "taskKindDirectEditHelp": "Bearbeitet den Quellordner ohne Git-Branches, Worktrees oder Commits. Es kann jeweils nur eine Aufgabe ausgeführt werden.",
@@ -408,6 +415,10 @@
     "full": "Vollständiger Dateikontext"
   },
   "errors": {
+    "databaseLocked": "Die Datenbank ist gesperrt. Versuchen Sie es erneut.",
+    "directProjectTaskAlreadyActiveWithTitle": "Dieses Projekt zur direkten Bearbeitung hat bereits eine aktive Aufgabe: {{title}}",
+    "taskTodosOpenForComplete": "Die Aufgabe kann nicht abgeschlossen werden, solange Todos offen sind: {{todos}}",
+    "taskTodosOpenForCompleteWithoutLabels": "Die Aufgabe kann nicht abgeschlossen werden, solange Todos offen sind.",
     "finalizationStrategyLocked": "Die Finalisierung hat bereits begonnen. Schließe den ausstehenden Merge ab oder fahre fort, ohne die Strategie zu ändern.",
     "directTaskCompletionFailed": "Die Aufgabe im Direktbearbeitungsmodus konnte nicht abgeschlossen werden.",
     "directTaskBranchChanged": "Der aktuelle Branch wurde von {{expected}} zu {{actual}} gewechselt. Wechsle vor dem Commit dieser Direct-Aufgabe zurück.",
@@ -638,5 +649,10 @@
   "reviewProgress": "{{reviewed}} / {{total}} Datei-Diffs geöffnet",
   "nextUnreviewedDiff": "Nächster ungeöffneter Diff",
   "resumeRemainingCommits": "Verbleibende Commits fortsetzen",
-  "detachedReviewDraft": "Diese Datei ist nicht mehr in der Prüfung. Kopiere den ungespeicherten Entwurf vor dem Schließen; Dateiaktionen sind nicht verfügbar."
+  "detachedReviewDraft": "Diese Datei ist nicht mehr in der Prüfung. Kopiere den ungespeicherten Entwurf vor dem Schließen; Dateiaktionen sind nicht verfügbar.",
+  "queueToLaunch": "Zu starten",
+  "queueInProgress": "In Arbeit",
+  "queueWaiting": "Wartend",
+  "queueCompleted": "Abgeschlossen",
+  "launchWorkflow": "Workflow starten"
 }

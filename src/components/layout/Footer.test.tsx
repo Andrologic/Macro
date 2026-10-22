@@ -1,9 +1,12 @@
+import en from '../../i18n/locales/en.json';
+import fr from '../../i18n/locales/fr.json';
+import { MacroServiceError, SERVICE_ERROR_CODES } from '../../services/contracts/errors';
 import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
 import React from 'react';
 import { act } from 'react';
 import { flushSync } from 'react-dom';
 import { createRoot, type Root } from 'react-dom/client';
-import { installReactI18nextMock } from '../../test-utils/reactI18nextMock';
+import { createTranslationMock, installReactI18nextMock } from '../../test-utils/reactI18nextMock';
 
 type Project = {
   id: string;
@@ -281,9 +284,9 @@ const flushAsyncWork = async () => {
   });
 };
 
-const waitForText = async (container: HTMLDivElement, text: string) => {
+const waitForText = async (_container: HTMLDivElement, text: string) => {
   const deadline = Date.now() + 2_000;
-  while (!(container.textContent ?? '').includes(text)) {
+  while (!(document.body.textContent ?? '').includes(text)) {
     if (Date.now() >= deadline) {
       throw new Error(`Timed out waiting for footer text: ${text}`);
     }
@@ -297,7 +300,7 @@ const findButtonByIcon = (container: HTMLDivElement, iconName: string): HTMLButt
   (container.querySelector(`[data-icon="${iconName}"]`)?.closest('button') as HTMLButtonElement | null) ?? null;
 
 const findButtonByText = (container: HTMLDivElement, text: string): HTMLButtonElement | null =>
-  Array.from(container.querySelectorAll('button'))
+  Array.from((container.hasAttribute('data-testid') ? container : document.body).querySelectorAll<HTMLButtonElement>('button'))
     .find((button) => button.textContent?.trim() === text) ?? null;
 
 const setInputValue = (input: HTMLInputElement, value: string) => {
@@ -321,7 +324,7 @@ const selectGitScope = async (container: HTMLDivElement, value: string) => {
 const loadFooter = async () => {
   mock.restore();
 
-  installReactI18nextMock();
+  installReactI18nextMock(createTranslationMock({ 'footer.sync.conflictedFiles': '{{count}} conflicted files' }));
 
   mock.module('@tauri-apps/plugin-dialog', () => ({
     open: (options: { directory?: boolean; multiple?: boolean; title?: string }) =>
@@ -419,10 +422,6 @@ const loadFooter = async () => {
     },
   }));
 
-  mock.module('../../services/conflictResolution', () => ({
-    buildMacroConflictAssistantPrompt: () => 'prompt',
-    toMacroConflictResolutionEntries: (repositories: unknown[]) => repositories,
-  }));
 
   mock.module('../../services/conflictAssistantService', () => ({
     openConflictAssistant: (options: { prompt: string }) =>
@@ -437,6 +436,8 @@ const loadFooter = async () => {
       dismissLabel,
       onRetry,
       onDismiss,
+      onUseAiAssistant,
+      useAiAssistantLabel,
     }: {
       title: string;
       description: string;
@@ -444,12 +445,15 @@ const loadFooter = async () => {
       dismissLabel?: string;
       onRetry?: () => void;
       onDismiss?: () => void;
+      onUseAiAssistant?: () => void;
+      useAiAssistantLabel?: string;
     }) => (
       <div data-testid="conflict-panel">
         <h3>{title}</h3>
         <p>{description}</p>
         {onDismiss && <button onClick={onDismiss}>{dismissLabel || 'Close'}</button>}
         {onRetry && <button onClick={onRetry}>{retryLabel || 'Retry'}</button>}
+        {onUseAiAssistant && <button onClick={onUseAiAssistant}>{useAiAssistantLabel}</button>}
       </div>
     ),
   }));
@@ -647,7 +651,7 @@ describe('Footer', () => {
     appState.selectedProjectId = 'project-b';
     await act(async () => { root?.render(<Footer />); });
     await flushAsyncWork();
-    expect(container.textContent).toContain('feature-b');
+    expect(document.body.textContent).toContain('feature-b');
     expect(findButtonByIcon(container!, 'refresh-cw')?.disabled).toBe(false);
     await act(async () => {
       replies.forEach((resolve) => resolve(buildGitStatus('main-a', 0, 0)));
@@ -678,12 +682,12 @@ describe('Footer', () => {
     await flushAsyncWork();
     act(() => { findButtonByText(container!, 'Resolve')?.click(); });
     await flushAsyncWork();
-    expect(container.querySelector('[data-testid="conflict-panel"]')).not.toBeNull();
+    expect(document.body.querySelector('[data-testid="conflict-panel"]')).not.toBeNull();
 
     appState.selectedProjectId = 'project-b';
     await act(async () => { root?.render(<Footer />); });
     await flushAsyncWork();
-    const panel = container.querySelector<HTMLDivElement>('[data-testid="conflict-panel"]');
+    const panel = document.body.querySelector<HTMLDivElement>('[data-testid="conflict-panel"]');
     expect(panel).not.toBeNull();
     expect(findButtonByText(panel!, 'Push @macro')).not.toBeNull();
     let releasePush!: (result: MacroBranchSyncDto) => void;
@@ -701,7 +705,7 @@ describe('Footer', () => {
     const currentPushCount = findButtonByIcon(container!, 'arrow-up')?.textContent;
     await act(async () => { releasePush(buildMacroStatus(0, 0)); });
     await flushAsyncWork();
-    expect(container.querySelector('[data-testid="conflict-panel"]')).not.toBeNull();
+    expect(document.body.querySelector('[data-testid="conflict-panel"]')).not.toBeNull();
     expect(findButtonByText(container!, 'Retry sync')).not.toBeNull();
     expect(findButtonByIcon(container!, 'arrow-up')?.textContent).toBe(currentPushCount);
   });
@@ -738,8 +742,8 @@ describe('Footer', () => {
     root.render(<Footer />);
     await flushAsyncWork();
 
-    expect(container.textContent ?? '').toContain('Web');
-    expect(container.textContent ?? '').not.toContain('API');
+    expect(document.body.textContent ?? '').toContain('Web');
+    expect(document.body.textContent ?? '').not.toContain('API');
 
     act(() => findButtonByIcon(container!, 'arrow-down')?.click());
     await flushAsyncWork();
@@ -760,8 +764,8 @@ describe('Footer', () => {
     root.render(<Footer />);
     await waitForText(container, 'feature-b');
 
-    expect(container.textContent ?? '').toContain('Web');
-    expect(container.textContent ?? '').not.toContain('Aucun projet');
+    expect(document.body.textContent ?? '').toContain('Web');
+    expect(document.body.textContent ?? '').not.toContain('Aucun dépôt Git sélectionné');
 
     act(() => findButtonByIcon(container!, 'refresh-cw')?.click());
     await flushAsyncWork();
@@ -785,12 +789,12 @@ describe('Footer', () => {
     appState.selectedProjectId = 'project-b';
     await act(async () => { root?.render(<Footer />); });
     await flushAsyncWork();
-    expect(container.textContent).toContain('feature-b');
+    expect(document.body.textContent).toContain('feature-b');
     await act(async () => {
       oldReplies.forEach((resolve) => resolve(buildGitStatus('stale-branch', 90, 90)));
     });
-    expect(container.textContent).toContain('feature-b');
-    expect(container.textContent).not.toContain('stale-branch');
+    expect(document.body.textContent).toContain('feature-b');
+    expect(document.body.textContent).not.toContain('stale-branch');
   });
 
   it('updates the Architect Git context synchronously when the selected project changes', async () => {
@@ -808,15 +812,15 @@ describe('Footer', () => {
       await Promise.resolve();
       await Promise.resolve();
     });
-    expect(container.textContent ?? '').toContain('main-a');
+    expect(document.body.textContent ?? '').toContain('main-a');
     gitStatusMock.mockClear();
     footerContentRenderProbe.mockClear();
 
     appState.selectedProjectId = 'project-b';
     flushSync(() => root?.render(<Footer />));
 
-    expect(container.textContent ?? '').toContain('Web');
-    expect(container.textContent ?? '').not.toContain('API');
+    expect(document.body.textContent ?? '').toContain('Web');
+    expect(document.body.textContent ?? '').not.toContain('API');
     expect(footerContentRenderProbe.mock.calls.length).toBeGreaterThan(0);
   });
 
@@ -840,16 +844,30 @@ describe('Footer', () => {
       await Promise.resolve();
       await Promise.resolve();
     });
-    expect(container.textContent ?? '').toContain('feature-b');
+    expect(document.body.textContent ?? '').toContain('feature-b');
     gitStatusMock.mockClear();
     footerContentRenderProbe.mockClear();
 
     appState.selectedProjectId = 'project-c';
     flushSync(() => root?.render(<Footer />));
 
-    expect(container.textContent ?? '').toContain('Web');
+    expect(document.body.textContent ?? '').toContain('Web');
     expect(footerContentRenderProbe).toHaveBeenCalledTimes(0);
     expect(gitStatusMock).toHaveBeenCalledTimes(0);
+  });
+
+  it('describes a direct-mode plan as having no selected Git repository, rather than no project', async () => {
+    appState.projectGroups = [{ id: 'group-1', name: 'Macro', projects: [{ id: 'project-a', name: 'API', path: '/workspace/api', gitSetupState: 'not_git', directEdit: true }] }];
+    appState.visibleArchitectPlans = [{ id: 'plan-group-1', projectIds: ['project-a'] }];
+    const { Footer } = await loadFooter();
+    container = document.createElement('div'); document.body.appendChild(container); root = createRoot(container);
+    root.render(<Footer />); await flushAsyncWork();
+    expect(document.body.textContent ?? '').toContain('Aucun dépôt Git sélectionné');
+    expect(document.body.textContent ?? '').not.toContain('Aucun projet');
+    expect(findButtonByIcon(container!, 'refresh-cw')?.disabled).toBe(true);
+    expect(gitStatusMock).not.toHaveBeenCalled();
+    expect(gitPullMock).not.toHaveBeenCalled();
+    expect(gitPushMock).not.toHaveBeenCalled();
   });
 
   it('disables Git actions and executes no fallback command without an active Chat project', async () => {
@@ -865,7 +883,7 @@ describe('Footer', () => {
     root.render(<Footer />);
     await flushAsyncWork();
 
-    expect(container.textContent ?? '').toContain('Aucun projet');
+    expect(document.body.textContent ?? '').toContain('Aucun dépôt Git sélectionné');
     expect(findButtonByIcon(container!, 'refresh-cw')?.disabled).toBe(true);
     expect(findButtonByIcon(container!, 'arrow-down')).toBeNull();
     expect(findButtonByIcon(container!, 'arrow-up')).toBeNull();
@@ -904,7 +922,7 @@ describe('Footer', () => {
       multiple: false,
       title: 'Sélectionner un dossier Git',
     });
-    expect(container.textContent ?? '').toContain('sandbox');
+    expect(document.body.textContent ?? '').toContain('sandbox');
     expect(findButtonByIcon(container, 'arrow-down')?.textContent?.trim()).toBe('2');
     expect(findButtonByIcon(container, 'arrow-up')?.textContent?.trim()).toBe('0');
 
@@ -1099,9 +1117,9 @@ describe('Footer', () => {
     });
     await flushAsyncWork();
 
-    expect(container?.textContent ?? '').toContain('Branch has diverged from remote');
-    expect(container?.textContent ?? '').toContain('origin/feature-b');
-    expect(container?.textContent ?? '').toContain('Available');
+    expect(document.body.textContent ?? '').toContain('Branch has diverged from remote');
+    expect(document.body.textContent ?? '').toContain('origin/feature-b');
+    expect(document.body.textContent ?? '').toContain('Available');
     expect(gitFetchMock).toHaveBeenCalledWith({
       repoPath: '/repo/web',
       branch: 'feature-b',
@@ -1138,6 +1156,51 @@ describe('Footer', () => {
     expect(gitMergeMock).not.toHaveBeenCalled();
   });
 
+  it('keeps a normal divergence ready and explains why fast-forward is unavailable', async () => {
+    gitStatusByPath['/repo/api'] = buildGitStatus('main-a', 2, 1);
+    const { Footer } = await loadFooter();
+    container = document.createElement('div');
+    document.body.appendChild(container);
+    root = createRoot(container);
+    await act(async () => { root?.render(<Footer />); });
+    await flushAsyncWork();
+    act(() => { findButtonByIcon(container!, 'arrow-down')?.click(); });
+    await flushAsyncWork();
+    expect(document.body.textContent).toContain('Ready to integrate remote commits');
+    expect(document.body.textContent).not.toContain('Preflight could not complete');
+    expect(document.body.textContent).toContain('Local commits prevent a fast-forward');
+    expect(document.body.textContent).not.toContain('Blocked by local changes');
+  });
+
+  it('contains focus, closes on Escape, and returns focus to Pull', async () => {
+    gitStatusByPath['/repo/api'] = buildGitStatus('main-a', 2, 1);
+    const { Footer } = await loadFooter();
+    container = document.createElement('div');
+    document.body.appendChild(container);
+    root = createRoot(container);
+    await act(async () => { root?.render(<Footer />); });
+    await flushAsyncWork();
+    const trigger = findButtonByIcon(container!, 'arrow-down')!;
+    act(() => { trigger.focus(); trigger.click(); trigger.blur(); });
+    // Browsers blur a button disabled during asynchronous Git preflight.
+    expect(document.activeElement).toBe(document.body);
+    await flushAsyncWork();
+    const dialog = document.body.querySelector<HTMLElement>('[role="dialog"]')!;
+    expect(dialog).not.toBeNull();
+    expect(dialog.contains(document.activeElement)).toBe(true);
+    expect(container.hasAttribute('inert')).toBe(true);
+    const buttons = dialog.querySelectorAll<HTMLButtonElement>('button');
+    buttons[buttons.length - 1].focus();
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Tab', bubbles: true, cancelable: true }));
+    expect(document.activeElement).toBe(buttons[0]);
+    await act(async () => {
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+    });
+    expect(document.body.querySelector('[role="dialog"]')).toBeNull();
+    expect(document.activeElement?.getAttribute('data-tour-id')).toBe('footer-pull');
+    expect(container.hasAttribute('inert')).toBe(false);
+  });
+
   it('can stash local changes before resolving a divergent branch', async () => {
     gitStatusByPath = {
       '/repo/api': buildGitStatus('main-a', 0, 0),
@@ -1172,7 +1235,7 @@ describe('Footer', () => {
     await waitForText(container!, 'local changes');
 
     expect(findButtonByText(container!, 'Stash, then merge')).toBeNull();
-    expect(container?.textContent ?? '').toContain('Stash, then rebase');
+    expect(document.body.textContent ?? '').toContain('Stash, then rebase');
 
     act(() => {
       findButtonByText(container!, 'Stash, then rebase')?.click();
@@ -1225,7 +1288,7 @@ describe('Footer', () => {
     });
     await flushAsyncWork();
 
-    const text = container?.textContent ?? '';
+    const text = document.body.textContent ?? '';
     expect(text).toContain('Conflicts detected');
     expect(text).toContain('Conflicts');
     expect(text).toContain('docs/cli.md');
@@ -1267,7 +1330,7 @@ describe('Footer', () => {
     });
     await flushAsyncWork();
 
-    const text = container?.textContent ?? '';
+    const text = document.body.textContent ?? '';
     expect(text).toContain('Conflicts detected');
     expect(text).toContain('src/cascade.ml');
     expect(text).toContain('tests/test_project_manifest.ml');
@@ -1314,7 +1377,7 @@ describe('Footer', () => {
     });
     await flushAsyncWork();
 
-    const text = container?.textContent ?? '';
+    const text = document.body.textContent ?? '';
     expect(text).toContain('docs/maintenance-plan.md');
     expect(text).toContain('src/project_interface.ml');
     expect(findButtonByText(container!, 'Merge')).toBeNull();
@@ -1351,8 +1414,8 @@ describe('Footer', () => {
     });
     await flushAsyncWork();
 
-    expect(container?.textContent ?? '').toContain('Merge in progress');
-    expect(container?.textContent ?? '').toContain('README.md');
+    expect(document.body.textContent ?? '').toContain('Merge in progress');
+    expect(document.body.textContent ?? '').toContain('README.md');
     expect(findButtonByText(container!, 'Stash, then rebase')).toBeNull();
     expect(findButtonByText(container!, 'Merge')).toBeNull();
     expect(gitMergeCheckMock).not.toHaveBeenCalled();
@@ -1399,7 +1462,7 @@ describe('Footer', () => {
     });
     await flushAsyncWork();
 
-    expect(container?.textContent ?? '').toContain('Branch has diverged from remote');
+    expect(document.body.textContent ?? '').toContain('Branch has diverged from remote');
   });
 
   it('exposes stash, discard, and conflict assistant actions when divergence meets local changes', async () => {
@@ -1440,10 +1503,60 @@ describe('Footer', () => {
     });
     await flushAsyncWork();
 
-    expect(container?.textContent ?? '').toContain('Conflicts detected');
+    expect(document.body.textContent ?? '').toContain('Conflicts detected');
+    expect(document.body.textContent).toContain('2 conflicted files');
+    expect(document.body.textContent).not.toContain('{{count}}');
     expect(findButtonByText(container!, 'Stash and retry')).not.toBeNull();
     expect(findButtonByText(container!, 'Discard local changes')).not.toBeNull();
-    expect(findButtonByText(container!, 'Open conflict assistant')).not.toBeNull();
+    expect(findButtonByText(container!, 'Open conflict assistant in Implement')).not.toBeNull();
+  });
+
+  it.each([
+    ['code', 'fr', 'opening'], ['code', 'en', 'opening'],
+    ['metadata', 'fr', 'verification'], ['metadata', 'en', 'verification'],
+  ] as const)('presents %s assistant context refusals in %s', async (kind, language, stage) => {
+    const copy = language === 'fr' ? fr : en;
+    const diagnosticCopy = copy.errors.degraded.service.conflictAssistantContextChanged;
+    const error = new MacroServiceError(SERVICE_ERROR_CODES.CONFLICT_ASSISTANT_CONTEXT_CHANGED,
+      'Conflict assistant context changed.', { stage, projectId: 'project-a' });
+    openConflictAssistantMock.mockImplementation(async () => { throw error; });
+    appState.activeArchitectPlanId = null;
+    appState.visibleArchitectPlans = [];
+    macroStatusByPath = { '/repo/api': buildMacroStatus(0, 0), '/repo/web': buildMacroStatus(0, 0), '/repo/docs': buildMacroStatus(0, 0) };
+    if (kind === 'metadata') {
+      macroStatusByPath['/repo/api'] = { ...buildMacroStatus(5, 4), state: 'conflict', reason: 'merge_conflict',
+        next_action: 'resolve_conflict', conflicted_files: ['plan.json'] };
+    } else {
+      appState.selectedProjectId = 'project-b';
+      gitStatusByPath['/repo/web'] = buildGitStatus('feature-b', 4, 3);
+      gitMergeCheckMock.mockImplementation(async () => ({ mergeable: false, conflictFiles: ['src/api.ts'], hasChanges: true, ahead: 4, behind: 3 }));
+      gitRebaseCheckMock.mockImplementation(async () => ({ rebaseable: false, conflictFiles: ['src/api.ts'], output: 'conflict' }));
+    }
+    const { Footer } = await loadFooter();
+    installReactI18nextMock(createTranslationMock({
+      'footer.sync.aiConflictAssistantStartFailed': copy.footer.sync.aiConflictAssistantStartFailed,
+      'errors.degraded.service.conflictAssistantContextChanged.title': diagnosticCopy.title,
+      'errors.degraded.service.conflictAssistantContextChanged.body': diagnosticCopy.body,
+      'errors.degraded.service.conflictAssistantContextChanged.nextStep': diagnosticCopy.nextStep,
+    }));
+    container = document.createElement('div'); document.body.appendChild(container); root = createRoot(container);
+    await act(async () => { root?.render(<Footer />); });
+    await flushAsyncWork();
+    if (kind === 'code') {
+      act(() => { findButtonByIcon(container!, 'arrow-down')?.click(); });
+    } else {
+      act(() => { findButtonByText(container!, 'Resolve')?.click(); });
+    }
+    await flushAsyncWork();
+    act(() => { findButtonByText(container!, 'Open conflict assistant in Implement')?.click(); });
+    await flushAsyncWork();
+    expect(openConflictAssistantMock).toHaveBeenCalledTimes(1);
+    expect(openConflictAssistantMock.mock.calls[0]?.[0].context.kind).toBe(kind);
+    expect(notifyErrorMock).toHaveBeenCalledWith(copy.footer.sync.aiConflictAssistantStartFailed, {
+      description: `${diagnosticCopy.body} ${diagnosticCopy.nextStep}`, category: 'git_sync_attention_required',
+    });
+    expect(notifyInfoMock).not.toHaveBeenCalled();
+    expect(error.details).toEqual({ stage, projectId: 'project-a' });
   });
 
   it('opens the conflict assistant when the corresponding modal action is clicked', async () => {
@@ -1485,7 +1598,7 @@ describe('Footer', () => {
     await flushAsyncWork();
 
     act(() => {
-      findButtonByText(container!, 'Open conflict assistant')?.click();
+      findButtonByText(container!, 'Open conflict assistant in Implement')?.click();
     });
     await flushAsyncWork();
 
@@ -1494,6 +1607,11 @@ describe('Footer', () => {
     expect(options).toBeDefined();
     expect(typeof options?.prompt).toBe('string');
     expect(options.prompt.length).toBeGreaterThan(0);
+    expect(options.prompt).toContain('feature-b');
+    expect(options.prompt).toContain('docs/cli.md');
+    expect(options.prompt).toContain('src/cascade.ml');
+    expect(options.prompt).not.toContain('@macro metadata');
+    expect(options.context).toEqual({ kind: 'code', repositories: [{ projectId: 'project-b', repoPath: '/repo/web', branch: 'feature-b', upstreamBranch: 'origin/feature-b', taskId: undefined }] });
     expect(notifyInfoMock).toHaveBeenCalledWith(
       'AI conflict assistant started',
       { category: 'git_sync_attention_required' }
@@ -1508,7 +1626,7 @@ describe('Footer', () => {
         )
       )
     ).toBe(false);
-    expect(container?.textContent ?? '').not.toContain('Conflicts detected');
+    expect(document.body.textContent ?? '').not.toContain('Conflicts detected');
   });
 
   it('discards local changes through gitRestorePaths when the user confirms', async () => {
@@ -1566,7 +1684,7 @@ describe('Footer', () => {
         target: 'staged_and_worktree',
       });
       expect(gitResetMock).not.toHaveBeenCalled();
-      expect(container?.textContent ?? '').not.toContain('Branch has diverged from remote');
+      expect(document.body.textContent ?? '').not.toContain('Branch has diverged from remote');
     } finally {
       window.confirm = originalConfirm;
     }
@@ -1637,8 +1755,110 @@ describe('Footer', () => {
     });
     await flushAsyncWork();
 
-    expect(container?.textContent ?? '').not.toContain('Branch has diverged from remote');
+    expect(document.body.textContent ?? '').not.toContain('Branch has diverged from remote');
     expect(gitPullMock).toHaveBeenCalledWith({ repoPath: '/repo/web' });
+  });
+
+  it('offers origin configuration after a failed Pull and retries only Pull', async () => {
+    gitStatusByPath['/repo/api'] = { ...buildGitStatus('main-a', 0, 0), has_origin: false, has_upstream: false };
+    gitPullMock.mockImplementationOnce(async () => { throw new Error("fatal: 'origin' does not appear to be a git repository"); });
+    const { Footer } = await loadFooter();
+    container = document.createElement('div');
+    document.body.appendChild(container);
+    root = createRoot(container);
+    await act(async () => { root?.render(<Footer />); });
+    await flushAsyncWork();
+    act(() => { findButtonByIcon(container!, 'arrow-down')?.click(); });
+    await flushAsyncWork();
+    const [title, options] = notifyActionRequiredMock.mock.calls.at(-1)!;
+    expect(title).toBe('No remote configured');
+    expect(options.description).not.toContain('fatal:');
+    await act(async () => { options.actions[0].onClick(); });
+    const dialog = document.body.querySelector<HTMLElement>('[role="dialog"]')!;
+    expect(dialog.querySelector('details')?.open).toBe(false);
+    act(() => { setInputValue(dialog.querySelector('input')!, 'https://example.invalid/repo.git'); });
+    act(() => { findButtonByText(container!, 'Configure and retry')?.click(); });
+    await flushAsyncWork();
+    expect(gitRemoteAddOriginMock).toHaveBeenCalledWith({ repoPath: '/repo/api', url: 'https://example.invalid/repo.git' });
+    expect(gitPullMock).toHaveBeenCalledTimes(2);
+    expect(gitPushMock).not.toHaveBeenCalled();
+  });
+
+  it('keeps a remote error out of the toast and shows collapsed details with a retry', async () => {
+    const output = 'fatal: repository https://example.invalid/missing not found';
+    gitFetchMock.mockImplementationOnce(async () => { throw new Error(output); });
+    const { Footer } = await loadFooter();
+    container = document.createElement('div');
+    document.body.appendChild(container);
+    root = createRoot(container);
+    await act(async () => { root?.render(<Footer />); });
+    await flushAsyncWork();
+    const trigger = findButtonByIcon(container!, 'refresh-cw')!;
+    act(() => { trigger.focus(); trigger.click(); });
+    await flushAsyncWork();
+    const [title, options] = notifyActionRequiredMock.mock.calls.at(-1)!;
+    expect(title).toBe('Remote repository unavailable');
+    expect(options.description).not.toContain(output);
+    await act(async () => { options.actions[0].onClick(); });
+    const dialog = document.body.querySelector<HTMLElement>('[role="dialog"]')!;
+    expect(dialog.querySelector('pre')?.textContent).toBe(output);
+    expect(dialog.querySelector('details')?.open).toBe(false);
+    act(() => { findButtonByText(container!, 'Retry sync')?.click(); });
+    await flushAsyncWork();
+    expect(gitFetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('offers explicit publication for missing code upstream without publishing automatically', async () => {
+    gitPullMock.mockImplementationOnce(async () => { throw new Error('There is no tracking information for the current branch.'); });
+    const { Footer } = await loadFooter();
+    container = document.createElement('div');
+    document.body.appendChild(container);
+    root = createRoot(container);
+    await act(async () => { root?.render(<Footer />); });
+    await flushAsyncWork();
+    act(() => { findButtonByIcon(container!, 'arrow-down')?.click(); });
+    await flushAsyncWork();
+    const [title, options] = notifyActionRequiredMock.mock.calls.at(-1)!;
+    expect(title).toBe('No tracking branch configured');
+    expect(gitPushMock).not.toHaveBeenCalled();
+    await act(async () => { options.actions[0].onClick(); });
+    expect(findButtonByText(container!, 'Publish code branch')).not.toBeNull();
+    expect(document.body.textContent).toContain('Publishing sends your local commits');
+  });
+
+  it('offers stash recovery when local files block a fast-forward-only pull', async () => {
+    gitStatusByPath['/repo/api'] = buildDirtyGitStatus('main-a', 2, 0);
+    gitPullMock.mockImplementationOnce(async () => { throw new Error('Your local changes would be overwritten by merge'); });
+    const { Footer } = await loadFooter();
+    container = document.createElement('div');
+    document.body.appendChild(container);
+    root = createRoot(container);
+    await act(async () => { root?.render(<Footer />); });
+    await flushAsyncWork();
+    act(() => { findButtonByIcon(container!, 'arrow-down')?.click(); });
+    await flushAsyncWork();
+    expect(findButtonByText(container!, 'Stash, then fast-forward')).not.toBeNull();
+    act(() => { findButtonByText(container!, 'Stash, then fast-forward')?.click(); });
+    await flushAsyncWork();
+    expect(gitStashMock).toHaveBeenCalledWith({ repoPath: '/repo/api', message: 'Macro: stash before fastForward main-a' });
+    expect(gitFastForwardMock).toHaveBeenCalledWith({ repoPath: '/repo/api', sourceBranch: 'origin/main-a', targetBranch: 'main-a' });
+  });
+
+  it('reports a real preflight inspection failure and does not offer mutations', async () => {
+    gitStatusByPath['/repo/api'] = buildGitStatus('main-a', 2, 1);
+    gitFetchMock.mockImplementation(async () => { throw new Error('fatal: cannot inspect remote'); });
+    const { Footer } = await loadFooter();
+    container = document.createElement('div');
+    document.body.appendChild(container);
+    root = createRoot(container);
+    await act(async () => { root?.render(<Footer />); });
+    await flushAsyncWork();
+    act(() => { findButtonByIcon(container!, 'arrow-down')?.click(); });
+    await flushAsyncWork();
+    expect(document.body.textContent).toContain('Preflight could not complete');
+    expect(findButtonByText(container!, 'Merge')).toBeNull();
+    expect(findButtonByText(container!, 'Rebase')).toBeNull();
+    expect(gitMergeMock).not.toHaveBeenCalled();
   });
 
   it('resets the local footer git scope when the selected group changes', async () => {
@@ -1663,7 +1883,7 @@ describe('Footer', () => {
     expect(container?.querySelector('select')).toBeNull();
     expect(findButtonByIcon(container!, 'arrow-down')?.textContent?.trim()).toBe('1@2');
     expect(findButtonByIcon(container!, 'arrow-up')?.textContent?.trim()).toBe('0@9');
-    expect(container?.textContent ?? '').toContain('release-c');
+    expect(document.body.textContent ?? '').toContain('release-c');
   });
 
   it('invalidates a disappeared manual scope and resolves the only remaining plan repository', async () => {
@@ -1740,8 +1960,8 @@ describe('Footer', () => {
 
     expect(findButtonByIcon(container!, 'arrow-down')?.textContent?.trim()).toBe('0');
     expect(findButtonByIcon(container!, 'arrow-up')?.textContent?.trim()).toBe('3');
-    expect(container?.textContent ?? '').not.toContain('Review');
-    expect(container?.textContent ?? '').not.toContain('Resolve');
+    expect(document.body.textContent ?? '').not.toContain('Review');
+    expect(document.body.textContent ?? '').not.toContain('Resolve');
   });
 
   it('opens a missing upstream choice modal before the first footer push', async () => {
@@ -1764,9 +1984,41 @@ describe('Footer', () => {
     });
     await flushAsyncWork();
 
-    expect(container?.textContent ?? '').toContain('@macro has no remote branch yet');
+    expect(document.body.textContent ?? '').toContain('@macro has no remote branch yet');
+    const dialog = document.body.querySelector<HTMLElement>('[role="dialog"]')!;
+    expect(dialog.contains(document.activeElement)).toBe(true);
+    await act(async () => {
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+    });
+    expect(document.body.querySelector('[role="dialog"]')).toBeNull();
     expect(gitPushMock).not.toHaveBeenCalled();
     expect(macroBranchPushMock).not.toHaveBeenCalled();
+  });
+
+  it('keeps keyboard focus and returns it when the upstream dialog closes', async () => {
+    macroStatusByPath['/repo/api'] = buildMissingUpstreamMacroStatus();
+    const { Footer } = await loadFooter();
+    container = document.createElement('div');
+    document.body.appendChild(container);
+    root = createRoot(container);
+    await act(async () => { root?.render(<Footer />); });
+    await flushAsyncWork();
+    const trigger = findButtonByIcon(container!, 'arrow-up')!;
+    act(() => { trigger.focus(); trigger.click(); trigger.blur(); });
+    expect(document.activeElement).toBe(document.body);
+    await flushAsyncWork();
+    const dialog = document.body.querySelector<HTMLElement>('[role="dialog"]')!;
+    expect(dialog.contains(document.activeElement)).toBe(true);
+    const buttons = dialog.querySelectorAll<HTMLButtonElement>('button');
+    buttons[buttons.length - 1].focus();
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Tab', bubbles: true, cancelable: true }));
+    expect(document.activeElement).toBe(buttons[0]);
+    await act(async () => {
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+    });
+    expect(document.body.querySelector('[role="dialog"]')).toBeNull();
+    expect(document.activeElement?.getAttribute('data-tour-id')).toBe('footer-push');
+    expect(gitPushMock).not.toHaveBeenCalled();
   });
 
   it('opens a remote configuration modal before pushing code without origin', async () => {
@@ -1789,8 +2041,8 @@ describe('Footer', () => {
     });
     await flushAsyncWork();
 
-    expect(container?.textContent ?? '').toContain('Remote origin is missing');
-    expect(container?.textContent ?? '').toContain('API');
+    expect(document.body.textContent ?? '').toContain('Remote origin is missing');
+    expect(document.body.textContent ?? '').toContain('API');
     expect(gitPushMock).not.toHaveBeenCalled();
     expect(macroBranchPushMock).not.toHaveBeenCalled();
   });
@@ -1816,8 +2068,8 @@ describe('Footer', () => {
     });
     await flushAsyncWork();
 
-    expect(container?.textContent ?? '').toContain('Remote origin is missing');
-    const inputLabels = Array.from(container?.querySelectorAll('input') ?? [])
+    expect(document.body.textContent ?? '').toContain('Remote origin is missing');
+    const inputLabels = Array.from(document.body.querySelectorAll('input') ?? [])
       .map((input) => input.closest('label')?.textContent ?? '');
     expect(inputLabels).toHaveLength(1);
     expect(inputLabels[0]).toContain('Web');
@@ -1875,7 +2127,7 @@ describe('Footer', () => {
     });
     await flushAsyncWork();
 
-    expect(container?.textContent ?? '').toContain('Remote origin is missing');
+    expect(document.body.textContent ?? '').toContain('Remote origin is missing');
 
     act(() => {
       findButtonByText(container!, 'Cancel')?.click();
@@ -1919,15 +2171,15 @@ describe('Footer', () => {
     });
     await flushAsyncWork();
 
-    expect(container?.textContent ?? '').toContain('API');
-    expect(container?.querySelectorAll('input')).toHaveLength(1);
+    expect(document.body.textContent ?? '').toContain('API');
+    expect(document.body.querySelectorAll('input')).toHaveLength(1);
 
     act(() => {
       findButtonByText(container!, 'Push available repositories')?.click();
     });
     await flushAsyncWork();
 
-    expect(container?.textContent ?? '').toContain('Enter at least one origin URL');
+    expect(document.body.textContent ?? '').toContain('Enter at least one origin URL');
     expect(gitRemoteAddOriginMock).not.toHaveBeenCalled();
     expect(gitPushMock).not.toHaveBeenCalled();
   });
@@ -1960,7 +2212,7 @@ describe('Footer', () => {
     });
     await flushAsyncWork();
 
-    const inputs = Array.from(container?.querySelectorAll('input') ?? []);
+    const inputs = Array.from(document.body.querySelectorAll('input') ?? []);
     act(() => {
       setInputValue(inputs[0]!, 'https://github.com/example/api.git');
     });
@@ -2008,7 +2260,7 @@ describe('Footer', () => {
     });
     await flushAsyncWork();
 
-    const input = container?.querySelector('input') as HTMLInputElement | null;
+    const input = document.body.querySelector('input') as HTMLInputElement | null;
     expect(input).not.toBeNull();
     act(() => {
       if (!input) return;
@@ -2048,7 +2300,7 @@ describe('Footer', () => {
     });
     await flushAsyncWork();
 
-    expect(container?.textContent ?? '').toContain('Remote origin is missing');
+    expect(document.body.textContent ?? '').toContain('Remote origin is missing');
     expect(macroBranchPushMock).not.toHaveBeenCalled();
     expect(gitPushMock).not.toHaveBeenCalled();
   });
@@ -2086,9 +2338,9 @@ describe('Footer', () => {
     });
     await flushAsyncWork();
 
-    expect(container?.textContent ?? '').toContain('Remote origin is missing');
+    expect(document.body.textContent ?? '').toContain('Remote origin is missing');
 
-    const input = container?.querySelector('input') as HTMLInputElement | null;
+    const input = document.body.querySelector('input') as HTMLInputElement | null;
     act(() => {
       if (!input) return;
       setInputValue(input, 'https://github.com/example/api.git');
@@ -2100,7 +2352,7 @@ describe('Footer', () => {
     });
     await flushAsyncWork();
 
-    expect(container?.textContent ?? '').toContain('@macro has no remote branch yet');
+    expect(document.body.textContent ?? '').toContain('@macro has no remote branch yet');
     expect(gitPushMock).not.toHaveBeenCalled();
   });
 
@@ -2119,14 +2371,14 @@ describe('Footer', () => {
     root?.render(<Footer />);
     await flushAsyncWork();
 
-    expect(container?.textContent ?? '').not.toContain('Resolve');
+    expect(document.body.textContent ?? '').not.toContain('Resolve');
 
     act(() => {
       findButtonByIcon(container!, 'arrow-up')?.click();
     });
     await flushAsyncWork();
 
-    expect(container?.textContent ?? '').toContain('Remote origin is missing');
+    expect(document.body.textContent ?? '').toContain('Remote origin is missing');
   });
 
   it('pushes @macro when the missing upstream modal confirms publishing', async () => {
@@ -2241,9 +2493,9 @@ describe('Footer', () => {
     });
     await flushAsyncWork();
 
-    expect(container?.textContent ?? '').toContain('Push @macro');
-    expect(container?.textContent ?? '').toContain('Ignore missing upstream');
-    expect(container?.textContent ?? '').not.toContain('Ask next time');
+    expect(document.body.textContent ?? '').toContain('Push @macro');
+    expect(document.body.textContent ?? '').toContain('Ignore missing upstream');
+    expect(document.body.textContent ?? '').not.toContain('Ask next time');
 
     act(() => {
       findButtonByText(container!, 'Ignore missing upstream')?.click();

@@ -1,6 +1,9 @@
+import { PROVIDER_ERROR_BLOCK_LANGUAGE, parseProviderErrorBlock } from '../../services/chatErrorPresentation';
+import { ProviderErrorNotice } from './ProviderErrorNotice';
+import { COMPOSER_REFERENCE_PATTERN } from "../../services/chat/composerReferenceText";
 import React, { Suspense, lazy, useCallback, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import ReactMarkdown from 'react-markdown';
+import ReactMarkdown, { defaultUrlTransform } from 'react-markdown';
 import type { Components } from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import remarkMath from 'remark-math';
@@ -55,8 +58,7 @@ const LANGUAGE_ALIASES: Record<string, string> = {
   mysql: 'sql',
 };
 
-const MARKDOWN_CONTEXT_MENTION_PATTERN =
-  /\[(skill|file|source|plan-node|predicted-branch):\s*([^\]]+)\]/gi;
+const MARKDOWN_CONTEXT_MENTION_PATTERN = COMPOSER_REFERENCE_PATTERN;
 
 let blockKeySeed = 0;
 
@@ -266,7 +268,8 @@ const normalizeContextKind = (kind: string): ContextRefKind => {
     normalized === 'source' ||
     normalized === 'conversation' ||
     normalized === 'plan-node' ||
-    normalized === 'predicted-branch'
+    normalized === 'predicted-branch' ||
+    normalized === 'agsdl'
   ) {
     return normalized;
   }
@@ -427,6 +430,11 @@ const MarkdownCode: NonNullable<Components['code']> = ({ className, children, ..
     );
   }
 
+  if (language.toLowerCase() === PROVIDER_ERROR_BLOCK_LANGUAGE) {
+    const presentation = parseProviderErrorBlock(codeText);
+    if (presentation) return <ProviderErrorNotice presentation={presentation} />;
+  }
+
   if (language.toLowerCase() === 'thinking') {
     return <div className="whitespace-pre-wrap text-sm text-muted-foreground">{codeText}</div>;
   }
@@ -550,6 +558,9 @@ const MarkdownRichContentBase: React.FC<MarkdownRichContentProps> = ({ content }
   const normalizedContent = useMemo(() => normalizeLatexBracketMath(content), [content]);
   const components = useMemo<Components>(() => ({
     a: ({ href, children, ...props }) => {
+      if (href?.startsWith('macro-context://')) {
+        return <>{renderContextMentionsInText(`[${getTextFromChildren(children)}]`, 'reference')}</>;
+      }
       const domProps = omitMarkdownDomProps(props);
       return (
         <a
@@ -674,6 +685,7 @@ const MarkdownRichContentBase: React.FC<MarkdownRichContentProps> = ({ content }
 
   return (
     <ReactMarkdown
+      urlTransform={(url) => url.startsWith('macro-context://') ? url : defaultUrlTransform(url)}
       remarkPlugins={[remarkGfm, remarkMath]}
       rehypePlugins={[rehypeKatex]}
       skipHtml

@@ -4,38 +4,31 @@ import '../../i18n';
 import { GenerationAttemptDetails } from './GenerationAttemptDetails';
 
 describe('GenerationAttemptDetails', () => {
-  it('makes a single completed attempt and its unknown cost inspectable', () => {
+  it('shows a single attempt as a plain message without disclosing the provider payload', () => {
     const html = renderToStaticMarkup(<GenerationAttemptDetails attempts={[
-      { id: 'only-turn', status: 'completed', rawText: 'Answer.', acceptedText: 'Answer.', costUsd: null },
+      { id: 'only-turn', status: 'completed', rawText: 'Provider draft.', acceptedText: 'Answer.', costUsd: null },
     ]} />);
-    expect(html).toContain('data-attempt-id="only-turn"');
-    expect(html).toContain('>only-turn</code>');
-    expect(html).toContain('Attempt text: Answer.');
-    expect(html).toContain('Text kept in response: Answer.');
-    expect(html).toContain('cost unknown');
+    expect(html).toContain('1 generation attempt');
+    expect(html).not.toContain('<details');
+    expect(html).not.toContain('<summary');
+    expect(html).not.toContain('only-turn');
+    expect(html).not.toContain('Provider draft.');
+    expect(html).not.toContain('Answer.');
   });
 
-  it('shows separate completed provider turns even when neither text was discarded', () => {
-    const html = renderToStaticMarkup(<GenerationAttemptDetails attempts={[
-      { id: 'tool-turn', status: 'completed', rawText: 'Reading.', acceptedText: 'Reading.', costUsd: null },
-      { id: 'answer-turn', status: 'completed', rawText: 'Answer.', acceptedText: 'Answer.', costUsd: null },
-    ]} />);
-    expect(html).toContain('data-attempt-id="tool-turn"');
-    expect(html).toContain('data-attempt-id="answer-turn"');
-    expect(html.match(/data-attempt-status="completed"/g)).toHaveLength(2);
-    expect(html.match(/Attempt text:/g)).toHaveLength(2);
-    expect(html).toContain('Reading.');
-    expect(html).toContain('Answer.');
-  });
-
-  it('keeps abandoned text inspectable without presenting an unknown cost as zero', () => {
+  it('counts completed, partial and abandoned attempts without duplicating the response', () => {
     const html = renderToStaticMarkup(<GenerationAttemptDetails attempts={[
       { id: 'first', status: 'abandoned', rawText: 'discarded draft', acceptedText: '', costUsd: null },
-      { id: 'second', status: 'completed', rawText: 'final answer', acceptedText: 'final answer', costUsd: null },
+      { id: 'second', status: 'partial', rawText: 'partial draft', acceptedText: 'partial', costUsd: null },
+      { id: 'third', status: 'completed', rawText: 'final answer', acceptedText: 'final answer', costUsd: 0.01 },
     ]} />);
-    expect(html).toContain('data-attempt-id="first"');
-    expect(html).toContain('discarded draft');
-    expect(html).toContain('cost unknown');
-    expect(html).not.toContain('$0');
+    expect(html).toContain('3 generation attempts');
+    expect(html).not.toContain('final answer');
+    expect(html).not.toContain('discarded draft');
+  });
+
+  it('omits the message before any generation attempt exists', () => {
+    expect(renderToStaticMarkup(<GenerationAttemptDetails />)).toBe('');
+    expect(renderToStaticMarkup(<GenerationAttemptDetails attempts={[]} />)).toBe('');
   });
 });

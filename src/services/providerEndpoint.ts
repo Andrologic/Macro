@@ -1,3 +1,5 @@
+import { cancelStreamReader, combineStreamErrors, withStreamCleanup } from './ai/streamCancellation';
+
 const MAX_PROVIDER_ERROR_BYTES = 16 * 1024;
 
 export const assertSecureProviderEndpoint = (input: string): void => {
@@ -32,31 +34,36 @@ export const readBoundedProviderError = async (response: Response, timeoutMs = 1
   const deadline = new Promise<never>((_, reject) => {
     timeoutId = setTimeout(() => {
       reject(new Error('Provider error response timed out.'));
-      void reader.cancel().catch(() => undefined);
     }, timeoutMs);
   });
-  try {
-    while (size < MAX_PROVIDER_ERROR_BYTES) {
-      const { done, value } = await Promise.race([reader.read(), deadline]);
-      if (done) break;
-      const remaining = MAX_PROVIDER_ERROR_BYTES - size;
-      chunks.push(value.subarray(0, remaining));
-      size += Math.min(value.byteLength, remaining);
-      if (value.byteLength >= remaining) {
-        truncated = true;
-        void reader.cancel().catch(() => undefined);
-        break;
+  return withStreamCleanup(async () => {
+    try {
+      while (size < MAX_PROVIDER_ERROR_BYTES) {
+        const { done, value } = await Promise.race([reader.read(), deadline]);
+        if (done) break;
+        const remaining = MAX_PROVIDER_ERROR_BYTES - size;
+        chunks.push(value.subarray(0, remaining));
+        size += Math.min(value.byteLength, remaining);
+        if (value.byteLength >= remaining) {
+          truncated = true;
+          break;
+        }
       }
+    } catch (error) {
+      try { await cancelStreamReader(reader, error); }
+      catch (cleanup) { throw combineStreamErrors(error, cleanup); }
+      throw error;
     }
-  } finally {
+    if (truncated) await cancelStreamReader(reader);
+    const output = new Uint8Array(size);
+    let offset = 0;
+    for (const chunk of chunks) {
+      output.set(chunk, offset);
+      offset += chunk.byteLength;
+    }
+    return new TextDecoder().decode(output) + (truncated ? ' [truncated]' : '');
+  }, () => {
     if (timeoutId !== undefined) clearTimeout(timeoutId);
     reader.releaseLock();
-  }
-  const output = new Uint8Array(size);
-  let offset = 0;
-  for (const chunk of chunks) {
-    output.set(chunk, offset);
-    offset += chunk.byteLength;
-  }
-  return new TextDecoder().decode(output) + (truncated ? ' [truncated]' : '');
+  });
 };

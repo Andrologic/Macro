@@ -45,8 +45,17 @@
     "no": "아니요"
   },
   "speech": {
-    "button": { "start": "받아쓰기 시작", "stop": "받아쓰기 중지", "transcribing": "오디오 전송됨 · 변환 중", "enhancing": "변환 내용 수신됨 · 스마트 정리 중" },
-    "recording": { "active": "녹음 중", "stopAndInsert": "중지하고 변환 내용 삽입", "stopAndSend": "중지하고 변환 후 보내기" },
+    "button": {
+      "start": "받아쓰기 시작",
+      "stop": "받아쓰기 중지",
+      "transcribing": "오디오 전송됨 · 변환 중",
+      "enhancing": "변환 내용 수신됨 · 스마트 정리 중"
+    },
+    "recording": {
+      "active": "녹음 중",
+      "stopAndInsert": "중지하고 변환 내용 삽입",
+      "stopAndSend": "중지하고 변환 후 보내기"
+    },
     "errors": {
       "title": "받아쓰기를 사용할 수 없음",
       "provider-missing": "먼저 음성 공급자를 구성하고 선택하세요.",
@@ -63,23 +72,52 @@
       "enhancement-failed": "Macro가 원본 변환 내용을 유지했습니다."
     },
     "settings": {
-      "validation": "이름, 엔드포인트 및 모델이 필요합니다.", "saved": "음성 공급자를 저장했습니다.", "saveFailed": "음성 공급자를 저장할 수 없습니다.",
-      "deleted": "음성 공급자를 삭제했습니다.", "deleteFailed": "음성 공급자를 삭제할 수 없습니다.", "deleteTitle": "음성 공급자 삭제",
+      "validation": "이름, 엔드포인트 및 모델이 필요합니다.",
+      "saved": "음성 공급자를 저장했습니다.",
+      "saveFailed": "음성 공급자를 저장할 수 없습니다.",
+      "deleted": "음성 공급자를 삭제했습니다.",
+      "deleteFailed": "음성 공급자를 삭제할 수 없습니다.",
+      "deleteTitle": "음성 공급자 삭제",
       "deleteConfirm": "{{name}} 및 로컬에 저장된 API 키를 삭제하시겠습니까?",
-      "title": "마이크 받아쓰기", "description": "작성기에서 녹음하고 선택한 공급자로 텍스트를 변환한 다음 보내기 전에 검토합니다.",
-      "testTitle": "마이크 및 음성 변환 테스트", "testDescription": "최대 15초를 녹음하고 이 테스트를 위해서만 선택한 공급자에게 전송합니다.",
-      "testStart": "마이크 테스트", "testStop": "중지 후 변환", "testRequesting": "마이크 접근을 요청하는 중...", "testTranscribing": "테스트를 변환하는 중...", "testCancelled": "마이크 테스트가 취소되었습니다.", "testFailed": "마이크 테스트에 실패했습니다.", "testProviderRequired": "테스트 전에 활성 공급자를 선택하세요.",
-      "activeProvider": "활성 공급자", "noProvider": "공급자 없음", "language": "언어", "autoLanguage": "자동",
-      "maxDuration": "최대 녹음 시간", "enhancementTitle": "변환 내용 스마트 정리", "enhancementDescription": "현재 대화 모델을 사용하여 인식 오류, 머뭇거림 및 반복을 짧고 신중하게 수정합니다.",
-      "noProviderPrivacy": "녹음된 오디오의 전송 위치를 확인하려면 공급자를 선택하세요.", "localPrivacy": "로컬 또는 키 없는 공급자: API 키를 요구하지 않고 설정된 엔드포인트로 오디오를 전송합니다.",
+      "title": "마이크 받아쓰기",
+      "description": "작성기에서 녹음하고 선택한 공급자로 텍스트를 변환한 다음 보내기 전에 검토합니다.",
+      "testTitle": "마이크 및 음성 변환 테스트",
+      "testDescription": "최대 15초를 녹음하고 이 테스트를 위해서만 선택한 공급자에게 전송합니다.",
+      "testStart": "마이크 테스트",
+      "testStop": "중지 후 변환",
+      "testRequesting": "마이크 접근을 요청하는 중...",
+      "testTranscribing": "테스트를 변환하는 중...",
+      "testCancelled": "마이크 테스트가 취소되었습니다.",
+      "testFailed": "마이크 테스트에 실패했습니다.",
+      "testProviderRequired": "테스트 전에 활성 공급자를 선택하세요.",
+      "activeProvider": "활성 공급자",
+      "noProvider": "공급자 없음",
+      "language": "언어",
+      "autoLanguage": "자동",
+      "maxDuration": "최대 녹음 시간",
+      "enhancementTitle": "변환 내용 스마트 정리",
+      "enhancementDescription": "현재 대화 모델을 사용하여 인식 오류, 머뭇거림 및 반복을 짧고 신중하게 수정합니다.",
+      "noProviderPrivacy": "녹음된 오디오의 전송 위치를 확인하려면 공급자를 선택하세요.",
+      "localPrivacy": "로컬 또는 키 없는 공급자: API 키를 요구하지 않고 설정된 엔드포인트로 오디오를 전송합니다.",
       "andrologicPrivacy": "Andrologic은 인증된 Macro 게이트웨이를 통해 오디오를 처리하며 보관하지 않습니다. 변환된 텍스트는 운영 로그에 기록됩니다.",
       "durationUnit": "초",
-      "remotePrivacy": "원격 공급자: 녹음된 오디오가 설정된 엔드포인트로 전송됩니다.", "providers": "음성 공급자",
-      "compatibility": "OpenAI 호환 및 Deepgram 음성 변환 엔드포인트를 지원합니다.", "addProvider": "공급자 추가",
-      "keyStored": "API 키가 로컬에 저장됨", "managedAuth": "Macro에서 인증 관리", "noKeyRequired": "API 키가 필요하지 않음", "keyMissing": "API 키 필요",
-      "editProvider": "공급자 편집", "newProvider": "새 공급자", "protocol": "프로토콜", "model": "음성 변환 모델",
-      "endpoint": "기본 URL", "apiKey": "API 키", "keepKey": "저장된 키를 유지하려면 비워 두세요",
-      "localProvider": "로컬 또는 키 없는 공급자", "removeKey": "저장된 API 키 제거"
+      "remotePrivacy": "원격 공급자: 녹음된 오디오가 설정된 엔드포인트로 전송됩니다.",
+      "providers": "음성 공급자",
+      "compatibility": "OpenAI 호환 및 Deepgram 음성 변환 엔드포인트를 지원합니다.",
+      "addProvider": "공급자 추가",
+      "keyStored": "API 키가 로컬에 저장됨",
+      "managedAuth": "Macro에서 인증 관리",
+      "noKeyRequired": "API 키가 필요하지 않음",
+      "keyMissing": "API 키 필요",
+      "editProvider": "공급자 편집",
+      "newProvider": "새 공급자",
+      "protocol": "프로토콜",
+      "model": "음성 변환 모델",
+      "endpoint": "기본 URL",
+      "apiKey": "API 키",
+      "keepKey": "저장된 키를 유지하려면 비워 두세요",
+      "localProvider": "로컬 또는 키 없는 공급자",
+      "removeKey": "저장된 API 키 제거"
     }
   },
   "startup": {
@@ -96,7 +134,10 @@
       "skipped": "@macro 자동 복구를 건너뛰었습니다",
       "blockedConflictDescription": "메타데이터 작업 트리에 해결되지 않은 충돌이 있어 자동 복구를 적용하지 않았습니다.",
       "blockedDirtyDescription": "메타데이터 작업 트리에 로컬 변경 사항이 있어 자동 복구를 적용하지 않았습니다."
-    }
+    },
+    "browserRuntimeSessionReplacedTitle": "이 브라우저 세션은 더 이상 Macro에 연결되어 있지 않습니다.",
+    "browserRuntimeSessionReplacedDescription": "다른 브라우저 탭이 데스크톱 런타임을 제어하고 있습니다. 계속하려면 이 탭을 새로 고치세요.",
+    "browserRuntimeSessionReplacedReload": "탭 새로 고침"
   },
   "shutdown": {
     "activeWorkSingle": "실행 중인 작업이 있습니다. Macro를 닫으면 작업이 중단됩니다.",
@@ -227,7 +268,8 @@
     "toggleLeftPanel": "왼쪽 패널 전환",
     "toggleRightPanel": "오른쪽 패널 전환",
     "settings": "설정",
-    "account": "계정"
+    "account": "계정",
+    "operate": "Operate"
   },
   "onboarding": {
     "open": "온보딩 열기",
@@ -350,6 +392,50 @@
     "cpu": "CPU",
     "memory": "메모리",
     "sync": {
+      "failure": {
+        "missing_origin": {
+          "title": "원격이 설정되지 않았습니다",
+          "body": "이 저장소를 동기화하려면 origin URL을 추가하세요. 로컬에서 계속 작업할 수도 있습니다."
+        },
+        "missing_upstream": {
+          "title": "추적 브랜치가 설정되지 않았습니다",
+          "body": "코드 브랜치를 origin에 게시해 추적 대상을 설정한 후 다시 시도하세요. 게시하면 로컬 커밋이 원격으로 전송됩니다."
+        },
+        "remote_unavailable": {
+          "title": "원격 저장소에 접근할 수 없습니다",
+          "body": "origin URL과 접근 권한을 확인하세요. 기존 URL은 Git 클라이언트에서 수정한 후 다시 시도하세요."
+        },
+        "auth": {
+          "title": "Git 인증이 필요합니다",
+          "body": "Git 인증 정보와 저장소 접근 권한을 확인한 후 다시 시도하세요."
+        },
+        "network": {
+          "title": "원격에 연결할 수 없습니다",
+          "body": "연결 상태와 origin URL을 확인한 후 다시 시도하세요."
+        },
+        "local_changes": {
+          "title": "로컬 파일 때문에 pull할 수 없습니다",
+          "body": "변경 사항을 보존하세요. 검토하거나 stash로 임시 저장한 후 pull을 다시 시도하세요."
+        },
+        "divergence": {
+          "title": "브랜치가 분기되었습니다",
+          "body": "브랜치 상태를 새로 고침하고 merge 또는 rebase로 원격 커밋을 통합하세요."
+        },
+        "unknown": {
+          "title": "Git 동기화에 실패했습니다",
+          "body": "기술 세부 정보를 검토하고 문제를 해결한 후 다시 시도하세요."
+        }
+      },
+      "publishCodeBranch": "코드 브랜치 게시",
+      "configureAndRetry": "설정 후 다시 시도",
+      "remoteConfigurationFailed": "원격 설정에 실패했습니다. URL과 기술 세부 정보를 확인하세요.",
+      "originUrl": "origin URL",
+      "metadataNeedsAttention": "코드 동기화가 완료되었습니다. 메타데이터 동기화에는 조치가 필요합니다.",
+      "reviewRecovery": "복구 검토",
+      "conflictedFiles_other": "충돌 파일 {{count}}개",
+      "conflictedFiles_one": "충돌 파일 {{count}}개",
+      "conflictContextChanged": "브랜치가 변경되었습니다. 도우미를 열기 전에 새로 고침하세요.",
+      "preflightUnavailable": "사용 불가",
       "done": "완료.",
       "macroClean": "@macro 클린",
       "macroPending": "@macro 보류 중",
@@ -474,7 +560,8 @@
       "conflictedFiles": "{{count}} conflicted files",
       "stashAndRetry": "Stash and retry",
       "discardLocalChanges": "Discard local changes",
-      "openConflictAssistant": "Open conflict assistant",
+      "openConflictAssistant": "Implement에서 충돌 도우미 열기",
+      "conflictReadOnly": "읽기 전용 충돌 검사",
       "abortMerge": "Abort merge",
       "fastForwardBlockedMergeInProgress": "Fast-forward is blocked while a merge is in progress.",
       "fastForwardBlockedLocalCommits": "Fast-forward is blocked by local commits.",
@@ -493,6 +580,7 @@
       "allRepositories": "모든 저장소",
       "gitScope": "Git 범위",
       "selectRepository": "저장소 선택",
+      "noRepository": "선택한 Git 저장소 없음",
       "selectFolder": "Git 폴더 선택",
       "folderNotGit": "이 폴더는 Git 저장소가 아닙니다.",
       "folderSelectionFailed": "이 폴더를 선택할 수 없습니다."
@@ -537,6 +625,7 @@
     "queueSaveFailed": "저장하지 못했습니다. 세션을 열어 둔 채 다시 시도하세요.",
     "queuePlanUnavailable": "원래 계획을 사용할 수 없습니다.",
     "queueContextChanged": "전송 대상이 변경되었습니다. 원래 컨텍스트를 복원한 뒤 다시 시도하세요.",
+    "sendImagesSaveFailed": "메시지와 이미지를 저장하지 못했습니다. 초안에서 다시 전송하세요.",
     "queueImagesSaveFailed": "메시지는 저장되었습니다. 이미지 저장을 다시 시도하세요.",
     "queueRecoveryTitle": "대기 중인 전송을 확인하세요",
     "queueRecoveryDescription": "{{count}}개가 보존되어 있습니다. 다시 시도하면 원래 컨텍스트에서 재개됩니다.",
@@ -547,6 +636,10 @@
     "queueAlreadySent": "이 메시지는 이미 저장되었습니다. 복구를 다시 시도하세요.",
     "queueEditInProgress": "대기 중인 메시지 변경이 끝날 때까지 기다리세요.",
     "queueEmptyMessage": "대기 중인 메시지는 비워 둘 수 없습니다.",
+    "queueAssistantInterrupted": "저장된 지시의 실행이 이미 시작되었을 수 있습니다. 응답과 도구의 영향을 확인하고 이 복구 항목을 삭제한 후 수동으로 계속하세요.",
+    "steerImagesSaveFailed": "지시와 이미지를 저장하지 못했습니다. 초안을 다시 전송하세요.",
+    "steerTurnEnded": "지시는 저장되었지만 전달되기 전에 해당 턴이 종료되었습니다. 계속하기 전에 확인하세요.",
+    "goalExecutorContextUnavailable": "목표 실행 컨텍스트를 사용할 수 없습니다. 재개하기 전에 이 대화에서 메시지를 보내세요.",
     "queueInterrupted": "전송이 중단되었습니다. 내용은 보존되어 있습니다.",
     "queueUnavailable": "이 대화에는 전송을 추가할 수 없습니다.",
     "secondaryAction": "대체 작업",
@@ -587,6 +680,7 @@
     "noProvidersConfigured": "구성된 제공업체가 없습니다.",
     "providerRestoreUnavailable": "이 대화에서 이전에 사용한 프로바이더 또는 모델을 더 이상 사용할 수 없습니다. 계속하려면 다른 항목을 선택하세요.",
     "runtimeErrorFallback": "Macro가 이 작업을 완료하지 못했습니다. 세부 정보를 확인한 후 다시 시도하세요.",
+    "conversationSourceEmpty": "선택한 대화에는 인용할 수 있는 완료된 텍스트가 없습니다. 이 참조를 제거하거나 다른 대화를 선택한 후 다시 전송하세요.",
     "noEnabledModels": "활성화된 모델이 없습니다. 설정에서 모델을 활성화하세요.",
     "selectProviderFirst": "먼저 제공업체를 선택하세요.",
     "agentTypeBuild": "짓다",
@@ -650,7 +744,11 @@
     "generationAttempts_one": "{{count}} generation attempt",
     "generationAttempts_other": "{{count}} generation attempts",
     "generationAttemptNumber": "Attempt {{number}}",
-    "generationAttemptStatus": { "completed": "completed", "partial": "partial", "abandoned": "abandoned" },
+    "generationAttemptStatus": {
+      "completed": "completed",
+      "partial": "partial",
+      "abandoned": "abandoned"
+    },
     "generationAttemptCostUnknown": "cost unknown",
     "generationAttemptCost": "${{amount}}",
     "generationAttemptRawText": "Attempt text",
@@ -659,6 +757,7 @@
     "toolDenied": "denied",
     "toolApprovalRecoveryWarning": "저장된 도구 요청 일부를 복원하지 못했습니다. 데이터는 보존되었습니다. 이 알림을 닫고 대화를 계속할 수 있습니다.",
     "toolApprovalResumeCancelled": "새 턴이 시작되지 않았습니다. 다시 재개할 수 있습니다.",
+    "sourcePassageEditApproval": "저장된 구절 편집",
     "toolApprovalInterrupted": "이 도구 요청이 중단되었습니다.",
     "toolApprovalInterruptedHint": "재개하면 새 턴에서 현재 워크스페이스를 확인하고 필요한 경우 새 승인을 요청합니다. 원래 요청은 기록에 남습니다.",
     "toolApprovalResume": "새 턴으로 재개",
@@ -751,10 +850,19 @@
       "binaryFileRejected": "{{file}}에 바이너리 데이터 또는 잘못된 UTF-8이 포함되어 있습니다.",
       "conversationRequired": "파일을 첨부하기 전에 작업 또는 계획을 선택하세요.",
       "urlPreviewFailedTitle": "URL 미리보기를 가져올 수 없습니다",
+      "urlPreviewBlockedDescription": "보안을 위해 미리보기는 로컬, 사설, 예약 또는 링크 로컬 네트워크 주소에 접근할 수 없습니다. 공개 URL을 사용하세요.",
       "clipboardEmptyTitle": "클립보드가 비어 있습니다",
       "clipboardReadFailedTitle": "클립보드를 읽을 수 없습니다",
       "previewUnavailable": "미리보기를 사용할 수 없음",
       "removeFromContext": "컨텍스트에서 제거",
+      "toolDescriptions": {
+        "web_search": "출처를 인용하여 웹에서 정보 검색",
+        "web_fetch": "지정된 URL을 직접 가져와 읽기",
+        "question": "응답을 기다리는 구조화된 질문을 선택지와 함께 제시",
+        "read_file": "이 채팅에 첨부된 파일과 맥락 문서 읽기",
+        "terminal_create_session": "개별적으로 승인된 명령을 컴퓨터에서 실행",
+        "mark_source_passage": "관심 있는 구절과 AI가 사용한 구절 기록"
+      },
       "toolsUnavailableWarning": "현재 선택한 제공업체 또는 모델에서는 도구를 사용할 수 없습니다. 활성화하려면 기본 도구 호출 지원이 포함된 모델을 선택하세요.",
       "builtInTools": "내장 도구",
       "noToolsEnabled": "활성화된 도구가 없습니다.",
@@ -764,6 +872,8 @@
       "webFetchDisabledTooltip": "설정 > 도구 > 웹 검색에서 Web Fetch를 활성화하세요.",
       "nativeToolTooltip": "선택한 모델은 기본 도구 호출을 지원하지 않습니다.",
       "sourceSummary": "{{interesting}}발견됨 •{{used}}사용됨 •{{total}}구절",
+      "sourceSummary_one": "{{interesting}}발견됨 •{{used}}사용됨 •{{total}}구절",
+      "sourceSummary_other": "{{interesting}}발견됨 •{{used}}사용됨 •{{total}}구절",
       "collectionDisabledTitle": "컬렉션이 비활성화되었습니다.",
       "collectionDisabledDescription": "새로운 구절을 저장하려면 소스 도구를 활성화하세요.",
       "sourceSearchPlaceholder": "소스 검색",
@@ -937,7 +1047,13 @@
           "belowThresholdDetail": "컨텍스트가 유용한 압축 임계값보다 낮습니다"
         }
       }
-    }
+    },
+    "queueWriteInProgress": "이 지시를 아직 저장 중입니다. 저장이 끝난 후 다시 시도하세요.",
+    "queueDirectionDeleted": "삭제 또는 재실행으로 이 지시가 무효화되었습니다. 수동으로 계속하기 전에 이 복구 항목을 제거하세요.",
+    "directionContextUnavailable": "활성 턴의 컨텍스트를 사용할 수 없습니다. 턴이 끝난 후 메시지를 보내세요.",
+    "providerErrorTitle": "모델이 이 요청을 완료하지 못했습니다.",
+    "providerErrorRetry": "잠시 후 다시 시도하세요.",
+    "providerErrorSettings": "다시 시도하기 전에 모델 설정을 확인하세요."
   },
   "skills": {
     "collectionTitle": "스킬",
@@ -1145,6 +1261,10 @@
       "maxTurnsLabel": "최대 에이전트 턴",
       "maxTurnsDescription": "Macro가 에이전트 루프를 중지하고 채팅에 안내를 표시하기 전까지의 최대 AI/도구 사이클 수입니다."
     },
+    "themeDark": "어두움",
+    "themeLight": "밝음",
+    "notificationChannelsUnsupportedDesc": "이 환경에서는 데스크톱 알림을 사용할 수 없습니다. 앱 내 알림을 선택하거나 알림을 끄세요.",
+    "desktopNotificationsUnsupportedHint": "이 환경에서는 데스크톱 알림을 사용할 수 없습니다. Macro는 앱 내 알림을 사용합니다.",
     "theme": "주제",
     "zoom": "줌",
     "zoom_auto": "자동",
@@ -1383,6 +1503,9 @@
     "parentFolderRequired": "상위 폴더는 필수 항목입니다.",
     "folderNameRequired": "폴더 이름은 단일 폴더 이름이어야 합니다.",
     "repoPathRequired": "먼저 기존 프로젝트 폴더를 선택하세요.",
+    "folderNotFound": "이 폴더가 존재하지 않습니다. 기존 폴더를 선택하세요.",
+    "pathNotDirectory": "이 경로는 폴더가 아닙니다. 기존 폴더를 선택하세요.",
+    "folderCheckFailed": "이 폴더를 읽을 수 없습니다. 경로와 접근 권한을 확인하세요.",
     "projectPathRequired": "프로젝트 경로는 필수 항목입니다.",
     "duplicateSubprojectName": "이 그룹에 같은 이름의 프로젝트가 이미 존재합니다.",
     "localFolder": "로컬 폴더",
@@ -1396,6 +1519,7 @@
     "attachedReposCount_one": "이 그룹의 프로젝트 {{count}}개",
     "attachedReposCount_other": "이 그룹의 프로젝트 {{count}}개",
     "folderAlreadyAttached": "이 폴더는 이미 다음에 첨부되어 있습니다.{{name}}.",
+    "folderAlreadyAttachedInWorkspace": "이 폴더는 이미 이 작업 공간의 프로젝트에 연결되어 있습니다.",
     "folderAlreadyAttachedNamed": "이 폴더는 이미 '에 첨부되어 있습니다.{{name}}\"",
     "saveFailed": "프로젝트를 저장하지 못했습니다.",
     "createProject": "프로젝트 생성",
@@ -1516,6 +1640,8 @@
     "projectGitPrepared": "{{projectName}}용 Git이 준비되었습니다.",
     "projectDirectEditEnabled": "이제 {{projectName}}을(를) Git 없이 편집할 수 있습니다.",
     "projectDirectEditDisabled": "{{projectName}}은(는) Git이 초기화될 때까지 읽기 전용입니다.",
+    "gitFlowInvalidBranch": "유효한 Git 브랜치 이름을 입력하세요.",
+    "projectActions": "{{name}} 작업",
     "gitFlowSaved": "Git workflow 설정이 저장되었습니다.",
     "readOnlyImpactTitle": "read-only로 전환할까요?",
     "readOnlyImpactDescription": "Macro는 이 프로젝트를 편집 가능한 계획/작업 대상에서 제거하지만, 컨텍스트와 읽기 전용 접근은 계속 유지합니다.",
@@ -1622,7 +1748,76 @@
       "hotfixEmptyHint": "프로덕션 버그를 설명하세요. Macro가 저장소를 추론하고 hotfix slug와 패치 버전을 제안한 뒤 확인을 요청합니다.",
       "bugfixEmptyHint": "버그를 설명하세요. Macro가 저장소를 추론하고 확인 전에 bugfix slug를 제안합니다."
     },
+    "planIcon": {
+      "title": "아이콘 선택",
+      "reset": "기본 아이콘",
+      "options": {
+        "sparkles": "반짝임",
+        "workflow": "워크플로",
+        "network": "네트워크",
+        "layers": "레이어",
+        "pencil-ruler": "설계",
+        "code": "코드",
+        "terminal": "터미널",
+        "flag": "깃발",
+        "target": "목표",
+        "zap": "번개",
+        "shield": "방패",
+        "tool": "도구",
+        "cpu": "프로세서",
+        "database": "데이터베이스",
+        "globe": "지구",
+        "cloud": "클라우드",
+        "message-square": "대화",
+        "book-open": "책",
+        "folder": "폴더",
+        "folder-open": "열린 폴더",
+        "file": "파일",
+        "file-code": "코드 파일",
+        "file-text": "문서",
+        "git-branch": "브랜치",
+        "git-commit": "커밋",
+        "git-merge": "병합",
+        "git-compare": "비교",
+        "history": "기록",
+        "list-todo": "체크리스트",
+        "check-square": "체크된 상자",
+        "clipboard": "클립보드",
+        "clock": "시계",
+        "milestone": "마일스톤",
+        "compass": "나침반",
+        "map": "지도",
+        "folder-tree": "폴더 트리",
+        "server": "서버",
+        "hard-drive": "저장소",
+        "user": "사용자",
+        "lock": "자물쇠",
+        "eye": "눈",
+        "palette": "팔레트",
+        "image": "이미지",
+        "camera": "카메라",
+        "mic": "마이크",
+        "bell": "종",
+        "settings": "설정",
+        "layout-grid": "그리드"
+      }
+    },
     "projectNavigator": {
+      "newBlueprint": "새 블루프린트",
+      "blueprintCreatedAtRoot": "프로젝트 최상위에 블루프린트를 생성했습니다. 폴더 배치를 저장하지 못했습니다.",
+      "newSubfolder": "새 하위 폴더",
+      "newFolder": "새 폴더",
+      "renameFolder": "폴더 이름 변경",
+      "folderActions": "{{name}} 작업",
+      "removeFolder": "폴더 제거",
+      "removeFolderHelp": "내용은 상위 폴더에 유지됩니다.",
+      "emptyFolder": "여기에 블루프린트를 놓으세요",
+      "moveToFolder": "이동 위치…",
+      "projectRoot": "프로젝트 최상위",
+      "folderNameError": "다른 폴더 이름을 선택하세요.",
+      "folderSaveError": "폴더 구성을 저장하지 못했습니다.",
+      "macroBlueprints": "Macro 라이브러리",
+      "newMacroBlueprint": "새 Macro 블루프린트",
       "title": "프로젝트",
       "searchPlans": "계획 검색...",
       "noSearchResults": "검색과 일치하는 계획이 없습니다.",
@@ -1761,15 +1956,13 @@
       "targetBranch": "Target: {{branchName}}"
     },
     "planNamingRecovery": {
-      "title": "Plan name still needed",
-      "description": "Macro could not generate a plan name from the first message after three attempts. Retry with AI or name the plan manually.",
-      "retryAi": "Retry AI",
-      "retryingAi": "Retrying AI...",
-      "nameManually": "Name manually",
+      "title": "플랜 이름을 생성하지 못했습니다",
+      "description": "플랜은 기본 이름을 유지합니다.",
+      "retryAi": "AI로 다시 시도",
+      "nameManually": "직접 이름 지정",
       "manualTitle": "Name This Plan",
       "manualDescription": "Enter the plan name you want to use for this conversation.",
       "saveManualName": "Save plan name",
-      "back": "Back",
       "manualPlaceholder": "e.g. Checkout Recovery Refresh"
     },
     "strategy": "전략",
@@ -1788,6 +1981,11 @@
     "noStrategyDescription": "Architect 채팅에서 계획을 논의한 다음 전략 생성을 사용해 이 그래프를 만드세요.",
     "noBranchesMatchingFilters": "현재 필터와 일치하는 브랜치가 없습니다.",
     "planCompleted": "계획 완료",
+    "newPlanPlaceholder": "새 계획",
+    "planValidationBranchesCreated_one": "계획을 검증했습니다. 브랜치 {{count}}개를 준비했습니다.",
+    "planValidationBranchesCreated_other": "계획을 검증했습니다. 브랜치 {{count}}개를 준비했습니다.",
+    "planValidationBranchesCurrent": "계획을 검증했습니다. 브랜치가 이미 최신 상태입니다.",
+    "finalizationTaskTitle": "계획 완료: {{name}}",
     "planValidated": "계획이 검증됨",
     "validatingPlan": "검증 중...",
     "noActivePlan": "활성 계획 없음",
@@ -1870,6 +2068,7 @@
     "totalChanges": "총 변경사항"
   },
   "providers": {
+    "backToProviders": "공급자 목록으로 돌아가기",
     "collectionTitle": "공급자",
     "collectionDescription": "구성된 연결을 관리합니다",
     "emptyDescription": "공급자를 추가하여 Macro를 AI 서비스에 연결하세요.",
@@ -1886,6 +2085,13 @@
     "searchPlaceholder": "프로바이더 검색...",
     "configuredTitle": "구성된 프로바이더",
     "unconfiguredTitle": "구성이 필요한 프로바이더",
+    "connectionModelsFound_one": "연결에 성공했습니다. 모델 {{count}}개를 찾았습니다.",
+    "connectionModelsFound_other": "연결에 성공했습니다. 모델 {{count}}개를 찾았습니다.",
+    "connectionLmStudioModelsFound_one": "연결에 성공했습니다. LM Studio 모델 {{count}}개를 찾았습니다.",
+    "connectionLmStudioModelsFound_other": "연결에 성공했습니다. LM Studio 모델 {{count}}개를 찾았습니다.",
+    "connectionModelVerified": "모델 {{model}}로 연결에 성공했습니다.",
+    "connectionModelsFound_zero": "연결에 성공했습니다. 모델 {{count}}개를 찾았습니다.",
+    "connectionLmStudioModelsFound_zero": "연결에 성공했습니다. LM Studio 모델 {{count}}개를 찾았습니다.",
     "testSaveFirst": "테스트 전에 프로바이더를 저장하세요.",
     "testConnection": "연결 테스트",
     "saveProvider": "프로바이더 저장",
@@ -2098,10 +2304,17 @@
       "deleteFailed": "MCP 서버를 삭제하지 못했습니다.",
       "toggleFailed": "MCP 서버를 업데이트하지 못했습니다.",
       "transportHint": "로컬 서버에는 stdio를, 레거시 및 상태 비저장 원격 서버에는 Streamable HTTP를 사용합니다.",
-      "transport": { "stdio": "로컬 stdio", "streamableHttp": "Streamable HTTP" },
+      "transport": {
+        "stdio": "로컬 stdio",
+        "streamableHttp": "Streamable HTTP"
+      },
       "urlPlaceholder": "https://example.com/mcp",
       "headersPlaceholder": "Authorization=Bearer token\nX-API-Key=value",
-      "protocol": { "auto": "자동 감지", "legacy": "레거시 세션", "modern": "모던 상태 비저장" },
+      "protocol": {
+        "auto": "자동 감지",
+        "legacy": "레거시 세션",
+        "modern": "모던 상태 비저장"
+      },
       "oauth": {
         "enable": "OAuth 사용",
         "scopes": "공백으로 구분된 범위",
@@ -2154,53 +2367,202 @@
     "hideDetails": "세부 정보 숨기기",
     "showDetails": "세부 정보 표시",
     "degraded": {
-      "fallback": { "title": "확인이 필요합니다", "body": "Macro가 이 작업을 안전하게 완료하지 못했습니다.", "nextStep": "세부 정보를 확인하고 차단 상태를 해결한 후 다시 시도하세요.", "dynamic": "{{message}}" },
-      "worktree": {
-        "checkedOut": { "title": "Macro가 작업 공간을 준비하지 못했습니다", "body": "이 작업에 필요한 브랜치가 로컬 변경 사항과 함께 기본 저장소에 열려 있습니다.", "nextStep": "로컬 변경 사항을 커밋하거나 스태시 또는 폐기한 후 작업을 다시 시도하세요." },
-        "missingBase": { "title": "Macro가 기준 브랜치를 찾지 못했습니다", "body": "이 작업의 작업 트리를 만들려면 기준 브랜치가 필요합니다.", "nextStep": "브랜치를 만들거나 프로젝트의 Git 워크플로 설정을 업데이트한 후 다시 시도하세요." },
-        "fallback": { "title": "Macro가 작업 공간을 준비하지 못했습니다", "body": "작업 공간이 아직 준비되지 않아 Macro가 파일을 안전하게 검토하거나 편집할 수 없습니다.", "nextStep": "작업을 다시 시도하세요. 계속 실패하면 프로젝트 Git 설정을 열어 저장소 상태를 확인하세요." }
+      "fallback": {
+        "title": "확인이 필요합니다",
+        "body": "Macro가 이 작업을 안전하게 완료하지 못했습니다.",
+        "nextStep": "세부 정보를 확인하고 차단 상태를 해결한 후 다시 시도하세요.",
+        "dynamic": "{{message}}"
       },
-      "readOnly": { "title": "이 프로젝트는 읽기 전용입니다", "body": "이 프로젝트를 컨텍스트로 사용할 수 있지만 Macro는 아직 여기서 브랜치, 작업 트리, 커밋 또는 병합을 만들 수 없습니다.", "namedBody": "{{projectName}}을(를) 컨텍스트로 사용할 수 있지만 Macro는 아직 여기서 브랜치, 작업 트리, 커밋 또는 병합을 만들 수 없습니다.", "missingGitNextStep": "이 프로젝트에서 Git을 초기화한 후 편집 작업을 활성화하세요.", "settingsNextStep": "프로젝트 설정을 열고 Git 워크플로가 준비되었는지 확인하세요." },
+      "worktree": {
+        "checkedOut": {
+          "title": "Macro가 작업 공간을 준비하지 못했습니다",
+          "body": "이 작업에 필요한 브랜치가 로컬 변경 사항과 함께 기본 저장소에 열려 있습니다.",
+          "nextStep": "로컬 변경 사항을 커밋하거나 스태시 또는 폐기한 후 작업을 다시 시도하세요."
+        },
+        "missingBase": {
+          "title": "Macro가 기준 브랜치를 찾지 못했습니다",
+          "body": "이 작업의 작업 트리를 만들려면 기준 브랜치가 필요합니다.",
+          "nextStep": "브랜치를 만들거나 프로젝트의 Git 워크플로 설정을 업데이트한 후 다시 시도하세요."
+        },
+        "fallback": {
+          "title": "Macro가 작업 공간을 준비하지 못했습니다",
+          "body": "작업 공간이 아직 준비되지 않아 Macro가 파일을 안전하게 검토하거나 편집할 수 없습니다.",
+          "nextStep": "작업을 다시 시도하세요. 계속 실패하면 프로젝트 Git 설정을 열어 저장소 상태를 확인하세요."
+        }
+      },
+      "readOnly": {
+        "title": "이 프로젝트는 읽기 전용입니다",
+        "body": "이 프로젝트를 컨텍스트로 사용할 수 있지만 Macro는 아직 여기서 브랜치, 작업 트리, 커밋 또는 병합을 만들 수 없습니다.",
+        "namedBody": "{{projectName}}을(를) 컨텍스트로 사용할 수 있지만 Macro는 아직 여기서 브랜치, 작업 트리, 커밋 또는 병합을 만들 수 없습니다.",
+        "missingGitNextStep": "이 프로젝트에서 Git을 초기화한 후 편집 작업을 활성화하세요.",
+        "settingsNextStep": "프로젝트 설정을 열고 Git 워크플로가 준비되었는지 확인하세요."
+      },
       "replica": {
-        "missing": { "titleSingular": "{{count}}개 저장소에 계획 메타데이터가 없습니다", "titlePlural": "{{count}}개 저장소에 계획 메타데이터가 없습니다", "body": "Macro가 이 계획을 안전하게 업데이트하려면 예상되는 모든 계획 메타데이터 복제본이 필요합니다.", "nextStep": "계획 메타데이터를 복구한 후 다시 시도하세요." },
-        "diverged": { "title": "저장소 간 계획 메타데이터가 다릅니다", "body": "Macro가 이 계획 메타데이터의 여러 버전을 발견했으므로 계속하기 전에 기준 복사본을 선택해야 합니다.", "nextStep": "이전 복사본이 의도적으로 필요한 경우가 아니라면 최신 복제본에서 복구하세요." }
+        "missing": {
+          "titleSingular": "{{count}}개 저장소에 계획 메타데이터가 없습니다",
+          "titlePlural": "{{count}}개 저장소에 계획 메타데이터가 없습니다",
+          "body": "Macro가 이 계획을 안전하게 업데이트하려면 예상되는 모든 계획 메타데이터 복제본이 필요합니다.",
+          "nextStep": "계획 메타데이터를 복구한 후 다시 시도하세요."
+        },
+        "diverged": {
+          "title": "저장소 간 계획 메타데이터가 다릅니다",
+          "body": "Macro가 이 계획 메타데이터의 여러 버전을 발견했으므로 계속하기 전에 기준 복사본을 선택해야 합니다.",
+          "nextStep": "이전 복사본이 의도적으로 필요한 경우가 아니라면 최신 복제본에서 복구하세요."
+        }
       },
       "gitFlow": {
-        "repositoryDirty": { "title": "저장소에 로컬 변경 사항이 있습니다", "body": "대상 저장소에 관련 없는 커밋되지 않은 변경 사항이 있는 동안 Macro는 이 병합을 완료할 수 없습니다.", "nextStep": "로컬 변경 사항을 커밋하거나 스태시 또는 폐기한 후 병합을 다시 시도하세요." },
-        "mergeInProgress": { "title": "이미 병합이 진행 중입니다", "body": "Macro가 이 저장소에서 완료되지 않은 병합을 발견했습니다.", "nextStep": "기존 병합을 완료하거나 중단한 후 다시 시도하세요." },
-        "conflict": { "title": "완료하기 전에 충돌을 해결하세요", "body": "아직 계획을 정상적으로 병합할 수 없습니다.", "filesNextStep": "목록의 파일을 해결한 후 병합을 다시 시도하세요.", "blockersNextStep": "병합 차단 요소를 해결한 후 다시 시도하세요." }
+        "repositoryDirty": {
+          "title": "저장소에 로컬 변경 사항이 있습니다",
+          "body": "대상 저장소에 관련 없는 커밋되지 않은 변경 사항이 있는 동안 Macro는 이 병합을 완료할 수 없습니다.",
+          "nextStep": "로컬 변경 사항을 커밋하거나 스태시 또는 폐기한 후 병합을 다시 시도하세요."
+        },
+        "mergeInProgress": {
+          "title": "이미 병합이 진행 중입니다",
+          "body": "Macro가 이 저장소에서 완료되지 않은 병합을 발견했습니다.",
+          "nextStep": "기존 병합을 완료하거나 중단한 후 다시 시도하세요."
+        },
+        "conflict": {
+          "title": "완료하기 전에 충돌을 해결하세요",
+          "body": "아직 계획을 정상적으로 병합할 수 없습니다.",
+          "filesNextStep": "목록의 파일을 해결한 후 병합을 다시 시도하세요.",
+          "blockersNextStep": "병합 차단 요소를 해결한 후 다시 시도하세요."
+        }
       },
       "metadata": {
-        "clean": { "title": "@macro 메타데이터가 최신 상태입니다", "body": "필요한 작업이 없습니다." },
-        "dirty": { "title": "@macro 메타데이터에 로컬 변경 사항이 있습니다", "body": "동기화하기 전에 Macro가 메타데이터 변경 사항을 저장해야 합니다.", "nextStep": "@macro 메타데이터를 저장한 후 동기화를 다시 시도하세요." },
-        "ahead": { "title": "@macro 메타데이터를 게시할 준비가 되었습니다", "body": "로컬 메타데이터 브랜치에 아직 원격에 없는 변경 사항이 있습니다.", "nextStep": "준비되면 @macro를 푸시하세요." },
-        "behind": { "title": "@macro 메타데이터가 원격보다 뒤처져 있습니다", "body": "원격 메타데이터에 아직 로컬에 없는 업데이트가 있습니다.", "nextStep": "@macro를 풀한 후 작업을 다시 시도하세요." },
-        "diverged": { "title": "@macro 메타데이터가 분기되었습니다", "body": "로컬 및 원격 메타데이터가 모두 변경되었습니다.", "nextStep": "@macro를 풀하고 충돌을 해결한 후 푸시하세요." },
-        "mergeConflict": { "title": "@macro 메타데이터에 충돌이 있습니다", "body": "메타데이터 브랜치에 해결되지 않은 충돌 파일이 있습니다.", "nextStep": "충돌한 메타데이터 파일을 해결한 후 같은 동기화 단계를 다시 시도하세요." },
-        "missingOrigin": { "title": "@macro 원격이 설정되지 않았습니다", "body": "저장소에 origin 원격이 없어 Macro가 메타데이터를 동기화할 수 없습니다.", "nextStep": "Git 원격을 설정한 후 다시 시도하세요." },
-        "missingUpstream": { "title": "@macro에 업스트림 브랜치가 없습니다", "body": "메타데이터 브랜치가 로컬에 있지만 아직 원격 브랜치에 연결되지 않았습니다.", "nextStep": "@macro를 푸시해 게시하거나 이 경고를 무시하고 메타데이터를 로컬에 유지하세요." },
-        "authRequired": { "title": "Git 인증이 필요합니다", "body": "현재 자격 증명으로 Macro가 메타데이터 원격에 접근할 수 없습니다.", "nextStep": "Git 인증을 설정한 후 다시 시도하세요." },
-        "networkError": { "title": "메타데이터 동기화가 원격에 연결되지 못했습니다", "body": "현재 네트워크 또는 원격 서비스를 사용할 수 없습니다.", "nextStep": "연결을 확인한 후 다시 시도하세요." },
-        "unknownError": { "title": "Macro 메타데이터 동기화에 실패했습니다", "body": "Macro가 메타데이터 동기화를 안전하게 완료하지 못했습니다.", "nextStep": "동기화를 다시 시도하세요. 다시 실패하면 기술 세부 정보를 확인하세요." }
+        "clean": {
+          "title": "@macro 메타데이터가 최신 상태입니다",
+          "body": "필요한 작업이 없습니다."
+        },
+        "dirty": {
+          "title": "@macro 메타데이터에 로컬 변경 사항이 있습니다",
+          "body": "동기화하기 전에 Macro가 메타데이터 변경 사항을 저장해야 합니다.",
+          "nextStep": "@macro 메타데이터를 저장한 후 동기화를 다시 시도하세요."
+        },
+        "ahead": {
+          "title": "@macro 메타데이터를 게시할 준비가 되었습니다",
+          "body": "로컬 메타데이터 브랜치에 아직 원격에 없는 변경 사항이 있습니다.",
+          "nextStep": "준비되면 @macro를 푸시하세요."
+        },
+        "behind": {
+          "title": "@macro 메타데이터가 원격보다 뒤처져 있습니다",
+          "body": "원격 메타데이터에 아직 로컬에 없는 업데이트가 있습니다.",
+          "nextStep": "@macro를 풀한 후 작업을 다시 시도하세요."
+        },
+        "diverged": {
+          "title": "@macro 메타데이터가 분기되었습니다",
+          "body": "로컬 및 원격 메타데이터가 모두 변경되었습니다.",
+          "nextStep": "@macro를 풀하고 충돌을 해결한 후 푸시하세요."
+        },
+        "mergeConflict": {
+          "title": "@macro 메타데이터에 충돌이 있습니다",
+          "body": "메타데이터 브랜치에 해결되지 않은 충돌 파일이 있습니다.",
+          "nextStep": "충돌한 메타데이터 파일을 해결한 후 같은 동기화 단계를 다시 시도하세요."
+        },
+        "missingOrigin": {
+          "title": "@macro 원격이 설정되지 않았습니다",
+          "body": "저장소에 origin 원격이 없어 Macro가 메타데이터를 동기화할 수 없습니다.",
+          "nextStep": "Git 원격을 설정한 후 다시 시도하세요."
+        },
+        "missingUpstream": {
+          "title": "@macro에 업스트림 브랜치가 없습니다",
+          "body": "메타데이터 브랜치가 로컬에 있지만 아직 원격 브랜치에 연결되지 않았습니다.",
+          "nextStep": "@macro를 푸시해 게시하거나 이 경고를 무시하고 메타데이터를 로컬에 유지하세요."
+        },
+        "authRequired": {
+          "title": "Git 인증이 필요합니다",
+          "body": "현재 자격 증명으로 Macro가 메타데이터 원격에 접근할 수 없습니다.",
+          "nextStep": "Git 인증을 설정한 후 다시 시도하세요."
+        },
+        "networkError": {
+          "title": "메타데이터 동기화가 원격에 연결되지 못했습니다",
+          "body": "현재 네트워크 또는 원격 서비스를 사용할 수 없습니다.",
+          "nextStep": "연결을 확인한 후 다시 시도하세요."
+        },
+        "unknownError": {
+          "title": "Macro 메타데이터 동기화에 실패했습니다",
+          "body": "Macro가 메타데이터 동기화를 안전하게 완료하지 못했습니다.",
+          "nextStep": "동기화를 다시 시도하세요. 다시 실패하면 기술 세부 정보를 확인하세요."
+        }
       },
       "service": {
-        "gitObjectMissing": { "title": "Git 리뷰가 일시 중지되었습니다", "body": "이 리뷰에 필요한 Git 개체를 사용할 수 없습니다. Macro는 작업 파일을 수정하지 않았습니다.", "bodyUncertain": "Git이 이 작업에 필요한 개체를 읽지 못했습니다. 다시 시도하기 전에 기술 세부 정보를 확인하세요.", "nextStep": "다시 시도하여 Git이 개체를 다시 요청하게 하세요. 기술 세부 정보에서 작업, 개체 ID 및 민감한 정보가 제거된 Git 출력을 확인할 수 있습니다." },
-        "directModeConfigurationRequired": { "title": "리뷰 모드 설정이 필요합니다", "body": "이 프로젝트는 Git 저장소가 아니며 작업 메타데이터도 직접 리뷰를 허용하지 않습니다. Macro는 Git 리뷰를 시작하거나 작업 파일을 수정하지 않았습니다.", "nextStep": "이 프로젝트에 Git을 설정하거나 직접 모드로 작업을 다시 만드세요. 기술 세부 정보에 저장된 모드가 표시됩니다." },
-        "directCheckpointMissing": { "title": "Macro 리뷰 체크포인트를 사용할 수 없습니다", "body": "Git을 사용하지 않는 이 프로젝트의 내부 리뷰 체크포인트가 없습니다. Macro는 작업 파일을 수정하지 않았습니다.", "nextStep": "작업을 다시 준비한 후 재시도하세요. 기술 세부 정보에서 체크포인트 ID를 확인할 수 있습니다." },
-        "directCheckpointCorrupt": { "title": "Macro 리뷰 체크포인트가 손상되었습니다", "body": "Git을 사용하지 않는 이 프로젝트의 내부 리뷰 체크포인트가 불완전합니다. Macro는 이를 보존했으며 작업 파일을 수정하지 않았습니다.", "nextStep": "한 번만 다시 시도하세요. 승인된 기록을 보존해야 한다면 체크포인트를 초기화하지 말고 기술 세부 정보를 확인하세요." },
-        "directCheckpointProjectMismatch": { "title": "Macro 리뷰 체크포인트가 다른 프로젝트 경로에 속합니다", "body": "저장된 체크포인트 식별 정보가 이 프로젝트의 현재 경로와 일치하지 않습니다. Macro는 체크포인트를 보존했으며 작업 파일을 수정하지 않았습니다.", "nextStep": "저장된 프로젝트 경로를 확인하거나 원래 프로젝트를 다시 여세요. 메타데이터를 수정하기 전에 기술 세부 정보에서 체크포인트를 확인하세요." },
-        "resourcePressure": { "title": "Macro가 일시적으로 과부하 상태입니다", "body": "시스템에 열린 파일이 너무 많아 Macro가 다시 시도하기 전에 자동 저장소 새로 고침을 일시 중지했습니다.", "nextStep": "잠시 기다린 후 다시 시도하세요. 문제가 계속되면 추가 프로젝트 창이나 터미널을 닫으세요." },
-        "replicaRepair": { "title": "계획 메타데이터를 복구해야 합니다", "body": "Macro가 일관되지 않은 계획 메타데이터를 발견했으므로 계속하기 전에 기준 복사본을 복구해야 합니다.", "nextStep": "계획 메타데이터를 복구한 후 다시 시도하세요." },
-        "metadataMissing": { "title": "계획 메타데이터가 불완전합니다", "body": "Macro가 누락되었거나 일부만 저장된 계획 메타데이터를 가리키는 작업 또는 대화를 발견했습니다.", "nextStep": "메타데이터 연결을 복구한 후 다시 시도하세요." },
-        "workspaceUnavailable": { "title": "작업 공간 상태를 일시적으로 사용할 수 없습니다", "body": "Macro가 이 작업에 필요한 작업 공간 상태를 읽지 못했습니다.", "nextStep": "작업 공간 업데이트가 끝난 후 다시 시도하세요. 문제가 지속되면 프로젝트를 다시 여세요." },
-        "gitNotReady": { "title": "이 프로젝트는 아직 편집할 준비가 되지 않았습니다", "body": "Macro는 이 프로젝트를 컨텍스트로 사용할 수 있지만 Git이 준비될 때까지 쓸 수 없습니다.", "nextStep": "프로젝트 설정을 열고 Git 설정을 완료하세요." },
-        "fallback": { "title": "확인이 필요합니다", "nextStep": "세부 정보를 확인하고 차단 상태를 해결한 후 다시 시도하세요." }
+        "gitObjectMissing": {
+          "title": "Git 리뷰가 일시 중지되었습니다",
+          "body": "이 리뷰에 필요한 Git 개체를 사용할 수 없습니다. Macro는 작업 파일을 수정하지 않았습니다.",
+          "bodyUncertain": "Git이 이 작업에 필요한 개체를 읽지 못했습니다. 다시 시도하기 전에 기술 세부 정보를 확인하세요.",
+          "nextStep": "다시 시도하여 Git이 개체를 다시 요청하게 하세요. 기술 세부 정보에서 작업, 개체 ID 및 민감한 정보가 제거된 Git 출력을 확인할 수 있습니다."
+        },
+        "directModeConfigurationRequired": {
+          "title": "리뷰 모드 설정이 필요합니다",
+          "body": "이 프로젝트는 Git 저장소가 아니며 작업 메타데이터도 직접 리뷰를 허용하지 않습니다. Macro는 Git 리뷰를 시작하거나 작업 파일을 수정하지 않았습니다.",
+          "nextStep": "이 프로젝트에 Git을 설정하거나 직접 모드로 작업을 다시 만드세요. 기술 세부 정보에 저장된 모드가 표시됩니다."
+        },
+        "directCheckpointMissing": {
+          "title": "Macro 리뷰 체크포인트를 사용할 수 없습니다",
+          "body": "Git을 사용하지 않는 이 프로젝트의 내부 리뷰 체크포인트가 없습니다. Macro는 작업 파일을 수정하지 않았습니다.",
+          "nextStep": "작업을 다시 준비한 후 재시도하세요. 기술 세부 정보에서 체크포인트 ID를 확인할 수 있습니다."
+        },
+        "directCheckpointCorrupt": {
+          "title": "Macro 리뷰 체크포인트가 손상되었습니다",
+          "body": "Git을 사용하지 않는 이 프로젝트의 내부 리뷰 체크포인트가 불완전합니다. Macro는 이를 보존했으며 작업 파일을 수정하지 않았습니다.",
+          "nextStep": "한 번만 다시 시도하세요. 승인된 기록을 보존해야 한다면 체크포인트를 초기화하지 말고 기술 세부 정보를 확인하세요."
+        },
+        "directCheckpointProjectMismatch": {
+          "title": "Macro 리뷰 체크포인트가 다른 프로젝트 경로에 속합니다",
+          "body": "저장된 체크포인트 식별 정보가 이 프로젝트의 현재 경로와 일치하지 않습니다. Macro는 체크포인트를 보존했으며 작업 파일을 수정하지 않았습니다.",
+          "nextStep": "저장된 프로젝트 경로를 확인하거나 원래 프로젝트를 다시 여세요. 메타데이터를 수정하기 전에 기술 세부 정보에서 체크포인트를 확인하세요."
+        },
+        "resourcePressure": {
+          "title": "Macro가 일시적으로 과부하 상태입니다",
+          "body": "시스템에 열린 파일이 너무 많아 Macro가 다시 시도하기 전에 자동 저장소 새로 고침을 일시 중지했습니다.",
+          "nextStep": "잠시 기다린 후 다시 시도하세요. 문제가 계속되면 추가 프로젝트 창이나 터미널을 닫으세요."
+        },
+        "replicaRepair": {
+          "title": "계획 메타데이터를 복구해야 합니다",
+          "body": "Macro가 일관되지 않은 계획 메타데이터를 발견했으므로 계속하기 전에 기준 복사본을 복구해야 합니다.",
+          "nextStep": "계획 메타데이터를 복구한 후 다시 시도하세요."
+        },
+        "metadataMissing": {
+          "title": "계획 메타데이터가 불완전합니다",
+          "body": "Macro가 누락되었거나 일부만 저장된 계획 메타데이터를 가리키는 작업 또는 대화를 발견했습니다.",
+          "nextStep": "메타데이터 연결을 복구한 후 다시 시도하세요."
+        },
+        "conflictAssistantContextChanged": {
+          "title": "Git 컨텍스트가 변경되었습니다",
+          "body": "도우미를 여는 동안 선택한 Git 컨텍스트가 변경되었습니다.",
+          "nextStep": "Git 보기를 새로 고침하고 도우미를 다시 여세요."
+        },
+        "workspaceUnavailable": {
+          "title": "작업 공간 상태를 일시적으로 사용할 수 없습니다",
+          "body": "Macro가 이 작업에 필요한 작업 공간 상태를 읽지 못했습니다.",
+          "nextStep": "작업 공간 업데이트가 끝난 후 다시 시도하세요. 문제가 지속되면 프로젝트를 다시 여세요."
+        },
+        "gitNotReady": {
+          "title": "이 프로젝트는 아직 편집할 준비가 되지 않았습니다",
+          "body": "Macro는 이 프로젝트를 컨텍스트로 사용할 수 있지만 Git이 준비될 때까지 쓸 수 없습니다.",
+          "nextStep": "프로젝트 설정을 열고 Git 설정을 완료하세요."
+        },
+        "fallback": {
+          "title": "확인이 필요합니다",
+          "nextStep": "세부 정보를 확인하고 차단 상태를 해결한 후 다시 시도하세요."
+        }
       }
     },
     "logoutFailed": "로그아웃하지 못했습니다.",
     "saveFailed": "제공업체를 저장하지 못했습니다."
   },
-  "prompts": { "title": "시스템 프롬프트", "description": "계획, 검토, 저장소 감사 흐름에서 사용하는 모드별 기본 프롬프트와 내부 프로필을 사용자 지정합니다.", "restoreAll": "모두 복원", "saveFailed": "시스템 프롬프트를 저장하지 못했습니다." },
+  "prompts": {
+    "editors": {
+      "promptArchitect": {
+        "label": "Architect 모드",
+        "description": "Architect 대화에 사용하는 기본 시스템 프롬프트."
+      }
+    },
+    "loadFailed": "시스템 프롬프트를 불러올 수 없습니다. 저장하기 전에 다시 시도하세요.",
+    "title": "시스템 프롬프트",
+    "description": "계획, 검토, 저장소 감사 흐름에서 사용하는 모드별 기본 프롬프트와 내부 프로필을 사용자 지정합니다.",
+    "restoreAll": "모두 복원",
+    "saveFailed": "시스템 프롬프트를 저장하지 못했습니다."
+  },
   "toast": {
     "languageChanged": "언어가 다음으로 변경되었습니다.{{language}}",
     "settingsSaved": "설정이 저장되었습니다.",
@@ -2557,7 +2919,17 @@
     "artifactSaveFailed": "목표 검토 결과 아티팩트를 저장할 수 없습니다",
     "artifactTitle": "목표 검토",
     "queueTrackingFailed": "대기열의 목표 작업을 추적할 수 없습니다",
-    "artifactStatus": { "achieved": "달성", "continue": "계속", "needs_user": "답변 필요", "cannot_progress": "진행 불가", "applied": "적용됨", "failed": "실패", "cancelled": "취소됨", "stale": "오래됨", "timed_out": "시간 초과" },
+    "artifactStatus": {
+      "achieved": "달성",
+      "continue": "계속",
+      "needs_user": "답변 필요",
+      "cannot_progress": "진행 불가",
+      "applied": "적용됨",
+      "failed": "실패",
+      "cancelled": "취소됨",
+      "stale": "오래됨",
+      "timed_out": "시간 초과"
+    },
     "reason": {
       "reviewInterrupted": "이전 검토가 중단되었습니다. 다시 시작하면 새 에이전트 작업이 시작됩니다.",
       "executorInterrupted": "이전 에이전트 작업이 중단되었습니다. 다시 시작하여 계속하세요.",
@@ -2619,6 +2991,16 @@
     "slashMenuLabel": "컨텍스트 또는 명령 삽입"
   },
   "backup": {
+    "exclusions": "프로젝트 폴더, Git 기록, 공급자 인증 정보는 제외됩니다. 프로젝트는 별도로 복사해 두세요.",
+    "limitsTitle": "호환성, 제한 및 개인 데이터",
+    "limits": "최대 크기는 256 MiB입니다. 같은 Macro 버전으로 복원하세요. 프로젝트 경로는 유지되며 이동한 프로젝트를 다시 연결하거나 프로필을 병합하지 않습니다.",
+    "exportHelp": "다음 시작 시 로컬 데이터를 새 보관 파일에 저장합니다.",
+    "restoreHelp": "보관 파일로 로컬 데이터를 교체합니다. 이전 프로필은 복구용으로 보관합니다.",
+    "desktopRequired": "로컬 데이터를 백업하거나 복원하려면 데스크톱에서 Macro를 여세요.",
+    "scheduledTitle": "작업 준비 완료",
+    "source": "복원할 보관 파일",
+    "destination": "새 보관 파일 저장 위치",
+    "confirmReplace": "교체 준비",
     "scheduled": "작업이 준비되었습니다. Macro를 완전히 종료한 뒤 다시 여세요. 종료 전까지 이 세션을 변경하지 마세요.",
     "resultExported": "백업이 저장되었습니다.",
     "resultRestored": "프로필이 복원되었습니다. 이전 프로필은 아래 경로에 보관됩니다.",
@@ -2627,18 +3009,23 @@
     "resultInvalidRequest": "대기 중인 요청이 유효하지 않아 격리했습니다. 프로필은 변경되지 않았습니다.",
     "resultLegacy": "이전 버전의 결과를 진단 세부 정보에서 확인할 수 있습니다.",
     "diagnostics": "진단 세부 정보",
+    "sessionReplacedTitle": "다른 탭에서 세션이 열려 있습니다",
+    "sessionReplacedHint": "이 탭을 새로고침하여 여기에서 Macro를 계속 사용하세요.",
+    "sessionReplacedReload": "새로고침",
+    "runtimeUnavailableTitle": "데스크톱 런타임을 사용할 수 없습니다",
+    "runtimeUnavailableHint": "Macro가 재시작 중이거나 실행되지 않았습니다. 데스크톱 런타임이 준비되면 다시 시도하세요.",
     "startupTitle": "프로필 복구 필요",
     "startupRecovery": "브라우저 데이터 복원을 완료하지 못했습니다. 기본 복구 아카이브는 보관됩니다. 진단을 확인하고 필요한 경우 로컬 저장 공간을 확보한 후 Macro를 다시 시작하세요.",
     "title": "백업 및 복원",
-    "scope": "로컬 프로필: 대화, 저장된 첨부 파일, 코드 체크포인트, 초안 및 전역 설정. 프로젝트 폴더와 Git 메타데이터는 제외됩니다. 프로젝트는 별도로 복사하세요. 최대 256 MiB이며 동일한 Macro 버전으로 복원해야 합니다.",
+    "scope": "Macro 로컬 데이터: 대화, 저장된 첨부 파일, 코드 체크포인트, 초안, 대기 중인 지시, 복구용 응답 및 일반 설정.",
     "secrets": "공급자 자격 증명, MCP 환경 변수 및 헤더는 이식용 내보내기에서 제외됩니다. 복원 후 공급자를 다시 연결하세요. 대화와 파일에는 개인 데이터가 포함되므로 안전하게 보관하세요.",
     "recovery": "복구가 필요합니다. 원본 데이터는 보존됩니다.",
     "path": "로컬 백업 파일의 절대 경로",
     "export": "백업 준비",
     "restore": "백업 복원",
     "confirmTitle": "프로필 작업 확인",
-    "confirmRestore": "다음 시작 시 이 백업이 로컬 프로필을 대체합니다. Macro는 먼저 검증하고 복구를 위해 이전 프로필을 보존합니다. 실행 중인 작업을 중지하고 확인 후 즉시 종료하세요. 이 파일을 복원할까요?",
-    "confirmExport": "실행 중인 작업을 중지하세요. 다음 시작 시 데이터베이스와 설정을 열기 전에 백업을 만듭니다. 이 백업을 준비할까요?",
+    "confirmRestore": "다음 시작 시 이 보관 파일로 로컬 데이터를 병합 없이 교체합니다. Macro는 파일을 검증하고 교체될 데이터의 복구 사본을 보관합니다. 대기 중인 지시는 일시 정지 상태를 유지합니다. 실행 중인 작업을 중지하고 확인 후 즉시 Macro를 종료한 다음 다시 여세요.",
+    "confirmExport": "실행 중인 작업을 중지하세요. Macro는 다음 시작 시 보관 파일을 만듭니다. 기존 파일은 덮어쓰지 않으므로 새 파일을 선택하세요. 확인 후 세션을 변경하지 말고 종료한 다음 다시 여세요.",
     "confirm": "확인"
   }
 }

@@ -304,7 +304,7 @@ describe("chatAssistantStreamRuntime with real lifecycle and orchestrator", () =
     oldStream.options.onLiveContextUpdate?.({ version: 1, visibleContent: "stale", visibleContentLength: 5, toolTraces: [] });
     expect(await oldStream.options.onToolCall?.("read", { path: "file.txt" }, "stale")).toMatchObject({ errorKind: "aborted" });
     pendingTool.resolve("Stale tool contents");
-    expect(await oldTool).toMatchObject({ errorKind: "aborted" });
+    expect(await oldTool).toMatchObject({ errorKind: "uncertain" });
     oldStream.options.onComplete(result("stale completion"));
     oldStream.options.onError(new Error("stale failure"));
     oldStream.done.resolve();
@@ -359,7 +359,7 @@ describe("chatAssistantStreamRuntime with real lifecycle and orchestrator", () =
       });
       expect(h.messages.get(params.assistantMessage.id)?.content).toBe("Partial answer");
       tool.resolve("Late tool result");
-      expect(await toolResult).toMatchObject({ kind: "result", isError: true, errorKind: "aborted" });
+      expect(await toolResult).toMatchObject({ kind: "result", isError: true, errorKind: "uncertain" });
       expect(h.preserve).not.toHaveBeenCalled();
       stream.options.onComplete(result("Late full answer"));
       if (transportExit === "resolve") stream.done.resolve();
@@ -382,7 +382,7 @@ describe("chatAssistantStreamRuntime with real lifecycle and orchestrator", () =
         tool_traces: [{ ...trace, recovery_state: "unknown" }],
       });
       expect(h.settled.mock.calls).toEqual([["a"]]);
-      expect(h.sync).not.toHaveBeenCalled();
+      expect(h.sync.mock.calls).toEqual([[params.modeAtSend, params.conversationId, params.architectPlanAtSend]]);
       expect(h.deleteMessagesAfter).not.toHaveBeenCalled();
     });
   }

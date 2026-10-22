@@ -11,6 +11,10 @@ export interface PendingAgentCodeReplayConfirmation {
   messageId: string;
   content: string;
   images?: MessageImageAttachment[];
+  contextRefs?: import("../../types").PersistedContextReference[];
+  hiddenContext?: string;
+  replaceStructuredFields?: boolean;
+  providerInputItems?: unknown[];
   preview: AgentCodeReplayPreview;
 }
 

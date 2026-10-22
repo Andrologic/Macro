@@ -1,5 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
 import React from 'react';
+import { createInstance } from 'i18next';
+import fr from '../../i18n/locales/fr.json';
+import { evaluateToolSecurity } from '../../services/toolSecurityPolicy';
+const frenchTranslator = createInstance();
+await frenchTranslator.init({ showSupportNotice: false, lng: 'fr', resources: { fr: { translation: fr } } });
+let frenchApproval = false;
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 
@@ -19,6 +25,7 @@ const loadToolApprovalFooter = async () => {
         fallbackOrOptions?: string | { defaultValue?: string; [key: string]: unknown },
         maybeOptions?: { defaultValue?: string; [key: string]: unknown }
       ) => {
+        if (frenchApproval) return frenchTranslator.t(_key);
         const template =
           typeof fallbackOrOptions === 'string'
             ? fallbackOrOptions
@@ -81,6 +88,7 @@ describe('ToolApprovalFooter', () => {
   let root: Root | null = null;
 
   beforeEach(() => {
+    frenchApproval = false;
     container = document.createElement('div');
     document.body.appendChild(container);
     root = createRoot(container);
@@ -95,6 +103,25 @@ describe('ToolApprovalFooter', () => {
     container = null;
     root = null;
     mock.restore();
+  });
+
+  it('localizes a source deletion approval while preserving the pending request and allow-once action', async () => {
+    frenchApproval = true;
+    const evaluation = evaluateToolSecurity('edit_source_passage', { action: 'delete', citation_id: 'source-été' }, { mode: 'Chat', riskLevel: 'balanced', workspacePath: '/repo' });
+    expect(evaluation.decision).toBe('ask');
+    const pendingApproval = { ...evaluation.normalizedCall, conversationId: 'c', assistantMessageId: 'm', toolCallId: 't', riskLevel: 'balanced' as const, args: { action: 'delete', citation_id: 'source-été' } };
+    const before = structuredClone(pendingApproval);
+    const allowOnce = mock(() => undefined);
+    const { ToolApprovalFooter } = await loadToolApprovalFooter();
+    await act(async () => root?.render(<ToolApprovalFooter pendingApproval={pendingApproval} onAllowOnce={allowOnce} onAllowForConversation={() => {}} onDeny={() => {}} />));
+    expect(container?.textContent).toContain('Modifier un passage enregistré');
+    expect(container?.textContent).not.toContain('Edit a saved source passage');
+    const button = Array.from(container!.querySelectorAll('button')).find(candidate => candidate.textContent === fr.chat.toolApprovalAllowOnce)!;
+    await act(async () => button.click());
+    expect(allowOnce).toHaveBeenCalledTimes(1);
+    expect(pendingApproval).toEqual(before);
+    expect(pendingApproval.rememberKey).toBe('tool:edit_source_passage');
+    expect(pendingApproval.isDestructive).toBe(true);
   });
 
   it('shows MCP identity and nested arguments, masks secrets and marks truncation', async () => {

@@ -1,3 +1,4 @@
+import { StreamStopUnconfirmedError, preserveStreamStopError, withStreamCleanup } from "./streamCancellation";
 import type { ProviderTurnState } from '../../types';
 import { ARCHITECT_POST_TOOL_RETRY_SYSTEM_PROMPT } from '../../domains/chat/prompts';
 import { getMacroToolRegistryEntry, type JsonSchema } from '../../shared/macroToolRegistry';
@@ -5,7 +6,7 @@ import { normalizeChatMaxTurns } from '../chatTurnLimits';
 import type { GenerationAttempt, StreamMessage, StreamingChatOptions, StreamingTurnResult, ToolCall, ToolResult, StreamCompletionReason } from './contracts';
 import { createStreamAccumulator } from './streamAccumulator';
 import { cloneStreamMessage, cloneProviderInputItems } from './jsonValues';
-import { collectAllowedTools } from './toolDefinitions';
+import { buildNativeAliasedTools, buildNativePublicationTool, collectAllowedTools, NATIVE_PUBLICATION_TOOL_ID } from './toolDefinitions';
 import { modelAllowedToolIds, MCP_DISCOVERY_DEFINITIONS } from '../mcp/toolDiscovery';
 import { runToolBatch } from './toolCallRunner';
 import { getValidToolCalls } from './toolCallProtocol';
@@ -49,8 +50,8 @@ export async function runToolCallingLoop(
   accumulator: StreamAccumulator,
 ) {
   const originalAllowedTools = new Set(options.allowedToolIds ?? []);
-  const allowedTools = new Set(modelAllowedToolIds(options.allowedToolIds ?? [], options.mcpTools ?? []));
-  const tools = collectAllowedTools({
+  let allowedTools = new Set(modelAllowedToolIds(options.allowedToolIds ?? [], options.mcpTools ?? []));
+  let tools = collectAllowedTools({
     allowedTools: originalAllowedTools,
     enableWebSearch: options.enableWebSearch ?? true,
     enableWebFetch: options.enableWebFetch ?? true,
@@ -60,7 +61,27 @@ export async function runToolCallingLoop(
     runnableSkillToolIds: options.runnableSkillToolIds,
   });
   const schemas = new Map<string, JsonSchema>();
-  for (const name of allowedTools) {
+  const aliases = options.nativeExecution?.toolAliases;
+  if (aliases !== undefined) {
+    if (options.executionPolicy !== 'native-serial' || !options.onRawToolCall) {
+      throw new Error('Tool aliases require the native execution profile and exact argument collector.');
+    }
+    const captured = buildNativeAliasedTools(aliases, originalAllowedTools);
+    allowedTools = captured.names;
+    tools = captured.tools;
+    for (const [name, schema] of captured.schemas) schemas.set(name, schema);
+  }
+  if (options.nativeExecution?.publication) {
+    if (options.executionPolicy !== 'native-serial' || !options.onRawToolCall) {
+      throw new Error('Publication requires the native execution profile and exact argument collector.');
+    }
+    if (allowedTools.has(NATIVE_PUBLICATION_TOOL_ID)) {
+      throw new Error('Publication identity collides with a captured tool.');
+    }
+    allowedTools.add(NATIVE_PUBLICATION_TOOL_ID);
+    tools.push(buildNativePublicationTool(options.nativeExecution.publication.choices));
+  }
+  for (const name of aliases === undefined ? allowedTools : []) {
     const entry = getMacroToolRegistryEntry(name);
     if (entry) schemas.set(name, entry.parameters);
   }
@@ -94,19 +115,24 @@ export async function runToolCallingLoop(
     generationAttempts: generationAttempts.map((attempt) => ({ ...attempt })),
   });
   const consumeSteers = () => {
+    if (maxTurns !== null && turnCount + 1 >= maxTurns) return false;
+    if (options.hasPendingSteers?.()) { turnCount += 1; return true; }
     const steers = options.consumePendingSteers?.() ?? [];
     if (!steers.length) return false;
     messages.push(...steers.map(cloneStreamMessage));
     turnCount += 1;
     return true;
   };
+  return withStreamCleanup(async () => {
   try {
     while (maxTurns === null || turnCount < maxTurns) {
-      if (options.signal?.aborted) return complete();
+      if (options.signal?.aborted || options.isRequestCurrent?.() === false) return complete();
       const recovering = recoveryCause !== null;
       const bufferOutput = enforceGuidedRetry || recovering;
       let streamedContent = '';
       let attemptId = `${attemptSessionId}:${++attemptSequence}`;
+      // A transport retry changes generation attempts, not the request carrying its directions.
+      const requestId = attemptId;
       const interruptedAttempt = (): GenerationAttempt => ({
         id: attemptId,
         status: bufferOutput ? 'abandoned' : 'partial',
@@ -114,7 +140,13 @@ export async function runToolCallingLoop(
         acceptedText: bufferOutput ? '' : streamedContent,
         costUsd: null,
       });
+      if (turnCount > 0) {
+        const pending = options.preparePendingSteers?.(requestId) ?? [];
+        if (options.signal?.aborted || options.isRequestCurrent?.() === false) return complete();
+        messages.push(...pending.map(cloneStreamMessage));
+      }
       options.onGenerationAttemptProgress?.(interruptedAttempt());
+      if (options.signal?.aborted || options.isRequestCurrent?.() === false) return complete();
       let turn: Awaited<ReturnType<ToolCallingAdapter['streamTurn']>>;
       try {
         turn = await adapter.streamTurn({
@@ -133,7 +165,11 @@ export async function runToolCallingLoop(
           },
         });
       } catch (error) {
-        await recordAttempt(interruptedAttempt());
+        try { await recordAttempt(interruptedAttempt()); }
+        catch (secondary) {
+          if (error instanceof StreamStopUnconfirmedError) throw preserveStreamStopError(error, secondary);
+          throw secondary;
+        }
         throw error;
       }
       if (options.signal?.aborted) {
@@ -145,6 +181,7 @@ export async function runToolCallingLoop(
         accumulator.appendSystemChunk(turn.stopped, true);
         return complete();
       }
+      options.onSteerRequestEnded?.(requestId);
       const result = turn.result;
       result.toolTraces?.forEach(accumulator.upsertToolTraceFromProvider);
       if (result.hiddenContext) accumulator.addHiddenContextBlock(result.hiddenContext);
@@ -202,8 +239,8 @@ export async function runToolCallingLoop(
         messages.push({
           role: 'assistant', content: replayContent,
           ...(calls.length ? { tool_calls: calls } : {}),
-          ...(requestProjection.items.length ? { provider_input_items: requestProjection.items } : {}),
-          ...(requestProjection.state ? { provider_turn_state: requestProjection.state } : {}),
+          ...(options.executionPolicy !== 'native-serial' && requestProjection.items.length ? { provider_input_items: requestProjection.items } : {}),
+          ...(options.executionPolicy !== 'native-serial' && requestProjection.state ? { provider_turn_state: requestProjection.state } : {}),
         });
       }
       if (!calls.length) {
@@ -249,7 +286,8 @@ export async function runToolCallingLoop(
           transcript.splice(transcriptStart, transcript.length - transcriptStart, ...progress.items, ...completedItems);
           accumulator.setProviderContext({ providerInputItems: transcript, providerTurnState });
           messages.push({ role: 'tool', content: toolResult.content,
-            tool_call_id: toolResult.tool_call_id, provider_input_items: [item] });
+            tool_call_id: toolResult.tool_call_id,
+            ...(options.executionPolicy !== 'native-serial' ? { provider_input_items: [item] } : {}) });
         },
       });
       if (interruptResolution) {
@@ -278,4 +316,5 @@ export async function runToolCallingLoop(
     if (error instanceof Error && error.name === 'AbortError') return complete();
     throw error;
   }
+  }, () => options.onExecutionMessages?.(messages.map(cloneStreamMessage)));
 }
