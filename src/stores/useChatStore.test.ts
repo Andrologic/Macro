@@ -37,6 +37,7 @@ import { registerQuestionnaireFlowScenarios } from './__tests__/questionnaireFlo
 import { registerReplayAndEditingScenarios } from './__tests__/replayAndEditing.scenarios';
 import { registerSendRuntimeAndDeletionScenarios } from './__tests__/sendRuntimeAndDeletion.scenarios';
 import { registerConversationSelectionScenarios } from './__tests__/conversationSelection.scenarios';
+import { registerPortableHistoryProofScenarios } from './__tests__/portableHistoryProof.scenarios';
 import { registerQuestionnaireNavigationScenarios } from './__tests__/questionnaireNavigation.scenarios';
 const conflictGitStatusMock = mock(async () => ({ branch: 'feature/api', head_commit: createGitCommitDto(), conflicted_files: ['src/api.ts'], merge_in_progress: true }));
 const actualTauriIpc = await import('../services/tauriIpc');
@@ -4408,6 +4409,7 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
   });
 
   registerConversationSelectionScenarios(useChatStoreScenarioContext);
+  registerPortableHistoryProofScenarios(useChatStoreScenarioContext);
   registerArchitectLifecycleScenarios(useChatStoreScenarioContext);
   registerArchitectStrategyScenarios(useChatStoreScenarioContext);
   registerChatToolsAndSourcesScenarios(useChatStoreScenarioContext);
