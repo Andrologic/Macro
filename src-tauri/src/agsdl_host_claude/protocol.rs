@@ -139,7 +139,7 @@ mod tests {
     use super::*;
     #[tokio::test]
     async fn eof_revokes_tool_admission_without_polling_protocol_frames() {
-        let mut child = tokio::process::Command::new("/usr/bin/python3")
+        let mut child = crate::core::process::background_tokio_command("/usr/bin/python3")
             .args([
                 "-c",
                 "import time;print('{\"method\":\"pendingApproval\"}',flush=True);time.sleep(0.05)",
