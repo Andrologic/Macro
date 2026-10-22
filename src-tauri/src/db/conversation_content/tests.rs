@@ -440,7 +440,7 @@ unsafe extern "C" fn trace_fetch(
     if event != libsqlite3_sys::SQLITE_TRACE_STMT as u32 {
         return 0;
     }
-    // SAFETY: the test keeps the boxed context alive until this connection closes;
+    // SAFETY: SQLite owns an Arc through the probe-owner function until close;
     // SQLite supplies a live statement for SQLITE_TRACE_STMT.
     let probe = unsafe { &*(context as *const FetchProbe) };
     let stmt = statement as *mut libsqlite3_sys::sqlite3_stmt;
@@ -464,7 +464,24 @@ unsafe extern "C" fn trace_fetch(
     }
     0
 }
-async fn probe_pool(dir: &TempDir) -> (SqlitePool, Box<FetchProbe>) {
+unsafe extern "C" fn probe_owner_function(
+    context: *mut libsqlite3_sys::sqlite3_context,
+    _: i32,
+    _: *mut *mut libsqlite3_sys::sqlite3_value,
+) {
+    // SAFETY: SQLite supplies its live function context.
+    unsafe {
+        libsqlite3_sys::sqlite3_result_null(context);
+    }
+}
+unsafe extern "C" fn drop_probe_owner(context: *mut std::ffi::c_void) {
+    // SAFETY: exactly the Arc transferred to sqlite3_create_function_v2, called
+    // once by SQLite on connection destruction or failed registration.
+    unsafe {
+        drop(std::sync::Arc::from_raw(context as *const FetchProbe));
+    }
+}
+async fn probe_pool(dir: &TempDir) -> (SqlitePool, std::sync::Arc<FetchProbe>) {
     let options = sqlx::sqlite::SqliteConnectOptions::new()
         .filename(dir.path().join("synthetic.db"))
         .foreign_keys(true);
@@ -473,21 +490,42 @@ async fn probe_pool(dir: &TempDir) -> (SqlitePool, Box<FetchProbe>) {
         .connect_with(options)
         .await
         .unwrap();
-    let probe = Box::new(FetchProbe {
+    let probe = std::sync::Arc::new(FetchProbe {
         bodies: 0.into(),
         descriptors: 0.into(),
         deny: 0.into(),
     });
     let mut connection = pool.acquire().await.unwrap();
     let mut handle = connection.lock_handle().await.unwrap();
-    // SAFETY: exclusive SQLx handle access, fixed C callback, boxed context above.
+    // SQLite keeps its own Arc until connection destruction, including when a
+    // test panics before stop_probe. The destructor releases that owner only
+    // after no engine callback can still use it.
+    let owner = std::sync::Arc::into_raw(probe.clone()).cast_mut().cast();
+    // SAFETY: exclusive SQLx handle; SQLite receives one Arc with an exact
+    // matching destructor. This inert test function is never invoked by SQL.
+    let registered = unsafe {
+        libsqlite3_sys::sqlite3_create_function_v2(
+            handle.as_raw_handle().as_ptr(),
+            c"c1a_probe_owner".as_ptr(),
+            0,
+            libsqlite3_sys::SQLITE_UTF8,
+            owner,
+            Some(probe_owner_function),
+            None,
+            None,
+            Some(drop_probe_owner),
+        )
+    };
+    // SQLite invokes the destructor even if registration fails.
+    assert_eq!(registered, libsqlite3_sys::SQLITE_OK);
+    // SAFETY: exclusive handle, fixed callback, lifetime anchored above.
     assert_eq!(
         unsafe {
             libsqlite3_sys::sqlite3_trace_v2(
                 handle.as_raw_handle().as_ptr(),
                 libsqlite3_sys::SQLITE_TRACE_STMT as u32,
                 Some(trace_fetch),
-                (&*probe as *const FetchProbe).cast_mut().cast(),
+                owner,
             )
         },
         libsqlite3_sys::SQLITE_OK
@@ -752,7 +790,8 @@ async fn ten_thousand_descriptors_then_explicit_windows_are_exhaustive() {
 async fn stop_probe(pool: &SqlitePool) {
     let mut connection = pool.acquire().await.unwrap();
     let mut handle = connection.lock_handle().await.unwrap();
-    // SAFETY: exclusive handle, unregister before releasing the boxed context.
+    // SAFETY: exclusive handle; unregister before pool close. SQLite owns its
+    // separate context reference until the actual connection destruction.
     assert_eq!(
         unsafe {
             libsqlite3_sys::sqlite3_trace_v2(
