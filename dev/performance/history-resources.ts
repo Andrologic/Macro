@@ -32,7 +32,7 @@ export function historyFixture(size: number, nested: boolean): DbMessage[] {
 }
 function adaptersFor(rows: DbMessage[]): ChatPersistenceAdapters {
   return { isTauriAvailable: () => true, ipc: {
-    listMessages: async (id) => { assert.equal(id, 'synthetic-conversation'); return rows; },
+    listMessages: async () => rows,
     getChatBootstrapSnapshot: unavailable, listConversations: unavailable, createMessage: unavailable,
     updateMessage: unavailable, renameConversation: unavailable, deleteConversation: unavailable,
     deleteConversations: unavailable, deleteMessagesAfter: unavailable, deleteConversationTurn: unavailable,
