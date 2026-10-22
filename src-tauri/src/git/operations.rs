@@ -6220,19 +6220,41 @@ pub(crate) fn diff_repo(
     let mut render_diff = |diff: &git2::Diff<'_>| -> Result<()> {
         match options.mode {
             GitDiffMode::Patch => {
-                diff.print(
+                let mut refusal = None;
+                let rendered = diff.print(
                     DiffFormat::Patch,
                     |_delta: git2::DiffDelta<'_>,
                      _hunk: Option<git2::DiffHunk<'_>>,
                      line: git2::DiffLine<'_>| {
+                        let content = std::str::from_utf8(line.content());
+                        if options.require_complete {
+                            refusal = if line.origin_value() == git2::DiffLineType::Binary {
+                                Some("binary differences do not contain a complete text patch")
+                            } else if content.is_err() {
+                                Some("rendered patch contains invalid UTF-8")
+                            } else if line.content().contains(&0) {
+                                Some("rendered patch contains NUL bytes")
+                            } else {
+                                None
+                            };
+                            if refusal.is_some() {
+                                return false;
+                            }
+                        }
                         let origin = line.origin();
                         if matches!(origin, '+' | '-' | ' ') {
                             output.push_str(&origin.to_string());
                         }
-                        output.push_str(std::str::from_utf8(line.content()).unwrap_or(""));
+                        output.push_str(content.unwrap_or(""));
                         true
                     },
-                )?;
+                );
+                if let Some(reason) = refusal {
+                    return Err(BackendError::Git {
+                        message: format!("Cannot return complete Git patch: {reason}"),
+                    });
+                }
+                rendered?;
             }
             GitDiffMode::Stat => {
                 let stats = diff.stats()?;
