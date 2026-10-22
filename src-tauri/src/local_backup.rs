@@ -261,12 +261,34 @@ async fn connection(path: &Path) -> Result<SqliteConnection> {
     SqliteConnection::connect_with(
         &SqliteConnectOptions::new()
             .filename(path)
+            .pragma("recursive_triggers", "ON")
             .read_only(false)
             .create_if_missing(false),
     )
     .await
     .map_err(|e| e.to_string())
 }
+// Only remove objects from our freshly built reference, never from an archive.
+async fn remove_reference_e_schema(db: &mut SqliteConnection, versions: &[i64]) -> Result<()> {
+    if !versions.contains(&16) {
+        let triggers: Vec<String> = sqlx::query_scalar("SELECT name FROM sqlite_master WHERE type='trigger' AND name GLOB 'e_source_version_*'")
+            .fetch_all(&mut *db).await.map_err(|e| e.to_string())?;
+        for name in triggers {
+            sqlx::query(sqlx::AssertSqlSafe(format!("DROP TRIGGER {name}")))
+                .execute(&mut *db)
+                .await
+                .map_err(|e| e.to_string())?;
+        }
+        sqlx::raw_sql("DROP TABLE e_source_relations; DROP TABLE e_source_fragments; DROP TABLE e_source_fields; DROP TABLE e_source_captures; DROP TABLE e_source_version;")
+            .execute(&mut *db).await.map_err(|e| e.to_string())?;
+    }
+    if !versions.contains(&15) {
+        sqlx::raw_sql("DROP TABLE e_inactive_mapping; DROP TABLE e_inactive_fragments; DROP TABLE e_inactive_records; DROP TABLE e_inactive_imports; DROP TABLE e_inactive_domain;")
+            .execute(db).await.map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
 async fn check_database(path: &Path) -> Result<()> {
     let mut db = connection(path).await?;
     let check: String = sqlx::query_scalar("PRAGMA integrity_check")
@@ -305,6 +327,15 @@ async fn check_database(path: &Path) -> Result<()> {
     {
         return Err("Incompatible database schema".into());
     }
+    if (versions.contains(&15) && (!versions.contains(&14) || !stamped(15, "015_inactive_storage")))
+        || (versions.contains(&16)
+            && (!versions.contains(&15) || !stamped(16, "016_source_capture")))
+    {
+        return Err("Incompatible database schema".into());
+    }
+    if versions.contains(&17) && (!versions.contains(&16) || !stamped(17, "017_chat_admission")) {
+        return Err("Incompatible database schema".into());
+    }
     let legacy_trace = stamped(6, "006_pilot_tool_trace_revisions");
     let legacy_management = stamped(7, "007_conversation_management");
     let has_trace =
@@ -317,6 +348,16 @@ async fn check_database(path: &Path) -> Result<()> {
     // Compare the archive with the schema its migration stamps describe. Do
     // not migrate the untrusted archive until its original objects pass this
     // strict comparison; startup validation migrates a temporary copy later.
+    if !versions.contains(&17) {
+        crate::db::chat_admission::remove_reference_schema(&reference)
+            .await
+            .map_err(|e| e.to_string())?;
+    }
+    remove_reference_e_schema(
+        &mut *reference.acquire().await.map_err(|e| e.to_string())?,
+        &versions,
+    )
+    .await?;
     if !versions.contains(&14) {
         crate::db::conversation_catalog::remove_reference_schema(&reference)
             .await
@@ -415,7 +456,10 @@ async fn check_database(path: &Path) -> Result<()> {
         return Err("Backup database tables do not match this Macro version".into());
     }
     for table in tables {
-        if table == "conversation_catalog_version"
+        if table.starts_with("chat_admission_")
+            || table.starts_with("e_inactive_")
+            || table.starts_with("e_source_")
+            || table == "conversation_catalog_version"
             || table == "conversation_content_versions"
             || table == "tool_invocations"
             || table == "agent_run_transitions"
@@ -905,6 +949,27 @@ fn preserve_raw(archive: &Archive, path: &Path) -> Result<()> {
 #[serde(deny_unknown_fields)]
 struct RestoreJournal {
     preserved: String,
+    #[serde(default)]
+    phase: RestorePhase,
+}
+#[derive(Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+enum RestorePhase {
+    #[default]
+    Rollback,
+    InstallHold,
+}
+
+async fn install_restore_hold(data: &Path) -> Result<()> {
+    let path = data.join("macro.db");
+    if !path.exists() {
+        return Ok(());
+    }
+    // No runtime is alive here. Validate/migrate before making the restored
+    // profile available; retain restoring.json if any step fails.
+    crate::db::restore_admission_hold(&path)
+        .await
+        .map_err(|e| e.to_string())
 }
 fn preserved_path(dir: &Path, journal: &RestoreJournal) -> Result<PathBuf> {
     let id = journal
@@ -1131,19 +1196,22 @@ async fn process_startup_with_preserver(
     if journal.exists() {
         let marker: RestoreJournal =
             serde_json::from_slice(&read_bounded(&journal)?).map_err(|e| e.to_string())?;
-        let original = load_archive(&preserved_path(&dir, &marker)?)?;
-        validate_raw(&original)?;
-        apply_files(&original, data, config, true)?;
-        let status = BackupStatus {
-            message: String::new(),
-            code: Some(BackupStatusCode::RolledBack),
-            path: None,
-            browser: Some(original.browser),
-        };
-        atomic(
-            &dir.join("status.json"),
-            &serde_json::to_vec(&status).map_err(|e| e.to_string())?,
-        )?;
+        if marker.phase == RestorePhase::Rollback {
+            let original = load_archive(&preserved_path(&dir, &marker)?)?;
+            validate_raw(&original)?;
+            apply_files(&original, data, config, true)?;
+            let status = BackupStatus {
+                message: String::new(),
+                code: Some(BackupStatusCode::RolledBack),
+                path: None,
+                browser: Some(original.browser),
+            };
+            atomic(
+                &dir.join("status.json"),
+                &serde_json::to_vec(&status).map_err(|e| e.to_string())?,
+            )?;
+        }
+        install_restore_hold(data).await?;
         // A recovered request must not replay the failed restore on this launch.
         if dir.join("request.json").exists() {
             remove_durable(&dir.join("request.json"))?;
@@ -1186,17 +1254,21 @@ async fn process_startup_with_preserver(
         } else if request.operation == "restore" {
             let archive = load_restore_archive(&dir.join("incoming.json")).await?;
             let original = capture_raw(data, config, request.browser)?;
-            let marker = RestoreJournal { preserved: format!("preserved-{}.json", uuid::Uuid::new_v4()) };
+            let mut marker = RestoreJournal { preserved: format!("preserved-{}.json", uuid::Uuid::new_v4()), phase: RestorePhase::Rollback };
             let preservation = preserved_path(&dir, &marker)?;
             preserve(&original, &preservation)?;
             atomic(&journal, &serde_json::to_vec(&marker).map_err(|e| e.to_string())?)?;
             if let Err(error) = apply(&archive, data, config) {
                 apply_files(&original, data, config, true).map_err(|rollback| format!("Restore failed: {error}. Rollback failed: {rollback}. Original preserved in {}", dir.display()))?;
+                install_restore_hold(data).await?;
                 remove_durable(&journal)?;
                 return Err(error);
             }
             let status = BackupStatus { message: String::new(), code: Some(BackupStatusCode::Restored), path: Some(preservation.to_string_lossy().into()), browser: Some(archive.browser) };
             atomic(&dir.join("status.json"), &serde_json::to_vec(&status).map_err(|e| e.to_string())?)?;
+            marker.phase = RestorePhase::InstallHold;
+            atomic(&journal, &serde_json::to_vec(&marker).map_err(|e| e.to_string())?)?;
+            install_restore_hold(data).await?;
             remove_durable(&request_path)?;
             remove_durable(&journal)?;
             Ok(status)
@@ -1331,7 +1403,18 @@ mod tests {
         (temp, data, config)
     }
 
+    pub(super) async fn remove_post_catalog_schema(db: &mut SqliteConnection) {
+        crate::db::chat_admission::remove_reference_schema_in(db)
+            .await
+            .unwrap();
+        remove_reference_e_schema(db, &[]).await.unwrap();
+        sqlx::query("DELETE FROM schema_migrations WHERE version>14")
+            .execute(db)
+            .await
+            .unwrap();
+    }
     async fn remove_content_schema(db: &mut SqliteConnection) {
+        remove_post_catalog_schema(db).await;
         crate::db::conversation_catalog::remove_reference_schema_in(db)
             .await
             .unwrap();
@@ -1568,18 +1651,18 @@ mod tests {
                 .fetch_one(&mut restored)
                 .await
                 .unwrap(),
-            4
+            17
         );
         restored.close().await.unwrap();
 
-        // Normal application startup migrates the restored database, not the archive.
+        // Restore installs the current schema and read-only ownership before startup.
         let pool = crate::db::create_pool(&database).await.unwrap();
         assert_eq!(
             sqlx::query_scalar::<_, i64>("SELECT MAX(version) FROM schema_migrations")
                 .fetch_one(&pool)
                 .await
                 .unwrap(),
-            14
+            17
         );
         assert_eq!(
             sqlx::query_scalar::<_, String>(
@@ -1612,7 +1695,7 @@ mod tests {
             .fetch_one(&mut db)
             .await
             .unwrap();
-        assert_eq!(version, 14);
+        assert_eq!(version, 17);
         sqlx::query("INSERT INTO schema_migrations VALUES (99, 'future', 'synthetic')")
             .execute(&mut db)
             .await
@@ -1909,9 +1992,7 @@ mod tests {
             recovered.files.keys().collect::<Vec<_>>(),
             original.files.keys().collect::<Vec<_>>()
         );
-        for (name, entry) in original.files {
-            assert_eq!(recovered.files[&name].sha256, entry.sha256);
-        }
+        super::qualification::assert_held_files(&recovered, &original).await;
         process_startup(&data, &config).await.unwrap();
         assert_eq!(fs::read(object).unwrap(), b"original leaf");
     }
@@ -2266,6 +2347,7 @@ mod tests {
         atomic(
             &dir.join("restoring.json"),
             &serde_json::to_vec(&RestoreJournal {
+                phase: RestorePhase::Rollback,
                 preserved: preserved.file_name().unwrap().to_string_lossy().into(),
             })
             .unwrap(),
@@ -2300,6 +2382,7 @@ mod tests {
         let dir = data.join("local-backup");
         fs::create_dir_all(&dir).unwrap();
         let marker = RestoreJournal {
+            phase: RestorePhase::Rollback,
             preserved: format!("preserved-{}.json", uuid::Uuid::new_v4()),
         };
         let preserved = preserved_path(&dir, &marker).unwrap();
@@ -2315,6 +2398,69 @@ mod tests {
         assert!(preserved.exists());
         assert!(!dir.join("restoring.json").exists());
     }
+    #[tokio::test]
+    async fn chat_admission_restore_hold_phase_does_not_reapply_rollback() {
+        let (_temp, data, config) = profile().await;
+        let original = capture_raw(&data, &config, BTreeMap::new()).unwrap();
+        let dir = data.join("local-backup");
+        fs::create_dir_all(&dir).unwrap();
+        let marker = RestoreJournal {
+            phase: RestorePhase::InstallHold,
+            preserved: format!("preserved-{}.json", uuid::Uuid::new_v4()),
+        };
+        preserve_raw(&original, &preserved_path(&dir, &marker).unwrap()).unwrap();
+        let mut db = connection(&data.join("macro.db")).await.unwrap();
+        sqlx::query("UPDATE messages SET content='installed replacement' WHERE id='message'")
+            .execute(&mut db)
+            .await
+            .unwrap();
+        db.close().await.unwrap();
+        atomic(
+            &dir.join("restoring.json"),
+            &serde_json::to_vec(&marker).unwrap(),
+        )
+        .unwrap();
+        process_startup(&data, &config).await.unwrap();
+        let mut db = connection(&data.join("macro.db")).await.unwrap();
+        let value: (String, String) = sqlx::query_as("SELECT m.content,o.mode FROM messages m JOIN chat_admission_owners o ON o.conversation_id=m.conversation_id WHERE m.id='message'")
+            .fetch_one(&mut db).await.unwrap();
+        assert_eq!(
+            value,
+            ("installed replacement".into(), "restore_hold".into())
+        );
+        assert!(
+            sqlx::query("UPDATE messages SET content='late' WHERE id='message'")
+                .execute(&mut db)
+                .await
+                .is_err()
+        );
+        assert!(!dir.join("restoring.json").exists());
+    }
+
+    #[tokio::test]
+    async fn chat_admission_restore_invalid_schema_retains_the_hold_journal() {
+        let (_temp, data, config) = profile().await;
+        let dir = data.join("local-backup");
+        fs::create_dir_all(&dir).unwrap();
+        let marker = RestoreJournal {
+            phase: RestorePhase::InstallHold,
+            preserved: format!("preserved-{}.json", uuid::Uuid::new_v4()),
+        };
+        let mut db = connection(&data.join("macro.db")).await.unwrap();
+        sqlx::query("DROP TRIGGER chat_admission_messages_update")
+            .execute(&mut db)
+            .await
+            .unwrap();
+        db.close().await.unwrap();
+        atomic(
+            &dir.join("restoring.json"),
+            &serde_json::to_vec(&marker).unwrap(),
+        )
+        .unwrap();
+        assert!(process_startup(&data, &config).await.is_err());
+        assert!(dir.join("restoring.json").exists());
+    }
+
     #[tokio::test]
     async fn portable_restore_detaches_provider_secrets_and_keeps_them_in_rollback() {
         let (_temp, data, config) = profile().await;
@@ -2970,6 +3116,7 @@ mod secrets_qualification;
 mod content_backup_tests {
     use super::*;
     async fn strip_content(db: &mut SqliteConnection) {
+        tests::remove_post_catalog_schema(db).await;
         crate::db::conversation_catalog::remove_reference_schema_in(db)
             .await
             .unwrap();
@@ -3006,7 +3153,7 @@ mod content_backup_tests {
                 .fetch_one(&mut db)
                 .await
                 .unwrap(),
-            14
+            17
         );
         assert_eq!(
             sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM conversation_content_versions")
@@ -3032,6 +3179,7 @@ mod content_backup_tests {
             let (_temp,data,_config)=tests::profile().await;
             let path=data.join("macro.db");
             let mut db=connection(&path).await.unwrap();
+            tests::remove_post_catalog_schema(&mut db).await;
             crate::db::conversation_catalog::remove_reference_schema_in(&mut db).await.unwrap();
             sqlx::query("DELETE FROM schema_migrations WHERE version=14").execute(&mut db).await.unwrap();
             sqlx::raw_sql(mutation).execute(&mut db).await.unwrap(); db.close().await.unwrap();
@@ -3051,6 +3199,7 @@ mod content_legacy_backup_tests {
             let (temp, data, _config) = tests::profile().await;
             let original = data.join("macro.db");
             let mut db = connection(&original).await.unwrap();
+            tests::remove_post_catalog_schema(&mut db).await;
             crate::db::conversation_catalog::remove_reference_schema_in(&mut db)
                 .await
                 .unwrap();
@@ -3137,10 +3286,11 @@ mod catalog_backup_tests {
     use crate::core::db_state::DbPool;
     use crate::db::models::ConversationCatalogVersionInput;
     #[tokio::test]
-    async fn exact_schema13_is_untouched_then_only_copy_migrates_to14() {
+    async fn exact_schema13_is_untouched_then_only_copy_migrates_to_current() {
         let (temp, data, _config) = tests::profile().await;
         let original = data.join("macro.db");
         let mut db = connection(&original).await.unwrap();
+        tests::remove_post_catalog_schema(&mut db).await;
         crate::db::conversation_catalog::remove_reference_schema_in(&mut db)
             .await
             .unwrap();
@@ -3161,7 +3311,7 @@ mod catalog_backup_tests {
                 .fetch_one(&mut connection(&copy).await.unwrap())
                 .await
                 .unwrap(),
-            14
+            17
         );
         assert_eq!(fs::read(&original).unwrap(), before);
     }

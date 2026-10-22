@@ -3,6 +3,7 @@
 // integration makes the entry points reachable from the application.
 #[allow(dead_code)]
 pub mod agent_runs;
+pub(crate) mod chat_admission;
 pub(crate) mod conversation_catalog;
 #[allow(dead_code)]
 pub(crate) mod conversation_content;
@@ -82,6 +83,7 @@ pub(crate) async fn validate_source_opening(
     conversation_content::validate_schema(&mut tx).await?;
     conversation_catalog::validate_schema(&mut tx).await?;
     source_capture::validate_schema(&mut tx).await?;
+    chat_admission::validate_schema(&mut tx).await?;
     let stamps: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM schema_migrations WHERE (version=13 AND name='013_conversation_content_versions') OR (version=14 AND name='014_conversation_catalog_version') OR (version=15 AND name='015_inactive_storage') OR (version=16 AND name='016_source_capture')")
         .fetch_one(&mut *tx).await?;
     if stamps != 4 {
@@ -105,7 +107,7 @@ const MIGRATION_004_VERSION: i64 = 4;
 const MIGRATION_004_NAME: &str = "004_message_search";
 const MIGRATION_004_SQL: &str = include_str!("migrations/004_message_search.sql");
 pub(crate) const SUPPORTED_MIGRATION_VERSIONS: &[i64] =
-    &[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16];
+    &[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17];
 const MIGRATION_005_VERSION: i64 = 5;
 const MIGRATION_005_NAME: &str = "005_runtime_schema";
 const MIGRATION_005_CHECK_SQL: &str = include_str!("migrations/005_runtime_schema_check.sql");
@@ -156,17 +158,33 @@ pub async fn init_db(app_handle: &AppHandle) -> DbResult<SqlitePool> {
     agent_runs::reconcile_active_agent_runs_after_restart(&pool).await?;
     conversation_goals::reconcile_audits_after_restart(&pool).await?;
     tool_invocations::reconcile_pending_after_restart(&pool).await?;
+    chat_admission::reconcile_after_restart(&pool).await?;
 
     Ok(pool)
 }
 
 /// Create a pool for the given database path.
 pub(crate) async fn create_pool(db_path: &Path) -> DbResult<SqlitePool> {
+    let pool = open_pool(db_path).await?;
+    run_migrations(&pool).await?;
+    Ok(pool)
+}
+
+/// Startup restore changes schema/ownership only, not provider defaults or auth.
+pub(crate) async fn restore_admission_hold(db_path: &Path) -> DbResult<()> {
+    let pool = open_pool(db_path).await?;
+    let result = chat_admission::hold_restored_profile(&pool).await;
+    pool.close().await;
+    result
+}
+
+async fn open_pool(db_path: &Path) -> DbResult<SqlitePool> {
     let db_url = format!("sqlite:{}?mode=rwc", db_path.display());
 
     let options = SqliteConnectOptions::from_str(&db_url)?
         .create_if_missing(true)
         .foreign_keys(true)
+        .pragma("recursive_triggers", "ON")
         .journal_mode(sqlx::sqlite::SqliteJournalMode::Wal)
         .synchronous(sqlx::sqlite::SqliteSynchronous::Normal)
         // Preserve the defaults required by E's abandoned-lease shutdown.
@@ -178,9 +196,6 @@ pub(crate) async fn create_pool(db_path: &Path) -> DbResult<SqlitePool> {
         .max_connections(5)
         .connect_with(options)
         .await?;
-
-    // Run migrations
-    run_migrations(&pool).await?;
 
     Ok(pool)
 }
@@ -205,7 +220,12 @@ async fn run_migrations_local(pool: SqlitePool) -> DbResult<()> {
         .execute(&mut *connection)
         .await?;
 
-    let migration_result = run_migrations_on_connection(&mut connection).await;
+    let migration_result = async {
+        run_migrations_on_connection(&mut connection).await?;
+        insert_default_providers(&mut connection).await?;
+        insert_default_speech_provider(&mut connection).await
+    }
+    .await;
     match migration_result {
         Ok(()) => {
             sqlx::query("COMMIT").execute(&mut *connection).await?;
@@ -413,6 +433,11 @@ async fn run_migrations_on_connection(connection: &mut SqliteConnection) -> DbRe
             "016_source_capture",
             include_str!("migrations/016_source_capture.sql"),
         ),
+        (
+            17,
+            "017_chat_admission",
+            include_str!("migrations/017_chat_admission.sql"),
+        ),
     ] {
         if !list_applied_migrations(connection)
             .await?
@@ -425,10 +450,7 @@ async fn run_migrations_on_connection(connection: &mut SqliteConnection) -> DbRe
     conversation_content::validate_schema(connection).await?;
     conversation_catalog::validate_schema(connection).await?;
     source_capture::validate_schema(connection).await?;
-
-    // Insert default providers if they don't exist
-    insert_default_providers(connection).await?;
-    insert_default_speech_provider(connection).await?;
+    chat_admission::validate_schema(connection).await?;
 
     Ok(())
 }
@@ -484,6 +506,8 @@ fn validate_migration_history(applied: &HashSet<i64>) -> DbResult<()> {
         || (applied.contains(&13) && !applied.contains(&12))
         || (applied.contains(&14) && !applied.contains(&13))
         || (applied.contains(&15) && !applied.contains(&14))
+        || (applied.contains(&16) && !applied.contains(&15))
+        || (applied.contains(&17) && !applied.contains(&16))
     {
         return Err(DbError::Migration(
             "Unsupported or inconsistent migration history; database left unchanged".to_string(),
@@ -2184,6 +2208,10 @@ mod tests {
         .execute(&pool)
         .await
         .expect("emulate local Pilot version five");
+        super::inactive_storage::tests::remove_reference_schema_in(
+            &mut *pool.acquire().await.unwrap(),
+        )
+        .await;
         super::conversation_catalog::remove_reference_schema(&pool)
             .await
             .unwrap();
@@ -2608,6 +2636,10 @@ mod tests {
         let temp_dir = TempDir::new().expect("temp dir");
         let db_path = temp_dir.path().join("macro.db");
         let pool = create_pool(&db_path).await.expect("initial pool");
+        super::inactive_storage::tests::remove_reference_schema_in(
+            &mut *pool.acquire().await.unwrap(),
+        )
+        .await;
         super::conversation_catalog::remove_reference_schema(&pool)
             .await
             .unwrap();

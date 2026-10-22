@@ -80,14 +80,15 @@ async fn version_incarnation_overflow_rollback_reopen_and_missing_stamp() {
         .await
         .unwrap();
     code(conversation_content_version(&pool, "a").await, "not_found");
-    sqlx::query("INSERT INTO conversations(id,title,created_at,updated_at) VALUES ('a','New','2026','2026')").execute(&pool).await.unwrap();
-    assert_ne!(token(&pool, "a").await.incarnation, wrapped.incarnation);
-    sqlx::query("DELETE FROM conversation_content_versions WHERE conversation_id='a'")
+    assert!(sqlx::query("INSERT INTO conversations(id,title,created_at,updated_at) VALUES ('a','Reused','2026','2026')").execute(&pool).await.is_err());
+    sqlx::query("INSERT INTO conversations(id,title,created_at,updated_at) VALUES ('new-a','New','2026','2026')").execute(&pool).await.unwrap();
+    assert_ne!(token(&pool, "new-a").await.incarnation, wrapped.incarnation);
+    sqlx::query("DELETE FROM conversation_content_versions WHERE conversation_id='new-a'")
         .execute(&pool)
         .await
         .unwrap();
     code(
-        conversation_content_version(&pool, "a").await,
+        conversation_content_version(&pool, "new-a").await,
         "unavailable",
     );
     pool.close().await;
@@ -1075,7 +1076,7 @@ async fn opening_keeps_i64_decimal_precision_and_handles_unreadable_numeric_fiel
 }
 
 #[tokio::test]
-async fn native_runtime_diagnostic_is_schema16_wal_normal_fk() {
+async fn native_runtime_diagnostic_is_schema17_wal_normal_fk() {
     let (_dir, pool) = fixture().await;
     let sqlite: String = sqlx::query_scalar("SELECT sqlite_version()")
         .fetch_one(&pool)
@@ -1088,7 +1089,7 @@ async fn native_runtime_diagnostic_is_schema16_wal_normal_fk() {
             .unwrap();
     assert_eq!(
         migrations,
-        [1, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]
+        [1, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17]
     );
     let mut db = pool.acquire().await.unwrap();
     let journal: String = sqlx::query_scalar("PRAGMA journal_mode")

@@ -4,6 +4,7 @@ pub mod macro_ai;
 pub mod openai_compatible;
 pub mod provider_capabilities;
 pub mod reasoning_catalog;
+mod stream_tasks;
 pub mod types;
 
 use std::collections::HashMap;
@@ -38,7 +39,7 @@ pub struct CopilotRuntimeCache {
 
 #[derive(Clone, Default)]
 pub struct AiState {
-    pub stream_tasks: Arc<Mutex<HashMap<String, tokio::task::JoinHandle<()>>>>,
+    stream_tasks: Arc<Mutex<HashMap<String, stream_tasks::StreamTask>>>,
     pub copilot_tool_writers: Arc<Mutex<HashMap<String, Arc<Mutex<ChildStdin>>>>>,
     pub copilot_runtime_cache: Arc<Mutex<Option<CopilotRuntimeCache>>>,
     pub auth_tasks: Arc<Mutex<HashMap<String, AuthTask>>>,

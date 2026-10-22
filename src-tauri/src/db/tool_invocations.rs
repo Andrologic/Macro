@@ -339,11 +339,17 @@ pub async fn list_unresolved(
 }
 
 pub async fn reconcile_pending_after_restart(pool: &SqlitePool) -> DbResult<()> {
+    reconcile_pending_after_restart_in(&mut *pool.acquire().await?).await
+}
+
+pub(crate) async fn reconcile_pending_after_restart_in(
+    db: &mut sqlx::SqliteConnection,
+) -> DbResult<()> {
     sqlx::query(
         "UPDATE tool_invocations SET status = 'unknown', updated_at = ? WHERE status = 'pending'",
     )
     .bind(chrono::Utc::now().to_rfc3339())
-    .execute(pool)
+    .execute(db)
     .await?;
     Ok(())
 }

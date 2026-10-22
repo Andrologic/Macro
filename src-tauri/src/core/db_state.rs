@@ -1,6 +1,9 @@
 use super::command_error::{command_error, CommandResult};
 use sqlx::SqlitePool;
-use std::sync::Arc;
+use std::sync::{
+    atomic::{AtomicUsize, Ordering},
+    Arc,
+};
 use tokio::sync::{watch, OwnedRwLockReadGuard, RwLock};
 use tokio::time::{timeout, Duration};
 
@@ -18,9 +21,23 @@ pub struct DbReady {
     pub pool: SqlitePool,
     pub(crate) catalog_generation: String,
     source_opening: crate::db::ValidatedSourceOpening,
+    chat_work: Arc<AtomicUsize>,
+}
+
+// A process-local lifetime fence, never a transfer permission or a substitute
+// for the SQLite journal. A task owns this value until its physical cleanup ends.
+pub(crate) struct ChatWorkLifetime(Arc<AtomicUsize>);
+impl Drop for ChatWorkLifetime {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::AcqRel);
+    }
 }
 
 impl DbReady {
+    pub(crate) fn retain_chat_work(&self) -> ChatWorkLifetime {
+        self.chat_work.fetch_add(1, Ordering::AcqRel);
+        ChatWorkLifetime(self.chat_work.clone())
+    }
     pub(crate) async fn check_source_schema(
         &self,
         db: &mut sqlx::SqliteConnection,
@@ -33,6 +50,8 @@ impl DbReady {
 pub struct DbPool {
     state: watch::Sender<DbInitializationState>,
     source_gate: Arc<RwLock<()>>,
+    // Revocation stops new work but must not forget work from that generation.
+    last_published: Arc<RwLock<Option<DbReady>>>,
     #[cfg(test)]
     pub(crate) opening_cleanup_started: Option<std::sync::mpsc::Sender<()>>,
 }
@@ -43,6 +62,7 @@ impl Default for DbPool {
         Self {
             state,
             source_gate: Arc::new(RwLock::new(())),
+            last_published: Arc::new(RwLock::new(None)),
             #[cfg(test)]
             opening_cleanup_started: None,
         }
@@ -57,6 +77,11 @@ impl DbPool {
 
     pub async fn set_ready(&self, pool: SqlitePool) -> CommandResult<()> {
         let _gate = self.source_gate.write().await;
+        if let Some(previous) = self.last_published.read().await.clone() {
+            if previous.chat_work.load(Ordering::Acquire) != 0 {
+                return Err(command_error("chat_admission_generation_busy"));
+            }
+        }
         // Retire the previous generation before waiting for a connection. An
         // abandoned validation cannot leave its predecessor advertised Ready.
         self.state.send_replace(DbInitializationState::Initializing);
@@ -75,12 +100,14 @@ impl DbPool {
                 return Err(command_error(message));
             }
         };
-        self.state
-            .send_replace(DbInitializationState::Ready(DbReady {
-                pool,
-                catalog_generation: uuid::Uuid::new_v4().simple().to_string(),
-                source_opening,
-            }));
+        let ready = DbReady {
+            pool,
+            catalog_generation: uuid::Uuid::new_v4().simple().to_string(),
+            source_opening,
+            chat_work: Arc::new(AtomicUsize::new(0)),
+        };
+        *self.last_published.write().await = Some(ready.clone());
+        self.state.send_replace(DbInitializationState::Ready(ready));
         Ok(())
     }
 

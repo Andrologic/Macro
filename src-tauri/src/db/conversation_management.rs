@@ -459,6 +459,13 @@ mod tests {
         acknowledge(&pool, &id, &[1], None).await.unwrap();
         let command = input(&id, "archive", Some(1));
         action(&pool, command.clone()).await.unwrap();
+        crate::db::inactive_storage::tests::remove_reference_schema_in(
+            &mut *pool.acquire().await.unwrap(),
+        )
+        .await;
+        crate::db::conversation_catalog::remove_reference_schema(&pool)
+            .await
+            .unwrap();
         // This recovery fixture represents the historical Pilot-only schema,
         // before develop's generation/tool/goal migrations were introduced.
         crate::db::conversation_content::remove_reference_schema(&pool)
