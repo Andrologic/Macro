@@ -121,3 +121,68 @@ it('does not promote a local stop flag over a conclusive native receipt', async 
   release({kind:'completed',sessionId:'native-thread',runId:'native-turn'});
   expect((await running).stopped).toBe(false);
 });
+
+it('retains the stopped receipt while a Macro Tool settles, without rerunning the Provider', async () => {
+  const f = fixture();
+  let runs = 0, closures = 0, waits = 0;
+  let release!: () => void;
+  const pending = new Promise<void>(resolve => { release = resolve; });
+  let entered!: () => void;
+  const waiting = new Promise<void>(resolve => { entered = resolve; });
+  f.ports.run = async () => { runs++; return { kind: 'stopped', sessionId: 'native-thread', runId: null }; };
+  f.ports.journal.close = async closure => {
+    closures++;
+    expect(closure.owner).toEqual(f.request.context.owner);
+    if (!waits) throw { code: 'STOP_PENDING', message: 'Tool still pending' };
+    return closure;
+  };
+  f.ports.waitForEffects = async () => { entered(); await pending; waits++; };
+  const agent = await prepareClaudeAgent(f.request, f.ports);
+  await agent.acceptInput(() => json('{}'));
+  let finished = false;
+  const completion = agent.executeReady().then(result => { finished = true; return result; });
+  await waiting;
+  expect(finished).toBe(false); expect(runs).toBe(1); expect(closures).toBe(1);
+  agent.requestStop();
+  release();
+  expect((await completion).stopped).toBe(true);
+  expect(runs).toBe(1); expect(closures).toBe(2); expect(waits).toBe(1);
+});
+it.each(['CORRELATION', 'NATIVE_UNCERTAIN', 'STORAGE'])('does not keep waiting for a stopped response closure after %s', async code => {
+  const f = fixture();
+  f.ports.run = async () => ({ kind: 'stopped', sessionId: 'native-thread', runId: null });
+  f.ports.journal.close = async () => { throw { code }; };
+  f.ports.waitForEffects = async () => { throw new Error('unexpected retry'); };
+  const agent = await prepareClaudeAgent(f.request, f.ports);
+  await agent.acceptInput(() => json('{}'));
+  await expect(agent.executeReady()).rejects.toMatchObject({ code });
+});
+
+it('retrieves the first durable response closure after its acknowledgement is lost', async () => {
+  const f = fixture();
+  let runs = 0, closes = 0;
+  let retained: Parameters<ClaudeAgentPorts['journal']['close']>[0] | undefined;
+  f.ports.run = async () => { runs++; return { kind: 'stopped', sessionId: 'native-thread', runId: null }; };
+  f.ports.journal.close = async closure => {
+    closes++;
+    if (!retained) { retained = closure; throw new Error('Lost closure IPC acknowledgement'); }
+    expect(closure).toEqual(retained);
+    return retained;
+  };
+  const agent = await prepareClaudeAgent(f.request, f.ports);
+  await agent.acceptInput(() => json('{}'));
+  const result = await agent.executeReady();
+  expect(result.stopped).toBe(true); expect(result.closure.digest).toBe(retained!.digest);
+  expect(runs).toBe(1); expect(closes).toBe(2);
+});
+it('rejects a fenced owner during late Tool waiting without another engine call', async () => {
+  const f = fixture();
+  let closes = 0, runs = 0, waits = 0;
+  f.ports.run = async () => { runs++; return { kind: 'stopped', sessionId: 'native-thread', runId: null }; };
+  f.ports.journal.close = async () => { closes++; throw { code: closes === 1 ? 'STOP_PENDING' : 'CORRELATION' }; };
+  f.ports.waitForEffects = async () => { waits++; };
+  const agent = await prepareClaudeAgent(f.request, f.ports);
+  await agent.acceptInput(() => json('{}'));
+  await expect(agent.executeReady()).rejects.toMatchObject({ code: 'CORRELATION' });
+  expect(runs).toBe(1); expect(closes).toBe(2); expect(waits).toBe(1);
+});

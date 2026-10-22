@@ -27,7 +27,7 @@ pub(super) fn validate(
     validate_json(&capture.registry_json)?;
     validate_json(&capture.native_catalogue_json)?;
     opaque(&capture.implementation_digest)?;
-    let registry: serde_json::Value = serde_json::from_str(&capture.registry_json)?;
+    let registry = super::super::exact_json::value(&capture.registry_json)?;
     require(
         registry.get("version").and_then(|v| v.as_str())
             == Some(snapshot.versions.registry.as_str()),

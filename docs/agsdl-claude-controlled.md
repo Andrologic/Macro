@@ -95,7 +95,11 @@ Le superviseur Macro possède le runner et ses descendants. Un `result`,
 `interrupt` ou `close` du SDK ne prouve pas leur fin. Stop distingue demande,
 confirmation physique et état incertain. La collection de réponses et le terminal
 attendent le règlement des outils possédés et la fermeture physique requise.
-Aucun successeur n’est livré avant cette clôture.
+Si le runner se termine avant le reçu d’un outil Macro, le host conserve le reçu
+`stopped` et réessaie seulement la clôture sans effet dans la même epoch. Une
+perte d’accusé de réception de cette clôture récupère son premier reçu durable.
+Un changement d’epoch ou une incohérence de corrélation reste un refus. Aucun
+successeur n’est livré avant cette clôture.
 
 ## Vérifications
 

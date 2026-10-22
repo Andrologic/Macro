@@ -1405,6 +1405,12 @@ impl CaptureAuthority for RoutedCompiler {
     }
 }
 async fn prepared_fixture() -> (TempDir, SqlitePool, EngineOwner, prepared::Prepare) {
+    prepared_fixture_with_results("{}", true).await
+}
+async fn prepared_fixture_with_results(
+    results: &str,
+    close: bool,
+) -> (TempDir, SqlitePool, EngineOwner, prepared::Prepare) {
     let temp = TempDir::new().unwrap();
     let pool = create_pool(&temp.path().join("test.db")).await.unwrap();
     let mut req = request();
@@ -1421,26 +1427,27 @@ async fn prepared_fixture() -> (TempDir, SqlitePool, EngineOwner, prepared::Prep
     let (_, digest) = responses::read(&pool, &runtime, &delivery.work)
         .await
         .unwrap();
-    responses::close(
+    if close {
+        responses::close(
         &pool,
         responses::Closure {
             owner: runtime.clone(),
             work: delivery.work.clone(),
             cursor: "0".into(),
             digest: digest.clone(),
-            validation_json: r#"{"kind":"success","text":"done","resultsJson":"{}","choice":null}"#
-                .into(),
+            validation_json: serde_json::json!({"kind":"success","text":"done","resultsJson":results,"choice":null}).to_string(),
         },
     )
     .await
     .unwrap();
+    }
     let request = prepared::Prepare {
         owner: runtime.clone(),
         work: delivery.work.clone(),
         outcome: EngineOutcome::Completed {
             output: EngineValue {
                 origin: "agent".into(),
-                value_json: r#"{"text":"done","results":{}}"#.into(),
+                value_json: format!(r#"{{"text":"done","results":{results}}}"#),
             },
         },
         response_cursor: "0".into(),
@@ -1752,8 +1759,20 @@ async fn external_graphless_delivery_uses_native_ids_and_keeps_its_exact_receipt
 
 #[tokio::test]
 async fn call_witness_requires_exact_retained_result_and_matching_invocation() {
-    const DECLARATION: &str = r#"{"type":"call","binding":"read","next":[]}"#;
-    const BINDING: &str = r#"{"contract":{"identity":"macro/tool/read","version":"1"},"implementation":{"identity":"macro/desktop","version":"1"}}"#;
+    for result in [
+        "9007199254740993",
+        r#"{"$serde_json::private::Number":"1"}"#,
+        r#"{"$serde_json::private::RawValue":"[true]"}"#,
+        r#"{"$serde_json::private::Number":"not a number"}"#,
+        r#"{"$serde_json::private::RawValue":"not JSON"}"#,
+        r#"{"nested":[{"$serde_json::private::Number":"1"},1e9999]}"#,
+    ] {
+        call_witness_with_result(result).await;
+    }
+}
+async fn call_witness_with_result(result: &str) {
+    const DECLARATION: &str = r#"{"type":"call","binding":"read","arguments":{"payload":{"value":{"$serde_json::private::Number":"not a number"}}},"next":[]}"#;
+    const BINDING: &str = r#"{"contract":{"identity":"macro/tool/read","version":"1"},"implementation":{"identity":"macro/desktop","version":"1"},"settings":{"opaque":{"$serde_json::private::RawValue":"not JSON"}}}"#;
     struct CallCompiler;
     impl CaptureAuthority for CallCompiler {
         type CommitGuard = ();
@@ -1834,7 +1853,7 @@ async fn call_witness_requires_exact_retained_result_and_matching_invocation() {
     request.outcome = EngineOutcome::Completed {
         output: EngineValue {
             origin: "call".into(),
-            value_json: r#"{"data":9007199254740993}"#.into(),
+            value_json: format!(r#"{{"data":{result}}}"#),
         },
     };
     assert!(
@@ -1866,7 +1885,7 @@ async fn call_witness_requires_exact_retained_result_and_matching_invocation() {
             })
             .unwrap(),
         )
-        .bind("9007199254740993")
+        .bind(result)
         .execute(&pool)
         .await
         .unwrap();
@@ -1901,9 +1920,14 @@ async fn call_witness_requires_exact_retained_result_and_matching_invocation() {
         .execute(&pool)
         .await
         .unwrap();
-    prepared::prepare(&pool, "generation", request)
+    let outcome = request.outcome.clone();
+    let witness = prepared::prepare(&pool, "generation", request)
         .await
         .unwrap();
+    let committed = prepared::commit(&pool, "generation", &runtime, &witness)
+        .await
+        .unwrap();
+    assert!(record_equal(&committed.outcome, &outcome).unwrap());
 }
 
 #[tokio::test]
@@ -3737,3 +3761,228 @@ mod native_codex_tests;
 
 #[path = "native_claude_tests.rs"]
 mod native_claude_tests;
+
+#[tokio::test]
+async fn exact_agent_publications_prepare_commit_and_reject_transformed_values() {
+    for value in [
+        r#"{"$serde_json::private::Number":"1"}"#,
+        r#"{"$serde_json::private::RawValue":"[true]"}"#,
+        r#"{"$serde_json::private::Number":"not a number"}"#,
+        r#"{"$serde_json::private::RawValue":"not JSON"}"#,
+        "9007199254740993",
+        "1e9999",
+    ] {
+        let results = format!(r#"{{"report":{{"value":{value},"mediaType":"application/json"}}}}"#);
+        let (_temp, pool, owner, request) = prepared_fixture_with_results(&results, true).await;
+        let mut changed = request.clone();
+        let EngineOutcome::Completed { output } = &mut changed.outcome else {
+            unreachable!()
+        };
+        output.value_json =
+            r#"{"text":"done","results":{"report":{"value":1,"mediaType":"application/json"}}}"#
+                .into();
+        assert_eq!(
+            prepared::prepare(&pool, "generation", changed)
+                .await
+                .unwrap_err()
+                .code,
+            "CORRELATION"
+        );
+        let outcome = request.outcome.clone();
+        let witness = prepared::prepare(&pool, "generation", request)
+            .await
+            .unwrap();
+        let committed = prepared::commit(&pool, "generation", &owner, &witness)
+            .await
+            .unwrap();
+        assert!(record_equal(&committed.outcome, &outcome).unwrap());
+        assert!(record_equal(
+            &committed.outgoing[0].input,
+            match &outcome {
+                EngineOutcome::Completed { output } => output,
+                _ => unreachable!(),
+            }
+        )
+        .unwrap());
+    }
+}
+
+#[tokio::test]
+async fn same_epoch_claude_stop_waits_for_the_late_tool_then_prepares_its_original_terminal() {
+    let (_temp, pool, owner, mut request) = prepared_fixture_with_results("{}", false).await;
+    let provider = effect(&owner, &request.work);
+    register_effect(&pool, provider.clone()).await.unwrap();
+    let mut tool = provider.clone();
+    tool.effect = EngineEffectIdentity::Tool {
+        tool_invocation_id: "late-tool".into(),
+        provider_attempt_id: Some("provider-1".into()),
+    };
+    register_effect(&pool, tool.clone()).await.unwrap();
+    let stop = ensure_stop(&pool, &owner.system_start_id, None)
+        .await
+        .unwrap();
+    settle_owned_effect(
+        &pool,
+        EngineSettlement {
+            context: provider.context.clone(),
+            effect: provider.effect.clone(),
+            status: "ended".into(),
+            evidence_json: "{}".into(),
+        },
+        None,
+    )
+    .await
+    .unwrap();
+    let stopped =
+        crate::agsdl_host_claude::stopped_receipt(&pool, &provider.context, "provider-1", false)
+            .await
+            .unwrap();
+    assert!(matches!(
+        stopped,
+        Some(crate::agsdl_host_claude::HostClaudeReceipt::Stopped { .. })
+    ));
+    let (_, digest) = responses::read(&pool, &owner, &request.work).await.unwrap();
+    let closure = responses::Closure {
+        owner: owner.clone(),
+        work: request.work.clone(),
+        cursor: "0".into(),
+        digest: digest.clone(),
+        validation_json: r#"{"kind":"success","text":"","resultsJson":"{}","choice":null}"#.into(),
+    };
+    assert_eq!(
+        responses::close(&pool, closure.clone())
+            .await
+            .unwrap_err()
+            .code,
+        "STOP_PENDING"
+    );
+    assert_eq!(
+        ensure_stop(&pool, &owner.system_start_id, None)
+            .await
+            .unwrap(),
+        stop
+    );
+    let pending = read_effects(&pool, &request.work).await.unwrap();
+    assert_eq!(
+        pending
+            .iter()
+            .find(|e| e.registered.effect == tool.effect)
+            .unwrap()
+            .status,
+        "pending"
+    );
+    assert!(settle_owned_effect(
+        &pool,
+        EngineSettlement {
+            context: tool.context.clone(),
+            effect: tool.effect.clone(),
+            status: "ended".into(),
+            evidence_json: "{}".into()
+        },
+        None
+    )
+    .await
+    .is_err());
+    settle_owned_effect(
+        &pool,
+        EngineSettlement {
+            context: tool.context,
+            effect: tool.effect,
+            status: "ended".into(),
+            evidence_json: "{}".into(),
+        },
+        Some("null".into()),
+    )
+    .await
+    .unwrap();
+    responses::close(&pool, closure).await.unwrap();
+    request.outcome = EngineOutcome::Stopped {
+        evidence_json: r#"{"kind":"native-claude-stopped"}"#.into(),
+    };
+    request.validation.closure_digest = digest;
+    let witness = prepared::prepare(&pool, "generation", request)
+        .await
+        .unwrap();
+    let terminal = prepared::commit(&pool, "generation", &owner, &witness)
+        .await
+        .unwrap();
+    assert_eq!(terminal.owner, owner);
+    assert!(terminal.outgoing.is_empty());
+    assert!(matches!(terminal.outcome, EngineOutcome::Stopped { .. }));
+    assert!(matches!(
+        ensure_stop(&pool, &owner.system_start_id, None)
+            .await
+            .unwrap(),
+        EngineStopState::Confirmed { .. }
+    ));
+    let state = read_projection(&pool, &owner.system_start_id)
+        .await
+        .unwrap();
+    assert_eq!(
+        state.activations[0].admitted_epoch.as_deref(),
+        Some(owner.owner_epoch.as_str())
+    );
+    let before = state.cursor;
+    prepared::commit(&pool, "generation", &owner, &witness)
+        .await
+        .unwrap();
+    ensure_stop(&pool, &owner.system_start_id, None)
+        .await
+        .unwrap();
+    assert_eq!(
+        read_projection(&pool, &owner.system_start_id)
+            .await
+            .unwrap()
+            .cursor,
+        before
+    );
+}
+
+#[tokio::test]
+async fn stopped_response_closure_keeps_unknown_effects_unconfirmed() {
+    let (_temp, pool, owner, request) = prepared_fixture_with_results("{}", false).await;
+    let provider = effect(&owner, &request.work);
+    register_effect(&pool, provider.clone()).await.unwrap();
+    ensure_stop(&pool, &owner.system_start_id, None)
+        .await
+        .unwrap();
+    settle_owned_effect(
+        &pool,
+        EngineSettlement {
+            context: provider.context,
+            effect: provider.effect,
+            status: "uncertain".into(),
+            evidence_json: "{}".into(),
+        },
+        None,
+    )
+    .await
+    .unwrap();
+    let (_, digest) = responses::read(&pool, &owner, &request.work).await.unwrap();
+    assert_eq!(
+        responses::close(
+            &pool,
+            responses::Closure {
+                owner: owner.clone(),
+                work: request.work.clone(),
+                cursor: "0".into(),
+                digest,
+                validation_json: r#"{"kind":"success"}"#.into(),
+            }
+        )
+        .await
+        .unwrap_err()
+        .code,
+        "NATIVE_UNCERTAIN"
+    );
+    assert_eq!(
+        read_effects(&pool, &request.work).await.unwrap()[0].status,
+        "uncertain"
+    );
+    assert!(!matches!(
+        ensure_stop(&pool, &owner.system_start_id, None)
+            .await
+            .unwrap(),
+        EngineStopState::Confirmed { .. }
+    ));
+}
