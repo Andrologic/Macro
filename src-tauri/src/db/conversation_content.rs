@@ -190,7 +190,7 @@ async fn opening(
     estimate: &mut u64,
 ) -> DbResult<ConversationContentOpening> {
     let query = format!(
-        "SELECT {} FROM conversations WHERE id = ?",
+        "SELECT {}, CASE WHEN typeof(message_count) = 'integer' AND typeof(is_pinned) = 'integer' THEN 1 ELSE 0 END AS scalars_valid FROM conversations WHERE id = ?",
         lengths(CONVERSATION_FIELDS)
     );
     let sizes = sqlx::query(sqlx::AssertSqlSafe(query))
@@ -198,18 +198,50 @@ async fn opening(
         .fetch_one(&mut *db)
         .await
         .map_err(unavailable)?;
+    // INTEGER affinity does not exclude oversized TEXT/BLOB values. Return
+    // only numeric type flags until every raw scalar in opening is validated.
+    if sizes
+        .try_get::<i64, _>("scalars_valid")
+        .map_err(unavailable)?
+        != 1
+    {
+        return Err(fail("unavailable"));
+    }
     *estimate = add(
         *estimate,
         text_cost(row_bytes(&sizes, CONVERSATION_FIELDS.len())?)?,
     )?;
     let metadata_query = format!("{METADATA_QUERY} WHERE s.conversation_id = ?");
-    let query = format!("WITH observed AS ({metadata_query}) SELECT {}, revision, response_revision, read_revision FROM observed", lengths(&["conversation_id", "question_message_id", "preview_message_id"]));
+    let query = format!(
+        "WITH observed AS ({metadata_query}) SELECT {}, CASE WHEN
+            typeof(revision) = 'integer' AND typeof(archived) = 'integer'
+            AND typeof(response_revision) = 'integer' AND typeof(read_revision) = 'integer'
+            AND typeof(pending_tool) = 'integer' AND typeof(provider_failed) = 'integer'
+            AND NOT EXISTS (SELECT 1 FROM conversation_response_versions v
+                WHERE v.conversation_id = observed.conversation_id
+                  AND (typeof(v.revision) != 'integer' OR typeof(v.read_revision) != 'integer'))
+            THEN 1 ELSE 0 END AS scalars_valid FROM observed",
+        lengths(&[
+            "conversation_id",
+            "question_message_id",
+            "preview_message_id"
+        ])
+    );
     let sizes = sqlx::query(sqlx::AssertSqlSafe(query))
         .bind(id)
         .fetch_optional(&mut *db)
         .await
         .map_err(unavailable)?
         .ok_or_else(|| fail("unavailable"))?;
+    // Check aggregate inputs as well: arithmetic/comparison can otherwise hide
+    // an ill-typed read_revision behind a numeric derived result.
+    if sizes
+        .try_get::<i64, _>("scalars_valid")
+        .map_err(unavailable)?
+        != 1
+    {
+        return Err(fail("unavailable"));
+    }
     *estimate = add(*estimate, text_cost(row_bytes(&sizes, 3)?)?)?;
     // Decimal integers, field names, bools and object syntax fit the fixed reserve.
     if *estimate > MAX_BYTES {

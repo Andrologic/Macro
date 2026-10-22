@@ -429,6 +429,7 @@ struct FetchProbe {
     bodies: std::sync::atomic::AtomicUsize,
     descriptors: std::sync::atomic::AtomicUsize,
     deny: std::sync::atomic::AtomicU8,
+    oversized_rows: std::sync::atomic::AtomicUsize,
 }
 unsafe extern "C" fn trace_fetch(
     event: u32,
@@ -437,13 +438,28 @@ unsafe extern "C" fn trace_fetch(
     _: *mut std::ffi::c_void,
 ) -> i32 {
     use std::sync::atomic::Ordering::SeqCst;
+    // SAFETY: SQLite owns an Arc through the probe-owner function until close;
+    // both trace events supply a live statement.
+    let probe = unsafe { &*(context as *const FetchProbe) };
+    let stmt = statement as *mut libsqlite3_sys::sqlite3_stmt;
+    if event == libsqlite3_sys::SQLITE_TRACE_ROW as u32 {
+        // Observe actual engine result values before SQLx duplicates the row.
+        // typeof/CASE projections must never emit an oversized TEXT or BLOB.
+        for column in 0..unsafe { libsqlite3_sys::sqlite3_column_count(stmt) } {
+            let kind = unsafe { libsqlite3_sys::sqlite3_column_type(stmt, column) };
+            if matches!(
+                kind,
+                libsqlite3_sys::SQLITE_TEXT | libsqlite3_sys::SQLITE_BLOB
+            ) && unsafe { libsqlite3_sys::sqlite3_column_bytes(stmt, column) } as u64 > MAX_BYTES
+            {
+                probe.oversized_rows.fetch_add(1, SeqCst);
+            }
+        }
+        return 0;
+    }
     if event != libsqlite3_sys::SQLITE_TRACE_STMT as u32 {
         return 0;
     }
-    // SAFETY: SQLite owns an Arc through the probe-owner function until close;
-    // SQLite supplies a live statement for SQLITE_TRACE_STMT.
-    let probe = unsafe { &*(context as *const FetchProbe) };
-    let stmt = statement as *mut libsqlite3_sys::sqlite3_stmt;
     let sql =
         unsafe { std::ffi::CStr::from_ptr(libsqlite3_sys::sqlite3_sql(stmt)) }.to_string_lossy();
     let body = sql.starts_with("SELECT m.id, m.conversation_id, m.role, m.content,");
@@ -494,6 +510,7 @@ async fn probe_pool(dir: &TempDir) -> (SqlitePool, std::sync::Arc<FetchProbe>) {
         bodies: 0.into(),
         descriptors: 0.into(),
         deny: 0.into(),
+        oversized_rows: 0.into(),
     });
     let mut connection = pool.acquire().await.unwrap();
     let mut handle = connection.lock_handle().await.unwrap();
@@ -523,7 +540,7 @@ async fn probe_pool(dir: &TempDir) -> (SqlitePool, std::sync::Arc<FetchProbe>) {
         unsafe {
             libsqlite3_sys::sqlite3_trace_v2(
                 handle.as_raw_handle().as_ptr(),
-                libsqlite3_sys::SQLITE_TRACE_STMT as u32,
+                (libsqlite3_sys::SQLITE_TRACE_STMT | libsqlite3_sys::SQLITE_TRACE_ROW) as u32,
                 Some(trace_fetch),
                 owner,
             )
@@ -1046,5 +1063,155 @@ async fn native_runtime_diagnostic_is_schema13_wal_normal_fk() {
         serde_json::json!({"pid":std::process::id(),"sqlite":sqlite,"migrations":migrations,"journal":journal,"synchronous":synchronous,"foreign_keys":fk,"timings":false,"memory_claim":false})
     );
     drop(db);
+    pool.close().await;
+}
+
+#[tokio::test]
+async fn opening_rejects_oversized_untyped_scalars_before_any_result_fetch() {
+    use std::sync::atomic::Ordering::SeqCst;
+    for (table, column, owner) in [
+        ("conversation_management", "revision", "conversation_id"),
+        ("conversation_management", "archived", "conversation_id"),
+        ("conversations", "message_count", "id"),
+        ("conversations", "is_pinned", "id"),
+        (
+            "conversation_response_versions",
+            "revision",
+            "conversation_id",
+        ),
+        (
+            "conversation_response_versions",
+            "read_revision",
+            "conversation_id",
+        ),
+    ] {
+        for blob in [false, true] {
+            let (dir, pool) = fixture().await;
+            message(&pool, "m", "a", "assistant", "small").await;
+            let query = format!("UPDATE {table} SET {column} = ? WHERE {owner} = 'a'");
+            if blob {
+                sqlx::query(sqlx::AssertSqlSafe(query))
+                    .bind(vec![b'x'; 5_000_000])
+                    .execute(&pool)
+                    .await
+                    .unwrap();
+            } else {
+                sqlx::query(sqlx::AssertSqlSafe(query))
+                    .bind("x".repeat(5_000_000))
+                    .execute(&pool)
+                    .await
+                    .unwrap();
+            }
+            validate_schema(&mut pool.acquire().await.unwrap())
+                .await
+                .unwrap();
+            assert_eq!(
+                sqlx::query_scalar::<_, String>("PRAGMA integrity_check")
+                    .fetch_one(&pool)
+                    .await
+                    .unwrap(),
+                "ok"
+            );
+            assert!(sqlx::query("PRAGMA foreign_key_check")
+                .fetch_all(&pool)
+                .await
+                .unwrap()
+                .is_empty());
+            pool.close().await;
+            let (pool, probe) = probe_pool(&dir).await;
+            code(
+                conversation_content_metadata(&pool, &metadata_input("a")).await,
+                "unavailable",
+            );
+            let oversized = probe.oversized_rows.load(SeqCst);
+            assert_eq!(oversized, 0, "{table}.{column} blob={blob}: oversized scalar crossed an SQL result before refusal");
+            assert_eq!(probe.bodies.load(SeqCst), 0);
+            assert_eq!(probe.descriptors.load(SeqCst), 0);
+            // Active negative control: select exactly the stored value without
+            // a guard. The same engine witness must observe its 5 MB payload.
+            let control = format!("SELECT {column} FROM {table} WHERE {owner} = 'a'");
+            drop(
+                sqlx::query(sqlx::AssertSqlSafe(control))
+                    .fetch_one(&pool)
+                    .await
+                    .unwrap(),
+            );
+            assert_eq!(
+                probe.oversized_rows.load(SeqCst),
+                1,
+                "inactive ROW witness for {table}.{column} blob={blob}"
+            );
+            eprintln!(
+                "C1A_NUMERIC_ADMISSION {}",
+                serde_json::json!({"table":table,"column":column,"kind":if blob {"blob"}else{"text"},"port_oversized_rows":oversized,"negative_control_oversized_rows":probe.oversized_rows.load(SeqCst)})
+            );
+            stop_probe(&pool).await;
+            drop(probe);
+        }
+    }
+}
+
+#[tokio::test]
+async fn opening_rejects_small_text_real_and_null_scalars_without_coercion() {
+    for (table, column, owner) in [
+        ("conversation_management", "revision", "conversation_id"),
+        ("conversation_management", "archived", "conversation_id"),
+        ("conversations", "message_count", "id"),
+        ("conversations", "is_pinned", "id"),
+        (
+            "conversation_response_versions",
+            "revision",
+            "conversation_id",
+        ),
+        (
+            "conversation_response_versions",
+            "read_revision",
+            "conversation_id",
+        ),
+    ] {
+        for value in ["'invalid'", "1.5"] {
+            let (_dir, pool) = fixture().await;
+            message(&pool, "m", "a", "assistant", "small").await;
+            sqlx::query(sqlx::AssertSqlSafe(format!(
+                "UPDATE {table} SET {column}={value} WHERE {owner}='a'"
+            )))
+            .execute(&pool)
+            .await
+            .unwrap();
+            code(
+                conversation_content_metadata(&pool, &metadata_input("a")).await,
+                "unavailable",
+            );
+            pool.close().await;
+        }
+    }
+    for column in ["message_count", "is_pinned"] {
+        let (_dir, pool) = fixture().await;
+        sqlx::query(sqlx::AssertSqlSafe(format!(
+            "UPDATE conversations SET {column}=NULL WHERE id='a'"
+        )))
+        .execute(&pool)
+        .await
+        .unwrap();
+        code(
+            conversation_content_metadata(&pool, &metadata_input("a")).await,
+            "unavailable",
+        );
+        pool.close().await;
+    }
+}
+
+#[tokio::test]
+async fn opening_preserves_pending_derived_revision_above_js_integer_precision() {
+    let (_dir, pool) = fixture().await;
+    message(&pool, "m", "a", "assistant", "small").await;
+    sqlx::query("UPDATE conversation_response_versions SET revision=9007199254740997,read_revision=0 WHERE message_id='m'").execute(&pool).await.unwrap();
+    let page = conversation_content_metadata(&pool, &metadata_input("a"))
+        .await
+        .unwrap();
+    let metadata = &page.opening.as_ref().unwrap().metadata;
+    assert_eq!(metadata.response_revision, "9007199254740997");
+    assert_eq!(metadata.read_revision, "9007199254740996");
+    admitted(&page, page.admission_estimate_bytes);
     pool.close().await;
 }
