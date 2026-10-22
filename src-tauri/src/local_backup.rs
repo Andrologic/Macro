@@ -295,6 +295,11 @@ async fn check_database(path: &Path) -> Result<()> {
         .await
         .map_err(|e| e.to_string())?;
     let stamped = |version, name: &str| stamps.iter().any(|(v, n)| *v == version && n == name);
+    if versions.contains(&13)
+        && (!versions.contains(&12) || !stamped(13, "013_conversation_content_versions"))
+    {
+        return Err("Incompatible database schema".into());
+    }
     let legacy_trace = stamped(6, "006_pilot_tool_trace_revisions");
     let legacy_management = stamped(7, "007_conversation_management");
     let has_trace =
@@ -307,6 +312,29 @@ async fn check_database(path: &Path) -> Result<()> {
     // Compare the archive with the schema its migration stamps describe. Do
     // not migrate the untrusted archive until its original objects pass this
     // strict comparison; startup validation migrates a temporary copy later.
+    if !versions.contains(&13) {
+        crate::db::conversation_content::remove_reference_schema(&reference)
+            .await
+            .map_err(|e| e.to_string())?;
+    }
+    if !versions.contains(&12) {
+        // Version 12 added these tables. An older archive must match its own
+        // schema, without accepting newer undeclared tables as extra objects.
+        for statement in [
+            "DROP TABLE pilot_file_chunks",
+            "DROP TABLE pilot_file_sends",
+            "DROP TABLE pilot_message_attachments",
+            "DROP TABLE pilot_file_transfers",
+            "DROP TABLE pilot_file_sources",
+            "DROP TABLE pilot_file_binding_history",
+            "DROP TABLE pilot_file_authorities",
+        ] {
+            sqlx::query(statement)
+                .execute(&reference)
+                .await
+                .map_err(|e| e.to_string())?;
+        }
+    }
     if !has_management {
         for statement in [
             "DROP TRIGGER conversation_management_insert",
@@ -377,7 +405,8 @@ async fn check_database(path: &Path) -> Result<()> {
         return Err("Backup database tables do not match this Macro version".into());
     }
     for table in tables {
-        if table == "tool_invocations"
+        if table == "conversation_content_versions"
+            || table == "tool_invocations"
             || table == "agent_run_transitions"
             || table == "conversation_goals"
             || table.starts_with("conversation_goal_")
@@ -1286,6 +1315,17 @@ mod tests {
         (temp, data, config)
     }
 
+    async fn remove_content_schema(db: &mut SqliteConnection) {
+        let names: Vec<String> = sqlx::query_scalar("SELECT name FROM sqlite_master WHERE type='trigger' AND name GLOB 'content_versions_*'").fetch_all(&mut *db).await.unwrap();
+        for name in names {
+            sqlx::query(sqlx::AssertSqlSafe(format!("DROP TRIGGER {name}")))
+                .execute(&mut *db)
+                .await
+                .unwrap();
+        }
+        sqlx::raw_sql("DROP TABLE conversation_content_versions; DELETE FROM schema_migrations WHERE version=13;").execute(&mut *db).await.unwrap();
+    }
+
     async fn remove_post_v4_schema(db: &mut SqliteConnection) {
         remove_v9_schema(db).await;
         sqlx::query("DROP TABLE agent_run_transitions")
@@ -1307,6 +1347,18 @@ mod tests {
     }
 
     async fn remove_v9_schema(db: &mut SqliteConnection) {
+        remove_content_schema(db).await;
+        for statement in [
+            "DROP TABLE pilot_file_chunks",
+            "DROP TABLE pilot_file_sends",
+            "DROP TABLE pilot_message_attachments",
+            "DROP TABLE pilot_file_transfers",
+            "DROP TABLE pilot_file_sources",
+            "DROP TABLE pilot_file_binding_history",
+            "DROP TABLE pilot_file_authorities",
+        ] {
+            sqlx::query(statement).execute(&mut *db).await.unwrap();
+        }
         for statement in [
             "DROP TRIGGER conversation_management_insert",
             "DROP TRIGGER conversation_management_update",
@@ -1504,7 +1556,7 @@ mod tests {
                 .fetch_one(&pool)
                 .await
                 .unwrap(),
-            12
+            13
         );
         assert_eq!(
             sqlx::query_scalar::<_, String>(
@@ -1537,7 +1589,7 @@ mod tests {
             .fetch_one(&mut db)
             .await
             .unwrap();
-        assert_eq!(version, 12);
+        assert_eq!(version, 13);
         sqlx::query("INSERT INTO schema_migrations VALUES (99, 'future', 'synthetic')")
             .execute(&mut db)
             .await
@@ -2890,3 +2942,154 @@ mod qualification;
 #[cfg(test)]
 #[path = "local_backup_secrets_qualification.rs"]
 mod secrets_qualification;
+
+#[cfg(test)]
+mod content_backup_tests {
+    use super::*;
+    async fn strip_content(db: &mut SqliteConnection) {
+        let names:Vec<String>=sqlx::query_scalar("SELECT name FROM sqlite_master WHERE type='trigger' AND name GLOB 'content_versions_*'").fetch_all(&mut *db).await.unwrap();
+        for name in names {
+            sqlx::query(sqlx::AssertSqlSafe(format!("DROP TRIGGER {name}")))
+                .execute(&mut *db)
+                .await
+                .unwrap();
+        }
+        sqlx::raw_sql("DROP TABLE conversation_content_versions; DELETE FROM schema_migrations WHERE version=13").execute(db).await.unwrap();
+    }
+    #[tokio::test]
+    async fn pre13_archive_validation_preserves_original_then_migrates_only_copy() {
+        let (temp, data, _config) = tests::profile().await;
+        let original = data.join("macro.db");
+        let mut db = connection(&original).await.unwrap();
+        strip_content(&mut db).await;
+        db.close().await.unwrap();
+        let before = fs::read(&original).unwrap();
+        check_database(&original).await.unwrap();
+        assert_eq!(fs::read(&original).unwrap(), before);
+        let copy = temp.path().join("migration-copy.db");
+        fs::copy(&original, &copy).unwrap();
+        check_database_startup(&copy).await.unwrap();
+        check_database(&copy).await.unwrap();
+        let mut db = connection(&copy).await.unwrap();
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>("SELECT MAX(version) FROM schema_migrations")
+                .fetch_one(&mut db)
+                .await
+                .unwrap(),
+            13
+        );
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM conversation_content_versions")
+                .fetch_one(&mut db)
+                .await
+                .unwrap(),
+            1
+        );
+        db.close().await.unwrap();
+        assert_eq!(fs::read(&original).unwrap(), before);
+    }
+    #[tokio::test]
+    async fn schema13_rejects_missing_unknown_and_modified_objects() {
+        for mutation in [
+            "DROP TRIGGER content_versions_messages_insert",
+            "DROP TABLE conversation_content_versions",
+            "CREATE TRIGGER content_versions_unexpected AFTER INSERT ON settings BEGIN SELECT 1; END",
+            "CREATE TRIGGER unrelated_unexpected AFTER INSERT ON settings BEGIN SELECT 1; END",
+            "PRAGMA writable_schema=ON; UPDATE sqlite_master SET sql=replace(sql, 'AND revision >= 0', 'AND revision >= -1') WHERE name='conversation_content_versions'; PRAGMA writable_schema=OFF; PRAGMA schema_version=999",
+            "DELETE FROM schema_migrations WHERE version=13",
+            "UPDATE schema_migrations SET name='wrong' WHERE version=13",
+        ] {
+            let (_temp,data,_config)=tests::profile().await;
+            let path=data.join("macro.db");
+            let mut db=connection(&path).await.unwrap(); sqlx::raw_sql(mutation).execute(&mut db).await.unwrap(); db.close().await.unwrap();
+            let before=fs::read(&path).unwrap();
+            assert!(check_database(&path).await.is_err(),"accepted {mutation}");
+            assert_eq!(fs::read(&path).unwrap(),before);
+        }
+    }
+}
+
+#[cfg(test)]
+mod content_legacy_backup_tests {
+    use super::*;
+    #[tokio::test]
+    async fn exact_v5_v9_and_v12_archives_validate_before_copy_migration() {
+        for version in [5, 9, 12] {
+            let (temp, data, _config) = tests::profile().await;
+            let original = data.join("macro.db");
+            let mut db = connection(&original).await.unwrap();
+            let names:Vec<String>=sqlx::query_scalar("SELECT name FROM sqlite_master WHERE type='trigger' AND name GLOB 'content_versions_*'").fetch_all(&mut db).await.unwrap();
+            for name in names {
+                sqlx::query(sqlx::AssertSqlSafe(format!("DROP TRIGGER {name}")))
+                    .execute(&mut db)
+                    .await
+                    .unwrap();
+            }
+            sqlx::query("DROP TABLE conversation_content_versions")
+                .execute(&mut db)
+                .await
+                .unwrap();
+            if version < 12 {
+                for statement in [
+                    "DROP TABLE pilot_file_chunks",
+                    "DROP TABLE pilot_file_sends",
+                    "DROP TABLE pilot_message_attachments",
+                    "DROP TABLE pilot_file_transfers",
+                    "DROP TABLE pilot_file_sources",
+                    "DROP TABLE pilot_file_binding_history",
+                    "DROP TABLE pilot_file_authorities",
+                    "DROP TRIGGER conversation_management_insert",
+                    "DROP TRIGGER conversation_management_update",
+                    "DROP TRIGGER conversation_response_insert",
+                    "DROP TRIGGER conversation_response_update",
+                    "DROP TABLE conversation_response_versions",
+                    "DROP TABLE conversation_action_receipts",
+                    "DROP TABLE conversation_management",
+                    "DROP TRIGGER messages_tool_trace_revision_insert",
+                    "DROP TRIGGER messages_tool_trace_revision_delete",
+                    "DROP TRIGGER messages_tool_trace_revision_update_same_conversation",
+                    "DROP TRIGGER messages_tool_trace_revision_update_conversation",
+                    "DROP TABLE conversation_tool_trace_revisions",
+                ] {
+                    sqlx::query(statement).execute(&mut db).await.unwrap();
+                }
+            }
+            if version == 5 {
+                for statement in [
+                    "DROP TRIGGER conversation_goal_audit_run_status",
+                    "DROP TABLE conversation_goal_audit_runs",
+                    "DROP TABLE conversation_goal_audits",
+                    "DROP TABLE conversation_goals",
+                    "DROP TABLE agent_run_transitions",
+                    "DROP TABLE tool_invocations",
+                    "ALTER TABLE messages DROP COLUMN generation_attempts_json",
+                ] {
+                    sqlx::query(statement).execute(&mut db).await.unwrap();
+                }
+            }
+            sqlx::query("DELETE FROM schema_migrations WHERE version > ?")
+                .bind(version)
+                .execute(&mut db)
+                .await
+                .unwrap();
+            db.close().await.unwrap();
+            let before = fs::read(&original).unwrap();
+            check_database(&original).await.unwrap();
+            assert_eq!(fs::read(&original).unwrap(), before);
+            let copy = temp.path().join("copy.db");
+            fs::copy(&original, &copy).unwrap();
+            check_database_startup(&copy).await.unwrap();
+            check_database(&copy).await.unwrap();
+            let pool = crate::db::create_pool(&copy).await.unwrap();
+            assert_eq!(
+                crate::db::repository::list_messages(&pool, "conversation")
+                    .await
+                    .unwrap()[0]
+                    .content,
+                "Representative transcript"
+            );
+            pool.close().await;
+            assert_eq!(fs::read(&original).unwrap(), before);
+        }
+    }
+}

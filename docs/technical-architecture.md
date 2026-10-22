@@ -980,6 +980,37 @@ journal de restauration pour empêcher son rejeu après récupération. Les stat
 natifs exposent un code et un chemin ; l'interface traduit le résumé et conserve
 les messages techniques dans les détails du diagnostic.
 
+Les ports internes `repository::conversation_content_version`,
+`conversation_content_metadata` et `conversation_content_window` préparent une
+lecture progressive du transcript. La migration 13 conserve une incarnation
+aléatoire de 128 bits et une révision entière par conversation. Les mutations des
+conversations, messages, métadonnées de gestion et reçus de provenance invalident
+ce token dans la transaction d'écriture. Les victimes de `REPLACE` sont prises en
+compte par clé et par rowid, avec récursivité SQLite activée ou désactivée.
+
+La version ne lit que l'existence et le token. L'ouverture du catalogue fournit
+les totaux brut et exportable, la conversation et ses métadonnées de gestion.
+Les pages suivantes rendent seulement les descripteurs et le token attendu.
+Le parcours natif BINARY conserve les dates brutes pour le tri actuel du frontend.
+Il ne lit aucune longueur de futur corps dans les descripteurs. Les calculs de
+métadonnées de gestion existants peuvent toujours inspecter du contenu et du JSON
+dans SQLite à l'ouverture.
+
+La fenêtre reçoit de 1 à 100 IDs distincts et vérifie leur appartenance ainsi que
+leur rôle avant de rendre un préfixe. Les longueurs UTF-8 des huit champs utiles
+et du reçu brut sont admises avant leur hydratation, sous une estimation
+conservative de 4 194 304 octets. Chaque page utilise une transaction courte et
+un snapshot cohérent pour le token, l'admission et le fetch. Ces contrats natifs
+ne branchent pas encore les captures TypeScript et n'annoncent aucune capacité
+supplémentaire. Leur plafond ne vaut ni limite avant décodage IPC, ni borne RSS.
+
+Les sauvegardes antérieures à 13 restent comparées à leur schéma d'origine avant
+migration d'une copie. Une archive déclarant 13 doit conserver le DDL complet de
+la table de versions et tous les triggers attendus. Le démarrage rejette aussi
+un stamp 13 dont ces objets sont incomplets ou modifiés. Une restauration peut
+réintroduire un ancien token durable ; l'invalidation des captures par époque de
+source reste à réaliser lors du branchement frontend.
+
 ### 9.4 `fs`
 
 Le module `fs` porte :
