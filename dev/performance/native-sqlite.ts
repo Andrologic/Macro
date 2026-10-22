@@ -45,14 +45,19 @@ export function validateContentBaseline(value: unknown, pilot: boolean): void {
   if (data.schema !== 3 || data.mode !== 'content-baseline' || data.pilot !== pilot ||
       data.reference_eligible !== !pilot || data.warmup !== (pilot ? 1 : 10) || data.samples !== samples ||
       typeof data.fixture_sha256 !== 'string' || !/^[a-f0-9]{64}$/.test(data.fixture_sha256)) throw new Error('Invalid content baseline header');
-  for (const key of ['all_counted_large_fields_refused', 'sql_rejection_before_fetch', 'fetch_probe_negative_control', 'legacy_receipt_not_projected', 'cas_conflict_refused']) {
+  for (const key of ['seven_payload_fields_refused', 'sql_rejection_before_fetch', 'fetch_probe_negative_control', 'legacy_receipt_not_projected', 'cas_conflict_refused']) {
     if (object(data.admission_controls)[key] !== true) throw new Error('Missing content admission control');
   }
-  if (object(data.contract_checks).all_14_fields !== true) throw new Error('Missing 14-field golden check');
+  for (const key of ['empty_and_missing','timestamp_id_ties','all_14_fields','unicode_preview_future_latest',
+    'duplicate_and_foreign_key_errors','metadata_failure_rolls_back_message_and_fts','wal_reader_and_writer_wait',
+    'commit_file_reopen_exact_content_metadata_fts']) {
+    if (object(data.contract_checks)[key] !== true) throw new Error('Missing content contract check');
+  }
+  if (object(data.contract_checks).rows_after_reopen !== 4) throw new Error('Invalid content contract reopen count');
   if (!Array.isArray(data.cases) || data.cases.length !== 3) throw new Error('Incomplete content cases');
   const names = ['get_message', 'list_messages_bounded', 'count_exportable', 'catalog_metadata',
     'serde_get_message', 'serde_all_messages', 'serde_catalog_metadata', 'update_stream_commit',
-    'import100_commit', 'delete100_commit', 'provenance_cas'];
+    'import100_commit', 'delete100_commit', 'provenance_cas', 'provenance_get'];
   for (const [index, raw] of data.cases.entries()) {
     const entry = object(raw); const size = [100, 1000, 10000][index];
     if (entry.initial_messages !== size || entry.final_messages !== size ||
@@ -72,11 +77,16 @@ export function validateContentBaseline(value: unknown, pilot: boolean): void {
       for (const rawOutcome of cell.outcomes) {
         const outcome = object(rawOutcome);
         if (name.startsWith('serde_') && (!Number.isSafeInteger(outcome.bytes) || Number(outcome.bytes) <= 0)) throw new Error('Invalid content serialized bytes');
-        if (name === 'get_message' && (outcome.rows !== 1 || outcome.outcome !== 'ok')) throw new Error('Invalid content get outcome');
+        if (['get_message','provenance_get'].includes(name) && (outcome.rows !== 1 || outcome.outcome !== 'ok')) throw new Error('Invalid content get outcome');
         if (name === 'count_exportable' && outcome.rows !== size) throw new Error('Invalid content count');
         if (name === 'catalog_metadata' && outcome.conversations !== 1) throw new Error('Invalid content metadata');
         if (['update_stream_commit', 'provenance_cas', 'import100_commit', 'delete100_commit'].includes(name) &&
             (outcome.start_rows !== size + (name === 'delete100_commit' ? 100 : 0) || outcome.end_rows !== size + (name === 'import100_commit' ? 100 : 0))) throw new Error('Invalid content write state');
+        if (name === 'import100_commit' && outcome.inserted !== 100) throw new Error('Invalid content inserted count');
+        if (name === 'delete100_commit' && outcome.deleted !== 100) throw new Error('Invalid content deleted count');
+        if (name === 'list_messages_bounded' && (entry.bounded_admitted
+          ? outcome.outcome !== 'ok' || outcome.rows !== size || 'rows_returned' in outcome
+          : outcome.outcome !== 'resource_limit' || outcome.rows_returned !== 0 || 'rows' in outcome)) throw new Error('Invalid content bounded cardinality');
         if (name === 'provenance_cas' && outcome.applied !== true) throw new Error('Invalid content CAS');
       }
       if (name === 'list_messages_bounded' && cell.outcomes.some(raw => object(raw).outcome !== (entry.bounded_admitted ? 'ok' : 'resource_limit'))) throw new Error('Unexpected content admission outcome');

@@ -276,17 +276,20 @@ remain required. The fixture hash covers its definition and Rust fixture module.
 | import100_commit | import_messages of 100 rows above N, including metadata and commit. |
 | delete100_commit | delete_messages_after removing 100 prepared tail rows, leaving N, including FTS/metadata/commit. |
 | provenance_cas | Actual app_settings CAS/autocommit at the exact provenance prefix; receipt hash generation excluded. |
+| provenance_get | Actual get_app_setting fetch and mapping of the raw receipt row. Exact key/value/timestamp are verified outside timing; no JSON parsing or serde in this cell. |
 
 Fixtures use mixed user/assistant rows, UTF-8, one assistant with all 14 fields,
 provider-output evidence and a version-2 receipt with a SHA-256/UTF-16 golden.
 No real conversation or provider is used. Metadata/body correctness checks,
-missing results, large annex fields, CAS conflict, legacy receipt exclusion and
+missing results, the seven common payload fields, CAS conflict, legacy receipt exclusion and
 SQL refusal before fetch are untimed controls. Legacy get/list DTOs do not include
 receipts; a large receipt is preserved without inventing an admission guard for
 it. Receipt/window admission remains unmeasured until that primitive exists.
 
+The seven payload controls cover content, hidden_context, tool_traces_json, provider_input_items_json, provider_turn_state_json, context_refs_json and generation_attempts_json. They do not claim coverage of every scalar counted only by list_messages_bounded.
+
 Write inputs are constructed before the timer. Imports/deletions reset outside
-timing, and every observation records starting/ending row counts. The same
+timing, and every observation records actual SQL COUNT values observed before/after each write, outside timing. Both timed and preparatory imports are checked exactly before deletion. UPDATE targets the latest assistant; its new FTS marker and removal of the previous marker, plus previews/counts/timestamps, are checked immediately. Import and deletion have distinct FTS markers and exact metadata checks before any later reset. The same
 fixture, sample order and reset operations must be used before and after future
 triggers. These resets and validations warm the file/WAL/cache. Streaming content
 and response-version counters advance deterministically; the fixture is not a

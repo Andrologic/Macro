@@ -14,7 +14,7 @@ const PREFIX: &str = "chat:assistant-visible-provenance:v1:";
 const COUNT: &str =
     "SELECT COUNT(*) FROM messages WHERE conversation_id = ? AND role IN ('user','assistant')";
 const FIXTURE: &str =
-    "content-v1:mixed-256;assistant-14-fields;receipt-v2;update-256+64*i;batch100;tail100;schema12";
+    "content-v2:mixed-256;assistant-14-fields;receipt-v2;update-latest-marker-256+64*i;batch100;tail100;schema12";
 
 #[derive(Default)]
 struct Cell {
@@ -159,15 +159,38 @@ async fn validate(pool: &SqlitePool, id: &str, expected: &[Message]) -> Result<(
     {
         return Err("Conversation metadata mismatch".into());
     }
-    let fts: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM message_search WHERE message_search MATCH 'syntheticbatchtoken'",
+    Ok(())
+}
+async fn row_count(pool: &SqlitePool, id: &str) -> Result<i64> {
+    Ok(
+        sqlx::query_scalar("SELECT COUNT(*) FROM messages WHERE conversation_id=?")
+            .bind(id)
+            .fetch_one(pool)
+            .await?,
     )
-    .fetch_one(pool)
-    .await?;
-    if fts != 0 {
-        return Err("Deleted batch remains in FTS".into());
+}
+async fn expect_count(pool: &SqlitePool, id: &str, expected: i64) -> Result<i64> {
+    let actual = row_count(pool, id).await?;
+    if actual != expected {
+        return Err(format!("Observed row count {actual}, expected {expected}").into());
+    }
+    Ok(actual)
+}
+async fn assert_fts(pool: &SqlitePool, term: &str, expected: &[String]) -> Result<()> {
+    let actual:Vec<Option<String>>=sqlx::query_scalar("SELECT m.id FROM message_search LEFT JOIN messages m ON m.rowid=message_search.rowid WHERE message_search MATCH ? ORDER BY m.id")
+        .bind(term).fetch_all(pool).await?;
+    let expected: Vec<_> = expected.iter().cloned().map(Some).collect();
+    if actual != expected {
+        return Err(format!("FTS mismatch for {term}, including orphan index entries").into());
     }
     Ok(())
+}
+fn marked_tail(marker: &str) -> Vec<ImportMessageInput> {
+    let mut inputs = batch("tail", 100, "2026-01-02T00:00:00Z");
+    for m in &mut inputs {
+        m.content = marker.into();
+    }
+    inputs
 }
 async fn check_runtime(pool: &SqlitePool, path: &std::path::Path) -> Result<Value> {
     assert_path(pool, path).await?;
@@ -217,7 +240,8 @@ async fn measure(
     .await?;
     let id = &conversation.id;
     repository::import_messages(pool, id, batch("seed", size, "2026-01-01T00:00:00Z")).await?;
-    let assistant = "seed-000001";
+    let assistant_id = format!("seed-{:06}", size - 1);
+    let assistant = assistant_id.as_str();
     let state = provider_state(ANSWER);
     sqlx::query("UPDATE messages SET content=?,token_count=37,tool_traces_json='[]',hidden_context='synthetic-hidden',provider_input_items_json='[{\"synthetic\":\"input\"}]',provider_turn_state_json=?,context_refs_json='[{\"synthetic\":\"refs\"}]',generation_attempts_json='[{\"synthetic\":\"attempts\"}]' WHERE id=?")
         .bind(ANSWER).bind(&state).bind(assistant).execute(pool).await?;
@@ -229,8 +253,17 @@ async fn measure(
     {
         return Err("Receipt seed failed".into());
     }
+    // Raw fixture seeding changed the latest content. Establish its metadata before timing.
+    sqlx::query("UPDATE conversations SET last_message=? WHERE id=?")
+        .bind(ANSWER)
+        .bind(id)
+        .execute(pool)
+        .await?;
+    let receipt_golden = repository::get_app_setting(pool, &key)
+        .await?
+        .ok_or("Missing seeded receipt")?;
     let mut golden = expected_rows(id, batch("seed", size, "2026-01-01T00:00:00Z"));
-    let special = &mut golden[1];
+    let special = &mut golden[size - 1];
     special.content = ANSWER.into();
     special.token_count = Some(37);
     special.tool_traces_json = Some("[]".into());
@@ -307,6 +340,21 @@ async fn measure(
         };
         cells.entry("list_messages_bounded").or_insert_with(Cell::default).record("list_messages_bounded",i,warmup,elapsed,outcome,"real bounded repository call; accepted and SQL resource_limit outcomes never pooled across fixture sizes");
         let start = Instant::now();
+        let raw_receipt = repository::get_app_setting(pool, &key).await?;
+        let elapsed = start.elapsed().as_secs_f64() * 1000.0;
+        keep(
+            &mut cells,
+            "provenance_get",
+            i,
+            warmup,
+            elapsed,
+            json!({"rows":usize::from(raw_receipt.is_some()),"outcome":"ok"}),
+            "actual get_app_setting receipt row; SQLx fetch/mapping, no parse, validation or serde",
+        );
+        if serde_json::to_value(&raw_receipt)? != serde_json::to_value(Some(&receipt_golden))? {
+            return Err("Raw receipt output changed".into());
+        }
+        let start = Instant::now();
         let n = count(pool, id).await?;
         let elapsed = start.elapsed().as_secs_f64() * 1000.0;
         keep(
@@ -345,8 +393,10 @@ async fn measure(
     }
     // Writes have separate series and deterministic states. Each commit includes production metadata/FTS.
     let anchor = golden.last().ok_or("Empty fixture")?.id.clone();
+    let mut previous_stream_marker: Option<String> = None;
     for i in 0..warmup + samples {
-        let content = format!("{ANSWER} {}", "x".repeat(256 + 64 * i));
+        let stream_marker = format!("syntheticstream{i}");
+        let content = format!("{ANSWER} {stream_marker} {}", "x".repeat(256 + 64 * i));
         let next = receipt(assistant, &content)?;
         let update = UpdateMessageContentInput {
             id: assistant,
@@ -361,10 +411,12 @@ async fn measure(
             completion_reason: Some("completed".into()),
             generation_attempts_json: Some("[]".into()),
         };
+        let start_rows = expect_count(pool, id, size as i64).await?;
         let start = Instant::now();
         repository::update_message_content(pool, update).await?;
         let elapsed = start.elapsed().as_secs_f64() * 1000.0;
-        keep(&mut cells,"update_stream_commit",i,warmup,elapsed,json!({"start_rows":size,"end_rows":size,"content_bytes":content.len()}),"actual update_message_content; BEGIN IMMEDIATE, FTS, metadata and commit; input construction excluded");
+        let end_rows = expect_count(pool, id, size as i64).await?;
+        keep(&mut cells,"update_stream_commit",i,warmup,elapsed,json!({"start_rows":start_rows,"end_rows":end_rows,"content_bytes":content.len()}),"actual update_message_content; BEGIN IMMEDIATE, FTS, metadata and commit; input construction excluded");
         let expected = &mut golden[index];
         expected.content = content.clone();
         expected.turn_id = Some("stream".into());
@@ -377,11 +429,19 @@ async fn measure(
         {
             return Err("Update changed one of 14 fields".into());
         }
+        validate(pool, id, &golden).await?;
+        assert_fts(pool, &stream_marker, &[assistant.to_owned()]).await?;
+        if let Some(ref marker) = previous_stream_marker {
+            assert_fts(pool, marker, &[]).await?;
+        }
+        previous_stream_marker = Some(stream_marker);
+        let start_rows = expect_count(pool, id, size as i64).await?;
         let start = Instant::now();
         let cas =
             repository::compare_and_swap_app_setting(pool, &key, Some(&previous), &next).await?;
         let elapsed = start.elapsed().as_secs_f64() * 1000.0;
-        keep(&mut cells,"provenance_cas",i,warmup,elapsed,json!({"applied":cas.applied,"start_rows":size,"end_rows":size}),"actual provenance app_setting CAS including autocommit; fingerprint construction excluded");
+        let end_rows = expect_count(pool, id, size as i64).await?;
+        keep(&mut cells,"provenance_cas",i,warmup,elapsed,json!({"applied":cas.applied,"start_rows":start_rows,"end_rows":end_rows}),"actual provenance app_setting CAS including autocommit; fingerprint construction excluded");
         if !cas.applied
             || repository::get_app_setting(pool, &key)
                 .await?
@@ -392,58 +452,44 @@ async fn measure(
             return Err("CAS mismatch".into());
         }
         previous = next;
-        let mut inputs = batch("tail", 100, "2026-01-02T00:00:00Z");
-        for m in &mut inputs {
-            m.content = "syntheticbatchtoken".into();
-        }
+        let inputs = marked_tail("syntheticbatchtoken");
         let expected_tail = expected_rows(id, inputs.clone());
+        let start_rows = expect_count(pool, id, size as i64).await?;
         let start = Instant::now();
         let inserted = repository::import_messages(pool, id, inputs).await?;
         let elapsed = start.elapsed().as_secs_f64() * 1000.0;
-        keep(
-            &mut cells,
-            "import100_commit",
-            i,
-            warmup,
-            elapsed,
-            json!({"start_rows":size,"end_rows":size+inserted.len(),"inserted":inserted.len()}),
-            "actual import_messages batch100, metadata and commit; inputs/reset excluded",
-        );
-        if inserted.len() != 100 || count(pool, id).await? != size as i64 + 100 {
-            return Err("Batch mismatch".into());
+        let end_rows = expect_count(pool, id, size as i64 + 100).await?;
+        keep(&mut cells,"import100_commit",i,warmup,elapsed,json!({"start_rows":start_rows,"end_rows":end_rows,"inserted":inserted.len()}),"actual import_messages batch100, metadata and commit; inputs/reset/counts/checks excluded");
+        if serde_json::to_value(&inserted)? != serde_json::to_value(&expected_tail)? {
+            return Err("Import output mismatch".into());
+        }
+        let tail_ids: Vec<_> = expected_tail.iter().map(|m| m.id.clone()).collect();
+        let mut expected_all = golden.clone();
+        expected_all.extend(expected_tail);
+        validate(pool, id, &expected_all).await?;
+        assert_fts(pool, "syntheticbatchtoken", &tail_ids).await?;
+        // This reset cannot mask the checks above: it runs only after they pass.
+        repository::delete_messages_after(pool, id, &anchor).await?;
+        validate(pool, id, &golden).await?;
+        assert_fts(pool, "syntheticbatchtoken", &[]).await?;
+        let inputs = marked_tail("syntheticdeletetoken");
+        let expected_tail = expected_rows(id, inputs.clone());
+        let prepared = repository::import_messages(pool, id, inputs).await?;
+        if serde_json::to_value(prepared)? != serde_json::to_value(&expected_tail)? {
+            return Err("Delete preparation mismatch".into());
         }
         let mut expected_all = golden.clone();
         expected_all.extend(expected_tail);
-        if serde_json::to_value(repository::list_messages(pool, id).await?)?
-            != serde_json::to_value(expected_all)?
-        {
-            return Err("Imported fields mismatch".into());
-        }
-        let matches: i64 = sqlx::query_scalar(
-            "SELECT COUNT(*) FROM message_search WHERE message_search MATCH 'syntheticbatchtoken'",
-        )
-        .fetch_one(pool)
-        .await?;
-        if matches != 100 {
-            return Err("Imported FTS mismatch".into());
-        }
-        // Reset is untimed; use the same real deletion path that the deletion series measures.
-        repository::delete_messages_after(pool, id, &anchor).await?;
-        validate(pool, id, &golden).await?;
-        repository::import_messages(pool, id, batch("tail", 100, "2026-01-02T00:00:00Z")).await?;
+        validate(pool, id, &expected_all).await?;
+        assert_fts(pool, "syntheticdeletetoken", &tail_ids).await?;
+        let start_rows = expect_count(pool, id, size as i64 + 100).await?;
         let start = Instant::now();
         repository::delete_messages_after(pool, id, &anchor).await?;
         let elapsed = start.elapsed().as_secs_f64() * 1000.0;
-        keep(
-            &mut cells,
-            "delete100_commit",
-            i,
-            warmup,
-            elapsed,
-            json!({"start_rows":size+100,"end_rows":size,"deleted":100}),
-            "actual delete_messages_after tail100, FTS, metadata and commit; preparation excluded",
-        );
+        let end_rows = expect_count(pool, id, size as i64).await?;
+        keep(&mut cells,"delete100_commit",i,warmup,elapsed,json!({"start_rows":start_rows,"end_rows":end_rows,"deleted":start_rows-end_rows}),"actual delete_messages_after tail100, FTS, metadata and commit; preparation/counts/checks excluded");
         validate(pool, id, &golden).await?;
+        assert_fts(pool, "syntheticdeletetoken", &[]).await?;
     }
     validate(pool, id, &golden).await?;
     let integrity: String = sqlx::query_scalar("PRAGMA integrity_check")
@@ -525,7 +571,7 @@ async fn controls() -> Result<Value> {
         for error in [repository::get_message(&pool,"large").await.unwrap_err(),repository::list_messages_bounded(&pool,id).await.unwrap_err()] {
             if !matches!(error,db::DbError::Sqlx(ref source) if source.to_string().contains("integer overflow")){return Err("Fetch probe inactive".into());}
         }
-        Ok(json!({"all_counted_large_fields_refused":true,"sql_rejection_before_fetch":true,"fetch_probe_negative_control":true,"legacy_receipt_not_projected":true,"cas_conflict_refused":true}))
+        Ok(json!({"seven_payload_fields_refused":true,"sql_rejection_before_fetch":true,"fetch_probe_negative_control":true,"legacy_receipt_not_projected":true,"cas_conflict_refused":true}))
     }.await;
     finish_case(pool, directory, result).await
 }
