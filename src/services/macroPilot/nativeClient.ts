@@ -8,6 +8,7 @@ import { PilotAccountClient, type PilotAccountConfirmation } from './accountClie
 import { validateContentMessage, validateContentResponse } from './contentProtocol';
 export type { PilotAccountCatalog, PilotAccountConfirmation } from './accountClient';
 import { tauriFetch } from '../tauriHttp';
+import { consumerWire, validConsumerResponse, type ConsumerTransport, type ConsumerIdentity, type ConsumerDispatch } from './consumerTransport';
 import {
   pilotDeviceName,
   pilotSecretDelete,
@@ -730,6 +731,78 @@ export class MacroPilotNativeClient {
     return this.sendRequest<T>(method, path, body, options);
   }
 
+  /** D1 client port. Credentials never leave this owner or become target keys. */
+  consumerTransport(): ConsumerTransport {
+    return {
+      context: () => this.consumerIdentity(),
+      subscribe: listener => this.subscribe(listener),
+      id: () => createOpaqueId('request', this.dependencies),
+      now: () => this.dependencies.now().getTime(),
+      send: async (context, instanceId, dispatch, signal) => {
+        this.checkContext(context.key);
+        const current = this.consumerIdentity();
+        if (current.key !== context.key || dispatch.request.type !== 'negotiate' && dispatch.request.account_id !== current.accountId) {
+          throw new PilotClientError('context_changed');
+        }
+        // Clone before the first await so the saved correlation cannot be retargeted.
+        const saved = structuredClone(dispatch);
+        const wire = consumerWire(instanceId, saved);
+        try {
+          return await this.sendRequest(wire.method, wire.path, wire.body,
+            { authenticated: true, signal, beforeSend: async () => { this.consumerIdentity(); this.checkContext(context.key); } },
+            'consumer', saved.request.request_id, saved);
+        } catch (error) {
+          if (!signal.aborted && error instanceof PilotClientError && ['unauthorized', 'session_revoked'].includes(error.code)) {
+            try { await this.verifyConsumerSession(context, signal); }
+            catch (verificationError) {
+              // Without a session proof, retire this target selection only.
+              if (verificationError instanceof PilotClientError && verificationError.code === 'offline') throw new PilotClientError('unavailable');
+              throw verificationError;
+            }
+          }
+          throw error;
+        }
+      },
+    };
+  }
+
+  private consumerIdentity(): ConsumerIdentity {
+    const state = this.persisted;
+    if (!state?.relayOrigin || !state.account || !state.deviceSession || this.publicState.deviceSession?.state !== 'active') {
+      throw new PilotClientError('unauthorized');
+    }
+    if (this.sessionVerification) throw new PilotClientError('vault_suspended');
+    if (this.vaultLease && this.vaultLease.status !== 'ready') throw this.vaultFailure(this.vaultLease.status);
+    return { key: this.contextKey(), configurationId: state.configurationId, relayOrigin: normalizeOrigin(state.relayOrigin),
+      accountId: state.account.account_id, sessionId: state.deviceSession.ref.session_id, epoch: this.epoch };
+  }
+
+  /** A remote producer can also lose its session. Only /me proves ours invalid. */
+  private async verifyConsumerSession(context: ConsumerIdentity, signal: AbortSignal): Promise<void> {
+    const check = () => {
+      this.checkContext(context.key);
+      if (signal.aborted) throw new PilotClientError('context_changed');
+    };
+    check();
+    try {
+      const result = await this.sendRequest('GET', '/me', undefined,
+        { authenticated: true, signal, beforeSend: async () => { check(); this.consumerIdentity(); } }, 'session-check');
+      check();
+      const data = result.data;
+      const account = isRecord(data) && isRecord(data.account) ? data.account : null;
+      const session = isRecord(data) && isRecord(data.device_session) ? data.device_session : null;
+      const ref = session && isRecord(session.ref) ? session.ref : null;
+      if (account?.account_id !== context.accountId || ref?.account_id !== context.accountId ||
+        ref?.session_id !== context.sessionId || session?.state !== 'active' ||
+        session?.device_id !== this.persisted?.deviceSession?.device_id || result.status !== 200) throw new PilotClientError('invalid_response');
+    } catch (error) {
+      check();
+      if (error instanceof PilotClientError && ['unauthorized', 'session_revoked'].includes(error.code)) {
+        await this.clearSession(error.code as 'unauthorized' | 'session_revoked');
+      } else throw error;
+    }
+  }
+
   /** Producer A2 uses the same native credentials, origin and lifecycle fence as v1. */
   async requestContent(path: string, body: unknown, signal: AbortSignal, options: PilotContentRequestOptions = {}): Promise<PilotResponse> {
     const instance = this.publicState.instance?.ref.instance_id;
@@ -754,23 +827,25 @@ export class MacroPilotNativeClient {
 
   private async sendRequest<T = unknown>(
     method: string, path: string, body: unknown, options: PilotRequestOptions,
-    extension: boolean | 'producer' = false, requestId = createOpaqueId('request', this.dependencies),
+    extension: boolean | 'producer' | 'consumer' | 'session-check' = false, requestId = createOpaqueId('request', this.dependencies), consumer?: ConsumerDispatch,
   ): Promise<PilotResponse<T>> {
     const readController = method === 'GET' ? new AbortController() : null;
     if (readController) this.pendingReads.add(readController);
     const signal = readController
       ? AbortSignal.any([readController.signal, ...(options.signal ? [options.signal] : [])])
       : options.signal;
-    try { return await this.sendRequestOnce<T>(method, path, body, { ...options, signal }, extension, requestId); }
+    try { return await this.sendRequestOnce<T>(method, path, body, { ...options, signal }, extension, requestId, consumer); }
     finally { if (readController) this.pendingReads.delete(readController); }
   }
 
   private async sendRequestOnce<T = unknown>(
     method: string, path: string, body: unknown, options: PilotRequestOptions,
-    extension: boolean | 'producer', requestId: string,
+    extension: boolean | 'producer' | 'consumer' | 'session-check', requestId: string, consumer?: ConsumerDispatch,
   ): Promise<PilotResponse<T>> {
     if (!this.persisted?.relayOrigin) throw new PilotClientError('invalid_configuration');
     const context = this.contextKey();
+    const targetOnly = extension === 'consumer' || extension === 'session-check';
+    const v2 = Boolean(extension) && extension !== 'session-check';
     const signals = [this.scopeController.signal];
     if (options.signal) signals.push(options.signal);
     let signal = AbortSignal.any(signals);
@@ -780,12 +855,12 @@ export class MacroPilotNativeClient {
       if (options.signal?.aborted) throw new PilotClientError('context_changed');
       if (signal.aborted) {
         if (this.vaultLease && this.vaultLease.status !== 'ready') throw this.vaultFailure(this.vaultLease.status);
-        if (options.authenticated) this.publish({ status: 'offline', lastError: 'offline' });
+        if (options.authenticated && !targetOnly) this.publish({ status: 'offline', lastError: 'offline' });
         throw new PilotClientError('offline');
       }
     };
     if (options.producer && this.sessionVerification) throw new PilotClientError('vault_suspended');
-    const url = `${normalizeOrigin(this.persisted.relayOrigin)}${extension ? '' : '/pilot/v1'}${safePath(path)}`;
+    const url = `${normalizeOrigin(this.persisted.relayOrigin)}${v2 ? '' : '/pilot/v1'}${safePath(path)}`;
     const headers = new Headers({ Accept: 'application/json', 'X-Request-Id': requestId });
     if (body !== undefined) headers.set('Content-Type', 'application/json; charset=utf-8');
     let token = options.authorizationToken;
@@ -831,7 +906,7 @@ export class MacroPilotNativeClient {
     } catch (error) {
       check();
       if (error instanceof PilotClientError) throw error;
-      if (options.authenticated) {
+      if (options.authenticated && !targetOnly) {
         this.publish({ status: 'offline', lastError: 'offline' });
       }
       throw new PilotClientError('offline');
@@ -845,21 +920,22 @@ export class MacroPilotNativeClient {
     try { data = await readBoundedJson(response, extension ? 256 * 1024 : MAX_BODY_BYTES, signal); }
     catch (error) {
       check();
-      if (options.authenticated && error instanceof PilotClientError && error.code === 'offline') {
+      if (options.authenticated && !targetOnly && error instanceof PilotClientError && error.code === 'offline') {
         this.publish({ status: 'offline', lastError: 'offline' });
       }
       throw error;
     }
     check();
     const responseRequestId = response.headers.get('x-request-id') || requestId;
+    if (extension === 'session-check' && responseRequestId !== requestId) throw new PilotClientError('invalid_response');
     if (
-      !extension && isRecord(data) &&
+      !v2 && isRecord(data) &&
       (('transport_version' in data && data.transport_version !== TRANSPORT_VERSION) ||
         ('contract_version' in data && data.contract_version !== CONTRACT_VERSION))
     ) {
       throw new PilotClientError('invalid_response', response.status, false, responseRequestId);
     }
-    if (extension) {
+    if (v2) {
       const responseHeader = response.headers.get('x-request-id');
       const expectedHeader = extension === 'producer' && isRecord(body) && body.type === 'poll' && isRecord(data) && data.type === 'delivery' ? data.request_id : requestId;
       if (responseHeader && responseHeader !== expectedHeader) throw new PilotClientError('invalid_response');
@@ -873,6 +949,8 @@ export class MacroPilotNativeClient {
             (input.type === 'authorize' && data.type === 'authorized' && data.request_id === input.request_id)
           );
           if (!empty && !valid && !(isRecord(data) && data.type === 'error')) throw new PilotClientError('invalid_response');
+        } else if (extension === 'consumer') {
+          if (!consumer || !validConsumerResponse(consumer, response.status, data)) throw new PilotClientError('invalid_response');
         } else if (!validateContentMessage(data) || !validateContentResponse(body, data)) throw new PilotClientError('invalid_response');
       }
     }
@@ -887,7 +965,7 @@ export class MacroPilotNativeClient {
       }
       throw new PilotClientError(code, response.status, response.status === 429 || response.status === 503, responseRequestId);
     }
-    if (options.authenticated && ['offline', 'vault_unavailable'].includes(this.publicState.status)) {
+    if (options.authenticated && !targetOnly && ['offline', 'vault_unavailable'].includes(this.publicState.status)) {
       this.publish({ status: 'connected', lastError: null });
     }
     return { status: response.status, data: data as T | null, requestId: responseRequestId };
