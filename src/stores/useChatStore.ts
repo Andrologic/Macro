@@ -6056,23 +6056,6 @@ export const useChatStore = create<ChatStore>((set, get) => {
     return { messageId, loaded, warnings };
   };
 
-  const cloneStreamContextDiagnosticsBaseline = (
-    baseline: StreamContextDiagnosticsBaseline,
-  ): StreamContextDiagnosticsBaseline => ({
-    ...baseline,
-    allowedToolIds: [...baseline.allowedToolIds],
-    toolDefinitions: baseline.toolDefinitions.map((tool) => ({ ...tool })),
-    messagesForRequest: baseline.messagesForRequest.map(cloneStreamMessage),
-    orderedMessages: baseline.orderedMessages.map(cloneChatMessageForDiagnostics),
-    citations: baseline.citations.map(cloneCitationForDiagnostics),
-    repositoryInstructionSources: baseline.repositoryInstructionSources.map((source) => ({
-      ...source,
-    })),
-    repositoryInstructionIssues: baseline.repositoryInstructionIssues.map((issue) => ({
-      ...issue,
-    })),
-  });
-
   const toRepositoryInstructionDiagnosticSource = (
     source: tauriIpc.RepositoryInstructionSourceDto,
   ): RepositoryInstructionDiagnosticSource => ({
@@ -9548,11 +9531,13 @@ export const useChatStore = create<ChatStore>((set, get) => {
         return state;
       }
       const version = params.snapshot.version;
-      const baseline = params.baseline
-        ? cloneStreamContextDiagnosticsBaseline(params.baseline)
-        : previous?.baseline
-          ? cloneStreamContextDiagnosticsBaseline(previous.baseline)
-          : undefined;
+      // The runtime owns the isolated baseline. Reuse it only within this generation.
+      const baseline = params.baseline ?? (
+        previous?.sessionId === params.sessionId &&
+        previous.assistantMessageId === params.assistantMessageId
+          ? previous.baseline
+          : undefined
+      );
       didRecord = true;
       return {
         liveStreamContextEstimatesByConversationId: {

@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'bun:test';
 import type { AppMode, ChatMessage } from '../../types';
+import { distribution } from '../../../dev/performance/stats';
 import type { UseChatStoreScenarioContext } from '../useChatStore.test';
 
 export const registerCompactionAndDiagnosticsScenarios = (
@@ -1993,6 +1994,105 @@ export const registerCompactionAndDiagnosticsScenarios = (
         useChatStore.getState().contextDiagnosticsByConversationId['chat-conv'];
       expect(diagnostics?.counts.citations).toBe(0);
       expect(JSON.stringify(diagnostics?.breakdown ?? [])).not.toContain('Late file');
+    });
+
+    if (process.env.MACRO_BENCHMARK_DIAGNOSTICS_STORE_SIZE) {
+      it('measures the live diagnostics callback connected to the store', async () => {
+        appState.mode = 'Chat';
+        const size = Number(process.env.MACRO_BENCHMARK_DIAGNOSTICS_STORE_SIZE);
+        expect(Number.isInteger(size) && size > 0).toBe(true);
+        providerState.modelsByProvider = {
+          'provider-1': [{ id: 'model-1', name: 'Model 1', isEnabled: true, contextWindowTokens: 100_000_000, outputLimitTokens: 4_000 } as never],
+        };
+        const { useChatStore } = await loadChatStore();
+        const messages: ChatMessage[] = Array.from({ length: size }, (_, index) => ({
+          id: `history-${index}`, task_id: '', conversation_id: 'chat-conv',
+          role: index % 2 ? 'assistant' : 'user', content: 'Synthetic historical context',
+          timestamp: '2026-01-01T00:00:00.000Z',
+        }));
+        useChatStore.setState(createIdleChatStoreState({
+          conversations: [createConversation('chat-conv', '')], messages,
+          selectedConversationId: 'chat-conv', selectedConversationIdsByMode: { Chat: 'chat-conv' },
+        }));
+        await useChatStore.getState().sendMessage({ conversationId: 'chat-conv', content: 'Measure context.' });
+        await flushAsyncWork();
+        const options = getLatestStreamOptions<{
+          onLiveContextUpdate?: (snapshot: { version: number; visibleContent: string; visibleContentLength: number; toolTraces: [] }) => void;
+        }>();
+        expect(options.onLiveContextUpdate).toBeDefined();
+        const samples: number[] = [];
+        for (let version = 1; version <= 110; version += 1) {
+          const snapshot = { version, visibleContent: 'delta', visibleContentLength: 5, toolTraces: [] as [] };
+          const start = performance.now();
+          options.onLiveContextUpdate!(snapshot);
+          const elapsed = performance.now() - start;
+          if (version > 10) samples.push(elapsed);
+        }
+        expect(useChatStore.getState().liveStreamContextEstimatesByConversationId['chat-conv']?.version).toBe(110);
+        console.log('MACRO_DIAGNOSTICS_STORE_RESULT=' + JSON.stringify({
+          historyMessages: size, warmup: 10, samples: 100,
+          callbackToStore: distribution(samples),
+        }));
+      });
+    }
+
+    it('shares the isolated diagnostics baseline across deltas and rejects replaced or cancelled sessions', async () => {
+      appState.mode = 'Chat';
+      const { useChatStore } = await loadChatStore();
+      const history: ChatMessage[] = Array.from({ length: 100 }, (_, index) => ({
+        id: `history-${index}`, task_id: '', conversation_id: 'chat-conv',
+        role: index % 2 ? 'assistant' : 'user', content: 'Historical context',
+        timestamp: '2026-01-01T00:00:00.000Z',
+      }));
+      useChatStore.setState(createIdleChatStoreState({
+        conversations: [createConversation('chat-conv', ''), createConversation('other-conv', '')],
+        messages: history, selectedConversationId: 'chat-conv',
+        selectedConversationIdsByMode: { Chat: 'chat-conv' },
+      }));
+      await useChatStore.getState().sendMessage({ conversationId: 'chat-conv', content: 'Capture context.' });
+      await flushAsyncWork();
+      const options = getLatestStreamOptions<{
+        onLiveContextUpdate?: (snapshot: { version: number; visibleContent: string; visibleContentLength: number; toolTraces: [] }) => void;
+      }>();
+      const read = () => useChatStore.getState().liveStreamContextEstimatesByConversationId['chat-conv'];
+      const initial = read()!;
+      const baseline = initial.baseline!;
+      expect(baseline.orderedMessages.find((message: ChatMessage) => message.id === history[0].id)).not.toBe(history[0]);
+      const baselineBefore = structuredClone(baseline);
+      expect(baseline.toolDefinitions.length).toBeGreaterThan(0);
+      history[0].content = 'Changed after capture';
+      useChatStore.setState({ selectedConversationId: 'other-conv' });
+      for (let version = 1; version <= 100; version += 1) {
+        options.onLiveContextUpdate?.({ version, visibleContent: `delta ${version}`, visibleContentLength: 9, toolTraces: [] });
+        expect(read()?.baseline).toBe(baseline);
+      }
+      expect(baseline.orderedMessages[0].content).toBe('Historical context');
+      await useChatStore.getState().refreshConversationContextDiagnostics('chat-conv', { mode: 'live_stream' });
+      expect(baseline).toEqual(baselineBefore);
+      options.onLiveContextUpdate?.({ version: 2, visibleContent: 'stale', visibleContentLength: 5, toolTraces: [] });
+      expect(read()?.version).toBe(100);
+      const runtime = useChatStore.getState().conversationRuntimeById['chat-conv'];
+      useChatStore.setState({ conversationRuntimeById: {
+        ...useChatStore.getState().conversationRuntimeById,
+        'chat-conv': { ...runtime, sessionId: 'replacement-session' },
+      } });
+      options.onLiveContextUpdate?.({ version: 101, visibleContent: 'replaced', visibleContentLength: 8, toolTraces: [] });
+      expect(read()?.version).toBe(100);
+      useChatStore.setState({
+        selectedConversationId: 'chat-conv',
+        conversationRuntimeById: { ...useChatStore.getState().conversationRuntimeById, 'chat-conv': runtime },
+      });
+      useChatStore.getState().stopStreaming();
+      options.onLiveContextUpdate?.({ version: 102, visibleContent: 'cancelled', visibleContentLength: 9, toolTraces: [] });
+      expect(read()).toBeUndefined();
+      await useChatStore.getState().sendMessage({ conversationId: 'chat-conv', content: 'New generation.' });
+      await flushAsyncWork();
+      const replacement = read()!;
+      expect(replacement.baseline).not.toBe(baseline);
+      expect(replacement.baseline?.sessionId).toBe(replacement.sessionId);
+      expect(replacement.baseline?.assistantMessageId).toBe(replacement.assistantMessageId);
+      options.onLiveContextUpdate?.({ version: 103, visibleContent: 'late old generation', visibleContentLength: 19, toolTraces: [] });
+      expect(read()).toBe(replacement);
     });
 
     it('ignores older live context snapshots after a newer version is recorded', async () => {
