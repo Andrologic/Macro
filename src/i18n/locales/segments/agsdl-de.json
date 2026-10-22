@@ -544,5 +544,46 @@
       "error": "Fehler",
       "value": "Aktueller Wert"
     }
+  },
+  "preview": {
+    "model": "Modell",
+    "uses": "Nutzt",
+    "receives": "Erhält",
+    "produces": "Liefert",
+    "limit": "Durchläufe",
+    "arguments": "Argumente",
+    "effect": "Wirkung",
+    "timeout": "Frist",
+    "validity": "Gültigkeit",
+    "test": "Prüft",
+    "mode": "Wartet auf",
+    "accept": "Akzeptiert wenn",
+    "agents": "Agenten",
+    "transmits": "Übergibt",
+    "whenLabel": "Gilt wenn",
+    "limitValue_one": "höchstens {{count}}",
+    "limitValue_other": "höchstens {{count}}",
+    "effects": {
+      "none": "keine",
+      "external": "extern",
+      "unknown": "nicht angegeben"
+    },
+    "join": {
+      "all": "alle Mitglieder",
+      "first": "das erste akzeptierte",
+      "remaining-finish": "die anderen beenden",
+      "remaining-stop-and-wait": "die anderen stoppen"
+    },
+    "when": {
+      "choice": "{{who}} wählt „{{name}}“",
+      "error": "{{source}} schlägt fehl",
+      "next": "Immer",
+      "true": "Die Bedingung ist wahr",
+      "false": "Die Bedingung ist falsch",
+      "approved": "Die Freigabe wird erteilt",
+      "denied": "Die Freigabe wird abgelehnt",
+      "exchange": "Bei einem Datenaustausch",
+      "dependency": "Nach dem vorherigen Block"
+    }
   }
 }

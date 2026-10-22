@@ -544,5 +544,46 @@
       "error": "Error",
       "value": "Current value"
     }
+  },
+  "preview": {
+    "model": "Model",
+    "uses": "Uses",
+    "receives": "Receives",
+    "produces": "Produces",
+    "limit": "Visits",
+    "arguments": "Arguments",
+    "effect": "Effect",
+    "timeout": "Timeout",
+    "validity": "Validity",
+    "test": "Tests",
+    "mode": "Waits for",
+    "accept": "Accepts if",
+    "agents": "Agents",
+    "transmits": "Delivers",
+    "whenLabel": "Taken when",
+    "limitValue_one": "{{count}} at most",
+    "limitValue_other": "{{count}} at most",
+    "effects": {
+      "none": "none",
+      "external": "external",
+      "unknown": "not declared"
+    },
+    "join": {
+      "all": "every member",
+      "first": "the first accepted",
+      "remaining-finish": "others finish",
+      "remaining-stop-and-wait": "others stop"
+    },
+    "when": {
+      "choice": "{{who}} chooses “{{name}}”",
+      "error": "{{source}} fails",
+      "next": "Always",
+      "true": "The condition is true",
+      "false": "The condition is false",
+      "approved": "Approval is given",
+      "denied": "Approval is refused",
+      "exchange": "On a data exchange",
+      "dependency": "After the previous block"
+    }
   }
 }

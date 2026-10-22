@@ -5,6 +5,7 @@ import { Bot, Boxes, ChevronDown, ChevronRight, CircleHelp, Info, Layers, List, 
 import { useElementSize } from "../../hooks/useElementSize";
 import { layoutViewer, routeViewerEdge, VIEWER_CARD_WIDTH, type ViewerEdge } from "../../services/agsdl/graphLayout";
 import { graphBlockPerformer, graphBlockShape, graphNeighborhood, presentFocusedGraph, presentGraph } from "../../services/agsdl/graphPresentation";
+import { blockDetails, type BlockDetail } from "../../services/agsdl/blockDetails";
 import "./graphPresentation.css";
 import type { ViewerCard } from "../../services/agsdl/viewer";
 import { useAgsdlTranslation } from "./useAgsdlTranslation";
@@ -32,6 +33,7 @@ type GraphNode = Node<{
   native?: NativeCardActivation;
   incoming: string[];
   outgoing: string[];
+  details: BlockDetail[];
   attach?: () => void;
   openTask?: () => void;
   dismissSignal: number;
@@ -49,7 +51,7 @@ function WorkflowNode({ data }: NodeProps<GraphNode>) {
     <>
       <Handle type="target" position={Position.Top} id="in" />
       <WorkflowBlockOverlay card={card} title={data.title} kindLabel={data.kindLabel} task={data.task} native={data.native}
-        incoming={data.incoming} outgoing={data.outgoing} dismissSignal={data.dismissSignal} actions={[
+        incoming={data.incoming} outgoing={data.outgoing} details={data.details} dismissSignal={data.dismissSignal} actions={[
           { label: data.members ? t("agsdl.graphInteraction.expand") : t("agsdl.viewer.componentDetails"), icon: data.members ? <Layers size={14} /> : <Info size={14} />, run: () => data.expand ? data.expand() : data.inspect(card.path) },
           ...(data.attach ? [{ label: t("agsdl.attachToChat"), icon: <MessageSquarePlus size={14} />, run: data.attach }] : []),
           ...(data.openTask ? [{ label: t("agsdl.graphInteraction.openTask"), icon: <MessageSquare size={14} />, run: data.openTask }] : []),
@@ -96,9 +98,11 @@ const nodeTypes = { workflow: WorkflowNode };
 const edgeTypes = { workflow: WorkflowEdge };
 const fitOptions = { padding: 0.16, minZoom: 0.5, maxZoom: 1 };
 
-function Canvas({ cards, edges: connections, selected, select, title, changedPaths = [], trackedTasks = {}, nativeActivations = {}, selectionMode = "inspect", onAttach, onOpenTask, onInspect }: {
+function Canvas({ cards, edges: connections, declarations = [], selected, select, title, changedPaths = [], trackedTasks = {}, nativeActivations = {}, selectionMode = "inspect", onAttach, onOpenTask, onInspect }: {
   cards: ViewerCard[];
   edges: ViewerEdge[];
+  /** Document declarations, read by the hover previews. */
+  declarations?: ViewerCard[];
   selected: string;
   select: (path: string) => void;
   title: (card: ViewerCard) => string;
@@ -164,6 +168,7 @@ function Canvas({ cards, edges: connections, selected, select, title, changedPat
         select: path => { setHighlighted(path); if (selectionMode === "select") select(path); }, inspect: path => { setHighlighted(path); (onInspect ?? select)(path); }, expand: group ? () => expandGroup(group.id) : undefined, focus: setHovered,
         incoming: [...new Set(presentation.edges.filter(edge => edge.target === card.path).map(edge => displayTitle(presentation.cards.find(item => item.path === edge.source)!)))],
         outgoing: [...new Set(presentation.edges.filter(edge => edge.source === card.path).map(edge => displayTitle(presentation.cards.find(item => item.path === edge.target)!)))],
+        details: group ? [] : blockDetails(card, declarations),
         attach: !group && onAttach ? () => onAttach(card.path) : undefined,
         openTask: !group && trackedTasks[card.path] && onOpenTask ? () => onOpenTask(card.path) : undefined,
         dismissSignal,
@@ -206,6 +211,7 @@ function Canvas({ cards, edges: connections, selected, select, title, changedPat
       ...edge, type: "workflow", data: { route: layout.routes.get(edge.id) ?? routeViewerEdge(layout.nodes, edge), connection: edge,
         sourceTitle: displayTitle(presentation.cards.find(card => card.path === edge.source)!),
         targetTitle: displayTitle(presentation.cards.find(card => card.path === edge.target)!),
+        sourcePerformer: (() => { const source = presentation.cards.find(card => card.path === edge.source)!; return graphBlockPerformer(source, displayTitle(source)); })(),
         dismissSignal, focusEdge,
         inspect: selectionMode === "inspect" ? () => activateEdge(edge.id) : undefined,
         inspectSource: () => presentation.groups.some(group => group.id === edge.source) ? expandGroup(edge.source) : (onInspect ?? select)(edge.source),

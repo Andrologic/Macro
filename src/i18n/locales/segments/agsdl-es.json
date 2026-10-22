@@ -544,5 +544,46 @@
       "error": "Error",
       "value": "Valor actual"
     }
+  },
+  "preview": {
+    "model": "Modelo",
+    "uses": "Usa",
+    "receives": "Recibe",
+    "produces": "Produce",
+    "limit": "Pasadas",
+    "arguments": "Argumentos",
+    "effect": "Efecto",
+    "timeout": "Plazo",
+    "validity": "Validez",
+    "test": "Comprueba",
+    "mode": "Espera",
+    "accept": "Acepta si",
+    "agents": "Agentes",
+    "transmits": "Transmite",
+    "whenLabel": "Se toma si",
+    "limitValue_one": "{{count}} como máximo",
+    "limitValue_other": "{{count}} como máximo",
+    "effects": {
+      "none": "ninguno",
+      "external": "externo",
+      "unknown": "no declarado"
+    },
+    "join": {
+      "all": "todos los miembros",
+      "first": "el primero aceptado",
+      "remaining-finish": "los demás terminan",
+      "remaining-stop-and-wait": "los demás se detienen"
+    },
+    "when": {
+      "choice": "{{who}} elige «{{name}}»",
+      "error": "{{source}} falla",
+      "next": "Siempre",
+      "true": "La condición es verdadera",
+      "false": "La condición es falsa",
+      "approved": "Se concede la aprobación",
+      "denied": "Se rechaza la aprobación",
+      "exchange": "En un intercambio de datos",
+      "dependency": "Después del bloque anterior"
+    }
   }
 }

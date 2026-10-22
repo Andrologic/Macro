@@ -6,6 +6,8 @@ import type { NativeCardActivation } from '../../services/agsdl/executionView';
 import { WorkflowStatusBadge } from './WorkflowStatusBadge';
 import { WorkflowGraphPopup, type GraphPopupAction } from './WorkflowGraphPopup';
 import { useAgsdlTranslation } from './useAgsdlTranslation';
+import { WorkflowBlockPreview } from './WorkflowPreviews';
+import type { BlockDetail } from '../../services/agsdl/blockDetails';
 
 export function WorkflowBlockSummary({ card, incoming = [], outgoing = [] }: { card: ViewerCard; incoming?: string[]; outgoing?: string[] }) {
   const { t } = useAgsdlTranslation();
@@ -20,9 +22,9 @@ export function WorkflowBlockSummary({ card, incoming = [], outgoing = [] }: { c
   </>;
 }
 
-export function WorkflowBlockOverlay({ card, title, kindLabel, task, native, incoming, outgoing, actions, children, dismissSignal }: {
+export function WorkflowBlockOverlay({ card, title, kindLabel, task, native, incoming, outgoing, details = [], actions, children, dismissSignal }: {
   card: ViewerCard; title: string; kindLabel: string; task?: TrackedTask; native?: NativeCardActivation;
-  incoming: string[]; outgoing: string[]; actions: GraphPopupAction[]; children: ReactElement<{ "aria-describedby"?: string }>; dismissSignal?: number;
+  incoming: string[]; outgoing: string[]; details?: BlockDetail[]; actions: GraphPopupAction[]; children: ReactElement<{ "aria-describedby"?: string }>; dismissSignal?: number;
 }) {
   const [anchor, setAnchor] = useState<HTMLDivElement | null>(null);
   const timer = useRef<ReturnType<typeof setTimeout>>(undefined);
@@ -30,7 +32,8 @@ export function WorkflowBlockOverlay({ card, title, kindLabel, task, native, inc
   const [preview, setPreview] = useState(false);
   const [menu, setMenu] = useState<{ left: number; top: number }>();
   const id = useId();
-  const show = () => { clearTimeout(timer.current); if (!suppressed.current && !menu) timer.current = setTimeout(() => setPreview(true), 450); };
+  const empty = card.details.contract === 'agsdl-0.2.0' && details.length === 0;
+  const show = () => { clearTimeout(timer.current); if (!suppressed.current && !menu && !empty) timer.current = setTimeout(() => setPreview(true), 450); };
   const hide = () => { clearTimeout(timer.current); setPreview(false); };
   const leave = () => { clearTimeout(timer.current); timer.current = setTimeout(() => setPreview(false), 120); };
   const close = () => { suppressed.current = true; hide(); setMenu(undefined); };
@@ -52,8 +55,11 @@ export function WorkflowBlockOverlay({ card, title, kindLabel, task, native, inc
     }}>
     {cloneElement(children, { "aria-describedby": preview ? id : undefined })}
     {preview && !menu && anchor && <WorkflowGraphPopup anchor={anchor} id={id} label={title} onClose={close} onMouseEnter={() => clearTimeout(timer.current)} onMouseLeave={leave}>
-      <header><WorkflowStatusBadge task={task} native={native} /><div><small>{kindLabel}</small><strong>{title}</strong></div></header>
-      <WorkflowBlockSummary card={card} incoming={incoming} outgoing={outgoing} />
+      {/* AgSDL 0.2 blocks show their configuration only; older documents keep the general summary. */}
+      {card.details.contract === 'agsdl-0.2.0' ? <WorkflowBlockPreview details={details} /> : <>
+        <header><WorkflowStatusBadge task={task} native={native} /><div><small>{kindLabel}</small><strong>{title}</strong></div></header>
+        <WorkflowBlockSummary card={card} incoming={incoming} outgoing={outgoing} />
+      </>}
     </WorkflowGraphPopup>}
     {menu && anchor && <WorkflowGraphPopup anchor={anchor} position={menu} label={title} actions={actions} onClose={close} />}
   </div>;

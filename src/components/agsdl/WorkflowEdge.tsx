@@ -4,6 +4,7 @@ import { ArrowDown, ArrowDownToLine, ArrowRightLeft, Check, CornerUpLeft, GitBra
 import type { ViewerEdge, ViewerEdgeRoute } from '../../services/agsdl/graphLayout';
 import { viewerEdgePath } from '../../services/agsdl/graphLayout';
 import { WorkflowGraphPopup } from './WorkflowGraphPopup';
+import { WorkflowEdgePreview } from './WorkflowPreviews';
 import { useAgsdlTranslation } from './useAgsdlTranslation';
 
 export type WorkflowEdgeData = {
@@ -11,6 +12,7 @@ export type WorkflowEdgeData = {
   connection: ViewerEdge;
   sourceTitle: string;
   targetTitle: string;
+  sourcePerformer?: string;
   dismissSignal: number;
   focusEdge?: (id: string, open: boolean) => void;
   inspect?: () => void;
@@ -111,7 +113,7 @@ export function WorkflowEdge(props: EdgeProps<GraphEdge>) {
     </svg></EdgeLabelRenderer>}
     {preview && !menu && anchor && <WorkflowGraphPopup anchor={anchor} position={position} id={id} label={t('agsdl.viewer.connection')} onClose={close}
       onMouseEnter={() => clearTimeout(timer.current)} onMouseLeave={leave}>
-      <WorkflowEdgeSummary {...data} />
+      <WorkflowEdgePreview connection={data.connection} sourceTitle={data.sourceTitle} sourcePerformer={data.sourcePerformer} />
     </WorkflowGraphPopup>}
     {menu && anchor && <WorkflowGraphPopup anchor={anchor} position={menu} label={t('agsdl.viewer.connection')} onClose={close} actions={[
       { label: t('agsdl.link.source'), icon: <Info size={14} />, run: data.inspectSource },

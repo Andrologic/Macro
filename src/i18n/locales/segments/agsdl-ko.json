@@ -544,5 +544,46 @@
       "error": "오류",
       "value": "현재 값"
     }
+  },
+  "preview": {
+    "model": "모델",
+    "uses": "사용",
+    "receives": "받는 것",
+    "produces": "생성",
+    "limit": "실행 횟수",
+    "arguments": "인수",
+    "effect": "영향",
+    "timeout": "기한",
+    "validity": "유효 기간",
+    "test": "조건",
+    "mode": "대기",
+    "accept": "채택 조건",
+    "agents": "에이전트",
+    "transmits": "전달",
+    "whenLabel": "진행 조건",
+    "limitValue_one": "최대 {{count}}회",
+    "limitValue_other": "최대 {{count}}회",
+    "effects": {
+      "none": "없음",
+      "external": "외부",
+      "unknown": "미선언"
+    },
+    "join": {
+      "all": "모든 구성원",
+      "first": "처음 채택된 결과",
+      "remaining-finish": "나머지는 끝까지 실행",
+      "remaining-stop-and-wait": "나머지는 중지"
+    },
+    "when": {
+      "choice": "{{who}}이(가) “{{name}}”을(를) 선택",
+      "error": "{{source}} 실패",
+      "next": "항상",
+      "true": "조건이 참",
+      "false": "조건이 거짓",
+      "approved": "승인됨",
+      "denied": "승인 거부됨",
+      "exchange": "데이터 교환 시",
+      "dependency": "이전 블록 이후"
+    }
   }
 }
