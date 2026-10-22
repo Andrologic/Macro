@@ -34,6 +34,7 @@ describe('local CI profiles', () => {
       'Check generated ipc contracts',
       'Run locked Rust tests for all targets',
       'Run locked Rust doc tests',
+      'Verify native process interruption recovery',
     ]);
   });
 
@@ -124,4 +125,18 @@ test('active native profiles check both generated contract domains after the sid
     }
   }
   expect(stepsForProfile('frontend').some((entry) => entry.args.includes('generate_config'))).toBe(false);
+});
+
+test('process recovery is explicit in Linux native profiles and absent from frontend checks', () => {
+  for (const profile of ['native', 'native-core', 'full']) {
+    expect(stepsForProfile(profile, { platform: 'linux' }).filter(entry => entry.args.includes('test:native:process-recovery'))).toHaveLength(1);
+  }
+  for (const platform of ['darwin', 'win32']) {
+    for (const profile of ['native', 'native-core', 'full']) {
+      expect(stepsForProfile(profile, { platform }).some(entry => entry.args.includes('test:native:process-recovery'))).toBe(false);
+    }
+  }
+  for (const profile of ['frontend', 'documentation', 'windows', 'windows-core', 'sidecar']) {
+    expect(stepsForProfile(profile).some(entry => entry.args.includes('test:native:process-recovery'))).toBe(false);
+  }
 });

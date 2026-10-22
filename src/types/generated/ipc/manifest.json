@@ -1080,6 +1080,7 @@
         "chat",
         "copilot",
         "db",
+        "errors",
         "mcp",
         "state",
         "workspace"

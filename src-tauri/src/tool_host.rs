@@ -1,3 +1,4 @@
+use crate::core::command_error::command_error;
 use crate::core::http_auth::BearerTokenDigest;
 use crate::core::tool_policy::{get_mode_policy, validate_tool_execution};
 use crate::core::workspace_execution::{
@@ -145,11 +146,10 @@ async fn tool_execute(
     let workspace_root = state.workspace_metadata_root.0.read().await.clone();
 
     let result = match payload.tool_id.as_str() {
-        tool_id if tool_id.starts_with("terminal_") => Err(CommandError {
-            message:
-                "Agent terminal tools must be relayed through Macro's frontend permission review."
-                    .to_string(),
-        }),
+        tool_id if tool_id.starts_with("terminal_") => Err(command_error(
+            "Agent terminal tools must be relayed through Macro's frontend permission review."
+                .to_string(),
+        )),
         _ => {
             execute_workspace_tool(
                 workspace_root.clone(),
