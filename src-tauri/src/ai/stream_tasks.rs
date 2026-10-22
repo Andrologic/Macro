@@ -2,6 +2,7 @@
 use super::AiState;
 use futures::future::{BoxFuture, FutureExt, Shared};
 use std::future::Future;
+use std::panic::AssertUnwindSafe;
 use tokio_util::sync::CancellationToken;
 
 pub(super) struct StreamTask {
@@ -26,13 +27,18 @@ impl AiState {
         // Hold registration until insertion: even an immediately completed task
         // cannot remove its entry before that entry exists.
         let handle = tokio::spawn(async move {
-            run(task_cancel).await;
+            let result = run_catching_panic(async move {
+                run(task_cancel).await;
+                Ok(())
+            })
+            .await;
             state.stream_tasks.lock().await.remove(&task_request);
+            result
         });
         let joined = async move {
             handle
                 .await
-                .map_err(|error| format!("AI stream task failed: {error}"))
+                .map_err(|error| format!("AI stream task failed: {error}"))?
         }
         .boxed()
         .shared();
@@ -54,6 +60,17 @@ impl AiState {
         }
         Ok(())
     }
+}
+
+/// Never resume a panicked provider future. Its owner still performs cleanup
+/// and records an uncertain effect; the panic payload is not a wire receipt.
+pub(super) async fn run_catching_panic<T>(
+    future: impl Future<Output = Result<T, String>>,
+) -> Result<T, String> {
+    AssertUnwindSafe(future)
+        .catch_unwind()
+        .await
+        .unwrap_or_else(|_| Err("AI stream task panicked.".into()))
 }
 
 /// A cancelled processing future has already released its borrows and pipes.
@@ -147,50 +164,88 @@ mod tests {
         state.cancel_stream_task("request").await.unwrap();
     }
 
+    #[tokio::test]
+    async fn panic_is_an_error_and_removes_registration_after_future_drop() {
+        let state = AiState::default();
+        let (release, ready) = oneshot::channel();
+        state
+            .spawn_stream("panic".into(), |_| async move {
+                ready.await.unwrap();
+                panic!("synthetic stream panic");
+            })
+            .await
+            .unwrap();
+        let joined = state
+            .stream_tasks
+            .lock()
+            .await
+            .get("panic")
+            .unwrap()
+            .joined
+            .clone();
+        release.send(()).unwrap();
+        assert_eq!(joined.await.unwrap_err(), "AI stream task panicked.");
+        assert!(!state.stream_tasks.lock().await.contains_key("panic"));
+    }
+
     #[cfg(unix)]
     #[tokio::test]
-    async fn cancellation_reaps_real_child_and_joins_stderr_reader() {
+    async fn cancellation_and_panic_reap_real_child_and_join_stderr_reader() {
         use std::process::Stdio;
         use tokio::io::{AsyncBufReadExt, BufReader};
-        let mut child = tokio::process::Command::new("sh")
-            .args(["-c", "printf 'synthetic-ready\\n' >&2; read ignored"])
-            .stdin(Stdio::piped())
-            .stdout(Stdio::null())
-            .stderr(Stdio::piped())
-            .kill_on_drop(true)
-            .spawn()
-            .unwrap();
-        let (ready, observed) = oneshot::channel();
-        let stderr = child.stderr.take().unwrap();
-        let reader = tokio::spawn(async move {
-            let mut lines = BufReader::new(stderr).lines();
-            let first = lines.next_line().await.unwrap().unwrap();
-            ready.send(first.clone()).unwrap();
-            while lines.next_line().await.unwrap().is_some() {}
-            first
-        });
-        assert_eq!(
-            tokio::time::timeout(std::time::Duration::from_secs(5), observed)
+        for panics in [false, true] {
+            let mut child = tokio::process::Command::new("sh")
+                .args(["-c", "printf 'synthetic-ready\\n' >&2; read ignored"])
+                .stdin(Stdio::piped())
+                .stdout(Stdio::null())
+                .stderr(Stdio::piped())
+                .kill_on_drop(true)
+                .spawn()
+                .unwrap();
+            let (ready, observed) = oneshot::channel();
+            let stderr = child.stderr.take().unwrap();
+            let reader = tokio::spawn(async move {
+                let mut lines = BufReader::new(stderr).lines();
+                let first = lines.next_line().await.unwrap().unwrap();
+                ready.send(first.clone()).unwrap();
+                while lines.next_line().await.unwrap().is_some() {}
+                first
+            });
+            assert_eq!(
+                tokio::time::timeout(std::time::Duration::from_secs(5), observed)
+                    .await
+                    .unwrap()
+                    .unwrap(),
+                "synthetic-ready"
+            );
+            assert!(child.try_wait().unwrap().is_none());
+            let cancel = CancellationToken::new();
+            let request_cancel = cancel.clone();
+            let task = tokio::spawn(async move {
+                let processing = run_catching_panic(async move {
+                    if panics {
+                        panic!("synthetic processing panic");
+                    }
+                    Ok(())
+                })
+                .await;
+                assert_eq!(processing.is_err(), panics);
+                let result =
+                    finish_child_stream(&mut child, Some(reader), &cancel, processing.is_err())
+                        .await;
+                // wait has reaped the process, not just requested termination.
+                assert!(child.id().is_none());
+                result
+            });
+            if !panics {
+                request_cancel.cancel();
+            }
+            let (status, _) = tokio::time::timeout(std::time::Duration::from_secs(5), task)
                 .await
                 .unwrap()
-                .unwrap(),
-            "synthetic-ready"
-        );
-        assert!(child.try_wait().unwrap().is_none());
-        let cancel = CancellationToken::new();
-        let request_cancel = cancel.clone();
-        let task = tokio::spawn(async move {
-            let result = finish_child_stream(&mut child, Some(reader), &cancel, false).await;
-            // wait has reaped the process, not just requested termination.
-            assert!(child.id().is_none());
-            result
-        });
-        request_cancel.cancel();
-        let (status, _) = tokio::time::timeout(std::time::Duration::from_secs(5), task)
-            .await
-            .unwrap()
-            .unwrap()
-            .unwrap();
-        assert!(!status.success());
+                .unwrap()
+                .unwrap();
+            assert!(!status.success());
+        }
     }
 }

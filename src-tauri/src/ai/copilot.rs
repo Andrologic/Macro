@@ -2292,7 +2292,7 @@ async fn stream_chat_inner(
     let result = tokio::select! {
         biased;
         _ = cancel.cancelled() => Err("AI stream cancelled.".to_string()),
-        result = processing => result,
+        result = crate::ai::stream_tasks::run_catching_panic(processing) => result,
     };
     // All exits after spawn pass here, including invalid events, failed writes
     // and cancellation. The stream task owns the child until wait completes.
