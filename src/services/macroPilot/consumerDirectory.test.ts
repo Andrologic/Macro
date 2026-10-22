@@ -35,7 +35,7 @@ describe('consumer directory admission and observations', () => {
   });
   it('reads the exact session scope and publishes a complete revision-zero catalog', async () => {
     const h = harness(); const denied: PilotInstanceAccess[] = [];
-    const result = await h.directory.read(signal(), value => denied.push(value));
+    const result = await h.directory.read(signal(), value => { if (value.type === 'instance_access') denied.push(value); });
     expect(result.accesses[0].revision).toBe(0); expect(result.instances).toHaveLength(1); expect(denied).toEqual([]);
     expect(h.requests[1].scope).toEqual({ type: 'session', account_id: context.accountId, session_id: context.sessionId });
   });
@@ -44,7 +44,7 @@ describe('consumer directory admission and observations', () => {
     h.query(async request => request.item_type === 'instance' ? page('instance', [instance()]) : request.cursor
       ? { malformed: true } : page('instance_access', [syntheticAccess('instance:a', 1, 'revoked')], 'cursor:next'));
     const denied: PilotInstanceAccess[] = [];
-    await expect(h.directory.read(signal(), value => denied.push(value))).rejects.toMatchObject({ code: 'invalid_response' });
+    await expect(h.directory.read(signal(), value => { if (value.type === 'instance_access') denied.push(value); })).rejects.toMatchObject({ code: 'invalid_response' });
     expect(denied).toHaveLength(1); expect(denied[0].state).toBe('revoked');
     h.query(async request => page(request.item_type, request.item_type === 'instance' ? [instance()] : [syntheticAccess()]));
     await expect(h.directory.read(signal(), () => {})).rejects.toMatchObject({ code: 'stale_revision' });
@@ -84,4 +84,22 @@ describe('consumer directory admission and observations', () => {
       await expect(pending).rejects.toMatchObject({ code: 'context_changed' });
     }
   });
+});
+
+it('rejects stale and contradictory instance revisions across refreshes', async () => {
+  const h = harness(); await h.directory.read(signal(), () => {});
+  h.query(async request => page(request.item_type, request.item_type === 'instance' ? [{ ...instance(), revision: 1, connection_state: 'unreachable' }] : [syntheticAccess()]));
+  let denied = 0; await h.directory.read(signal(), () => { denied++; }); expect(denied).toBe(1);
+  h.query(async request => page(request.item_type, request.item_type === 'instance' ? [instance()] : [syntheticAccess()]));
+  await expect(h.directory.read(signal(), () => {})).rejects.toMatchObject({ code: 'stale_revision' });
+});
+it('bounds historical directory observations and stays closed when the retained budget is exhausted', async () => {
+  const h = harness({ ...syntheticLimits, directoryBytes: 1000, pageBytes: 1000 });
+  let count = 0;
+  h.query(async request => page(request.item_type, request.item_type === 'instance' ? [instance(`instance:${count}`)] : [syntheticAccess(`instance:${count}`)]));
+  await h.directory.read(signal(), () => {}); count++;
+  await h.directory.read(signal(), () => {}); count++;
+  await expect(h.directory.read(signal(), () => {})).rejects.toMatchObject({ code: 'resource_limit' });
+  count = 0; await expect(h.directory.read(signal(), () => {})).rejects.toMatchObject({ code: 'resource_limit' });
+  h.directory.reset(); expect((await h.directory.read(signal(), () => {})).instances).toHaveLength(1);
 });

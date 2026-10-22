@@ -41,7 +41,7 @@ export function consumerRetryPolicy(value: ConsumerRetryPolicy): Readonly<Consum
     !Number.isSafeInteger(value.maxDelayMs) || value.maxDelayMs < 1 || value.maxDelayMs > value.deadlineMs ||
     !Number.isSafeInteger(value.pollIntervalMs) || value.pollIntervalMs < 1 || value.pollIntervalMs > value.maxDelayMs ||
     !Number.isFinite(value.jitterRatio) || value.jitterRatio < 0 || value.jitterRatio > 1 ||
-    value.delaysMs.some(delay => !Number.isSafeInteger(delay) || delay < 1 || delay > value.maxDelayMs)) {
+    Array.from(value.delaysMs).some(delay => !Number.isSafeInteger(delay) || delay < 1 || delay > value.maxDelayMs) || Object.keys(value).some(key => !['delaysMs', 'maxDelayMs', 'deadlineMs', 'jitterRatio', 'pollIntervalMs'].includes(key))) {
     throw new PilotClientError('invalid_configuration');
   }
   return Object.freeze({ ...value, delaysMs: Object.freeze([...value.delaysMs]) });
@@ -50,7 +50,7 @@ export function consumerRetryable(error: unknown): error is PilotClientError {
   return error instanceof PilotClientError && (error.code === 'offline' || error.retryable && error.code === 'unavailable');
 }
 export const consumerClock: ConsumerClock = {
-  now: () => Date.now(), random: () => Math.random(),
+  now: () => performance.now(), random: () => Math.random(),
   sleep: (ms, signal) => new Promise((resolve, reject) => {
     const cancel = () => { clearTimeout(timer); signal.removeEventListener('abort', cancel); reject(new PilotClientError('context_changed')); };
     const timer = setTimeout(() => { signal.removeEventListener('abort', cancel); resolve(); }, ms);
@@ -58,3 +58,13 @@ export const consumerClock: ConsumerClock = {
     if (signal.aborted) cancel();
   }),
 };
+
+/** Abandon an uncooperative injected port without accepting its late value. */
+export function consumerAbortable<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const abort = () => { signal.removeEventListener('abort', abort); reject(new PilotClientError('context_changed')); };
+    signal.addEventListener('abort', abort, { once: true });
+    void promise.then(value => { signal.removeEventListener('abort', abort); if (signal.aborted) reject(new PilotClientError('context_changed')); else resolve(value); }, error => { signal.removeEventListener('abort', abort); reject(error); });
+    if (signal.aborted) abort();
+  });
+}

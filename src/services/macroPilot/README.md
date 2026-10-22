@@ -220,3 +220,84 @@ remain distinct contract limits. JSON buffers, strings and decoded objects can
 coexist transiently; serialized bytes are not a heap measurement. D2 and B8 must
 define admission and retention before adding a shared process cache or retained
 multi-view content. No performance or memory gain is claimed by D1.
+
+## Shared desktop consumer owner
+
+`ConsumerConnections` is a demand-created D2a owner for one native context.
+`createMacroConnectConsumer(native, limits, retry, clock?)` is an inert factory.
+Nothing starts at import, and the caller must dispose the owner. This foundation
+has no UI and does not complete the multi-PC product workflow. Local service
+providers and the local producer composition remain independent.
+
+Composition must supply every `ConsumerLimits` and `ConsumerRetryPolicy` field.
+There are no operational defaults. Limits count targets, visible subscribers,
+active reads, directory pages/items/bytes and identity/cursor records. They are
+not a process heap budget. Tests use explicitly synthetic limits. B8 and the
+future UI composition must choose their own reviewed values.
+
+Call `refreshDirectory()` before acquiring a target. It shares one account proof
+and one bounded v1 directory traversal. The native directory port admits only
+`instance` and current-session `instance_access` requests, validates A1, requires
+an exact response request header and uses only the session Bearer. It reuses the
+strict D1 `/me` proof for authentication failures. It never provisions, attaches
+or reactivates a local producer, and never reads an instance key.
+
+Directory grants become available only after the full traversal succeeds.
+Validated denials and unreachable/revoked instances take effect before a
+replacement catalog. A partial traversal does not prove revocation by absence.
+Unsafe, old or contradictory revisions, duplicate references and cursor loops
+fail closed. Revision zero is valid. Historical observations are bounded by both
+identity count and serialized bytes; exhaustion keeps discovery closed until a
+fresh owner is created. Directory pages have no atomic capture or authority
+lease, so this metadata is never a substitute for server authorization.
+
+`acquire(instanceId, notify?)` creates a visible lease. Leases for the same target
+share one `PilotTargetClient`, negotiation and event feed. Its state exposes
+non-secret scope, selected capabilities, phase, revision domains and invalidation
+versions. `release()` is idempotent. The last release cancels work and removes
+the entry, callbacks and listeners. Context replacement disposes the whole owner;
+a target failure retires only that target's protected state.
+
+The operation and capability lists are exactly the D1 lists above. `lease.read`
+keeps one replaceable desired request per subscriber. Identical in-flight reads
+coalesce. Canceling one reader leaves other readers active; canceling the last
+reader aborts the shared operation. Returned pages are independent copies and
+are not kept in the owner. A new desired request rejects its predecessor. A
+round-robin admission map allows at most one active reading slot and one waiting
+admission per target, subject to the configured global read limit. Long polls
+use the separate D1 event slot. With a global read limit of one, another target
+waits until that slot finishes or is canceled; deadlines prevent an indefinite
+queue. There is no background transcript prefetch.
+
+Shared pages add `resourceKey` and `ownerVersion`. Future views must compare
+those stamps and the full D1 scope before displaying held data, and drop their
+own protected payloads on invalidation. Continuations require the still-current
+shared stamp, the previous D1 page and the complete bounded `seenIdentities` set.
+The caller-owned continuation record is capped at 512 KiB, a client admission
+limit for the request/previous-page metadata, not a heap estimate. A limit or
+capture expiry requires a new initial read or an explicit partial state. The
+owner does not accumulate transcript pages or pagination identity sets.
+
+The event owner applies invalidations and tombstones before locally committing
+the D1 ACK cursor. UI notifications run afterward and cannot hold that ACK.
+Catalog, projects, enhanced content and legacy content revisions remain separate.
+Only visible resource records are retained; replaceable changes condense into
+revision/version state. Tombstones survive later content changes. Reset retires
+the affected target's captures and pending readers. Account/session changes share
+revalidation across target feeds. Account deletion locks this owner; only the
+native strict proof can clear the local authentication session.
+
+Automatic recovery admits only transport `offline` and explicitly retryable
+`unavailable` errors from reads/events. The finite delay array is a target-wide
+allowance, with injected jitter and a fixed recovery deadline. Neither a
+successful negotiation nor an unrelated directory refresh resets it or retries
+a forbidden target. The original read deadline includes queueing, recovery and
+D1 terminal GET polling. Retries release global reading admission during backoff.
+`retryTarget()` is the explicit manual reset and revalidates authority. Malformed,
+forbidden, revoked and other non-retryable replies require explicit action.
+
+`revalidate()` locks protected state before checking authority and continuity.
+No offline authority duration is invented. There is no on-disk consumer cache,
+mutation, conversation read receipt, file access, reflection or interaction in
+D2a. Future mutation support requires its own intent receipts and reconciliation
+on the original target after a lost acknowledgement.

@@ -775,13 +775,13 @@ export class MacroPilotNativeClient {
       verify: (context, signal) => this.verifyConsumerSession(context, signal),
       query: async (context, request, signal) => {
         this.checkContext(context.key);
-        if (!validDirectoryRequest(context, request)) throw new PilotClientError('invalid_configuration');
+        if (!validDirectoryRequest(this.consumerIdentity(), request)) throw new PilotClientError('invalid_configuration');
         const saved = structuredClone(request);
         try {
           const result = await this.sendRequest('POST', '/directory/query', saved,
             { authenticated: true, signal, beforeSend: async () => { this.consumerIdentity(); this.checkContext(context.key); } }, 'consumer-directory');
           this.checkContext(context.key);
-          if (!validateA1(result.data) || !isRecord(result.data) || result.data.type !== 'page' || result.data.item_type !== saved.item_type) throw new PilotClientError('invalid_response');
+          if (result.status !== 200 || !validateA1(result.data) || !isRecord(result.data) || result.data.type !== 'page' || result.data.item_type !== saved.item_type) throw new PilotClientError('invalid_response');
           return result.data;
         } catch (error) {
           if (!signal.aborted && error instanceof PilotClientError && ['unauthorized', 'session_revoked'].includes(error.code)) await this.verifyConsumerSession(context, signal);
@@ -953,8 +953,12 @@ export class MacroPilotNativeClient {
     const responseHeader = response.headers.get('x-request-id');
     const responseRequestId = responseHeader || requestId;
     if (extension === 'consumer-directory') {
-      if (responseHeader !== requestId || !validateA1(data) || !isRecord(data) ||
-        (!response.ok && (data.type !== 'error' || data.request_id !== requestId))) throw new PilotClientError('invalid_response', response.status);
+      if (responseHeader !== requestId || !validateA1(data) || !isRecord(data)) throw new PilotClientError('invalid_response', response.status);
+      if (data.type === 'error') {
+        if (response.ok || data.request_id !== requestId || !isRecord(data.error)) throw new PilotClientError('invalid_response', response.status);
+        const authenticationError = data.error.code === 'unauthorized' || data.error.code === 'session_revoked';
+        if ((response.status === 401) !== authenticationError) throw new PilotClientError('invalid_response', response.status);
+      } else if (!response.ok) throw new PilotClientError('invalid_response', response.status);
     }
     if (extension === 'session-check') {
       // Global cleanup needs a correlated canonical proof, not a status fallback.
