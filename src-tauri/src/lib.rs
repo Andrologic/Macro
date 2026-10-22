@@ -1150,3 +1150,6 @@ mod frontend_log_tests {
         assert!(!source.contains(removed_command));
     }
 }
+
+#[cfg(test)]
+mod process_recovery_transport;

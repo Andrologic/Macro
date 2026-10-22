@@ -93,3 +93,26 @@ Each stage must pass its focused local checks and an OX Alpha review. The full
 frontend suite, type checking, linting, and any required native checks must then
 pass on GitHub before merge; run `bun run ci` locally when the stage's risk or a
 remote failure calls for an exhaustive rehearsal.
+
+## Native process interruption recovery
+
+Run `bun run test:native:process-recovery` on a POSIX host with the native build
+prerequisites. The `native`, `native-core`, and `full` profiles run it; ordinary
+frontend tests do not build or start a native backend. Set
+`MACRO_RECOVERY_LOG_DIR` to retain per-process diagnostics outside the repository.
+
+The runner builds a private copy of the Rust test executable and connects actual
+Tauri handlers under MockRuntime to Bun workers through stdio. Only transport and
+DOM storage are adapted, and provider replies are synthetic. Production Chat dispatch, completion, recovery storage,
+Plans mutations and GitFlow own the decisions. Fixtures use migrated SQLite,
+Git remotes served by a supervised, read-only `git daemon` on loopback, and real
+`@macro` metadata. The daemon has an explicit readiness signal and its process
+group is also checked after cleanup. No provider or user profile is used.
+
+Four explicit checkpoints cover a file effect before its receipt, the first
+merge of two repositories before its checkpoint, committed Plans metadata before
+saga closure, and a failed assistant write after its recovery copy is saved. The
+parent inspects durable state, kills the processes and their process groups,
+checks they stopped, then restarts twice against the same data. The second
+restart must preserve the first recovery's durable result. This checks process
+death, not machine power loss, desktop rendering or provider behavior.
