@@ -225,7 +225,7 @@ export async function normalizePortableChatHistory(
                 keep(256 + part.id.length * 2); calls.set(part.id, hash);
                 const target = await content(field, JSON.stringify({ tool: part.name, arguments_json: part.arguments }), 'data', { kind: 'historical_text', purpose: 'historical_data' }, { message: id!, source: sourceRef });
                 pendingRelations.push({ message: id!, target, relation: 'data_for_message' }); keep(128);
-              } else {
+              } else if (part.kind === 'result') {
                 const hash = await portableDigest(encoder.encode(part.text));
                 if (results.has(part.id) && results.get(part.id) !== hash) fail('contradictory_result');
                 keep(256 + part.id.length * 2); results.set(part.id, hash);
