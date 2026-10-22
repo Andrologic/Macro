@@ -41,6 +41,13 @@ fn context_error() -> crate::db::agsdl_execution::dto::EngineFailure {
         "Claude context contains an external source or cannot be attested",
     )
 }
+fn valid_workspace_id(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 256
+        && value
+            .bytes()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, b'-' | b'_'))
+}
 pub(crate) fn private_directory(path: &Path) -> Result<()> {
     #[cfg(unix)]
     {
@@ -358,9 +365,7 @@ pub(crate) fn prepare(manager: &ConfigManager) -> Result<Profile> {
         file.sync_all().map_err(|_| context_error())?;
     }
     let workspace = std::env::var("MACRO_CLAUDE_WORKSPACE_ID").ok();
-    if workspace.as_ref().is_some_and(|s| {
-        s.is_empty() || s.len() > 256 || !s.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'-')
-    }) {
+    if workspace.as_ref().is_some_and(|s| !valid_workspace_id(s)) {
         return Err(context_error());
     }
     let qa_endpoint = if cfg!(debug_assertions) {
@@ -417,5 +422,25 @@ pub(crate) fn unavailable(code: &str) -> ClaudeStatus {
         version: None,
         tool_policy: "macro-controlled".into(),
         installation_url: INSTALL_URL.into(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::valid_workspace_id;
+    #[test]
+    fn native_workspace_routing_accepts_official_shape_and_rejects_header_injection() {
+        assert!(valid_workspace_id("wrkspc_synthetic-0123"));
+        for value in [
+            "",
+            "wrkspc synthetic",
+            "wrkspc:test",
+            "wrkspc_test\r\nx-other: value",
+            "wrkspc_test\n",
+            "é",
+        ] {
+            assert!(!valid_workspace_id(value));
+        }
+        assert!(!valid_workspace_id(&"x".repeat(257)));
     }
 }
