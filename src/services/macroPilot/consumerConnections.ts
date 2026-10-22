@@ -671,9 +671,11 @@ export class ConsumerConnections {
       const pending = this.renew(entry, signal);
       void pending.then(() => {
         this.current(entry, signal); if (entry.authorityEpoch !== generation) throw changed();
-        // This is an ordinary renewal: no feed reset, discovery or content read.
-        if (!entry.recovering) { entry.presentationDeadline = entry.client.readAuthority()?.deadline ?? null; entry.retries = 0; entry.retryDeadline = null; }
-        this.notify(entry);
+        // Only a still-healthy feed confirms ordinary renewal; an exhausted recovery stays offline.
+        if (!entry.recovering && entry.ready && entry.authorityValid && entry.state.phase === 'ready') {
+          entry.presentationDeadline = entry.client.readAuthority()?.deadline ?? null; entry.retries = 0; entry.retryDeadline = null;
+          this.notify(entry);
+        }
       }).catch(error => {
         if (signal.aborted || entry.authorityEpoch !== generation) return;
         if (consumerRetryable(error)) void this.recover(entry, error).catch(() => {});

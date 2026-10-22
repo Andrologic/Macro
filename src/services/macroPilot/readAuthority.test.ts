@@ -469,3 +469,50 @@ describe('per-target presentation confirmation', () => {
     expect(clock.count()).toBe(0); expect(h.waiting.size).toBe(0); expect(h.listeners.size).toBe(0);
   });
 });
+
+
+describe('ordinary renewal after the recovery budget', () => {
+  for(const mode of ['exhausted-expired','exhausted-still-valid','healthy-expired','hidden','revoked','credential','refusal'] as const) it(`confirms presentation only with a continuous healthy feed: ${mode}`, async () => {
+    const clock=manualClock(), hold=gate<void>(); let signal: AbortSignal | undefined, returned=false;
+    const h=createConnectConsumerFixture({authorityLifetimeMs:30000,monotonicNow:clock.now,timer:clock.timer,retry:{...connectReaderRetry,delaysMs:[5,10],deadlineMs:60,maxDelayMs:20,pollIntervalMs:5}}), reader=new ConsumerReader(h.ports);
+    try {
+      reader.start(); await until(()=>reader.getSnapshot().phase==='ready'); reader.open('instance:alpha');
+      await until(()=>Boolean(reader.getSnapshot().panels[0].catalog.page) && h.waiting.has('instance:alpha'));
+      const original=reader.getSnapshot().panels[0].catalog.page;
+      h.negotiate(async (id,dispatch,s)=> { signal=s; const response=h.negotiated(id,dispatch); await hold.promise; returned=true; if(mode==='refusal') throw new PilotClientError('forbidden',403); return response; });
+      clock.advance(15000); await until(()=>Boolean(signal));
+      if(mode!=='healthy-expired') {
+        h.failEvents('instance:alpha',new PilotClientError('unavailable',503,true));
+        await until(()=>reader.getSnapshot().panels[0].phase==='offline'); await new Promise(r=>setTimeout(r,110));
+      }
+      if(mode!=='exhausted-still-valid') clock.advance(15001);
+      if(mode==='hidden') reader.setPanelVisible(reader.getSnapshot().panels[0].key,false);
+      else if(mode==='credential') h.changeCredential();
+      else if(mode==='revoked') {
+        h.directoryRead(async request=> { const page=h.directory(request); if(request.item_type==='instance_access') page.items=page.items.map(item=>'ref' in item && item.ref.instance_id==='instance:alpha'?h.access('instance:alpha',true):item); return page; });
+        await h.owner()!.refreshDirectory();
+      }
+      expect(reader.getSnapshot().panels[0]?.catalog.page ?? null).toBe(mode==='exhausted-still-valid'?original:null);
+      hold.resolve(); await until(()=>returned); await new Promise(r=>setTimeout(r,15));
+      if(mode==='exhausted-still-valid') {
+        expect(reader.getSnapshot().panels[0].catalog.page).toBe(original); clock.advance(15000);
+      }
+      if(mode==='healthy-expired') {
+        await until(()=>reader.getSnapshot().panels[0].phase==='ready' && Boolean(reader.getSnapshot().panels[0].catalog.page));
+        expect(reader.getSnapshot().panels[0].catalog.page).toBe(original);
+        expect(reader.getSnapshot().panels[0].catalog.page!.captureDeadline).toBe(original!.captureDeadline); expect(signal!.aborted).toBe(false);
+      } else {
+        expect(reader.getSnapshot().panels[0]?.catalog.page ?? null).toBeNull();
+        if(mode.startsWith('exhausted')) expect(reader.getSnapshot().panels[0].phase).toBe('authority_expired');
+        else expect(signal!.aborted).toBe(true);
+      }
+      clock.advance(5000); await new Promise(r=>setTimeout(r,15));
+      expect(h.calls.filter(c=>c.dispatch.kind==='negotiate')).toHaveLength(2);
+      expect(h.calls.filter(c=>c.dispatch.kind==='events')).toHaveLength(2);
+      expect(h.calls.filter(c=>c.dispatch.kind==='submit')).toHaveLength(1);
+      expect(h.waiting.size).toBe(mode==='healthy-expired'?1:0);
+      if(mode!=='healthy-expired') expect(reader.getSnapshot().panels[0]?.catalog.page ?? null).toBeNull();
+    } finally { hold.resolve(); reader.dispose(); }
+    expect(clock.count()).toBe(0); expect(h.waiting.size).toBe(0); expect(h.listeners.size).toBe(0);
+  });
+});
