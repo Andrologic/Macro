@@ -1807,6 +1807,56 @@
           "$ref": "#/$defs/uuid"
         }
       }
+    },
+    "expectation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "binding",
+        "frozen",
+        "manifest",
+        "prepared",
+        "terminal"
+      ],
+      "properties": {
+        "binding": {
+          "$ref": "#/$defs/binding"
+        },
+        "frozen": {
+          "$ref": "#/$defs/frozen"
+        },
+        "manifest": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/manifest"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "prepared": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/prepared"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "terminal": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/terminal"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "description": "Independent native journal facts for receive-time correlation. Never construct from the response being checked."
     }
   }
 }

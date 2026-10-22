@@ -36,16 +36,27 @@ export function canonicalJson(value) {
     if (typeof item === 'string') { requireThat(validUnicode(item)); return JSON.stringify(item); }
     if (typeof item === 'number') { requireThat(Number.isSafeInteger(item) && !Object.is(item, -0)); return String(item); }
     requireThat(item && typeof item === 'object' && !seen.has(item));
-    requireThat(Array.isArray(item) || Object.getPrototypeOf(item) === Object.prototype || Object.getPrototypeOf(item) === null);
-    requireThat(Object.getOwnPropertySymbols(item).length === 0);
-    const keys = Object.keys(item);
-    requireThat(keys.every(key => Object.hasOwn(Object.getOwnPropertyDescriptor(item, key), 'value')));
+    const array = Array.isArray(item);
+    requireThat(array ? Object.getPrototypeOf(item) === Array.prototype : Object.getPrototypeOf(item) === Object.prototype || Object.getPrototypeOf(item) === null);
+    const keys = Reflect.ownKeys(item);
+    requireThat(keys.every(key => typeof key === 'string'));
     seen.add(item);
-    let result;
-    if (Array.isArray(item)) {
-      requireThat(keys.length === item.length && keys.every((key, index) => key === String(index)));
-      result = `[${item.map(child => render(child, depth + 1)).join(',')}]`;
-    } else result = `{${Object.keys(item).sort().map(key => { requireThat(validUnicode(key)); return `${JSON.stringify(key)}:${render(item[key], depth + 1)}`; }).join(',')}}`;
+    const parts = [];
+    if (array) {
+      requireThat(keys.length === item.length + 1 && keys.at(-1) === 'length');
+      for (let index = 0; index < item.length; index++) {
+        requireThat(keys[index] === String(index));
+        const descriptor = Object.getOwnPropertyDescriptor(item, String(index));
+        requireThat(descriptor.enumerable && Object.hasOwn(descriptor, 'value'));
+        parts.push(render(descriptor.value, depth + 1));
+      }
+    } else for (const key of keys.sort()) {
+      requireThat(validUnicode(key));
+      const descriptor = Object.getOwnPropertyDescriptor(item, key);
+      requireThat(descriptor.enumerable && Object.hasOwn(descriptor, 'value'));
+      parts.push(`${JSON.stringify(key)}:${render(descriptor.value, depth + 1)}`);
+    }
+    const result = array ? `[${parts.join(',')}]` : `{${parts.join(',')}}`;
     seen.delete(item); return result;
   }
   return render(value, 0);
@@ -90,6 +101,7 @@ export function createTransferDecisionValidator(shape) {
     }
     visit(value);
     if (definition === 'binding') bindingRules(value);
+    if (definition === 'expectation') expectationRules(value);
     if (definition === 'terminal') terminalRules(value);
     if (definition === 'ledger') ledgerRules(value);
     if (definition === 'record') recordRules(value);
@@ -123,7 +135,7 @@ export function createTransferDecisionValidator(shape) {
     if (terminal.prepared) requireThat(terminal.prepared.binding_digest === terminal.binding_digest && terminal.prepared.manifest_digest === terminal.manifest_digest && terminal.prepared.target_conversation_id !== terminal.source.source_conversation_id);
   }
   function activationRules(activation, terminal) {
-    requireThat(terminal?.outcome === 'committed' && activation.transfer_id === terminal.transfer_id && activation.terminal_digest === fingerprint('terminal', terminal) && activation.target_instance_id === terminal.target_instance_id && activation.target_conversation_id === terminal.prepared.target_conversation_id && activation.prepared_digest === fingerprint('prepared', terminal.prepared));
+    requireThat(terminal?.outcome === 'committed' && activation.transfer_id === terminal.transfer_id && activation.terminal_digest === fingerprint('terminal', terminal) && activation.target_instance_id === terminal.target_instance_id && activation.target_conversation_id === terminal.prepared.target_conversation_id && activation.prepared_digest === fingerprint('prepared', terminal.prepared), 'conflict');
   }
   function ledgerRules(ledger) {
     requireThat(ledger.birth.provenance_digest === fingerprint('provenance', ledger.provenance));
@@ -247,10 +259,11 @@ export function createTransferDecisionValidator(shape) {
   function uncertain(provenance, context, ledger) {
     return ledger?.state === 'recovery_hold' || context.history === 'restored' && (ledger === null || provenance.birth_generation !== context.recovery_generation);
   }
-  function status(request, record, context, ledger) {
+  function status(request, record, context, ledger, retainedTerminal = null) {
     const b = record?.binding ?? request.body.binding;
-    const hold = uncertain(b.provenance, context, ledger) || record?.phase === 'recovery_hold';
-    return envelope('reconciliation_status', { status: record?.terminal ? 'terminal' : hold ? 'recovery_hold' : record ? 'in_progress' : 'not_found', transfer_id: b.transfer_id, source: sourceOf(b), epoch: b.epoch, revision: record?.revision ?? '0', phase: record?.phase ?? null, terminal: record?.terminal ?? null, activation: record?.activation ?? null, recovery_generation: context.recovery_generation, source_recovery: hold ? 'recovery_hold' : 'intact' });
+    const terminal = record?.terminal ?? retainedTerminal;
+    const hold = uncertain(b.provenance, context, ledger) || record?.phase === 'recovery_hold' || ledger?.state === 'ceded' && ledger.terminal.transfer_id !== b.transfer_id;
+    return envelope('reconciliation_status', { status: terminal ? 'terminal' : hold ? 'recovery_hold' : record ? 'in_progress' : 'not_found', transfer_id: b.transfer_id, source: sourceOf(b), epoch: b.epoch, revision: record?.revision ?? terminal?.decision_revision ?? '0', phase: record?.phase ?? terminal?.outcome ?? null, terminal, activation: record?.activation ?? null, recovery_generation: context.recovery_generation, source_recovery: hold ? 'recovery_hold' : 'intact' });
   }
   function receiptFor(record, operation) {
     return operation === 'reserve' ? record.reserve_receipt : operation === 'seal' ? record.seal_receipt : operation === 'ready' ? record.ready_receipt : operation === 'activation.record' ? record.activation : record.terminal;
@@ -304,6 +317,7 @@ export function createTransferDecisionValidator(shape) {
         const { provenance, mode } = request.body; authorityOrigin(provenance, context);
         currentActor(provenance.source.account_id, context);
         if (ledger) {
+          sourceReader(provenance, context);
           requireThat(same(ledger.provenance, provenance) && ledger.birth.operation_id === request.operation_id && ledger.birth.request_digest === fingerprint('retry-body', request), 'conflict');
           requireThat(!uncertain(provenance, context, ledger), 'recovery_hold');
           return { valid: true, kind: 'retry', errors: [], receipt: ledger.birth, status: null };
@@ -331,7 +345,22 @@ export function createTransferDecisionValidator(shape) {
       } else if (ledger) requireThat(same(ledger.provenance, binding.provenance), 'conflict');
       if (op === 'reconcile') {
         reader(binding, context);
-        if (record || request.body.action === 'status') return { valid: true, kind: 'status', errors: [], status: status(request, record, context, ledger) };
+        if (record === null && ledger?.state === 'ceded') {
+          matchTerminal(ledger.terminal, { binding, frozen: request.body.frozen, manifest: null, prepared: null, terminal: null });
+          const current = status(request, null, context, ledger, ledger.terminal);
+          return request.body.action === 'status' ? { valid: true, kind: 'status', errors: [], status: current } : { valid: true, kind: 'terminal', errors: [], receipt: ledger.terminal, status: current };
+        }
+        if (request.body.action === 'status') return { valid: true, kind: 'status', errors: [], status: status(request, record, context, ledger) };
+        if (record) {
+          const reused = record.retries.find(r => r.operation_id === request.operation_id);
+          if (reused) requireThat(reused.operation === op && reused.request_digest === fingerprint('retry-body', request), 'conflict');
+          const earlier = record.retries.find(r => r.operation === op);
+          if (earlier) {
+            requireThat(earlier.body_digest === bodyDigest(request), 'conflict');
+            return { valid: true, kind: 'retry', errors: [], receipt: record.terminal, status: status(request, record, context, ledger) };
+          }
+          return record.terminal ? { valid: true, kind: 'terminal', errors: [], receipt: record.terminal, status: status(request, record, context, ledger) } : { valid: true, kind: 'status', errors: [], status: status(request, record, context, ledger) };
+        }
         requireThat(!uncertain(binding.provenance, context, ledger), 'recovery_hold');
         rights(binding, context, false);
         requireThat(ledger !== null && ledger.state === 'available', ledger?.state === 'ceded' ? 'conflict' : 'recovery_hold');
@@ -435,24 +464,121 @@ export function createTransferDecisionValidator(shape) {
       return terminalize(request, ledger, record, context, 'aborted', reason);
     } catch (error) { return caught(error); }
   }
-  function validateExchange(request, result) {
+  function expectationRules(expected) {
+    bindingRules(expected.binding);
+    const digest = bindingDigest(expected.binding);
+    requireThat(expected.frozen.binding_digest === digest, 'conflict');
+    if (expected.manifest) requireThat(expected.manifest.binding_digest === digest && expected.manifest.frozen_digest === fingerprint('frozen', expected.frozen) && expected.manifest.source_revision === expected.frozen.content_revision, 'conflict');
+    if (expected.prepared) requireThat(expected.manifest !== null && expected.prepared.binding_digest === digest && expected.prepared.manifest_digest === fingerprint('manifest', expected.manifest), 'conflict');
+    if (expected.terminal) matchTerminal(expected.terminal, expected);
+  }
+  function matchTerminal(terminal, expected) {
+    assertObject(terminal, 'terminal');
+    const b = expected.binding;
+    requireThat(terminal.transfer_id === b.transfer_id && same(terminal.source, sourceOf(b)) && terminal.epoch === b.epoch && terminal.target_instance_id === b.target_instance_id && terminal.binding_digest === bindingDigest(b) && terminal.frozen_digest === fingerprint('frozen', expected.frozen), 'conflict');
+    if (terminal.outcome === 'committed') {
+      if (expected.manifest) requireThat(terminal.manifest_digest === fingerprint('manifest', expected.manifest), 'conflict');
+      if (expected.prepared) requireThat(same(terminal.prepared, expected.prepared), 'conflict');
+    }
+    if (expected.terminal) requireThat(same(terminal, expected.terminal), 'conflict');
+  }
+  function receptionExpectation(request, independent) {
+    let expected = independent;
+    if (request.body.binding) {
+      if (expected !== undefined) {
+        assertObject(expected, 'expectation');
+        requireThat(same(expected.binding, request.body.binding) && same(expected.frozen, request.body.frozen), 'conflict');
+      } else expected = { binding: request.body.binding, frozen: request.body.frozen, manifest: null, prepared: null, terminal: null };
+    }
+    requireThat(expected !== undefined);
+    assertObject(expected, 'expectation'); expected = structuredClone(expected);
+    requireThat(request.transfer_id === expected.binding.transfer_id, 'conflict');
+    if (request.operation === 'seal') {
+      if (expected.manifest) requireThat(same(expected.manifest, request.body.manifest), 'conflict');
+      expected.manifest = request.body.manifest;
+    }
+    if (request.operation === 'ready') {
+      requireThat(expected.manifest !== null);
+      if (expected.prepared) requireThat(same(expected.prepared, request.body.prepared), 'conflict');
+      expected.prepared = request.body.prepared;
+    }
+    if (['commit', 'activation.record'].includes(request.operation)) requireThat(expected.manifest !== null && expected.prepared !== null);
+    if (request.operation === 'activation.record') {
+      requireThat(expected.terminal?.outcome === 'committed');
+      activationRules(request.body.activation, expected.terminal);
+    }
+    expectationRules(expected); return expected;
+  }
+  function matchStatus(current, expected) {
+    assertObject(current, 'status');
+    const b = expected.binding;
+    requireThat(current.transfer_id === b.transfer_id && same(current.source, sourceOf(b)) && current.epoch === b.epoch, 'conflict');
+    if (current.terminal) matchTerminal(current.terminal, expected);
+    if (expected.terminal) requireThat(current.terminal !== null && same(current.terminal, expected.terminal), 'conflict');
+  }
+  /** Receive-time correlation uses independent native journal facts for requests
+   * without a full binding. Never derive that expectation from this response. */
+  function validateExchange(request, result, independentExpectation) {
     try {
       assertObject(request, 'request');
       requireThat(result?.valid === true && ['mutation', 'retry', 'terminal', 'status', 'source_status'].includes(result.kind));
-      if (result.kind === 'source_status') { assertObject(result.status, 'sourceStatus'); requireThat(request.operation === 'reconcile' && request.body.action === 'source_status' && same(request.body.provenance, result.status.provenance), 'conflict'); return ok(); }
-      if (result.kind === 'status') { assertObject(result.status, 'status'); requireThat(request.operation === 'reconcile' && result.status.transfer_id === request.transfer_id, 'conflict'); return ok(); }
-      if (result.kind === 'mutation') { assertObject(result.ledger, 'ledger'); if (result.record !== null) assertObject(result.record, 'record'); }
+      const fields = result.kind === 'mutation' ? ['valid', 'kind', 'errors', 'ledger', 'record', 'receipt', 'reservation_bytes'] : ['retry', 'terminal'].includes(result.kind) ? ['valid', 'kind', 'errors', 'receipt', 'status'] : ['valid', 'kind', 'errors', 'status'];
+      requireThat(Reflect.ownKeys(result).length === fields.length && fields.every(key => Object.hasOwn(result, key)) && Array.isArray(result.errors) && result.errors.length === 0);
+      if (request.operation === 'reconcile' && request.body.action === 'source_status') {
+        requireThat(result.kind === 'source_status'); assertObject(result.status, 'sourceStatus');
+        requireThat(same(request.body.provenance, result.status.provenance), 'conflict'); return ok();
+      }
+      if (request.operation === 'lineage.create') {
+        requireThat(['mutation', 'retry'].includes(result.kind)); assertObject(result.receipt, 'birthReceipt');
+        const r = result.receipt;
+        requireThat(r.operation_id === request.operation_id && r.request_digest === fingerprint('retry-body', request) && r.mode === request.body.mode && r.provenance_digest === fingerprint('provenance', request.body.provenance), 'conflict');
+        if (result.kind === 'mutation') {
+          assertObject(result.ledger, 'ledger');
+          requireThat(result.record === null && same(result.ledger.provenance, request.body.provenance) && same(result.ledger.birth, r) && result.ledger.state === 'available' && result.ledger.high_epoch === '0' && result.ledger.revision === '1' && result.reservation_bytes === String(LIMITS.ledger), 'conflict');
+        }
+        return ok();
+      }
+      const expected = receptionExpectation(request, independentExpectation), b = expected.binding;
+      if (result.kind === 'status') {
+        requireThat(request.operation === 'reconcile'); matchStatus(result.status, expected); return ok();
+      }
+      requireThat(result.kind !== 'source_status');
       const r = result.receipt; requireThat(r !== null);
-      const definition = { birth_receipt: 'birthReceipt', step_receipt: 'stepReceipt', terminal_receipt: 'terminal', activation_receipt: 'activation' }[r.type];
-      requireThat(definition); assertObject(r, definition);
-      if (request.operation === 'lineage.create') requireThat(r.type === 'birth_receipt' && r.operation_id === request.operation_id && r.request_digest === fingerprint('retry-body', request), 'conflict');
-      else {
-        requireThat(r.transfer_id === request.transfer_id, 'conflict');
-        if (r.type === 'step_receipt') requireThat(r.operation === request.operation && r.previous_revision === request.expected_revision && r.revision === increment(request.expected_revision), 'conflict');
-        if (request.operation === 'reserve') requireThat(r.binding_digest === bindingDigest(request.body.binding) && (r.type === 'step_receipt' ? r.subject_digest : r.frozen_digest) === fingerprint('frozen', request.body.frozen), 'conflict');
-        if (request.operation === 'seal' && r.type === 'step_receipt') requireThat(r.subject_digest === fingerprint('manifest', request.body.manifest), 'conflict');
-        if (request.operation === 'ready' && r.type === 'step_receipt') requireThat(r.subject_digest === fingerprint('prepared', request.body.prepared), 'conflict');
-        if (r.type === 'activation_receipt') requireThat(request.operation === 'activation.record' && same(r, request.body.activation), 'conflict');
+      if (r.type === 'step_receipt') {
+        assertObject(r, 'stepReceipt');
+        requireThat(['reserve', 'seal', 'ready'].includes(request.operation) && r.operation === request.operation && r.transfer_id === b.transfer_id && r.binding_digest === bindingDigest(b) && r.previous_revision === request.expected_revision && r.revision === increment(request.expected_revision), 'conflict');
+        const subject = request.operation === 'reserve' ? fingerprint('frozen', expected.frozen) : request.operation === 'seal' ? fingerprint('manifest', expected.manifest) : fingerprint('prepared', expected.prepared);
+        requireThat(r.subject_digest === subject, 'conflict');
+      } else if (r.type === 'terminal_receipt') {
+        requireThat(['reserve', 'commit', 'abort', 'reconcile'].includes(request.operation)); matchTerminal(r, expected);
+      } else {
+        requireThat(r.type === 'activation_receipt' && request.operation === 'activation.record'); assertObject(r, 'activation');
+        requireThat(same(r, request.body.activation), 'conflict'); activationRules(r, expected.terminal);
+      }
+      if (result.status !== undefined && result.status !== null) {
+        matchStatus(result.status, expected);
+        if (r.type === 'terminal_receipt') requireThat(same(r, result.status.terminal), 'conflict');
+        if (r.type === 'activation_receipt') requireThat(same(r, result.status.activation), 'conflict');
+        if (r.type === 'step_receipt') requireThat(exactInteger(result.status.revision) >= exactInteger(r.revision), 'conflict');
+      }
+      if (result.kind === 'mutation') {
+        assertObject(result.ledger, 'ledger'); assertObject(result.record, 'record');
+        const ledger = result.ledger, record = result.record;
+        requireThat(same(ledger.provenance, b.provenance) && same(record.binding, b) && same(record.frozen, expected.frozen) && ledger.high_epoch === b.epoch, 'conflict');
+        requireThat(record.revision === increment(request.expected_revision), 'conflict');
+        const accepted = record.retries.find(entry => entry.operation === request.operation);
+        requireThat(accepted && accepted.operation_id === request.operation_id && accepted.request_digest === fingerprint('retry-body', request) && accepted.body_digest === bodyDigest(request), 'conflict');
+        if (expected.manifest) requireThat(same(record.manifest, expected.manifest), 'conflict');
+        if (expected.prepared) requireThat(same(record.prepared, expected.prepared), 'conflict');
+        if (record.terminal) matchTerminal(record.terminal, expected);
+        if (expected.terminal) requireThat(same(record.terminal, expected.terminal), 'conflict');
+        requireThat(same(r, receiptFor(record, request.operation)), 'conflict');
+        const phase = { reserve: 'reserved', seal: 'sealed', ready: 'target_ready', commit: 'committed', abort: 'aborted', reconcile: 'aborted', 'activation.record': 'committed' }[request.operation];
+        requireThat(record.phase === phase, 'conflict');
+        if (phase === 'committed') requireThat(ledger.state === 'ceded' && same(ledger.terminal, record.terminal), 'conflict');
+        else if (phase === 'aborted') requireThat(ledger.state === 'available', 'conflict');
+        else requireThat(ledger.state === 'reserved' && ledger.active_transfer_id === b.transfer_id, 'conflict');
+        requireThat(result.reservation_bytes === String(['reserve', 'reconcile'].includes(request.operation) ? LIMITS.record : 0), 'conflict');
       }
       return ok();
     } catch (error) { return caught(error); }

@@ -1,12 +1,12 @@
 {
   "decision_contract": "transfer-decision-1",
   "type": "birth_receipt",
-  "receipt_id": "00000000-0000-0000-0000-000000000091",
-  "operation_id": "00000000-0000-0000-0000-000000000088",
-  "request_digest": "c9a1409751d8ecf79c1537c57061789b2da1f358e11bb655ee0036637688521b",
+  "receipt_id": "00000000-0000-0000-0000-000000000092",
+  "operation_id": "00000000-0000-0000-0000-000000000089",
+  "request_digest": "4c7d4538f9db888ec393d1d025ce8ea678e2ba08789a77fd33e8e64d6e708da1",
   "mode": "initial_existing",
   "provenance_digest": "daeaabbfc580b1a63e883d062d0d4dd0a29fff3ccfb32fc692ffec316f7cb780",
   "producer_generation": "producer-source-synthetic",
-  "attestation_digest": "c1dbaeed7db5d2ea6b3849df33b7527a79d5e2396219e8a7649b374905d2d3e9",
+  "attestation_digest": "4a375e230df1d95ad2212eca04ff9ab088525887d338d9b9873589ae94a12693",
   "revision": "1"
 }

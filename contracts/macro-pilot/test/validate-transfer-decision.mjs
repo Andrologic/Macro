@@ -19,7 +19,7 @@ for (const step of steps) {
   const value = s[step];
   assert.equal(validateObject(value.request).valid, true, step);
   assert.equal(validateObject(value.context, 'context').valid, true, step);
-  assert.equal(validateExchange(value.request, value.result).valid, true, step);
+  assert.equal(validateExchange(value.request, value.result, step === 'birth' ? undefined : s.expectation(value.request.operation)).valid, true, step);
   assert.equal(value.result.kind, 'mutation');
   assert.equal(validateObject(value.result.ledger).valid, true);
   if (value.result.record) assert.equal(validateObject(value.result.record).valid, true);
@@ -62,6 +62,14 @@ const symbol = { [Symbol('synthetic')]: 1 }; assert.throws(() => canonicalJson(s
 let getterCalls = 0;
 const accessor = { get value() { getterCalls++; return 1; } };
 assert.throws(() => canonicalJson(accessor)); assert.equal(getterCalls, 0);
+// F3: neither non-enumerable methods nor substituted prototypes may supply bytes.
+let arrayMethodCalls = 0;
+const methodArray = [1]; Object.defineProperty(methodArray, 'map', { value: () => { arrayMethodCalls++; return []; } });
+const prototypeArray = [1]; Object.setPrototypeOf(prototypeArray, { map: () => { arrayMethodCalls++; return []; } });
+const hiddenArray = [1]; Object.defineProperty(hiddenArray, 'private', { value: 7 });
+for (const array of [methodArray, prototypeArray, hiddenArray]) assert.throws(() => canonicalJson(array));
+assert.equal(arrayMethodCalls, 0); assert.equal(canonicalJson(Object.freeze([1])), '[1]');
+assert.equal(canonicalJson(Object.assign(Object.create(null), { a: 1 })), '{"a":1}');
 
 const fail = (result, code) => {
   assert.equal(result.valid, false, JSON.stringify(result));
@@ -78,6 +86,38 @@ assert.equal(missingStatus.kind, 'status');
 assert.equal(validateExchange(statusRequest, missingStatus).valid, true);
 const inProgressStatus = plan(statusRequest, 'ready', s.context);
 assert.equal(inProgressStatus.status.status, 'in_progress');
+// F1: individually valid objects are insufficient to correlate a reply.
+const wrongStatusIdentity = clone(statusRequest);
+wrongStatusIdentity.body.binding.provenance.source.source_conversation_id = 'other-chat-synthetic';
+wrongStatusIdentity.body.binding.epoch = '1';
+wrongStatusIdentity.body.frozen.binding_digest = fingerprint('transfer-binding', wrongStatusIdentity.body.binding);
+assert.equal(validateObject(wrongStatusIdentity).valid, true); assert.equal(validateObject(inProgressStatus.status).valid, true);
+fail(validateExchange(wrongStatusIdentity, inProgressStatus), 'conflict');
+const wrongTerminalIdentity = clone(s.commit.result.receipt);
+wrongTerminalIdentity.source.source_conversation_id = 'other-chat-synthetic'; wrongTerminalIdentity.epoch = '1'; wrongTerminalIdentity.target_instance_id = 'other-target-synthetic';
+assert.equal(validateObject(wrongTerminalIdentity).valid, true);
+fail(validateExchange(s.reserve.request, { valid: true, kind: 'terminal', errors: [], receipt: wrongTerminalIdentity, status: null }), 'conflict');
+const foreign = scenario(true);
+const mixedMutation = { ...clone(s.reserve.result), record: foreign.reserve.result.record, ledger: foreign.reserve.result.ledger };
+assert.equal(validateObject(mixedMutation.record).valid, true); assert.equal(validateObject(mixedMutation.ledger).valid, true);
+fail(validateExchange(s.reserve.request, mixedMutation), 'conflict');
+for (const stage of ['seal', 'ready', 'commit', 'activate']) {
+  fail(validateExchange(s[stage].request, s[stage].result));
+  assert.equal(validateExchange(s[stage].request, s[stage].result, s.expectation(s[stage].request.operation)).valid, true);
+  const foreignExpected = foreign.expectation(s[stage].request.operation);
+  fail(validateExchange(s[stage].request, s[stage].result, foreignExpected), 'conflict');
+}
+const changedSeal = clone(s.seal.result);
+changedSeal.record.manifest.manifest_sha256 = s.hash('0');
+changedSeal.record.seal_receipt.subject_digest = fingerprint('manifest', changedSeal.record.manifest);
+assert.equal(validateObject(changedSeal.record).valid, true);
+fail(validateExchange(s.seal.request, changedSeal, s.expectation('seal')), 'conflict');
+for (const stage of ['commit', 'activate']) {
+  const changedCAS = clone(s[stage].request); changedCAS.expected_revision = '1';
+  fail(validateExchange(changedCAS, s[stage].result, s.expectation(s[stage].request.operation)), 'conflict');
+  const changedId = clone(s[stage].request); changedId.operation_id = 'ffffffff-ffff-ffff-ffff-ffffffffffff';
+  fail(validateExchange(changedId, s[stage].result, s.expectation(s[stage].request.operation)), 'conflict');
+}
 
 // Source exclusivity uses the ledger even if T, destination or initiator differ.
 const competing = clone(s.reserve.request);
@@ -157,6 +197,16 @@ const tombstone = planDecision(abortMissingRequest, s.birth.result.ledger, null,
 assert.equal(tombstone.kind, 'mutation'); assert.equal(tombstone.receipt.outcome, 'aborted');
 assert.equal(tombstone.receipt.reason, 'missing_reservation');
 assert.equal(tombstone.result, undefined); assert.equal(tombstone.ledger.high_epoch, s.binding.epoch);
+// F2: accepted abort_missing has a real mutation retry, not the read shortcut.
+const exactTombstoneRetry = planDecision(abortMissingRequest, tombstone.ledger, tombstone.record, abortMissingContext);
+assert.equal(exactTombstoneRetry.kind, 'retry'); assert.deepEqual(exactTombstoneRetry.receipt, tombstone.receipt);
+assert.equal(exactTombstoneRetry.status.status, 'terminal');
+assert.equal(validateExchange(abortMissingRequest, exactTombstoneRetry).valid, true);
+const changedTombstoneRetry = clone(abortMissingRequest); changedTombstoneRetry.expected_revision = '1';
+fail(planDecision(changedTombstoneRetry, tombstone.ledger, tombstone.record, abortMissingContext), 'conflict');
+const changedTombstoneBody = clone(abortMissingRequest); changedTombstoneBody.body.expected_ledger_revision = '2';
+fail(planDecision(changedTombstoneBody, tombstone.ledger, tombstone.record, abortMissingContext), 'conflict');
+assert.equal(planDecision(statusRequest, tombstone.ledger, tombstone.record, s.context).kind, 'status');
 const delayed = planDecision(s.reserve.request, tombstone.ledger, tombstone.record, s.reserve.context);
 assert.equal(delayed.kind, 'terminal'); assert.deepEqual(delayed.receipt, tombstone.receipt);
 const oldEpoch = clone(s.reserve.request); oldEpoch.operation_id = s.uuid(); oldEpoch.transfer_id = s.uuid(); oldEpoch.body.binding.transfer_id = oldEpoch.transfer_id;
@@ -174,8 +224,10 @@ fail(plan(badReconcile, 'ready', s.context), 'conflict');
 const abortRequest = s.request('abort', s.ready.result.record.revision, { reason: 'user_cancelled' });
 const abort = plan(abortRequest, 'ready', { ...s.context, receipt_id: s.uuid() });
 assert.equal(abort.receipt.outcome, 'aborted'); assert.equal(abort.ledger.state, 'available');
+assert.equal(validateExchange(abortRequest, abort, s.expectation('abort')).valid, true);
 const commitLoses = planDecision(s.commit.request, abort.ledger, abort.record, s.commit.context);
 assert.equal(commitLoses.kind, 'terminal'); assert.deepEqual(commitLoses.receipt, abort.receipt);
+assert.equal(validateExchange(s.commit.request, commitLoses, s.expectation('commit')).valid, true);
 const abortLoses = plan(abortRequest, 'commit', s.context);
 assert.equal(abortLoses.kind, 'terminal'); assert.deepEqual(abortLoses.receipt, s.commit.result.receipt);
 const pinned = clone(s.ready.result.record);
@@ -203,6 +255,22 @@ const restored = clone(recovery); restored.history = 'restored'; restored.recove
 const afterRestore = plan(statusRequest, 'commit', restored);
 assert.equal(afterRestore.status.status, 'terminal'); assert.deepEqual(afterRestore.status.terminal, recovered.status.terminal);
 assert.equal(afterRestore.status.recovery_generation, restored.recovery_generation);
+// F5 closes the nullable API without claiming that SQLite lost a real journal.
+const ledgerOnlyTerminal = planDecision(statusRequest, s.commit.result.ledger, null, restored);
+assert.equal(ledgerOnlyTerminal.status.status, 'terminal'); assert.deepEqual(ledgerOnlyTerminal.status.terminal, s.commit.result.receipt);
+assert.equal(validateExchange(statusRequest, ledgerOnlyTerminal).valid, true);
+const ledgerOnlyAbort = planDecision(abortMissingRequest, s.commit.result.ledger, null, restored);
+assert.equal(ledgerOnlyAbort.kind, 'terminal'); assert.deepEqual(ledgerOnlyAbort.receipt, s.commit.result.receipt);
+assert.equal(validateExchange(abortMissingRequest, ledgerOnlyAbort).valid, true);
+for (const field of ['epoch', 'target_instance_id', 'transfer_id']) {
+  const changed = clone(statusRequest);
+  changed.body.binding[field] = field === 'epoch' ? '1' : field === 'transfer_id' ? s.uuid() : 'different-target';
+  changed.transfer_id = changed.body.binding.transfer_id;
+  changed.body.frozen.binding_digest = fingerprint('transfer-binding', changed.body.binding);
+  fail(planDecision(changed, s.commit.result.ledger, null, s.context), 'conflict');
+}
+const wrongFreeze = clone(statusRequest); wrongFreeze.body.frozen.sha256 = s.hash('0');
+fail(planDecision(wrongFreeze, s.commit.result.ledger, null, s.context), 'conflict');
 const missingAfterRestore = planDecision(statusRequest, null, null, restored);
 assert.equal(missingAfterRestore.status.status, 'recovery_hold');
 const sourceStatusRequest = s.request('reconcile', '0', { action: 'source_status', provenance: s.provenance }, false);
@@ -239,6 +307,9 @@ const nextReady = s.call(nextReadyRequest, nextSeal.result.ledger, nextSeal.resu
 const nextCommitRequest = nextRequest('commit', '3', {});
 const nextCommit = s.call(nextCommitRequest, nextReady.result.ledger, nextReady.result.record, [nextProof(nextCommitRequest, 'source_maintained', fingerprint('frozen', nextFrozen), fingerprint('manifest', nextManifest)), nextProof(nextCommitRequest, 'target_maintained', fingerprint('prepared', nextPrepared), fingerprint('prepared', nextPrepared), true)]);
 assert.equal(nextCommit.result.ledger.state, 'ceded'); assert.equal(nextCommit.result.receipt.transfer_id, nextBinding.transfer_id);
+const earlierAbortAgainstLaterCommit = planDecision(statusRequest, nextCommit.result.ledger, abort.record, s.context);
+assert.equal(earlierAbortAgainstLaterCommit.status.terminal.outcome, 'aborted');
+assert.equal(earlierAbortAgainstLaterCommit.status.source_recovery, 'recovery_hold');
 const restoredBeforeT2 = planDecision(sourceStatusRequest, clone(abort.ledger), null, restored);
 assert.equal(restoredBeforeT2.status.status, 'recovery_hold');
 assert.equal(planDecision(statusRequest, clone(abort.ledger), clone(abort.record), restored).status.source_recovery, 'recovery_hold');
@@ -269,6 +340,13 @@ assert.equal(planDecision(fresh.birth.request, null, null, freshContext).kind, '
 const relabel = clone(s.birth.request); relabel.operation_id = s.uuid(); relabel.body.provenance.source.source_instance_id = s.opaque('replacement-instance');
 fail(planDecision(relabel, null, null, { ...s.birth.context, history: 'restored', recovery_generation: s.uuid() }), 'recovery_hold');
 fail(planDecision(s.birth.request, null, null, { ...s.birth.context, proofs: [] }), 'forbidden');
+// F4: a historical birth receipt still needs current disclosure authority.
+const birthNoAccess = clone(s.context); birthNoAccess.accesses = []; birthNoAccess.recovery_access = null; birthNoAccess.proofs = []; birthNoAccess.producers = [];
+fail(planDecision(s.birth.request, s.birth.result.ledger, null, birthNoAccess), 'forbidden');
+const birthRead = clone(birthNoAccess); birthRead.accesses = [{ ...s.context.accesses[0], permissions: ['supervise'] }];
+assert.deepEqual(planDecision(s.birth.request, s.birth.result.ledger, null, birthRead).receipt, s.birth.result.receipt);
+const birthRecovery = clone(birthNoAccess); birthRecovery.recovery_access = { account_id: s.source.account_id, session_id: birthRecovery.actor.identity.session_id, instance_id: s.source.source_instance_id, grant_id: s.uuid() };
+assert.deepEqual(planDecision(s.birth.request, s.birth.result.ledger, null, birthRecovery).receipt, s.birth.result.receipt);
 fail(planDecision(s.reserve.request, null, null, s.reserve.context), 'recovery_hold');
 
 // Origin comes from verified authority configuration, never a transport alias/body.
@@ -334,7 +412,7 @@ function maxBytes(definition) {
   throw new Error('Unbounded decision schema');
 }
 const bounds = {};
-for (const definition of ['request', 'attestation', 'context', 'stepReceipt', 'birthReceipt', 'activation', 'status', 'sourceStatus', 'error', 'terminal', 'ledger', 'record']) {
+for (const definition of ['request', 'attestation', 'context', 'expectation', 'stepReceipt', 'birthReceipt', 'activation', 'status', 'sourceStatus', 'error', 'terminal', 'ledger', 'record']) {
   const bound = maxBytes(definition), limit = definition === 'terminal' ? LIMITS.terminal : definition === 'ledger' ? LIMITS.ledger : definition === 'record' ? LIMITS.record : LIMITS.envelope;
   assert.ok(bound <= limit, `${definition} schema maximum ${bound} > ${limit}`); bounds[definition] = bound;
 }

@@ -7,8 +7,8 @@
   "subject_digest": "7564c16bb2f24206053f5ad4b7bae238130b4cc2ff8c3b7c322e250b9792e465",
   "producer_instance_id": "source-synthetic",
   "producer_generation": "producer-source-synthetic",
-  "delivery_id": "00000000-0000-0000-0000-000000000089",
-  "challenge_id": "00000000-0000-0000-0000-000000000090",
-  "request_digest": "c9a1409751d8ecf79c1537c57061789b2da1f358e11bb655ee0036637688521b",
+  "delivery_id": "00000000-0000-0000-0000-000000000090",
+  "challenge_id": "00000000-0000-0000-0000-000000000091",
+  "request_digest": "4c7d4538f9db888ec393d1d025ce8ea678e2ba08789a77fd33e8e64d6e708da1",
   "prior_receipt_digest": null
 }

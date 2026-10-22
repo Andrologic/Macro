@@ -1,7 +1,7 @@
 import type {
   DecisionRequest, DecisionLedger, DecisionRecord, DecisionContext,
   DecisionStepReceipt, DecisionBirthReceipt, DecisionTerminal, DecisionActivation,
-  DecisionStatus, DecisionSourceStatus, DecisionDefinitions,
+  DecisionStatus, DecisionSourceStatus, DecisionExpectation, DecisionDefinitions,
 } from './transfer-decision.js';
 
 export type Failure = { valid: false; code: DecisionDefinitions['errorCode']; errors: ['Invalid transfer decision'] };
@@ -17,7 +17,10 @@ export type FingerprintDomain = 'source-key' | 'provenance' | 'transfer-binding'
 export interface DecisionValidator {
   validateObject(value: unknown, definition?: keyof DecisionDefinitions): Validation;
   decodeDecision<K extends keyof DecisionDefinitions>(raw: string, definition: K): Failure | { valid: true; errors: []; value: DecisionDefinitions[K] };
-  validateExchange(request: unknown, plan: unknown): Validation;
+  /** The expectation comes from the independent native journal, never the reply.
+   * Requests containing no full binding require it both at type and runtime. */
+  validateExchange(request: Extract<DecisionRequest, { operation: 'reserve' | 'reconcile' | 'lineage.create' }>, plan: unknown, expectation?: DecisionExpectation): Validation;
+  validateExchange(request: DecisionRequest, plan: unknown, expectation: DecisionExpectation): Validation;
   validateProducerAttestation(attestation: unknown, exchange: unknown, selected: unknown, authenticatedConnection: unknown): Validation;
   /** Pure synchronous plan. Adapter authenticates, performs atomic CAS, consumes
    * challenges, accounts bytes and commits durably before publishing the receipt. */

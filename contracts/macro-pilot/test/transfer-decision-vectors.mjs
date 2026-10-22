@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { fingerprint, planDecision } from '../v2/transfer-decision-validate.mjs';
 
 export function scenario(maximal = false) {
+  const clone = structuredClone;
   let sequence = 1;
   const uuid = () => `00000000-0000-0000-0000-${String(sequence++).padStart(12, '0')}`;
   const opaque = prefix => maximal ? prefix.padEnd(128, 'x') : `${prefix}-synthetic`;
@@ -55,5 +56,8 @@ export function scenario(maximal = false) {
   const activationResult = planDecision(activationRequest, commit.result.ledger, commit.result.record, activationContext);
   assert.equal(activationResult.valid, true, JSON.stringify(activationResult));
   const activate = { request: activationRequest, context: activationContext, result: activationResult };
-  return { uuid, opaque, hash, source, provenance, binding, context, frozen, manifest, prepared, request, attest, call, birth, reserve, seal, ready, commit, activate };
+  // Stand-in for independently retained local native journal facts, not fields
+  // extracted from the response passed to validateExchange.
+  const expectation = operation => ({ binding: clone(binding), frozen: clone(frozen), manifest: ['seal', 'ready', 'commit', 'abort', 'activation.record'].includes(operation) ? clone(manifest) : null, prepared: ['ready', 'commit', 'abort', 'activation.record'].includes(operation) ? clone(prepared) : null, terminal: operation === 'activation.record' ? clone(commit.result.receipt) : null });
+  return { uuid, opaque, hash, source, provenance, binding, context, frozen, manifest, prepared, request, attest, call, expectation, birth, reserve, seal, ready, commit, activate };
 }

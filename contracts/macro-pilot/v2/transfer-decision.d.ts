@@ -37,6 +37,7 @@ export type DecisionStatus = { "decision_contract": "transfer-decision-1"; "type
 export type DecisionErrorCode = "validation_failed" | "unsupported_version" | "unsupported_context" | "unauthorized" | "session_revoked" | "forbidden" | "not_found" | "conflict" | "stale_revision" | "stale_epoch" | "authority_changed" | "producer_changed" | "instance_offline" | "recovery_hold" | "resource_limit" | "unavailable";
 export type DecisionError = { "decision_contract": "transfer-decision-1"; "type": "decision_error"; "operation_id": DecisionUuid; "code": DecisionErrorCode; "retryable": boolean };
 export type DecisionSourceStatus = { "decision_contract": "transfer-decision-1"; "type": "source_reconciliation_status"; "status": "known" | "not_found" | "recovery_hold"; "provenance": DecisionProvenance; "ledger": (DecisionLedger | null); "recovery_generation": DecisionUuid };
+export type DecisionExpectation = { "binding": DecisionBinding; "frozen": DecisionFrozen; "manifest": (DecisionManifest | null); "prepared": (DecisionPrepared | null); "terminal": (DecisionTerminal | null) };
 export interface DecisionDefinitions {
   id: DecisionId;
   uuid: DecisionUuid;
@@ -75,5 +76,6 @@ export interface DecisionDefinitions {
   errorCode: DecisionErrorCode;
   error: DecisionError;
   sourceStatus: DecisionSourceStatus;
+  expectation: DecisionExpectation;
 }
 export type DecisionObject = (DecisionRequest | DecisionAttestation | DecisionLedger | DecisionRecord | DecisionStepReceipt | DecisionTerminal | DecisionActivation | DecisionBirthReceipt | DecisionStatus | DecisionError | DecisionSourceStatus);

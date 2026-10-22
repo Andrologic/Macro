@@ -60,8 +60,12 @@ only after `Number.isSafeInteger`. Overflow refuses the operation. Generation
 tokens from PilotContent remain opaque strings, not monotonic counters.
 
 Canonical JSON sorts object keys by UTF-16 code unit order and preserves array
-order. It rejects unsafe numbers, non-JSON values, cycles, sparse/extended arrays,
-symbol keys, enumerable accessors and lone surrogates. Decoders reject duplicate
+order. Arrays require the standard Array prototype and exactly their own data
+indices plus length. Non-enumerable extensions and substituted prototypes are
+rejected. The renderer reads index descriptors and never calls input methods.
+Ordinary objects have Object or null prototype and enumerable own data properties.
+It rejects unsafe numbers, non-JSON values, cycles, symbols, accessors and lone
+surrogates. Decoders reject duplicate
 decoded keys before canonicalization. A decoded object cannot retain those
 duplicates. `decodeDecision` supplies the bounded strict decode entry point for
 this metadata; it does not admit transcript data.
@@ -203,6 +207,12 @@ entry. The journal has at most one entry per accepted step and five total entrie
 Changing an operation ID cannot circumvent the source ledger or acquire another
 target. Retry output remains subject to current authorization. New sessions use
 reconciliation rather than replacing the initiator.
+This includes lineage.create: a historical birth receipt still requires current
+source read/recovery authority, without a new native birth attestation. An accepted
+abort_missing mutation has a retained retry entry. Its exact replay returns the
+original aborted receipt and current status. The same operation_id with another
+body or expected revision is conflict. The separate status action remains a read
+and never replaces a mutation receipt.
 
 Commit and abort compete on the same journal revision. A terminal winner never
 changes. The loser receives that terminal if currently authorized to read it.
@@ -231,13 +241,21 @@ restore whose backup predates a later T2 committed. That historical aborted is
 returned with the current source recovery_hold; it cannot reopen S. The source
 status reply also carries the current recovery generation. Native reconciliation
 must enforce these current ownership barriers even when a terminal receipt is
-valid for its original T and epoch.
+valid for its original T and epoch. An old aborted T read against an intact
+ledger already ceded through another T also reports source_recovery hold. Its
+historical terminal cannot reopen the later owner.
 An absent reservation in an intact history can be closed only by an authenticated
 abort_missing request with the frozen binding and no other active T for S. Its
 transaction writes aborted and advances high epoch before any source unfreeze.
 A delayed reserve then returns aborted. Another T with an old/equal epoch is
 rejected even if payload detail was compacted. With another active T, this path
 refuses to cancel it. A not_found response alone gives no permission.
+If record is null but a ceded ledger retains the same T terminal, compare S, T,
+epoch, target, binding and frozen digests before returning that terminal. Never
+report not_found while this matching proof exists. Inconsistent bindings or a
+distinct T close the path with conflict; source_status can discover the current
+T. This nullable API guard does not claim that an atomic SQLite implementation
+spontaneously loses a journal.
 
 The source_status variant accepts provenance S alone, without inventing T. It lets
 a backup taken before reserve retrieve the known ceded ledger and its terminal.
@@ -291,6 +309,7 @@ These limits apply only to closed metadata, with no transcript length limit.
 | Request | 16,384 | 2,832 |
 | Attestation | 16,384 | 877 |
 | Trusted context | 16,384 | 8,751 |
+| Independent receive expectation | 16,384 | 5,646 |
 | Terminal | 8,192 | 2,073 |
 | Ledger | 8,192 | 3,885 |
 | Journal | 131,072 | 9,184 |
@@ -330,6 +349,20 @@ relay must load its authenticated snapshots and ledger/journal, check the actual
 SQL key revisions, validate the plan, consume challenges, update accounting and
 write both records within one SQLite transaction. Emit ACK only after durable
 commit. Do not place an await between those checks and writes.
+
+Reception has a separate correlation boundary. validateExchange compares all
+available identities and commitments across request, receipt, current status,
+ledger and journal. Individually valid objects cannot be mixed across sources.
+Reserve and transfer reconcile supply a full binding and freeze in their request.
+For seal, ready, commit, abort and activation.record the caller MUST pass a typed
+independent expectation containing binding, frozen and locally known manifest,
+prepared and terminal. It comes from the retained native journal, never the
+response being checked. The API refuses these operations without it. Commit
+requires known manifest and prepared; activation additionally requires the known
+committed terminal. Seal and ready compare their bodies with those local facts.
+No helper derives this expectation from received state. Callers load it
+independently before applying a reply. Correlation does not authenticate the
+transport or replace native ownership/application checks.
 
 Import the exact integrated desktop files into the relay's existing
 `vendor/contracts/macro-pilot/v2` mechanism, with source commit/tree/blob and byte

@@ -1,5 +1,5 @@
-import type { DecisionBinding, DecisionRequest, DecisionContext, DecisionLedger, DecisionRecord } from '../v2/transfer-decision.js';
-import { planDecision, decodeDecision, exactInteger, type DecisionPlan } from '../v2/transfer-decision-validate.mjs';
+import type { DecisionBinding, DecisionRequest, DecisionContext, DecisionLedger, DecisionRecord, DecisionExpectation } from '../v2/transfer-decision.js';
+import { planDecision, decodeDecision, exactInteger, validateExchange, type DecisionPlan } from '../v2/transfer-decision-validate.mjs';
 import { parseStoredJsonStrict } from '../v2/strict-json.mjs';
 
 export function consumePlan(request: DecisionRequest, ledger: DecisionLedger | null, record: DecisionRecord | null, context: DecisionContext): void {
@@ -25,3 +25,8 @@ void epoch;
 // @ts-expect-error no permissive content operation exists
 const operation: DecisionRequest['operation'] = 'content.read';
 void operation;
+export function checkReceive(commit: Extract<DecisionRequest, { operation: 'commit' }>, expectedFromNativeJournal: DecisionExpectation): void {
+  validateExchange(commit, {}, expectedFromNativeJournal);
+  // @ts-expect-error no full binding in this request: independent local facts required
+  validateExchange(commit, {});
+}

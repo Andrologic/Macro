@@ -2,7 +2,7 @@
   "decision_contract": "transfer-decision-1",
   "type": "decision_request",
   "operation": "reconcile",
-  "operation_id": "00000000-0000-0000-0000-000000000065",
+  "operation_id": "00000000-0000-0000-0000-000000000066",
   "expected_revision": "0",
   "body": {
     "action": "source_status",
