@@ -524,3 +524,131 @@ locale objects matched their source JSON. These checks cover emitted imports
 and data, not first-open latency, WebView rendering or a native startup timing.
 The earlier performance series in this document remain tied to their recorded
 commits and are not re-measured by this build.
+
+## History loading and long-session resource protocol
+
+The developer runner below separates JSON decoding, the production
+`loadConversationMessages` mapping, `buildMessageState` indexing and transcript
+item construction. It does not install instrumentation in production or change
+storage, pagination, eviction or UI behavior.
+
+```sh
+bun --no-install test dev/performance/history-resources.test.ts
+bun --no-install x tsc --noEmit --strict --skipLibCheck --moduleResolution bundler --module esnext --target es2022 --jsx react-jsx --allowImportingTsExtensions --resolveJsonModule --types bun-types,vite/client dev/performance/history-resources.ts dev/performance/history-resources.test.ts
+bun --no-install dev/performance/history-resources.ts --self-test > /tmp/macro-history-resources-smoke.json
+bun --no-install dev/performance/history-resources.ts > /tmp/macro-history-resources.json
+```
+
+Commit source changes before the two runner commands. They require a clean
+worktree and check its HEAD again at completion. Reports record timestamp,
+HEAD, Bun, lockfile hash, OS, CPU, memory and start/end load averages. Repeat the
+full runner in three fresh processes with other heavy work stopped. Each timing
+case uses 10 warmups and 100 observations, nearest-rank percentiles, without
+outlier removal or forced GC. The smoke uses three messages and six resource
+cycles and supplies no performance baseline.
+
+History fixtures contain 100, 1,000 or 10,000 messages. Plain fixtures match the
+native example's 256 ASCII content bytes, user roles, null optional fields and
+ordered seed IDs. Conversation IDs differ and payload byte totals therefore
+need not match. Nested fixtures alternate roles and add valid tool traces,
+provider input JSON and assistant provider turn JSON. They exercise the actual
+parsers rather than a substitute mapping loop. Fixtures, JSON preparation and
+assertions are outside timed sections. The mapping includes the immediate
+synthetic Promise adapter, conversation-map creation and the production mapper;
+there are no conversations in that map, so project/task lookup and bootstrap
+loading are not represented. Index and transcript timings reuse already mapped
+messages. They exclude store publication, recovery merging, React, layout and
+Markdown rendering. Indexes point to the same message objects; the separate
+arrays add references, not content copies.
+
+The native example additionally reports `serialize_messages_json` and
+`serialized_messages_json_bytes`. Its existing `read` boundary remains the real
+repository/SQLx call, including pool acquisition, SQL, row materialization and
+model conversion. Serialization times only `serde_json::to_vec` of the returned
+models, after the read boundary. A JSON roundtrip count/content check follows
+outside timing. No SQL execution-only subdivision or Tauri IPC is claimed.
+Serialization and its untimed validation allocate between read samples; this
+extended protocol therefore also changes inter-sample allocator/cache state.
+Separate stage percentiles cannot be added to infer an end-to-end percentile.
+The native and Bun fixtures/engines are separate experiments.
+
+### Resources exercised and retained
+
+The runner executes 10,000 sequential cycles of real production helpers. Each
+cycle reopens the same 100-message history through production mapping and index
+helpers, replacing the prior synthetic owner state. Checkpoints report its
+retained message count, which should stay at 100; this is not a mounted
+useChatStore or an eviction policy test. It
+completes and cancels alternating chat turns, tracks/drains settled stream
+promises, consumes steers, forgets session identities and clears the synthetic
+state port. It creates and cancels real Web Streams through the production
+stream registry. Each lifecycle scope owns a real EventTarget subscription and
+a real timer, then stops twice and drains admitted work. A real SubagentRuntime
+uses a synthetic immediate executor and a clock adapter around real timers;
+its completed snapshots accumulate deliberately until `releaseRun` is called.
+The run checks callback delivery, stream cancellation, projected-state counts,
+owned timer counts, subagent timer counts and stream-registry size. After idle,
+unsubscribe and a further completed run that verifies listener removal, then
+dispose, it explicitly releases all settled runs and checks
+that public snapshots reach zero. It does not inspect private Maps or claim
+that an empty public API proves garbage collection of every internal object.
+
+Memory checkpoints record `process.memoryUsage()` before and after full Bun GC
+at 0 and every 1,000 cycles, then after dispose and after explicit run release.
+They are whole-process observations with allocator, JIT, sampling allocations
+and intentionally retained records mixed in. Snapshot counting itself allocates
+copies. The runtime and its one empty parent pool remain reachable at the final
+checkpoint. RSS is not retained-object size, and Bun GC is not WebView GC.
+These checkpoints can reveal a direction to investigate, not establish a leak
+or prove its absence. They do not launch child processes or open any profile.
+
+| Owner | Intended retention and release | Evidence boundary |
+| --- | --- | --- |
+| `useChatStore` history | Loaded messages and ready status remain for revisits; concurrent load promises are removed in `finally`. Replacing one conversation rebuilds indexes over all loaded messages. | Source inspection of `ensureMessagesLoadedForConversation` and `replaceLoadedConversationMessages`; runner measures mapping/index helpers, not the mounted store. |
+| `chatMessageState` | Two arrays reference each message, plus an ID-to-index entry. | Identity assertions in the runner; no duplicate content payload in these indexes. |
+| `chatTurnRuntime` | Sessions persist until forget/reset; completion ownership releases explicitly; tracked streams remove themselves on settlement. | Real helper cycles, cancellation, completion, drain and forget. |
+| `streamResources` | Registry holds active readers/streams/request IDs; prune removes only an empty entry owned by that invocation. | Real Web Stream cancellation; no HTTP reader, native request or provider is opened. |
+| `lifecycleScope` / configuration effects | Scope owns unsubscribe/dispose functions and admitted promises; stop revokes then releases, drain waits. Config effects own store and preference subscriptions. | Scope cycles with EventTarget/timer; configuration subscriptions inspected, not mounted. |
+| `SubagentRuntime` / Goal audit | Runtime keeps settled snapshots until `releaseRun`; dispose cancels work and removes listeners. GoalAuditCoordinator calls releaseRun after observing results, and the durable journal releases transient data. | Real runtime completion/dispose/release cycles, synthetic executor; coordinator release path inspected, not a provider-driven audit. |
+| `terminalRuntime` | Detach retains at most six detached renderers; attached tabs remain. Disposal clears queued writes, RAF/retry timers, observers, links, input/global listeners and xterm. | Source inspection only; helper cycles do not instantiate xterm or measure WebView rendering. |
+| Native terminal store | PTYs/process groups and output tasks have native close paths; snapshots cap at 1,000,000 bytes per terminal. | Source inspection only; no native process lifetime measured by this runner. |
+| `useGitStore` | Tree/commit data retained per project; request identity Maps clear in finally; invalidateProject clears results and invalidates requests. Project registry owns invalidation. | Source inspection of store and gitCacheComposition; no repository polling experiment. |
+| `modelContextCatalog` | Catalog snapshot and status listeners have application lifetimes; persisted catalog is intentional cache data. | Source inspection only; no network refresh or user cache is accessed. |
+
+A Map alone is not evidence of a leak. A positive leak conclusion needs an
+unexpected retaining owner after the relevant release boundary, preferably a
+heap retaining path and repeatable growth across equal settled cycles.
+
+### Missing native and WebView portions
+
+Run these only in an isolated disposable synthetic profile, with providers
+absent and no user projects. Follow the identifier/config isolation described
+in `DEVELOPMENT.md`; a config directory override alone is insufficient.
+
+1. Seed the same fixture sizes in a disposable database. Run 10 warmups and 100
+   full-history opens per size in a native Tauri WebView. Wrap its actual
+   `__TAURI_INTERNALS__.invoke` with `installNativeProbe` from
+   `dev/performance/native-probe.ts`; measure the actual open action until its
+   message count is correct and the virtualized first/last target has painted
+   after two animation frames. Export aggregate call/JSON-byte distributions
+   and uninstall the probe. JSON bytes exclude framing and native events.
+2. Capture a WebView performance trace for those opens. Correlate the command
+   span with mapping/index work and React/paint. Native invoke duration includes
+   repository and transport work; subtracting percentiles from separate runners
+   does not isolate IPC overhead. An exact native transport split requires
+   command-level trace correlation; no synthetic JSON result fills that gap.
+3. For resource retention, repeat a fixed batch of 100 open/switch/close actions
+   ten times, then wait for stream settlement, terminal close acknowledgements,
+   RAF/retry queues and idle work. Record app/backend and WebView process-tree
+   RSS, open file descriptors and live child PIDs before/after each batch. In
+   WebView DevTools take heap snapshots at matching settled boundaries. Compare
+   retained paths for messages, detached DOM, xterm renderers and subscriptions,
+   distinguishing six cached detached terminals from closed ones. Keep selected
+   entities and fixture sizes fixed so intentional loaded-history growth is
+   separated from repeated same-entity retention.
+4. Close every created terminal, verify child/descendant PIDs disappear and
+   check that output tasks stop. Dispose the app runtime, close the app, verify
+   the isolated process tree exits, then remove only owned fixtures. Record
+   browser/WebView/toolchain versions, source SHA, lifecycle action counts and
+   boundaries. Repeat in three fresh processes. This protocol requires an
+   authorized browser/native driver and has not been executed by the Bun runner.
