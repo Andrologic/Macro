@@ -1077,6 +1077,88 @@
     "moreDiagnostics": "+{{count}} 件の追加診断"
   },
   "settings": {
+    "connectReader": {
+      "title": "コンピューター · 読み取り専用",
+      "help": "会話は元のコンピューターに残ります。閲覧しても返信は既読になりません。",
+      "launchTitle": "コンピューターを閲覧",
+      "launchHelp": "ローカル作業を続けながら、2台のコンピューターのチャットを閲覧します。",
+      "open": "ビューアーを開く",
+      "computer": "コンピューター",
+      "chooseComputer": "コンピューターを選択",
+      "add": "コンピューターを追加",
+      "verify": "コンピューターを確認",
+      "twoLimit": "最大2台です。別のコンピューターを選ぶにはパネルを閉じてください。",
+      "locked": "非表示またはオフライン中は内容がロックされます。再確認が必要です。",
+      "thisComputer": "このコンピューター",
+      "closeComputer": "{{computer}}を閉じる",
+      "chat": "チャット",
+      "archiveFilter": "会話の状態",
+      "active": "アクティブ",
+      "archived": "アーカイブ済み",
+      "unread": "未読",
+      "emptyCatalog": "この一覧にチャットはありません。",
+      "emptyWindow": "このウィンドウにメッセージはありません。",
+      "chooseConversation": "会話を選択してください。",
+      "back": "会話一覧に戻る",
+      "conversation": "会話",
+      "next": "次のページ",
+      "older": "以前のメッセージ",
+      "first": "先頭に戻る",
+      "latest": "最新のメッセージ",
+      "beginning": "会話の先頭",
+      "anchor": "以前を続ける · 新しいキャプチャ",
+      "newCapture": "前のアンカー付近の新しいキャプチャです。メッセージが重複する場合があります。",
+      "limit": "閲覧上限は10ページまたは500件です。この一覧はすべてを網羅していません。",
+      "phase": {
+        "connecting": "接続中",
+        "ready": "準備完了",
+        "revalidating": "権限を確認中",
+        "error": "利用不可",
+        "locked": "ロック中"
+      },
+      "attention": {
+        "generating": "生成中",
+        "user_request": "回答待ち",
+        "tool_approval": "承認待ち",
+        "error": "エラー",
+        "unknown": "不明"
+      },
+      "role": {
+        "user": "ユーザー",
+        "assistant": "アシスタント"
+      },
+      "content": {
+        "complete": "完全",
+        "excerpt": "抜粋",
+        "withheld": "内容は非公開",
+        "pending": "生成中"
+      },
+      "completion": {
+        "complete": "完全",
+        "incomplete": "未完了",
+        "unknown": "不明"
+      },
+      "errors": {
+        "invalid_configuration": "デバイス名を確認して、もう一度お試しください。",
+        "invalid_response": "リレーから無効な応答が返されました。",
+        "validation_failed": "リレーがこのリクエストを拒否しました。更新してもう一度お試しください。",
+        "response_too_large": "リレーの応答が 1 MB の上限を超えました。",
+        "redirect_refused": "リレーがリクエストをリダイレクトしようとしました。",
+        "unauthorized": "このコンピューターの閲覧権限がありません。再試行前に権限を確認してください。",
+        "session_revoked": "このコンピューターの閲覧権限がありません。再試行前に権限を確認してください。",
+        "forbidden": "このコンピューターの閲覧権限がありません。再試行前に権限を確認してください。",
+        "not_found": "要求された Macro Connect の項目は存在しません。",
+        "conflict": "接続が変わりました。更新して再試行してください。",
+        "stale_revision": "適用前にリクエストの内容が変更されました。",
+        "unavailable": "Macro Connect は一時的に利用できません。",
+        "vault_unavailable": "保存された認証情報にアクセスできません。接続を復元してください。",
+        "offline": "リレーに接続できません。Macro のローカル機能は引き続き利用できます。",
+        "extension_unavailable": "このコンピューターはこのビューアーに対応していません。",
+        "snapshot_expired": "このリストは期限切れです。更新してから続行してください。",
+        "resource_limit": "リレーのリソース制限によりこのリストを返せません。",
+        "context_changed": "接続中のアカウントが変わりました。更新して再試行してください。"
+      }
+    },
     "searchNoResults": "一致する設定はありません",
     "title": "設定",
     "general": "一般的な",

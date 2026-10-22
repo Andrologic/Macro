@@ -1082,6 +1082,88 @@
     "moreDiagnostics": "+{{count}} diagnósticos más"
   },
   "settings": {
+    "connectReader": {
+      "title": "Ordenadores · Solo lectura",
+      "help": "Las conversaciones permanecen en el ordenador de origen. La consulta no marca las respuestas como leídas.",
+      "launchTitle": "Consultar ordenadores",
+      "launchHelp": "Lee Chats de dos ordenadores mientras continúas el trabajo local.",
+      "open": "Abrir lector",
+      "computer": "Ordenador",
+      "chooseComputer": "Elegir un ordenador",
+      "add": "Añadir ordenador",
+      "verify": "Verificar ordenadores",
+      "twoLimit": "Máximo dos ordenadores. Cierra un panel para elegir otro.",
+      "locked": "El contenido se bloquea al ocultarse o perder la conexión. Se requiere una nueva verificación.",
+      "thisComputer": "Este ordenador",
+      "closeComputer": "Cerrar {{computer}}",
+      "chat": "Chat",
+      "archiveFilter": "Estado de conversaciones",
+      "active": "Activas",
+      "archived": "Archivadas",
+      "unread": "Sin leer",
+      "emptyCatalog": "No hay conversaciones Chat en esta lista.",
+      "emptyWindow": "No hay mensajes en esta ventana.",
+      "chooseConversation": "Elige una conversación.",
+      "back": "Volver a conversaciones",
+      "conversation": "Conversación",
+      "next": "Página siguiente",
+      "older": "Mensajes anteriores",
+      "first": "Volver al inicio",
+      "latest": "Últimos mensajes",
+      "beginning": "Inicio de la conversación",
+      "anchor": "Continuar atrás · nueva captura",
+      "newCapture": "Nueva captura en el anclaje anterior. Algunos mensajes pueden repetirse.",
+      "limit": "Límite: 10 páginas o 500 elementos. Esta lista no es exhaustiva.",
+      "phase": {
+        "connecting": "Conectando",
+        "ready": "Listo",
+        "revalidating": "Verificando acceso",
+        "error": "No disponible",
+        "locked": "Bloqueado"
+      },
+      "attention": {
+        "generating": "Generando",
+        "user_request": "Respuesta solicitada",
+        "tool_approval": "Aprobación solicitada",
+        "error": "Error",
+        "unknown": "Desconocido"
+      },
+      "role": {
+        "user": "Tú",
+        "assistant": "Asistente"
+      },
+      "content": {
+        "complete": "Completo",
+        "excerpt": "Extracto",
+        "withheld": "Contenido retenido",
+        "pending": "Generando"
+      },
+      "completion": {
+        "complete": "Completo",
+        "incomplete": "Incompleto",
+        "unknown": "Desconocido"
+      },
+      "errors": {
+        "invalid_configuration": "Comprueba el nombre del dispositivo e inténtalo de nuevo.",
+        "invalid_response": "El relay devolvió una respuesta no válida.",
+        "validation_failed": "El servidor de retransmisión rechazó esta solicitud. Actualiza y vuelve a intentarlo.",
+        "response_too_large": "La respuesta del relay superó el límite de 1 MB.",
+        "redirect_refused": "El relay intentó redirigir la solicitud.",
+        "unauthorized": "No se autoriza la lectura de este ordenador. Verifica el acceso antes de reintentar.",
+        "session_revoked": "No se autoriza la lectura de este ordenador. Verifica el acceso antes de reintentar.",
+        "forbidden": "No se autoriza la lectura de este ordenador. Verifica el acceso antes de reintentar.",
+        "not_found": "El elemento de Macro Connect solicitado ya no existe.",
+        "conflict": "La conexión ha cambiado. Actualiza y vuelve a intentarlo.",
+        "stale_revision": "La solicitud cambió antes de poder aplicarse.",
+        "unavailable": "Macro Connect no está disponible temporalmente.",
+        "vault_unavailable": "No se puede acceder a las credenciales guardadas. Restablece la conexión.",
+        "offline": "No se puede acceder al relay. Las funciones locales de Macro siguen disponibles.",
+        "extension_unavailable": "Este ordenador no admite este lector.",
+        "snapshot_expired": "Esta lista ha caducado. Actualízala antes de continuar.",
+        "resource_limit": "El servidor no puede devolver esta lista dentro de sus límites de recursos.",
+        "context_changed": "La cuenta conectada ha cambiado. Actualiza y vuelve a intentarlo."
+      }
+    },
     "searchNoResults": "No hay ajustes coincidentes",
     "title": "Configuración",
     "general": "generales",

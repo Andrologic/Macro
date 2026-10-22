@@ -1078,6 +1078,88 @@
     "moreDiagnostics": "+{{count}} weitere Diagnosen"
   },
   "settings": {
+    "connectReader": {
+      "title": "Computer · Nur lesen",
+      "help": "Gespräche bleiben auf dem Quellcomputer. Antworten werden beim Lesen nicht als gelesen markiert.",
+      "launchTitle": "Computer durchsuchen",
+      "launchHelp": "Chats auf zwei Computern lesen und lokal weiterarbeiten.",
+      "open": "Leser öffnen",
+      "computer": "Computer",
+      "chooseComputer": "Computer auswählen",
+      "add": "Computer hinzufügen",
+      "verify": "Computer prüfen",
+      "twoLimit": "Höchstens zwei Computer. Schließe ein Feld, um einen anderen auszuwählen.",
+      "locked": "Inhalte sind im Hintergrund oder offline gesperrt. Eine neue Prüfung ist erforderlich.",
+      "thisComputer": "Dieser Computer",
+      "closeComputer": "{{computer}} schließen",
+      "chat": "Chat",
+      "archiveFilter": "Gesprächsstatus",
+      "active": "Aktiv",
+      "archived": "Archiviert",
+      "unread": "Ungelesen",
+      "emptyCatalog": "Keine Chat-Gespräche in dieser Liste.",
+      "emptyWindow": "Keine Nachrichten in diesem Fenster.",
+      "chooseConversation": "Wähle ein Gespräch.",
+      "back": "Zurück zu Gesprächen",
+      "conversation": "Gespräch",
+      "next": "Nächste Seite",
+      "older": "Ältere Nachrichten",
+      "first": "Zum Anfang",
+      "latest": "Neueste Nachrichten",
+      "beginning": "Gesprächsanfang",
+      "anchor": "Ältere laden · neue Aufnahme",
+      "newCapture": "Neue Aufnahme am bisherigen Anker. Nachrichten können sich wiederholen.",
+      "limit": "Grenze: 10 Seiten oder 500 Einträge. Die Liste ist nicht vollständig.",
+      "phase": {
+        "connecting": "Verbinden",
+        "ready": "Bereit",
+        "revalidating": "Zugriff prüfen",
+        "error": "Nicht verfügbar",
+        "locked": "Gesperrt"
+      },
+      "attention": {
+        "generating": "Wird erstellt",
+        "user_request": "Antwort angefordert",
+        "tool_approval": "Genehmigung angefordert",
+        "error": "Fehler",
+        "unknown": "Unbekannt"
+      },
+      "role": {
+        "user": "Du",
+        "assistant": "Assistent"
+      },
+      "content": {
+        "complete": "Vollständig",
+        "excerpt": "Auszug",
+        "withheld": "Inhalt zurückgehalten",
+        "pending": "Wird erstellt"
+      },
+      "completion": {
+        "complete": "Vollständig",
+        "incomplete": "Unvollständig",
+        "unknown": "Unbekannt"
+      },
+      "errors": {
+        "invalid_configuration": "Prüfen Sie den Gerätenamen und versuchen Sie es erneut.",
+        "invalid_response": "Das Relay hat eine ungültige Antwort zurückgegeben.",
+        "validation_failed": "Der Relay-Server hat diese Anfrage abgelehnt. Aktualisiere die Ansicht und versuche es erneut.",
+        "response_too_large": "Die Relay-Antwort überschreitet die Grenze von 1 MB.",
+        "redirect_refused": "Das Relay hat versucht, die Anfrage umzuleiten.",
+        "unauthorized": "Lesen auf diesem Computer ist nicht erlaubt. Prüfe den Zugriff vor einem neuen Versuch.",
+        "session_revoked": "Lesen auf diesem Computer ist nicht erlaubt. Prüfe den Zugriff vor einem neuen Versuch.",
+        "forbidden": "Lesen auf diesem Computer ist nicht erlaubt. Prüfe den Zugriff vor einem neuen Versuch.",
+        "not_found": "Das angeforderte Macro Connect-Element existiert nicht mehr.",
+        "conflict": "Die Verbindung hat sich geändert. Aktualisieren Sie und versuchen Sie es erneut.",
+        "stale_revision": "Die Anfrage wurde geändert, bevor sie angewendet werden konnte.",
+        "unavailable": "Macro Connect ist vorübergehend nicht verfügbar.",
+        "vault_unavailable": "Gespeicherte Zugangsdaten sind nicht zugänglich. Stellen Sie die Verbindung wieder her.",
+        "offline": "Das Relay ist nicht erreichbar. Die lokalen Macro-Funktionen bleiben verfügbar.",
+        "extension_unavailable": "Dieser Computer unterstützt diesen Leser nicht.",
+        "snapshot_expired": "Diese Liste ist abgelaufen. Vor dem Fortfahren aktualisieren.",
+        "resource_limit": "Das Relay kann diese Liste innerhalb seiner Ressourcengrenzen nicht zurückgeben.",
+        "context_changed": "Das verbundene Konto hat sich geändert. Aktualisieren und erneut versuchen."
+      }
+    },
     "searchNoResults": "Keine passenden Einstellungen",
     "title": "Einstellungen",
     "general": "Allgemein",

@@ -1106,6 +1106,88 @@
     "moreDiagnostics": "+{{count}} diagnostics supplémentaires"
   },
   "settings": {
+    "connectReader": {
+      "title": "Ordinateurs · Lecture seule",
+      "help": "Les conversations restent sur leur ordinateur source. La consultation ne marque pas les réponses comme lues.",
+      "launchTitle": "Consulter des ordinateurs",
+      "launchHelp": "Lire les Chats de deux ordinateurs tout en continuant le travail local.",
+      "open": "Ouvrir le lecteur",
+      "computer": "Ordinateur",
+      "chooseComputer": "Choisir un ordinateur",
+      "add": "Ajouter un ordinateur",
+      "verify": "Vérifier les ordinateurs",
+      "twoLimit": "Deux ordinateurs au maximum. Fermez un panneau pour en choisir un autre.",
+      "locked": "Les contenus sont verrouillés quand la fenêtre est masquée ou hors ligne. Une nouvelle vérification est nécessaire.",
+      "thisComputer": "Cet ordinateur",
+      "closeComputer": "Fermer {{computer}}",
+      "chat": "Chat",
+      "archiveFilter": "État des conversations",
+      "active": "Actives",
+      "archived": "Archivées",
+      "unread": "Non lu",
+      "emptyCatalog": "Aucune conversation Chat dans cette liste.",
+      "emptyWindow": "Aucun message dans cette fenêtre.",
+      "chooseConversation": "Choisissez une conversation.",
+      "back": "Retour aux conversations",
+      "conversation": "Conversation",
+      "next": "Page suivante",
+      "older": "Messages plus anciens",
+      "first": "Revenir au début",
+      "latest": "Derniers messages",
+      "beginning": "Début de la conversation",
+      "anchor": "Continuer vers les anciens · nouvelle capture",
+      "newCapture": "Nouvelle capture autour de l’ancre précédente. Certains messages peuvent se répéter.",
+      "limit": "Limite du parcours : 10 pages ou 500 éléments. Cette liste n’est pas exhaustive.",
+      "phase": {
+        "connecting": "Connexion",
+        "ready": "Prêt",
+        "revalidating": "Vérification des droits",
+        "error": "Indisponible",
+        "locked": "Verrouillé"
+      },
+      "attention": {
+        "generating": "Génération en cours",
+        "user_request": "Réponse demandée",
+        "tool_approval": "Approbation demandée",
+        "error": "Erreur",
+        "unknown": "Inconnu"
+      },
+      "role": {
+        "user": "Vous",
+        "assistant": "Assistant"
+      },
+      "content": {
+        "complete": "Complet",
+        "excerpt": "Extrait",
+        "withheld": "Contenu non transmis",
+        "pending": "Génération en cours"
+      },
+      "completion": {
+        "complete": "Complet",
+        "incomplete": "Incomplet",
+        "unknown": "Inconnu"
+      },
+      "errors": {
+        "invalid_configuration": "Vérifiez le nom de l’appareil et réessayez.",
+        "invalid_response": "Le relais a renvoyé une réponse invalide.",
+        "validation_failed": "Le relais a refusé cette requête. Actualisez et réessayez.",
+        "response_too_large": "La réponse du relais dépasse la limite de 1 Mo.",
+        "redirect_refused": "Le relais a tenté de rediriger la requête.",
+        "unauthorized": "La lecture de cet ordinateur n’est pas autorisée. Vérifiez les droits avant de réessayer.",
+        "session_revoked": "La lecture de cet ordinateur n’est pas autorisée. Vérifiez les droits avant de réessayer.",
+        "forbidden": "La lecture de cet ordinateur n’est pas autorisée. Vérifiez les droits avant de réessayer.",
+        "not_found": "L’élément Macro Connect demandé n’existe plus.",
+        "conflict": "La connexion a changé. Actualisez et réessayez.",
+        "stale_revision": "La demande a changé avant d’être appliquée.",
+        "unavailable": "Macro Connect est temporairement indisponible.",
+        "vault_unavailable": "Les identifiants enregistrés sont inaccessibles. Rétablissez la connexion.",
+        "offline": "Le relais est inaccessible. Les fonctions locales de Macro restent disponibles.",
+        "extension_unavailable": "Cet ordinateur ne prend pas en charge ce lecteur.",
+        "snapshot_expired": "Cette liste a expiré. Actualisez-la avant de continuer.",
+        "resource_limit": "Le relais ne peut pas retourner cette liste dans ses limites de ressources.",
+        "context_changed": "Le compte connecté a changé. Actualisez et réessayez."
+      }
+    },
     "searchNoResults": "Aucun réglage correspondant",
     "title": "Paramètres",
     "general": "Général",

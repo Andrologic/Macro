@@ -350,3 +350,41 @@ If the conversation observation fails, a separate projects-only observation may
 still report a valid project change. A partial catalog is never published. Reads
 and delivery validation keep their fresh checks; this adds no timed cache or
 read authority. Sequenced outbox events and acknowledgement retries are unchanged.
+
+### Desktop reader composition
+
+The Connect settings launcher opens a dialog-owned reader for at most two chosen
+computers. It uses only `conversations.catalog` with the server-side Chat mode
+filter and `conversation.window`. It never marks responses read or enables
+conversation mutations. The local producer, service ports and conversation
+stores remain local. Missing negotiated capabilities remain unavailable.
+
+The explicit composition in `macroConnectConsumer.ts` admits two targets, four
+leases and two concurrent reading slots. Directory admission is 16 pages, 256
+items and 256 KiB total, with 50 items/64 KiB per page, 512 identities and 32
+cursors. Retry delays are [1000, 3000] ms, with 20% jitter, a 5000 ms delay cap,
+250 ms empty-event polling and the fixed 30000 ms owner deadline. Public discovery
+has a separate 30000 ms UI deadline that retires the whole already-locked owner.
+These are admission choices and serialized sizes, not a process heap budget.
+
+Each panel retains only its current catalog and transcript window, with no
+prefetch. The dialog has at most four rendered page envelopes. Pagination holds
+the previous page only while D1 validates its continuation; defensive transport
+copies and React's previous render are transient additional owners. A traversal
+stops at ten pages or 500 IDs and says the catalog is not exhaustive. A backward
+window can explicitly start a new capture at its previous anchor, with overlap
+explained rather than joining different snapshots. Output is passive escaped
+text: no rich Markdown, media requests or local context links.
+
+Hidden/offline state retires the owner and all protected pages. Returning to the
+foreground requires a complete fresh proof. The proposed thirty-second offline
+authority extension is not implemented here, and no local timer grants authority.
+Changed scopes, stamps, tombstones, captures or native contexts retire their
+copies; callbacks and pending results cannot reopen a closed selection.
+
+The frontend-only QA entry is `/dev/connect-consumer-qa.html`, served by Vite on
+loopback. It refuses non-DEV and non-loopback execution, mounts the real dialog
+and D2a with in-memory synthetic ports, and imports no App/native singleton or
+provider. Browser validation must be authorized separately; this entry alone is
+not visual validation, a native installation test or completion of Connect's
+multi-PC action parity.
