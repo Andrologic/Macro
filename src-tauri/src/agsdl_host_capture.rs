@@ -178,16 +178,35 @@ pub(crate) fn execution_scope(
     Ok(scope)
 }
 
-fn observation(
+async fn observation(
+    manager: &ConfigManager,
     workspace: &Path,
     source: &LockedExecutionSource,
     catalogue: &ModelCapture,
     tools: &Value,
     task: Option<(&str, &crate::git::GitState)>,
-) -> Result<Value> {
+) -> Result<(Value, Option<String>)> {
     let scope = execution_scope(workspace, source, task)?;
     let project = &source.project;
     let document: Value = serde_json::from_str(&source.source).unwrap_or(Value::Null);
+    let has_codex = document
+        .get("bindings")
+        .and_then(Value::as_object)
+        .is_some_and(|bindings| {
+            bindings
+                .values()
+                .any(|binding| binding["implementation"]["identity"] == "openai/codex")
+        });
+    let codex = if has_codex {
+        crate::agsdl_host_codex::observe(
+            manager,
+            &scope,
+            project.user_read_only || project.is_read_only,
+        )
+        .await?
+    } else {
+        None
+    };
     let mut configurations = Vec::new();
     if let Some(agents) = document.get("agents").and_then(Value::as_object) {
         for (name, agent) in agents {
@@ -236,6 +255,27 @@ fn observation(
                 Some("Architect") => "Architect",
                 _ => continue,
             };
+            let engine = configuration
+                .get("engine")
+                .and_then(Value::as_str)
+                .and_then(|key| {
+                    document
+                        .get("bindings")
+                        .and_then(|bindings| bindings.get(key))
+                });
+            let mut settings = settings.clone();
+            if engine.is_some_and(|engine| engine["implementation"]["identity"] == "openai/codex") {
+                let Some((profile, _, _)) = &codex else {
+                    continue;
+                };
+                if settings.get("maxTurns").is_some() {
+                    continue;
+                }
+                settings["nativeProfileJson"] = json!(profile.attestation(
+                    project.user_read_only || project.is_read_only || mode != "Implement",
+                    &scope
+                )?);
+            }
             configurations.push(json!({
                 "agentName": name, "verifiedRequirementsJson": [],
                 "effectiveSettingsJson": serde_json::to_string(&settings)?,
@@ -244,17 +284,30 @@ fn observation(
             }));
         }
     }
-    let models = catalogue.catalogue.models.iter().map(|model| Ok(json!({
+    let mut models = catalogue.catalogue.models.iter().map(|model| Ok(json!({
         "editionJson":serde_json::to_string(&model.edition)?,"providerId":model.provider_id,"modelId":model.model_id
     }))).collect::<Result<Vec<_>>>()?;
+    if let Some((_, ids, _)) = &codex {
+        for id in ids {
+            models.push(json!({"editionJson":serde_json::to_string(&agsdl_host_catalogue::edition("codex-native",id)?)?, "providerId":"codex-native","modelId":id}));
+        }
+    }
     let mut observation = json!({"format":"macro-native-registry-observation/1","models":models,"tools":crate::agsdl_host_tools::observations(),"configurations":configurations,
         "callPermissions":crate::agsdl_host_tools::permissions("Implement", project.user_read_only || project.is_read_only, tools)?,"callScope":scope});
+    let account = codex.as_ref().map(|(_, _, account)| account.clone());
+    if let Some((profile, _, _)) = codex {
+        observation["codexProfileJson"] = json!(profile.identity())
+    }
     let version = format!(
         "sha256:{:x}",
-        Sha256::digest(serde_json::to_vec(&(&observation, &catalogue.providers))?)
+        Sha256::digest(serde_json::to_vec(&(
+            &observation,
+            &catalogue.providers,
+            &account
+        ))?)
     );
     observation["version"] = Value::String(version);
-    Ok(observation)
+    Ok((observation, account))
 }
 
 pub(crate) async fn compile(
@@ -284,12 +337,21 @@ pub(crate) async fn compile_input(
         request.expected.as_ref(),
     )
     .await?;
-    let native_catalogue = agsdl_host_catalogue::capture(manager, pool).await?;
+    let mut native_catalogue = agsdl_host_catalogue::capture(manager, pool).await?;
     let policy = manager
         .lock_execution_tools(&locked.revision.owner.project_id)
         .await
         .map_err(|_| failure("PERMISSION", "policy", "Project tool policy is unavailable"))?;
-    let mut registry = observation(workspace, &locked, &native_catalogue, &policy.tools, task)?;
+    let (mut registry, account) = observation(
+        manager,
+        workspace,
+        &locked,
+        &native_catalogue,
+        &policy.tools,
+        task,
+    )
+    .await?;
+    native_catalogue.codex_account_digest = account;
     let call_permissions_json = serde_json::to_string(&registry["callPermissions"])?;
     let call_scope_json = serde_json::to_string(&registry["callScope"])?;
     if let Some(entry) = start_entry {
@@ -589,13 +651,14 @@ impl crate::db::agsdl_execution::CaptureAuthority for StartAuthority<'_> {
             )
             .await?
         };
-        let current_catalogue = agsdl_host_catalogue::capture(self.manager, self.pool).await?;
+        let mut current_catalogue = agsdl_host_catalogue::capture(self.manager, self.pool).await?;
         let policy = self
             .manager
             .lock_execution_tools(&locked.revision.owner.project_id)
             .await
             .map_err(|_| failure("PERMISSION", "policy", "Project tool policy is unavailable"))?;
-        let current_observation = observation(
+        let (current_observation, account) = observation(
+            self.manager,
             self.workspace,
             &locked,
             &current_catalogue,
@@ -605,7 +668,9 @@ impl crate::db::agsdl_execution::CaptureAuthority for StartAuthority<'_> {
                 .task_id
                 .as_deref()
                 .map(|id| (id, self.git)),
-        )?;
+        )
+        .await?;
+        current_catalogue.codex_account_digest = account;
         let catalogue = serde_json::to_string(&current_catalogue)?;
         let prior = self
             .captured

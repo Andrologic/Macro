@@ -339,6 +339,14 @@
     },
     {
       "families": [
+        "execution"
+      ],
+      "name": "CodexStatus",
+      "origin": "macro_lib::agsdl_host_codex::profile::CodexStatus",
+      "path": "CodexStatus.ts"
+    },
+    {
+      "families": [
         "errors"
       ],
       "name": "CommandErrorPayload",
@@ -1490,6 +1498,22 @@
       "name": "HostAgentState",
       "origin": "macro_lib::db::agsdl_execution::inspection::HostAgentState",
       "path": "HostAgentState.ts"
+    },
+    {
+      "families": [
+        "execution"
+      ],
+      "name": "HostCodexReceipt",
+      "origin": "macro_lib::agsdl_host_codex::HostCodexReceipt",
+      "path": "HostCodexReceipt.ts"
+    },
+    {
+      "families": [
+        "execution"
+      ],
+      "name": "HostCodexRequest",
+      "origin": "macro_lib::agsdl_host_codex::HostCodexRequest",
+      "path": "HostCodexRequest.ts"
     },
     {
       "families": [

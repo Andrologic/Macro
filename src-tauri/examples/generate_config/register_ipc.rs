@@ -30,6 +30,9 @@ pub fn register(registry: &mut Registry) -> Result<(), String> {
     registry.add::<ipc_contracts::execution::Closure>("execution")?;
     registry.add::<ipc_contracts::execution::EngineTerminalCommit>("execution")?;
     registry.add::<ipc_contracts::execution::HostCompileJob>("execution")?;
+    registry.add::<ipc_contracts::execution::CodexStatus>("execution")?;
+    registry.add::<ipc_contracts::execution::HostCodexRequest>("execution")?;
+    registry.add::<ipc_contracts::execution::HostCodexReceipt>("execution")?;
     registry.add::<ipc_contracts::execution::HostToolInvocation>("execution")?;
     registry.add::<ipc_contracts::execution::HostToolReceipt>("execution")?;
     registry.add::<ipc_contracts::execution::NativeModelChoice>("execution")?;

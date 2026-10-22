@@ -158,6 +158,7 @@ export function AgentDetails({ card, cards, source, onSelect, captured = false }
         }
         return <details className="agsdl-runtime-settings" key={`${config.id}-${index}`}>
           <DisclosureSummary><Settings2 size={13} />{macro ? model?.name || unavailable(modelId) : config.engine || t("agsdl.viewer.detail.engineUnset")}<span className="agsdl-muted">{macro && providerId ? provider?.name || unavailable(providerId) : config.id}{config.selected ? ` · ${t("agsdl.viewer.detail.selected")}` : ""}</span></DisclosureSummary>
+          {config.engineIdentity === "openai/codex" && <p className="agsdl-muted">{t("agsdl.codex.policy")}</p>}
           {config.engineReference && <div className="agsdl-engine-reference">{reference(config.engineReference)}</div>}
           {!!Object.keys(config.engineParameters ?? {}).length && <details className="agsdl-details"><DisclosureSummary>{t("agsdl.viewer.detail.engineSettings")}</DisclosureSummary><Parameters value={config.engineParameters ?? {}} /></details>}
           {macro && <dl className="agsdl-configuration-values">

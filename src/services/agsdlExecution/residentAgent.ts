@@ -16,7 +16,7 @@ export interface ResidentAgentRequest {
   readonly context: ExecutionContext;
   readonly configuration: FrozenAgentConfiguration;
   readonly memory: MemoryCheckpoint | null;
-  readonly providerType: 'openai' | 'ollama' | 'lmstudio';
+  readonly providerType: 'openai' | 'ollama' | 'lmstudio' | 'codex-native';
   readonly responses: Omit<ResponseCollectionOptions, 'context' | 'providerAttempts'>;
   readonly toolAliases: readonly { readonly name: string; readonly toolId: string }[];
 }
@@ -59,6 +59,7 @@ export class ResidentAgent {
     private readonly ports: ResidentAgentPorts, private readonly invokeTool: ResidentToolDispatch) {}
 
   static async prepare(request: ResidentAgentRequest, invokeTool: ResidentToolDispatch = createResidentToolDispatch(request), ports = nativeResidentAgentPorts): Promise<ResidentAgent> {
+    if (request.providerType === 'codex-native') return fail('CORRELATION', '/engine', 'Native Codex work must use its own adapter.');
     const agent = request.context.work.agentInstanceId;
     if (!agent || request.context.permissionsJson !== request.configuration.permissionsJson || request.context.scopeJson !== request.configuration.scopeJson) {
       return fail('CORRELATION', '', 'Agent configuration does not match admitted work.');
@@ -113,7 +114,7 @@ export class ResidentAgent {
       choices: list(record(decode(responses.publicationContractJson)).choices).map(value => text(value)),
     };
     const options: StreamingChatOptions = {
-      executionPolicy: 'native-serial', providerType: this.request.providerType,
+      executionPolicy: 'native-serial', providerType: this.request.providerType as 'openai' | 'ollama' | 'lmstudio',
       providerId: configuration.providerId, modelId: configuration.modelId, baseUrl: '', mode: mode as AppMode,
       messages: this.memory.messages(), signal: this.abort.signal,
       maxTurns: maxTurns as number | undefined, reasoningEffort: reasoning as string | null | undefined,

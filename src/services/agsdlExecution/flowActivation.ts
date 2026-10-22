@@ -9,6 +9,7 @@ import { evaluatePureStep, flowFailure, flowInput, retainedAgentOutcome } from '
 import { metadataArray, metadataJson, metadataObject, metadataText } from './metadata';
 import { awaitNativeTool } from './nativeToolDispatch';
 import { captureRegistry, captureToolAliases, resolveBinding, validateRegisteredResult, type CapturedRegistry } from './registry';
+import { prepareCodexAgent } from './codexAgent';
 import { ResidentAgent, nativeResidentAgentPorts, type ResidentAgentPorts, type ResidentAgentRequest } from './residentAgent';
 
 export interface FlowCapture {
@@ -64,6 +65,7 @@ async function retryClosure<T>(operation: () => Promise<T>): Promise<T> {
   try { return await operation(); } catch { return operation(); }
 }
 export async function prepareFlowAgent(request: ResidentAgentRequest, ports: ResidentAgentPorts = nativeResidentAgentPorts): Promise<FlowAgent> {
+  if (request.providerType === 'codex-native') return prepareCodexAgent(request);
   const agent = await ResidentAgent.prepare(request, undefined, { ...ports, journal: { ...ports.journal,
     close: closure => retryClosure(() => ports.journal.close(closure)),
   } });
@@ -121,13 +123,14 @@ export async function executeFlowActivation(owner: EngineOwner, activation: Engi
     const expanded = record(decode(configuration.configurationJson));
     const provider = metadataArray(capture.catalogue.providers, '/providers').map(value => metadataObject(value, '/provider'))
       .find(value => value.providerId === configuration.providerId);
-    if (!provider || !['openai', 'ollama', 'lmstudio'].includes(metadataText(provider.providerType, '/providerType'))) {
+    const nativeCodex = record(expanded.nativeEngine ?? {}).adapter === 'codex-app-server-v1';
+    if (!nativeCodex && (!provider || !['openai', 'ollama', 'lmstudio'].includes(metadataText(provider.providerType, '/providerType')))) {
       fail('UNSUPPORTED', '/provider', 'Captured Agent transport is unavailable.');
     }
     const context = { owner, work, permissionsJson: configuration.permissionsJson, scopeJson: configuration.scopeJson,
       registryVersion: capture.registry.version } as ExecutionContext;
     const agent = await ports.prepareAgent({ context, configuration: configuration as FrozenAgentConfiguration, memory: memory as MemoryCheckpoint | null,
-      providerType: provider.providerType as ResidentAgentRequest['providerType'],
+      providerType: nativeCodex ? 'codex-native' : provider!.providerType as ResidentAgentRequest['providerType'],
       toolAliases: captureToolAliases(capture.document, record(expanded.configuration), capture.registry),
       responses: { agentName: configuration.agentName, interfaceJson: encode(interfaceValue),
         stepJson: declared.declarationJson as import('./contracts').ExactJsonText | null,

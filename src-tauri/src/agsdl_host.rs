@@ -29,7 +29,7 @@ struct OwnedHost {
 #[derive(Default)]
 pub(crate) struct HostState(
     Mutex<Option<OwnedHost>>,
-    tokio::sync::Mutex<()>,
+    Arc<tokio::sync::Mutex<()>>,
     crate::agsdl_host_tools::ToolExecutors,
 );
 
@@ -93,6 +93,9 @@ impl HostStartLease {
 }
 
 impl HostState {
+    pub(crate) fn admission_lock(&self) -> Arc<tokio::sync::Mutex<()>> {
+        self.1.clone()
+    }
     pub(crate) fn tools(&self) -> &crate::agsdl_host_tools::ToolExecutors {
         &self.2
     }
@@ -249,6 +252,7 @@ fn retire(host: &Arc<Incarnation>, database: &DbPool, app: &tauri::AppHandle) {
         // native journal acknowledges it; shutdown recovery handles process loss.
         while !owners.is_empty() {
             if let Ok(pool) = database.wait_until_ready().await {
+                let _gate = app.state::<HostState>().admission_lock().lock_owned().await;
                 if repository::revoke_host_owners(&pool, &owners).await.is_ok() {
                     break;
                 }
@@ -256,6 +260,44 @@ fn retire(host: &Arc<Incarnation>, database: &DbPool, app: &tauri::AppHandle) {
             tokio::time::sleep(std::time::Duration::from_secs(2)).await;
         }
         drop(_retirement_guard);
+        // Native engines may own descendants outside Macro's process. Revoking
+        // their epoch also requests physical stop; reload never leaves them running.
+        if let Ok(pool) = database.wait_until_ready().await {
+            for owner in &owners {
+                if let Ok(projection) =
+                    repository::read_projection(&pool, &owner.system_start_id).await
+                {
+                    for activation in projection.activations {
+                        if let Ok(effects) =
+                            repository::read_effects(&pool, &activation.delivery.delivery.work)
+                                .await
+                        {
+                            for effect in effects {
+                                let native = serde_json::from_str::<serde_json::Value>(
+                                    &effect.registered.invocation_json,
+                                )
+                                .ok()
+                                .is_some_and(|value| value["kind"] == "codex-app-server-v1");
+                                if !native || effect.status == "ended" {
+                                    continue;
+                                }
+                                if let repository::dto::EngineEffectIdentity::Provider {
+                                    provider_attempt_id,
+                                } = effect.registered.effect
+                                {
+                                    let _ = crate::agsdl_host_provider::finish(
+                                        &app,
+                                        effect.registered.context,
+                                        provider_attempt_id,
+                                    )
+                                    .await;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
         // A native replacement follows durable fencing, never a Flow polling tick.
         for _ in 0..10 {
             let current = app

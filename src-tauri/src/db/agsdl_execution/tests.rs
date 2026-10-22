@@ -3646,6 +3646,21 @@ async fn native_operation_receipts_survive_reopen_and_never_authorize_replay() {
     };
     native_operations::admit(&pool, &op).await.unwrap();
     assert!(native_operations::admit(&pool, &op).await.is_err());
+    // The crash window before a receipt also survives reopening. Absence of a
+    // reference is uncertainty, never permission to issue the request again.
+    pool.close().await;
+    let pool = create_pool(&temp.path().join("test.db")).await.unwrap();
+    assert_eq!(
+        native_operations::read_instance(
+            &pool,
+            &runtime.system_start_id,
+            d.work.agent_instance_id.as_deref().unwrap()
+        )
+        .await
+        .unwrap(),
+        vec![(op.clone(), None)]
+    );
+    assert!(native_operations::admit(&pool, &op).await.is_err());
     let refs = r#"{"threadId":"synthetic-thread","turnId":null}"#;
     native_operations::received(&pool, &op, refs).await.unwrap();
     let agent = d.work.agent_instance_id.as_deref().unwrap();
@@ -3698,3 +3713,6 @@ async fn native_operation_receipts_survive_reopen_and_never_authorize_replay() {
     delayed.method = "turn/start".into();
     assert!(native_operations::admit(&reopened, &delayed).await.is_err());
 }
+
+#[path = "native_codex_tests.rs"]
+mod native_codex_tests;

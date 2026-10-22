@@ -2,6 +2,7 @@ export type { ApprovalDecision } from '../ApprovalDecision';
 export type { ApprovalPage } from '../ApprovalPage';
 export type { ApprovalScope } from '../ApprovalScope';
 export type { Closure } from '../Closure';
+export type { CodexStatus } from '../CodexStatus';
 export type { DiagnosticIdentity } from '../DiagnosticIdentity';
 export type { DiagnosticRequest } from '../DiagnosticRequest';
 export type { Emission } from '../Emission';
@@ -53,6 +54,8 @@ export type { ExecutionReadIntentsRequest } from '../ExecutionReadIntentsRequest
 export type { ExecutionStageIntentRequest } from '../ExecutionStageIntentRequest';
 export type { HostAdmission } from '../HostAdmission';
 export type { HostAgentState } from '../HostAgentState';
+export type { HostCodexReceipt } from '../HostCodexReceipt';
+export type { HostCodexRequest } from '../HostCodexRequest';
 export type { HostCompileJob } from '../HostCompileJob';
 export type { HostInspection } from '../HostInspection';
 export type { HostToolInvocation } from '../HostToolInvocation';
