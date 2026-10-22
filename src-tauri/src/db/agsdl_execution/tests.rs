@@ -3627,94 +3627,108 @@ async fn process_exit_recovery_preserves_unknown_tool_outcome_and_never_replays(
 #[tokio::test]
 async fn native_operation_receipts_survive_reopen_and_never_authorize_replay() {
     use super::native_operations::{self, NativeOperation};
-    for (adapter,version,method,refs,delayed_method) in [
-        ("codex-app-server-v1","0.163.0","thread/start",r#"{"threadId":"synthetic-thread","turnId":null}"#,"turn/start"),
-        ("claude-sdk-v1","0.3.308","session/create",r#"{"sessionId":"synthetic-session","runId":null}"#,"query/start"),
+    for (adapter, version, method, refs, delayed_method) in [
+        (
+            "codex-app-server-v1",
+            "0.163.0",
+            "thread/start",
+            r#"{"threadId":"synthetic-thread","turnId":null}"#,
+            "turn/start",
+        ),
+        (
+            "claude-sdk-v1",
+            "0.3.308",
+            "session/create",
+            r#"{"sessionId":"synthetic-session","runId":null}"#,
+            "query/start",
+        ),
     ] {
-    let (temp, pool, _receipt, runtime) = setup().await;
-    let d = delivery(&pool, &runtime, "second", "native").await;
-    accept_delivery(&pool, &runtime, d.clone()).await.unwrap();
-    begin(&pool, &runtime, &d.delivery_id).await.unwrap();
-    let mut effect = effect(&runtime, &d.work);
-    effect.invocation_json = serde_json::json!({"kind":adapter}).to_string();
-    register_effect(&pool, effect.clone()).await.unwrap();
-    let op = NativeOperation {
-        context: effect.context.clone(),
-        effect: effect.effect.clone(),
-        operation_id: "native:thread".into(),
-        adapter: adapter.into(),
-        version: version.into(),
-        profile_digest: "private-profile-digest".into(),
-        method: method.into(),
-        request_json: "{}".into(),
-    };
-    native_operations::admit(&pool, &op).await.unwrap();
-    assert!(native_operations::admit(&pool, &op).await.is_err());
-    // The crash window before a receipt also survives reopening. Absence of a
-    // reference is uncertainty, never permission to issue the request again.
-    pool.close().await;
-    let pool = create_pool(&temp.path().join("test.db")).await.unwrap();
-    assert_eq!(
-        native_operations::read_instance(
-            &pool,
-            &runtime.system_start_id,
-            d.work.agent_instance_id.as_deref().unwrap()
-        )
-        .await
-        .unwrap(),
-        vec![(op.clone(), None)]
-    );
-    assert!(native_operations::admit(&pool, &op).await.is_err());
-    native_operations::received(&pool, &op, refs).await.unwrap();
-    let agent = d.work.agent_instance_id.as_deref().unwrap();
-    pool.close().await;
-    let reopened = create_pool(&temp.path().join("test.db")).await.unwrap();
-    assert_eq!(
-        native_operations::read_instance(&reopened, &runtime.system_start_id, agent)
+        let (temp, pool, _receipt, runtime) = setup().await;
+        let d = delivery(&pool, &runtime, "second", "native").await;
+        accept_delivery(&pool, &runtime, d.clone()).await.unwrap();
+        begin(&pool, &runtime, &d.delivery_id).await.unwrap();
+        let mut effect = effect(&runtime, &d.work);
+        effect.invocation_json = serde_json::json!({"kind":adapter}).to_string();
+        register_effect(&pool, effect.clone()).await.unwrap();
+        let op = NativeOperation {
+            context: effect.context.clone(),
+            effect: effect.effect.clone(),
+            operation_id: "native:thread".into(),
+            adapter: adapter.into(),
+            version: version.into(),
+            profile_digest: "private-profile-digest".into(),
+            method: method.into(),
+            request_json: "{}".into(),
+        };
+        native_operations::admit(&pool, &op).await.unwrap();
+        assert!(native_operations::admit(&pool, &op).await.is_err());
+        // The crash window before a receipt also survives reopening. Absence of a
+        // reference is uncertainty, never permission to issue the request again.
+        pool.close().await;
+        let pool = create_pool(&temp.path().join("test.db")).await.unwrap();
+        assert_eq!(
+            native_operations::read_instance(
+                &pool,
+                &runtime.system_start_id,
+                d.work.agent_instance_id.as_deref().unwrap()
+            )
             .await
             .unwrap(),
-        vec![(op.clone(), Some(refs.into()))]
-    );
-    assert!(native_operations::admit(&reopened, &op).await.is_err());
-    assert!(
-        native_operations::received(&reopened, &op, r#"{"threadId":"foreign"}"#)
+            vec![(op.clone(), None)]
+        );
+        assert!(native_operations::admit(&pool, &op).await.is_err());
+        native_operations::received(&pool, &op, refs).await.unwrap();
+        let agent = d.work.agent_instance_id.as_deref().unwrap();
+        pool.close().await;
+        let reopened = create_pool(&temp.path().join("test.db")).await.unwrap();
+        assert_eq!(
+            native_operations::read_instance(&reopened, &runtime.system_start_id, agent)
+                .await
+                .unwrap(),
+            vec![(op.clone(), Some(refs.into()))]
+        );
+        assert!(native_operations::admit(&reopened, &op).await.is_err());
+        assert!(
+            native_operations::received(&reopened, &op, r#"{"threadId":"foreign"}"#)
+                .await
+                .is_err()
+        );
+        let mut foreign = op.clone();
+        foreign.profile_digest = "foreign-profile".into();
+        assert!(native_operations::received(&reopened, &foreign, refs)
             .await
-            .is_err()
-    );
-    let mut foreign = op.clone();
-    foreign.profile_digest = "foreign-profile".into();
-    assert!(native_operations::received(&reopened, &foreign, refs)
+            .is_err());
+        assert!(native_operations::read_instance(
+            &reopened,
+            &runtime.system_start_id,
+            "other-agent"
+        )
         .await
-        .is_err());
-    assert!(
-        native_operations::read_instance(&reopened, &runtime.system_start_id, "other-agent")
+        .unwrap()
+        .is_empty());
+        // Losing Macro's process does not establish external native process death.
+        sqlx::query("DROP TRIGGER engine_effect_process_immutable")
+            .execute(&reopened)
             .await
-            .unwrap()
-            .is_empty()
-    );
-    // Losing Macro's process does not establish external native process death.
-    sqlx::query("DROP TRIGGER engine_effect_process_immutable")
-        .execute(&reopened)
-        .await
-        .unwrap();
-    sqlx::query("UPDATE engine_effect_processes SET process_id=2147483647")
-        .execute(&reopened)
-        .await
-        .unwrap();
-    revoke_host_owners(&reopened, &[runtime.clone()])
-        .await
-        .unwrap();
-    process_recovery::close_dead_process_effects(&reopened, &runtime.system_start_id, None)
-        .await
-        .unwrap();
-    assert_ne!(
-        read_effects(&reopened, &d.work).await.unwrap()[0].status,
-        "ended"
-    );
-    let mut delayed = op.clone();
-    delayed.operation_id = "native:turn".into();
-    delayed.method = delayed_method.into();
-    assert!(native_operations::admit(&reopened, &delayed).await.is_err());
+            .unwrap();
+        sqlx::query("UPDATE engine_effect_processes SET process_id=2147483647")
+            .execute(&reopened)
+            .await
+            .unwrap();
+        revoke_host_owners(&reopened, &[runtime.clone()])
+            .await
+            .unwrap();
+        process_recovery::close_dead_process_effects(&reopened, &runtime.system_start_id, None)
+            .await
+            .unwrap();
+        assert_ne!(
+            read_effects(&reopened, &d.work).await.unwrap()[0].status,
+            "ended"
+        );
+        let mut delayed = op.clone();
+        delayed.operation_id = "native:turn".into();
+        delayed.method = delayed_method.into();
+        assert!(native_operations::admit(&reopened, &delayed).await.is_err());
     }
 }
 

@@ -551,7 +551,7 @@ pub(crate) async fn run(
             )
         })?;
         let refs: Value = serde_json::from_str(&refs)?;
-        if op.method == "query/result" && refs["nativeResult"]["subtype"] != "success" {
+        if op.method == "query/result" && !successful_result(&refs["nativeResult"]) {
             return Err(failure(
                 "NATIVE_UNCERTAIN",
                 "memory",
@@ -787,19 +787,39 @@ pub(crate) async fn run(
             .await?;
             drop(client);
             drop(owned);
-            return Ok(
-                if native["subtype"] == "success" && native["is_error"] == false {
-                    HostClaudeReceipt::Completed {
-                        session_id: session,
-                        run_id: id,
-                    }
-                } else {
-                    HostClaudeReceipt::Failed {
-                        session_id: session,
-                        run_id: id,
-                    }
-                },
-            );
+            return Ok(if successful_result(native) {
+                HostClaudeReceipt::Completed {
+                    session_id: session,
+                    run_id: id,
+                }
+            } else {
+                HostClaudeReceipt::Failed {
+                    session_id: session,
+                    run_id: id,
+                }
+            });
+        }
+    }
+}
+
+fn successful_result(native: &Value) -> bool {
+    native["subtype"] == "success" && native["is_error"] == false
+}
+
+#[cfg(test)]
+mod result_tests {
+    use super::*;
+    #[test]
+    fn native_resume_requires_an_explicit_error_free_success() {
+        assert!(successful_result(
+            &json!({"subtype":"success","is_error":false})
+        ));
+        for result in [
+            json!({"subtype":"success","is_error":true}),
+            json!({"subtype":"success"}),
+            json!({"subtype":"error_during_execution","is_error":false}),
+        ] {
+            assert!(!successful_result(&result));
         }
     }
 }

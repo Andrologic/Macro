@@ -94,8 +94,8 @@ mod native_quit_consent {
 mod agsdl_host;
 mod agsdl_host_capture;
 mod agsdl_host_catalogue;
-mod agsdl_host_codex;
 mod agsdl_host_claude;
+mod agsdl_host_codex;
 mod agsdl_host_compiler;
 mod agsdl_host_provider;
 mod agsdl_host_tasks;

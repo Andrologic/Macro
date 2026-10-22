@@ -201,6 +201,44 @@ for line in sys.stdin:pass
             );
             break;
         }
+        if index == 2 {
+            let (operation, references) = native
+                .iter()
+                .find(|(op, _)| op.operation_id == "claude-2:query/result")
+                .unwrap();
+            let original = references.as_ref().unwrap();
+            let before = std::fs::read_to_string(directory.join("children")).unwrap();
+            for native_result in [
+                json!({"subtype":"success","is_error":true}),
+                json!({"subtype":"success"}),
+            ] {
+                let mut changed: serde_json::Value = serde_json::from_str(original).unwrap();
+                changed["nativeResult"] = native_result;
+                sqlx::query("UPDATE engine_native_operations SET references_json=? WHERE system_id=? AND operation_id=?")
+                    .bind(changed.to_string()).bind(&owner.system_start_id).bind(&operation.operation_id).execute(&pool).await.unwrap();
+                let refused = crate::agsdl_host_claude::run(
+                    pool.clone(),
+                    ai.clone(),
+                    profile.clone(),
+                    configuration.clone(),
+                    request.clone(),
+                    std::sync::Arc::default(),
+                    None,
+                    false,
+                )
+                .await
+                .unwrap_err();
+                assert_eq!(refused.code, "NATIVE_UNCERTAIN");
+                assert!(refused.message.contains("unsuccessful native turn"));
+                assert_eq!(
+                    std::fs::read_to_string(directory.join("children")).unwrap(),
+                    before,
+                    "an unsuccessful result spawned a runner"
+                );
+            }
+            sqlx::query("UPDATE engine_native_operations SET references_json=? WHERE system_id=? AND operation_id=?")
+                .bind(original).bind(&owner.system_start_id).bind(&operation.operation_id).execute(&pool).await.unwrap();
+        }
         let HostClaudeReceipt::Completed { session_id, .. } = result.unwrap() else {
             panic!("expected completed Claude receipt")
         };
