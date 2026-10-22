@@ -980,7 +980,11 @@ ni des commandes Tauri ni de State, Window ou AppHandle.
 `core::db_state` l'état d'initialisation DB. Les conversions depuis `BackendError`
 et `DbError` portent un code explicite, indépendant du message affiché, et
 conservent les détails structurés déjà exposés. Les mutations de fichiers et leur
-rollback conservent ainsi `REVISION_CONFLICT` ; les budgets des outils de lecture
+rollback conservent ainsi `REVISION_CONFLICT`, y compris lorsqu'il n'apparaît que
+pendant la compensation. Le code initial reste prioritaire s'il est déjà établi ;
+sinon, l'agrégation retient un conflit de compensation, puis à défaut la première
+erreur de compensation typée. Tous les diagnostics restent dans leur ordre
+historique. Les budgets des outils de lecture
 distinguent `TOOL_EXECUTION_CANCELLED` de `TOOL_EXECUTION_TIMEOUT`. Les échecs de
 stockage et d'initialisation DB utilisent le code existant `Database`, tandis que
 la validation d'une entrée DB reste `Validation`. Les producteurs historiques de

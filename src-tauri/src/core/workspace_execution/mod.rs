@@ -1055,7 +1055,7 @@ type MutationBackupEntry = (
 async fn rollback_pending_file_changes_via_fs(
     backups: &[MutationBackupEntry],
     applied_changes: &[PendingFileChange],
-) -> Vec<String> {
+) -> Vec<CommandError> {
     debug_assert_eq!(backups.len(), applied_changes.len());
     let mut errors = Vec::new();
     for ((workspace, path, display_path, backup, unix_mode, native_target), change) in
@@ -1088,17 +1088,18 @@ async fn rollback_pending_file_changes_via_fs(
                     write_wsl_backup_bytes(workspace, path, content, expected, *unix_mode).await
                 };
                 if let Err(error) = result {
-                    if error.code() == Some("REVISION_CONFLICT") {
-                        errors.push(format!(
+                    let message = if error.code() == Some("REVISION_CONFLICT") {
+                        format!(
                             "Rollback conflict for {}: the current file no longer matches Macro's applied mutation; preserving the current filesystem state",
                             display_path
-                        ));
+                        )
                     } else {
-                        errors.push(format!(
+                        format!(
                             "Failed to restore {} during rollback: {}",
                             display_path, error.message
-                        ));
-                    }
+                        )
+                    };
+                    errors.push(error.with_message(message));
                 }
             }
             None => {
@@ -1120,17 +1121,19 @@ async fn rollback_pending_file_changes_via_fs(
                         .await
                     };
                     if let Err(error) = deletion {
-                        if matches!(error, BackendError::RevisionConflict { .. }) {
-                            errors.push(format!(
+                        let error = CommandError::from(error);
+                        let message = if error.code() == Some("REVISION_CONFLICT") {
+                            format!(
                                 "Rollback conflict for {}: the current file no longer matches Macro's applied mutation; preserving the current filesystem state",
                                 display_path
-                            ));
+                            )
                         } else {
-                            errors.push(format!(
+                            format!(
                                 "Failed to remove created file {} during rollback: {}",
-                                display_path, error
-                            ));
-                        }
+                                display_path, error.message
+                            )
+                        };
+                        errors.push(error.with_message(message));
                     }
                 }
             }
@@ -1369,7 +1372,7 @@ fn normalize_pending_change_metadata(
 async fn rollback_mutation_backups(
     backups: &MutationBackups,
     changes: &[PendingFileChange],
-) -> Vec<String> {
+) -> Vec<CommandError> {
     rollback_pending_file_changes_via_fs(&backups.0, changes).await
 }
 
@@ -1581,12 +1584,7 @@ async fn apply_mutation_backups(
                 &changes[..applied_count],
             )
             .await;
-            let message = format!(
-                "{}{}",
-                error.message,
-                rollback_error_suffix(rollback_errors)
-            );
-            return Err(error.with_message(message));
+            return Err(with_rollback_errors(error, rollback_errors));
         }
     }
 
@@ -1695,11 +1693,10 @@ where
     }
 
     let rollback_errors = rollback_mutation_backups(&backups, &changes).await;
-    Err(command_error(format!(
-        "Post-mutation validation failed; Macro's mutations were rolled back where still possible. Validation errors: {}{}",
+    Err(with_rollback_errors(command_error(format!(
+        "Post-mutation validation failed; Macro's mutations were rolled back where still possible. Validation errors: {}",
         report.errors.join("; "),
-        rollback_error_suffix(rollback_errors)
-    )))
+    )), rollback_errors))
 }
 
 struct PostWriteValidationReport {
@@ -1897,12 +1894,38 @@ fn assemble_post_write_response(
         .map_err(|error| command_error(error.to_string()))
 }
 
-fn rollback_error_suffix(rollback_errors: Vec<String>) -> String {
+fn with_rollback_errors(
+    error: CommandError,
+    mut rollback_errors: Vec<CommandError>,
+) -> CommandError {
     if rollback_errors.is_empty() {
-        String::new()
-    } else {
-        format!(" Rollback errors: {}", rollback_errors.join("; "))
+        return error;
     }
+    let message = format!(
+        "{} Rollback errors: {}",
+        error.message,
+        rollback_errors
+            .iter()
+            .map(|error| error.message.as_str())
+            .collect::<Vec<_>>()
+            .join("; "),
+    );
+    // Preserve an established primary code. Otherwise prefer a compensation
+    // conflict, then the first typed compensation error, without parsing text.
+    if error.code().is_none() {
+        let fallback = rollback_errors
+            .iter()
+            .position(|error| error.code() == Some("REVISION_CONFLICT"))
+            .or_else(|| {
+                rollback_errors
+                    .iter()
+                    .position(|error| error.code().is_some())
+            });
+        if let Some(index) = fallback {
+            return rollback_errors.swap_remove(index).with_message(message);
+        }
+    }
+    error.with_message(message)
 }
 
 fn format_bounded_git_status(
