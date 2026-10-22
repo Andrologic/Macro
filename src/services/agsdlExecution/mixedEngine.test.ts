@@ -4,6 +4,7 @@ import { buildNativeRegistry, type NativeRegistryObservation } from './nativeReg
 import { compileFixture, json } from './conformanceFixtures';
 import { decode, encode, record } from './exact';
 import { prepareMessage, deliveryMessage } from './content';
+import { completionResult } from './constraints';
 import { macroNativeModelEdition } from '../agsdl/nativeModelEdition';
 
 // This suite verifies compilation and exact transfer, not native execution or SQLite.
@@ -52,6 +53,10 @@ it('transfers only the explicitly named report with exact numbers, decimals and 
   const steps = record(record(document.flow).steps);
   const report = '{"value":{"n":9007199254740993,"decimal":0.12345678901234567890123456789,"label":"Été à Montréal"},"mediaType":"application/json"}';
   const completion = decode(`{"text":"Visible text is not the report","results":{"report":${report},"private":{"value":"must not transfer","mediaType":"text/plain"}}}`);
+  const contract = record(record(record(document.agents).macro).interface);
+  expect(completionResult(contract, record(steps['macro-first']), completion).valueJson).toContain('0.12345678901234567890123456789');
+  const rounded = decode(encode(completion).replace('0.12345678901234567890123456789', '0.12345678901234568'));
+  expect(() => completionResult(contract, record(steps['macro-first']), rounded)).toThrow('valueSchema');
   for (const step of Object.values(steps).map(step => record(step)).filter(step => step.type === 'prepare')) {
     const prepared = prepareMessage(document, step, completion);
     expect(encode(record(prepared.resources).report)).toBe(json(report));

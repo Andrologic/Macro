@@ -105,7 +105,8 @@
                   ]
                 },
                 "decimal": {
-                  "type": "number"
+                  "type": "number",
+                  "enum": [0.12345678901234567890123456789]
                 },
                 "label": {
                   "type": "string",
@@ -158,7 +159,8 @@
                   ]
                 },
                 "decimal": {
-                  "type": "number"
+                  "type": "number",
+                  "enum": [0.12345678901234567890123456789]
                 },
                 "label": {
                   "type": "string",
@@ -211,7 +213,8 @@
                   ]
                 },
                 "decimal": {
-                  "type": "number"
+                  "type": "number",
+                  "enum": [0.12345678901234567890123456789]
                 },
                 "label": {
                   "type": "string",
