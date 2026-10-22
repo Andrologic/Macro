@@ -45,6 +45,12 @@ describe("block details read from AgSDL", () => {
       { key: "effect", values: ["none"] },
     ]);
     expect(blockDetails(card("call", { binding: "missing" }), declarations)).toEqual([{ key: "effect", values: ["unknown"] }]);
+    const deploy = card("call", { binding: "tests", scope: { action: "deploy", resources: ["service:catalog-api"], context: { path: [] } } });
+    expect(blockDetails(deploy, declarations).slice(1)).toEqual([
+      { key: "action", values: ["deploy"] }, { key: "targets", values: ["service:catalog-api"] }, { key: "context", values: ["input"] },
+    ]);
+    const publish = card("call", { scope: { action: "publish", resources: [], context: { value: { release: "1.8.0", targets: ["web"] } } } });
+    expect(blockDetails(publish, declarations).at(-1)).toEqual({ key: "context", values: ['release = "1.8.0"', 'targets = ["web"]'] });
   });
 
   it("reads approval timings, condition tests and join rules", () => {

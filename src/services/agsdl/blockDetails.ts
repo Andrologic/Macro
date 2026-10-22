@@ -7,7 +7,7 @@ const list = (value: unknown): unknown[] => Array.isArray(value) ? value : [];
 
 /** Configuration facts a block preview shows, in a fixed order. Values are AgSDL names or display titles. */
 export type BlockDetailKey = "instructions" | "model" | "uses" | "receives" | "produces" | "limit"
-  | "arguments" | "effect" | "timeout" | "validity" | "test" | "mode" | "accept" | "agents" | "transmits";
+  | "arguments" | "effect" | "action" | "targets" | "context" | "timeout" | "validity" | "test" | "mode" | "accept" | "agents" | "transmits";
 export interface BlockDetail { key: BlockDetailKey; values: string[] }
 
 /** Operands read as their path (`data.exitCode`) or their literal value (`0`, `"portal"`). */
@@ -80,6 +80,15 @@ export function blockDetails(card: ViewerCard, declarations: ViewerCard[]): Bloc
   }
   if (card.kind === "compose") add("agents", Object.entries(object(step.agents)).map(([parameter, agent]) => `${parameter} → ${title(`/agents/${String(agent)}`, String(agent))}`));
   if (card.kind === "prepare") add("transmits", card.inputs.map(input => input.name));
+  // The scope names what an external effect touches, as the document declares it.
+  const scope = object(step.scope);
+  add("action", [typeof scope.action === "string" ? scope.action : undefined]);
+  add("targets", list(scope.resources).filter((item): item is string => typeof item === "string"));
+  // An object context reads field by field, like call arguments.
+  const context = object(scope.context);
+  const fields = object(context.value);
+  if (Object.keys(fields).length && Object.hasOwn(context, "value")) add("context", Object.entries(fields).map(([name, value]) => `${name} = ${JSON.stringify(value)}`));
+  else if (Object.hasOwn(scope, "context")) add("context", [operandText(scope.context)]);
   if (typeof step.maxVisits === "number") add("limit", [String(step.maxVisits)]);
   return details;
 }

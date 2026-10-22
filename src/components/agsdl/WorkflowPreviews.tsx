@@ -4,7 +4,7 @@ import type { ViewerEdge } from '../../services/agsdl/graphLayout';
 import { useAgsdlTranslation } from './useAgsdlTranslation';
 
 // Expressions and arguments stay as written in the document.
-const literal = new Set<BlockDetailKey>(['arguments', 'test', 'accept']);
+const literal = new Set<BlockDetailKey>(['arguments', 'test', 'accept', 'action', 'targets', 'context']);
 const transferKeys: Record<string, string> = {
   'Message': 'message', 'completion': 'response', 'data': 'result', 'members': 'results', 'error': 'error', 'current value': 'value',
   'resources.result ← text · text/plain': 'response', 'resources.result ← data · application/json': 'result',
