@@ -237,3 +237,76 @@ quota or a substitute stream. These checks add assertion/trace overhead to raw
 scenario elapsed time; the four wrapped capture API durations keep their
 previous boundary. No performance comparison with an older runner definition
 is inferred from these correctness probes.
+
+
+## Native content baseline before content-version triggers
+
+The existing native runner also accepts `--content-baseline`. It compiles the
+same repository modules and uses disposable on-disk SQLite databases, schema 12
+exactly. It does not implement content windows or install content-version triggers.
+The historical default, self-test and diagnostic modes retain their cells.
+This mode has a separate schema 3 report and is not projected into historical A2
+or producer A4 metrics.
+
+```sh
+# Short validation only. Never use its three observations as a reference.
+bun --no-install dev/performance/native-sqlite.ts --content-baseline --pilot > /tmp/content-pilot.json 2> /tmp/content-pilot.log
+# Run each full process only after independent review of the benchmark.
+bun --no-install dev/performance/native-sqlite.ts --content-baseline > /tmp/content-1.json 2> /tmp/content-1.log
+```
+
+The pilot uses 1 warmup and 3 observations per cell at N=100/1000/10000. A full
+process requires clean committed sources and uses 10 warmups and 100 observations
+per cell at those sizes. Run three fresh processes for a reference. A pilot is
+marked `reference_eligible: false`; this flag describes sample/profile eligibility,
+not approval of a campaign. The runner validates complete cell/sample counts,
+runtime checks, outcomes and summaries before publishing JSON. Source fingerprint,
+lock hash, compiled nonce, privately staged binary verification and drift checks
+remain required. The fixture hash covers its definition and Rust fixture module.
+
+| Cell | Actual measured boundary |
+| --- | --- |
+| get_message | Repository transaction, SQL admission, row fetch and mapping; no serde. |
+| list_messages_bounded | Repository admission/fetch/mapping. N=100 and 1000 admit; N=10000 refuses this fixture. The refusal series tests the explicit hypothesis that the SQL admission scan cost grows with N. It is not successful export latency. |
+| count_exportable | SQL COUNT of user/assistant rows. It is an explicit diagnostic query, not a product metadata cache. |
+| catalog_metadata | Existing conversation_management metadata call over the single-conversation fixture, including SQL JSON inspection. |
+| serde_get_message / serde_all_messages / serde_catalog_metadata | serde_json::to_vec of preloaded real outputs; loading, validation and destruction excluded. The all-messages output is obtained through list_messages outside timing. |
+| serde_bounded_messages | Serialization of an actual accepted bounded output, absent when the operation refuses. |
+| update_stream_commit | update_message_content of the same assistant, deterministic growing content, FTS/metadata/commit included. |
+| import100_commit | import_messages of 100 rows above N, including metadata and commit. |
+| delete100_commit | delete_messages_after removing 100 prepared tail rows, leaving N, including FTS/metadata/commit. |
+| provenance_cas | Actual app_settings CAS/autocommit at the exact provenance prefix; receipt hash generation excluded. |
+| provenance_get | Actual get_app_setting fetch and mapping of the raw receipt row. Exact key/value/timestamp are verified outside timing; no JSON parsing or serde in this cell. |
+
+Fixtures use mixed user/assistant rows, UTF-8, one assistant with all 14 fields,
+provider-output evidence and a version-2 receipt with a SHA-256/UTF-16 golden.
+No real conversation or provider is used. Metadata/body correctness checks,
+missing results, the seven common payload fields, CAS conflict, legacy receipt exclusion and
+SQL refusal before fetch are untimed controls. Legacy get/list DTOs do not include
+receipts; a large receipt is preserved without inventing an admission guard for
+it. Receipt/window admission remains unmeasured until that primitive exists.
+
+The seven payload controls cover content, hidden_context, tool_traces_json, provider_input_items_json, provider_turn_state_json, context_refs_json and generation_attempts_json. They do not claim coverage of every scalar counted only by list_messages_bounded.
+
+Write inputs are constructed before the timer. Imports/deletions reset outside
+timing, and every observation records actual SQL COUNT values observed before/after each write, outside timing. Both timed and preparatory imports are checked exactly before deletion. UPDATE targets the latest assistant; its new FTS marker and removal of the previous marker, plus previews/counts/timestamps, are checked immediately. Import and deletion have distinct FTS markers and exact metadata checks before any later reset. The same
+fixture, sample order and reset operations must be used before and after future
+triggers. These resets and validations warm the file/WAL/cache. Streaming content
+and response-version counters advance deterministically; the fixture is not a
+cold-write workload. Exact fields, FTS, previews, counts, integrity and reopen
+persistence are checked outside timing. Pools and their owned directories close
+on success or error; no other directory is removed.
+
+Every measured observation is retained in execution order as raw_ms/outcomes.
+Raw JSON records are also written to stderr after timing with a case-start record,
+so a later failure preserves prior observations in the log. Unexpected errors
+abort the report and are not silently removed from successful distributions.
+The final JSON is emitted only after all cases and cleanup succeed. Preserve
+stdout and stderr together. Logging/validation are untimed and can affect machine
+load; keep the same protocol for control/candidate runs.
+
+Do not add phase p95s or pool process samples. Compare median process p50 and p95
+separately under the existing non-regression policy. JSON lengths are serialized
+bytes only, never memory, allocation counts, IPC bytes or transport bytes. A4
+continues to measure another boundary. Native content windows, capture metadata
+quotas, physical RSS and end-to-end latency remain absent from this report.
