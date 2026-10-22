@@ -74,3 +74,36 @@ Cette garantie concerne le chemin natif libgit2. Les transports WSL utilisent
 des conversions distinctes et ne sont pas qualifiés pour cette fidélité ; les
 commandes AgSDL les refusent déjà. Les tests Git du renderer ne qualifient pas
 le parcours Call vers le reviewer, qui demande une vérification distincte.
+
+## Chaîne Macro, Claude et Codex
+
+Qualification complémentaire du 22 octobre 2026 sur Linux ARM64, avec Codex
+0.163.0 et Claude SDK 0.3.308, CLI 2.1.308. Le
+[document sériel à trois moteurs](agsdl-mixed-engine.md) traverse la pompe
+existante et le repository SQLite réel. Macro utilise son transport HTTP vers
+un fournisseur local simulé. Claude utilise réellement Haiku 5.5 et Codex une
+session native réelle. Ce contrôle ne qualifie pas une inférence Macro HTTP
+auprès d’Anthropic.
+
+| Critère | Preuve et portée |
+| --- | --- |
+| Ressources explicites et configurations capturées | Onze activations terminées, trois Agents visités deux fois, cinq Prepare. Les entrées adaptées et publications retenues conservent `9007199254740993`, `0.12345678901234567890123456789` et `Été à Montréal`. Les résultats nommés passent par Prepare, sans transfert de transcript entre moteurs. |
+| Continuité, FIFO et tâches | Trois instances, chacune aux positions FIFO 1 puis 2 et révisions mémoire 1 puis 2. Même session Claude et même thread Codex, activations distinctes, trois tâches Operate stables. La projection distingue une position par instance du curseur global des steps sans Agent. |
+| Échecs conclusifs | Une publication Macro invalide produit `OUTPUT_CONSTRAINT`. Une sélection Prepare absente produit `OPERAND`. Les routes normales restent bloquées ; seules les routes onError authored sont admises après le terminal d’échec. Ces deux variantes utilisent le fournisseur Macro simulé et ne lancent aucune opération native Claude ou Codex. |
+| Reçus perdus et incertitude | Après les vrais IPC, un appelant QA perd une fois l’acquittement prepare puis une fois celui de commit. Chaque reprise retrouve le même témoin ; aucune query ni livraison n’est doublée. Cette injection ne représente pas une coupure réseau physique. Les opérations natives ambiguës restent couvertes séparément par les qualifications Codex et Claude, sans rejeu mixte supplémentaire. |
+| Stop, epoch et fin physique | Les garanties physiques réutilisent les qualifications des deux adaptateurs natifs et leurs tests. Le nominal mixte vérifie la clôture des effets avant terminal puis admission du successeur. Aucun nouveau test Stop physique mixte n’est revendiqué. |
+| Consultation Operate | Le vrai dialog affiche les onze steps terminés. Deux pages navigateur fraîches retrouvent le même système, curseur et tâches. Le graphe conserve la capture initiale après modification du blueprint. Une exception de lecture injectée dans l’appelant navigateur affiche une erreur et rend les tâches stale/Blocked ; Retry rétablit la projection Completed avec les mêmes identités. Aucun Start ni modèle n’est exécuté pendant cette consultation. |
+| Propriété de l’orchestration | Les tests ciblés maintiennent les refus des anciens chemins dispatch, review et merge avant tout effet Git ou worktree. Le parcours AgSDL n’ajoute aucun worktree automatique. |
+
+Le contrôle visuel monte le composant produit dans une page QA raccordée au
+runtime Tauri et à ses données natives. Il ne couvre pas toute la navigation
+desktop ni un redémarrage physique de l’application pendant la consultation.
+Les scénarios d’approbation, Stop et uncertain restent couverts par leurs
+qualifications et tests dédiés, sans prétendre que le nominal les exerce.
+L’instrumentation temporaire de perte d’acquittement est retirée du candidat ;
+les identités, reçus et captures de qualification restent hors du dépôt public.
+
+Le [parcours de review logicielle](agsdl-software-review.md) complète cette
+chaîne avec un artefact de patch explicite. Sa fidélité porte sur la chaîne
+retenue et transmise, avec les limites du renderer et du workspace décrites
+dans ce guide.

@@ -57,3 +57,8 @@ pas une inférence du modèle annoncé par le simulateur. Une perte de reçu
 injectée côté appelant après le vrai IPC prouve la récupération de cette
 frontière, pas une coupure physique du réseau. Les rapports locaux distinguent
 ces contrôles des sessions Claude SDK et Codex natives réelles.
+
+La [matrice de qualification](agsdl-qualification.md#chaîne-macro-claude-et-codex)
+détaille les contrôles natifs, les injections côté appelant et les garanties
+réutilisées des adaptateurs. Pour une review d’un changement logiciel, suivre
+le [contrat d’artefact de patch](agsdl-software-review.md).
