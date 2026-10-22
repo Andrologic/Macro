@@ -16034,6 +16034,33 @@ mod tests {
     }
 
     #[test]
+    fn test_git_diff_complete_preserves_multibyte_collector_boundary() {
+        let (temp, repo) = init_repo();
+        fs::write(temp.path().join("README.md"), "a".repeat(1_024) + "é\n").unwrap();
+        let expected = complete_patch(&repo).unwrap();
+        let accent = expected.find('é').expect("accent in patch");
+        // Place the head/tail split between the two bytes of the accent.
+        let max_bytes = (accent + 1) * 4 / 3;
+        assert_eq!(max_bytes - max_bytes / 4, accent + 1);
+        assert!(expected.len() <= max_bytes);
+        let patch = diff_repo(
+            &repo,
+            None,
+            None,
+            DiffRequestOptions {
+                context_lines: Some(3),
+                ignore_whitespace: false,
+                paths: None,
+                mode: GitDiffMode::Patch,
+                max_bytes: Some(max_bytes),
+                require_complete: true,
+            },
+        )
+        .unwrap();
+        assert_eq!(patch.as_bytes(), expected.as_bytes());
+    }
+
+    #[test]
     fn test_git_diff_complete_rejects_binary_patches() {
         for untracked in [false, true] {
             let (temp, repo) = init_repo();

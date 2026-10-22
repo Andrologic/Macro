@@ -116,9 +116,13 @@ impl BoundedTextCollector {
         }
     }
 
-    pub(crate) fn finish(self, label: &str) -> BoundedTextOutput {
+    pub(crate) fn finish(mut self, label: &str) -> BoundedTextOutput {
         let retained_bytes = self.head.len().saturating_add(self.tail.len());
         let truncated = self.total_bytes > retained_bytes;
+        if !truncated {
+            // The head/tail split may fall inside a UTF-8 code point.
+            self.head.extend(self.tail.drain(..));
+        }
         let mut text = String::from_utf8_lossy(&self.head).into_owned();
         if truncated {
             let omitted = self.total_bytes.saturating_sub(retained_bytes);
@@ -390,6 +394,21 @@ mod tests {
         let error = paginate_read_content("one\ntwo", &json!({ "cursor": 12 }), "read\0notes.txt")
             .expect_err("numeric cursor must fail");
         assert!(error.message.contains("cursor must be a string"));
+    }
+
+    #[test]
+    fn bounded_text_preserves_complete_multibyte_boundaries() {
+        for suffix in ["é", "€", "🦀"] {
+            let input = format!("12345678{suffix}");
+            let mut collector = BoundedTextCollector::new(12);
+            collector.push_str("12345678");
+            collector.push_str(suffix);
+            let output = collector.finish("TEST OUTPUT");
+            assert!(!output.truncated);
+            assert_eq!(output.total_bytes, input.len());
+            assert_eq!(output.retained_bytes, input.len());
+            assert_eq!(output.text.as_bytes(), input.as_bytes());
+        }
     }
 
     #[test]
