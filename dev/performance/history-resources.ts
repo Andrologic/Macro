@@ -190,7 +190,7 @@ export async function resourceCycles(cycles: number, checkpointEvery: number) {
     checks: { settled, releasedStreams: released, deliveredEvents: events, cancelledTurns: cancellations,
       pendingOwnedTimers: pendingTimers, projectedStates: states.size, activeStreamRegistry: activeStreamResourcesBySessionId.size, pendingSubagentTimers: subagentTimers.size },
     retainedHistoryMessages: historyState.messages.length,
-    retained: 'SubagentRuntime keeps completed snapshots and run records for its lifetime, including after dispose, until explicit releaseRun. Last checkpoint follows releaseRun of all completed runs. Counts are data retention, not proof of a leak; the empty parent pool remains until runtime collection.',
+    retained: 'SubagentRuntime keeps completed snapshots and run records for its lifetime, including after dispose, until explicit releaseRun. Last checkpoint follows releaseRun of all completed runs. Counts are data retention, not proof of a leak. Empty parent pools are removed by SubagentRuntime.#pump when queued and active work reaches zero.',
   };
 }
 

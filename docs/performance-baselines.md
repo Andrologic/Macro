@@ -597,8 +597,9 @@ Memory checkpoints record `process.memoryUsage()` before and after full Bun GC
 at 0 and every 1,000 cycles, then after dispose and after explicit run release.
 They are whole-process observations with allocator, JIT, sampling allocations
 and intentionally retained records mixed in. Snapshot counting itself allocates
-copies. The runtime and its one empty parent pool remain reachable at the final
-checkpoint. RSS is not retained-object size, and Bun GC is not WebView GC.
+copies. The runtime variable remains reachable at the final checkpoint inside the
+helper. Empty parent pools are removed by `SubagentRuntime.#pump` once active
+and queued work reach zero; the helper does not measure private pool counts. RSS is not retained-object size, and Bun GC is not WebView GC.
 These checkpoints can reveal a direction to investigate, not establish a leak
 or prove its absence. They do not launch child processes or open any profile.
 
@@ -760,3 +761,13 @@ or establishes a leak. The executed evidence confirms the tested release
 contracts and explicit data retention only. WebView heaps, DOM/listeners,
 xterm/RAF, native PTYs/process groups and app shutdown remain unmeasured; use
 the separate native/WebView protocol above before making claims about them.
+
+
+The original JSON captures at `f4b1dd00` contain an incorrect sentence in their
+`retained` narrative field stating that an empty parent pool persists until
+runtime collection. Preserve those raw captures and their original SHA/hashes.
+That sentence is corrected here and in future runner output.
+[`SubagentRuntime.#pump`](../src/services/subagentRuntime/SubagentRuntime.ts#L539)
+deletes an empty pool, and `#startExecution` decrements its active count and
+pumps again in `finally`. This correction changes no timings, numeric resource
+counts or memory readings; it removes an unsupported attribution of retention.
