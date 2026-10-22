@@ -362,6 +362,38 @@ pub(crate) async fn execution_host_invoke_tool(
     host: State<'_, HostState>,
     request: HostToolInvocation,
 ) -> Result<HostToolReceipt> {
+    invoke_tool(app, webview, host.inner(), request, None).await
+}
+
+/// A controlled runner can revoke new dispatch while a policy ticket or human
+/// approval is pending. Existing owned effects keep their original settlement.
+pub(crate) async fn invoke_controlled_tool(
+    app: tauri::AppHandle,
+    webview: Webview,
+    host: &HostState,
+    request: HostToolInvocation,
+    channel: &std::sync::atomic::AtomicBool,
+) -> Result<HostToolReceipt> {
+    invoke_tool(app, webview, host, request, Some(channel)).await
+}
+
+fn channel_live(channel: Option<&std::sync::atomic::AtomicBool>) -> Result<()> {
+    if channel.is_some_and(|c| !c.load(std::sync::atomic::Ordering::SeqCst)) {
+        return Err(failure(
+            "NATIVE_UNCERTAIN",
+            "channel",
+            "Controlled runner channel no longer admits effects",
+        ));
+    }
+    Ok(())
+}
+async fn invoke_tool(
+    app: tauri::AppHandle,
+    webview: Webview,
+    host: &HostState,
+    request: HostToolInvocation,
+    channel: Option<&std::sync::atomic::AtomicBool>,
+) -> Result<HostToolReceipt> {
     host.authenticate_owner(&webview, &request.context.owner)?;
     let database = app.state::<crate::core::db_state::DbPool>();
     let pool = database
@@ -568,7 +600,9 @@ pub(crate) async fn execution_host_invoke_tool(
                 .into(),
         });
     }
+    channel_live(channel)?;
     let previous_approval = repository::approvals::existing(&pool, &effect).await?;
+    channel_live(channel)?;
     let registered = if decision == "ask" || previous_approval.is_some() {
         let summary = result
             .pointer("/toolPolicy/summary")
@@ -626,6 +660,22 @@ pub(crate) async fn execution_host_invoke_tool(
     repository::authorize_reserved_effect(&pool, &effect).await?;
     // No fallible await remains between the final caller check and owned dispatch.
     host.authenticate_owner(&webview, &request.context.owner)?;
+    if let Err(error) = channel_live(channel) {
+        // This call alone created the reservation and no executor was installed.
+        // Record physical non-dispatch, without changing an earlier owned effect.
+        repository::settle_owned_effect(
+            &pool,
+            EngineSettlement {
+                context: request.context.clone(),
+                effect: effect.effect.clone(),
+                status: "ended".into(),
+                evidence_json: "{\"kind\":\"macro-controlled-tool-not-dispatched/1\"}".into(),
+            },
+            None,
+        )
+        .await?;
+        return Err(error);
+    }
     let execution_key = key(&request);
     if !host.tools().insert(execution_key.clone()) {
         return Err(failure(

@@ -185,7 +185,7 @@ async fn observation(
     catalogue: &ModelCapture,
     tools: &Value,
     task: Option<(&str, &crate::git::GitState)>,
-) -> Result<(Value, Option<String>)> {
+) -> Result<(Value, Option<String>, Option<String>)> {
     let scope = execution_scope(workspace, source, task)?;
     let project = &source.project;
     let document: Value = serde_json::from_str(&source.source).unwrap_or(Value::Null);
@@ -204,6 +204,19 @@ async fn observation(
             project.user_read_only || project.is_read_only,
         )
         .await?
+    } else {
+        None
+    };
+    let has_claude = document
+        .get("bindings")
+        .and_then(Value::as_object)
+        .is_some_and(|bindings| {
+            bindings.values().any(|binding| {
+                binding["implementation"]["identity"] == "anthropic/claude-agent-sdk"
+            })
+        });
+    let claude = if has_claude {
+        crate::agsdl_host_claude::observe(manager, &scope).await?
     } else {
         None
     };
@@ -276,6 +289,14 @@ async fn observation(
                     &scope
                 )?);
             }
+            if engine.is_some_and(|engine| {
+                engine["implementation"]["identity"] == "anthropic/claude-agent-sdk"
+            }) {
+                let Some((profile, _, _)) = &claude else {
+                    continue;
+                };
+                settings["nativeProfileJson"] = json!(profile.attestation(&scope)?);
+            }
             configurations.push(json!({
                 "agentName": name, "verifiedRequirementsJson": [],
                 "effectiveSettingsJson": serde_json::to_string(&settings)?,
@@ -292,22 +313,34 @@ async fn observation(
             models.push(json!({"editionJson":serde_json::to_string(&agsdl_host_catalogue::edition("codex-native",id)?)?, "providerId":"codex-native","modelId":id}));
         }
     }
+    if let Some((_, ids, _)) = &claude {
+        for id in ids {
+            models.push(json!({"editionJson":serde_json::to_string(&agsdl_host_catalogue::edition("claude-native",id)?)?,"providerId":"claude-native","modelId":id}));
+        }
+    }
     let mut observation = json!({"format":"macro-native-registry-observation/1","models":models,"tools":crate::agsdl_host_tools::observations(),"configurations":configurations,
         "callPermissions":crate::agsdl_host_tools::permissions("Implement", project.user_read_only || project.is_read_only, tools)?,"callScope":scope});
     let account = codex.as_ref().map(|(_, _, account)| account.clone());
     if let Some((profile, _, _)) = codex {
         observation["codexProfileJson"] = json!(profile.identity())
     }
-    let version = format!(
-        "sha256:{:x}",
-        Sha256::digest(serde_json::to_vec(&(
+    let claude_account = claude.as_ref().map(|(_, _, account)| account.clone());
+    if let Some((profile, _, _)) = claude {
+        observation["claudeProfileJson"] = json!(profile.identity());
+    }
+    let version_bytes = if claude_account.is_some() {
+        serde_json::to_vec(&(
             &observation,
             &catalogue.providers,
-            &account
-        ))?)
-    );
+            &account,
+            &claude_account,
+        ))?
+    } else {
+        serde_json::to_vec(&(&observation, &catalogue.providers, &account))?
+    };
+    let version = format!("sha256:{:x}", Sha256::digest(version_bytes));
     observation["version"] = Value::String(version);
-    Ok((observation, account))
+    Ok((observation, account, claude_account))
 }
 
 pub(crate) async fn compile(
@@ -342,7 +375,7 @@ pub(crate) async fn compile_input(
         .lock_execution_tools(&locked.revision.owner.project_id)
         .await
         .map_err(|_| failure("PERMISSION", "policy", "Project tool policy is unavailable"))?;
-    let (mut registry, account) = observation(
+    let (mut registry, account, claude_account) = observation(
         manager,
         workspace,
         &locked,
@@ -352,6 +385,7 @@ pub(crate) async fn compile_input(
     )
     .await?;
     native_catalogue.codex_account_digest = account;
+    native_catalogue.claude_account_digest = claude_account;
     let call_permissions_json = serde_json::to_string(&registry["callPermissions"])?;
     let call_scope_json = serde_json::to_string(&registry["callScope"])?;
     if let Some(entry) = start_entry {
@@ -657,7 +691,7 @@ impl crate::db::agsdl_execution::CaptureAuthority for StartAuthority<'_> {
             .lock_execution_tools(&locked.revision.owner.project_id)
             .await
             .map_err(|_| failure("PERMISSION", "policy", "Project tool policy is unavailable"))?;
-        let (current_observation, account) = observation(
+        let (current_observation, account, claude_account) = observation(
             self.manager,
             self.workspace,
             &locked,
@@ -671,6 +705,7 @@ impl crate::db::agsdl_execution::CaptureAuthority for StartAuthority<'_> {
         )
         .await?;
         current_catalogue.codex_account_digest = account;
+        current_catalogue.claude_account_digest = claude_account;
         let catalogue = serde_json::to_string(&current_catalogue)?;
         let prior = self
             .captured

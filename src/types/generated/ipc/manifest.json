@@ -333,6 +333,14 @@
       "families": [
         "execution"
       ],
+      "name": "ClaudeStatus",
+      "origin": "macro_lib::agsdl_host_claude::profile::ClaudeStatus",
+      "path": "ClaudeStatus.ts"
+    },
+    {
+      "families": [
+        "execution"
+      ],
       "name": "Closure",
       "origin": "macro_lib::db::agsdl_execution::responses::Closure",
       "path": "Closure.ts"
@@ -1498,6 +1506,22 @@
       "name": "HostAgentState",
       "origin": "macro_lib::db::agsdl_execution::inspection::HostAgentState",
       "path": "HostAgentState.ts"
+    },
+    {
+      "families": [
+        "execution"
+      ],
+      "name": "HostClaudeReceipt",
+      "origin": "macro_lib::agsdl_host_claude::HostClaudeReceipt",
+      "path": "HostClaudeReceipt.ts"
+    },
+    {
+      "families": [
+        "execution"
+      ],
+      "name": "HostClaudeRequest",
+      "origin": "macro_lib::agsdl_host_claude::HostClaudeRequest",
+      "path": "HostClaudeRequest.ts"
     },
     {
       "families": [

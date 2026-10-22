@@ -5,7 +5,7 @@ import { macroNativeModelEdition, readMacroNativeModel } from "./nativeModelEdit
 
 export interface MacroConfiguration {
   editable: boolean;
-  engine?: "macro" | "codex";
+  engine?: "macro" | "codex" | "claude";
   providerId: string;
   modelId: string;
   bindingPath?: string;
@@ -98,10 +98,11 @@ function configuration02(doc: Record<string, unknown>, card: ViewerCard): MacroC
   const settings = object(config.settings);
   const nativeModel = readMacroNativeModel(config.model, config.settings);
   const codex = editionMatches(engine.implementation, { identity: "openai/codex", version: "1" });
-  const editable = editionMatches(engine.contract, MACRO_ENGINE_CONTRACT) && (editionMatches(engine.implementation, MACRO_ENGINE_IMPLEMENTATION) || codex) &&
+  const claude = editionMatches(engine.implementation, { identity: "anthropic/claude-agent-sdk", version: "1" });
+  const editable = editionMatches(engine.contract, MACRO_ENGINE_CONTRACT) && (editionMatches(engine.implementation, MACRO_ENGINE_IMPLEMENTATION) || codex || claude) &&
     (config.model === undefined || !!nativeModel) && (config.settings === undefined || isRecord(config.settings)) &&
     [settings.providerId, settings.modelId].every(value => value === undefined || typeof value === "string");
-  return { editable, ...(codex ? { engine: "codex" as const } : {}), providerId: nativeModel?.providerId ?? text(settings.providerId), modelId: nativeModel?.modelId ?? text(settings.modelId),
+  return { editable, ...(codex ? { engine: "codex" as const } : claude ? { engine: "claude" as const } : {}), providerId: nativeModel?.providerId ?? text(settings.providerId), modelId: nativeModel?.modelId ?? text(settings.modelId),
     bindingPath: `/configurations/${pointerPart(agent.configuration)}` };
 }
 

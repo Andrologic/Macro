@@ -82,6 +82,9 @@ fn referenced_secret_ids(documents: &[Value]) -> (BTreeSet<String>, BTreeSet<Str
             }
         }
     }
+    // The registered controlled Claude engine consumes this reserved secret
+    // without creating an HTTP provider document.
+    api_keys.insert("claude-native".into());
     (api_keys, sessions)
 }
 

@@ -116,3 +116,23 @@ it.each([['openai/codex','p'],['macro/desktop','codex-native']] as const)('refus
   const compiled=await compilePlan(source,{owner:{projectId:'synthetic',planId:'plan',branch:'feature/test'},revision:'1',sourceSha256:id(await sourceDigest(source))},registry);
   expect(compiled.runtime.supported).toBe(false);expect(compiled.plan).toBeNull();
 });
+
+it('captures Claude with Macro tool admission and rejects crossed native providers', async () => {
+  const { doc, config, observed } = fixture();
+  record(record(doc.bindings).engine).implementation = { identity: 'anthropic/claude-agent-sdk', version: '1' };
+  const claudeProfileJson = json('{"format":"macro-claude-controlled-profile/1","version":"0.3.308","cliVersion":"2.1.308","toolPolicy":"macro-controlled","digest":"synthetic"}');
+  for (const providerId of ['claude-native', 'codex-native', 'p']) {
+    config.model = { identity: `macro/native-model/p/${btoa(providerId).replaceAll('=', '')}/m/bQ`, version: '1' };
+    const source = encode(doc);
+    const observation = { ...observed, claudeProfileJson, models: [{ editionJson: encode(config.model), providerId, modelId: 'm' }] };
+    const registry = buildNativeRegistry(source, observation);
+    const result = await compilePlan(source, { owner: { projectId: 'synthetic', planId: 'plan', branch: 'feature/test' }, revision: '1', sourceSha256: id(await sourceDigest(source)) }, registry);
+    expect(result.runtime.supported).toBe(providerId === 'claude-native');
+    if (providerId === 'claude-native') {
+      expect(captureToolAliases(doc, config, registry)).toEqual([{ name: 'inspect_source', toolId: 'read' }]);
+      expect(registry.bindings.find(entry => entry.target.kind === 'engine')!.capabilities).toContain('tool-admission');
+      expect(result.plan!.agents[0].configurationJson).toContain('claude-sdk-v1');
+      expect(() => buildNativeRegistry(source, { ...observation, claudeProfileJson: json(claudeProfileJson.replace('2.1.308', 'unknown')) })).toThrow('Unknown Claude controlled profile');
+    }
+  }
+});

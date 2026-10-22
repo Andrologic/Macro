@@ -95,6 +95,7 @@ mod agsdl_host;
 mod agsdl_host_capture;
 mod agsdl_host_catalogue;
 mod agsdl_host_codex;
+mod agsdl_host_claude;
 mod agsdl_host_compiler;
 mod agsdl_host_provider;
 mod agsdl_host_tasks;
@@ -817,6 +818,9 @@ pub fn run() {
             commands::db_delete_conversations_by_ids,
             agsdl_host_codex::execution_codex_status,
             agsdl_host_codex::execution_host_run_codex,
+            agsdl_host_claude::execution_host_run_claude,
+            agsdl_host_claude::execution_claude_status,
+            agsdl_host_claude::execution_claude_set_api_key,
             agsdl_host_provider::execution_host_register_provider,
             agsdl_host_provider::execution_host_dispatch_provider,
             agsdl_host_provider::execution_host_end_provider,

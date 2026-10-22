@@ -3627,21 +3627,25 @@ async fn process_exit_recovery_preserves_unknown_tool_outcome_and_never_replays(
 #[tokio::test]
 async fn native_operation_receipts_survive_reopen_and_never_authorize_replay() {
     use super::native_operations::{self, NativeOperation};
+    for (adapter,version,method,refs,delayed_method) in [
+        ("codex-app-server-v1","0.163.0","thread/start",r#"{"threadId":"synthetic-thread","turnId":null}"#,"turn/start"),
+        ("claude-sdk-v1","0.3.308","session/create",r#"{"sessionId":"synthetic-session","runId":null}"#,"query/start"),
+    ] {
     let (temp, pool, _receipt, runtime) = setup().await;
     let d = delivery(&pool, &runtime, "second", "native").await;
     accept_delivery(&pool, &runtime, d.clone()).await.unwrap();
     begin(&pool, &runtime, &d.delivery_id).await.unwrap();
     let mut effect = effect(&runtime, &d.work);
-    effect.invocation_json = r#"{"kind":"codex-app-server-v1"}"#.into();
+    effect.invocation_json = serde_json::json!({"kind":adapter}).to_string();
     register_effect(&pool, effect.clone()).await.unwrap();
     let op = NativeOperation {
         context: effect.context.clone(),
         effect: effect.effect.clone(),
         operation_id: "native:thread".into(),
-        adapter: "codex-app-server-v1".into(),
-        version: "0.163.0".into(),
+        adapter: adapter.into(),
+        version: version.into(),
         profile_digest: "private-profile-digest".into(),
-        method: "thread/start".into(),
+        method: method.into(),
         request_json: "{}".into(),
     };
     native_operations::admit(&pool, &op).await.unwrap();
@@ -3661,7 +3665,6 @@ async fn native_operation_receipts_survive_reopen_and_never_authorize_replay() {
         vec![(op.clone(), None)]
     );
     assert!(native_operations::admit(&pool, &op).await.is_err());
-    let refs = r#"{"threadId":"synthetic-thread","turnId":null}"#;
     native_operations::received(&pool, &op, refs).await.unwrap();
     let agent = d.work.agent_instance_id.as_deref().unwrap();
     pool.close().await;
@@ -3710,9 +3713,13 @@ async fn native_operation_receipts_survive_reopen_and_never_authorize_replay() {
     );
     let mut delayed = op.clone();
     delayed.operation_id = "native:turn".into();
-    delayed.method = "turn/start".into();
+    delayed.method = delayed_method.into();
     assert!(native_operations::admit(&reopened, &delayed).await.is_err());
+    }
 }
 
 #[path = "native_codex_tests.rs"]
 mod native_codex_tests;
+
+#[path = "native_claude_tests.rs"]
+mod native_claude_tests;

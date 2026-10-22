@@ -567,5 +567,20 @@
     "stopPending": "Un processus natif Codex n’a pas encore confirmé son arrêt.",
     "sandboxUnqualified": "Le sandbox natif des outils Codex ne démarre pas dans le profil isolé. Ce moteur reste indisponible.",
     "contextUnqualified": "Le contexte natif privé a changé ou une source de skills administrateur est présente. Ce moteur reste indisponible."
+  },
+  "claude": {
+    "policy": "Claude utilise uniquement les outils Macro capturés et la publication AgSDL exacte. Ses outils natifs sont désactivés.",
+    "checking": "Vérification de l’installation externe Claude…",
+    "notInstalled": "Installez séparément Claude Agent SDK 0.3.308 et configurez les chemins explicites de Node, du SDK et du CLI.",
+    "keyRequired": "Enregistrez votre clé API Anthropic dans Macro pour utiliser ce profil Claude privé.",
+    "versionUnqualified": "Cette version du SDK ou du CLI Claude n’a pas été qualifiée.",
+    "platformUnqualified": "Ce profil contrôlé est qualifié uniquement sur Linux arm64.",
+    "ready": "Le profil Claude contrôlé est prêt pour l’évaluation.",
+    "profileUnqualified": "La configuration ou les capacités natives de Claude n’ont pas pu être qualifiées.",
+    "diagnosticFailed": "Le diagnostic Claude a échoué.",
+    "stopPending": "La fin physique des processus reste à confirmer.",
+    "installation": "Instructions officielles d’installation du SDK",
+    "apiKey": "Clé API Anthropic",
+    "keySaveFailed": "La clé n’a pas pu être enregistrée ou son profil n’a pas pu être qualifié."
   }
 }

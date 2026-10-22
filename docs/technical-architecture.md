@@ -417,13 +417,16 @@ pas utilisés pour réécrire le document entier. Une mutation d’outil vérifi
 conversation propriétaire, le statut brouillon et la révision lue. Ces outils
 sont exposés uniquement dans Architect, avec la politique partagée des outils.
 Le moteur résident AgSDL utilise le transport fournisseur et les outils natifs de
-Macro, ou l’adaptateur Codex explicitement capturé. L’adaptateur lance le CLI
+Macro, ou les adaptateurs Codex et Claude explicitement capturés. Codex lance le CLI
 officiel en app-server sous un profil privé et conserve le scheduler existant.
 Les outils natifs Codex suivent sa politique de sandbox ; les admissions,
 références privées, réponses et terminaux restent sous autorité Macro. Le profil `macro-serial-inline-v1` compile une capture immuable avant Start ;
 le journal SQLite fait autorité pour les admissions, les approbations, les effets,
 les réponses et Stop. Le navigateur ne possède ni les droits d'exécution ni la
-preuve de terminaison. Voir les [contrats du moteur](agsdl-engine-architecture.md).
+preuve de terminaison. Claude utilise un SDK et un CLI externes, un pont MCP
+limité aux outils Macro capturés, le même journal et le même superviseur. Voir les
+[contrats du moteur](agsdl-engine-architecture.md) et le
+[profil Claude contrôlé](agsdl-claude-controlled.md).
 
 Une perte du host révoque son epoch et bloque les continuations anciennes. Les
 exécuteurs natifs peuvent encore enregistrer leurs reçus de fin corrélés, sans
@@ -437,8 +440,9 @@ fournisseur. Aucun replay automatique n'est permis. L'utilisateur doit vérifier
 les effets avant de demander une nouvelle exécution.
 
 Le profil initial exclut les compositions, les fournisseurs qui lancent un
-processus externe autres que Codex, Terminal et les MCP. Le
-[profil Codex](agsdl-codex-native.md) détaille les limites de cette exception.
+processus externe autres que les adaptateurs Codex et Claude qualifiés, Terminal
+et les MCP. Les profils [Codex](agsdl-codex-native.md) et
+[Claude](agsdl-claude-controlled.md) détaillent les limites de ces exceptions.
 Un document statiquement valide peut donc
 rester non exécutable dans Macro. La disponibilité produit est annoncée seulement
 après qualification des commandes réelles de l'application.

@@ -273,11 +273,22 @@ fn retire(host: &Arc<Incarnation>, database: &DbPool, app: &tauri::AppHandle) {
                                 .await
                         {
                             for effect in effects {
+                                if effect.registered.context.owner != *owner
+                                    || effect.status == "ended"
+                                {
+                                    continue;
+                                }
+                                // A controlled native runner may be waiting for a Macro
+                                // Tool. Revoke that owned executor as well as its provider.
+                                crate::agsdl_host_tools::cancel(&effect.registered);
                                 let native = serde_json::from_str::<serde_json::Value>(
                                     &effect.registered.invocation_json,
                                 )
                                 .ok()
-                                .is_some_and(|value| value["kind"] == "codex-app-server-v1");
+                                .is_some_and(|value| {
+                                    value["kind"] == "codex-app-server-v1"
+                                        || value["kind"] == "claude-sdk-v1"
+                                });
                                 if !native || effect.status == "ended" {
                                     continue;
                                 }

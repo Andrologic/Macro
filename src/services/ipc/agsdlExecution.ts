@@ -153,3 +153,10 @@ export function executionHostRunCodex(request: import('../../types/generated/ipc
 export function executionCodexStatus(): Promise<import('../../types/generated/ipc').CodexStatus> {
   return invoke('execution_codex_status');
 }
+
+/** Controlled Claude runner. Only the native supervisor confirms physical end. */
+export function executionHostRunClaude(request: import('../../types/generated/ipc').HostClaudeRequest): Promise<import('../../types/generated/ipc').HostClaudeReceipt> {
+  return invoke('execution_host_run_claude', { request });
+}
+export function executionClaudeStatus(): Promise<import('../../types/generated/ipc').ClaudeStatus> { return invoke('execution_claude_status'); }
+export function executionClaudeSetApiKey(apiKey: string): Promise<void> { return invoke('execution_claude_set_api_key', { apiKey }); }
