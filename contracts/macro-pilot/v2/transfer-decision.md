@@ -440,6 +440,10 @@ without editing the imported bytes. Any later contract correction starts in the
 desktop and requires a new verified exact import. No provider grammar belongs
 in the relay.
 
+The canonical typecheck is self-contained under contracts/macro-pilot. The
+desktop-only DTO composition check lives in dev/typecheck-transfer-decision-native.mts;
+it imports the real native DTO and is excluded from the vendor contract import.
+
 Contract tests cover both roots' refusal of these objects, exact counters and
 UTF-8, closed shapes, correlation/auth snapshots, state/CAS/retry, terminal races,
 168 nonterminal status profiles, 50 operation/action/kind cases and receipt

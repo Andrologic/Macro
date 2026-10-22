@@ -1,5 +1,4 @@
-import type { DecisionBinding, DecisionRequest, DecisionContext, DecisionLedger, DecisionRecord, DecisionExpectation, DecisionFrozen } from '../v2/transfer-decision.js';
-import type { ConversationContentToken } from '../../../src/types/generated/ipc/ConversationContentToken.js';
+import type { DecisionBinding, DecisionRequest, DecisionContext, DecisionLedger, DecisionRecord, DecisionExpectation } from '../v2/transfer-decision.js';
 import { planDecision, decodeDecision, exactInteger, validateExchange, type DecisionPlan } from '../v2/transfer-decision-validate.mjs';
 import { parseStoredJsonStrict } from '../v2/strict-json.mjs';
 
@@ -36,8 +35,4 @@ export function checkReceiptStatus(receipt: DecisionRecord['reserve_receipt']): 
   // @ts-expect-error every transfer retry requires a current reconciliation status
   const stripped: DecisionPlan = { valid: true, kind: 'retry', errors: [], receipt, status: null };
   void stripped;
-}
-// Native C1 DTO fields project without UUID conversion or numeric coercion.
-export function frozenFromCurrentNativeToken(token: ConversationContentToken, rest: Omit<DecisionFrozen, 'content_incarnation' | 'content_revision'>): DecisionFrozen {
-  return { ...rest, content_incarnation: token.incarnation, content_revision: token.revision };
 }

@@ -18,7 +18,8 @@ const s = scenario();
 const receptionMatrix = verifyReceptionMatrix();
 const steps = ['birth', 'reserve', 'seal', 'ready', 'commit', 'activate'];
 // C1 uses the current native ConversationContentToken DTO verbatim. The
-// companion TypeScript probe imports that generated DTO, rather than copying it.
+// desktop-only dev/typecheck-transfer-decision-native.mts imports that generated
+// DTO, rather than copying it into the canonical contract.
 assert.deepEqual(s.contentToken, { version: 1, incarnation: '0123456789abcdef0123456789abcdef', revision: '9007199254740993' });
 assert.equal(s.frozen.content_incarnation, s.contentToken.incarnation);
 assert.equal(s.frozen.content_revision, s.contentToken.revision);
