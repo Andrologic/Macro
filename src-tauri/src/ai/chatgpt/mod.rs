@@ -12,6 +12,13 @@ pub use auth::{cancel_auth, start_browser_auth};
 pub(crate) use models::{available_models, persist_model_enrichments, recover_auth_mutations};
 pub use models::{disconnect_auth, sync_models};
 pub use stream::{cancel_stream, stream_chat};
+#[cfg(test)]
+pub(crate) fn portable_history_proof_request(
+    request: &AiChatRequest,
+) -> Result<serde_json::Value, String> {
+    serde_json::to_value(stream::build_responses_request(request)?)
+        .map_err(|_| "serialization_failed".into())
+}
 // Retain the historical public path while shared consumers use ai::types.
 #[allow(unused_imports)]
 pub use types::AiChatRequest;

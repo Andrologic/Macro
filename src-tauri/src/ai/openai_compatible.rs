@@ -24,6 +24,28 @@ const STREAM_IDLE_TIMEOUT: Duration = Duration::from_secs(60);
 const REQUEST_RETRY_ATTEMPTS: usize = 2;
 const MAX_SSE_BUFFER_BYTES: usize = 1_048_576;
 
+#[cfg(test)]
+pub(crate) fn portable_history_proof_request(request: &AiChatRequest) -> Result<Value, String> {
+    let provider = ProviderConfig {
+        id: "macro-ai".into(),
+        name: "Synthetic Macro AI".into(),
+        provider_type: "openai".into(),
+        base_url: "https://provider.invalid".into(),
+        api_key: None,
+        has_stored_api_key: false,
+        is_enabled: true,
+        is_local: false,
+        auth_status: None,
+        auth_source: None,
+        plan_type: None,
+        account_label: None,
+        token_expires_at: None,
+        created_at: String::new(),
+        updated_at: String::new(),
+    };
+    build_chat_completions_request(request, &provider)
+}
+
 #[derive(Debug)]
 struct ChatCompletionError {
     message: String,

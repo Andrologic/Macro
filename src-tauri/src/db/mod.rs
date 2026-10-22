@@ -17,6 +17,8 @@ pub mod pilot_reflections;
 pub mod pilot_tools;
 pub mod repository;
 pub mod tool_invocations;
+#[cfg(test)]
+mod portable_history_proof;
 
 use crate::ai::macro_ai;
 use sqlx::sqlite::{SqliteConnectOptions, SqliteConnection, SqlitePool, SqlitePoolOptions};

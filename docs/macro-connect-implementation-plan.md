@@ -142,6 +142,14 @@ précontrôle des dépendances est rejoué à l'admission puis au scellement. Le
 images et assets obligatoires sont contrôlés par taille et empreinte. La
 compaction et les données fournisseur ne sont pas reprises par un spread DB.
 
+L'objectif est l'historique complet récupérable, y compris après compaction.
+Un contexte indispensable absent ou non exportable entraîne un refus explicite.
+Le nombre total de messages et la taille d'un texte ne sont pas limités par les
+seuils d'affichage : lecture segmentée, traitement incrémental et préparation sur
+disque sont admis selon des ressources justifiées. Codex et Macro AI sont les
+premiers adaptateurs dont le contexte fonctionnel doit être prouvé, sans promettre
+une reprise de session fournisseur identique ni appeler un fournisseur à l'import.
+
 Critères de fin : compatibilité v1 inchangée ; import idempotent et inactif ;
 contexte non portable refusé avant gel ; données tronquées, privées ou invalides
 refusées ; aucun fournisseur appelé. Les tests injectent les opérations de
