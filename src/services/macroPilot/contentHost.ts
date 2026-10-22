@@ -4,7 +4,7 @@ import { MachineResources, MACHINE_OPERATIONS, type MachineResourceSource } from
 import { ConversationInteractions, INTERACTION_OPERATIONS, type InteractionSource } from './conversationInteractions';
 import { CONVERSATION_OPERATIONS, type ConversationManager } from './conversationManager';
 import { TaskCompletionHost, TASK_COMPLETION_OPERATIONS, type TaskCompletionSource } from './taskCompletionHost';
-import { ConversationCaptures, ConversationCaptureError, type ConversationRef, type CatalogObservation } from './conversationCaptures';
+import { ConversationCaptures, ConversationCaptureError, type ConversationRef } from './conversationCaptures';
 import { type TextPolicy, utf8Bytes } from './conversationText';
 import { createReviewCaptureService, type ReviewCaptureInfo, type ReviewCaptureRequest, type ReviewCaptureSource } from './reviewCapture';
 import { CONVERSATION_READ_OPERATIONS, validateContentIntegrity, validateContentMessage, validateContentResponse, type ContentCapture, type ContentDelivery, type ContentDeliveryResult, type ContentError, type ContentEvent, type ContentRequest, type ContentReviewRef } from './contentProtocol';
@@ -165,9 +165,9 @@ export class ContentHost {
   }
   async prepare(): Promise<void> {
     await this.serial(() => this.policy());
-    const projects = await this.deps.conversations.refreshProjects();
-    const conversations = await this.deps.conversations.refreshCatalog();
+    const { projects, conversations, error } = await this.deps.conversations.refreshHostCatalogs();
     this.check();
+    if (projects === null || conversations === null) throw error ?? new ContentHostError('content_unavailable');
     // Establish catalogs before advertising the producer. Their first observation
     // describes the baseline; it does not invalidate content exposed afterwards.
     await this.serial(async () => {
@@ -178,14 +178,7 @@ export class ContentHost {
   }
   async observe(): Promise<void> {
     await this.serial(() => this.policy());
-    let projects: number | null = null;
-    let conversations: CatalogObservation | null = null;
-    let observationError: unknown;
-    try { projects = await this.deps.conversations.refreshProjects(); }
-    catch (error) { observationError = error; }
-    this.check();
-    try { conversations = await this.deps.conversations.refreshCatalog(); }
-    catch (error) { observationError = error; }
+    const { projects, conversations, error: observationError } = await this.deps.conversations.refreshHostCatalogs();
     this.check();
     // C4 owns its own observation queue. Do not hold the host's decision queue
     // across a transcript scan; review deliveries can proceed in the meantime.

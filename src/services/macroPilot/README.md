@@ -220,3 +220,18 @@ remain distinct contract limits. JSON buffers, strings and decoded objects can
 coexist transiently; serialized bytes are not a heap measurement. D2 and B8 must
 define admission and retention before adding a shared process cache or retained
 multi-view content. No performance or memory gain is claimed by D1.
+
+
+### Host catalog observations
+
+ContentHost preparation and observation share one verified pair of complete
+catalog source reads. The projects fingerprint is projected exactly as the
+standalone projects observation, with its own durable revision. A stable host
+pass calls the projects source twice instead of four times. Conversation source
+reads and the two-read consistency check remain unchanged. This counts source
+calls, not IPC traffic, network bytes, heap or display latency.
+
+If the conversation observation fails, a separate projects-only observation may
+still report a valid project change. A partial catalog is never published. Reads
+and delivery validation keep their fresh checks; this adds no timed cache or
+read authority. Sequenced outbox events and acknowledgement retries are unchanged.
