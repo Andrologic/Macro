@@ -138,3 +138,85 @@ or dispatches a command again.
 
 For the negotiated mobile conversation catalog, search, observed reading and Chat
 management operations, see [mobile conversations contract](../../../docs/mobile-conversations-contract.md).
+
+
+## D1 desktop consumer transport
+
+`MacroPilotNativeClient.consumerTransport()` provides a separate, typed consumer
+port. `PilotTargetClient` owns an explicit target handle with one read slot and
+one event slot. Concurrent reads on the same handle return `conflict`; different
+handles remain independent. There is no process-wide target registry, background
+polling, UI integration, automatic target discovery or service-provider switch.
+The local producer and desktop service composition keep their existing owners.
+This infrastructure does not complete the desktop multi-PC product workflow.
+
+The closed D1 read set is `projects.list`, `conversations.list`,
+`conversation.read`, `conversations.catalog` and `conversation.window`.
+The only offered capabilities are `network-reliability-1`, `conversations-1`
+and `conversation-history-1`. History requires conversations; catalog and window
+reads require conversations, and backward windows also require history.
+Consistency and conditional project reads require the selected reliability
+capability. The caller opts into consistency in its typed request body.
+Files, reflections, interactions, model selection, telemetry, commands and
+mutations are unavailable through this port. Capability selection never grants
+permission; the relay still checks current authority for every exchange.
+
+Create a target with the native transport, await `negotiate()`, then call
+`read(operation, body)` or `events()`. An optional directory access record must
+match the native account/session and the target instance. `setAccess()` fences
+reads when its revision changes, rejects older/conflicting revisions and blocks
+revoked access. Absence of a directory record supplies no authorization shortcut.
+Call `reset()` to cancel and renegotiate a target, and `dispose()` when its owner
+closes. A disposed handle cannot reopen. D2 must provide sharing between views
+and lifecycle integration before exposing a desktop workflow.
+
+A returned read contains its non-secret scope, original request and validated
+response. Scope includes configuration/profile ID, normalized relay origin,
+account incarnation, emitter session, native epoch, target instance, unique connection ID, local target
+generation and observed access revision when supplied. Remote conversation IDs
+remain nested in this scope. There is no claim that the current protocol exposes
+a remote producer generation. The relay's selection checks, errors and stream
+resets fence remote changes; negotiation retires the old local generation.
+
+For continuation, pass the previous returned read as `previous`, and all earlier
+item IDs as `seenIdentities`. Both are required for a continuation. The client validates target generation,
+request resource, immutable capture fields, cursor, adjacent offsets and duplicate
+identities. The caller owns the returned pages and any full-capture identity set.
+The target keeps no response, transcript or page registry after returning it.
+A replacement handle has a fresh connection ID, so even equal numeric generations
+cannot readmit the retired handle's pages.
+There is no automatic page accumulation or prefetch.
+
+`events()` performs one demand-driven event request. Apply its returned page, then
+call `acknowledgeEvents(batch)` before requesting another. Until acknowledgement,
+the target keeps only the receipt identity and next stream/sequence, not the event
+body. Caller edits cannot change that cursor. The client checks sequence continuity
+and event instance/account membership. A reset retires this target's active read
+and prior capture scopes. Other targets remain active. D2 must coordinate capture
+loading with event application and provide any bounded buffering it needs.
+
+Native sends use only the emitter bearer. They never read or attach an instance
+key. They reuse native origin checks, credential fences, bounded body reading,
+request correlation, redirect refusal, deadlines and late-response cancellation.
+An accepted exchange must match the original request and retain the same expiry
+through its GET polls. Polling cannot renew the original 60-second deadline.
+No request, mutation or provider effect is automatically replayed.
+
+A consumer network failure does not publish global offline/connected state.
+A target access error retires that target's selection. A remote producer can also
+report `session_revoked`; this code alone does not revoke the emitter. The native
+owner makes a narrow guarded `/me` check, without provisioning an instance or
+restarting a producer. Only confirmed failure of our current authentication uses
+the existing global session cleanup. A late check cannot restore a replaced
+context. Native vault failures retain their existing global authority behavior.
+The local producer's Windows/WSL preparation guards are unchanged and do not imply
+a consumer permission or a validated consumer platform release.
+
+D1 retains only connection metadata, active request state and an optional pending
+event receipt. There is no transcript persistence, offline content cache or global
+heap budget. The existing 256 KiB extension body limit, relay event wait of at most
+25 seconds, native 30-second transport deadline and 60-second exchange lifetime
+remain distinct contract limits. JSON buffers, strings and decoded objects can
+coexist transiently; serialized bytes are not a heap measurement. D2 and B8 must
+define admission and retention before adding a shared process cache or retained
+multi-view content. No performance or memory gain is claimed by D1.
