@@ -43,11 +43,11 @@ enregistrée à 06:57:53 UTC. Aucun échec d'assertion n'apparaît dans le journ
 
 Ce dépassement n'a pas été reproduit sur Windows, aucune machine Windows
 n'étant disponible dans cet environnement. Les tests macOS locaux ne
-reproduisent pas les temps de compilation Windows. Aucune correction du code
-ou du budget CI n'a donc été appliquée. Les journaux ne démontrent pas de panne
-transitoire de runner, de service ou de réseau ; aucune relance inchangée n'est
-justifiée par les éléments recueillis. La validation des huit cas sur Windows
-reste à obtenir après reproduction et correction vérifiée de ce dépassement.
+reproduisent pas les temps de compilation Windows. Lors de l'examen initial,
+aucune correction du code ou du budget CI n'a été appliquée. Les journaux ne
+démontrent pas de panne transitoire de runner, de service ou de réseau ; aucune
+relance inchangée n'est justifiée par les éléments recueillis. La validation des huit cas sur Windows
+reste à obtenir sur une future exécution du workflow corrigé ci-dessous.
 
 Le job macOS a exécuté les huit cas de `dev/ci/native-recovery-smoke.mjs` :
 
@@ -124,3 +124,20 @@ contrôles de distribution ne peut être déduit du succès des tests de récup�
 
 Aucune clé de production n'a été utilisée. Aucune version n'a été publiée,
 aucun canal de mise à jour n'a été modifié et aucun commit n'a été poussé.
+
+## Correction locale du timeout Windows
+
+À la demande du mainteneur, la limite du job Windows passe de 20 à 40 minutes.
+Dans l'exécution examinée, les préparatifs et le profil conservateur ont occupé
+19 minutes avant l'étape des huit tests natifs. La nouvelle limite laisserait
+donc 21 minutes pour compiler et exécuter ces tests avec les mêmes durées
+préalables. Cette marge est prévue pour la compilation sans cache et les tests ;
+sa suffisance sur Windows reste à confirmer lors d'une future exécution complète.
+
+La modification conserve le profil de validation et l'étape qui exécute les
+huit tests. `bun run ci:workflows` réussit. La commande
+`bun test dev/ci/validate-workflows.test.ts dev/ci/ci-routing.test.ts dev/ci/native-recovery-smoke.test.ts`
+donne 18 succès et aucun échec. Ces contrôles portent sur la validité et la
+politique du workflow, le routage des profils et la sélection des tests natifs.
+La comparaison des documents YAML confirme que seul le timeout Windows change.
+Aucune exécution GitHub n'a été relancée.
