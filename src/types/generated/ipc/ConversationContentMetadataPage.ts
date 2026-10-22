@@ -4,4 +4,4 @@ import type { ConversationContentDescriptor } from "./ConversationContentDescrip
 import type { ConversationContentOpening } from "./ConversationContentOpening";
 import type { ConversationContentToken } from "./ConversationContentToken";
 
-export type ConversationContentMetadataPage = { token: ConversationContentToken, opening: ConversationContentOpening | null, items: Array<ConversationContentDescriptor>, next_after: ConversationContentAnchor | null, admission_estimate_bytes: number, };
+export type ConversationContentMetadataPage = { token: ConversationContentToken, opening?: ConversationContentOpening, items: Array<ConversationContentDescriptor>, next_after: ConversationContentAnchor | null, admission_estimate_bytes: number, };

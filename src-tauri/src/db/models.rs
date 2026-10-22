@@ -694,6 +694,7 @@ pub struct ConversationContentOpening {
 pub struct ConversationContentMetadataPage {
     pub token: ConversationContentToken,
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
     pub opening: Option<ConversationContentOpening>,
     pub items: Vec<ConversationContentDescriptor>,
     pub next_after: Option<ConversationContentAnchor>,

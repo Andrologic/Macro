@@ -1,6 +1,8 @@
 import type { DbMessage } from '../tauriIpc';
 import { buildAssistantMessagePresentation, buildUserMessagePresentation } from '../chatDbMappers';
 
+export type MessageProjection = Pick<DbMessage, 'id' | 'conversation_id' | 'role' | 'content' | 'created_at' | 'completion_reason' | 'provider_turn_state_json' | 'tool_traces_json'>;
+
 export interface TextPolicy { revision: string; secrets: readonly string[]; inspectionBytes?: number }
 export type ExportText = { content_state: 'complete' | 'excerpt'; text: string } |
   { content_state: 'withheld' | 'pending'; reason: 'unsafe_content' | 'unknown_provenance' | 'generating' };
@@ -41,7 +43,7 @@ function hasReasoningMarker(text: string): boolean {
 
 // undefined means no recorded provenance; null means recorded evidence was rejected.
 // Only absence permits the historical grammar, never contradictory provider data.
-function providerFinalText(message: DbMessage, recordedFinal: boolean, displayContent: string): string | null | undefined {
+function providerFinalText(message: MessageProjection, recordedFinal: boolean, displayContent: string): string | null | undefined {
   if (message.provider_turn_state_json == null) return undefined;
   try {
     const state: unknown = JSON.parse(message.provider_turn_state_json);
@@ -76,7 +78,7 @@ function recordedFinalText(content: string): string | null {
   if (hasReasoningMarker(rest)) return null;
   return (output + rest).trim();
 }
-export function messageText(message: DbMessage, generating: boolean, policy: TextPolicy, attestedText?: string | null, maxBytes = 16384): ExportText {
+export function messageText(message: MessageProjection, generating: boolean, policy: TextPolicy, attestedText?: string | null, maxBytes = 16384): ExportText {
   if (message.role === 'assistant' && message.completion_reason === 'provider_error') return { content_state: 'withheld', reason: 'unknown_provenance' };
   if (message.role === 'assistant' && generating) return { content_state: 'pending', reason: 'generating' };
   if (message.role === 'user') {
