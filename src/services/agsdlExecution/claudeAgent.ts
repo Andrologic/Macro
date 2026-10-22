@@ -14,6 +14,7 @@ export interface ClaudeAgentPorts {
   stop: typeof ipc.executionHostEndProvider;
   journal: typeof nativeResidentAgentPorts.journal;
   identity(): string;
+  waitForEffects?(): Promise<void>;
 }
 const nativePorts: ClaudeAgentPorts = { run: ipc.executionHostRunClaude, stop: ipc.executionHostEndProvider,
   journal: nativeResidentAgentPorts.journal, identity: () => crypto.randomUUID() };
@@ -73,7 +74,30 @@ export async function prepareClaudeAgent(request: ResidentAgentRequest, ports = 
         if (sessionId !== null && receipt.sessionId !== sessionId) fail('CORRELATION', '/memory', 'Claude returned a different native session.');
         sessionId = receipt.sessionId;
         if (receipt.kind === 'stopped') stopped = true;
-        const closure = await closeRetainedResponses({ ...request.responses, context }, ports.journal);
+        const journal: ClaudeAgentPorts['journal'] = { ...ports.journal, close: async closure => {
+          try { return await ports.journal.close(closure); }
+          catch (error) {
+            const code = typeof error === 'object' && error !== null && 'code' in error ? error.code : undefined;
+            // A lost no-effect acknowledgement can retrieve the first durable
+            // closure. Structured ownership/refusal errors remain conclusive.
+            if (typeof code === 'string' && code !== 'STORAGE') throw error;
+            return ports.journal.close(closure);
+          }
+        } };
+        let closure;
+        for (;;) {
+          try {
+            closure = await closeRetainedResponses({ ...request.responses, context }, journal);
+            break;
+          } catch (error) {
+            // The joined Provider may precede its detached Macro Tool receipt.
+            // Retain this continuation and retry only the no-effect closure. Native
+            // epoch/digest checks still reject fencing or a contradictory receipt.
+            if (receipt.kind !== 'stopped' || typeof error !== 'object' || error === null
+              || !('code' in error) || error.code !== 'STOP_PENDING') throw error;
+            await (ports.waitForEffects?.() ?? new Promise(resolve => setTimeout(resolve, 150)));
+          }
+        }
         return { closure, memory: checkpoint(), stopped: receipt.kind === 'stopped', failed: receipt.kind === 'failed', completionReason: undefined };
       } finally { phase = 'finished'; }
     },

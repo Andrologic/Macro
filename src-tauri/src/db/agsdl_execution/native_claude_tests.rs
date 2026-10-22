@@ -81,7 +81,8 @@ for line in sys.stdin:pass
     let mut config = configuration("a");
     config.provider_id = "claude-native".into();
     config.model_id = "synthetic-model".into();
-    config.configuration_json=json!({"initialization":{"prompt":[{"value":"Synthetic."}]},"configuration":{"tools":{}},"bindings":{},"nativeEngine":{"adapter":"claude-sdk-v1","profileJson":profile.identity()}}).to_string();
+    let public_data = crate::db::exact_json::value(r#"{"number":{"$serde_json::private::Number":"not a number"},"raw":{"$serde_json::private::RawValue":"not JSON"}}"#).unwrap();
+    config.configuration_json=json!({"initialization":{"prompt":[{"value":"Synthetic."}]},"configuration":{"tools":{}},"bindings":{"unused":{"contract":{"identity":"macro/tool/read","version":"1"},"implementation":{"identity":"macro/desktop","version":"1"},"claims":[{"requirement":{"contract":{"identity":"synthetic/claim","version":"1"},"parameters":public_data},"status":"unknown"}]}},"nativeEngine":{"adapter":"claude-sdk-v1","profileJson":profile.identity()}}).to_string();
     config.settings_json =
         json!({"nativeProfileJson":profile.attestation(&scope).unwrap()}).to_string();
     config.scope_json = scope.to_string();

@@ -20,7 +20,7 @@ fn identity(value: Option<&Value>) -> Option<String> {
 pub(crate) fn capture(authored_source: &str, cards_json: &str) -> Result<Vec<CardAssociation>> {
     validate_json(authored_source)?;
     validate_json(cards_json)?;
-    let document: Value = serde_json::from_str(authored_source)?;
+    let document = super::super::exact_json::value(authored_source)?;
     let cards: Value = serde_json::from_str(cards_json)?;
     let mut paths = BTreeMap::new();
     if let Some(agents) = document.get("agents").and_then(Value::as_object) {
@@ -66,7 +66,7 @@ mod tests {
     use super::*;
     #[test]
     fn step_overrides_agent_without_inference_from_title_or_unknown_path() {
-        let document = r#"{"agents":{"a/b":{}},"flow":{"steps":{"inherit":{"type":"agent","agent":"a/b"},"override":{"type":"agent","agent":"a/b"},"remove":{"type":"agent","agent":"a/b"},"call":{"type":"call"}}}}"#;
+        let document = r#"{"agents":{"a/b":{"opaque":{"$serde_json::private::Number":"not a number"}}},"flow":{"steps":{"inherit":{"type":"agent","agent":"a/b"},"override":{"type":"agent","agent":"a/b"},"remove":{"type":"agent","agent":"a/b"},"call":{"type":"call"}}}}"#;
         let cards = r#"{"/agents/a~1b":{"macroTaskId":"agent-task","macroLegacyNodeId":"node","title":"unused"},"/flow/steps/override":{"macroTaskId":"step-task"},"/flow/steps/remove":{"macroTaskId":null,"macroLegacyNodeId":""},"/flow/steps/call":{"title":"agent-task"},"/absent":{"macroTaskId":"foreign"}}"#;
         let captured = capture(document, cards).unwrap();
         assert_eq!(captured.len(), 3);

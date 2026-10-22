@@ -1,7 +1,8 @@
 //! A host validation is bound to durable inputs before it can select a declared route.
 //! Only native preparation mints successor identities. A lost acknowledgement reuses them.
+use super::super::exact_json::{at_path, value};
 use super::*;
-use serde_json::Value;
+use serde_json::{value::RawValue, Value};
 
 #[derive(Debug, Clone, Serialize, Deserialize, ts_rs::TS)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -54,13 +55,9 @@ fn declaration(snapshot: &EngineSnapshot, work: &EngineWork) -> Result<Option<St
         address.len() == 1,
         "Nested routes are outside the inline profile",
     )?;
-    let document: Value = serde_json::from_str(&snapshot.authored_source)?;
-    let step = document
-        .get("flow")
-        .and_then(|v| v.get("steps"))
-        .and_then(|v| v.get(&address[0]))
+    let step = at_path(&snapshot.authored_source, &["flow", "steps", &address[0]])?
         .ok_or_else(|| failure("CORRELATION", "step", "Step declaration is absent"))?;
-    Ok(Some(encode(step)?))
+    Ok(Some(step.get().to_owned()))
 }
 pub(super) fn target(snapshot: &EngineSnapshot, request: &Prepare) -> Result<Option<Vec<String>>> {
     let expected = declaration(snapshot, &request.work)?;
@@ -84,7 +81,7 @@ pub(super) fn target(snapshot: &EngineSnapshot, request: &Prepare) -> Result<Opt
         )?;
         return Ok(None);
     };
-    let step: Value = serde_json::from_str(&raw)?;
+    let step = value(&raw)?;
     let destinations = match &request.outcome {
         EngineOutcome::Stopped { .. } => return Ok(None),
         EngineOutcome::Failed { .. } => {
@@ -123,7 +120,7 @@ pub(super) fn target(snapshot: &EngineSnapshot, request: &Prepare) -> Result<Opt
                     step.get("next").and_then(|v| v.get(branch))
                 }
                 Some("agent") if step.get("decision").is_some() => {
-                    let completion: Value = serde_json::from_str(&output.value_json)?;
+                    let completion = value(&output.value_json)?;
                     let choice = completion
                         .get("choice")
                         .and_then(Value::as_str)
@@ -199,7 +196,7 @@ async fn validate(db: &mut SqliteConnection, stored: &Stored, request: &Prepare)
             env!("CARGO_MANIFEST_DIR"),
             "/../src/vendor/agsdl/v0.2/schema.json"
         )))?;
-        let portable: Value = serde_json::from_str(error_json)?;
+        let portable = value(error_json)?;
         require(
             schema
                 .pointer("/$defs/Error/properties/code/enum")
@@ -240,33 +237,27 @@ async fn validate(db: &mut SqliteConnection, stored: &Stored, request: &Prepare)
     // equality. The value's Agent or Call origin describes the producing step,
     // whose publication was already validated when that step committed.
     let forwarded_by_condition = match declaration(&stored.snapshot, &request.work)? {
-        Some(raw) => {
-            serde_json::from_str::<Value>(&raw)?
-                .get("type")
-                .and_then(Value::as_str)
-                == Some("condition")
-        }
+        Some(raw) => value(&raw)?.get("type").and_then(Value::as_str) == Some("condition"),
         None => false,
     };
     if let EngineOutcome::Completed { output } = &request.outcome {
         if output.origin == "call" && !forwarded_by_condition {
             let raw = declaration(&stored.snapshot, &request.work)?
                 .ok_or_else(|| failure("CORRELATION", "call", "Call declaration is absent"))?;
-            let step: Value = serde_json::from_str(&raw)?;
+            let step = value(&raw)?;
             require(
                 step.get("type").and_then(Value::as_str) == Some("call"),
                 "Completed Call belongs to another step",
             )?;
-            let document: Value = serde_json::from_str(&stored.snapshot.authored_source)?;
-            let binding = step
+            let binding_name = step
                 .get("binding")
                 .and_then(Value::as_str)
-                .and_then(|name| {
-                    document
-                        .get("bindings")
-                        .and_then(|bindings| bindings.get(name))
-                })
                 .ok_or_else(|| failure("CORRELATION", "call", "Call binding is absent"))?;
+            let binding = at_path(
+                &stored.snapshot.authored_source,
+                &["bindings", binding_name],
+            )?
+            .ok_or_else(|| failure("CORRELATION", "call", "Call binding is absent"))?;
             let rows = sqlx::query("SELECT record_json,status,result_json,settlement_json FROM engine_effects WHERE system_id=? AND activation_id=?")
                 .bind(&request.work.system_start_id).bind(&request.work.activation_id).fetch_all(&mut *db).await?;
             require(
@@ -289,29 +280,28 @@ async fn validate(db: &mut SqliteConnection, stored: &Stored, request: &Prepare)
             )?;
             let settlement: EngineSettlement =
                 serde_json::from_str(rows[0].get::<&str, _>("settlement_json"))?;
-            let evidence: Value = serde_json::from_str(&settlement.evidence_json)?;
+            let evidence = value(&settlement.evidence_json)?;
             require(
                 evidence.get("failed").and_then(Value::as_bool) == Some(false),
                 "A failed native invocation cannot complete a Call",
             )?;
-            let invocation: Value = serde_json::from_str(&effect.invocation_json)?;
+            let invocation = value(&effect.invocation_json)?;
             let called = invocation
                 .get("bindingJson")
                 .and_then(Value::as_str)
                 .ok_or_else(|| failure("CORRELATION", "call", "Invocation binding is absent"))?;
             require(
-                super::super::exact_json::equal(called, &encode(binding)?)?,
+                super::super::exact_json::equal(called, binding.get())?,
                 "Call completed with another binding",
             )?;
             let result: String = rows[0]
                 .get::<Option<String>, _>("result_json")
                 .ok_or_else(|| failure("CORRELATION", "call", "Native Call result is absent"))?;
-            let completion: Value = serde_json::from_str(&output.value_json)?;
-            let data = completion.get("data").ok_or_else(|| {
+            let data = at_path(&output.value_json, &["data"])?.ok_or_else(|| {
                 failure("OUTPUT_CONSTRAINT", "data", "Call output data is absent")
             })?;
             require(
-                super::super::exact_json::equal(&encode(data)?, &result)?,
+                super::super::exact_json::equal(data.get(), &result)?,
                 "Call output differs from the retained native result",
             )?;
         }
@@ -319,7 +309,7 @@ async fn validate(db: &mut SqliteConnection, stored: &Stored, request: &Prepare)
     if !forwarded_by_condition
         && matches!(&request.outcome, EngineOutcome::Completed { output } if output.origin == "agent")
     {
-        let validation: Value = serde_json::from_str(&closure.validation_json)?;
+        let validation = value(&closure.validation_json)?;
         require(
             validation["kind"] == "success",
             "Failed publication cannot complete an Agent",
@@ -335,11 +325,19 @@ async fn validate(db: &mut SqliteConnection, stored: &Stored, request: &Prepare)
             .get("text")
             .and_then(Value::as_str)
             .ok_or_else(|| failure("CORRELATION", "responses", "Closure text is absent"))?;
-        let mut completion =
-            serde_json::json!({"text":text,"results":serde_json::from_str::<Value>(results)?});
-        if let Some(choice) = validation.get("choice").and_then(Value::as_str) {
-            completion["choice"] = Value::String(choice.into());
+        #[derive(Serialize)]
+        struct Completion<'a> {
+            text: &'a str,
+            results: &'a RawValue,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            choice: Option<&'a str>,
         }
+        let results: Box<RawValue> = serde_json::from_str(results)?;
+        let completion = Completion {
+            text,
+            results: &results,
+            choice: validation.get("choice").and_then(Value::as_str),
+        };
         require(
             super::super::exact_json::equal(&encode(&completion)?, &output.value_json)?,
             "Agent terminal contradicts its retained publication",

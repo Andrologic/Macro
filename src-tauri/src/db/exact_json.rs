@@ -152,6 +152,51 @@ fn signed_add(exponent: &str, shift: i128) -> String {
         result
     )
 }
+/// Decode metadata without treating user object keys as serde_json internal tokens.
+/// Use RawValue/at_path instead when retaining data for exact comparisons.
+pub(crate) fn value(text: &str) -> serde_json::Result<Value> {
+    fn at_depth(text: &str, depth: usize) -> serde_json::Result<Value> {
+        if depth >= MAX_JSON_DEPTH {
+            return Err(<serde_json::Error as de::Error>::custom(
+                "JSON nesting limit exceeded",
+            ));
+        }
+        let raw: Box<RawValue> = serde_json::from_str(text)?;
+        let text = raw.get();
+        match text.as_bytes()[0] {
+            b'{' => Ok(Value::Object(
+                serde_json::from_str::<Fields>(text)?
+                    .0
+                    .into_iter()
+                    .map(|(key, raw)| Ok((key, at_depth(raw.get(), depth + 1)?)))
+                    .collect::<serde_json::Result<_>>()?,
+            )),
+            b'[' => Ok(Value::Array(
+                serde_json::from_str::<Vec<Box<RawValue>>>(text)?
+                    .into_iter()
+                    .map(|raw| at_depth(raw.get(), depth + 1))
+                    .collect::<serde_json::Result<_>>()?,
+            )),
+            _ => serde_json::from_str(text),
+        }
+    }
+    at_depth(text, 0)
+}
+/// Select object members without interpreting serde_json's private Value tokens.
+/// Embedded values retain their authored JSON until the exact comparator reads them.
+pub(crate) fn at_path(text: &str, path: &[&str]) -> serde_json::Result<Option<Box<RawValue>>> {
+    let mut raw: Box<RawValue> = serde_json::from_str(text)?;
+    for key in path {
+        if !raw.get().starts_with('{') {
+            return Ok(None);
+        }
+        let Some(value) = serde_json::from_str::<Fields>(raw.get())?.0.remove(*key) else {
+            return Ok(None);
+        };
+        raw = value;
+    }
+    Ok(Some(raw))
+}
 pub(crate) fn validate(text: &str) -> serde_json::Result<()> {
     parse(text).map(|_| ())
 }
@@ -220,8 +265,44 @@ mod tests {
         );
         assert!(validate(&nested).is_err());
         assert!(equal(&nested, &nested).is_err());
+        assert!(value(&nested).is_err());
         let bounded = format!("{}0{}", "[".repeat(32), "]".repeat(32));
         assert!(equal(&bounded, &bounded).unwrap());
+    }
+    #[test]
+    fn member_selection_preserves_public_private_token_keys_and_exact_numbers() {
+        let source = r#"{"flow":{"steps":{"a":{"type":"prepare","message":{"resources":{"value":{"value":{"$serde_json::private::Number":"1"}}}}}}},"bindings":{"b":{"schema":{"$serde_json::private::RawValue":"[true]"}}},"data":1e9999}"#;
+        for (path, expected) in [
+            (
+                vec![
+                    "flow",
+                    "steps",
+                    "a",
+                    "message",
+                    "resources",
+                    "value",
+                    "value",
+                ],
+                r#"{"$serde_json::private::Number":"1"}"#,
+            ),
+            (
+                vec!["bindings", "b", "schema"],
+                r#"{"$serde_json::private::RawValue":"[true]"}"#,
+            ),
+            (vec!["data"], "1e9999"),
+        ] {
+            assert_eq!(at_path(source, &path).unwrap().unwrap().get(), expected);
+        }
+        assert!(at_path(source, &["missing"]).unwrap().is_none());
+        assert!(at_path(source, &["data", "missing"]).unwrap().is_none());
+        assert!(at_path(r#"{"a":1,"a":2}"#, &["a"]).is_err());
+        for raw in [
+            r#"{"$serde_json::private::Number":"not a number"}"#,
+            r#"{"$serde_json::private::RawValue":"not JSON"}"#,
+        ] {
+            assert!(value(raw).unwrap().is_object());
+            assert!(equal(raw, &serde_json::to_string(&value(raw).unwrap()).unwrap()).unwrap());
+        }
     }
     #[test]
     fn equality_is_mathematical_and_lossless() {

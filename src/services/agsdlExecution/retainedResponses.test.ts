@@ -47,3 +47,12 @@ describe('retained native response validation', () => {
     await expect(closeRetainedResponses(options, { read: async () => ({ digest: 'native', events: [publication('1')] }), close: async receipt => ({ ...receipt, validationJson: encode({ ...record(decode(receipt.validationJson)), text: 'changed' }) }) })).rejects.toMatchObject({ code: 'CORRELATION' });
   });
 });
+
+it.each(['{"$serde_json::private::Number":"1"}', '{"$serde_json::private::RawValue":"[true]"}', '{"$serde_json::private::Number":"not a number"}', '{"$serde_json::private::RawValue":"not JSON"}'])('keeps a valid JSON object with serde private-looking keys as published data: %s', async value => {
+  const contractInterface = json('{"results":{"report":{"required":true,"mediaTypes":["application/json"],"valueSchema":{"type":"object"}}}}');
+  const contractOptions = { ...options, interfaceJson: contractInterface, publicationContractJson: encode({ protocol: 'macro-agsdl-publication/1', registryVersion: context.registryVersion, agent: 'worker', step: ['work'], interface: decode(contractInterface), choices: [], decisionBinding: null }) };
+  const result = await validateRetainedResponses(contractOptions, { digest: 'retained', events: [publication('1', `{"results":{"report":{"value":${value},"mediaType":"application/json"}}}`)] });
+  expect(result.validation.kind).toBe('success');
+  if (result.validation.kind !== 'success') throw new Error('Expected valid object publication');
+  expect(record(record(decode(result.validation.resultsJson)).report).value).toEqual(decode(value));
+});

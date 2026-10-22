@@ -459,7 +459,7 @@ fn message_text(raw: &str) -> Result<String> {
 fn tool_aliases(configuration: &EngineAgentConfiguration) -> Result<BTreeMap<String, String>> {
     let fields: BTreeMap<String, Box<RawValue>> =
         serde_json::from_str(&configuration.configuration_json)?;
-    let expanded: Value = serde_json::from_str(&configuration.configuration_json)?;
+    let expanded = crate::db::exact_json::value(&configuration.configuration_json)?;
     let raw_bindings: BTreeMap<String, Box<RawValue>> = serde_json::from_str(
         fields
             .get("bindings")
@@ -521,7 +521,7 @@ pub(crate) async fn run(
     profile.verify_context()?;
     let scope: Value = serde_json::from_str(&request.context.scope_json)?;
     let settings: Value = serde_json::from_str(&configuration.settings_json)?;
-    let expanded: Value = serde_json::from_str(&configuration.configuration_json)?;
+    let expanded = crate::db::exact_json::value(&configuration.configuration_json)?;
     if settings["nativeProfileJson"] != profile.attestation(&scope)?
         || expanded["nativeEngine"]["adapter"] != ADAPTER
         || expanded["nativeEngine"]["profileJson"] != profile.identity()
@@ -628,7 +628,7 @@ pub(crate) async fn run(
     }
     config["input"] = json!(input);
     config["publication"] = json!(request.publication_contract_json.is_some());
-    let registry: Value = serde_json::from_str(&capture.registry_json)?;
+    let registry = crate::db::exact_json::value(&capture.registry_json)?;
     let descriptions=aliases.iter().map(|(name,binding)|->Result<Value>{
         let schema=registry["bindings"].as_array().into_iter().flatten().find(|entry|entry["declarationJson"].as_str().is_some_and(|raw|crate::db::exact_json::equal(raw,binding).unwrap_or(false)))
             .and_then(|entry|entry["argumentSchemaJson"].as_str()).ok_or_else(||failure("CORRELATION","tool","Captured tool schema absent"))?;

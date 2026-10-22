@@ -4,7 +4,8 @@ import { executeFlowActivation, loadFlowCapture, prepareFlowAgent, type FlowActi
 import { MacroAgentMemory } from './agentMemory';
 import type { FrozenAgentConfiguration, AgentInstanceId } from './contracts';
 import type { ResidentAgentPorts } from './residentAgent';
-import { decode, record } from './exact';
+import { decode, encode, record } from './exact';
+import { prepareClaudeAgent, type ClaudeAgentPorts } from './claudeAgent';
 import type { FlowAgent } from './flowActivation';
 import { FlowPump, ResidentFlowHost, type FlowSchedulerPorts } from './flowScheduler';
 import { deferred, flowDelivery, flowFixture, flowOwner, preparedFixture } from './flowTestFixtures';
@@ -453,4 +454,50 @@ it('keeps retrying a transient terminal failure without inventing uncertainty', 
   expect(f.uncertaintyReasons).toEqual([]);
   expect(f.calls.filter(call => call === 'execute:first')).toHaveLength(1);
   expect(first.workState).toBe('terminal');
+});
+
+it('keeps the actual Claude and Flow continuation until the late Tool receipt, in the same owner epoch', async () => {
+  const first = flowDelivery('claude-stop', '1'), f = await harness([first]);
+  const running = deferred<void>(), providerEnd = deferred<void>(), closing = deferred<void>(), toolEnd = deferred<void>();
+  let runs = 0, closures = 0, toolsEnded = false;
+  const native: ClaudeAgentPorts = {
+    identity: () => 'claude-attempt', stop: async () => undefined,
+    run: async () => { runs++; running.resolve(); await providerEnd.promise; return { kind: 'stopped', sessionId: 'thread', runId: null }; },
+    journal: { read: async () => ({ events: [], digest: 'retained' }), close: async closure => {
+      closures++;
+      expect(closure.owner).toMatchObject(flowOwner);
+      if (!toolsEnded) throw { code: 'STOP_PENDING' };
+      return closure;
+    } },
+    waitForEffects: async () => { closing.resolve(); await toolEnd.promise; },
+  };
+  f.ports.execute = (owner, activation, memory, inspection, capture, onAgent) => executeFlowActivation(owner, activation, memory, inspection, capture, onAgent, {
+    readResponses: async () => [[], 'retained'], closeResponses: async closure => closure,
+    invoke: async () => { throw new Error('Tool must not be reexecuted'); }, identity: () => 'unused',
+    prepareAgent: request => prepareClaudeAgent({ ...request, providerType: 'claude-native', configuration: {
+      ...request.configuration, providerId: 'claude-native', configurationJson: encode({ initialization: {}, nativeEngine: {
+        adapter: 'claude-sdk-v1', profileJson: encode({ format: 'macro-claude-controlled-profile/1', version: '0.3.308', cliVersion: '2.1.308', toolPolicy: 'macro-controlled' }),
+      } }),
+    } }, native),
+  });
+  const pump = new FlowPump('generation', flowOwner, f.ports), completion = pump.wake();
+  await running.promise;
+  f.inspection.projection.systemStop = { kind: 'requested', requestId: 'ensure-stop' };
+  first.stopState = f.inspection.projection.systemStop;
+  pump.observe(f.inspection);
+  providerEnd.resolve();
+  await closing.promise;
+  expect(first.workState).toBe('active'); expect(f.uncertaintyReasons).toEqual([]);
+  expect(closures).toBe(1); expect(runs).toBe(1); expect(f.requests).toEqual([]);
+  // Repeated authenticated Stop reads retain the same continuation while pending.
+  pump.observe(f.inspection); void pump.wake();
+  toolsEnded = true; toolEnd.resolve();
+  await completion;
+  expect(first.workState).toBe('terminal'); expect(first.terminal?.kind).toBe('stopped');
+  expect(first.admittedEpoch).toBe(flowOwner.ownerEpoch);
+  expect(f.terminal()?.owner).toEqual(flowOwner);
+  expect(f.terminal()?.outgoing).toEqual([]);
+  expect(f.uncertaintyReasons).toEqual([]); expect(runs).toBe(1); expect(closures).toBe(2);
+  await pump.wake();
+  expect(runs).toBe(1); expect(closures).toBe(2);
 });

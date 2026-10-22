@@ -128,11 +128,22 @@ pub(crate) async fn close(pool: &SqlitePool, closure: Closure) -> Result<Closure
         tx.commit().await?;
         return Ok(previous);
     }
-    let unresolved:i64=sqlx::query_scalar("SELECT count(*) FROM engine_effects WHERE system_id=? AND activation_id=? AND status<>'ended'").bind(&closure.work.system_start_id).bind(&closure.work.activation_id).fetch_one(&mut *tx).await?;
-    require(
-        unresolved == 0,
-        "Response owner still has unresolved effects",
-    )?;
+    let (unresolved, uncertain): (i64, i64) = sqlx::query_as("SELECT count(*),coalesce(sum(status='uncertain'),0) FROM engine_effects WHERE system_id=? AND activation_id=? AND status<>'ended'")
+        .bind(&closure.work.system_start_id).bind(&closure.work.activation_id).fetch_one(&mut *tx).await?;
+    if uncertain != 0 {
+        return Err(failure(
+            "NATIVE_UNCERTAIN",
+            "responses",
+            "Response owner has effects without a confirmed physical end",
+        ));
+    }
+    if unresolved != 0 {
+        return Err(failure(
+            "STOP_PENDING",
+            "responses",
+            "Response owner still has unresolved effects",
+        ));
+    }
     let events = retained(&mut tx, &closure.work).await?;
     require(
         closure.cursor == events.len().to_string(),
