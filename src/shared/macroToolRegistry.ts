@@ -918,7 +918,7 @@ export const MACRO_TOOL_REGISTRY = [
       require_complete: {
         type: "boolean",
         description:
-          "Fail instead of returning an explicitly truncated diff. Defaults to false.",
+          "Fail instead of returning an explicitly truncated diff. Native libgit2 patch mode also rejects binary markers, invalid UTF-8 and NUL bytes in rendered data; stat/name_only remain summaries. This fidelity guarantee does not cover WSL. Defaults to false.",
       },
     },
     required: [],

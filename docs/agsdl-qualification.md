@@ -51,3 +51,26 @@ une demande automatiquement.
 Les fenêtres de coupure utilisent des délais bornés, disponibles uniquement avec
 `debug_assertions`, la fonctionnalité `browser-runtime-debug` et un identifiant
 d’application QA. La relance finale ne conserve aucun délai d’injection.
+
+## Artefact de patch texte natif
+
+Avec `mode="patch"` et `require_complete=true`, le renderer natif libgit2
+retourne le texte UTF-8 exact des données rendues, sans troncature, ou échoue.
+Il refuse les indications de différence binaire sans contenu de patch, les
+lignes UTF-8 invalides et les NUL, y compris lorsque Git force le mode texte.
+Les accents, CRLF, fichiers sans LF final et fichiers texte non suivis restent
+pris en charge. `stat` et `name_only` restent des résumés.
+
+Ce contrat porte sur le patch sélectionné, pas sur les régions hors hunks,
+les fichiers ignorés ou hors sélection, ni sur la stabilité du workspace après
+capture. Une suppression et un ajout peuvent représenter un renommage sans
+que sa détection soit garantie. Pour une review fidèle, fixer
+`ignore_whitespace=false`, une base immuable et les chemins et le contexte
+attendus, puis transmettre la chaîne exacte retenue dans le journal, sans la
+reconstruire depuis l'affichage. Un refus de capture ne fournit aucun artefact
+à soumettre à la review normale.
+
+Cette garantie concerne le chemin natif libgit2. Les transports WSL utilisent
+des conversions distinctes et ne sont pas qualifiés pour cette fidélité ; les
+commandes AgSDL les refusent déjà. Les tests Git du renderer ne qualifient pas
+le parcours Call vers le reviewer, qui demande une vérification distincte.
