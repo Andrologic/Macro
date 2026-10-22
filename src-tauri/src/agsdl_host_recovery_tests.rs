@@ -438,3 +438,67 @@ async fn recovery_retries_a_full_compiler_mailbox_in_the_same_generation() {
         "1"
     );
 }
+
+#[tokio::test]
+async fn recovery_survives_a_real_compile_timeout_and_late_reply_before_resuming_a_and_b() {
+    let temp = tempfile::TempDir::new().unwrap();
+    let pool = crate::db::create_pool(&temp.path().join("compile-timeout.db"))
+        .await
+        .unwrap();
+    let mut receipts = vec![
+        repository::start(&pool, request("timeout-a"), &Capture)
+            .await
+            .unwrap(),
+        repository::start(&pool, request("timeout-b"), &Capture)
+            .await
+            .unwrap(),
+    ];
+    receipts.sort_by(|a, b| a.system_start_id.cmp(&b.system_start_id));
+    let a = &receipts[0];
+    let b = &receipts[1];
+    let database = DbPool::default();
+    database.set_ready(pool.clone());
+    let host = host();
+    let supervisor = tokio::spawn(reattach_retained(
+        database,
+        host.clone(),
+        Default::default(),
+        Duration::from_millis(10),
+    ));
+    let first = next(&host).await;
+    assert_eq!(first.source, a.snapshot.source);
+    // B is enqueued only once A's actual production 30-second timeout has expired.
+    let second = tokio::time::timeout(Duration::from_secs(35), host.compiler.next())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(second.source, b.snapshot.source);
+    assert!(host.owners.lock().unwrap().is_empty());
+    complete(&host, &first, Some(a.snapshot.compiled_plan_json.clone()));
+    // A's stale response is acknowledged, but gives no owner or admission.
+    assert!(host.owners.lock().unwrap().is_empty());
+    assert!(host.live.load(Ordering::SeqCst));
+    complete(&host, &second, Some(b.snapshot.compiled_plan_json.clone()));
+    let retry = next(&host).await;
+    assert_eq!(retry.source, a.snapshot.source);
+    assert!(host.owners.lock().unwrap().contains_key(&b.system_start_id));
+    assert!(!host.owners.lock().unwrap().contains_key(&a.system_start_id));
+    complete(&host, &retry, Some(a.snapshot.compiled_plan_json.clone()));
+    wait_owners(&host, 2).await;
+    tokio::time::timeout(Duration::from_secs(1), supervisor)
+        .await
+        .unwrap()
+        .unwrap();
+    for receipt in receipts {
+        assert_eq!(
+            host.owners.lock().unwrap()[&receipt.system_start_id].owner_epoch,
+            "1"
+        );
+        let projection = repository::read_projection(&pool, &receipt.system_start_id)
+            .await
+            .unwrap();
+        assert_eq!(projection.activations.len(), 1);
+        assert_eq!(projection.activations[0].work_state, "queued");
+    }
+    close(&host);
+}

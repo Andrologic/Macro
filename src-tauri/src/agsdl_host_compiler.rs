@@ -23,6 +23,7 @@ pub(crate) struct CompileReceipt {
 }
 struct Pending {
     job: HostCompileJob,
+    issued: bool,
     reply: oneshot::Sender<Result<CompileReceipt>>,
 }
 #[derive(Default)]
@@ -30,6 +31,9 @@ struct Queue {
     closed: bool,
     ready: VecDeque<String>,
     pending: BTreeMap<String, Pending>,
+    // Only jobs actually delivered to JS can reply after their waiter expires.
+    // Together with pending, these retain at most the mailbox's 32 captures.
+    expired: BTreeMap<String, HostCompileJob>,
 }
 #[derive(Default)]
 pub(crate) struct CompileBroker {
@@ -43,7 +47,11 @@ struct TicketGuard<'a> {
 impl Drop for TicketGuard<'_> {
     fn drop(&mut self) {
         let mut queue = self.broker.queue.lock().expect("compiler queue");
-        queue.pending.remove(&self.ticket);
+        if let Some(pending) = queue.pending.remove(&self.ticket) {
+            if pending.issued && !queue.closed {
+                queue.expired.insert(self.ticket.clone(), pending.job);
+            }
+        }
         queue.ready.retain(|ticket| ticket != &self.ticket);
     }
 }
@@ -52,6 +60,7 @@ impl CompileBroker {
         let mut queue = self.queue.lock().expect("compiler queue");
         queue.closed = true;
         queue.ready.clear();
+        queue.expired.clear();
         for (_, pending) in std::mem::take(&mut queue.pending) {
             let _ = pending.reply.send(Err(failure(
                 "RUNTIME_UNAVAILABLE",
@@ -95,7 +104,7 @@ impl CompileBroker {
         let (reply, receiver) = oneshot::channel();
         {
             let mut queue = self.queue.lock().expect("compiler queue");
-            if queue.closed || queue.pending.len() >= 32 {
+            if queue.closed || queue.pending.len() + queue.expired.len() >= 32 {
                 return Err(failure(
                     "RUNTIME_UNAVAILABLE",
                     "",
@@ -109,7 +118,14 @@ impl CompileBroker {
                 authored_source,
                 registry_json,
             };
-            queue.pending.insert(ticket.clone(), Pending { job, reply });
+            queue.pending.insert(
+                ticket.clone(),
+                Pending {
+                    job,
+                    issued: false,
+                    reply,
+                },
+            );
             queue.ready.push_back(ticket.clone());
         }
         let _ticket_guard = TicketGuard {
@@ -118,12 +134,8 @@ impl CompileBroker {
         };
         self.available.notify_one();
         let received = tokio::time::timeout(std::time::Duration::from_secs(30), receiver).await;
-        // Timeout cancels the ticket. A late reply cannot become authority for another Start.
-        self.queue
-            .lock()
-            .expect("compiler queue")
-            .pending
-            .remove(&ticket);
+        // The guard retires an issued ticket on timeout or cancellation. Its late
+        // reply is checked but can never become authority for another Start.
         received
             .map_err(|_| {
                 failure(
@@ -147,7 +159,8 @@ impl CompileBroker {
                     ));
                 }
                 while let Some(ticket) = queue.ready.pop_front() {
-                    if let Some(pending) = queue.pending.get(&ticket) {
+                    if let Some(pending) = queue.pending.get_mut(&ticket) {
+                        pending.issued = true;
                         return Ok(pending.job.clone());
                     }
                 }
@@ -171,20 +184,19 @@ impl CompileBroker {
         validate_json(&result_json)?;
         let result: Value = serde_json::from_str(&result_json)?;
         let mut queue = self.queue.lock().expect("compiler queue");
-        let pending = queue.pending.get(ticket).ok_or_else(|| {
-            failure(
-                "CORRELATION",
-                "ticket",
-                "Compiler ticket is absent or expired",
-            )
-        })?;
-        let registry: Value = serde_json::from_str(&pending.job.registry_json)?;
+        let job = queue
+            .pending
+            .get(ticket)
+            .map(|pending| &pending.job)
+            .or_else(|| queue.expired.get(ticket))
+            .ok_or_else(|| failure("CORRELATION", "ticket", "Compiler ticket is absent"))?;
+        let registry: Value = serde_json::from_str(&job.registry_json)?;
         if queue.closed
-            || pending.job.generation != generation
+            || job.generation != generation
             || result.get("runtime").and_then(|v| v.get("registryVersion"))
                 != registry.get("version")
             || result.get("runtime").and_then(|v| v.get("source"))
-                != Some(&serde_json::to_value(&pending.job.source)?)
+                != Some(&serde_json::to_value(&job.source)?)
         {
             return Err(failure(
                 "CORRELATION",
@@ -306,7 +318,7 @@ impl CompileBroker {
         if let Some(plan_json) = result.get("compiledPlanJson").and_then(Value::as_str) {
             validate_json(plan_json)?;
             let plan: Value = serde_json::from_str(plan_json)?;
-            if plan.get("source") != Some(&serde_json::to_value(&pending.job.source)?)
+            if plan.get("source") != Some(&serde_json::to_value(&job.source)?)
                 || plan.pointer("/versions/registry") != registry.get("version")
                 || plan.get("format").and_then(Value::as_str) != Some("macro-agsdl-compiled-plan/1")
             {
@@ -320,7 +332,7 @@ impl CompileBroker {
                 .get("documentJson")
                 .and_then(Value::as_str)
                 .ok_or_else(|| failure("CORRELATION", "compiler", "Compiled document is absent"))?;
-            if !crate::db::exact_json::equal(document, &pending.job.authored_source)? {
+            if !crate::db::exact_json::equal(document, &job.authored_source)? {
                 return Err(failure(
                     "CORRELATION",
                     "compiler",
@@ -338,14 +350,16 @@ impl CompileBroker {
                 "Supported assessment has no compiled plan",
             ));
         }
-        let pending = queue
-            .pending
-            .remove(ticket)
-            .expect("checked compiler ticket");
-        let _ = pending.reply.send(Ok(CompileReceipt {
-            generation: generation.into(),
-            result_json,
-        }));
+        if let Some(pending) = queue.pending.remove(ticket) {
+            let _ = pending.reply.send(Ok(CompileReceipt {
+                generation: generation.into(),
+                result_json,
+            }));
+        } else {
+            // Acknowledge only this known, fully correlated late response so JS
+            // can keep serving the mailbox. No receiver or admission is restored.
+            queue.expired.remove(ticket);
+        }
         Ok(())
     }
 }
@@ -434,5 +448,95 @@ mod tests {
             .await
             .is_err());
         assert!(broker.queue.lock().unwrap().pending.is_empty());
+    }
+    #[tokio::test]
+    async fn issued_cancelled_ticket_checks_late_reply_without_recreating_a_receipt() {
+        let broker = Arc::new(CompileBroker::default());
+        let task = broker.clone();
+        let pending = tokio::spawn(async move {
+            task.compile(
+                "generation",
+                source(),
+                "{\"n\":9007199254740993}".into(),
+                "{\"version\":\"registry\"}".into(),
+            )
+            .await
+        });
+        let job = broker.next().await.unwrap();
+        pending.abort();
+        assert!(matches!(pending.await, Err(error) if error.is_cancelled()));
+        assert!(broker.queue.lock().unwrap().pending.is_empty());
+        assert_eq!(broker.queue.lock().unwrap().expired.len(), 1);
+        assert!(broker
+            .complete("generation", "unknown", result(&job))
+            .is_err());
+        assert!(broker
+            .complete("foreign", &job.ticket, result(&job))
+            .is_err());
+        let mut wrong: Value = serde_json::from_str(&result(&job)).unwrap();
+        wrong["runtime"]["source"]["revision"] = "foreign".into();
+        assert!(broker
+            .complete("generation", &job.ticket, wrong.to_string())
+            .is_err());
+        wrong = serde_json::from_str(&result(&job)).unwrap();
+        wrong["runtime"]["registryVersion"] = "foreign".into();
+        assert!(broker
+            .complete("generation", &job.ticket, wrong.to_string())
+            .is_err());
+        broker
+            .complete("generation", &job.ticket, result(&job))
+            .unwrap();
+        assert!(broker.queue.lock().unwrap().expired.is_empty());
+        assert!(broker.queue.lock().unwrap().pending.is_empty());
+        assert!(broker
+            .complete("generation", &job.ticket, result(&job))
+            .is_err());
+        let task = broker.clone();
+        let next = tokio::spawn(async move {
+            task.compile(
+                "generation",
+                source(),
+                "{\"n\":9007199254740993}".into(),
+                "{\"version\":\"registry\"}".into(),
+            )
+            .await
+        });
+        let next_job = broker.next().await.unwrap();
+        broker
+            .complete("generation", &next_job.ticket, result(&next_job))
+            .unwrap();
+        assert_eq!(next.await.unwrap().unwrap().result_json, result(&next_job));
+    }
+
+    #[tokio::test]
+    async fn expired_issued_captures_share_the_mailbox_bound_and_close_with_the_generation() {
+        let broker = Arc::new(CompileBroker::default());
+        for _ in 0..32 {
+            let task = broker.clone();
+            let pending = tokio::spawn(async move {
+                task.compile(
+                    "generation",
+                    source(),
+                    "{\"n\":9007199254740993}".into(),
+                    "{\"version\":\"registry\"}".into(),
+                )
+                .await
+            });
+            broker.next().await.unwrap();
+            pending.abort();
+            assert!(matches!(pending.await, Err(error) if error.is_cancelled()));
+        }
+        assert_eq!(broker.queue.lock().unwrap().expired.len(), 32);
+        assert!(broker
+            .compile(
+                "generation",
+                source(),
+                "{\"n\":9007199254740993}".into(),
+                "{\"version\":\"registry\"}".into()
+            )
+            .await
+            .is_err());
+        broker.close();
+        assert!(broker.queue.lock().unwrap().expired.is_empty());
     }
 }

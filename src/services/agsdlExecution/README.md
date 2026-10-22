@@ -294,8 +294,11 @@ Le nouveau host réattache les captures conservées seulement si la compilation
 et les versions correspondent exactement. Une erreur transitoire de compilation
 ou de stockage est isolée au candidat ; les autres candidats restent traités.
 Le superviseur réessaie après deux secondes, jusqu'au traitement des captures
-ou à la révocation de sa génération. Une capture incompatible reste fermée et
-les effets inconnus ne sont pas rejoués. Le port privé mark_uncertain vise un travail, sans arrêter les autres
+ou à la révocation de sa génération. Les tickets remis au host puis expirés
+restent corrélés dans la capacité de 32 tickets. Leur réponse tardive peut être
+acquittée sans restaurer de reçu ni d'autorité ; les réponses étrangères restent
+refusées. Une capture incompatible reste fermée et les effets inconnus ne sont
+pas rejoués. Le port privé mark_uncertain vise un travail, sans arrêter les autres
 Agents. Les diagnostics publics permettent une sélection exacte ou une page
 récente bornée et ne révèlent pas la capture privée.
 
