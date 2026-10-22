@@ -1,4 +1,4 @@
-use super::{CommandError, CommandResult};
+use super::{command_error, CommandResult};
 use tauri::{Manager, ResourceId, ResourceTable, Runtime, Webview};
 
 #[derive(Debug, PartialEq, Eq, serde::Serialize, ts_rs::TS)]
@@ -12,9 +12,9 @@ fn release(table: &mut ResourceTable, rid: ResourceId) -> CommandResult<WebviewR
     if !table.has(rid) {
         return Ok(WebviewResourceRelease::AlreadyAbsent);
     }
-    table.close(rid).map_err(|error| CommandError {
-        message: error.to_string(),
-    })?;
+    table
+        .close(rid)
+        .map_err(|error| command_error(error.to_string()))?;
     Ok(WebviewResourceRelease::Removed)
 }
 

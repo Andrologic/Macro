@@ -1250,3 +1250,6 @@ mod frontend_log_tests {
         assert!(!source.contains(removed_command));
     }
 }
+
+#[cfg(all(test, target_os = "linux"))]
+mod process_recovery_transport;

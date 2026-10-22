@@ -1240,11 +1240,11 @@ async fn reconcile_provider_secret_metadata(
 ) -> CommandResult<()> {
     if config.provider_type == "chatgpt" {
         let has_secret = secrets::get_chatgpt_secret(&config.id)
-            .map_err(|error| CommandError {
-                message: format!(
+            .map_err(|error| {
+                command_error(format!(
                     "Failed to access local ChatGPT session for {}: {}",
                     config.id, error
-                ),
+                ))
             })?
             .is_some();
         let linked = matches!(
@@ -1277,11 +1277,11 @@ async fn reconcile_provider_secret_metadata(
 
     if config.provider_type != "copilot" && !config.is_local && config.has_stored_api_key {
         let has_key = secrets::get_api_key(&config.id)
-            .map_err(|error| CommandError {
-                message: format!(
+            .map_err(|error| {
+                command_error(format!(
                     "Failed to access local provider API key for {}: {}",
                     config.id, error
-                ),
+                ))
             })?
             .is_some();
         if !has_key {
@@ -1321,16 +1321,14 @@ pub async fn db_reveal_provider_api_key(
         .find(|provider| provider.id == id);
 
     if config.is_none() {
-        return Err(CommandError {
-            message: format!("Provider {} not found", id),
-        });
+        return Err(command_error(format!("Provider {} not found", id)));
     }
 
-    let api_key = secrets::get_api_key(&id).map_err(|error| CommandError {
-        message: format!(
+    let api_key = secrets::get_api_key(&id).map_err(|error| {
+        command_error(format!(
             "Failed to access the local provider secret for {}: {}",
             id, error
-        ),
+        ))
     })?;
 
     Ok(api_key)
@@ -1396,9 +1394,9 @@ pub async fn db_update_provider_config(
 ) -> CommandResult<()> {
     let pool = get_pool(&pool).await?;
     if params.id == crate::ai::macro_ai::PROVIDER_ID {
-        return Err(CommandError {
-            message: "Macro AI is managed automatically and cannot be edited.".to_string(),
-        });
+        return Err(command_error(
+            "Macro AI is managed automatically and cannot be edited.".to_string(),
+        ));
     }
 
     let provider_id = params.id.clone();
@@ -1530,9 +1528,9 @@ pub async fn db_delete_provider_config(
 ) -> CommandResult<()> {
     let pool = get_pool(&pool).await?;
     if id == crate::ai::macro_ai::PROVIDER_ID {
-        return Err(CommandError {
-            message: "Macro AI is managed automatically and cannot be deleted.".to_string(),
-        });
+        return Err(command_error(
+            "Macro AI is managed automatically and cannot be deleted.".to_string(),
+        ));
     }
 
     let lock = provider_mutation_lock(&id);

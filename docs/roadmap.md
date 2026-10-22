@@ -31,16 +31,19 @@ Un écart devenu obsolète doit être supprimé.
 
 ## 3. État actuel synthétique
 
-La dernière version stable publiée est [Macro 0.1.8](https://github.com/Andrologic/Macro/releases/tag/v0.1.8),
-du 30 septembre 2026. Le tag `v0.1.8` désigne le commit `9ee0b9b5`.
-`package.json` et `src-tauri/Cargo.toml` déclarent encore `0.1.8` ;
-la configuration Tauri reprend la version de `package.json`.
-Les changements postérieurs dans `develop` ne constituent pas une nouvelle
-version publiée. Le [changelog](../CHANGELOG.md) distingue ces changements des
-versions livrées.
+Point d'état du 22 octobre 2026, fondé sur `develop` au commit `2f3dd1d3`.
+La version déclarée par `package.json` et `src-tauri/Cargo.toml` est `0.1.8`.
+La configuration Tauri reprend la version de `package.json`.
+[Macro 0.1.8](https://github.com/Andrologic/Macro/releases/tag/v0.1.8) a été
+publiée le 30 septembre 2026. Le tag `v0.1.8` désigne le commit `9ee0b9b5`.
+Le code intégré depuis ce tag conserve la même version déclarée ; sa présence
+dans la branche de développement ne signifie pas qu'une nouvelle release a
+été publiée. Le [changelog](../CHANGELOG.md) décrit les versions livrées.
 
-L'état ci-dessous décrit le code intégré. Il ne vaut pas validation des paquets
-ou du canal de mises à jour.
+L'état ci-dessous décrit le code intégré à cette base. Les mentions de socle
+stabilisé concernent les workflows desktop décrits ; elles ne valent pas
+qualification des paquets ni du canal de mises à jour de ce code postérieur
+à la release. Les réserves sont précisées en section 3.2.
 
 L'application dispose déjà d'une base solide :
 
@@ -77,7 +80,7 @@ En revanche, le produit cible n'est pas encore atteint sur plusieurs axes critiq
 - articulation desktop / remote / mobile encore incomplète
 - expérience multi-plan et multi-projet encore à consolider de bout en bout
 
-### 3.1 Périmètre figé de la 0.1.4
+### 3.1 Repère historique du 5 septembre 2026, périmètre de la 0.1.4
 
 La boucle d'attention desktop est livrée dans la version `0.1.4`.
 Les notifications et la file « À traiter » ramènent aux demandes en attente.
@@ -103,37 +106,39 @@ connectée, un système de plugins, l'édition complète des fichiers en review 
 une nouvelle politique de merge automatique restent hors périmètre de la
 `0.1.4`.
 
-### 3.2 Stabilisation desktop en cours de qualification
+### 3.2 Stabilisation et qualification au 22 octobre 2026
 
-Le code local postérieur à la 0.1.8 renforce la sauvegarde du profil,
-la récupération des messages et des effets d'outils incertains, le transport
-des conversations et les réglages. Un candidat séparé rassemble les
-corrections restantes de finalisation, de restauration des tâches, d'historique,
-de navigation entre projets, de dialogues, de MCP, de revue et de français.
-Ces corrections restent en qualification avant leur intégration à `develop`.
+Le [bilan de sécurité](security-validation-2026-10-22.md) documente les
+corrections intégrées à cette base et leur validation automatisée. Les
+contrôles Linux et les huit tests natifs de récupération sur Windows et
+macOS réussissent dans l'exécution CI qui y est référencée. Ce bilan porte
+sur le code postérieur à la release 0.1.8.
 
-La sortie de cette stabilisation exige :
+Les essais d'installation, de mise à jour valide, de refus d'une signature
+invalide et de rétrogradation avec décision native dans une application
+installée restent non effectués. Les paquets signés de test appropriés
+manquaient ; aucun poste Windows n'était disponible pour ces essais.
+Les signatures sont vérifiées sur fixtures et la récupération native est
+testée, mais ces contrôles ne remplacent pas les parcours sur application
+installée. La publication de la 0.1.8 ne qualifie pas ces corrections
+postérieures.
 
-- des revues indépendantes favorables sur le candidat exact ;
-- les contrôles locaux pertinents et les parcours visuels des états modifiés ;
-- une vérification de l'intégration dans un `develop` propre ;
-- un périmètre et une version choisis avant la préparation de la release.
+### 3.3 AgSDL, Pilot et Connect à cette base
 
-Le diagnostic des incidents Windows de création de tâche n'a pas établi
-de cause racine ni reproduit les incidents historiques. La prise en charge des
-chemins longs reste à vérifier sur Windows. Une compilation ou une recette
-macOS ne remplace pas cette validation.
+Au point historique du 22 octobre 2026, la base `2f3dd1d3` ne contenait
+ni l'éditeur AgSDL ni les parcours Macro Pilot et Macro Connect.
 
-### 3.3 Travaux distincts de la stabilisation
+Le code courant contient désormais le [visualisateur et l'éditeur AgSDL](agsdl-editor.md)
+et le [moteur résident](agsdl-engine-architecture.md), avec les profils
+[Codex natif](agsdl-codex-native.md) et [Claude contrôlé](agsdl-claude-controlled.md)
+explicitement sélectionnés. Leur présence ne vaut ni nouvelle release publiée
+ni qualification des paquets. Les limites et les contrôles propres à ces
+parcours figurent dans le [bilan de qualification AgSDL](agsdl-qualification.md).
+Macro Pilot et Macro Connect ne sont pas déclarés livrés.
 
-L'éditeur AgSDL, Macro Pilot et la récupération Connect restent sur des
-branches de développement distinctes, non intégrées à `develop` lors de ce
-point d'état du 5 octobre 2026. Leur présence dans Git ne vaut pas livraison.
-Ils sont hors du périmètre de la stabilisation desktop décrite ci-dessus.
-
-La ligne publique 0.1 reste desktop local-first. Le kernel distant et la
-supervision mobile sont des objectifs futurs, selon la section 20 de la
-spécification fonctionnelle ; ils ne sont pas annoncés comme disponibles.
+La ligne publique 0.1 reste desktop local-first. Le kernel headless est un
+[prototype expérimental](../HEADLESS.md) ; la supervision mobile, les comptes
+applicatifs et les abonnements restent des objectifs futurs.
 
 ---
 
@@ -317,14 +322,12 @@ spécification fonctionnelle ; ils ne sont pas annoncés comme disponibles.
 
 ## 5. Chantiers prioritaires
 
-La priorité immédiate est de terminer la qualification de la stabilisation
-desktop décrite en section 3.2, puis de fixer sa prochaine release.
-Les chantiers ci-dessous décrivent les acquis et les étapes suivantes.
+### 5.1 Repère historique, boucle d'attention desktop intégrée en 0.1.4
 
-### 5.1 Boucle d'attention desktop intégrée en 0.1.4
-
+Ce bilan concerne le périmètre publié le 5 septembre 2026. Les réserves de
+qualification du code postérieur à la 0.1.8 figurent en section 3.2.
 Les écarts de notification, de restauration des approbations et de filtrage
-sont résolus dans le code local. Les contrôles locaux et les parcours Tauri
+sont résolus dans le code de la 0.1.4. Les contrôles locaux et les parcours Tauri
 vérifiés passent. Les paquets multiplateformes, leurs empreintes et les cinq
 manifestes publics du canal stable sont validés. Une reprise complète avec un
 fournisseur IA réel reste à exercer en complément des tests automatisés.
@@ -476,7 +479,8 @@ Critère de sortie :
 État :
 - le démarrage manuel, les questionnaires et le système de notifications desktop sont livrés
 - les notifications, la navigation persistante, la reprise des approbations interrompues et la file « À traiter » sont livrées en `0.1.4`
-- la release multiplateforme est publiée et les cinq manifestes stables publics sont validés ; une reprise complète avec un fournisseur IA réel reste à exercer en complément des tests automatisés
+- le bilan de la release `0.1.4` du 5 septembre 2026 indique la publication multiplateforme et la validation des cinq manifestes stables publics ; une reprise complète avec un fournisseur IA réel reste à exercer en complément des tests automatisés
+- ce repère historique ne lève pas les réserves de qualification du code postérieur à la `0.1.8` décrites en section 3.2
 
 ### Phase 5 - Remote kernel et mobile supervision
 
