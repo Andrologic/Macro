@@ -81,7 +81,9 @@ export function validDisplayMetadata(value: unknown): value is AgsdlDisplayMetad
 export function retainDesignOrigin(previous: DesignMetadata | undefined, next: DesignMetadata | undefined): DesignMetadata | undefined {
   if ((previous !== undefined && !valid(previous)) || (next !== undefined && !valid(next))) throw new DesignMetadataError();
   if (!previous?.origin) return next;
-  return { ...(next ?? previous), origin: { ...previous.origin, ...next?.origin } };
+  const origin = { ...previous.origin, ...next?.origin };
+  if (origin.branchName === undefined && previous.origin.branchName !== undefined) origin.branchName = previous.origin.branchName;
+  return { ...(next ?? previous), origin };
 }
 /** Preserve unrelated metadata and row extensions while updating owned design fields. */
 export function updateDesignMetadata(previous: DesignMetadata | undefined, design: DesignMetadata): DesignMetadata {

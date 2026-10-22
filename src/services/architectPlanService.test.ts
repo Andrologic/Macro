@@ -2521,9 +2521,14 @@ describe('architectPlanService', () => {
     saved = (await service.getArchitectPlan(branchName, created.id))!;
     expect(saved.agsdl!.design!.origin).toEqual(origin);
     expect(saved.agsdl!.source).toContain('Edited.');
+    await service.updateArchitectPlan({ branchName, planId: created.id, expectedAgsdlRevision: 3,
+      agsdl: { source: saved.agsdl!.source, annexes: {}, design: { ...defaultDesign(), origin: { ...origin, branchName: undefined } } } });
+    service.clearArchitectPlanFrontendCaches();
+    saved = (await service.getArchitectPlan(branchName, created.id))!;
+    expect(saved.agsdl!.design!.origin).toEqual(origin);
   });
 
-  it.each([null, 7, {}, { planId: 'blueprint' }])('refuses malformed provenance at persistence before merging: %j', async origin => {
+  it.each([null, 7, {}, { planId: 'blueprint' }, { planId: 'blueprint', name: 'Blueprint', revision: 1, branchName: null }, { planId: 'blueprint', name: 'Blueprint', revision: 1, branchName: 7 }])('refuses malformed provenance at persistence before merging: %j', async origin => {
     const { defaultDesign } = await import('./agsdl/design');
     const { BASE_SOURCE } = await import('./agsdlExecution/conformanceFixtures');
     const created = await service.createArchitectPlan({ branchName, planId: 'invalid-copy-provenance', label: 'Copy',

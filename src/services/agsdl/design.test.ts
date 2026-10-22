@@ -160,6 +160,7 @@ it('preserves blueprint provenance when ordinary design edits omit origin in bot
   modern.design!.origin = origin;
   expect(withDocumentDesign(modern.source, next, modern).design?.origin).toEqual(origin);
   expect(withDocumentDesign(modern.source, { ...next, origin: { planId: 'blueprint', name: 'Blueprint', revision: 2 } }, modern).design?.origin).toEqual(origin);
+  expect(withDocumentDesign(modern.source, { ...next, origin: { ...origin, branchName: undefined } }, modern).design?.origin).toEqual(origin);
   const legacy = JSON.parse(createEmptySystem('Copy'));
   legacy.root.annotations.macroDesign.origin = origin;
   const edited = applyChanges(JSON.stringify(legacy), designChanges(JSON.stringify(legacy), next));
@@ -167,7 +168,12 @@ it('preserves blueprint provenance when ordinary design edits omit origin in bot
   expect(readDesign(edited).context).toBe('Edited context');
 });
 
-it.each([null, 7, {}, { planId: 'blueprint' }])('rejects malformed provenance before retaining the previous origin: %j', origin => {
+it.each([null, 7, {}, { planId: 'blueprint' }, { planId: 'blueprint', name: 'Blueprint', revision: 1, branchName: null }, { planId: 'blueprint', name: 'Blueprint', revision: 1, branchName: 7 }])('rejects malformed provenance before retaining the previous origin: %j', origin => {
   const previous = { ...defaultDesign(), origin: { branchName: 'develop', planId: 'blueprint', name: 'Blueprint', revision: 1 } };
   expect(() => retainDesignOrigin(previous, { ...defaultDesign(), origin } as never)).toThrow('design metadata');
+});
+
+it('allows an origin without a branch when none was previously captured', () => {
+  const design = { ...defaultDesign(), origin: { planId: 'blueprint', name: 'Blueprint', revision: 1 } };
+  expect(retainDesignOrigin(design, { ...design, origin: { ...design.origin, branchName: undefined } })?.origin?.branchName).toBeUndefined();
 });
