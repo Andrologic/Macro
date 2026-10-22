@@ -39,6 +39,7 @@ test('target-owned projection reads all dependencies and reflection remains reco
     expect(providerIndex).toBeGreaterThan(-1); expect(hiddenIndex).toBeGreaterThan(providerIndex);
     expect(ordered.map(message => message.id)).toEqual(projection.messages.map(message => message.id));
     expect(projection.citations[0].content).toBe('CITATION_FACT');
+    expect(projection.citations[0].type).toBe('document'); expect(projection.citations[0].scope).toBe('context');
     expect(projection.messages.every(m => m.role === 'user' || m.role === 'assistant')).toBe(true);
     expect(projection.messages.every(m => !m.provider_input_items && !m.provider_turn_state && !m.context_refs)).toBe(true);
   });

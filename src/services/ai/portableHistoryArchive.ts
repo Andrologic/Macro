@@ -230,7 +230,9 @@ export class PortableHistoryArchive {
       for (const row of citationRows.values()) {
         const f = row.fields;
         if (!f.has(0) || !f.has(6) || (!f.has(7) && !f.has(8))) fail('required_citation_missing');
-        citations.push({ id: row.uuid, conversationId: binding.importKey, messageId: owners.get(row.message)?.id ?? row.uuid, type: 'document', scope: 'source', source: f.get(5) ?? 'archive', title: f.get(6)!, snippet: f.get(7), content: f.get(8), timestamp: owners.get(row.message)?.timestamp ?? messages[0]?.timestamp ?? '1970-01-01T00:00:00.000Z' });
+        const type = f.get(3), scope = f.get(4), kind = f.get(14);
+        if (!['web', 'file', 'document', 'source_passage'].includes(type ?? '') || !['context', 'source'].includes(scope ?? '') || (kind !== undefined && !['interesting', 'used'].includes(kind))) fail('required_citation_missing');
+        citations.push({ id: row.uuid, conversationId: binding.importKey, messageId: owners.get(row.message)?.id ?? row.uuid, type: type as Citation['type'], scope: scope as Citation['scope'], ...(kind === undefined ? {} : { kind: kind as Citation['kind'] }), source: f.get(5) ?? 'archive', title: f.get(6)!, snippet: f.get(7), content: f.get(8), timestamp: owners.get(row.message)?.timestamp ?? messages[0]?.timestamp ?? '1970-01-01T00:00:00.000Z' });
         messages.push({ id: `${row.uuid}:data`, task_id: '', conversation_id: binding.importKey, role: 'user', content: `[Historical archive citation ${row.uuid}]\n${f.get(6)}\n${f.get(7) ?? ''}\n${f.get(8) ?? ''}`, timestamp: owners.get(row.message)?.timestamp ?? messages[0]?.timestamp ?? '1970-01-01T00:00:00.000Z', portable_history: binding });
       }
       // Projection order is archive/association order. Source timestamps remain

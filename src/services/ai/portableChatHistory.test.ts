@@ -86,3 +86,13 @@ test('owned asset digest and declared byte length must agree with the actual cap
     expect(writes).toBe(0); expect(f.budget.used).toBe(0);
   }
 });
+
+test('unknown citation type, scope or disposition refuses before target writes', async () => {
+  for (const [type, scope, kind] of [['future', 'source', null], ['document', 'future', null], ['document', 'source', 'future']]) {
+    const f = await fixture('codex');
+    await f.appendRow(6, ['unknown-citation', 's', 'u', type, scope, 'synthetic', 'Title', null, 'Complete text', null, null, null, null, null, kind, null, 't', 't']);
+    let writes = 0;
+    await expect(normalizePortableChatHistoryTwoPass(f.source, async () => policy, f.budget, { append: async () => { writes++; } })).rejects.toThrow('unknown_required_shape');
+    expect(writes).toBe(0); expect(f.budget.used).toBe(0);
+  }
+});

@@ -213,6 +213,10 @@ export async function normalizePortableChatHistory(
         messageRoles.set(id!, role!); keep(64);
         if (messageIds.has(id!)) fail('integrity_failed'); keep(256 + id!.length * 2); messageIds.add(id!); contentHash.update(role! + ':');
       }
+      if (row.family === 6) {
+        const type = await small(row, 3), scope = await small(row, 4), kind = await small(row, 14);
+        if (!['web', 'file', 'document', 'source_passage'].includes(type ?? '') || !['context', 'source'].includes(scope ?? '') || (kind !== null && !['interesting', 'used'].includes(kind))) fail('unknown_required_shape');
+      }
       if (row.family === 8 && messageRoles.get((await small(row, 1)) ?? '') !== 'user') fail('unsupported_assistant_asset');
       // Provider values precede visible content to establish its attribution.
       const fields = [...row.fields].sort((a, b) => {
