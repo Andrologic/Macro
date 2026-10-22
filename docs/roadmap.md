@@ -31,14 +31,19 @@ Un écart devenu obsolète doit être supprimé.
 
 ## 3. État actuel synthétique
 
-La version déclarée par `package.json` et `src-tauri/Cargo.toml` est `0.1.5`.
-La configuration Tauri reprend la version de `package.json`. Le tag local
-`v0.1.5` désigne le commit `73e794d2`. Le code intégré depuis ce tag conserve
-la même version déclarée ; sa présence dans la branche de développement ne
-signifie pas qu'une nouvelle release a été publiée.
+Point d'état du 22 octobre 2026, fondé sur `develop` au commit `2f3dd1d3`.
+La version déclarée par `package.json` et `src-tauri/Cargo.toml` est `0.1.8`.
+La configuration Tauri reprend la version de `package.json`.
+[Macro 0.1.8](https://github.com/Andrologic/Macro/releases/tag/v0.1.8) a été
+publiée le 30 septembre 2026. Le tag `v0.1.8` désigne le commit `9ee0b9b5`.
+Le code intégré depuis ce tag conserve la même version déclarée ; sa présence
+dans la branche de développement ne signifie pas qu'une nouvelle release a
+été publiée. Le [changelog](../CHANGELOG.md) décrit les versions livrées.
 
-L'état ci-dessous décrit le code intégré. Il ne vaut pas validation des paquets
-ou du canal de mises à jour.
+L'état ci-dessous décrit le code intégré à cette base. Les mentions de socle
+stabilisé concernent les workflows desktop décrits ; elles ne valent pas
+qualification des paquets ni du canal de mises à jour de ce code postérieur
+à la release. Les réserves sont précisées en section 3.2.
 
 L'application dispose déjà d'une base solide :
 
@@ -73,14 +78,14 @@ En revanche, le produit cible n'est pas encore atteint sur plusieurs axes critiq
 - articulation desktop / remote / mobile encore incomplète
 - expérience multi-plan et multi-projet encore à consolider de bout en bout
 
-### 3.1 Périmètre figé de la 0.1.4
+### 3.1 Repère historique du 5 septembre 2026, périmètre de la 0.1.4
 
 La boucle d'attention desktop est livrée dans la version `0.1.4`.
 Les notifications et la file « À traiter » ramènent aux demandes en attente.
 Le périmètre est figé sur le code intégré au commit `22c16fea`. La branche
 locale `release/0.1.4` conserve le jalon de stabilisation. Le tag immuable
 `v0.1.4` pointe sur le commit `156c067a`. Ce périmètre constitue un repère
-historique ; la version déclarée courante est désormais `0.1.5`. Les évolutions
+historique ; la version déclarée courante est désormais `0.1.8`. Les évolutions
 intégrées depuis ce repère sont décrites dans l'état courant ci-dessus.
 
 Écarts résolus dans le code :
@@ -98,6 +103,34 @@ Le kernel distant public, la supervision mobile, les comptes, la synchronisation
 connectée, un système de plugins, l'édition complète des fichiers en review et
 une nouvelle politique de merge automatique restent hors périmètre de la
 `0.1.4`.
+
+### 3.2 Stabilisation et qualification au 22 octobre 2026
+
+Le [bilan de sécurité](security-validation-2026-10-22.md) documente les
+corrections intégrées à cette base et leur validation automatisée. Les
+contrôles Linux et les huit tests natifs de récupération sur Windows et
+macOS réussissent dans l'exécution CI qui y est référencée. Ce bilan porte
+sur le code postérieur à la release 0.1.8.
+
+Les essais d'installation, de mise à jour valide, de refus d'une signature
+invalide et de rétrogradation avec décision native dans une application
+installée restent non effectués. Les paquets signés de test appropriés
+manquaient ; aucun poste Windows n'était disponible pour ces essais.
+Les signatures sont vérifiées sur fixtures et la récupération native est
+testée, mais ces contrôles ne remplacent pas les parcours sur application
+installée. La publication de la 0.1.8 ne qualifie pas ces corrections
+postérieures.
+
+### 3.3 AgSDL, Pilot et Connect à cette base
+
+La base `2f3dd1d3` ne contient ni l'éditeur AgSDL ni les parcours Macro Pilot
+et Macro Connect. Cette roadmap ne les déclare donc ni intégrés ni
+utilisables. Un travail présent sur une autre branche ne modifie pas cet
+état et doit être évalué sur sa propre révision avant d'être annoncé.
+
+La ligne publique 0.1 reste desktop local-first. Le kernel headless est un
+[prototype expérimental](../HEADLESS.md) ; la supervision mobile, les comptes
+applicatifs et les abonnements restent des objectifs futurs.
 
 ---
 
@@ -281,10 +314,12 @@ une nouvelle politique de merge automatique restent hors périmètre de la
 
 ## 5. Chantiers prioritaires
 
-### 5.1 Boucle d'attention desktop intégrée en 0.1.4
+### 5.1 Repère historique, boucle d'attention desktop intégrée en 0.1.4
 
+Ce bilan concerne le périmètre publié le 5 septembre 2026. Les réserves de
+qualification du code postérieur à la 0.1.8 figurent en section 3.2.
 Les écarts de notification, de restauration des approbations et de filtrage
-sont résolus dans le code local. Les contrôles locaux et les parcours Tauri
+sont résolus dans le code de la 0.1.4. Les contrôles locaux et les parcours Tauri
 vérifiés passent. Les paquets multiplateformes, leurs empreintes et les cinq
 manifestes publics du canal stable sont validés. Une reprise complète avec un
 fournisseur IA réel reste à exercer en complément des tests automatisés.
@@ -436,7 +471,8 @@ Critère de sortie :
 État :
 - le démarrage manuel, les questionnaires et le système de notifications desktop sont livrés
 - les notifications, la navigation persistante, la reprise des approbations interrompues et la file « À traiter » sont livrées en `0.1.4`
-- la release multiplateforme est publiée et les cinq manifestes stables publics sont validés ; une reprise complète avec un fournisseur IA réel reste à exercer en complément des tests automatisés
+- le bilan de la release `0.1.4` du 5 septembre 2026 indique la publication multiplateforme et la validation des cinq manifestes stables publics ; une reprise complète avec un fournisseur IA réel reste à exercer en complément des tests automatisés
+- ce repère historique ne lève pas les réserves de qualification du code postérieur à la `0.1.8` décrites en section 3.2
 
 ### Phase 5 - Remote kernel et mobile supervision
 
