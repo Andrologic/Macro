@@ -1,15 +1,4 @@
 {
-  "graphHints": {
-    "skills": "Skills",
-    "structured": "Validated structured result",
-    "dynamic": "Configuration selected at initialization",
-    "external": "Declared external effect",
-    "externalShort": "External effect",
-    "first": "First acceptable result",
-    "all": "All results required",
-    "steering": "Guidance during active work",
-    "maxVisits": "Up to {{count}} visits"
-  },
   "editor": "AgSDL viewer",
   "legacyStrategy": "Legacy strategy",
   "loading": "Loading AgSDL...",
@@ -230,7 +219,10 @@
       "engineUnset": "Engine not configured",
       "selected": "Selected"
     },
-    "backToComponent": "Back to previous details"
+    "backToComponent": "Back to previous details",
+    "legend": "Legend",
+    "legendFlow": "Flow",
+    "legendError": "Exit on error"
   },
   "attachToChat": "Attach to chat",
   "chatSelection": "AgSDL selection",

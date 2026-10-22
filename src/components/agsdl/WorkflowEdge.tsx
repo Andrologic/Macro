@@ -1,5 +1,5 @@
 import { useEffect, useId, useRef, useState } from 'react';
-import { BaseEdge, getSmoothStepPath, type Edge, type EdgeProps } from '@xyflow/react';
+import { BaseEdge, EdgeLabelRenderer, getSmoothStepPath, type Edge, type EdgeProps } from '@xyflow/react';
 import { ArrowDown, ArrowDownToLine, ArrowRightLeft, Check, CornerUpLeft, GitBranch, Info, Link2, X } from 'lucide-react';
 import type { ViewerEdge, ViewerEdgeRoute } from '../../services/agsdl/graphLayout';
 import { viewerEdgePath } from '../../services/agsdl/graphLayout';
@@ -62,7 +62,8 @@ export function WorkflowEdge(props: EdgeProps<GraphEdge>) {
   const { t } = useAgsdlTranslation();
   const data = props.data!;
   const route = data.route;
-  const path = route ? viewerEdgePath(route, props) : getSmoothStepPath(props)[0];
+  const failure = data.connection.label === 'onError';
+  const path = route ? viewerEdgePath(route, props, failure) : getSmoothStepPath(props)[0];
   const [anchor, setAnchor] = useState<SVGGElement | null>(null);
   const pointerPosition = useRef<{ left: number; top: number } | undefined>(undefined);
   const [preview, setPreview] = useState(false);
@@ -103,6 +104,11 @@ export function WorkflowEdge(props: EdgeProps<GraphEdge>) {
       }}>
       <BaseEdge id={props.id} path={path} markerStart={props.markerStart} markerEnd={props.markerEnd} style={props.style} interactionWidth={18} />
     </g>
+    {/* Drawn above the blocks: the exit sits on the block's border. */}
+    {failure && <EdgeLabelRenderer><svg className="agsdl-edge-exit" width="18" height="18" viewBox="-9 -9 18 18" aria-hidden="true"
+      style={{ transform: `translate(-50%, -50%) translate(${props.sourceX}px, ${props.sourceY}px)`, opacity: props.style?.opacity }}>
+      <circle r="8" /><path d="M0 -3.5v4M0 3.4v.1" />
+    </svg></EdgeLabelRenderer>}
     {preview && !menu && anchor && <WorkflowGraphPopup anchor={anchor} position={position} id={id} label={t('agsdl.viewer.connection')} onClose={close}
       onMouseEnter={() => clearTimeout(timer.current)} onMouseLeave={leave}>
       <WorkflowEdgeSummary {...data} />

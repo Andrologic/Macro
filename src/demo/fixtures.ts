@@ -450,7 +450,31 @@ const longName = demoPlans.find(plan => plan.id === 'demo-persistent')!;
 longName.label = longName.title = 'Rédaction supervisée avec validation éditoriale et révision du même agent';
 longName.agsdl.display!.title = longName.title;
 longName.agsdl.display!.cards!['/flow'] = { title: longName.title };
-for (const path of ['/agents/writer', '/flow/steps/write']) longName.agsdl.display!.cards![path] = { title: 'Rédiger un dossier technique étayé sans perdre les consignes reçues en cours de travail' };
+longName.agsdl.display!.cards!['/flow/steps/write'] = { title: 'Rédiger un dossier technique étayé sans perdre les consignes reçues en cours de travail' };
+
+// Agents are participants and carry a role; steps keep the action they perform.
+const agentRoles: Record<string, Record<string, string>> = {
+  'demo-release': { checklist: 'Responsable de publication', review: 'Relecteur', installers: 'Testeur mobile' },
+  'demo-assistant': { specify: 'Analyste de la demande', implement: 'Rédacteur', verify: 'Relecteur' },
+  'demo-voice': { transcribe: 'Transcripteur', clarify: 'Chargé de clarification', summarize: 'Rédacteur', review: 'Relecteur' },
+  'demo-quality': { scope: 'Responsable qualité', security: 'Auditeur sécurité', accessibility: 'Expert accessibilité', content: 'Relecteur de contenu', synthesize: 'Rapporteur', revise: 'Développeur' },
+  'demo-ingestion': { inspect: 'Analyste de données', normalize: 'Ingénieur de données', repair: 'Correcteur de données', report: 'Rapporteur' },
+  'demo-incident': { triage: 'Responsable d’astreinte', investigate: 'Analyste des traces', verify: 'Vérificateur', conclude: 'Rédacteur du post-mortem' },
+  'demo-refund': { understand: 'Conseiller client', eligibility: 'Analyste des remboursements', alternative: 'Conseiller commercial', notify: 'Chargé de relation client' },
+  'demo-editorial': { research: 'Documentaliste', technical: 'Rédacteur technique', practical: 'Rédacteur pratique', edit: 'Éditeur' },
+  'demo-delivery': { coordinator: 'Coordinateur de livraison', coordinatorReview: 'Auditeur des preuves', repair: 'Développeur' },
+  'demo-persistent': { writer: 'Rédacteur' },
+  'demo-competition': { summarize: 'Rapporteur', fallback: 'Enquêteur' },
+  'demo-structured': { extractor: 'Extracteur de fiches', recovery: 'Analyste technique', publish: 'Rédacteur catalogue' },
+  'demo-approvals': { prepare: 'Éditeur', revise: 'Réviseur', recover: 'Analyste technique', confirm: 'Rapporteur' },
+  'demo-crisis': { technical: 'Contrôleur technique', business: 'Contrôleur métier', report: 'Rédacteur', escalation: 'Coordinateur', recovery: 'Analyste technique' },
+  'demo-fix': { triage: 'Responsable support', designer: 'Concepteur', developer: 'Développeur', reviewer: 'Relecteur', releaser: 'Intégrateur', support: 'Conseiller support', duplicate: 'Gestionnaire des tickets', recovery: 'Analyste technique' },
+  'demo-audio-feature': { scope: 'Analyste produit', implement: 'Développeur mobile', verify: 'Testeur' },
+  'macro-chantier': { agent1: 'Concepteur', agent2: 'Développeur', agent3: 'Vérificateur' },
+};
+for (const plan of demoPlans) for (const [agent, role] of Object.entries(agentRoles[plan.id] ?? {})) {
+  plan.agsdl.display!.cards![`/agents/${agent}`] = { ...plan.agsdl.display!.cards![`/agents/${agent}`], title: role };
+}
 
 const executionFixtures = buildDemoExecutions(demoPlans, DEMO_DATE);
 demoTasks.push(...executionFixtures.tasks);

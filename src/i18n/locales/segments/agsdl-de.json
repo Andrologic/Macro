@@ -1,15 +1,4 @@
 {
-  "graphHints": {
-    "skills": "Skills",
-    "structured": "Geprüftes strukturiertes Ergebnis",
-    "dynamic": "Konfigurationswahl bei Initialisierung",
-    "external": "Deklarierte externe Auswirkung",
-    "externalShort": "Externe Auswirkung",
-    "first": "Erstes akzeptables Ergebnis",
-    "all": "Alle Ergebnisse erforderlich",
-    "steering": "Anweisung während der Arbeit",
-    "maxVisits": "Bis zu {{count}} Durchläufe"
-  },
   "editor": "AgSDL-Ansicht",
   "legacyStrategy": "Bisherige Strategie",
   "loading": "AgSDL wird geladen...",
@@ -230,7 +219,10 @@
       "engineUnset": "Engine nicht konfiguriert",
       "selected": "Ausgewählt"
     },
-    "backToComponent": "Zurück zu den vorherigen Details"
+    "backToComponent": "Zurück zu den vorherigen Details",
+    "legend": "Legende",
+    "legendFlow": "Ablauf",
+    "legendError": "Ausgang bei Fehler"
   },
   "attachToChat": "Zum Chat hinzufügen",
   "chatSelection": "AgSDL-Auswahl",

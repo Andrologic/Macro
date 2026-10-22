@@ -1,15 +1,4 @@
 {
-  "graphHints": {
-    "skills": "스킬",
-    "structured": "구조화된 결과 검증",
-    "dynamic": "초기화 시 구성 선택",
-    "external": "선언된 외부 영향",
-    "externalShort": "외부 영향",
-    "first": "첫 번째 적합한 결과",
-    "all": "모든 결과 필요",
-    "steering": "작업 중 지시",
-    "maxVisits": "최대 {{count}}회"
-  },
   "editor": "AgSDL 뷰어",
   "legacyStrategy": "기존 전략",
   "loading": "AgSDL 로드 중...",
@@ -230,7 +219,10 @@
       "engineUnset": "엔진 미설정",
       "selected": "선택됨"
     },
-    "backToComponent": "이전 상세 정보로 돌아가기"
+    "backToComponent": "이전 상세 정보로 돌아가기",
+    "legend": "범례",
+    "legendFlow": "흐름",
+    "legendError": "오류 시 출구"
   },
   "attachToChat": "채팅에 첨부",
   "chatSelection": "AgSDL 선택",

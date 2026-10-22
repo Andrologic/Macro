@@ -1,15 +1,4 @@
 {
-  "graphHints": {
-    "skills": "スキル",
-    "structured": "構造化結果の検証",
-    "dynamic": "初期化時に構成を選択",
-    "external": "宣言された外部への作用",
-    "externalShort": "外部への作用",
-    "first": "最初の適切な結果",
-    "all": "すべての結果が必要",
-    "steering": "実行中の指示",
-    "maxVisits": "最大 {{count}} 回"
-  },
   "editor": "AgSDL ビューアー",
   "legacyStrategy": "従来の戦略",
   "loading": "AgSDLを読み込み中...",
@@ -230,7 +219,10 @@
       "engineUnset": "エンジンが未設定",
       "selected": "選択済み"
     },
-    "backToComponent": "前の詳細に戻る"
+    "backToComponent": "前の詳細に戻る",
+    "legend": "凡例",
+    "legendFlow": "フロー",
+    "legendError": "エラー時の出口"
   },
   "attachToChat": "チャットに添付",
   "chatSelection": "AgSDL の選択",

@@ -49,11 +49,15 @@ lancement natif devra isoler le profil avant le démarrage du backend.
   passages, appel de tests en erreur et accord avant une étape d’agent protégée.
 - Lecture des graphes : le chemin principal reste dans une colonne, les
   alternatives se placent à côté, les retours et les connexions éloignées suivent
-  des rails latéraux partagés par bloc cible. Les étapes de routage sont plus
-  discrètes que les agents ; un repère marque le début et la fin des parcours.
-- Les cartes distinguent les types de blocs et indiquent les compétences, les
-  résultats contraints, la sélection de configuration et les effets externes déclarés.
-  Le survol précise leur sens, sans prétendre à une prise en charge à l’exécution.
+  des rails latéraux partagés par bloc cible.
+- Blocs : les étapes d’agent et les approbations sont des cartes, les appels
+  déterministes des barres à angles coupés, les sous-processus des cartes à
+  ouvrir et les étapes de routage des pastilles. La deuxième ligne nomme qui
+  exécute l’étape : l’agent, le service appelé, le valideur ou la composition.
+  Les agents des démos portent un rôle, les étapes une action.
+- Liaisons : trait gris pour l’enchaînement, rouge atténué pour les erreurs, qui
+  partent d’une sortie marquée sur le bord du bloc. La légende s’ouvre depuis les
+  contrôles du graphe ; le détail de chaque liaison reste au survol.
 - Compétences partagées, contenus référencés et équipe sans graphe imposé.
 - Quatre-vingt-neuf tâches réparties entre vingt-deux exécutions fictives, dont une
   édition archivée. Elles restent individuelles dans les quatre états de la file,

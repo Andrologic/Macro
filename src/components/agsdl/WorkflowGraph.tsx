@@ -1,10 +1,10 @@
 import { groupNativeState, type NativeCardActivation } from "../../services/agsdl/executionView";
-import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
-import { Background, Handle, MarkerType, Panel, Position, ReactFlow, ReactFlowProvider, useReactFlow, type Node, type NodeProps, type NodeChange } from "@xyflow/react";
-import { ArrowRightLeft, Bot, Box, Boxes, Braces, ChevronDown, CircleHelp, GitBranch, GitMerge, Hand, Info, Layers, MessageSquare, MessageSquarePlus, LocateFixed, Minus, Plus, Plug, RotateCcw, Shuffle, Sparkles, Trophy, Zap } from "lucide-react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Handle, MarkerType, Panel, Position, ReactFlow, ReactFlowProvider, useReactFlow, type Node, type NodeProps, type NodeChange } from "@xyflow/react";
+import { Bot, Boxes, ChevronDown, ChevronRight, CircleHelp, Info, Layers, List, MessageSquare, MessageSquarePlus, LocateFixed, Minus, Plus, Terminal, UserCheck } from "lucide-react";
 import { useElementSize } from "../../hooks/useElementSize";
-import { layoutViewer, routeViewerEdge, type ViewerEdge } from "../../services/agsdl/graphLayout";
-import { graphNeighborhood, presentFocusedGraph, presentGraph } from "../../services/agsdl/graphPresentation";
+import { layoutViewer, routeViewerEdge, VIEWER_CARD_WIDTH, type ViewerEdge } from "../../services/agsdl/graphLayout";
+import { graphBlockPerformer, graphBlockShape, graphNeighborhood, presentFocusedGraph, presentGraph } from "../../services/agsdl/graphPresentation";
 import "./graphPresentation.css";
 import type { ViewerCard } from "../../services/agsdl/viewer";
 import { useAgsdlTranslation } from "./useAgsdlTranslation";
@@ -32,9 +32,6 @@ type GraphNode = Node<{
   native?: NativeCardActivation;
   incoming: string[];
   outgoing: string[];
-  /** Path markers: no authored predecessor, or no continuation on this canvas. */
-  start: boolean;
-  end: boolean;
   attach?: () => void;
   openTask?: () => void;
   dismissSignal: number;
@@ -43,11 +40,11 @@ type GraphNode = Node<{
 function WorkflowNode({ data }: NodeProps<GraphNode>) {
   const { card } = data;
   const { t } = useAgsdlTranslation();
-  const Icon = data.members ? Layers : card.kind === "System" ? Boxes : card.kind === "condition" ? GitBranch : card.kind === "approval" ? Hand : card.kind === "join" ? card.details.mode === "first" ? Trophy : GitMerge : card.kind === "compose" ? Boxes : card.kind === "call" ? Plug : card.kind === "prepare" ? ArrowRightLeft : ["Agent", "invoke", "agent"].includes(card.kind) ? Bot : Box;
+  const shape = data.members ? "card" : graphBlockShape(card);
+  const Icon = data.members ? Layers : card.kind === "System" ? Boxes : card.kind === "approval" ? UserCheck : card.kind === "call" ? Terminal : card.kind === "compose" ? Layers : Bot;
   const warning = Boolean(card.issueCount) || card.unresolved || card.branches.some(branch => branch.reference.unresolved) || card.dependencies?.some(ref => ref.unresolved);
-  const control = !data.members && ["prepare", "condition", "join"].includes(card.kind);
-  const maxVisits = typeof card.details.maxVisits === "number" ? card.details.maxVisits : undefined;
   const label = [data.kindLabel, data.title !== data.kindLabel ? data.title : "", data.subtitle, warning ? t("agsdl.viewer.unresolved") : ""].filter(Boolean).join(" · ");
+  const status = data.task || data.native ? <WorkflowStatusBadge task={data.task} native={data.native} /> : null;
   return (
     <>
       <Handle type="target" position={Position.Top} id="in" />
@@ -59,7 +56,7 @@ function WorkflowNode({ data }: NodeProps<GraphNode>) {
         ]}>
       <button
         type="button"
-        className={`agsdl-graph-node nodrag nopan${data.active ? " is-selected" : ""}${card.kind === "approval" ? " is-interaction" : ""}${control ? " is-control" : ""}${data.start ? " is-start" : ""}${data.end ? " is-end" : ""}`}
+        className={`agsdl-graph-node is-${shape} nodrag nopan${data.active ? " is-selected" : ""}`}
         onClick={event => {
           event.stopPropagation();
           if (data.expand) data.expand();
@@ -72,24 +69,23 @@ function WorkflowNode({ data }: NodeProps<GraphNode>) {
         aria-expanded={data.members ? false : undefined}
         aria-label={data.task || data.native ? undefined : label}
       >
-        {data.task || data.native ? <WorkflowStatusBadge task={data.task} native={data.native} />
-          : <span className="agsdl-node-icon"><Icon size={15} aria-hidden="true" /></span>}
-        <span className="agsdl-node-text">
+        {shape === "routing" ? <>
+          {status}
           <span className="agsdl-node-title">{data.title}</span>
-          {data.subtitle && <span className="agsdl-node-subtitle">{data.subtitle}</span>}
-          {!data.members && card.capabilities && <span className="agsdl-node-capabilities">
-            {card.capabilities.skills.length > 0 && <span title={`${t("agsdl.graphHints.skills")}: ${card.capabilities.skills.join(", ")}`} aria-label={`${t("agsdl.graphHints.skills")}: ${card.capabilities.skills.join(", ")}`}><Sparkles size={11} aria-hidden="true" /><span className="agsdl-node-skill-name">{card.capabilities.skills.at(-1)}</span></span>}
-            {card.capabilities.structuredResults && <span title={t("agsdl.graphHints.structured")} aria-label={t("agsdl.graphHints.structured")}><Braces size={12} aria-hidden="true" /></span>}
-            {card.capabilities.dynamicConfiguration && <span title={t("agsdl.graphHints.dynamic")} aria-label={t("agsdl.graphHints.dynamic")}><Shuffle size={12} aria-hidden="true" /></span>}
-            {maxVisits !== undefined && <span title={t("agsdl.graphHints.maxVisits", { count: maxVisits })} aria-label={t("agsdl.graphHints.maxVisits", { count: maxVisits })}><RotateCcw size={11} aria-hidden="true" /><span>{maxVisits}</span></span>}
-            {card.capabilities.externalEffects && <span title={t("agsdl.graphHints.external")} aria-label={t("agsdl.graphHints.external")}><Zap size={12} aria-hidden="true" /><span>{t("agsdl.graphHints.externalShort")}</span></span>}
-          </span>}
-
-        </span>
-        {data.members && <ChevronDown size={14} aria-hidden="true" />}
+        </> : <>
+          <span className="agsdl-node-tile">{status ?? <Icon size={shape === "execution" ? 15 : 14} aria-hidden="true" />}</span>
+          <span className="agsdl-node-text">
+            <span className="agsdl-node-title">{data.title}</span>
+            {data.subtitle && <span className="agsdl-node-subtitle">{data.subtitle}</span>}
+          </span>
+          {shape === "subprocess" && <ChevronRight size={15} className="agsdl-node-chevron" aria-hidden="true" />}
+          {data.members && <ChevronDown size={14} className="agsdl-node-chevron" aria-hidden="true" />}
+        </>}
         {data.changed && <span className="agsdl-graph-change-dot" title={t("agsdl.designGraph.changed", { defaultValue: "Modified" })} />}
         {data.pending && <span className="agsdl-graph-pending" title={t("agsdl.designGraph.instructionsMissing", { defaultValue: "Instructions to complete" })}><CircleHelp size={12} aria-hidden="true" /></span>}
         {warning && <CircleHelp size={12} className="agsdl-node-warning" aria-hidden="true" />}
+        {/* Failures leave through the block's own edge, on the right. */}
+        <Handle type="source" position={Position.Right} id="error" />
       </button>
       </WorkflowBlockOverlay>
       <Handle type="source" position={Position.Bottom} id="out" />
@@ -118,11 +114,11 @@ function Canvas({ cards, edges: connections, selected, select, title, changedPat
   const { t } = useAgsdlTranslation();
   const { ref, width, height } = useElementSize<HTMLDivElement>();
   const flow = useReactFlow<GraphNode>();
-  const backgroundId = useId();
   const [canvasAnchor, setCanvasAnchor] = useState<HTMLDivElement | null>(null);
   const [paneMenu, setPaneMenu] = useState<{ left: number; top: number }>();
   const [dismissSignal, setDismissSignal] = useState(0);
   const [inspectedEdge, setInspectedEdge] = useState("");
+  const [legend, setLegend] = useState(false);
   const focusEdge = useCallback((id: string, open: boolean) => {
     setInspectedEdge(current => open ? id : current === id ? "" : current);
   }, []);
@@ -159,15 +155,15 @@ function Canvas({ cards, edges: connections, selected, select, title, changedPat
     return {
       id: card.path, type: "workflow", position,
       // Preserve measured dimensions on focus updates without fixing CSS height.
-      measured: heights[card.path] === undefined ? undefined : { width: 210, height: heights[card.path] },
-      style: { width: 210 },
+      measured: heights[card.path] === undefined ? undefined : { width: VIEWER_CARD_WIDTH, height: heights[card.path] },
+      style: { width: VIEWER_CARD_WIDTH },
       data: { card, title: displayTitle(card), kindLabel: group ? t("agsdl.designGraph.group", { defaultValue: "Group" }) : t(`agsdl.kind.${card.kind === "agent" ? "Agent" : card.kind}`, { defaultValue: card.kind }), active: active === card.path,
-        subtitle: group ? t("agsdl.designGraph.members", { count: group.members.length, defaultValue: "{{count}} components" }) : card.kind === "join" ? t(card.details.mode === "first" ? "agsdl.graphHints.first" : "agsdl.graphHints.all") : card.kind === "compose" ? card.composition?.label ?? "" : card.kind === "agent" && card.details.delivery === "steering" ? t("agsdl.graphHints.steering") : card.kind === "approval" ? card.approvalBinding ? card.approvalBinding.label : card.approvers?.length ? card.approvers.map(ref => ref.label).join(" · ") : t("agsdl.viewer.approverMissing") : "",
+        // The second line names who performs the step; routing steps have none.
+        subtitle: group ? t("agsdl.designGraph.members", { count: group.members.length, defaultValue: "{{count}} components" })
+          : graphBlockPerformer(card, displayTitle(card)) ?? (card.kind === "approval" && !card.approvalBinding && !card.approvers?.length ? t("agsdl.viewer.approverMissing") : ""),
         select: path => { setHighlighted(path); if (selectionMode === "select") select(path); }, inspect: path => { setHighlighted(path); (onInspect ?? select)(path); }, expand: group ? () => expandGroup(group.id) : undefined, focus: setHovered,
         incoming: [...new Set(presentation.edges.filter(edge => edge.target === card.path).map(edge => displayTitle(presentation.cards.find(item => item.path === edge.source)!)))],
         outgoing: [...new Set(presentation.edges.filter(edge => edge.source === card.path).map(edge => displayTitle(presentation.cards.find(item => item.path === edge.target)!)))],
-        start: presentation.edges.length > 0 && !overview.edges.some(edge => edge.target === card.path),
-        end: presentation.edges.length > 0 && !overview.edges.some(edge => edge.source === card.path),
         attach: !group && onAttach ? () => onAttach(card.path) : undefined,
         openTask: !group && trackedTasks[card.path] && onOpenTask ? () => onOpenTask(card.path) : undefined,
         dismissSignal,
@@ -201,7 +197,10 @@ function Canvas({ cards, edges: connections, selected, select, title, changedPat
     select(selected === edge.originals[0].id ? "" : edge.originals[0].id);
   };
   const edges: GraphEdge[] = presentation.edges.map(edge => {
-    const color = edge.transfers?.length && neighborhood.edges.has(edge.id) ? "rgb(var(--primary))" : edge.dependency ? "rgb(var(--muted-foreground))" : "rgb(var(--primary))";
+    // Grey for the flow, attenuated red for failures; focus brightens without adding colour.
+    const failure = edge.label === "onError";
+    const focused = hasFocus && neighborhood.edges.has(edge.id);
+    const color = failure ? "rgb(var(--destructive) / 0.55)" : focused ? "rgb(var(--foreground) / 0.7)" : "rgb(var(--muted-foreground) / 0.5)";
     return {
       ...edge, type: "workflow", data: { route: layout.routes.get(edge.id) ?? routeViewerEdge(layout.nodes, edge), connection: edge,
         sourceTitle: displayTitle(presentation.cards.find(card => card.path === edge.source)!),
@@ -210,11 +209,11 @@ function Canvas({ cards, edges: connections, selected, select, title, changedPat
         inspect: selectionMode === "inspect" ? () => activateEdge(edge.id) : undefined,
         inspectSource: () => presentation.groups.some(group => group.id === edge.source) ? expandGroup(edge.source) : (onInspect ?? select)(edge.source),
         inspectTarget: () => presentation.groups.some(group => group.id === edge.target) ? expandGroup(edge.target) : (onInspect ?? select)(edge.target),
-      }, sourceHandle: "out", targetHandle: "in", label: undefined,
+      }, sourceHandle: failure ? "error" : "out", targetHandle: "in", label: undefined,
       ariaRole: "group" as const,
       ariaLabel: `${displayTitle(presentation.cards.find(card => card.path === edge.source)!)} → ${displayTitle(presentation.cards.find(card => card.path === edge.target)!)}`,
       markerEnd: { type: MarkerType.ArrowClosed, width: 14, height: 14, color },
-      style: { stroke: color, strokeWidth: hasFocus && neighborhood.edges.has(edge.id) ? 2.5 : 1.3, strokeDasharray: edge.exchangeOnly ? "3 4" : edge.dependency ? "7 4" : undefined, opacity: 0.85 },
+      style: { stroke: color, strokeWidth: focused ? 2 : 1.3, strokeDasharray: edge.exchangeOnly ? "3 4" : edge.dependency ? "7 4" : undefined },
     };
   });
   const clearSelection = () => { setHighlighted(""); setHovered(""); select(""); };
@@ -241,11 +240,15 @@ function Canvas({ cards, edges: connections, selected, select, title, changedPat
         {selectionMode === "inspect" && presentation.cards.some(card => card.path === active) && <Panel position="top-right" className="agsdl-graph-controls">
           <button onClick={() => select(active)} aria-label={t("agsdl.viewer.componentDetails")} title={t("agsdl.viewer.componentDetails")}><Info size={14} /></button>
         </Panel>}
-        <Background id={backgroundId} color="rgb(var(--muted-foreground) / 0.3)" gap={20} size={1.5} />
         <Panel position="bottom-left" className="agsdl-graph-controls">
+          {legend && <div className="agsdl-graph-legend" role="note">
+            <div><svg width="40" height="12" aria-hidden="true"><path d="M1 6H39" stroke="rgb(var(--muted-foreground) / 0.6)" strokeWidth="1.4" /></svg>{t("agsdl.viewer.legendFlow")}</div>
+            <div><svg width="40" height="18" aria-hidden="true"><path d="M9 9H39" stroke="rgb(var(--destructive) / 0.6)" strokeWidth="1.4" /><circle cx="9" cy="9" r="7.5" fill="rgb(var(--background))" stroke="rgb(var(--destructive) / 0.4)" /><path d="M9 5.5v4M9 12.4v.1" stroke="rgb(var(--destructive))" strokeWidth="1.6" strokeLinecap="round" /></svg>{t("agsdl.viewer.legendError")}</div>
+          </div>}
           <button onClick={() => void flow.zoomOut()} aria-label={t("agsdl.viewer.zoomOut")} title={t("agsdl.viewer.zoomOut")}><Minus size={14} /></button>
           <button onClick={() => void flow.zoomIn()} aria-label={t("agsdl.viewer.zoomIn")} title={t("agsdl.viewer.zoomIn")}><Plus size={14} /></button>
           <button onClick={() => void flow.fitView(fitOptions)} aria-label={t("agsdl.viewer.fit")} title={t("agsdl.viewer.fit")}><LocateFixed size={14} /></button>
+          <button onClick={() => setLegend(value => !value)} aria-pressed={legend} aria-label={t("agsdl.viewer.legend")} title={t("agsdl.viewer.legend")}><List size={14} /></button>
         </Panel>
       </ReactFlow>
       </div>

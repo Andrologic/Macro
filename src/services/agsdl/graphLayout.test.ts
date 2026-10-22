@@ -19,7 +19,7 @@ describe("AgSDL reading layout", () => {
   it("keeps the main path in one straight column below the tallest card of each row", () => {
     const cards = ["a", "b", "c"].map(id => card(id));
     const graph = layoutViewer(cards, [edge("a", "b"), edge("b", "c")], { [cards[0].path]: 180 });
-    expect(graph.nodes.map(node => node.position.y)).toEqual([0, 240, 352]);
+    expect(graph.nodes.map(node => node.position.y)).toEqual([0, 240, 350]);
     expect(new Set(graph.nodes.map(center)).size).toBe(1);
   });
 

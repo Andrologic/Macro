@@ -1,15 +1,4 @@
 {
-  "graphHints": {
-    "skills": "Compétences",
-    "structured": "Résultat structuré contrôlé",
-    "dynamic": "Configuration choisie à l’initialisation",
-    "external": "Effet externe déclaré",
-    "externalShort": "Effet externe",
-    "first": "Premier résultat acceptable",
-    "all": "Tous les résultats requis",
-    "steering": "Consigne en cours de travail",
-    "maxVisits": "Jusqu’à {{count}} passages"
-  },
   "editor": "Visualiseur AgSDL",
   "legacyStrategy": "Stratégie existante",
   "loading": "Chargement d’AgSDL...",
@@ -230,7 +219,10 @@
       "engineUnset": "Moteur non configuré",
       "selected": "Sélectionnée"
     },
-    "backToComponent": "Revenir à la fiche précédente"
+    "backToComponent": "Revenir à la fiche précédente",
+    "legend": "Légende",
+    "legendFlow": "Enchaînement",
+    "legendError": "Sortie en cas d’erreur"
   },
   "attachToChat": "Joindre au chat",
   "chatSelection": "Sélection AgSDL",

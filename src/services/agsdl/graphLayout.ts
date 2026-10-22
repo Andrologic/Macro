@@ -19,7 +19,7 @@ export interface ViewerLayoutNode {
 export interface ViewerRouteStep { y: number; x?: number }
 export interface ViewerEdgeRoute { kind: "orthogonal"; steps: ViewerRouteStep[]; loop?: boolean }
 
-export const VIEWER_CARD_WIDTH = 210;
+export const VIEWER_CARD_WIDTH = 240;
 const ROW_GAP = 60;
 const CARD_GAP = 40;
 const LANE_GAP = 14;
@@ -27,10 +27,11 @@ const TRACK_GAP = 8;
 const SIDE_MARGIN = 24;
 const SIDE_LANE = 14;
 const LOOP_OFFSET = 8;
+const SIDE_EXIT = 18;
 const RAIL_SPAN = 2;
 const TRACK_LIMIT = ROW_GAP / 2 - 10;
 
-const minimumHeight = (card: ViewerCard) => card.kind === "approval" ? 68 : ["prepare", "condition", "join"].includes(card.kind) ? 40 : 52;
+const minimumHeight = (card: ViewerCard) => ["prepare", "condition", "join"].includes(card.kind) ? 28 : 50;
 // Main continuations keep their source's column; alternatives and failures move aside.
 const routeRank = (label: string) => label === "onError" ? 2 : ["next", "success", "true", "approved", ""].includes(label) ? 0 : 1;
 
@@ -356,10 +357,11 @@ export function routeViewerEdge(nodes: ViewerLayoutNode[], edge: ViewerEdge): Vi
 }
 
 /** Orthogonal path with rounded corners, ending at the actual React Flow handles. */
-export function viewerEdgePath(route: ViewerEdgeRoute, handles: { sourceX: number; sourceY: number; targetX: number; targetY: number }): string {
+export function viewerEdgePath(route: ViewerEdgeRoute, handles: { sourceX: number; sourceY: number; targetX: number; targetY: number }, fromSide = false): string {
   const { sourceX, sourceY, targetX, targetY } = handles;
-  const points = [{ x: sourceX, y: sourceY }];
-  let x = sourceX;
+  // A side exit (failures) first steps away from the block before following its route.
+  const points = fromSide ? [{ x: sourceX, y: sourceY }, { x: sourceX + SIDE_EXIT, y: sourceY }] : [{ x: sourceX, y: sourceY }];
+  let x = fromSide ? sourceX + SIDE_EXIT : sourceX;
   for (const step of route.steps) {
     points.push({ x, y: step.y });
     x = step.x ?? targetX;
