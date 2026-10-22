@@ -53,8 +53,10 @@ export class MachineResources {
       const generation = this.generation;
       const { reuseForMs, ...value } = await this.source.telemetry();
       const returned = this.clock();
+      if (reuseForMs !== undefined && reuseForMs !== null &&
+        (!Number.isInteger(reuseForMs) || reuseForMs < 0 || reuseForMs > 5000)) throw new Error('content_unavailable');
       const response = { ...value, instance_id: instanceId };
-      if (typeof reuseForMs === 'number' && Number.isInteger(reuseForMs) && reuseForMs >= 0 && reuseForMs <= 5000) {
+      if (typeof reuseForMs === 'number') {
         const lifetime = { deadline: started.monotonic + reuseForMs, generation };
         this.telemetryLifetimes.set(response, lifetime);
         if (generation === this.generation && Number.isFinite(returned.monotonic) && returned.monotonic < lifetime.deadline &&

@@ -78,10 +78,19 @@ it('shares one completed native sample across two real serial deliveries with se
   await h.host.dispose(); expect(h.reads()).toBe(1);
 });
 
-it.each([undefined, null, NaN, -1, 5001, 1.5])('keeps sources without a reliable native budget uncached: %s', async hint => {
+it.each([undefined, null])('keeps sources without a native budget uncached: %s', async hint => {
   const h = await harness(); h.read(async () => ({ ...h.dto(), reuseForMs: hint }));
   payload(await h.host.handle(h.delivery('first'), h.authorize));
   payload(await h.host.handle(h.delivery('second'), h.authorize));
+  expect(h.reads()).toBe(2); await h.host.dispose();
+});
+
+it.each([NaN, -1, 5001, 1.5])('refuses an invalid native budget without caching and reads a valid next sample: %s', async hint => {
+  const h = await harness(); h.read(async () => ({ ...h.dto(), reuseForMs: hint }));
+  expect((await h.host.handle(h.delivery('invalid'), h.authorize)).response).toMatchObject({ type: 'error', code: 'content_unavailable' });
+  expect(h.reads()).toBe(1);
+  h.read(async () => h.dto());
+  payload(await h.host.handle(h.delivery('valid'), h.authorize));
   expect(h.reads()).toBe(2); await h.host.dispose();
 });
 
