@@ -11,5 +11,7 @@ export interface WorkflowAgentTaskReference {
   state: WorkflowAgentTaskState;
   activationIds: ActivationId[];
   interactionRequired: boolean;
+  /** Run failures without an Agent are surfaced on one existing row. */
+  runAttention?: { state: 'failed' | 'uncertain'; activationIds: ActivationId[] };
   stale?: boolean;
 }

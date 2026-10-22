@@ -116,7 +116,7 @@ describe('AgSDL 0.2 design envelopes', () => {
   });
 });
 
-import { adaptationChanges, defaultDesign } from './design';
+import { adaptationChanges, defaultDesign, retainDesignOrigin } from './design';
 
 describe('adaptation support assertions', () => {
   const requirement = { contract: { identity: 'example/support', version: '1' } };
@@ -151,4 +151,29 @@ describe('adaptation support assertions', () => {
     before.requirements[0].value = '';
     expect(adaptationChanges(source, before, { ...before, requirements: [{ ...before.requirements[0], value: 'old' }] })).toEqual([]);
   });
+});
+
+it('preserves blueprint provenance when ordinary design edits omit origin in both editions', () => {
+  const origin = { branchName: 'develop', planId: 'blueprint', name: 'Blueprint', revision: 2 };
+  const next = { ...defaultDesign(), context: 'Edited context' };
+  const modern = createEmptySystemDocument('Copy');
+  modern.design!.origin = origin;
+  expect(withDocumentDesign(modern.source, next, modern).design?.origin).toEqual(origin);
+  expect(withDocumentDesign(modern.source, { ...next, origin: { planId: 'blueprint', name: 'Blueprint', revision: 2 } }, modern).design?.origin).toEqual(origin);
+  expect(withDocumentDesign(modern.source, { ...next, origin: { ...origin, branchName: undefined } }, modern).design?.origin).toEqual(origin);
+  const legacy = JSON.parse(createEmptySystem('Copy'));
+  legacy.root.annotations.macroDesign.origin = origin;
+  const edited = applyChanges(JSON.stringify(legacy), designChanges(JSON.stringify(legacy), next));
+  expect(readDesign(edited).origin).toEqual(origin);
+  expect(readDesign(edited).context).toBe('Edited context');
+});
+
+it.each([null, 7, {}, { planId: 'blueprint' }, { planId: 'blueprint', name: 'Blueprint', revision: 1, branchName: null }, { planId: 'blueprint', name: 'Blueprint', revision: 1, branchName: 7 }])('rejects malformed provenance before retaining the previous origin: %j', origin => {
+  const previous = { ...defaultDesign(), origin: { branchName: 'develop', planId: 'blueprint', name: 'Blueprint', revision: 1 } };
+  expect(() => retainDesignOrigin(previous, { ...defaultDesign(), origin } as never)).toThrow('design metadata');
+});
+
+it('allows an origin without a branch when none was previously captured', () => {
+  const design = { ...defaultDesign(), origin: { planId: 'blueprint', name: 'Blueprint', revision: 1 } };
+  expect(retainDesignOrigin(design, { ...design, origin: { ...design.origin, branchName: undefined } })?.origin?.branchName).toBeUndefined();
 });

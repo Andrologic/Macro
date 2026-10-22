@@ -1,7 +1,7 @@
 import { normalizePlanIcon } from './planIcon';
 import type { ArchitectPlanServiceDependencies } from './architectPlanReadContext';
 import type { PlanNode, PredictedBranch } from '../types';
-import { updateDesignMetadata, validDisplayMetadata } from './agsdl/design';
+import { retainDesignOrigin, updateDesignMetadata, validDisplayMetadata } from './agsdl/design';
 import { devLogger } from '../utils/devLogger';
 import { isCanonicalArchitectPlan } from './architectPlanPresentation';
 import { type ValidProjectRegistrySnapshot } from './validProjectRegistry';
@@ -368,7 +368,9 @@ export const updateArchitectPlanWithDerivedUpdate = async (
     if (input.expectedAgsdlRevision !== (existing.agsdl?.revision ?? 0)) {
       throw new Error('The AgSDL document changed. Reload it before saving.');
     }
-    assertAgsdlEditorDocument(input.agsdl);
+    const design = retainDesignOrigin(existing.agsdl?.design, input.agsdl.design);
+    input = { ...input, agsdl: { ...input.agsdl, ...(design !== undefined ? { design } : {}) } };
+    assertAgsdlEditorDocument(input.agsdl!);
   }
   if (
     input.expectedRevision !== undefined &&

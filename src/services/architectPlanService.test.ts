@@ -2503,4 +2503,40 @@ describe('architectPlanService', () => {
     expect(payload?.chatMessages).toHaveLength(0);
     expect(payload?.conversationId).toBeNull();
   });
+  it('retains blueprint provenance at the shared persistence boundary when direct saves omit it', async () => {
+    const { defaultDesign } = await import('./agsdl/design');
+    const { BASE_SOURCE } = await import('./agsdlExecution/conformanceFixtures');
+    const origin = { branchName, planId: 'blueprint', name: 'Blueprint', revision: 1 };
+    const created = await service.createArchitectPlan({ branchName, planId: 'durable-provenance', label: 'Copy',
+      agsdl: { source: BASE_SOURCE, annexes: {}, design: { ...defaultDesign(), origin } } });
+    await service.updateArchitectPlan({ branchName, planId: created.id, expectedAgsdlRevision: 1,
+      agsdl: { source: BASE_SOURCE, annexes: {}, design: { ...defaultDesign(), context: 'Edited context' } } });
+    service.clearArchitectPlanFrontendCaches();
+    let saved = (await service.getArchitectPlan(branchName, created.id))!;
+    expect(saved.agsdl!.design!.origin).toEqual(origin);
+    expect(saved.agsdl!.design!.context).toBe('Edited context');
+    await service.updateArchitectPlan({ branchName, planId: created.id, expectedAgsdlRevision: 2,
+      agsdl: { source: BASE_SOURCE.replace('Review.', 'Edited.'), annexes: {} } });
+    service.clearArchitectPlanFrontendCaches();
+    saved = (await service.getArchitectPlan(branchName, created.id))!;
+    expect(saved.agsdl!.design!.origin).toEqual(origin);
+    expect(saved.agsdl!.source).toContain('Edited.');
+    await service.updateArchitectPlan({ branchName, planId: created.id, expectedAgsdlRevision: 3,
+      agsdl: { source: saved.agsdl!.source, annexes: {}, design: { ...defaultDesign(), origin: { ...origin, branchName: undefined } } } });
+    service.clearArchitectPlanFrontendCaches();
+    saved = (await service.getArchitectPlan(branchName, created.id))!;
+    expect(saved.agsdl!.design!.origin).toEqual(origin);
+  });
+
+  it.each([null, 7, {}, { planId: 'blueprint' }, { planId: 'blueprint', name: 'Blueprint', revision: 1, branchName: null }, { planId: 'blueprint', name: 'Blueprint', revision: 1, branchName: 7 }])('refuses malformed provenance at persistence before merging: %j', async origin => {
+    const { defaultDesign } = await import('./agsdl/design');
+    const { BASE_SOURCE } = await import('./agsdlExecution/conformanceFixtures');
+    const created = await service.createArchitectPlan({ branchName, planId: 'invalid-copy-provenance', label: 'Copy',
+      agsdl: { source: BASE_SOURCE, annexes: {}, design: { ...defaultDesign(), origin: { branchName, planId: 'blueprint', name: 'Blueprint', revision: 1 } } } });
+    await expect(service.updateArchitectPlan({ branchName, planId: created.id, expectedAgsdlRevision: 1,
+      agsdl: { source: BASE_SOURCE.replace('Review.', 'Refused edit.'), annexes: {}, design: { ...defaultDesign(), origin } as never } })).rejects.toThrow('design metadata');
+    service.clearArchitectPlanFrontendCaches();
+    expect(await service.getArchitectPlan(branchName, created.id)).toEqual(created);
+  });
+
 });

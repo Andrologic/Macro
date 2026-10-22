@@ -81,3 +81,33 @@ describe('Macro design metadata history', () => {
     expect(state()).toEqual(before);
   });
 });
+
+it('preserves copy provenance through design updates, envelope replacement and source edits', () => {
+  const store = useAgsdlStore.getState();
+  const origin = { branchName: 'develop', planId: 'blueprint', name: 'Blueprint', revision: 1 };
+  store.setDesign(target, { ...state().design!, origin });
+  const { origin: _omitted, ...design } = state().design!;
+  store.setDesign(target, { ...design, context: 'Edited' });
+  expect(state().design!.origin).toEqual(origin);
+  store.setDesign(target, { ...design, origin: { ...origin, branchName: undefined } });
+  expect(state().design!.origin).toEqual(origin);
+  store.replace(target, state().source, undefined, undefined, { design: { ...design, origin: { ...origin, branchName: undefined } } });
+  expect(state().design!.origin).toEqual(origin);
+  store.replace(target, state().source, undefined, undefined, { design });
+  expect(state().design!.origin).toEqual(origin);
+  store.replace(target, state().source, undefined, undefined, {});
+  expect(state().design!.origin).toEqual(origin);
+  store.edit(target, [{ op: 'set', path: '/id', valueJson: '"edited-copy"' }]);
+  expect(state().design!.origin).toEqual(origin);
+});
+
+it.each([null, 7, {}, { planId: 'blueprint' }, { planId: 'blueprint', name: 'Blueprint', revision: 1, branchName: null }, { planId: 'blueprint', name: 'Blueprint', revision: 1, branchName: 7 }])('refuses malformed provenance in editor replacements without changing source or history: %j', origin => {
+  const store = useAgsdlStore.getState();
+  store.setDesign(target, { ...state().design!, origin: { branchName: 'develop', planId: 'blueprint', name: 'Blueprint', revision: 1 } });
+  const before = structuredClone(state());
+  const design = { ...state().design!, origin } as never;
+  expect(() => store.replace(target, state().source.replace('"agents"', '"agents" '), undefined, state().version, { design })).toThrow('design metadata');
+  expect(state()).toEqual(before);
+  expect(() => store.setDesign(target, design)).toThrow('design metadata');
+  expect(state()).toEqual(before);
+});
