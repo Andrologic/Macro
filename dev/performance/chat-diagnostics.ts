@@ -233,7 +233,8 @@ if (import.meta.main) {
     const prefix = "MACRO_DIAGNOSTICS_STORE_RESULT=";
     const row = output.split("\n").find(line => line.startsWith(prefix));
     assert.ok(row, "Expected the real store measurement result");
-    return JSON.parse(row.slice(prefix.length));
+    const { callbackSamplesMs, ...measurement } = JSON.parse(row.slice(prefix.length));
+    return { ...measurement, callbackToStore: distribution(callbackSamplesMs) };
   }) : sizes.flatMap((size) => (["simple", "nested"] as const).map((scenario) => runScenario(size, scenario)));
   const environment = {
     timestamp: new Date().toISOString(), bun: Bun.version, platform: platform(), release: release(), arch: arch(),
