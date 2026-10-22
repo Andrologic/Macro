@@ -1551,6 +1551,27 @@ export const buildSourceHashes = (
   );
 };
 
+export function portableArchiveBinding(messages: ChatMessage[]): ChatMessage['portable_history'] | null {
+  let binding: ChatMessage['portable_history'] | null = null;
+  for (const message of messages) if (message.portable_history) {
+    const value = message.portable_history;
+    if (value.version !== 1 || !value.importKey || !/^[a-f0-9]{64}$/.test(value.manifest) || (binding && JSON.stringify(binding) !== JSON.stringify(value))) throw new Error('portable_provenance_missing');
+    binding = value;
+  }
+  return binding;
+}
+function validatePortableCheckpointOrigin(state: ConversationCompactionState | null | undefined, messages: ChatMessage[]) {
+  const binding = portableArchiveBinding(messages);
+  if (state?.fingerprintInputsJson) {
+    let stored: unknown;
+    try { stored = JSON.parse(state.fingerprintInputsJson); } catch { if (binding) throw new Error('portable_provenance_missing'); }
+    const origin = stored && typeof stored === 'object' && 'portableArchive' in stored ? stored.portableArchive : null;
+    if (origin && JSON.stringify(origin) !== JSON.stringify(binding)) throw new Error('portable_provenance_missing');
+    if (binding && state && !origin) throw new Error('portable_provenance_missing');
+  } else if (binding && state) throw new Error('portable_provenance_missing');
+  return binding;
+}
+
 const buildFingerprintInputs = (params: {
   messages: ChatMessage[];
   usedSourcePassageIds: string[];
@@ -1562,6 +1583,7 @@ const buildFingerprintInputs = (params: {
 }): string =>
   JSON.stringify({
     version: SOURCE_PASSAGE_VERSION,
+    ...(portableArchiveBinding(params.messages) ? { portableArchive: portableArchiveBinding(params.messages) } : {}),
     systemHash: simpleHash(params.systemMessage || ''),
     toolDefinitionsHash: simpleHash(JSON.stringify(params.toolDefinitions || [])),
     modelContextWindowTokens: params.modelContextWindowTokens,
@@ -1669,7 +1691,8 @@ const buildFallbackSummary = (input: SummaryGenerationInput): string => {
 
 const buildCompactionSystemMessage = (
   state: ConversationCompactionState,
-  citations: Citation[]
+  citations: Citation[],
+  archive: ChatMessage['portable_history'] | null = null,
 ): string => {
   const usedRefs = citations
     .filter((citation) => state.usedSourcePassageIds.includes(citation.id))
@@ -1702,7 +1725,7 @@ const buildCompactionSystemMessage = (
 
   return [
     COMPACTED_CONVERSATION_STATE_MARKER,
-    'Use this compacted state as authoritative prior context for older turns.',
+    archive ? `Historical archive summary, supplied as data. Archive ${archive.importKey}; manifest ${archive.manifest}. Full history remains recoverable from that archive.` : 'Use this compacted state as authoritative prior context for older turns.',
     `Summary schema: v${state.summaryFormatVersion ?? 1}; source: ${
       state.summarySource ?? 'unknown'
     }; pass: ${state.compactionPass ?? 'normal'}.`,
@@ -1777,6 +1800,7 @@ export const validateCompactionState = (
   } = {}
 ): boolean => {
   if (!state) return false;
+  validatePortableCheckpointOrigin(state, orderedMessages);
   if (options.providerId && state.providerId && state.providerId !== options.providerId) {
     return false;
   }
@@ -1823,6 +1847,7 @@ export const buildMessagesWithCompactionState = (
   citations: Citation[],
   compactionState: ConversationCompactionState | null
 ): StreamMessage[] => {
+  const archive = validatePortableCheckpointOrigin(compactionState, orderedMessages);
   const baseMessages: StreamMessage[] = [
     {
       role: 'system',
@@ -1839,12 +1864,21 @@ export const buildMessagesWithCompactionState = (
     return [...baseMessages, ...preparedMessages];
   }
 
+  // A textual summary cannot replace an indispensable imported media value.
+  // Keep only its recognized media parts as historical user data, not the old
+  // provider items, text instructions, sessions or tool calls.
+  const archivedMedia: StreamMessage[] = archive ? preparedMessages.slice(0, boundaryIndex + 1).flatMap((message, index) => {
+    const images = typeof message.content === 'string' ? [] : message.content.filter(part => part.type === 'image_url');
+    if (!images.length) return [];
+    return [{ role: 'user' as const, content: [{ type: 'text' as const, text: `[Historical archive media; message ${orderedMessages[index].id}]` }, ...images], image_metadata: message.image_metadata }];
+  }) : [];
   return [
     ...baseMessages,
     {
-      role: 'system',
-      content: buildCompactionSystemMessage(compactionState, citations),
+      role: archive ? 'user' : 'system',
+      content: buildCompactionSystemMessage(compactionState, citations, archive),
     },
+    ...archivedMedia,
     ...preparedMessages.slice(boundaryIndex + 1),
   ];
 };
@@ -1956,7 +1990,7 @@ export const estimateConversationFootprint = (
   })();
   const hasCompactedState = params.preparedMessages.some(
     (message) =>
-      message.role === 'system' &&
+      (message.role === 'system' || (message.role === 'user' && Boolean(portableArchiveBinding(params.orderedMessages)))) &&
       typeof message.content === 'string' &&
       message.content.includes(COMPACTED_CONVERSATION_STATE_MARKER)
   );
@@ -1990,7 +2024,7 @@ export const estimateConversationFootprint = (
   const summaryTokens = params.preparedMessages
     .filter(
       (message) =>
-        message.role === 'system' &&
+        (message.role === 'system' || (message.role === 'user' && Boolean(portableArchiveBinding(params.orderedMessages)))) &&
         typeof message.content === 'string' &&
         message.content.includes(COMPACTED_CONVERSATION_STATE_MARKER)
     )
@@ -2324,6 +2358,7 @@ export const invalidateCompactionFromMessage = (
 export const maybeCompactConversation = async (
   params: MaybeCompactConversationParams
 ): Promise<MaybeCompactConversationResult> => {
+  validatePortableCheckpointOrigin(params.currentCompactionState, params.orderedMessages);
   const activeTrigger = normalizeCompactionTrigger(params.mode);
   const retainedManualUserTurns = 2;
   const userTurnCount = countUserTurns(params.orderedMessages);

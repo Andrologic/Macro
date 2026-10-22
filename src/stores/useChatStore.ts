@@ -1,3 +1,4 @@
+import { buildProviderInputItemsFromContent } from '../services/ai/responsesCodec';
 import { acknowledgeDisplayedConversation } from '../services/conversationManagementService';
 import { getConflictAssistantContext, clearConflictAssistantContext, isConflictAssistantContextAllowed, revalidateConflictAssistantContext, scopeConflictAssistantExecutionContext } from '../services/conflictAssistantContext';
 import { type LifecycleContext, createLifecycleScope } from '../services/lifecycleScope';
@@ -6384,41 +6385,6 @@ export const useChatStore = create<ChatStore>((set, get) => {
     sizeBytes: source.sizeBytes,
   });
 
-  const buildProviderInputItemsFromContent = (
-    role: "user" | "assistant",
-    content: StreamMessage["content"],
-  ): unknown[] => {
-    const parts =
-      typeof content === "string"
-        ? [
-            {
-              type: role === "user" ? "input_text" : "output_text",
-              text: content,
-            },
-          ]
-        : content.map((part) => {
-            if (part.type === "image_url") {
-              return {
-                type: "input_image",
-                image_url: part.image_url.url,
-              };
-            }
-
-            return {
-              type: role === "user" ? "input_text" : "output_text",
-              text: part.text || "",
-            };
-          });
-
-    return [
-      {
-        type: "message",
-        role,
-        content: parts,
-      },
-    ];
-  };
-
   const replaceProviderMessageInputItem = (
     items: unknown[] | null | undefined,
     role: "user" | "assistant",
@@ -6668,8 +6634,8 @@ export const useChatStore = create<ChatStore>((set, get) => {
 
       if (
         message.role === "user" &&
-        messageWithImagesId &&
-        message.id === messageWithImagesId
+        ((messageWithImagesId && message.id === messageWithImagesId) ||
+          Boolean(message.portable_history))
       ) {
         const images = messageImagesByMessageId[message.id] || [];
         if (images.length > 0) {

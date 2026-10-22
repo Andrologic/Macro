@@ -1,11 +1,12 @@
 /** Closed recognition of stored codec values. This never builds a replay item. */
 import { isRecord } from './jsonValues';
-import { buildAssistantProviderInputItemsFromTurn } from './responsesCodec';
+import { buildAssistantProviderInputItemsFromTurn, buildProviderInputItemsFromContent } from './responsesCodec';
 import { CHAT_COMPLETION_PROVIDER_ITEM_TYPE } from './chatCompletionsCodec';
 import { normalizeToolResultBlocks } from '../../shared/toolResultContent';
 
 export type HistoricalProviderPart =
-  | { kind: 'final' | 'reflection' | 'display'; text: string; path: (string | number)[] }
+  | { kind: 'final' | 'reflection' | 'display' | 'user_data'; text: string; path: (string | number)[] }
+  | { kind: 'image'; url: string; path: (string | number)[] }
   | { kind: 'call'; id: string; name: string; arguments: string; path: (string | number)[] }
   | { kind: 'result'; id: string; text: string; path: (string | number)[] }
   | { kind: 'excluded'; reason: 'opaque_continuation' | 'local_identifier'; path: (string | number)[] };
@@ -40,18 +41,24 @@ export function recognizePortableProviderItems(value: unknown): HistoricalProvid
   for (const [index, raw] of value.entries()) {
     if (!isRecord(raw)) throw new Error('unknown_required_shape');
     const path = [index] as (string | number)[];
-    const addText = (kind: 'final' | 'reflection' | 'display', content: unknown, suffix: (string | number)[]) =>
+    const addText = (kind: 'final' | 'reflection' | 'display' | 'user_data', content: unknown, suffix: (string | number)[]) =>
       parts.push({ kind, text: text(content), path: [...path, ...suffix] });
     if (raw.type === 'message') {
       const item = object(raw, ['type', 'id', 'status', 'role', 'content', 'channel']); complete(item);
-      if (item.role !== 'assistant' || (item.channel !== undefined && item.channel !== 'final') || !Array.isArray(item.content)) throw new Error('unknown_required_shape');
+      if (!['user', 'assistant'].includes(String(item.role)) || (item.channel !== undefined && item.channel !== 'final') || !Array.isArray(item.content)) throw new Error('unknown_required_shape');
       for (const [position, rawPart] of item.content.entries()) {
+        if (item.role === 'user' && isRecord(rawPart) && rawPart.type === 'input_image') {
+          const image = object(rawPart, ['type', 'image_url']);
+          const url = text(image.image_url);
+          buildProviderInputItemsFromContent('user', [{ type: 'image_url', image_url: { url } }]);
+          parts.push({ kind: 'image', url, path: [...path, 'content', position, 'image_url'] }); continue;
+        }
         const part = object(rawPart, ['type', 'text', 'annotations', 'logprobs']);
-        if (part.type !== 'output_text' || (part.annotations !== undefined && (!Array.isArray(part.annotations) || part.annotations.length)) || (part.logprobs !== undefined && (!Array.isArray(part.logprobs) || part.logprobs.length))) throw new Error('unknown_required_shape');
+        if (part.type !== (item.role === 'user' ? 'input_text' : 'output_text') || (part.annotations !== undefined && (!Array.isArray(part.annotations) || part.annotations.length)) || (part.logprobs !== undefined && (!Array.isArray(part.logprobs) || part.logprobs.length))) throw new Error('unknown_required_shape');
         // Use the same text-bearing envelope as the producer; no UI text fallback.
         const produced = buildAssistantProviderInputItemsFromTurn(text(part.text), []);
         if (!produced.length && part.text !== '') throw new Error('unknown_required_shape');
-        addText('final', part.text, ['content', position, 'text']);
+        addText(item.role === 'user' ? 'user_data' : 'final', part.text, ['content', position, 'text']);
       }
     } else if (raw.type === 'reasoning') {
       const item = object(raw, ['type', 'id', 'status', 'summary', 'encrypted_content']); complete(item);
@@ -79,6 +86,7 @@ export function recognizePortableProviderItems(value: unknown): HistoricalProvid
       } else if (item.role === 'assistant') {
         if (item.tool_call_id !== undefined || item.macro_tool_result !== undefined) throw new Error('unknown_required_shape');
         addText('final', item.content, ['content']);
+        if (item.tool_name !== undefined) text(item.tool_name);
         if (item.visible_content !== undefined) addText('display', item.visible_content, ['visible_content']);
         if (item.reasoning_content !== undefined) addText('reflection', item.reasoning_content, ['reasoning_content']);
         if (item.reasoning_details !== undefined && (!Array.isArray(item.reasoning_details) || item.reasoning_details.length)) throw new Error('unknown_required_reasoning');
@@ -94,6 +102,7 @@ export function recognizePortableProviderItems(value: unknown): HistoricalProvid
       } else throw new Error('unknown_required_shape');
     } else throw new Error('unknown_required_shape');
     // Do not retain IDs, opaque bytes, their lengths or isolated fingerprints.
+    if ('id' in raw && typeof raw.id !== 'string') throw new Error('unknown_required_shape');
     if ('id' in raw) parts.push({ kind: 'excluded', reason: 'local_identifier', path: [...path, 'id'] });
   }
   return parts;

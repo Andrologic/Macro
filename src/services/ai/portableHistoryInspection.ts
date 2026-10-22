@@ -68,3 +68,10 @@ export async function withInspectedPortableText(
     await consume(text, decoded);
   });
 }
+
+/** ContentHost's revision can remain visible-1 while secret forms change.
+ * Compare the private snapshot locally; never export an isolated secret digest. */
+export function samePortablePolicy(left: TextPolicy, right: TextPolicy): boolean {
+  return left.revision === right.revision && left.inspectionBytes === right.inspectionBytes &&
+    left.secrets.length === right.secrets.length && left.secrets.every((value, index) => value === right.secrets[index]);
+}

@@ -1,61 +1,9 @@
 import { expect, test } from 'bun:test';
-import { assistantProvenance } from '../macroPilot/assistantProvenance';
-import { buildAssistantProviderInputItemsFromTurn, buildChatGptProviderTurnState, buildChatGptVisibleTurnContent, buildFunctionCallOutputProviderInputItem } from './responsesCodec';
-import { buildAssistantChatCompletionProviderItem, buildToolChatCompletionProviderItem } from './chatCompletionsCodec';
-import { normalizePortableChatHistory, portableDigest, recognizeHiddenHistory, type RawHistoryField, type RawHistoryRow, type PortableRecord, type SealedHistorySource } from './portableChatHistory';
-import { PortableWorkBudget } from './portableHistoryInspection';
+import { portableDigest, recognizeHiddenHistory, normalizePortableChatHistory, normalizePortableChatHistoryTwoPass } from './portableChatHistory';
 import { buildToolContextBlock } from './toolPresentation';
 import { recognizePortableProviderItems } from './portableProviderHistory';
-
-const encoder = new TextEncoder(), decoder = new TextDecoder();
-const policy = { revision: 'synthetic-policy', secrets: ['fixture-private-token'] };
-async function fixture(provider: 'codex' | 'macro-ai', change?: (messages: unknown[][]) => void) {
-  const final = 'A complete final answer.';
-  const reflection = 'OBSERVABLE_REFLECTION_é🙂';
-  const args = '{"integer":9007199254740993,"overflow":1e400,"location":"sample"}';
-  const call = { id: 'call', type: 'function' as const, function: { name: 'read_sources', arguments: args } };
-  const visible = buildChatGptVisibleTurnContent(final, reflection);
-  const items = provider === 'codex'
-    ? [...buildAssistantProviderInputItemsFromTurn('', [call]), buildFunctionCallOutputProviderInputItem('call', 'PROVIDER_ONLY_FACT'), ...buildAssistantProviderInputItemsFromTurn(final, [])]
-    : [buildAssistantChatCompletionProviderItem({ visibleContent: '', apiContent: '', reasoningContent: '', reasoningDetails: [], toolCalls: [call] }), buildToolChatCompletionProviderItem('call', 'PROVIDER_ONLY_FACT'), buildAssistantChatCompletionProviderItem({ visibleContent: visible, apiContent: final, reasoningContent: reflection, reasoningDetails: [], toolCalls: [] })];
-  const state = provider === 'codex' ? buildChatGptProviderTurnState('local-session', [
-    { type: 'reasoning', summary: [{ type: 'summary_text', text: reflection }], encrypted_content: 'fixture-private-token' },
-    ...buildAssistantProviderInputItemsFromTurn(final, []),
-  ]) : null;
-  const storedReceipts = new Map<string, string>();
-  await assistantProvenance({ load: async key => storedReceipts.get(key) ?? null, compareAndSwap: async (key, _old, value) => { storedReceipts.set(key, value); return true; } }).recordFinal('a', visible, buildAssistantProviderInputItemsFromTurn(final, []));
-  const messages: unknown[][] = [
-    ['u', 's', 'turn', 'user', 'Original user é🙂', '000', null, null, null, null, null, '[]', null, null],
-    ['a', 's', 'turn', 'assistant', visible, '001', null, '[]', buildToolContextBlock('hidden', 'read_sources', undefined, 'HIDDEN_ONLY_FACT'), JSON.stringify(items), state && JSON.stringify(state), '[]', 'final', null],
-  ];
-  change?.(messages);
-  const values: [number, unknown[]][] = [
-    [0, ['s', 'Synthetic', null, 'Chat', null, null, null, provider, 'model', null, 't', 't', null, 2n, 0n]],
-    ...messages.map(row => [1, row] as [number, unknown[]]),
-    ...[...storedReceipts].map(([key, value]) => [2, [key, value]] as [number, unknown[]]),
-    [6, ['citation', 's', 'toolbox-only', 'document', 'context', 'synthetic', 'Toolbox source', null, 'CITATION_FACT', null, null, null, null, null, null, null, 't', 't']],
-    [7, ['s', JSON.stringify([{ id: 'citation', kind: 'source', title: 'Toolbox source' }]), 't', 't']],
-  ];
-  const data = new Map<number, Uint8Array>(), rows: RawHistoryRow[] = [];
-  let ordinal = 0;
-  for (const [family, valuesForRow] of values) {
-    const row = rows.length, fields: RawHistoryField[] = [];
-    for (const [tag, value] of valuesForRow.entries()) {
-      let raw: Uint8Array;
-      const sql_type = value === null ? 0 : typeof value === 'bigint' ? 1 : 2;
-      if (sql_type === 1) { raw = new Uint8Array(8); new DataView(raw.buffer).setBigInt64(0, value as bigint, true); }
-      else raw = encoder.encode(value === null ? '' : String(value));
-      fields.push({ ordinal, row, family, tag, sql_type, bytes: raw.length, sha256: await portableDigest(raw) }); data.set(ordinal++, raw);
-    }
-    rows.push({ family, row, fields });
-  }
-  const source: SealedHistorySource = { manifest: 'a'.repeat(64), async *rows() { yield* rows; }, async *relations() {}, async *read(field) { const raw = data.get(field.ordinal)!; for (let offset = 0; offset < raw.length; offset += 4093) yield raw.subarray(offset, offset + 4093); } };
-  const output: { header: PortableRecord; text: string }[] = [];
-  const budget = new PortableWorkBudget(128 * 1024 * 1024);
-  const run = () => normalizePortableChatHistory(source, async () => policy, budget, { append: async (header, bytes) => { output.push({ header, text: decoder.decode(bytes) }); } });
-  return { source, rows, data, output, budget, run, args, reflection };
-}
-
+import { fixture, policy } from './portableHistoryFixtures.testSupport';
+const encoder = new TextEncoder();
 test('recognized real Codex and Macro AI producers keep exact data and exclude private continuation', async () => {
   for (const provider of ['codex', 'macro-ai'] as const) {
     const f = await fixture(provider); const first = await f.run();
@@ -97,4 +45,26 @@ test('policy invalidation and decoded JSON secret refuse; reservations release',
   const valid = await fixture('codex'); let checks = 0;
   await expect(normalizePortableChatHistory(valid.source, async () => ({ ...policy, revision: checks++ ? 'changed' : policy.revision }), valid.budget, { append: async () => {} })).rejects.toThrow('policy_changed');
   expect(valid.budget.used).toBe(0);
+});
+
+test('same visible revision with changed secret forms invalidates the operation and two-pass gap', async () => {
+  const f = await fixture('codex'); let calls = 0;
+  await expect(normalizePortableChatHistory(f.source, async () => ({ ...policy, secrets: calls++ ? [...policy.secrets, 'newly-configured'] : policy.secrets }), f.budget, { append: async () => {} })).rejects.toThrow('policy_changed');
+  expect(f.budget.used).toBe(0);
+  let policyCalls = 0, writes = 0;
+  await expect(normalizePortableChatHistoryTwoPass(f.source, async () => ({ ...policy, secrets: ++policyCalls >= 4 ? [...policy.secrets, 'gap-change'] : policy.secrets }), f.budget, { append: async () => { writes++; } })).rejects.toThrow('policy_changed');
+  expect(writes).toBe(0); expect(f.budget.used).toBe(0);
+});
+
+test('real user codec enrichment is retained without restoring active context references', async () => {
+  const f = await fixture('codex', messages => { messages[0][9] = JSON.stringify([{ type: 'message', role: 'user', content: [{ type: 'input_text', text: 'Original user é🙂 plus an admissible enrichment' }] }]); });
+  await f.run(); expect(JSON.stringify(f.output)).toContain('admissible enrichment'); expect(f.budget.used).toBe(0);
+});
+
+test('assistant-owned required attachments refuse before a portable destination write', async () => {
+  const f = await fixture('codex'); const bytes = encoder.encode('indispensable assistant asset');
+  await f.appendRow(8, ['assistant-asset', 'a', 'synthetic.txt', 'text/plain', BigInt(bytes.length), await portableDigest(bytes), bytes]);
+  let writes = 0;
+  await expect(normalizePortableChatHistoryTwoPass(f.source, async () => policy, f.budget, { append: async () => { writes++; } })).rejects.toThrow('unsupported_assistant_asset');
+  expect(writes).toBe(0); expect(f.budget.used).toBe(0);
 });

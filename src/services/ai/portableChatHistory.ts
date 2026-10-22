@@ -1,8 +1,9 @@
 /** Internal E profile. These values are historical data, never F admission. */
+import { buildAssistantMessagePresentation, buildUserMessagePresentation } from '../chatDbMappers';
 import { createCompactionTextFingerprint, buildSourceHashes, validateArchivedCompactionEvidence } from '../contextCompaction';
 import type { Citation } from '../../types/citation';
 import { parseStoredJsonStrict, isRecord } from './jsonValues';
-import { withAdmittedPortableText, PortableWorkBudget } from './portableHistoryInspection';
+import { withAdmittedPortableText, PortableWorkBudget, samePortablePolicy } from './portableHistoryInspection';
 import { recognizePortableProviderItems } from './portableProviderHistory';
 import { buildChatGptVisibleTurnContent } from './responsesCodec';
 import { buildToolContextBlock } from './toolPresentation';
@@ -18,6 +19,7 @@ export interface RawHistoryRow { family: number; row: number; fields: RawHistory
 /** Adapter over a sealed capture. No ordinary conversation query or fallback. */
 export interface SealedHistorySource {
   manifest: string;
+  limits: readonly string[];
   rows(): AsyncIterable<RawHistoryRow>;
   relations(): AsyncIterable<{ from: number; kind: number; position: number; to: number | null; status: number }>;
   read(field: RawHistoryField): AsyncIterable<Uint8Array>;
@@ -38,12 +40,16 @@ export interface PortableMetadata {
   version: 1;
   normalizer: 'macro-portable-history-1';
   policy: string;
-  source: { ordinal: number; row: number; family: number; tag: number; path?: (string | number)[] };
+  source: { ordinal: number; row: number; family: number; tag: number; sqlType: 0 | 1 | 2 | 3; path?: (string | number)[] };
   classification: PortableClassification;
   reason: string;
   meaning?: 'original' | 'message' | 'data' | 'reflection' | 'citation' | 'asset' | 'checkpoint';
   message?: string;
   timestamp?: string;
+  sourceLimits?: readonly string[];
+  remainingLimits?: readonly string[];
+  retained?: number;
+  captureManifest?: string;
   sourceHash?: string;
   sourceBytes?: number;
 }
@@ -99,15 +105,21 @@ export async function normalizePortableChatHistory(
   policy: () => Promise<TextPolicy>,
   budget: PortableWorkBudget,
   sink: PortableSink,
-): Promise<{ records: number; bytes: number; manifest: string; policy: string }> {
-  const initial = await policy();
-  if (!/^[a-f0-9]{64}$/.test(source.manifest)) fail('integrity_failed');
+): Promise<{ records: number; bytes: number; manifest: string; policy: string; costs: { sourceLoads: number; sourcePayloadBytes: number; sourceChunks: number; maxSourceChunkBytes: number; maxAssembledFieldBytes: number; textDecodes: number; jsonFieldInspections: number; fieldAndEmissionDigestInputCopyBytes: number } }> {
+  const currentPolicy = await policy();
+  const releasePolicy = budget.reserve(512 + currentPolicy.secrets.reduce((sum, secret) => sum + secret.length * 4 + 32, 0));
+  const initial = { ...currentPolicy, secrets: [...currentPolicy.secrets] };
+  if (!/^[a-f0-9]{64}$/.test(source.manifest)) { releasePolicy(); fail('integrity_failed'); }
   let ordinal = 0, retainedBytes = 0;
+  const costs = { sourceLoads: 0, sourcePayloadBytes: 0, sourceChunks: 0, maxSourceChunkBytes: 0, maxAssembledFieldBytes: 0, textDecodes: 0, jsonFieldInspections: 0, fieldAndEmissionDigestInputCopyBytes: 0 };
+  const digest = (bytes: Uint8Array) => { costs.fieldAndEmissionDigestInputCopyBytes += bytes.length; return portableDigest(bytes); };
   const manifest: string[] = [];
-  const controls: (() => void)[] = [];
+  const controls: (() => void)[] = [releasePolicy];
   const messageIds = new Set<string>(), citationIds = new Set<string>(), requiredCitations = new Set<string>();
   const calls = new Map<string, string>(), results = new Map<string, string>();
   const messages = new Map<string, number>();
+  const messageRoles = new Map<string, string>();
+  const assets = new Map<string, number>();
   const pendingRelations: { message: string; target: number; relation: 'data_for_message' | 'asset_for_message' | 'citation_for_message'; sourceRow?: number }[] = [];
   const receipts = new Map<string, string>();
   const evidence: { id: string; role: string; contentHash: string; providerInputHash: string }[] = [];
@@ -117,7 +129,7 @@ export async function normalizePortableChatHistory(
   // Only admitted control metadata may survive a field scope. No payload cache.
   const keep = (bytes: number) => controls.push(budget.reserve(bytes));
   const emit = async (entry: PortableEntry, bytes: Uint8Array, origin?: number): Promise<number> => {
-    const header: PortableRecord = { ordinal: ordinal++, entry, bytes: bytes.length, sha256: await portableDigest(bytes), ...(origin === undefined ? {} : { origin }) };
+    const header: PortableRecord = { ordinal: ordinal++, entry, bytes: bytes.length, sha256: await digest(bytes), ...(origin === undefined ? {} : { origin }) };
     const encoded = JSON.stringify(header); keep(1024 + encoded.length * 8);
     manifest.push(encoded); retainedBytes += bytes.length;
     await sink.append(header, bytes);
@@ -125,7 +137,7 @@ export async function normalizePortableChatHistory(
   };
   const metadata = async (field: RawHistoryField, classification: PortableClassification, reason: string, extra: Partial<PortableMetadata> = {}) => {
     const value: PortableMetadata = { version: 1, normalizer: 'macro-portable-history-1', policy: initial.revision,
-      source: { ordinal: field.ordinal, row: field.row, family: field.family, tag: field.tag }, classification, reason, ...extra };
+      source: { ordinal: field.ordinal, row: field.row, family: field.family, tag: field.tag, sqlType: field.sql_type }, classification, reason, ...extra };
     // Excluded data never contributes a value hash, length, or isolated digest.
     if (classification === 'excluded_local_metadata') { delete value.sourceBytes; delete value.sourceHash; }
     inspect(value, initial);
@@ -137,17 +149,20 @@ export async function normalizePortableChatHistory(
     return emit(entry, encoder.encode(text), origin);
   };
   const load = async (field: RawHistoryField): Promise<Uint8Array> => {
+    costs.sourceLoads++; costs.sourcePayloadBytes += field.bytes; costs.maxAssembledFieldBytes = Math.max(costs.maxAssembledFieldBytes, field.bytes);
     const bytes = new Uint8Array(field.bytes); let offset = 0;
     for await (const chunk of source.read(field)) {
+      costs.sourceChunks++; costs.maxSourceChunkBytes = Math.max(costs.maxSourceChunkBytes, chunk.length);
       if (offset + chunk.length > bytes.length) fail('integrity_failed');
       bytes.set(chunk, offset); offset += chunk.length;
     }
-    if (offset !== bytes.length || await portableDigest(bytes) !== field.sha256) fail('integrity_failed');
+    if (offset !== bytes.length || await digest(bytes) !== field.sha256) fail('integrity_failed');
     return bytes;
   };
   const read = async (field: RawHistoryField, json: boolean, use: (text: string) => Promise<void>) => {
     if (field.sql_type === 0) { if (field.bytes !== 0) fail('integrity_failed'); return; }
     if (field.sql_type !== 2) fail('source_type_invalid');
+    costs.textDecodes++; if (json) costs.jsonFieldInspections++;
     await withAdmittedPortableText(field.bytes, () => load(field), budget, json, use);
   };
   const integer = async (field: RawHistoryField) => {
@@ -166,15 +181,19 @@ export async function normalizePortableChatHistory(
     return value;
   };
   try {
+    let first: RawHistoryField | undefined;
+    for await (const row of source.rows()) { first = row.fields[0]; break; }
+    if (!first || first.family !== 0 || first.tag !== 0) fail('missing_source_identity');
+    await metadata(first!, 'excluded_local_metadata', 'capture_provenance_only', { captureManifest: source.manifest, sourceLimits: source.limits, remainingLimits: ['not_F_admission', 'runtime_intentions_unattested', 'not_provider_session_resumption', 'recognized_shapes_only'] });
     // Provenance is read first, from the same immutable capture, not a live DB.
     for await (const row of source.rows()) if (row.family === 2) {
       const key = await small(row, 0); const value = await small(row, 1);
       if (!key?.startsWith('chat:assistant-visible-provenance:v1:') || value === null) fail('unknown_provenance');
-      parseStoredJsonStrict(value!); receipts.set(key!.slice('chat:assistant-visible-provenance:v1:'.length), value!);
+      closed(parseStoredJsonStrict(value!), ['version', 'source', 'fingerprint', 'start', 'end']); receipts.set(key!.slice('chat:assistant-visible-provenance:v1:'.length), value!);
     }
     for await (const row of source.rows()) {
       const count = [15, 14, 2, 5, 4, 29, 18, 4, 7, 7][row.family];
-      if (rowIds.has(row.row) || row.fields.length !== count || row.fields.some((f, index) => f.family !== row.family || f.row !== row.row || f.tag !== index)) fail('integrity_failed');
+      if (rowIds.has(row.row) || row.fields.length !== count || row.fields.some((f, index) => f.family !== row.family || f.row !== row.row || f.tag !== index || !Number.isSafeInteger(f.ordinal) || f.ordinal < 0 || !Number.isSafeInteger(f.bytes) || f.bytes < 0 || ![0, 1, 2, 3].includes(f.sql_type) || !/^[a-f0-9]{64}$/.test(f.sha256))) fail('integrity_failed');
       rowIds.add(row.row); keep(64);
       const contentHash = createCompactionTextFingerprint(), providerHash = createCompactionTextFingerprint();
       let providerSeen = false;
@@ -185,11 +204,14 @@ export async function normalizePortableChatHistory(
       let checkpointBoundary = '', checkpointFingerprint = '', checkpointInputs: unknown = null;
       let id: string | null = null, role: string | null = null, timestamp: string | null = null;
       const finalHashes = new Set<string>(), reflectionHashes = new Set<string>(), displayHashes = new Set<string>();
+      const representations = new Map<string, number>();
       if (row.family === 1) {
         id = await small(row, 0); role = await small(row, 3); timestamp = await small(row, 5);
         if (!id || !['user', 'assistant'].includes(role!)) fail('unsupported_role');
+        messageRoles.set(id!, role!); keep(64);
         if (messageIds.has(id!)) fail('integrity_failed'); keep(256 + id!.length * 2); messageIds.add(id!); contentHash.update(role! + ':');
       }
+      if (row.family === 8 && messageRoles.get((await small(row, 1)) ?? '') !== 'user') fail('unsupported_assistant_asset');
       // Provider values precede visible content to establish its attribution.
       const fields = [...row.fields].sort((a, b) => {
         const order = (f: RawHistoryField) => row.family === 1 && [9, 10].includes(f.tag) ? -2 + f.tag / 100 : f.tag;
@@ -203,20 +225,36 @@ export async function normalizePortableChatHistory(
             if (field.tag === 9) { providerHash.update(JSON.stringify(decoded)); providerSeen = true; }
             if (field.tag === 10) {
               const state = closed(decoded, ['provider', 'response_id', 'output_items']);
-              if (state.provider !== 'chatgpt') fail('unknown_required_shape');
+              if (state.provider !== 'chatgpt' || (state.response_id !== undefined && typeof state.response_id !== 'string')) fail('unknown_required_shape');
               decoded = state.output_items;
               await metadata(field, 'excluded_local_metadata', 'local_provider_continuation');
             }
             for (const part of recognizePortableProviderItems(decoded)) {
-              const sourceRef = { ordinal: field.ordinal, row: field.row, family: field.family, tag: field.tag, path: part.path };
+              const sourceRef = { ordinal: field.ordinal, row: field.row, family: field.family, tag: field.tag, sqlType: field.sql_type, path: part.path };
               if (part.kind === 'excluded') { await metadata(field, 'excluded_local_metadata', part.reason, { source: sourceRef }); continue; }
+              if ((['final', 'reflection', 'display'].includes(part.kind) && role !== 'assistant') || (['user_data', 'image'].includes(part.kind) && role !== 'user')) fail('contradictory_provenance');
+              if (part.kind === 'image') {
+                const match = /^data:(image\/(?:png|jpeg|webp));base64,([A-Za-z0-9+/]+={0,2})$/.exec(part.url);
+                if (!match) fail('required_external_context');
+                const binary = atob(match![2]); if (btoa(binary) !== match![2]) fail('invalid_asset');
+                const bytes = Uint8Array.from(binary, char => char.charCodeAt(0));
+                if (inspectAttachmentContent(bytes, match![1], initial) !== 'available') fail('unsafe_asset');
+                const mime = { 'image/png': 'image_png', 'image/jpeg': 'image_jpeg', 'image/webp': 'image_webp' }[match![1]] as 'image_png' | 'image_jpeg' | 'image_webp';
+                const origin = await metadata(field, 'retained_original', 'inline_owned_image', { source: sourceRef, meaning: 'asset', message: id! });
+                const target = await emit({ kind: 'asset', mime }, bytes, origin);
+                assets.set(JSON.stringify([id, match![1], await portableDigest(bytes)]), target); keep(256);
+                pendingRelations.push({ message: id!, target, relation: 'asset_for_message' }); keep(128); continue;
+              }
               inspect(part, initial);
-              if (part.kind === 'final' || part.kind === 'reflection' || part.kind === 'display') {
+              if (part.kind === 'final' || part.kind === 'reflection' || part.kind === 'display' || part.kind === 'user_data') {
                 const hash = await portableDigest(encoder.encode(part.text));
-                (part.kind === 'final' ? finalHashes : part.kind === 'reflection' ? reflectionHashes : displayHashes).add(hash);
+                if (part.kind !== 'user_data') (part.kind === 'final' ? finalHashes : part.kind === 'reflection' ? reflectionHashes : displayHashes).add(hash);
+                const previous = representations.get(`${part.kind}:${hash}`);
+                if (previous !== undefined) { await metadata(field, 'redundant_representation', 'recognized_identical_text', { source: sourceRef, retained: previous }); continue; }
                 if (part.text) {
                   const target = await content(field, part.text, part.kind === 'reflection' ? 'reflection' : 'data', { kind: 'historical_text', purpose: 'historical_data' }, { message: id!, source: sourceRef });
                   pendingRelations.push({ message: id!, target, relation: 'data_for_message' }); keep(128);
+                  representations.set(`${part.kind}:${hash}`, target); keep(128);
                 }
               } else if (part.kind === 'call') {
                 const hash = await portableDigest(encoder.encode(JSON.stringify([part.name, part.arguments])));
@@ -237,7 +275,11 @@ export async function normalizePortableChatHistory(
         } else if (row.family === 1 && field.tag === 4) {
           await read(field, false, async raw => {
             inspect(raw, initial);
-            contentHash.update(raw); contentHash.update('\n');
+            // Checkpoints fingerprint the actual DB mapper's presentation,
+            // including user whitespace normalization. The raw value is still
+            // stored verbatim below and remains recoverable.
+            const presentation = role === 'user' ? buildUserMessagePresentation(raw).content : buildAssistantMessagePresentation(raw).content;
+            contentHash.update(presentation); contentHash.update('\n');
             if (displayHashes.size && !displayHashes.has(await portableDigest(encoder.encode(raw)))) fail('contradictory_provenance');
             let projected = raw;
             if (role === 'assistant' && raw) {
@@ -250,7 +292,8 @@ export async function normalizePortableChatHistory(
                 if (!reflectionHashes.has(await portableDigest(encoder.encode(reflection))) || buildChatGptVisibleTurnContent(projected, reflection) !== raw) fail('contradictory_provenance');
               }
             }
-            await content(field, raw, 'original', { kind: 'historical_text', purpose: 'original_text' }, { message: id!, sourceHash: field.sha256, sourceBytes: field.bytes });
+            const original = await content(field, raw, 'original', { kind: 'historical_text', purpose: 'original_text' }, { message: id!, sourceHash: field.sha256, sourceBytes: field.bytes });
+            pendingRelations.push({ message: id!, target: original, relation: 'data_for_message' }); keep(128);
             const target = await content(field, projected, 'message', { kind: 'message', role: role as 'user' | 'assistant' }, { message: id!, timestamp: timestamp! });
             messages.set(id!, target); keep(128);
           });
@@ -270,7 +313,15 @@ export async function normalizePortableChatHistory(
               if (ref.kind !== 'source') fail('required_external_context');
               inspect(ref, initial); const citation = str(ref.id); keep(256 + citation.length * 2); requiredCitations.add(citation);
             }
-            await content(field, raw, 'data', { kind: 'historical_text', purpose: 'original_text' }, { message: id! });
+            const original = await content(field, raw, 'original', { kind: 'historical_text', purpose: 'original_text' }, { message: id! });
+            pendingRelations.push({ message: id!, target: original, relation: 'data_for_message' }); keep(128);
+          });
+        } else if (row.family === 2 && field.tag === 1) {
+          const key = await small(row, 0), message = key!.slice('chat:assistant-visible-provenance:v1:'.length);
+          await read(field, true, async raw => {
+            closed(parseStoredJsonStrict(raw), ['version', 'source', 'fingerprint', 'start', 'end']);
+            const target = await content(field, raw, 'original', { kind: 'historical_text', purpose: 'original_text' }, { message, sourceHash: field.sha256, sourceBytes: field.bytes });
+            pendingRelations.push({ message, target, relation: 'data_for_message' }); keep(128);
           });
         } else if (row.family === 6) {
           const citationId = id ?? await small(row, 0); id = citationId;
@@ -278,12 +329,19 @@ export async function normalizePortableChatHistory(
           if (field.sql_type === 2) await read(field, false, async raw => {
             if (citationFields[field.tag]) citationParts[citationFields[field.tag]] = raw;
             if (field.tag === 11 && raw && !raw.startsWith('attachment://')) fail('required_external_context');
-            const target = await content(field, raw, 'citation', { kind: 'citation' }, { message: id! });
             const message = await small(row, 2);
+            const target = await content(field, raw, 'citation', { kind: 'citation' }, messages.has(message!) ? { message: message! } : {});
             if (messages.has(message!)) { pendingRelations.push({ message: message!, target, relation: 'citation_for_message' }); keep(128); }
           });
           else await integer(field);
-        } else if (row.family === 8 && field.tag === 6) {
+        } else if (row.family === 8 && [2, 3].includes(field.tag)) {
+          const message = await small(row, 1);
+          await read(field, false, async raw => {
+            const target = await content(field, raw, 'original', { kind: 'historical_text', purpose: 'original_text' }, { message: message! });
+            pendingRelations.push({ message: message!, target, relation: 'data_for_message' }); keep(128);
+          });
+        } else if (row.family === 8 && field.tag === 4) await integer(field);
+        else if (row.family === 8 && field.tag === 6) {
           const owner = await small(row, 1), mime = await small(row, 3);
           const mimes: Record<string, Extract<PortableEntry, { kind: 'asset' }>['mime']> = { 'text/plain': 'text_plain', 'image/png': 'image_png', 'image/jpeg': 'image_jpeg', 'image/webp': 'image_webp' };
           if (!mime || !mimes[mime]) fail('unsupported_asset');
@@ -291,9 +349,16 @@ export async function normalizePortableChatHistory(
           try {
             const bytes = await load(field);
             if (inspectAttachmentContent(bytes, mime!, initial) !== 'available') fail('unsafe_asset');
+            const previous = assets.get(JSON.stringify([owner, mime, field.sha256]));
+            if (previous !== undefined) {
+              await metadata(field, 'redundant_representation', 'identical_owned_asset', { retained: previous });
+              const link = pendingRelations.find(link => link.target === previous && link.relation === 'asset_for_message');
+              if (!link || link.sourceRow !== undefined) fail('ambiguous_asset'); link!.sourceRow = row.row;
+            } else {
             const origin = await metadata(field, 'retained_original', 'owned_asset', { meaning: 'asset', message: owner!, sourceBytes: field.bytes, sourceHash: field.sha256 });
             const target = await emit({ kind: 'asset', mime: mimes[mime!] }, bytes, origin);
             pendingRelations.push({ message: owner!, target, relation: 'asset_for_message', sourceRow: row.row }); keep(128);
+            }
           } finally { release(); }
         } else if (row.family === 5) {
           if (field.sql_type === 2) await read(field, /json/.test(checkpointColumns[field.tag] ?? ''), async raw => {
@@ -315,7 +380,7 @@ export async function normalizePortableChatHistory(
               if (ref.kind !== 'source') fail('required_external_context');
               inspect(ref, initial); const citation = str(ref.id); keep(256 + citation.length * 2); requiredCitations.add(citation);
             }
-            await content(field, raw, 'data', { kind: 'historical_text', purpose: 'original_text' });
+            await content(field, raw, 'original', { kind: 'historical_text', purpose: 'original_text' });
           });
         } else if (row.family === 0 && [1, 2].includes(field.tag)) {
           await read(field, false, async raw => { await content(field, raw, 'original', { kind: 'historical_text', purpose: 'original_text' }); });
@@ -372,8 +437,23 @@ export async function normalizePortableChatHistory(
       positions.set(link.message, position! + 1);
       await emit({ kind: 'association', from: from!, to: link.target, position: position!, relation: link.relation }, new Uint8Array());
     }
-    if ((await policy()).revision !== initial.revision) fail('policy_changed');
-    return { records: ordinal, bytes: retainedBytes, manifest: await portableDigest(encoder.encode(JSON.stringify([source.manifest, initial.revision, manifest]))), policy: initial.revision };
+    if (!samePortablePolicy(await policy(), initial)) fail('policy_changed');
+    return { records: ordinal, bytes: retainedBytes, manifest: await portableDigest(encoder.encode(JSON.stringify([source.manifest, initial.revision, manifest]))), policy: initial.revision, costs };
   } finally { for (const release of controls.reverse()) release(); }
 }
 const checkpointColumns = ['conversation_id', 'up_to_message_id', 'summary_text', 'tool_digest_json', 'used_source_passage_ids_json', 'interesting_source_passage_ids_json', 'estimated_tokens_before', 'estimated_tokens_after', 'fingerprint', 'version', 'pruned_tool_context_message_ids_json', 'reserved_tokens', 'footprint_before_json', 'footprint_after_json', 'degraded_reason', 'compaction_kind', 'compaction_pass', 'summary_format_version', 'summary_source', 'policy_version', 'fingerprint_inputs_json', 'source_hashes_json', 'model_context_window_tokens', 'provider_id', 'model_id', 'checkpoint_health', 'last_trigger', 'created_at', 'updated_at'];
+
+/** Caller keeps the destination inactive and aborts its receiving attempt on any
+ * error. Only a matching second pass may be handed to sealStorage afterwards. */
+export async function normalizePortableChatHistoryTwoPass(source: SealedHistorySource, policy: () => Promise<TextPolicy>, budget: PortableWorkBudget, sink: PortableSink) {
+  const current = await policy();
+  const release = budget.reserve(512 + current.secrets.reduce((sum, secret) => sum + secret.length * 4 + 32, 0));
+  const expected = { ...current, secrets: [...current.secrets] };
+  const checked = async () => { const value = await policy(); if (!samePortablePolicy(expected, value)) fail('policy_changed'); return value; };
+  try {
+    const first = await normalizePortableChatHistory(source, checked, budget, { append: async () => {} });
+    const second = await normalizePortableChatHistory(source, checked, budget, sink);
+    if (JSON.stringify(first) !== JSON.stringify(second)) fail('normalization_changed');
+    await checked(); return second;
+  } finally { release(); }
+}
