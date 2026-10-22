@@ -726,3 +726,36 @@ pub struct ConversationContentWindow {
     pub consumed_count: u32,
     pub admission_estimate_bytes: u64,
 }
+
+// Internal bounded catalog reads. These tokens do not grant transport authority.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ts_rs::TS)]
+pub struct ConversationCatalogToken {
+    pub version: u8,
+    pub generation: String,
+    pub incarnation: String,
+    pub revision: String,
+}
+#[derive(Debug, Clone, Default, Serialize, Deserialize, ts_rs::TS)]
+pub struct ConversationCatalogVersionInput {
+    pub expected_token: Option<ConversationCatalogToken>,
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ts_rs::TS)]
+pub struct ConversationCatalogAnchor {
+    pub id: String,
+}
+#[derive(Debug, Clone, Serialize, Deserialize, ts_rs::TS)]
+pub struct ConversationCatalogPageInput {
+    pub expected_token: Option<ConversationCatalogToken>,
+    pub after: Option<ConversationCatalogAnchor>,
+    pub limit: u32,
+}
+#[derive(Debug, Clone, Serialize, Deserialize, ts_rs::TS)]
+pub struct ConversationCatalogPage {
+    pub token: ConversationCatalogToken,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub total_raw: Option<String>,
+    pub items: Vec<Conversation>,
+    pub next_after: Option<ConversationCatalogAnchor>,
+    pub admission_estimate_bytes: u64,
+}

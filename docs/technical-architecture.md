@@ -1044,6 +1044,28 @@ réintroduire un ancien token durable ; une époque de source neuve au construct
 et à clear rend les anciens handles inutilisables. L'époque persistée n'est pas
 restaurée comme époque active.
 
+Les ports internes `db_conversation_catalog_version` et
+`db_conversation_catalog_page` ajoutent un parcours natif primaire admis avant
+fetch des chaînes, limité à 100 lignes et 4 Mio par page. Ils rendent les quinze
+champs Conversation actuels. Le parcours par ID BINARY est indépendant du tri
+TypeScript public. La migration 14 ajoute un singleton durable et trois triggers
+sur conversations, couvrant aussi REPLACE par clé ou rowid. Chaque appel valide
+le schéma et le singleton. Le compteur i64 reste une chaîne décimale canonique.
+
+Le token de catalogue ajoute une génération volatile détenue avec le pool dans
+l'état Ready, renouvelée à chaque installation. Un résultat en attente est retiré
+si ce propriétaire change. La restauration supportée au démarrage renouvelle
+cette génération même si le token durable revient à une ancienne valeur. Les
+archives antérieures à 14 restent validées contre leur schéma sans modification,
+puis seule une copie est migrée. Le remplacement arbitraire du fichier sous un
+pool ouvert ne fait pas partie de ce contrat.
+
+Ces ports ne branchent pas encore la source primaire et n'ajoutent ni cache
+TypeScript ni autorité réseau ou management. Un futur assembleur doit abandonner
+toutes ses pages en cas de stale_revision et contrôler le token à la clôture.
+La pagination ne borne pas la taille totale du catalogue, les deux observations
+et leurs copies restent soumises aux quotas existants.
+
 ### 9.4 `fs`
 
 Le module `fs` porte :

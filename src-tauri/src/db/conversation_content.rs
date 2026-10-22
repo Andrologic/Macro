@@ -4,8 +4,8 @@ use super::{conversation_management::METADATA_QUERY, models::*, DbError, DbResul
 use sqlx::{sqlite::SqliteRow, Connection, Row, SqliteConnection, SqlitePool};
 use std::collections::HashSet;
 
-const LIMIT: usize = 100;
-const MAX_BYTES: u64 = 4_194_304;
+pub(super) const LIMIT: usize = 100;
+pub(super) const MAX_BYTES: u64 = 4_194_304;
 const PROVENANCE_PREFIX: &str = "chat:assistant-visible-provenance:v1:";
 const MIGRATION: &str = include_str!("migrations/013_conversation_content_versions.sql");
 const DESCRIPTOR_FIELDS: &[&str] = &["m.id", "m.conversation_id", "m.role", "m.created_at"];
@@ -20,7 +20,7 @@ const BODY_FIELDS: &[&str] = &[
     "m.tool_traces_json",
     "p.value_json",
 ];
-const CONVERSATION_FIELDS: &[&str] = &[
+pub(super) const CONVERSATION_FIELDS: &[&str] = &[
     "id",
     "title",
     "description",
@@ -35,10 +35,10 @@ const CONVERSATION_FIELDS: &[&str] = &[
     "updated_at",
     "last_message",
 ];
-fn fail(code: &str) -> DbError {
+pub(super) fn fail(code: &str) -> DbError {
     DbError::Validation(code.into())
 }
-fn unavailable(_: sqlx::Error) -> DbError {
+pub(super) fn unavailable(_: sqlx::Error) -> DbError {
     fail("unavailable")
 }
 fn valid_id(id: &str) -> bool {
@@ -76,13 +76,13 @@ fn check_token(token: &ConversationContentToken) -> DbResult<()> {
     }
     Ok(())
 }
-fn add(a: u64, b: u64) -> DbResult<u64> {
+pub(super) fn add(a: u64, b: u64) -> DbResult<u64> {
     a.checked_add(b).ok_or_else(|| fail("resource_limit"))
 }
-fn text_cost(bytes: u64) -> DbResult<u64> {
+pub(super) fn text_cost(bytes: u64) -> DbResult<u64> {
     bytes.checked_mul(6).ok_or_else(|| fail("resource_limit"))
 }
-fn request_size(parts: impl IntoIterator<Item = usize>) -> DbResult<()> {
+pub(super) fn request_size(parts: impl IntoIterator<Item = usize>) -> DbResult<()> {
     let mut size = 0;
     for n in parts {
         size = add(size, n as u64)?;
@@ -92,7 +92,7 @@ fn request_size(parts: impl IntoIterator<Item = usize>) -> DbResult<()> {
     }
     Ok(())
 }
-fn lengths(fields: &[&str]) -> String {
+pub(super) fn lengths(fields: &[&str]) -> String {
     fields
         .iter()
         .enumerate()
@@ -100,7 +100,7 @@ fn lengths(fields: &[&str]) -> String {
         .collect::<Vec<_>>()
         .join(",")
 }
-fn row_bytes(row: &SqliteRow, fields: usize) -> DbResult<u64> {
+pub(super) fn row_bytes(row: &SqliteRow, fields: usize) -> DbResult<u64> {
     let mut total = 0;
     for i in 0..fields {
         let value: i64 = row.try_get(format!("l{i}").as_str()).map_err(unavailable)?;
@@ -545,4 +545,4 @@ async fn fetch_body(
 }
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;

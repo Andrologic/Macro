@@ -300,6 +300,11 @@ async fn check_database(path: &Path) -> Result<()> {
     {
         return Err("Incompatible database schema".into());
     }
+    if versions.contains(&14)
+        && (!versions.contains(&13) || !stamped(14, "014_conversation_catalog_version"))
+    {
+        return Err("Incompatible database schema".into());
+    }
     let legacy_trace = stamped(6, "006_pilot_tool_trace_revisions");
     let legacy_management = stamped(7, "007_conversation_management");
     let has_trace =
@@ -312,6 +317,11 @@ async fn check_database(path: &Path) -> Result<()> {
     // Compare the archive with the schema its migration stamps describe. Do
     // not migrate the untrusted archive until its original objects pass this
     // strict comparison; startup validation migrates a temporary copy later.
+    if !versions.contains(&14) {
+        crate::db::conversation_catalog::remove_reference_schema(&reference)
+            .await
+            .map_err(|e| e.to_string())?;
+    }
     if !versions.contains(&13) {
         crate::db::conversation_content::remove_reference_schema(&reference)
             .await
@@ -405,7 +415,8 @@ async fn check_database(path: &Path) -> Result<()> {
         return Err("Backup database tables do not match this Macro version".into());
     }
     for table in tables {
-        if table == "conversation_content_versions"
+        if table == "conversation_catalog_version"
+            || table == "conversation_content_versions"
             || table == "tool_invocations"
             || table == "agent_run_transitions"
             || table == "conversation_goals"
@@ -481,6 +492,11 @@ async fn check_database(path: &Path) -> Result<()> {
         .map_err(|e| e.to_string())?;
     if actual_schema != expected_schema {
         return Err("Backup database schema objects do not match this Macro version".into());
+    }
+    if versions.contains(&14) {
+        crate::db::conversation_catalog::validate_schema(&mut db)
+            .await
+            .map_err(|e| e.to_string())?;
     }
     reference.close().await;
     let violations = sqlx::query("PRAGMA foreign_key_check")
@@ -1316,6 +1332,13 @@ mod tests {
     }
 
     async fn remove_content_schema(db: &mut SqliteConnection) {
+        crate::db::conversation_catalog::remove_reference_schema_in(db)
+            .await
+            .unwrap();
+        sqlx::query("DELETE FROM schema_migrations WHERE version=14")
+            .execute(&mut *db)
+            .await
+            .unwrap();
         let names: Vec<String> = sqlx::query_scalar("SELECT name FROM sqlite_master WHERE type='trigger' AND name GLOB 'content_versions_*'").fetch_all(&mut *db).await.unwrap();
         for name in names {
             sqlx::query(sqlx::AssertSqlSafe(format!("DROP TRIGGER {name}")))
@@ -1556,7 +1579,7 @@ mod tests {
                 .fetch_one(&pool)
                 .await
                 .unwrap(),
-            13
+            14
         );
         assert_eq!(
             sqlx::query_scalar::<_, String>(
@@ -1589,7 +1612,7 @@ mod tests {
             .fetch_one(&mut db)
             .await
             .unwrap();
-        assert_eq!(version, 13);
+        assert_eq!(version, 14);
         sqlx::query("INSERT INTO schema_migrations VALUES (99, 'future', 'synthetic')")
             .execute(&mut db)
             .await
@@ -2947,6 +2970,13 @@ mod secrets_qualification;
 mod content_backup_tests {
     use super::*;
     async fn strip_content(db: &mut SqliteConnection) {
+        crate::db::conversation_catalog::remove_reference_schema_in(db)
+            .await
+            .unwrap();
+        sqlx::query("DELETE FROM schema_migrations WHERE version=14")
+            .execute(&mut *db)
+            .await
+            .unwrap();
         let names:Vec<String>=sqlx::query_scalar("SELECT name FROM sqlite_master WHERE type='trigger' AND name GLOB 'content_versions_*'").fetch_all(&mut *db).await.unwrap();
         for name in names {
             sqlx::query(sqlx::AssertSqlSafe(format!("DROP TRIGGER {name}")))
@@ -2976,7 +3006,7 @@ mod content_backup_tests {
                 .fetch_one(&mut db)
                 .await
                 .unwrap(),
-            13
+            14
         );
         assert_eq!(
             sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM conversation_content_versions")
@@ -3001,7 +3031,10 @@ mod content_backup_tests {
         ] {
             let (_temp,data,_config)=tests::profile().await;
             let path=data.join("macro.db");
-            let mut db=connection(&path).await.unwrap(); sqlx::raw_sql(mutation).execute(&mut db).await.unwrap(); db.close().await.unwrap();
+            let mut db=connection(&path).await.unwrap();
+            crate::db::conversation_catalog::remove_reference_schema_in(&mut db).await.unwrap();
+            sqlx::query("DELETE FROM schema_migrations WHERE version=14").execute(&mut db).await.unwrap();
+            sqlx::raw_sql(mutation).execute(&mut db).await.unwrap(); db.close().await.unwrap();
             let before=fs::read(&path).unwrap();
             assert!(check_database(&path).await.is_err(),"accepted {mutation}");
             assert_eq!(fs::read(&path).unwrap(),before);
@@ -3018,6 +3051,9 @@ mod content_legacy_backup_tests {
             let (temp, data, _config) = tests::profile().await;
             let original = data.join("macro.db");
             let mut db = connection(&original).await.unwrap();
+            crate::db::conversation_catalog::remove_reference_schema_in(&mut db)
+                .await
+                .unwrap();
             let names:Vec<String>=sqlx::query_scalar("SELECT name FROM sqlite_master WHERE type='trigger' AND name GLOB 'content_versions_*'").fetch_all(&mut db).await.unwrap();
             for name in names {
                 sqlx::query(sqlx::AssertSqlSafe(format!("DROP TRIGGER {name}")))
@@ -3091,5 +3127,108 @@ mod content_legacy_backup_tests {
             pool.close().await;
             assert_eq!(fs::read(&original).unwrap(), before);
         }
+    }
+}
+
+#[cfg(test)]
+mod catalog_backup_tests {
+    use super::*;
+    use crate::commands::conversation_catalog::version;
+    use crate::core::db_state::DbPool;
+    use crate::db::models::ConversationCatalogVersionInput;
+    #[tokio::test]
+    async fn exact_schema13_is_untouched_then_only_copy_migrates_to14() {
+        let (temp, data, _config) = tests::profile().await;
+        let original = data.join("macro.db");
+        let mut db = connection(&original).await.unwrap();
+        crate::db::conversation_catalog::remove_reference_schema_in(&mut db)
+            .await
+            .unwrap();
+        sqlx::query("DELETE FROM schema_migrations WHERE version=14")
+            .execute(&mut db)
+            .await
+            .unwrap();
+        db.close().await.unwrap();
+        let before = fs::read(&original).unwrap();
+        check_database(&original).await.unwrap();
+        assert_eq!(fs::read(&original).unwrap(), before);
+        let copy = temp.path().join("copy.db");
+        fs::copy(&original, &copy).unwrap();
+        check_database_startup(&copy).await.unwrap();
+        check_database(&copy).await.unwrap();
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>("SELECT MAX(version) FROM schema_migrations")
+                .fetch_one(&mut connection(&copy).await.unwrap())
+                .await
+                .unwrap(),
+            14
+        );
+        assert_eq!(fs::read(&original).unwrap(), before);
+    }
+    #[tokio::test]
+    async fn schema14_archive_rejects_missing_altered_or_undeclared_catalog() {
+        for mutation in [
+            "DROP TRIGGER catalog_version_conversations_insert",
+            "DROP TABLE conversation_catalog_version",
+            "DELETE FROM conversation_catalog_version",
+            "DELETE FROM schema_migrations WHERE version=14",
+            "UPDATE schema_migrations SET name='wrong' WHERE version=14",
+            "DELETE FROM schema_migrations WHERE version=13",
+            "CREATE TRIGGER catalog_version_extra AFTER INSERT ON conversations BEGIN SELECT 1; END",
+            "PRAGMA writable_schema=ON; UPDATE sqlite_master SET sql=replace(sql,'AND revision >= 0','AND revision >= -1') WHERE name='conversation_catalog_version'; PRAGMA writable_schema=OFF; PRAGMA schema_version=999",
+        ] {
+            let (_temp,data,_config)=tests::profile().await;let path=data.join("macro.db");
+            let mut db=connection(&path).await.unwrap();sqlx::raw_sql(mutation).execute(&mut db).await.unwrap();db.close().await.unwrap();
+            let before=fs::read(&path).unwrap();assert!(check_database(&path).await.is_err(),"accepted {mutation}");assert_eq!(fs::read(&path).unwrap(),before);
+        }
+    }
+    #[tokio::test]
+    async fn supported_startup_restore_keeps_durable_token_and_retires_old_generation() {
+        let (_temp, data, config) = tests::profile().await;
+        let path = data.join("macro.db");
+        let owner = DbPool::default();
+        let pool = crate::db::create_pool(&path).await.unwrap();
+        owner.set_ready(pool.clone());
+        let old = version(&owner, ConversationCatalogVersionInput::default())
+            .await
+            .unwrap();
+        owner.set_initializing();
+        pool.close().await;
+        let archive = capture(&data, &config, BTreeMap::new(), true)
+            .await
+            .unwrap();
+        let mut db = connection(&path).await.unwrap();
+        sqlx::query("UPDATE conversations SET title='new'")
+            .execute(&mut db)
+            .await
+            .unwrap();
+        db.close().await.unwrap();
+        tests::queue_restore(&data, &archive);
+        process_startup(&data, &config).await.unwrap();
+        let status: BackupStatus =
+            serde_json::from_slice(&fs::read(data.join("local-backup/status.json")).unwrap())
+                .unwrap();
+        assert_eq!(status.code, Some(BackupStatusCode::Restored));
+        let pool = crate::db::create_pool(&path).await.unwrap();
+        owner.set_ready(pool.clone());
+        let restored = version(&owner, ConversationCatalogVersionInput::default())
+            .await
+            .unwrap();
+        assert_eq!(old.incarnation, restored.incarnation);
+        assert_eq!(old.revision, restored.revision);
+        assert_ne!(old.generation, restored.generation);
+        assert_eq!(
+            version(
+                &owner,
+                ConversationCatalogVersionInput {
+                    expected_token: Some(old)
+                }
+            )
+            .await
+            .unwrap_err()
+            .message,
+            "stale_revision"
+        );
+        pool.close().await;
     }
 }

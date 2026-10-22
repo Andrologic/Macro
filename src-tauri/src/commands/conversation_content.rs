@@ -2,7 +2,7 @@
 use super::{command_error, get_pool, CommandResult, DbPool};
 use crate::db::{models::*, repository};
 use tauri::State;
-fn error(e: crate::db::DbError) -> super::CommandError {
+pub(super) fn error(e: crate::db::DbError) -> super::CommandError {
     match e {
         crate::db::DbError::Validation(code) => command_error(code),
         _ => command_error("unavailable"),

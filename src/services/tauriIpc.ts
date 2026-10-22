@@ -665,3 +665,5 @@ export { hostTelemetryRead } from "./ipc/hostTelemetry";
 export * from "./ipc/pilotFiles";
 
 export * from './ipc/conversationContent';
+
+export * from './ipc/conversationCatalog';

@@ -1,3 +1,4 @@
+pub use super::conversation_catalog::{conversation_catalog_page, conversation_catalog_version};
 #[allow(unused_imports)]
 pub use super::conversation_content::{
     conversation_content_metadata, conversation_content_version, conversation_content_window,
@@ -333,26 +334,27 @@ pub(super) async fn get_conversation_with_connection(
     .fetch_optional(&mut *connection)
     .await?;
 
-    row.map(|row| -> DbResult<Conversation> {
-        Ok(Conversation {
-            id: row.try_get("id")?,
-            title: row.try_get("title")?,
-            description: row.try_get("description")?,
-            scope_mode: row.try_get("scope_mode")?,
-            task_id: row.try_get("task_id")?,
-            group_id: row.try_get("group_id")?,
-            project_id: row.try_get("project_id")?,
-            provider_id: row.try_get("provider_id")?,
-            model_id: row.try_get("model_id")?,
-            reasoning_effort: row.try_get("reasoning_effort")?,
-            created_at: row.try_get("created_at")?,
-            updated_at: row.try_get("updated_at")?,
-            last_message: row.try_get("last_message")?,
-            message_count: row.try_get("message_count")?,
-            is_pinned: row.try_get::<i32, _>("is_pinned")? != 0,
-        })
+    row.as_ref().map(conversation_from_row).transpose()
+}
+
+pub(super) fn conversation_from_row(row: &sqlx::sqlite::SqliteRow) -> DbResult<Conversation> {
+    Ok(Conversation {
+        id: row.try_get("id")?,
+        title: row.try_get("title")?,
+        description: row.try_get("description")?,
+        scope_mode: row.try_get("scope_mode")?,
+        task_id: row.try_get("task_id")?,
+        group_id: row.try_get("group_id")?,
+        project_id: row.try_get("project_id")?,
+        provider_id: row.try_get("provider_id")?,
+        model_id: row.try_get("model_id")?,
+        reasoning_effort: row.try_get("reasoning_effort")?,
+        created_at: row.try_get("created_at")?,
+        updated_at: row.try_get("updated_at")?,
+        last_message: row.try_get("last_message")?,
+        message_count: row.try_get("message_count")?,
+        is_pinned: row.try_get::<i32, _>("is_pinned")? != 0,
     })
-    .transpose()
 }
 
 pub async fn create_conversation(

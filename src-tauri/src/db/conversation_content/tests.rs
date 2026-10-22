@@ -435,11 +435,15 @@ async fn replace_conflicts_cover_all_victims_and_failed_dml_rolls_back() {
 
 // A real engine trace witness, scoped to a single-connection synthetic pool.
 // Interruption makes an unexpected body/descriptor SELECT fail before decoding.
-struct FetchProbe {
-    bodies: std::sync::atomic::AtomicUsize,
-    descriptors: std::sync::atomic::AtomicUsize,
-    deny: std::sync::atomic::AtomicU8,
-    oversized_rows: std::sync::atomic::AtomicUsize,
+pub(crate) struct FetchProbe {
+    pub(crate) catalogs: std::sync::atomic::AtomicUsize,
+    pub(crate) catalog_pause: std::sync::atomic::AtomicBool,
+    pub(crate) catalog_started: std::sync::atomic::AtomicBool,
+    pub(crate) catalog_release: std::sync::atomic::AtomicBool,
+    pub(crate) bodies: std::sync::atomic::AtomicUsize,
+    pub(crate) descriptors: std::sync::atomic::AtomicUsize,
+    pub(crate) deny: std::sync::atomic::AtomicU8,
+    pub(crate) oversized_rows: std::sync::atomic::AtomicUsize,
 }
 unsafe extern "C" fn trace_fetch(
     event: u32,
@@ -472,8 +476,21 @@ unsafe extern "C" fn trace_fetch(
     }
     let sql =
         unsafe { std::ffi::CStr::from_ptr(libsqlite3_sys::sqlite3_sql(stmt)) }.to_string_lossy();
+    if sql.starts_with("SELECT incarnation, revision FROM conversation_catalog_version")
+        && probe.catalog_pause.load(SeqCst)
+    {
+        probe.catalog_started.store(true, SeqCst);
+        let end = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while !probe.catalog_release.load(SeqCst) && std::time::Instant::now() < end {
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+    }
     let body = sql.starts_with("SELECT m.id, m.conversation_id, m.role, m.content,");
     let descriptor = sql.starts_with("SELECT id, conversation_id, role, created_at FROM messages");
+    let catalog = sql.starts_with("SELECT id, title, description, scope_mode, task_id, group_id, project_id, provider_id, model_id, reasoning_effort, created_at, updated_at, last_message, message_count, is_pinned FROM conversations WHERE rowid =");
+    if catalog {
+        probe.catalogs.fetch_add(1, SeqCst);
+    }
     if body {
         probe.bodies.fetch_add(1, SeqCst);
     }
@@ -481,6 +498,7 @@ unsafe extern "C" fn trace_fetch(
         probe.descriptors.fetch_add(1, SeqCst);
     }
     if (probe.deny.load(SeqCst) == 4 && (sql.contains("messages") || sql.contains("COUNT(")))
+        || (catalog && probe.deny.load(SeqCst) == 5)
         || (body && probe.deny.load(SeqCst) == 1)
         || (descriptor && probe.deny.load(SeqCst) == 2)
     {
@@ -507,7 +525,7 @@ unsafe extern "C" fn drop_probe_owner(context: *mut std::ffi::c_void) {
         drop(std::sync::Arc::from_raw(context as *const FetchProbe));
     }
 }
-async fn probe_pool(dir: &TempDir) -> (SqlitePool, std::sync::Arc<FetchProbe>) {
+pub(crate) async fn probe_pool(dir: &TempDir) -> (SqlitePool, std::sync::Arc<FetchProbe>) {
     let options = sqlx::sqlite::SqliteConnectOptions::new()
         .filename(dir.path().join("synthetic.db"))
         .foreign_keys(true);
@@ -517,6 +535,10 @@ async fn probe_pool(dir: &TempDir) -> (SqlitePool, std::sync::Arc<FetchProbe>) {
         .await
         .unwrap();
     let probe = std::sync::Arc::new(FetchProbe {
+        catalogs: 0.into(),
+        catalog_pause: false.into(),
+        catalog_started: false.into(),
+        catalog_release: false.into(),
         bodies: 0.into(),
         descriptors: 0.into(),
         deny: 0.into(),
@@ -840,6 +862,13 @@ async fn migration_backfill_stamp_failure_rolls_back_and_schema_damage_is_reject
     let (dir, pool) = fixture().await;
     message(&pool, "old", "a", "assistant", "old content").await;
     sqlx::query("INSERT INTO app_settings VALUES ('chat:assistant-visible-provenance:v1:old','old receipt','now')").execute(&pool).await.unwrap();
+    crate::db::conversation_catalog::remove_reference_schema(&pool)
+        .await
+        .unwrap();
+    sqlx::query("DELETE FROM schema_migrations WHERE version=14")
+        .execute(&pool)
+        .await
+        .unwrap();
     remove_reference_schema(&pool).await.unwrap();
     sqlx::raw_sql("DELETE FROM schema_migrations WHERE version=13; CREATE TRIGGER reject_content_stamp BEFORE INSERT ON schema_migrations WHEN NEW.version=13 BEGIN SELECT RAISE(ABORT,'synthetic migration failure'); END;").execute(&pool).await.unwrap();
     assert!(crate::db::run_migrations(&pool).await.is_err());
@@ -1042,7 +1071,7 @@ async fn opening_keeps_i64_decimal_precision_and_handles_unreadable_numeric_fiel
 }
 
 #[tokio::test]
-async fn native_runtime_diagnostic_is_schema13_wal_normal_fk() {
+async fn native_runtime_diagnostic_is_schema14_wal_normal_fk() {
     let (_dir, pool) = fixture().await;
     let sqlite: String = sqlx::query_scalar("SELECT sqlite_version()")
         .fetch_one(&pool)
@@ -1053,7 +1082,7 @@ async fn native_runtime_diagnostic_is_schema13_wal_normal_fk() {
             .fetch_all(&pool)
             .await
             .unwrap();
-    assert_eq!(migrations, [1, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13]);
+    assert_eq!(migrations, [1, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14]);
     let mut db = pool.acquire().await.unwrap();
     let journal: String = sqlx::query_scalar("PRAGMA journal_mode")
         .fetch_one(&mut *db)
