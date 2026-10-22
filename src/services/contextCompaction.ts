@@ -1580,10 +1580,11 @@ const buildFingerprintInputs = (params: {
   systemMessage?: string;
   toolDefinitions?: MacroToolRegistryEntry[];
   modelContextWindowTokens?: number;
-}): string =>
-  JSON.stringify({
+}): string => {
+  const archive = portableArchiveBinding(params.messages);
+  return JSON.stringify({
     version: SOURCE_PASSAGE_VERSION,
-    ...(portableArchiveBinding(params.messages) ? { portableArchive: portableArchiveBinding(params.messages) } : {}),
+    ...(archive ? { portableArchive: archive } : {}),
     systemHash: simpleHash(params.systemMessage || ''),
     toolDefinitionsHash: simpleHash(JSON.stringify(params.toolDefinitions || [])),
     modelContextWindowTokens: params.modelContextWindowTokens,
@@ -1600,6 +1601,7 @@ const buildFingerprintInputs = (params: {
       ...params.interestingSourcePassageIds,
     ]),
   });
+};
 
 /** Complete-source verification for an archived checkpoint, without rendering
  * its summary or treating its captured system/tool hashes as current authority. */
@@ -1988,9 +1990,10 @@ export const estimateConversationFootprint = (
     if (confidences.includes('provider_formula')) return 'provider_formula';
     return confidences.length > 0 ? 'model_formula' : 'unknown';
   })();
+  const importedHistory = Boolean(portableArchiveBinding(params.orderedMessages));
   const hasCompactedState = params.preparedMessages.some(
     (message) =>
-      (message.role === 'system' || (message.role === 'user' && Boolean(portableArchiveBinding(params.orderedMessages)))) &&
+      (message.role === 'system' || (message.role === 'user' && importedHistory)) &&
       typeof message.content === 'string' &&
       message.content.includes(COMPACTED_CONVERSATION_STATE_MARKER)
   );
@@ -2024,7 +2027,7 @@ export const estimateConversationFootprint = (
   const summaryTokens = params.preparedMessages
     .filter(
       (message) =>
-        (message.role === 'system' || (message.role === 'user' && Boolean(portableArchiveBinding(params.orderedMessages)))) &&
+        (message.role === 'system' || (message.role === 'user' && importedHistory)) &&
         typeof message.content === 'string' &&
         message.content.includes(COMPACTED_CONVERSATION_STATE_MARKER)
     )

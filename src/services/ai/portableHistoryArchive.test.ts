@@ -3,7 +3,7 @@ import { portableDigest } from './portableChatHistory';
 import { fixture, policy } from './portableHistoryFixtures.testSupport';
 import { PortableHistoryArchive, type PortableArchivePort, type PortableArchiveFragment } from './portableHistoryArchive';
 import { PortableWorkBudget } from './portableHistoryInspection';
-import { buildCompactedMessagesForRequest, buildMessagesWithCompactionState, validateCompactionState } from '../contextCompaction';
+import { estimateConversationFootprint, buildCompactedMessagesForRequest, buildMessagesWithCompactionState, validateCompactionState } from '../contextCompaction';
 import type { ChatMessage } from '../../types';
 
 async function archiveFixture(input?: Awaited<ReturnType<typeof fixture>>) {
@@ -103,4 +103,14 @@ test('persisted attachment positions override record and remapped UUID order', a
       expect(Date.parse(data[0].timestamp)).toBeLessThan(Date.parse(data[1].timestamp));
     });
   } finally { archive.dispose(); expect(budget.used).toBe(0); }
+});
+
+test('one footprint estimate checks portable provenance in linear metadata reads', () => {
+  for (const count of [20, 40]) {
+    let reads = 0;
+    const binding = { version: 1 as const, importKey: 'archive', manifest: 'a'.repeat(64) };
+    const messages: ChatMessage[] = Array.from({ length: count }, (_, index) => ({ id: String(index), task_id: '', conversation_id: 'archive', role: 'user', content: 'historical data', timestamp: String(index), get portable_history() { reads++; return binding; } }));
+    estimateConversationFootprint({ systemMessage: 'Local instructions', preparedMessages: messages.map(message => ({ role: message.role, content: message.content })), orderedMessages: messages, citations: [], toolDefinitions: [], modelContextWindowTokens: 8000 });
+    expect(reads).toBeLessThanOrEqual(count * 3);
+  }
 });
