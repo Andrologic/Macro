@@ -133,14 +133,24 @@ identifiers match. Changing relay origin or rotating the transport credential
 invalidates the local generation even when account, session and device IDs
 remain unchanged. Never place the credential itself in a scope key or proof.
 
-Advance the local generation and invalidate the affected publication context
-before aborting requests, locking display or purging data. Capture the exact
-attempt, origin and local generation before each wait. Recheck them after
-credential and network waits and immediately before admission or rendering.
-An aborted or retired attempt cannot publish, restart renewal or unlock data.
-A late success cannot override a known authority refusal or revocation, nor
-revalidate an old context after suspension. Only a fresh, explicitly admitted
-attempt in the current context can establish authority again.
+On context invalidation, advance the local generation and invalidate the
+affected publication context before aborting requests, locking display or
+purging data. Context invalidation includes known revocation or authority
+refusal, suspension, replacement of audience/origin/selection, credential
+rotation and purge. Capture the exact attempt, origin and local generation
+before each wait. Recheck them after credential and network waits and
+immediately before admission or rendering. An aborted or retired attempt cannot
+publish, restart renewal or unlock data. A late success cannot override a known
+authority refusal or revocation, nor revalidate an old context after suspension.
+Only a fresh, explicitly admitted attempt in the current context can establish
+authority after such an invalidation.
+
+Simple proof expiration immediately locks protected access without advancing
+the local generation or cancelling an otherwise current renewal. Its response
+may unlock still-valid captures only if its own deadline remains valid, its
+attempt is still current, the audience/selection remain unchanged and required
+continuity checks pass. It cannot revive an expired or purged capture. This is
+distinct from the context invalidations above.
 
 A client records a monotonic timestamp before the exact negotiation attempt.
 Its local authority deadline is that timestamp plus `expires_at - issued_at`:
