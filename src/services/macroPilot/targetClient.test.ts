@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'bun:test';
 import { MacroPilotNativeClient, PilotClientError, type PilotClientDependencies, type PilotInstanceAccess } from './nativeClient';
 import { PilotTargetClient } from './targetClient';
+import { validateA1 } from './protocol';
 import { CONSUMER_CAPABILITIES, consumerWire, type ConsumerDispatch, type ConsumerOperation } from './consumerTransport';
 import { PilotRuntime } from './runtime';
 import { PilotKernel } from './kernel';
@@ -623,5 +624,44 @@ it('does not readmit a disposed handle page through a new handle with the same t
     await expect(replacement.read('conversation.read', { ref: ref(replacement.instanceId),
       continuation: { snapshot_id: page.response.result.page.snapshot_id, cursor: 'cursor:retired' } },
       { previous: page, seenIdentities: new Set(['message-demo']) })).rejects.toMatchObject({ code: 'context_changed' });
+  } finally { h.dispose(); }
+});
+
+
+it('accepts canonical revision zero, advances to one and preserves revocation fences', async () => {
+  const h = await harness();
+  const zero = access('instance:a', 0);
+  const entered = deferred<WireRequest>(), late = deferred<Response>();
+  try {
+    expect(validateA1(zero)).toBe(true);
+    const a = h.target('instance:a', zero), b = h.target('instance:b');
+    await Promise.all([a.negotiate(), b.negotiate()]);
+    const scopeB = b.scope();
+    expect((await a.read('conversation.read', { ref: ref(a.instanceId) })).scope.accessRevision).toBe(0);
+    for (const revision of [-1, 0.5, Number.MAX_SAFE_INTEGER + 1, Infinity, NaN]) {
+      expect(() => a.setAccess({ ...zero, revision })).toThrow('invalid_configuration');
+    }
+    const contradictory = { ...zero, permissions: ['respond' as const] };
+    expect(validateA1(contradictory)).toBe(true);
+    expect(() => a.setAccess(contradictory)).toThrow('stale_revision');
+    const one = access(a.instanceId, 1);
+    expect(validateA1(one)).toBe(true);
+    a.setAccess(one); await a.negotiate();
+    expect((await a.read('conversation.read', { ref: ref(a.instanceId) })).scope.accessRevision).toBe(1);
+    expect(() => a.setAccess(zero)).toThrow('stale_revision');
+    h.intercept(async w => {
+      if (w.instanceId === a.instanceId && w.request.type === 'request') { entered.resolve(w); return late.promise; }
+    });
+    const pending = a.read('conversation.read', { ref: ref(a.instanceId) });
+    const w = await entered.promise;
+    const revoked = { ...access(a.instanceId, 2, 'revoked'), revoked_at: new Date(time).toISOString() };
+    expect(validateA1(revoked)).toBe(true);
+    a.setAccess(revoked);
+    await expect(pending).rejects.toMatchObject({ code: 'context_changed' });
+    late.resolve(json(terminal(w.request, w.instanceId), w.requestId));
+    await expect(a.negotiate()).rejects.toMatchObject({ code: 'forbidden' });
+    expect(() => a.setAccess(one)).toThrow('stale_revision');
+    expect(b.scope()).toEqual(scopeB);
+    await b.read('conversation.read', { ref: ref(b.instanceId) });
   } finally { h.dispose(); }
 });

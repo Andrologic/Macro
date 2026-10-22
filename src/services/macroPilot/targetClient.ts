@@ -78,7 +78,7 @@ export class PilotTargetClient {
   setAccess(access: PilotInstanceAccess): void {
     if (this.closed) throw new PilotClientError('context_changed');
     if (access.ref.account_id !== this.identity.accountId || access.ref.session_id !== this.identity.sessionId ||
-      access.ref.instance_id !== this.instanceId || !Number.isSafeInteger(access.revision) || access.revision < 1) {
+      access.ref.instance_id !== this.instanceId || !Number.isSafeInteger(access.revision) || access.revision < 0) {
       throw new PilotClientError('invalid_configuration');
     }
     if (this.access && (access.revision < this.access.revision || access.revision === this.access.revision && stableJson(access) !== stableJson(this.access))) throw new PilotClientError('stale_revision');
