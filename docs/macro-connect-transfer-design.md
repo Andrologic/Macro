@@ -5,6 +5,16 @@ de la proposition initiale. Il spécifie le comportement à réaliser ; les noms
 d'états ci-dessous ne sont pas encore des opérations publiques du protocole.
 Lire le [plan](macro-connect-implementation-plan.md) pour les lots et leurs preuves.
 
+L'étape E de stockage cible reste interne et inactive. Son reçu de scellement
+atteste uniquement les records, fragments, associations et mappings conservés
+dans des tables dédiées. Il ne vaut ni admission du contexte, ni `target_ready`,
+ni autorisation F. La capture source et la normalisation réelle ne sont pas
+implémentées par cette étape. Les expériences locales reprennent des fixtures
+synthétiques Codex et Macro AI, y compris des sources récupérables après
+compaction. Elles ne prouvent pas une borne mémoire du prochain tour, dont la
+préparation actuelle matérialise encore l'historique. Aucune opération publique
+de transfert ou activation de conversation n'en découle.
+
 ## Périmètre du premier transfert
 
 Le mode Chat seul n'est pas un critère suffisant. Le précontrôle lit la portée

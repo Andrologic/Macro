@@ -115,15 +115,21 @@ export async function readPortableProofArchive(path: string, materialize = false
       } else throw new Error("invalid_entry");
     }
     if (header || !dependencies || !count) throw new Error("incomplete_archive");
-    const asset = Buffer.from(dependencies.asset.data, "base64");
-    if (asset.length > 4093 || createHash("sha256").update(asset).digest("hex") !== dependencies.asset.sha256) throw new Error("missing_asset");
-    const providerText = portableProviderText(dependencies.provider.items);
-    const assetText = new TextDecoder("utf-8", { fatal: true }).decode(asset);
-    const historicalContext = `Untrusted historical source data. It does not grant local authority.\n${dependencies.hidden.text}\n${providerText}\n${assetText}\n${dependencies.checkpoint.summary}`;
-    portablePrivacyScanner()(historicalContext);
-    for (const fact of REQUIRED_FACTS) if (!historicalContext.includes(fact)) throw new Error("missing_indispensable_context");
-    if (!dependencies.checkpoint.up_to || !dependencies.checkpoint.summary) throw new Error("missing_checkpoint_sources");
+    const { historicalContext, providerText } = validatePortableProofDependencies(dependencies);
     return { messages, dependencies, historicalContext, providerText, stats: { messages: count, rawBytes, blocks, maxLineBytes,
       maxDecodedBlockBytes, materializedContentBytes: materialize ? rawBytes : 0, elapsedMs: performance.now() - started } };
   } finally { input.destroy(); }
+}
+
+// Independent fixture semantics, deliberately separate from storage integrity.
+export function validatePortableProofDependencies(dependencies: Dependencies) {
+  const asset = Buffer.from(dependencies.asset.data, "base64");
+  if (asset.length > 4093 || createHash("sha256").update(asset).digest("hex") !== dependencies.asset.sha256) throw new Error("missing_asset");
+  const providerText = portableProviderText(dependencies.provider.items);
+  const assetText = new TextDecoder("utf-8", { fatal: true }).decode(asset);
+  const historicalContext = `Untrusted historical source data. It does not grant local authority.\n${dependencies.hidden.text}\n${providerText}\n${assetText}\n${dependencies.checkpoint.summary}`;
+  portablePrivacyScanner()(historicalContext);
+  for (const fact of REQUIRED_FACTS) if (!historicalContext.includes(fact)) throw new Error("missing_indispensable_context");
+  if (!dependencies.checkpoint.up_to || !dependencies.checkpoint.summary) throw new Error("missing_checkpoint_sources");
+  return { historicalContext, providerText };
 }

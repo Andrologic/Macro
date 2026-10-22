@@ -10,15 +10,17 @@ pub mod conversation_goals;
 pub mod conversation_management;
 pub mod goal_audit_children;
 pub mod goal_audit_transitions;
+mod inactive_budget;
+pub(crate) mod inactive_storage;
 #[allow(dead_code)]
 pub mod models;
 pub mod pilot_files;
 pub mod pilot_reflections;
 pub mod pilot_tools;
-pub mod repository;
-pub mod tool_invocations;
 #[cfg(test)]
 mod portable_history_proof;
+pub mod repository;
+pub mod tool_invocations;
 
 use crate::ai::macro_ai;
 use sqlx::sqlite::{SqliteConnectOptions, SqliteConnection, SqlitePool, SqlitePoolOptions};
@@ -56,7 +58,7 @@ const MIGRATION_004_VERSION: i64 = 4;
 const MIGRATION_004_NAME: &str = "004_message_search";
 const MIGRATION_004_SQL: &str = include_str!("migrations/004_message_search.sql");
 pub(crate) const SUPPORTED_MIGRATION_VERSIONS: &[i64] =
-    &[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14];
+    &[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15];
 const MIGRATION_005_VERSION: i64 = 5;
 const MIGRATION_005_NAME: &str = "005_runtime_schema";
 const MIGRATION_005_CHECK_SQL: &str = include_str!("migrations/005_runtime_schema_check.sql");
@@ -120,9 +122,12 @@ pub(crate) async fn create_pool(db_path: &Path) -> DbResult<SqlitePool> {
         .foreign_keys(true)
         .journal_mode(sqlx::sqlite::SqliteJournalMode::Wal)
         .synchronous(sqlx::sqlite::SqliteSynchronous::Normal)
+        // Preserve the defaults required by E's abandoned-lease shutdown.
+        .optimize_on_close(false, None::<u32>)
         .busy_timeout(std::time::Duration::from_secs(30));
 
     let pool = SqlitePoolOptions::new()
+        .min_connections(0)
         .max_connections(5)
         .connect_with(options)
         .await?;
@@ -351,6 +356,11 @@ async fn run_migrations_on_connection(connection: &mut SqliteConnection) -> DbRe
             "014_conversation_catalog_version",
             include_str!("migrations/014_conversation_catalog_version.sql"),
         ),
+        (
+            15,
+            "015_inactive_storage",
+            include_str!("migrations/015_inactive_storage.sql"),
+        ),
     ] {
         if !list_applied_migrations(connection)
             .await?
@@ -420,6 +430,7 @@ fn validate_migration_history(applied: &HashSet<i64>) -> DbResult<()> {
         || (applied.contains(&12) && !applied.contains(&11))
         || (applied.contains(&13) && !applied.contains(&12))
         || (applied.contains(&14) && !applied.contains(&13))
+        || (applied.contains(&15) && !applied.contains(&14))
     {
         return Err(DbError::Migration(
             "Unsupported or inconsistent migration history; database left unchanged".to_string(),

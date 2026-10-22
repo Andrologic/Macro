@@ -560,6 +560,9 @@ pub async fn begin(
     }
     let effect_deadline = date(expires.min(timestamp(&i.execute_before)?))?;
     let transfer_id = uuid::Uuid::new_v4().to_string();
+    // Same write transaction as the E owner. Existing per-instance/session
+    // byte/count limits above remain independent and unchanged.
+    super::inactive_budget::admit(&mut t, i.total_bytes).await?;
     guard(&mut t, &i.scope, &effect_deadline, clock).await?;
     sqlx::query("INSERT INTO pilot_file_transfers(id,scope_key,owner_key,ref_key,instance_id,session_id,intent_id,batch_id,intent_digest,file_name,mime_type,total_bytes,sha256,state,created_at,last_progress_at,expires_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,'receiving',?,?,?)")
         .bind(&transfer_id).bind(json(&i.scope)?).bind(owner(&i.scope)?).bind(json(&i.scope.r#ref)?).bind(&i.scope.instance_id).bind(&i.scope.session_id).bind(&i.intent_id).bind(&i.batch_id).bind(digest).bind(&i.file_name).bind(&i.mime_type).bind(i.total_bytes).bind(&i.sha256).bind(clock()).bind(clock()).bind(expires).execute(&mut *t).await.map_err(db)?;
@@ -1817,6 +1820,10 @@ mod tests {
             .await
             .unwrap();
         sqlx::raw_sql(include_str!("migrations/012_pilot_files.sql"))
+            .execute(&p)
+            .await
+            .unwrap();
+        sqlx::raw_sql(include_str!("migrations/015_inactive_storage.sql"))
             .execute(&p)
             .await
             .unwrap();

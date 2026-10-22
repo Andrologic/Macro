@@ -130,6 +130,22 @@ sur une plateforme ne disparaît pas par simple réutilisation d'un client.
 
 ## E. Contrat et import inactif
 
+Une étape partielle ajoute un noyau SQLite cible distinct des conversations
+ordinaires : réception segmentée, journal idempotent, mapping durable et
+scellement du stockage. Sa composition normale refuse toute opération ; seule
+une autorité native de test permet les preuves synthétiques. Le budget du banc
+de preuve ne définit aucun plafond de production. Un domaine persistant commun
+couvre les octets de préparation E et le staging des attachments, sans plafonner
+rétroactivement les assets ordinaires. Les seuils propres aux attachments restent
+inchangés. Le protocole de mesure 6 distingue le schéma 15 des historiques 3/4/5.
+
+Ce noyau ne constitue ni un importeur de Chat ni une admission de contexte.
+La capture source atomique, son index de dépendances, la normalisation réelle,
+le contrat portable normatif et les barrières F restent à réaliser. La
+récupération complète sur disque est distincte de la préparation du prochain
+tour, qui matérialise actuellement le contexte en O(N). Aucune route publique,
+capacité de transfert, promotion ou activation n'est ajoutée par cette étape.
+
 Le point 3 possède le contrat canonique de transfert dans le dépôt desktop.
 Il fixe les opérations, droits, champs, états, plafonds, erreurs et fixtures,
 puis les validateurs générés et leurs imports exacts dans le relais et le mobile.

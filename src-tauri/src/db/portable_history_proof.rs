@@ -28,7 +28,7 @@ fn output(name: &str) -> Option<std::fs::File> {
 
 /// Token and rowid are read before opening the incremental BLOB handle, in the
 /// same short SQLite snapshot. No sqlite3_column_text/blob or full-value CAST.
-async fn segment(
+pub(super) async fn segment(
     pool: &SqlitePool,
     id: &str,
     expected: &(String, i64),
@@ -296,7 +296,11 @@ fn portable_history_serializers() {
     let file = std::fs::File::open(Path::new(&root).join("requests.json"))
         .expect("run the Bun preparation proof first");
     let cases: Vec<WireCase> = serde_json::from_reader(std::io::BufReader::new(file)).unwrap();
-    assert_eq!(cases.len(), 14);
+    let storage_proof = std::env::var_os("MACRO_INACTIVE_STORAGE_PROOF_DIR");
+    if let Some(path) = &storage_proof {
+        assert_eq!(path, &root);
+    }
+    assert_eq!(cases.len(), if storage_proof.is_some() { 10 } else { 14 });
     for case in cases {
         let wire = if case.target == "codex" {
             crate::ai::chatgpt::portable_history_proof_request(&case.request).unwrap()
