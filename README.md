@@ -128,6 +128,8 @@ contribution, and technical references remain available below.
 - [HEADLESS.md](HEADLESS.md) - internal experimental notes for a possible future remote runtime.
 - [docs/configuration.md](docs/configuration.md) - JSON configuration files,
   scopes, schemas, agent tools, skills, and security rules.
+- [Connect reader authority](docs/macro-pilot/connect-reader-authority.md) - bounded
+  read authority, synthetic checks, and the native lifecycle limitation.
 - [CONTRIBUTING.md](CONTRIBUTING.md) - contribution guidelines.
 - [SECURITY.md](SECURITY.md) - security reporting and security model notes.
 - [SUPPORT.md](SUPPORT.md) - supported workflows for the current release line.

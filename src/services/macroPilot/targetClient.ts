@@ -3,6 +3,8 @@ import {
   type ContentEventsPage, type ContentPage, type ContentRequest,
 } from './contentProtocol';
 import { PilotClientError } from './clientError';
+import { admitReadAuthority, captureDeadline, CapabilityCompatibilityError, type AdmittedReadAuthority, type ConsumerSessionObservation, type ReadStart } from './readAuthority';
+import { consumerAbortable } from './consumerPolicy';
 import type { PilotInstanceAccess } from './nativeClient';
 import { stableJson } from './protocol';
 import {
@@ -23,6 +25,7 @@ export interface ConsumerReadPage<O extends ConsumerOperation = ConsumerOperatio
   scope: ConsumerTargetScope;
   request: ConsumerReadRequestFor<O>;
   response: ConsumerReadResponse<O>;
+  captureDeadline?: number;
 }
 export interface ConsumerEventBatch {
   scope: ConsumerTargetScope;
@@ -41,6 +44,7 @@ const pause = (ms: number, signal: AbortSignal) => new Promise<void>((resolve, r
 
 /** One explicit target handle. No global registry, transcript cache or mutation. */
 export class PilotTargetClient {
+  private session?: ConsumerSessionObservation;
   private readonly identity: ConsumerIdentity;
   private readonly connectionId: string;
   private readonly offered: readonly ConsumerCapability[];
@@ -50,18 +54,24 @@ export class PilotTargetClient {
   private access: PilotInstanceAccess | undefined;
   private unsubscribe: () => void = () => undefined;
   private reading: Slot | null = null;
+  private renewing: Slot | null = null;
+  private grant?: AdmittedReadAuthority;
+  private lastMonotonic = -Infinity;
+  private readonly monotonic: () => number;
   private monitoring: Slot | null = null;
   private cursor: { stream: string; sequence: number } | null = null;
   // No page or event body is retained while waiting for application acknowledgement.
   private pending: { receipt: object; generation: number; stream: string; sequence: number } | null = null;
 
   constructor(private readonly transport: ConsumerTransport, readonly instanceId: string,
-    options: { capabilities?: readonly ConsumerCapability[]; access?: PilotInstanceAccess } = {}) {
+    options: { capabilities?: readonly ConsumerCapability[]; access?: PilotInstanceAccess; session?: ConsumerSessionObservation; monotonic?: () => number } = {}) {
+    this.monotonic = options.monotonic ?? (() => performance.now());
+    this.session = options.session ? Object.freeze({ ...options.session }) : undefined;
     checkConsumerTarget(instanceId);
     this.identity = Object.freeze({ ...transport.context() });
     this.connectionId = transport.id();
     checkConsumerCapabilities(options.capabilities ?? CONSUMER_CAPABILITIES);
-    this.offered = Object.freeze([...(options.capabilities ?? CONSUMER_CAPABILITIES)]);
+    this.offered = Object.freeze([...(options.capabilities ?? CONSUMER_CAPABILITIES)].filter(value => value !== 'read-authority-1' || Boolean(transport.readAuthority?.suspensionBarrierVerified && this.session)));
     if (options.access) this.setAccess(options.access);
     this.unsubscribe = transport.subscribe(() => {
       try { this.check(); } catch { this.dispose(); }
@@ -74,6 +84,10 @@ export class PilotTargetClient {
   }
   capabilities(): readonly ConsumerCapability[] { return [...this.selected ?? []]; }
 
+  setSession(session: ConsumerSessionObservation | undefined): void {
+    if (stableJson(session ?? null) !== stableJson(this.session ?? null)) this.reset();
+    this.session = session ? Object.freeze({ ...session }) : undefined;
+  }
   /** Observed directory access is a fence, never a replacement for relay checks. */
   setAccess(access: PilotInstanceAccess): void {
     if (this.closed) throw new PilotClientError('context_changed');
@@ -88,7 +102,9 @@ export class PilotTargetClient {
 
   reset(): void {
     this.generation++;
+    this.grant = undefined;
     this.selected = null;
+    this.renewing?.controller.abort(); this.renewing = null;
     this.reading?.controller.abort(); this.reading = null;
     this.monitoring?.controller.abort(); this.monitoring = null;
     this.cursor = null; this.pending = null;
@@ -100,14 +116,14 @@ export class PilotTargetClient {
   }
 
   private check(generation = this.generation, signal?: AbortSignal): void {
-    if (this.closed || generation !== this.generation || signal?.aborted || this.transport.context().key !== this.identity.key) {
+    if (this.closed || generation !== this.generation || signal?.aborted || this.transport.context().key !== this.identity.key || this.transport.context().credentialGeneration !== this.identity.credentialGeneration) {
       throw new PilotClientError('context_changed');
     }
   }
   private authority(): void {
     if (this.access && (this.access.state !== 'granted' || !this.access.permissions.includes('supervise'))) throw new PilotClientError('forbidden');
   }
-  private async exclusive<T>(kind: 'reading' | 'monitoring', signal: AbortSignal | undefined,
+  private async exclusive<T>(kind: 'reading' | 'monitoring' | 'renewing', signal: AbortSignal | undefined,
     work: (generation: number, signal: AbortSignal) => Promise<T>): Promise<T> {
     this.check(); this.authority();
     if (this[kind] || kind === 'monitoring' && this.pending) throw new PilotClientError('conflict');
@@ -119,14 +135,15 @@ export class PilotTargetClient {
     catch (error) {
       // An obsolete request must never reset its replacement or another target.
       if (generation === this.generation && !combined.aborted && error instanceof PilotClientError &&
-        ['forbidden', 'unauthorized', 'session_revoked', 'unavailable', 'extension_unavailable', 'invalid_response'].includes(error.code)) this.reset();
+        (['forbidden', 'unauthorized', 'session_revoked', 'extension_unavailable', 'invalid_response', 'context_changed'].includes(error.code) || error.code === 'unavailable' && !this.grant)) this.reset();
       throw error;
     } finally { if (this[kind] === slot) this[kind] = null; }
   }
 
   private async send(dispatch: ConsumerDispatch, generation: number, signal: AbortSignal) {
     this.check(generation, signal); this.authority();
-    const response = await this.transport.send(this.identity, this.instanceId, dispatch, signal);
+    const sending = this.transport.send(this.identity, this.instanceId, dispatch, signal);
+    const response = await (dispatch.kind === 'negotiate' ? consumerAbortable(sending, signal) : sending);
     this.check(generation, signal); this.authority();
     if (!validConsumerResponse(dispatch, response.status, response.data)) return invalid();
     if (!validateContentMessage(response.data)) return invalid();
@@ -141,24 +158,61 @@ export class PilotTargetClient {
     return response.data;
   }
 
+  private tick(): number {
+    const now = this.monotonic();
+    if (!Number.isFinite(now) || now < this.lastMonotonic) { this.reset(); throw new PilotClientError('context_changed'); }
+    this.lastMonotonic = now; return now;
+  }
+  readAuthority(): AdmittedReadAuthority | undefined { this.check(); this.tick(); return this.grant ? structuredClone(this.grant) : undefined; }
   async negotiate(signal?: AbortSignal): Promise<readonly ConsumerCapability[]> {
     this.check(); this.authority();
-    if (this.reading) throw new PilotClientError('conflict');
+    if (this.reading || this.renewing) throw new PilotClientError('conflict');
     this.reset();
-    return this.exclusive('reading', signal, async (generation, signal) => {
-      const request = { negotiation_version: '1.0' as const, type: 'negotiate' as const,
-        request_id: this.transport.id(), instance_id: this.instanceId, supported_versions: ['2.0'], capabilities: [...this.offered] };
-      const response = await this.send({ kind: 'negotiate', request }, generation, signal);
-      if (response.type !== 'negotiated') return invalid();
-      if (response.selected_version !== '2.0') throw new PilotClientError('extension_unavailable');
-      this.selected = selectedConsumerCapabilities(response);
-      return this.capabilities();
+    return this.selectAuthority(false, signal);
+  }
+  renew(signal?: AbortSignal): Promise<readonly ConsumerCapability[]> {
+    if (!this.grant || !this.selected) return Promise.reject(new PilotClientError('extension_unavailable'));
+    return this.selectAuthority(true, signal);
+  }
+  private selectAuthority(renewal: boolean, signal?: AbortSignal): Promise<readonly ConsumerCapability[]> {
+    return this.exclusive(renewal ? 'renewing' : 'reading', signal, async (generation, signal) => {
+      let offered = [...this.offered];
+      for (;;) {
+        const request = { negotiation_version: '1.0' as const, type: 'negotiate' as const,
+          request_id: this.transport.id(), instance_id: this.instanceId, supported_versions: ['2.0'], capabilities: offered };
+        const started = this.tick(); // Before the port and its credential wait, once per exact attempt.
+        let response;
+        try { response = await this.send({ kind: 'negotiate', request }, generation, signal); }
+        catch (error) {
+          if (!renewal && offered.includes('read-authority-1') && error instanceof CapabilityCompatibilityError && error.requestId === request.request_id) {
+            offered = offered.filter(value => value !== 'read-authority-1'); continue;
+          }
+          throw error;
+        }
+        if (response.type !== 'negotiated') return invalid();
+        if (response.selected_version !== '2.0') throw new PilotClientError('extension_unavailable');
+        const selected = selectedConsumerCapabilities(response);
+        if (renewal && stableJson([...selected].sort()) !== stableJson([...(this.selected ?? [])].sort())) throw new PilotClientError('context_changed');
+        if (selected.includes('read-authority-1')) {
+          if (!this.session || !offered.includes('read-authority-1') || !response.read_authority) return invalid();
+          this.grant = admitReadAuthority(response.read_authority, this.identity, this.session, this.instanceId, this.access?.revision,
+            started, this.tick(), renewal ? this.grant : undefined);
+        } else {
+          if (renewal) { this.reset(); throw new PilotClientError('context_changed'); }
+          this.grant = undefined;
+        }
+        this.selected = selected; return this.capabilities();
+      }
     });
   }
 
   read<O extends ConsumerOperation>(operation: O, body: ContentRequest<O>['body'],
-    options: { signal?: AbortSignal; previous?: ConsumerReadPage<O>; seenIdentities?: ReadonlySet<string> } = {}): Promise<ConsumerReadPage<O>> {
+    options: { signal?: AbortSignal; previous?: ConsumerReadPage<O>; seenIdentities?: ReadonlySet<string>; started?: ReadStart } = {}): Promise<ConsumerReadPage<O>> {
     return this.exclusive('reading', options.signal, async (generation, outerSignal) => {
+      const entered = this.tick();
+      const started = options.started ?? { monotonic: entered, wall: this.transport.now() };
+      if (!Number.isFinite(started.monotonic) || !Number.isFinite(started.wall) || started.monotonic > entered) throw new PilotClientError('invalid_configuration');
+      const authority = this.grant ? structuredClone(this.grant) : undefined;
       if (!this.selected) throw new PilotClientError('extension_unavailable');
       if (!CONSUMER_READ_OPERATIONS.includes(operation)) throw new PilotClientError('invalid_configuration');
       // Request fields contain identifiers only; no returned transcript is retained here.
@@ -176,7 +230,7 @@ export class PilotTargetClient {
         if (previous.request.operation !== operation || stableJson(withoutCursor(previous.request.body)) !== stableJson(withoutCursor(request.body))) throw new PilotClientError('invalid_configuration');
         if (!options.seenIdentities) throw new PilotClientError('invalid_configuration');
         const before = (previous.response as ConsumerReadResponse).result as { page?: ContentPage };
-        if (!before.page || Date.parse(before.page.expires_at) <= this.transport.now() ||
+        if (!before.page || options.previous!.captureDeadline !== undefined && this.tick() >= options.previous!.captureDeadline! || Date.parse(before.page.expires_at) <= this.transport.now() ||
           input.continuation.snapshot_id !== before.page.snapshot_id || input.continuation.cursor !== before.page.next_cursor) throw new PilotClientError('snapshot_expired');
       }
       const deadline = this.transport.now() + 60_000;
@@ -200,7 +254,9 @@ export class PilotTargetClient {
       if (input.continuation && !validateContentPageContinuation(options.previous!.response, response,
         { request, seenIdentities: options.seenIdentities })) return invalid();
       this.check(generation, signal);
-      return { scope: this.scope(), request, response } as ConsumerReadPage<O>;
+      const capture = result.page ? captureDeadline(result.page, started, authority, options.previous?.captureDeadline) : undefined;
+      if (capture !== undefined && this.tick() >= capture) throw new PilotClientError('snapshot_expired');
+      return { scope: this.scope(), request, response, ...(capture !== undefined ? { captureDeadline: capture } : {}) } as ConsumerReadPage<O>;
     });
   }
 

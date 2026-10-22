@@ -21,7 +21,11 @@ export interface ConsumerRetryPolicy {
   jitterRatio: number;
   pollIntervalMs: number;
 }
+export function consumerTimer(callback: () => void, ms: number): () => void {
+  const timer = setTimeout(callback, ms); return () => clearTimeout(timer);
+}
 export interface ConsumerClock {
+  timer?(callback: () => void, ms: number): () => void;
   now(): number;
   random(): number;
   sleep(ms: number, signal: AbortSignal): Promise<void>;
