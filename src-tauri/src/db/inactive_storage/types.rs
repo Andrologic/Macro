@@ -34,6 +34,7 @@ pub struct Bindings {
 #[serde(rename_all = "snake_case")]
 pub enum Profile {
     SyntheticHistoryV1,
+    PortableChatHistoryV1,
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -61,6 +62,9 @@ pub enum TextPurpose {
     Title,
     Url,
     Label,
+    PortableMetadata,
+    OriginalText,
+    HistoricalData,
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -143,6 +147,18 @@ pub struct RecordHeader {
     pub entry: RecordKind,
     pub bytes: u64,
     pub sha256: String,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "present_origin"
+    )]
+    pub origin: Option<u64>,
+}
+// Absence preserves the legacy envelope; an explicit null is never an origin.
+fn present_origin<'de, D: serde::Deserializer<'de>>(
+    decoder: D,
+) -> std::result::Result<Option<u64>, D::Error> {
+    u64::deserialize(decoder).map(Some)
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]

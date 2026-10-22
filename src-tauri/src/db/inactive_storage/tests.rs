@@ -48,6 +48,7 @@ fn intent(records: &[(RecordKind, Vec<u8>)]) -> (Begin, Vec<RecordHeader>) {
         .iter()
         .enumerate()
         .map(|(ordinal, (entry, bytes))| RecordHeader {
+            origin: None,
             ordinal: ordinal as u64,
             entry: entry.clone(),
             bytes: bytes.len() as u64,
@@ -1091,6 +1092,8 @@ async fn migration15_failure_rolls_back_and_does_not_change_existing_content_tok
 mod lifetime;
 #[path = "proof.rs"]
 mod proof;
+#[path = "portable_profile_tests.rs"]
+mod portable_profile_tests;
 
 #[tokio::test]
 async fn sqlite_full_rolls_back_payload_mapping_and_charge_before_ack() {
