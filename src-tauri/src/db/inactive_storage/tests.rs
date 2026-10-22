@@ -1325,3 +1325,5 @@ pub(crate) async fn shared_attachment_reservation(
     let scope = file_scope(pool, "shared-instance", "shared-session").await;
     files::begin(pool, file_begin(&scope, intent, bytes), &|| FILE_TIME).await
 }
+#[path = "portable_normalization_proof.rs"]
+mod portable_normalization_proof;
