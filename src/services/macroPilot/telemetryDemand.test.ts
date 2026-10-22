@@ -6,7 +6,7 @@ import { ContentHost } from './contentHost';
 import { ConversationCaptures } from './conversationCaptures';
 import { createReviewCaptureService } from './reviewCapture';
 
-type NativeSample = HostTelemetryDto & { reuseForMs?: number | null };
+type NativeSample = Omit<HostTelemetryDto, 'reuseForMs'> & { reuseForMs?: number | null };
 let nativeRead: () => Promise<NativeSample>;
 const core = await import('@tauri-apps/api/core');
 mock.module('@tauri-apps/api/core', () => ({ ...core, invoke: async (command: string) => {
