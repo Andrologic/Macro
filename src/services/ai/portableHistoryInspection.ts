@@ -49,7 +49,7 @@ export async function withInspectedPortableText(
   try {
     const raw = await load();
     if (raw.byteLength !== bytes) throw new Error('integrity_failed');
-    const text = new TextDecoder('utf-8', { fatal: true }).decode(raw);
+    const text = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(raw);
     const full = { ...policy, inspectionBytes: bytes };
     if (!inspectWholeText(text, full)) throw new Error('unsafe_content');
     const decoded = json ? parseStoredJsonStrict(text) : undefined;

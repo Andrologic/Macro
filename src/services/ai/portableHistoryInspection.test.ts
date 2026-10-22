@@ -38,3 +38,15 @@ test('examines decoded JSON strings and frees reservations after parse/consumer 
     expect(budget.used).toBe(0);
   }
 });
+
+test('preserves an original UTF-8 BOM and refuses BOM JSON without stripping it', async () => {
+  const raw = Uint8Array.from([0xef, 0xbb, 0xbf, 0x41]);
+  const budget = new PortableWorkBudget(100_000);
+  await withInspectedPortableText(raw.length, async () => raw, policy, budget, false, async text => {
+    expect(text).toBe('\uFEFFA');
+    expect(new TextEncoder().encode(text)).toEqual(raw);
+  });
+  const json = new TextEncoder().encode('\uFEFF{"text":"value"}');
+  await expect(withInspectedPortableText(json.length, async () => json, policy, budget, true, async () => { throw new Error('must not consume'); })).rejects.toThrow();
+  expect(budget.used).toBe(0);
+});
