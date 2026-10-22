@@ -849,6 +849,7 @@ async fn execute_workspace_tool_edit_rejects_a_stale_revision() {
     .await
     .expect_err("stale edit must fail");
 
+    assert_eq!(error.code(), Some("REVISION_CONFLICT"));
     assert!(error.message.contains("Stale content"));
     assert_eq!(
         fs::read_to_string(path).expect("read guarded file"),
@@ -1068,6 +1069,7 @@ async fn commit_pending_file_changes_rolls_back_a_late_revision_conflict() {
     .await
     .expect_err("the second mutation must observe the first revision change");
 
+    assert_eq!(error.code(), Some("REVISION_CONFLICT"));
     assert!(error.message.contains("Stale content for 'shared.txt'"));
     assert_eq!(
         fs::read_to_string(path).expect("read rolled back file"),
@@ -1766,4 +1768,50 @@ async fn mixed_mount_patch_rejects_read_only_target_before_any_write() {
     );
     assert!(!writable.path().join("first.txt").exists());
     assert!(!read_only.path().join("second.txt").exists());
+}
+
+#[tokio::test]
+async fn controlled_tool_errors_distinguish_cancellation_from_both_timeout_paths() {
+    let workspace = TempDir::new().expect("workspace");
+    git2::Repository::init(workspace.path()).expect("repository");
+    // Hold the real metadata repository lock so the read stays pending until
+    // its execution budget expires or its registered cancellation is observed.
+    let _guard = crate::workspace::lock_git_repository(workspace.path())
+        .await
+        .unwrap();
+    let cancelled_id = uuid::Uuid::new_v4().to_string();
+    tool_cancel_workspace(cancelled_id.clone());
+    for (execution_id, expected_code) in [
+        (Some(cancelled_id), "TOOL_EXECUTION_CANCELLED"),
+        (
+            Some(uuid::Uuid::new_v4().to_string()),
+            "TOOL_EXECUTION_TIMEOUT",
+        ),
+        (None, "TOOL_EXECUTION_TIMEOUT"),
+    ] {
+        let error = tokio::time::timeout(
+            Duration::from_secs(8),
+            execute_workspace_tool_controlled(
+                workspace.path().to_path_buf(),
+                workspace.path().to_path_buf(),
+                GitState::new(),
+                "Implement".into(),
+                "read".into(),
+                json!({"path": "held.txt"}),
+                None,
+                Some("metadata".into()),
+                None,
+                None,
+                None,
+                execution_id,
+            ),
+        )
+        .await
+        .expect("tool budget must settle the blocked read")
+        .unwrap_err();
+        assert_eq!(error.code(), Some(expected_code));
+        if expected_code == "TOOL_EXECUTION_CANCELLED" {
+            assert_eq!(error.message, "Tool execution cancelled: read.");
+        }
+    }
 }

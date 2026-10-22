@@ -780,7 +780,7 @@ async fn write_bytes_atomically_with_parent_creation(
             latest_revision.as_deref(),
         ) {
             let _ = tokio::fs::remove_file(&temp_path).await;
-            return Err(command_error(error.to_string()));
+            return Err(CommandError::from(error));
         }
     }
     if let Err(error) = tokio::fs::rename(&temp_path, path).await {
@@ -982,7 +982,7 @@ async fn write_wsl_backup_bytes(
         .ok_or_else(|| command_error("Invalid WSL workspace path"))?;
     let target = fs::canonical_wsl_path_within_workspace(&wsl_workspace, &target, Some(false))
         .await
-        .map_err(|error| command_error(error.to_string()))?;
+        .map_err(CommandError::from)?;
     let output = run_wsl_shell_with_stdin(
         &target,
         wsl_mutation_backup_write_script(),
@@ -997,7 +997,7 @@ async fn write_wsl_backup_bytes(
         Duration::from_secs(15),
     )
     .await
-    .map_err(|error| command_error(error.to_string()))?;
+    .map_err(CommandError::from)?;
     if let Some(actual) = output
         .stdout_text()
         .lines()
@@ -1009,11 +1009,11 @@ async fn write_wsl_backup_bytes(
             Some(actual)
         };
         fs::validate_expected_revision(path, expected_revision, actual_revision)
-            .map_err(|error| command_error(error.to_string()))?;
-        return Err(command_error(format!(
-            "Revision conflict while restoring {}",
-            path
-        )));
+            .map_err(CommandError::from)?;
+        return Err(CommandError::from(BackendError::RevisionConflict {
+            message: format!("Revision conflict while restoring {}", path),
+        })
+        .with_message(format!("Revision conflict while restoring {}", path)));
     }
     Ok(())
 }
@@ -1083,12 +1083,12 @@ async fn rollback_pending_file_changes_via_fs(
                     )
                     .await
                     .map(|_| ())
-                    .map_err(|error| command_error(error.to_string()))
+                    .map_err(CommandError::from)
                 } else {
                     write_wsl_backup_bytes(workspace, path, content, expected, *unix_mode).await
                 };
                 if let Err(error) = result {
-                    if error.message.contains("Revision conflict") {
+                    if error.code() == Some("REVISION_CONFLICT") {
                         errors.push(format!(
                             "Rollback conflict for {}: the current file no longer matches Macro's applied mutation; preserving the current filesystem state",
                             display_path
@@ -1120,7 +1120,7 @@ async fn rollback_pending_file_changes_via_fs(
                         .await
                     };
                     if let Err(error) = deletion {
-                        if error.to_string().contains("Revision conflict") {
+                        if matches!(error, BackendError::RevisionConflict { .. }) {
                             errors.push(format!(
                                 "Rollback conflict for {}: the current file no longer matches Macro's applied mutation; preserving the current filesystem state",
                                 display_path
@@ -1497,7 +1497,7 @@ async fn prepare_mutation_backups(changes: &[PendingFileChange]) -> CommandResul
                 .map(|(bytes, _)| fs::content_revision(bytes))
                 .as_deref(),
         )
-        .map_err(|error| command_error(error.to_string()))?;
+        .map_err(CommandError::from)?;
         let (backup, unix_mode) = backup
             .map(|(content, unix_mode)| (Some(content), unix_mode))
             .unwrap_or((None, None));
@@ -1534,6 +1534,7 @@ async fn apply_mutation_backups(
                 )
                 .await
                 .map(|_| ())
+                .map_err(CommandError::from)
             } else {
                 fs::write_file_internal_with_revision_and_mode_unlocked(
                     &change.effective_workspace,
@@ -1546,6 +1547,7 @@ async fn apply_mutation_backups(
                 )
                 .await
                 .map(|_| ())
+                .map_err(CommandError::from)
             }
         } else {
             let deletion = if let Some(target) = native_target {
@@ -1564,8 +1566,12 @@ async fn apply_mutation_backups(
                 )
                 .await
             };
-            deletion.map_err(|error| BackendError::Filesystem {
-                message: format!("Failed to delete {}: {}", change.display_path, error),
+            deletion.map_err(|error| {
+                let message = format!(
+                    "File system error: Failed to delete {}: {}",
+                    change.display_path, error
+                );
+                CommandError::from(error).with_message(message)
             })
         };
 
@@ -1575,11 +1581,12 @@ async fn apply_mutation_backups(
                 &changes[..applied_count],
             )
             .await;
-            return Err(command_error(format!(
+            let message = format!(
                 "{}{}",
-                error,
+                error.message,
                 rollback_error_suffix(rollback_errors)
-            )));
+            );
+            return Err(error.with_message(message));
         }
     }
 
@@ -2160,15 +2167,17 @@ pub async fn execute_workspace_tool_controlled_with_options(
     if execution_id.is_some() {
         tokio::select! {
             biased;
-            _ = cancellation.cancelled() => Err(command_error(format!(
-                "Tool execution cancelled: {tool_label}."
-            ))),
+            _ = cancellation.cancelled() => Err(CommandError::from(BackendError::ToolExecutionCancelled {
+                message: format!("Tool execution cancelled: {tool_label}."),
+            })),
             _ = tokio::time::sleep(timeout_duration) => {
                 cancellation.cancel();
-                Err(command_error(format!(
-                    "Tool execution timed out after {} seconds: {tool_label}. Narrow the path, pattern, or query before retrying.",
-                    timeout_duration.as_secs()
-                )))
+                Err(CommandError::from(BackendError::ToolExecutionTimeout {
+                    message: format!(
+                        "Tool execution timed out after {} seconds: {tool_label}. Narrow the path, pattern, or query before retrying.",
+                        timeout_duration.as_secs()
+                    ),
+                }))
             },
             result = &mut execution => result,
         }
@@ -2177,10 +2186,12 @@ pub async fn execute_workspace_tool_controlled_with_options(
             Ok(result) => result,
             Err(_) => {
                 cancellation.cancel();
-                Err(command_error(format!(
-                    "Tool execution timed out after {} seconds: {tool_label}. Narrow the path, pattern, or query before retrying.",
-                    timeout_duration.as_secs()
-                )))
+                Err(CommandError::from(BackendError::ToolExecutionTimeout {
+                    message: format!(
+                        "Tool execution timed out after {} seconds: {tool_label}. Narrow the path, pattern, or query before retrying.",
+                        timeout_duration.as_secs()
+                    ),
+                }))
             }
         }
     }
@@ -2495,7 +2506,7 @@ async fn execute_workspace_tool_inner(
                 expected_revision.as_deref(),
                 Some(&current.revision),
             )
-            .map_err(|error| command_error(error.to_string()))?;
+            .map_err(CommandError::from)?;
             let mutation_revision = expected_revision
                 .clone()
                 .unwrap_or_else(|| current.revision.clone());
@@ -2599,7 +2610,7 @@ async fn execute_workspace_tool_inner(
                 expected_revision.as_deref(),
                 Some(&current.revision),
             )
-            .map_err(|error| command_error(error.to_string()))?;
+            .map_err(CommandError::from)?;
             let mutation_revision = expected_revision
                 .clone()
                 .unwrap_or_else(|| current.revision.clone());

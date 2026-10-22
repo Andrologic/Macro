@@ -1,4 +1,5 @@
-use super::command_error::{command_error, CommandResult};
+use super::command_error::{CommandError, CommandResult};
+use super::error::BackendError;
 use sqlx::SqlitePool;
 use tokio::sync::watch;
 use tokio::time::{timeout, Duration};
@@ -56,7 +57,7 @@ impl DbPool {
                 match receiver.borrow().clone() {
                     DbInitializationState::Ready(pool) => return Ok(pool),
                     DbInitializationState::Failed(message) => {
-                        return Err(command_error(format!(
+                        return Err(database_error(format!(
                             "Database initialization failed: {message}"
                         )))
                     }
@@ -64,13 +65,38 @@ impl DbPool {
                 }
 
                 receiver.changed().await.map_err(|_| {
-                    command_error("Database initialization state channel closed unexpectedly.")
+                    database_error("Database initialization state channel closed unexpectedly.")
                 })?;
             }
         };
 
         timeout(DB_INIT_WAIT_TIMEOUT, wait).await.map_err(|_| {
-            command_error("Database is still initializing. Please retry in a moment.")
+            database_error("Database is still initializing. Please retry in a moment.")
         })?
+    }
+}
+
+fn database_error(message: impl Into<String>) -> CommandError {
+    let message = message.into();
+    CommandError::from(BackendError::Database {
+        message: message.clone(),
+    })
+    .with_message(message)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn initialization_failure_keeps_its_database_code_and_message() {
+        let pool = DbPool::default();
+        pool.set_failed("storage unavailable");
+        let error = pool.wait_until_ready().await.unwrap_err();
+        assert_eq!(error.code(), Some("Database"));
+        assert_eq!(
+            error.message,
+            "Database initialization failed: storage unavailable"
+        );
     }
 }

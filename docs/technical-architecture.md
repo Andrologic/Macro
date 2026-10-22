@@ -977,7 +977,16 @@ journaux résident dans `git::operations::workflow`. Ces modules ne dépendent
 ni des commandes Tauri ni de State, Window ou AppHandle.
 
 `core::command_error` conserve le contrat d'erreur sérialisé et
-`core::db_state` l'état d'initialisation DB. Les identifiants de secrets MCP
+`core::db_state` l'état d'initialisation DB. Les conversions depuis `BackendError`
+et `DbError` portent un code explicite, indépendant du message affiché, et
+conservent les détails structurés déjà exposés. Les mutations de fichiers et leur
+rollback conservent ainsi `REVISION_CONFLICT` ; les budgets des outils de lecture
+distinguent `TOOL_EXECUTION_CANCELLED` de `TOOL_EXECUTION_TIMEOUT`. Les échecs de
+stockage et d'initialisation DB utilisent le code existant `Database`, tandis que
+la validation d'une entrée DB reste `Validation`. Les producteurs historiques de
+simples messages gardent leur classification de compatibilité ; les erreurs web,
+MCP, fournisseur et de sérialisation non migrées restent sur leurs contrats
+existants. Les identifiants de secrets MCP
 sont définis dans `core::mcp_ids`, accessibles au registre de configuration
 sans importer son adaptateur de commandes.
 
