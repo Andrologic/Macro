@@ -1,4 +1,13 @@
 {
+  "viewExecutionGraph": "ワークフローを表示",
+  "executionGraph": "ワークフローの実行",
+  "workflowGraph": "ワークフローグラフ",
+  "executionGraphError": "ワークフローを読み込めませんでした。",
+  "executionGraphEmpty": "このタスクに関連付けられた AgSDL の実行はありません。",
+  "openGraphTask": "タスクを開く",
+  "taskFilters": "タスクのフィルター",
+  "tasksWithoutInteraction": "操作不要",
+  "blockedTasks": "ブロックされたタスク",
   "startReview": "レビューを開始",
   "startReviewBusy": "レビューを開始する前に、現在のターンを終了するか、ツールの承認要求を解決してください。",
   "startReviewUnavailable": "このタスクは現在の状態ではレビューに移行できません。",
@@ -24,9 +33,9 @@
   "selectTaskForValidation": "変更を検証するタスクを選択してください",
   "activeCount": "{{count}}アクティブ",
   "noTasks": "まだタスクはありません",
+  "otherTasks": "その他のタスク",
   "readyTasks": "準備ができたタスク",
   "noReadyTasks": "現在実行可能なタスクはありません。",
-  "blockedTasks": "ブロックされたタスク",
   "failedTasks": "失敗したタスク",
   "noBlockedTasks": "依存関係でブロックされたタスクはありません。",
   "blockedBy": "ブロックされた人:{{tasks}}",
@@ -331,8 +340,6 @@
   "clearStatusFilter": "すべての状態を表示",
   "allStatuses": "すべての状態",
   "planFilterStandalone": "プランなし / スタンドアロン",
-  "standaloneBadge": "独立",
-  "taskKindPending": "エージェントが分類中",
   "taskKindFeature": "Feature",
   "taskKindDirectEdit": "ダイレクト編集",
   "taskKindDirectEditHelp": "Git ブランチ、worktree、コミットを使わずにソースフォルダーを編集します。同時に実行できるタスクは 1 つだけです。",
@@ -408,6 +415,10 @@
     "full": "完全なファイルコンテキスト"
   },
   "errors": {
+    "databaseLocked": "データベースがロックされています。再試行してください。",
+    "directProjectTaskAlreadyActiveWithTitle": "この直接編集プロジェクトには既にアクティブなタスクがあります: {{title}}",
+    "taskTodosOpenForComplete": "未完了の todo があるためタスクを完了できません: {{todos}}",
+    "taskTodosOpenForCompleteWithoutLabels": "未完了の todo があるためタスクを完了できません。",
     "finalizationStrategyLocked": "最終処理はすでに開始されています。保留中のマージを完了するか、戦略を変更せずに再開してください。",
     "directTaskCompletionFailed": "直接編集タスクを完了できませんでした。",
     "directTaskBranchChanged": "現在のブランチが {{expected}} から {{actual}} に変わりました。この Direct タスクをコミットする前に元のブランチへ戻してください。",
@@ -638,5 +649,10 @@
   "reviewProgress": "{{reviewed}} / {{total}} 件のファイル差分を表示済み",
   "nextUnreviewedDiff": "次の未表示の差分",
   "resumeRemainingCommits": "残りのコミットを再開",
-  "detachedReviewDraft": "このファイルはレビューに含まれていません。閉じる前に未保存の下書きをコピーしてください。ファイル操作は利用できません。"
+  "detachedReviewDraft": "このファイルはレビューに含まれていません。閉じる前に未保存の下書きをコピーしてください。ファイル操作は利用できません。",
+  "queueToLaunch": "開始待ち",
+  "queueInProgress": "実行中",
+  "queueWaiting": "待機中",
+  "queueCompleted": "完了",
+  "launchWorkflow": "ワークフローを開始"
 }

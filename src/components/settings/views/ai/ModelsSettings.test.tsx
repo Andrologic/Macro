@@ -302,6 +302,59 @@ describe('ModelsSettings metadata model config', () => {
     expect(liveProviderStore!.getState().lastError).toBeNull();
   });
 
+  it('registers the manual model menu with Dialog and preserves keyboard focus', async () => {
+    providerConfigs = [provider('provider-a')];
+    modelsByProvider = { 'provider-a': [model('provider-a', 'model-a', { isManual: true })] };
+    const { ModelsSettings } = await loadModelsSettings();
+    const { Dialog } = await import('../../../ui/Dialog');
+    const close = mock(() => undefined);
+    await act(async () => {
+      root = createRoot(container!);
+      root.render(<Dialog title="Settings" onClose={close}><ModelsSettings /></Dialog>);
+      await flush();
+    });
+    const trigger = document.body.querySelector<HTMLButtonElement>('button[title="Model actions"]')!;
+    const press = async (key: string, shiftKey = false) => {
+      const event = new KeyboardEvent('keydown', { key, shiftKey, bubbles: true, cancelable: true });
+      await act(async () => document.activeElement!.dispatchEvent(event));
+      return event;
+    };
+    trigger.focus();
+    await act(async () => trigger.click());
+    const menu = document.body.querySelector<HTMLElement>('[role="menu"]')!;
+    const [editAction, deleteAction] = [...menu.querySelectorAll<HTMLButtonElement>('[role="menuitem"]')];
+    expect(menu.hasAttribute('inert')).toBe(false);
+    expect(menu.getAttribute('aria-hidden')).not.toBe('true');
+    expect(trigger.getAttribute('aria-expanded')).toBe('true');
+    expect(document.activeElement).toBe(editAction);
+    // Happy DOM has no native Tab default. Check Dialog's interception first,
+    // then apply the browser's next/previous DOM focus step when not prevented.
+    expect((await press('Tab')).defaultPrevented).toBe(false);
+    await act(async () => deleteAction.focus());
+    expect(document.activeElement).toBe(deleteAction);
+    expect((await press('Tab', true)).defaultPrevented).toBe(false);
+    await act(async () => editAction.focus());
+    expect(document.activeElement).toBe(editAction);
+    await press('ArrowDown');
+    expect(document.activeElement).toBe(deleteAction);
+    await press('ArrowUp');
+    expect(document.activeElement).toBe(editAction);
+    await press('Escape');
+    expect(close).not.toHaveBeenCalled();
+    expect(document.body.querySelector('[role="menu"]')).toBeNull();
+    expect(document.activeElement).toBe(trigger);
+    expect(trigger.getAttribute('aria-expanded')).toBe('false');
+    await press('Escape');
+    expect(close).toHaveBeenCalledTimes(1);
+
+    await act(async () => trigger.click());
+    await press('ArrowDown');
+    // The registered portal's last action participates in the dialog Tab loop.
+    expect((await press('Tab')).defaultPrevented).toBe(true);
+    expect(document.body.querySelector('[role="dialog"]')!.contains(document.activeElement)).toBe(true);
+    expect(document.body.querySelector('[role="menu"]')).toBeNull();
+  });
+
   it('migrates and repairs a dedicated legacy commit model before rendering selects', async () => {
     window.localStorage.setItem(
       'macro_smartCommitModelConfig',

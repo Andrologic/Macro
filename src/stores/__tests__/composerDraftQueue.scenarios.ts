@@ -121,6 +121,15 @@ export const registerComposerDraftQueueScenarios = (
       });
     });
 
+    it('drops a missing conversation draft on reload', async () => {
+      useChatStore.getState().saveComposerDraftForContext('conversation:missing', { text: 'Disparue', images: [], contextRefs: [] });
+
+      ({ useChatStore } = await context.loadChatStore());
+      await useChatStore.getState().initializeCritical();
+
+      expect(useChatStore.getState().getComposerDraftForContext('conversation:missing')).toBeNull();
+    });
+
     it('keeps two persisted conversation drafts isolated', () => {
       useChatStore.getState().saveComposerDraftForContext('conversation:conv-a', {
         text: 'Draft A',

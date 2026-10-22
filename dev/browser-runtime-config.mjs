@@ -21,3 +21,13 @@ export function resolveQaBrowserLogDirectory(config, temporaryDirectory) {
   }
   return join(temporaryDirectory, 'macro-browser-runtime', validated.identifier, 'logs');
 }
+
+// Keep the authenticated bridge on loopback while allowing an occupied UI port.
+export function resolveQaBrowserOrigin(config) {
+  const url = new URL(config.build?.devUrl || 'http://127.0.0.1:1422');
+  if (url.protocol !== 'http:' || url.hostname !== '127.0.0.1' ||
+      url.username || url.password || url.pathname !== '/' || url.search || url.hash) {
+    throw new Error('The QA browser devUrl must be a loopback HTTP origin.');
+  }
+  return url.origin;
+}

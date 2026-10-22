@@ -37,13 +37,16 @@ describe('test file selection', () => {
 });
 
 describe('per-file spawn arguments', () => {
-  test('keeps React in test mode but selects Lexical production exports for ComposerEditor', () => {
-    expect(usesProductionConditions('src\\components\\chat\\composer\\ComposerEditor.test.tsx')).toBe(true);
-    expect(spawnArgsForFile('src/components/chat/composer/ComposerEditor.test.tsx')).toEqual([
+  test.each([
+    'src/components/chat/composer/ComposerEditor.test.tsx',
+    'src/components/chat/ChatZone.test.tsx',
+  ])('keeps React in test mode but selects Lexical production exports for %s', (file) => {
+    expect(usesProductionConditions(file.replaceAll('/', '\\'))).toBe(true);
+    expect(spawnArgsForFile(file)).toEqual([
       '--conditions=production',
       'test',
       '--timeout=30000',
-      'src/components/chat/composer/ComposerEditor.test.tsx',
+      file,
     ]);
   });
 

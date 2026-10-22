@@ -6,36 +6,8 @@ export function GenerationAttemptDetails({ attempts }: { attempts?: GenerationAt
   if (!attempts?.length) return null;
 
   return (
-    <details className="mt-2 rounded-md border border-border bg-card/40 px-2.5 py-1.5 text-xs text-muted-foreground">
-      <summary className="cursor-pointer font-medium">
-        {t('chat.generationAttempts', { count: attempts.length, defaultValue: '{{count}} generation attempts' })}
-      </summary>
-      <div className="mt-2 space-y-2">
-        {attempts.map((attempt, index) => (
-          <div key={attempt.id} data-attempt-id={attempt.id} data-attempt-status={attempt.status} className="rounded border border-border/70 p-2">
-            <div className="font-medium">
-              {t('chat.generationAttemptNumber', { number: index + 1, defaultValue: 'Attempt {{number}}' })}
-              {' · '}
-              {t(`chat.generationAttemptStatus.${attempt.status}`)}
-              {' · '}
-              {attempt.costUsd === null
-                ? t('chat.generationAttemptCostUnknown', 'cost unknown')
-                : t('chat.generationAttemptCost', { amount: attempt.costUsd, defaultValue: '${{amount}}' })}
-            </div>
-            <code className="mt-1 block break-all text-[10px] text-muted-foreground">{attempt.id}</code>
-            {attempt.rawText && (
-              <div className="mt-1 whitespace-pre-wrap break-words">
-                {t('chat.generationAttemptRawText', 'Attempt text')}: {attempt.rawText}
-              </div>
-            )}
-            {attempt.acceptedText && (
-              <div className="mt-1 whitespace-pre-wrap break-words">
-                {t('chat.generationAttemptAcceptedText', 'Text kept in response')}: {attempt.acceptedText}
-              </div>
-            )}
-          </div>
-        ))}
-      </div>
-    </details>
+    <p className="my-3 px-1 text-xs leading-relaxed text-muted-foreground">
+      {t('chat.generationAttempts', { count: attempts.length, defaultValue: '{{count}} generation attempts' })}
+    </p>
   );
 }

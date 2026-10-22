@@ -7,6 +7,8 @@ import {
 } from "./chatErrorPresentation";
 import type { ChatStreamTokenControls } from "./chatStreamOrchestrator";
 import type { StreamCompletionResult } from "./streamingChat";
+import { StreamStopUnconfirmedError } from "./ai/streamCancellation";
+import { isSuccessfulCompletionReason } from "./ai/completionRecovery";
 import { mergeGenerationAttempts } from "./ai/generationAttemptState";
 import { mergeToolTracesPreservingDeniedStatus, settleToolTraceRecovery } from "./toolTraceState";
 
@@ -63,6 +65,7 @@ export interface ChatStreamLifecycleRuntimeAdapters {
     assistantMessage: ChatMessage,
   ) => Promise<void>;
   consolidatePendingToolBoundaryCompactionAfterPersistence: () => Promise<void>;
+  onAssistantPersisted?: () => void;
   syncMacroMetadataAfterStream: (
     mode: AppMode,
     conversationId: string,
@@ -209,6 +212,11 @@ export const createChatStreamLifecycleRuntime = (params: {
     }
 
     try {
+      if (!adapters.isAbortSignalAborted() && isSuccessfulCompletionReason(result.completionReason)) adapters.onAssistantPersisted?.();
+    } catch (error) {
+      adapters.warn('Direction recovery remains pending after assistant persistence.', error);
+    }
+    try {
       await adapters.consolidatePendingToolBoundaryCompactionAfterPersistence();
     } catch (error) {
       adapters.info(
@@ -253,6 +261,15 @@ export const createChatStreamLifecycleRuntime = (params: {
       await adapters.persistAssistantPartialStreamResult(message);
     } catch (persistError) {
       adapters.warn(warning, persistError);
+      return;
+    }
+    // Interrupted responses are durable too: keep the captured plan transcript
+    // aligned after saving, without publishing work from a departed turn.
+    if (!(adapters.isTurnCurrent?.() ?? true)) return;
+    try {
+      await adapters.syncMacroMetadataAfterStream(stream.modeAtSend, stream.conversationId);
+    } catch (syncError) {
+      adapters.warn("Failed to sync metadata after partial assistant persistence:", syncError);
     }
   };
 
@@ -347,10 +364,7 @@ export const createChatStreamLifecycleRuntime = (params: {
         stream.providerContext.modelId,
       );
 
-      const abnormalCompletion = Boolean(result.completionReason && ![
-        "completed", "length_recovered", "incomplete_recovered",
-        "tool_turn_limit", "post_tool_empty_fallback",
-      ].includes(result.completionReason));
+      const abnormalCompletion = !isSuccessfulCompletionReason(result.completionReason);
       if (abnormalCompletion) {
         adapters.updateConversationAfterCompletion(
           stream.conversationId,
@@ -413,7 +427,9 @@ export const createChatStreamLifecycleRuntime = (params: {
         return;
       }
 
-      const recovered = await adapters.tryRecoverFromOverflow(error, tokenControls);
+      // A provider retry cannot discharge a local executor lacking its receipt.
+      const recovered = !(error instanceof StreamStopUnconfirmedError) &&
+        await adapters.tryRecoverFromOverflow(error, tokenControls);
       if (adapters.isAbortSignalAborted()) {
         await persistAbortedTurn(tokenControls);
         return;

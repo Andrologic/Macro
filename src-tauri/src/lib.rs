@@ -1,3 +1,5 @@
+#[cfg(any(test, all(debug_assertions, feature = "browser-runtime-debug")))]
+mod browser_runtime_port;
 // AppKit's standard Quit item and Dock Quit call terminate:, bypassing
 // Tauri CloseRequested. Cancel that termination and request the same guarded
 // window close as the title bar. Approved exits use AppHandle::exit directly.
@@ -89,6 +91,14 @@ mod native_quit_consent {
     }
 }
 
+mod agsdl_host;
+mod agsdl_host_capture;
+mod agsdl_host_catalogue;
+mod agsdl_host_compiler;
+mod agsdl_host_provider;
+mod agsdl_host_tasks;
+mod agsdl_host_tools;
+mod agsdl_intent_coordinator;
 mod app_quit_state;
 mod app_updates;
 pub mod commands;
@@ -198,12 +208,31 @@ fn install_browser_runtime_event_relays(app: &tauri::AppHandle) {
 
 fn shutdown_mcp_runtime(app_handle: &tauri::AppHandle) {
     let runtime = app_handle.state::<commands::mcp::McpRuntimeManager>();
-    let result = tauri::async_runtime::block_on(tokio::time::timeout(
-        std::time::Duration::from_secs(12),
-        runtime.shutdown_all(),
-    ));
+    let result = block_on_mcp_shutdown(runtime.shutdown_all());
     if result.is_err() {
         tracing::warn!("MCP runtime shutdown exceeded its 12-second budget");
+    }
+}
+
+// Construct the timer while polling inside Tauri's runtime, not on the native
+// event-loop thread that invokes the exit callback.
+fn block_on_mcp_shutdown(
+    shutdown: impl std::future::Future<Output = ()>,
+) -> Result<(), tokio::time::error::Elapsed> {
+    tauri::async_runtime::block_on(async {
+        tokio::time::timeout(std::time::Duration::from_secs(12), shutdown).await
+    })
+}
+
+#[cfg(test)]
+mod mcp_shutdown_tests {
+    #[test]
+    fn shutdown_can_start_from_a_thread_without_a_tokio_runtime() {
+        assert!(tokio::runtime::Handle::try_current().is_err());
+        let result = super::block_on_mcp_shutdown(async {
+            tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+        });
+        assert!(result.is_ok());
     }
 }
 
@@ -497,11 +526,14 @@ pub fn run() {
         .manage(DbPool::default())
         .manage(diagnostics::DiagnosticReportStore::default())
         .manage(AiState::default())
+        .manage(agsdl_host::HostState::default())
+        .manage(agsdl_intent_coordinator::IntentCoordinator::default())
         .manage(GitState::new())
         .manage(commands::mcp::McpRuntimeManager::production())
         .manage(commands::workspace::ProjectOperationStore::default())
         .manage(commands::terminal::TerminalSessionStore::default())
         .setup(move |app| {
+            agsdl_host::install(app.handle())?;
             match app_updates::staged_update_requires_native_confirmation(app.handle()) {
                 Ok(true) => {
                     // Wait for RunEvent::Ready, after setup has finished its migrations.
@@ -518,20 +550,39 @@ pub fn run() {
             }
             #[cfg(all(debug_assertions, feature = "browser-runtime-debug"))]
             if std::env::var("MACRO_TAURI_BROWSER_BRIDGE").as_deref() == Ok("1") {
+                let bridge_port = browser_runtime_port::parse(
+                    std::env::var("MACRO_TAURI_BROWSER_BRIDGE_PORT")
+                        .ok()
+                        .as_deref(),
+                )
+                .expect("Invalid QA browser bridge port");
                 let bridge_token = std::env::var("MACRO_TAURI_BROWSER_BRIDGE_TOKEN").expect(
                     "MACRO_TAURI_BROWSER_BRIDGE_TOKEN doit être défini par le lanceur debug",
+                );
+                let browser_origin = std::env::var("MACRO_TAURI_BROWSER_ORIGIN")
+                    .unwrap_or_else(|_| "http://127.0.0.1:1422".into());
+                let origin = url::Url::parse(&browser_origin).expect("Invalid QA browser origin");
+                assert!(
+                    origin.scheme() == "http"
+                        && origin.host_str() == Some("127.0.0.1")
+                        && origin.username().is_empty()
+                        && origin.password().is_none()
+                        && origin.path() == "/"
+                        && origin.query().is_none()
+                        && origin.fragment().is_none(),
+                    "QA browser origin must remain on loopback"
                 );
                 install_browser_runtime_event_relays(app.handle());
                 let browser_bridge_handle = app.handle().clone();
                 tauri::async_runtime::spawn(async move {
                     let bridge_config = RemoteUiConfig::default()
-                        .set_port(Some(1430))
-                        .set_websocket_origin("http://127.0.0.1:1422")
+                        .set_port(Some(bridge_port))
+                        .set_websocket_origin(&browser_origin)
                         .set_websocket_token(bridge_token);
                     match browser_bridge_handle.start_remote_ui(bridge_config).await {
-                        Ok(()) => tracing::info!(
-                            "Debug browser runtime bridge ready at http://127.0.0.1:1422"
-                        ),
+                        Ok(()) => {
+                            tracing::info!("Debug browser runtime bridge ready at {browser_origin}")
+                        }
                         Err(error) => {
                             tracing::error!("Failed to start debug browser runtime bridge: {error}")
                         }
@@ -763,6 +814,47 @@ pub fn run() {
             commands::db_update_conversation_ai_selection,
             commands::db_delete_conversation_by_id,
             commands::db_delete_conversations_by_ids,
+            agsdl_host_provider::execution_host_register_provider,
+            agsdl_host_provider::execution_host_dispatch_provider,
+            agsdl_host_provider::execution_host_end_provider,
+            agsdl_host::execution_host_ready,
+            agsdl_host::execution_qa_available,
+            agsdl_host::execution_qa_run,
+            agsdl_host::execution_host_qa_take,
+            agsdl_host::execution_qa_replace_host,
+            agsdl_host::execution_host_owners,
+            agsdl_host::execution_host_prepare_terminal,
+            agsdl_host::execution_host_commit_terminal,
+            agsdl_host::execution_host_append_response,
+            agsdl_host::execution_host_read_responses,
+            agsdl_host::execution_host_close_responses,
+            agsdl_host::execution_host_inspect,
+            agsdl_host::execution_host_begin,
+            agsdl_host::execution_host_mark_uncertain,
+            agsdl_host::execution_host_failed,
+            agsdl_host::execution_host_next_compile,
+            agsdl_host::execution_host_complete_compile,
+            commands::agsdl_execution::execution_model_choices,
+            commands::agsdl_execution::execution_preflight,
+            commands::agsdl_execution::execution_list_runs,
+            commands::agsdl_execution::execution_find_start,
+            commands::agsdl_execution::execution_read_diagnostic,
+            commands::agsdl_execution::execution_pending_approvals,
+            commands::agsdl_execution::execution_decide_approval,
+            crate::agsdl_host_tools::execution_host_invoke_tool,
+            commands::agsdl_execution::execution_start,
+            commands::agsdl_execution::execution_stage_intent,
+            commands::agsdl_execution::execution_read_intents,
+            commands::agsdl_execution::execution_read_intent,
+            commands::agsdl_execution::execution_submit_intent,
+            commands::agsdl_execution::execution_close_intent,
+            commands::agsdl_execution::execution_deliver,
+            commands::agsdl_execution::execution_resolve_card_task,
+            commands::agsdl_execution::execution_stop,
+            commands::agsdl_execution::execution_ensure_stop,
+            commands::agsdl_execution::execution_read_snapshot,
+            commands::agsdl_execution::execution_read_projection,
+            commands::agsdl_execution::execution_read_events,
             commands::tool_invocations::db_record_tool_invocation,
             commands::tool_invocations::db_complete_tool_invocation,
             commands::tool_invocations::db_mark_tool_invocation_unknown,
@@ -830,6 +922,7 @@ pub fn run() {
             commands::ai::ai_sync_provider_models,
             commands::ai::ai_stream_chat,
             commands::ai::ai_cancel_stream,
+            commands::http_resources::http_release_webview_resource,
             commands::ai::ai_submit_tool_result,
             // Git metadata commands
             commands::db_upsert_git_repository,

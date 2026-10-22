@@ -86,6 +86,7 @@ import { repairArchitectPlanReplicas as repairArchitectPlanReplicasImpl } from '
 import { repairArchitectPlanMetadata as repairArchitectPlanMetadataImpl } from './architectPlanSyncService';
 import { writeArchitectTaskExecution as writeArchitectTaskExecutionImpl } from './architectPlanSyncService';
 import { createArchitectPlan as createArchitectPlanImpl } from './architectPlanMutationService';
+import { migrateArchitectPlanToAgsdl as migrateArchitectPlanToAgsdlImpl } from './architectPlanMutationService';
 import {
   mutateArchitectPlanTaskStatus as mutateArchitectPlanTaskStatusImpl,
 } from './architectPlanMutationService';
@@ -192,6 +193,7 @@ export const writeArchitectTaskExecution: typeof writeArchitectTaskExecutionImpl
 
 export { type UpdateArchitectPlanInput } from './architectPlanMutationService';
 export const createArchitectPlan: typeof createArchitectPlanImpl = (...args) => createArchitectPlanImpl(...args);
+export const migrateArchitectPlanToAgsdl: typeof migrateArchitectPlanToAgsdlImpl = (...args) => migrateArchitectPlanToAgsdlImpl(...args);
 export const mutateArchitectPlanTaskStatus: typeof mutateArchitectPlanTaskStatusImpl = (...args) => mutateArchitectPlanTaskStatusImpl(...args);
 export const updateArchitectPlan: typeof updateArchitectPlanImpl = (...args) => updateArchitectPlanImpl(...args);
 export const bindArchitectPlanConversation: typeof bindArchitectPlanConversationImpl = (...args) => bindArchitectPlanConversationImpl(...args);

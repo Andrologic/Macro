@@ -21,6 +21,7 @@ export const getFileChangesExecutionTargets = (
   task: FileChangesTaskLike,
   getGitFlowBaseBranch?: () => string
 ): TaskExecutionTarget[] => {
+  if (task.task_source === 'agsdl') return [];
   if (task.execution_targets?.length) {
     return task.execution_targets;
   }
@@ -46,6 +47,7 @@ export const getFileChangesTaskRepositoryIds = (
     getGitFlowBaseBranch?: () => string;
   }
 ): string[] => {
+  if (task.task_source === 'agsdl') return [];
   const repositoryIds = getFileChangesExecutionTargets(
     task,
     options?.getGitFlowBaseBranch

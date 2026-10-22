@@ -1,10 +1,13 @@
-import { afterEach, describe, expect, it } from 'bun:test';
+import { afterEach, describe, expect, it, mock } from 'bun:test';
 import {
   ARCHITECT_STRATEGY_LOCKED_AFTER_VALIDATION_MESSAGE,
   type ArchitectPlanRecord,
 } from './architectPlanService';
 import type { PlanNode, Project, ProjectGroup } from '../types';
 import { handleArchitectToolCall } from './architectToolRuntime';
+import { createChatToolDispatch } from './chatToolDispatch';
+import type { FrozenToolCallContext } from './chatStreamContracts';
+import type { ToolInvocation } from '../types/generated/ipc';
 import { installArchitectPlanRuntimePorts } from './architectPlanRuntimeService';
 
 let releasePlanRuntimePorts: (() => void) | undefined;
@@ -134,6 +137,19 @@ const createRuntime = (
         projectGroups: runtimeProjectGroups,
         getProjectById,
         activateArchitectPlan: async () => true,
+        consumeArchitectPlanActivationPayload: () => ({
+          plan: appliedPlan,
+          targetBranch: appliedPlan.targetBranch,
+          conversationId: appliedPlan.conversationId ?? null,
+          sharedConversation: false,
+          resolutionMode: 'full' as const,
+          chatMessages: [],
+          chatMessagesLoaded: false,
+          chatTranscriptRevision: 'transcript-revision-1',
+          chatMessageCount: 2,
+          replicaScopeKey: 'project:mouillage-app',
+          replicaProjectId: 'mouillage-app',
+        }),
         setStrategyMutationPreview: () => undefined,
       }),
       getNeedsState: () => ({
@@ -255,6 +271,144 @@ const createRuntime = (
 };
 
 describe('architectToolRuntime strategy scope', () => {
+  it('forwards the activation head identity to transcript reconciliation', async () => {
+    const runtime = createRuntime(createPlan());
+    const ensure = mock(runtime.params.ensureArchitectConversationForPlan);
+    runtime.params.ensureArchitectConversationForPlan = ensure;
+
+    const result = await handleArchitectToolCall(runtime.params);
+    expect(typeof result).toBe('string');
+
+    expect(ensure).toHaveBeenCalledWith(expect.objectContaining({
+      conversationIdHint: 'conversation-1',
+      chatMessagesHint: [],
+      chatMessagesLoaded: false,
+      chatTranscriptRevision: 'transcript-revision-1',
+      chatMessageCount: 2,
+      replicaScopeKey: 'project:mouillage-app',
+      replicaProjectId: 'mouillage-app',
+    }));
+  });
+
+  it('reports the saved strategy and failed transcript reconciliation without applying it again', async () => {
+    const runtime = createRuntime(createPlan());
+    const apply = mock(runtime.params.strategyService.applyStrategyMutationPreview);
+    runtime.params.strategyService.applyStrategyMutationPreview = apply;
+    const refresh = mock(async () => undefined);
+    runtime.params.getTaskState = () => ({ tasks: [], refreshFromPlan: refresh });
+    runtime.params.ensureArchitectConversationForPlan = async () => {
+      throw new Error('Architect transcript replica identity is incomplete');
+    };
+
+    const result = await handleArchitectToolCall(runtime.params);
+
+    expect(result).toMatchObject({ kind: 'result', isError: true, errorKind: 'execution' });
+    expect(String(result)).toContain('"mutation_status": "applied"');
+    expect(String(result)).toContain('Architect transcript replica identity is incomplete');
+    expect(String(result)).toContain('Reselect the plan');
+    expect(String(result)).toContain('Do not regenerate');
+    expect(runtime.getAppliedPlan().nodes).toHaveLength(1);
+    expect(apply).toHaveBeenCalledTimes(1);
+    expect(refresh).toHaveBeenCalledTimes(1);
+
+    runtime.params.ensureArchitectConversationForPlan = async () => ({
+      conversationId: 'conversation-1', restoredTranscript: false, createdConversation: false,
+    });
+    runtime.params.toolName = 'strategy_get';
+    runtime.params.args = {};
+    expect(await handleArchitectToolCall(runtime.params)).toContain('Configurer la release');
+    expect(apply).toHaveBeenCalledTimes(1);
+  });
+
+  it('confirms the partial executor result in the journal and refuses replay of the same invocation', async () => {
+    const runtime = createRuntime(createPlan());
+    const apply = mock(runtime.params.strategyService.applyStrategyMutationPreview);
+    runtime.params.strategyService.applyStrategyMutationPreview = apply;
+    runtime.params.ensureArchitectConversationForPlan = async () => { throw new Error('replica unavailable'); };
+    const operation = {
+      conversationId: 'conversation-1', turnId: 'turn-1', assistantMessageId: 'message-1',
+      signal: new AbortController().signal, allowedToolIds: ['strategy_generate'],
+    } as unknown as FrozenToolCallContext;
+    let recorded = false;
+    const invocation = {} as ToolInvocation;
+    const complete = mock(async () => invocation);
+    const markUnknown = mock(async () => invocation);
+    const dispatch = createChatToolDispatch(operation, {
+      journal: {
+        isRemoteRuntime: () => false,
+        record: async () => { const is_new = !recorded; recorded = true; return { is_new, invocation }; },
+        complete, markUnknown,
+      },
+      execute: () => handleArchitectToolCall(runtime.params),
+      preserve: async (_operation, _name, _callId, result) => result,
+      boundError: async (_operation, _name, _callId, error) => error,
+    }, () => true, () => {});
+
+    expect(await dispatch('strategy_generate', runtime.params.args, 'call-1')).toMatchObject({ isError: true });
+    expect(complete).toHaveBeenCalledTimes(1);
+    expect(markUnknown).not.toHaveBeenCalled();
+    expect(await dispatch('strategy_generate', runtime.params.args, 'call-1')).toMatchObject({ isError: true });
+    expect(apply).toHaveBeenCalledTimes(1);
+  });
+
+  it('reports an activation failure after the strategy was saved', async () => {
+    const runtime = createRuntime(createPlan());
+    const appState = runtime.params.getAppState();
+    runtime.params.getAppState = () => ({ ...appState, activateArchitectPlan: async () => false });
+    const ensure = mock(runtime.params.ensureArchitectConversationForPlan);
+    runtime.params.ensureArchitectConversationForPlan = ensure;
+    const result = await handleArchitectToolCall(runtime.params);
+    expect(result).toMatchObject({ isError: true });
+    expect(String(result)).toContain('could not be activated');
+    expect(String(result)).toContain('"mutation_status": "applied"');
+    expect(ensure).not.toHaveBeenCalled();
+    expect(runtime.getAppliedPlan().nodes).toHaveLength(1);
+  });
+
+  it('reports a transcript replica conflict after saving without claiming full success', async () => {
+    const runtime = createRuntime(createPlan({ hasReplicaDivergence: true, replicationState: 'diverged' }));
+    runtime.params.ensureArchitectConversationForPlan = async () => {
+      throw { code: 'ARCHITECT_PLAN_REPLICA_DIVERGENCE', message: 'Transcript replicas conflict' };
+    };
+    const result = await handleArchitectToolCall(runtime.params);
+    expect(result).toMatchObject({ isError: true });
+    expect(String(result)).toContain('Transcript replicas conflict');
+    expect(String(result)).toContain('"mutation_status": "applied"');
+    expect(runtime.getAppliedPlan().nodes).toHaveLength(1);
+  });
+
+  it('keeps cancellation explicit instead of converting it to partial success', async () => {
+    const runtime = createRuntime(createPlan());
+    runtime.params.ensureArchitectConversationForPlan = async () => {
+      throw new Error('Tool execution aborted');
+    };
+    await expect(handleArchitectToolCall(runtime.params)).rejects.toThrow('Tool execution aborted');
+    expect(runtime.getAppliedPlan().nodes).toHaveLength(1);
+  });
+
+  it('reports failed task refresh after a confirmed strategy update', async () => {
+    const runtime = createRuntime(createPlan());
+    runtime.params.toolName = 'strategy_update';
+    runtime.params.getTaskState = () => ({ tasks: [], refreshFromPlan: async () => { throw new Error('task refresh unavailable'); } });
+    const result = await handleArchitectToolCall(runtime.params);
+    expect(result).toMatchObject({ isError: true });
+    expect(String(result)).toContain('refresh_tasks');
+    expect(String(result)).toContain('task refresh unavailable');
+    expect(String(result)).toContain('"mutation_status": "applied"');
+  });
+
+  it('propagates a strategy persistence failure before reporting any saved mutation', async () => {
+    const runtime = createRuntime(createPlan());
+    runtime.params.strategyService.applyStrategyMutationPreview = async () => {
+      throw new Error('replica revision conflict');
+    };
+    const ensure = mock(runtime.params.ensureArchitectConversationForPlan);
+    runtime.params.ensureArchitectConversationForPlan = ensure;
+    await expect(handleArchitectToolCall(runtime.params)).rejects.toThrow('replica revision conflict');
+    expect(runtime.getAppliedPlan().nodes).toHaveLength(0);
+    expect(ensure).not.toHaveBeenCalled();
+  });
+
   it('keeps unscoped generated nodes inside the active mono-project plan', async () => {
     const runtime = createRuntime(createPlan());
 

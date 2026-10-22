@@ -31,11 +31,13 @@ Un écart devenu obsolète doit être supprimé.
 
 ## 3. État actuel synthétique
 
-La version déclarée par `package.json` et `src-tauri/Cargo.toml` est `0.1.5`.
-La configuration Tauri reprend la version de `package.json`. Le tag local
-`v0.1.5` désigne le commit `73e794d2`. Le code intégré depuis ce tag conserve
-la même version déclarée ; sa présence dans la branche de développement ne
-signifie pas qu'une nouvelle release a été publiée.
+La dernière version stable publiée est [Macro 0.1.8](https://github.com/Andrologic/Macro/releases/tag/v0.1.8),
+du 30 septembre 2026. Le tag `v0.1.8` désigne le commit `9ee0b9b5`.
+`package.json` et `src-tauri/Cargo.toml` déclarent encore `0.1.8` ;
+la configuration Tauri reprend la version de `package.json`.
+Les changements postérieurs dans `develop` ne constituent pas une nouvelle
+version publiée. Le [changelog](../CHANGELOG.md) distingue ces changements des
+versions livrées.
 
 L'état ci-dessous décrit le code intégré. Il ne vaut pas validation des paquets
 ou du canal de mises à jour.
@@ -60,6 +62,8 @@ L'application dispose déjà d'une base solide :
 - démarrage manuel des tâches autonomes avec progression visible et reprise sûre après échec
 - recherche locale compacte dans les listes Architect, Implement et Chat
 - brouillons de composer persistants par conversation ou tâche
+- références communes AgSDL, skills et fichiers avec identité stable, brouillons et messages conservés à travers l’envoi, le replay et le redémarrage
+- visualisation AgSDL des tâches liées par identifiant exact, sans création ni exécution de tâches par le document
 - tâches directes Git et édition directe des projets sans Git, avec checkpoints internes pour la review
 - contrats de domaine et adaptateurs de composition présents, avec extraction des workflows Chat, Tasks et Plans hors des stores
 - registres internes de vues, raccourcis et réglages présents, avec chargement différé des panneaux
@@ -80,7 +84,7 @@ Les notifications et la file « À traiter » ramènent aux demandes en attente.
 Le périmètre est figé sur le code intégré au commit `22c16fea`. La branche
 locale `release/0.1.4` conserve le jalon de stabilisation. Le tag immuable
 `v0.1.4` pointe sur le commit `156c067a`. Ce périmètre constitue un repère
-historique ; la version déclarée courante est désormais `0.1.5`. Les évolutions
+historique ; la version déclarée courante est désormais `0.1.8`. Les évolutions
 intégrées depuis ce repère sont décrites dans l'état courant ci-dessus.
 
 Écarts résolus dans le code :
@@ -98,6 +102,38 @@ Le kernel distant public, la supervision mobile, les comptes, la synchronisation
 connectée, un système de plugins, l'édition complète des fichiers en review et
 une nouvelle politique de merge automatique restent hors périmètre de la
 `0.1.4`.
+
+### 3.2 Stabilisation desktop en cours de qualification
+
+Le code local postérieur à la 0.1.8 renforce la sauvegarde du profil,
+la récupération des messages et des effets d'outils incertains, le transport
+des conversations et les réglages. Un candidat séparé rassemble les
+corrections restantes de finalisation, de restauration des tâches, d'historique,
+de navigation entre projets, de dialogues, de MCP, de revue et de français.
+Ces corrections restent en qualification avant leur intégration à `develop`.
+
+La sortie de cette stabilisation exige :
+
+- des revues indépendantes favorables sur le candidat exact ;
+- les contrôles locaux pertinents et les parcours visuels des états modifiés ;
+- une vérification de l'intégration dans un `develop` propre ;
+- un périmètre et une version choisis avant la préparation de la release.
+
+Le diagnostic des incidents Windows de création de tâche n'a pas établi
+de cause racine ni reproduit les incidents historiques. La prise en charge des
+chemins longs reste à vérifier sur Windows. Une compilation ou une recette
+macOS ne remplace pas cette validation.
+
+### 3.3 Travaux distincts de la stabilisation
+
+L'éditeur AgSDL, Macro Pilot et la récupération Connect restent sur des
+branches de développement distinctes, non intégrées à `develop` lors de ce
+point d'état du 5 octobre 2026. Leur présence dans Git ne vaut pas livraison.
+Ils sont hors du périmètre de la stabilisation desktop décrite ci-dessus.
+
+La ligne publique 0.1 reste desktop local-first. Le kernel distant et la
+supervision mobile sont des objectifs futurs, selon la section 20 de la
+spécification fonctionnelle ; ils ne sont pas annoncés comme disponibles.
 
 ---
 
@@ -280,6 +316,10 @@ une nouvelle politique de merge automatique restent hors périmètre de la
 ---
 
 ## 5. Chantiers prioritaires
+
+La priorité immédiate est de terminer la qualification de la stabilisation
+desktop décrite en section 3.2, puis de fixer sa prochaine release.
+Les chantiers ci-dessous décrivent les acquis et les étapes suivantes.
 
 ### 5.1 Boucle d'attention desktop intégrée en 0.1.4
 

@@ -524,3 +524,88 @@ locale objects matched their source JSON. These checks cover emitted imports
 and data, not first-open latency, WebView rendering or a native startup timing.
 The earlier performance series in this document remain tied to their recorded
 commits and are not re-measured by this build.
+
+## Bundle budgets for the local stabilization scope
+
+Fresh production builds compared `develop` at
+`65fffca4ca486ecb1efe45f0b24cd7f25e63644a` with the stabilization candidate
+`3e31241085ef389c12485a15e7a88445731920b0`, using Bun 1.3.14, the same locked
+dependencies and `NODE_ENV=production bun dev/performance/build-bundles.mjs`.
+The old guard already rejected the base entry, Korean and Japanese chunks.
+The candidate also exceeded the task-queue, French and German caps.
+
+| Output | Base bytes | Candidate bytes | Candidate gzip bytes, level 9 | Budget bytes |
+| --- | ---: | ---: | ---: | ---: |
+| Application entry | 1,468,818 | 1,487,044 | 390,994 | 1,505,000 |
+| TaskQueue | 61,285 | 62,167 | 18,393 | 63,000 |
+| ChatZone | 198,692 | 199,494 | 57,853 | 201,000, unchanged |
+| French locale | 138,429 | 143,205 | 42,490 | 145,500 |
+| Korean locale | 138,974 | 143,769 | 42,586 | 145,500 |
+| Japanese locale | 153,710 | 159,064 | 44,374 | 161,000 |
+
+The stabilization scope adds task and archive guards, project validation, Git
+diagnostics and conflict inspection, shared-dialog integration and their
+translations. The entry grows by 18,226 bytes, or 1.24%, against the current
+base. The new ceilings allow approximately 1% above these measured outputs.
+The vendor, deferred-chat and rich-markdown limits remain unchanged. These
+adjustments account for the retained behavior and copy; they do not establish
+a performance improvement.
+
+The deduplicated static entry closure grows from 1,817,373 to 1,835,599 bytes,
+and from 492,778 to 498,500 gzip bytes. Its six chunks are unchanged in
+composition. Both builds report zero forbidden deferred modules in startup,
+deep-compare all 12 emitted locale objects with their source JSON, and retain
+terminal CSS rules. Total emitted JS/CSS grows from 9,371,068 to 9,425,567
+bytes. The raw reports and failed old-budget results are retained outside Git.
+
+This is a local candidate measurement, not a published version. Subsequent
+candidate corrections must still pass the fixed gate. Browser startup,
+first-open latency, rendering and native timing were not measured here.
+
+
+### Native refusal translation follow-up
+
+The production build of `afdfaa7beacbf09c4740c23e4531c611febb6869`
+measures TaskQueue at 63,040 bytes. Its native SQLite lock refusal now uses the
+existing translated message, with an additional exact backend diagnostic
+recognized by the presentation helper. The build exceeds the 63,000-byte cap
+by 40 bytes. The TaskQueue cap moves to 63,200 bytes, leaving 160 bytes above
+this measured output. All other caps remain unchanged. The raw measurement
+and failed old-budget result are retained with the local QA proofs.
+
+This adjustment accounts for the retained refusal translation. It does not
+establish a performance improvement or change the previously recorded startup
+and first-open measurements. Subsequent builds still use the budget guard.
+
+
+### AgSDL 0.2 and bounded develop integration
+
+The combined worktree starts from the integrated Chat candidate
+`cc0edb66bca867eba7a04ba3015a42b998fba8e6` and merges develop only through
+`0dad2a36a651d75d77e5d9da86f62fc03ad90374`. A local production build with
+Bun 1.3.14 and the final frozen lock measures the outputs below. These are
+working-tree measurements used to resolve the conflicting budgets. A fresh
+build of the committed candidate must pass the same guard before integration.
+
+| Output | Bytes | Gzip bytes, level 9 | Budget bytes |
+| --- | ---: | ---: | ---: |
+| Application entry | 1,633,013 | 432,579 | 1,650,000 |
+| ChatZone | 202,043 | 58,797 | 204,000, unchanged |
+| TaskQueue | 60,357 | 17,915 | 62,000, unchanged |
+| German locale | 141,613 | 43,674 | 143,200 |
+| Spanish locale | 138,417 | 42,500 | 138,500, unchanged |
+| French locale | 144,447 | 42,771 | 146,600 |
+| Korean locale | 145,081 | 43,061 | 146,600 |
+| Japanese locale | 160,587 | 44,864 | 162,300 |
+
+The entry retains the AgSDL compiler and revisioned editing contracts together
+with develop's plan hydration, conflict validation, approval and diagnostics
+changes. Its ceiling and the expanded locale ceilings leave about 1% above the
+measured combined output. German and Spanish now have separate ceilings so the
+Spanish limit remains unchanged. Deferred Chat, task queue, vendor and rich
+Markdown limits keep their existing values.
+
+The Vite build still reports its large-entry warning. This measurement does
+not establish a startup, rendering or native performance improvement. The
+fresh candidate measurement separately checks the static startup closure,
+emitted locale values and terminal styles.

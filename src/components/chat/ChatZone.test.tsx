@@ -3,11 +3,16 @@ import React from 'react';
 import { act } from 'react';
 import { flushSync } from 'react-dom';
 import { createRoot, type Root } from 'react-dom/client';
+import { create, type StoreApi, type UseBoundStore } from 'zustand';
 import {
   createTranslationMock,
   installReactI18nextMock,
 } from '../../test-utils/reactI18nextMock';
 import { createDeferred } from '../../test-utils/deferred';
+import { resolveConversationContextSources } from '../../services/conversationContextSource';
+import type { DbConversation } from '../../services/ipc/conversations.types';
+import type { PersistedContextReference } from '../../types';
+import fr from '../../i18n/locales/fr.json';
 import {
   installTauriRuntimeMock,
   removeTauriRuntimeMock,
@@ -18,6 +23,8 @@ import { useConversationArchiveStore } from '../../stores/useConversationArchive
 import { useCitationsStore } from '../../stores/useCitationsStore';
 import type { PendingToolApproval } from '../../types';
 import type { ComposerDraft } from '../../stores/useChatStore';
+import { useChatStore as draftLifecycleStore } from '../../stores/useChatStore';
+import { clearConflictAssistantContext, registerConflictAssistantContext } from '../../services/conflictAssistantContext';
 import {
   COMPOSER_DRAFTS_STORAGE_KEY,
   loadComposerDraftsFromStorage,
@@ -48,6 +55,7 @@ export type MockMessage = {
   task_id?: string | null;
   tool_traces?: unknown[];
   context_refs?: unknown[];
+  hidden_context?: string;
   questionnaire_response_summary?: {
     assistantMessageId: string;
     source?: 'tool' | 'legacy_quick_replies';
@@ -74,6 +82,9 @@ export type MockMessage = {
 };
 
 export type MockChatState = {
+  composerDraftConversationAliases?: Record<string, string>;
+  dismissArchitectPlanNamingRecovery?: () => void;
+  resolveComposerDraftConversationId?: (conversationId: string) => string;
   conversations: MockConversation[];
   messages: MockMessage[];
   selectedConversationId: string | null;
@@ -199,7 +210,9 @@ export type MockChatState = {
   retryArchitectPlanNamingRecovery: ReturnType<typeof mock>;
   submitArchitectPlanManualName: ReturnType<typeof mock>;
   composerContextRefs: unknown[];
+  replaceComposerContextRefs: ReturnType<typeof mock>;
   addComposerContextRef: ReturnType<typeof mock>;
+  removeComposerContextRef: ReturnType<typeof mock>;
   clearComposerContextRefs: ReturnType<typeof mock>;
 };
 
@@ -270,7 +283,14 @@ let chatState: MockChatState;
 let providerState: ProviderState;
 let shortcutsState: ShortcutsState;
 let taskState: TaskState;
-let skillsState: { getSkillById: ReturnType<typeof mock>; refreshSkills: ReturnType<typeof mock> };
+let skillsState: {
+  getSkillById: ReturnType<typeof mock>;
+  refreshSkills: ReturnType<typeof mock>;
+  skills: [];
+  settingsBySkillId: Record<string, never>;
+  isLoading: boolean;
+  loadSettings: ReturnType<typeof mock>;
+};
 let composerDraftsByContextKey: Record<string, ComposerDraft>;
 
 const getMockConversationRuntime = (
@@ -330,6 +350,8 @@ const useChatStore = Object.assign(
   }) as typeof chatStoreMock,
   chatStoreMock,
 );
+// Capture the real store before installing the component's presentation mocks.
+const realDraftStore = draftLifecycleStore;
 const useProviderStore = createStoreHookMock(() => providerState, (nextState) => {
   providerState = nextState;
 });
@@ -345,6 +367,10 @@ const useTaskStore = createStoreHookMock(() => taskState, (nextState) => {
 const translationMock = createTranslationMock({
   'errors.degraded.fallback.dynamic': '{{message}}',
   'chat.typeMessage': 'Type your message',
+  'chat.conversationSourceEmpty': fr.chat.conversationSourceEmpty,
+  'errors.degraded.service.resourcePressure.title': fr.errors.degraded.service.resourcePressure.title,
+  'errors.degraded.service.resourcePressure.body': fr.errors.degraded.service.resourcePressure.body,
+  'errors.degraded.service.resourcePressure.nextStep': fr.errors.degraded.service.resourcePressure.nextStep,
   'chat.stop': 'Stop',
   'chat.newConversation': 'New Conversation',
   'architect.selectPlanToStart': 'Select or create a plan to start architecting.',
@@ -430,7 +456,10 @@ const resetNotifyMocks = () => {
   notifyActionRequiredMock.mockClear();
 };
 
-const loadChatZoneModule = async () => {
+const loadChatZoneModule = async (
+  useRichComposer = false,
+  chatStore: typeof useChatStore | UseBoundStore<StoreApi<MockChatState>> = useChatStore,
+) => {
   importCounter += 1;
   mock.restore();
 
@@ -441,7 +470,7 @@ const loadChatZoneModule = async () => {
   }));
 
   mock.module('../../stores/useChatStore', () => ({
-    useChatStore,
+    useChatStore: chatStore,
   }));
 
   mock.module('../../stores/useSkillsStore', () => ({
@@ -569,6 +598,15 @@ const loadChatZoneModule = async () => {
     ScrollSeparator: () => <div data-testid="scroll-separator" />,
   }));
 
+  mock.module('../tasks/TaskExecutionGraphDialog', () => ({
+    default: ({ task, onClose }: { task: { id: string; title: string }; onClose: () => void }) => (
+      <div role="dialog" data-task-id={task.id}>
+        {task.title}
+        <button onClick={onClose}>Close workflow</button>
+      </div>
+    ),
+  }));
+
   mock.module('../modals/ImagePreviewModal', () => ({
     ImagePreviewModal: () => null,
   }));
@@ -577,9 +615,12 @@ const loadChatZoneModule = async () => {
     PlanSelector: () => null,
   }));
 
+  const RichComposer = useRichComposer
+    ? (await import(`./composer/LazyComposerEditor.tsx?rich-chat-zone-test=${importCounter}`)).default
+    : null;
   mock.module('./composer/LazyComposerEditor', () => ({
     __esModule: true,
-    default: React.forwardRef((props: Record<string, unknown>, ref: React.ForwardedRef<{
+    default: RichComposer ?? React.forwardRef((props: Record<string, unknown>, ref: React.ForwardedRef<{
       getTextContent: () => string;
       clear: () => void;
       setText: (_value: string) => void;
@@ -688,7 +729,7 @@ const loadChatZoneModule = async () => {
 
   await Promise.all([
     import('./AgentCodeReplayConfirmModal'),
-    import('../architect/ArchitectPlanNamingRecoveryModal'),
+    import('../architect/PlanFormModal'),
   ]);
   ({ default: ChatZone } = await import(`./ChatZone.tsx?chat-zone-test=${importCounter}`));
 };
@@ -700,10 +741,10 @@ const preloadChatZoneLazyComponents = async () => {
     import('./ToolApprovalFooter'),
     import('./QuestionnaireResponseSummary'),
     import('./ImplementTaskTodoDropdown'),
+    import('../tasks/TaskExecutionGraphDialog'),
     import('./ContextWindowIndicator'),
     import('./AgentCodeReplayConfirmModal'),
     import('../modals/ImagePreviewModal'),
-    import('../architect/ArchitectPlanNamingRecoveryModal'),
     import('../architect/PlanFormModal'),
   ]);
 };
@@ -926,12 +967,22 @@ const resetState = () => {
     retryArchitectPlanNamingRecovery: mock(async () => false),
     submitArchitectPlanManualName: mock(async () => false),
     composerContextRefs: [],
+    replaceComposerContextRefs: mock((refs: unknown[]) => {
+      chatState = { ...chatState, composerContextRefs: refs };
+      useChatStore.emit();
+    }),
     addComposerContextRef: mock((ref: unknown) => {
       chatState = {
         ...chatState,
         composerContextRefs: [...chatState.composerContextRefs, ref],
       };
       useChatStore.emit();
+    }),
+    removeComposerContextRef: mock((id: string, kind: string) => {
+      useChatStore.setState({ composerContextRefs: chatState.composerContextRefs.filter((value) => {
+        const ref = value as { id: string; kind: string };
+        return ref.id !== id || ref.kind !== kind;
+      }) });
     }),
     clearComposerContextRefs: mock(() => {
       chatState = {
@@ -952,6 +1003,7 @@ const resetState = () => {
 
 
   skillsState = {
+    skills: [], settingsBySkillId: {}, isLoading: false, loadSettings: mock(async () => undefined),
     getSkillById: mock(() => null),
     refreshSkills: mock(async () => undefined),
   };
@@ -1231,6 +1283,167 @@ describe('ChatZone', () => {
     mock.restore();
   });
 
+  it('keeps AgSDL context removable, scoped to its plan, and includes it only on explicit send', async () => {
+    const { getAgsdlContext } = await import('../../stores/agsdl/chatContext');
+    const { useAgsdlStore, agsdlSessionKey } = await import('../../stores/useAgsdlStore');
+    const context = { id: 'selection-1', conversationId: 'conv-1', planId: 'plan-1', branchName: 'develop', document: 'agsdl' as const, version: 'version-1', persistedRevision: 1, path: '/definitions/0', title: 'Selected agent' };
+    useAgsdlStore.setState({ sessions: { [agsdlSessionKey(context)]: { source: '{}', annexes: {}, version: 'version-1', persistedRevision: 1, dirty: false, saving: false, status: 'draft', history: [], future: [], reports: [], error: null } } });
+    appState = { ...appState, mode: 'Architect', activeArchitectPlanId: 'plan-1', activePlanContext: { id: 'plan-1', status: 'draft', targetBranch: 'develop' } };
+    chatState.conversations = [{ ...buildConversation(), scope_mode: 'Architect' }];
+    await act(async () => requireRoot().render(<ChatZone />));
+    await setComposerText('Keep my draft');
+    await act(async () => useChatStore.setState({ composerContextRefs: [{ id: context.id, kind: 'agsdl', title: context.title, data: context }] }));
+    expect(getComposerEditor().value).toBe('Keep my draft');
+    expect(chatState.sendMessage).not.toHaveBeenCalled();
+    await act(async () => { useAppStore.setState({ activeArchitectPlanId: 'plan-2' }); });
+    expect(requireContainer().textContent).not.toContain('Selected agent');
+    await act(async () => { useAppStore.setState({ activeArchitectPlanId: 'plan-1' }); });
+    chatState.sendMessage.mockRejectedValueOnce(new Error('Provider unavailable'));
+    await clickSendButton();
+    expect(getComposerEditor().value).toBe('Keep my draft');
+    expect(getAgsdlContext(chatState.composerContextRefs as import('../../types').ContextReference[])).toEqual(context);
+    const pendingSend = createDeferred<{ status: 'sent' }>();
+    chatState.sendMessage.mockImplementationOnce(() => pendingSend.promise);
+    await clickSendButton();
+    expect(getAgsdlContext(chatState.composerContextRefs as import('../../types').ContextReference[])).toBeUndefined();
+    expect(requireContainer().textContent).not.toContain('Selected agent');
+    await act(async () => { pendingSend.resolve({ status: 'sent' }); await pendingSend.promise; });
+    expect(chatState.sendMessage).toHaveBeenCalledWith(expect.objectContaining({ conversationId: 'conv-1', content: 'Keep my draft', hiddenContext: expect.stringContaining('"path":"/definitions/0"') }));
+    expect(getAgsdlContext(chatState.composerContextRefs as import('../../types').ContextReference[])).toBeUndefined();
+    await act(async () => useChatStore.setState({ composerContextRefs: [{ id: context.id, kind: 'agsdl', title: context.title, data: context }] }));
+    await act(async () => useChatStore.setState({ composerContextRefs: [] }));
+
+  });
+
+  it('does not send an AgSDL selection pasted into Chat mode', async () => {
+    appState = { ...appState, mode: 'Chat' };
+    await act(async () => requireRoot().render(<ChatZone />));
+    await setComposerText('Review pasted selection');
+    const context = { id: 'pasted-selection', conversationId: 'conv-1', planId: 'plan-1', branchName: 'develop', document: 'agsdl' as const, version: 'v1', persistedRevision: 1, path: '', title: 'Release' };
+    await act(async () => useChatStore.setState({
+      composerContextRefs: [{ id: context.id, kind: 'agsdl', title: context.title, data: context }],
+    }));
+    await clickSendButton();
+    expect(chatState.sendMessage).not.toHaveBeenCalled();
+    expect(getComposerEditor().value).toBe('Review pasted selection');
+    expect(chatState.composerContextRefs).toHaveLength(1);
+  });
+
+  it('keeps multiple pasted AgSDL selections visible and blocks Architect send', async () => {
+    const { useAgsdlStore, agsdlSessionKey } = await import('../../stores/useAgsdlStore');
+    const first = { id: 'selection-1', conversationId: 'conv-1', planId: 'plan-1', branchName: 'develop', document: 'agsdl' as const, version: 'v1', persistedRevision: 1, path: '', title: 'First' };
+    const second = { ...first, id: 'selection-2', title: 'Second', conversationId: 'other-conversation' };
+    useAgsdlStore.setState({ sessions: { [agsdlSessionKey(first)]: { source: '{}', annexes: {}, version: 'v1', persistedRevision: 1, dirty: false, saving: false, status: 'draft', history: [], future: [], reports: [], error: null } } });
+    appState = { ...appState, mode: 'Architect', activeArchitectPlanId: 'plan-1', activePlanContext: { id: 'plan-1', status: 'draft', targetBranch: 'develop' } };
+    chatState.conversations = [{ ...buildConversation(), scope_mode: 'Architect' }];
+    await act(async () => requireRoot().render(<ChatZone />));
+    await setComposerText('Review selections');
+    await act(async () => useChatStore.setState({ composerContextRefs: [
+      { id: first.id, kind: 'agsdl', title: first.title, data: first },
+      { id: second.id, kind: 'agsdl', title: second.title, data: second },
+    ] }));
+    await clickSendButton();
+    expect(chatState.sendMessage).not.toHaveBeenCalled();
+    expect(chatState.composerContextRefs).toHaveLength(2);
+    expect(getComposerEditor().value).toBe('Review selections');
+  });
+
+  it('keeps a sent AgSDL inline reference as one transcript chip', async () => {
+    const { referenceText } = await import('../../services/chat/composerReferenceText');
+    const selection = { id: 'sent-selection', conversationId: 'conv-1', planId: 'plan-1', branchName: 'develop', document: 'agsdl' as const, version: 'v1', persistedRevision: 1, path: '', title: 'Release' };
+    chatState.messages = [buildMessage({ id: 'sent-inline', role: 'user', content: `Review ${referenceText('agsdl', selection.id, selection.title)}`,
+      context_refs: [{ id: selection.id, kind: 'agsdl', title: selection.title, agsdl: selection }],
+    })];
+    await act(async () => requireRoot().render(<ChatZone />));
+    const message = requireContainer().querySelector('[data-user-message-content]');
+    expect(message?.querySelectorAll('[data-context-reference-kind="agsdl"]')).toHaveLength(1);
+    expect(message?.querySelector('[data-agsdl-sent-selection]')).toBeNull();
+  });
+
+  it('shows a sent AgSDL selection from persisted context without exposing its technical data', async () => {
+    chatState.messages = [buildMessage({
+      id: 'sent-selection', role: 'user', content: 'Review this system',
+      hidden_context: '<agsdl_selection>\n{"document":"agsdl","title":"Release","diagnostic":"Internal diagnostic","path":"/definitions/0"}\n</agsdl_selection>',
+    })];
+    await act(async () => requireRoot().render(<ChatZone />));
+    const message = requireContainer().querySelector('[data-user-message-content]');
+    expect(message?.querySelector('[data-agsdl-sent-selection]')?.textContent).toContain('Release');
+    expect(message?.textContent).toContain('Review this system');
+    expect(message?.textContent).not.toContain('Internal diagnostic');
+    expect(message?.textContent).not.toContain('/definitions/0');
+    expect(message?.querySelector('button')).toBeNull();
+  });
+
+  it('reacts to approval-only publication and removal with a real Zustand subscription', async () => {
+    const runtime = getMockConversationRuntime(chatState, 'conv-1');
+    const realChatStore = create<MockChatState>(() => ({
+      ...chatState,
+      messagesByConversationId: {},
+      // Real runtime snapshots keep their identity until the runtime changes.
+      getConversationRuntime: () => runtime,
+      getPendingToolApproval: mock((id: string): PendingToolApproval | null =>
+        realChatStore.getState().pendingToolApprovalByConversationId[id] ?? null
+      ),
+    }));
+    await loadChatZoneModule(false, realChatStore);
+    await preloadChatZoneLazyComponents();
+    await act(async () => { requireRoot().render(<ChatZone />); });
+
+    const traceMessage = buildMessage({
+      id: 'approval-assistant',
+      role: 'assistant',
+      content: '',
+      tool_traces: [{ tool_call_id: 'selected-call', tool_name: 'terminal_run', status: 'pending_approval' }],
+    });
+    await act(async () => {
+      realChatStore.setState({ messages: [traceMessage], messagesByConversationId: { 'conv-1': [traceMessage] } });
+    });
+    const footer = () => requireContainer().querySelector('[data-testid="tool-approval-footer"]');
+    expect(footer()).toBeNull();
+
+    const approval: PendingToolApproval = {
+      conversationId: 'conv-1', assistantMessageId: traceMessage.id, toolCallId: 'selected-call',
+      toolId: 'terminal_run', actionGroup: 'escape', riskLevel: 'balanced',
+      summary: 'Run selected command', detail: 'echo selected-request', rememberKey: '',
+      canApproveForConversation: false,
+    };
+    const otherApproval: PendingToolApproval = {
+      ...approval, conversationId: 'conv-2', toolCallId: 'other-call', detail: 'echo other-request',
+    };
+    await act(async () => {
+      realChatStore.setState({ pendingToolApprovalByConversationId: { 'conv-2': otherApproval } });
+    });
+    expect(footer()).toBeNull();
+
+    // Persistence has finished. Only the approval map changes, with no forced render.
+    await act(async () => {
+      realChatStore.setState({ pendingToolApprovalByConversationId: { 'conv-1': approval, 'conv-2': otherApproval } });
+    });
+    expect(footer()).not.toBeNull();
+    expect(footer()?.textContent).toContain('echo selected-request');
+    expect(footer()?.textContent).not.toContain('echo other-request');
+    expect(footer()?.textContent).toContain('Refuse');
+    const allowOnce = Array.from(footer()?.querySelectorAll('button') ?? []).find(
+      (button) => button.textContent?.includes('Allow once')
+    );
+    expect(allowOnce).toBeDefined();
+    await act(async () => { allowOnce?.click(); });
+    expect(realChatStore.getState().approvePendingToolApprovalOnce).toHaveBeenCalledTimes(1);
+    expect(realChatStore.getState().approvePendingToolApprovalOnce).toHaveBeenCalledWith('conv-1');
+
+    await act(async () => {
+      realChatStore.setState({ pendingToolApprovalByConversationId: { 'conv-2': otherApproval } });
+    });
+    expect(footer()).toBeNull();
+    expect(requireContainer().querySelector('[data-testid="composer-editor"]')).not.toBeNull();
+
+    await act(async () => {
+      realChatStore.setState({ selectedConversationId: 'conv-2' });
+    });
+    expect(footer()?.textContent).toContain('echo other-request');
+    expect(footer()?.textContent).not.toContain('echo selected-request');
+  });
+
   it('bounds the zero-viewport fallback for a long history without truncating conversation data', async () => {
     chatState = {
       ...chatState,
@@ -1494,6 +1707,44 @@ describe('ChatZone', () => {
     expect(composerDraftsByContextKey['conversation:conv-1']?.text).toBe(
       'Message suivant pendant la préparation.',
     );
+  });
+
+  it('does not restore an accepted message when the agent later fails', async () => {
+    chatState.sendMessage = mock(async (payload: { onUserMessagePublished?: (id: string) => void }) => {
+      payload.onUserMessagePublished?.('accepted');
+      throw new Error('Agent failed after acceptance');
+    });
+    await act(async () => requireRoot().render(<ChatZone />));
+    await setComposerText('Already accepted');
+    await clickSendButton();
+    expect(getComposerEditor().value).toBe('');
+    expect(composerDraftsByContextKey['conversation:conv-1']).toBeUndefined();
+  });
+
+  it('does not attach failed submission references to a newer draft', async () => {
+    const pending = createDeferred<{ status: 'sent' }>();
+    const ref = { id: 'old-file', kind: 'file', title: 'old.md', data: { id: 'old-file', path: '/repo/old.md', relativePath: 'old.md' } };
+    chatState = { ...chatState, composerContextRefs: [ref], sendMessage: mock(async () => { await pending.promise; throw new Error("Failed"); }) };
+    await act(async () => requireRoot().render(<ChatZone />));
+    await setComposerText('First request');
+    await clickSendButton();
+    await setComposerText('A different request');
+    await act(async () => { pending.resolve({ status: 'sent' }); await pending.promise; });
+    expect(getComposerEditor().value).toBe('A different request');
+    expect(chatState.composerContextRefs).toEqual([]);
+    expect(chatState.sendMessage).toHaveBeenCalledWith(expect.objectContaining({ contextRefs: [expect.objectContaining({ id: 'old-file' })] }));
+  });
+
+  it('does not clear a changed draft after a delayed active-turn submission', async () => {
+    const pending = createDeferred<string>();
+    chatState = { ...chatState, isStreaming: true, submitDuringActiveTurn: mock(() => pending.promise) };
+    await act(async () => requireRoot().render(<ChatZone />));
+    await setComposerText('Direction for the agent');
+    await clickSendButton();
+    expect(chatState.submitDuringActiveTurn).toHaveBeenCalledTimes(1);
+    await setComposerText('Next direction');
+    await act(async () => { pending.resolve('steered'); await pending.promise; });
+    expect(getComposerEditor().value).toBe('Next direction');
   });
 
   it('removes the persisted draft after a confirmed send', async () => {
@@ -1879,6 +2130,267 @@ describe('ChatZone', () => {
     }));
   });
 
+  it('keeps a first Architect draft through a refused send and sends it from the created conversation', async () => {
+    const pendingId = 'pending-architect-develop-plan-1';
+    const ref = { id: 'file:notes.md', kind: 'file', title: 'notes.md', data: { id: 'file:notes.md', path: '/repo/notes.md', relativePath: 'notes.md' } };
+    const architectConversation = (id: string): MockConversation => ({ ...buildConversation(), id, scope_mode: 'Architect' });
+    appState = { ...appState, mode: 'Architect', activeArchitectPlanId: 'plan-1', activePlanContext: { id: 'plan-1', status: 'draft', targetBranch: 'develop' } };
+    chatState = {
+      ...chatState,
+      selectedConversationId: pendingId,
+      conversations: [architectConversation(pendingId)],
+      composerContextRefs: [ref],
+      resolveComposerDraftConversationId: (id: string) => chatState.composerDraftConversationAliases?.[id] ?? id,
+      sendMessage: mock(async () => {
+        // The store creates the conversation and binds the plan to it before the provider check refuses.
+        useChatStore.setState({ selectedConversationId: 'conv-plan', conversations: [architectConversation('conv-plan')],
+          composerDraftConversationAliases: { [pendingId]: 'conv-plan' } });
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        throw new Error('Select a provider and model before sending a message.');
+      }),
+    };
+    await act(async () => { requireRoot().render(<ChatZone />); });
+    await setComposerText('Premier brouillon du plan');
+    await clickSendButton();
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 300)); });
+    expect(getComposerEditor().value).toBe('Premier brouillon du plan');
+    expect(chatState.composerContextRefs).toEqual([expect.objectContaining({ id: 'file:notes.md' })]);
+    // The plan reopens conv-plan after a reload, so the draft lives there.
+    expect(composerDraftsByContextKey['conversation:conv-plan']?.text).toBe('Premier brouillon du plan');
+    expect(composerDraftsByContextKey[`conversation:${pendingId}`]).toBeUndefined();
+
+    const acceptedSend = mock(async (payload: { conversationId: string; onUserMessagePublished?: (id: string) => void }) => {
+      payload.onUserMessagePublished?.('accepted');
+      return { status: 'sent' as const };
+    });
+    await act(async () => { useChatStore.setState({ sendMessage: acceptedSend }); });
+    await clickSendButton();
+    expect(acceptedSend).toHaveBeenCalledWith(expect.objectContaining({ conversationId: 'conv-plan', content: 'Premier brouillon du plan' }));
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 300)); });
+    expect(getComposerEditor().value).toBe('');
+    expect(chatState.composerContextRefs).toEqual([]);
+    // This mock keeps empty drafts; the store deletes them.
+    expect(composerDraftsByContextKey['conversation:conv-plan']?.text ?? '').toBe('');
+    expect(composerDraftsByContextKey[`conversation:${pendingId}`]).toBeUndefined();
+  });
+
+  it('leaves no sent draft or chip when the plan binds its created conversation during an accepted first send', async () => {
+    const pendingId = 'pending-architect-develop-plan-1';
+    const ref = { id: 'file:notes.md', kind: 'file', title: 'notes.md', data: { id: 'file:notes.md', path: '/repo/notes.md', relativePath: 'notes.md' } };
+    const architectConversation = (id: string): MockConversation => ({ ...buildConversation(), id, scope_mode: 'Architect' });
+    appState = { ...appState, mode: 'Architect', activeArchitectPlanId: 'plan-1', activePlanContext: { id: 'plan-1', status: 'draft', targetBranch: 'develop' } };
+    chatState = {
+      ...chatState,
+      selectedConversationId: pendingId,
+      conversations: [architectConversation(pendingId)],
+      composerContextRefs: [ref],
+      resolveComposerDraftConversationId: (id: string) => chatState.composerDraftConversationAliases?.[id] ?? id,
+      sendMessage: mock(async (payload: { onUserMessagePublished?: (id: string) => void }) => {
+        useChatStore.setState({ selectedConversationId: 'conv-plan', conversations: [architectConversation('conv-plan')],
+          composerDraftConversationAliases: { [pendingId]: 'conv-plan' } });
+        payload.onUserMessagePublished?.('accepted');
+        return { status: 'sent' as const };
+      }),
+    };
+    await act(async () => { requireRoot().render(<ChatZone />); });
+    await setComposerText('Premier message accepté');
+    await clickSendButton();
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 300)); });
+    expect(getComposerEditor().value).toBe('');
+    expect(chatState.composerContextRefs).toEqual([]);
+    expect(composerDraftsByContextKey['conversation:conv-plan']?.text ?? '').toBe('');
+    expect(composerDraftsByContextKey[`conversation:${pendingId}`]?.text ?? '').toBe('');
+  });
+
+  it('keeps B refusal when A rejects late after a context switch', async () => {
+    const releaseA = createDeferred<void>();
+    const failure = 'The selected conversation has no completed text to cite.';
+    chatState.sendMessage = mock(async (payload: { conversationId: string }) => {
+      if (payload.conversationId === 'conv-1') {
+        await releaseA.promise;
+        throw new Error('A late failure');
+      }
+      throw new Error(failure);
+    });
+    await act(async () => { requireRoot().render(<ChatZone />); });
+    await setComposerText('A draft');
+    await clickSendButton();
+    await act(async () => {
+      useChatStore.setState({ selectedConversationId: 'conv-2', conversations: [buildConversation(), { ...buildConversation(), id: 'conv-2' }] });
+    });
+    await setComposerText('B draft');
+    await clickSendButton();
+    expect(requireContainer().querySelector('[data-chat-floating-notices]')?.textContent).toContain(fr.chat.conversationSourceEmpty);
+    await act(async () => { releaseA.resolve(); await new Promise((resolve) => setTimeout(resolve, 10)); });
+    expect(getComposerEditor().value).toBe('B draft');
+    expect(requireContainer().querySelector('[data-chat-floating-notices]')?.textContent).toContain(fr.chat.conversationSourceEmpty);
+    await act(async () => { useChatStore.setState({ selectedConversationId: 'conv-1' }); });
+    expect(getComposerEditor().value).toBe('A draft');
+    await clickButtonWithText('Show details');
+    expect(requireContainer().querySelector('pre')?.textContent).toContain('A late failure');
+  });
+
+  it.each(['remove_image', 'send', 'type'])('preserves A refusal after a user action in B: %s', async (action) => {
+    const failure = 'The selected conversation has no completed text to cite.';
+    const image = { id: 'b-image', dataUrl: 'data:image/png;base64,AAAA', mimeType: 'image/png', createdAt: '2026-10-06T10:00:00Z' };
+    chatState.sendMessage = mock(async () => { throw new Error(failure); });
+    composerDraftsByContextKey['conversation:conv-2'] = { text: 'B draft', images: [image], contextRefs: [] };
+    await act(async () => { requireRoot().render(<ChatZone />); });
+    await setComposerText('A draft');
+    await clickSendButton();
+    expect(requireContainer().querySelector('[data-chat-floating-notices]')).not.toBeNull();
+    await act(async () => {
+      useChatStore.setState({ selectedConversationId: 'conv-2', conversations: [buildConversation(), { ...buildConversation(), id: 'conv-2' }] });
+    });
+    expect(requireContainer().querySelector('[data-chat-floating-notices]')).toBeNull();
+    expect(requireContainer().querySelector('img[alt="Pasted image"]')).not.toBeNull();
+    if (action === 'remove_image') {
+      const remove = requireContainer().querySelector('button[title="Remove image"]');
+      expect(remove).not.toBeNull();
+      await act(async () => { remove?.dispatchEvent(new window.Event('click', { bubbles: true })); });
+      expect(requireContainer().querySelector('img[alt="Pasted image"]')).toBeNull();
+    } else if (action === 'send') {
+      await clickSendButton();
+      expect(requireContainer().querySelector('[data-chat-floating-notices]')?.textContent).toContain(fr.chat.conversationSourceEmpty);
+    } else {
+      await setComposerText('B edited draft');
+    }
+    await act(async () => { useChatStore.setState({ selectedConversationId: 'conv-1' }); });
+    expect(getComposerEditor().value).toBe('A draft');
+    expect(requireContainer().querySelector('[data-chat-floating-notices]')?.textContent).toContain(fr.chat.conversationSourceEmpty);
+    // Editing A dismisses A's refusal; it must not remove B's refusal either.
+    await setComposerText('A edited draft');
+    expect(requireContainer().querySelector('[data-chat-floating-notices]')).toBeNull();
+    if (action === 'send') {
+      await act(async () => { useChatStore.setState({ selectedConversationId: 'conv-2' }); });
+      expect(getComposerEditor().value).toBe('B draft');
+      expect(requireContainer().querySelector('[data-chat-floating-notices]')?.textContent).toContain(fr.chat.conversationSourceEmpty);
+    }
+  });
+
+  it('preserves structured pre-provider code and details', async () => {
+    chatState.sendMessage = mock(async () => {
+      throw { code: 'RESOURCE_PRESSURE', message: 'Failed to read workspace state', details: { errno: 24, reason: 'Too many open files' } };
+    });
+    await act(async () => { requireRoot().render(<ChatZone />); });
+    await setComposerText('A draft');
+    await clickSendButton();
+    const notice = requireContainer().querySelector('[data-chat-floating-notices]');
+    expect(notice?.textContent).toContain(fr.errors.degraded.service.resourcePressure.title);
+    await clickButtonWithText('Show details');
+    expect(requireContainer().querySelector('pre')?.textContent).toContain('Too many open files');
+    expect(requireContainer().querySelector('pre')?.textContent).toContain('"errno": 24');
+  });
+
+  it.each([
+    { publishedByStore: false, retry: 'edit' },
+    { publishedByStore: true, retry: 'send' },
+    { publishedByStore: false, retry: 'navigate' },
+  ])('keeps a pre-send refusal visible after real Lexical restoration: %j', async ({ publishedByStore, retry }) => {
+    await loadChatZoneModule(true);
+    const draft = 'QA_SOURCE_VIDE Brouillon été avec image.';
+    const image = { id: 'synthetic-image', dataUrl: 'data:image/png;base64,AAAA', mimeType: 'image/png', createdAt: '2026-10-06T10:00:00Z' };
+    const source = { id: 'source-empty', kind: 'conversation' as const, title: 'Source vide', data: { conversationId: 'source-empty' } };
+    const persistedSource: PersistedContextReference = {
+      id: source.id, kind: 'conversation', conversationId: source.id, title: source.title,
+    };
+    composerDraftsByContextKey['conversation:conv-1'] = { text: draft, images: [image], contextRefs: [source] };
+    const release = createDeferred<void>();
+    const providerRequest = mock(() => undefined);
+    const failureMessage = 'The selected conversation has no completed text to cite.';
+    const clear = mock(() => useChatStore.setState({ lastError: null, sendState: 'idle' }));
+    chatState = {
+      ...chatState,
+      clearLastError: clear,
+      composerContextRefs: [source],
+      conversations: [buildConversation(), { ...buildConversation(), id: source.id, title: source.title }],
+      sendMessage: mock(async (_payload: { conversationId: string; content: string; images?: unknown[] }) => {
+        useChatStore.setState({ lastError: null, sendState: 'idle' });
+        const selected = [...chatState.composerContextRefs];
+        await release.promise;
+        try {
+          await resolveConversationContextSources({
+            targetConversationId: 'conv-1', request: draft,
+            refs: selected.length ? [persistedSource] : [],
+            ports: {
+              getConversation: async () => buildConversation() as DbConversation,
+              getConversationSourceSnapshot: async () => ({
+                target_project_id: 'project-1',
+                conversation: { ...buildConversation(), id: source.id } as DbConversation,
+                messages: [],
+              }),
+              isSourceActive: () => false,
+            },
+          });
+        } catch (error) {
+          if (publishedByStore) flushSync(() => useChatStore.setState({ lastError: failureMessage, sendState: 'error' }));
+          throw error;
+        }
+        providerRequest();
+        return { status: 'sent', turnId: 'turn-1', assistantMessageId: 'assistant-1' };
+      }),
+    };
+    await act(async () => { requireRoot().render(<ChatZone />); });
+    for (let attempt = 0; attempt < 30; attempt += 1) {
+      if (requireContainer().querySelector('[contenteditable="true"]')?.textContent === draft) break;
+      await act(async () => { await new Promise((resolve) => setTimeout(resolve, 10)); });
+    }
+    let editable = requireContainer().querySelector('[contenteditable="true"]') as HTMLElement & { __lexicalEditor: import('lexical').LexicalEditor };
+    expect(editable?.textContent).toBe(draft);
+    expect(chatState.composerContextRefs).toEqual([source]);
+    expect(requireContainer().querySelector('img[alt="Pasted image"]')).not.toBeNull();
+    await clickSendButton();
+    expect(editable.textContent).toBe('');
+    expect(chatState.sendMessage.mock.calls[0]?.[0]).toMatchObject({ conversationId: 'conv-1', content: draft, images: [image] });
+    await act(async () => { release.resolve(); await new Promise((resolve) => setTimeout(resolve, 10)); });
+    expect(editable.textContent).toStartWith(draft);
+    expect(requireContainer().querySelector('img[alt="Pasted image"]')).not.toBeNull();
+    expect(chatState.composerContextRefs).toEqual([source]);
+    expect(providerRequest).not.toHaveBeenCalled();
+    expect(chatState.messages).toEqual([]);
+    expect(clear).not.toHaveBeenCalled();
+    const details = Array.from(requireContainer().querySelectorAll('button')).find((button) => button.textContent === 'Show details');
+    expect(details).toBeDefined();
+    expect(requireContainer().querySelector('[data-chat-floating-notices]')?.textContent).toContain(fr.chat.conversationSourceEmpty);
+    await act(async () => { details?.click(); });
+    expect(requireContainer().querySelector('pre')?.textContent).toContain(failureMessage);
+    // Passive rerenders and programmatic restoration keep the notice durable.
+    await act(async () => { requireRoot().render(<ChatZone />); await new Promise((resolve) => setTimeout(resolve, 10)); });
+    expect(requireContainer().querySelector('[data-chat-floating-notices]')?.textContent).toContain(fr.chat.conversationSourceEmpty);
+    if (retry === 'navigate') {
+      await act(async () => { useChatStore.setState({ selectedConversationId: source.id }); });
+      expect(requireContainer().textContent).not.toContain(fr.chat.conversationSourceEmpty);
+      await act(async () => { useChatStore.setState({ selectedConversationId: 'conv-1' }); });
+      expect(requireContainer().querySelector('[data-chat-floating-notices]')?.textContent).toContain(fr.chat.conversationSourceEmpty);
+      editable = requireContainer().querySelector('[contenteditable="true"]') as typeof editable;
+    }
+    const { $getRoot, KEY_ENTER_COMMAND } = await import('lexical');
+    if (retry !== 'send') {
+      await act(async () => {
+        editable.__lexicalEditor.update(() => { $getRoot().selectEnd().insertText(' Suite.'); });
+        await Promise.resolve();
+      });
+      expect(clear).toHaveBeenCalledTimes(1);
+      expect(requireContainer().querySelector('[data-chat-floating-notices]')).toBeNull();
+    }
+    await act(async () => { useChatStore.setState({ composerContextRefs: [] }); });
+    if (retry === 'send') {
+      expect(clear).not.toHaveBeenCalled();
+      expect(requireContainer().querySelector('[data-chat-floating-notices]')?.textContent).toContain(fr.chat.conversationSourceEmpty);
+    }
+    // Enter follows the real Lexical submit command, with no reload or stop.
+    await act(async () => {
+      editable.__lexicalEditor.dispatchCommand(KEY_ENTER_COMMAND, new KeyboardEvent('keydown', { key: 'Enter' }));
+      await Promise.resolve();
+    });
+    expect(chatState.sendMessage).toHaveBeenCalledTimes(2);
+    expect(chatState.sendMessage.mock.calls[1]?.[0]).toMatchObject({ conversationId: 'conv-1', images: [image] });
+    expect(providerRequest).toHaveBeenCalledTimes(1);
+    expect(requireContainer().querySelector('[data-chat-floating-notices]')).toBeNull();
+    expect(editable.textContent).toBe('');
+    expect(requireContainer().querySelector('img[alt="Pasted image"]')).toBeNull();
+  });
+
   it('restores the composer when a send fails before Macro accepts it', async () => {
     const draftRef = {
       id: 'file:failure.md',
@@ -1890,11 +2402,14 @@ describe('ChatZone', () => {
         relativePath: 'failure.md',
       },
     };
+    let attempts = 0;
     chatState = {
       ...chatState,
       composerContextRefs: [draftRef],
       sendMessage: mock(async () => {
-        throw new Error('Envoi refusé');
+        attempts += 1;
+        if (attempts === 1) throw new Error('Enregistrement des images refusé');
+        return { status: 'sent', conversationId: 'conv-1', turnId: 'turn', userMessageId: 'user', assistantMessageId: 'assistant' };
       }),
     };
 
@@ -1913,6 +2428,11 @@ describe('ChatZone', () => {
       images: [expect.objectContaining({ mimeType: 'image/png' })],
       contextRefs: [draftRef],
     });
+    await clickSendButton();
+    expect(attempts).toBe(2);
+    expect(getComposerEditor().value).toBe('');
+    expect(requireContainer().querySelector('img[alt="Pasted image"]')).toBeNull();
+    expect(composerDraftsByContextKey['conversation:conv-1']).toBeUndefined();
   });
 
   it('saves and restores text, images, and context refs when the conversation changes', async () => {
@@ -2127,6 +2647,9 @@ describe('ChatZone', () => {
     await clickSendButton();
 
     expect(chatState.sendMessage).toHaveBeenCalledWith({
+      onUserMessagePublished: expect.any(Function),
+      contextRefs: [],
+      hiddenContext: undefined,
       conversationId: 'conv-1',
       content: 'Finish the authentication migration',
       taskId: null,
@@ -2533,6 +3056,9 @@ describe('ChatZone', () => {
     await clickSendButton();
 
     expect(chatState.sendMessage).toHaveBeenCalledWith({
+      onUserMessagePublished: expect.any(Function),
+      contextRefs: [],
+      hiddenContext: undefined,
       conversationId: 'conv-1',
       content: 'Draft the migration plan',
       taskId: null,
@@ -2588,6 +3114,9 @@ describe('ChatZone', () => {
 
     expect(taskState.startTask).not.toHaveBeenCalled();
     expect(chatState.sendMessage).toHaveBeenCalledWith({
+      onUserMessagePublished: expect.any(Function),
+      contextRefs: [],
+      hiddenContext: undefined,
       conversationId: 'conv-1',
       content: 'Ship the CSV export end to end',
       taskId: 'task-1',
@@ -3009,7 +3538,7 @@ describe('ChatZone', () => {
     expect(chatState.editMessage).toHaveBeenCalledWith(
       'msg-user-1',
       '[skill: test-skill] utilise ce skill modifié',
-      { skipAgentCodeReplayCheck: undefined }
+      { skipAgentCodeReplayCheck: undefined, contextRefs: [], hiddenContext: undefined, providerInputItems: undefined, replaceStructuredFields: true }
     );
     expect(chatState.sendMessage).not.toHaveBeenCalled();
   });
@@ -3155,6 +3684,7 @@ describe('ChatZone', () => {
 
     expect(chatState.restoreAgentCodeForReplay).toHaveBeenCalledWith(preview);
     expect(chatState.editMessage).toHaveBeenCalledWith('msg-user-1', 'Edited after checkpoint', {
+      contextRefs: [], hiddenContext: undefined, providerInputItems: undefined, replaceStructuredFields: true,
       skipAgentCodeReplayCheck: true,
     });
     expect(getComposerEditor().value).toBe('Draft before edit');
@@ -3209,6 +3739,7 @@ describe('ChatZone', () => {
 
     expect(chatState.editMessage).toHaveBeenCalledWith('msg-user-1', 'Edited image message', {
       skipAgentCodeReplayCheck: undefined,
+      contextRefs: [], hiddenContext: undefined, providerInputItems: undefined, replaceStructuredFields: true,
     });
     expect(chatState.setMessageImages).toHaveBeenCalledWith('msg-user-1', []);
   });
@@ -3905,6 +4436,102 @@ describe('ChatZone', () => {
     expect(requireContainer().querySelector('[data-tour-id="provider-dropdown"]')).toBeNull();
     expect(requireContainer().querySelector('[data-testid="model-dropdown"]')).not.toBeNull();
     expect(requireContainer().querySelector('[data-testid="reasoning-dropdown"]')).not.toBeNull();
+  });
+
+  it.each([false, true])('keeps the audit opening draft and the previous unsent draft, durable=%s', async durable => {
+    const previous = 'Previous unsent draft.';
+    const prompt = 'Inspect the verified conflict without editing files.';
+    composerDraftsByContextKey['conversation:conv-1'] = { text: previous, images: [], contextRefs: [] };
+    chatState.peekComposerDraft = mock((id: string) => chatState.pendingComposerDraftByConversationId[id] ?? null);
+    chatState.acknowledgeComposerDraft = mock((id: string) => { delete chatState.pendingComposerDraftByConversationId[id]; });
+    await act(async () => { requireRoot().render(<ChatZone />); });
+    expect(composerEditorValue).toBe(previous);
+    composerEditorSetTextCalls = [];
+    if (durable) composerDraftsByContextKey['conversation:inspection-audit'] = { text: prompt, images: [], contextRefs: [] };
+    await act(async () => {
+      useChatStore.setState({
+        conversations: [...chatState.conversations, { ...buildConversation(), id: 'inspection-audit' }],
+        pendingComposerDraftByConversationId: { 'inspection-audit': prompt },
+        selectedConversationId: 'inspection-audit',
+      });
+    });
+    expect(composerEditorSetTextCalls).toEqual([prompt]);
+    expect(composerEditorValue).toBe(prompt);
+    expect(chatState.peekComposerDraft('inspection-audit')).toBeNull();
+    expect(composerDraftsByContextKey['conversation:conv-1']?.text).toBe(previous);
+    expect(chatState.sendMessage).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { opening: 'mount', saved: false }, { opening: 'switch', saved: false },
+    { opening: 'mount', saved: true }, { opening: 'switch', saved: true },
+  ])('keeps the prepared inspection draft through real editor restoration: %j', async ({ opening, saved }) => {
+    await loadChatZoneModule(true);
+    await preloadChatZoneLazyComponents();
+    const id = 'prepared-inspection';
+    const prompt = 'Inspect README.md and qa-conflict.txt without changing any files.';
+    const savedImage = { id: 'inspection-image', mimeType: 'image/png', dataUrl: 'data:image/png;base64,AQID', createdAt: '2026-10-06T00:00:00Z' };
+    const state = realDraftStore.getState();
+    realDraftStore.setState(realDraftStore.getInitialState(), true);
+    installTauriRuntimeMock(async command => {
+      if (command === 'db_create_conversation') return { ...buildConversation(), id, title: 'Resolve merge conflicts',
+        scope_mode: 'Implement', group_id: 'group-1', provider_id: 'provider-1', model_id: 'model-1',
+        description: '', last_message: '', message_count: 0, created_at: '2026-10-06T00:00:00Z', updated_at: '2026-10-06T00:00:00Z' };
+      if (command === 'db_list_conversation_citations' || command === 'db_list_unresolved_tool_invocations') return [];
+      return null;
+    });
+    Object.assign(providerState, {
+      providerConfigs: [{ id: 'provider-1', isEnabled: true, isLocal: true, providerType: 'openai' }],
+      modelsByProvider: { 'provider-1': [{ id: 'model-1', isEnabled: true }] },
+      commitRestoredSelection: async () => ({ providerId: 'provider-1', modelId: 'model-1', reasoningEffort: null }),
+    });
+    const save = mock((key: string, draft: ComposerDraft) => state.saveComposerDraftForContext(key, draft));
+    const acknowledge = mock((conversationId: string) => state.acknowledgeComposerDraft(conversationId));
+    chatState = { ...chatState,
+      peekComposerDraft: mock((conversationId: string) => state.peekComposerDraft(conversationId)),
+      acknowledgeComposerDraft: acknowledge,
+      getComposerDraftForContext: mock((key: string) => state.getComposerDraftForContext(key)),
+      saveComposerDraftForContext: save,
+    };
+    const stop = realDraftStore.subscribe(snapshot => useChatStore.setState({
+      conversations: snapshot.conversations.map(conversation => ({ ...conversation, group_id: conversation.group_id ?? null })),
+      selectedConversationId: snapshot.selectedConversationId,
+      activeContextKey: snapshot.activeContextKey, selectedConversationContextKey: snapshot.selectedConversationContextKey,
+      restoreStatus: snapshot.restoreStatus,
+    }));
+    appState = { ...appState, mode: 'Implement', selectedProjectId: 'project-1', selectedGroupId: 'group-1', selectedTaskId: null };
+    registerConflictAssistantContext({ conversationId: id, projectId: 'project-1', groupId: 'group-1', kind: 'code',
+      repositories: [{ projectId: 'project-1', projectPath: '/tmp/api', repoPath: '/tmp/api', branch: 'develop',
+        head: 'ee2603d50000000000000000000000000000000000', conflictFiles: ['README.md', 'qa-conflict.txt'], mergeInProgress: true }],
+    });
+    try {
+      if (opening === 'switch') await act(async () => { requireRoot().render(<ChatZone />); });
+      await act(async () => {
+        const conversation = await state.createConversation('Resolve merge conflicts', null, 'project-1', 'group-1', { selectConversation: false });
+        expect(conversation.id).toBe(id);
+        // Use the actual creation, selection, pending and durable draft lifecycle.
+        if (saved) state.saveComposerDraftForContext(`conversation:${id}`, { text: 'Older saved text', images: [savedImage], contextRefs: [] });
+        state.setComposerDraft(id, prompt);
+        expect(await state.selectConversation(id)).toBe(true);
+        requireRoot().render(<ChatZone />);
+      });
+      for (let attempt = 0; attempt < 40; attempt += 1) {
+        if (requireContainer().querySelector('[contenteditable="true"]')?.textContent === prompt) break;
+        await act(async () => { await new Promise(resolve => setTimeout(resolve, 10)); });
+      }
+      expect(requireContainer().querySelector('[contenteditable="true"]')?.textContent).toBe(prompt);
+      await act(async () => { await new Promise(resolve => setTimeout(resolve, 600)); });
+      expect(requireContainer().querySelector('[contenteditable="true"]')?.textContent).toBe(prompt);
+      expect((requireContainer().querySelector('[data-tour-id="chat-send-button"]') as HTMLButtonElement).disabled).toBe(false);
+      expect(state.peekComposerDraft(id)).toBeNull();
+      expect(state.getComposerDraftForContext(`conversation:${id}`)).toMatchObject({ text: prompt, images: saved ? [savedImage] : [] });
+      expect(acknowledge).toHaveBeenCalledTimes(1);
+      expect(chatState.sendMessage).not.toHaveBeenCalled();
+      expect(chatState.clearLastError).not.toHaveBeenCalled();
+      await act(async () => { useChatStore.setState({ selectedConversationId: 'conv-1' }); });
+      await act(async () => { useChatStore.setState({ selectedConversationId: id }); });
+      expect(requireContainer().querySelector('[contenteditable="true"]')?.textContent).toBe(prompt);
+    } finally { stop(); clearConflictAssistantContext(id); }
   });
 
   it('consults peekComposerDraft when the selected conversation changes', async () => {

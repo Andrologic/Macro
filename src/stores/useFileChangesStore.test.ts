@@ -2311,7 +2311,7 @@ describe('useFileChangesStore', () => {
 
     await useFileChangesStore.getState().loadCurrentChanges();
     const previousRepositories = useFileChangesStore.getState().repositories;
-    expect(previousRepositories).toHaveLength(1);
+    expect(previousRepositories).toHaveLength(2);
 
     shouldFail = true;
     await useFileChangesStore.getState().loadCurrentChanges({ silent: true });
@@ -2319,12 +2319,12 @@ describe('useFileChangesStore', () => {
     expect(suspended.repositories).toEqual(previousRepositories);
     expect(suspended.lastError).toBeNull();
     expect(suspended.reviewSuspension?.error.code).toBe('GIT_OBJECT_MISSING');
-    expect(gitReviewSnapshotMock).toHaveBeenCalledTimes(2);
+    expect(gitReviewSnapshotMock).toHaveBeenCalledTimes(4);
 
     shouldFail = false;
     await suspended.retrySuspendedReview('task-1');
     expect(useFileChangesStore.getState().reviewSuspension).toBeNull();
-    expect(gitReviewSnapshotMock).toHaveBeenCalledTimes(3);
+    expect(gitReviewSnapshotMock).toHaveBeenCalledTimes(6);
   });
 
   it('does not expose the previous task repositories when a new task suspends', async () => {
@@ -2391,48 +2391,47 @@ describe('useFileChangesStore', () => {
     expect(repository?.planBranchName).toBe('release/project-a');
   });
 
-  it('narrows loaded repositories to the selected project scope', async () => {
+  it('reviews every task target despite a global project selection', async () => {
     appStoreState.selectedProjectId = 'project-b';
-
     await useFileChangesStore.getState().loadCurrentChanges();
 
     const { repositories, reviewSummary } = useFileChangesStore.getState();
-    expect(repositories).toHaveLength(1);
-    expect(repositories[0]?.projectId).toBe('project-b');
-    expect(reviewSummary.repositoryCount).toBe(1);
-    expect(reviewSummary.nextRepositoryId).toBe(repositoryIdB);
-    expect(gitStatusMock.mock.calls.map((call) => call[0])).toEqual([worktreeBPath]);
+    expect(repositories.map((repository) => repository.projectId)).toEqual(['project-a', 'project-b']);
+    expect(reviewSummary.repositoryCount).toBe(2);
+    expect(reviewSummary.nextRepositoryId).toBe(repositoryIdA);
+    expect(gitStatusMock.mock.calls.map((call) => call[0])).toEqual([worktreeAPath, worktreeBPath]);
   });
 
-  it('marks the task as out of scope when the selected group has no matching repositories', async () => {
+  it('reviews the selected task when the global group belongs to other projects', async () => {
     appStoreState.selectedGroupId = 'group-2';
-
     await useFileChangesStore.getState().loadCurrentChanges();
 
     const nextState = useFileChangesStore.getState();
     expect(nextState.currentTaskId).toBe('task-1');
-    expect(nextState.currentTaskLoadState).toBe('out_of_scope');
-    expect(nextState.currentTaskLoadMessage).toBe('This task has no changes in Group 2.');
-    expect(nextState.repositories).toHaveLength(0);
-    expect(nextState.reviewSummary.repositoryCount).toBe(0);
-    expect(gitStatusMock).not.toHaveBeenCalled();
+    expect(nextState.currentTaskLoadState).toBe('ready');
+    expect(nextState.currentTaskLoadMessage).toBeNull();
+    expect(nextState.repositories.map((repository) => repository.projectId)).toEqual(['project-a', 'project-b']);
+    expect(gitStatusMock.mock.calls.map((call) => call[0])).toEqual([worktreeAPath, worktreeBPath]);
   });
 
-  it('recomputes the scoped repository list when the focused project changes on the same task', async () => {
+  it('keeps all task targets and review receipts when the global focus changes', async () => {
     appStoreState.selectedProjectId = 'project-a';
     const store = useFileChangesStore.getState();
-
     await store.loadCurrentChanges();
-    expect(useFileChangesStore.getState().reviewSummary.nextRepositoryId).toBe(repositoryIdA);
+    store.markChangeReviewed(repositoryIdA, changeIdA);
+    const receipt = useFileChangesStore.getState().reviewedChanges[changeIdA];
 
-    appStoreState.selectedProjectId = 'project-b';
+    appStoreState.selectedProjectId = 'project-c';
+    await store.loadCurrentChanges();
+    appStoreState.selectedGroupId = null;
+    appStoreState.selectedProjectId = null;
     await store.loadCurrentChanges();
 
     const nextState = useFileChangesStore.getState();
     expect(nextState.currentTaskId).toBe('task-1');
-    expect(nextState.repositories).toHaveLength(1);
-    expect(nextState.repositories[0]?.projectId).toBe('project-b');
-    expect(nextState.reviewSummary.nextRepositoryId).toBe(repositoryIdB);
+    expect(nextState.repositories.map((repository) => repository.projectId)).toEqual(['project-a', 'project-b']);
+    expect(nextState.reviewSummary.nextRepositoryId).toBe(repositoryIdA);
+    expect(nextState.reviewedChanges[changeIdA]).toEqual(receipt);
   });
 
   it('reads repository changes from the task worktrees and reloads external edits', async () => {

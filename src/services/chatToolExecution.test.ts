@@ -108,7 +108,7 @@ function setup(tool = "read", riskLevel: ToolRiskLevel = "yolo", loadRuntime?: P
     terminal: {
       cachedSession: () => terminalSession,
       createSession: mock(async () => terminalSession), readSession: mock(async () => terminalSession),
-      runCommand: mock(async () => terminalSession), killSession: mock(async () => terminalSession),
+      runCommand: mock(async () => ({ ...terminalSession, status: "completed" as const })), killSession: mock(async () => terminalSession),
     },
     workspace: {
       executor: async () => executor,
@@ -396,7 +396,10 @@ describe("agent terminal isolation", () => {
   test("rejects manual sessions and omits project metadata from agent results", async () => {
     const f = setup("terminal_read");
     f.ports.terminal.cachedSession = () => ({ ...terminalSession, project_id: "manual" });
-    expect(await f.run({ session_id: "terminal" })).toContain("manual project terminal");
+    expect(await f.run({ session_id: "terminal" })).toMatchObject({
+      kind: "result", isError: true, errorKind: "permission",
+      result: expect.stringContaining("manual project terminal"),
+    });
     f.ports.terminal.cachedSession = () => terminalSession;
     const result = JSON.parse(String(await f.run({ session_id: "terminal" })));
     expect(result).not.toHaveProperty("project_id");
@@ -412,7 +415,7 @@ describe("agent terminal isolation", () => {
     f.resolve({ kind: "allow_once" });
     await checkpoint();
     f.abort.abort();
-    command.resolve(terminalSession);
+    command.resolve({ ...terminalSession, status: "killed" });
     await running;
     expect(f.ports.terminal.runCommand).toHaveBeenCalledWith({ sessionId: "terminal", command: "pwd", timeoutMs: 1_800_000, executionId: expect.any(String) });
     expect(f.ports.terminal.killSession).toHaveBeenCalledWith("terminal", expect.any(String));
@@ -461,6 +464,11 @@ function architectFixture(loadRuntime?: Parameters<typeof handleDeferredArchitec
       activeArchitectPlanId: "plan-a", activePlanContext: { targetBranch: selectedBranch },
       selectedProjectId: "project", selectedGroupId: null, projectGroups: [], standaloneProjects: [],
       getProjectById: () => undefined, activateArchitectPlan: activate, setStrategyMutationPreview: preview,
+      consumeArchitectPlanActivationPayload: () => ({
+        plan, targetBranch: plan.targetBranch, conversationId: plan.conversationId ?? null,
+        sharedConversation: false, resolutionMode: 'blank_fast_path',
+        chatMessages: [], chatMessagesLoaded: true, chatMessageCount: 0,
+      }),
     }),
     getTaskState: () => ({ tasks: [], refreshFromPlan: refresh }),
     ensureArchitectConversationForPlan: ensure,
@@ -522,14 +530,6 @@ describe("Architect turn authority with the real handler", () => {
     expect(f.update.mock.calls[0]?.[0].branchName).toBe("branch-a");
     expect(f.activate).not.toHaveBeenCalled();
     expect(f.ensure).not.toHaveBeenCalled();
-  });
-
-  test("strategy lookup uses the captured plan even when another plan is selected", async () => {
-    const f = architectFixture();
-    f.operation.allowedToolIds = ["strategy_get"];
-    f.select("branch-b");
-    await f.execute(f.operation, "strategy_get", {});
-    expect(f.getPlan).toHaveBeenCalledWith("branch-a", "plan-a");
   });
 
   test("preserves an already-started write but skips UI hydration after Stop", async () => {

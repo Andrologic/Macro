@@ -1323,6 +1323,10 @@ const FRONTEND_RELAY_PAGED_GIT_READ_IDS = new Set([
   'git_branch_list',
   'git_get_tree',
 ]);
+const FRONTEND_RELAY_AGSDL_IDS = new Set([
+  'agsdl_get',
+  'agsdl_update',
+]);
 const TOOL_HOST_GIT_READ_IDS = new Set([
   'git_status',
   'git_log',
@@ -1337,6 +1341,7 @@ const isFrontendRelayToolId = (toolId: string, hasFrontendRelay = false): boolea
   FRONTEND_RELAY_WORKSPACE_TOOL_IDS.has(toolId) ||
   FRONTEND_RELAY_GIT_MUTATION_IDS.has(toolId) ||
   FRONTEND_RELAY_PAGED_GIT_READ_IDS.has(toolId) ||
+  FRONTEND_RELAY_AGSDL_IDS.has(toolId) ||
   (hasFrontendRelay && TOOL_HOST_GIT_READ_IDS.has(toolId)) ||
   toolId.startsWith('terminal_') ||
   toolId.startsWith('need_') ||
@@ -1350,7 +1355,8 @@ const inferMacroMode = (allowedToolIds: string[]): string => {
       (toolId) =>
         toolId.startsWith('need_') ||
         toolId.startsWith('plan_') ||
-        toolId.startsWith('strategy_')
+        toolId.startsWith('strategy_') ||
+        FRONTEND_RELAY_AGSDL_IDS.has(toolId)
     )
   ) {
     return 'Architect';

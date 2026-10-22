@@ -1,5 +1,7 @@
+import { normalizePlanIcon } from './planIcon';
 import type { ArchitectPlanServiceDependencies } from './architectPlanReadContext';
 import type { PlanNode, PredictedBranch } from '../types';
+import { updateDesignMetadata, validDisplayMetadata } from './agsdl/design';
 import { devLogger } from '../utils/devLogger';
 import { isCanonicalArchitectPlan } from './architectPlanPresentation';
 import { type ValidProjectRegistrySnapshot } from './validProjectRegistry';
@@ -80,10 +82,32 @@ export const createArchitectPlanId = (): string => {
   return `plan-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
 };
 
+const assertAgsdlEditorDocument = (
+  document: Omit<import('../types/agsdl').AgsdlEditorDocument, 'revision'>,
+): void => {
+  if (!document || typeof document.source !== 'string' || !document.annexes ||
+      typeof document.annexes !== 'object' || Array.isArray(document.annexes) ||
+      Object.values(document.annexes).some((value) => typeof value !== 'string')) {
+    throw new Error('Invalid AgSDL editor document.');
+  }
+  if (document.design !== undefined) updateDesignMetadata(undefined, document.design);
+  if (document.display !== undefined && !validDisplayMetadata(document.display)) {
+    throw new Error('Invalid AgSDL display metadata.');
+  }
+  if (document.migration !== undefined && (!document.migration || typeof document.migration !== 'object' || document.migration.version !== 1 || !['macro-legacy-plan', 'agsdl-0.1.0'].includes(document.migration.from) || !Array.isArray(document.migration.issues) || document.migration.issues.some(issue => typeof issue !== 'string'))) {
+    throw new Error('Invalid AgSDL migration metadata.');
+  }
+  const metadata = JSON.stringify({ design: document.design, display: document.display, migration: document.migration });
+  if (new TextEncoder().encode(document.source + Object.values(document.annexes).join('') + metadata).length > 1024 * 1024) {
+    throw new Error('AgSDL inputs exceed the 1 MiB editor limit.');
+  }
+};
+
 export const createArchitectPlanUnlocked = async (
   input: CreateArchitectPlanInput,
   deps: ResolvedArchitectPlanServiceDependencies
 ): Promise<ArchitectPlanRecord> => {
+  if (input.agsdl !== undefined) assertAgsdlEditorDocument(input.agsdl);
   const normalizedBranch = normalizeBranchName(input.branchName);
   assertGitFlowTargetBranch(normalizedBranch);
   const now = new Date().toISOString();
@@ -153,6 +177,7 @@ export const createArchitectPlanUnlocked = async (
   });
 
   const initialPlanRecord = applyArchitectPlanLifecycleForStatus({
+    ...(input.agsdl !== undefined ? { agsdl: { ...input.agsdl, revision: 1 } } : {}),
     id: planId,
     slug: canonicalSlug,
     title: planId,
@@ -228,12 +253,63 @@ export const createArchitectPlan = async (
 ): Promise<ArchitectPlanRecord> =>
   enqueueArchitectPlanCreation(input.branchName, () => createArchitectPlanUnlocked(input, deps));
 
+/** Convert the plan document without changing its lifecycle or execution records. */
+export const migrateArchitectPlanToAgsdl = async (
+  branchName: string,
+  planId: string,
+  deps: ResolvedArchitectPlanServiceDependencies = resolveArchitectPlanServiceDependencies(),
+): Promise<ArchitectPlanRecord | null> => {
+  const normalizedBranch = normalizeBranchName(branchName);
+  assertGitFlowTargetBranch(normalizedBranch);
+  const safeId = sanitizeId(planId);
+  return enqueueArchitectPlanMutation(normalizedBranch, safeId, async () => {
+    const registrySnapshot = await loadArchitectPlanRegistrySnapshot(deps);
+    const replicaSet = await loadPlanReplicaSet(normalizedBranch, safeId, { registrySnapshot }, deps);
+    if (!replicaSet) return null;
+    const existing = replicaSet.canonical.plan;
+    if (existing.agsdl || existing.status === 'deleted') return existing;
+    const { convertLegacyPlan } = await import('./agsdl/legacy');
+    const agsdl = convertLegacyPlan(existing);
+    if (!agsdl) return existing;
+    if (existing.missingProjectIds?.length) {
+      throw new Error('Restore the missing project replicas before converting this plan.');
+    }
+    assertAgsdlEditorDocument(agsdl);
+    const next = { ...existing, agsdl, revision: (existing.revision || 1) + 1 };
+    const scopes = dedupeScopes([
+      ...replicaSet.expectedScopes,
+      ...replicaSet.snapshots.map((snapshot) => snapshot.scope),
+    ]);
+    const targets = await Promise.all(scopes.map((scope) => buildUpsertReplicaMutationTarget({
+      scope,
+      branchName: normalizedBranch,
+      plan: next,
+      registrySnapshot,
+      chatMessageCount: replicaSet.canonical.manifest.conversation.messageCount,
+    })));
+    await runArchitectPlanReplicaMutation({
+      branchName: normalizedBranch,
+      planId: safeId,
+      operation: 'update',
+      targets,
+      registrySnapshot,
+      deps,
+      commitMessage: `chore(metadata): convert architect plan to AgSDL ${safeId}`,
+    });
+    invalidateArchitectPlanRuntimeCaches({ branchName: normalizedBranch, planId: safeId });
+    return (await getArchitectPlan(normalizedBranch, safeId, deps)) || next;
+  });
+};
+
 export interface UpdateArchitectPlanInput {
+  agsdl?: Omit<import('../types/agsdl').AgsdlEditorDocument, 'revision'>;
+  expectedAgsdlRevision?: number;
   branchName: string;
   planId: string;
   expectedRevision?: number;
   title?: string;
   label?: string;
+  icon?: string | null;
   slug?: string;
   description?: string;
   planKind?: ArchitectPlanKind;
@@ -287,6 +363,13 @@ export const updateArchitectPlanWithDerivedUpdate = async (
     throwPlanMetadataMissing(normalizedBranch, safeId);
   }
   const existing = replicaSet.canonical.plan;
+  if (input.agsdl !== undefined) {
+    if (existing.status !== 'draft') throw new Error('AgSDL editing requires a draft plan.');
+    if (input.expectedAgsdlRevision !== (existing.agsdl?.revision ?? 0)) {
+      throw new Error('The AgSDL document changed. Reload it before saving.');
+    }
+    assertAgsdlEditorDocument(input.agsdl);
+  }
   if (
     input.expectedRevision !== undefined &&
     (!Number.isInteger(input.expectedRevision) || input.expectedRevision < 1)
@@ -490,11 +573,15 @@ export const updateArchitectPlanWithDerivedUpdate = async (
 
   const candidateResult = sanitizeArchitectPlanRecord(normalizedBranch, safeId, {
     ...existing,
+    agsdl: input.agsdl !== undefined
+      ? { ...input.agsdl, revision: (existing.agsdl?.revision ?? 0) + 1 }
+      : existing.agsdl,
     slug: requestedSlug,
     title: isCanonicalPlan ? existing.title : input.title?.trim() || existing.title,
     label: isCanonicalPlan
       ? (input.label !== undefined || input.title !== undefined ? requestedLabel : existing.label)
       : normalizePlanLabel(input.label) ?? existing.label,
+    icon: input.icon !== undefined ? normalizePlanIcon(input.icon) : existing.icon,
     description: input.description !== undefined ? input.description.trim() : existing.description,
     planKind,
     gitFlowPlan: normalizedGitFlowPlan,
@@ -978,6 +1065,7 @@ export const archiveArchitectPlan = async (
 /** Serialized plan commands, including task status derivation under the branch queue without a store or UI dependency. */
 export interface ArchitectPlanMutationService {
   createArchitectPlan: typeof createArchitectPlan;
+  migrateArchitectPlanToAgsdl: typeof migrateArchitectPlanToAgsdl;
   updateArchitectPlan: typeof updateArchitectPlan;
   mutateArchitectPlan: typeof mutateArchitectPlan;
   mutateArchitectPlanTaskStatus: typeof mutateArchitectPlanTaskStatus;
@@ -992,6 +1080,7 @@ export const createArchitectPlanMutationService = (overrides: ArchitectPlanServi
   const deps = resolveArchitectPlanServiceDependencies(overrides);
   return {
     createArchitectPlan: (input) => createArchitectPlan(input, deps),
+    migrateArchitectPlanToAgsdl: (branchName, planId) => migrateArchitectPlanToAgsdl(branchName, planId, deps),
     updateArchitectPlan: (input) => updateArchitectPlan(input, deps),
     mutateArchitectPlan: (input, deriveUpdate) => mutateArchitectPlan(input, deriveUpdate, deps),
     mutateArchitectPlanTaskStatus: (input, deriveUpdate) => mutateArchitectPlanTaskStatus(input, deriveUpdate, deps),

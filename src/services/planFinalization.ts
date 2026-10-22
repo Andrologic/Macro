@@ -89,17 +89,42 @@ export const isRepositoryRootExecutionTarget = (
   target: Pick<TaskExecutionTarget, 'executionKind'>
 ): boolean => target.executionKind === 'repository_root';
 
+type TranslateFinalization = (
+  key: string,
+  fallback: string,
+  options?: { name: string },
+) => string;
+
+const PLAN_FINALIZATION_TITLE_PREFIX = 'Finalize plan: ';
+
 export const buildPlanFinalizationTaskTitle = (plan: {
   title: string;
   label?: string | null;
-}): string => `Finalize plan: ${plan.label || plan.title}`;
+}, translate?: TranslateFinalization): string => {
+  const name = plan.label || plan.title;
+  return translate
+    ? translate('architect.finalizationTaskTitle', 'Finalize plan: {{name}}', { name })
+    : `${PLAN_FINALIZATION_TITLE_PREFIX}${name}`;
+};
+
+export const getPlanFinalizationTaskDisplayTitle = (
+  task: { title: string; task_source?: string | null },
+  translate: TranslateFinalization,
+): string => {
+  if (!isPlanFinalizationTaskSource(task.task_source) || !task.title.startsWith(PLAN_FINALIZATION_TITLE_PREFIX)) {
+    return task.title;
+  }
+  return buildPlanFinalizationTaskTitle({ title: task.title.slice(PLAN_FINALIZATION_TITLE_PREFIX.length) }, translate);
+};
 
 const isActionablePlanFinalizationNode = (
-  node: Pick<PlanNode, 'id' | 'archivedAt'>
-): boolean => Boolean(node.id.trim()) && !node.archivedAt;
+  node: Pick<PlanNode, 'id' | 'status' | 'archivedAt' | 'archiveReason'>
+): boolean => Boolean(node.id.trim()) && (
+  !node.archivedAt || (node.status === 'completed' && node.archiveReason === 'merged')
+);
 
 export const derivePlanFinalizationDependencyState = (
-  nodes: Array<Pick<PlanNode, 'id' | 'dependencies' | 'status' | 'archivedAt'>>
+  nodes: Array<Pick<PlanNode, 'id' | 'dependencies' | 'status' | 'archivedAt' | 'archiveReason'>>
 ): PlanFinalizationDependencyState => {
   const actionableNodes = nodes.filter(isActionablePlanFinalizationNode);
   const actionableNodeIds = actionableNodes.map((node) => node.id);

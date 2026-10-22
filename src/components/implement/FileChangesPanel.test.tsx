@@ -3887,7 +3887,7 @@ describe('FileChangesPanel', () => {
     expect(document.body.textContent).not.toContain('Retry');
   });
 
-  it('reloads repository changes when the focused project changes', async () => {
+  it('keeps task review stable when the global project changes', async () => {
     seedStores(buildRepository(false));
 
     await act(async () => {
@@ -3905,7 +3905,7 @@ describe('FileChangesPanel', () => {
       await flushRender();
     });
 
-    expect(loadCurrentChangesMock).toHaveBeenCalledTimes(1);
+    expect(loadCurrentChangesMock).not.toHaveBeenCalled();
   });
 
   it('does not load repository changes while the task is awaiting a user response', async () => {
@@ -4360,6 +4360,39 @@ describe('FileChangesPanel', () => {
         actions: [expect.objectContaining({ label: 'Project settings' })],
       })
     );
+  });
+
+  it('loads the task review in All projects without a global selection', async () => {
+    seedStores(buildRepository(false));
+    useAppStore.setState({ selectedGroupId: null, selectedProjectId: null });
+
+    await act(async () => {
+      root?.render(<FileChangesPanel />);
+      await flushRender();
+    });
+
+    expect(loadCurrentChangesMock).toHaveBeenCalledTimes(1);
+    expect(document.body.textContent).not.toContain('Select a project to view changes');
+  });
+
+  it('does not block task review on an unrelated unsupported global project', async () => {
+    seedStores(buildRepository(false));
+    const taskProject = useAppStore.getState().getProjectById('project-1');
+    const unrelatedProject = { ...taskProject!, id: 'unrelated', path: '//wsl.localhost/Ubuntu/repo', pathKind: 'wsl' as const };
+    useAppStore.setState({
+      selectedGroupId: null,
+      selectedProjectId: unrelatedProject.id,
+      standaloneProjects: [unrelatedProject],
+      getProjectById: (id: string) => id === 'project-1' ? taskProject : unrelatedProject,
+    });
+
+    await act(async () => {
+      root?.render(<FileChangesPanel />);
+      await flushRender();
+    });
+
+    expect(loadCurrentChangesMock).toHaveBeenCalledTimes(1);
+    expect(document.body.textContent).not.toContain('For WSL projects');
   });
 
   it('loads changes when only a focused project is selected', async () => {

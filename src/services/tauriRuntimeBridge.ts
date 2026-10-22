@@ -1,3 +1,4 @@
+import { RuntimeCommandError } from './runtimeCommandError';
 import {
   invoke as invokeTauri,
   type InvokeArgs,
@@ -41,6 +42,37 @@ export async function invoke<T>(
   }
 
   return invokeTauri<T>(command, args, options);
+}
+
+/** HTTP opts into response provenance; ordinary invoke consumers are unchanged. */
+export async function invokeWithReceipt<T>(
+  command: string,
+  args?: InvokeArgs,
+  options?: InvokeOptions,
+): Promise<T> {
+  if (import.meta.env.DEV && isBrowserRuntimeBridgeEnabled()) {
+    const bridge = await import('./browserRuntimeTransport');
+    return bridge.invokeBrowserRuntimeWithReceipt<T>(command, args, options);
+  }
+  const internals = typeof window === 'undefined' ? undefined : (window as Window & {
+    __TAURI_INTERNALS__?: {
+      transformCallback: (callback: (payload: unknown) => void, once: boolean) => number;
+      unregisterCallback: (id: number) => void;
+      ipc?: (message: { cmd: string; payload: InvokeArgs; options?: InvokeOptions; callback: number; error: number }) => void;
+    };
+  }).__TAURI_INTERNALS__;
+  // Without the callback port, a rejection has no reliable reply provenance.
+  if (!internals?.ipc) return invokeTauri<T>(command, args, options);
+  return new Promise<T>((resolve, reject) => {
+    const cleanup = () => {
+      internals.unregisterCallback(callback);
+      internals.unregisterCallback(error);
+    };
+    const callback = internals.transformCallback(payload => { cleanup(); resolve(payload as T); }, true);
+    const error = internals.transformCallback(payload => { cleanup(); reject(new RuntimeCommandError(payload)); }, true);
+    try { internals.ipc!({ cmd: command, payload: args ?? {}, options, callback, error }); }
+    catch (failure) { cleanup(); reject(failure); }
+  });
 }
 
 export async function listen<T>(

@@ -4,6 +4,14 @@ import {
   truncateUtf8Middle,
 } from "../shared/toolOutputLimits";
 
+/** Carries the bounded fallback without pretending the full result was saved. */
+export class ToolResultPreservationError extends Error {
+  constructor(readonly preview: string) {
+    super(preview);
+    this.name = 'ToolResultPreservationError';
+  }
+}
+
 export interface SpilledToolResultPreview {
   preview: string;
   totalBytes: number;

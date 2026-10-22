@@ -3,10 +3,12 @@ import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { create } from 'zustand';
 import type { Conversation } from '../../types';
+import fr from '../../i18n/locales/fr.json';
+import en from '../../i18n/locales/en.json';
 import { usePersistenceHealth } from '../../services/persistenceHealth';
 import { createTranslationMock, installReactI18nextMock } from '../../test-utils/reactI18nextMock';
 
-installReactI18nextMock(createTranslationMock({
+const translation = createTranslationMock({
   'backup.recovery': 'Recovery required. Original data preserved.',
   'backup.diagnostics': 'Diagnostics',
   'chat.queueRecoveryTitle': 'Queued messages need attention',
@@ -17,7 +19,9 @@ installReactI18nextMock(createTranslationMock({
   'common.edit': 'Edit',
   'common.save': 'Save',
   'common.cancel': 'Cancel',
-}));
+});
+const defaultTranslate = translation.t;
+installReactI18nextMock(translation);
 
 const openSettingsMock = mock(() => undefined);
 const appState = { inAppNotificationsEnabled: false, openSettings: openSettingsMock };
@@ -75,6 +79,7 @@ describe('PersistenceHealthNotifications', () => {
   let root: Root | null;
 
   beforeEach(() => {
+    translation.t = defaultTranslate;
     container = document.createElement('div');
     document.body.appendChild(container);
     root = createRoot(container);
@@ -140,6 +145,64 @@ describe('PersistenceHealthNotifications', () => {
     });
 
     expect(container.querySelector('[data-persistence-recovery-panel="true"]')).toBeNull();
+  });
+
+  it('translates the retained Git context refusal in the active language and keeps exact details', async () => {
+    const error = 'Conflict repository changed. Open a new assistant from the Git dialog.';
+    const recovery = { count: 1, error };
+    const preview = { id: 'queued-image-turn', conversationId: conversation.id, content: 'Été : conserve mon image.' };
+    const retryAction = mock(async () => undefined);
+    useChatStore.setState({
+      queuedSubmissionRecoveryByConversationId: { [conversation.id]: recovery },
+      queuedSubmissionPreviews: [preview],
+      retryQueuedSubmissions: retryAction,
+    });
+
+    for (const locale of [fr, en]) {
+      const copy = locale.errors.degraded.service.conflictAssistantContextChanged;
+      translation.t = createTranslationMock({
+        'errors.degraded.service.conflictAssistantContextChanged.title': copy.title,
+        'errors.degraded.service.conflictAssistantContextChanged.body': copy.body,
+        'errors.degraded.service.conflictAssistantContextChanged.nextStep': copy.nextStep,
+        'errors.showDetails': locale.errors.showDetails,
+        'errors.hideDetails': locale.errors.hideDetails,
+      }).t;
+      await act(async () => { root?.render(<PersistenceHealthNotifications />); await flush(); });
+      const alert = container.querySelector('[role="alert"]');
+      expect(alert?.textContent).toContain(copy.title);
+      expect(alert?.textContent).toContain(copy.body);
+      expect(alert?.textContent).toContain(copy.nextStep);
+      expect(container.textContent).not.toContain(error);
+      const details = Array.from(container.querySelectorAll('button')).find(button => button.textContent === locale.errors.showDetails);
+      expect(details).toBeDefined();
+      await act(async () => { details?.click(); });
+      expect(container.querySelector('pre')?.textContent).toBe(error);
+      expect(details?.getAttribute('aria-expanded')).toBe('true');
+      await act(async () => { details?.click(); });
+      expect(container.querySelector('pre')).toBeNull();
+    }
+    const retry = container.querySelector<HTMLButtonElement>('button[aria-label="Retry Recovery conversation"]');
+    await act(async () => { retry?.click(); retry?.click(); await flush(); });
+    expect(retryAction).toHaveBeenCalledTimes(1);
+    expect(retryAction).toHaveBeenCalledWith(conversation.id);
+    expect(useChatStore.getState().queuedSubmissionRecoveryByConversationId[conversation.id]).toBe(recovery);
+    expect(useChatStore.getState().queuedSubmissionPreviews).toEqual([preview]);
+    expect(container.textContent).toContain(preview.content);
+  });
+
+  it('preserves unknown and similar errors verbatim without guessing a context refusal', async () => {
+    for (const error of [
+      'Échec fournisseur : détail original',
+      'Conflict repository changed. Open a new assistant from the Git dialog. Additional diagnostic.',
+    ]) {
+      await act(async () => {
+        useChatStore.setState({ queuedSubmissionRecoveryByConversationId: { [conversation.id]: { count: 1, error } } });
+        root?.render(<PersistenceHealthNotifications />);
+        await flush();
+      });
+      expect(container.querySelector('[role="alert"]')?.textContent).toBe(error);
+      expect(container.querySelector('pre')).toBeNull();
+    }
   });
 
   it('keeps persistence errors visible without a dismiss action', async () => {

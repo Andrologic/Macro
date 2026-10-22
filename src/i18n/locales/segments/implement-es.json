@@ -1,4 +1,13 @@
 {
+  "viewExecutionGraph": "Ver workflow",
+  "executionGraph": "Ejecución del workflow",
+  "workflowGraph": "Grafo del workflow",
+  "executionGraphError": "No se pudo cargar el workflow.",
+  "executionGraphEmpty": "No hay ninguna ejecución AgSDL vinculada a esta tarea.",
+  "openGraphTask": "Abrir tarea",
+  "taskFilters": "Filtrar tareas",
+  "tasksWithoutInteraction": "Sin interacción",
+  "blockedTasks": "Tareas bloqueadas",
   "startReview": "Iniciar revisión",
   "startReviewBusy": "Finaliza el turno actual o resuelve la aprobación de la herramienta antes de iniciar la revisión.",
   "startReviewUnavailable": "Esta tarea no puede pasar a revisión en su estado actual.",
@@ -24,9 +33,9 @@
   "selectTaskForValidation": "Seleccione una tarea para validar los cambios",
   "activeCount": "{{count}} activo",
   "noTasks": "Aún no hay tareas",
+  "otherTasks": "Otras tareas",
   "readyTasks": "Tareas listas",
   "noReadyTasks": "Ninguna tarea se puede ejecutar actualmente.",
-  "blockedTasks": "Tareas bloqueadas",
   "failedTasks": "Tareas fallidas",
   "noBlockedTasks": "Ninguna tarea bloqueada por dependencia.",
   "blockedBy": "Bloqueado por: {{tasks}}",
@@ -331,8 +340,6 @@
   "clearStatusFilter": "Mostrar todos los estados",
   "allStatuses": "Todos los estados",
   "planFilterStandalone": "Sin plan / independiente",
-  "standaloneBadge": "Independiente",
-  "taskKindPending": "Clasificación del agente",
   "taskKindFeature": "Feature",
   "taskKindDirectEdit": "Edición directa",
   "taskKindDirectEditHelp": "Edita la carpeta de origen sin ramas, worktrees ni commits de Git. Solo puede ejecutarse una tarea a la vez.",
@@ -408,6 +415,10 @@
     "full": "Contexto completo del archivo"
   },
   "errors": {
+    "databaseLocked": "La base de datos está bloqueada. Vuelve a intentarlo.",
+    "directProjectTaskAlreadyActiveWithTitle": "Este proyecto de edición directa ya tiene una tarea activa: {{title}}",
+    "taskTodosOpenForComplete": "No se puede completar la tarea mientras haya todos abiertos: {{todos}}",
+    "taskTodosOpenForCompleteWithoutLabels": "No se puede completar la tarea mientras haya todos abiertos.",
     "finalizationStrategyLocked": "La finalización ya ha comenzado. Completa la fusión pendiente o continúa sin cambiar su estrategia.",
     "directTaskCompletionFailed": "No se pudo completar la tarea de edición directa.",
     "directTaskBranchChanged": "La rama actual cambió de {{expected}} a {{actual}}. Vuelve a la rama inicial antes de confirmar esta tarea Direct.",
@@ -638,5 +649,10 @@
   "reviewProgress": "{{reviewed}} / {{total}} diferencias de archivos abiertas",
   "nextUnreviewedDiff": "Siguiente diferencia sin abrir",
   "resumeRemainingCommits": "Reanudar commits restantes",
-  "detachedReviewDraft": "Este archivo ya no está en la revisión. Copia el borrador sin guardar antes de cerrar; las acciones del archivo no están disponibles."
+  "detachedReviewDraft": "Este archivo ya no está en la revisión. Copia el borrador sin guardar antes de cerrar; las acciones del archivo no están disponibles.",
+  "queueToLaunch": "Por iniciar",
+  "queueInProgress": "En curso",
+  "queueWaiting": "En espera",
+  "queueCompleted": "Finalizadas",
+  "launchWorkflow": "Iniciar un workflow"
 }

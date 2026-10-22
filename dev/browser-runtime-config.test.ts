@@ -3,6 +3,7 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import {
   resolveQaBrowserLogDirectory,
+  resolveQaBrowserOrigin,
   validateQaBrowserRuntimeConfig,
 } from './browser-runtime-config.mjs';
 
@@ -31,4 +32,20 @@ test('the default browser runtime config is isolated from the production profile
     'logs',
   ));
   expect(logDirectory).not.toBe(join('/tmp', 'com.macro.desktop', 'logs'));
+});
+
+test('allows a different loopback UI port without accepting remote origins', () => {
+  expect(resolveQaBrowserOrigin({})).toBe('http://127.0.0.1:1422');
+  expect(resolveQaBrowserOrigin({ build: { devUrl: 'http://127.0.0.1:1428/' } })).toBe('http://127.0.0.1:1428');
+  for (const devUrl of ['http://example.com:1428', 'http://0.0.0.0:1428', 'https://127.0.0.1', 'http://user@127.0.0.1', 'http://127.0.0.1/path']) {
+    expect(() => resolveQaBrowserOrigin({ build: { devUrl } })).toThrow('loopback');
+  }
+});
+
+// Shared parser is also used by the browser transport and launcher.
+test('bridge ports are canonical, bounded, and default only when absent', async () => {
+  const { browserRuntimePort } = await import('../src/shared/browserRuntimePort.mjs');
+  expect(browserRuntimePort(undefined)).toBe(1430);
+  for (const value of ['1', '1430', '1450', '65535']) expect(browserRuntimePort(value)).toBe(Number(value));
+  for (const value of ['', '0', '01', '+1', ' 1430', '1430 ', '65536', '1.0', '1e3', '１２', null, 1430]) expect(() => browserRuntimePort(value)).toThrow('canonical');
 });

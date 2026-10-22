@@ -45,8 +45,17 @@
     "no": "いいえ"
   },
   "speech": {
-    "button": { "start": "音声入力を開始", "stop": "音声入力を停止", "transcribing": "音声を送信済み · 文字起こし中", "enhancing": "文字起こしを受信済み · スマート補正中" },
-    "recording": { "active": "録音中", "stopAndInsert": "停止して文字起こしを挿入", "stopAndSend": "停止して文字起こし後に送信" },
+    "button": {
+      "start": "音声入力を開始",
+      "stop": "音声入力を停止",
+      "transcribing": "音声を送信済み · 文字起こし中",
+      "enhancing": "文字起こしを受信済み · スマート補正中"
+    },
+    "recording": {
+      "active": "録音中",
+      "stopAndInsert": "停止して文字起こしを挿入",
+      "stopAndSend": "停止して文字起こし後に送信"
+    },
     "errors": {
       "title": "音声入力を利用できません",
       "provider-missing": "最初に音声プロバイダーを設定して選択してください。",
@@ -63,23 +72,52 @@
       "enhancement-failed": "Macro は未補正の文字起こしを保持しました。"
     },
     "settings": {
-      "validation": "名前、エンドポイント、モデルは必須です。", "saved": "音声プロバイダーを保存しました。", "saveFailed": "音声プロバイダーを保存できませんでした。",
-      "deleted": "音声プロバイダーを削除しました。", "deleteFailed": "音声プロバイダーを削除できませんでした。", "deleteTitle": "音声プロバイダーを削除",
+      "validation": "名前、エンドポイント、モデルは必須です。",
+      "saved": "音声プロバイダーを保存しました。",
+      "saveFailed": "音声プロバイダーを保存できませんでした。",
+      "deleted": "音声プロバイダーを削除しました。",
+      "deleteFailed": "音声プロバイダーを削除できませんでした。",
+      "deleteTitle": "音声プロバイダーを削除",
       "deleteConfirm": "{{name}} とローカルに保存された API キーを削除しますか？",
-      "title": "マイク音声入力", "description": "コンポーザーから録音し、選択したプロバイダーで文字起こしして、送信前に内容を確認します。",
-      "testTitle": "マイクと文字起こしをテスト", "testDescription": "最大15秒録音し、このテストのためだけに選択したプロバイダーへ送信します。",
-      "testStart": "マイクをテスト", "testStop": "停止して文字起こし", "testRequesting": "マイクへのアクセスを要求しています...", "testTranscribing": "テストを文字起こししています...", "testCancelled": "マイクテストをキャンセルしました。", "testFailed": "マイクテストに失敗しました。", "testProviderRequired": "テスト前に有効なプロバイダーを選択してください。",
-      "activeProvider": "使用するプロバイダー", "noProvider": "プロバイダーなし", "language": "言語", "autoLanguage": "自動",
-      "maxDuration": "最大録音時間", "enhancementTitle": "文字起こしのスマート補正", "enhancementDescription": "会話で使用中のモデルにより、認識ミス、ためらい、繰り返しだけを短く慎重に補正します。",
-      "noProviderPrivacy": "録音音声の送信先を確認するにはプロバイダーを選択してください。", "localPrivacy": "ローカルまたはキーレスのプロバイダー：API キーを必須とせず、設定したエンドポイントへ音声を送信します。",
+      "title": "マイク音声入力",
+      "description": "コンポーザーから録音し、選択したプロバイダーで文字起こしして、送信前に内容を確認します。",
+      "testTitle": "マイクと文字起こしをテスト",
+      "testDescription": "最大15秒録音し、このテストのためだけに選択したプロバイダーへ送信します。",
+      "testStart": "マイクをテスト",
+      "testStop": "停止して文字起こし",
+      "testRequesting": "マイクへのアクセスを要求しています...",
+      "testTranscribing": "テストを文字起こししています...",
+      "testCancelled": "マイクテストをキャンセルしました。",
+      "testFailed": "マイクテストに失敗しました。",
+      "testProviderRequired": "テスト前に有効なプロバイダーを選択してください。",
+      "activeProvider": "使用するプロバイダー",
+      "noProvider": "プロバイダーなし",
+      "language": "言語",
+      "autoLanguage": "自動",
+      "maxDuration": "最大録音時間",
+      "enhancementTitle": "文字起こしのスマート補正",
+      "enhancementDescription": "会話で使用中のモデルにより、認識ミス、ためらい、繰り返しだけを短く慎重に補正します。",
+      "noProviderPrivacy": "録音音声の送信先を確認するにはプロバイダーを選択してください。",
+      "localPrivacy": "ローカルまたはキーレスのプロバイダー：API キーを必須とせず、設定したエンドポイントへ音声を送信します。",
       "andrologicPrivacy": "Andrologic は認証済みの Macro ゲートウェイ経由で音声を処理し、保存しません。文字起こしは運用ログに記録されます。",
       "durationUnit": "秒",
-      "remotePrivacy": "リモートプロバイダー：録音音声は設定したエンドポイントへ送信されます。", "providers": "音声プロバイダー",
-      "compatibility": "OpenAI互換およびDeepgramの文字起こしエンドポイントに対応します。", "addProvider": "プロバイダーを追加",
-      "keyStored": "APIキーはローカルに保存済み", "managedAuth": "認証は Macro が管理", "noKeyRequired": "APIキー不要", "keyMissing": "APIキーが必要",
-      "editProvider": "プロバイダーを編集", "newProvider": "新しいプロバイダー", "protocol": "プロトコル", "model": "文字起こしモデル",
-      "endpoint": "ベースURL", "apiKey": "APIキー", "keepKey": "保存済みのキーを保持するには空のままにします",
-      "localProvider": "ローカルまたはキーレスのプロバイダー", "removeKey": "保存済みのAPIキーを削除"
+      "remotePrivacy": "リモートプロバイダー：録音音声は設定したエンドポイントへ送信されます。",
+      "providers": "音声プロバイダー",
+      "compatibility": "OpenAI互換およびDeepgramの文字起こしエンドポイントに対応します。",
+      "addProvider": "プロバイダーを追加",
+      "keyStored": "APIキーはローカルに保存済み",
+      "managedAuth": "認証は Macro が管理",
+      "noKeyRequired": "APIキー不要",
+      "keyMissing": "APIキーが必要",
+      "editProvider": "プロバイダーを編集",
+      "newProvider": "新しいプロバイダー",
+      "protocol": "プロトコル",
+      "model": "文字起こしモデル",
+      "endpoint": "ベースURL",
+      "apiKey": "APIキー",
+      "keepKey": "保存済みのキーを保持するには空のままにします",
+      "localProvider": "ローカルまたはキーレスのプロバイダー",
+      "removeKey": "保存済みのAPIキーを削除"
     }
   },
   "startup": {
@@ -96,7 +134,10 @@
       "skipped": "@macro の自動復元をスキップしました",
       "blockedConflictDescription": "メタデータのワークツリーに未解決の競合があるため、自動復元を適用しませんでした。",
       "blockedDirtyDescription": "メタデータのワークツリーにローカル変更があるため、自動復元を適用しませんでした。"
-    }
+    },
+    "browserRuntimeSessionReplacedTitle": "このブラウザーセッションは Macro に接続されていません。",
+    "browserRuntimeSessionReplacedDescription": "別のブラウザータブがデスクトップランタイムを引き継ぎました。続行するにはこのタブを再読み込みしてください。",
+    "browserRuntimeSessionReplacedReload": "タブを再読み込み"
   },
   "shutdown": {
     "activeWorkSingle": "実行中のタスクがあります。Macro を閉じると中断されます。",
@@ -227,7 +268,8 @@
     "toggleLeftPanel": "左パネルを切り替えます",
     "toggleRightPanel": "右パネルを切り替えます",
     "settings": "設定",
-    "account": "アカウント"
+    "account": "アカウント",
+    "operate": "Operate"
   },
   "onboarding": {
     "open": "オンボーディングを開く",
@@ -350,6 +392,50 @@
     "cpu": "CPU",
     "memory": "メモリ",
     "sync": {
+      "failure": {
+        "missing_origin": {
+          "title": "リモートが設定されていません",
+          "body": "このリポジトリを同期するには origin の URL を追加してください。ローカルで作業を続けることもできます。"
+        },
+        "missing_upstream": {
+          "title": "追跡ブランチが設定されていません",
+          "body": "コードブランチを origin に公開して追跡先を設定し、再試行してください。公開するとローカルのコミットがリモートに送信されます。"
+        },
+        "remote_unavailable": {
+          "title": "リモートリポジトリにアクセスできません",
+          "body": "origin の URL とアクセス権を確認してください。既存の URL は Git クライアントで修正してから再試行してください。"
+        },
+        "auth": {
+          "title": "Git 認証が必要です",
+          "body": "Git の認証情報とリポジトリへのアクセス権を確認して再試行してください。"
+        },
+        "network": {
+          "title": "リモートに接続できません",
+          "body": "接続と origin の URL を確認して再試行してください。"
+        },
+        "local_changes": {
+          "title": "ローカルファイルが pull を妨げています",
+          "body": "変更を保持してください。変更を確認するか stash で退避してから pull を再試行してください。"
+        },
+        "divergence": {
+          "title": "ブランチが分岐しています",
+          "body": "ブランチの状態を更新し、merge または rebase でリモートのコミットを統合してください。"
+        },
+        "unknown": {
+          "title": "Git の同期に失敗しました",
+          "body": "技術的な詳細を確認し、問題を修正して再試行してください。"
+        }
+      },
+      "publishCodeBranch": "コードブランチを公開",
+      "configureAndRetry": "設定して再試行",
+      "remoteConfigurationFailed": "リモートの設定に失敗しました。URL と技術的な詳細を確認してください。",
+      "originUrl": "origin の URL",
+      "metadataNeedsAttention": "コードの同期は完了しました。メタデータの同期には対応が必要です。",
+      "reviewRecovery": "復旧手順を確認",
+      "conflictedFiles_other": "競合ファイル {{count}} 件",
+      "conflictedFiles_one": "競合ファイル {{count}} 件",
+      "conflictContextChanged": "ブランチが変更されました。アシスタントを開く前に更新してください。",
+      "preflightUnavailable": "利用不可",
       "done": "終わり。",
       "macroClean": "@macroクリーン",
       "macroPending": "@macro保留中",
@@ -474,7 +560,8 @@
       "conflictedFiles": "{{count}} conflicted files",
       "stashAndRetry": "Stash and retry",
       "discardLocalChanges": "Discard local changes",
-      "openConflictAssistant": "Open conflict assistant",
+      "openConflictAssistant": "Implement で競合アシスタントを開く",
+      "conflictReadOnly": "読み取り専用の競合調査",
       "abortMerge": "Abort merge",
       "fastForwardBlockedMergeInProgress": "Fast-forward is blocked while a merge is in progress.",
       "fastForwardBlockedLocalCommits": "Fast-forward is blocked by local commits.",
@@ -493,6 +580,7 @@
       "allRepositories": "すべてのリポジトリ",
       "gitScope": "Git スコープ",
       "selectRepository": "リポジトリを選択",
+      "noRepository": "Git リポジトリ未選択",
       "selectFolder": "Git フォルダーを選択",
       "folderNotGit": "このフォルダーは Git リポジトリではありません。",
       "folderSelectionFailed": "このフォルダーを選択できませんでした。"
@@ -537,6 +625,7 @@
     "queueSaveFailed": "保存失敗。閉じずに再試行。",
     "queuePlanUnavailable": "元のプラン利用不可",
     "queueContextChanged": "送信先変更。元に戻して再試行。",
+    "sendImagesSaveFailed": "画像付きのメッセージを保存できませんでした。下書きから再送信してください。",
     "queueImagesSaveFailed": "本文は保存済み。画像は要再試行。",
     "queueRecoveryTitle": "待機中の送信",
     "queueRecoveryDescription": "{{count}}件保持。元のコンテキストで再試行。",
@@ -547,6 +636,10 @@
     "queueAlreadySent": "このメッセージは保存済みです。復旧を再試行してください。",
     "queueEditInProgress": "待機中のメッセージの変更が完了するまでお待ちください。",
     "queueEmptyMessage": "待機中のメッセージを空にすることはできません。",
+    "queueAssistantInterrupted": "保存済みの指示は実行が始まっている可能性があります。応答とツールの影響を確認し、この復元項目を削除してから手動で続行してください。",
+    "steerImagesSaveFailed": "指示と画像を保存できませんでした。下書きの送信を再試行してください。",
+    "steerTurnEnded": "指示は保存されましたが、送信前にターンが終了しました。続行する前に確認してください。",
+    "goalExecutorContextUnavailable": "目標の実行コンテキストを利用できません。再開する前にこの会話でメッセージを送信してください。",
     "queueInterrupted": "送信中断。内容は保持。",
     "queueUnavailable": "この会話には追加不可",
     "secondaryAction": "別の操作",
@@ -587,6 +680,7 @@
     "noProvidersConfigured": "プロバイダーが構成されていません",
     "providerRestoreUnavailable": "この会話で以前使用したプロバイダーまたはモデルは利用できなくなりました。続行するには別のものを選択してください。",
     "runtimeErrorFallback": "Macro はこの操作を完了できませんでした。詳細を確認して、もう一度お試しください。",
+    "conversationSourceEmpty": "選択した会話には引用できる完了済みのテキストがありません。この参照元を削除するか、別の会話を選択してから、もう一度送信してください。",
     "noEnabledModels": "有効なモデルはありません。設定でモデルを有効にします。",
     "selectProviderFirst": "まずプロバイダーを選択してください",
     "agentTypeBuild": "建てる",
@@ -650,7 +744,11 @@
     "generationAttempts_one": "{{count}} generation attempt",
     "generationAttempts_other": "{{count}} generation attempts",
     "generationAttemptNumber": "Attempt {{number}}",
-    "generationAttemptStatus": { "completed": "completed", "partial": "partial", "abandoned": "abandoned" },
+    "generationAttemptStatus": {
+      "completed": "completed",
+      "partial": "partial",
+      "abandoned": "abandoned"
+    },
     "generationAttemptCostUnknown": "cost unknown",
     "generationAttemptCost": "${{amount}}",
     "generationAttemptRawText": "Attempt text",
@@ -659,6 +757,7 @@
     "toolDenied": "denied",
     "toolApprovalRecoveryWarning": "保存されたツールリクエストの一部を復元できませんでした。データは保持されています。この通知を閉じてチャットを続けられます。",
     "toolApprovalResumeCancelled": "新しいターンは開始されませんでした。もう一度再開できます。",
+    "sourcePassageEditApproval": "保存された箇所を編集する",
     "toolApprovalInterrupted": "このツールリクエストは中断されました。",
     "toolApprovalInterruptedHint": "再開すると新しいターンで現在のワークスペースを確認し、必要に応じて改めて承認を求めます。元のリクエストは履歴に残ります。",
     "toolApprovalResume": "新しいターンで再開",
@@ -751,10 +850,19 @@
       "binaryFileRejected": "{{file}}にはバイナリデータまたは無効なUTF-8が含まれています。",
       "conversationRequired": "ファイルを添付する前にタスクまたはプランを選択してください。",
       "urlPreviewFailedTitle": "URL プレビューを取得できませんでした",
+      "urlPreviewBlockedDescription": "セキュリティ上の理由から、プレビューはローカル、プライベート、予約済み、リンクローカルのネットワークアドレスにアクセスできません。公開 URL を使用してください。",
       "clipboardEmptyTitle": "クリップボードは空です",
       "clipboardReadFailedTitle": "クリップボードを読み取れませんでした",
       "previewUnavailable": "プレビューを利用できません",
       "removeFromContext": "コンテキストから削除",
+      "toolDescriptions": {
+        "web_search": "引用付きでWeb上の情報を検索する",
+        "web_fetch": "指定したURLを直接取得して読む",
+        "question": "回答を待つ構造化された質問を選択肢付きで提示する",
+        "read_file": "このチャットに添付されたファイルとコンテキスト文書を読む",
+        "terminal_create_session": "個別に承認されたコマンドをコンピューターで実行する",
+        "mark_source_passage": "重要な箇所とAIが使用した箇所を記録する"
+      },
       "toolsUnavailableWarning": "現在選択されているプロバイダーまたはモデルではツールを使用できません。ネイティブ ツール呼び出しサポートを有効にするには、サポートを備えたモデルを選択します。",
       "builtInTools": "内蔵ツール",
       "noToolsEnabled": "有効なツールはありません",
@@ -764,6 +872,8 @@
       "webFetchDisabledTooltip": "[設定] > [ツール] > [ウェブ検索] で Web Fetch を有効にします。",
       "nativeToolTooltip": "選択したモデルはネイティブ ツール呼び出しをサポートしていません。",
       "sourceSummary": "{{interesting}}見つかった •{{used}}使用済み •{{total}}パッセージ",
+      "sourceSummary_one": "{{interesting}}見つかった •{{used}}使用済み •{{total}}パッセージ",
+      "sourceSummary_other": "{{interesting}}見つかった •{{used}}使用済み •{{total}}パッセージ",
       "collectionDisabledTitle": "収集が無効になっています",
       "collectionDisabledDescription": "新しいパッセージを保存するには、ソース ツールを有効にします。",
       "sourceSearchPlaceholder": "ソースを検索する",
@@ -937,7 +1047,13 @@
           "belowThresholdDetail": "コンテキストは有用な圧縮しきい値を下回っています"
         }
       }
-    }
+    },
+    "queueWriteInProgress": "この指示はまだ保存中です。保存が完了してから再試行してください。",
+    "queueDirectionDeleted": "この指示は削除または再実行により無効になりました。手動で続行する前に、この復旧項目を削除してください。",
+    "directionContextUnavailable": "実行中のターンのコンテキストを利用できません。ターンが終了してからメッセージを送信してください。",
+    "providerErrorTitle": "モデルはこのリクエストを完了できませんでした。",
+    "providerErrorRetry": "しばらくしてから再試行してください。",
+    "providerErrorSettings": "再試行する前にモデルの設定を確認してください。"
   },
   "skills": {
     "collectionTitle": "スキル",
@@ -1145,6 +1261,10 @@
       "maxTurnsLabel": "エージェント最大ターン数",
       "maxTurnsDescription": "Macro がエージェントループを停止し、チャットに通知を表示するまでの AI/ツール サイクルの最大数。"
     },
+    "themeDark": "ダーク",
+    "themeLight": "ライト",
+    "notificationChannelsUnsupportedDesc": "この環境ではデスクトップ通知を利用できません。アプリ内通知を選択するか、通知をオフにしてください。",
+    "desktopNotificationsUnsupportedHint": "この環境ではデスクトップ通知を利用できません。Macroはアプリ内通知を使用します。",
     "theme": "テーマ",
     "zoom": "ズーム",
     "zoom_auto": "自動",
@@ -1383,6 +1503,9 @@
     "parentFolderRequired": "親フォルダーは必須です",
     "folderNameRequired": "フォルダー名は単一のフォルダー名にしてください",
     "repoPathRequired": "先に既存プロジェクトのフォルダーを選択してください",
+    "folderNotFound": "このフォルダーは存在しません。既存のフォルダーを選択してください。",
+    "pathNotDirectory": "このパスはフォルダーではありません。既存のフォルダーを選択してください。",
+    "folderCheckFailed": "このフォルダーを読み取れません。パスとアクセス権限を確認してください。",
     "projectPathRequired": "プロジェクトパスは必須です",
     "duplicateSubprojectName": "このグループには同じ名前のプロジェクトがすでに存在します",
     "localFolder": "ローカルフォルダー",
@@ -1396,6 +1519,7 @@
     "attachedReposCount_one": "このグループに{{count}}件のプロジェクト",
     "attachedReposCount_other": "このグループに{{count}}件のプロジェクト",
     "folderAlreadyAttached": "このフォルダーは既に添付されています{{name}}。",
+    "folderAlreadyAttachedInWorkspace": "このフォルダーは、このワークスペースのプロジェクトに既に関連付けられています。",
     "folderAlreadyAttachedNamed": "このフォルダはすでに「」に添付されています{{name}}」",
     "saveFailed": "プロジェクトの保存に失敗しました",
     "createProject": "プロジェクトの作成",
@@ -1516,6 +1640,8 @@
     "projectGitPrepared": "{{projectName}} の Git 準備が完了しました。",
     "projectDirectEditEnabled": "{{projectName}} を Git なしで編集できるようになりました。",
     "projectDirectEditDisabled": "{{projectName}} は Git が初期化されるまで読み取り専用です。",
+    "gitFlowInvalidBranch": "有効な Git ブランチ名を入力してください。",
+    "projectActions": "{{name}} の操作",
     "gitFlowSaved": "Git ワークフロー設定を保存しました。",
     "readOnlyImpactTitle": "read-only に切り替えますか？",
     "readOnlyImpactDescription": "Macro はこのプロジェクトを編集可能なプランやタスクの対象から外しますが、コンテキスト参照と読み取りは引き続き可能です。",
@@ -1622,7 +1748,76 @@
       "hotfixEmptyHint": "本番環境のバグを説明してください。Macro がリポジトリを推定し、hotfix slug とパッチバージョンを提案してから確認を求めます。",
       "bugfixEmptyHint": "バグを説明してください。Macro がリポジトリを推定し、確認前に bugfix slug を提案します。"
     },
+    "planIcon": {
+      "title": "アイコンを選択",
+      "reset": "デフォルトのアイコン",
+      "options": {
+        "sparkles": "きらめき",
+        "workflow": "ワークフロー",
+        "network": "ネットワーク",
+        "layers": "レイヤー",
+        "pencil-ruler": "設計",
+        "code": "コード",
+        "terminal": "ターミナル",
+        "flag": "旗",
+        "target": "ターゲット",
+        "zap": "稲妻",
+        "shield": "盾",
+        "tool": "ツール",
+        "cpu": "プロセッサー",
+        "database": "データベース",
+        "globe": "地球",
+        "cloud": "クラウド",
+        "message-square": "会話",
+        "book-open": "本",
+        "folder": "フォルダー",
+        "folder-open": "開いたフォルダー",
+        "file": "ファイル",
+        "file-code": "コードファイル",
+        "file-text": "ドキュメント",
+        "git-branch": "ブランチ",
+        "git-commit": "コミット",
+        "git-merge": "マージ",
+        "git-compare": "比較",
+        "history": "履歴",
+        "list-todo": "チェックリスト",
+        "check-square": "チェック済みボックス",
+        "clipboard": "クリップボード",
+        "clock": "時計",
+        "milestone": "マイルストーン",
+        "compass": "コンパス",
+        "map": "地図",
+        "folder-tree": "フォルダーツリー",
+        "server": "サーバー",
+        "hard-drive": "ストレージ",
+        "user": "ユーザー",
+        "lock": "鍵",
+        "eye": "目",
+        "palette": "パレット",
+        "image": "画像",
+        "camera": "カメラ",
+        "mic": "マイク",
+        "bell": "ベル",
+        "settings": "設定",
+        "layout-grid": "グリッド"
+      }
+    },
     "projectNavigator": {
+      "newBlueprint": "新しいブループリント",
+      "blueprintCreatedAtRoot": "ブループリントをプロジェクト直下に作成しました。フォルダーへの配置は保存できませんでした。",
+      "newSubfolder": "新しいサブフォルダー",
+      "newFolder": "新しいフォルダー",
+      "renameFolder": "フォルダー名を変更",
+      "folderActions": "{{name}} の操作",
+      "removeFolder": "フォルダーを削除",
+      "removeFolderHelp": "内容は親フォルダーに残ります。",
+      "emptyFolder": "ここにブループリントをドロップ",
+      "moveToFolder": "移動先…",
+      "projectRoot": "プロジェクト直下",
+      "folderNameError": "別のフォルダー名を選んでください。",
+      "folderSaveError": "フォルダーの整理状態を保存できませんでした。",
+      "macroBlueprints": "Macro ライブラリ",
+      "newMacroBlueprint": "新しい Macro ブループリント",
       "title": "プロジェクト",
       "searchPlans": "プランを検索...",
       "noSearchResults": "この検索に一致するプランはありません。",
@@ -1761,15 +1956,13 @@
       "targetBranch": "Target: {{branchName}}"
     },
     "planNamingRecovery": {
-      "title": "Plan name still needed",
-      "description": "Macro could not generate a plan name from the first message after three attempts. Retry with AI or name the plan manually.",
-      "retryAi": "Retry AI",
-      "retryingAi": "Retrying AI...",
-      "nameManually": "Name manually",
+      "title": "プラン名を生成できませんでした",
+      "description": "プランは既定の名前のままです。",
+      "retryAi": "AIで再試行",
+      "nameManually": "手動で名前を付ける",
       "manualTitle": "Name This Plan",
       "manualDescription": "Enter the plan name you want to use for this conversation.",
       "saveManualName": "Save plan name",
-      "back": "Back",
       "manualPlaceholder": "e.g. Checkout Recovery Refresh"
     },
     "strategy": "戦略",
@@ -1788,6 +1981,11 @@
     "noStrategyDescription": "Architect チャットでプランについて話し合い、戦略を生成を使ってこのグラフを作成します。",
     "noBranchesMatchingFilters": "現在のフィルターに一致するブランチはありません。",
     "planCompleted": "計画が完了しました",
+    "newPlanPlaceholder": "新しいプラン",
+    "planValidationBranchesCreated_one": "プランを検証しました。{{count}}個のブランチを準備しました。",
+    "planValidationBranchesCreated_other": "プランを検証しました。{{count}}個のブランチを準備しました。",
+    "planValidationBranchesCurrent": "プランを検証しました。ブランチはすでに最新です。",
+    "finalizationTaskTitle": "プランを完了: {{name}}",
     "planValidated": "計画が検証されました",
     "validatingPlan": "検証中...",
     "noActivePlan": "有効なプランはありません",
@@ -1870,6 +2068,7 @@
     "totalChanges": "合計の変更"
   },
   "providers": {
+    "backToProviders": "プロバイダー一覧に戻る",
     "collectionTitle": "プロバイダー",
     "collectionDescription": "設定済みの接続を管理します",
     "emptyDescription": "プロバイダーを追加して Macro を AI サービスに接続します。",
@@ -1886,6 +2085,13 @@
     "searchPlaceholder": "プロバイダーを検索...",
     "configuredTitle": "設定済みプロバイダー",
     "unconfiguredTitle": "設定が必要なプロバイダー",
+    "connectionModelsFound_one": "接続に成功しました。{{count}}個のモデルが見つかりました。",
+    "connectionModelsFound_other": "接続に成功しました。{{count}}個のモデルが見つかりました。",
+    "connectionLmStudioModelsFound_one": "接続に成功しました。{{count}}個のLM Studioモデルが見つかりました。",
+    "connectionLmStudioModelsFound_other": "接続に成功しました。{{count}}個のLM Studioモデルが見つかりました。",
+    "connectionModelVerified": "モデル{{model}}で接続に成功しました。",
+    "connectionModelsFound_zero": "接続に成功しました。{{count}}個のモデルが見つかりました。",
+    "connectionLmStudioModelsFound_zero": "接続に成功しました。{{count}}個のLM Studioモデルが見つかりました。",
     "testSaveFirst": "テスト前にプロバイダーを保存してください。",
     "testConnection": "テスト接続",
     "saveProvider": "プロバイダーを保存",
@@ -2098,10 +2304,17 @@
       "deleteFailed": "MCP サーバーを削除できませんでした。",
       "toggleFailed": "MCP サーバーを更新できませんでした。",
       "transportHint": "ローカルサーバーには stdio、従来型およびステートレスのリモートサーバーには Streamable HTTP を使用します。",
-      "transport": { "stdio": "ローカル stdio", "streamableHttp": "Streamable HTTP" },
+      "transport": {
+        "stdio": "ローカル stdio",
+        "streamableHttp": "Streamable HTTP"
+      },
       "urlPlaceholder": "https://example.com/mcp",
       "headersPlaceholder": "Authorization=Bearer token\nX-API-Key=value",
-      "protocol": { "auto": "自動検出", "legacy": "従来型セッション", "modern": "モダン・ステートレス" },
+      "protocol": {
+        "auto": "自動検出",
+        "legacy": "従来型セッション",
+        "modern": "モダン・ステートレス"
+      },
       "oauth": {
         "enable": "OAuth を使用",
         "scopes": "スペース区切りのスコープ",
@@ -2154,53 +2367,202 @@
     "hideDetails": "詳細を非表示",
     "showDetails": "詳細を表示",
     "degraded": {
-      "fallback": { "title": "確認が必要です", "body": "Macro はこの操作を安全に完了できませんでした。", "nextStep": "詳細を確認し、妨げになっている状態を解消してから再試行してください。", "dynamic": "{{message}}" },
-      "worktree": {
-        "checkedOut": { "title": "Macro はタスクの作業領域を準備できませんでした", "body": "このタスクに必要なブランチが、ローカル変更を含んだままメインリポジトリで開かれています。", "nextStep": "ローカル変更をコミット、スタッシュ、または破棄してから、タスクを再試行してください。" },
-        "missingBase": { "title": "Macro はベースブランチを見つけられませんでした", "body": "このタスクのワークツリーを作成するには、ベースブランチが必要です。", "nextStep": "ブランチを作成するか、プロジェクトの Git ワークフロー設定を更新してから再試行してください。" },
-        "fallback": { "title": "Macro はタスクの作業領域を準備できませんでした", "body": "タスクの作業領域がまだ準備できていないため、Macro はファイルを安全に確認または編集できません。", "nextStep": "タスクを再試行してください。失敗が続く場合は、プロジェクトの Git 設定を開いてリポジトリの状態を確認してください。" }
+      "fallback": {
+        "title": "確認が必要です",
+        "body": "Macro はこの操作を安全に完了できませんでした。",
+        "nextStep": "詳細を確認し、妨げになっている状態を解消してから再試行してください。",
+        "dynamic": "{{message}}"
       },
-      "readOnly": { "title": "このプロジェクトは読み取り専用です", "body": "このプロジェクトはコンテキストとして使用できますが、Macro はまだブランチ、ワークツリー、コミット、マージを作成できません。", "namedBody": "{{projectName}} はコンテキストとして使用できますが、Macro はまだブランチ、ワークツリー、コミット、マージを作成できません。", "missingGitNextStep": "このプロジェクトで Git を初期化してから、編集可能な作業を有効にしてください。", "settingsNextStep": "プロジェクト設定を開き、Git ワークフローが準備できていることを確認してください。" },
+      "worktree": {
+        "checkedOut": {
+          "title": "Macro はタスクの作業領域を準備できませんでした",
+          "body": "このタスクに必要なブランチが、ローカル変更を含んだままメインリポジトリで開かれています。",
+          "nextStep": "ローカル変更をコミット、スタッシュ、または破棄してから、タスクを再試行してください。"
+        },
+        "missingBase": {
+          "title": "Macro はベースブランチを見つけられませんでした",
+          "body": "このタスクのワークツリーを作成するには、ベースブランチが必要です。",
+          "nextStep": "ブランチを作成するか、プロジェクトの Git ワークフロー設定を更新してから再試行してください。"
+        },
+        "fallback": {
+          "title": "Macro はタスクの作業領域を準備できませんでした",
+          "body": "タスクの作業領域がまだ準備できていないため、Macro はファイルを安全に確認または編集できません。",
+          "nextStep": "タスクを再試行してください。失敗が続く場合は、プロジェクトの Git 設定を開いてリポジトリの状態を確認してください。"
+        }
+      },
+      "readOnly": {
+        "title": "このプロジェクトは読み取り専用です",
+        "body": "このプロジェクトはコンテキストとして使用できますが、Macro はまだブランチ、ワークツリー、コミット、マージを作成できません。",
+        "namedBody": "{{projectName}} はコンテキストとして使用できますが、Macro はまだブランチ、ワークツリー、コミット、マージを作成できません。",
+        "missingGitNextStep": "このプロジェクトで Git を初期化してから、編集可能な作業を有効にしてください。",
+        "settingsNextStep": "プロジェクト設定を開き、Git ワークフローが準備できていることを確認してください。"
+      },
       "replica": {
-        "missing": { "titleSingular": "{{count}} 件のリポジトリにプランのメタデータがありません", "titlePlural": "{{count}} 件のリポジトリにプランのメタデータがありません", "body": "Macro がこのプランを安全に更新するには、想定されるすべてのメタデータレプリカが必要です。", "nextStep": "プランのメタデータを修復してから再試行してください。" },
-        "diverged": { "title": "リポジトリ間でプランのメタデータが異なります", "body": "Macro はこのプランのメタデータに複数の版を検出したため、続行する前に正規のコピーを選択する必要があります。", "nextStep": "古いコピーが意図的に必要な場合を除き、最新のレプリカから修復してください。" }
+        "missing": {
+          "titleSingular": "{{count}} 件のリポジトリにプランのメタデータがありません",
+          "titlePlural": "{{count}} 件のリポジトリにプランのメタデータがありません",
+          "body": "Macro がこのプランを安全に更新するには、想定されるすべてのメタデータレプリカが必要です。",
+          "nextStep": "プランのメタデータを修復してから再試行してください。"
+        },
+        "diverged": {
+          "title": "リポジトリ間でプランのメタデータが異なります",
+          "body": "Macro はこのプランのメタデータに複数の版を検出したため、続行する前に正規のコピーを選択する必要があります。",
+          "nextStep": "古いコピーが意図的に必要な場合を除き、最新のレプリカから修復してください。"
+        }
       },
       "gitFlow": {
-        "repositoryDirty": { "title": "リポジトリにローカル変更があります", "body": "対象リポジトリに無関係な未コミット変更がある間は、このマージを完了できません。", "nextStep": "ローカル変更をコミット、スタッシュ、または破棄してから、マージを再試行してください。" },
-        "mergeInProgress": { "title": "すでにマージが進行中です", "body": "Macro はこのリポジトリに未完了のマージを検出しました。", "nextStep": "既存のマージを完了または中止してから再試行してください。" },
-        "conflict": { "title": "完了する前に競合を解決してください", "body": "このプランはまだ正常にマージできません。", "filesNextStep": "一覧のファイルを解決してから、マージを再試行してください。", "blockersNextStep": "マージを妨げている問題を解消してから再試行してください。" }
+        "repositoryDirty": {
+          "title": "リポジトリにローカル変更があります",
+          "body": "対象リポジトリに無関係な未コミット変更がある間は、このマージを完了できません。",
+          "nextStep": "ローカル変更をコミット、スタッシュ、または破棄してから、マージを再試行してください。"
+        },
+        "mergeInProgress": {
+          "title": "すでにマージが進行中です",
+          "body": "Macro はこのリポジトリに未完了のマージを検出しました。",
+          "nextStep": "既存のマージを完了または中止してから再試行してください。"
+        },
+        "conflict": {
+          "title": "完了する前に競合を解決してください",
+          "body": "このプランはまだ正常にマージできません。",
+          "filesNextStep": "一覧のファイルを解決してから、マージを再試行してください。",
+          "blockersNextStep": "マージを妨げている問題を解消してから再試行してください。"
+        }
       },
       "metadata": {
-        "clean": { "title": "@macro メタデータは最新です", "body": "操作は必要ありません。" },
-        "dirty": { "title": "@macro メタデータにローカル変更があります", "body": "同期する前に、Macro はメタデータの変更を保存する必要があります。", "nextStep": "@macro メタデータを保存してから同期を再試行してください。" },
-        "ahead": { "title": "@macro メタデータを公開できます", "body": "ローカルのメタデータブランチに、まだリモートにない変更があります。", "nextStep": "準備ができたら @macro をプッシュしてください。" },
-        "behind": { "title": "@macro メタデータがリモートより遅れています", "body": "リモートのメタデータに、まだローカルにない更新があります。", "nextStep": "@macro をプルしてから操作を再試行してください。" },
-        "diverged": { "title": "@macro メタデータが分岐しています", "body": "ローカルとリモートの両方でメタデータが変更されています。", "nextStep": "@macro をプルし、競合を解決してからプッシュしてください。" },
-        "mergeConflict": { "title": "@macro メタデータに競合があります", "body": "メタデータブランチに未解決の競合ファイルがあります。", "nextStep": "競合しているメタデータファイルを解決してから、同じ同期手順を再試行してください。" },
-        "missingOrigin": { "title": "@macro のリモートが設定されていません", "body": "リポジトリに origin リモートがないため、Macro はメタデータを同期できません。", "nextStep": "Git リモートを設定してから再試行してください。" },
-        "missingUpstream": { "title": "@macro にアップストリームブランチがありません", "body": "メタデータブランチはローカルにありますが、まだリモートブランチに関連付けられていません。", "nextStep": "@macro をプッシュして公開するか、この警告を無視してメタデータをローカルに保持してください。" },
-        "authRequired": { "title": "Git の認証が必要です", "body": "現在の認証情報では、Macro はメタデータのリモートにアクセスできません。", "nextStep": "Git 認証を設定してから再試行してください。" },
-        "networkError": { "title": "メタデータ同期でリモートに接続できませんでした", "body": "ネットワークまたはリモートサービスは現在利用できません。", "nextStep": "接続を確認してから再試行してください。" },
-        "unknownError": { "title": "Macro のメタデータ同期に失敗しました", "body": "Macro はメタデータ同期を安全に完了できませんでした。", "nextStep": "同期を再試行してください。再び失敗する場合は、技術的な詳細を確認してください。" }
+        "clean": {
+          "title": "@macro メタデータは最新です",
+          "body": "操作は必要ありません。"
+        },
+        "dirty": {
+          "title": "@macro メタデータにローカル変更があります",
+          "body": "同期する前に、Macro はメタデータの変更を保存する必要があります。",
+          "nextStep": "@macro メタデータを保存してから同期を再試行してください。"
+        },
+        "ahead": {
+          "title": "@macro メタデータを公開できます",
+          "body": "ローカルのメタデータブランチに、まだリモートにない変更があります。",
+          "nextStep": "準備ができたら @macro をプッシュしてください。"
+        },
+        "behind": {
+          "title": "@macro メタデータがリモートより遅れています",
+          "body": "リモートのメタデータに、まだローカルにない更新があります。",
+          "nextStep": "@macro をプルしてから操作を再試行してください。"
+        },
+        "diverged": {
+          "title": "@macro メタデータが分岐しています",
+          "body": "ローカルとリモートの両方でメタデータが変更されています。",
+          "nextStep": "@macro をプルし、競合を解決してからプッシュしてください。"
+        },
+        "mergeConflict": {
+          "title": "@macro メタデータに競合があります",
+          "body": "メタデータブランチに未解決の競合ファイルがあります。",
+          "nextStep": "競合しているメタデータファイルを解決してから、同じ同期手順を再試行してください。"
+        },
+        "missingOrigin": {
+          "title": "@macro のリモートが設定されていません",
+          "body": "リポジトリに origin リモートがないため、Macro はメタデータを同期できません。",
+          "nextStep": "Git リモートを設定してから再試行してください。"
+        },
+        "missingUpstream": {
+          "title": "@macro にアップストリームブランチがありません",
+          "body": "メタデータブランチはローカルにありますが、まだリモートブランチに関連付けられていません。",
+          "nextStep": "@macro をプッシュして公開するか、この警告を無視してメタデータをローカルに保持してください。"
+        },
+        "authRequired": {
+          "title": "Git の認証が必要です",
+          "body": "現在の認証情報では、Macro はメタデータのリモートにアクセスできません。",
+          "nextStep": "Git 認証を設定してから再試行してください。"
+        },
+        "networkError": {
+          "title": "メタデータ同期でリモートに接続できませんでした",
+          "body": "ネットワークまたはリモートサービスは現在利用できません。",
+          "nextStep": "接続を確認してから再試行してください。"
+        },
+        "unknownError": {
+          "title": "Macro のメタデータ同期に失敗しました",
+          "body": "Macro はメタデータ同期を安全に完了できませんでした。",
+          "nextStep": "同期を再試行してください。再び失敗する場合は、技術的な詳細を確認してください。"
+        }
       },
       "service": {
-        "gitObjectMissing": { "title": "Git レビューを一時停止しました", "body": "このレビューに必要な Git オブジェクトを利用できません。Macro は作業ファイルを変更していません。", "bodyUncertain": "Git はこの操作に必要なオブジェクトを読み取れませんでした。再試行する前に技術的な詳細を確認してください。", "nextStep": "再試行して、Git にオブジェクトをもう一度要求してください。技術的な詳細で操作、オブジェクト ID、機密情報を除いた Git の出力を確認できます。" },
-        "directModeConfigurationRequired": { "title": "レビューモードの設定が必要です", "body": "このプロジェクトは Git リポジトリではなく、タスク情報も直接レビューを許可していません。Macro は Git レビューを開始せず、作業ファイルも変更していません。", "nextStep": "このプロジェクトに Git を設定するか、直接モードでタスクを作り直してください。技術的な詳細に保存済みのモードが表示されます。" },
-        "directCheckpointMissing": { "title": "Macro のレビューチェックポイントを利用できません", "body": "Git を使わないこのプロジェクトの内部レビューチェックポイントがありません。Macro は作業ファイルを変更していません。", "nextStep": "タスクを再準備してから再試行してください。技術的な詳細でチェックポイント ID を確認できます。" },
-        "directCheckpointCorrupt": { "title": "Macro のレビューチェックポイントが破損しています", "body": "Git を使わないこのプロジェクトの内部レビューチェックポイントが不完全です。Macro はそれを保持し、作業ファイルを変更していません。", "nextStep": "一度だけ再試行してください。承認済みの履歴を保持する必要がある場合はチェックポイントをリセットせず、技術的な詳細を確認してください。" },
-        "directCheckpointProjectMismatch": { "title": "Macro のレビューチェックポイントは別のプロジェクトパスに属しています", "body": "保存されたチェックポイントの識別情報が、このプロジェクトの現在のパスと一致しません。Macro はチェックポイントを保持し、作業ファイルを変更していません。", "nextStep": "保存されたプロジェクトパスを確認するか、元のプロジェクトを開き直してください。メタデータを修正する前に、技術的な詳細でチェックポイントを確認してください。" },
-        "resourcePressure": { "title": "Macro は一時的に過負荷です", "body": "開いているファイルが多すぎるため、Macro は再試行前にリポジトリの自動更新を一時停止しました。", "nextStep": "少し待ってから再試行してください。問題が続く場合は、余分なプロジェクトウィンドウやターミナルを閉じてください。" },
-        "replicaRepair": { "title": "プランのメタデータを修復する必要があります", "body": "Macro は不整合なプランのメタデータを検出したため、続行する前に正規のコピーを修復する必要があります。", "nextStep": "プランのメタデータを修復してから再試行してください。" },
-        "metadataMissing": { "title": "プランのメタデータが不完全です", "body": "Macro は、欠落または一部のみ保存されたプランのメタデータを参照するタスクまたは会話を検出しました。", "nextStep": "メタデータのリンクを修復してから再試行してください。" },
-        "workspaceUnavailable": { "title": "作業領域の状態を一時的に取得できません", "body": "Macro はこの操作に必要な作業領域の状態を読み取れませんでした。", "nextStep": "作業領域の更新が終わってから再試行してください。問題が続く場合は、プロジェクトを開き直してください。" },
-        "gitNotReady": { "title": "このプロジェクトはまだ編集できません", "body": "Macro はこのプロジェクトをコンテキストとして使用できますが、Git の準備が整うまで書き込めません。", "nextStep": "プロジェクト設定を開き、Git の設定を完了してください。" },
-        "fallback": { "title": "確認が必要です", "nextStep": "詳細を確認し、妨げになっている状態を解消してから再試行してください。" }
+        "gitObjectMissing": {
+          "title": "Git レビューを一時停止しました",
+          "body": "このレビューに必要な Git オブジェクトを利用できません。Macro は作業ファイルを変更していません。",
+          "bodyUncertain": "Git はこの操作に必要なオブジェクトを読み取れませんでした。再試行する前に技術的な詳細を確認してください。",
+          "nextStep": "再試行して、Git にオブジェクトをもう一度要求してください。技術的な詳細で操作、オブジェクト ID、機密情報を除いた Git の出力を確認できます。"
+        },
+        "directModeConfigurationRequired": {
+          "title": "レビューモードの設定が必要です",
+          "body": "このプロジェクトは Git リポジトリではなく、タスク情報も直接レビューを許可していません。Macro は Git レビューを開始せず、作業ファイルも変更していません。",
+          "nextStep": "このプロジェクトに Git を設定するか、直接モードでタスクを作り直してください。技術的な詳細に保存済みのモードが表示されます。"
+        },
+        "directCheckpointMissing": {
+          "title": "Macro のレビューチェックポイントを利用できません",
+          "body": "Git を使わないこのプロジェクトの内部レビューチェックポイントがありません。Macro は作業ファイルを変更していません。",
+          "nextStep": "タスクを再準備してから再試行してください。技術的な詳細でチェックポイント ID を確認できます。"
+        },
+        "directCheckpointCorrupt": {
+          "title": "Macro のレビューチェックポイントが破損しています",
+          "body": "Git を使わないこのプロジェクトの内部レビューチェックポイントが不完全です。Macro はそれを保持し、作業ファイルを変更していません。",
+          "nextStep": "一度だけ再試行してください。承認済みの履歴を保持する必要がある場合はチェックポイントをリセットせず、技術的な詳細を確認してください。"
+        },
+        "directCheckpointProjectMismatch": {
+          "title": "Macro のレビューチェックポイントは別のプロジェクトパスに属しています",
+          "body": "保存されたチェックポイントの識別情報が、このプロジェクトの現在のパスと一致しません。Macro はチェックポイントを保持し、作業ファイルを変更していません。",
+          "nextStep": "保存されたプロジェクトパスを確認するか、元のプロジェクトを開き直してください。メタデータを修正する前に、技術的な詳細でチェックポイントを確認してください。"
+        },
+        "resourcePressure": {
+          "title": "Macro は一時的に過負荷です",
+          "body": "開いているファイルが多すぎるため、Macro は再試行前にリポジトリの自動更新を一時停止しました。",
+          "nextStep": "少し待ってから再試行してください。問題が続く場合は、余分なプロジェクトウィンドウやターミナルを閉じてください。"
+        },
+        "replicaRepair": {
+          "title": "プランのメタデータを修復する必要があります",
+          "body": "Macro は不整合なプランのメタデータを検出したため、続行する前に正規のコピーを修復する必要があります。",
+          "nextStep": "プランのメタデータを修復してから再試行してください。"
+        },
+        "metadataMissing": {
+          "title": "プランのメタデータが不完全です",
+          "body": "Macro は、欠落または一部のみ保存されたプランのメタデータを参照するタスクまたは会話を検出しました。",
+          "nextStep": "メタデータのリンクを修復してから再試行してください。"
+        },
+        "conflictAssistantContextChanged": {
+          "title": "Git コンテキストが変更されました",
+          "body": "アシスタントを開く間に、選択された Git コンテキストが変更されました。",
+          "nextStep": "Git ビューを更新し、アシスタントを開き直してください。"
+        },
+        "workspaceUnavailable": {
+          "title": "作業領域の状態を一時的に取得できません",
+          "body": "Macro はこの操作に必要な作業領域の状態を読み取れませんでした。",
+          "nextStep": "作業領域の更新が終わってから再試行してください。問題が続く場合は、プロジェクトを開き直してください。"
+        },
+        "gitNotReady": {
+          "title": "このプロジェクトはまだ編集できません",
+          "body": "Macro はこのプロジェクトをコンテキストとして使用できますが、Git の準備が整うまで書き込めません。",
+          "nextStep": "プロジェクト設定を開き、Git の設定を完了してください。"
+        },
+        "fallback": {
+          "title": "確認が必要です",
+          "nextStep": "詳細を確認し、妨げになっている状態を解消してから再試行してください。"
+        }
       }
     },
     "logoutFailed": "ログアウトに失敗しました",
     "saveFailed": "プロバイダーの保存に失敗しました"
   },
-  "prompts": { "title": "システムプロンプト", "description": "プラン、レビュー、リポジトリ監査で使用する各モードの基本プロンプトと内部プロファイルをカスタマイズします。", "restoreAll": "すべて復元", "saveFailed": "システムプロンプトを保存できませんでした。" },
+  "prompts": {
+    "editors": {
+      "promptArchitect": {
+        "label": "Architectモード",
+        "description": "Architectの会話に使用する基本システムプロンプト。"
+      }
+    },
+    "loadFailed": "システムプロンプトを読み込めませんでした。保存する前に再試行してください。",
+    "title": "システムプロンプト",
+    "description": "プラン、レビュー、リポジトリ監査で使用する各モードの基本プロンプトと内部プロファイルをカスタマイズします。",
+    "restoreAll": "すべて復元",
+    "saveFailed": "システムプロンプトを保存できませんでした。"
+  },
   "toast": {
     "languageChanged": "言語が次のように変更されました{{language}}",
     "settingsSaved": "設定が保存されました",
@@ -2557,7 +2919,17 @@
     "artifactSaveFailed": "目標の確認結果を保存できませんでした",
     "artifactTitle": "目標の確認",
     "queueTrackingFailed": "キュー内の目標ターンを追跡できませんでした",
-    "artifactStatus": { "achieved": "達成", "continue": "続行", "needs_user": "回答が必要", "cannot_progress": "続行不可", "applied": "適用済み", "failed": "失敗", "cancelled": "キャンセル", "stale": "期限切れ", "timed_out": "時間切れ" },
+    "artifactStatus": {
+      "achieved": "達成",
+      "continue": "続行",
+      "needs_user": "回答が必要",
+      "cannot_progress": "続行不可",
+      "applied": "適用済み",
+      "failed": "失敗",
+      "cancelled": "キャンセル",
+      "stale": "期限切れ",
+      "timed_out": "時間切れ"
+    },
     "reason": {
       "reviewInterrupted": "前回の確認は中断されました。再開すると新しいエージェントのターンが始まります。",
       "executorInterrupted": "前回のエージェントのターンは中断されました。再開して続行してください。",
@@ -2619,6 +2991,16 @@
     "slashMenuLabel": "コンテキストまたはコマンドを挿入"
   },
   "backup": {
+    "exclusions": "プロジェクトのフォルダーと Git 履歴、プロバイダーの認証情報は含まれません。プロジェクトは別途保存してください。",
+    "limitsTitle": "互換性、上限、プライベートデータ",
+    "limits": "上限は 256 MiB です。同じバージョンの Macro で復元してください。プロジェクトのパスは保持されます。移動したプロジェクトの再関連付けやプロファイルの統合は行いません。",
+    "exportHelp": "次回起動時にローカルデータを新しいアーカイブに保存します。",
+    "restoreHelp": "アーカイブでローカルデータを置き換えます。以前のプロファイルは復旧用に保持します。",
+    "desktopRequired": "ローカルデータのバックアップと復元にはデスクトップ版 Macro を開いてください。",
+    "scheduledTitle": "操作を準備しました",
+    "source": "復元するアーカイブ",
+    "destination": "新しいアーカイブの保存先",
+    "confirmReplace": "置き換えを準備",
     "scheduled": "操作を準備しました。Macro を完全に終了して再度開いてください。終了するまでこのセッションを変更しないでください。",
     "resultExported": "バックアップを保存しました。",
     "resultRestored": "プロファイルを復元しました。以前のプロファイルは以下のパスに保存されています。",
@@ -2627,18 +3009,23 @@
     "resultInvalidRequest": "保留中の要求が無効だったため隔離しました。プロファイルは変更されていません。",
     "resultLegacy": "以前のバージョンの結果を診断の詳細で確認できます。",
     "diagnostics": "診断の詳細",
+    "sessionReplacedTitle": "別のタブでセッションが開かれています",
+    "sessionReplacedHint": "このタブを再読み込みして、ここでMacroを使い続けてください。",
+    "sessionReplacedReload": "再読み込み",
+    "runtimeUnavailableTitle": "デスクトップランタイムを利用できません",
+    "runtimeUnavailableHint": "Macro は再起動中か、起動していません。デスクトップランタイムの準備ができたら再試行してください。",
     "startupTitle": "プロファイルの復旧が必要です",
     "startupRecovery": "ブラウザーデータの復元を完了できませんでした。ネイティブの復旧アーカイブは保持されています。診断を確認し、必要に応じてローカルストレージの空き容量を増やしてから、Macroを再起動してください。",
     "title": "バックアップと復元",
-    "scope": "ローカルプロファイル：会話、保存済み添付ファイル、コードチェックポイント、下書き、全体設定。プロジェクトフォルダーと Git メタデータは含まれません。プロジェクトは別途コピーしてください。上限 256 MiB。同じ Macro バージョンで復元してください。",
+    "scope": "Macro のローカルデータ：会話、保存済み添付ファイル、コードのチェックポイント、下書き、待機中の指示、復旧用の回答、全般設定。",
     "secrets": "プロバイダーの認証情報、MCP 環境変数とヘッダーはポータブルエクスポートに含まれません。復元後に再接続してください。会話やファイルは個人データを含むため、アーカイブを安全に保管してください。",
     "recovery": "復旧が必要です。元のデータは保持されています。",
     "path": "ローカルバックアップファイルの絶対パス",
     "export": "バックアップを準備",
     "restore": "バックアップを復元",
     "confirmTitle": "プロファイル操作の確認",
-    "confirmRestore": "次回起動時に、このアーカイブでローカルプロファイルを置き換えます。Macro は事前に検証し、復旧用に以前のプロファイルを保持します。実行中のタスクを停止し、確認後すぐに終了してください。このファイルを復元しますか？",
-    "confirmExport": "実行中のタスクを停止してください。次回起動時にデータベースと設定を開く前にアーカイブを作成します。このバックアップを準備しますか？",
+    "confirmRestore": "次回起動時にこのアーカイブでローカルデータを置き換えます。統合はしません。Macro は検証後、置き換えるデータの復旧用コピーを保存します。待機中の指示は一時停止のままです。実行中のタスクを停止し、確認後すぐに Macro を終了して再度開いてください。",
+    "confirmExport": "実行中のタスクを停止してください。Macro は次回起動時にアーカイブを作成します。既存のアーカイブは上書きしないため、新しいファイルを選んでください。確認後はセッションを変更せず終了し、再度開いてください。",
     "confirm": "確認"
   }
 }

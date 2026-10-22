@@ -1,3 +1,5 @@
+import { fsListDir } from '../../services/tauriIpc';
+import { toServiceError } from '../../services/contracts/errors';
 import { normalizeProjectPathIdentity } from '../../services/projectRegistry';
 import { resolveProjectGitFlowSettings } from '../../services/architectGitNaming';
 import type {
@@ -56,6 +58,24 @@ interface BuildPendingProjectCreationOptions {
   subProjectPath: string;
   derivedSubProjectName: string;
 }
+
+/** Present the backend's exact canonical duplicate refusal without inferring a project identity. */
+export const getProjectCreationErrorMessage = (
+  error: unknown,
+  t: (key: string, fallback: string) => string,
+): string => {
+  const failure = toServiceError(error);
+  if (
+    failure.code === 'Validation'
+    && failure.message === 'A project with this folder already exists in the workspace.'
+  ) {
+    return t(
+      'project.folderAlreadyAttachedInWorkspace',
+      'This folder is already attached to a project in this workspace.',
+    );
+  }
+  return failure.message || t('project.saveFailed', 'Failed to save project');
+};
 
 export const normalizeProjectPath = normalizeProjectPathIdentity;
 
@@ -281,3 +301,8 @@ export const getAcceptedActionsAfterDecliningPrompt = (
   activeProjectSetupPrompt.kind === 'create_develop'
     ? pendingProjectSetupPrompt.acceptedActions
     : [];
+
+/** Check a user-selected folder before proposing Git setup, including folders outside the current workspace. */
+export const validateExistingProjectDirectory = async (path: string): Promise<void> => {
+  await fsListDir({ path, workspacePath: path, allowOutsideWorkspace: true, recursive: true, maxDepth: 0 });
+};

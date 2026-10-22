@@ -1,3 +1,6 @@
+import { StreamStopUnconfirmedError } from "./ai/streamCancellation";
+import { formatToolExecutionError } from './ai/toolCallResolution';
+import { ToolResultPreservationError } from './toolResultArtifacts';
 import type { FrozenToolCallContext } from "./chatStreamContracts";
 import type { ToolCallResolution } from "./ai/contracts";
 import { normalizeArchitectToolId } from "./architectToolNames";
@@ -18,12 +21,12 @@ export interface ChatToolInvocationJournal {
 const READ_ONLY_TOOLS = new Set([
   'read_sources', 'read_file', 'config_list', 'config_get', 'config_validate',
   'skill_activate', 'skill_read_resource', 'task_artifact_get', 'task_artifact_list',
-  'task_todo_get', 'strategy_get', 'plan_get', 'plan_list', 'list', 'read',
+  'task_todo_get', 'strategy_get', 'agsdl_get', 'plan_get', 'plan_list', 'list', 'read',
   'glob', 'grep', 'ast_grep', 'git_status', 'git_log', 'git_branch_list',
   'git_diff', 'git_get_tree', 'terminal_read',
 ]);
 const WORKSPACE_MUTATIONS = new Set([
-  'write', 'edit', 'delete', 'apply_patch', 'git_add', 'git_commit',
+  'write', 'edit', 'delete', 'apply_patch', 'agsdl_update', 'git_add', 'git_commit',
   'git_checkout', 'git_merge', 'git_reset', 'git_stash',
 ]);
 
@@ -73,7 +76,16 @@ export function createChatToolDispatch(
     progress();
     let normalizedName = normalizeArchitectToolId(toolName);
     let resolution: ToolCallResolution | string | void;
+    let effectDispatched = false;
     const journalState: { localIntent: ToolInvocationIdentity | null } = { localIntent: null };
+    const uncertain = (reason: string, diagnostic?: string): ToolCallResolution => ({
+      kind: 'result', isError: true, errorKind: 'uncertain',
+      result: JSON.stringify({
+        ...(diagnostic ? { diagnostic } : {}),
+        outcome: 'unknown', invocation: journalState.localIntent, toolName: normalizedName,
+        reason, instruction: 'The effect may have occurred. Inspect the original invocation and its effects before retrying, including with a new call ID.',
+      }),
+    });
     const markUnknown = async () => {
       if (!journalState.localIntent) return;
       try { await ports.journal.markUnknown(journalState.localIntent); } catch { /* Pending becomes unknown on restart. */ }
@@ -99,6 +111,7 @@ export function createChatToolDispatch(
       // Keep this path on its existing contract until a remote conversation
       // journal can reserve the same executionId before dispatch.
       if (ports.journal.isRemoteRuntime()) {
+        effectDispatched = true;
         return ports.execute(operation, name, canonicalArgs, toolCallId, isCurrent);
       }
       try {
@@ -119,17 +132,32 @@ export function createChatToolDispatch(
       }
       let result: ToolCallResolution | string | void;
       try {
+        effectDispatched = true;
         result = await ports.execute(operation, name, canonicalArgs, toolCallId, isCurrent);
       } catch (error) {
         await markUnknown();
-        throw error;
+        if (error instanceof StreamStopUnconfirmedError) throw error;
+        if (!isCurrent()) return uncertain('Stop revoked publication before the executor confirmed its outcome.');
+        let bounded: unknown;
+        try {
+          bounded = await ports.boundError(operation, name, toolCallId, error);
+        } catch (preservationError) {
+          bounded = preservationError instanceof ToolResultPreservationError ? preservationError : undefined;
+        }
+        if (!isCurrent()) return uncertain('Stop revoked publication before the executor confirmed its outcome.');
+        return uncertain('The executor did not confirm its outcome.', bounded === undefined ? undefined : formatToolExecutionError(bounded));
       }
-      if (!isCurrent() || result === undefined ||
-        (typeof result === 'object' && result?.kind === 'result' && result.errorKind === 'aborted')) {
+      const typed = typeof result === 'object' && result?.kind === 'result' ? result : undefined;
+      if (typed?.errorKind === 'uncertain') {
         await markUnknown();
-        return result === undefined
-          ? journalFailure('Tool execution returned no confirmed result. Inspect its outcome before retrying.')
-          : ABORTED;
+        return typed;
+      }
+      if (!isCurrent() || result === undefined || typed?.errorKind === 'aborted') {
+        await markUnknown();
+        if (typed?.errorKind === 'permission' || typed?.errorKind === 'validation') return typed;
+        return uncertain(result === undefined
+          ? 'The executor returned no confirmed result.'
+          : 'Stop revoked publication after dispatch. Effects may have occurred.');
       }
       return result;
     };
@@ -155,41 +183,73 @@ export function createChatToolDispatch(
         resolution = await executeJournaled(normalizedName, args);
       }
     } catch (error) {
+      if (error instanceof StreamStopUnconfirmedError) throw error;
+      if (effectDispatched) {
+        await markUnknown();
+        return uncertain('The executor did not confirm its outcome.', formatToolExecutionError(error));
+      }
       if (!isCurrent()) return ABORTED;
       const bounded = await ports.boundError(operation, normalizedName, toolCallId, error);
       if (!isCurrent()) return ABORTED;
       throw bounded;
     }
+    if (typeof resolution === 'object' && resolution?.kind === 'result' && resolution.errorKind === 'uncertain') return resolution;
     if (!isCurrent()) {
       await markUnknown();
+      if (!effectDispatched) return resolution;
       // Preserve explicit denial without starting a new artifact write after Stop.
-      return typeof resolution === "object" && resolution?.kind === "result" && resolution.errorKind === "permission"
-        ? resolution : ABORTED;
+      return typeof resolution === "object" && resolution?.kind === "result" && (resolution.errorKind === "permission" || resolution.errorKind === "validation")
+        ? resolution : uncertain("Stop revoked publication after dispatch. Effects may have occurred.");
     }
+    // A pre-effect refusal is already a bounded result. If its diagnostic
+    // artifact fails, retain that result through the same durable completion.
+    const refusal = typeof resolution === 'object' && resolution?.kind === 'result' &&
+      (resolution.errorKind === 'permission' || resolution.errorKind === 'validation') ? resolution : undefined;
     let preserved: ToolCallResolution | string | void;
     try {
       preserved = await ports.preserve(operation, normalizedName, toolCallId, resolution);
     } catch (error) {
-      await markUnknown();
-      if (!isCurrent()) return ABORTED;
-      throw await ports.boundError(operation, normalizedName, toolCallId, error);
+      if (refusal && isCurrent()) {
+        preserved = refusal;
+      } else {
+        await markUnknown();
+        if (!isCurrent()) return refusal ?? uncertain("Stop revoked publication while preserving the result.");
+        if (journalState.localIntent) {
+          const failure = uncertain('The tool result could not be preserved.',
+            error instanceof ToolResultPreservationError ? error.preview : undefined);
+          // Losing the full text artifact must not discard already bounded media.
+          return typeof resolution === 'object' && resolution?.kind === 'result' && resolution.blocks
+            ? { ...failure, blocks: [{ type: 'text' as const, text: failure.result }, ...resolution.blocks.filter(block => block.type !== 'text')] }
+            : failure;
+        }
+        throw await ports.boundError(operation, normalizedName, toolCallId, error);
+      }
     }
     if (!isCurrent()) {
       await markUnknown();
-      return ABORTED;
+      return refusal ?? uncertain("Stop revoked publication after dispatch. Effects may have occurred.");
     }
     if (journalState.localIntent) {
+      if (preserved === undefined && refusal) preserved = refusal;
       if (preserved === undefined) {
         await markUnknown();
-        return journalFailure('Tool result could not be preserved. Inspect the outcome before retrying.');
+        return uncertain('The tool result could not be preserved.');
       }
       try {
-        // Confirm the executor response after optional large-result preservation.
-        // Short results are not journaled; Copilot acceptance is separate.
-        await ports.journal.complete({ ...journalState.localIntent, receiptId: globalThis.crypto?.randomUUID?.() ?? 'local-executor-response' });
+        // Persist the exact result delivered to continuation, including short
+        // results and refusals. Provider acceptance remains a separate receipt.
+        preserved = normalizeLegacyToolExecutionResult(normalizedName, preserved);
+        const resultJson = JSON.stringify(preserved);
+        if (resultJson === undefined) throw new Error('Tool result is not JSON serializable');
+        const completion: CompleteToolInvocationInput = {
+          ...journalState.localIntent,
+          receiptId: globalThis.crypto?.randomUUID?.() ?? 'local-executor-response',
+          resultJson,
+        };
+        await ports.journal.complete(completion);
       } catch {
         await markUnknown();
-        return journalFailure('Tool result was preserved, but its durable completion could not be confirmed. Inspect the outcome before retrying.');
+        return uncertain('The tool result was preserved, but durable completion could not be confirmed.');
       }
     }
     return normalizeLegacyToolExecutionResult(normalizedName, preserved);
