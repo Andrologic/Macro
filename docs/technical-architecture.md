@@ -779,7 +779,10 @@ champs provider adaptés restent des contrats frontend identifiés. Le canal
 `MCPRuntimeEvent` réservé au frontend n'a pas de DTO Rust à générer. Les erreurs
 natives, elles, dérivent du payload effectivement sérialisé par `CommandError` ;
 la normalisation des erreurs de service conserve aussi les rejets historiques
-sous forme de chaîne ou d'enveloppe distante.
+sous forme de chaîne ou d'enveloppe distante. Une erreur de mutation distante
+récupérée dans un résultat durable conserve aussi le code du corps backend ;
+un ancien corps sans code garde son repli générique. Cette projection ne change
+ni l'identité durable, ni la politique de relance de la mutation.
 
 
 Les exports de `ServiceProvider` restent raccordés au chargement dynamique des
@@ -977,7 +980,20 @@ journaux résident dans `git::operations::workflow`. Ces modules ne dépendent
 ni des commandes Tauri ni de State, Window ou AppHandle.
 
 `core::command_error` conserve le contrat d'erreur sérialisé et
-`core::db_state` l'état d'initialisation DB. Les identifiants de secrets MCP
+`core::db_state` l'état d'initialisation DB. Les conversions depuis `BackendError`
+et `DbError` portent un code explicite, indépendant du message affiché, et
+conservent les détails structurés déjà exposés. Les mutations de fichiers et leur
+rollback conservent ainsi `REVISION_CONFLICT`, y compris lorsqu'il n'apparaît que
+pendant la compensation. Le code initial reste prioritaire s'il est déjà établi ;
+sinon, l'agrégation retient un conflit de compensation, puis à défaut la première
+erreur de compensation typée. Tous les diagnostics restent dans leur ordre
+historique. Les budgets des outils de lecture
+distinguent `TOOL_EXECUTION_CANCELLED` de `TOOL_EXECUTION_TIMEOUT`. Les échecs de
+stockage et d'initialisation DB utilisent le code existant `Database`, tandis que
+la validation d'une entrée DB reste `Validation`. Les producteurs historiques de
+simples messages gardent leur classification de compatibilité ; les erreurs web,
+MCP, fournisseur et de sérialisation non migrées restent sur leurs contrats
+existants. Les identifiants de secrets MCP
 sont définis dans `core::mcp_ids`, accessibles au registre de configuration
 sans importer son adaptateur de commandes.
 

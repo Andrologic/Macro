@@ -204,6 +204,7 @@ fn attach_stderr_excerpt(error: CommandError, excerpt: &str) -> CommandError {
     }
     CommandError {
         message: format!("{} Stderr: {}", error.message, excerpt),
+        ..error
     }
 }
 

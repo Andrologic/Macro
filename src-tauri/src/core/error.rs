@@ -134,6 +134,12 @@ pub enum BackendError {
     #[error("Revision conflict: {message}")]
     RevisionConflict { message: String },
 
+    #[error("{message}")]
+    ToolExecutionCancelled { message: String },
+
+    #[error("{message}")]
+    ToolExecutionTimeout { message: String },
+
     #[error("Internal server error: {message}")]
     Internal { message: String },
 }
@@ -175,6 +181,8 @@ impl BackendError {
             BackendError::PermissionDenied(_) => "PermissionDenied",
             BackendError::Validation(_) => "Validation",
             BackendError::RevisionConflict { .. } => "REVISION_CONFLICT",
+            BackendError::ToolExecutionCancelled { .. } => "TOOL_EXECUTION_CANCELLED",
+            BackendError::ToolExecutionTimeout { .. } => "TOOL_EXECUTION_TIMEOUT",
             BackendError::Internal { .. } => "Internal",
         }
     }
@@ -210,6 +218,8 @@ impl BackendError {
             | BackendError::RevisionConflict { message }
             | BackendError::AI { message }
             | BackendError::Config { message }
+            | BackendError::ToolExecutionCancelled { message }
+            | BackendError::ToolExecutionTimeout { message }
             | BackendError::Internal { message } => message,
             BackendError::NotFound(message)
             | BackendError::PermissionDenied(message)
