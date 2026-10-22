@@ -228,19 +228,28 @@ pub async fn ai_stream_chat(
     request: AiChatRequest,
 ) -> CommandResult<()> {
     validate_request_id(&request.request_id)?;
+    let reservation = ai_state
+        .reserve_stream(request.request_id.clone())
+        .map_err(|message| CommandError { message })?;
     let pool = get_pool(&pool).await?;
     match get_provider_type(&pool, &request.provider_id)
         .await?
         .as_str()
     {
-        "chatgpt" => chatgpt::stream_chat(app_handle, pool, ai_state.inner().clone(), request)
+        "chatgpt" => chatgpt::stream_chat(app_handle, pool, request, reservation)
             .await
             .map_err(|message| CommandError { message }),
-        "copilot" => copilot::stream_chat(app_handle, pool, ai_state.inner().clone(), request)
-            .await
-            .map_err(|message| CommandError { message }),
+        "copilot" => copilot::stream_chat(
+            app_handle,
+            pool,
+            ai_state.inner().clone(),
+            request,
+            reservation,
+        )
+        .await
+        .map_err(|message| CommandError { message }),
         "openai" | "openrouter" | "ollama" | "lmstudio" => {
-            openai_compatible::stream_chat(app_handle, pool, ai_state.inner().clone(), request)
+            openai_compatible::stream_chat(app_handle, pool, request, reservation)
                 .await
                 .map_err(|message| CommandError { message })
         }

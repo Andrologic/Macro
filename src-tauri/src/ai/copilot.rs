@@ -1986,21 +1986,21 @@ pub async fn sync_models(
         .map_err(|error| error.to_string())
 }
 
-pub async fn stream_chat(
+pub(crate) async fn stream_chat(
     app_handle: AppHandle,
     pool: SqlitePool,
     ai_state: AiState,
     request: AiChatRequest,
+    reservation: crate::ai::stream_tasks::StreamReservation,
 ) -> Result<(), String> {
-    let request_id = request.request_id.clone();
     let task_request_id = request.request_id.clone();
     let task_provider_id = request.provider_id.clone();
     let app_for_task = app_handle.clone();
     let state_for_task = ai_state.clone();
     let task_started_at = Instant::now();
 
-    ai_state
-        .spawn_stream(request_id, move |cancel| async move {
+    reservation
+        .spawn(move |cancel| async move {
             let result = stream_chat_inner(
                 app_for_task.clone(),
                 pool,
@@ -2028,7 +2028,6 @@ pub async fn stream_chat(
                 );
             }
         })
-        .await
 }
 
 pub async fn cancel_stream(ai_state: &AiState, request_id: &str) -> Result<(), String> {

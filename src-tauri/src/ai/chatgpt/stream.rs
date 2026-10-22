@@ -4,7 +4,7 @@ use super::types::{
     AiStreamDoneEvent, AiStreamErrorEvent, AiToolCall, AiToolCallFunction, ChatGptResponsesRequest,
     ResponsesContentItem, ResponsesMessageItem, DEFAULT_ORIGINATOR,
 };
-use crate::ai::{emit_timeline, AiState, ProviderTimeline};
+use crate::ai::{emit_timeline, ProviderTimeline};
 use crate::db::models::ProviderConfig;
 use crate::db::repository;
 use crate::secrets::ChatGptSecret;
@@ -31,45 +31,42 @@ struct StreamingCompletionAccumulator {
     reasoning_summary: String,
 }
 
-pub async fn stream_chat(
+pub(crate) async fn stream_chat(
     app_handle: AppHandle,
     pool: SqlitePool,
-    ai_state: AiState,
     request: AiChatRequest,
+    reservation: crate::ai::stream_tasks::StreamReservation,
 ) -> Result<(), String> {
-    let request_id = request.request_id.clone();
     let task_request_id = request.request_id.clone();
     let task_provider_id = request.provider_id.clone();
     let app_for_task = app_handle.clone();
     let task_started_at = Instant::now();
 
-    ai_state
-        .spawn_stream(request_id, move |cancel| async move {
-            let result = tokio::select! {
-                biased;
-                _ = cancel.cancelled() => Err("AI stream cancelled.".to_string()),
-                result = stream_chat_inner(app_for_task.clone(), pool, request) => result,
-            };
-            if let Err(message) = result {
-                emit_timeline(
-                    &app_for_task,
-                    &task_request_id,
-                    &task_provider_id,
-                    "chatgpt",
-                    task_started_at,
-                    "error",
-                );
-                let _ = app_for_task.emit(
-                    "ai:error",
-                    AiStreamErrorEvent {
-                        request_id: task_request_id.clone(),
-                        message,
-                        status: None,
-                    },
-                );
-            }
-        })
-        .await
+    reservation.spawn(move |cancel| async move {
+        let result = tokio::select! {
+            biased;
+            _ = cancel.cancelled() => Err("AI stream cancelled.".to_string()),
+            result = stream_chat_inner(app_for_task.clone(), pool, request) => result,
+        };
+        if let Err(message) = result {
+            emit_timeline(
+                &app_for_task,
+                &task_request_id,
+                &task_provider_id,
+                "chatgpt",
+                task_started_at,
+                "error",
+            );
+            let _ = app_for_task.emit(
+                "ai:error",
+                AiStreamErrorEvent {
+                    request_id: task_request_id.clone(),
+                    message,
+                    status: None,
+                },
+            );
+        }
+    })
 }
 
 async fn stream_chat_inner(

@@ -3,7 +3,7 @@ use super::types::{
     AiToolCall, AiToolCallFunction,
 };
 use crate::ai::provider_capabilities::resolve_provider_capabilities;
-use crate::ai::{emit_timeline, AiState, ProviderTimeline};
+use crate::ai::{emit_timeline, ProviderTimeline};
 use crate::db::models::ProviderConfig;
 use crate::db::repository;
 use crate::secrets;
@@ -92,19 +92,18 @@ struct ChatCompletionAccumulator {
     completion_reason: Option<String>,
 }
 
-pub async fn stream_chat(
+pub(crate) async fn stream_chat(
     app_handle: AppHandle,
     pool: SqlitePool,
-    ai_state: AiState,
     request: AiChatRequest,
+    reservation: crate::ai::stream_tasks::StreamReservation,
 ) -> Result<(), String> {
-    let request_id = request.request_id.clone();
     let task_request_id = request.request_id.clone();
     let task_provider_id = request.provider_id.clone();
     let app_for_task = app_handle.clone();
     let task_started_at = Instant::now();
 
-    ai_state.spawn_stream(request_id, move |cancel| async move {
+    reservation.spawn(move |cancel| async move {
         let result = tokio::select! {
             biased;
             _ = cancel.cancelled() => Err(ChatCompletionError::from("AI stream cancelled.".to_string())),
@@ -122,7 +121,7 @@ pub async fn stream_chat(
             let _ = app_for_task.emit("ai:error", error.into_event(task_request_id.clone()));
         }
 
-    }).await
+    })
 }
 
 async fn stream_chat_inner(

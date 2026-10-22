@@ -10,51 +10,122 @@ pub(super) struct StreamTask {
     joined: Shared<BoxFuture<'static, Result<(), String>>>,
 }
 
-impl AiState {
-    pub(crate) async fn spawn_stream<F, Fut>(&self, request: String, run: F) -> Result<(), String>
+type SpawnedStream = Option<tokio::task::JoinHandle<Result<(), String>>>;
+
+/// Owns the request from command admission, before asynchronous setup, until
+/// the spawned task and its cleanup have returned. It is never serialized.
+pub(crate) struct StreamReservation {
+    state: AiState,
+    request: String,
+    cancel: CancellationToken,
+    completion: Option<tokio::sync::oneshot::Sender<Result<SpawnedStream, String>>>,
+}
+
+impl Drop for StreamReservation {
+    fn drop(&mut self) {
+        // No await or user code runs under this mutex. Drop also covers command
+        // setup failure and unwind, so cancellation cannot leave a stale slot.
+        self.state
+            .stream_tasks
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&self.request);
+        if let Some(completion) = self.completion.take() {
+            let _ = completion.send(Err("AI stream setup did not complete.".into()));
+        }
+    }
+}
+
+impl StreamReservation {
+    pub(crate) fn spawn<F, Fut>(mut self, run: F) -> Result<(), String>
     where
         F: FnOnce(CancellationToken) -> Fut + Send + 'static,
         Fut: Future<Output = ()> + Send + 'static,
     {
-        let mut tasks = self.stream_tasks.lock().await;
+        if self.cancel.is_cancelled() {
+            let completion = self.completion.take();
+            drop(self);
+            if let Some(completion) = completion {
+                let _ = completion.send(Ok(None));
+            }
+            return Err("AI stream cancelled before launch.".into());
+        }
+        let completion = self.completion.take().expect("reserved stream completion");
+        let handle = tokio::spawn(async move {
+            let cancel = self.cancel.clone();
+            let result = run_catching_panic(async move {
+                // Cancellation may race spawn. Do not invoke the provider
+                // closure if it won before the task first ran.
+                if !cancel.is_cancelled() {
+                    run(cancel).await;
+                }
+                Ok(())
+            })
+            .await;
+            // Reservation drop happens after the provider future is dropped.
+            drop(self);
+            result
+        });
+        let _ = completion.send(Ok(Some(handle)));
+        Ok(())
+    }
+}
+
+impl AiState {
+    pub(crate) fn reserve_stream(&self, request: String) -> Result<StreamReservation, String> {
+        let mut tasks = self.stream_tasks.lock().unwrap_or_else(|e| e.into_inner());
         if tasks.contains_key(&request) {
             return Err("chat_admission_request_active".into());
         }
         let cancel = CancellationToken::new();
-        let task_cancel = cancel.clone();
-        let state = self.clone();
-        let task_request = request.clone();
-        // Hold registration until insertion: even an immediately completed task
-        // cannot remove its entry before that entry exists.
-        let handle = tokio::spawn(async move {
-            let result = run_catching_panic(async move {
-                run(task_cancel).await;
-                Ok(())
-            })
-            .await;
-            state.stream_tasks.lock().await.remove(&task_request);
-            result
-        });
+        let (completion, completed) =
+            tokio::sync::oneshot::channel::<Result<SpawnedStream, String>>();
         let joined = async move {
-            handle
+            match completed
                 .await
-                .map_err(|error| format!("AI stream task failed: {error}"))?
+                .map_err(|_| "AI stream completion was lost.".to_string())??
+            {
+                Some(handle) => handle
+                    .await
+                    .map_err(|error| format!("AI stream task failed: {error}"))?,
+                None => Ok(()),
+            }
         }
         .boxed()
         .shared();
-        tasks.insert(request, StreamTask { cancel, joined });
-        Ok(())
+        tasks.insert(
+            request.clone(),
+            StreamTask {
+                cancel: cancel.clone(),
+                joined,
+            },
+        );
+        Ok(StreamReservation {
+            state: self.clone(),
+            request,
+            cancel,
+            completion: Some(completion),
+        })
+    }
+
+    #[cfg(test)]
+    async fn spawn_stream<F, Fut>(&self, request: String, run: F) -> Result<(), String>
+    where
+        F: FnOnce(CancellationToken) -> Fut + Send + 'static,
+        Fut: Future<Output = ()> + Send + 'static,
+    {
+        self.reserve_stream(request)?.spawn(run)
     }
 
     pub(crate) async fn cancel_stream_task(&self, request: &str) -> Result<(), String> {
         let joined = {
-            let tasks = self.stream_tasks.lock().await;
+            let tasks = self.stream_tasks.lock().unwrap_or_else(|e| e.into_inner());
             tasks.get(request).map(|task| {
                 task.cancel.cancel();
                 task.joined.clone()
             })
         };
-        // The task removes itself under this mutex. Never join while holding it.
+        // Setup or physical cleanup can still be running. Join outside the lock.
         if let Some(joined) = joined {
             joined.await?;
         }
@@ -128,6 +199,44 @@ mod tests {
     use tokio::sync::oneshot;
 
     #[tokio::test]
+    async fn cancellation_during_command_setup_prevents_provider_launch() {
+        let state = AiState::default();
+        // The command owns this reservation before its first pool/config await.
+        let reservation = state.reserve_stream("setup".into()).unwrap();
+        let cancellation = state.cancel_stream_task("setup");
+        tokio::pin!(cancellation);
+        assert!(futures::poll!(&mut cancellation).is_pending());
+        assert!(state.reserve_stream("setup".into()).is_err());
+        let invoked = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let observed = invoked.clone();
+        assert!(reservation
+            .spawn(move |_| async move {
+                observed.store(true, std::sync::atomic::Ordering::SeqCst);
+            })
+            .is_err());
+        cancellation.await.unwrap();
+        assert!(!invoked.load(std::sync::atomic::Ordering::SeqCst));
+        assert!(!state.stream_tasks.lock().unwrap().contains_key("setup"));
+    }
+
+    #[tokio::test]
+    async fn abandoned_command_setup_releases_slot_with_error() {
+        let state = AiState::default();
+        let reservation = state.reserve_stream("setup".into()).unwrap();
+        let cancellation = state.cancel_stream_task("setup");
+        tokio::pin!(cancellation);
+        assert!(futures::poll!(&mut cancellation).is_pending());
+        // The same Drop runs for a setup error, cancelled command future or panic.
+        drop(reservation);
+        assert_eq!(
+            cancellation.await.unwrap_err(),
+            "AI stream setup did not complete."
+        );
+        assert!(!state.stream_tasks.lock().unwrap().contains_key("setup"));
+        assert!(state.reserve_stream("setup".into()).is_ok());
+    }
+
+    #[tokio::test]
     async fn cancellation_waits_for_cleanup_and_rejects_request_reuse() {
         let state = AiState::default();
         let (cancelled, observed) = oneshot::channel();
@@ -160,7 +269,7 @@ mod tests {
         unrelated.await.unwrap();
         release.send(()).unwrap();
         cancellation.await.unwrap().unwrap();
-        assert!(!state.stream_tasks.lock().await.contains_key("request"));
+        assert!(!state.stream_tasks.lock().unwrap().contains_key("request"));
         state.cancel_stream_task("request").await.unwrap();
     }
 
@@ -178,14 +287,14 @@ mod tests {
         let joined = state
             .stream_tasks
             .lock()
-            .await
+            .unwrap()
             .get("panic")
             .unwrap()
             .joined
             .clone();
         release.send(()).unwrap();
         assert_eq!(joined.await.unwrap_err(), "AI stream task panicked.");
-        assert!(!state.stream_tasks.lock().await.contains_key("panic"));
+        assert!(!state.stream_tasks.lock().unwrap().contains_key("panic"));
     }
 
     #[cfg(unix)]
