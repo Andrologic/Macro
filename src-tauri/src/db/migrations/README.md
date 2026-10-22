@@ -108,3 +108,8 @@ The checks do not certify arbitrary hand-edited types, constraint definitions,
 trigger bodies or FTS contents. A committed version 5 is trusted on subsequent
 openings; normal migration startup does not run a full integrity audit. Backup
 validation and recovery retain their separate schema validation contracts.
+
+Version 16 adds the private native-operation journal. Requests enter `possiblySent`
+before writing to a native process; received thread and turn references survive
+reopening the database before a terminal checkpoint. The journal never authorizes
+retrying an operation. Backup validation retains compatibility with older schemas.

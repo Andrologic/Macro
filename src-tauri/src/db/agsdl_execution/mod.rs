@@ -8,6 +8,7 @@ pub(crate) mod discovery;
 pub mod dto;
 pub(crate) mod inspection;
 pub(crate) mod intents;
+pub(crate) mod native_operations;
 pub(crate) mod prepared;
 pub(crate) mod process_recovery;
 pub(crate) mod public;

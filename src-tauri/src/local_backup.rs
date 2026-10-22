@@ -319,7 +319,11 @@ async fn check_database(path: &Path) -> Result<()> {
             .await
             .map_err(|e| e.to_string())?;
     }
-    for (version, table) in [(14, "engine_effect_processes"), (13, "engine_ui_intents")] {
+    for (version, table) in [
+        (16, "engine_native_operations"),
+        (14, "engine_effect_processes"),
+        (13, "engine_ui_intents"),
+    ] {
         if !versions.contains(&version) {
             sqlx::query(sqlx::AssertSqlSafe(format!("DROP TABLE {table}")))
                 .execute(&reference)
@@ -1320,6 +1324,7 @@ mod tests {
             .unwrap();
 
         for statement in [
+            "DROP TABLE engine_native_operations",
             "DROP TABLE engine_effect_processes",
             "DROP TABLE engine_ui_intents",
             "DROP TABLE engine_prepared_terminals",
@@ -1518,7 +1523,7 @@ mod tests {
                 .fetch_one(&pool)
                 .await
                 .unwrap(),
-            15
+            16
         );
         assert_eq!(
             sqlx::query_scalar::<_, String>(
@@ -1583,7 +1588,7 @@ mod tests {
             .fetch_one(&mut db)
             .await
             .unwrap();
-        assert_eq!(version, 15);
+        assert_eq!(version, 16);
         sqlx::query("INSERT INTO schema_migrations VALUES (99, 'future', 'synthetic')")
             .execute(&mut db)
             .await
