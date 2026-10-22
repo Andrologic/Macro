@@ -79,6 +79,7 @@ export function validDisplayMetadata(value: unknown): value is AgsdlDisplayMetad
 }
 /** Omission during an ordinary edit must not detach a launched copy from its blueprint. */
 export function retainDesignOrigin(previous: DesignMetadata | undefined, next: DesignMetadata | undefined): DesignMetadata | undefined {
+  if ((previous !== undefined && !valid(previous)) || (next !== undefined && !valid(next))) throw new DesignMetadataError();
   if (!previous?.origin) return next;
   return { ...(next ?? previous), origin: { ...previous.origin, ...next?.origin } };
 }

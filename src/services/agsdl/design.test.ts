@@ -116,7 +116,7 @@ describe('AgSDL 0.2 design envelopes', () => {
   });
 });
 
-import { adaptationChanges, defaultDesign } from './design';
+import { adaptationChanges, defaultDesign, retainDesignOrigin } from './design';
 
 describe('adaptation support assertions', () => {
   const requirement = { contract: { identity: 'example/support', version: '1' } };
@@ -165,4 +165,9 @@ it('preserves blueprint provenance when ordinary design edits omit origin in bot
   const edited = applyChanges(JSON.stringify(legacy), designChanges(JSON.stringify(legacy), next));
   expect(readDesign(edited).origin).toEqual(origin);
   expect(readDesign(edited).context).toBe('Edited context');
+});
+
+it.each([null, 7, {}, { planId: 'blueprint' }])('rejects malformed provenance before retaining the previous origin: %j', origin => {
+  const previous = { ...defaultDesign(), origin: { branchName: 'develop', planId: 'blueprint', name: 'Blueprint', revision: 1 } };
+  expect(() => retainDesignOrigin(previous, { ...defaultDesign(), origin } as never)).toThrow('design metadata');
 });

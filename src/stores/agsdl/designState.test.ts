@@ -96,3 +96,14 @@ it('preserves copy provenance through design updates, envelope replacement and s
   store.edit(target, [{ op: 'set', path: '/id', valueJson: '"edited-copy"' }]);
   expect(state().design!.origin).toEqual(origin);
 });
+
+it.each([null, 7, {}, { planId: 'blueprint' }])('refuses malformed provenance in editor replacements without changing source or history: %j', origin => {
+  const store = useAgsdlStore.getState();
+  store.setDesign(target, { ...state().design!, origin: { branchName: 'develop', planId: 'blueprint', name: 'Blueprint', revision: 1 } });
+  const before = structuredClone(state());
+  const design = { ...state().design!, origin } as never;
+  expect(() => store.replace(target, state().source.replace('"agents"', '"agents" '), undefined, state().version, { design })).toThrow('design metadata');
+  expect(state()).toEqual(before);
+  expect(() => store.setDesign(target, design)).toThrow('design metadata');
+  expect(state()).toEqual(before);
+});
