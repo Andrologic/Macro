@@ -9,6 +9,9 @@ async fn accepts_develop_v9_with_historical_pilot_v5_stamp() {
     let mut old = fixture(&path, true).await;
     old.close().await.unwrap();
     let pool = create_pool(&path).await.unwrap();
+    conversation_content::remove_reference_schema(&pool)
+        .await
+        .unwrap();
     sqlx::raw_sql("DELETE FROM schema_migrations WHERE version >= 10; UPDATE schema_migrations SET name = '005_pilot_tool_trace_revisions' WHERE version = 5;")
         .execute(&pool).await.unwrap();
     pool.close().await;
@@ -31,6 +34,7 @@ async fn accepts_develop_v9_with_historical_pilot_v5_stamp() {
             (10, "010_pilot_tool_trace_revisions".into()),
             (11, "011_conversation_management".into()),
             (12, "012_pilot_files".into()),
+            (13, "013_conversation_content_versions".into()),
         ]
     );
 }
@@ -117,7 +121,7 @@ async fn rehearses_upgrade_on_external_database_copy() {
             .unwrap()
             .iter()
             .max(),
-        Some(&12)
+        Some(&13)
     );
 }
 
@@ -168,6 +172,24 @@ async fn fixture(path: &Path, stamped: bool) -> SqliteConnection {
 }
 
 async fn drop_v9(connection: &mut SqliteConnection) {
+    let names: Vec<String> = sqlx::query_scalar(
+        "SELECT name FROM sqlite_master WHERE type='trigger' AND name GLOB 'content_versions_*'",
+    )
+    .fetch_all(&mut *connection)
+    .await
+    .unwrap();
+    for name in names {
+        sqlx::query(sqlx::AssertSqlSafe(format!("DROP TRIGGER {name}")))
+            .execute(&mut *connection)
+            .await
+            .unwrap();
+    }
+    sqlx::raw_sql(
+        "DROP TABLE conversation_content_versions; DELETE FROM schema_migrations WHERE version=13;",
+    )
+    .execute(&mut *connection)
+    .await
+    .unwrap();
     sqlx::query("DROP TRIGGER conversation_goal_audit_run_status")
         .execute(&mut *connection)
         .await

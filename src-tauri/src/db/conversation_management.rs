@@ -43,8 +43,7 @@ fn guard(deadline: &str) -> Result<(), String> {
     }
     Ok(())
 }
-pub async fn metadata(pool: &SqlitePool) -> Result<Vec<ConversationMetadata>, String> {
-    let rows = sqlx::query("SELECT s.conversation_id, s.revision, s.archived, COALESCE((SELECT MAX(revision) FROM conversation_response_versions v WHERE v.conversation_id = s.conversation_id),0) AS response_revision, COALESCE((SELECT MIN(v.revision)-1 FROM conversation_response_versions v WHERE v.conversation_id = s.conversation_id AND v.revision > v.read_revision), (SELECT MAX(v.revision) FROM conversation_response_versions v WHERE v.conversation_id = s.conversation_id),0) AS read_revision,
+pub(super) const METADATA_QUERY: &str = "SELECT s.conversation_id, s.revision, s.archived, COALESCE((SELECT MAX(revision) FROM conversation_response_versions v WHERE v.conversation_id = s.conversation_id),0) AS response_revision, COALESCE((SELECT MIN(v.revision)-1 FROM conversation_response_versions v WHERE v.conversation_id = s.conversation_id AND v.revision > v.read_revision), (SELECT MAX(v.revision) FROM conversation_response_versions v WHERE v.conversation_id = s.conversation_id),0) AS read_revision,
  EXISTS(SELECT 1 FROM messages m, json_each(CASE WHEN json_valid(m.tool_traces_json) THEN m.tool_traces_json ELSE '[]' END) trace
  WHERE m.conversation_id = s.conversation_id AND m.role = 'assistant' AND m.completion_reason IS NOT 'provider_error' AND CASE WHEN trace.type = 'object' THEN json_extract(trace.value, '$.status') END = 'pending_approval'
  AND CASE WHEN trace.type = 'object' THEN json_type(trace.value, '$.tool_call_id') END = 'text'
@@ -55,7 +54,13 @@ pub async fn metadata(pool: &SqlitePool) -> Result<Vec<ConversationMetadata>, St
  AND NOT EXISTS(SELECT 1 FROM messages u WHERE u.conversation_id = m.conversation_id AND u.role = 'user' AND (u.created_at > m.created_at OR (u.created_at = m.created_at AND u.id > m.id)))
  ORDER BY m.created_at DESC, m.id DESC LIMIT 1) AS question_message_id,
  (SELECT id FROM messages preview WHERE preview.conversation_id = s.conversation_id AND preview.role = 'user' ORDER BY created_at DESC, id DESC LIMIT 1) AS preview_message_id
- FROM conversation_management s").fetch_all(pool).await.map_err(db)?;
+ FROM conversation_management s";
+
+pub async fn metadata(pool: &SqlitePool) -> Result<Vec<ConversationMetadata>, String> {
+    let rows = sqlx::query(METADATA_QUERY)
+        .fetch_all(pool)
+        .await
+        .map_err(db)?;
     Ok(rows
         .into_iter()
         .map(|r| ConversationMetadata {
@@ -456,6 +461,9 @@ mod tests {
         action(&pool, command.clone()).await.unwrap();
         // This recovery fixture represents the historical Pilot-only schema,
         // before develop's generation/tool/goal migrations were introduced.
+        crate::db::conversation_content::remove_reference_schema(&pool)
+            .await
+            .unwrap();
         sqlx::raw_sql("DROP TRIGGER conversation_goal_audit_run_status;
             DROP TABLE conversation_goal_audit_runs; DROP TABLE conversation_goal_audits;
             DROP TABLE conversation_goals; DROP TABLE agent_run_transitions;
