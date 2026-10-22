@@ -167,7 +167,8 @@ export class PortableHistoryArchive {
       (header.origin !== undefined && ['data', 'checkpoint'].includes(this.origins.get(header.origin)!.meaning ?? '')));
     const release = this.budget.reserve(4096 + selected.reduce((total, header) => total + header.bytes * 16 + 1024, 0));
     try {
-      const messages: ChatMessage[] = [], citations: Citation[] = [], images: PortableProjection['images'] = Object.create(null);
+      let messages: ChatMessage[] = [];
+      const citations: Citation[] = [], images: PortableProjection['images'] = Object.create(null);
       const owners = new Map<string, ChatMessage>(), additional: { origin: PortableMetadata; ordinal: number; text: string; uuid: string }[] = [];
       const citationRows = new Map<string, { fields: Map<number, string>; uuid: string; message: string }>();
       const binding = { ...this.port.binding };
@@ -222,7 +223,7 @@ export class PortableHistoryArchive {
         const group = additions.get(owner ?? null) ?? []; group.push(message); additions.set(owner ?? null, group);
       }
       const ordered = messages.flatMap(message => [message, ...(additions.get(message) ?? [])]);
-      ordered.push(...(additions.get(null) ?? [])); messages.splice(0, messages.length, ...ordered);
+      messages = ordered.concat(additions.get(null) ?? []);
       for (const row of citationRows.values()) {
         const f = row.fields;
         if (!f.has(0) || !f.has(6) || (!f.has(7) && !f.has(8))) fail('required_citation_missing');
