@@ -292,7 +292,8 @@ impl InactiveStorage {
                 .await
                 .map_err(db)?;
             let charge = JOURNAL_BYTES + json(&journal.begin)?.len() as i64;
-            let phase = if (self.clock)() >= journal.expires {
+            let phase = if matches!(journal.check_time((self.clock)()), Err(error) if error == "expired")
+            {
                 Phase::Expired
             } else {
                 Phase::Aborted

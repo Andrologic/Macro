@@ -233,3 +233,396 @@ async fn two_database_storage_roundtrip_reopens_with_persistent_mapping_and_no_o
 pub(crate) async fn remove_reference_schema_in(db: &mut sqlx::SqliteConnection) {
     sqlx::raw_sql("DROP TABLE e_inactive_mapping; DROP TABLE e_inactive_fragments; DROP TABLE e_inactive_records; DROP TABLE e_inactive_imports; DROP TABLE e_inactive_domain; DELETE FROM schema_migrations WHERE version=15;").execute(db).await.unwrap();
 }
+
+async fn fixture() -> (TempDir, InactiveStorage, Arc<AtomicI64>) {
+    let dir = TempDir::new().unwrap();
+    let pool = create_pool(&dir.path().join("target.db")).await.unwrap();
+    let clock = Arc::new(AtomicI64::new(100));
+    let store = active(pool, clock.clone());
+    (dir, store, clock)
+}
+async fn assert_charge(store: &InactiveStorage, key: &str) {
+    let mut tx = store.tx().await.unwrap();
+    let authority = store.authorize().await.unwrap();
+    let journal = store.load(&mut tx, key, &authority).await.unwrap();
+    assert_eq!(journal.charge, charge(&mut tx, journal.id).await.unwrap());
+}
+
+#[tokio::test]
+async fn closed_framing_rejects_duplicate_unknown_and_large_headers_without_publication() {
+    let (_dir, store, _clock) = fixture().await;
+    let (begin, headers) = intent(&[(RecordKind::Message { role: Role::User }, b"a".to_vec())]);
+    let valid = json(&begin).unwrap();
+    let frames = vec![
+        valid.replacen("\"version\":1", "\"version\":1,\"version\":1", 1),
+        valid.replacen("\"origin\":", "\"extra\":1,\"origin\":", 1),
+        valid.replacen(
+            "\"target_instance\":",
+            "\"actor\":\"duplicate\",\"target_instance\":",
+            1,
+        ),
+        valid.replacen("\"records\":1", "\"records\":1.0", 1),
+        valid.replacen("synthetic_history_v1", "unknown_profile", 1),
+        valid.replacen("\"version\":1", "\"version\":2", 1),
+        valid.replacen("\"bytes\":1", "\"bytes\":9223372036854775808", 1),
+        " ".repeat(CONTROL_BYTES + 1),
+    ];
+    for frame in frames {
+        assert!(
+            store.begin(frame.as_bytes()).await.is_err(),
+            "accepted {frame}"
+        );
+    }
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM e_inactive_imports")
+            .fetch_one(&store.pool)
+            .await
+            .unwrap(),
+        0
+    );
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM e_inactive_domain")
+            .fetch_one(&store.pool)
+            .await
+            .unwrap(),
+        0
+    );
+    let receipt = store.begin(valid.as_bytes()).await.unwrap();
+    let append = json(&Append {
+        record: headers[0].clone(),
+        offset: 0,
+        sha256: digest(b"a"),
+    })
+    .unwrap();
+    for frame in [
+        append.replacen("\"offset\":0", "\"offset\":0,\"offset\":0", 1),
+        append.replacen(
+            "\"kind\":\"message\"",
+            "\"kind\":\"message\",\"kind\":\"message\"",
+            1,
+        ),
+        append.replacen(
+            "\"role\":\"user\"",
+            "\"role\":\"user\",\"role\":\"user\"",
+            1,
+        ),
+        append.replacen("\"role\":\"user\"", "\"role\":\"system\"", 1),
+        append.replacen("\"role\":\"user\"", "\"role\":\"user\",\"unknown\":0", 1),
+    ] {
+        assert_eq!(
+            store
+                .append(&receipt.key, frame.as_bytes(), b"a")
+                .await
+                .unwrap_err(),
+            "invalid_frame"
+        );
+    }
+    assert_eq!(store.status(&receipt.key).await.unwrap(), receipt);
+}
+
+#[tokio::test]
+async fn utf8_replay_ack_and_generation_binding_survive_restart() {
+    let (dir, store, clock) = fixture().await;
+    let payload = format!("{}🙂 suite", "x".repeat(FRAGMENT_BYTES - 1)).into_bytes();
+    let records = vec![(
+        RecordKind::Message {
+            role: Role::Assistant,
+        },
+        payload.clone(),
+    )];
+    let (begin, headers) = intent(&records);
+    let receipt = store.begin(json(&begin).unwrap().as_bytes()).await.unwrap();
+    let first = &payload[..FRAGMENT_BYTES];
+    let frame = Append {
+        record: headers[0].clone(),
+        offset: 0,
+        sha256: digest(first),
+    };
+    let control = json(&frame).unwrap();
+    let ack = store
+        .append(&receipt.key, control.as_bytes(), first)
+        .await
+        .unwrap();
+    let tail: Vec<u8> = sqlx::query_scalar("SELECT utf8_tail FROM e_inactive_records")
+        .fetch_one(&store.pool)
+        .await
+        .unwrap();
+    assert_eq!(tail.len(), 1);
+    drop(store);
+    let pool = create_pool(&dir.path().join("target.db")).await.unwrap();
+    let store = active(pool, clock);
+    let rest = &payload[FRAGMENT_BYTES..];
+    store
+        .append(
+            &receipt.key,
+            json(&Append {
+                record: headers[0].clone(),
+                offset: FRAGMENT_BYTES as u64,
+                sha256: digest(rest),
+            })
+            .unwrap()
+            .as_bytes(),
+            rest,
+        )
+        .await
+        .unwrap();
+    let before = store.status(&receipt.key).await.unwrap();
+    assert_eq!(
+        store
+            .append(&receipt.key, control.as_bytes(), first)
+            .await
+            .unwrap(),
+        ack
+    );
+    assert_eq!(store.status(&receipt.key).await.unwrap(), before);
+    let sealed = store.seal_storage(&receipt.key).await.unwrap();
+    assert_eq!(
+        store
+            .append(&receipt.key, control.as_bytes(), first)
+            .await
+            .unwrap(),
+        ack
+    );
+    assert_eq!(store.status(&receipt.key).await.unwrap(), sealed.receipt);
+    assert_charge(&store, &receipt.key).await;
+    let mut authority = store.authority.as_ref().unwrap().write().await;
+    authority.bindings.target_generation = "new-target-generation".into();
+    drop(authority);
+    assert_eq!(
+        store.readback(&receipt.key, None, 1).await.unwrap_err(),
+        "binding_conflict"
+    );
+    let mut changed = begin.clone();
+    changed.bindings.target_generation = "new-target-generation".into();
+    assert_eq!(
+        store
+            .begin(json(&changed).unwrap().as_bytes())
+            .await
+            .unwrap_err(),
+        "intent_conflict"
+    );
+    assert_eq!(identity_key(&changed.identity).unwrap(), receipt.key);
+}
+
+#[tokio::test]
+async fn append_failure_is_atomic_and_abort_keeps_a_non_reusable_charged_tombstone() {
+    let (_dir, store, clock) = fixture().await;
+    let payload = b"safe history";
+    let (begin, headers) = intent(&[(RecordKind::Message { role: Role::User }, payload.to_vec())]);
+    let original = store.begin(json(&begin).unwrap().as_bytes()).await.unwrap();
+    let control = json(&Append {
+        record: headers[0].clone(),
+        offset: 0,
+        sha256: digest(payload),
+    })
+    .unwrap();
+    sqlx::raw_sql("CREATE TRIGGER synthetic_append_crash BEFORE UPDATE ON e_inactive_imports BEGIN SELECT RAISE(ABORT,'synthetic crash before ACK commit'); END").execute(&store.pool).await.unwrap();
+    assert_eq!(
+        store
+            .append(&original.key, control.as_bytes(), payload)
+            .await
+            .unwrap_err(),
+        "database_unavailable"
+    );
+    sqlx::query("DROP TRIGGER synthetic_append_crash")
+        .execute(&store.pool)
+        .await
+        .unwrap();
+    assert_eq!(store.status(&original.key).await.unwrap(), original);
+    for table in [
+        "e_inactive_records",
+        "e_inactive_fragments",
+        "e_inactive_mapping",
+    ] {
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>(sqlx::AssertSqlSafe(format!(
+                "SELECT COUNT(*) FROM {table}"
+            )))
+            .fetch_one(&store.pool)
+            .await
+            .unwrap(),
+            0
+        );
+    }
+    store
+        .append(&original.key, control.as_bytes(), payload)
+        .await
+        .unwrap();
+    assert_charge(&store, &original.key).await;
+    clock.store(600_100, Ordering::SeqCst); // Idle deadline, before absolute deadline.
+    let tombstone = store.abort_receiving(&original.key).await.unwrap();
+    assert_eq!(tombstone.phase, Phase::Expired);
+    assert_eq!(tombstone.charge_bytes, original.charge_bytes);
+    assert_eq!(tombstone.received_bytes, 0);
+    assert_eq!(
+        store.abort_receiving(&original.key).await.unwrap(),
+        tombstone
+    );
+    assert_eq!(
+        store.begin(json(&begin).unwrap().as_bytes()).await.unwrap(),
+        tombstone
+    );
+    assert_eq!(
+        store
+            .append(&original.key, control.as_bytes(), payload)
+            .await
+            .unwrap_err(),
+        "not_receiving"
+    );
+    assert_charge(&store, &original.key).await;
+    for table in [
+        "e_inactive_records",
+        "e_inactive_fragments",
+        "e_inactive_mapping",
+    ] {
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>(sqlx::AssertSqlSafe(format!(
+                "SELECT COUNT(*) FROM {table}"
+            )))
+            .fetch_one(&store.pool)
+            .await
+            .unwrap(),
+            0
+        );
+    }
+}
+
+#[tokio::test]
+async fn privacy_across_blocks_bad_utf8_offsets_and_hashes_refuse_without_residue() {
+    let (_dir, store, clock) = fixture().await;
+    let bytes = b"prefix synthetic-private-token suffix";
+    let (begin, headers) = intent(&[(RecordKind::Message { role: Role::User }, bytes.to_vec())]);
+    let receipt = store.begin(json(&begin).unwrap().as_bytes()).await.unwrap();
+    let first = &bytes[..20];
+    store
+        .append(
+            &receipt.key,
+            json(&Append {
+                record: headers[0].clone(),
+                offset: 0,
+                sha256: digest(first),
+            })
+            .unwrap()
+            .as_bytes(),
+            first,
+        )
+        .await
+        .unwrap();
+    let before = store.status(&receipt.key).await.unwrap();
+    let rest = &bytes[20..];
+    let mut frame = Append {
+        record: headers[0].clone(),
+        offset: 20,
+        sha256: digest(rest),
+    };
+    assert_eq!(
+        store
+            .append(&receipt.key, json(&frame).unwrap().as_bytes(), rest)
+            .await
+            .unwrap_err(),
+        "private_context"
+    );
+    frame.offset = 21;
+    assert_eq!(
+        store
+            .append(&receipt.key, json(&frame).unwrap().as_bytes(), rest)
+            .await
+            .unwrap_err(),
+        "invalid_offset"
+    );
+    frame.offset = 20;
+    frame.sha256 = digest(b"wrong");
+    assert_eq!(
+        store
+            .append(&receipt.key, json(&frame).unwrap().as_bytes(), rest)
+            .await
+            .unwrap_err(),
+        "integrity_failed"
+    );
+    frame.sha256 = digest(&[255]);
+    assert_eq!(
+        store
+            .append(&receipt.key, json(&frame).unwrap().as_bytes(), &[255])
+            .await
+            .unwrap_err(),
+        "invalid_utf8"
+    );
+    clock.store(99, Ordering::SeqCst);
+    assert_eq!(
+        store
+            .append(&receipt.key, json(&frame).unwrap().as_bytes(), &[255])
+            .await
+            .unwrap_err(),
+        "clock_rollback"
+    );
+    assert_eq!(store.status(&receipt.key).await.unwrap(), before);
+    assert_charge(&store, &receipt.key).await;
+}
+
+#[tokio::test]
+async fn seal_rejects_missing_dependencies_and_corruption_and_preserves_c1_c2_tokens() {
+    let (_dir, store, _clock) = fixture().await;
+    let before: (String, i64) =
+        sqlx::query_as("SELECT incarnation,revision FROM conversation_catalog_version")
+            .fetch_one(&store.pool)
+            .await
+            .unwrap();
+    let records = vec![
+        (RecordKind::Message { role: Role::User }, b"a".to_vec()),
+        (
+            RecordKind::Association {
+                from: 0,
+                to: 99,
+                position: 0,
+                relation: Relation::AssetForMessage,
+            },
+            vec![],
+        ),
+    ];
+    let (begin, headers) = intent(&records);
+    let receipt = store.begin(json(&begin).unwrap().as_bytes()).await.unwrap();
+    assert_eq!(
+        store.seal_storage(&receipt.key).await.unwrap_err(),
+        "incomplete_storage"
+    );
+    for (h, (_, b)) in headers.iter().zip(&records) {
+        append_record(&store, &receipt.key, h, b).await;
+    }
+    assert_eq!(
+        store.seal_storage(&receipt.key).await.unwrap_err(),
+        "invalid_association"
+    );
+    assert_eq!(
+        store.status(&receipt.key).await.unwrap().phase,
+        Phase::Verifying
+    );
+    assert_eq!(
+        store.readback(&receipt.key, None, 1).await.unwrap_err(),
+        "not_sealed"
+    );
+    sqlx::query("UPDATE e_inactive_fragments SET data=X'62' WHERE ordinal=0")
+        .execute(&store.pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        store.seal_storage(&receipt.key).await.unwrap_err(),
+        "integrity_failed"
+    );
+    assert_eq!(
+        store.abort_receiving(&receipt.key).await.unwrap().phase,
+        Phase::Aborted
+    );
+    let after: (String, i64) =
+        sqlx::query_as("SELECT incarnation,revision FROM conversation_catalog_version")
+            .fetch_one(&store.pool)
+            .await
+            .unwrap();
+    assert_eq!(before, after);
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM conversation_content_versions")
+            .fetch_one(&store.pool)
+            .await
+            .unwrap(),
+        0
+    );
+}
