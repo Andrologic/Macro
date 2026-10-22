@@ -624,7 +624,7 @@ pub(crate) async fn run(
     )?);
     let mut input = message_text(&request.input_json)?;
     if let Some(contract) = &request.publication_contract_json {
-        input.push_str(&format!("\n\nPublish the final AgSDL object using mcp__macro__macro_agsdl_publish, with exact JSON in argumentsJson. Preserve number tokens. The publication must satisfy this captured contract:\n{contract}"));
+        input.push_str(&format!("\n\nPublish the final AgSDL object using mcp__macro__macro_agsdl_publish, with exact JSON in argumentsJson. Its only top-level properties are results and, when a decision is required, choice. results maps declared result names to content fragments satisfying the captured interface. choice must be a string selected from the captured choices; omit it entirely when choices is empty, rather than using null. Preserve number tokens exactly. The following captured contract describes the interface and decision. Its protocol, registryVersion, agent, step, interface, choices and decisionBinding are metadata, not properties of the published object:\n{contract}"));
     }
     config["input"] = json!(input);
     config["publication"] = json!(request.publication_contract_json.is_some());
