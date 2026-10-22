@@ -535,6 +535,10 @@ async fn migration14_stamp_failure_rolls_back_and_reopen_preserves_durable_token
         .await
         .unwrap();
     assert_eq!(before, version(&pool).await);
+    crate::db::inactive_storage::tests::remove_reference_schema_in(
+        &mut *pool.acquire().await.unwrap(),
+    )
+    .await;
     remove_reference_schema(&pool).await.unwrap();
     sqlx::raw_sql("DELETE FROM schema_migrations WHERE version=14; CREATE TRIGGER reject_catalog_stamp BEFORE INSERT ON schema_migrations WHEN NEW.version=14 BEGIN SELECT RAISE(ABORT,'synthetic'); END").execute(&pool).await.unwrap();
     assert!(crate::db::run_migrations(&pool).await.is_err());

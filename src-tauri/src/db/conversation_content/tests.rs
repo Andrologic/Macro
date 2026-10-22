@@ -860,6 +860,10 @@ async fn stop_probe(pool: &SqlitePool) {
 #[tokio::test]
 async fn migration_backfill_stamp_failure_rolls_back_and_schema_damage_is_rejected() {
     let (dir, pool) = fixture().await;
+    crate::db::inactive_storage::tests::remove_reference_schema_in(
+        &mut *pool.acquire().await.unwrap(),
+    )
+    .await;
     message(&pool, "old", "a", "assistant", "old content").await;
     sqlx::query("INSERT INTO app_settings VALUES ('chat:assistant-visible-provenance:v1:old','old receipt','now')").execute(&pool).await.unwrap();
     crate::db::conversation_catalog::remove_reference_schema(&pool)
@@ -1071,7 +1075,7 @@ async fn opening_keeps_i64_decimal_precision_and_handles_unreadable_numeric_fiel
 }
 
 #[tokio::test]
-async fn native_runtime_diagnostic_is_schema14_wal_normal_fk() {
+async fn native_runtime_diagnostic_is_schema15_wal_normal_fk() {
     let (_dir, pool) = fixture().await;
     let sqlite: String = sqlx::query_scalar("SELECT sqlite_version()")
         .fetch_one(&pool)
@@ -1082,7 +1086,7 @@ async fn native_runtime_diagnostic_is_schema14_wal_normal_fk() {
             .fetch_all(&pool)
             .await
             .unwrap();
-    assert_eq!(migrations, [1, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14]);
+    assert_eq!(migrations, [1, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]);
     let mut db = pool.acquire().await.unwrap();
     let journal: String = sqlx::query_scalar("PRAGMA journal_mode")
         .fetch_one(&mut *db)

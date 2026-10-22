@@ -9,6 +9,7 @@ async fn accepts_develop_v9_with_historical_pilot_v5_stamp() {
     let mut old = fixture(&path, true).await;
     old.close().await.unwrap();
     let pool = create_pool(&path).await.unwrap();
+    inactive_storage::tests::remove_reference_schema_in(&mut *pool.acquire().await.unwrap()).await;
     conversation_catalog::remove_reference_schema(&pool)
         .await
         .unwrap();
@@ -39,6 +40,7 @@ async fn accepts_develop_v9_with_historical_pilot_v5_stamp() {
             (12, "012_pilot_files".into()),
             (13, "013_conversation_content_versions".into()),
             (14, "014_conversation_catalog_version".into()),
+            (15, "015_inactive_storage".into()),
         ]
     );
 }
@@ -125,7 +127,7 @@ async fn rehearses_upgrade_on_external_database_copy() {
             .unwrap()
             .iter()
             .max(),
-        Some(&14)
+        Some(&15)
     );
 }
 
@@ -176,6 +178,7 @@ async fn fixture(path: &Path, stamped: bool) -> SqliteConnection {
 }
 
 async fn drop_v9(connection: &mut SqliteConnection) {
+    inactive_storage::tests::remove_reference_schema_in(connection).await;
     conversation_catalog::remove_reference_schema_in(connection)
         .await
         .unwrap();
