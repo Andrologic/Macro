@@ -8,6 +8,7 @@ import { PilotAccountClient, type PilotAccountConfirmation } from './accountClie
 import { validateContentMessage, validateContentResponse } from './contentProtocol';
 export type { PilotAccountCatalog, PilotAccountConfirmation } from './accountClient';
 import { tauriFetch } from '../tauriHttp';
+import { validateA1 } from './protocol';
 import { consumerWire, validConsumerResponse, type ConsumerTransport, type ConsumerIdentity, type ConsumerDispatch } from './consumerTransport';
 import {
   pilotDeviceName,
@@ -784,23 +785,22 @@ export class MacroPilotNativeClient {
       if (signal.aborted) throw new PilotClientError('context_changed');
     };
     check();
-    try {
-      const result = await this.sendRequest('GET', '/me', undefined,
-        { authenticated: true, signal, beforeSend: async () => { check(); this.consumerIdentity(); } }, 'session-check');
-      check();
-      const data = result.data;
-      const account = isRecord(data) && isRecord(data.account) ? data.account : null;
-      const session = isRecord(data) && isRecord(data.device_session) ? data.device_session : null;
-      const ref = session && isRecord(session.ref) ? session.ref : null;
-      if (account?.account_id !== context.accountId || ref?.account_id !== context.accountId ||
-        ref?.session_id !== context.sessionId || session?.state !== 'active' ||
-        session?.device_id !== this.persisted?.deviceSession?.device_id || result.status !== 200) throw new PilotClientError('invalid_response');
-    } catch (error) {
-      check();
-      if (error instanceof PilotClientError && ['unauthorized', 'session_revoked'].includes(error.code)) {
-        await this.clearSession(error.code as 'unauthorized' | 'session_revoked');
-      } else throw error;
+    const result = await this.sendRequest('GET', '/me', undefined,
+      { authenticated: true, signal, beforeSend: async () => { check(); this.consumerIdentity(); } }, 'session-check');
+    check();
+    const data = result.data;
+    // Only a validated HTTP reply can prove revocation, never a transport exception.
+    if (result.status === 401 && isRecord(data) && isRecord(data.error) &&
+      (data.error.code === 'unauthorized' || data.error.code === 'session_revoked')) {
+      await this.clearSession(data.error.code);
+      return;
     }
+    const account = isRecord(data) && isRecord(data.account) ? data.account : null;
+    const session = isRecord(data) && isRecord(data.device_session) ? data.device_session : null;
+    const ref = session && isRecord(session.ref) ? session.ref : null;
+    if (account?.account_id !== context.accountId || ref?.account_id !== context.accountId ||
+      ref?.session_id !== context.sessionId || session?.state !== 'active' ||
+      session?.device_id !== this.persisted?.deviceSession?.device_id || result.status !== 200) throw new PilotClientError('invalid_response');
   }
 
   /** Producer A2 uses the same native credentials, origin and lifecycle fence as v1. */
@@ -926,8 +926,20 @@ export class MacroPilotNativeClient {
       throw error;
     }
     check();
-    const responseRequestId = response.headers.get('x-request-id') || requestId;
-    if (extension === 'session-check' && responseRequestId !== requestId) throw new PilotClientError('invalid_response');
+    const responseHeader = response.headers.get('x-request-id');
+    const responseRequestId = responseHeader || requestId;
+    if (extension === 'session-check') {
+      // Global cleanup needs a correlated canonical proof, not a status fallback.
+      if (responseHeader !== requestId) throw new PilotClientError('invalid_response', response.status);
+      if (!response.ok || (isRecord(data) && data.type === 'error')) {
+        if (!isRecord(data) || data.type !== 'error' || !validateA1(data) ||
+          data.request_id !== requestId || !isRecord(data.error)) throw new PilotClientError('invalid_response', response.status);
+        const authenticationError = data.error.code === 'unauthorized' || data.error.code === 'session_revoked';
+        if ((response.status === 401) !== authenticationError) throw new PilotClientError('invalid_response', response.status);
+        // The narrow caller decides global cleanup only after its context guard.
+        if (response.status === 401) return { status: response.status, data: data as T, requestId: responseRequestId };
+      }
+    }
     if (
       !v2 && isRecord(data) &&
       (('transport_version' in data && data.transport_version !== TRANSPORT_VERSION) ||

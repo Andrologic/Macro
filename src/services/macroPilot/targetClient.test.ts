@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'bun:test';
-import { MacroPilotNativeClient, type PilotClientDependencies, type PilotInstanceAccess } from './nativeClient';
+import { MacroPilotNativeClient, PilotClientError, type PilotClientDependencies, type PilotInstanceAccess } from './nativeClient';
 import { PilotTargetClient } from './targetClient';
 import { CONSUMER_CAPABILITIES, consumerWire, type ConsumerDispatch, type ConsumerOperation } from './consumerTransport';
 import { PilotRuntime } from './runtime';
@@ -40,6 +40,10 @@ function terminal(request: Record<string, unknown>, instanceId: string) {
 }
 const accepted = (w: WireRequest, expires = time + 60_000) => json({ transport_version: '2.0', type: 'accepted',
   request_id: w.requestId, exchange_id: w.requestId, expires_at: new Date(expires).toISOString() }, w.requestId, 202);
+const sessionError = (requestId: string, code: 'unauthorized' | 'session_revoked' = 'session_revoked') => ({
+  contract_version: '1.0', type: 'error', request_id: requestId,
+  error: { code, message: 'Synthetic authentication error', retryable: false },
+});
 const remoteError = (w: WireRequest, code: string, status: number) => json({ contract_version: '2.0', type: 'error',
   request_id: w.requestId, account_id: account.account_id, operation: w.request.operation ?? 'events.read', code, retryable: ['unavailable', 'instance_offline'].includes(code) }, w.requestId, status);
 
@@ -256,11 +260,11 @@ describe('D1 desktop target reads', () => {
     } finally { h.dispose(); }
   });
 
-  it('clears all dependent targets only after /me confirms our session invalid', async () => {
+  for (const code of ['unauthorized', 'session_revoked'] as const) it(`clears dependent targets only after canonical /me ${code}`, async () => {
     const h = await harness(); const a = h.target(), b = h.target('instance:b');
     try {
       await Promise.all([a.negotiate(), b.negotiate()]);
-      h.intercept(async w => w.url.pathname.endsWith('/me') ? json({ code: 'session_revoked' }, w.requestId, 401) :
+      h.intercept(async w => w.url.pathname.endsWith('/me') ? json(sessionError(w.requestId, code), w.requestId, 401) :
         w.request.type === 'request' ? remoteError(w, 'session_revoked', 401) : undefined);
       await expect(a.read('conversation.read', { ref: ref(a.instanceId) })).rejects.toMatchObject({ code: 'session_revoked' });
       expect(h.client.getState()).toMatchObject({ status: 'signed_out', account: null, deviceSession: null });
@@ -518,7 +522,7 @@ it('requires complete-capture identity tracking from the caller for pagination',
   } finally { h.dispose(); }
 });
 
-for (const proof of ['offline', 'wrong-account', 'wrong-request-id'] as const) {
+for (const proof of ['offline', 'wrong-account', 'wrong-request-id', 'missing-header', 'wrong-body-id', 'malformed-401', 'wrong-status-503', 'transport-auth-error'] as const) {
   it(`keeps the emitter session and retires the target if /me is ${proof}`, async () => {
     const h = await harness(); const a = h.target(), b = h.target('instance:b');
     try {
@@ -526,12 +530,17 @@ for (const proof of ['offline', 'wrong-account', 'wrong-request-id'] as const) {
       h.intercept(async w => {
         if (w.url.pathname.endsWith('/me')) {
           if (proof === 'offline') throw new Error('Synthetic failed proof');
+          if (proof === 'transport-auth-error') throw new PilotClientError('session_revoked', 401);
+          if (proof === 'missing-header') return new Response(JSON.stringify(sessionError(w.requestId)), { status: 401 });
+          if (proof === 'wrong-body-id') return json(sessionError('request:foreign'), w.requestId, 401);
+          if (proof === 'malformed-401') return json({}, w.requestId, 401);
+          if (proof === 'wrong-status-503') return json(sessionError(w.requestId), w.requestId, 503);
           return json({ transport_version: '1.0', account: proof === 'wrong-account' ? { ...account, account_id: 'account:other' } : account,
             device_session: session }, proof === 'wrong-request-id' ? 'request:other' : w.requestId);
         }
         if (w.instanceId === a.instanceId && w.request.type === 'request') return remoteError(w, 'session_revoked', 401);
       });
-      await expect(a.read('conversation.read', { ref: ref(a.instanceId) })).rejects.toMatchObject({ code: proof === 'offline' ? 'unavailable' : 'invalid_response' });
+      await expect(a.read('conversation.read', { ref: ref(a.instanceId) })).rejects.toMatchObject({ code: proof === 'offline' ? 'unavailable' : proof === 'transport-auth-error' ? 'session_revoked' : 'invalid_response' });
       expect(a.capabilities()).toEqual([]);
       expect(h.client.getState()).toMatchObject({ status: 'connected', deviceSession: session });
       await b.read('conversation.read', { ref: ref(b.instanceId) });
