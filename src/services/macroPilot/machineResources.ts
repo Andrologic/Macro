@@ -1,10 +1,11 @@
-import type { ContentHostTelemetry, ContentProjectIcon, ContentProjectRef } from './contentProtocol';
+import { validateContentMessage, type ContentHostTelemetry, type ContentProjectIcon, type ContentProjectRef } from './contentProtocol';
 
 export const MACHINE_CAPABILITIES = ['host-telemetry-1', 'project-icons-1'] as const;
 export const MACHINE_OPERATIONS = new Set(['instance.telemetry', 'project.icon']);
 export const ICON_LIMIT = { encodedBytes: 131072, rawBytes: 98304, entries: 64, cacheBytes: 8 * 1024 * 1024, ttlMs: 300000 } as const;
 export interface MachineResourceSource {
-  telemetry(): Promise<Omit<ContentHostTelemetry, 'instance_id'>>;
+  /** Local-only native monotonic budget. Omitted by sources without that guarantee. */
+  telemetry(): Promise<Omit<ContentHostTelemetry, 'instance_id'> & { reuseForMs?: number | null }>;
   /** Local fingerprint changes when the project disappears, moves or changes workspace. */
   projectKey(ref: ContentProjectRef): string | null;
   icon(projectId: string): Promise<{ dataUrl: string; revision: string } | null>;
@@ -19,11 +20,54 @@ const supportedSignature = (mime: string, bytes: Uint8Array): boolean => {
 /** Per-host cache bounds wire resources and keeps local context out of responses. */
 export class MachineResources {
   private readonly icons = new Map<string, { context: string; expires: number; icon: NonNullable<ContentProjectIcon['icon']> }>();
-  constructor(private readonly source: MachineResourceSource, private readonly now = Date.now) {}
-  clear(): void { this.icons.clear(); }
+  private sample?: { value: Omit<ContentHostTelemetry, 'instance_id'>; deadline: number; generation: number };
+  private readonly telemetryLifetimes = new WeakMap<object, { deadline: number; generation: number }>();
+  private generation = 0;
+  private previousClock?: { utc: number; monotonic: number };
+  constructor(private readonly source: MachineResourceSource, private readonly now = Date.now, private readonly monotonicNow = () => performance.now()) {}
+  clear(): void { this.icons.clear(); this.sample = undefined; this.generation++; }
+  private clock(): { utc: number; monotonic: number } {
+    const current = { utc: this.now(), monotonic: this.monotonicNow() };
+    if (!Number.isFinite(current.utc) || !Number.isFinite(current.monotonic) ||
+      (this.previousClock && (current.utc < this.previousClock.utc || current.monotonic < this.previousClock.monotonic))) this.clear();
+    this.previousClock = current;
+    return current;
+  }
+  /** The response keeps its own lifetime even after another sample replaces the slot. */
+  validateTelemetry(sample: ContentHostTelemetry): void {
+    const clock = this.clock();
+    const lifetime = this.telemetryLifetimes.get(sample);
+    if (lifetime && (lifetime.generation !== this.generation || !Number.isFinite(lifetime.deadline) ||
+      !Number.isFinite(clock.monotonic) || clock.monotonic >= lifetime.deadline)) throw new Error('snapshot_expired');
+    if (!Number.isFinite(clock.utc) || !Number.isFinite(Date.parse(sample.observed_at)) || !Number.isFinite(Date.parse(sample.expires_at)) ||
+      Date.parse(sample.observed_at) > clock.utc || Date.parse(sample.expires_at) <= clock.utc) throw new Error('snapshot_expired');
+  }
   async telemetry(instanceId: string): Promise<ContentHostTelemetry> {
-    const sample = await this.source.telemetry();
-    return { ...sample, instance_id: instanceId };
+    // The native budget starts inside the IPC. Anchoring before it also pays
+    // for measurement and transport instead of extending the sample on return.
+    const started = this.clock();
+    let entry = this.sample;
+    if (entry && (entry.generation !== this.generation || started.monotonic >= entry.deadline ||
+      started.utc < Date.parse(entry.value.observed_at) || started.utc >= Date.parse(entry.value.expires_at))) this.sample = entry = undefined;
+    if (!entry) {
+      const generation = this.generation;
+      const { reuseForMs, ...value } = await this.source.telemetry();
+      const returned = this.clock();
+      const response = { ...value, instance_id: instanceId };
+      if (typeof reuseForMs === 'number' && Number.isInteger(reuseForMs) && reuseForMs >= 0 && reuseForMs <= 5000) {
+        const lifetime = { deadline: started.monotonic + reuseForMs, generation };
+        this.telemetryLifetimes.set(response, lifetime);
+        if (generation === this.generation && Number.isFinite(returned.monotonic) && returned.monotonic < lifetime.deadline &&
+          Date.parse(value.observed_at) <= returned.utc && returned.utc < Date.parse(value.expires_at) &&
+          validateContentMessage({ contract_version: '2.0', type: 'response', account_id: 'validation', request_id: 'validation', operation: 'instance.telemetry', result: response })) {
+          this.sample = { value, ...lifetime };
+        }
+      }
+      return response;
+    }
+    const response = { ...entry.value, instance_id: instanceId };
+    this.telemetryLifetimes.set(response, { deadline: entry.deadline, generation: entry.generation });
+    return response;
   }
   context(ref: ContentProjectRef): string {
     const key = this.source.projectKey(ref);

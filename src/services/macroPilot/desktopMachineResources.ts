@@ -13,7 +13,7 @@ export function desktopMachineResources(instanceId: string, workspaceId: string,
       const sample = await ipc.hostTelemetryRead();
       return { sample_id: sample.sampleId, observed_at: sample.observedAt, expires_at: sample.expiresAt,
         availability: sample.availability, reason: sample.reason, cpu_percent: sample.cpuPercent,
-        memory_used_bytes: sample.memoryUsedBytes, memory_total_bytes: sample.memoryTotalBytes };
+        memory_used_bytes: sample.memoryUsedBytes, memory_total_bytes: sample.memoryTotalBytes, reuseForMs: sample.reuseForMs };
     },
     projectKey: ref => {
       if (ref.instance_id !== instanceId || ref.workspace_id !== workspaceId) return null;
