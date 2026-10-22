@@ -1,7 +1,7 @@
 import { expect, it } from 'bun:test';
 import { compilePlan, sourceDigest } from './compiler';
 import { documentFixture, id, json } from './conformanceFixtures';
-import { encode, record } from './exact';
+import { decode, encode, record } from './exact';
 import { buildNativeRegistry, type NativeRegistryObservation } from './nativeRegistry';
 import { captureToolAliases } from './registry';
 
@@ -135,4 +135,19 @@ it('captures Claude with Macro tool admission and rejects crossed native provide
       expect(() => buildNativeRegistry(source, { ...observation, claudeProfileJson: json(claudeProfileJson.replace('2.1.308', 'unknown')) })).toThrow('Unknown Claude controlled profile');
     }
   }
+});
+
+it.each(['{"$serde_json::private::Number":"1"}', '{"$serde_json::private::RawValue":"[true]"}', '{"$serde_json::private::Number":"not a number"}', '{"$serde_json::private::RawValue":"not JSON"}'])('qualifies native Agent and Call bindings with opaque public claims: %s', async value => {
+  const { doc, observed } = fixture();
+  record(record(doc.bindings).inspect).claims = [{ requirement: { contract: { identity: 'synthetic/claim', version: '1' }, parameters: { data: decode(value) } }, status: 'unknown' }];
+  record(record(doc.flow).steps).inspect = { type: 'call', binding: 'inspect', arguments: { path: { value: 'README.md' } }, next: [] };
+  record(record(record(doc.flow).steps).work).next = ['inspect'];
+  record(doc.flow).entry = 'prepare';
+  record(record(doc.flow).steps).prepare = { type: 'prepare', message: { resources: { opaque: { value: decode(value), mediaType: 'application/json' } } }, next: ['work'] };
+  const source = encode(doc), registry = buildNativeRegistry(source, observed);
+  const result = await compilePlan(source, { owner: { projectId: 'synthetic', planId: 'plan', branch: 'feature/test' }, revision: '1', sourceSha256: id(await sourceDigest(source)) }, registry);
+  expect(result.static.valid).toBe(true); expect(result.runtime.supported).toBe(true);
+  expect(registry.bindings.find(binding => binding.target.kind === 'macro-tool')!.declarationJson).toContain(value);
+  expect(result.plan!.agents[0].configurationJson).toContain(value);
+  expect(result.plan!.steps.some(step => step.address[0] === 'inspect')).toBe(true);
 });

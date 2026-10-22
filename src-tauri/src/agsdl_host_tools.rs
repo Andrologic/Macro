@@ -137,7 +137,7 @@ fn bound_tool(
     request: &HostToolInvocation,
 ) -> Result<String> {
     exact_json::validate(&request.arguments_json)?;
-    let registry: Value = serde_json::from_str(&capture.registry_json)?;
+    let registry = exact_json::value(&capture.registry_json)?;
     let mut matches = Vec::new();
     for binding in registry
         .get("bindings")
@@ -167,7 +167,10 @@ fn bound_tool(
         .ok_or_else(|| failure("UNSUPPORTED", "binding", "Tool adapter is not qualified"))?;
     Ok(tool.into())
 }
-async fn authorize_binding(pool: &sqlx::SqlitePool, request: &HostToolInvocation) -> Result<()> {
+pub(crate) async fn authorize_binding(
+    pool: &sqlx::SqlitePool,
+    request: &HostToolInvocation,
+) -> Result<()> {
     let declarations: Vec<Value> = if let Some(agent) = &request.context.work.agent_instance_id {
         if request.provider_attempt_id.is_none() {
             return Err(failure(
@@ -178,7 +181,7 @@ async fn authorize_binding(pool: &sqlx::SqlitePool, request: &HostToolInvocation
         }
         let (configuration, _) =
             repository::read_agent(pool, &request.context.owner.system_start_id, agent).await?;
-        let captured: Value = serde_json::from_str(&configuration.configuration_json)?;
+        let captured = exact_json::value(&configuration.configuration_json)?;
         captured
             .pointer("/configuration/tools")
             .and_then(Value::as_object)
@@ -202,7 +205,7 @@ async fn authorize_binding(pool: &sqlx::SqlitePool, request: &HostToolInvocation
         }
         let snapshot =
             repository::read_snapshot(pool, &request.context.owner.system_start_id).await?;
-        let plan: Value = serde_json::from_str(&snapshot.compiled_plan_json)?;
+        let plan = exact_json::value(&snapshot.compiled_plan_json)?;
         let address = serde_json::to_value(&request.context.work.step)?;
         let step = plan
             .get("steps")
@@ -217,7 +220,7 @@ async fn authorize_binding(pool: &sqlx::SqlitePool, request: &HostToolInvocation
                     "Call step is absent from the captured plan",
                 )
             })?;
-        let declaration: Value = serde_json::from_str(
+        let declaration = exact_json::value(
             step.get("declarationJson")
                 .and_then(Value::as_str)
                 .ok_or_else(|| failure("CORRELATION", "step", "Call declaration is absent"))?,
@@ -229,7 +232,7 @@ async fn authorize_binding(pool: &sqlx::SqlitePool, request: &HostToolInvocation
                 "Work is not a captured Call",
             ));
         }
-        let document: Value = serde_json::from_str(
+        let document = exact_json::value(
             plan.get("documentJson")
                 .and_then(Value::as_str)
                 .ok_or_else(|| failure("CORRELATION", "plan", "Captured document is absent"))?,
@@ -462,9 +465,9 @@ async fn invoke_tool(
             "Root identity changed before Tool dispatch",
         ));
     }
-    let args: Value = serde_json::from_str(&request.arguments_json)?;
+    let args = exact_json::value(&request.arguments_json)?;
     let snapshot = repository::read_snapshot(&pool, &request.context.owner.system_start_id).await?;
-    let mut registry: Value = serde_json::from_str(&capture.registry_json)?;
+    let mut registry = exact_json::value(&capture.registry_json)?;
     registry["toolPolicyInput"] = json!({"invocationIdentity":key(&request),"toolId":tool,"bindingJson":request.binding_json,
         "argumentsJson":request.arguments_json,"mode":mode,"riskLevel":current["riskLevel"],"capturedRiskLevel":frozen["riskLevel"],"root":root,"allowedToolIds":current["allowedToolIds"]});
     if request.context.work.agent_instance_id.is_none() {
@@ -475,7 +478,7 @@ async fn invoke_tool(
             .iter()
             .find(|activation| activation.delivery.delivery.work == request.context.work)
             .ok_or_else(|| failure("CORRELATION", "work", "Call activation is absent"))?;
-        let plan: Value = serde_json::from_str(&snapshot.compiled_plan_json)?;
+        let plan = exact_json::value(&snapshot.compiled_plan_json)?;
         let address = serde_json::to_value(&request.context.work.step)?;
         let step = plan
             .get("steps")

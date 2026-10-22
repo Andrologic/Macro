@@ -3,6 +3,7 @@ use crate::agsdl_host::HostState;
 use crate::agsdl_host_catalogue::{self, ModelCapture};
 use crate::config::ConfigManager;
 use crate::db::agsdl_execution::{dto::*, failure, Result};
+use crate::db::exact_json;
 use crate::workspace::architect::{lock_execution_source_owner, LockedExecutionSource};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -188,7 +189,7 @@ async fn observation(
 ) -> Result<(Value, Option<String>, Option<String>)> {
     let scope = execution_scope(workspace, source, task)?;
     let project = &source.project;
-    let document: Value = serde_json::from_str(&source.source).unwrap_or(Value::Null);
+    let document = exact_json::value(&source.source).unwrap_or(Value::Null);
     let has_codex = document
         .get("bindings")
         .and_then(Value::as_object)
@@ -564,7 +565,7 @@ impl crate::db::agsdl_execution::CaptureAuthority for StartAuthority<'_> {
             .and_then(Value::as_str)
             .ok_or_else(|| failure("CORRELATION", "compiler", "Compiled plan is absent"))?
             .to_owned();
-        let plan: Value = serde_json::from_str(&compiled_plan_json)?;
+        let plan = exact_json::value(&compiled_plan_json)?;
         let registry_json = captured
             .result
             .get("capturedRegistryJson")
@@ -584,7 +585,7 @@ impl crate::db::agsdl_execution::CaptureAuthority for StartAuthority<'_> {
         let mut policies = Vec::new();
         let mut call_scopes: Vec<CallScope> = Vec::new();
         for step in steps {
-            let declaration: Value = serde_json::from_str(
+            let declaration = exact_json::value(
                 step.get("declarationJson")
                     .and_then(Value::as_str)
                     .ok_or_else(|| {
@@ -812,7 +813,7 @@ pub(crate) async fn deliver_linked(
     let snapshot =
         super::db::agsdl_execution::read_snapshot(pool, &request.system_start_id).await?;
     let capture = super::db::agsdl_execution::capture::read(pool, &owner).await?;
-    let mut registry: Value = serde_json::from_str(&capture.registry_json)?;
+    let mut registry = exact_json::value(&capture.registry_json)?;
     registry["deliveryInput"] =
         json!({"agentName":request.agent_name,"messageJson":request.message_json});
     let receipt = host
@@ -874,4 +875,78 @@ pub(crate) async fn deliver_linked(
         intent.map(|(link, _)| link),
     )
     .await
+}
+
+#[cfg(test)]
+mod exact_capture_tests {
+    use super::*;
+    use crate::agsdl_host_catalogue::NativeModelCatalogue;
+    use crate::workspace::metadata::{ProjectDto, WorkspaceState};
+
+    #[tokio::test]
+    async fn native_observation_retains_configurations_with_opaque_public_source_data() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let workspace = temp.path().join("workspace");
+        let metadata = workspace.join(".macro");
+        let project = workspace.join("project");
+        let plan = project.join(".macro/branches/develop/plans/source/plan.json");
+        std::fs::create_dir_all(plan.parent().unwrap()).unwrap();
+        std::fs::create_dir_all(&metadata).unwrap();
+        let registered: ProjectDto = serde_json::from_value(json!({
+            "id":"project", "name":"Synthetic", "path":project, "created_at":"2026-01-01", "status":"active",
+            "directEdit":true, "gitSetupState":"not_git",
+            "metadata":{"description":"", "tags":[], "team_members":[], "api_contracts":[], "dependencies":[]}
+        })).unwrap();
+        let mut state = WorkspaceState::default();
+        state.standalone_projects.push(registered);
+        std::fs::write(
+            metadata.join("workspace.json"),
+            serde_json::to_vec(&state).unwrap(),
+        )
+        .unwrap();
+        let manager = ConfigManager::initialize(temp.path().join("config"))
+            .await
+            .unwrap();
+        let catalogue = ModelCapture {
+            catalogue: NativeModelCatalogue {
+                revision: "synthetic".into(),
+                models: vec![],
+                unavailable_providers: vec![],
+            },
+            providers: vec![],
+            codex_account_digest: None,
+            claude_account_digest: None,
+        };
+        let owner = EngineSourceOwner {
+            project_id: "project".into(),
+            plan_id: "source".into(),
+            branch: "develop".into(),
+        };
+        for data in [
+            r#"{"$serde_json::private::Number":"not a number"}"#,
+            r#"{"$serde_json::private::RawValue":"not JSON"}"#,
+        ] {
+            let source = format!(
+                r#"{{"contract":"agsdl-0.2.0","id":"synthetic","bindings":{{"engine":{{"contract":{{"identity":"macro/agent-engine","version":"1"}},"implementation":{{"identity":"macro/desktop","version":"1"}}}}}},"agents":{{"worker":{{"configuration":"fixed","prompt":[{{"value":"Synthetic."}}]}}}},"configurations":{{"fixed":{{"engine":"engine","model":{{"identity":"macro/native-model/p/cA/m/bQ","version":"1"}}}}}},"flow":{{"entry":"prepare","steps":{{"prepare":{{"type":"prepare","message":{{"resources":{{"opaque":{{"value":{data},"mediaType":"application/json"}}}}}},"next":["work"]}},"work":{{"type":"agent","agent":"worker","next":[]}}}}}}}}"#
+            );
+            std::fs::write(&plan, serde_json::to_vec(&json!({"id":"source", "projectIds":["project"], "revision":1, "agsdl":{"source":source}})).unwrap()).unwrap();
+            let locked = lock_execution_source_owner(&workspace, &metadata, &owner, None)
+                .await
+                .unwrap();
+            let (observed, codex, claude) = observation(
+                &manager,
+                &workspace,
+                &locked,
+                &catalogue,
+                &json!({"riskLevel":"balanced"}),
+                None,
+            )
+            .await
+            .unwrap();
+            assert_eq!(observed["configurations"].as_array().unwrap().len(), 1);
+            assert_eq!(observed["configurations"][0]["agentName"], "worker");
+            assert_eq!(locked.source, source);
+            assert!(codex.is_none() && claude.is_none());
+        }
+    }
 }

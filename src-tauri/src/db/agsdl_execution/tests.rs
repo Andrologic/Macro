@@ -1771,16 +1771,26 @@ async fn call_witness_requires_exact_retained_result_and_matching_invocation() {
     }
 }
 async fn call_witness_with_result(result: &str) {
-    const DECLARATION: &str = r#"{"type":"call","binding":"read","arguments":{"payload":{"value":{"$serde_json::private::Number":"not a number"}}},"next":[]}"#;
-    const BINDING: &str = r#"{"contract":{"identity":"macro/tool/read","version":"1"},"implementation":{"identity":"macro/desktop","version":"1"},"settings":{"opaque":{"$serde_json::private::RawValue":"not JSON"}}}"#;
-    struct CallCompiler;
+    const DECLARATION: &str =
+        r#"{"type":"call","binding":"read","arguments":{"path":{"value":"README.md"}},"next":[]}"#;
+    let binding = format!(
+        r#"{{"contract":{{"identity":"macro/tool/read","version":"1"}},"implementation":{{"identity":"macro/desktop","version":"1"}},"claims":[{{"requirement":{{"contract":{{"identity":"synthetic/claim","version":"1"}},"parameters":{{"data":{result}}}}},"status":"unknown"}}]}}"#
+    );
+    struct CallCompiler(String);
     impl CaptureAuthority for CallCompiler {
         type CommitGuard = ();
         async fn capture(&self, request: &EngineStartRequest, id: &str) -> Result<TrustedCapture> {
             let mut capture = Compiler.capture(request, id).await?;
+            let binding = &self.0;
             capture.snapshot.authored_source = format!(
-                r#"{{"bindings":{{"read":{BINDING}}},"flow":{{"steps":{{"second":{DECLARATION}}}}}}}"#
+                r#"{{"bindings":{{"read":{binding}}},"flow":{{"steps":{{"second":{DECLARATION}}}}}}}"#
             );
+            capture.snapshot.compiled_plan_json = serde_json::json!({"documentJson":capture.snapshot.authored_source,"steps":[{"address":["second"],"declarationJson":DECLARATION}]}).to_string();
+            for agent in &mut capture.snapshot.agents {
+                agent.configuration_json = format!(
+                    r#"{{"configuration":{{"tools":{{"read":"read"}}}},"bindings":{{"read":{binding}}}}}"#
+                );
+            }
             capture
                 .policies
                 .iter_mut()
@@ -1802,10 +1812,12 @@ async fn call_witness_with_result(result: &str) {
     let pool = create_pool(&temp.path().join("test.db")).await.unwrap();
     let mut start_request = request();
     let source = format!(
-        r#"{{"bindings":{{"read":{BINDING}}},"flow":{{"steps":{{"second":{DECLARATION}}}}}}}"#
+        r#"{{"bindings":{{"read":{binding}}},"flow":{{"steps":{{"second":{DECLARATION}}}}}}}"#
     );
     start_request.source.source_sha256 = format!("{:x}", Sha256::digest(source.as_bytes()));
-    let started = start(&pool, start_request, &CallCompiler).await.unwrap();
+    let started = start(&pool, start_request, &CallCompiler(binding.clone()))
+        .await
+        .unwrap();
     let runtime = resume(&pool, &started.system_start_id, &versions())
         .await
         .unwrap();
@@ -1814,6 +1826,37 @@ async fn call_witness_with_result(result: &str) {
         .await
         .unwrap();
     begin(&pool, &runtime, &delivery.delivery_id).await.unwrap();
+    // Traverse the production native binding authorization before any physical
+    // receipt fixture. Both Call and Agent paths must retain the captured object.
+    let mut invocation = crate::agsdl_host_tools::HostToolInvocation {
+        context: effect(&runtime, &delivery.work).context,
+        tool_invocation_id: "authorization".into(),
+        provider_attempt_id: None,
+        binding_json: binding.clone(),
+        arguments_json: "{}".into(),
+        call_scope_json: None,
+    };
+    crate::agsdl_host_tools::authorize_binding(&pool, &invocation)
+        .await
+        .unwrap();
+    let mut connection = pool.acquire().await.unwrap();
+    let stored = load(&mut connection, &runtime.system_start_id)
+        .await
+        .unwrap();
+    invocation.context.work.agent_instance_id = Some(stored.state.agents["a"].id.clone());
+    drop(connection);
+    invocation.provider_attempt_id = Some("agent-attempt".into());
+    crate::agsdl_host_tools::authorize_binding(&pool, &invocation)
+        .await
+        .unwrap();
+    invocation.binding_json = "{}".into();
+    assert_eq!(
+        crate::agsdl_host_tools::authorize_binding(&pool, &invocation)
+            .await
+            .unwrap_err()
+            .code,
+        "PERMISSION"
+    );
     let (_, digest) = responses::read(&pool, &runtime, &delivery.work)
         .await
         .unwrap();
@@ -1849,7 +1892,6 @@ async fn call_witness_with_result(result: &str) {
             selected_branch: None,
         },
     };
-    let binding = BINDING;
     request.outcome = EngineOutcome::Completed {
         output: EngineValue {
             origin: "call".into(),
