@@ -26,6 +26,40 @@ structural pass. Syntax errors return `invalid_json`, duplicate keys return
 `ambiguous_json`. Callers must admit the raw string, parsed graph and key sets
 before calling it. It does not inspect a provider grammar or apply export policy.
 
+## Shared semantic boundaries
+
+Each comparison belongs to the lowest shared rule with the required facts.
+Object and strict JSON validation apply the same semantic rules; a nested
+provenance cannot bypass the rule applied to a standalone provenance.
+
+| Facts present | Shared owner | Reused boundaries |
+| --- | --- | --- |
+| Source provenance | `provenanceRules` | Birth body/request, binding, ledger, source status, their plans and reception |
+| Prepared target and source provenance | `preparedProvenanceRules` | Prepared/binding, journal/expectation, retained terminal/ledger and their consumers |
+| Prepared target and source identity | `preparedSourceRules` | Terminal, plus every owner with source provenance |
+| Binding and frozen/manifest/prepared commitments | `frozenBindingRules`, `manifestBindingRules`, `preparedBindingRules` | Request, journal, expectation and receipt reception |
+| Terminal and source provenance | `terminalProvenanceRules` | Retained ledger and full-binding terminal comparison |
+| Step receipt, binding and accepted subject | `matchStepReceipt` | Journal and receipt reception |
+| Attestation and authenticated exchange | `attestationExchangeRules` | Isolated proof, context and selected-producer validation |
+| Journal and source ledger | `recordLedgerRules` | Decision, maintenance, mutation output and mutation reception |
+
+Provenance requires different lineage and installation IDs before birth, retry
+or source discovery. When a retained committed terminal has source provenance,
+its prepared target lineage must differ from the source lineage. These rules do
+not infer missing facts from a hash: an isolated terminal or transfer status
+lacks the source lineage; an isolated birth receipt lacks the provenance IDs.
+Their consumers must compare them with their independently held facts.
+
+Isolated exact counters and canonical origins use the same scalar checks as
+nested fields. Context validation owns uniqueness of instance entries, explicit
+loopback configuration and internal proof/exchange correlations. These checks do
+not authenticate a self-supplied context: the adapter still supplies current
+bearer authority, producer connection and native journal facts. Selected producer
+liveness and current authorization remain checks at their existing operation
+boundaries. A terminal journal/ledger pair must agree even when maintenance
+returns an existing terminal. Historical aborted records may coexist with a
+later source epoch; the conservative ceded high-water check remains unchanged.
+
 ## Identity and exact comparison
 
 S is the tuple `relay_origin`, `account_id`, `source_instance_id`,
@@ -487,6 +521,7 @@ Contract tests cover both roots' refusal of these objects, exact counters and
 UTF-8, closed shapes, correlation/auth snapshots, state/CAS/retry, terminal races,
 168 nonterminal status profiles, 50 operation/action/kind cases and receipt
 families, native C1 representation and the zero initial lifecycle epoch,
+179 paired semantic boundaries, three attested birth/reserve model scenarios,
 64 terminal reachability profiles, 28 mutation/retry CAS cases and 12 step/terminal
 histories with real competing winners and preserved recovery holds,
 missing reserve and delayed arrival, initial enrollment, server restore, recovery

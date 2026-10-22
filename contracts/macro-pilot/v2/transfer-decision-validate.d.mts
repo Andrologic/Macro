@@ -18,6 +18,8 @@ export type FingerprintDomain = 'source-key' | 'provenance' | 'transfer-binding'
 export interface DecisionValidator {
   /** Plain JSON data API, not a sandbox for hostile JS objects/proxies.
    * Shape validation can read accessors before rejecting non-JSON values.
+   * Shared semantic rules compare the facts present in each closed definition;
+   * absent provenance or authenticated state cannot be inferred from digests.
    * Use decodeDecision for untrusted serialized input. */
   validateObject(value: unknown, definition?: keyof DecisionDefinitions): Validation;
   decodeDecision<K extends keyof DecisionDefinitions>(raw: string, definition: K): Failure | { valid: true; errors: []; value: DecisionDefinitions[K] };

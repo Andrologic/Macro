@@ -11,6 +11,7 @@ import {
 import { scenario } from './transfer-decision-vectors.mjs';
 import { verifyReceptionMatrix } from './transfer-decision-reception-matrix.mjs';
 import { verifyTerminalMatrix } from './transfer-decision-terminal-matrix.mjs';
+import { verifyInvariantBoundaries } from './transfer-decision-invariant-boundaries.mjs';
 
 const root = new URL('../v2/', import.meta.url);
 const schema = JSON.parse(readFileSync(new URL('transfer-decision.schema.json', root), 'utf8'));
@@ -18,6 +19,7 @@ const clone = structuredClone;
 const s = scenario();
 const receptionMatrix = verifyReceptionMatrix();
 const terminalMatrix = verifyTerminalMatrix();
+const invariantBoundaries = verifyInvariantBoundaries();
 const steps = ['birth', 'reserve', 'seal', 'ready', 'commit', 'activate'];
 // C1 uses the current native ConversationContentToken DTO verbatim. The
 // desktop-only dev/typecheck-transfer-decision-native.mts imports that generated
@@ -539,6 +541,13 @@ invalid['terminal-tombstone-after-reservation'] = { ...tombstone.receipt, decisi
 invalid['birth-nonzero-cas'] = { ...s.birth.request, expected_revision: '1' };
 invalid['step-reserve-shifted-cas'] = { ...s.reserve.result.receipt, previous_revision: '2', revision: '3' };
 
+const invalidBirthProvenance = clone(s.birth.request);
+invalidBirthProvenance.body.provenance.installation_id = invalidBirthProvenance.body.provenance.lineage_id;
+invalid['birth-lineage-is-installation'] = invalidBirthProvenance;
+const invalidRetainedLineage = clone(s.commit.result.ledger);
+invalidRetainedLineage.terminal.prepared.lineage_id = invalidRetainedLineage.provenance.lineage_id;
+invalid['ceded-retains-source-lineage'] = invalidRetainedLineage;
+
 if (process.argv.includes('--write-fixtures')) {
   for (const [kind, fixtures] of Object.entries({ valid, invalid })) {
     mkdirSync(new URL(`fixtures/transfer-decision/${kind}/`, root), { recursive: true });
@@ -572,4 +581,5 @@ for (const version of ['v1', 'v2']) {
 console.log(`Decision contract: ${fixtures} fixtures, CAS/retry, auth bindings, terminal races, tombstone, restore, enrollment, capacity, UTF-8 and exact counters passed.`);
 console.log(`Reception matrix: ${JSON.stringify(receptionMatrix)}`);
 console.log(`Terminal matrix: ${JSON.stringify(terminalMatrix)}`);
+console.log(`Invariant boundaries: ${JSON.stringify(invariantBoundaries)}`);
 console.log(`Maximum canonical JSON bytes per complete closed schema alternative: ${JSON.stringify(bounds)}`);
