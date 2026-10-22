@@ -1,6 +1,7 @@
 //! Real worker probes. The OS controller can release SQLite even while a
 //! current-thread runtime is blocked in an abandoned lease's Drop.
 use super::*;
+use crate::db::preparation_lease::test_pause::{hold_begin, hold_commit, Pause};
 use std::sync::{atomic::AtomicBool, mpsc, Condvar, Mutex};
 
 async fn single_connection() -> (TempDir, InactiveStorage, Arc<AtomicI64>) {
@@ -21,59 +22,6 @@ async fn single_connection() -> (TempDir, InactiveStorage, Arc<AtomicI64>) {
         .await
         .unwrap();
     (dir, active(pool, clock.clone()), clock)
-}
-struct Pause {
-    entered: mpsc::Sender<()>,
-    once: AtomicBool,
-    released: Mutex<bool>,
-    wake: Condvar,
-}
-impl Pause {
-    fn wait(&self) -> i32 {
-        if self.once.swap(true, Ordering::SeqCst) {
-            return 0;
-        }
-        if self.entered.send(()).is_err() {
-            return 1;
-        }
-        let Ok(mut released) = self.released.lock() else {
-            return 1;
-        };
-        while !*released {
-            match self.wake.wait(released) {
-                Ok(value) => released = value,
-                Err(_) => return 1,
-            }
-        }
-        0
-    }
-    fn release(&self) {
-        if let Ok(mut released) = self.released.lock() {
-            *released = true;
-            self.wake.notify_all();
-        }
-    }
-}
-unsafe extern "C" fn hold_commit(context: *mut std::ffi::c_void) -> i32 {
-    // Context is an Arc kept by the test and OS controller until worker close.
-    unsafe { &*context.cast::<Pause>() }.wait()
-}
-unsafe extern "C" fn hold_begin(
-    context: *mut std::ffi::c_void,
-    action: i32,
-    arg: *const std::ffi::c_char,
-    _: *const std::ffi::c_char,
-    _: *const std::ffi::c_char,
-    _: *const std::ffi::c_char,
-) -> i32 {
-    if action == libsqlite3_sys::SQLITE_TRANSACTION
-        && !arg.is_null()
-        && unsafe { std::ffi::CStr::from_ptr(arg) }.to_bytes() == b"BEGIN"
-    {
-        unsafe { &*context.cast::<Pause>() }.wait()
-    } else {
-        libsqlite3_sys::SQLITE_OK
-    }
 }
 async fn worker_probe(commit: bool) {
     let (_dir, mut store, _clock) = single_connection().await;

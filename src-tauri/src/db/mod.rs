@@ -19,6 +19,7 @@ pub mod pilot_reflections;
 pub mod pilot_tools;
 #[cfg(test)]
 mod portable_history_proof;
+mod preparation_lease;
 pub mod repository;
 pub(crate) mod source_capture;
 pub mod tool_invocations;

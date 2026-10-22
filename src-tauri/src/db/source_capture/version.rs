@@ -12,7 +12,7 @@ const FAMILIES: &[&str] = &[
     "pilot_file_sends",
 ];
 static EXPECTED: OnceCell<Vec<(String, Option<String>)>> = OnceCell::const_new();
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub(super) struct Version {
     pub incarnation: String,
     pub revision: i64,

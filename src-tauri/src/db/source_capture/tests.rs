@@ -199,3 +199,6 @@ async fn migration16_and_its_stamp_roll_back_together() {
         .await
         .unwrap();
 }
+
+#[path = "owner_tests.rs"]
+mod owner_tests;
