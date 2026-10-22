@@ -3,8 +3,8 @@ import type { Citation } from '../../types/citation';
 import { inspectAttachmentContent } from '../macroPilot/attachmentFilesHost';
 import { inspectWholeText, type TextPolicy } from '../macroPilot/conversationText';
 import { parseStoredJsonStrict, isRecord } from './jsonValues';
-import { PortableWorkBudget, samePortablePolicy } from './portableHistoryInspection';
-import { PORTABLE_SOURCE_LIMITS, PORTABLE_LIMITS, portableDigest, type PortableMetadata, type PortableRecord } from './portableChatHistory';
+import { PortableWorkBudget, samePortablePolicy, inspectPortableDecodedValue } from './portableHistoryInspection';
+import { PORTABLE_SOURCE_LIMITS, PORTABLE_LIMITS, portableDigest, portableRetainedJsonKind, inspectRetainedPortableJson, type PortableMetadata, type PortableRecord } from './portableChatHistory';
 
 export interface PortableArchiveBinding { version: 1; importKey: string; manifest: string }
 export interface PortableArchiveFragment { record: PortableRecord; offset: number; bytes: Uint8Array; targetUuid: string | null }
@@ -132,7 +132,9 @@ export class PortableHistoryArchive {
   /** Returned bytes cannot outlive consume. Pages and assembly stay admitted. */
   async withRecord(ordinal: number, consume: (bytes: Uint8Array, uuid: string | null) => Promise<void>): Promise<void> {
     const header = this.headers[ordinal]; if (!header) fail('missing_record');
-    const release = this.budget.reserve(512 + header.bytes * (header.entry.kind === 'historical_text' && header.entry.purpose === 'portable_metadata' ? 256 : 16));
+    const isMetadata = header.entry.kind === 'historical_text' && header.entry.purpose === 'portable_metadata';
+    const origin = header.origin === undefined ? undefined : this.origins.get(header.origin);
+    const release = this.budget.reserve(512 + header.bytes * (isMetadata || portableRetainedJsonKind(origin) ? 256 : 16));
     try {
       const bytes = new Uint8Array(header.bytes); let offset = 0, done = false;
       do {
@@ -150,7 +152,12 @@ export class PortableHistoryArchive {
       if (await portableDigest(bytes) !== header.sha256) fail('integrity_failed');
       const policy = await this.policy();
       if (this.policySnapshot && !samePortablePolicy(policy, this.policySnapshot)) fail('policy_changed');
-      if (textEntry(header) && !inspectWholeText(decoder.decode(bytes), { ...policy, inspectionBytes: bytes.length })) fail('unsafe_content');
+      if (textEntry(header)) {
+        const text = decoder.decode(bytes);
+        if (!inspectWholeText(text, { ...policy, inspectionBytes: bytes.length })) fail('unsafe_content');
+        if (isMetadata) inspectPortableDecodedValue(parseStoredJsonStrict(text), policy);
+        else if (origin) inspectRetainedPortableJson(origin, text, policy);
+      }
       await consume(bytes, this.uuids[ordinal]);
     } finally { release(); }
   }

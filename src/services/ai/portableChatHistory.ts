@@ -1,14 +1,14 @@
 /** Internal E profile. These values are historical data, never F admission. */
 import { buildAssistantMessagePresentation, buildUserMessagePresentation } from '../chatDbMappers';
-import { createCompactionTextFingerprint, buildSourceHashes, validateArchivedCompactionEvidence } from '../contextCompaction';
+import { createCompactionTextFingerprint, buildSourceHashes, validateArchivedCompactionEvidence, validateArchivedCompactionJson } from '../contextCompaction';
 import type { Citation } from '../../types/citation';
 import { parseStoredJsonStrict, isRecord } from './jsonValues';
-import { withAdmittedPortableText, PortableWorkBudget, samePortablePolicy } from './portableHistoryInspection';
+import { withAdmittedPortableText, PortableWorkBudget, samePortablePolicy, inspectPortableDecodedValue as inspect } from './portableHistoryInspection';
 import { recognizePortableProviderItems } from './portableProviderHistory';
 import { buildChatGptVisibleTurnContent } from './responsesCodec';
-import { buildToolContextBlock } from './toolPresentation';
+import { buildToolContextBlock, formatToolTraceDetail } from './toolPresentation';
 import { projectFinalProvenance } from '../macroPilot/assistantProvenance';
-import { inspectWholeText, type TextPolicy } from '../macroPilot/conversationText';
+import type { TextPolicy } from '../macroPilot/conversationText';
 import { inspectAttachmentContent } from '../macroPilot/attachmentFilesHost';
 
 export interface RawHistoryField {
@@ -61,25 +61,48 @@ export async function portableDigest(bytes: Uint8Array): Promise<string> {
 }
 const fail = (code: string): never => { throw new Error(code); };
 const str = (value: unknown): string => typeof value === 'string' ? value : fail('unknown_required_shape');
-function inspect(value: unknown, policy: TextPolicy): void {
-  const stack = [value];
-  while (stack.length) {
-    const current = stack.pop();
-    if (typeof current === 'string') {
-      if (!inspectWholeText(current, { ...policy, inspectionBytes: encoder.encode(current).length })) fail('unsafe_content');
-    } else if (current && typeof current === 'object') {
-      for (const [key, nested] of Object.entries(current)) { stack.push(key); stack.push(nested); }
-    }
-  }
-}
 function closed(value: unknown, keys: readonly string[]): Record<string, unknown> {
   if (!isRecord(value) || Object.keys(value).some(key => !keys.includes(key))) return fail('unknown_required_shape');
   return value;
 }
+/** Only JSON representations emitted by this normalizer are decoded again.
+ * User prose, provider result text and excluded private bindings are not JSON. */
+export function portableRetainedJsonKind(origin: Pick<PortableMetadata, 'source' | 'reason'> | undefined): 'tool_digest' | 'source_ids' | 'footprint' | 'tool_call' | 'context_refs' | 'provenance' | null {
+  if (!origin) return null;
+  const { family, tag } = origin.source;
+  if (family === 5) return ({ 3: 'tool_digest', 4: 'source_ids', 5: 'source_ids', 10: 'source_ids', 12: 'footprint', 13: 'footprint' } as const)[tag as 3 | 4 | 5 | 10 | 12 | 13] ?? null;
+  if (family === 1 && [9, 10].includes(tag) && origin.reason === 'provider_tool_call') return 'tool_call';
+  if ((family === 1 && tag === 11) || (family === 7 && tag === 1)) return 'context_refs';
+  if (family === 2 && tag === 1) return 'provenance';
+  return null;
+}
+export function inspectRetainedPortableJson(origin: Pick<PortableMetadata, 'source' | 'reason'>, raw: string, policy: TextPolicy): unknown {
+  const kind = portableRetainedJsonKind(origin);
+  if (!kind) return undefined;
+  const decoded = parseStoredJsonStrict(raw);
+  inspect(decoded, policy);
+  if (['tool_digest', 'source_ids', 'footprint'].includes(kind)) {
+    if (!validateArchivedCompactionJson(kind as 'tool_digest' | 'source_ids' | 'footprint', decoded)) fail('unknown_required_shape');
+  } else if (kind === 'tool_call') {
+    const call = closed(decoded, ['tool', 'arguments_json']); str(call.tool);
+    // Keep the original JSON string and its numeric lexemes verbatim. Parsing
+    // is only inspection; the decoded arguments are never re-serialized.
+    inspect(parseStoredJsonStrict(str(call.arguments_json)), policy);
+  } else if (kind === 'context_refs') {
+    if (!Array.isArray(decoded)) fail('unknown_required_shape');
+    for (const item of decoded as unknown[]) {
+      const ref = closed(item, ['id', 'kind', 'title', 'snippet', 'sourceLabel', 'url', 'contentHash']);
+      if (ref.kind !== 'source') fail('required_external_context');
+      str(ref.id);
+      for (const key of ['title', 'snippet', 'sourceLabel', 'url', 'contentHash']) if (ref[key] !== undefined) str(ref[key]);
+    }
+  } else closed(decoded, ['version', 'source', 'fingerprint', 'start', 'end']);
+  return decoded;
+}
 /** Strict inverse for legacy hidden-only output. Ambiguous delimiters refuse.
  * Structured provider results need not use this inverse: they remain separate. */
-export function recognizeHiddenHistory(value: string): string[] {
-  const results: string[] = [];
+function recognizeHiddenHistoryParts(value: string): { block: string; id: string; name: string; detail?: string }[] {
+  const results: { block: string; id: string; name: string; detail?: string }[] = [];
   let remaining = value;
   while (remaining) {
     const lineEnd = remaining.indexOf('>\n');
@@ -95,11 +118,14 @@ export function recognizeHiddenHistory(value: string): string[] {
     const block = buildToolContextBlock(unescape(match![1]), unescape(match![2]), match![3] === undefined ? undefined : unescape(match![3]), result);
     const consumed = end + '\n</tool_context>'.length;
     if (block !== remaining.slice(0, consumed)) fail('unknown_hidden_shape');
-    results.push(block!);
+    results.push({ block: block!, id: unescape(match![1]), name: unescape(match![2]), ...(match![3] === undefined ? {} : { detail: unescape(match![3]) }) });
     remaining = remaining.slice(consumed);
     if (remaining) { if (!remaining.startsWith('\n\n')) fail('unknown_hidden_shape'); remaining = remaining.slice(2); if (!remaining) fail('unknown_hidden_shape'); }
   }
   return results;
+}
+export function recognizeHiddenHistory(value: string): string[] {
+  return recognizeHiddenHistoryParts(value).map(part => part.block);
 }
 
 export async function normalizePortableChatHistory(
@@ -126,7 +152,7 @@ export async function normalizePortableChatHistory(
   const receipts = new Map<string, string>();
   const evidence: { id: string; role: string; contentHash: string; providerInputHash: string }[] = [];
   const citationEvidence: Record<string, string> = Object.create(null);
-  let checkpoint: { boundary: string; fingerprint: string; inputs: unknown } | null = null;
+  let checkpoint: { boundary: string; fingerprint: string; inputs: unknown; captured: { used: unknown; interesting: unknown; pruned: unknown; sourceHashes: unknown; version: string; policyVersion: string; modelContextWindowTokens: string } } | null = null;
   const rowIds = new Set<number>();
   // Only admitted control metadata may survive a field scope. No payload cache.
   const keep = (bytes: number) => controls.push(budget.reserve(bytes));
@@ -147,6 +173,7 @@ export async function normalizePortableChatHistory(
   };
   const content = async (field: RawHistoryField, text: string, meaning: NonNullable<PortableMetadata['meaning']>, entry: PortableEntry, extra: Partial<PortableMetadata> = {}) => {
     inspect(text, initial);
+    inspectRetainedPortableJson({ source: { ordinal: field.ordinal, row: field.row, family: field.family, tag: field.tag, sqlType: field.sql_type }, reason: extra.reason ?? 'recognized_history' }, text, initial);
     const origin = await metadata(field, 'retained_original', 'recognized_history', { meaning, ...extra });
     return emit(entry, encoder.encode(text), origin);
   };
@@ -204,6 +231,11 @@ export async function normalizePortableChatHistory(
       const rowReleases: (() => void)[] = [];
       if (row.family === 6) for (const field of row.fields) if (citationFields[field.tag] && field.sql_type === 2) { const release = budget.reserve(256 + field.bytes * 4); rowReleases.push(release); controls.push(release); }
       let checkpointBoundary = '', checkpointFingerprint = '', checkpointInputs: unknown = null;
+      const captured = { used: null as unknown, interesting: null as unknown, pruned: [] as unknown, sourceHashes: null as unknown, version: '', policyVersion: '', modelContextWindowTokens: '' };
+      const rowCalls = new Map<string, { name: string; arguments: string }>(), rowResults = new Map<string, { text: string; name?: string }>();
+      const rowTraces: { id: string; name: string; detail?: string }[] = [];
+      const providerTextOrigins: { field: RawHistoryField; source: PortableMetadata['source']; kind: string }[] = [];
+      let attributedFinalHash: string | null = null, attributedDisplayHash: string | null = null;
       let id: string | null = null, role: string | null = null, timestamp: string | null = null;
       const finalHashes = new Set<string>(), reflectionHashes = new Set<string>(), displayHashes = new Set<string>();
       const representations = new Map<string, number>();
@@ -212,6 +244,14 @@ export async function normalizePortableChatHistory(
         if (!id || !['user', 'assistant'].includes(role!)) fail('unsupported_role');
         messageRoles.set(id!, role!); keep(64);
         if (messageIds.has(id!)) fail('integrity_failed'); keep(256 + id!.length * 2); messageIds.add(id!); contentHash.update(role! + ':');
+        if (role === 'assistant') { keep(512); await read(row.fields[4], false, async raw => {
+          inspect(raw, initial);
+          const final = raw ? await projectFinalProvenance(id!, raw, receipts.get(id!) ?? null) ?? fail('unknown_provenance') : raw;
+          // Only digests survive this admitted preliminary field read. This
+          // separates a repeated final from distinct intermediate provider text.
+          attributedFinalHash = await portableDigest(encoder.encode(final));
+          attributedDisplayHash = await portableDigest(encoder.encode(raw));
+        }); }
       }
       if (row.family === 6) {
         const type = await small(row, 3), scope = await small(row, 4), kind = await small(row, 14);
@@ -258,21 +298,27 @@ export async function normalizePortableChatHistory(
                 const previous = representations.get(`${part.kind}:${hash}`);
                 if (previous !== undefined) { await metadata(field, 'redundant_representation', 'recognized_identical_text', { source: sourceRef, retained: previous }); continue; }
                 if (part.text) {
-                  const target = await content(field, part.text, part.kind === 'reflection' ? 'reflection' : 'data', { kind: 'historical_text', purpose: 'historical_data' }, { message: id!, source: sourceRef });
+                  const redundant = (part.kind === 'final' && hash === attributedFinalHash) || (part.kind === 'display' && hash === attributedDisplayHash);
+                  const target = await content(field, part.text, part.kind === 'reflection' ? 'reflection' : redundant ? 'original' : 'data', { kind: 'historical_text', purpose: 'historical_data' }, { message: id!, source: sourceRef });
                   pendingRelations.push({ message: id!, target, relation: 'data_for_message' }); keep(128);
                   representations.set(`${part.kind}:${hash}`, target); keep(128);
+                  if (redundant) { providerTextOrigins.push({ field, source: sourceRef, kind: part.kind }); keep(256); }
                 }
               } else if (part.kind === 'call') {
                 const hash = await portableDigest(encoder.encode(JSON.stringify([part.name, part.arguments])));
                 inspect(parseStoredJsonStrict(part.arguments), initial);
                 if (calls.has(part.id) && calls.get(part.id) !== hash) fail('contradictory_result');
                 keep(256 + part.id.length * 2); calls.set(part.id, hash);
-                const target = await content(field, JSON.stringify({ tool: part.name, arguments_json: part.arguments }), 'data', { kind: 'historical_text', purpose: 'historical_data' }, { message: id!, source: sourceRef });
+                if (!rowCalls.has(part.id)) { keep(512 + (part.name.length + part.arguments.length) * 4); rowCalls.set(part.id, { name: part.name, arguments: part.arguments }); }
+                const target = await content(field, JSON.stringify({ tool: part.name, arguments_json: part.arguments }), 'data', { kind: 'historical_text', purpose: 'historical_data' }, { message: id!, source: sourceRef, reason: 'provider_tool_call' });
                 pendingRelations.push({ message: id!, target, relation: 'data_for_message' }); keep(128);
               } else if (part.kind === 'result') {
                 const hash = await portableDigest(encoder.encode(part.text));
                 if (results.has(part.id) && results.get(part.id) !== hash) fail('contradictory_result');
                 keep(256 + part.id.length * 2); results.set(part.id, hash);
+                const previousResult = rowResults.get(part.id);
+                if (previousResult && previousResult.name !== part.name) fail('contradictory_result');
+                if (!previousResult) { keep(512 + part.text.length * 4 + (part.name?.length ?? 0) * 4); rowResults.set(part.id, { text: part.text, name: part.name }); }
                 const target = await content(field, part.text, 'data', { kind: 'historical_text', purpose: 'historical_data' }, { message: id!, source: sourceRef });
                 pendingRelations.push({ message: id!, target, relation: 'data_for_message' }); keep(128);
               }
@@ -302,13 +348,37 @@ export async function normalizePortableChatHistory(
             pendingRelations.push({ message: id!, target: original, relation: 'data_for_message' }); keep(128);
             const target = await content(field, projected, 'message', { kind: 'message', role: role as 'user' | 'assistant' }, { message: id!, timestamp: timestamp! });
             messages.set(id!, target); keep(128);
+            for (const representation of providerTextOrigins) await metadata(representation.field, 'redundant_representation', `provider_${representation.kind}_matches_attributed_message`, { source: representation.source, retained: target });
           });
         } else if (row.family === 1 && field.tag === 8) {
           await read(field, false, async raw => {
             contentHash.update(raw);
-            for (const block of recognizeHiddenHistory(raw)) {
-              const target = await content(field, block, 'data', { kind: 'historical_text', purpose: 'historical_data' }, { message: id! });
+            if (rowTraces.length) {
+              // The producer joins complete formatter outputs in trace order.
+              // Compare the entire container, including result delimiters. The
+              // lossy compaction digest parser is never a completeness proof.
+              if (rowTraces.length !== rowCalls.size || rowResults.size !== rowCalls.size) fail('incomplete_result');
+              if (JSON.stringify(rowTraces.map(trace => trace.id)) !== JSON.stringify([...rowCalls.keys()])) fail('contradictory_result');
+              const blocks = rowTraces.map(trace => {
+                const call = rowCalls.get(trace.id), result = rowResults.get(trace.id);
+                if (!call || !result || trace.name !== call.name || (result.name !== undefined && result.name !== call.name)) fail('contradictory_result');
+                const args = parseStoredJsonStrict(call!.arguments);
+                const detail = isRecord(args) ? formatToolTraceDetail(call!.name, args) : undefined;
+                if (trace.detail !== detail) fail('contradictory_result');
+                return buildToolContextBlock(trace.id, call!.name, trace.detail, result!.text);
+              }).filter((block): block is string => block !== null);
+              if (blocks.join('\n\n').trim() !== raw) fail('contradictory_result');
+              const target = await content(field, raw, 'original', { kind: 'historical_text', purpose: 'original_text' }, { message: id!, reason: 'complete_structured_hidden_representation' });
               pendingRelations.push({ message: id!, target, relation: 'data_for_message' }); keep(128);
+              await metadata(field, 'redundant_representation', 'hidden_matches_complete_structured_results', { retained: target });
+            } else {
+              for (const part of recognizeHiddenHistoryParts(raw)) {
+                inspect({ id: part.id, name: part.name, detail: part.detail }, initial);
+                // A known call without its trace cannot be proved hidden-only.
+                if (rowCalls.has(part.id) || rowResults.has(part.id)) fail('incomplete_result');
+                const target = await content(field, part.block, 'data', { kind: 'historical_text', purpose: 'historical_data' }, { message: id!, reason: 'recognized_hidden_only' });
+                pendingRelations.push({ message: id!, target, relation: 'data_for_message' }); keep(128);
+              }
             }
           });
         } else if (row.family === 1 && field.tag === 11) {
@@ -372,16 +442,35 @@ export async function normalizePortableChatHistory(
           } finally { release(); }
         } else if (row.family === 5) {
           if (field.sql_type === 2) await read(field, /json/.test(checkpointColumns[field.tag] ?? ''), async raw => {
-            const decoded = /json/.test(checkpointColumns[field.tag] ?? '') ? parseStoredJsonStrict(raw) : undefined;
+            const json = /json/.test(checkpointColumns[field.tag] ?? '');
+            const decoded = [20, 21].includes(field.tag) ? parseStoredJsonStrict(raw) : inspectRetainedPortableJson({ source: { ordinal: field.ordinal, row: field.row, family: field.family, tag: field.tag, sqlType: field.sql_type }, reason: 'recognized_history' }, raw, initial);
+            if (json && decoded === undefined) fail('unknown_required_shape');
             if (field.tag === 1) checkpointBoundary = raw;
             if (field.tag === 8) checkpointFingerprint = raw;
-            if (field.tag === 20) { keep(256 + field.bytes * 256); checkpointInputs = decoded; }
+            if ([4, 5, 10, 20, 21].includes(field.tag)) keep(256 + field.bytes * 256);
+            if (field.tag === 4) captured.used = decoded;
+            if (field.tag === 5) captured.interesting = decoded;
+            if (field.tag === 10) captured.pruned = decoded;
+            if (field.tag === 20) checkpointInputs = decoded;
+            if (field.tag === 21) captured.sourceHashes = decoded;
             // These captured hashes may commit excluded continuation bytes.
             // Use them only locally for source verification, never inventory them.
             if ([8, 20, 21].includes(field.tag)) await metadata(field, 'excluded_local_metadata', 'private_checkpoint_binding');
             else await content(field, raw, 'checkpoint', { kind: 'historical_text', purpose: 'historical_data' });
           });
-          else await integer(field);
+          else {
+            if ([9, 19, 22].includes(field.tag)) {
+              const release = budget.reserve(512);
+              try {
+                if (field.sql_type !== 1 || field.bytes !== 8) fail('source_type_invalid');
+                const bytes = await load(field), value = new DataView(bytes.buffer, bytes.byteOffset, 8).getBigInt64(0, true).toString();
+                if (field.tag === 9) captured.version = value;
+                if (field.tag === 19) captured.policyVersion = value;
+                if (field.tag === 22) captured.modelContextWindowTokens = value;
+              } finally { release(); }
+            }
+            await integer(field);
+          }
         } else if (row.family === 7 && field.tag === 1) {
           await read(field, true, async raw => {
             const refs = parseStoredJsonStrict(raw); if (!Array.isArray(refs)) fail('unknown_required_shape');
@@ -408,28 +497,34 @@ export async function normalizePortableChatHistory(
           if (row.family === 1 && field.tag === 7) await read(field, true, async raw => {
             const traces = parseStoredJsonStrict(raw);
             if (!Array.isArray(traces)) fail('unknown_required_shape');
+            keep(512 + field.bytes * 16);
             for (const rawTrace of traces as unknown[]) {
               const trace = closed(rawTrace, ['tool_call_id', 'tool_name', 'detail', 'status', 'visible_offset', 'execution_mode', 'batch_id', 'order', 'started_at_ms', 'completed_at_ms', 'recovery_state']);
-              if (trace.status !== 'done' || !calls.has(str(trace.tool_call_id)) || !results.has(str(trace.tool_call_id))) fail('incomplete_result');
+              if (trace.status !== 'done' || trace.recovery_state === 'unknown' || !rowCalls.has(str(trace.tool_call_id)) || !rowResults.has(str(trace.tool_call_id))) fail('incomplete_result');
+              str(trace.tool_name); if (trace.detail !== undefined) str(trace.detail);
+              if (rowTraces.some(item => item.id === trace.tool_call_id)) fail('unknown_required_shape');
+              rowTraces.push({ id: str(trace.tool_call_id), name: str(trace.tool_name), ...(trace.detail === undefined ? {} : { detail: str(trace.detail) }) });
             }
           });
           await metadata(field, 'excluded_local_metadata', 'local_operational_metadata');
         }
       }
       if (row.family === 1) {
+        for (const [callId, result] of rowResults) if (result.name !== undefined && rowCalls.get(callId)?.name !== result.name) fail('contradictory_result');
+        for (const trace of rowTraces) if (rowCalls.get(trace.id)?.name !== trace.name) fail('contradictory_result');
         if (!providerSeen) providerHash.update('[]');
         evidence.push({ id: id!, role: role!, contentHash: contentHash.finish(), providerInputHash: providerHash.finish() }); keep(256 + id!.length * 2);
       }
       if (row.family === 6) Object.assign(citationEvidence, buildSourceHashes([citationParts as unknown as Citation], [citationParts.id]));
       if (row.family === 5) {
         if (checkpoint) fail('ambiguous_checkpoint');
-        checkpoint = { boundary: checkpointBoundary, fingerprint: checkpointFingerprint, inputs: checkpointInputs };
+        checkpoint = { boundary: checkpointBoundary, fingerprint: checkpointFingerprint, inputs: checkpointInputs, captured };
       }
       for (const release of rowReleases) release();
     }
     if (checkpoint) {
       const boundary = evidence.findIndex(item => item.id === checkpoint!.boundary);
-      if (boundary < 0 || !validateArchivedCompactionEvidence(checkpoint.fingerprint, checkpoint.inputs, evidence.slice(0, boundary + 1), citationEvidence)) fail('checkpoint_source_missing');
+      if (boundary < 0 || !validateArchivedCompactionEvidence(checkpoint.fingerprint, checkpoint.inputs, evidence.slice(0, boundary + 1), citationEvidence, checkpoint.captured, messageIds)) fail('checkpoint_source_missing');
     }
     const assetOrder = new Map<number, number>();
     for await (const relation of source.relations()) {

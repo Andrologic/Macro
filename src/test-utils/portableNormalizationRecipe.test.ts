@@ -1,5 +1,5 @@
 import { expect, test } from 'bun:test';
-import { open, writeFile, unlink, mkdtemp, rm } from 'node:fs/promises';
+import { open, writeFile, unlink, mkdtemp, rm, readFile, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { normalizePortableChatHistoryTwoPass } from '../services/ai/portableChatHistory';
@@ -80,4 +80,30 @@ test('private NDJSON bridge refuses oversized and unterminated frames before a c
       await expect(readNativeTargetSpool(path, budget)).rejects.toThrow(error); expect(budget.used).toBe(0);
     }
   } finally { await rm(dir, { recursive: true, force: true }); }
+});
+
+/** Fixed oracle over the actual Rust serializer artifact, not Bun declarations. */
+function assertSingleFinal(body: Record<string, unknown>) {
+  const messages = (body.input ?? body.messages) as { role?: string }[];
+  expect(Array.isArray(messages)).toBe(true);
+  const final = 'A complete final answer.';
+  expect(JSON.stringify(body).split(final).length - 1).toBe(1);
+  expect(JSON.stringify(messages.filter(message => message.role === 'user')).split(final).length - 1).toBe(1);
+  expect(JSON.stringify(messages.filter(message => ['system', 'developer'].includes(message.role ?? '')))).not.toContain(final);
+}
+test.skipIf(!root || process.env.MACRO_PORTABLE_NORMALIZATION_PHASE !== 'verify-wire')('eight real Rust serializer bodies project one final, and an injected user duplicate is rejected', async () => {
+  const path = join(root!, 'native-wire.ndjson');
+  // This assertion bounds only this small fixture oracle, never a product Chat.
+  expect((await stat(path)).size).toBeLessThan(128 * 1024);
+  const rows = (await readFile(path, 'utf8')).trim().split('\n').map(line => JSON.parse(line));
+  expect(rows).toHaveLength(8); const seen = new Set<string>();
+  for (const row of rows) {
+    expect(['codex', 'macro-ai']).toContain(row.target);
+    expect(['codex-compacted', 'codex-recovered', 'macro-ai-compacted', 'macro-ai-recovered']).toContain(row.phase);
+    expect(seen.has(`${row.target}:${row.phase}`)).toBe(false); seen.add(`${row.target}:${row.phase}`);
+    assertSingleFinal(row.body);
+    const body = structuredClone(row.body), messages = body.input ?? body.messages;
+    messages.push({ role: 'user', content: 'A complete final answer.' });
+    expect(() => assertSingleFinal(body)).toThrow();
+  }
 });

@@ -45,7 +45,9 @@ export function registerPortableNormalizationScenarios(c: UseChatStoreScenarioCo
         summaryCalls++;
         // Test-only controlled generation. Facts are copied exclusively from
         // the actual compactable target/source values, never injected as data.
-        const lines = input.compactableMessages.flatMap(message => message.content.split('\n')).filter(line => PORTABLE_FACTS.some(fact => line.includes(fact)) && !line.includes(OMITTED_FACT));
+        // Keep the observed final as a selected historical fact too; duplicate
+        // provider representations would now duplicate it in the real body.
+        const lines = input.compactableMessages.flatMap(message => message.content.split('\n')).filter(line => (PORTABLE_FACTS.some(fact => line.includes(fact)) || line === 'A complete final answer.') && !line.includes(OMITTED_FACT));
         return JSON.stringify({ currentObjective: source ? SOURCE_SUMMARY : TARGET_SUMMARY, userInstructions: [], decisions: [], openQuestions: [], activeFiles: [], toolFacts: lines, remainingWork: [], summary: source ? SOURCE_SUMMARY : TARGET_SUMMARY });
       } });
       if (source && params.currentCompactionState) { expect(result.usedExistingCompaction).toBe(true); reusedSource++; }
@@ -115,6 +117,8 @@ export function registerPortableNormalizationScenarios(c: UseChatStoreScenarioCo
               const beforeJson = { ...jsonCosts };
               const started = performance.now(), id = native.port.binding.importKey;
               expect(projection.messages.filter(message => message.role === 'user').length).toBeGreaterThan(256);
+              const finals = projection.messages.filter(message => message.content.includes('A complete final answer.'));
+              expect(finals).toHaveLength(1); expect(finals[0].role).toBe('assistant');
               const all = JSON.stringify(projection.messages); for (const fact of PORTABLE_FACTS) expect(all).toContain(fact);
               expect(all).toContain(OMITTED_FACT); expect(all).toContain(SOURCE_SUMMARY); expect(all).not.toContain('synthetic-private-token');
               const assetData = projection.messages.filter(message => message.content.startsWith('[Historical archive data;') && message.content.includes('; asset]')).map(message => message.content).join('\n');
@@ -135,6 +139,7 @@ export function registerPortableNormalizationScenarios(c: UseChatStoreScenarioCo
                 await c.flushAsyncWork(); expect(streamSentinels).toBe(before + 1);
                 const options = c.getLatestStreamOptions<{ messages: StreamMessage[] }>();
                 const body = JSON.stringify(options.messages), systems = options.messages.filter(message => message.role === 'system').map(message => String(message.content)).join('\n');
+                expect(body.split('A complete final answer.').length - 1).toBe(1);
                 for (const fact of [...PORTABLE_FACTS, ...extraFacts]) expect(body).toContain(fact);
                 if (phase === 'compacted') expect(body).not.toContain(OMITTED_FACT);
                 else expect(body).toContain(OMITTED_FACT);

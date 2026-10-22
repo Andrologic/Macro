@@ -8,7 +8,7 @@ export type HistoricalProviderPart =
   | { kind: 'final' | 'reflection' | 'display' | 'user_data'; text: string; path: (string | number)[] }
   | { kind: 'image'; url: string; path: (string | number)[] }
   | { kind: 'call'; id: string; name: string; arguments: string; path: (string | number)[] }
-  | { kind: 'result'; id: string; text: string; path: (string | number)[] }
+  | { kind: 'result'; id: string; text: string; name?: string; path: (string | number)[] }
   | { kind: 'excluded'; reason: 'opaque_continuation' | 'local_identifier'; path: (string | number)[] };
 
 function object(value: unknown, keys: readonly string[]): Record<string, unknown> {
@@ -82,7 +82,7 @@ export function recognizePortableProviderItems(value: unknown): HistoricalProvid
       const item = object(raw, ['type', 'role', 'content', 'visible_content', 'reasoning_content', 'reasoning_details', 'tool_calls', 'tool_call_id', 'tool_name', 'macro_tool_result']);
       if (item.role === 'tool') {
         if (item.tool_calls !== undefined || item.reasoning_content !== undefined || item.reasoning_details !== undefined || item.visible_content !== undefined) throw new Error('unknown_required_shape');
-        parts.push({ kind: 'result', id: text(item.tool_call_id), text: resultText(item, text(item.content)), path });
+        parts.push({ kind: 'result', id: text(item.tool_call_id), text: resultText(item, text(item.content)), ...(item.tool_name === undefined ? {} : { name: text(item.tool_name) }), path });
       } else if (item.role === 'assistant') {
         if (item.tool_call_id !== undefined || item.macro_tool_result !== undefined) throw new Error('unknown_required_shape');
         addText('final', item.content, ['content']);

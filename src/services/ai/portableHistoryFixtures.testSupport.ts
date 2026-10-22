@@ -55,3 +55,30 @@ export async function fixture(provider: 'codex' | 'macro-ai', change?: (messages
   const run = () => normalizePortableChatHistory(source, async () => policy, budget, { append: async (header, bytes) => { output.push({ header, text: decoder.decode(bytes) }); } });
   return { source, rows, data, output, budget, run, args, reflection, appendRow };
 }
+
+/** Small complete-source checkpoint from the real compaction owner, independent
+ * of the large private native recipe. Used to mutate one captured dependency. */
+export async function checkpointFixture() {
+  const f = await fixture('codex', messages => {
+    const older = Array.from({ length: 20 }, (_, i) => [`older-${i}`, 's', `turn-${i}`, 'user', `history-${i} ${'recoverable fact '.repeat(200)}`, String(i + 1), null, null, null, null, null, '[]', null, null]);
+    messages.splice(1, 0, ...older);
+  });
+  const { mapDbMessageToChatMessage } = await import('../chatDbMappers');
+  const { buildCompactedMessagesForRequest } = await import('../contextCompaction');
+  const keys = ['id', 'conversation_id', 'turn_id', 'role', 'content', 'created_at', 'token_count', 'tool_traces_json', 'hidden_context', 'provider_input_items_json', 'provider_turn_state_json', 'context_refs_json', 'completion_reason', 'generation_attempts_json'];
+  const messages = f.rows.filter(row => row.family === 1).map(row => mapDbMessageToChatMessage(Object.fromEntries(row.fields.map(field => [keys[field.tag], field.sql_type === 0 ? null : decoder.decode(f.data.get(field.ordinal))])) as unknown as import('../tauriIpc').DbMessage, new Map()));
+  const citation: import('../../types/citation').Citation = { id: 'used', conversationId: 's', messageId: 'u', type: 'source_passage', scope: 'source', kind: 'used', title: 'Evidence', source: 'synthetic', content: 'Complete citation', timestamp: 't' };
+  await f.appendRow(6, ['used', 's', 'u', 'source_passage', 'source', 'synthetic', 'Evidence', null, 'Complete citation', null, null, null, null, null, 'used', null, 't', 't']);
+  const result = await buildCompactedMessagesForRequest({ systemMessage: 'Trusted local instructions', preparedMessages: messages.map(message => ({ role: message.role, content: message.content })), orderedMessages: messages, citations: [citation], toolDefinitions: [], modelContextWindowTokens: 8000, mode: 'manual', forceCompaction: true, generateSummary: async () => 'Historical checkpoint summary' });
+  const state = result.compactionState;
+  if (!state) throw new Error('fixture_checkpoint_not_created');
+  const optionalJson = (value: unknown) => value === undefined ? null : JSON.stringify(value);
+  await f.appendRow(5, [state.conversationId, state.upToMessageId, state.summaryText, JSON.stringify(state.toolDigest), JSON.stringify(state.usedSourcePassageIds), JSON.stringify(state.interestingSourcePassageIds), BigInt(state.estimatedTokensBefore), BigInt(state.estimatedTokensAfter), state.fingerprint, BigInt(state.version), JSON.stringify(state.prunedToolContextMessageIds ?? []), BigInt(state.reservedTokens ?? 0), optionalJson(state.footprintBefore), optionalJson(state.footprintAfter), state.degradedReason ?? null, state.compactionKind ?? null, state.compactionPass ?? null, BigInt(state.summaryFormatVersion!), state.summarySource ?? null, BigInt(state.policyVersion!), state.fingerprintInputsJson!, state.sourceHashesJson!, BigInt(state.modelContextWindowTokens!), state.providerId ?? null, state.modelId ?? null, state.checkpointHealth ?? null, state.lastTrigger ?? null, state.createdAt, state.updatedAt]);
+  const change = async (family: number, tag: number, value: string | bigint) => {
+    const field = f.rows.find(row => row.family === family)!.fields[tag];
+    const bytes = typeof value === 'string' ? encoder.encode(value) : new Uint8Array(8);
+    if (typeof value === 'bigint') new DataView(bytes.buffer).setBigInt64(0, value, true);
+    Object.assign(field, { sql_type: typeof value === 'string' ? 2 : 1, bytes: bytes.length, sha256: await portableDigest(bytes) }); f.data.set(field.ordinal, bytes);
+  };
+  return { ...f, state, change };
+}

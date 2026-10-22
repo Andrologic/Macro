@@ -27,7 +27,7 @@ test('inspects the admitted 4.9 MB value entirely, preserving ordinary display d
 
 test('one JSON syntax owner rejects duplicate decoded keys without confusing strings, arrays or siblings', () => {
   for (const text of ['{"id":1,"id":2}', '{"a":[{"id":1,"\\u0069d":2}]}', '{"a":{"__proto__":1,"__proto__":2}}']) expect(() => parseStoredJsonStrict(text)).toThrow('ambiguous_json');
-  for (const text of ['["x",{"a":"\\\"{}:x","nested":{"a":2}},{"a":3}]', '{"a":"a:b","b":"\\\\","c":[null,true,2]}', '"string"']) expect(parseStoredJsonStrict(text)).toEqual(JSON.parse(text));
+  for (const text of ['["x",{"a":"\\"{}:x","nested":{"a":2}},{"a":3}]', '{"a":"a:b","b":"\\\\","c":[null,true,2]}', '"string"']) expect(parseStoredJsonStrict(text)).toEqual(JSON.parse(text));
   for (const text of ['{"a":1,}', '{a:1}', '"unterminated']) expect(() => parseStoredJsonStrict(text)).toThrow();
 });
 

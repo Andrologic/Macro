@@ -17,15 +17,15 @@ export class PortableWorkBudget {
   }
 }
 
-function inspectDecoded(value: unknown, policy: TextPolicy): void {
+export function inspectPortableDecodedValue(value: unknown, policy: TextPolicy): void {
   const pending = [value];
   while (pending.length) {
     const entry = pending.pop();
     if (typeof entry === 'string') {
-      if (!inspectWholeText(entry, policy)) throw new Error('unsafe_content');
+      if (!inspectWholeText(entry, { ...policy, inspectionBytes: new TextEncoder().encode(entry).length })) throw new Error('unsafe_content');
     } else if (entry && typeof entry === 'object') {
       for (const [key, nested] of Object.entries(entry)) {
-        if (!inspectWholeText(key, policy)) throw new Error('unsafe_content');
+        if (!inspectWholeText(key, { ...policy, inspectionBytes: new TextEncoder().encode(key).length })) throw new Error('unsafe_content');
         pending.push(nested);
       }
     }
@@ -64,7 +64,7 @@ export async function withInspectedPortableText(
     const full = { ...policy, inspectionBytes: bytes };
     if (!inspectWholeText(text, full)) throw new Error('unsafe_content');
     const decoded = json ? parseStoredJsonStrict(text) : undefined;
-    if (json) inspectDecoded(decoded, { ...full, inspectionBytes: bytes * 4 });
+    if (json) inspectPortableDecodedValue(decoded, full);
     await consume(text, decoded);
   });
 }
