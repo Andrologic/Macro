@@ -1075,7 +1075,7 @@ async fn opening_keeps_i64_decimal_precision_and_handles_unreadable_numeric_fiel
 }
 
 #[tokio::test]
-async fn native_runtime_diagnostic_is_schema15_wal_normal_fk() {
+async fn native_runtime_diagnostic_is_schema16_wal_normal_fk() {
     let (_dir, pool) = fixture().await;
     let sqlite: String = sqlx::query_scalar("SELECT sqlite_version()")
         .fetch_one(&pool)
@@ -1086,7 +1086,10 @@ async fn native_runtime_diagnostic_is_schema15_wal_normal_fk() {
             .fetch_all(&pool)
             .await
             .unwrap();
-    assert_eq!(migrations, [1, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]);
+    assert_eq!(
+        migrations,
+        [1, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]
+    );
     let mut db = pool.acquire().await.unwrap();
     let journal: String = sqlx::query_scalar("PRAGMA journal_mode")
         .fetch_one(&mut *db)

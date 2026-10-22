@@ -20,6 +20,7 @@ pub mod pilot_tools;
 #[cfg(test)]
 mod portable_history_proof;
 pub mod repository;
+pub(crate) mod source_capture;
 pub mod tool_invocations;
 
 use crate::ai::macro_ai;
@@ -58,7 +59,7 @@ const MIGRATION_004_VERSION: i64 = 4;
 const MIGRATION_004_NAME: &str = "004_message_search";
 const MIGRATION_004_SQL: &str = include_str!("migrations/004_message_search.sql");
 pub(crate) const SUPPORTED_MIGRATION_VERSIONS: &[i64] =
-    &[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15];
+    &[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16];
 const MIGRATION_005_VERSION: i64 = 5;
 const MIGRATION_005_NAME: &str = "005_runtime_schema";
 const MIGRATION_005_CHECK_SQL: &str = include_str!("migrations/005_runtime_schema_check.sql");
@@ -361,6 +362,11 @@ async fn run_migrations_on_connection(connection: &mut SqliteConnection) -> DbRe
             "015_inactive_storage",
             include_str!("migrations/015_inactive_storage.sql"),
         ),
+        (
+            16,
+            "016_source_capture",
+            include_str!("migrations/016_source_capture.sql"),
+        ),
     ] {
         if !list_applied_migrations(connection)
             .await?
@@ -372,6 +378,7 @@ async fn run_migrations_on_connection(connection: &mut SqliteConnection) -> DbRe
 
     conversation_content::validate_schema(connection).await?;
     conversation_catalog::validate_schema(connection).await?;
+    source_capture::validate_schema(connection).await?;
 
     // Insert default providers if they don't exist
     insert_default_providers(connection).await?;
