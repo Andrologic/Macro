@@ -91,7 +91,13 @@ export async function runToolCallingLoop(
   let messages = [...options.messages];
   const transcript: unknown[] = [];
   let providerTurnState: ProviderTurnState | undefined;
-  const maxTurns = normalizeChatMaxTurns(options.maxTurns);
+  const nativeSerial = options.executionPolicy === 'native-serial';
+  if (nativeSerial && options.maxTurns !== undefined &&
+      (typeof options.maxTurns !== 'number' || !Number.isSafeInteger(options.maxTurns) || options.maxTurns < 1)) {
+    throw new Error('Native execution requires a positive integer turn limit.');
+  }
+  // Captured AgSDL budgets are not Chat preferences and must not be clamped.
+  const maxTurns = nativeSerial ? options.maxTurns ?? null : normalizeChatMaxTurns(options.maxTurns);
   let turnCount = 0;
   let guidedRetryCount = 0;
   let architectRetryCount = 0;
