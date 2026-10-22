@@ -28,7 +28,7 @@ export interface ConsumerLease {
   read<O extends ConsumerOperation>(operation: O, body: ContentRequest<O>['body'], options?: SharedConsumerReadOptions): Promise<SharedConsumerReadPage<O>>;
   release(): void;
 }
-interface Desired {
+interface ReadPlan {
   key: string;
   resourceKey: string;
   ownerVersion: number;
@@ -38,13 +38,15 @@ interface Desired {
   body: ContentRequest<ConsumerOperation>['body'];
   options: ReadOptions;
   deadline: number;
+}
+interface Desired extends ReadPlan {
   signal: AbortSignal;
   cleanup(): void;
   resolve(page: ConsumerReadPage): void;
   reject(error: unknown): void;
 }
 interface Subscriber { desired: Desired | null; resource: string | null; notify?: () => void; released: boolean }
-interface Job { desired: Desired; subscribers: Set<Subscriber>; controller: AbortController; dispatched: boolean; cleanup(): void }
+interface Job { desired: ReadPlan; subscribers: Set<Subscriber>; controller: AbortController; dispatched: boolean; cleanup(): void }
 interface Slot { signal: AbortSignal; run(): Promise<unknown>; resolve(value: unknown): void; reject(error: unknown): void; cleanup(): void }
 interface Entry {
   id: string; client: PilotTargetClient; subscribers: Set<Subscriber>; life: AbortController;
@@ -288,8 +290,8 @@ export class ConsumerConnections {
     });
     this.runNext(entry); return promise;
   }
-  private checkDesired(entry: Entry, desired: Desired, scope?: string): void {
-    this.current(entry, desired.signal);
+  private checkDesired(entry: Entry, desired: ReadPlan, signal: AbortSignal, scope?: string): void {
+    this.current(entry, signal);
     if (this.accountTerminal || !entry.authorityValid || entry.authorityEpoch !== desired.authorityEpoch) throw changed();
     const resource = entry.resources.get(desired.resourceKey);
     if (resource?.removed) throw new PilotClientError('not_found');
@@ -303,7 +305,11 @@ export class ConsumerConnections {
     if (entry.job || entry.blocked || entry.controller.signal.aborted) return;
     const first = [...entry.subscribers].find(value => value.desired);
     if (!first?.desired) return;
-    const desired = first.desired;
+    // The shared plan owns its guards and fixed deadline, independently of any reader's signal.
+    const source = first.desired;
+    const desired: ReadPlan = { key: source.key, resourceKey: source.resourceKey, ownerVersion: source.ownerVersion,
+      authorityEpoch: source.authorityEpoch, resume: source.resume, operation: source.operation, body: source.body,
+      options: source.options, deadline: source.deadline };
     const job: Job = { desired, subscribers: new Set([...entry.subscribers].filter(value => value.desired?.key === desired.key)), controller: new AbortController(), dispatched: false, cleanup: () => {} };
     entry.job = job;
     const expiry = deadline(Math.max(1, desired.deadline - this.clock.now())); job.cleanup = () => expiry.dispose();
@@ -315,10 +321,10 @@ export class ConsumerConnections {
         try {
           if (entry.recovering) await guarded(entry.recovering, signal);
           await guarded(this.ensureReady(entry), signal);
-          this.checkDesired(entry, desired);
+          this.checkDesired(entry, desired, signal);
           const scope = stableJson(entry.client.scope());
-          const result = await this.slot(entry, signal, () => { this.checkDesired(entry, desired, scope); job.dispatched = true; return entry.client.read(desired.operation, desired.body, { ...desired.options, signal }); });
-          this.current(entry, signal); this.checkDesired(entry, desired, scope);
+          const result = await this.slot(entry, signal, () => { this.checkDesired(entry, desired, signal, scope); job.dispatched = true; return entry.client.read(desired.operation, desired.body, { ...desired.options, signal }); });
+          this.current(entry, signal); this.checkDesired(entry, desired, signal, scope);
           if (this.clock.now() >= desired.deadline) throw new PilotClientError('snapshot_expired');
           const ref = (desired.body as { ref?: object }).ref;
           const resourceKey = ref ? stableJson(ref) : desired.operation === 'projects.list' ? 'projects' : 'catalog';
@@ -352,7 +358,7 @@ export class ConsumerConnections {
       subscriber.desired = null; desired.cleanup();
       if (error) desired.reject(error);
       else {
-        try { this.checkDesired(entry, desired, stableJson(page!.scope)); desired.resolve(structuredClone(page!)); }
+        try { this.checkDesired(entry, desired, desired.signal, stableJson(page!.scope)); desired.resolve(structuredClone(page!)); }
         catch (failure) { desired.reject(failure); }
       }
     }
@@ -439,8 +445,9 @@ export class ConsumerConnections {
       const previous = entry.streamId;
       this.invalidate(entry, true);
       this.cancelDesired(entry, desired => previous !== null && !desired.resume, changed());
-      for (const subscriber of entry.subscribers) if (subscriber.desired && !subscriber.desired.options.previous) {
-        const desired = subscriber.desired;
+      const plans: ReadPlan[] = [...entry.subscribers].flatMap(subscriber => subscriber.desired ? [subscriber.desired] : []);
+      if (entry.job && !entry.job.controller.signal.aborted) plans.push(entry.job.desired);
+      for (const desired of plans) if (!desired.options.previous) {
         desired.ownerVersion = entry.resources.get(desired.resourceKey)?.version ?? (desired.resourceKey === 'projects' ? entry.state.projectsVersion : entry.state.catalogVersion);
         desired.authorityEpoch = entry.authorityEpoch; desired.resume = false;
       }
@@ -521,7 +528,10 @@ export class ConsumerConnections {
   private recover(entry: Entry, error: unknown): Promise<void> {
     if (entry.recovering) return entry.recovering;
     if (!consumerRetryable(error)) return Promise.reject(error);
-    if (entry.job) for (const subscriber of entry.job.subscribers) if (subscriber.desired && !subscriber.desired.options.previous) subscriber.desired.resume = true;
+    if (entry.job) {
+      if (!entry.job.desired.options.previous) entry.job.desired.resume = true;
+      for (const subscriber of entry.job.subscribers) if (subscriber.desired && !subscriber.desired.options.previous) subscriber.desired.resume = true;
+    }
     this.fence(entry, true); entry.blocked = true;
     if (entry.retryDeadline === null) entry.retryDeadline = this.clock.now() + this.retry.deadlineMs;
     const expiry = deadline(Math.max(1, entry.retryDeadline - this.clock.now()));

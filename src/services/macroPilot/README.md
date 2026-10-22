@@ -272,9 +272,11 @@ a target failure retires only that target's protected state.
 The operation and capability lists are exactly the D1 lists above. `lease.read`
 keeps one replaceable desired request per subscriber. Identical in-flight reads
 coalesce. Canceling one reader leaves other readers active; canceling the last
-reader aborts the shared operation. Returned pages are independent copies and
-are not kept in the owner. A new desired request rejects its predecessor. A
-round-robin admission map allows at most one active reading slot and one waiting
+reader aborts the shared operation. The job owns its read plan, signal and fixed
+deadline; each reader keeps its own cancellation guard at restitution. Removing
+the first reader cannot cancel another reader or restart the shared deadline.
+Returned pages are independent copies and are not kept in the owner. A new
+desired request rejects its predecessor. A round-robin admission map allows at most one active reading slot and one waiting
 admission per target, subject to the configured global read limit. Long polls
 use the separate D1 event slot. With a global read limit of one, another target
 waits until that slot finishes or is canceled; deadlines prevent an indefinite

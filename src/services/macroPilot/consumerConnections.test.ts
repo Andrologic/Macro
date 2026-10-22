@@ -120,6 +120,70 @@ describe('shared consumer ownership', () => {
       expect(h.owner.diagnostics()).toMatchObject({ targets: 0, subscribers: 0, desiredReads: 0, resources: 0 });
     } finally { h.owner.dispose(); }
   });
+  for (const stage of ['before-dispatch', 'before-admission', 'in-flight', 'retry'] as const) for (const canceled of ['leader', 'follower'] as const) {
+    it(`keeps the other shared reader when the ${canceled} signal aborts ${stage}`, async () => {
+      const h = harness({ activeReads: stage === 'before-admission' ? 1 : 2 }); await h.owner.refreshDirectory();
+      const a = h.owner.acquire('instance:a'), a2 = h.owner.acquire('instance:a');
+      const blocker = stage === 'before-admission' ? h.owner.acquire('instance:b') : null;
+      const cancel = new AbortController(); const gate = defer<unknown>(); let readSignal: AbortSignal | undefined, attempts = 0;
+      try {
+        await until(() => h.waiting.size === (blocker ? 2 : 1));
+        h.read(async (id, dispatch, signal) => {
+          if (id === 'instance:b') return gate.promise;
+          readSignal = signal;
+          return stage === 'in-flight' || stage === 'retry' && ++attempts === 1 ? gate.promise : h.terminal(id, dispatch);
+        });
+        const blocking = blocker?.read('projects.list', { instance_id: 'instance:b' }).catch(error => error);
+        if (blocker) await until(() => h.owner.diagnostics().activeReads === 1);
+        const first = a.read('conversation.read', { ref: ref('instance:a') }, canceled === 'leader' ? { signal: cancel.signal } : {}).catch(error => error);
+        const second = a2.read('conversation.read', { ref: ref('instance:a') }, canceled === 'follower' ? { signal: cancel.signal } : {}).catch(error => error);
+        if (stage === 'before-admission') await until(() => h.owner.diagnostics().waitingReads === 1);
+        if (stage === 'in-flight' || stage === 'retry') await until(() => Boolean(readSignal));
+        cancel.abort();
+        if (readSignal) expect(readSignal.aborted).toBe(false);
+        if (blocker) { blocker.release(); await blocking; }
+        if (stage === 'in-flight') {
+          const sent = h.calls.find(value => value.id === 'instance:a' && value.dispatch.kind === 'submit')!;
+          gate.resolve(h.terminal(sent.id, sent.dispatch));
+        }
+        if (stage === 'retry') gate.reject(new PilotClientError('unavailable', 503, true));
+        const [one, two] = await Promise.all([first, second]);
+        expect(canceled === 'leader' ? one : two).toMatchObject({ code: 'context_changed' });
+        expect(canceled === 'leader' ? two : one).toMatchObject({ scope: { instanceId: 'instance:a' } });
+        expect(h.calls.filter(value => value.id === 'instance:a' && value.dispatch.kind === 'submit')).toHaveLength(stage === 'retry' ? 2 : 1);
+        expect(a.state().phase).toBe('ready');
+      } finally { gate.resolve({ malformed: true }); h.owner.dispose(); }
+    });
+  }
+  it('aborts the shared physical read only when its last external signal leaves', async () => {
+    const h = harness(); await h.owner.refreshDirectory(); const a = h.owner.acquire('instance:a'), a2 = h.owner.acquire('instance:a');
+    const firstCancel = new AbortController(), lastCancel = new AbortController(), gate = defer<unknown>(); let readSignal!: AbortSignal;
+    try {
+      await until(() => h.waiting.has('instance:a'));
+      h.read(async (_id, _request, signal) => { readSignal = signal; return gate.promise; });
+      const first = a.read('conversation.read', { ref: ref('instance:a') }, { signal: firstCancel.signal }).catch(error => error);
+      const last = a2.read('conversation.read', { ref: ref('instance:a') }, { signal: lastCancel.signal }).catch(error => error);
+      await until(() => Boolean(readSignal)); firstCancel.abort();
+      expect(await first).toMatchObject({ code: 'context_changed' }); expect(readSignal.aborted).toBe(false);
+      lastCancel.abort(); expect(await last).toMatchObject({ code: 'context_changed' }); expect(readSignal.aborted).toBe(true);
+      gate.resolve({ malformed: true }); await until(() => h.owner.diagnostics().activeReads === 0);
+      expect(h.owner.diagnostics().desiredReads).toBe(0); expect(a.state().phase).toBe('ready');
+    } finally { gate.resolve({ malformed: true }); h.owner.dispose(); }
+  });
+  it('keeps the original shared deadline after its first reader aborts', async () => {
+    const h = harness(); await h.owner.refreshDirectory(); const a = h.owner.acquire('instance:a'), a2 = h.owner.acquire('instance:a');
+    const cancel = new AbortController(), gate = defer<unknown>();
+    try {
+      await until(() => h.waiting.has('instance:a')); h.read(async () => gate.promise);
+      const first = a.read('conversation.read', { ref: ref('instance:a') }, { signal: cancel.signal }).catch(error => error);
+      await until(() => h.calls.some(value => value.dispatch.kind === 'submit')); h.advance(900);
+      const last = a2.read('conversation.read', { ref: ref('instance:a') }).catch(error => error); cancel.abort();
+      expect(await first).toMatchObject({ code: 'context_changed' }); h.advance(101);
+      const sent = h.calls.find(value => value.dispatch.kind === 'submit')!; gate.resolve(h.terminal(sent.id, sent.dispatch));
+      expect(await last).toMatchObject({ code: 'snapshot_expired' }); expect(h.delays).toHaveLength(0);
+      expect(h.calls.filter(value => value.dispatch.kind === 'submit')).toHaveLength(1);
+    } finally { gate.resolve({ malformed: true }); h.owner.dispose(); }
+  });
   it('replaces queued desire without an unbounded queue and admits another target after cancellation', async () => {
     const h = harness({ activeReads: 1 }); await h.owner.refreshDirectory(); const a = h.owner.acquire('instance:a'), b = h.owner.acquire('instance:b');
     try {
