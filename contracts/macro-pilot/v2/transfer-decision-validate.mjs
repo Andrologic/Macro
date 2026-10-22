@@ -77,6 +77,19 @@ const bindingDigest = binding => fingerprint('transfer-binding', binding);
 const bodyDigest = request => { const { operation_id: _id, ...body } = request; return fingerprint('step-body', body); };
 const sourceOf = binding => binding.provenance.source;
 const envelope = (type, fields) => ({ decision_contract: CONTRACT, type, ...fields });
+const progressRevisions = Object.freeze({ reserved: '1', sealed: '2', target_ready: '3' });
+function progressRevision(phase, held = false) {
+  requireThat(Object.hasOwn(progressRevisions, phase));
+  return held ? increment(progressRevisions[phase]) : progressRevisions[phase];
+}
+const consumerKinds = Object.freeze({
+  'lineage.create': ['mutation', 'retry'],
+  reserve: ['mutation', 'retry', 'terminal'],
+  seal: ['mutation', 'retry'], ready: ['mutation', 'retry'],
+  commit: ['mutation', 'retry', 'terminal'], abort: ['mutation', 'retry', 'terminal'],
+  status: ['status'], abort_missing: ['mutation', 'retry', 'terminal', 'status'],
+  source_status: ['source_status'], 'activation.record': ['mutation', 'retry'],
+});
 
 /** Synchronous comparisons only. All context facts must come from the adapter's
  * authenticated current snapshots INSIDE its transaction, never request JSON.
@@ -122,8 +135,13 @@ export function createTransferDecisionValidator(shape) {
         requireThat(value.revision === (value.activation ? increment(value.terminal.decision_revision) : value.terminal.decision_revision));
       }
       if (value.status === 'not_found') requireThat(value.revision === '0' && value.phase === null && value.activation === null && value.source_recovery === 'intact');
-      if (value.status === 'in_progress') requireThat(['reserved', 'sealed', 'target_ready'].includes(value.phase) && value.activation === null && value.source_recovery === 'intact');
-      if (value.status === 'recovery_hold') requireThat(value.source_recovery === 'recovery_hold' && value.activation === null);
+      if (value.status === 'in_progress') requireThat(value.revision === progressRevision(value.phase) && value.activation === null && value.source_recovery === 'intact');
+      if (value.status === 'recovery_hold') {
+        requireThat(value.source_recovery === 'recovery_hold' && value.activation === null);
+        requireThat(value.phase === null ? value.revision === '0' : value.phase === 'recovery_hold'
+          ? Object.keys(progressRevisions).some(phase => value.revision === progressRevision(phase, true))
+          : value.revision === progressRevision(value.phase));
+      }
       if (value.activation) activationRules(value.activation, value.terminal);
     }
     if (definition === 'error') requireThat(value.retryable === ['unavailable', 'instance_offline'].includes(value.code));
@@ -190,7 +208,7 @@ export function createTransferDecisionValidator(shape) {
     requireThat(same([...expected].sort(), record.retries.map(r => r.operation).sort()));
     const stageRevision = record.ready_receipt ? '3' : record.seal_receipt ? '2' : record.reserve_receipt ? '1' : '0';
     if (record.terminal) requireThat(record.terminal.decision_revision === increment(stageRevision) && record.revision === (record.activation ? increment(record.terminal.decision_revision) : record.terminal.decision_revision));
-    else requireThat(record.revision === (record.phase === 'recovery_hold' ? increment(stageRevision) : stageRevision));
+    else requireThat(stageRevision === progressRevision(phase) && record.revision === progressRevision(phase, record.phase === 'recovery_hold'));
   }
   function validateObject(value, definition) {
     try { assertObject(value, definition); return ok(); } catch (error) { return caught(error); }
@@ -527,6 +545,8 @@ export function createTransferDecisionValidator(shape) {
     try {
       assertObject(request, 'request');
       requireThat(result?.valid === true && ['mutation', 'retry', 'terminal', 'status', 'source_status'].includes(result.kind));
+      const operation = request.operation === 'reconcile' ? request.body.action : request.operation;
+      requireThat(Object.hasOwn(consumerKinds, operation) && consumerKinds[operation].includes(result.kind), 'conflict');
       const fields = result.kind === 'mutation' ? ['valid', 'kind', 'errors', 'ledger', 'record', 'receipt', 'reservation_bytes'] : ['retry', 'terminal'].includes(result.kind) ? ['valid', 'kind', 'errors', 'receipt', 'status'] : ['valid', 'kind', 'errors', 'status'];
       requireThat(Reflect.ownKeys(result).length === fields.length && fields.every(key => Object.hasOwn(result, key)) && Array.isArray(result.errors) && result.errors.length === 0);
       if (request.operation === 'reconcile' && request.body.action === 'source_status') {
@@ -550,6 +570,10 @@ export function createTransferDecisionValidator(shape) {
       }
       requireThat(result.kind !== 'source_status');
       const r = result.receipt; requireThat(r !== null);
+      const receiptType = result.kind === 'terminal' ? 'terminal_receipt'
+        : { reserve: 'step_receipt', seal: 'step_receipt', ready: 'step_receipt', commit: 'terminal_receipt', abort: 'terminal_receipt', reconcile: 'terminal_receipt', 'activation.record': 'activation_receipt' }[request.operation];
+      requireThat(r.type === receiptType, 'conflict');
+      if (r.type === 'terminal_receipt' && result.kind !== 'terminal') requireThat(r.outcome === (request.operation === 'commit' ? 'committed' : 'aborted'), 'conflict');
       if (r.type === 'step_receipt') {
         assertObject(r, 'stepReceipt');
         requireThat(['reserve', 'seal', 'ready'].includes(request.operation) && r.operation === request.operation && r.transfer_id === b.transfer_id && r.binding_digest === bindingDigest(b) && r.previous_revision === request.expected_revision && r.revision === increment(request.expected_revision), 'conflict');

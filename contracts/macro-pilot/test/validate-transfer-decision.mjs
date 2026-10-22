@@ -9,12 +9,36 @@ import {
   createTransferDecisionValidator,
 } from '../v2/transfer-decision-validate.mjs';
 import { scenario } from './transfer-decision-vectors.mjs';
+import { verifyReceptionMatrix } from './transfer-decision-reception-matrix.mjs';
 
 const root = new URL('../v2/', import.meta.url);
 const schema = JSON.parse(readFileSync(new URL('transfer-decision.schema.json', root), 'utf8'));
 const clone = structuredClone;
 const s = scenario();
+const receptionMatrix = verifyReceptionMatrix();
 const steps = ['birth', 'reserve', 'seal', 'ready', 'commit', 'activate'];
+// C1 uses the current native ConversationContentToken DTO verbatim. The
+// companion TypeScript probe imports that generated DTO, rather than copying it.
+assert.deepEqual(s.contentToken, { version: 1, incarnation: '0123456789abcdef0123456789abcdef', revision: '9007199254740993' });
+assert.equal(s.frozen.content_incarnation, s.contentToken.incarnation);
+assert.equal(s.frozen.content_revision, s.contentToken.revision);
+for (const incarnation of ['00000000-0000-0000-0000-000000000001', 'A'.repeat(32), '0'.repeat(31), '0'.repeat(33), '0'.repeat(32) + '\n']) {
+  assert.equal(validateObject({ ...s.frozen, content_incarnation: incarnation }, 'frozen').valid, false);
+}
+// PilotStore.lifecycleVersion returns 0 for a fresh account, not revision 1.
+const zeroLifecycle = scenario(false, 0);
+assert.equal(zeroLifecycle.binding.initiator.account_epoch, '0');
+for (const stage of steps) {
+  assert.equal(validateObject(zeroLifecycle[stage].context, 'context').valid, true);
+  assert.equal(validateExchange(zeroLifecycle[stage].request, zeroLifecycle[stage].result, stage === 'birth' ? undefined : zeroLifecycle.expectation(zeroLifecycle[stage].request.operation)).valid, true);
+}
+const advancedLifecycle = clone(zeroLifecycle.commit.context);
+advancedLifecycle.actor.identity.account_epoch = '1';
+assert.equal(planDecision(zeroLifecycle.commit.request, zeroLifecycle.ready.result.ledger, zeroLifecycle.ready.result.record, advancedLifecycle).code, 'authority_changed');
+for (const field of ['session_revision', 'source_access_revision', 'target_access_revision']) {
+  const actor = clone(zeroLifecycle.binding.initiator); actor[field] = '0';
+  assert.equal(validateObject(actor, 'actor').valid, false);
+}
 for (const step of steps) {
   const value = s[step];
   assert.equal(validateObject(value.request).valid, true, step);
@@ -502,6 +526,8 @@ const malformedPrepared = clone(s.ready.request); malformedPrepared.body.prepare
 const invalid = { 'extra-private-metadata': extra, 'forged-ready-boolean': malformedPrepared, 'origin-from-body': injectedOrigin, 'frozen-wrong-binding': { ...s.reserve.request, body: { ...s.reserve.request.body, frozen: { ...s.frozen, binding_digest: s.hash('0') } } }, 'terminal-without-preparation': { ...s.commit.result.receipt, prepared: null }, 'recovery-hold-with-terminal': { ...inherited.record, terminal: s.commit.result.receipt }, 'revision-number': { ...s.reserve.request, expected_revision: 42 }, 'revision-leading-zero': { ...s.reserve.request, expected_revision: '01' }, 'revision-overflow': { ...s.reserve.request, expected_revision: '9223372036854775808' }, 'unknown-contract': { ...s.reserve.request, decision_contract: 'transfer-decision-2' }, 'unknown-operation': { ...s.commit.request, operation: 'content.read' }, 'unknown-format': { ...s.ready.request, body: { prepared: { ...s.prepared, format_version: '2' } } } };
 
 valid['status-activated'] = activatedStatus.status;
+valid['request-zero-account-epoch'] = zeroLifecycle.reserve.request;
+invalid['request-uuid-content-incarnation'] = { ...s.reserve.request, body: { ...s.reserve.request.body, frozen: { ...s.frozen, content_incarnation: '00000000-0000-0000-0000-000000000001' } } };
 invalid['status-terminal-before-decision'] = { ...terminalStatus.status, revision: '0' };
 invalid['status-terminal-extra-revision-without-activation'] = { ...terminalStatus.status, revision: '5' };
 invalid['status-activated-without-application-revision'] = { ...activatedStatus.status, revision: '4' };
@@ -537,4 +563,5 @@ for (const version of ['v1', 'v2']) {
   assert.equal(old(JSON.parse(readFileSync(new URL(`fixtures/valid/${example}.json`, oldRoot), 'utf8'))), true);
 }
 console.log(`Decision contract: ${fixtures} fixtures, CAS/retry, auth bindings, terminal races, tombstone, restore, enrollment, capacity, UTF-8 and exact counters passed.`);
+console.log(`Reception matrix: ${JSON.stringify(receptionMatrix)}`);
 console.log(`Maximum canonical JSON bytes per complete closed schema alternative: ${JSON.stringify(bounds)}`);

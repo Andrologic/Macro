@@ -35,14 +35,14 @@
     "format_version": "1",
     "binding_digest": "e55b3a7a088968fceb10ccf848c4a5d304da3e16f81ee11f16931ce04247475b",
     "ownership_revision": "9007199254740993",
-    "content_incarnation": "00000000-0000-0000-0000-000000000008",
+    "content_incarnation": "0123456789abcdef0123456789abcdef",
     "content_revision": "9007199254740993",
     "sha256": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
   },
   "manifest": {
     "format_version": "1",
     "binding_digest": "e55b3a7a088968fceb10ccf848c4a5d304da3e16f81ee11f16931ce04247475b",
-    "frozen_digest": "367f73208d81776ed2729add2fc4f464dd4d38946baf7b7bd4d81a300998dbe0",
+    "frozen_digest": "94f0f343badf920801cdc19cccf626c12a5e8b91602d002a3024ffc80333e891",
     "content_contract_sha256": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
     "manifest_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
     "source_revision": "9007199254740993"
@@ -50,7 +50,7 @@
   "prepared": {
     "format_version": "1",
     "binding_digest": "e55b3a7a088968fceb10ccf848c4a5d304da3e16f81ee11f16931ce04247475b",
-    "manifest_digest": "24da390312da5f504e5831995a7711ebc7954b41dcd0cf34834e59758f8bb81e",
+    "manifest_digest": "a21e8e04d4c009a7762c94ea57763439cbcce04deb49d4fdfe753caef889a57d",
     "import_id": "00000000-0000-0000-0000-000000000009",
     "target_conversation_id": "new-chat-synthetic",
     "lineage_id": "00000000-0000-0000-0000-000000000010",
@@ -64,7 +64,7 @@
     "operation": "reserve",
     "transfer_id": "00000000-0000-0000-0000-000000000004",
     "binding_digest": "e55b3a7a088968fceb10ccf848c4a5d304da3e16f81ee11f16931ce04247475b",
-    "subject_digest": "367f73208d81776ed2729add2fc4f464dd4d38946baf7b7bd4d81a300998dbe0",
+    "subject_digest": "94f0f343badf920801cdc19cccf626c12a5e8b91602d002a3024ffc80333e891",
     "previous_revision": "0",
     "revision": "1",
     "phase": "reserved"
@@ -76,7 +76,7 @@
     "operation": "seal",
     "transfer_id": "00000000-0000-0000-0000-000000000004",
     "binding_digest": "e55b3a7a088968fceb10ccf848c4a5d304da3e16f81ee11f16931ce04247475b",
-    "subject_digest": "24da390312da5f504e5831995a7711ebc7954b41dcd0cf34834e59758f8bb81e",
+    "subject_digest": "a21e8e04d4c009a7762c94ea57763439cbcce04deb49d4fdfe753caef889a57d",
     "previous_revision": "1",
     "revision": "2",
     "phase": "sealed"
@@ -88,7 +88,7 @@
     "operation": "ready",
     "transfer_id": "00000000-0000-0000-0000-000000000004",
     "binding_digest": "e55b3a7a088968fceb10ccf848c4a5d304da3e16f81ee11f16931ce04247475b",
-    "subject_digest": "6249bd76835ac6dec14e5699b95bfe462253af0f7a43baa3cb3b63324722992b",
+    "subject_digest": "d9209e0f816d61188d095f9d72cf27cf60f011d06407b82965daa92376418bfb",
     "previous_revision": "2",
     "revision": "3",
     "phase": "target_ready"
@@ -107,7 +107,7 @@
     "epoch": "9007199254740993",
     "target_instance_id": "target-synthetic",
     "binding_digest": "e55b3a7a088968fceb10ccf848c4a5d304da3e16f81ee11f16931ce04247475b",
-    "frozen_digest": "367f73208d81776ed2729add2fc4f464dd4d38946baf7b7bd4d81a300998dbe0",
+    "frozen_digest": "94f0f343badf920801cdc19cccf626c12a5e8b91602d002a3024ffc80333e891",
     "decision_revision": "4",
     "outcome": "aborted",
     "reason": "user_cancelled",
@@ -119,20 +119,20 @@
     {
       "operation": "reserve",
       "operation_id": "00000000-0000-0000-0000-000000000015",
-      "request_digest": "10b2aa08f9228b8de004c485d310440c2e5fd1f33ef1c2dbfc569b6ca08bde1f",
-      "body_digest": "1f49b7f058ff6f7b147fda896fdcf965899cf36ac6daab2b0b6e4b713e65fdb8"
+      "request_digest": "6c63d93dae7fa5c5605b68718d89b0b5c136a13ec5ae18ea217bc97b29493f06",
+      "body_digest": "7b319651075d243a517a855695db6c0d720722661e29e59690b18ff943549030"
     },
     {
       "operation": "seal",
       "operation_id": "00000000-0000-0000-0000-000000000019",
-      "request_digest": "a16df09c84dc7abc1ed9c789c226734e3d3ba075d7c1a982e68a1de52971d8e1",
-      "body_digest": "2a208636db0e7cab2f23dd309859fc17c0c65701aae775fdb556250ec4e8876a"
+      "request_digest": "08e768257545f27b6e23cc728661c594e997675fc90d3bd2ee8e09d2eaa2a230",
+      "body_digest": "64dcd27741c77b28379c8b09b39564e586d8f7bb0f8b541b71fe84ccb8b0347e"
     },
     {
       "operation": "ready",
       "operation_id": "00000000-0000-0000-0000-000000000023",
-      "request_digest": "56e21cbb77052a88bc12f336e7342933e0911fbb98ae7f687911cf8629c688b8",
-      "body_digest": "1c2f6aa5757a975d0829a82a723e5f711300b898520443f63a4498ab7d5103d9"
+      "request_digest": "ffd39e13aa9a9d3b7d0db06cdbb022bfc210c4268665f168305c381278b59da5",
+      "body_digest": "f2a7d91e080d6477c39fce25f82d932dfc75d5c6b1e57e1c1d72d2c6ef5d59fe"
     },
     {
       "operation": "abort",

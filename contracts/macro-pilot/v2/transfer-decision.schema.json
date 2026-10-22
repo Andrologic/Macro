@@ -57,6 +57,13 @@
       "minLength": 36,
       "maxLength": 36
     },
+    "contentIncarnation": {
+      "type": "string",
+      "minLength": 32,
+      "maxLength": 32,
+      "pattern": "^[0-9a-f]{32}$",
+      "not": { "pattern": "[^0-9a-f]" }
+    },
     "decimal": {
       "type": "string",
       "minLength": 1,
@@ -163,7 +170,7 @@
           "$ref": "#/$defs/positive"
         },
         "account_epoch": {
-          "$ref": "#/$defs/positive"
+          "$ref": "#/$defs/decimal"
         },
         "source_access_revision": {
           "$ref": "#/$defs/positive"
@@ -235,7 +242,7 @@
           "$ref": "#/$defs/positive"
         },
         "content_incarnation": {
-          "$ref": "#/$defs/uuid"
+          "$ref": "#/$defs/contentIncarnation"
         },
         "content_revision": {
           "$ref": "#/$defs/decimal"

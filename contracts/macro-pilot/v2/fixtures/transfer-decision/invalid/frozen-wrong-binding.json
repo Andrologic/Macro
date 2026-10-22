@@ -37,7 +37,7 @@
       "format_version": "1",
       "binding_digest": "0000000000000000000000000000000000000000000000000000000000000000",
       "ownership_revision": "9007199254740993",
-      "content_incarnation": "00000000-0000-0000-0000-000000000008",
+      "content_incarnation": "0123456789abcdef0123456789abcdef",
       "content_revision": "9007199254740993",
       "sha256": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
     },

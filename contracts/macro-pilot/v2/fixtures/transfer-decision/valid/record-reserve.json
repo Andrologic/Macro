@@ -35,7 +35,7 @@
     "format_version": "1",
     "binding_digest": "e55b3a7a088968fceb10ccf848c4a5d304da3e16f81ee11f16931ce04247475b",
     "ownership_revision": "9007199254740993",
-    "content_incarnation": "00000000-0000-0000-0000-000000000008",
+    "content_incarnation": "0123456789abcdef0123456789abcdef",
     "content_revision": "9007199254740993",
     "sha256": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
   },
@@ -48,7 +48,7 @@
     "operation": "reserve",
     "transfer_id": "00000000-0000-0000-0000-000000000004",
     "binding_digest": "e55b3a7a088968fceb10ccf848c4a5d304da3e16f81ee11f16931ce04247475b",
-    "subject_digest": "367f73208d81776ed2729add2fc4f464dd4d38946baf7b7bd4d81a300998dbe0",
+    "subject_digest": "94f0f343badf920801cdc19cccf626c12a5e8b91602d002a3024ffc80333e891",
     "previous_revision": "0",
     "revision": "1",
     "phase": "reserved"
@@ -61,8 +61,8 @@
     {
       "operation": "reserve",
       "operation_id": "00000000-0000-0000-0000-000000000015",
-      "request_digest": "10b2aa08f9228b8de004c485d310440c2e5fd1f33ef1c2dbfc569b6ca08bde1f",
-      "body_digest": "1f49b7f058ff6f7b147fda896fdcf965899cf36ac6daab2b0b6e4b713e65fdb8"
+      "request_digest": "6c63d93dae7fa5c5605b68718d89b0b5c136a13ec5ae18ea217bc97b29493f06",
+      "body_digest": "7b319651075d243a517a855695db6c0d720722661e29e59690b18ff943549030"
     }
   ],
   "hold_phase": null

@@ -51,6 +51,12 @@ conversation IDs use the same portable character set, 1 to 128 characters.
 New transfer, lineage, installation, recovery, challenge, delivery and receipt
 IDs use canonical lowercase UUID strings. SHA-256 is lowercase hexadecimal.
 IDs compare exactly, without Unicode normalization or splitting an emitted ID.
+Frozen.content_incarnation is the existing native C1 ConversationContentToken
+incarnation: exactly 32 lowercase hexadecimal characters, compared byte for byte.
+It is not a UUID. The native version=1 token's incarnation and exact decimal
+revision project directly to content_incarnation/content_revision, without
+inserting hyphens, mapping namespaces or converting the revision through Number.
+Its incarnation can change on replacement/overflow; it is not a lineage ID.
 
 All epochs, revisions and byte counters are canonical decimal strings in
 `[0, 9223372036854775807]`. Positive fields exclude zero. Signs, leading zeros,
@@ -58,6 +64,9 @@ fractions, exponent notation and JSON numbers are rejected. Arithmetic uses
 checked BigInt or exact native integers. Adapters may convert an existing Number
 only after `Number.isSafeInteger`. Overflow refuses the operation. Generation
 tokens from PilotContent remain opaque strings, not monotonic counters.
+Actor.account_epoch is the actual PilotStore lifecycleVersion(account_id), whose
+initial value is zero before global revocation. Preserve that nonnegative decimal
+without adding one. Session and instance-access revisions remain positive.
 
 Canonical JSON sorts object keys by UTF-16 code unit order and preserves array
 order. Arrays require the standard Array prototype and exactly their own data
@@ -202,6 +211,22 @@ digest, target, prepared commitment and conversation; it cannot qualify another
 decision. These relations also apply to restored historical terminal statuses.
 Timestamps and TTLs cannot substitute for these states.
 
+Nonterminal statuses use the same phase/revision relations as the journal:
+
+| Status | Exposed phase | Revision |
+| --- | --- | --- |
+| in_progress | reserved / sealed / target_ready | 1 / 2 / 3 respectively |
+| recovery_hold without a journal | null | 0 |
+| recovery_hold inherited before maintenance | reserved / sealed / target_ready | 1 / 2 / 3 respectively |
+| recovery_hold after maintenance | recovery_hold | 2, 3 or 4 |
+| not_found | null | 0 |
+
+The post-maintenance status hides the original hold_phase, so any of 2/3/4 is
+possible there. The journal retains hold_phase and checks its exact revision.
+Repeated maintenance preserves that revision. A nonterminal hold never exposes
+committed or aborted. Historical terminal statuses retain their terminal and
+current recovery barriers independently.
+
 Retry identity is account incarnation, T, operation and operation_id. Fingerprints
 cover the complete validated request, including expected revision and commitment.
 Same identity/body returns its stored receipt and current status; another body is
@@ -312,13 +337,13 @@ These limits apply only to closed metadata, with no transcript length limit.
 
 | Object | Admission cap in canonical JSON UTF-8 bytes | Complete schema upper bound |
 | --- | ---: | ---: |
-| Request | 16,384 | 2,832 |
+| Request | 16,384 | 2,828 |
 | Attestation | 16,384 | 877 |
 | Trusted context | 16,384 | 8,751 |
-| Independent receive expectation | 16,384 | 5,646 |
+| Independent receive expectation | 16,384 | 5,642 |
 | Terminal | 8,192 | 2,073 |
 | Ledger | 8,192 | 3,885 |
-| Journal | 131,072 | 9,184 |
+| Journal | 131,072 | 9,180 |
 
 Conformance computes the maximum of every alternative from closed string widths,
 object properties and array cardinalities. It also exercises maximum-width valid
@@ -359,6 +384,27 @@ commit. Do not place an await between those checks and writes.
 Reception has a separate correlation boundary. validateExchange compares all
 available identities and commitments across request, receipt, current status,
 ledger and journal. Individually valid objects cannot be mixed across sources.
+It first closes the consumer operation/action/result-kind relation:
+
+| Operation/action | Allowed result kinds |
+| --- | --- |
+| lineage.create | mutation, retry |
+| reserve | mutation, retry, terminal |
+| seal / ready | mutation, retry |
+| commit / abort | mutation, retry, terminal |
+| reconcile status | status |
+| reconcile abort_missing | mutation, retry, terminal, status |
+| reconcile source_status | source_status |
+| activation.record | mutation, retry |
+
+A status read cannot acknowledge a tombstone mutation, even when its journal and
+request digests are individually consistent. Maintenance is a separate trusted
+adapter entry and does not broaden this consumer matrix. A terminal kind always
+carries a terminal receipt. Mutation/retry uses the operation's own receipt:
+birth for lineage.create, step for reserve/seal/ready, terminal for commit/abort/
+abort_missing, and activation for activation.record. A commit mutation/retry is
+committed; abort/abort_missing mutation/retry is aborted. A terminal winner can
+instead expose the outcome that won a commit/abort race.
 Every transfer retry/terminal result includes a non-null current status, including
 historical step receipts and adapter maintenance returning an existing terminal.
 Only a birth retry uses the separate null-status variant. An independently known
@@ -396,6 +442,8 @@ in the relay.
 
 Contract tests cover both roots' refusal of these objects, exact counters and
 UTF-8, closed shapes, correlation/auth snapshots, state/CAS/retry, terminal races,
+168 nonterminal status profiles, 50 operation/action/kind cases and receipt
+families, native C1 representation and the zero initial lifecycle epoch,
 missing reserve and delayed arrival, initial enrollment, server restore, recovery
 reads under a different session, pin/application separation and resource bounds.
 They prove neither native freeze nor real SQLite concurrency, durable pin,

@@ -1,8 +1,8 @@
 // Synthetic trusted-channel facts for conformance, never native proof or auth.
 import assert from 'node:assert/strict';
-import { fingerprint, planDecision } from '../v2/transfer-decision-validate.mjs';
+import { fingerprint, fromSafeInteger, planDecision } from '../v2/transfer-decision-validate.mjs';
 
-export function scenario(maximal = false) {
+export function scenario(maximal = false, lifecycleVersion) {
   const clone = structuredClone;
   let sequence = 1;
   const uuid = () => `00000000-0000-0000-0000-${String(sequence++).padStart(12, '0')}`;
@@ -13,7 +13,7 @@ export function scenario(maximal = false) {
   const generation = uuid();
   const source = { relay_origin: origin, account_id: opaque('account'), source_instance_id: opaque('source'), source_conversation_id: opaque('chat') };
   const provenance = { source, lineage_id: uuid(), installation_id: uuid(), birth_generation: generation };
-  const actor = { account_id: source.account_id, session_id: opaque('initiator-session'), device_id: opaque('initiator-device'), session_revision: counter, account_epoch: counter, source_access_revision: counter, target_access_revision: counter };
+  const actor = { account_id: source.account_id, session_id: opaque('initiator-session'), device_id: opaque('initiator-device'), session_revision: counter, account_epoch: lifecycleVersion === undefined ? counter : fromSafeInteger(lifecycleVersion), source_access_revision: counter, target_access_revision: counter };
   const binding = { transfer_id: uuid(), provenance, epoch: counter, target_instance_id: opaque('target'), relay_recovery_generation: generation, initiator: actor, source_producer_generation: opaque('producer-source'), target_producer_generation: opaque('producer-target') };
   const context = {
     authority_origin: origin, recovery_generation: generation, history: 'intact', actor: { identity: actor, state: 'active' },
@@ -22,7 +22,11 @@ export function scenario(maximal = false) {
     proofs: [], supported_context_contracts: maximal ? '0123456789abcdef'.split('').map(hash) : [hash('e')], recovery_access: null,
     capacity: { used_bytes: '0', reserved_bytes: '0', limit_bytes: '33554432' }, receipt_id: uuid(), loopback_test_origin: null,
   };
-  const frozen = { format_version: '1', binding_digest: fingerprint('transfer-binding', binding), ownership_revision: counter, content_incarnation: uuid(), content_revision: counter, sha256: hash('f') };
+  // Exact C1 DTO representation from ConversationContentToken, without UUID
+  // conversion. Keep the allocated synthetic sequence stable for other IDs.
+  uuid();
+  const contentToken = { version: 1, incarnation: '0123456789abcdef0123456789abcdef', revision: counter };
+  const frozen = { format_version: '1', binding_digest: fingerprint('transfer-binding', binding), ownership_revision: counter, content_incarnation: contentToken.incarnation, content_revision: contentToken.revision, sha256: hash('f') };
   const manifest = { format_version: '1', binding_digest: frozen.binding_digest, frozen_digest: fingerprint('frozen', frozen), content_contract_sha256: hash('e'), manifest_sha256: hash('a'), source_revision: counter };
   const prepared = { format_version: '1', binding_digest: frozen.binding_digest, manifest_digest: fingerprint('manifest', manifest), import_id: uuid(), target_conversation_id: opaque('new-chat'), lineage_id: uuid(), mapping_sha256: hash('b'), preparation_sha256: hash('c') };
   const request = (operation, revision, body, transfer = true) => ({ decision_contract: 'transfer-decision-1', type: 'decision_request', operation, operation_id: uuid(), expected_revision: revision, body, ...(transfer ? { transfer_id: binding.transfer_id } : {}) });
@@ -63,5 +67,5 @@ export function scenario(maximal = false) {
   // Stand-in for independently retained local native journal facts, not fields
   // extracted from the response passed to validateExchange.
   const expectation = operation => ({ binding: clone(binding), frozen: clone(frozen), manifest: ['seal', 'ready', 'commit', 'abort', 'activation.record'].includes(operation) ? clone(manifest) : null, prepared: ['ready', 'commit', 'abort', 'activation.record'].includes(operation) ? clone(prepared) : null, terminal: operation === 'activation.record' ? clone(knownTerminal) : null });
-  return { uuid, opaque, hash, source, provenance, binding, context, frozen, manifest, prepared, knownTerminal, request, attest, call, expectation, birth, reserve, seal, ready, commit, activate };
+  return { uuid, opaque, hash, source, provenance, binding, context, contentToken, frozen, manifest, prepared, knownTerminal, request, attest, call, expectation, birth, reserve, seal, ready, commit, activate };
 }

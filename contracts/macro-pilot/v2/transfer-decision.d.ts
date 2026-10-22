@@ -2,15 +2,16 @@
 // String counters are canonical checked i64 decimals, never JavaScript numbers.
 export type DecisionId = string;
 export type DecisionUuid = string;
+export type DecisionContentIncarnation = string;
 export type DecisionDecimal = string;
 export type DecisionPositive = string;
 export type DecisionHash = string;
 export type DecisionOrigin = string;
 export type DecisionSource = { "relay_origin": DecisionOrigin; "account_id": DecisionId; "source_instance_id": DecisionId; "source_conversation_id": DecisionId };
 export type DecisionProvenance = { "source": DecisionSource; "lineage_id": DecisionUuid; "installation_id": DecisionUuid; "birth_generation": DecisionUuid };
-export type DecisionActor = { "account_id": DecisionId; "session_id": DecisionId; "device_id": DecisionId; "session_revision": DecisionPositive; "account_epoch": DecisionPositive; "source_access_revision": DecisionPositive; "target_access_revision": DecisionPositive };
+export type DecisionActor = { "account_id": DecisionId; "session_id": DecisionId; "device_id": DecisionId; "session_revision": DecisionPositive; "account_epoch": DecisionDecimal; "source_access_revision": DecisionPositive; "target_access_revision": DecisionPositive };
 export type DecisionBinding = { "transfer_id": DecisionUuid; "provenance": DecisionProvenance; "epoch": DecisionPositive; "target_instance_id": DecisionId; "relay_recovery_generation": DecisionUuid; "initiator": DecisionActor; "source_producer_generation": DecisionId; "target_producer_generation": DecisionId };
-export type DecisionFrozen = { "format_version": "1"; "binding_digest": DecisionHash; "ownership_revision": DecisionPositive; "content_incarnation": DecisionUuid; "content_revision": DecisionDecimal; "sha256": DecisionHash };
+export type DecisionFrozen = { "format_version": "1"; "binding_digest": DecisionHash; "ownership_revision": DecisionPositive; "content_incarnation": DecisionContentIncarnation; "content_revision": DecisionDecimal; "sha256": DecisionHash };
 export type DecisionManifest = { "format_version": "1"; "binding_digest": DecisionHash; "frozen_digest": DecisionHash; "content_contract_sha256": DecisionHash; "manifest_sha256": DecisionHash; "source_revision": DecisionDecimal };
 export type DecisionPrepared = { "format_version": "1"; "binding_digest": DecisionHash; "manifest_digest": DecisionHash; "import_id": DecisionUuid; "target_conversation_id": DecisionId; "lineage_id": DecisionUuid; "mapping_sha256": DecisionHash; "preparation_sha256": DecisionHash };
 export type DecisionBirthBody = { "provenance": DecisionProvenance; "mode": "created" | "initial_existing"; "creation_digest": DecisionHash };
@@ -41,6 +42,7 @@ export type DecisionExpectation = { "binding": DecisionBinding; "frozen": Decisi
 export interface DecisionDefinitions {
   id: DecisionId;
   uuid: DecisionUuid;
+  contentIncarnation: DecisionContentIncarnation;
   decimal: DecisionDecimal;
   positive: DecisionPositive;
   hash: DecisionHash;
