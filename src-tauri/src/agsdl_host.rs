@@ -1,7 +1,7 @@
 //! Native ownership of the resident execution webview. A label is not an identity.
 use crate::core::db_state::DbPool;
 use crate::db::agsdl_execution::{self as repository, dto::EngineOwner, failure, Result};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{
     atomic::{AtomicBool, AtomicUsize, Ordering},
     Arc, Mutex,
@@ -16,6 +16,7 @@ struct Incarnation {
     lifecycle: Arc<tokio::sync::RwLock<()>>,
     live: AtomicBool,
     ready: AtomicBool,
+    retired: tokio_util::sync::CancellationToken,
     loads: AtomicUsize,
     owners: Mutex<BTreeMap<String, EngineOwner>>,
     qa_request: Mutex<Option<(String, String)>>,
@@ -235,6 +236,7 @@ fn retire(host: &Arc<Incarnation>, database: &DbPool, app: &tauri::AppHandle) {
         return;
     }
     host.ready.store(false, Ordering::SeqCst);
+    host.retired.cancel();
     host.compiler.close();
     let database = database.clone();
     let host = host.clone();
@@ -370,6 +372,7 @@ pub(crate) fn install(app: &tauri::AppHandle) -> tauri::Result<()> {
         lifecycle: Arc::new(tokio::sync::RwLock::new(())),
         live: AtomicBool::new(true),
         ready: AtomicBool::new(false),
+        retired: Default::default(),
         loads: AtomicUsize::new(0),
         owners: Mutex::new(BTreeMap::new()),
         qa_request: Mutex::new(None),
@@ -446,16 +449,23 @@ pub(crate) fn execution_host_ready(
     let host = state.authenticate(&webview)?;
     if !host.ready.swap(true, Ordering::SeqCst) {
         // Do not await the compiler here: the JS mailbox starts after this handshake.
-        let generation = host.generation.clone();
+        let database = app.state::<DbPool>().inner().clone();
+        let gate = state.admission_lock();
+        let recovering = host.clone();
         // This synchronous command runs on the main thread, outside a Tokio context.
-        tauri::async_runtime::spawn(async move {
-            if let Err(error) = reattach_retained(&app, &generation).await {
-                tracing::warn!(code = %error.code, "Execution host recovery did not complete");
-            }
-        });
+        tauri::async_runtime::spawn(reattach_retained(
+            database,
+            recovering,
+            gate,
+            std::time::Duration::from_secs(2),
+        ));
     }
     Ok(host.generation.clone())
 }
+
+#[cfg(test)]
+#[path = "agsdl_host_recovery_tests.rs"]
+mod recovery_tests;
 
 #[cfg(test)]
 mod tests {
@@ -468,6 +478,7 @@ mod tests {
             lifecycle: Arc::new(tokio::sync::RwLock::new(())),
             live: AtomicBool::new(true),
             ready: AtomicBool::new(true),
+            retired: Default::default(),
             loads: AtomicUsize::new(0),
             owners: Mutex::new(BTreeMap::new()),
             qa_request: Mutex::new(None),
@@ -500,6 +511,7 @@ mod tests {
             lifecycle: Arc::new(tokio::sync::RwLock::new(())),
             live: AtomicBool::new(true),
             ready: AtomicBool::new(false),
+            retired: Default::default(),
             loads: AtomicUsize::new(0),
             owners: Mutex::new(BTreeMap::new()),
             qa_request: Mutex::new(None),
@@ -510,6 +522,7 @@ mod tests {
             lifecycle: Arc::new(tokio::sync::RwLock::new(())),
             live: AtomicBool::new(true),
             ready: AtomicBool::new(false),
+            retired: Default::default(),
             loads: AtomicUsize::new(0),
             owners: Mutex::new(BTreeMap::new()),
             qa_request: Mutex::new(None),
@@ -708,67 +721,121 @@ pub(crate) async fn execution_host_mark_uncertain(
     Ok(())
 }
 
-async fn reattach_retained(app: &tauri::AppHandle, generation: &str) -> Result<()> {
-    let database = app.state::<DbPool>();
-    let pool = database
-        .wait_until_ready()
-        .await
-        .map_err(|_| failure("STORAGE", "", "Execution database unavailable"))?;
-    let state = app.state::<HostState>();
-    let lease = state.start_lease().await?;
-    if lease.generation() != generation {
-        return Err(failure(
-            "RUNTIME_UNAVAILABLE",
-            "",
-            "Recovery generation changed",
-        ));
+// One supervisor belongs to the physical incarnation. Transient failures are
+// retried at a bounded rate until retirement; an old Start receipt never dispatches work.
+async fn reattach_retained(
+    database: DbPool,
+    host: Arc<Incarnation>,
+    gate: Arc<tokio::sync::Mutex<()>>,
+    retry_delay: std::time::Duration,
+) {
+    let mut incompatible = BTreeSet::new();
+    while host.live.load(Ordering::SeqCst) {
+        let pool = tokio::select! {
+            _ = host.retired.cancelled() => return,
+            pool = database.wait_until_ready() => pool,
+        };
+        let result = match pool {
+            Ok(pool) => reattach_pass(&pool, &host, &gate, &mut incompatible).await,
+            Err(_) => Err(failure("STORAGE", "", "Execution database unavailable")),
+        };
+        match result {
+            Ok(false) => return, // Every retained candidate is attached or incompatible.
+            Ok(true) => {}
+            Err(error) => tracing::warn!(code = %error.code, "Execution host recovery will retry"),
+        }
+        tokio::select! {
+            _ = host.retired.cancelled() => return,
+            _ = tokio::time::sleep(retry_delay) => {},
+        }
     }
+}
+
+async fn reattach_pass(
+    pool: &sqlx::SqlitePool,
+    host: &Arc<Incarnation>,
+    gate: &tokio::sync::Mutex<()>,
+    incompatible: &mut BTreeSet<String>,
+) -> Result<bool> {
+    // Never hold the lifecycle lease while sleeping between scans. Retirement
+    // still waits for a committed owner to be recorded before revoking it.
+    let lease = HostStartLease {
+        host: host.clone(),
+        _guard: host.lifecycle.clone().read_owned().await,
+    };
+    lease.ensure_live()?;
     let mut after = String::new();
+    let mut retry_needed = false;
     loop {
-        let candidates = repository::retained_for_resume(&pool, &after).await?;
+        let candidates = repository::retained_for_resume(pool, &after).await?;
         if candidates.is_empty() {
-            break;
+            return Ok(retry_needed);
         }
         for (snapshot, capture) in candidates {
             after = snapshot.system_start_id.clone();
             lease.ensure_live()?;
-            if lease.owner(&snapshot.system_start_id).is_ok() {
-                continue;
-            }
-            if capture.implementation_digest != "macro-native-host/1" {
-                continue;
-            }
-            let verified = state
-                .compile(
-                    snapshot.source.clone(),
-                    snapshot.authored_source.clone(),
-                    capture.registry_json,
-                )
-                .await?;
-            let result: serde_json::Value = serde_json::from_str(&verified.result_json)?;
-            let Some(compiled) = result
-                .get("compiledPlanJson")
-                .and_then(serde_json::Value::as_str)
-            else {
-                continue;
-            };
-            // Recompile using the original capture. Exact plan equality includes every implementation version.
-            if verified.generation != generation
-                || !crate::db::exact_json::equal(compiled, &snapshot.compiled_plan_json)?
+            if lease.owner(&snapshot.system_start_id).is_ok()
+                || incompatible.contains(&snapshot.system_start_id)
             {
                 continue;
             }
-            let _gate = state.admission_gate().await;
-            lease.ensure_live()?;
-            if lease.owner(&snapshot.system_start_id).is_ok() {
-                continue;
+            match reattach_candidate(pool, &lease, gate, &snapshot, capture).await {
+                Ok(true) => {}
+                Ok(false) => {
+                    incompatible.insert(snapshot.system_start_id);
+                }
+                Err(error) => {
+                    retry_needed = true;
+                    // A busy compiler or failed SQL operation for A cannot hide B.
+                    tracing::warn!(code = %error.code, "Retained execution recovery will retry");
+                }
             }
-            let owner =
-                repository::resume(&pool, &snapshot.system_start_id, &snapshot.versions).await?;
-            lease.retain_committed_owner(owner)?;
         }
     }
-    Ok(())
+}
+
+async fn reattach_candidate(
+    pool: &sqlx::SqlitePool,
+    lease: &HostStartLease,
+    gate: &tokio::sync::Mutex<()>,
+    snapshot: &repository::dto::EngineSnapshot,
+    capture: repository::capture::PrivateCapture,
+) -> Result<bool> {
+    if capture.implementation_digest != "macro-native-host/1" {
+        return Ok(false);
+    }
+    let verified = lease
+        .host
+        .compiler
+        .compile(
+            lease.generation(),
+            snapshot.source.clone(),
+            snapshot.authored_source.clone(),
+            capture.registry_json,
+        )
+        .await?;
+    let result: serde_json::Value = serde_json::from_str(&verified.result_json)?;
+    let Some(compiled) = result
+        .get("compiledPlanJson")
+        .and_then(serde_json::Value::as_str)
+    else {
+        return Ok(false);
+    };
+    // Exact equality includes every captured implementation version. Incompatible
+    // captures stay closed without replaying effects or rotating their epoch.
+    if verified.generation != lease.generation()
+        || !crate::db::exact_json::equal(compiled, &snapshot.compiled_plan_json)?
+    {
+        return Ok(false);
+    }
+    let _gate = gate.lock().await;
+    lease.ensure_live()?;
+    if lease.owner(&snapshot.system_start_id).is_ok() {
+        return Ok(true);
+    }
+    let owner = repository::resume(pool, &snapshot.system_start_id, &snapshot.versions).await?;
+    lease.retain_committed_owner(owner)?;
+    Ok(true)
 }
 
 // Manual qualification only. The native slot authorizes one existing delivery;

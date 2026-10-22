@@ -5,6 +5,7 @@ import { prepareCall } from './services/agsdlExecution/constraints';
 import { assessNativeToolPolicy } from './services/agsdlExecution/nativeToolPolicy';
 import { executionHostFailed, executionHostCompleteCompile, executionHostNextCompile, executionHostReady } from './services/tauriIpc';
 import { compilePlan } from './services/agsdlExecution/compiler';
+import { encodeHostCompilation } from './services/agsdlExecution/hostCompilation';
 import { captureSourceRevision } from './services/agsdlExecution/metadata';
 import { buildNativeRegistry, type NativeRegistryObservation } from './services/agsdlExecution/nativeRegistry';
 import { normalizeMessage } from './services/agsdlExecution/content';
@@ -88,7 +89,7 @@ async function start(): Promise<void> {
       }
       const toolPolicy = Object.hasOwn(observation, 'toolPolicyInput')
         ? assessNativeToolPolicy(observation.toolPolicyInput, registry) : undefined;
-      await executionHostCompleteCompile(job.ticket, JSON.stringify({ ...result, capturedRegistryJson: JSON.stringify(registry), entryValidation, deliveryValidation, toolPolicy, callValidation }));
+      await executionHostCompleteCompile(job.ticket, encodeHostCompilation(result, registry, { entryValidation, deliveryValidation, toolPolicy, callValidation }));
     }
   } finally { flow.close(); }
 }
