@@ -220,3 +220,119 @@ remain distinct contract limits. JSON buffers, strings and decoded objects can
 coexist transiently; serialized bytes are not a heap measurement. D2 and B8 must
 define admission and retention before adding a shared process cache or retained
 multi-view content. No performance or memory gain is claimed by D1.
+
+## Shared desktop consumer owner
+
+`ConsumerConnections` is a demand-created D2a owner for one native context.
+`createMacroConnectConsumer(native, limits, retry, clock?)` is an inert factory.
+Nothing starts at import, and the caller must dispose the owner. This foundation
+has no UI and does not complete the multi-PC product workflow. Local service
+providers and the local producer composition remain independent.
+
+Composition must supply every `ConsumerLimits` and `ConsumerRetryPolicy` field.
+There are no operational defaults. Limits count targets, visible subscribers,
+active reads, directory pages/items/bytes and identity/cursor records. They are
+not a process heap budget. Tests use explicitly synthetic limits. B8 and the
+future UI composition must choose their own reviewed values.
+
+Call `refreshDirectory()` before acquiring a target. It shares one account proof
+and one bounded v1 directory traversal. The native directory port admits only
+`instance` and current-session `instance_access` requests, validates A1, requires
+an exact response request header and uses only the session Bearer. It reuses the
+strict D1 `/me` proof for authentication failures. It never provisions, attaches
+or reactivates a local producer, and never reads an instance key.
+
+Public refreshDirectory locks every view before the account proof and keeps it
+locked on a partial or failed traversal. Continuous event feeds remain able to
+report revocation while proof is pending. Internal recovery and manual retry use
+an explicit private target discovery path; they preserve the healthy target and
+restore only the selected target or a previously authorized changed grant. They
+cannot bypass a public authority lock. An authority epoch and terminal guard are
+checked after every discovery wait and before publishing its catalog.
+
+Directory grants become available only after the full traversal succeeds.
+Validated denials and unreachable/revoked instances take effect before a
+replacement catalog. A partial traversal does not prove revocation by absence.
+Unsafe, old or contradictory durable revisions, duplicate references and cursor
+loops fail closed. For instances, last_seen_at and relay-derived reachable versus
+unreachable presence are ephemeral observations at the same lifecycle revision.
+Their denial callbacks still apply. Labels, references, supported versions and
+revoked lifecycle state remain revision-governed. Access records remain strict. Revision zero is valid. Historical observations are bounded by both
+identity count and serialized bytes; exhaustion keeps discovery closed until a
+fresh owner is created. Directory pages have no atomic capture or authority
+lease, so this metadata is never a substitute for server authorization.
+
+`acquire(instanceId, notify?)` creates a visible lease. Leases for the same target
+share one `PilotTargetClient`, negotiation and event feed. Its state exposes
+non-secret scope, selected capabilities, phase, revision domains and invalidation
+versions. `release()` is idempotent. The last release cancels work and removes
+the entry, callbacks and listeners. Context replacement disposes the whole owner;
+a target failure retires only that target's protected state.
+
+The operation and capability lists are exactly the D1 lists above. `lease.read`
+keeps one replaceable desired request per subscriber. Identical in-flight reads
+coalesce. Canceling one reader leaves other readers active; canceling the last
+reader aborts the shared operation. The job owns its read plan, signal and fixed
+deadline; each reader keeps its own cancellation guard at restitution. Removing
+the first reader cannot cancel another reader or restart the shared deadline.
+Returned pages are independent copies and are not kept in the owner. A new
+desired request rejects its predecessor. A round-robin admission map allows at most one active reading slot and one waiting
+admission per target, subject to the configured global read limit. Long polls
+use the separate D1 event slot. With a global read limit of one, another target
+waits until that slot finishes or is canceled; deadlines prevent an indefinite
+queue. There is no background transcript prefetch.
+
+Shared pages add `resourceKey` and `ownerVersion`. Future views must compare
+those stamps and the full D1 scope before displaying held data, and drop their
+own protected payloads on invalidation. Continuations require the still-current
+shared stamp, the previous D1 page and the complete bounded `seenIdentities` set.
+The caller-owned continuation record is capped at 512 KiB, a client admission
+limit for the request/previous-page metadata, not a heap estimate. A limit or
+capture expiry requires a new initial read or an explicit partial state. The
+owner does not accumulate transcript pages or pagination identity sets.
+
+The event owner applies invalidations and tombstones before locally committing
+the D1 ACK cursor. UI notifications run afterward and cannot hold that ACK.
+Catalog, projects, enhanced content and legacy content revisions remain separate.
+Only visible resource records are retained; replaceable changes condense into
+revision/version state. Tombstones cancel active and queued desires before ACK
+and survive later changes within the same stream. Dispatch and restitution
+recheck authority, resource stamp, tombstone and full D1 scope after waits.
+A reset requires a fresh stream identity and retires that target's old content
+clocks, captures and queued desires. Initial requests explicitly conserved by a
+bounded internal recovery may rebootstrap under a new scope and stamp with their
+original deadline. Access observations and revocations remain separate. Account/session changes share
+revalidation across target feeds. Account deletion locks this owner; only the
+native strict proof can clear the local authentication session.
+
+The numeric comparison domains are deliberately limited:
+
+| Operation | Comparable event clock |
+| --- | --- |
+| projects.list | Primary captures projects.changed |
+| conversations.list | Primary captures conversations.changed |
+| conversation.read legacy | Primary global legacy conversation.changed and conversations.changed |
+| conversation.read enhanced | Primary per-reference conversation.resource_changed |
+| conversations.catalog | No equality with host event clocks; manager catalog storage is independent |
+| conversation.window | No equality with host event clocks; management captures are independent |
+
+The management operations use invalidation stamps, D1 capture validation and
+stream continuity. A current management page may legitimately have a lower
+revision than a host invalidation. Within the same stream, a page below a known
+comparable legacy or enhanced floor is rejected. A fresh stream starts fresh
+content clocks, without discarding strict access observations.
+
+Automatic recovery admits only transport `offline` and explicitly retryable
+`unavailable` errors from reads/events. The finite delay array is a target-wide
+allowance, with injected jitter and a fixed recovery deadline. Neither a
+successful negotiation nor an unrelated directory refresh resets it or retries
+a forbidden target. The original read deadline includes queueing, recovery and
+D1 terminal GET polling. Retries release global reading admission during backoff.
+`retryTarget()` is the explicit manual reset and revalidates authority. Malformed,
+forbidden, revoked and other non-retryable replies require explicit action.
+
+`revalidate()` locks protected state before checking authority and continuity.
+No offline authority duration is invented. There is no on-disk consumer cache,
+mutation, conversation read receipt, file access, reflection or interaction in
+D2a. Future mutation support requires its own intent receipts and reconciliation
+on the original target after a lost acknowledgement.

@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'bun:test';
 import { MacroPilotNativeClient, PilotClientError, type PilotClientDependencies, type PilotInstanceAccess } from './nativeClient';
+import { ConsumerConnections } from './consumerConnections';
 import { PilotTargetClient } from './targetClient';
 import { validateA1 } from './protocol';
 import { CONSUMER_CAPABILITIES, consumerWire, type ConsumerDispatch, type ConsumerOperation } from './consumerTransport';
@@ -664,4 +665,84 @@ it('accepts canonical revision zero, advances to one and preserves revocation fe
     expect(b.scope()).toEqual(scopeB);
     await b.read('conversation.read', { ref: ref(b.instanceId) });
   } finally { h.dispose(); }
+});
+
+describe('D2a native directory port', () => {
+  it('uses only the session bearer, exact v1 route, A1 and strict correlation', async () => {
+    const h = await harness(); const port = h.client.consumerDirectoryTransport(); const context = port.context();
+    const request = { contract_version: '1.0' as const, type: 'page_request' as const, item_type: 'instance' as const, limit: 2 };
+    h.intercept(async w => w.url.pathname.endsWith('/directory/query') ? json({ contract_version: '1.0', type: 'page', item_type: 'instance', items: [instance], has_more: false }, w.requestId) : undefined);
+    const result = await port.query(context, request, new AbortController().signal);
+    expect(result).toMatchObject({ type: 'page' });
+    const sent = h.requests.at(-1)!; expect(sent.url.pathname).toBe('/pilot/v1/directory/query');
+    expect(new Headers(sent.init.headers).has('x-instance-key')).toBe(false); expect(h.reads.every(kind => kind === 'session_token')).toBe(true);
+    h.intercept(async () => new Response(JSON.stringify({ contract_version: '1.0', type: 'page', item_type: 'instance', items: [], has_more: false }), { headers: { 'x-request-id': 'request:wrong' } }));
+    await expect(port.query(context, request, new AbortController().signal)).rejects.toMatchObject({ code: 'invalid_response' });
+    expect(h.client.getState().status).toBe('connected'); h.dispose();
+  });
+  it('keeps directory transport failures and unproven auth local; proven /me revocation clears session', async () => {
+    for (const proof of ['network', 'valid', 'malformed', 'revoked'] as const) {
+      const h = await harness(); const port = h.client.consumerDirectoryTransport();
+      h.intercept(async w => {
+        if (w.url.pathname.endsWith('/directory/query')) {
+          if (proof === 'network') throw new Error('synthetic network');
+          return json(sessionError(w.requestId), w.requestId, 401);
+        }
+        if (w.url.pathname.endsWith('/me') && proof !== 'valid') return json(proof === 'revoked' ? sessionError(w.requestId) : {}, w.requestId, 401);
+      });
+      await expect(port.query(port.context(), { contract_version: '1.0', type: 'page_request', item_type: 'instance', limit: 2 }, new AbortController().signal)).rejects.toBeInstanceOf(PilotClientError);
+      expect(Boolean(h.client.getState().deviceSession)).toBe(proof !== 'revoked'); h.dispose();
+    }
+  });
+});
+
+it('keeps the real local producer and service ports active while a shared consumer target fails', async () => {
+  const h = await harness();
+  // Synthetic admission only; D2a has no operational composition defaults.
+  const owner = new ConsumerConnections(h.client.consumerTransport(), h.client.consumerDirectoryTransport(), {
+    targets: 2, subscribers: 3, activeReads: 2, directoryPages: 4, directoryItems: 8,
+    directoryBytes: 8192, pageItems: 2, pageBytes: 2048, identities: 8, cursors: 4,
+  }, { delaysMs: [], maxDelayMs: 100, deadlineMs: 1000, jitterRatio: 0, pollIntervalMs: 100 });
+  let polls = 0, readsA = 0, stored: string | null = null, portReads = 0;
+  const gates: Array<ReturnType<typeof deferred<Response>>> = [];
+  const eventGates: Array<ReturnType<typeof deferred<Response>>> = [];
+  const localTasks = { tasks: [] }, localChat = { marker: 'local-chat' }, localApp = { marker: 'local-app' };
+  const ports = { tasks: () => { portReads++; return localTasks; }, chat: () => localChat, app: () => localApp,
+    taskLifecycle: () => ({}), taskCommandTargets: () => [] } as unknown as DesktopStorePorts;
+  const producer = { getState: h.client.getState, subscribe: h.client.subscribe, initialize: () => h.client.initialize(), request: h.client.request.bind(h.client) };
+  const runtime = new PilotRuntime(producer, dependencies => new PilotKernel({ ...dependencies,
+    storage: { load: async () => stored, compareAndSwap: async (previous, next) => { if (previous !== stored) return false; stored = next; return true; } },
+    project: () => { ports.tasks(); return { snapshots: [], state: null }; },
+  }), ports);
+  const until = async (predicate: () => boolean) => {
+    for (let n = 0; !predicate() && n < 100; n++) await new Promise(resolve => setTimeout(resolve, 1));
+    expect(predicate()).toBe(true);
+  };
+  try {
+    h.intercept(async w => {
+      if (w.request.type === 'events.request' && w.request.stream_id !== null) { const gate = deferred<Response>(); eventGates.push(gate); return gate.promise; }
+      if (w.url.pathname.endsWith('/directory/query')) return json({ contract_version: '1.0', type: 'page', item_type: w.request.item_type, has_more: false,
+        items: ['instance:a', 'instance:b'].map(id => w.request.item_type === 'instance' ? { ...instance, ref: { type: 'instance', instance_id: id } } : access(id, 0)) }, w.requestId);
+      if (w.instanceId === 'instance:local' && w.url.pathname.endsWith('/deliveries/poll')) {
+        polls++; const gate = deferred<Response>(); gates.push(gate); return gate.promise;
+      }
+      if (w.instanceId === 'instance:a' && w.request.type === 'request' && ++readsA > 1) throw new Error('Synthetic failed consumer target');
+    });
+    await runtime.start(); await until(() => polls === 1);
+    await owner.refreshDirectory(); const a = owner.acquire('instance:a'), b = owner.acquire('instance:b');
+    await Promise.all([a.read('conversation.read', { ref: ref('instance:a') }), b.read('conversation.read', { ref: ref('instance:b') })]);
+    gates[0].resolve(new Response(null, { status: 204 })); await until(() => polls === 2);
+    await expect(a.read('conversation.read', { ref: ref('instance:a') })).rejects.toBeInstanceOf(PilotClientError);
+    await b.read('conversation.read', { ref: ref('instance:b') });
+    gates[1].resolve(new Response(null, { status: 204 })); await until(() => polls === 3);
+    expect(runtime.isStarted()).toBe(true); expect(runtime.getStatus()).toBe('running'); expect(h.client.getState().status).toBe('connected');
+    expect(ports.app()).toBe(localApp as never); expect(ports.chat()).toBe(localChat as never); expect(ports.tasks()).toBe(localTasks as never); expect(portReads).toBeGreaterThanOrEqual(3);
+    for (const w of h.requests.filter(w => w.instanceId !== 'instance:local')) {
+      expect(new Headers(w.init.headers).has('x-instance-key')).toBe(false);
+      expect(w.url.pathname.includes('/instances/instance%3Alocal/')).toBe(false);
+    }
+  } finally {
+    owner.dispose(); h.dispose(); await runtime.stop();
+    for (const gate of [...gates, ...eventGates]) gate.resolve(new Response(null, { status: 204 }));
+  }
 });
