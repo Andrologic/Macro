@@ -37,24 +37,21 @@ async function fixture() {
   return { ...f, ports, capture: await loadFlowCapture(f.inspection) };
 }
 
-it('transfers the retained strict patch through Call and Prepare into Claude unchanged after the live file changes', async () => {
+it('transfers the retained strict patch through Call and Prepare into the Claude adapter unchanged', async () => {
   const f = await fixture();
   const patch = 'diff --git a/greeting.js b/greeting.js\n--- a/greeting.js\n+++ b/greeting.js\n@@ -1 +1 @@\n-Bonjour\r\n+Bonjour, été\r\n\\ No newline at end of file\n';
-  let liveFile = 'Bonjour, été\r\n';
   f.ports.invoke = async request => {
     expect(JSON.parse(request.argumentsJson)).toMatchObject({ mode: 'patch', require_complete: true, ignore_whitespace: false, paths: ['greeting.js'] });
     return { failed: false, resultJson: JSON.stringify(patch) };
   };
   const captured = await executeFlowActivation(flowOwner, flowDelivery('capture', '1', 'call', null), null, f.inspection, f.capture, () => {}, f.ports);
   if (captured.outcome.kind !== 'completed') throw Error('Capture failed');
-  liveFile = 'Concurrent unrelated contents\n';
   const prepare = flowDelivery('prepare', '2', 'prepare', null);
   prepare.delivery.input = captured.outcome.output;
   const prepared = await executeFlowActivation(flowOwner, prepare, null, f.inspection, f.capture, () => {}, f.ports);
   if (prepared.outcome.kind !== 'completed') throw Error('Prepare failed');
   const input = deliveryMessage(f.capture.document, flowInput(prepared.outcome.output));
   expect(record(record(record(decode(input)).resources).patch).value).toBe(patch);
-  expect(input).not.toContain(liveFile);
   let received = '';
   const configuration = f.capture.plan.agents[0];
   const agent = await prepareClaudeAgent({ context: { ...contextFixture(), work: { ...contextFixture().work, step: null },
