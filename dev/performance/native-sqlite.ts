@@ -27,13 +27,71 @@ export function stageVerifiedBinary(source: string, destination: string, expecte
   }
 }
 
-async function run() {
-  if (process.argv.slice(2).some((arg) => arg !== '--self-test' && arg !== '--diagnostics') || process.argv.slice(2).length > 1) {
-    throw new Error('Usage: bun dev/performance/native-sqlite.ts [--self-test|--diagnostics]');
+export function validateNativeArgs(args: string[]): void {
+  const allowed = [[], ['--self-test'], ['--diagnostics'], ['--content-baseline'], ['--content-baseline', '--pilot']];
+  if (!allowed.some(value => JSON.stringify(value) === JSON.stringify(args))) {
+    throw new Error('Usage: native-sqlite.ts [--self-test|--diagnostics|--content-baseline [--pilot]]');
   }
+}
+
+/** Reject incomplete content evidence before the runner publishes it. */
+export function validateContentBaseline(value: unknown, pilot: boolean): void {
+  const object = (value: unknown): Record<string, unknown> => {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('Invalid content baseline object');
+    return value as Record<string, unknown>;
+  };
+  const data = object(value);
+  const samples = pilot ? 3 : 100;
+  if (data.schema !== 3 || data.mode !== 'content-baseline' || data.pilot !== pilot ||
+      data.reference_eligible !== !pilot || data.warmup !== (pilot ? 1 : 10) || data.samples !== samples ||
+      typeof data.fixture_sha256 !== 'string' || !/^[a-f0-9]{64}$/.test(data.fixture_sha256)) throw new Error('Invalid content baseline header');
+  for (const key of ['all_counted_large_fields_refused', 'sql_rejection_before_fetch', 'fetch_probe_negative_control', 'legacy_receipt_not_projected', 'cas_conflict_refused']) {
+    if (object(data.admission_controls)[key] !== true) throw new Error('Missing content admission control');
+  }
+  if (object(data.contract_checks).all_14_fields !== true) throw new Error('Missing 14-field golden check');
+  if (!Array.isArray(data.cases) || data.cases.length !== 3) throw new Error('Incomplete content cases');
+  const names = ['get_message', 'list_messages_bounded', 'count_exportable', 'catalog_metadata',
+    'serde_get_message', 'serde_all_messages', 'serde_catalog_metadata', 'update_stream_commit',
+    'import100_commit', 'delete100_commit', 'provenance_cas'];
+  for (const [index, raw] of data.cases.entries()) {
+    const entry = object(raw); const size = [100, 1000, 10000][index];
+    if (entry.initial_messages !== size || entry.final_messages !== size ||
+        entry.bounded_admitted !== (index < 2) || ['exact_14_fields', 'missing', 'writes_and_resets', 'metadata_fts', 'reopen', 'integrity', 'cleanup'].some(key => object(entry.checks)[key] !== true)) throw new Error('Invalid content fixture checks');
+    const runtime = object(entry.runtime);
+    if (JSON.stringify(runtime.migrations) !== JSON.stringify([1,3,4,5,6,7,8,9,10,11,12]) || runtime.journal_mode !== 'wal' || runtime.synchronous !== 1 || runtime.foreign_keys !== 1) throw new Error('Invalid content runtime');
+    const cells = object(entry.cells);
+    const expected = [...names, ...(entry.bounded_admitted ? ['serde_bounded_messages'] : [])].sort();
+    if (JSON.stringify(Object.keys(cells).sort()) !== JSON.stringify(expected)) throw new Error('Incomplete content cells');
+    for (const [name, rawCell] of Object.entries(cells)) {
+      const cell = object(rawCell);
+      if (!Array.isArray(cell.raw_ms) || cell.raw_ms.length !== samples || cell.raw_ms.some(n => typeof n !== 'number' || !Number.isFinite(n) || n < 0) ||
+          !Array.isArray(cell.outcomes) || cell.outcomes.length !== samples || object(cell.summary).count !== samples) throw new Error('Incomplete content raw samples');
+      const times = (cell.raw_ms as number[]).slice().sort((a,b) => a-b);
+      const summary = object(cell.summary);
+      if (summary.unit !== 'ms' || summary.p50 !== times[Math.ceil(samples * 0.5)-1] || summary.p95 !== times[Math.ceil(samples * 0.95)-1] || summary.max !== times.at(-1)) throw new Error('Invalid content summary');
+      for (const rawOutcome of cell.outcomes) {
+        const outcome = object(rawOutcome);
+        if (name.startsWith('serde_') && (!Number.isSafeInteger(outcome.bytes) || Number(outcome.bytes) <= 0)) throw new Error('Invalid content serialized bytes');
+        if (name === 'get_message' && (outcome.rows !== 1 || outcome.outcome !== 'ok')) throw new Error('Invalid content get outcome');
+        if (name === 'count_exportable' && outcome.rows !== size) throw new Error('Invalid content count');
+        if (name === 'catalog_metadata' && outcome.conversations !== 1) throw new Error('Invalid content metadata');
+        if (['update_stream_commit', 'provenance_cas', 'import100_commit', 'delete100_commit'].includes(name) &&
+            (outcome.start_rows !== size + (name === 'delete100_commit' ? 100 : 0) || outcome.end_rows !== size + (name === 'import100_commit' ? 100 : 0))) throw new Error('Invalid content write state');
+        if (name === 'provenance_cas' && outcome.applied !== true) throw new Error('Invalid content CAS');
+      }
+      if (name === 'list_messages_bounded' && cell.outcomes.some(raw => object(raw).outcome !== (entry.bounded_admitted ? 'ok' : 'resource_limit'))) throw new Error('Unexpected content admission outcome');
+    }
+  }
+}
+
+async function run() {
+  validateNativeArgs(process.argv.slice(2));
   const head = git('rev-parse', 'HEAD');
   const fingerprint = sourceFingerprint();
   const dirty = Boolean(git('status', '--porcelain', '--untracked-files=all'));
+  const content = process.argv.includes('--content-baseline');
+  const pilot = process.argv.includes('--pilot');
+  if (content && !pilot && dirty) throw new Error('Content reference requires clean committed sources');
   const identity = { sourceSha256: fingerprint, buildNonce: randomUUID() };
   const build = Bun.spawn(['cargo', 'build', '--manifest-path', 'src-tauri/Cargo.toml',
     '--example', 'performance-sqlite', '--locked', '--offline', '-j', '1',
@@ -59,8 +117,11 @@ async function run() {
     if (head !== git('rev-parse', 'HEAD') || fingerprint !== sourceFingerprint()) {
       throw new Error('Sources changed during measurement; discard the report');
     }
+    const measurement: unknown = JSON.parse(result);
+    if (content) validateContentBaseline(measurement, pilot);
     console.log(JSON.stringify({
       provenance: { head, dirty, sourceSha256: fingerprint, binarySha256,
+        cargoLockSha256: createHash('sha256').update(readFileSync(join(root, 'src-tauri/Cargo.lock'))).digest('hex'),
         cargoTargetCache: process.env.CARGO_TARGET_DIR ? 'explicit-shared-cache' : 'local-default',
         rustc: execFileSync('rustc', ['--version'], { encoding: 'utf8' }).trim(),
         cargo: execFileSync('cargo', ['--version'], { encoding: 'utf8' }).trim(),
@@ -69,7 +130,7 @@ async function run() {
       environment: { timestamp: new Date().toISOString(), platform: platform(), release: release(),
         arch: arch(), cpu: cpus()[0].model, cpuCount: cpus().length, memoryGiB: totalmem() / 2 ** 30,
         load: 'shared machine; no idle-machine or cold-OS-cache claim' },
-      measurement: JSON.parse(result),
+      measurement,
     }, null, 2));
   } finally { rmSync(directory, { recursive: true, force: true }); }
 }

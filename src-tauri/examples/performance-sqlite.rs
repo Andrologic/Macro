@@ -17,6 +17,9 @@ mod contracts;
 #[path = "performance-sqlite/diagnostics.rs"]
 mod diagnostics;
 
+#[path = "performance-sqlite/content_baseline.rs"]
+mod content_baseline;
+
 use db::models::{CreateConversationInput, CreateMessageInput, ImportMessageInput};
 use db::repository;
 use serde_json::{json, Value};
@@ -311,6 +314,14 @@ async fn main() -> Result<()> {
                 "sourceSha256": option_env!("MACRO_NATIVE_PERF_SOURCE_SHA256"),
                 "buildNonce": option_env!("MACRO_NATIVE_PERF_BUILD_NONCE")
             })
+        );
+        return Ok(());
+    }
+    if args == ["--content-baseline"] || args == ["--content-baseline", "--pilot"] {
+        self_test().await?;
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&content_baseline::run(args.len() == 2).await?)?
         );
         return Ok(());
     }
