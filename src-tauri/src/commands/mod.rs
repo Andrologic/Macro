@@ -112,7 +112,7 @@ pub async fn db_retry_initialize(
                     "Database authentication recovery failed: {error}"
                 )));
             }
-            pool.set_ready(sqlite_pool).await;
+            pool.set_ready(sqlite_pool).await?;
         }
         Err(error) => {
             let message = error.to_string();
@@ -2243,16 +2243,15 @@ mod tests {
     #[tokio::test]
     async fn db_pool_wakes_waiters_when_initialization_becomes_ready() {
         let pool = DbPool::default();
-        let ready_pool = sqlx::sqlite::SqlitePoolOptions::new()
-            .max_connections(1)
-            .connect("sqlite::memory:")
+        let directory = tempfile::tempdir().unwrap();
+        let ready_pool = crate::db::create_pool(&directory.path().join("wake.db"))
             .await
             .expect("db pool");
         let state = pool.clone();
         let expected_pool = ready_pool.clone();
         tokio::spawn(async move {
             tokio::task::yield_now().await;
-            state.set_ready(ready_pool).await;
+            state.set_ready(ready_pool).await.unwrap();
         });
 
         let resolved = pool.wait_until_ready().await.expect("ready state");

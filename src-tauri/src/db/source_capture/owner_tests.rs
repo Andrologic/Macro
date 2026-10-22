@@ -9,6 +9,10 @@ use std::sync::{
     Arc,
 };
 use tokio::sync::{RwLock, Semaphore};
+#[path = "opening_lifetime_tests.rs"]
+mod opening_lifetime_tests;
+#[path = "schema_trust_tests.rs"]
+mod schema_trust_tests;
 fn json<T: serde::Serialize>(v: &T) -> Vec<u8> {
     serde_json::to_vec(v).unwrap()
 }
@@ -46,7 +50,7 @@ async fn authorized(
 async fn capture_fixture() -> (TempDir, SqlitePool, SourceCapture, Arc<AtomicI64>) {
     let (dir, pool) = fixture().await;
     let owner = DbPool::default();
-    owner.set_ready(pool.clone()).await;
+    owner.set_ready(pool.clone()).await.unwrap();
     let clock = Arc::new(AtomicI64::new(1_000_000));
     let capture = authorized(
         owner,
@@ -194,7 +198,7 @@ async fn real_native_capture_replays_and_reopens_sealed_after_source_deletion() 
     c.owner.set_initializing().await;
     pool.close().await;
     let reopened = create_pool(&dir.path().join("source.db")).await.unwrap();
-    c.owner.set_ready(reopened.clone()).await;
+    c.owner.set_ready(reopened.clone()).await.unwrap();
     assert!(c.readback(None, 32).await.is_err());
     let closed = SourceCapture::closed(c.owner.clone());
     assert_eq!(
@@ -238,7 +242,7 @@ async fn source_mutation_refuses_copy_and_new_generation_can_only_abandon_incomp
         "stale_revision"
     );
     assert_eq!(c.status().await.unwrap(), before);
-    c.owner.set_ready(pool.clone()).await;
+    c.owner.set_ready(pool.clone()).await.unwrap();
     assert!(c.status().await.is_err());
     let recovery = authorized(
         c.owner.clone(),

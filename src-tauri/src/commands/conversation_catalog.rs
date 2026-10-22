@@ -177,7 +177,7 @@ mod tests {
                 pool.close().await;
                 let (pool, probe) = probe_pool(&dir).await;
                 let owner = DbPool::default();
-                owner.set_ready(pool.clone()).await;
+                owner.set_ready(pool.clone()).await.unwrap();
                 let token = version(&owner, ConversationCatalogVersionInput::default())
                     .await
                     .unwrap();
@@ -222,13 +222,30 @@ mod tests {
                 .await
                 .unwrap();
                 match action {
-                    "replace" => owner.set_ready(pool.clone()).await,
+                    "replace" => {
+                        use std::future::{poll_fn, Future};
+                        use std::task::Poll;
+                        let publication = owner.set_ready(pool.clone());
+                        tokio::pin!(publication);
+                        assert!(
+                            poll_fn(|cx| Poll::Ready(publication.as_mut().poll(cx).is_pending()))
+                                .await
+                        );
+                        assert!(matches!(
+                            owner.current(),
+                            crate::core::db_state::DbInitializationState::Initializing
+                        ));
+                        // The paused read owns the only connection required by
+                        // validation. Retire it before completing publication.
+                        probe.catalog_release.store(true, SeqCst);
+                        publication.await.unwrap();
+                    }
                     "initializing" => owner.set_initializing().await,
                     _ => owner.set_failed("synthetic").await,
                 }
                 probe.catalog_release.store(true, SeqCst);
                 assert_eq!(task.await.unwrap().unwrap_err().message, "stale_revision");
-                owner.set_ready(pool.clone()).await;
+                owner.set_ready(pool.clone()).await.unwrap();
                 let next = version(&owner, ConversationCatalogVersionInput::default())
                     .await
                     .unwrap();

@@ -3188,7 +3188,7 @@ mod catalog_backup_tests {
         let path = data.join("macro.db");
         let owner = DbPool::default();
         let pool = crate::db::create_pool(&path).await.unwrap();
-        owner.set_ready(pool.clone()).await;
+        owner.set_ready(pool.clone()).await.unwrap();
         let old = version(&owner, ConversationCatalogVersionInput::default())
             .await
             .unwrap();
@@ -3210,7 +3210,7 @@ mod catalog_backup_tests {
                 .unwrap();
         assert_eq!(status.code, Some(BackupStatusCode::Restored));
         let pool = crate::db::create_pool(&path).await.unwrap();
-        owner.set_ready(pool.clone()).await;
+        owner.set_ready(pool.clone()).await.unwrap();
         let restored = version(&owner, ConversationCatalogVersionInput::default())
             .await
             .unwrap();

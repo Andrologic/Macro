@@ -19,7 +19,7 @@ async fn connections(maximum: u32) -> (TempDir, SqlitePool, SourceCapture, Arc<A
         )
         .await
         .unwrap();
-    c.owner.set_ready(pool.clone()).await;
+    c.owner.set_ready(pool.clone()).await.unwrap();
     let capture = authorized(
         c.owner.clone(),
         uuid::Uuid::new_v4().to_string(),
@@ -269,7 +269,7 @@ async fn cancelled_worker(commit: bool) {
             0
         );
     }
-    c.owner.set_ready(pool.clone()).await;
+    c.owner.set_ready(pool.clone()).await.unwrap();
     assert!(
         c.status().await.is_err(),
         "next block retained a stale generation"

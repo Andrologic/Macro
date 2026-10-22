@@ -4132,7 +4132,7 @@ mod tests {
             .await
             .unwrap();
         let pool = DbPool::default();
-        pool.set_ready(sql).await;
+        pool.set_ready(sql).await.unwrap();
         let record = build_terminal_record(
             "manual",
             "project".into(),

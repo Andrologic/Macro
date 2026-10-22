@@ -135,6 +135,12 @@ impl SourceCapture {
         Ok(lease)
     }
     pub(super) async fn load(&self, db: &mut SqliteConnection, scope: &Scope) -> Result<Journal> {
+        scope
+            .generation
+            .ready
+            .check_source_schema(db)
+            .await
+            .map_err(|_| "stale_revision")?;
         let r=sqlx::query("SELECT id,CASE WHEN length(CAST(binding_json AS BLOB))<=4096 THEN binding_json END AS binding_json,phase,revision,family,cursor_rowid,cursor_field,cursor_offset,rows_count,fields_count,bytes_received,charge_bytes,progressed_at,expires_at,idle_ms,last_clock,CASE WHEN typeof(manifest_hash)='blob' AND length(manifest_hash)=32 THEN manifest_hash END AS manifest_hash FROM e_source_captures WHERE capture_id=?").bind(&scope.authority.capture_id).fetch_optional(db).await.map_err(error)?.ok_or("not_found")?;
         let raw: Option<String> = r.try_get("binding_json").map_err(error)?;
         let binding: Binding = parse(raw.ok_or("database_unavailable")?.as_bytes())?;
@@ -223,6 +229,12 @@ impl SourceCapture {
         }
         let mut lease = self.lease(&scope.generation.ready.pool).await?;
         let mut tx = lease.begin_with("BEGIN IMMEDIATE").await.map_err(error)?;
+        scope
+            .generation
+            .ready
+            .check_source_schema(&mut tx)
+            .await
+            .map_err(|_| "stale_revision")?;
         let existing: i64 =
             sqlx::query_scalar("SELECT COUNT(*) FROM e_source_captures WHERE capture_id=?")
                 .bind(&input.capture_id)

@@ -26,7 +26,7 @@ pub mod tool_invocations;
 
 use crate::ai::macro_ai;
 use sqlx::sqlite::{SqliteConnectOptions, SqliteConnection, SqlitePool, SqlitePoolOptions};
-use sqlx::Row;
+use sqlx::{Connection, Row};
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
@@ -46,6 +46,51 @@ pub enum DbError {
 }
 
 pub type DbResult<T> = Result<T, DbError>;
+
+/// Native proof of one validated opening, never reconstructed from a receipt.
+#[derive(Clone, Debug)]
+pub(crate) struct ValidatedSourceOpening {
+    schema_cookie: i64,
+}
+
+impl ValidatedSourceOpening {
+    pub(crate) async fn check(&self, db: &mut SqliteConnection) -> DbResult<()> {
+        let current: i64 = sqlx::query_scalar("PRAGMA schema_version")
+            .fetch_one(db)
+            .await?;
+        if current != self.schema_cookie {
+            return Err(DbError::Validation("stale_revision".into()));
+        }
+        Ok(())
+    }
+}
+
+pub(crate) async fn validate_source_opening(
+    pool: &SqlitePool,
+    #[cfg(test)] cleanup_started: Option<std::sync::mpsc::Sender<()>>,
+) -> DbResult<ValidatedSourceOpening> {
+    let mut lease = preparation_lease::Lease::new(pool.acquire().await?);
+    #[cfg(test)]
+    {
+        lease.cleanup_started = cleanup_started;
+    }
+    let mut tx = lease.begin().await?;
+    // Establish the read snapshot before checking every relevant namespace.
+    let schema_cookie: i64 = sqlx::query_scalar("PRAGMA schema_version")
+        .fetch_one(&mut *tx)
+        .await?;
+    conversation_content::validate_schema(&mut tx).await?;
+    conversation_catalog::validate_schema(&mut tx).await?;
+    source_capture::validate_schema(&mut tx).await?;
+    let stamps: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM schema_migrations WHERE (version=13 AND name='013_conversation_content_versions') OR (version=14 AND name='014_conversation_catalog_version') OR (version=15 AND name='015_inactive_storage') OR (version=16 AND name='016_source_capture')")
+        .fetch_one(&mut *tx).await?;
+    if stamps != 4 {
+        return Err(DbError::Migration("Invalid source opening stamps".into()));
+    }
+    tx.commit().await?;
+    lease.committed = true;
+    Ok(ValidatedSourceOpening { schema_cookie })
+}
 
 const MIGRATION_001_VERSION: i64 = 1;
 const MIGRATION_001_NAME: &str = "001_initial";

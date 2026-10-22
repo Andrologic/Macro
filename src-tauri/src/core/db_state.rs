@@ -17,12 +17,24 @@ pub enum DbInitializationState {
 pub struct DbReady {
     pub pool: SqlitePool,
     pub(crate) catalog_generation: String,
+    source_opening: crate::db::ValidatedSourceOpening,
+}
+
+impl DbReady {
+    pub(crate) async fn check_source_schema(
+        &self,
+        db: &mut sqlx::SqliteConnection,
+    ) -> crate::db::DbResult<()> {
+        self.source_opening.check(db).await
+    }
 }
 
 #[derive(Clone, Debug)]
 pub struct DbPool {
     state: watch::Sender<DbInitializationState>,
     source_gate: Arc<RwLock<()>>,
+    #[cfg(test)]
+    pub(crate) opening_cleanup_started: Option<std::sync::mpsc::Sender<()>>,
 }
 
 impl Default for DbPool {
@@ -31,6 +43,8 @@ impl Default for DbPool {
         Self {
             state,
             source_gate: Arc::new(RwLock::new(())),
+            #[cfg(test)]
+            opening_cleanup_started: None,
         }
     }
 }
@@ -41,13 +55,33 @@ impl DbPool {
         self.state.send_replace(DbInitializationState::Initializing);
     }
 
-    pub async fn set_ready(&self, pool: SqlitePool) {
+    pub async fn set_ready(&self, pool: SqlitePool) -> CommandResult<()> {
         let _gate = self.source_gate.write().await;
+        // Retire the previous generation before waiting for a connection. An
+        // abandoned validation cannot leave its predecessor advertised Ready.
+        self.state.send_replace(DbInitializationState::Initializing);
+        let source_opening = match crate::db::validate_source_opening(
+            &pool,
+            #[cfg(test)]
+            self.opening_cleanup_started.clone(),
+        )
+        .await
+        {
+            Ok(opening) => opening,
+            Err(_) => {
+                let message = "Database schema validation failed";
+                self.state
+                    .send_replace(DbInitializationState::Failed(message.into()));
+                return Err(command_error(message));
+            }
+        };
         self.state
             .send_replace(DbInitializationState::Ready(DbReady {
                 pool,
                 catalog_generation: uuid::Uuid::new_v4().simple().to_string(),
+                source_opening,
             }));
+        Ok(())
     }
 
     pub async fn set_failed(&self, message: impl Into<String>) {
@@ -143,10 +177,11 @@ mod source_gate_tests {
         let request = owner.source_ready(None);
         tokio::pin!(request);
         pending(request.as_mut()).await;
-        let pool = sqlx::sqlite::SqlitePoolOptions::new()
-            .connect_lazy("sqlite::memory:")
+        let directory = tempfile::tempdir().unwrap();
+        let pool = crate::db::create_pool(&directory.path().join("gate.db"))
+            .await
             .unwrap();
-        owner.set_ready(pool).await;
+        owner.set_ready(pool).await.unwrap();
         let guard = request.await.unwrap();
         assert!(owner.catalog_is_current(&guard.ready));
     }
@@ -154,15 +189,16 @@ mod source_gate_tests {
     async fn source_permit_defers_each_transition_and_rejects_old_generation() {
         for mode in 0..3 {
             let owner = DbPool::default();
-            let pool = sqlx::sqlite::SqlitePoolOptions::new()
-                .connect_lazy("sqlite::memory:")
+            let directory = tempfile::tempdir().unwrap();
+            let pool = crate::db::create_pool(&directory.path().join("gate.db"))
+                .await
                 .unwrap();
-            owner.set_ready(pool.clone()).await;
+            owner.set_ready(pool.clone()).await.unwrap();
             let guard = owner.source_ready(None).await.unwrap();
             let old = guard.ready.catalog_generation.clone();
             let transition = async {
                 match mode {
-                    0 => owner.set_ready(pool.clone()).await,
+                    0 => owner.set_ready(pool.clone()).await.unwrap(),
                     1 => owner.set_initializing().await,
                     _ => owner.set_failed("synthetic").await,
                 }
@@ -173,7 +209,7 @@ mod source_gate_tests {
             drop(guard);
             transition.await;
             if mode != 0 {
-                owner.set_ready(pool.clone()).await;
+                owner.set_ready(pool.clone()).await.unwrap();
             }
             assert!(owner.source_ready(Some(&old)).await.is_err());
             let fresh = owner.source_ready(None).await.unwrap();

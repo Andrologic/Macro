@@ -350,7 +350,7 @@ async fn full_native_source_capture_experiment() {
     c.owner.set_initializing().await;
     pool.close().await;
     let reopened = create_pool(&dir.path().join("source.db")).await.unwrap();
-    c.owner.set_ready(reopened.clone()).await;
+    c.owner.set_ready(reopened.clone()).await.unwrap();
     assert!(c.readback(None, 32).await.is_err());
     let read = authorized(c.owner.clone(), id, Mode::SealedRead, clock).await;
     assert_eq!(verify(&read, &oracle).await.0, hash);
