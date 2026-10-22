@@ -653,8 +653,14 @@ export class ConsumerConnections {
     this.current(entry, signal);
     if (!this.demanded(entry)) return Promise.reject(changed());
     if (entry.renewal) return entry.renewal;
-    const pending = entry.client.renew(AbortSignal.any([signal, entry.renewalController.signal])); entry.renewal = pending;
+    const epoch = entry.authorityEpoch, renewalSignal = AbortSignal.any([signal, entry.renewalController.signal]);
+    const pending = entry.client.renew(renewalSignal); entry.renewal = pending;
     void pending.finally(() => { if (entry.renewal === pending) entry.renewal = null; }).catch(() => {});
+    void pending.then(() => {
+      this.current(entry, renewalSignal); if (entry.authorityEpoch !== epoch) throw changed();
+      // Every current admission can contract the effective bound, independently of continuity.
+      this.notify(entry);
+    }).catch(() => {});
     return pending;
   }
   private scheduleRenewal(entry: Entry): void {
@@ -675,7 +681,6 @@ export class ConsumerConnections {
         if (!entry.recovering && entry.ready && entry.authorityValid && entry.state.phase === 'ready') {
           entry.presentationDeadline = entry.client.readAuthority()?.deadline ?? null; entry.retries = 0; entry.retryDeadline = null;
         }
-        this.notify(entry);
       }).catch(error => {
         if (signal.aborted || entry.authorityEpoch !== generation) return;
         if (consumerRetryable(error)) void this.recover(entry, error).catch(() => {});
