@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { sourceFingerprint, stageVerifiedBinary, validateNativeArgs, validateContentBaseline, validateCurrentContentBaseline, nativeContentFixture } from './native-sqlite';
+import { sourceFingerprint, stageVerifiedBinary, validateNativeArgs, validateContentBaseline, validateCurrentContentBaseline, nativeContentFixture, schema13ContentFixture } from './native-sqlite';
 
 test('native fingerprint detects untracked and tracked source changes, excludes Cargo outputs', () => {
   const root = mkdtempSync(join(tmpdir(), 'macro-native-provenance-'));
@@ -143,16 +143,18 @@ test('rejects audit adversaries starting with a valid content report', () => {
   }
 });
 
-function nativePilot() {
+function nativePilot(schema = 5) {
+  const fixture = schema === 4 ? schema13ContentFixture : nativeContentFixture;
   const legacy = contentPilot();
-  const report = {...legacy, schema:4, fixture:nativeContentFixture, percentile:'nearest-rank',
+  const report = {...legacy, schema, fixture, percentile:'nearest-rank',
     raw_observation_order:'execution order, warmup excluded'};
-  report.fixture_sha256 = createHash('sha256').update(nativeContentFixture)
+  report.fixture_sha256 = createHash('sha256').update(fixture)
     .update(readFileSync(new URL('../../src-tauri/examples/performance-sqlite/content_baseline.rs', import.meta.url))).digest('hex');
   Object.assign(report.admission_controls, {native_large_receipt_refused:true,native_prefix_exact:true,
     native_missing_suffix_refused:true,native_stale_token_refused:true});
   for (const entry of report.cases) {
     entry.runtime.migrations.push(13);
+    if (schema === 5) entry.runtime.migrations.push(14);
     Object.assign(entry.checks,{native_fields_positions_tokens:true,native_mutations_before_reset:true,
       native_admission_bytes:true,native_reopen:true});
     const size = entry.initial_messages;
@@ -176,7 +178,7 @@ function nativePilot() {
 
 test('keeps historical evidence valid and rejects mixed native protocol identities', () => {
   expect(()=>validateContentBaseline(contentPilot(),true)).not.toThrow();
-  expect(()=>validateCurrentContentBaseline(contentPilot(),true)).toThrow('protocol 4');
+  expect(()=>validateCurrentContentBaseline(contentPilot(),true)).toThrow('protocol 5');
   const valid = nativePilot();
   expect(()=>validateContentBaseline(valid,true)).not.toThrow();
   expect(()=>validateCurrentContentBaseline(valid,true)).not.toThrow();
@@ -210,5 +212,26 @@ test('rejects missing native controls, truncated pages, unsafe tokens and byte/c
   for (const mutate of mutations) {
     const report=nativePilot(); mutate(report);
     expect(()=>validateContentBaseline(report,true)).toThrow();
+  }
+});
+
+
+test('accepts a distinct current schema14 report without relabelling schema13 history', () => {
+  const historical = nativePilot(4), current = nativePilot(5);
+  expect(()=>validateContentBaseline(historical,true)).not.toThrow();
+  expect(()=>validateCurrentContentBaseline(historical,true)).toThrow('protocol 5');
+  expect(()=>validateContentBaseline(current,true)).not.toThrow();
+  expect(()=>validateCurrentContentBaseline(current,true)).not.toThrow();
+  expect(current.fixture).not.toBe(historical.fixture);
+  expect(current.fixture_sha256).not.toBe(historical.fixture_sha256);
+  for (const original of [historical,current]) {
+    for (const mutate of [
+      (value:typeof current)=>{value.schema=value.schema===4?5:4;},
+      (value:typeof current)=>{value.fixture=value.schema===4?nativeContentFixture:schema13ContentFixture;},
+      (value:typeof current)=>{value.cases[0].runtime.migrations=value.schema===4?[1,3,4,5,6,7,8,9,10,11,12,13,14]:[1,3,4,5,6,7,8,9,10,11,12,13];},
+    ]) {
+      const mixed=structuredClone(original);mutate(mixed);
+      expect(()=>validateContentBaseline(mixed,true)).toThrow();
+    }
   }
 });

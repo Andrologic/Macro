@@ -716,7 +716,10 @@ in-memory and historical 128 ms values are separate references. Full aggregate
 reports, process timestamps/load, manifests, source/binary fingerprints and
 superseded build failures remain outside Git.
 
-### Content protocol 4 after native admission
+### Historical content protocol 4 after native admission
+
+This section records the schema13 runner. New executions use protocol 5 below;
+its earlier observations and source hashes remain schema13 evidence.
 
 `bun --no-install dev/performance/native-sqlite.ts --content-baseline --pilot`
 runs the current SQLite content pilot with one warmup and three retained samples
@@ -775,3 +778,21 @@ Tauri IPC, transport, displayed UI, RSS and heap remain unmeasured. A2 SQLite
 percentiles and A4 memory-port percentiles cannot be added to claim a complete
 path or global gain. This section defines the protocol; it does not announce a
 new accepted reference or a performance improvement.
+
+### Current content protocol 5 with catalogue migration14
+
+The same `--content-baseline` and `--pilot` commands now require exact migrations
+`[1,3,4,5,6,7,8,9,10,11,12,13,14]`, WAL/NORMAL and foreign keys. Protocol 5 has a
+distinct `content-v4-native-catalog` fixture identity and a new hash of that
+identity plus the complete Rust content module. Protocols 3 and 4 remain readable
+as historical evidence with their own fixture/runtime guards; the current runner
+refuses to publish either as a new execution. No historical report is relabelled.
+
+The 50 cells, message inputs, write/reset schedule, sample counts, validation and
+source/nonce checks remain unchanged. This profile measures those existing cells
+on a fresh database with migration14's catalogue triggers installed. It does not
+time an existing database migration, isolate trigger overhead, exercise the new
+catalogue IPC/page ports or prove a capture/network/UI/heap improvement. Those
+need separate measurements after their consumers are connected. The schema13
+reference cannot be pooled with this profile. No new accepted reference is
+announced by this tooling change, and no thresholds or resource limits change.

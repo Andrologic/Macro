@@ -16,7 +16,8 @@ export function sourceFingerprint(directory = root) {
 }
 
 type BuildIdentity = { sourceSha256: string; buildNonce: string };
-export const nativeContentFixture = 'content-v3-native:mixed-256;assistant-14-fields;receipt-v2;update-latest-marker-256+64*i;batch100;tail100;schema13;metadata100;after50;window50';
+export const schema13ContentFixture = 'content-v3-native:mixed-256;assistant-14-fields;receipt-v2;update-latest-marker-256+64*i;batch100;tail100;schema13;metadata100;after50;window50';
+export const nativeContentFixture = 'content-v4-native-catalog:mixed-256;assistant-14-fields;receipt-v2;update-latest-marker-256+64*i;batch100;tail100;schema14;metadata100;after50;window50';
 export function stageVerifiedBinary(source: string, destination: string, expected: BuildIdentity,
   readIdentity: (binary: string) => unknown = (binary) =>
     JSON.parse(execFileSync(binary, ['--build-identity'], { encoding: 'utf8' }))) {
@@ -42,12 +43,13 @@ export function validateContentBaseline(value: unknown, pilot: boolean): void {
     return value as Record<string, unknown>;
   };
   const data = object(value);
-  const native = data.schema === 4;
+  const native = data.schema === 4 || data.schema === 5;
+  const catalogRuntime = data.schema === 5;
   const samples = pilot ? 3 : 100;
   if ((!native && data.schema !== 3) || data.mode !== 'content-baseline' || data.pilot !== pilot ||
       data.reference_eligible !== !pilot || data.warmup !== (pilot ? 1 : 10) || data.samples !== samples ||
       typeof data.fixture_sha256 !== 'string' || !/^[a-f0-9]{64}$/.test(data.fixture_sha256)) throw new Error('Invalid content baseline header');
-  if (native && (data.fixture !== nativeContentFixture || data.percentile !== 'nearest-rank' ||
+  if (native && (data.fixture !== (catalogRuntime ? nativeContentFixture : schema13ContentFixture) || data.percentile !== 'nearest-rank' ||
       data.raw_observation_order !== 'execution order, warmup excluded')) throw new Error('Invalid native content fixture');
   if (native) for (const key of ['native_large_receipt_refused', 'native_prefix_exact', 'native_missing_suffix_refused', 'native_stale_token_refused']) {
     if (object(data.admission_controls)[key] !== true) throw new Error('Missing native admission control');
@@ -70,7 +72,7 @@ export function validateContentBaseline(value: unknown, pilot: boolean): void {
     if (entry.initial_messages !== size || entry.final_messages !== size ||
         entry.bounded_admitted !== (index < 2) || ['exact_14_fields', 'missing', 'writes_and_resets', 'metadata_fts', 'reopen', 'integrity', 'cleanup'].some(key => object(entry.checks)[key] !== true)) throw new Error('Invalid content fixture checks');
     const runtime = object(entry.runtime);
-    if (JSON.stringify(runtime.migrations) !== JSON.stringify([1,3,4,5,6,7,8,9,10,11,12,...(native ? [13] : [])]) || runtime.journal_mode !== 'wal' || runtime.synchronous !== 1 || runtime.foreign_keys !== 1) throw new Error('Invalid content runtime');
+    if (JSON.stringify(runtime.migrations) !== JSON.stringify([1,3,4,5,6,7,8,9,10,11,12,...(native ? [13, ...(catalogRuntime ? [14] : [])] : [])]) || runtime.journal_mode !== 'wal' || runtime.synchronous !== 1 || runtime.foreign_keys !== 1) throw new Error('Invalid content runtime');
     if (native && ['native_fields_positions_tokens','native_mutations_before_reset','native_admission_bytes','native_reopen'].some(key => object(entry.checks)[key] !== true)) throw new Error('Missing native fixture check');
     const cells = object(entry.cells);
     const expected = [...names, ...(entry.bounded_admitted ? ['serde_bounded_messages'] : []),
@@ -125,7 +127,7 @@ export function validateContentBaseline(value: unknown, pilot: boolean): void {
 
 /** The current executable cannot publish a historical report as a new run. */
 export function validateCurrentContentBaseline(value: unknown, pilot: boolean): void {
-  if (!value || typeof value !== 'object' || (value as Record<string, unknown>).schema !== 4) throw new Error('Current content run requires protocol 4');
+  if (!value || typeof value !== 'object' || (value as Record<string, unknown>).schema !== 5) throw new Error('Current content run requires protocol 5');
   validateContentBaseline(value, pilot);
   const fixtureHash = createHash('sha256').update(nativeContentFixture)
     .update(readFileSync(join(root, 'src-tauri/examples/performance-sqlite/content_baseline.rs'))).digest('hex');
