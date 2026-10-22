@@ -82,6 +82,10 @@ Stop et conserve les premières identités de successeur.
    Il renvoie séparément `static` et `runtime`. `supported` devient true seulement
    après construction, sérialisation exacte et contrôle lexical du plan sérialisé.
    Tout refus reste non supporté, sans plan ni `compiledPlanJson`.
+   Le transport du host borne le résultat complet à 8 000 000 octets UTF-8.
+   Un développement trop volumineux devient un diagnostic `INPUT_LIMIT` propre
+   au document, avec la source et la version de registre du ticket conservées.
+   Il ne révoque pas le host partagé et n'autorise aucune admission.
 3. Avant une livraison, `validateOrigin` puis `deliveryMessage` et `validateInput`
    contrôlent la frontière. `prepareMessage` applique seulement les sélecteurs de
    l'entrée courante. `conditionResult` conserve la même valeur et son origine.
@@ -287,8 +291,11 @@ Une Task de Start est facultative et doit désigner une cible Macro réelle.
 
 Le superviseur natif révoque l’incarnation perdue avant de recréer le webview.
 Le nouveau host réattache les captures conservées seulement si la compilation
-et les versions correspondent exactement. Les effets inconnus ne sont pas
-rejoués. Le port privé mark_uncertain vise un travail, sans arrêter les autres
+et les versions correspondent exactement. Une erreur transitoire de compilation
+ou de stockage est isolée au candidat ; les autres candidats restent traités.
+Le superviseur réessaie après deux secondes, jusqu'au traitement des captures
+ou à la révocation de sa génération. Une capture incompatible reste fermée et
+les effets inconnus ne sont pas rejoués. Le port privé mark_uncertain vise un travail, sans arrêter les autres
 Agents. Les diagnostics publics permettent une sélection exacte ou une page
 récente bornée et ne révèlent pas la capture privée.
 
