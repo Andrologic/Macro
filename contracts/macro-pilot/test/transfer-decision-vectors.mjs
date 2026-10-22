@@ -50,7 +50,11 @@ export function scenario(maximal = false) {
   const ready = call(readyRequest, seal.result.ledger, seal.result.record, [attest(readyRequest, 'target_pinned', fingerprint('prepared', prepared), fingerprint('manifest', manifest), true)]);
   const commitRequest = request('commit', ready.result.record.revision, {});
   const commit = call(commitRequest, ready.result.ledger, ready.result.record, [attest(commitRequest, 'source_maintained', fingerprint('frozen', frozen), fingerprint('manifest', manifest)), attest(commitRequest, 'target_maintained', fingerprint('prepared', prepared), fingerprint('prepared', prepared), true)]);
-  const activation = { decision_contract: 'transfer-decision-1', type: 'activation_receipt', receipt_id: uuid(), transfer_id: binding.transfer_id, terminal_digest: fingerprint('terminal', commit.result.receipt), target_instance_id: binding.target_instance_id, target_conversation_id: prepared.target_conversation_id, prepared_digest: fingerprint('prepared', prepared), revision: '1' };
+  // Independent journal oracle: native facts and the allocated decision receipt
+  // ID, without reading any field of the response under validation.
+  const knownTerminal = { decision_contract: 'transfer-decision-1', type: 'terminal_receipt', receipt_id: commit.context.receipt_id, transfer_id: binding.transfer_id, source: clone(source), epoch: binding.epoch, target_instance_id: binding.target_instance_id, binding_digest: fingerprint('transfer-binding', binding), frozen_digest: fingerprint('frozen', frozen), decision_revision: '4', outcome: 'committed', reason: null, manifest_digest: fingerprint('manifest', manifest), prepared: clone(prepared) };
+  assert.deepEqual(commit.result.receipt, knownTerminal);
+  const activation = { decision_contract: 'transfer-decision-1', type: 'activation_receipt', receipt_id: uuid(), transfer_id: binding.transfer_id, terminal_digest: fingerprint('terminal', knownTerminal), target_instance_id: binding.target_instance_id, target_conversation_id: prepared.target_conversation_id, prepared_digest: fingerprint('prepared', prepared), revision: '1' };
   const activationRequest = request('activation.record', commit.result.record.revision, { activation });
   const activationContext = { ...context, receipt_id: activation.receipt_id, proofs: [attest(activationRequest, 'target_activated', fingerprint('activation', activation), fingerprint('terminal', commit.result.receipt), true)] };
   const activationResult = planDecision(activationRequest, commit.result.ledger, commit.result.record, activationContext);
@@ -58,6 +62,6 @@ export function scenario(maximal = false) {
   const activate = { request: activationRequest, context: activationContext, result: activationResult };
   // Stand-in for independently retained local native journal facts, not fields
   // extracted from the response passed to validateExchange.
-  const expectation = operation => ({ binding: clone(binding), frozen: clone(frozen), manifest: ['seal', 'ready', 'commit', 'abort', 'activation.record'].includes(operation) ? clone(manifest) : null, prepared: ['ready', 'commit', 'abort', 'activation.record'].includes(operation) ? clone(prepared) : null, terminal: operation === 'activation.record' ? clone(commit.result.receipt) : null });
-  return { uuid, opaque, hash, source, provenance, binding, context, frozen, manifest, prepared, request, attest, call, expectation, birth, reserve, seal, ready, commit, activate };
+  const expectation = operation => ({ binding: clone(binding), frozen: clone(frozen), manifest: ['seal', 'ready', 'commit', 'abort', 'activation.record'].includes(operation) ? clone(manifest) : null, prepared: ['ready', 'commit', 'abort', 'activation.record'].includes(operation) ? clone(prepared) : null, terminal: operation === 'activation.record' ? clone(knownTerminal) : null });
+  return { uuid, opaque, hash, source, provenance, binding, context, frozen, manifest, prepared, knownTerminal, request, attest, call, expectation, birth, reserve, seal, ready, commit, activate };
 }

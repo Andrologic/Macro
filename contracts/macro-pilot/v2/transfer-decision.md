@@ -196,6 +196,10 @@ one; successful mutations increment by exactly one. Step receipts include
 previous/current revision, binding digest and subject digest. Terminal receipts
 include S/T/epoch, frozen and binding digests, decision revision and committed
 preparation/manifest when present. Decision and activation receipts are distinct.
+Terminal status revision equals decision_revision without activation, or exactly
+decision_revision + 1 with activation. That activation must match the terminal
+digest, target, prepared commitment and conversation; it cannot qualify another
+decision. These relations also apply to restored historical terminal statuses.
 Timestamps and TTLs cannot substitute for these states.
 
 Retry identity is account incarnation, T, operation and operation_id. Fingerprints
@@ -212,7 +216,9 @@ source read/recovery authority, without a new native birth attestation. An accep
 abort_missing mutation has a retained retry entry. Its exact replay returns the
 original aborted receipt and current status. The same operation_id with another
 body or expected revision is conflict. The separate status action remains a read
-and never replaces a mutation receipt.
+and never replaces a mutation receipt. Changing abort_missing to status with its
+accepted operation_id is conflict before returning a read. A new status read
+uses a distinct operation_id.
 
 Commit and abort compete on the same journal revision. A terminal winner never
 changes. The loser receives that terminal if currently authorized to read it.
@@ -353,6 +359,12 @@ commit. Do not place an await between those checks and writes.
 Reception has a separate correlation boundary. validateExchange compares all
 available identities and commitments across request, receipt, current status,
 ledger and journal. Individually valid objects cannot be mixed across sources.
+Every transfer retry/terminal result includes a non-null current status, including
+historical step receipts and adapter maintenance returning an existing terminal.
+Only a birth retry uses the separate null-status variant. An independently known
+terminal is always compared against the current status, even when the returned
+receipt predates that terminal. The status preserves current recovery hold and
+generation independently of the immutable historical receipt.
 Reserve and transfer reconcile supply a full binding and freeze in their request.
 For seal, ready, commit, abort and activation.record the caller MUST pass a typed
 independent expectation containing binding, frozen and locally known manifest,
@@ -360,9 +372,19 @@ prepared and terminal. It comes from the retained native journal, never the
 response being checked. The API refuses these operations without it. Commit
 requires known manifest and prepared; activation additionally requires the known
 committed terminal. Seal and ready compare their bodies with those local facts.
+Whenever the binding is known, preparation must use a lineage distinct from
+binding.provenance.lineage_id and a conversation distinct from its source.
 No helper derives this expectation from received state. Callers load it
 independently before applying a reply. Correlation does not authenticate the
 transport or replace native ownership/application checks.
+
+validateObject and the object helper APIs accept plain JSON data; they are not
+a sandbox for executable JavaScript objects or proxies. Shape validation may
+read an accessor before the later canonicalization rejects it. canonicalJson
+itself refuses accessors, exotic prototypes and extensions without invoking
+input methods. For untrusted serialized input, use decodeDecision, which applies
+the byte cap and strict JSON parser before object validation. Fixed diagnostics
+do not expose property names or values.
 
 Import the exact integrated desktop files into the relay's existing
 `vendor/contracts/macro-pilot/v2` mechanism, with source commit/tree/blob and byte

@@ -9,12 +9,16 @@ export type Validation = Failure | { valid: true; errors: [] };
 export type Receipt = DecisionStepReceipt | DecisionBirthReceipt | DecisionTerminal | DecisionActivation;
 export type DecisionPlan = Failure
   | { valid: true; kind: 'mutation'; errors: []; ledger: DecisionLedger; record: DecisionRecord | null; receipt: Receipt | null; reservation_bytes: string }
-  | { valid: true; kind: 'retry' | 'terminal'; errors: []; receipt: Receipt; status: DecisionStatus | null }
+  | { valid: true; kind: 'retry'; errors: []; receipt: DecisionBirthReceipt; status: null }
+  | { valid: true; kind: 'retry' | 'terminal'; errors: []; receipt: DecisionStepReceipt | DecisionTerminal | DecisionActivation; status: DecisionStatus }
   | { valid: true; kind: 'status'; errors: []; status: DecisionStatus }
   | { valid: true; kind: 'source_status'; errors: []; status: DecisionSourceStatus };
 export type MaintenanceReason = 'session_invalidated' | 'access_changed' | 'producer_changed' | 'account_revoked' | 'operator_cancelled' | 'restore_uncertain';
 export type FingerprintDomain = 'source-key' | 'provenance' | 'transfer-binding' | 'retry-body' | 'step-body' | 'birth' | 'frozen' | 'manifest' | 'prepared' | 'attestation' | 'terminal' | 'activation';
 export interface DecisionValidator {
+  /** Plain JSON data API, not a sandbox for hostile JS objects/proxies.
+   * Shape validation can read accessors before rejecting non-JSON values.
+   * Use decodeDecision for untrusted serialized input. */
   validateObject(value: unknown, definition?: keyof DecisionDefinitions): Validation;
   decodeDecision<K extends keyof DecisionDefinitions>(raw: string, definition: K): Failure | { valid: true; errors: []; value: DecisionDefinitions[K] };
   /** The expectation comes from the independent native journal, never the reply.

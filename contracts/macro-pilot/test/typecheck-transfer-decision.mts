@@ -30,3 +30,9 @@ export function checkReceive(commit: Extract<DecisionRequest, { operation: 'comm
   // @ts-expect-error no full binding in this request: independent local facts required
   validateExchange(commit, {});
 }
+export function checkReceiptStatus(receipt: DecisionRecord['reserve_receipt']): void {
+  if (receipt === null) return;
+  // @ts-expect-error every transfer retry requires a current reconciliation status
+  const stripped: DecisionPlan = { valid: true, kind: 'retry', errors: [], receipt, status: null };
+  void stripped;
+}

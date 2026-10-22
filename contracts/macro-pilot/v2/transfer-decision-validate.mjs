@@ -116,7 +116,11 @@ export function createTransferDecisionValidator(shape) {
     if (definition === 'stepReceipt') requireThat(value.revision === increment(value.previous_revision) && value.phase === { reserve: 'reserved', seal: 'sealed', ready: 'target_ready' }[value.operation]);
     if (definition === 'status') {
       requireThat((value.status === 'terminal') === (value.terminal !== null));
-      if (value.terminal) { terminalRules(value.terminal); requireThat(value.transfer_id === value.terminal.transfer_id && same(value.source, value.terminal.source) && value.epoch === value.terminal.epoch && value.phase === value.terminal.outcome); }
+      if (value.terminal) {
+        terminalRules(value.terminal);
+        requireThat(value.transfer_id === value.terminal.transfer_id && same(value.source, value.terminal.source) && value.epoch === value.terminal.epoch && value.phase === value.terminal.outcome);
+        requireThat(value.revision === (value.activation ? increment(value.terminal.decision_revision) : value.terminal.decision_revision));
+      }
       if (value.status === 'not_found') requireThat(value.revision === '0' && value.phase === null && value.activation === null && value.source_recovery === 'intact');
       if (value.status === 'in_progress') requireThat(['reserved', 'sealed', 'target_ready'].includes(value.phase) && value.activation === null && value.source_recovery === 'intact');
       if (value.status === 'recovery_hold') requireThat(value.source_recovery === 'recovery_hold' && value.activation === null);
@@ -345,6 +349,8 @@ export function createTransferDecisionValidator(shape) {
       } else if (ledger) requireThat(same(ledger.provenance, binding.provenance), 'conflict');
       if (op === 'reconcile') {
         reader(binding, context);
+        const reused = record?.retries.find(r => r.operation_id === request.operation_id);
+        if (reused) requireThat(reused.operation === op && reused.request_digest === fingerprint('retry-body', request), 'conflict');
         if (record === null && ledger?.state === 'ceded') {
           matchTerminal(ledger.terminal, { binding, frozen: request.body.frozen, manifest: null, prepared: null, terminal: null });
           const current = status(request, null, context, ledger, ledger.terminal);
@@ -352,8 +358,6 @@ export function createTransferDecisionValidator(shape) {
         }
         if (request.body.action === 'status') return { valid: true, kind: 'status', errors: [], status: status(request, record, context, ledger) };
         if (record) {
-          const reused = record.retries.find(r => r.operation_id === request.operation_id);
-          if (reused) requireThat(reused.operation === op && reused.request_digest === fingerprint('retry-body', request), 'conflict');
           const earlier = record.retries.find(r => r.operation === op);
           if (earlier) {
             requireThat(earlier.body_digest === bodyDigest(request), 'conflict');
@@ -452,7 +456,7 @@ export function createTransferDecisionValidator(shape) {
       contextRules(context); assertObject(ledger, 'ledger'); assertObject(record, 'record');
       authorityOrigin(record.binding.provenance, context); sameLedger(record.binding, ledger);
       requireThat(['session_invalidated', 'access_changed', 'producer_changed', 'account_revoked', 'operator_cancelled', 'restore_uncertain'].includes(reason));
-      if (record.terminal) return { valid: true, kind: 'terminal', errors: [], receipt: record.terminal, status: null };
+      if (record.terminal) return { valid: true, kind: 'terminal', errors: [], receipt: record.terminal, status: status({ body: { binding: record.binding } }, record, context, ledger) };
       ledger = structuredClone(ledger); record = structuredClone(record);
       requireThat(ledger.active_transfer_id === record.binding.transfer_id, 'conflict');
       if (reason === 'restore_uncertain' || uncertain(record.binding.provenance, context, ledger)) {
@@ -469,7 +473,7 @@ export function createTransferDecisionValidator(shape) {
     const digest = bindingDigest(expected.binding);
     requireThat(expected.frozen.binding_digest === digest, 'conflict');
     if (expected.manifest) requireThat(expected.manifest.binding_digest === digest && expected.manifest.frozen_digest === fingerprint('frozen', expected.frozen) && expected.manifest.source_revision === expected.frozen.content_revision, 'conflict');
-    if (expected.prepared) requireThat(expected.manifest !== null && expected.prepared.binding_digest === digest && expected.prepared.manifest_digest === fingerprint('manifest', expected.manifest), 'conflict');
+    if (expected.prepared) requireThat(expected.manifest !== null && expected.prepared.binding_digest === digest && expected.prepared.manifest_digest === fingerprint('manifest', expected.manifest) && expected.prepared.lineage_id !== expected.binding.provenance.lineage_id && expected.prepared.target_conversation_id !== sourceOf(expected.binding).source_conversation_id, 'conflict');
     if (expected.terminal) matchTerminal(expected.terminal, expected);
   }
   function matchTerminal(terminal, expected) {
@@ -477,6 +481,7 @@ export function createTransferDecisionValidator(shape) {
     const b = expected.binding;
     requireThat(terminal.transfer_id === b.transfer_id && same(terminal.source, sourceOf(b)) && terminal.epoch === b.epoch && terminal.target_instance_id === b.target_instance_id && terminal.binding_digest === bindingDigest(b) && terminal.frozen_digest === fingerprint('frozen', expected.frozen), 'conflict');
     if (terminal.outcome === 'committed') {
+      requireThat(terminal.prepared.lineage_id !== b.provenance.lineage_id, 'conflict');
       if (expected.manifest) requireThat(terminal.manifest_digest === fingerprint('manifest', expected.manifest), 'conflict');
       if (expected.prepared) requireThat(same(terminal.prepared, expected.prepared), 'conflict');
     }
@@ -530,6 +535,7 @@ export function createTransferDecisionValidator(shape) {
       }
       if (request.operation === 'lineage.create') {
         requireThat(['mutation', 'retry'].includes(result.kind)); assertObject(result.receipt, 'birthReceipt');
+        if (result.kind === 'retry') requireThat(result.status === null);
         const r = result.receipt;
         requireThat(r.operation_id === request.operation_id && r.request_digest === fingerprint('retry-body', request) && r.mode === request.body.mode && r.provenance_digest === fingerprint('provenance', request.body.provenance), 'conflict');
         if (result.kind === 'mutation') {
@@ -555,7 +561,7 @@ export function createTransferDecisionValidator(shape) {
         requireThat(r.type === 'activation_receipt' && request.operation === 'activation.record'); assertObject(r, 'activation');
         requireThat(same(r, request.body.activation), 'conflict'); activationRules(r, expected.terminal);
       }
-      if (result.status !== undefined && result.status !== null) {
+      if (['retry', 'terminal'].includes(result.kind)) {
         matchStatus(result.status, expected);
         if (r.type === 'terminal_receipt') requireThat(same(r, result.status.terminal), 'conflict');
         if (r.type === 'activation_receipt') requireThat(same(r, result.status.activation), 'conflict');

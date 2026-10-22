@@ -133,6 +133,8 @@ fail(planDecision(anotherT, s.reserve.result.ledger, null, s.reserve.context), '
 for (const stage of ['reserve', 'seal', 'ready', 'commit', 'activate']) {
   const retry = plan(s[stage].request, stage);
   assert.equal(retry.kind, 'retry', stage); assert.deepEqual(retry.receipt, s[stage].result.receipt);
+  assert.equal(validateExchange(s[stage].request, retry, s.expectation(s[stage].request.operation)).valid, true);
+  fail(validateExchange(s[stage].request, { ...retry, status: null }, s.expectation(s[stage].request.operation)));
   const newId = clone(s[stage].request); newId.operation_id = s.uuid();
   const sameStep = plan(newId, stage);
   assert.equal(sameStep.kind, 'retry'); assert.deepEqual(sameStep.receipt, retry.receipt);
@@ -142,6 +144,38 @@ for (const stage of ['reserve', 'seal', 'ready', 'commit', 'activate']) {
 const oldReserve = plan(s.reserve.request, 'commit', s.reserve.context);
 assert.equal(oldReserve.kind, 'retry'); assert.deepEqual(oldReserve.receipt, s.reserve.result.receipt);
 assert.equal(oldReserve.status.status, 'terminal');
+// R2: current status is mandatory even for a historical step receipt. The
+// expected terminal is independently retained, not extracted from this reply.
+const knownCommitExpectation = { ...s.expectation('commit'), terminal: clone(s.knownTerminal) };
+assert.equal(validateExchange(s.reserve.request, oldReserve, knownCommitExpectation).valid, true);
+fail(validateExchange(s.reserve.request, { ...oldReserve, status: null }, knownCommitExpectation));
+const wrongKnownTerminal = clone(knownCommitExpectation); wrongKnownTerminal.terminal.receipt_id = 'ffffffff-ffff-ffff-ffff-ffffffffffff';
+fail(validateExchange(s.reserve.request, oldReserve, wrongKnownTerminal), 'conflict');
+const birthRetry = planDecision(s.birth.request, s.birth.result.ledger, null, s.context);
+assert.equal(birthRetry.status, null); assert.equal(validateExchange(s.birth.request, birthRetry).valid, true);
+fail(validateExchange(s.birth.request, { ...birthRetry, status: oldReserve.status }));
+// R3: complete binding facts exclude a target that reuses source lineage.
+const selfLineageStatus = plan(statusRequest, 'commit', s.context);
+selfLineageStatus.status.terminal.prepared.lineage_id = s.provenance.lineage_id;
+assert.equal(validateObject(selfLineageStatus.status, 'status').valid, true);
+fail(validateExchange(statusRequest, selfLineageStatus), 'conflict');
+const selfLineageExpectation = s.expectation('commit'); selfLineageExpectation.prepared.lineage_id = s.provenance.lineage_id;
+fail(validateObject(selfLineageExpectation, 'expectation'), 'conflict');
+fail(validateExchange(s.commit.request, s.commit.result, selfLineageExpectation), 'conflict');
+// R4: revision counts the decision and, if present, exactly one application.
+const terminalStatus = plan(statusRequest, 'commit', s.context);
+const activatedStatus = plan(statusRequest, 'activate', s.context);
+assert.equal(terminalStatus.status.revision, '4'); assert.equal(activatedStatus.status.revision, '5');
+assert.equal(validateExchange(statusRequest, terminalStatus).valid, true);
+assert.equal(validateExchange(statusRequest, activatedStatus).valid, true);
+for (const [reply, revisions] of [[terminalStatus, ['0', '3', '5']], [activatedStatus, ['0', '4', '6']]]) {
+  for (const revision of revisions) {
+    const bad = clone(reply); bad.status.revision = revision;
+    fail(validateObject(bad.status, 'status')); fail(validateExchange(statusRequest, bad));
+  }
+}
+const wrongApplication = clone(activatedStatus); wrongApplication.status.activation.terminal_digest = s.hash('0');
+fail(validateObject(wrongApplication.status, 'status'), 'conflict'); fail(validateExchange(statusRequest, wrongApplication), 'conflict');
 const collideId = clone(s.commit.request); collideId.operation_id = s.reserve.request.operation_id;
 fail(plan(collideId, 'ready', s.commit.context), 'conflict');
 const staleSeal = clone(s.seal.request); staleSeal.expected_revision = '0';
@@ -206,6 +240,12 @@ const changedTombstoneRetry = clone(abortMissingRequest); changedTombstoneRetry.
 fail(planDecision(changedTombstoneRetry, tombstone.ledger, tombstone.record, abortMissingContext), 'conflict');
 const changedTombstoneBody = clone(abortMissingRequest); changedTombstoneBody.body.expected_ledger_revision = '2';
 fail(planDecision(changedTombstoneBody, tombstone.ledger, tombstone.record, abortMissingContext), 'conflict');
+// R1: an accepted mutation ID cannot become a read by changing its action.
+const tombstoneAsRead = clone(abortMissingRequest); tombstoneAsRead.body.action = 'status';
+assert.equal(validateObject(tombstoneAsRead).valid, true);
+fail(planDecision(tombstoneAsRead, tombstone.ledger, tombstone.record, abortMissingContext), 'conflict');
+const tombstoneAsChangedRead = clone(tombstoneAsRead); tombstoneAsChangedRead.expected_revision = '1'; tombstoneAsChangedRead.body.expected_ledger_revision = '2';
+fail(planDecision(tombstoneAsChangedRead, tombstone.ledger, tombstone.record, abortMissingContext), 'conflict');
 assert.equal(planDecision(statusRequest, tombstone.ledger, tombstone.record, s.context).kind, 'status');
 const delayed = planDecision(s.reserve.request, tombstone.ledger, tombstone.record, s.reserve.context);
 assert.equal(delayed.kind, 'terminal'); assert.deepEqual(delayed.receipt, tombstone.receipt);
@@ -228,6 +268,11 @@ assert.equal(validateExchange(abortRequest, abort, s.expectation('abort')).valid
 const commitLoses = planDecision(s.commit.request, abort.ledger, abort.record, s.commit.context);
 assert.equal(commitLoses.kind, 'terminal'); assert.deepEqual(commitLoses.receipt, abort.receipt);
 assert.equal(validateExchange(s.commit.request, commitLoses, s.expectation('commit')).valid, true);
+fail(validateExchange(s.commit.request, { ...commitLoses, status: null }, s.expectation('commit')));
+const heldAbortRetry = planDecision(s.reserve.request, abort.ledger, abort.record, { ...s.context, history: 'restored', recovery_generation: s.provenance.installation_id });
+assert.equal(heldAbortRetry.status.source_recovery, 'recovery_hold');
+assert.equal(validateExchange(s.reserve.request, heldAbortRetry).valid, true);
+fail(validateExchange(s.reserve.request, { ...heldAbortRetry, status: null }));
 const abortLoses = plan(abortRequest, 'commit', s.context);
 assert.equal(abortLoses.kind, 'terminal'); assert.deepEqual(abortLoses.receipt, s.commit.result.receipt);
 const pinned = clone(s.ready.result.record);
@@ -327,6 +372,7 @@ for (const reason of ['session_invalidated', 'access_changed', 'producer_changed
   assert.equal(outcome.receipt.outcome, 'aborted'); assert.equal(outcome.receipt.reason, reason);
   const terminal = planMaintenance(s.commit.result.ledger, s.commit.result.record, restored, reason);
   assert.equal(terminal.kind, 'terminal'); assert.deepEqual(terminal.receipt, s.commit.result.receipt);
+  assert.equal(terminal.status.source_recovery, 'recovery_hold'); assert.equal(validateObject(terminal.status, 'status').valid, true);
 }
 
 // Birth proves newness through a correlated native event, including first enrollment.
@@ -454,6 +500,11 @@ Object.assign(valid, { 'request-initial-existing': enrolledRequest, 'receipt-ini
 for (const code of schema.$defs.errorCode.enum) valid[`error-${code}`] = { decision_contract: 'transfer-decision-1', type: 'decision_error', operation_id: s.uuid(), code, retryable: ['unavailable', 'instance_offline'].includes(code) };
 const malformedPrepared = clone(s.ready.request); malformedPrepared.body.prepared.ready = true;
 const invalid = { 'extra-private-metadata': extra, 'forged-ready-boolean': malformedPrepared, 'origin-from-body': injectedOrigin, 'frozen-wrong-binding': { ...s.reserve.request, body: { ...s.reserve.request.body, frozen: { ...s.frozen, binding_digest: s.hash('0') } } }, 'terminal-without-preparation': { ...s.commit.result.receipt, prepared: null }, 'recovery-hold-with-terminal': { ...inherited.record, terminal: s.commit.result.receipt }, 'revision-number': { ...s.reserve.request, expected_revision: 42 }, 'revision-leading-zero': { ...s.reserve.request, expected_revision: '01' }, 'revision-overflow': { ...s.reserve.request, expected_revision: '9223372036854775808' }, 'unknown-contract': { ...s.reserve.request, decision_contract: 'transfer-decision-2' }, 'unknown-operation': { ...s.commit.request, operation: 'content.read' }, 'unknown-format': { ...s.ready.request, body: { prepared: { ...s.prepared, format_version: '2' } } } };
+
+valid['status-activated'] = activatedStatus.status;
+invalid['status-terminal-before-decision'] = { ...terminalStatus.status, revision: '0' };
+invalid['status-terminal-extra-revision-without-activation'] = { ...terminalStatus.status, revision: '5' };
+invalid['status-activated-without-application-revision'] = { ...activatedStatus.status, revision: '4' };
 
 if (process.argv.includes('--write-fixtures')) {
   for (const [kind, fixtures] of Object.entries({ valid, invalid })) {
