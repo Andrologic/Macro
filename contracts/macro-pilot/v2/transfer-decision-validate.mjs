@@ -82,6 +82,8 @@ function progressRevision(phase, held = false) {
   requireThat(Object.hasOwn(progressRevisions, phase));
   return held ? increment(progressRevisions[phase]) : progressRevisions[phase];
 }
+const postProgressRevisions = Object.freeze(Object.keys(progressRevisions).map(phase => progressRevision(phase, true)));
+const stepPhases = Object.freeze({ reserve: 'reserved', seal: 'sealed', ready: 'target_ready' });
 const consumerKinds = Object.freeze({
   'lineage.create': ['mutation', 'retry'],
   reserve: ['mutation', 'retry', 'terminal'],
@@ -126,7 +128,7 @@ export function createTransferDecisionValidator(shape) {
       bindingRules(value.body.binding);
       requireThat(value.transfer_id === value.body.binding.transfer_id && value.body.frozen.binding_digest === bindingDigest(value.body.binding));
     }
-    if (definition === 'stepReceipt') requireThat(value.revision === increment(value.previous_revision) && value.phase === { reserve: 'reserved', seal: 'sealed', ready: 'target_ready' }[value.operation]);
+    if (definition === 'stepReceipt') stepReceiptRules(value);
     if (definition === 'status') {
       requireThat((value.status === 'terminal') === (value.terminal !== null));
       if (value.terminal) {
@@ -139,7 +141,7 @@ export function createTransferDecisionValidator(shape) {
       if (value.status === 'recovery_hold') {
         requireThat(value.source_recovery === 'recovery_hold' && value.activation === null);
         requireThat(value.phase === null ? value.revision === '0' : value.phase === 'recovery_hold'
-          ? Object.keys(progressRevisions).some(phase => value.revision === progressRevision(phase, true))
+          ? postProgressRevisions.includes(value.revision)
           : value.revision === progressRevision(value.phase));
       }
       if (value.activation) activationRules(value.activation, value.terminal);
@@ -154,7 +156,14 @@ export function createTransferDecisionValidator(shape) {
   function terminalRules(terminal) {
     requireThat(terminal.target_instance_id !== terminal.source.source_instance_id);
     requireThat(terminal.outcome === 'committed' ? terminal.reason === null && terminal.manifest_digest !== null && terminal.prepared !== null : terminal.reason !== null && terminal.prepared === null && terminal.manifest_digest === null);
+    requireThat(terminal.outcome === 'committed' ? terminal.decision_revision === progressRevision('target_ready', true)
+      : terminal.reason === 'missing_reservation' ? terminal.decision_revision === '1'
+      : postProgressRevisions.includes(terminal.decision_revision));
     if (terminal.prepared) requireThat(terminal.prepared.binding_digest === terminal.binding_digest && terminal.prepared.manifest_digest === terminal.manifest_digest && terminal.prepared.target_conversation_id !== terminal.source.source_conversation_id);
+  }
+  function stepReceiptRules(receipt) {
+    requireThat(Object.hasOwn(stepPhases, receipt.operation) && receipt.phase === stepPhases[receipt.operation]);
+    requireThat(receipt.revision === progressRevision(receipt.phase) && receipt.revision === increment(receipt.previous_revision));
   }
   function activationRules(activation, terminal) {
     requireThat(terminal?.outcome === 'committed' && activation.transfer_id === terminal.transfer_id && activation.terminal_digest === fingerprint('terminal', terminal) && activation.target_instance_id === terminal.target_instance_id && activation.target_conversation_id === terminal.prepared.target_conversation_id && activation.prepared_digest === fingerprint('prepared', terminal.prepared), 'conflict');
@@ -196,9 +205,9 @@ export function createTransferDecisionValidator(shape) {
     }
     for (const [operation, receipt] of [['reserve', record.reserve_receipt], ['seal', record.seal_receipt], ['ready', record.ready_receipt]]) {
       if (receipt) {
-        requireThat(receipt.operation === operation && receipt.transfer_id === b.transfer_id && receipt.binding_digest === digest && receipt.revision === increment(receipt.previous_revision) && receipt.phase === { reserve: 'reserved', seal: 'sealed', ready: 'target_ready' }[operation] && exactInteger(receipt.revision) <= exactInteger(record.revision));
+        stepReceiptRules(receipt);
+        requireThat(receipt.operation === operation && receipt.transfer_id === b.transfer_id && receipt.binding_digest === digest && exactInteger(receipt.revision) <= exactInteger(record.revision));
         requireThat(receipt.subject_digest === (operation === 'reserve' ? fingerprint('frozen', record.frozen) : operation === 'seal' ? fingerprint('manifest', record.manifest) : fingerprint('prepared', record.prepared)));
-        requireThat(receipt.previous_revision === { reserve: '0', seal: '1', ready: '2' }[operation]);
       }
     }
     requireThat(new Set(record.retries.map(r => r.operation)).size === record.retries.length && new Set(record.retries.map(r => r.operation_id)).size === record.retries.length);
@@ -581,15 +590,25 @@ export function createTransferDecisionValidator(shape) {
         requireThat(r.subject_digest === subject, 'conflict');
       } else if (r.type === 'terminal_receipt') {
         requireThat(['reserve', 'commit', 'abort', 'reconcile'].includes(request.operation)); matchTerminal(r, expected);
+        if (result.kind !== 'terminal') {
+          requireThat(r.decision_revision === increment(request.expected_revision), 'conflict');
+          if (request.operation === 'abort') requireThat(r.reason === request.body.reason, 'conflict');
+          if (request.operation === 'reconcile') requireThat(r.reason === 'missing_reservation', 'conflict');
+        }
       } else {
         requireThat(r.type === 'activation_receipt' && request.operation === 'activation.record'); assertObject(r, 'activation');
         requireThat(same(r, request.body.activation), 'conflict'); activationRules(r, expected.terminal);
+        requireThat(request.expected_revision === expected.terminal.decision_revision, 'conflict');
       }
       if (['retry', 'terminal'].includes(result.kind)) {
         matchStatus(result.status, expected);
         if (r.type === 'terminal_receipt') requireThat(same(r, result.status.terminal), 'conflict');
         if (r.type === 'activation_receipt') requireThat(same(r, result.status.activation), 'conflict');
-        if (r.type === 'step_receipt') requireThat(exactInteger(result.status.revision) >= exactInteger(r.revision), 'conflict');
+        if (r.type === 'step_receipt') {
+          const revision = exactInteger(result.status.terminal?.decision_revision ?? result.status.revision);
+          const followsStep = result.status.terminal !== null || result.status.phase === 'recovery_hold';
+          requireThat(followsStep ? revision > exactInteger(r.revision) : revision >= exactInteger(r.revision), 'conflict');
+        }
       }
       if (result.kind === 'mutation') {
         assertObject(result.ledger, 'ledger'); assertObject(result.record, 'record');

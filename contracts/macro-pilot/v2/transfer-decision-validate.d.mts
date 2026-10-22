@@ -22,7 +22,9 @@ export interface DecisionValidator {
   validateObject(value: unknown, definition?: keyof DecisionDefinitions): Validation;
   decodeDecision<K extends keyof DecisionDefinitions>(raw: string, definition: K): Failure | { valid: true; errors: []; value: DecisionDefinitions[K] };
   /** The expectation comes from the independent native journal, never the reply.
-   * Requests containing no full binding require it both at type and runtime. */
+   * Requests containing no full binding require it both at type and runtime.
+   * Mutation/retry receipts correlate the acquired CAS; a terminal winner of a
+   * competing operation is independent of the losing request's CAS. */
   validateExchange(request: Extract<DecisionRequest, { operation: 'reserve' | 'reconcile' | 'lineage.create' }>, plan: unknown, expectation?: DecisionExpectation): Validation;
   validateExchange(request: DecisionRequest, plan: unknown, expectation: DecisionExpectation): Validation;
   validateProducerAttestation(attestation: unknown, exchange: unknown, selected: unknown, authenticatedConnection: unknown): Validation;

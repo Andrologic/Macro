@@ -10,12 +10,14 @@ import {
 } from '../v2/transfer-decision-validate.mjs';
 import { scenario } from './transfer-decision-vectors.mjs';
 import { verifyReceptionMatrix } from './transfer-decision-reception-matrix.mjs';
+import { verifyTerminalMatrix } from './transfer-decision-terminal-matrix.mjs';
 
 const root = new URL('../v2/', import.meta.url);
 const schema = JSON.parse(readFileSync(new URL('transfer-decision.schema.json', root), 'utf8'));
 const clone = structuredClone;
 const s = scenario();
 const receptionMatrix = verifyReceptionMatrix();
+const terminalMatrix = verifyTerminalMatrix();
 const steps = ['birth', 'reserve', 'seal', 'ready', 'commit', 'activate'];
 // C1 uses the current native ConversationContentToken DTO verbatim. The
 // desktop-only dev/typecheck-transfer-decision-native.mts imports that generated
@@ -532,6 +534,10 @@ invalid['request-uuid-content-incarnation'] = { ...s.reserve.request, body: { ..
 invalid['status-terminal-before-decision'] = { ...terminalStatus.status, revision: '0' };
 invalid['status-terminal-extra-revision-without-activation'] = { ...terminalStatus.status, revision: '5' };
 invalid['status-activated-without-application-revision'] = { ...activatedStatus.status, revision: '4' };
+invalid['terminal-committed-before-ready'] = { ...s.knownTerminal, decision_revision: '1' };
+invalid['terminal-tombstone-after-reservation'] = { ...tombstone.receipt, decision_revision: '2' };
+invalid['birth-nonzero-cas'] = { ...s.birth.request, expected_revision: '1' };
+invalid['step-reserve-shifted-cas'] = { ...s.reserve.result.receipt, previous_revision: '2', revision: '3' };
 
 if (process.argv.includes('--write-fixtures')) {
   for (const [kind, fixtures] of Object.entries({ valid, invalid })) {
@@ -565,4 +571,5 @@ for (const version of ['v1', 'v2']) {
 }
 console.log(`Decision contract: ${fixtures} fixtures, CAS/retry, auth bindings, terminal races, tombstone, restore, enrollment, capacity, UTF-8 and exact counters passed.`);
 console.log(`Reception matrix: ${JSON.stringify(receptionMatrix)}`);
+console.log(`Terminal matrix: ${JSON.stringify(terminalMatrix)}`);
 console.log(`Maximum canonical JSON bytes per complete closed schema alternative: ${JSON.stringify(bounds)}`);

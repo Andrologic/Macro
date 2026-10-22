@@ -211,6 +211,18 @@ digest, target, prepared commitment and conversation; it cannot qualify another
 decision. These relations also apply to restored historical terminal statuses.
 Timestamps and TTLs cannot substitute for these states.
 
+Every terminal, including an isolated receipt or a terminal retained in a ceded
+ledger, must also be reachable in the closed decision graph:
+
+| Outcome | Reason | Decision revision |
+| --- | --- | --- |
+| committed | null | 4 |
+| aborted | missing_reservation | 1 |
+| aborted | user_cancelled or any of the five intact maintenance reasons | 2, 3 or 4 |
+
+A recovery hold never terminalizes. Application is separate from this decision
+revision and cannot make an otherwise unreachable terminal valid.
+
 Nonterminal statuses use the same phase/revision relations as the journal:
 
 | Status | Exposed phase | Revision |
@@ -244,6 +256,33 @@ body or expected revision is conflict. The separate status action remains a read
 and never replaces a mutation receipt. Changing abort_missing to status with its
 accepted operation_id is conflict before returning a read. A new status read
 uses a distinct operation_id.
+
+Reception of a mutation/retry correlates the acquired receipt with its accepted
+request CAS. A terminal receipt has decision_revision = expected_revision + 1:
+commit consumes 3 to decide 4; abort consumes 1/2/3 to decide 2/3/4;
+abort_missing consumes 0 to decide 1. Abort also matches its requested reason;
+abort_missing matches missing_reservation. An activation request instead consumes
+the known terminal decision revision 4, producing journal revision 5 while its
+application receipt keeps its own revision 1.
+
+The complete accepted-CAS preconditions are lineage.create=0, reserve=0, seal=1,
+ready=2, commit=3, abort=1/2/3 according to its acquired phase, abort_missing=0,
+and activation.record=4. Birth requires zero in its closed request shape for
+both mutation and retry. Isolated step receipts share the journal's fixed
+operation/revision rule: reserve 0→1, seal 1→2, ready 2→3. Consistently shifting
+both request and step receipt cannot invent another accepted step revision.
+The other CAS preconditions apply to mutation/retry, preserving terminal winners
+and reconcile reads that do not acquire a new mutation.
+The read-only source_status request already fixes expected_revision=0 in its
+closed shape. Transfer status reads accept a canonical decimal without acquiring
+that CAS; they do not certify a new mutation.
+
+A historical step retry with a terminal status requires decision_revision
+strictly greater than the step revision. A materialized recovery_hold likewise
+has a revision strictly after the step; an inherited hold before maintenance may
+still expose that step's own phase/revision. These checks preserve honest holds
+and later continuations. A kind=terminal result reveals the immutable winner of
+a competing operation and is not tied to the losing request's CAS.
 
 Commit and abort compete on the same journal revision. A terminal winner never
 changes. The loser receives that terminal if currently authorized to read it.
@@ -448,6 +487,8 @@ Contract tests cover both roots' refusal of these objects, exact counters and
 UTF-8, closed shapes, correlation/auth snapshots, state/CAS/retry, terminal races,
 168 nonterminal status profiles, 50 operation/action/kind cases and receipt
 families, native C1 representation and the zero initial lifecycle epoch,
+64 terminal reachability profiles, 28 mutation/retry CAS cases and 12 step/terminal
+histories with real competing winners and preserved recovery holds,
 missing reserve and delayed arrival, initial enrollment, server restore, recovery
 reads under a different session, pin/application separation and resource bounds.
 They prove neither native freeze nor real SQLite concurrency, durable pin,

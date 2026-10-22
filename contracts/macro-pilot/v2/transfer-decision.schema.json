@@ -1246,7 +1246,7 @@
               "$ref": "#/$defs/uuid"
             },
             "expected_revision": {
-              "$ref": "#/$defs/decimal"
+              "const": "0"
             },
             "body": {
               "$ref": "#/$defs/birthBody"

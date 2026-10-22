@@ -36,3 +36,6 @@ export function checkReceiptStatus(receipt: DecisionRecord['reserve_receipt']): 
   const stripped: DecisionPlan = { valid: true, kind: 'retry', errors: [], receipt, status: null };
   void stripped;
 }
+// @ts-expect-error birth always consumes the absent ledger at revision zero
+const birthCAS: Extract<DecisionRequest, { operation: 'lineage.create' }>['expected_revision'] = '1';
+void birthCAS;
