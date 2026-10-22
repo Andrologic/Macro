@@ -2,7 +2,7 @@ import { secretForms } from '../macroPilot/desktopContentHost';
 import { assistantProvenance } from '../macroPilot/assistantProvenance';
 import { buildAssistantProviderInputItemsFromTurn, buildChatGptProviderTurnState, buildChatGptVisibleTurnContent, buildFunctionCallOutputProviderInputItem } from './responsesCodec';
 import { buildAssistantChatCompletionProviderItem, buildToolChatCompletionProviderItem } from './chatCompletionsCodec';
-import { normalizePortableChatHistory, portableDigest, type RawHistoryField, type RawHistoryRow, type PortableRecord, type SealedHistorySource } from './portableChatHistory';
+import { PORTABLE_SOURCE_LIMITS, normalizePortableChatHistory, portableDigest, type RawHistoryField, type RawHistoryRow, type PortableRecord, type SealedHistorySource } from './portableChatHistory';
 import { PortableWorkBudget } from './portableHistoryInspection';
 import { buildToolContextBlock } from './toolPresentation';
 
@@ -49,7 +49,7 @@ export async function fixture(provider: 'codex' | 'macro-ai', change?: (messages
     rows.push({ family, row, fields });
   };
   for (const [family, valuesForRow] of values) await appendRow(family, valuesForRow);
-  const source: SealedHistorySource = { manifest: 'a'.repeat(64), limits: ['not_normalized', 'not_F_admission', 'runtime_intentions_unattested'], async *rows() { yield* rows; }, async *relations() {}, async *read(field) { const raw = data.get(field.ordinal)!; for (let offset = 0; offset < raw.length; offset += 4093) yield raw.subarray(offset, offset + 4093); } };
+  const source: SealedHistorySource = { manifest: 'a'.repeat(64), limits: [...PORTABLE_SOURCE_LIMITS], async *rows() { yield* rows; }, async *relations() {}, async *read(field) { const raw = data.get(field.ordinal)!; for (let offset = 0; offset < raw.length; offset += 4093) yield raw.subarray(offset, offset + 4093); } };
   const output: { header: PortableRecord; text: string }[] = [];
   const budget = new PortableWorkBudget(128 * 1024 * 1024);
   const run = () => normalizePortableChatHistory(source, async () => policy, budget, { append: async (header, bytes) => { output.push({ header, text: decoder.decode(bytes) }); } });

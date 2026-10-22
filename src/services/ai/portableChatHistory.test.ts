@@ -68,3 +68,11 @@ test('assistant-owned required attachments refuse before a portable destination 
   await expect(normalizePortableChatHistoryTwoPass(f.source, async () => policy, f.budget, { append: async () => { writes++; } })).rejects.toThrow('unsupported_assistant_asset');
   expect(writes).toBe(0); expect(f.budget.used).toBe(0);
 });
+
+test('unknown or omitted source limitations refuse before target publication', async () => {
+  const f = await fixture('codex'); let writes = 0;
+  for (const limits of [[...f.source.limits, 'future_unevaluated_family'], f.source.limits.filter(limit => limit !== 'browser_unobserved')]) {
+    await expect(normalizePortableChatHistoryTwoPass({ ...f.source, limits }, async () => policy, f.budget, { append: async () => { writes++; } })).rejects.toThrow('integrity_failed');
+  }
+  expect(writes).toBe(0); expect(f.budget.used).toBe(0);
+});

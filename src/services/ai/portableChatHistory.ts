@@ -53,6 +53,8 @@ export interface PortableMetadata {
   sourceHash?: string;
   sourceBytes?: number;
 }
+export const PORTABLE_SOURCE_LIMITS: readonly string[] = ['browser_unobserved', 'files_skills_other_chats_unobserved', 'opaque_json_semantics_unevaluated', 'runtime_intentions_unattested', 'not_normalized', 'not_F_admission'];
+export const PORTABLE_LIMITS: readonly string[] = [...PORTABLE_SOURCE_LIMITS, 'not_provider_session_resumption', 'recognized_shapes_only'];
 const encoder = new TextEncoder();
 export async function portableDigest(bytes: Uint8Array): Promise<string> {
   return Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256', new Uint8Array(bytes))), b => b.toString(16).padStart(2, '0')).join('');
@@ -109,7 +111,7 @@ export async function normalizePortableChatHistory(
   const currentPolicy = await policy();
   const releasePolicy = budget.reserve(512 + currentPolicy.secrets.reduce((sum, secret) => sum + secret.length * 4 + 32, 0));
   const initial = { ...currentPolicy, secrets: [...currentPolicy.secrets] };
-  if (!/^[a-f0-9]{64}$/.test(source.manifest)) { releasePolicy(); fail('integrity_failed'); }
+  if (typeof source.manifest !== 'string' || !/^[a-f0-9]{64}$/.test(source.manifest) || !Array.isArray(source.limits) || source.limits.some(limit => !PORTABLE_SOURCE_LIMITS.includes(limit)) || new Set(source.limits).size !== source.limits.length || PORTABLE_SOURCE_LIMITS.some(limit => !source.limits.includes(limit))) { releasePolicy(); fail('integrity_failed'); }
   let ordinal = 0, retainedBytes = 0;
   const costs = { sourceLoads: 0, sourcePayloadBytes: 0, sourceChunks: 0, maxSourceChunkBytes: 0, maxAssembledFieldBytes: 0, textDecodes: 0, jsonFieldInspections: 0, fieldAndEmissionDigestInputCopyBytes: 0 };
   const digest = (bytes: Uint8Array) => { costs.fieldAndEmissionDigestInputCopyBytes += bytes.length; return portableDigest(bytes); };

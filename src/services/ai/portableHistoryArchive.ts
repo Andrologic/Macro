@@ -4,7 +4,7 @@ import { inspectAttachmentContent } from '../macroPilot/attachmentFilesHost';
 import { inspectWholeText, type TextPolicy } from '../macroPilot/conversationText';
 import { parseStoredJsonStrict, isRecord } from './jsonValues';
 import { PortableWorkBudget, samePortablePolicy } from './portableHistoryInspection';
-import { portableDigest, type PortableMetadata, type PortableRecord } from './portableChatHistory';
+import { PORTABLE_SOURCE_LIMITS, PORTABLE_LIMITS, portableDigest, type PortableMetadata, type PortableRecord } from './portableChatHistory';
 
 export interface PortableArchiveBinding { version: 1; importKey: string; manifest: string }
 export interface PortableArchiveFragment { record: PortableRecord; offset: number; bytes: Uint8Array; targetUuid: string | null }
@@ -37,7 +37,7 @@ function metadata(value: unknown): PortableMetadata {
   if (Number(value.source.sqlType) > 3 || Number(value.source.family) > 9 || Number(value.source.tag) >= [15,14,2,5,4,29,18,4,7,7][Number(value.source.family)]) fail('invalid_portable_metadata');
   if (value.retained !== undefined && (!Number.isSafeInteger(value.retained) || Number(value.retained) < 0)) fail('invalid_portable_metadata');
   for (const key of ['sourceHash', 'captureManifest']) if (value[key] !== undefined && !/^[a-f0-9]{64}$/.test(String(value[key]))) fail('invalid_portable_metadata');
-  for (const key of ['sourceLimits', 'remainingLimits']) if (value[key] !== undefined && (!Array.isArray(value[key]) || (value[key] as unknown[]).some(limit => typeof limit !== 'string' || !['browser_unobserved', 'files_skills_other_chats_unobserved', 'opaque_json_semantics_unevaluated', 'runtime_intentions_unattested', 'not_normalized', 'not_F_admission', 'not_provider_session_resumption', 'recognized_shapes_only'].includes(limit)))) fail('invalid_portable_metadata');
+  for (const key of ['sourceLimits', 'remainingLimits']) if (value[key] !== undefined && (!Array.isArray(value[key]) || (value[key] as unknown[]).some(limit => typeof limit !== 'string' || !PORTABLE_LIMITS.includes(limit)))) fail('invalid_portable_metadata');
   if (value.source.path !== undefined && (!Array.isArray(value.source.path) || value.source.path.some(part => typeof part !== 'string' && (!Number.isSafeInteger(part) || part < 0)))) fail('invalid_portable_metadata');
   return value as unknown as PortableMetadata;
 }
@@ -103,7 +103,7 @@ export class PortableHistoryArchive {
         });
       }
       const roots = [...this.origins.values()].filter(origin => origin.captureManifest !== undefined);
-      if (roots.length !== 1 || !roots[0].sourceLimits || !roots[0].remainingLimits?.includes('not_F_admission') || roots[0].reason !== 'capture_provenance_only' || roots[0].source.family !== 0 || roots[0].source.tag !== 0) fail('missing_source_identity');
+      if (roots.length !== 1 || !roots[0].sourceLimits || PORTABLE_SOURCE_LIMITS.some(limit => !roots[0].sourceLimits!.includes(limit)) || !roots[0].remainingLimits?.includes('not_F_admission') || roots[0].reason !== 'capture_provenance_only' || roots[0].source.family !== 0 || roots[0].source.tag !== 0) fail('missing_source_identity');
       for (const origin of this.origins.values()) if (origin.classification === 'redundant_representation' && (origin.retained === undefined || !this.headers[origin.retained] || this.headers[origin.retained].entry.kind === 'association')) fail('invalid_origin');
       for (const header of this.headers) {
         if (header.entry.kind === 'association') {
