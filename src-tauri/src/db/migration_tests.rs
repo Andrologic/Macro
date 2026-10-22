@@ -9,6 +9,9 @@ async fn accepts_develop_v9_with_historical_pilot_v5_stamp() {
     let mut old = fixture(&path, true).await;
     old.close().await.unwrap();
     let pool = create_pool(&path).await.unwrap();
+    conversation_catalog::remove_reference_schema(&pool)
+        .await
+        .unwrap();
     conversation_content::remove_reference_schema(&pool)
         .await
         .unwrap();
@@ -35,6 +38,7 @@ async fn accepts_develop_v9_with_historical_pilot_v5_stamp() {
             (11, "011_conversation_management".into()),
             (12, "012_pilot_files".into()),
             (13, "013_conversation_content_versions".into()),
+            (14, "014_conversation_catalog_version".into()),
         ]
     );
 }
@@ -121,7 +125,7 @@ async fn rehearses_upgrade_on_external_database_copy() {
             .unwrap()
             .iter()
             .max(),
-        Some(&13)
+        Some(&14)
     );
 }
 
@@ -172,6 +176,13 @@ async fn fixture(path: &Path, stamped: bool) -> SqliteConnection {
 }
 
 async fn drop_v9(connection: &mut SqliteConnection) {
+    conversation_catalog::remove_reference_schema_in(connection)
+        .await
+        .unwrap();
+    sqlx::query("DELETE FROM schema_migrations WHERE version=14")
+        .execute(&mut *connection)
+        .await
+        .unwrap();
     let names: Vec<String> = sqlx::query_scalar(
         "SELECT name FROM sqlite_master WHERE type='trigger' AND name GLOB 'content_versions_*'",
     )

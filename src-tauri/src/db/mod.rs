@@ -3,6 +3,7 @@
 // integration makes the entry points reachable from the application.
 #[allow(dead_code)]
 pub mod agent_runs;
+pub(crate) mod conversation_catalog;
 #[allow(dead_code)]
 pub(crate) mod conversation_content;
 pub mod conversation_goals;
@@ -53,7 +54,7 @@ const MIGRATION_004_VERSION: i64 = 4;
 const MIGRATION_004_NAME: &str = "004_message_search";
 const MIGRATION_004_SQL: &str = include_str!("migrations/004_message_search.sql");
 pub(crate) const SUPPORTED_MIGRATION_VERSIONS: &[i64] =
-    &[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13];
+    &[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14];
 const MIGRATION_005_VERSION: i64 = 5;
 const MIGRATION_005_NAME: &str = "005_runtime_schema";
 const MIGRATION_005_CHECK_SQL: &str = include_str!("migrations/005_runtime_schema_check.sql");
@@ -343,6 +344,11 @@ async fn run_migrations_on_connection(connection: &mut SqliteConnection) -> DbRe
             "013_conversation_content_versions",
             include_str!("migrations/013_conversation_content_versions.sql"),
         ),
+        (
+            14,
+            "014_conversation_catalog_version",
+            include_str!("migrations/014_conversation_catalog_version.sql"),
+        ),
     ] {
         if !list_applied_migrations(connection)
             .await?
@@ -353,6 +359,7 @@ async fn run_migrations_on_connection(connection: &mut SqliteConnection) -> DbRe
     }
 
     conversation_content::validate_schema(connection).await?;
+    conversation_catalog::validate_schema(connection).await?;
 
     // Insert default providers if they don't exist
     insert_default_providers(connection).await?;
@@ -410,6 +417,7 @@ fn validate_migration_history(applied: &HashSet<i64>) -> DbResult<()> {
         || (applied.contains(&11) && !applied.contains(&10))
         || (applied.contains(&12) && !applied.contains(&11))
         || (applied.contains(&13) && !applied.contains(&12))
+        || (applied.contains(&14) && !applied.contains(&13))
     {
         return Err(DbError::Migration(
             "Unsupported or inconsistent migration history; database left unchanged".to_string(),
@@ -2110,6 +2118,9 @@ mod tests {
         .execute(&pool)
         .await
         .expect("emulate local Pilot version five");
+        super::conversation_catalog::remove_reference_schema(&pool)
+            .await
+            .unwrap();
         super::conversation_content::remove_reference_schema(&pool)
             .await
             .unwrap();
@@ -2531,6 +2542,9 @@ mod tests {
         let temp_dir = TempDir::new().expect("temp dir");
         let db_path = temp_dir.path().join("macro.db");
         let pool = create_pool(&db_path).await.expect("initial pool");
+        super::conversation_catalog::remove_reference_schema(&pool)
+            .await
+            .unwrap();
         super::conversation_content::remove_reference_schema(&pool)
             .await
             .unwrap();

@@ -16,6 +16,11 @@ export type { CompleteToolInvocationInput } from '../CompleteToolInvocationInput
 export type { Conversation } from '../Conversation';
 export type { ConversationActionInput } from '../ConversationActionInput';
 export type { ConversationActionResult } from '../ConversationActionResult';
+export type { ConversationCatalogAnchor } from '../ConversationCatalogAnchor';
+export type { ConversationCatalogPage } from '../ConversationCatalogPage';
+export type { ConversationCatalogPageInput } from '../ConversationCatalogPageInput';
+export type { ConversationCatalogToken } from '../ConversationCatalogToken';
+export type { ConversationCatalogVersionInput } from '../ConversationCatalogVersionInput';
 export type { ConversationCitation } from '../ConversationCitation';
 export type { ConversationCompactionStateRecord } from '../ConversationCompactionStateRecord';
 export type { ConversationContentAnchor } from '../ConversationContentAnchor';

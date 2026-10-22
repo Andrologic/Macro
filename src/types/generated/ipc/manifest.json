@@ -363,6 +363,46 @@
     },
     {
       "families": [
+        "db"
+      ],
+      "name": "ConversationCatalogAnchor",
+      "origin": "macro_lib::db::models::ConversationCatalogAnchor",
+      "path": "ConversationCatalogAnchor.ts"
+    },
+    {
+      "families": [
+        "db"
+      ],
+      "name": "ConversationCatalogPage",
+      "origin": "macro_lib::db::models::ConversationCatalogPage",
+      "path": "ConversationCatalogPage.ts"
+    },
+    {
+      "families": [
+        "db"
+      ],
+      "name": "ConversationCatalogPageInput",
+      "origin": "macro_lib::db::models::ConversationCatalogPageInput",
+      "path": "ConversationCatalogPageInput.ts"
+    },
+    {
+      "families": [
+        "db"
+      ],
+      "name": "ConversationCatalogToken",
+      "origin": "macro_lib::db::models::ConversationCatalogToken",
+      "path": "ConversationCatalogToken.ts"
+    },
+    {
+      "families": [
+        "db"
+      ],
+      "name": "ConversationCatalogVersionInput",
+      "origin": "macro_lib::db::models::ConversationCatalogVersionInput",
+      "path": "ConversationCatalogVersionInput.ts"
+    },
+    {
+      "families": [
         "db",
         "pilot_files"
       ],

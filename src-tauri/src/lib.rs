@@ -784,6 +784,8 @@ pub fn run() {
             window_set_zoom,
             window_set_traffic_light_position,
             commands::db_list_conversations,
+            commands::conversation_catalog::db_conversation_catalog_version,
+            commands::conversation_catalog::db_conversation_catalog_page,
             commands::conversation_content::db_conversation_content_version,
             commands::conversation_content::db_conversation_content_metadata,
             commands::conversation_content::db_conversation_content_window,
