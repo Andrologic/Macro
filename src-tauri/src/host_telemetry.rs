@@ -44,6 +44,10 @@ pub struct HostTelemetryDto {
     pub cpu_percent: Option<f64>,
     pub memory_used_bytes: Option<u64>,
     pub memory_total_bytes: Option<u64>,
+    /// Local IPC budget on the native monotonic clock. Anchor before invoking IPC.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub reuse_for_ms: Option<u64>,
 }
 
 type MeasurementResult<T> = Result<T, HostTelemetryReason>;
@@ -116,13 +120,15 @@ impl Sampler {
             let now = clock.utc();
             let utc_valid = *observed <= now
                 && now < *observed + chrono::Duration::seconds(CACHE_TTL.as_secs() as i64);
-            if clock
+            if let Some(age) = clock
                 .monotonic()
                 .checked_duration_since(*completed)
-                .is_some_and(|age| age < CACHE_TTL)
-                && utc_valid
+                .filter(|age| *age < CACHE_TTL && utc_valid)
             {
-                return dto.clone();
+                let mut result = dto.clone();
+                // Floor to milliseconds, so a sub-millisecond remainder is exhausted.
+                result.reuse_for_ms = Some((CACHE_TTL - age).as_millis() as u64);
+                return result;
             }
         }
         let measurement = (|| {
@@ -147,7 +153,8 @@ impl Sampler {
         let completed = clock.monotonic();
         // Match the millisecond precision of observedAt/expiresAt on the wire.
         let observed = clock.utc().trunc_subsecs(3);
-        let dto = HostTelemetryDto::from_measurement(measurement, observed);
+        let mut dto = HostTelemetryDto::from_measurement(measurement, observed);
+        dto.reuse_for_ms = Some(CACHE_TTL.as_millis() as u64);
         self.cached = Some((completed, observed, dto.clone()));
         dto
     }
@@ -182,6 +189,7 @@ impl HostTelemetryDto {
             cpu_percent,
             memory_used_bytes,
             memory_total_bytes,
+            reuse_for_ms: None,
         }
     }
 }
@@ -640,6 +648,7 @@ mod tests {
         assert_eq!(first.memory_total_bytes, Some(1024));
         assert_eq!(first.observed_at, "1970-01-01T00:00:00.250Z");
         assert_eq!(first.expires_at, "1970-01-01T00:00:05.250Z");
+        assert_eq!(first.reuse_for_ms, Some(5000));
         assert_eq!(
             uuid::Uuid::parse_str(&first.sample_id)
                 .unwrap()
@@ -648,7 +657,13 @@ mod tests {
         );
         assert_eq!(collector.reads, 2);
         clock.advance(4999);
-        assert_eq!(sampler.read(&mut collector, &clock), first);
+        assert_eq!(
+            sampler.read(&mut collector, &clock),
+            HostTelemetryDto {
+                reuse_for_ms: Some(1),
+                ..first.clone()
+            }
+        );
         assert_eq!(collector.reads, 2);
         clock.advance(1);
         let next = sampler.read(&mut collector, &clock);
@@ -677,6 +692,56 @@ mod tests {
             assert_eq!(sampler.read(&mut collector, &clock), next);
             assert_eq!(collector.reads, 4);
         }
+    }
+
+    #[test]
+    fn utc_rollback_cannot_extend_the_native_monotonic_budget() {
+        let clock = FakeClock::new();
+        // The first 250 ms measurement completes at UTC 100 seconds.
+        clock.utc_millis.set(99_750);
+        let mut collector = FakeCollector::valid();
+        let mut sampler = Sampler::default();
+        let first = sampler.read(&mut collector, &clock);
+        assert_eq!(first.observed_at, "1970-01-01T00:01:40.000Z");
+        assert_eq!(first.expires_at, "1970-01-01T00:01:45.000Z");
+        clock.advance(4000);
+        clock.utc_millis.set(102_000);
+        let reused = sampler.read(&mut collector, &clock);
+        assert_eq!(reused.reuse_for_ms, Some(1000));
+        assert_eq!(
+            reused,
+            HostTelemetryDto {
+                reuse_for_ms: Some(1000),
+                ..first
+            }
+        );
+        assert_eq!(collector.reads, 2);
+        let expires = DateTime::parse_from_rfc3339(&reused.expires_at)
+            .unwrap()
+            .with_timezone(&Utc);
+        assert_eq!((expires - clock.utc()).num_milliseconds(), 3000);
+        let json = serde_json::to_value(reused).unwrap();
+        assert_eq!(json["reuseForMs"], 1000);
+    }
+
+    #[test]
+    fn sub_millisecond_native_budget_is_exhausted_without_renewing_the_sample() {
+        let clock = FakeClock::new();
+        let mut collector = FakeCollector::valid();
+        let mut sampler = Sampler::default();
+        let first = sampler.read(&mut collector, &clock);
+        clock.advance(4999);
+        // Give this sample an age of 4999.5 ms while UTC still permits its DTO.
+        sampler.cached.as_mut().unwrap().0 -= Duration::from_micros(500);
+        let exhausted = sampler.read(&mut collector, &clock);
+        assert_eq!(
+            exhausted,
+            HostTelemetryDto {
+                reuse_for_ms: Some(0),
+                ..first
+            }
+        );
+        assert_eq!(collector.reads, 2);
     }
 
     #[test]
@@ -790,6 +855,8 @@ mod tests {
         assert!(json.get("sampleId").is_some());
         assert!(json.get("instanceId").is_none());
         assert!(json.get("sample_id").is_none());
+        // Fallback DTOs are not backed by the sampler's monotonic tuple.
+        assert!(json.get("reuseForMs").is_none());
         assert_eq!(json.as_object().unwrap().len(), 8);
     }
 }

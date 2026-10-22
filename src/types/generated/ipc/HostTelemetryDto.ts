@@ -10,4 +10,8 @@ observedAt: string, expiresAt: string, availability: HostTelemetryAvailability, 
 /**
  * Aggregate busy CPU time / aggregate elapsed CPU time, normalized to 0..100.
  */
-cpuPercent: number | null, memoryUsedBytes: number | null, memoryTotalBytes: number | null, };
+cpuPercent: number | null, memoryUsedBytes: number | null, memoryTotalBytes: number | null,
+/**
+ * Local IPC budget on the native monotonic clock. Anchor before invoking IPC.
+ */
+reuseForMs?: number, };

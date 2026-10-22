@@ -7,7 +7,7 @@ import { TaskCompletionHost, TASK_COMPLETION_OPERATIONS, type TaskCompletionSour
 import { ConversationCaptures, ConversationCaptureError, type ConversationRef } from './conversationCaptures';
 import { type TextPolicy, utf8Bytes } from './conversationText';
 import { createReviewCaptureService, type ReviewCaptureInfo, type ReviewCaptureRequest, type ReviewCaptureSource } from './reviewCapture';
-import { CONVERSATION_READ_OPERATIONS, validateContentIntegrity, validateContentMessage, validateContentResponse, type ContentCapture, type ContentDelivery, type ContentDeliveryResult, type ContentError, type ContentEvent, type ContentRequest, type ContentReviewRef } from './contentProtocol';
+import { CONVERSATION_READ_OPERATIONS, validateContentIntegrity, validateContentMessage, validateContentResponse, type ContentHostTelemetry, type ContentCapture, type ContentDelivery, type ContentDeliveryResult, type ContentError, type ContentEvent, type ContentRequest, type ContentReviewRef } from './contentProtocol';
 import type { KernelStorage } from './kernel';
 import { PilotError, stableJson } from './protocol';
 
@@ -40,6 +40,7 @@ export interface ContentHostDependencies {
   files?: AttachmentFileSource;
   reflections?: ReflectionSource;
   now?: () => number;
+  monotonicNow?: () => number;
 }
 const failure = (code: ContentError['code']): never => { throw new ContentHostError(code); };
 class ContentHostError extends Error { constructor(readonly code: ContentError['code']) { super(code); } }
@@ -58,7 +59,7 @@ export class ContentHost {
   private replies = new Map<string, { digest: string; expires: number; response: unknown }>();
   private policyKey: string | null = null;
   private readonly conversationEmissions = new WeakMap<object, { binding: string; policy: string | null; authorizedBefore: number }>();
-  private readonly machineEmissions = new WeakMap<object, { policy: string | null; context?: string }>();
+  private readonly machineEmissions = new WeakMap<object, { policy: string | null; context?: string; telemetry?: ContentHostTelemetry }>();
   private reviewOffset = 0;
   private reliability = false;
   private machinesAdvertised = false;
@@ -75,12 +76,17 @@ export class ContentHost {
   private readonly reflectionEmissions = new WeakMap<object, string | null>();
   private readonly fileEmissions = new WeakMap<object, string | null>();
   private readonly machines?: MachineResources;
+  private readonly clearMachines = () => this.machines?.clear();
   private readonly now: () => number;
   constructor(private readonly deps: ContentHostDependencies) {
     this.now = deps.now ?? Date.now;
     if (deps.reflections) this.reflections = new ConversationReflections(deps.reflections,this.now);
     if (deps.files) this.files = new AttachmentFilesHost(deps.files, this.now);
-    if (deps.machines) this.machines = new MachineResources(deps.machines, this.now);
+    if (deps.machines) {
+      this.machines = new MachineResources(deps.machines, this.now, deps.monotonicNow);
+      if (deps.signal.aborted) this.clearMachines();
+      else deps.signal.addEventListener('abort', this.clearMachines, { once: true });
+    }
     if (deps.interactions) this.interactions = new ConversationInteractions({ ...deps.interactions, now: this.now, emit: async change => { const next = structuredClone(this.state); this.event(next, change); await this.save(next); } });
     if (deps.taskCompletion) this.taskCompletion = new TaskCompletionHost({ ...deps.taskCompletion, now: this.now,
       emit: async change => { const next = structuredClone(this.state); this.event(next, change); await this.save(next); } });
@@ -432,6 +438,7 @@ export class ContentHost {
           await this.policy(); guard();
           if (readingPolicy !== this.policyKey) failure('snapshot_expired');
           if (request.operation === 'project.icon') this.machines!.validate(request.body.ref, machineContext!);
+          else this.machines!.validateTelemetry(result as ContentHostTelemetry);
           if (Date.parse((result as { expires_at: string }).expires_at) <= this.now() || Date.parse((result as { observed_at: string }).observed_at) > this.now()) failure('snapshot_expired');
         }
         await this.validateConversationResult(delivery, result); guard();
@@ -439,10 +446,12 @@ export class ContentHost {
         if (!validateContentResponse(request, response) || !await validateContentIntegrity(response)) failure('content_unavailable');
         await this.policy(); guard();
         if (readingPolicy !== this.policyKey) failure('snapshot_expired');
+        if (request.operation === 'instance.telemetry') this.machines!.validateTelemetry(result as ContentHostTelemetry);
         if (CONVERSATION_READ_OPERATIONS.has(request.operation)) this.conversationEmissions.set(response as object, { binding: stableJson(delivery), policy: readingPolicy, authorizedBefore: deadline });
         if (request.operation === REFLECTION_OPERATION) this.reflectionEmissions.set(response as object, readingPolicy);
         if (FILE_OPERATIONS.has(request.operation)) this.fileEmissions.set(response as object, readingPolicy);
-        if (MACHINE_OPERATIONS.has(request.operation)) this.machineEmissions.set(response as object, { policy: readingPolicy, context: machineContext });
+        if (MACHINE_OPERATIONS.has(request.operation)) this.machineEmissions.set(response as object, { policy: readingPolicy, context: machineContext,
+          telemetry: request.operation === 'instance.telemetry' ? result as ContentHostTelemetry : undefined });
         if (request.operation !== REFLECTION_OPERATION && !FILE_OPERATIONS.has(request.operation) && !MACHINE_OPERATIONS.has(request.operation) && request.operation !== 'review.verdict' && !CONVERSATION_OPERATIONS.has(request.operation) && !TASK_COMPLETION_OPERATIONS.has(request.operation) && !INTERACTION_OPERATIONS.has(request.operation) && !(request.operation === 'projects.list' && request.body.known_revision !== undefined)) {
           this.replies.set(replyKey, { digest: requestDigest, expires: Math.min(Date.parse(delivery.expires_at), this.now() + 300_000), response });
           if (this.memoryBytes() + utf8Bytes(this.persisted ?? '') * 2 > CONTENT_BUDGET.host) { this.replies.delete(replyKey); failure('resource_limit'); }
@@ -562,6 +571,7 @@ export class ContentHost {
       const payload = result.response as { result: { expires_at: string; observed_at: string } };
       if (Date.parse(payload.result.expires_at) <= this.now() || Date.parse(payload.result.observed_at) > this.now()) failure('snapshot_expired');
       if (delivery.request.operation === 'project.icon') this.machines!.validate(delivery.request.body.ref, metadata!.context!);
+      else this.machines!.validateTelemetry(metadata!.telemetry!);
     });
   }
   async validateFileEmission(delivery: ContentDelivery, result: ContentDeliveryResult, authorize: (delivery: ContentDelivery) => Promise<string>): Promise<void> {
@@ -601,7 +611,8 @@ export class ContentHost {
     });
   }
   async dispose(): Promise<void> {
+    this.deps.signal.removeEventListener('abort', this.clearMachines);
     this.disposed = true; this.deps.conversationManagement?.clear(); this.taskCompletion?.clear(); this.interactions?.clear(); this.deps.conversations.clear(); this.snapshots.clear(); this.replies.clear(); this.machines?.clear(); this.files?.clear(); this.reflections?.clear();
-    await this.files?.dispose(); await this.deps.reviews.dispose(); await this.tail; this.taskCompletion?.clear(); this.interactions?.clear();
+    await this.files?.dispose(); await this.deps.reviews.dispose(); await this.tail; this.machines?.clear(); this.taskCompletion?.clear(); this.interactions?.clear();
   }
 }
