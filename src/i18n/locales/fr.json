@@ -1118,6 +1118,7 @@
       "verify": "Vérifier les ordinateurs",
       "twoLimit": "Deux ordinateurs au maximum. Fermez un panneau pour en choisir un autre.",
       "locked": "Les contenus sont verrouillés quand la fenêtre est masquée ou hors ligne. Une nouvelle vérification est nécessaire.",
+      "passive": "Consultation temporaire pendant la panne. La copie et la navigation nécessitent une connexion revalidée.",
       "thisComputer": "Cet ordinateur",
       "closeComputer": "Fermer {{computer}}",
       "chat": "Chat",
@@ -1143,6 +1144,8 @@
         "ready": "Prêt",
         "revalidating": "Vérification des droits",
         "error": "Indisponible",
+        "offline": "Consultation temporaire pendant la panne",
+        "authority_expired": "Consultation verrouillée · vérification des droits",
         "locked": "Verrouillé"
       },
       "attention": {

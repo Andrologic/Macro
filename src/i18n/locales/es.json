@@ -1094,6 +1094,7 @@
       "verify": "Verificar ordenadores",
       "twoLimit": "Máximo dos ordenadores. Cierra un panel para elegir otro.",
       "locked": "El contenido se bloquea al ocultarse o perder la conexión. Se requiere una nueva verificación.",
+      "passive": "Lectura temporal sin conexión. Copiar y navegar requiere una conexión verificada.",
       "thisComputer": "Este ordenador",
       "closeComputer": "Cerrar {{computer}}",
       "chat": "Chat",
@@ -1119,6 +1120,8 @@
         "ready": "Listo",
         "revalidating": "Verificando acceso",
         "error": "No disponible",
+        "offline": "Lectura temporal sin conexión",
+        "authority_expired": "Lectura bloqueada · verificando acceso",
         "locked": "Bloqueado"
       },
       "attention": {

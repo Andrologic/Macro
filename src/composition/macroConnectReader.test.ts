@@ -9,3 +9,10 @@ it('binds the opening context before lazy UI loading and refuses a late factory 
   expect(ports.context().key).toBe('context:synthetic'); expect(directory).not.toHaveBeenCalled(); expect(h.calls).toHaveLength(0);
   h.changeAccount(); expect(() => ports.context()).toThrow('context_changed'); expect(() => ports.createOwner()).toThrow('context_changed'); expect(directory).not.toHaveBeenCalled();
 });
+
+it('retires a pending opening when only the consumer credential generation changes', () => {
+  const h=createConnectConsumerFixture(), directory=mock(()=> { throw new Error('No owner for a retired opening'); });
+  const native={consumerTransport:()=>h.transport,consumerDirectoryTransport:directory,getState:()=>({instance:null})} as unknown as MacroPilotNativeClient;
+  const ports=macroConnectReaderPorts(native); h.changeCredential();
+  expect(()=>ports.context()).toThrow('context_changed'); expect(()=>ports.createOwner()).toThrow('context_changed'); expect(directory).not.toHaveBeenCalled();
+});

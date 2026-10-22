@@ -7,11 +7,13 @@ export function useConsumerReader(ports: ConsumerReaderPorts) {
   const state = useSyncExternalStore(reader?.subscribe ?? emptySubscribe, reader?.getSnapshot ?? (() => initial));
   useEffect(() => {
     const current = new ConsumerReader(ports); setReader(current);
-    const available = () => !document.hidden && navigator.onLine !== false;
-    current.start(available());
-    const changed = () => current.setAvailable(available());
+    const available = () => !document.hidden;
+    current.setTransportOnline(navigator.onLine !== false); current.start(available());
+    const changed = () => { current.setAvailable(available()); current.setTransportOnline(navigator.onLine !== false); };
+    const suspend = () => current.setAvailable(false);
+    window.addEventListener('pagehide', suspend); window.addEventListener('pageshow', changed);
     document.addEventListener('visibilitychange', changed); window.addEventListener('online', changed); window.addEventListener('offline', changed);
-    return () => { document.removeEventListener('visibilitychange', changed); window.removeEventListener('online', changed); window.removeEventListener('offline', changed); current.dispose(); };
+    return () => { window.removeEventListener('pagehide', suspend); window.removeEventListener('pageshow', changed); document.removeEventListener('visibilitychange', changed); window.removeEventListener('online', changed); window.removeEventListener('offline', changed); current.dispose(); };
   }, [ports]);
   return { reader, state };
 }
