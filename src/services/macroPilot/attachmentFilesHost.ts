@@ -54,7 +54,7 @@ function controlledName(name: string, policy: TextPolicy): string {
   const exported = controlledText(name, policy, 480);
   return /^[^/\\]{1,120}$/u.test(name) && ![...name].some(char => char.charCodeAt(0) < 32 || char.charCodeAt(0) === 127) && exported.content_state === 'complete' ? name : 'Fichier masqué';
 }
-function inspect(bytes: Uint8Array, mime: string, policy: TextPolicy): ContentConversationFileCapture['content_state'] {
+export function inspectAttachmentContent(bytes: Uint8Array, mime: string, policy: TextPolicy): ContentConversationFileCapture['content_state'] {
   if (bytes.length > FILE_LIMITS.file) return 'too_large';
   if (mime.startsWith('image/')) {
     const magic = String.fromCharCode(...bytes.subarray(0, 12));
@@ -181,7 +181,7 @@ export class AttachmentFilesHost {
           this.reserve(scope.sessionId, file.allocationBytes ?? FILE_LIMITS.file * 12, token);
           let loaded = await file.read(); await guarded();
           if (!loaded) state = 'unavailable';
-          else { mime = loaded.mimeType; state = inspect(loaded.bytes, loaded.mimeType, policy); if (state === 'available') bytes = loaded.bytes; }
+          else { mime = loaded.mimeType; state = inspectAttachmentContent(loaded.bytes, loaded.mimeType, policy); if (state === 'available') bytes = loaded.bytes; }
           loaded = null;
           this.reserve(scope.sessionId, bytes ? FILE_LIMITS.file * 3 : 2048, token);
           await this.validateCatalog(ref, catalog.fingerprint, scope, guarded); await guarded();
