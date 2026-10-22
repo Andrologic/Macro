@@ -79,6 +79,18 @@ function fixture(tasks: TaskWorkflowTask[] = [task]) {
 }
 
 describe('task review workflow without stores', () => {
+  it('refuses AgSDL Agent Tasks before legacy review, merge or workspace preparation', async () => {
+    const owned = { ...task, id: 'task:agsdl:v1:run:agent', task_source: 'agsdl' } as TaskWorkflowTask;
+    const { ports, git } = fixture([owned]);
+    await expect(createTaskReviewWorkflow(ports).load(owned.id)).rejects.toMatchObject({ code: 'NATIVE_WORKFLOW_OWNED' });
+    await expect(createTaskMergeWorkflow(ports, { load: unexpected }).run(owned.id)).rejects.toMatchObject({ code: 'NATIVE_WORKFLOW_OWNED' });
+    expect(git.gitWorkflow).not.toHaveBeenCalled();
+    expect(ports.prepareExecutionTargets).not.toHaveBeenCalled();
+    expect(ports.ensureIntegrationWorktree).not.toHaveBeenCalled();
+    expect(ports.persistRuntime).not.toHaveBeenCalled();
+    expect(ports.acquireOperation).not.toHaveBeenCalled();
+  });
+
   it('reuses a load and ignores a superseded load before persistence', async () => {
     const { ports, git, persisted } = fixture();
     const pending = deferred<GitWorkflowSessionDto | null>();

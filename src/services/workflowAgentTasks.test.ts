@@ -43,6 +43,28 @@ describe('native workflow Agent Task projection', () => {
     expect(f.projection.activations[0].terminalKind).toBe('stopped');
   });
 
+  it('keeps independent Agent FIFO positions and stable Tasks across repeated visits', async () => {
+    const f = await workflowTaskFixture();
+    const reviewer = (position: string) => {
+      const activation = f.activation(position, 'terminal', 'completed', 'reviewer');
+      activation.work.activationId = id(`reviewer-${position}`);
+      activation.deliveryId = id(`reviewer-delivery-${position}`);
+      return activation;
+    };
+    f.projection.activations = [f.activation('1', 'terminal', 'completed'), reviewer('1')];
+    const first = await loadWorkflowAgentTasks([f.plan], null, f.ports);
+    f.projection.activations.push(f.activation('2', 'terminal', 'completed'), reviewer('2'));
+    const second = await loadWorkflowAgentTasks([f.plan], null, f.ports);
+    expect(second.map(task => task.id)).toEqual(first.map(task => task.id));
+    expect(second.map(task => task.workflow_execution!.activationIds.length)).toEqual([2, 2]);
+    expect(second.map(task => task.status)).toEqual(['Completed', 'Completed']);
+    const duplicate = reviewer('2');
+    duplicate.work.activationId = id('another-reviewer-activation');
+    duplicate.deliveryId = id('another-reviewer-delivery');
+    f.projection.activations.push(duplicate);
+    expect(() => projectWorkflowAgentTasks(f.plan, f.snapshot, f.projection, [])).toThrow('activation identity');
+  });
+
   it('loads every projection page before deriving a completed state', async () => {
     const f = await workflowTaskFixture();
     f.ports.projection = async (_system, page) => !page ? { ...f.projection,

@@ -65,9 +65,12 @@ export function projectWorkflowAgentTasks(plan: ArchitectPlanRecord, snapshot: P
   }
   for (const activation of projection.activations) {
     compareSequence(activation.queueSequence, activation.queueSequence);
-    if (activations.has(activation.work.activationId) || positions.has(activation.queueSequence) ||
+    // SQLite numbers each Agent's FIFO independently. Pure steps use the
+    // system cursor and therefore share only the null-instance position space.
+    const position = JSON.stringify([activation.work.agentInstanceId, activation.queueSequence]);
+    if (activations.has(activation.work.activationId) || positions.has(position) ||
       activation.work.agentInstanceId !== null && !instances.has(activation.work.agentInstanceId)) throw new Error('Invalid native activation identity');
-    activations.add(activation.work.activationId); positions.add(activation.queueSequence);
+    activations.add(activation.work.activationId); positions.add(position);
   }
   for (const approval of approvals) {
     if (approval.work.systemStartId !== snapshot.systemStartId) throw new Error('Approval scope differs');
