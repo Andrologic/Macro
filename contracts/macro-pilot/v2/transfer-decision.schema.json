@@ -1,0 +1,1812 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.macro.andrologic.ai/macro-pilot/v2/transfer-decision.schema.json",
+  "title": "Macro Connect metadata decision transfer-decision-1",
+  "description": "Separate closed metadata contract. No route, content operation or product capability. Trusted contexts do not authenticate themselves.",
+  "oneOf": [
+    {
+      "$ref": "#/$defs/request"
+    },
+    {
+      "$ref": "#/$defs/attestation"
+    },
+    {
+      "$ref": "#/$defs/ledger"
+    },
+    {
+      "$ref": "#/$defs/record"
+    },
+    {
+      "$ref": "#/$defs/stepReceipt"
+    },
+    {
+      "$ref": "#/$defs/terminal"
+    },
+    {
+      "$ref": "#/$defs/activation"
+    },
+    {
+      "$ref": "#/$defs/birthReceipt"
+    },
+    {
+      "$ref": "#/$defs/status"
+    },
+    {
+      "$ref": "#/$defs/error"
+    },
+    {
+      "$ref": "#/$defs/sourceStatus"
+    }
+  ],
+  "$defs": {
+    "id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$",
+      "not": {
+        "pattern": "[^A-Za-z0-9._:-]"
+      }
+    },
+    "uuid": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+      "not": {
+        "pattern": "[^0-9a-f-]"
+      },
+      "minLength": 36,
+      "maxLength": 36
+    },
+    "decimal": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 19,
+      "pattern": "^(0|[1-9][0-9]*)$",
+      "not": {
+        "pattern": "[^0-9]"
+      }
+    },
+    "positive": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 19,
+      "pattern": "^[1-9][0-9]*$",
+      "not": {
+        "pattern": "[^0-9]"
+      }
+    },
+    "hash": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$",
+      "not": {
+        "pattern": "[^0-9a-f]"
+      },
+      "minLength": 64,
+      "maxLength": 64
+    },
+    "origin": {
+      "type": "string",
+      "minLength": 8,
+      "maxLength": 255
+    },
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "relay_origin",
+        "account_id",
+        "source_instance_id",
+        "source_conversation_id"
+      ],
+      "properties": {
+        "relay_origin": {
+          "$ref": "#/$defs/origin"
+        },
+        "account_id": {
+          "$ref": "#/$defs/id"
+        },
+        "source_instance_id": {
+          "$ref": "#/$defs/id"
+        },
+        "source_conversation_id": {
+          "$ref": "#/$defs/id"
+        }
+      }
+    },
+    "provenance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "source",
+        "lineage_id",
+        "installation_id",
+        "birth_generation"
+      ],
+      "properties": {
+        "source": {
+          "$ref": "#/$defs/source"
+        },
+        "lineage_id": {
+          "$ref": "#/$defs/uuid"
+        },
+        "installation_id": {
+          "$ref": "#/$defs/uuid"
+        },
+        "birth_generation": {
+          "$ref": "#/$defs/uuid"
+        }
+      }
+    },
+    "actor": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "account_id",
+        "session_id",
+        "device_id",
+        "session_revision",
+        "account_epoch",
+        "source_access_revision",
+        "target_access_revision"
+      ],
+      "properties": {
+        "account_id": {
+          "$ref": "#/$defs/id"
+        },
+        "session_id": {
+          "$ref": "#/$defs/id"
+        },
+        "device_id": {
+          "$ref": "#/$defs/id"
+        },
+        "session_revision": {
+          "$ref": "#/$defs/positive"
+        },
+        "account_epoch": {
+          "$ref": "#/$defs/positive"
+        },
+        "source_access_revision": {
+          "$ref": "#/$defs/positive"
+        },
+        "target_access_revision": {
+          "$ref": "#/$defs/positive"
+        }
+      }
+    },
+    "binding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "transfer_id",
+        "provenance",
+        "epoch",
+        "target_instance_id",
+        "relay_recovery_generation",
+        "initiator",
+        "source_producer_generation",
+        "target_producer_generation"
+      ],
+      "properties": {
+        "transfer_id": {
+          "$ref": "#/$defs/uuid"
+        },
+        "provenance": {
+          "$ref": "#/$defs/provenance"
+        },
+        "epoch": {
+          "$ref": "#/$defs/positive"
+        },
+        "target_instance_id": {
+          "$ref": "#/$defs/id"
+        },
+        "relay_recovery_generation": {
+          "$ref": "#/$defs/uuid"
+        },
+        "initiator": {
+          "$ref": "#/$defs/actor"
+        },
+        "source_producer_generation": {
+          "$ref": "#/$defs/id"
+        },
+        "target_producer_generation": {
+          "$ref": "#/$defs/id"
+        }
+      }
+    },
+    "frozen": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "format_version",
+        "binding_digest",
+        "ownership_revision",
+        "content_incarnation",
+        "content_revision",
+        "sha256"
+      ],
+      "properties": {
+        "format_version": {
+          "const": "1"
+        },
+        "binding_digest": {
+          "$ref": "#/$defs/hash"
+        },
+        "ownership_revision": {
+          "$ref": "#/$defs/positive"
+        },
+        "content_incarnation": {
+          "$ref": "#/$defs/uuid"
+        },
+        "content_revision": {
+          "$ref": "#/$defs/decimal"
+        },
+        "sha256": {
+          "$ref": "#/$defs/hash"
+        }
+      }
+    },
+    "manifest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "format_version",
+        "binding_digest",
+        "frozen_digest",
+        "content_contract_sha256",
+        "manifest_sha256",
+        "source_revision"
+      ],
+      "properties": {
+        "format_version": {
+          "const": "1"
+        },
+        "binding_digest": {
+          "$ref": "#/$defs/hash"
+        },
+        "frozen_digest": {
+          "$ref": "#/$defs/hash"
+        },
+        "content_contract_sha256": {
+          "$ref": "#/$defs/hash"
+        },
+        "manifest_sha256": {
+          "$ref": "#/$defs/hash"
+        },
+        "source_revision": {
+          "$ref": "#/$defs/decimal"
+        }
+      }
+    },
+    "prepared": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "format_version",
+        "binding_digest",
+        "manifest_digest",
+        "import_id",
+        "target_conversation_id",
+        "lineage_id",
+        "mapping_sha256",
+        "preparation_sha256"
+      ],
+      "properties": {
+        "format_version": {
+          "const": "1"
+        },
+        "binding_digest": {
+          "$ref": "#/$defs/hash"
+        },
+        "manifest_digest": {
+          "$ref": "#/$defs/hash"
+        },
+        "import_id": {
+          "$ref": "#/$defs/uuid"
+        },
+        "target_conversation_id": {
+          "$ref": "#/$defs/id"
+        },
+        "lineage_id": {
+          "$ref": "#/$defs/uuid"
+        },
+        "mapping_sha256": {
+          "$ref": "#/$defs/hash"
+        },
+        "preparation_sha256": {
+          "$ref": "#/$defs/hash"
+        }
+      }
+    },
+    "birthBody": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "provenance",
+        "mode",
+        "creation_digest"
+      ],
+      "properties": {
+        "provenance": {
+          "$ref": "#/$defs/provenance"
+        },
+        "mode": {
+          "enum": [
+            "created",
+            "initial_existing"
+          ]
+        },
+        "creation_digest": {
+          "$ref": "#/$defs/hash"
+        }
+      }
+    },
+    "attestationKind": {
+      "enum": [
+        "lineage_created",
+        "lineage_enrolled",
+        "source_frozen",
+        "source_sealed",
+        "target_pinned",
+        "source_maintained",
+        "target_maintained",
+        "target_activated"
+      ]
+    },
+    "attestation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "decision_contract",
+        "type",
+        "kind",
+        "format_version",
+        "binding_digest",
+        "subject_digest",
+        "producer_instance_id",
+        "producer_generation",
+        "delivery_id",
+        "challenge_id",
+        "request_digest",
+        "prior_receipt_digest"
+      ],
+      "properties": {
+        "decision_contract": {
+          "const": "transfer-decision-1"
+        },
+        "type": {
+          "const": "producer_attestation"
+        },
+        "kind": {
+          "$ref": "#/$defs/attestationKind"
+        },
+        "format_version": {
+          "const": "1"
+        },
+        "binding_digest": {
+          "$ref": "#/$defs/hash"
+        },
+        "subject_digest": {
+          "$ref": "#/$defs/hash"
+        },
+        "producer_instance_id": {
+          "$ref": "#/$defs/id"
+        },
+        "producer_generation": {
+          "$ref": "#/$defs/id"
+        },
+        "delivery_id": {
+          "$ref": "#/$defs/uuid"
+        },
+        "challenge_id": {
+          "$ref": "#/$defs/uuid"
+        },
+        "request_digest": {
+          "$ref": "#/$defs/hash"
+        },
+        "prior_receipt_digest": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/hash"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      }
+    },
+    "exchange": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "binding_digest",
+        "subject_digest",
+        "instance_id",
+        "producer_generation",
+        "connection_id",
+        "delivery_id",
+        "challenge_id",
+        "request_digest",
+        "prior_receipt_digest"
+      ],
+      "properties": {
+        "kind": {
+          "$ref": "#/$defs/attestationKind"
+        },
+        "binding_digest": {
+          "$ref": "#/$defs/hash"
+        },
+        "subject_digest": {
+          "$ref": "#/$defs/hash"
+        },
+        "instance_id": {
+          "$ref": "#/$defs/id"
+        },
+        "producer_generation": {
+          "$ref": "#/$defs/id"
+        },
+        "connection_id": {
+          "$ref": "#/$defs/uuid"
+        },
+        "delivery_id": {
+          "$ref": "#/$defs/uuid"
+        },
+        "challenge_id": {
+          "$ref": "#/$defs/uuid"
+        },
+        "request_digest": {
+          "$ref": "#/$defs/hash"
+        },
+        "prior_receipt_digest": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/hash"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      }
+    },
+    "producer": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "account_id",
+        "instance_id",
+        "generation",
+        "connection_id",
+        "state"
+      ],
+      "properties": {
+        "account_id": {
+          "$ref": "#/$defs/id"
+        },
+        "instance_id": {
+          "$ref": "#/$defs/id"
+        },
+        "generation": {
+          "$ref": "#/$defs/id"
+        },
+        "connection_id": {
+          "$ref": "#/$defs/uuid"
+        },
+        "state": {
+          "enum": [
+            "active",
+            "inactive"
+          ]
+        }
+      }
+    },
+    "proof": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "attestation",
+        "exchange",
+        "authenticated_connection_id"
+      ],
+      "properties": {
+        "attestation": {
+          "$ref": "#/$defs/attestation"
+        },
+        "exchange": {
+          "$ref": "#/$defs/exchange"
+        },
+        "authenticated_connection_id": {
+          "$ref": "#/$defs/uuid"
+        }
+      }
+    },
+    "access": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "account_id",
+        "session_id",
+        "instance_id",
+        "revision",
+        "permissions"
+      ],
+      "properties": {
+        "account_id": {
+          "$ref": "#/$defs/id"
+        },
+        "session_id": {
+          "$ref": "#/$defs/id"
+        },
+        "instance_id": {
+          "$ref": "#/$defs/id"
+        },
+        "revision": {
+          "$ref": "#/$defs/positive"
+        },
+        "permissions": {
+          "type": "array",
+          "items": {
+            "enum": [
+              "supervise",
+              "respond"
+            ]
+          },
+          "uniqueItems": true,
+          "maxItems": 2
+        }
+      }
+    },
+    "authenticatedActor": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "identity",
+        "state"
+      ],
+      "properties": {
+        "identity": {
+          "$ref": "#/$defs/actor"
+        },
+        "state": {
+          "enum": [
+            "active",
+            "inactive"
+          ]
+        }
+      }
+    },
+    "recoveryAccess": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "account_id",
+        "session_id",
+        "instance_id",
+        "grant_id"
+      ],
+      "properties": {
+        "account_id": {
+          "$ref": "#/$defs/id"
+        },
+        "session_id": {
+          "$ref": "#/$defs/id"
+        },
+        "instance_id": {
+          "$ref": "#/$defs/id"
+        },
+        "grant_id": {
+          "$ref": "#/$defs/uuid"
+        }
+      }
+    },
+    "capacity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "used_bytes",
+        "reserved_bytes",
+        "limit_bytes"
+      ],
+      "properties": {
+        "used_bytes": {
+          "$ref": "#/$defs/decimal"
+        },
+        "reserved_bytes": {
+          "$ref": "#/$defs/decimal"
+        },
+        "limit_bytes": {
+          "$ref": "#/$defs/decimal"
+        }
+      }
+    },
+    "context": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "authority_origin",
+        "recovery_generation",
+        "history",
+        "actor",
+        "accesses",
+        "producers",
+        "proofs",
+        "supported_context_contracts",
+        "recovery_access",
+        "capacity",
+        "receipt_id",
+        "loopback_test_origin"
+      ],
+      "properties": {
+        "authority_origin": {
+          "$ref": "#/$defs/origin"
+        },
+        "recovery_generation": {
+          "$ref": "#/$defs/uuid"
+        },
+        "history": {
+          "enum": [
+            "intact",
+            "restored"
+          ]
+        },
+        "actor": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/authenticatedActor"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "accesses": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/access"
+          },
+          "maxItems": 2
+        },
+        "producers": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/producer"
+          },
+          "maxItems": 2
+        },
+        "proofs": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/proof"
+          },
+          "maxItems": 2
+        },
+        "supported_context_contracts": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/hash"
+          },
+          "uniqueItems": true,
+          "maxItems": 16
+        },
+        "recovery_access": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/recoveryAccess"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "capacity": {
+          "$ref": "#/$defs/capacity"
+        },
+        "receipt_id": {
+          "$ref": "#/$defs/uuid"
+        },
+        "loopback_test_origin": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/origin"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      }
+    },
+    "stepReceipt": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "decision_contract",
+        "type",
+        "receipt_id",
+        "operation",
+        "transfer_id",
+        "binding_digest",
+        "previous_revision",
+        "revision",
+        "phase",
+        "subject_digest"
+      ],
+      "properties": {
+        "decision_contract": {
+          "const": "transfer-decision-1"
+        },
+        "type": {
+          "const": "step_receipt"
+        },
+        "receipt_id": {
+          "$ref": "#/$defs/uuid"
+        },
+        "operation": {
+          "enum": [
+            "reserve",
+            "seal",
+            "ready"
+          ]
+        },
+        "transfer_id": {
+          "$ref": "#/$defs/uuid"
+        },
+        "binding_digest": {
+          "$ref": "#/$defs/hash"
+        },
+        "previous_revision": {
+          "$ref": "#/$defs/decimal"
+        },
+        "revision": {
+          "$ref": "#/$defs/positive"
+        },
+        "phase": {
+          "enum": [
+            "reserved",
+            "sealed",
+            "target_ready"
+          ]
+        },
+        "subject_digest": {
+          "$ref": "#/$defs/hash"
+        }
+      }
+    },
+    "abortReason": {
+      "enum": [
+        "user_cancelled",
+        "missing_reservation",
+        "session_invalidated",
+        "access_changed",
+        "producer_changed",
+        "account_revoked",
+        "operator_cancelled"
+      ]
+    },
+    "terminal": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "decision_contract",
+        "type",
+        "receipt_id",
+        "transfer_id",
+        "source",
+        "epoch",
+        "target_instance_id",
+        "binding_digest",
+        "decision_revision",
+        "outcome",
+        "reason",
+        "manifest_digest",
+        "prepared",
+        "frozen_digest"
+      ],
+      "properties": {
+        "decision_contract": {
+          "const": "transfer-decision-1"
+        },
+        "type": {
+          "const": "terminal_receipt"
+        },
+        "receipt_id": {
+          "$ref": "#/$defs/uuid"
+        },
+        "transfer_id": {
+          "$ref": "#/$defs/uuid"
+        },
+        "source": {
+          "$ref": "#/$defs/source"
+        },
+        "epoch": {
+          "$ref": "#/$defs/positive"
+        },
+        "target_instance_id": {
+          "$ref": "#/$defs/id"
+        },
+        "binding_digest": {
+          "$ref": "#/$defs/hash"
+        },
+        "decision_revision": {
+          "$ref": "#/$defs/positive"
+        },
+        "outcome": {
+          "enum": [
+            "committed",
+            "aborted"
+          ]
+        },
+        "reason": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/abortReason"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "manifest_digest": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/hash"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "prepared": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/prepared"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "frozen_digest": {
+          "$ref": "#/$defs/hash"
+        }
+      }
+    },
+    "activation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "decision_contract",
+        "type",
+        "receipt_id",
+        "transfer_id",
+        "terminal_digest",
+        "target_instance_id",
+        "target_conversation_id",
+        "prepared_digest",
+        "revision"
+      ],
+      "properties": {
+        "decision_contract": {
+          "const": "transfer-decision-1"
+        },
+        "type": {
+          "const": "activation_receipt"
+        },
+        "receipt_id": {
+          "$ref": "#/$defs/uuid"
+        },
+        "transfer_id": {
+          "$ref": "#/$defs/uuid"
+        },
+        "terminal_digest": {
+          "$ref": "#/$defs/hash"
+        },
+        "target_instance_id": {
+          "$ref": "#/$defs/id"
+        },
+        "target_conversation_id": {
+          "$ref": "#/$defs/id"
+        },
+        "prepared_digest": {
+          "$ref": "#/$defs/hash"
+        },
+        "revision": {
+          "const": "1"
+        }
+      }
+    },
+    "birthReceipt": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "decision_contract",
+        "type",
+        "receipt_id",
+        "operation_id",
+        "request_digest",
+        "mode",
+        "provenance_digest",
+        "producer_generation",
+        "attestation_digest",
+        "revision"
+      ],
+      "properties": {
+        "decision_contract": {
+          "const": "transfer-decision-1"
+        },
+        "type": {
+          "const": "birth_receipt"
+        },
+        "receipt_id": {
+          "$ref": "#/$defs/uuid"
+        },
+        "operation_id": {
+          "$ref": "#/$defs/uuid"
+        },
+        "request_digest": {
+          "$ref": "#/$defs/hash"
+        },
+        "mode": {
+          "enum": [
+            "created",
+            "initial_existing"
+          ]
+        },
+        "provenance_digest": {
+          "$ref": "#/$defs/hash"
+        },
+        "producer_generation": {
+          "$ref": "#/$defs/id"
+        },
+        "attestation_digest": {
+          "$ref": "#/$defs/hash"
+        },
+        "revision": {
+          "const": "1"
+        }
+      }
+    },
+    "ledger": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "decision_contract",
+        "type",
+        "provenance",
+        "revision",
+        "high_epoch",
+        "birth",
+        "state",
+        "active_transfer_id",
+        "terminal",
+        "hold_reason"
+      ],
+      "properties": {
+        "decision_contract": {
+          "const": "transfer-decision-1"
+        },
+        "type": {
+          "const": "source_ledger"
+        },
+        "provenance": {
+          "$ref": "#/$defs/provenance"
+        },
+        "revision": {
+          "$ref": "#/$defs/positive"
+        },
+        "high_epoch": {
+          "$ref": "#/$defs/decimal"
+        },
+        "birth": {
+          "$ref": "#/$defs/birthReceipt"
+        },
+        "state": {
+          "enum": [
+            "available",
+            "reserved",
+            "ceded",
+            "recovery_hold"
+          ]
+        },
+        "active_transfer_id": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/uuid"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "terminal": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/terminal"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "hold_reason": {
+          "oneOf": [
+            {
+              "const": "relay_restore"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      }
+    },
+    "retry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "operation",
+        "operation_id",
+        "request_digest",
+        "body_digest"
+      ],
+      "properties": {
+        "operation": {
+          "enum": [
+            "reserve",
+            "seal",
+            "ready",
+            "commit",
+            "abort",
+            "reconcile",
+            "activation.record"
+          ]
+        },
+        "operation_id": {
+          "$ref": "#/$defs/uuid"
+        },
+        "request_digest": {
+          "$ref": "#/$defs/hash"
+        },
+        "body_digest": {
+          "$ref": "#/$defs/hash"
+        }
+      }
+    },
+    "record": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "decision_contract",
+        "type",
+        "binding",
+        "revision",
+        "phase",
+        "frozen",
+        "manifest",
+        "prepared",
+        "reserve_receipt",
+        "seal_receipt",
+        "ready_receipt",
+        "terminal",
+        "activation",
+        "retries",
+        "hold_phase"
+      ],
+      "properties": {
+        "decision_contract": {
+          "const": "transfer-decision-1"
+        },
+        "type": {
+          "const": "transfer_record"
+        },
+        "binding": {
+          "$ref": "#/$defs/binding"
+        },
+        "revision": {
+          "$ref": "#/$defs/positive"
+        },
+        "phase": {
+          "enum": [
+            "reserved",
+            "sealed",
+            "target_ready",
+            "committed",
+            "aborted",
+            "recovery_hold"
+          ]
+        },
+        "frozen": {
+          "$ref": "#/$defs/frozen"
+        },
+        "manifest": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/manifest"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "prepared": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/prepared"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "reserve_receipt": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/stepReceipt"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "seal_receipt": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/stepReceipt"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "ready_receipt": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/stepReceipt"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "terminal": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/terminal"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "activation": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/activation"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "retries": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/retry"
+          },
+          "maxItems": 5
+        },
+        "hold_phase": {
+          "oneOf": [
+            {
+              "enum": [
+                "reserved",
+                "sealed",
+                "target_ready"
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      }
+    },
+    "request": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "decision_contract",
+            "type",
+            "operation",
+            "operation_id",
+            "expected_revision",
+            "body"
+          ],
+          "properties": {
+            "decision_contract": {
+              "const": "transfer-decision-1"
+            },
+            "type": {
+              "const": "decision_request"
+            },
+            "operation": {
+              "const": "lineage.create"
+            },
+            "operation_id": {
+              "$ref": "#/$defs/uuid"
+            },
+            "expected_revision": {
+              "$ref": "#/$defs/decimal"
+            },
+            "body": {
+              "$ref": "#/$defs/birthBody"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "decision_contract",
+            "type",
+            "operation",
+            "operation_id",
+            "expected_revision",
+            "body",
+            "transfer_id"
+          ],
+          "properties": {
+            "decision_contract": {
+              "const": "transfer-decision-1"
+            },
+            "type": {
+              "const": "decision_request"
+            },
+            "operation": {
+              "const": "reserve"
+            },
+            "operation_id": {
+              "$ref": "#/$defs/uuid"
+            },
+            "expected_revision": {
+              "$ref": "#/$defs/decimal"
+            },
+            "body": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "binding",
+                "frozen",
+                "expected_ledger_revision"
+              ],
+              "properties": {
+                "binding": {
+                  "$ref": "#/$defs/binding"
+                },
+                "frozen": {
+                  "$ref": "#/$defs/frozen"
+                },
+                "expected_ledger_revision": {
+                  "$ref": "#/$defs/positive"
+                }
+              }
+            },
+            "transfer_id": {
+              "$ref": "#/$defs/uuid"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "decision_contract",
+            "type",
+            "operation",
+            "operation_id",
+            "expected_revision",
+            "body",
+            "transfer_id"
+          ],
+          "properties": {
+            "decision_contract": {
+              "const": "transfer-decision-1"
+            },
+            "type": {
+              "const": "decision_request"
+            },
+            "operation": {
+              "const": "seal"
+            },
+            "operation_id": {
+              "$ref": "#/$defs/uuid"
+            },
+            "expected_revision": {
+              "$ref": "#/$defs/decimal"
+            },
+            "body": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "manifest"
+              ],
+              "properties": {
+                "manifest": {
+                  "$ref": "#/$defs/manifest"
+                }
+              }
+            },
+            "transfer_id": {
+              "$ref": "#/$defs/uuid"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "decision_contract",
+            "type",
+            "operation",
+            "operation_id",
+            "expected_revision",
+            "body",
+            "transfer_id"
+          ],
+          "properties": {
+            "decision_contract": {
+              "const": "transfer-decision-1"
+            },
+            "type": {
+              "const": "decision_request"
+            },
+            "operation": {
+              "const": "ready"
+            },
+            "operation_id": {
+              "$ref": "#/$defs/uuid"
+            },
+            "expected_revision": {
+              "$ref": "#/$defs/decimal"
+            },
+            "body": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "prepared"
+              ],
+              "properties": {
+                "prepared": {
+                  "$ref": "#/$defs/prepared"
+                }
+              }
+            },
+            "transfer_id": {
+              "$ref": "#/$defs/uuid"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "decision_contract",
+            "type",
+            "operation",
+            "operation_id",
+            "expected_revision",
+            "body",
+            "transfer_id"
+          ],
+          "properties": {
+            "decision_contract": {
+              "const": "transfer-decision-1"
+            },
+            "type": {
+              "const": "decision_request"
+            },
+            "operation": {
+              "const": "commit"
+            },
+            "operation_id": {
+              "$ref": "#/$defs/uuid"
+            },
+            "expected_revision": {
+              "$ref": "#/$defs/decimal"
+            },
+            "body": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [],
+              "properties": {}
+            },
+            "transfer_id": {
+              "$ref": "#/$defs/uuid"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "decision_contract",
+            "type",
+            "operation",
+            "operation_id",
+            "expected_revision",
+            "body",
+            "transfer_id"
+          ],
+          "properties": {
+            "decision_contract": {
+              "const": "transfer-decision-1"
+            },
+            "type": {
+              "const": "decision_request"
+            },
+            "operation": {
+              "const": "abort"
+            },
+            "operation_id": {
+              "$ref": "#/$defs/uuid"
+            },
+            "expected_revision": {
+              "$ref": "#/$defs/decimal"
+            },
+            "body": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "reason"
+              ],
+              "properties": {
+                "reason": {
+                  "const": "user_cancelled"
+                }
+              }
+            },
+            "transfer_id": {
+              "$ref": "#/$defs/uuid"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "decision_contract",
+            "type",
+            "operation",
+            "operation_id",
+            "expected_revision",
+            "body",
+            "transfer_id"
+          ],
+          "properties": {
+            "decision_contract": {
+              "const": "transfer-decision-1"
+            },
+            "type": {
+              "const": "decision_request"
+            },
+            "operation": {
+              "const": "reconcile"
+            },
+            "operation_id": {
+              "$ref": "#/$defs/uuid"
+            },
+            "expected_revision": {
+              "$ref": "#/$defs/decimal"
+            },
+            "body": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "binding",
+                "frozen",
+                "expected_ledger_revision",
+                "action"
+              ],
+              "properties": {
+                "binding": {
+                  "$ref": "#/$defs/binding"
+                },
+                "frozen": {
+                  "$ref": "#/$defs/frozen"
+                },
+                "expected_ledger_revision": {
+                  "$ref": "#/$defs/positive"
+                },
+                "action": {
+                  "enum": [
+                    "status",
+                    "abort_missing"
+                  ]
+                }
+              }
+            },
+            "transfer_id": {
+              "$ref": "#/$defs/uuid"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "decision_contract",
+            "type",
+            "operation",
+            "operation_id",
+            "expected_revision",
+            "body",
+            "transfer_id"
+          ],
+          "properties": {
+            "decision_contract": {
+              "const": "transfer-decision-1"
+            },
+            "type": {
+              "const": "decision_request"
+            },
+            "operation": {
+              "const": "activation.record"
+            },
+            "operation_id": {
+              "$ref": "#/$defs/uuid"
+            },
+            "expected_revision": {
+              "$ref": "#/$defs/decimal"
+            },
+            "body": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "activation"
+              ],
+              "properties": {
+                "activation": {
+                  "$ref": "#/$defs/activation"
+                }
+              }
+            },
+            "transfer_id": {
+              "$ref": "#/$defs/uuid"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "decision_contract",
+            "type",
+            "operation",
+            "operation_id",
+            "expected_revision",
+            "body"
+          ],
+          "properties": {
+            "decision_contract": {
+              "const": "transfer-decision-1"
+            },
+            "type": {
+              "const": "decision_request"
+            },
+            "operation": {
+              "const": "reconcile"
+            },
+            "operation_id": {
+              "$ref": "#/$defs/uuid"
+            },
+            "expected_revision": {
+              "const": "0"
+            },
+            "body": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "action",
+                "provenance"
+              ],
+              "properties": {
+                "action": {
+                  "const": "source_status"
+                },
+                "provenance": {
+                  "$ref": "#/$defs/provenance"
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+    "status": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "decision_contract",
+        "type",
+        "status",
+        "transfer_id",
+        "source",
+        "epoch",
+        "revision",
+        "phase",
+        "terminal",
+        "activation",
+        "recovery_generation",
+        "source_recovery"
+      ],
+      "properties": {
+        "decision_contract": {
+          "const": "transfer-decision-1"
+        },
+        "type": {
+          "const": "reconciliation_status"
+        },
+        "status": {
+          "enum": [
+            "terminal",
+            "in_progress",
+            "not_found",
+            "recovery_hold"
+          ]
+        },
+        "transfer_id": {
+          "$ref": "#/$defs/uuid"
+        },
+        "source": {
+          "$ref": "#/$defs/source"
+        },
+        "epoch": {
+          "$ref": "#/$defs/positive"
+        },
+        "revision": {
+          "$ref": "#/$defs/decimal"
+        },
+        "phase": {
+          "oneOf": [
+            {
+              "enum": [
+                "reserved",
+                "sealed",
+                "target_ready",
+                "committed",
+                "aborted",
+                "recovery_hold"
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "terminal": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/terminal"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "activation": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/activation"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "recovery_generation": {
+          "$ref": "#/$defs/uuid"
+        },
+        "source_recovery": {
+          "enum": [
+            "intact",
+            "recovery_hold"
+          ]
+        }
+      }
+    },
+    "errorCode": {
+      "enum": [
+        "validation_failed",
+        "unsupported_version",
+        "unsupported_context",
+        "unauthorized",
+        "session_revoked",
+        "forbidden",
+        "not_found",
+        "conflict",
+        "stale_revision",
+        "stale_epoch",
+        "authority_changed",
+        "producer_changed",
+        "instance_offline",
+        "recovery_hold",
+        "resource_limit",
+        "unavailable"
+      ]
+    },
+    "error": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "decision_contract",
+        "type",
+        "operation_id",
+        "code",
+        "retryable"
+      ],
+      "properties": {
+        "decision_contract": {
+          "const": "transfer-decision-1"
+        },
+        "type": {
+          "const": "decision_error"
+        },
+        "operation_id": {
+          "$ref": "#/$defs/uuid"
+        },
+        "code": {
+          "$ref": "#/$defs/errorCode"
+        },
+        "retryable": {
+          "type": "boolean"
+        }
+      }
+    },
+    "sourceStatus": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "decision_contract",
+        "type",
+        "status",
+        "provenance",
+        "ledger",
+        "recovery_generation"
+      ],
+      "properties": {
+        "decision_contract": {
+          "const": "transfer-decision-1"
+        },
+        "type": {
+          "const": "source_reconciliation_status"
+        },
+        "status": {
+          "enum": [
+            "known",
+            "not_found",
+            "recovery_hold"
+          ]
+        },
+        "provenance": {
+          "$ref": "#/$defs/provenance"
+        },
+        "ledger": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/ledger"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "recovery_generation": {
+          "$ref": "#/$defs/uuid"
+        }
+      }
+    }
+  }
+}

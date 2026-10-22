@@ -1,0 +1,11 @@
+{
+  "decision_contract": "transfer-decision-1",
+  "type": "activation_receipt",
+  "receipt_id": "00000000-0000-0000-0000-000000000033",
+  "transfer_id": "00000000-0000-0000-0000-000000000004",
+  "terminal_digest": "7fd26300b910598b2b61b3ac5f32d35ab588efaf80b7af3cdaff69fcc8ddb05b",
+  "target_instance_id": "target-synthetic",
+  "target_conversation_id": "new-chat-synthetic",
+  "prepared_digest": "6249bd76835ac6dec14e5699b95bfe462253af0f7a43baa3cb3b63324722992b",
+  "revision": "1"
+}

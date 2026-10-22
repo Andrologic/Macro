@@ -1,0 +1,7 @@
+{
+  "decision_contract": "transfer-decision-1",
+  "type": "decision_error",
+  "operation_id": "00000000-0000-0000-0000-000000000100",
+  "code": "not_found",
+  "retryable": false
+}

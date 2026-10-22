@@ -1,0 +1,14 @@
+{
+  "decision_contract": "transfer-decision-1",
+  "type": "producer_attestation",
+  "kind": "lineage_enrolled",
+  "format_version": "1",
+  "binding_digest": "daeaabbfc580b1a63e883d062d0d4dd0a29fff3ccfb32fc692ffec316f7cb780",
+  "subject_digest": "7564c16bb2f24206053f5ad4b7bae238130b4cc2ff8c3b7c322e250b9792e465",
+  "producer_instance_id": "source-synthetic",
+  "producer_generation": "producer-source-synthetic",
+  "delivery_id": "00000000-0000-0000-0000-000000000089",
+  "challenge_id": "00000000-0000-0000-0000-000000000090",
+  "request_digest": "c9a1409751d8ecf79c1537c57061789b2da1f358e11bb655ee0036637688521b",
+  "prior_receipt_digest": null
+}
