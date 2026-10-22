@@ -117,8 +117,12 @@ tauri-remote-ui = { path = "vendor/tauri-remote-ui", optional = true }
 
 # Utils
 [dev-dependencies]
-tauri = { version = "=2.12.5", features = ["test"] }
 rmcp = { version = "=3.1.3", default-features = false, features = ["client", "server", "transport-async-rw"] }
+
+# The mock IPC transport belongs to the Linux process-recovery runner.
+[target.'cfg(target_os = "linux")'.dev-dependencies]
+tauri = { version = "=2.12.5", features = ["test"] }
+
 [target.'cfg(target_vendor = "apple")'.dependencies]
 objc2 = "0.6.3"
 

@@ -1151,5 +1151,5 @@ mod frontend_log_tests {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, target_os = "linux"))]
 mod process_recovery_transport;
