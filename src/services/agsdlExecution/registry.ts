@@ -14,6 +14,7 @@ export const ENGINE_CAPABILITIES = ['agent-continuity', 'prompt-instructions', '
 export const INVOCATION_CAPABILITIES = ['actual-permission-scope', 'termination-evidence'] as const;
 export type BindingTarget =
   | { readonly kind: 'engine'; readonly adapter: 'macro-streaming-v1' }
+  | { readonly kind: 'engine'; readonly adapter: 'codex-app-server-v1'; readonly profileJson: ExactJsonText }
   | { readonly kind: 'macro-tool'; readonly toolId: string }
   | { readonly kind: 'mcp-tool'; readonly serverId: string; readonly toolId: string; readonly descriptorJson: ExactJsonText }
   | { readonly kind: 'publication'; readonly protocol: typeof PUBLICATION_PROTOCOL };
@@ -67,8 +68,14 @@ export function captureRegistry(value: unknown): CapturedRegistry {
     let capturedTarget: BindingTarget;
     switch (target.kind) {
       case 'engine':
-        if (target.adapter !== 'macro-streaming-v1') return fail('UNSUPPORTED', `${targetPointer}/adapter`, 'Unknown Engine adapter.');
-        capturedTarget = { kind: 'engine', adapter: 'macro-streaming-v1' }; break;
+        if (target.adapter === 'macro-streaming-v1') capturedTarget = { kind: 'engine', adapter: 'macro-streaming-v1' };
+        else if (target.adapter === 'codex-app-server-v1') {
+          const profileJson = metadataJson(target.profileJson, `${targetPointer}/profileJson`);
+          const profile = record(decode(profileJson));
+          if (profile.format !== 'macro-codex-native-profile/1' || profile.version !== '0.163.0' || profile.toolPolicy !== 'codex-native' || profile.approvalPolicy !== 'never') return fail('UNSUPPORTED', targetPointer, 'Unknown Codex native profile.');
+          capturedTarget = { kind: 'engine', adapter: 'codex-app-server-v1', profileJson };
+        } else return fail('UNSUPPORTED', `${targetPointer}/adapter`, 'Unknown Engine adapter.');
+        break;
       case 'publication':
         if (target.protocol !== PUBLICATION_PROTOCOL) return fail('UNSUPPORTED', `${targetPointer}/protocol`, 'Unknown publication protocol.');
         capturedTarget = { kind: 'publication', protocol: PUBLICATION_PROTOCOL }; break;
@@ -188,8 +195,9 @@ export function resolveBinding(document: ExactObject, name: string, registry: Ca
   verifyArgumentSchema(decode(entry.argumentSchemaJson));
   verifyResultConstraint(entry.resultConstraintJson);
   if (role === 'engine') {
-    if (entry.target.kind !== 'engine' || entry.target.adapter !== 'macro-streaming-v1') return fail('UNSUPPORTED', '', 'Unknown Engine path.');
-    requiredCapabilities(entry, ENGINE_CAPABILITIES);
+    if (entry.target.kind !== 'engine') return fail('UNSUPPORTED', '', 'Unknown Engine path.');
+    requiredCapabilities(entry, entry.target.adapter === 'codex-app-server-v1'
+      ? [...ENGINE_CAPABILITIES.filter(capability => capability !== 'tool-admission'), 'native-tool-policy', 'contained-stop'] : ENGINE_CAPABILITIES);
   } else if (role === 'publication') {
     if (entry.target.kind !== 'publication' || entry.target.protocol !== PUBLICATION_PROTOCOL) return fail('UNSUPPORTED', '', 'Unknown publication path.');
     requiredCapabilities(entry, ['typed-publication', 'response-attribution']);
@@ -223,7 +231,8 @@ export function captureAgent(document: ExactObject, agentName: string, initializ
   const agent = record(record(document.agents)[agentName]);
   const configurationName = text(agent.configuration);
   const configuration = record(record(document.configurations)[configurationName]);
-  resolveBinding(document, text(configuration.engine), registry, 'engine');
+  const engine = resolveBinding(document, text(configuration.engine), registry, 'engine');
+  if (engine.target.kind === 'engine' && engine.target.adapter === 'codex-app-server-v1' && Object.keys(record(configuration.tools ?? {})).length) return fail('UNSUPPORTED', '/configurations/tools', 'Codex native tools follow its captured sandbox policy; Macro tool aliases are unavailable in this profile.');
   for (const [alias, name] of Object.entries(record(configuration.tools ?? {}))) {
     if (!isNativeToolAlias(alias) || alias === 'macro_agsdl_publish') return fail('UNSUPPORTED', `/configurations/${configurationName}/tools`, 'Tool alias is reserved or unsupported by the qualified transport.');
     resolveBinding(document, text(name), registry, 'tool');
@@ -233,6 +242,8 @@ export function captureAgent(document: ExactObject, agentName: string, initializ
   if (models.length !== 1) return fail('UNSUPPORTED', '/registry/models', 'Model has no unique captured native catalogue entry.');
   const providerId = metadataIdentity(models[0].providerId, '/registry/models/providerId');
   const modelId = metadataIdentity(models[0].modelId, '/registry/models/modelId');
+  const nativeCodex = engine.target.kind === 'engine' && engine.target.adapter === 'codex-app-server-v1';
+  if (nativeCodex !== (providerId === 'codex-native')) return fail('UNSUPPORTED', `/configurations/${configurationName}/model`, 'Engine adapter and native provider do not match.');
   // Native model dispatch identifies a model by provider and model ID.
   if (registry.models.filter(model => model.providerId === providerId && model.modelId === modelId).length !== 1) return fail('UNSUPPORTED', '/registry/models', 'Selected native Model identity is ambiguous.');
   const authoredSettings = record(configuration.settings ?? {});
@@ -253,7 +264,7 @@ export function captureAgent(document: ExactObject, agentName: string, initializ
   decode(proof.scopeJson);
   return {
     agentName, configurationName, providerId, modelId,
-    configurationJson: encode({ agent: clone(agent), configuration: clone(configuration), initialization: clone(initialization), bindings: clone(record(document.bindings)) }),
+    configurationJson: encode({ agent: clone(agent), configuration: clone(configuration), initialization: clone(initialization), bindings: clone(record(document.bindings)), ...(engine.target.kind === 'engine' && engine.target.adapter === 'codex-app-server-v1' ? { nativeEngine: clone(engine.target as unknown as ExactObject) } : {}) }),
     settingsJson: encode(effectiveSettings), permissionsJson: proof.permissionsJson, scopeJson: proof.scopeJson,
   };
 }

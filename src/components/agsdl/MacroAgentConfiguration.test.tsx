@@ -24,8 +24,8 @@ afterEach(() => {
   useAgsdlModelCatalogue.setState(originalCatalogue);
   useProviderStore.setState({ providers: originalProviders.providers, modelsByProvider: originalProviders.modelsByProvider });
 });
-async function mount(source = createExample("release")) {
-  useAgsdlModelCatalogue.setState({ catalogue: nativeCatalogue, loading: false, error: undefined, load: async () => useAgsdlModelCatalogue.getState().catalogue ?? nativeCatalogue });
+async function mount(source = createExample("release"), catalogue = nativeCatalogue) {
+  useAgsdlModelCatalogue.setState({ catalogue, loading: false, error: undefined, load: async () => useAgsdlModelCatalogue.getState().catalogue ?? catalogue });
   useProviderStore.setState({
     providers: [{ id: "demo-provider", name: "Demo provider", status: "online" }],
     modelsByProvider: { "demo-provider": [{ id: "demo-model", name: "Demo model", provider_id: "demo-provider" }] },
@@ -160,4 +160,21 @@ it("refuses duplicate native catalogue identities without substituting a global 
   await submit();
   expect(useAgsdlStore.getState().sessions[key].source).toBe(original);
   expect(document.body.querySelector("form")).not.toBeNull();
+});
+
+it("selects only observed Codex models and saves the native Edition without replacing its engine", async () => {
+  const doc=JSON.parse(createExample020("release"));
+  doc.bindings[doc.configurations.project.engine].implementation={identity:"openai/codex",version:"1"};
+  const before=structuredClone(doc.bindings);
+  const choice={providerId:"codex-native",modelId:"synthetic-codex-model",providerName:"Codex",modelName:"Synthetic Codex model",edition:macroNativeModelEdition("codex-native","synthetic-codex-model")};
+  await mount(JSON.stringify(doc),{...nativeCatalogue,models:[...nativeCatalogue.models,choice]});
+  const providers=document.body.querySelectorAll<HTMLSelectElement>(".agsdl-macro-config select")[0];
+  expect([...providers.options].map(option=>option.value)).toEqual(["","codex-native"]);
+  choose(0,"codex-native");choose(1,"synthetic-codex-model");
+  let persisted="";useAgsdlStore.setState({save:async()=>{persisted=useAgsdlStore.getState().sessions[key].source;}});
+  await submit();
+  const saved=JSON.parse(persisted);
+  expect(saved.configurations.project.model).toEqual(choice.edition);
+  expect(saved.configurations.project.settings).toEqual({providerId:"codex-native",modelId:"synthetic-codex-model"});
+  expect(saved.bindings).toEqual(before);
 });

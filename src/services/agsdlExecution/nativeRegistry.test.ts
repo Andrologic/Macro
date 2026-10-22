@@ -80,3 +80,39 @@ it('rejects a registered tool removed by the native project policy before compil
   const restricted = { ...observed, configurations: observed.configurations.map(configuration => ({ ...configuration, permissionsJson: json('{"allowedToolIds":[]}') })) };
   expect(() => buildNativeRegistry(encode(doc), restricted)).toThrow('outside the captured native policy');
 });
+
+it('captures Codex as a distinct adapter only after a native profile observation', async () => {
+  const { doc, config, observed } = fixture();
+  record(record(doc.bindings).engine).implementation = { identity: 'openai/codex', version: '1' };
+  delete config.tools;
+  const source = encode(doc);
+  const compile = async (observation: NativeRegistryObservation) => compilePlan(source,
+    { owner: { projectId: 'synthetic', planId: 'plan', branch: 'feature/test' }, revision: '1', sourceSha256: id(await sourceDigest(source)) }, buildNativeRegistry(source, observation));
+  expect((await compile(observed)).runtime.supported).toBe(false);
+  const codexProfileJson = json('{"format":"macro-codex-native-profile/1","version":"0.163.0","toolPolicy":"codex-native","approvalPolicy":"never","digest":"synthetic"}');
+  config.model = { identity: 'macro/native-model/p/Y29kZXgtbmF0aXZl/m/bQ', version: '1' };
+  const captured = { ...observed, codexProfileJson, models: [{ editionJson: encode(config.model), providerId: 'codex-native', modelId: 'm' }] };
+  // The positive fixture uses an actually native Edition, not the HTTP fixture.
+  const nativeSource = encode(doc);
+  const compileNative = async () => compilePlan(nativeSource,{ owner: { projectId: 'synthetic', planId: 'plan', branch: 'feature/test' }, revision: '1', sourceSha256: id(await sourceDigest(nativeSource)) },buildNativeRegistry(nativeSource,captured));
+  const result = await compileNative();
+  expect(result.runtime.supported).toBe(true);
+  const binding = buildNativeRegistry(nativeSource, captured).bindings.find(binding => binding.target.kind === 'engine')!;
+  expect(binding.target).toEqual({ kind: 'engine', adapter: 'codex-app-server-v1', profileJson: codexProfileJson });
+  expect(binding.capabilities).not.toContain('tool-admission');
+  expect(binding.capabilities).toContain('native-tool-policy');
+  expect(result.plan!.versions.profile).toBe('macro-serial-inline-v1');
+  expect(result.plan!.agents[0].configurationJson).toContain('nativeEngine');
+  expect(() => buildNativeRegistry(nativeSource, { ...captured, codexProfileJson: json(codexProfileJson.replace('0.163.0', 'unknown')) })).toThrow('Unknown Codex native profile');
+  config.tools = { inspect: 'inspect' };
+  expect((await compilePlan(encode(doc), { owner: { projectId: 'synthetic', planId: 'plan', branch: 'feature/test' }, revision: '1', sourceSha256: id(await sourceDigest(encode(doc))) }, buildNativeRegistry(encode(doc), captured))).runtime.supported).toBe(false);
+});
+
+it.each([['openai/codex','p'],['macro/desktop','codex-native']] as const)('refuses crossed Engine %s and provider %s before activation', async (engine,providerId) => {
+  const {doc,config,observed}=fixture();delete config.tools;
+  record(record(doc.bindings).engine).implementation={identity:engine,version:'1'};
+  const source=encode(doc);
+  const registry=buildNativeRegistry(source,{...observed,models:[{...observed.models[0],providerId}],codexProfileJson:json('{"format":"macro-codex-native-profile/1","version":"0.163.0","toolPolicy":"codex-native","approvalPolicy":"never","digest":"synthetic"}')});
+  const compiled=await compilePlan(source,{owner:{projectId:'synthetic',planId:'plan',branch:'feature/test'},revision:'1',sourceSha256:id(await sourceDigest(source))},registry);
+  expect(compiled.runtime.supported).toBe(false);expect(compiled.plan).toBeNull();
+});

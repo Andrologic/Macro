@@ -56,7 +56,8 @@ async fn drop_visible_search(connection: &mut SqliteConnection) {
          DROP TRIGGER messages_search_update_insert;
          DROP TABLE message_search;
          DROP VIEW message_search_content;
-         DELETE FROM schema_migrations WHERE version = 15;",
+         DROP TABLE engine_native_operations;
+         DELETE FROM schema_migrations WHERE version >= 15;",
     )
     .execute(&mut *connection)
     .await
@@ -856,7 +857,7 @@ async fn joins_both_published_v10_histories_without_replacing_stamps_or_data() {
                 .fetch_one(&upgraded)
                 .await
                 .unwrap(),
-            15
+            16
         );
         assert_eq!(
             sqlx::query_scalar::<_, String>(

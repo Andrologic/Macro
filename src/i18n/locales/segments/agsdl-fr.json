@@ -552,5 +552,20 @@
       "error": "Erreur",
       "value": "Valeur courante"
     }
+  },
+  "codex": {
+    "policy": "Les outils natifs de Codex suivent ses permissions et son sandbox. Macro contrôle l’admission, la continuité, la validation des sorties et l’arrêt des processus.",
+    "loginRequired": "Connectez un compte de test dans le profil Codex privé de Macro avant la qualification.",
+    "assessmentRequired": "La disponibilité est vérifiée selon la version locale de Codex, la plateforme, le profil privé et le workspace capturé.",
+    "checking": "Vérification de l’installation privée de Codex.",
+    "diagnosticFailed": "Les diagnostics Codex sont indisponibles. Rouvrez cette configuration pour réessayer.",
+    "notInstalled": "Installez Codex CLI 0.163.0 pour utiliser ce moteur.",
+    "versionUnqualified": "Cette version de Codex CLI n’a pas été qualifiée. La version 0.163.0 est requise.",
+    "platformUnqualified": "Le sandbox natif Codex n’a pas été qualifié sur cette plateforme.",
+    "profileUnqualified": "Le profil privé Codex ou l’isolation du workspace n’a pas pu être qualifié.",
+    "accountUnqualified": "L’identité du compte Codex privé n’a pas pu être attestée.",
+    "stopPending": "Un processus natif Codex n’a pas encore confirmé son arrêt.",
+    "sandboxUnqualified": "Le sandbox natif des outils Codex ne démarre pas dans le profil isolé. Ce moteur reste indisponible.",
+    "contextUnqualified": "Le contexte natif privé a changé ou une source de skills administrateur est présente. Ce moteur reste indisponible."
   }
 }

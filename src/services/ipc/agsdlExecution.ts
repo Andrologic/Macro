@@ -145,3 +145,11 @@ export async function closeExecutionIntent(request: ExecutionCloseIntentRequest)
 export async function ensureExecutionStop(request: ExecutionEnsureStopRequest): Promise<PublicStopState> {
   return nativeContract<PublicStopStateWire, PublicStopState>(await invoke<PublicStopStateWire>('execution_ensure_stop', { request }));
 }
+
+/** Private native Codex process. The response is returned only after physical end. */
+export function executionHostRunCodex(request: import('../../types/generated/ipc').HostCodexRequest): Promise<import('../../types/generated/ipc').HostCodexReceipt> {
+  return invoke('execution_host_run_codex', { request });
+}
+export function executionCodexStatus(): Promise<import('../../types/generated/ipc').CodexStatus> {
+  return invoke('execution_codex_status');
+}

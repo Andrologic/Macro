@@ -72,6 +72,15 @@ pub(crate) async fn close_dead_process_effects(
         .bind(system_id).fetch_all(&mut *tx).await?;
     for row in rows {
         let effect: EngineEffect = serde_json::from_str(row.get("record_json"))?;
+        // External native processes have a separate physical owner. Macro's PID
+        // disappearing is never evidence that their descendants disappeared.
+        if serde_json::from_str::<serde_json::Value>(&effect.invocation_json)?
+            .get("kind")
+            .and_then(serde_json::Value::as_str)
+            == Some("codex-app-server-v1")
+        {
+            continue;
+        }
         let a = activation(&stored.state, &effect.context.work)?;
         if activation_id.is_some_and(|id| id != row.get::<&str, _>("activation_id"))
             || a.work_state != "uncertain"

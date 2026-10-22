@@ -552,5 +552,20 @@
       "error": "오류",
       "value": "현재 값"
     }
+  },
+  "codex": {
+    "policy": "Codex native tools follow Codex permissions and sandbox. Macro controls admission, continuity, output validation and process shutdown.",
+    "loginRequired": "Connect a test account in Macro's private Codex profile before qualification.",
+    "assessmentRequired": "Availability is checked against the local Codex version, platform, private profile and captured workspace.",
+    "checking": "Checking the private Codex installation.",
+    "diagnosticFailed": "Codex diagnostics could not be read. Reopen this configuration to retry.",
+    "notInstalled": "Install Codex CLI 0.163.0 to use this engine.",
+    "versionUnqualified": "This Codex CLI version has not been qualified. Version 0.163.0 is required.",
+    "platformUnqualified": "The native Codex sandbox has not been qualified on this platform.",
+    "profileUnqualified": "The private Codex profile or workspace isolation could not be qualified.",
+    "accountUnqualified": "The private Codex account identity could not be attested.",
+    "stopPending": "A native Codex process has not yet confirmed its shutdown.",
+    "sandboxUnqualified": "The native Codex tool sandbox cannot start inside the isolated profile. This engine remains unavailable.",
+    "contextUnqualified": "The private native context changed or an administrator skills source is present. This engine remains unavailable."
   }
 }

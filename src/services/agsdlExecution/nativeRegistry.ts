@@ -9,6 +9,7 @@ export interface NativeRegistryObservation {
   readonly format: 'macro-native-registry-observation/1';
   readonly version: string;
   readonly models: readonly ModelCatalogueEntry[];
+  readonly codexProfileJson?: ExactJsonText;
   readonly tools: readonly {
     readonly toolId: string;
     readonly resultConstraintJson: ExactJsonText;
@@ -30,12 +31,17 @@ export function buildNativeRegistry(authoredSource: string, observed: NativeRegi
   const bindings: BindingAttestation[] = [];
   for (const declaration of Object.values(record(document.bindings))) {
     const binding = record(declaration);
-    if (!equal(binding.implementation, MACRO_ENGINE_IMPLEMENTATION)) continue;
+    const codex = equal(binding.implementation, { identity: 'openai/codex', version: '1' });
+    if (!equal(binding.implementation, MACRO_ENGINE_IMPLEMENTATION) && !codex) continue;
+    if (codex && !observed.codexProfileJson) continue;
     // No binding settings have an implemented interpretation in this profile.
     if (Object.keys(record(binding.settings ?? {})).length) continue;
     let candidate: Omit<BindingAttestation, 'declarationJson'> | undefined;
     let effects: 'none' | 'external' = 'external';
-    if (equal(binding.contract, MACRO_ENGINE_CONTRACT)) {
+    if (codex) {
+      if (!equal(binding.contract, MACRO_ENGINE_CONTRACT)) continue;
+      candidate = { target: { kind: 'engine', adapter: 'codex-app-server-v1', profileJson: observed.codexProfileJson! }, argumentSchemaJson: encode({}), resultConstraintJson: encode({ type: 'object' }), capabilities: [...ENGINE_CAPABILITIES.filter(value => value !== 'tool-admission'), 'native-tool-policy', 'contained-stop', 'typed-publication'], verifiedRequirementsJson: [] };
+    } else if (equal(binding.contract, MACRO_ENGINE_CONTRACT)) {
       candidate = { target: { kind: 'engine', adapter: 'macro-streaming-v1' }, argumentSchemaJson: encode({}), resultConstraintJson: encode({ type: 'object' }), capabilities: [...ENGINE_CAPABILITIES, 'typed-publication'], verifiedRequirementsJson: [] };
     } else if (equal(binding.contract, { identity: 'macro-agsdl-publication', version: '1' })) {
       effects = 'none';

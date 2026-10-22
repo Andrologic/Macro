@@ -20,7 +20,7 @@ Le profil Macro ci-dessous est volontairement plus restreint que le langage.
 ## Propriétaire et hébergement retenus
 
 Un propriétaire natif unique tient les admissions, transactions et epochs.
-L'adaptateur JavaScript Macro réside dans une webview native cachée dédiée,
+L’adaptateur JavaScript Macro réside dans une webview native cachée dédiée,
 avec une entrée distincte de `main.tsx` et de `App`. Il réutilise
 `src/services/streamingChat.ts`, `src/services/ai/toolCallingLoop.ts` et les
 adaptateurs fournisseurs existants. Ce choix conserve les contrôles Macro et
@@ -66,7 +66,7 @@ qui ferait autorité. Le SHA porte sur les octets conservés, sans reformatage.
 Les configurations, settings effectifs, bindings, contenu initial, permissions
 et scopes sont capturés sans secrets. Les identifiants fournisseur et modèle
 sont explicites. Aucun fournisseur ni modèle par défaut n'est choisi.
-Les credentials restent dans les services sécurisés Macro et sont résolus au
+Les credentials du transport Macro restent dans ses services sécurisés et sont résolus au
 moment de l'invocation. L'autorité de capture native exporte explicitement les
 champs publics des configurations et settings typés du catalogue ; elle ne
 sérialise pas `ProviderConfig` en bloc et ne charge pas les credentials dans
@@ -93,7 +93,9 @@ La configuration d'une instance reste identique, même après un échec. Les
 permissions capturées sont un plafond, pas un droit irrévocable. À chaque effet,
 Macro vérifie aussi les permissions actuelles. Une révocation bloque l'effet ;
 un ajout de droits après démarrage n'élargit pas le snapshot. Le périmètre réel
-et les approbations de Tool restent évalués par Macro.
+et les approbations des Tools Macro restent évalués par Macro. Le
+[profil natif Codex](agsdl-codex-native.md) conserve cette autorité pour les
+admissions et les terminaux, avec les outils natifs gouvernés par Codex.
 
 ## Profil initial et assessment
 
