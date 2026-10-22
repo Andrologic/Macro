@@ -1827,6 +1827,15 @@ mod tests {
             .execute(&p)
             .await
             .unwrap();
+        // This manual historical fixture needs the real missing runtime table
+        // before the source-version triggers and shared preparation domain.
+        crate::db::ensure_conversation_compactions(&mut *p.acquire().await.unwrap())
+            .await
+            .unwrap();
+        sqlx::raw_sql(include_str!("migrations/016_source_capture.sql"))
+            .execute(&p)
+            .await
+            .unwrap();
         sqlx::query("INSERT INTO conversations(id,title,scope_mode,created_at,updated_at) VALUES ('conversation','Synthetic','Chat','now','now')").execute(&p).await.unwrap();
         let s = PilotFileScope {
             account_id: "account".into(),

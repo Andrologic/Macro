@@ -38,6 +38,8 @@ browser-runtime-debug = ["dep:tauri-remote-ui"]
 tauri-build = { version = "=2.5.5", features = [] }
 
 [dependencies]
+# Same locked SQLite library as SQLx, for bounded native BLOB reads.
+libsqlite3-sys = "=0.30.1"
 keyring = { version = "=4.2.0", default-features = false, features = ["v1"] }
 tempfile = "3"
 tauri = { version = "=2.10.2", features = ["macos-private-api", "image-png"] }
@@ -117,8 +119,6 @@ tauri-remote-ui = { path = "vendor/tauri-remote-ui", optional = true }
 
 # Utils
 [dev-dependencies]
-# Same locked SQLite library as SQLx, only for the native engine diagnostic.
-libsqlite3-sys = "=0.30.1"
 rmcp = { version = "=3.1.3", default-features = false, features = ["client", "server", "transport-async-rw"] }
 [target.'cfg(target_vendor = "apple")'.dependencies]
 objc2 = "0.6.3"

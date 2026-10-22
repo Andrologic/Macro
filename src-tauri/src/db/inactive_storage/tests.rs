@@ -232,6 +232,7 @@ async fn two_database_storage_roundtrip_reopens_with_persistent_mapping_and_no_o
 
 // Downgrade helpers are restricted to synthetic test databases, never recovery.
 pub(crate) async fn remove_reference_schema_in(db: &mut sqlx::SqliteConnection) {
+    crate::db::source_capture::tests::remove_reference_schema_in(db).await;
     sqlx::raw_sql("DROP TABLE e_inactive_mapping; DROP TABLE e_inactive_fragments; DROP TABLE e_inactive_records; DROP TABLE e_inactive_imports; DROP TABLE e_inactive_domain; DELETE FROM schema_migrations WHERE version=15;").execute(db).await.unwrap();
 }
 
@@ -1285,4 +1286,39 @@ async fn e_and_attachment_reservations_enforce_the_same_boundary_in_both_orders(
         assert_eq!(retained(&store).await, base + extra);
         assert_charge(&store, &receipt.key).await;
     }
+}
+
+pub(crate) async fn shared_preparation_owner(
+    pool: SqlitePool,
+    clock: Arc<AtomicI64>,
+    budget: i64,
+    maximum: i64,
+    transfer: &str,
+) -> (InactiveStorage, Begin) {
+    let store = active(pool, clock);
+    let (mut begin, headers) = intent(&[(
+        RecordKind::Message { role: Role::User },
+        b"shared synthetic context".to_vec(),
+    )]);
+    begin.identity.transfer = transfer.into();
+    let mut manifest = Manifest::new(&begin).unwrap();
+    for h in &headers {
+        manifest.record(h).unwrap();
+    }
+    begin.manifest_sha256 = manifest.finish();
+    {
+        let mut authority = store.authority.as_ref().unwrap().write().await;
+        authority.identity = begin.identity.clone();
+        authority.policy.budget = budget;
+        authority.policy.max_receipts = maximum;
+    }
+    (store, begin)
+}
+pub(crate) async fn shared_attachment_reservation(
+    pool: &SqlitePool,
+    intent: &str,
+    bytes: i64,
+) -> Result<files::PilotFileReceipt> {
+    let scope = file_scope(pool, "shared-instance", "shared-session").await;
+    files::begin(pool, file_begin(&scope, intent, bytes), &|| FILE_TIME).await
 }

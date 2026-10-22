@@ -103,20 +103,20 @@ pub async fn db_retry_initialize(
         return db_get_initialization_status(pool).await;
     }
 
-    pool.set_initializing();
+    pool.set_initializing().await;
     match crate::db::init_db(&app).await {
         Ok(sqlite_pool) => {
             if let Err(error) = crate::ai::chatgpt::recover_auth_mutations(&sqlite_pool).await {
-                pool.set_failed(error.clone());
+                pool.set_failed(error.clone()).await;
                 return Err(command_error(format!(
                     "Database authentication recovery failed: {error}"
                 )));
             }
-            pool.set_ready(sqlite_pool);
+            pool.set_ready(sqlite_pool).await?;
         }
         Err(error) => {
             let message = error.to_string();
-            pool.set_failed(message.clone());
+            pool.set_failed(message.clone()).await;
             return Err(command_error(format!(
                 "Database initialization failed: {message}"
             )));
@@ -2234,7 +2234,7 @@ mod tests {
     #[tokio::test]
     async fn db_pool_propagates_failure_without_polling() {
         let pool = DbPool::default();
-        pool.set_failed("migration failed");
+        pool.set_failed("migration failed").await;
 
         let error = pool.wait_until_ready().await.expect_err("failed state");
         assert!(error.message.contains("migration failed"));
@@ -2243,16 +2243,15 @@ mod tests {
     #[tokio::test]
     async fn db_pool_wakes_waiters_when_initialization_becomes_ready() {
         let pool = DbPool::default();
-        let ready_pool = sqlx::sqlite::SqlitePoolOptions::new()
-            .max_connections(1)
-            .connect("sqlite::memory:")
+        let directory = tempfile::tempdir().unwrap();
+        let ready_pool = crate::db::create_pool(&directory.path().join("wake.db"))
             .await
             .expect("db pool");
         let state = pool.clone();
         let expected_pool = ready_pool.clone();
         tokio::spawn(async move {
             tokio::task::yield_now().await;
-            state.set_ready(ready_pool);
+            state.set_ready(ready_pool).await.unwrap();
         });
 
         let resolved = pool.wait_until_ready().await.expect("ready state");

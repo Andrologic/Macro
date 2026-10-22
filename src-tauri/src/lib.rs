@@ -701,19 +701,22 @@ pub fn run() {
             tauri::async_runtime::spawn(async move {
                 match db::init_db(&app_handle).await {
                     Ok(pool) => match ai::chatgpt::recover_auth_mutations(&pool).await {
-                        Ok(()) => {
-                            pool_state.set_ready(pool);
-                            tracing::info!("Database initialized successfully");
-                        }
+                        Ok(()) => match pool_state.set_ready(pool).await {
+                            Ok(()) => tracing::info!("Database initialized successfully"),
+                            Err(error) => tracing::error!(
+                                "Failed to validate database opening: {}",
+                                error.message
+                            ),
+                        },
                         Err(error) => {
-                            pool_state.set_failed(error.clone());
+                            pool_state.set_failed(error.clone()).await;
                             tracing::error!(
                                 "Failed to recover durable authentication mutations: {error}"
                             );
                         }
                     },
                     Err(e) => {
-                        pool_state.set_failed(e.to_string());
+                        pool_state.set_failed(e.to_string()).await;
                         tracing::error!("Failed to initialize database: {}", e);
                     }
                 }

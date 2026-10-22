@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { sourceFingerprint, stageVerifiedBinary, validateNativeArgs, validateContentBaseline, validateCurrentContentBaseline, nativeContentFixture, currentNativeContentFixture, schema13ContentFixture } from './native-sqlite';
+import { sourceFingerprint, stageVerifiedBinary, validateNativeArgs, validateContentBaseline, validateCurrentContentBaseline, nativeContentFixture, currentNativeContentFixture, schema15ContentFixture, schema13ContentFixture } from './native-sqlite';
 
 test('native fingerprint detects untracked and tracked source changes, excludes Cargo outputs', () => {
   const root = mkdtempSync(join(tmpdir(), 'macro-native-provenance-'));
@@ -143,8 +143,8 @@ test('rejects audit adversaries starting with a valid content report', () => {
   }
 });
 
-function nativePilot(schema = 6) {
-  const fixture = schema === 4 ? schema13ContentFixture : schema === 5 ? nativeContentFixture : currentNativeContentFixture;
+function nativePilot(schema = 7) {
+  const fixture = schema === 4 ? schema13ContentFixture : schema === 5 ? nativeContentFixture : schema === 6 ? schema15ContentFixture : currentNativeContentFixture;
   const legacy = contentPilot();
   const report = {...legacy, schema, fixture, percentile:'nearest-rank',
     raw_observation_order:'execution order, warmup excluded'};
@@ -155,7 +155,8 @@ function nativePilot(schema = 6) {
   for (const entry of report.cases) {
     entry.runtime.migrations.push(13);
     if (schema >= 5) entry.runtime.migrations.push(14);
-    if (schema === 6) entry.runtime.migrations.push(15);
+    if (schema >= 6) entry.runtime.migrations.push(15);
+    if (schema === 7) entry.runtime.migrations.push(16);
     Object.assign(entry.checks,{native_fields_positions_tokens:true,native_mutations_before_reset:true,
       native_admission_bytes:true,native_reopen:true});
     const size = entry.initial_messages;
@@ -179,7 +180,7 @@ function nativePilot(schema = 6) {
 
 test('keeps historical evidence valid and rejects mixed native protocol identities', () => {
   expect(()=>validateContentBaseline(contentPilot(),true)).not.toThrow();
-  expect(()=>validateCurrentContentBaseline(contentPilot(),true)).toThrow('protocol 6');
+  expect(()=>validateCurrentContentBaseline(contentPilot(),true)).toThrow('protocol 7');
   const valid = nativePilot();
   expect(()=>validateContentBaseline(valid,true)).not.toThrow();
   expect(()=>validateCurrentContentBaseline(valid,true)).not.toThrow();
@@ -220,9 +221,9 @@ test('rejects missing native controls, truncated pages, unsafe tokens and byte/c
 test('keeps schema13 and schema14 reports historical without relabelling them', () => {
   const historical = nativePilot(4), current = nativePilot(5);
   expect(()=>validateContentBaseline(historical,true)).not.toThrow();
-  expect(()=>validateCurrentContentBaseline(historical,true)).toThrow('protocol 6');
+  expect(()=>validateCurrentContentBaseline(historical,true)).toThrow('protocol 7');
   expect(()=>validateContentBaseline(current,true)).not.toThrow();
-  expect(()=>validateCurrentContentBaseline(current,true)).toThrow('protocol 6');
+  expect(()=>validateCurrentContentBaseline(current,true)).toThrow('protocol 7');
   expect(current.fixture).not.toBe(historical.fixture);
   expect(current.fixture_sha256).not.toBe(historical.fixture_sha256);
   for (const original of [historical,current]) {
@@ -237,11 +238,11 @@ test('keeps schema13 and schema14 reports historical without relabelling them', 
   }
 });
 
- test('current schema15 identity refuses historical protocol, mixed migrations and stale fixture hashes', () => {
-  const current = nativePilot(6);
+ test('current schema16 identity refuses historical protocol, mixed migrations and stale fixture hashes', () => {
+  const current = nativePilot(7);
   expect(()=>validateCurrentContentBaseline(current,true)).not.toThrow();
-  for (const schema of [4,5]) expect(()=>validateCurrentContentBaseline(nativePilot(schema),true)).toThrow('protocol 6');
-  const historical = nativePilot(5);
+  for (const schema of [4,5,6]) expect(()=>validateCurrentContentBaseline(nativePilot(schema),true)).toThrow('protocol 7');
+  const historical = nativePilot(6);
   const snapshot = JSON.stringify(historical);
   validateContentBaseline(historical,true);
   expect(JSON.stringify(historical)).toBe(snapshot);
@@ -252,5 +253,5 @@ test('keeps schema13 and schema14 reports historical without relabelling them', 
   ]) {const altered=structuredClone(current);mutate(altered);expect(()=>validateCurrentContentBaseline(altered,true)).toThrow();}
   const source=readFileSync(new URL('../../src-tauri/examples/performance-sqlite/content_baseline.rs',import.meta.url),'utf8');
   expect(source).toContain(currentNativeContentFixture);
-  expect(source).toContain('"schema":6,"mode":"content-baseline"');
+  expect(source).toContain('"schema":7,"mode":"content-baseline"');
 });

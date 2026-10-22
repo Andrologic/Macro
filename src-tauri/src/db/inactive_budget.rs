@@ -4,7 +4,7 @@ use sqlx::{Row, SqliteConnection};
 pub(super) const DOMAIN_BYTES: i64 = 24;
 
 pub(super) async fn retained(db: &mut SqliteConnection) -> Result<i64, String> {
-    sqlx::query_scalar("SELECT COALESCE((SELECT SUM(charge_bytes) FROM e_inactive_imports),0)+COALESCE((SELECT SUM(total_bytes) FROM pilot_file_transfers WHERE state IN ('receiving','finalized')),0)+CASE WHEN EXISTS(SELECT 1 FROM e_inactive_domain) THEN 24 ELSE 0 END")
+    sqlx::query_scalar("SELECT COALESCE((SELECT SUM(charge_bytes) FROM e_inactive_imports),0)+COALESCE((SELECT SUM(charge_bytes) FROM e_source_captures),0)+COALESCE((SELECT SUM(total_bytes) FROM pilot_file_transfers WHERE state IN ('receiving','finalized')),0)+CASE WHEN EXISTS(SELECT 1 FROM e_inactive_domain) THEN 24 ELSE 0 END")
         .fetch_one(db).await.map_err(|_| "database_unavailable".into())
 }
 
@@ -15,13 +15,14 @@ pub(super) async fn admit(db: &mut SqliteConnection, extra: i64) -> Result<(), S
         .map_err(|_| "database_unavailable")?;
     if let Some(row) = domain {
         let total = retained(db).await?;
-        if extra < 0
-            || total.checked_add(extra).ok_or("resource_limit")? > row.get::<i64, _>("budget_bytes")
-        {
+        let budget: i64 = row
+            .try_get("budget_bytes")
+            .map_err(|_| "database_unavailable")?;
+        if extra < 0 || total.checked_add(extra).ok_or("resource_limit")? > budget {
             return Err("resource_limit".into());
         }
     } else {
-        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM e_inactive_imports")
+        let count: i64 = sqlx::query_scalar("SELECT (SELECT COUNT(*) FROM e_inactive_imports)+(SELECT COUNT(*) FROM e_source_captures)")
             .fetch_one(db)
             .await
             .map_err(|_| "database_unavailable")?;
@@ -49,10 +50,12 @@ pub(super) async fn admit_e(
         }
         return admit(db, extra).await;
     }
-    let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM e_inactive_imports")
-        .fetch_one(&mut *db)
-        .await
-        .map_err(|_| "database_unavailable")?;
+    let count: i64 = sqlx::query_scalar(
+        "SELECT (SELECT COUNT(*) FROM e_inactive_imports)+(SELECT COUNT(*) FROM e_source_captures)",
+    )
+    .fetch_one(&mut *db)
+    .await
+    .map_err(|_| "database_unavailable")?;
     if count != 0 {
         return Err("database_unavailable".into());
     }
@@ -75,4 +78,13 @@ pub(super) async fn admit_e(
         .await
         .map_err(|_| "database_unavailable")?;
     Ok(())
+}
+
+pub(super) async fn journal_count(db: &mut SqliteConnection) -> Result<i64, String> {
+    sqlx::query_scalar(
+        "SELECT (SELECT COUNT(*) FROM e_inactive_imports)+(SELECT COUNT(*) FROM e_source_captures)",
+    )
+    .fetch_one(db)
+    .await
+    .map_err(|_| "database_unavailable".into())
 }

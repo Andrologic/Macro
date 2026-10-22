@@ -41,6 +41,7 @@ async fn accepts_develop_v9_with_historical_pilot_v5_stamp() {
             (13, "013_conversation_content_versions".into()),
             (14, "014_conversation_catalog_version".into()),
             (15, "015_inactive_storage".into()),
+            (16, "016_source_capture".into()),
         ]
     );
 }

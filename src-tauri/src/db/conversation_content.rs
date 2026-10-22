@@ -49,7 +49,7 @@ fn valid_id(id: &str) -> bool {
             .bytes()
             .all(|b| b.is_ascii_alphanumeric() || b"._:-".contains(&b))
 }
-fn check_id(id: &str) -> DbResult<()> {
+pub(super) fn check_id(id: &str) -> DbResult<()> {
     if !valid_id(id) {
         return Err(fail("validation_failed"));
     }
@@ -154,7 +154,7 @@ pub(crate) async fn remove_reference_schema(db: &SqlitePool) -> DbResult<()> {
         .await?;
     Ok(())
 }
-async fn token_in(
+pub(super) async fn token_in(
     db: &mut SqliteConnection,
     id: &str,
     expected: Option<&ConversationContentToken>,

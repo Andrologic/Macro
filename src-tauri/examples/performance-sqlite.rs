@@ -3,6 +3,10 @@
 #![allow(dead_code, unused_imports)]
 #[path = "../src/db/mod.rs"]
 mod db;
+// The source owner uses the actual pool-generation gate. Keep the companion's
+// direct DB compilation connected to these native types, without app startup.
+#[path = "performance-sqlite/native_context.rs"]
+mod core;
 #[path = "../src/ai/macro_ai.rs"]
 pub mod macro_ai;
 mod ai {
@@ -158,7 +162,7 @@ async fn measure_case(
         sqlx::query_scalar("SELECT version FROM schema_migrations ORDER BY version")
             .fetch_all(pool)
             .await?;
-    if migrations != [1, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
+    if migrations != [1, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]
         || journal != "wal"
         || synchronous != 1
         || foreign_keys != 1
@@ -296,6 +300,7 @@ async fn self_test() -> Result<()> {
         .tempdir()?;
     let owned_path = directory.path().to_owned();
     let pool = db::create_pool(&owned_path.join("fixture.db")).await?;
+    content_baseline::check_runtime(&pool, &owned_path.join("fixture.db")).await?;
     let failure = finish_case(pool, directory, Err("Synthetic failure".into())).await;
     assert!(failure.is_err());
     assert!(!owned_path.exists());
