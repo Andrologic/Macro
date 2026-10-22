@@ -58,8 +58,8 @@ export class ResidentAgent {
   private constructor(private readonly request: ResidentAgentRequest, private readonly memory: MacroAgentMemory,
     private readonly ports: ResidentAgentPorts, private readonly invokeTool: ResidentToolDispatch) {}
 
-  static async prepare(request: ResidentAgentRequest, invokeTool: ResidentToolDispatch = createResidentToolDispatch(request), ports = nativeResidentAgentPorts): Promise<ResidentAgent> {
-    if (request.providerType === 'codex-native') return fail('CORRELATION', '/engine', 'Native Codex work must use its own adapter.');
+  static async prepare(request: ResidentAgentRequest, invokeTool: ResidentToolDispatch | undefined = undefined, ports = nativeResidentAgentPorts): Promise<ResidentAgent> {
+    if (request.providerType === 'codex-native' || request.configuration.providerId === 'codex-native' || record(decode(request.configuration.configurationJson)).nativeEngine !== undefined) return fail('CORRELATION', '/engine', 'Native Codex work must use its own adapter.');
     const agent = request.context.work.agentInstanceId;
     if (!agent || request.context.permissionsJson !== request.configuration.permissionsJson || request.context.scopeJson !== request.configuration.scopeJson) {
       return fail('CORRELATION', '', 'Agent configuration does not match admitted work.');
@@ -70,7 +70,7 @@ export class ResidentAgent {
     // Validate the real collection contract before input adaptation or provider effects.
     new ExactResponseCollection({ ...request.responses, context: request.context, providerAttempts: [] });
     const memory = await MacroAgentMemory.prepare(agent, request.configuration, request.memory);
-    return new ResidentAgent(request, memory, ports, invokeTool);
+    return new ResidentAgent(request, memory, ports, invokeTool ?? createResidentToolDispatch(request));
   }
   checkpoint(): MemoryCheckpoint { return this.memory.checkpoint(); }
   async acceptInput(adapt: () => ExactJsonText | Promise<ExactJsonText>): Promise<void> {

@@ -251,6 +251,10 @@ pub(crate) async fn execution_host_end_provider(
     request_id: String,
 ) -> Result<()> {
     host.authenticate_owner(&webview, &context.owner)?;
+    // Registration and StreamTasks.start form one admission. End cannot infer
+    // "not admitted" from the interval between those two operations.
+    let _admission = host.admission_gate().await;
+    host.authenticate_owner(&webview, &context.owner)?;
     // The native supervisor, not a JavaScript boolean, supplies termination evidence.
     finish(&app, context, request_id).await
 }

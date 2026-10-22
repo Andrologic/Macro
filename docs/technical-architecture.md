@@ -417,7 +417,10 @@ pas utilisés pour réécrire le document entier. Une mutation d’outil vérifi
 conversation propriétaire, le statut brouillon et la révision lue. Ces outils
 sont exposés uniquement dans Architect, avec la politique partagée des outils.
 Le moteur résident AgSDL utilise le transport fournisseur et les outils natifs de
-Macro. Le profil `macro-serial-inline-v1` compile une capture immuable avant Start ;
+Macro, ou l’adaptateur Codex explicitement capturé. L’adaptateur lance le CLI
+officiel en app-server sous un profil privé et conserve le scheduler existant.
+Les outils natifs Codex suivent sa politique de sandbox ; les admissions,
+références privées, réponses et terminaux restent sous autorité Macro. Le profil `macro-serial-inline-v1` compile une capture immuable avant Start ;
 le journal SQLite fait autorité pour les admissions, les approbations, les effets,
 les réponses et Stop. Le navigateur ne possède ni les droits d'exécution ni la
 preuve de terminaison. Voir les [contrats du moteur](agsdl-engine-architecture.md).
@@ -434,7 +437,9 @@ fournisseur. Aucun replay automatique n'est permis. L'utilisateur doit vérifier
 les effets avant de demander une nouvelle exécution.
 
 Le profil initial exclut les compositions, les fournisseurs qui lancent un
-processus externe, Terminal et les MCP. Un document statiquement valide peut donc
+processus externe autres que Codex, Terminal et les MCP. Le
+[profil Codex](agsdl-codex-native.md) détaille les limites de cette exception.
+Un document statiquement valide peut donc
 rester non exécutable dans Macro. La disponibilité produit est annoncée seulement
 après qualification des commandes réelles de l'application.
 

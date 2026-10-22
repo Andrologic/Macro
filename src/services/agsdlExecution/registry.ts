@@ -242,6 +242,8 @@ export function captureAgent(document: ExactObject, agentName: string, initializ
   if (models.length !== 1) return fail('UNSUPPORTED', '/registry/models', 'Model has no unique captured native catalogue entry.');
   const providerId = metadataIdentity(models[0].providerId, '/registry/models/providerId');
   const modelId = metadataIdentity(models[0].modelId, '/registry/models/modelId');
+  const nativeCodex = engine.target.kind === 'engine' && engine.target.adapter === 'codex-app-server-v1';
+  if (nativeCodex !== (providerId === 'codex-native')) return fail('UNSUPPORTED', `/configurations/${configurationName}/model`, 'Engine adapter and native provider do not match.');
   // Native model dispatch identifies a model by provider and model ID.
   if (registry.models.filter(model => model.providerId === providerId && model.modelId === modelId).length !== 1) return fail('UNSUPPORTED', '/registry/models', 'Selected native Model identity is ambiguous.');
   const authoredSettings = record(configuration.settings ?? {});

@@ -78,7 +78,7 @@ for line in sys.stdin:
  value=json.loads(line); method=value.get('method'); p=value.get('params',{}); result={}
  if 'id' not in value:continue
  if method=='config/read':result={'layers':[{'name':{'type':'sessionFlags'},'config':json.loads((root/'config.json').read_text())}],'config':json.loads((root/'config.json').read_text())}
- elif method=='skills/list':result={'data':[{'skills':[]}]}
+ elif method=='skills/list':result={'data':[{'cwd':p['cwds'][0],'skills':[],'errors':[]}]}
  elif method=='command/exec':result={'exitCode':0}
  elif method=='account/read':result={'account':{'type':'chatgpt'},'workspaceRouting':{'chatgptAccountId':'synthetic-account','backendOrigin':'https://synthetic.invalid','accountRoutingOverride':'NO_CONSTRAINT'}}
  elif method=='model/list':result={'data':[{'model':'synthetic-model'}],'nextCursor':None}
@@ -89,7 +89,7 @@ for line in sys.stdin:
    thread=p['threadId']
    if not (root/thread).is_file():
     print(json.dumps({'id':value['id'],'error':{'code':-1,'message':'missing thread'}}),flush=True);continue
-  result={'thread':{'id':thread},'model':'synthetic-model','approvalPolicy':'never','activePermissionProfile':{'id':'macro-agsdl'}}
+  result={'thread':{'id':thread},'model':'synthetic-model','approvalPolicy':'never','activePermissionProfile':{'id':'macro-agsdl'},'cwd':p['cwd'],'runtimeWorkspaceRoots':p['runtimeWorkspaceRoots'],'instructionSources':[]}
  elif method=='turn/start':
   assert p['threadId']==thread
   with (root/thread).open('a') as f:f.write(p['input'][0]['text'].split('\n\nReturn the final')[0]+'\n')
@@ -98,7 +98,7 @@ for line in sys.stdin:
  print(json.dumps({'id':value['id'],'result':result}),flush=True)
  if method=='turn/start':
   print(json.dumps({'method':'item/completed','params':{'threadId':thread,'turnId':turn,'item':{'type':'agentMessage','id':turn+'-message','phase':'final_answer','text':json.dumps({'publicationJson':'{"results":{"n":{"value":9007199254740993}}}'})}}}),flush=True)
-  print(json.dumps({'method':'turn/completed','params':{'threadId':thread,'turn':{'id':turn,'status':'completed'}}}),flush=True)
+  print(json.dumps({'method':'turn/completed','params':{'threadId':thread,'turn':{'id':turn,'status':'failed' if (root/'failed-turn').exists() else 'completed'}}}),flush=True)
 "#).unwrap();
     std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o700)).unwrap();
     let pool = create_pool(&temp.path().join("native.db")).await.unwrap();
@@ -114,7 +114,11 @@ for line in sys.stdin:
         (0, "second", "first"),
         (1, "second", "second"),
         (2, "b", "other"),
+        (3, "b", "failed"),
     ] {
+        if index == 3 {
+            std::fs::write(directory.join("failed-turn"), "synthetic").unwrap();
+        }
         let delivery = delivery(&pool, &owner, step, &format!("native-{index}")).await;
         accept_delivery(&pool, &owner, delivery.clone())
             .await
@@ -163,6 +167,15 @@ for line in sys.stdin:
             })
             .unwrap();
         let received = receiver.await.unwrap().unwrap();
+        let thread_id = match received {
+            crate::agsdl_host_codex::HostCodexReceipt::Completed { thread_id, .. } if index < 3 => {
+                thread_id
+            }
+            crate::agsdl_host_codex::HostCodexReceipt::Failed { thread_id, .. } if index == 3 => {
+                thread_id
+            }
+            other => panic!("unexpected conclusive receipt: {other:?}"),
+        };
         ai.stream_tasks
             .cancel_owned(&format!("native-{index}"))
             .await
@@ -179,6 +192,15 @@ for line in sys.stdin:
         )
         .await
         .unwrap();
+        if index == 3 {
+            assert_eq!(thread_id, threads[2]);
+            assert_eq!(
+                read_effects(&pool, &delivery.work).await.unwrap()[0].status,
+                "ended"
+            );
+            std::fs::remove_file(directory.join("failed-turn")).unwrap();
+            continue;
+        }
         let (emissions, digest) = responses::read(&pool, &owner, &delivery.work)
             .await
             .unwrap();
@@ -204,10 +226,10 @@ for line in sys.stdin:
             agent_instance_id: delivery.work.agent_instance_id.clone().unwrap(),
             revision: if index == 1 { "2" } else { "1" }.into(),
             format_version: "macro-codex-memory/1".into(),
-            state_json: json!({"threadId":received.thread_id}).to_string(),
+            state_json: json!({"threadId":thread_id}).to_string(),
         });
         commit_terminal(&pool, terminal, &NoRoutes).await.unwrap();
-        threads.push(received.thread_id);
+        threads.push(thread_id);
     }
     assert_eq!(threads[0], threads[1]);
     assert_ne!(threads[0], threads[2]);
@@ -217,7 +239,7 @@ for line in sys.stdin:
     );
     assert_eq!(
         std::fs::read_to_string(directory.join(&threads[2])).unwrap(),
-        "other\n"
+        "other\nfailed\n"
     );
     // A turn may execute even if its receipt is lost. The adapter must retain
     // uncertainty and refuse a later call before it can spawn another process.
@@ -321,5 +343,187 @@ for line in sys.stdin:
             "native descendant {pid} remains: {:?}",
             std::fs::read_to_string(format!("/proc/{pid}/stat"))
         );
+    }
+}
+
+/// Stream cancellation drops the IPC sender. Only the joined physical effect
+/// plus durable Stop authorizes the alternative stopped receipt.
+#[cfg(unix)]
+#[tokio::test]
+async fn native_stop_receipt_requires_correlated_stop_and_join_and_preserves_private_refs() {
+    use super::native_operations::{self, NativeOperation};
+    use crate::agsdl_host_codex::{stopped_receipt, HostCodexReceipt};
+    for stage in [
+        "before-admission",
+        "before-thread-receipt",
+        "after-thread-receipt",
+        "after-turn-receipt",
+    ] {
+        let (_temp, pool, _, owner) = setup().await;
+        let d = delivery(&pool, &owner, "second", stage).await;
+        accept_delivery(&pool, &owner, d.clone()).await.unwrap();
+        begin(&pool, &owner, &d.delivery_id).await.unwrap();
+        let mut effect = effect(&owner, &d.work);
+        effect.effect = EngineEffectIdentity::Provider {
+            provider_attempt_id: stage.into(),
+        };
+        effect.invocation_json = r#"{"kind":"codex-app-server-v1"}"#.into();
+        let context = effect.context.clone();
+        assert!(stopped_receipt(&pool, &context, stage, true)
+            .await
+            .unwrap()
+            .is_none());
+        if stage != "before-admission" {
+            register_effect(&pool, effect.clone()).await.unwrap();
+            let op = NativeOperation {
+                context: context.clone(),
+                effect: effect.effect.clone(),
+                operation_id: format!("{stage}:thread"),
+                adapter: "codex-app-server-v1".into(),
+                version: "0.163.0".into(),
+                profile_digest: "synthetic".into(),
+                method: "thread/start".into(),
+                request_json: "{}".into(),
+            };
+            native_operations::admit(&pool, &op).await.unwrap();
+            if stage != "before-thread-receipt" {
+                native_operations::received(
+                    &pool,
+                    &op,
+                    r#"{"threadId":"synthetic-thread","turnId":null}"#,
+                )
+                .await
+                .unwrap();
+            }
+            if stage == "after-turn-receipt" {
+                let op = NativeOperation {
+                    operation_id: format!("{stage}:turn"),
+                    method: "turn/start".into(),
+                    ..op
+                };
+                native_operations::admit(&pool, &op).await.unwrap();
+                native_operations::received(
+                    &pool,
+                    &op,
+                    r#"{"threadId":"synthetic-thread","turnId":"synthetic-turn"}"#,
+                )
+                .await
+                .unwrap();
+            }
+        }
+        stop(
+            &pool,
+            EngineStopRequest {
+                system_start_id: owner.system_start_id.clone(),
+                request_id: format!("stop-{stage}"),
+                activation_id: Some(d.work.activation_id.clone()),
+            },
+        )
+        .await
+        .unwrap();
+        if stage == "before-admission" {
+            assert!(register_effect(&pool, effect).await.is_err());
+        } else {
+            assert_eq!(
+                stopped_receipt(&pool, &context, stage, false)
+                    .await
+                    .unwrap_err()
+                    .code,
+                "STOP_PENDING"
+            );
+            let ai = crate::ai::AiState::default();
+            let (sender, receiver) = tokio::sync::oneshot::channel::<()>();
+            let (ready, started) = tokio::sync::oneshot::channel();
+            let owned = ai.clone();
+            let id = stage.to_owned();
+            ai.stream_tasks
+                .start(stage.into(), async move {
+                    let mut command =
+                        crate::core::process::background_contained_tokio_command("/usr/bin/sleep");
+                    command.arg("30");
+                    let process =
+                        crate::core::process::ContainedBackgroundProcess::spawn(command).unwrap();
+                    let _process = owned.stream_tasks.own_process(&id, process).unwrap();
+                    ready.send(()).unwrap();
+                    std::future::pending::<()>().await;
+                    let _ = sender.send(());
+                })
+                .unwrap();
+            started.await.unwrap();
+            assert!(ai.stream_tasks.cancel_owned(stage).await.unwrap());
+            assert!(receiver.await.is_err());
+            settle_owned_effect(
+                &pool,
+                EngineSettlement {
+                    context: context.clone(),
+                    effect: effect.effect,
+                    status: "ended".into(),
+                    evidence_json: r#"{"kind":"synthetic-supervisor-joined"}"#.into(),
+                },
+                None,
+            )
+            .await
+            .unwrap();
+        }
+        let receipt = stopped_receipt(&pool, &context, stage, stage == "before-admission")
+            .await
+            .unwrap()
+            .unwrap();
+        let HostCodexReceipt::Stopped { thread_id, turn_id } = receipt else {
+            panic!("stopped receipt required")
+        };
+        assert_eq!(
+            thread_id.as_deref(),
+            if stage.starts_with("after-") {
+                Some("synthetic-thread")
+            } else {
+                None
+            }
+        );
+        assert_eq!(
+            turn_id.as_deref(),
+            if stage == "after-turn-receipt" {
+                Some("synthetic-turn")
+            } else {
+                None
+            }
+        );
+        // Receipt loss remains durable even after an acknowledged physical Stop.
+        if stage == "before-thread-receipt" {
+            assert!(native_operations::read_instance(
+                &pool,
+                &owner.system_start_id,
+                d.work.agent_instance_id.as_deref().unwrap()
+            )
+            .await
+            .unwrap()[0]
+                .1
+                .is_none());
+        }
+        let (_, digest) = responses::read(&pool, &owner, &d.work).await.unwrap();
+        responses::close(
+            &pool,
+            responses::Closure {
+                owner: owner.clone(),
+                work: d.work.clone(),
+                cursor: "0".into(),
+                digest,
+                validation_json: r#"{"kind":"success","text":"","resultsJson":"{}","choice":null}"#
+                    .into(),
+            },
+        )
+        .await
+        .unwrap();
+        let mut terminal = commit(&owner, &d.work);
+        terminal.outcome = EngineOutcome::Stopped {
+            evidence_json: r#"{"kind":"synthetic-supervisor-joined"}"#.into(),
+        };
+        terminal.memory = Some(EngineMemory {
+            agent_instance_id: d.work.agent_instance_id.clone().unwrap(),
+            revision: "1".into(),
+            format_version: "macro-codex-memory/1".into(),
+            state_json: json!({"threadId":thread_id}).to_string(),
+        });
+        commit_terminal(&pool, terminal, &NoRoutes).await.unwrap();
     }
 }

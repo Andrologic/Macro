@@ -159,19 +159,7 @@ impl Client {
                 json!({"cwds":[profile.bootstrap],"forceReload":true}),
             )
             .await?;
-        if skills["data"].as_array().is_none_or(|entries| {
-            entries.iter().any(|entry| {
-                entry["skills"]
-                    .as_array()
-                    .is_none_or(|skills| !skills.is_empty())
-            })
-        }) {
-            return Err(failure(
-                "CODEX_PROFILE_UNQUALIFIED",
-                "skills",
-                "Implicit native skills remain visible",
-            ));
-        }
+        verify_skills(&skills, &profile.bootstrap)?;
         // This local command has no model or account dependency. Initializing
         // app-server alone does not prove that its nested native sandbox works.
         let command = self.request("command/exec",json!({"command":["/usr/bin/true"],"cwd":cwd,"permissionProfile":"macro-agsdl","timeoutMs":5000,"outputBytesCap":4096})).await?;
@@ -284,7 +272,7 @@ impl Client {
         thread: &str,
         turn: &str,
         publication: bool,
-    ) -> Result<()> {
+    ) -> Result<bool> {
         let mut sequence = 0;
         self.pending_bytes = 0;
         let mut events: std::collections::VecDeque<_> = std::mem::take(&mut self.pending).into();
@@ -344,20 +332,30 @@ impl Client {
                 .await?;
             }
             if method == "turn/completed" {
-                if required(&params["turn"], "id")? != turn
-                    || params["turn"]["status"] != "completed"
-                {
-                    return Err(failure(
-                        "CODEX_TURN_FAILED",
-                        "turn",
-                        "Codex did not complete this native turn",
-                    ));
-                }
-                return Ok(());
+                return conclusive_turn(&params["turn"], turn);
             }
         }
     }
 }
+fn conclusive_turn(value: &Value, turn: &str) -> Result<bool> {
+    if required(value, "id")? != turn {
+        return Err(failure(
+            "CORRELATION",
+            "turn",
+            "Codex completed another native turn",
+        ));
+    }
+    match value["status"].as_str() {
+        Some("completed") => Ok(false),
+        Some("failed" | "interrupted") => Ok(true),
+        _ => Err(failure(
+            "CORRELATION",
+            "turn",
+            "Native turn has no conclusive status",
+        )),
+    }
+}
+
 pub(crate) fn required(value: &Value, name: &str) -> Result<String> {
     value
         .get(name)
@@ -371,4 +369,77 @@ pub(crate) fn required(value: &Value, name: &str) -> Result<String> {
                 "Required Codex response field is missing",
             )
         })
+}
+
+fn verify_skills(value: &Value, bootstrap: &std::path::Path) -> Result<()> {
+    let Some(entries) = value["data"].as_array() else {
+        return Err(failure(
+            "CODEX_CONTEXT_UNQUALIFIED",
+            "skills",
+            "Native skills inventory is absent",
+        ));
+    };
+    if entries.len() != 1
+        || entries[0]["cwd"] != json!(bootstrap)
+        || entries[0]["skills"]
+            .as_array()
+            .is_none_or(|skills| !skills.is_empty())
+        || entries[0]["errors"]
+            .as_array()
+            .is_none_or(|errors| !errors.is_empty())
+    {
+        return Err(failure(
+            "CODEX_CONTEXT_UNQUALIFIED",
+            "skills",
+            "Native skills inventory is incomplete, foreign or failed",
+        ));
+    }
+    Ok(())
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn only_correlated_conclusive_turns_can_become_terminal() {
+        for (status, failed) in [
+            ("completed", false),
+            ("failed", true),
+            ("interrupted", true),
+        ] {
+            assert_eq!(
+                conclusive_turn(&json!({"id":"turn","status":status}), "turn").unwrap(),
+                failed
+            );
+        }
+        for value in [
+            json!({"id":"foreign","status":"failed"}),
+            json!({"id":"turn","status":"inProgress"}),
+            json!({"id":"turn"}),
+        ] {
+            assert_eq!(
+                conclusive_turn(&value, "turn").unwrap_err().code,
+                "CORRELATION"
+            );
+        }
+    }
+    #[test]
+    fn skills_inventory_requires_one_complete_error_free_bootstrap_entry() {
+        let root = std::path::Path::new("/synthetic/bootstrap");
+        let entry = json!({"cwd":root,"skills":[],"errors":[]});
+        verify_skills(&json!({"data":[entry.clone()]}), root).unwrap();
+        for value in [
+            json!({}),
+            json!({"data":[]}),
+            json!({"data":[entry.clone(),entry.clone()]}),
+            json!({"data":[{"cwd":"/foreign","skills":[],"errors":[]}]}),
+            json!({"data":[{"cwd":root,"skills":[]}]}),
+            json!({"data":[{"cwd":root,"skills":[],"errors":[{"message":"synthetic discovery failure"}]}]}),
+            json!({"data":[{"cwd":root,"skills":[{"name":"unobserved"}],"errors":[]}]}),
+        ] {
+            assert_eq!(
+                verify_skills(&value, root).unwrap_err().code,
+                "CODEX_CONTEXT_UNQUALIFIED"
+            );
+        }
+    }
 }

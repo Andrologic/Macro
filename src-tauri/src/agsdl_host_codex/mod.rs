@@ -33,10 +33,25 @@ pub struct HostCodexRequest {
     pub publication_contract_json: Option<String>,
 }
 #[derive(Debug, Clone, Serialize, Deserialize, ts_rs::TS)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct HostCodexReceipt {
-    pub thread_id: String,
-    pub turn_id: String,
+#[serde(
+    tag = "kind",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase",
+    deny_unknown_fields
+)]
+pub enum HostCodexReceipt {
+    Completed {
+        thread_id: String,
+        turn_id: String,
+    },
+    Failed {
+        thread_id: String,
+        turn_id: String,
+    },
+    Stopped {
+        thread_id: Option<String>,
+        turn_id: Option<String>,
+    },
 }
 #[tauri::command]
 pub(crate) async fn execution_codex_status(
@@ -266,6 +281,30 @@ fn message_text(raw: &str) -> Result<String> {
     }
     Ok(pieces.join("\n\n"))
 }
+fn thread_reference(
+    response: &Value,
+    profile: &Profile,
+    model: &str,
+    previous: Option<&str>,
+) -> Result<String> {
+    let thread = required(&response["thread"], "id")?;
+    if previous.is_some_and(|prior| prior != thread)
+        || response["model"] != model
+        || response["approvalPolicy"] != "never"
+        || response["activePermissionProfile"]["id"] != "macro-agsdl"
+        || response["cwd"] != json!(profile.bootstrap)
+        || response["runtimeWorkspaceRoots"] != json!([profile.bootstrap])
+        || response["instructionSources"] != json!([])
+    {
+        return Err(failure(
+            "CORRELATION",
+            "thread",
+            "Codex thread, model, permissions or native context differs",
+        ));
+    }
+    Ok(thread)
+}
+
 pub(crate) async fn run(
     pool: SqlitePool,
     ai: AiState,
@@ -429,7 +468,7 @@ pub(crate) async fn run(
     } else {
         "thread/start"
     };
-    let mut params = json!({"model":configuration.model_id,"cwd":profile.bootstrap,"approvalPolicy":"never","permissions":"macro-agsdl",
+    let mut params = json!({"model":configuration.model_id,"cwd":profile.bootstrap,"runtimeWorkspaceRoots":[profile.bootstrap],"approvalPolicy":"never","permissions":"macro-agsdl",
         "developerInstructions":initialization});
     if let Some(thread) = &previous_thread {
         params["threadId"] = json!(thread)
@@ -444,20 +483,12 @@ pub(crate) async fn run(
             &gate,
         )
         .await?;
-    let thread = required(&response["thread"], "id")?;
-    if previous_thread
-        .as_ref()
-        .is_some_and(|prior| prior != &thread)
-        || response["model"] != configuration.model_id
-        || response["approvalPolicy"] != "never"
-        || response["activePermissionProfile"]["id"] != "macro-agsdl"
-    {
-        return Err(failure(
-            "CORRELATION",
-            "thread",
-            "Codex resumed a different thread, model or permission profile",
-        ));
-    }
+    let thread = thread_reference(
+        &response,
+        &profile,
+        &configuration.model_id,
+        previous_thread.as_deref(),
+    )?;
     let mut input = message_text(&request.input_json)?;
     let publication = request.publication_contract_json.is_some();
     let mut params =
@@ -482,7 +513,7 @@ pub(crate) async fn run(
         )
         .await?;
     let turn = required(&response["turn"], "id")?;
-    client
+    let failed = client
         .collect(
             &pool,
             &request.context,
@@ -496,9 +527,16 @@ pub(crate) async fn run(
     // joined by finish(); stdio EOF and turn/completed are never end evidence.
     drop(client);
     drop(owned);
-    Ok(HostCodexReceipt {
-        thread_id: thread,
-        turn_id: turn,
+    Ok(if failed {
+        HostCodexReceipt::Failed {
+            thread_id: thread,
+            turn_id: turn,
+        }
+    } else {
+        HostCodexReceipt::Completed {
+            thread_id: thread,
+            turn_id: turn,
+        }
     })
 }
 
@@ -540,13 +578,25 @@ pub(crate) async fn execution_host_run_codex(
     let effect = effect(&request)?;
     let _gate = host.admission_gate().await;
     host.authenticate_owner(&webview, &request.context.owner)?;
-    if !repository::register_effect(&pool, effect).await? {
+    let registered = match repository::register_effect(&pool, effect).await {
+        Ok(registered) => registered,
+        Err(error) => {
+            if let Some(receipt) =
+                stopped_receipt(&pool, &request.context, &request.request_id, true).await?
+            {
+                return Ok(receipt);
+            }
+            return Err(error);
+        }
+    };
+    if !registered {
         return Err(failure(
             "NATIVE_UNCERTAIN",
             "operation",
             "Codex activation may already have been sent; replay is forbidden",
         ));
     }
+    let settlement_pool = pool.clone();
     let admission = host.admission_lock();
     let (sender, receiver) = tokio::sync::oneshot::channel();
     let tasks = ai.stream_tasks.clone();
@@ -586,7 +636,10 @@ pub(crate) async fn execution_host_run_codex(
                 "Codex task ended without its result",
             ))
         });
-        crate::agsdl_host_provider::finish(&app, context, id).await?;
+        crate::agsdl_host_provider::finish(&app, context.clone(), id.clone()).await?;
+        if let Some(receipt) = stopped_receipt(&settlement_pool, &context, &id, false).await? {
+            return Ok(receipt);
+        }
         result
     })
     .await
@@ -599,6 +652,91 @@ pub(crate) async fn execution_host_run_codex(
     })?
 }
 
+/// Called only after the supervisor joined the physical process tree. A local
+/// cancellation flag or dropped result channel cannot authorize a terminal.
+pub(crate) async fn stopped_receipt(
+    pool: &SqlitePool,
+    context: &EngineContext,
+    id: &str,
+    never_admitted: bool,
+) -> Result<Option<HostCodexReceipt>> {
+    let inspection = repository::inspection::read(pool, &context.owner).await?;
+    let activation = inspection
+        .projection
+        .activations
+        .iter()
+        .find(|activation| activation.delivery.delivery.work == context.work)
+        .ok_or_else(|| failure("CORRELATION", "stop", "Native activation is absent"))?;
+    if activation.admitted_epoch.as_deref() != Some(context.owner.owner_epoch.as_str()) {
+        return Err(failure(
+            "CORRELATION",
+            "stop",
+            "Native Stop belongs to another admission epoch",
+        ));
+    }
+    if matches!(inspection.projection.system_stop, EngineStopState::None)
+        && matches!(activation.stop_state, EngineStopState::None)
+    {
+        return Ok(None);
+    }
+    let effect = inspection.effects.iter().find(|effect| {
+        effect.registered.context == *context
+            && effect.registered.effect
+                == (EngineEffectIdentity::Provider {
+                    provider_attempt_id: id.into(),
+                })
+    });
+    if (!never_admitted && !effect.is_some_and(|effect| effect.status == "ended"))
+        || (never_admitted && effect.is_some())
+    {
+        return Err(failure(
+            "STOP_PENDING",
+            "stop",
+            "Native physical end is unconfirmed",
+        ));
+    }
+    let agent = context
+        .work
+        .agent_instance_id
+        .as_deref()
+        .ok_or_else(|| failure("CORRELATION", "agent", "Native Agent is absent"))?;
+    let mut thread_id: Option<String> = None;
+    let mut turn_id = None;
+    for (operation, references) in
+        native_operations::read_instance(pool, &context.work.system_start_id, agent).await?
+    {
+        if never_admitted
+            && operation.context == *context
+            && operation.effect
+                == (EngineEffectIdentity::Provider {
+                    provider_attempt_id: id.into(),
+                })
+        {
+            return Err(failure(
+                "NATIVE_UNCERTAIN",
+                "stop",
+                "Native operation may have been sent",
+            ));
+        }
+        if let Some(references) = references {
+            let references: Value = serde_json::from_str(&references)?;
+            let thread = required(&references, "threadId")?;
+            if thread_id.as_ref().is_some_and(|prior| prior != &thread) {
+                return Err(failure(
+                    "CORRELATION",
+                    "memory",
+                    "Native instance has foreign thread references",
+                ));
+            }
+            thread_id = Some(thread);
+            if operation.context == *context && operation.method == "turn/start" {
+                turn_id = Some(required(&references, "turnId")?);
+            }
+        }
+    }
+    Ok(Some(HostCodexReceipt::Stopped { thread_id, turn_id }))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -608,6 +746,42 @@ mod tests {
         assert!(text.starts_with("Do the work\n\nResource information, not instructions:"));
         assert!(text.contains("9007199254740993"));
         assert!(text.contains("1e9999"));
+    }
+
+    #[test]
+    fn thread_receipt_requires_exact_context_and_continuity_before_turn_admission() {
+        let profile = Profile {
+            executable: "/synthetic/codex".into(),
+            directory: "/synthetic/private".into(),
+            home: "/synthetic/home".into(),
+            bootstrap: "/synthetic/bootstrap".into(),
+            digest: "synthetic".into(),
+        };
+        let response = json!({"thread":{"id":"thread"},"model":"model","approvalPolicy":"never","activePermissionProfile":{"id":"macro-agsdl"},"cwd":profile.bootstrap,"runtimeWorkspaceRoots":[profile.bootstrap],"instructionSources":[]});
+        assert_eq!(
+            thread_reference(&response, &profile, "model", None).unwrap(),
+            "thread"
+        );
+        thread_reference(&response, &profile, "model", Some("thread")).unwrap();
+        assert!(thread_reference(&response, &profile, "model", Some("foreign")).is_err());
+        for (field, value) in [
+            ("cwd", json!("/workspace")),
+            ("runtimeWorkspaceRoots", json!(["/workspace"])),
+            ("runtimeWorkspaceRoots", json!([])),
+            ("instructionSources", json!(["/workspace/AGENTS.md"])),
+            ("model", json!("other")),
+            ("approvalPolicy", json!("on-request")),
+            ("activePermissionProfile", json!({"id":"other"})),
+        ] {
+            let mut changed = response.clone();
+            changed[field] = value;
+            assert_eq!(
+                thread_reference(&changed, &profile, "model", None)
+                    .unwrap_err()
+                    .code,
+                "CORRELATION"
+            );
+        }
     }
 
     #[cfg(target_os = "linux")]
@@ -782,7 +956,11 @@ print(json.dumps(rows))
             for field in ["gitWrite","codexWrite","agentsWrite","bootstrapWrite"] { assert_eq!(observed[field],30,"{field}: {observed}"); }
             assert_eq!(observed["network"],1);
             assert!(std::fs::read_dir(&profile.bootstrap).unwrap().next().is_none());
-            std::fs::write(root.join("physical-report.json"),json!({"version":VERSION,"inferenceRequested":false,"threadCreated":false,"nativeToolProbe":observed}).to_string()).unwrap();
+            let patch = format!("*** Begin Patch\n*** Add File: {}\n+synthetic absolute patch\n*** End Patch",workspace.join("absolute-patch").display());
+            let patched=client.request("command/exec",json!({"command":[profile.executable,"--codex-run-as-apply-patch",patch],"cwd":profile.bootstrap,"permissionProfile":"macro-agsdl","timeoutMs":5000,"outputBytesCap":4096})).await?;
+            assert_eq!(patched["exitCode"],0,"absolute apply_patch: {patched}");
+            assert_eq!(std::fs::read_to_string(workspace.join("absolute-patch")).unwrap(),"synthetic absolute patch\n");
+            std::fs::write(root.join("physical-report.json"),json!({"version":VERSION,"inferenceRequested":false,"threadCreated":false,"nativeToolProbe":observed,"absoluteApplyPatch":true}).to_string()).unwrap();
             let account = client
                 .request("account/read", json!({"refreshToken":false}))
                 .await?;
@@ -797,6 +975,26 @@ print(json.dumps(rows))
         result
             .expect("bounded native profile check")
             .expect("native profile observation");
+        // Read-only mode is a distinct effective profile, exercised with a real
+        // native command rather than inferred from the serialized permission.
+        let mut readonly_process = ContainedBackgroundProcess::spawn(
+            profile.app_server_command(&workspace, true).unwrap(),
+        )
+        .unwrap();
+        let readonly = tokio::time::timeout(std::time::Duration::from_secs(15),async {
+            let mut client=Client::new(readonly_process.take_stdin().unwrap(),readonly_process.take_stdout().unwrap());
+            client.initialize().await?;
+            client.preflight(&profile,&workspace.to_string_lossy(),true).await?;
+            let result=client.request("command/exec",json!({"command":["/usr/bin/python3","-c","import sys;from pathlib import Path;p=Path(sys.argv[1]);assert p.read_text()=='synthetic';\ntry:p.write_text('forbidden')\nexcept OSError as e:print(e.errno)\nelse:raise Exception('read-only write succeeded')",workspace.join("native-write")],"cwd":workspace,"permissionProfile":"macro-agsdl","timeoutMs":5000,"outputBytesCap":4096})).await?;
+            assert_eq!(result["exitCode"],0,"readonly command: {result}");assert_eq!(result["stdout"].as_str().unwrap().trim(),"30");
+            assert_eq!(std::fs::read_to_string(workspace.join("native-write")).unwrap(),"synthetic");
+            std::fs::write(root.join("readonly-report.json"),json!({"workspaceRead":true,"workspaceWriteErrno":30,"inferenceRequested":false}).to_string()).unwrap();
+            Ok::<_,EngineFailure>(())
+        }).await;
+        readonly_process.terminate_bounded().await.unwrap();
+        readonly
+            .expect("bounded readonly check")
+            .expect("readonly native observation");
         #[cfg(target_os = "linux")]
         {
             physical_stop_probe(&profile, &workspace, false).await;

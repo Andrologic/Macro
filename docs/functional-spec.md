@@ -279,8 +279,10 @@ s’ouvrent dans cette fiche. La bibliothèque permet de prévisualiser le point
 départ et conserve les sources lisibles si une autre source échoue au chargement.
 
 Les contrôles de document et les champs à compléter accompagnent la conception
-progressive. Ils ne certifient pas l’exécution. Macro est le moteur retenu pour
-les agents.
+progressive. Ils ne certifient pas l’exécution. Les agents peuvent conserver le
+moteur Macro ou choisir explicitement le moteur natif Codex lorsque son profil
+est disponible. Chaque moteur conserve sa politique d’outils ; voir le
+[profil Codex](agsdl-codex-native.md).
 
 Trois capacités restent distinctes :
 - la conception du document, décrite ci-dessous, disponible ;
@@ -1502,10 +1504,13 @@ Les règles suivantes sont fondatrices :
 - L'IA construit le document AgSDL avec l'utilisateur ; sa conception ne lance
   pas le graphe. L'utilisateur peut vérifier puis lancer explicitement une
   exécution depuis le panneau droit, avec un message d'entrée.
-- Le profil initial exécute les agents via le moteur Macro, leurs transmissions,
+- Le profil initial exécute les agents via le moteur Macro ou le profil natif
+  Codex explicitement sélectionné, leurs transmissions,
   les préparations, les conditions et les outils locaux pris en charge. Les
-  compositions, Terminal, les MCP et les fournisseurs à processus externe
+  compositions, Terminal, les MCP et les autres fournisseurs à processus externe
   restent hors de ce profil ; le chat reçoit les diagnostics détaillés.
+  Les outils natifs Codex suivent le sandbox Codex capturé. Les approbations
+  d’outils Macro s’appliquent aux outils Macro.
 - Les exécutions conservent leur capture et leur historique après rechargement.
   Stop attend une preuve native de terminaison locale. Après un crash, un
   résultat perdu reste signalé et aucun effet n'est rejoué automatiquement.

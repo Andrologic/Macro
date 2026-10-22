@@ -2,7 +2,8 @@ import { expect, it } from 'bun:test';
 import { prepareCodexAgent, CODEX_MEMORY_VERSION, type CodexAgentPorts } from './codexAgent';
 import { contextFixture, id, json } from './conformanceFixtures';
 import { decode, encode, record } from './exact';
-import type { ResidentAgentRequest } from './residentAgent';
+import { ResidentAgent, type ResidentAgentRequest } from './residentAgent';
+import { prepareFlowAgent } from './flowActivation';
 
 function fixture() {
   const context = contextFixture();
@@ -13,7 +14,7 @@ function fixture() {
     responses: { agentName: 'worker', interfaceJson: json('{}'), stepJson: json('{"type":"agent","agent":"worker"}'), publicationContractJson: null } };
   const calls: string[] = [];
   const ports: CodexAgentPorts = { identity: () => 'native-attempt',
-    run: async () => { calls.push('physical end'); return { threadId: 'native-thread', turnId: 'native-turn' }; },
+    run: async () => { calls.push('physical end'); return { kind: 'completed', threadId: 'native-thread', turnId: 'native-turn' }; },
     stop: async () => { calls.push('stop requested'); },
     journal: { read: async () => { calls.push('read responses'); return { events: [], digest: 'native-digest' }; },
       close: async closure => { calls.push('close responses'); return closure; } } };
@@ -56,13 +57,67 @@ it('initializes before rejecting input and treats stop as a request', async () =
   expect(initialized).toBe(true);
   expect(f.calls).toEqual([]);
   const active = await prepareCodexAgent(f.request, f.ports);
-  let release!: (value: { threadId: string; turnId: string }) => void;
+  let release!: (value: Awaited<ReturnType<CodexAgentPorts['run']>>) => void;
   f.ports.run = () => new Promise(resolve => { release = resolve; });
   await active.acceptInput(() => json('{}'));
   const running = active.executeReady();
   active.requestStop();
   expect(active.stopRequested).toBe(true);
   expect(f.calls).toEqual(['stop requested']);
-  release({ threadId: 'native-thread', turnId: 'native-turn' });
+  release({ kind: 'stopped', threadId: 'native-thread', turnId: 'native-turn' });
   expect((await running).stopped).toBe(true);
+});
+
+it('keeps a correlated failed native turn conclusive after physical end', async () => {
+  const f = fixture();
+  f.ports.run = async () => ({ kind: 'failed', threadId: 'native-thread', turnId: 'native-turn' });
+  const agent = await prepareCodexAgent(f.request, f.ports);
+  await agent.acceptInput(() => json('{}'));
+  const result = await agent.executeReady();
+  expect(result.failed).toBe(true);
+  expect(result.stopped).toBe(false);
+  expect(f.calls).toEqual(['read responses', 'close responses']);
+});
+it('accepts only a native stopped receipt and preserves an observed thread', async () => {
+  const f = fixture();
+  f.ports.run = async () => ({ kind: 'stopped', threadId: 'native-thread', turnId: null });
+  const agent = await prepareCodexAgent(f.request, f.ports);
+  await agent.acceptInput(() => json('{}'));
+  const result = await agent.executeReady();
+  expect(result.stopped).toBe(true);
+  expect(record(decode(result.memory.stateJson)).threadId).toBe('native-thread');
+  expect(f.calls).toEqual(['read responses', 'close responses']);
+});
+it('does not turn a rejected stop IPC into a terminal receipt', async () => {
+  const f = fixture();
+  let reject!: (error: Error) => void;
+  f.ports.run = () => new Promise((_, fail) => { reject = fail; });
+  const agent = await prepareCodexAgent(f.request, f.ports);
+  await agent.acceptInput(() => json('{}'));
+  const running = agent.executeReady();
+  agent.requestStop();
+  reject(new Error('STOP_PENDING'));
+  await expect(running).rejects.toThrow('STOP_PENDING');
+  expect(f.calls).toEqual(['stop requested']);
+});
+
+it('rejects crossed providers and captured adapters at both preparation boundaries', async () => {
+  const f = fixture();
+  const http = { ...f.request, providerType: 'openai' as const, configuration: { ...f.request.configuration, providerId: 'http-provider' } };
+  await expect(prepareFlowAgent(http)).rejects.toMatchObject({ code: 'CORRELATION' });
+  await expect(ResidentAgent.prepare(http)).rejects.toMatchObject({ code: 'CORRELATION' });
+  const macro = { ...f.request, configuration: { ...f.request.configuration, configurationJson: json('{"initialization":{}}') } };
+  await expect(prepareFlowAgent(macro)).rejects.toMatchObject({ code: 'CORRELATION' });
+  await expect(ResidentAgent.prepare(macro)).rejects.toMatchObject({ code: 'CORRELATION' });
+});
+
+it('does not promote a local stop flag over a conclusive native receipt', async () => {
+  const f=fixture();
+  let release!: (value:Awaited<ReturnType<CodexAgentPorts['run']>>) => void;
+  f.ports.run=()=>new Promise(resolve=>{release=resolve;});
+  const agent=await prepareCodexAgent(f.request,f.ports);
+  await agent.acceptInput(()=>json('{}'));
+  const running=agent.executeReady();agent.requestStop();
+  release({kind:'completed',threadId:'native-thread',turnId:'native-turn'});
+  expect((await running).stopped).toBe(false);
 });

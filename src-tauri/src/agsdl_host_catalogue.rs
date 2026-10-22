@@ -142,6 +142,17 @@ pub(crate) async fn capture(manager: &ConfigManager, pool: &SqlitePool) -> Resul
     let document = manager
         .effective_user_document(ConfigDocumentKind::Providers)
         .await;
+    if document
+        .get("providers")
+        .and_then(|providers| providers.get("codex-native"))
+        .is_some_and(|provider| provider["deleted"] != true)
+    {
+        return Err(failure(
+            "RESERVED_PROVIDER_ID",
+            "model",
+            "Provider ID codex-native is reserved for the isolated native Codex engine",
+        ));
+    }
     let providers = crate::commands::configured_provider_configs(manager, pool)
         .await
         .map_err(|_| {
@@ -233,6 +244,34 @@ pub(crate) async fn capture(manager: &ConfigManager, pool: &SqlitePool) -> Resul
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[tokio::test]
+    async fn http_provider_cannot_claim_the_native_codex_namespace_before_catalogue_or_secret_lookup(
+    ) {
+        let temp = tempfile::tempdir().unwrap();
+        use crate::config::{
+            ConfigChangeSource, ConfigPatchRequest, ConfigScope, JsonPatchOperation,
+        };
+        let manager = ConfigManager::initialize(temp.path().to_path_buf())
+            .await
+            .unwrap();
+        let document = manager
+            .get_document(ConfigDocumentKind::Providers, ConfigScope::User)
+            .await
+            .unwrap();
+        manager.apply_patch(ConfigPatchRequest {kind:ConfigDocumentKind::Providers,scope:ConfigScope::User,expected_etag:document.etag,
+            patch:vec![JsonPatchOperation {op:"add".into(),path:"/providers".into(),from:None,value:Some(serde_json::json!({"codex-native":{"name":"Synthetic HTTP collision","providerType":"openai","baseUrl":"https://synthetic.invalid","enabled":true}}))}],source:ConfigChangeSource::UserInterface}).await.unwrap();
+        // No product schema or secret store is initialized: the namespace must
+        // be refused before either one is consulted.
+        let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
+        assert_eq!(
+            capture(&manager, &pool).await.unwrap_err().code,
+            "RESERVED_PROVIDER_ID"
+        );
+        assert_eq!(
+            choices(&manager, &pool).await.unwrap_err().code,
+            "RESERVED_PROVIDER_ID"
+        );
+    }
     #[test]
     fn effective_manual_models_use_the_same_overrides_as_chat() {
         let document = serde_json::json!({

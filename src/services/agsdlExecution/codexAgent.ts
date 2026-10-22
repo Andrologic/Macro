@@ -69,10 +69,12 @@ export async function prepareCodexAgent(request: ResidentAgentRequest, ports = n
       requestId = ports.identity();
       try {
         const receipt = await ports.run({ context: nativeContext, requestId, inputJson, publicationContractJson: request.responses.publicationContractJson });
+        if (!['completed', 'failed', 'stopped'].includes(receipt.kind) || receipt.kind !== 'stopped' && (!receipt.threadId || !receipt.turnId)) fail('CORRELATION', '/receipt', 'Native terminal receipt is invalid.');
         if (threadId !== null && receipt.threadId !== threadId) fail('CORRELATION', '/memory', 'Codex returned a different native thread.');
         threadId = receipt.threadId;
+        if (receipt.kind === 'stopped') stopped = true;
         const closure = await closeRetainedResponses({ ...request.responses, context }, ports.journal);
-        return { closure, memory: checkpoint(), stopped, failed: false, completionReason: undefined };
+        return { closure, memory: checkpoint(), stopped: receipt.kind === 'stopped', failed: receipt.kind === 'failed', completionReason: undefined };
       } finally { phase = 'finished'; }
     },
   };

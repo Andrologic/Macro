@@ -65,7 +65,13 @@ async function retryClosure<T>(operation: () => Promise<T>): Promise<T> {
   try { return await operation(); } catch { return operation(); }
 }
 export async function prepareFlowAgent(request: ResidentAgentRequest, ports: ResidentAgentPorts = nativeResidentAgentPorts): Promise<FlowAgent> {
-  if (request.providerType === 'codex-native') return prepareCodexAgent(request);
+  const expanded = record(decode(request.configuration.configurationJson));
+  if (expanded.nativeEngine !== undefined) {
+    const engine = record(expanded.nativeEngine);
+    if (engine.adapter !== 'codex-app-server-v1' || request.providerType !== 'codex-native' || request.configuration.providerId !== 'codex-native') return fail('CORRELATION', '/engine', 'Captured engine and provider do not match.');
+    return prepareCodexAgent(request);
+  }
+  if (request.providerType === 'codex-native' || request.configuration.providerId === 'codex-native') return fail('CORRELATION', '/engine', 'Codex provider requires its captured native adapter.');
   const agent = await ResidentAgent.prepare(request, undefined, { ...ports, journal: { ...ports.journal,
     close: closure => retryClosure(() => ports.journal.close(closure)),
   } });
