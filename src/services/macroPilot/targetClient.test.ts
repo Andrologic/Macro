@@ -109,7 +109,7 @@ describe('D1 desktop target reads', () => {
   it('reads the closed operation set and never exposes installation credentials', async () => {
     const h = await harness(); const a = h.target();
     try {
-      expect(await a.negotiate()).toEqual(CONSUMER_CAPABILITIES);
+      expect(await a.negotiate()).toEqual(CONSUMER_CAPABILITIES.filter(value => value !== 'read-authority-1'));
       const read = await a.read('conversation.read', { ref: ref(a.instanceId) });
       expect(read.response.result.items[0]).toMatchObject({ text: 'From instance:a' });
       await a.read('projects.list', { instance_id: a.instanceId });
@@ -745,4 +745,46 @@ it('keeps the real local producer and service ports active while a shared consum
     owner.dispose(); h.dispose(); await runtime.stop();
     for (const gate of [...gates, ...eventGates]) gate.resolve(new Response(null, { status: 204 }));
   }
+});
+
+it('keeps native B7 closed and returns a fresh non-secret /me observation without provisioning', async () => {
+  const h=await harness();
+  try {
+    expect(h.transport.readAuthority).toBeUndefined();
+    const before=h.requests.length;
+    const observation=await h.client.consumerDirectoryTransport().verify(h.transport.context(),new AbortController().signal);
+    expect(observation).toEqual({deviceId:session.device_id,sessionRevision:session.revision});
+    expect(h.requests.slice(before).map(w=>w.url.pathname)).toEqual(['/pilot/v1/me']);
+  } finally { h.dispose(); }
+});
+for(const issue of ['canonical','malformed','header','401','403'] as const) it(`uses only correlated v1 compatibility after the native credential wait: ${issue}`, async () => {
+  const h=await harness();
+  const target=new PilotTargetClient({...h.transport,readAuthority:{suspensionBarrierVerified:true}},'instance:a', {access:access(),session:{deviceId:session.device_id,sessionRevision:session.revision}});
+  try {
+    h.intercept(async w=> {
+      if(w.request.type!=='negotiate') return;
+      if((w.request.capabilities as string[]).includes('read-authority-1')) {
+        const status=issue==='401'?401:issue==='403'?403:400;
+        const data=issue==='malformed'?{code:'validation_failed'}:{contract_version:'1.0',type:'error',request_id:w.requestId,error:{code:issue==='401'?'unauthorized':issue==='403'?'forbidden':'validation_failed',message:'Synthetic rejection',retryable:false}};
+        return json(data,issue==='header'?'request:other':w.requestId,status);
+      }
+    });
+    if(issue==='canonical') {
+      expect(await target.negotiate()).not.toContain('read-authority-1');
+      const calls=h.requests.filter(w=>w.request.type==='negotiate'); expect(calls).toHaveLength(2);
+      expect(calls[0].requestId).not.toBe(calls[1].requestId); expect(calls[1].request.capabilities).toEqual((calls[0].request.capabilities as string[]).filter(c=>c!=='read-authority-1'));
+    } else {
+      await expect(target.negotiate()).rejects.toBeInstanceOf(PilotClientError);
+      expect(h.requests.filter(w=>w.request.type==='negotiate')).toHaveLength(1);
+    }
+  } finally { target.dispose(); h.dispose(); }
+});
+it('charges native credential waiting against the exact authority attempt rather than HTTP receipt', async () => {
+  const h=await harness(); let monotonic=0;
+  const target=new PilotTargetClient({...h.transport,readAuthority:{suspensionBarrierVerified:true}},'instance:a',{access:access(),session:{deviceId:session.device_id,sessionRevision:session.revision},monotonic:()=>monotonic});
+  try {
+    h.secretWait(async kind=> { if(kind==='session_token') monotonic=30000; });
+    h.intercept(async w=>w.request.type==='negotiate'?json({negotiation_version:'1.0',type:'negotiated',request_id:w.requestId,instance_id:'instance:a',selected_version:'2.0',capabilities:w.request.capabilities,read_authority:{authority_binding:'binding:synthetic',account_id:account.account_id,session_id:session.ref.session_id,device_id:session.device_id,instance_id:'instance:a',producer_generation:'producer:synthetic',session_revision:session.revision,access_revision:1,permissions:['supervise'],issued_at:new Date(time).toISOString(),expires_at:new Date(time+30000).toISOString()}},w.requestId):undefined);
+    await expect(target.negotiate()).rejects.toMatchObject({code:'invalid_response'}); expect(target.readAuthority()).toBeUndefined();
+  } finally { target.dispose(); h.dispose(); }
 });

@@ -1,3 +1,4 @@
+import { CapabilityCompatibilityError, type ReadAuthoritySupport } from './readAuthority';
 import { REFLECTION_CAPABILITY, REFLECTION_OPERATION } from './conversationReflections';
 import { FILE_CAPABILITIES, FILE_OPERATIONS } from './attachmentFilesHost';
 import { MACHINE_CAPABILITIES } from './machineResources';
@@ -57,6 +58,7 @@ export class PilotRuntime {
     private readonly client: Pick<MacroPilotNativeClient, 'getState' | 'subscribe' | 'initialize' | 'request'> & Partial<Pick<MacroPilotNativeClient, 'requestContent' | 'contentSecretValues'>> = macroPilotNativeClient,
     private readonly createKernel: (dependencies: KernelDependencies) => PilotKernel = dependencies => new PilotKernel(dependencies),
     private readonly ports: DesktopStorePorts,
+    private readonly readAuthoritySupport?: ReadAuthoritySupport,
   ) {
     this.actions = createDesktopActions(ports);
   }
@@ -216,6 +218,7 @@ export class PilotRuntime {
     const base = `/pilot/v2/instances/${encodeURIComponent(instanceId)}/deliveries`;
     let failures = 0;
     let extended = true;
+    let readAuthority = Boolean(this.readAuthoritySupport?.suspensionBarrierVerified);
     let reliability = true;
     let conversations = true;
     let history = true;
@@ -231,7 +234,7 @@ export class PilotRuntime {
     while (!signal.aborted && host.isAvailable() && !isAppShutdownGateActive()) {
       if (pending && pending.expiresAt <= Date.now()) pending = undefined;
       try {
-        const response = await this.client.requestContent!(`${base}/poll`, { transport_version: '2.0', type: 'poll', commands: ['conversation.send'], ...(extended ? { capabilities: [...TASK_COMPLETION_CAPABILITIES, ...(reflections && conversations ? [REFLECTION_CAPABILITY] : []), ...(files ? FILE_CAPABILITIES : []), ...(machines ? MACHINE_CAPABILITIES : []), ...(reliability ? ['network-reliability-1'] : []), ...(conversations ? ['conversations-1', ...(history ? ['conversation-history-1'] : []), ...(interactions ? ['conversation-interactions-1', ...(models ? ['conversation-models-1'] : [])] : [])] : [])] } : {}) }, signal);
+        const response = await this.client.requestContent!(`${base}/poll`, { transport_version: '2.0', type: 'poll', commands: ['conversation.send'], ...(extended ? { capabilities: [...TASK_COMPLETION_CAPABILITIES, ...(readAuthority ? ['read-authority-1'] : []), ...(reflections && conversations ? [REFLECTION_CAPABILITY] : []), ...(files ? FILE_CAPABILITIES : []), ...(machines ? MACHINE_CAPABILITIES : []), ...(reliability ? ['network-reliability-1'] : []), ...(conversations ? ['conversations-1', ...(history ? ['conversation-history-1'] : []), ...(interactions ? ['conversation-interactions-1', ...(models ? ['conversation-models-1'] : [])] : [])] : [])] } : {}) }, signal);
         if (signal.aborted) break;
         advertised = true;
         host.enableReflections(extended && reflections && conversations);
@@ -302,6 +305,10 @@ export class PilotRuntime {
         failures = 0;
       } catch (error) {
         if (signal.aborted) break;
+        if (!advertised && readAuthority) {
+          if (error instanceof CapabilityCompatibilityError) { readAuthority = false; continue; }
+          this.publish('unavailable'); await pause(Math.min(1000 * 2 ** Math.min(failures++, 5), 30_000), signal); continue;
+        }
         const status = object(error).status;
         if (!advertised && extended && (status === 400 || status === 422)) { if (reflections) reflections = false; else if (files) files = false; else if (machines) machines = false; else if (models) models = false; else if (interactions) interactions = false; else if (history) history = false; else if (conversations) conversations = false; else if (reliability) reliability = false; else extended = false; continue; }
         this.publish('unavailable'); await pause(Math.min(1000 * 2 ** Math.min(failures++, 5), 30_000), signal);

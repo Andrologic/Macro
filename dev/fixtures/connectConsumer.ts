@@ -4,11 +4,12 @@ import type { ConsumerCapability, ConsumerDispatch, ConsumerTransport, ConsumerI
 import type { ConsumerDirectoryRequest } from '../../src/services/macroPilot/consumerDirectory';
 import type { ContentEvent } from '../../src/services/macroPilot/contentProtocol';
 import { connectReaderLimits, connectReaderRetry } from '../../src/composition/macroConnectConsumer';
-import { consumerAbortable } from '../../src/services/macroPilot/consumerPolicy';
+import { type ConsumerRetryPolicy, consumerAbortable } from '../../src/services/macroPilot/consumerPolicy';
 import { PilotClientError } from '../../src/services/macroPilot/clientError';
 
 /** In-memory canonical producer fixtures. No native client, fetch, provider or real credentials. */
-export function createConnectConsumerFixture() {
+export function createConnectConsumerFixture(options: { authorityLifetimeMs?: number; monotonicNow?: () => number; timer?: (callback: () => void, ms: number) => () => void; retry?: ConsumerRetryPolicy } = {}) {
+  const monotonicNow = options.monotonicNow ?? (() => performance.now());
   let identity: ConsumerIdentity = { key: 'context:synthetic', configurationId: 'config:synthetic', relayOrigin: 'https://relay.example', accountId: 'account:synthetic', sessionId: 'session:synthetic', epoch: 0 };
   const listeners = new Set<() => void>();
   const grantedAt = new Date().toISOString();
@@ -50,16 +51,25 @@ export function createConnectConsumerFixture() {
     });
     return { contract_version: '2.0', type: 'response', account_id: identity.accountId, request_id: request.request_id, operation: request.operation, result: { page, items, ...(!isCatalog ? { read_token: null } : {}) } };
   };
-  const transport: ConsumerTransport = { context, subscribe: callback => { listeners.add(callback); return () => { listeners.delete(callback); }; }, id: () => `request:synthetic:${++sequence}`, now: () => Date.now(),
+  let negotiateHook: ((id: string, dispatch: Extract<ConsumerDispatch, { kind: 'negotiate' }>, signal: AbortSignal) => Promise<unknown>) | undefined;
+  const negotiated = (id: string, dispatch: Extract<ConsumerDispatch, { kind: 'negotiate' }>) => {
+    const chosen = capabilities ?? dispatch.request.capabilities ?? [];
+    const issued = Date.now();
+    return { negotiation_version: '1.0', type: 'negotiated', request_id: dispatch.request.request_id, instance_id: id, selected_version: '2.0', capabilities: chosen, ...(chosen.includes('read-authority-1') ? { read_authority: { authority_binding: `binding:${id}`, account_id: identity.accountId, session_id: identity.sessionId, device_id: 'device:synthetic', instance_id: id, producer_generation: `producer:${id}`, session_revision: 0, access_revision: 0, permissions: ['supervise'], issued_at: new Date(issued).toISOString(), expires_at: new Date(issued + (options.authorityLifetimeMs ?? 30000)).toISOString() } } : {}) };
+  };
+  const transport: ConsumerTransport = { ...(options.authorityLifetimeMs ? { readAuthority: { suspensionBarrierVerified: true as const } } : {}), context, subscribe: callback => { listeners.add(callback); return () => { listeners.delete(callback); }; }, id: () => `request:synthetic:${++sequence}`, now: () => Date.now(),
     send: async (_context, id, dispatch, signal) => {
       calls.push({ id, dispatch, signal }); if (calls.length > 512) calls.shift();
       if (dispatch.kind === 'negotiate') {
-        streams.set(id, { id: `stream:synthetic:${++sequence}`, sequence: 0 });
-        return { status: 200, data: { negotiation_version: '1.0', type: 'negotiated', request_id: dispatch.request.request_id, instance_id: id, selected_version: '2.0', capabilities: capabilities ?? dispatch.request.capabilities } };
+        if (!streams.has(id)) streams.set(id, { id: `stream:synthetic:${++sequence}`, sequence: 0 });
+        return { status: 200, data: negotiateHook ? await negotiateHook(id, dispatch, signal) : negotiated(id, dispatch) };
       }
       if (dispatch.kind === 'events') {
         const stream = streams.get(id)!;
-        if (dispatch.request.stream_id === null) return { status: 200, data: { contract_version: '2.0', type: 'events.page', request_id: dispatch.request.request_id, account_id: identity.accountId, stream_id: stream.id, after_sequence: 0, next_sequence: 0, reset: true, events: [] } };
+        if (dispatch.request.stream_id === null) {
+          stream.id = `stream:synthetic:${++sequence}`; stream.sequence = 0;
+          return { status: 200, data: { contract_version: '2.0', type: 'events.page', request_id: dispatch.request.request_id, account_id: identity.accountId, stream_id: stream.id, after_sequence: 0, next_sequence: 0, reset: true, events: [] } };
+        }
         return { status: 200, data: await new Promise((resolve, reject) => {
           const abort = () => { if (waiting.get(id)?.request === dispatch.request) waiting.delete(id); reject(new PilotClientError('context_changed')); };
           waiting.set(id, { request: dispatch.request, resolve, reject, cleanup: () => signal.removeEventListener('abort', abort) });
@@ -68,8 +78,8 @@ export function createConnectConsumerFixture() {
       }
       return { status: 200, data: hook ? await consumerAbortable(hook(id, dispatch, signal), signal) : terminal(id, dispatch) };
     } };
-  const ports: ConsumerReaderPorts = { context, subscribe: transport.subscribe, localInstanceId: 'instance:local',
-    createOwner: () => owner = new ConsumerConnections(transport, { context, verify: async () => {}, query: async (_context, request) => directoryHook ? directoryHook(request) : directory(request) }, connectReaderLimits, connectReaderRetry) };
+  const ports: ConsumerReaderPorts = { timer: options.timer, monotonicNow, context, subscribe: transport.subscribe, localInstanceId: 'instance:local',
+    createOwner: () => owner = new ConsumerConnections(transport, { context, verify: async () => options.authorityLifetimeMs ? { deviceId: 'device:synthetic', sessionRevision: 0 } : undefined, query: async (_context, request) => directoryHook ? directoryHook(request) : directory(request) }, connectReaderLimits, options.retry ?? connectReaderRetry, { timer: options.timer, now: monotonicNow, random: () => 0.5, sleep: (ms, signal) => consumerAbortable(new Promise(resolve => setTimeout(resolve, ms)), signal) }) };
   const emit = (id: string, changes: ContentEvent['change'][], reset = false) => {
     const pending = waiting.get(id); if (!pending) throw new Error('No synthetic event wait'); waiting.delete(id); pending.cleanup();
     const stream = streams.get(id)!; if (reset) { stream.id = `stream:synthetic:${++sequence}`; stream.sequence = 0; }
@@ -78,8 +88,10 @@ export function createConnectConsumerFixture() {
     stream.sequence = after + events.length;
     pending.resolve({ contract_version: '2.0', type: 'events.page', account_id: identity.accountId, request_id: pending.request.request_id, stream_id: stream.id, after_sequence: after, next_sequence: stream.sequence, reset, events });
   };
-  return { ports, transport, calls, waiting, terminal, directory, access, emit, owner: () => owner, listeners,
+  const failEvents = (id: string, error: unknown) => { const pending = waiting.get(id); if (!pending) throw new Error('No synthetic event wait'); waiting.delete(id); pending.cleanup(); pending.reject(error); };
+  return { ports, transport, failEvents, negotiated, negotiate: (value: typeof negotiateHook) => { negotiateHook = value; }, calls, waiting, terminal, directory, access, emit, owner: () => owner, listeners,
     capabilities: (value: ConsumerCapability[]) => { capabilities = value; },
     read: (value: typeof hook) => { hook = value; }, directoryRead: (value: typeof directoryHook) => { directoryHook = value; },
+    changeCredential: () => { identity = { ...identity, credentialGeneration: (identity.credentialGeneration ?? 0) + 1 }; for (const callback of [...listeners]) callback(); },
     changeAccount: () => { identity = { ...identity, key: 'context:replacement', accountId: 'account:replacement', epoch: identity.epoch + 1 }; for (const callback of [...listeners]) callback(); } };
 }

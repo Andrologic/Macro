@@ -4,6 +4,7 @@ import {
   type ContentResponse, type ContentEventsRequest,
 } from './contentProtocol';
 import { PilotClientError } from './clientError';
+import type { ReadAuthoritySupport } from './readAuthority';
 
 // D1 deliberately implements no commands, files, reflections or interactions.
 export const CONSUMER_READ_OPERATIONS = [
@@ -11,7 +12,7 @@ export const CONSUMER_READ_OPERATIONS = [
   'conversations.catalog', 'conversation.window',
 ] as const;
 export const CONSUMER_CAPABILITIES = [
-  'network-reliability-1', 'conversations-1', 'conversation-history-1',
+  'network-reliability-1', 'conversations-1', 'conversation-history-1', 'read-authority-1',
 ] as const;
 export type ConsumerOperation = typeof CONSUMER_READ_OPERATIONS[number];
 export type ConsumerCapability = typeof CONSUMER_CAPABILITIES[number];
@@ -27,12 +28,15 @@ export interface ConsumerIdentity {
   accountId: string;
   sessionId: string;
   epoch: number;
+  /** Non-secret fence, retired before credential replacement or suspension. */
+  credentialGeneration?: number;
 }
 export type ConsumerDispatch =
   | { kind: 'negotiate'; request: ContentNegotiate }
   | { kind: 'submit' | 'poll'; request: ConsumerReadRequest }
   | { kind: 'events'; request: ContentEventsRequest };
 export interface ConsumerTransport {
+  readAuthority?: ReadAuthoritySupport;
   context(): ConsumerIdentity;
   subscribe(listener: () => void): () => void;
   id(): string;
