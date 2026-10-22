@@ -1,4 +1,4 @@
-import type { IconName } from '../components/ui/Icon';
+import type { IconName } from '../types/icon';
 import { getArchitectPlanKind, type ArchitectPlanKindRef } from './architectPlanKinds';
 import { getPlanKindIconName } from './planKindPresentation';
 
