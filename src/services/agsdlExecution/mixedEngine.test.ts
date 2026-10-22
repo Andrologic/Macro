@@ -25,7 +25,7 @@ async function fixture() {
       record(record(document.configurations)[name]).model = edition;
       return { editionJson: encode(edition), providerId, modelId };
     }),
-    configurations: models.map(([agentName]) => ({ agentName, effectiveSettingsJson: json('{"mode":"Chat","maxTurns":3,"reasoningEffort":"low"}'),
+    configurations: models.map(([agentName]) => ({ agentName, effectiveSettingsJson: encode(record(record(document.configurations)[agentName]).settings),
       permissionsJson: json('{"mode":"Chat","allowedToolIds":[],"riskLevel":"balanced"}'), scopeJson: json('{"root":"/synthetic/project"}'), verifiedRequirementsJson: [] })),
   };
   const registry = buildNativeRegistry(encode(document), observed);
