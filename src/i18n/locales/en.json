@@ -1106,6 +1106,88 @@
     "moreDiagnostics": "+{{count}} more diagnostics"
   },
   "settings": {
+    "connectReader": {
+      "title": "Computers · Read only",
+      "help": "Conversations stay on their source computer. Reading does not mark replies as read.",
+      "launchTitle": "Browse computers",
+      "launchHelp": "Read Chats on up to two computers while continuing local work.",
+      "open": "Open reader",
+      "computer": "Computer",
+      "chooseComputer": "Choose a computer",
+      "add": "Add computer",
+      "verify": "Verify computers",
+      "twoLimit": "Two computers maximum. Close a panel to choose another.",
+      "locked": "Contents are locked while hidden or offline. A new check is required.",
+      "thisComputer": "This computer",
+      "closeComputer": "Close {{computer}}",
+      "chat": "Chat",
+      "archiveFilter": "Conversation status",
+      "active": "Active",
+      "archived": "Archived",
+      "unread": "Unread",
+      "emptyCatalog": "No Chat conversation in this list.",
+      "emptyWindow": "No messages in this window.",
+      "chooseConversation": "Choose a conversation.",
+      "back": "Back to conversations",
+      "conversation": "Conversation",
+      "next": "Next page",
+      "older": "Older messages",
+      "first": "Back to beginning",
+      "latest": "Latest messages",
+      "beginning": "Beginning of conversation",
+      "anchor": "Continue older · new capture",
+      "newCapture": "New capture around the previous anchor. Some messages may overlap.",
+      "limit": "Browsing limit: 10 pages or 500 items. This is not an exhaustive list.",
+      "phase": {
+        "connecting": "Connecting",
+        "ready": "Ready",
+        "revalidating": "Checking access",
+        "error": "Unavailable",
+        "locked": "Locked"
+      },
+      "attention": {
+        "generating": "Generating",
+        "user_request": "Response requested",
+        "tool_approval": "Approval requested",
+        "error": "Error",
+        "unknown": "Unknown"
+      },
+      "role": {
+        "user": "You",
+        "assistant": "Assistant"
+      },
+      "content": {
+        "complete": "Complete",
+        "excerpt": "Excerpt",
+        "withheld": "Content withheld",
+        "pending": "Generating"
+      },
+      "completion": {
+        "complete": "Complete",
+        "incomplete": "Incomplete",
+        "unknown": "Unknown"
+      },
+      "errors": {
+        "invalid_configuration": "Check the device name and try again.",
+        "invalid_response": "The relay returned an invalid response.",
+        "validation_failed": "The relay rejected this request. Refresh and try again.",
+        "response_too_large": "The relay response exceeded the 1 MB limit.",
+        "redirect_refused": "The relay tried to redirect the request.",
+        "unauthorized": "Reading this computer is not authorized. Verify access before retrying.",
+        "session_revoked": "Reading this computer is not authorized. Verify access before retrying.",
+        "forbidden": "Reading this computer is not authorized. Verify access before retrying.",
+        "not_found": "The requested Macro Connect item no longer exists.",
+        "conflict": "The connection changed. Refresh and try again.",
+        "stale_revision": "The request changed before it could be applied.",
+        "unavailable": "Macro Connect is temporarily unavailable.",
+        "vault_unavailable": "Saved credentials are inaccessible. Restore the connection.",
+        "offline": "The relay cannot be reached. Local Macro features remain available.",
+        "extension_unavailable": "This computer does not support this reader.",
+        "snapshot_expired": "This list expired. Refresh it before continuing.",
+        "resource_limit": "The relay cannot return this list within its resource limits.",
+        "context_changed": "The connected account changed. Refresh and try again."
+      }
+    },
     "searchNoResults": "No matching settings",
     "title": "Settings",
     "general": "General",

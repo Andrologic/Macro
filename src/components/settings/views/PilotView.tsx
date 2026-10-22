@@ -1,5 +1,8 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { Monitor, Smartphone, RefreshCw, ChevronRight } from 'lucide-react';
+import { ConnectConsumerLauncher } from '../../connect/ConnectConsumerLauncher';
+import { macroConnectReaderPorts } from '../../../composition/macroConnectReader';
+import { macroPilotNativeClient } from '../../../services/macroPilot/nativeClient';
 import { PilotActions } from './PilotActions';
 import { SettingsSectionHeader } from '../SettingsSectionHeader';
 import { useTranslation } from 'react-i18next';
@@ -452,6 +455,8 @@ export const PilotView: React.FC = () => {
           </div>
         </section>
       )}
+
+      <ConnectConsumerLauncher enabled={Boolean(store.account && store.deviceSession?.state === 'active' && !store.sessionVerification && store.vaultStatus === 'ready' && (!store.busy || store.reading))} createPorts={() => macroConnectReaderPorts(macroPilotNativeClient)} />
 
       {store.instance && runtimeStatus === 'unavailable' && (
         <div role="alert" className="rounded-md border border-destructive/40 bg-destructive/10 p-3 text-xs space-y-2">

@@ -1077,6 +1077,88 @@
     "moreDiagnostics": "추가 진단 {{count}}개"
   },
   "settings": {
+    "connectReader": {
+      "title": "컴퓨터 · 읽기 전용",
+      "help": "대화는 원본 컴퓨터에 남습니다. 열람해도 답변은 읽음으로 표시되지 않습니다.",
+      "launchTitle": "컴퓨터 열람",
+      "launchHelp": "로컬 작업을 계속하면서 컴퓨터 두 대의 채팅을 읽습니다.",
+      "open": "뷰어 열기",
+      "computer": "컴퓨터",
+      "chooseComputer": "컴퓨터 선택",
+      "add": "컴퓨터 추가",
+      "verify": "컴퓨터 확인",
+      "twoLimit": "최대 두 대입니다. 다른 컴퓨터를 선택하려면 패널을 닫으세요.",
+      "locked": "숨김 또는 오프라인 상태에서는 내용이 잠깁니다. 새 확인이 필요합니다.",
+      "thisComputer": "이 컴퓨터",
+      "closeComputer": "{{computer}} 닫기",
+      "chat": "채팅",
+      "archiveFilter": "대화 상태",
+      "active": "활성",
+      "archived": "보관됨",
+      "unread": "읽지 않음",
+      "emptyCatalog": "이 목록에 채팅 대화가 없습니다.",
+      "emptyWindow": "이 창에 메시지가 없습니다.",
+      "chooseConversation": "대화를 선택하세요.",
+      "back": "대화로 돌아가기",
+      "conversation": "대화",
+      "next": "다음 페이지",
+      "older": "이전 메시지",
+      "first": "처음으로",
+      "latest": "최신 메시지",
+      "beginning": "대화 시작",
+      "anchor": "이전 계속 · 새 캡처",
+      "newCapture": "이전 기준점 주변의 새 캡처입니다. 일부 메시지가 반복될 수 있습니다.",
+      "limit": "열람 한도는 10페이지 또는 500개입니다. 전체 목록이 아닙니다.",
+      "phase": {
+        "connecting": "연결 중",
+        "ready": "준비됨",
+        "revalidating": "권한 확인 중",
+        "error": "사용 불가",
+        "locked": "잠김"
+      },
+      "attention": {
+        "generating": "생성 중",
+        "user_request": "응답 요청",
+        "tool_approval": "승인 요청",
+        "error": "오류",
+        "unknown": "알 수 없음"
+      },
+      "role": {
+        "user": "사용자",
+        "assistant": "어시스턴트"
+      },
+      "content": {
+        "complete": "완료",
+        "excerpt": "발췌",
+        "withheld": "내용 비공개",
+        "pending": "생성 중"
+      },
+      "completion": {
+        "complete": "완료",
+        "incomplete": "미완료",
+        "unknown": "알 수 없음"
+      },
+      "errors": {
+        "invalid_configuration": "기기 이름을 확인하고 다시 시도하세요.",
+        "invalid_response": "릴레이가 올바르지 않은 응답을 반환했습니다.",
+        "validation_failed": "릴레이가 이 요청을 거부했습니다. 새로고침한 후 다시 시도하세요.",
+        "response_too_large": "릴레이 응답이 1MB 제한을 초과했습니다.",
+        "redirect_refused": "릴레이가 요청을 리디렉션하려고 했습니다.",
+        "unauthorized": "이 컴퓨터를 읽을 권한이 없습니다. 다시 시도하기 전에 권한을 확인하세요.",
+        "session_revoked": "이 컴퓨터를 읽을 권한이 없습니다. 다시 시도하기 전에 권한을 확인하세요.",
+        "forbidden": "이 컴퓨터를 읽을 권한이 없습니다. 다시 시도하기 전에 권한을 확인하세요.",
+        "not_found": "요청한 Macro Connect 항목이 더 이상 존재하지 않습니다.",
+        "conflict": "연결이 변경되었습니다. 새로 고친 후 다시 시도하세요.",
+        "stale_revision": "적용되기 전에 요청이 변경되었습니다.",
+        "unavailable": "Macro Connect를 일시적으로 사용할 수 없습니다.",
+        "vault_unavailable": "저장된 자격 증명에 접근할 수 없습니다. 연결을 복원하세요.",
+        "offline": "릴레이에 연결할 수 없습니다. Macro의 로컬 기능은 계속 사용할 수 있습니다.",
+        "extension_unavailable": "이 컴퓨터는 이 뷰어를 지원하지 않습니다.",
+        "snapshot_expired": "이 목록이 만료되었습니다. 계속하기 전에 새로 고침하세요.",
+        "resource_limit": "릴레이의 리소스 제한으로 이 목록을 반환할 수 없습니다.",
+        "context_changed": "연결된 계정이 변경되었습니다. 새로 고침 후 다시 시도하세요."
+      }
+    },
     "searchNoResults": "일치하는 설정이 없습니다",
     "title": "설정",
     "general": "일반적인",
