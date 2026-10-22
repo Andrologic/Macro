@@ -166,7 +166,7 @@ export class ConsumerConnections {
         if (accessChanged) this.fence(entry);
         if (mode.entries.has(entry) || selected && entry.state.phase !== 'error' || accessChanged && (selected || wasAuthorized)) entry.blocked = false;
         if (selected || accessChanged && wasAuthorized) {
-          if (entry.client.readAuthority() && !accessChanged && !entry.blocked) await guarded(entry.client.renew(signal), signal);
+          if (entry.client.readAuthority() && !accessChanged && !entry.blocked && this.demanded(entry)) await guarded(this.renew(entry, signal), signal);
           check(); entry.authorityValid = true;
         }
         if (entry.authorityValid && !entry.blocked) { entry.state.phase = entry.ready ? 'ready' : 'connecting'; entry.state.error = null; this.scheduleRenewal(entry); this.notify(entry); }
@@ -199,6 +199,7 @@ export class ConsumerConnections {
     this.fence(entry); entry.blocked = true;
     entry.retries = 0; entry.retryDeadline = null;
     await this.refreshTarget(entry); this.current(entry);
+    if (!this.demanded(entry)) throw changed();
     if (entry.blocked) throw new PilotClientError('forbidden');
     await this.ensureReady(entry);
   }
@@ -229,27 +230,31 @@ export class ConsumerConnections {
       setVisible: visible => {
         this.current(target); if (subscriber.released || subscriber.visible === visible) return;
         const demanded = [...target.subscribers].some(value => value.visible); subscriber.visible = visible;
-        if (![...target.subscribers].some(value => value.visible)) {
-          target.renewalTimer?.(); target.renewalTimer = undefined;
-          target.renewalController.abort(); target.renewalController = new AbortController(); target.renewal = null;
-          target.recoveryController.abort(); target.recoveryController = new AbortController(); target.recovering = null;
-        } else if (!demanded && target.client.readAuthority() && this.online) {
+        if (!visible) this.cancel(target, subscriber);
+        if (!this.demanded(target)) this.stopUndemanded(target);
+        else if (!demanded && target.client.readAuthority() && this.online) {
           target.retries = 0; target.retryDeadline = null;
           void this.recover(target, new PilotClientError('unavailable', 503, true)).catch(() => {});
+        } else if (!demanded && !target.ready && !target.blocked && this.online) {
+          void this.retryTarget(target.id).catch(() => {});
         } else this.scheduleRenewal(target);
       },
       release: () => {
         if (subscriber.released) return;
         subscriber.released = true; subscriber.notify = undefined; this.cancel(target, subscriber); if (target.subscribers.delete(subscriber)) this.subscriberCount--;
         this.prune(target);
-        if (![...target.subscribers].some(value => value.visible)) {
-          target.renewalTimer?.(); target.renewalTimer = undefined;
-          target.renewalController.abort(); target.renewalController = new AbortController(); target.renewal = null;
-          target.recoveryController.abort(); target.recoveryController = new AbortController(); target.recovering = null;
-        }
+        if (!this.demanded(target)) this.stopUndemanded(target);
         if (!target.subscribers.size) { this.entries.delete(target.id); this.closeEntry(target); }
       },
     };
+  }
+  private demanded(entry: Entry): boolean { return [...entry.subscribers].some(value => value.visible); }
+  private stopUndemanded(entry: Entry): void {
+    // An established feed still receives invalidations. Only unfinished preparation is retired.
+    if (!entry.ready) this.fence(entry);
+    entry.renewalTimer?.(); entry.renewalTimer = undefined;
+    entry.renewalController.abort(); entry.renewalController = new AbortController(); entry.renewal = null;
+    entry.recoveryController.abort(); entry.recoveryController = new AbortController(); entry.recovering = null;
   }
   private notify(entry: Entry): void {
     entry.state.version++;
@@ -275,7 +280,7 @@ export class ConsumerConnections {
     for (const subscriber of [...entry.job?.subscribers ?? []]) this.cancel(entry, subscriber);
   }
   private request(entry: Entry, subscriber: Subscriber, operation: ConsumerOperation, body: ContentRequest<ConsumerOperation>['body'], options: ReadOptions): Promise<ConsumerReadPage> {
-    this.current(entry); if (!this.online || entry.state.phase === 'offline') return Promise.reject(new PilotClientError('offline')); if (subscriber.released) return Promise.reject(changed());
+    this.current(entry); if (!this.online || entry.state.phase === 'offline') return Promise.reject(new PilotClientError('offline')); if (subscriber.released || !subscriber.visible) return Promise.reject(changed());
     if (!entry.authorityValid) return Promise.reject(new PilotClientError('unavailable'));
     if (entry.blocked) return Promise.reject(new PilotClientError(entry.state.error ?? 'unavailable'));
     // Bound caller-owned continuation metadata before making any retained copy.
@@ -420,6 +425,7 @@ export class ConsumerConnections {
     }
   }
   private start(entry: Entry): void {
+    if (!this.demanded(entry)) return;
     const life = entry.life; const epoch = entry.authorityEpoch;
     void this.ensureReady(entry).catch(error => {
       if (life.signal.aborted || entry.controller.signal.aborted || !entry.authorityValid || epoch !== entry.authorityEpoch) return;
@@ -429,13 +435,14 @@ export class ConsumerConnections {
   }
   private ensureReady(entry: Entry): Promise<void> {
     this.current(entry);
+    if (!this.demanded(entry)) return Promise.reject(changed());
     if (!entry.authorityValid) return Promise.reject(new PilotClientError('unavailable'));
     if (entry.blocked) return Promise.reject(new PilotClientError(entry.state.error ?? 'unavailable'));
     if (entry.ready) return Promise.resolve();
     if (entry.preparing) return entry.preparing;
     const life = entry.life; const epoch = entry.authorityEpoch;
     const signal = AbortSignal.any([life.signal, entry.controller.signal]);
-    const check = () => { this.current(entry, signal); if (!entry.authorityValid || epoch !== entry.authorityEpoch || this.accountTerminal) throw changed(); };
+    const check = () => { this.current(entry, signal); if (!this.demanded(entry) || !entry.authorityValid || epoch !== entry.authorityEpoch || this.accountTerminal) throw changed(); };
     const pending = (async () => {
       await this.slot(entry, signal, () => entry.client.negotiate(signal)); check();
       const batch = await entry.client.events(signal); check();
@@ -564,6 +571,10 @@ export class ConsumerConnections {
     if (entry.recovering) return entry.recovering;
     entry.renewalTimer?.(); entry.renewalTimer = undefined;
     if (!consumerRetryable(error)) return Promise.reject(error);
+    if (!this.demanded(entry)) { this.offline(entry); return Promise.reject(changed()); }
+    // Capture before backoff: ordinary renewal may settle and clear the shared field meanwhile.
+    let renewal = entry.renewal;
+    void renewal?.catch(() => {});
     if (entry.job) {
       if (!entry.job.desired.options.previous) entry.job.desired.resume = true;
       for (const subscriber of entry.job.subscribers) if (subscriber.desired && !subscriber.desired.options.previous) subscriber.desired.resume = true;
@@ -576,8 +587,13 @@ export class ConsumerConnections {
     }
     else { this.fence(entry, true); entry.blocked = true; }
     if (entry.retryDeadline === null) entry.retryDeadline = this.clock.now() + this.retry.deadlineMs;
+    const epoch = entry.authorityEpoch;
     const expiry = deadline(Math.max(1, entry.retryDeadline - this.clock.now()));
     const signal = AbortSignal.any([entry.controller.signal, entry.recoveryController.signal, expiry.signal]);
+    const check = () => {
+      this.current(entry, signal);
+      if (!this.demanded(entry) || this.accountTerminal || preserved && (!entry.authorityValid || entry.authorityEpoch !== epoch)) throw changed();
+    };
     const pending = (async () => {
       let failure: unknown = error;
       while (consumerRetryable(failure) && entry.retries < this.retry.delaysMs.length) {
@@ -585,14 +601,15 @@ export class ConsumerConnections {
         if (!Number.isFinite(random) || random < 0 || random > 1) throw new PilotClientError('invalid_configuration');
         const delay = Math.min(this.retry.maxDelayMs, Math.max(1, Math.round(this.retry.delaysMs[entry.retries++] * (1 + (2 * random - 1) * this.retry.jitterRatio))));
         if (this.clock.now() + delay >= entry.retryDeadline!) throw failure;
-        await guarded(this.clock.sleep(delay, signal), signal); this.current(entry, signal);
+        check(); await guarded(this.clock.sleep(delay, signal), signal); check();
         if (this.clock.now() >= entry.retryDeadline!) throw new PilotClientError('snapshot_expired');
         try {
           if (preserved) {
             if (entry.monitoring) await guarded(entry.monitoring.catch(() => {}), signal);
-            await guarded(entry.client.renew(signal), signal); this.current(entry, signal);
-            const batch = await guarded(entry.client.events(signal), signal); this.current(entry, signal);
-            this.apply(entry, batch);
+            check();
+            await guarded(renewal ?? this.renew(entry, signal), signal); check();
+            const batch = await guarded(entry.client.events(signal), signal); check();
+            this.apply(entry, batch); check();
             entry.retries = 0; entry.retryDeadline = null;
             entry.state.phase = 'ready'; entry.state.error = null; this.scheduleRenewal(entry); this.notify(entry); queueMicrotask(() => this.monitor(entry, entry.life)); return;
           }
@@ -600,13 +617,13 @@ export class ConsumerConnections {
           if (this.clock.now() >= entry.retryDeadline!) throw new PilotClientError('snapshot_expired');
           if (entry.blocked) throw new PilotClientError(entry.state.error ?? 'forbidden');
           await guarded(this.ensureReady(entry), signal); this.current(entry, signal); return;
-        } catch (next) { failure = next; if (!consumerRetryable(next)) throw next; if (!preserved) { this.fence(entry, true); entry.blocked = true; } }
+        } catch (next) { failure = next; renewal = null; check(); if (!consumerRetryable(next)) throw next; if (!preserved) { this.fence(entry, true); entry.blocked = true; } }
       }
       throw failure;
     })();
     entry.recovering = pending;
     void pending.catch(failure => {
-      if (entry.recovering !== pending || entry.controller.signal.aborted || entry.recoveryController.signal.aborted) return;
+      if (entry.recovering !== pending || entry.controller.signal.aborted || entry.recoveryController.signal.aborted || preserved && epoch !== entry.authorityEpoch) return;
       if (preserved && (consumerRetryable(failure) || expiry.signal.aborted)) this.offline(entry); else this.block(entry, failure);
     }).finally(() => { expiry.dispose(); if (entry.recovering === pending) { entry.recovering = null; if (entry.state.phase === 'ready') this.scheduleRenewal(entry); } });
     return pending;
@@ -623,6 +640,14 @@ export class ConsumerConnections {
     return grant ? { deadline: grant.deadline, valid: entry.authorityValid && this.clock.now() < grant.deadline } : undefined;
   }
   private offline(entry: Entry): void { entry.state.phase = 'offline'; entry.state.error = 'unavailable'; this.notify(entry); }
+  private renew(entry: Entry, signal: AbortSignal): Promise<unknown> {
+    this.current(entry, signal);
+    if (!this.demanded(entry)) return Promise.reject(changed());
+    if (entry.renewal) return entry.renewal;
+    const pending = entry.client.renew(AbortSignal.any([signal, entry.renewalController.signal])); entry.renewal = pending;
+    void pending.finally(() => { if (entry.renewal === pending) entry.renewal = null; }).catch(() => {});
+    return pending;
+  }
   private scheduleRenewal(entry: Entry): void {
     entry.renewalTimer?.(); entry.renewalTimer = undefined;
     const grant = entry.client.readAuthority();
@@ -634,7 +659,7 @@ export class ConsumerConnections {
       entry.renewalTimer = undefined;
       if (entry.authorityEpoch !== generation || entry.renewal || !this.online || ![...entry.subscribers].some(value => value.visible)) return;
       const signal = AbortSignal.any([entry.controller.signal, entry.renewalController.signal]);
-      const pending = entry.client.renew(signal); entry.renewal = pending;
+      const pending = this.renew(entry, signal);
       void pending.then(() => {
         this.current(entry, signal); if (entry.authorityEpoch !== generation) throw changed();
         // This is an ordinary renewal: no feed reset, discovery or content read.
@@ -645,7 +670,7 @@ export class ConsumerConnections {
         if (consumerRetryable(error)) void this.recover(entry, error).catch(() => {});
         else this.block(entry, error);
       }).finally(() => {
-        if (entry.renewal === pending) { entry.renewal = null; if (entry.state.phase === 'ready') this.scheduleRenewal(entry); }
+        if (!signal.aborted && entry.authorityEpoch === generation && entry.state.phase === 'ready') this.scheduleRenewal(entry);
       });
     }, delay);
   }

@@ -23,7 +23,11 @@ transport, global transcript registry, or change to the producer host.
 
 Each target has one proof, one renewal attempt and one renewal timer, shared by
 its visible readers. Panels start reading when they enter the visible viewport.
-Leaving the last visible reader stops renewal. Hiding the document or leaving
+Leaving the last visible reader cancels its UI requests, renewal and unfinished
+initial preparation. An already established feed keeps receiving invalidations.
+A preparation shared with another visible reader continues. A late cancelled
+negotiation cannot start bootstrap or monitoring; returning requires a fresh
+context. Hiding the document or leaving
 the page purges the reader context; returning requires fresh rights and feed
 continuity.
 
@@ -37,7 +41,8 @@ return through proof renewal.
 Known refusal, audience replacement, credential generation change and
 suspension retire publication before aborting requests. A simple proof expiration
 does not cancel a current renewal. Recovery reuses the finite shared retry
-policy. After exhaustion, a relay that becomes healthy without a network or
+policy and any ordinary renewal already in flight, including one that settles
+during backoff. Rights and event continuity are checked before actions resume. After exhaustion, a relay that becomes healthy without a network or
 visibility transition requires manual retry. There is no additional periodic
 retry loop.
 
@@ -57,8 +62,10 @@ account, vault, provider, relay or OAuth service.
 Open Alpha and Beta, then one conversation in each. Toggle synthetic offline.
 The existing text stays passive until its remaining proof expires. Verify that
 copy/cut/drag and copy shortcuts are blocked, directory names are hidden, and
-text/titles disappear at expiration. Toggle online and allow the finite retry
-and cursor continuation to finish. A stream reset invalidates only its target.
+text/titles disappear at expiration. Toggle online, then click **Release
+continuity** once both pending feeds are waiting. This emits an empty page on
+each pending Alpha/Beta feed without resetting its stream. The finite retry and
+cursor continuation can then finish. A stream reset invalidates only its target.
 Changing the synthetic account retires the whole reader. Exercise the layout at
 900×700, 1280×720 and 1440×900, including scrolling, focus and panel closure.
 

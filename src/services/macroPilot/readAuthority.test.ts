@@ -248,3 +248,107 @@ it('charges accepted and terminal polling to the original capture start', async 
     await client.negotiate(); await expect(client.read('conversations.catalog',{instance_id:'instance:alpha',kind:'conversation'})).rejects.toMatchObject({code:'snapshot_expired'});
   } finally { client.dispose(); }
 });
+
+
+describe('shared renewal and visible demand regressions', () => {
+  for(const settleDuringBackoff of [false,true]) it(`shares ordinary renewal across feed recovery, settled during backoff: ${settleDuringBackoff}`, async () => {
+    const clock=manualClock(), hold=gate<void>();
+    const h=createConnectConsumerFixture({authorityLifetimeMs:30000,monotonicNow:clock.now,timer:clock.timer,retry:{...connectReaderRetry,delaysMs:[10,20]}}), reader=new ConsumerReader(h.ports);
+    try {
+      reader.start(); await until(()=>reader.getSnapshot().phase==='ready'); reader.open('instance:alpha'); reader.open('instance:beta');
+      await until(()=>reader.getSnapshot().panels.every(p=>p.catalog.page) && h.waiting.size===2);
+      const pages=reader.getSnapshot().panels.map(p=>p.catalog.page), before=h.waiting.get('instance:alpha')!.request;
+      h.negotiate(async (id,dispatch)=> { const response=h.negotiated(id,dispatch); if(id==='instance:alpha') await hold.promise; return response; });
+      clock.advance(15000); await until(()=>h.calls.filter(c=>c.id==='instance:alpha' && c.dispatch.kind==='negotiate').length===2);
+      h.failEvents('instance:alpha',new PilotClientError('unavailable',503,true));
+      await until(()=>reader.getSnapshot().panels[0].phase==='offline');
+      if(settleDuringBackoff) hold.resolve();
+      await new Promise(r=>setTimeout(r,70));
+      expect(reader.getSnapshot().panels.map(p=>p.catalog.page)).toEqual(pages);
+      expect(reader.getSnapshot().panels.map(p=>p.phase)).toEqual(['offline','ready']);
+      expect(h.calls.filter(c=>c.id==='instance:alpha' && c.dispatch.kind==='negotiate')).toHaveLength(2);
+      hold.resolve(); await until(()=>h.waiting.has('instance:alpha'));
+      expect(reader.getSnapshot().panels[0].phase).toBe('offline');
+      expect(h.waiting.get('instance:alpha')!.request).toMatchObject({stream_id:before.stream_id,after_sequence:before.after_sequence});
+      h.emit('instance:alpha',[]); await until(()=>reader.getSnapshot().panels[0].phase==='ready');
+      expect(reader.getSnapshot().panels.map(p=>p.catalog.page)).toEqual(pages);
+      expect(h.calls.filter(c=>c.dispatch.kind==='submit')).toHaveLength(2);
+    } finally { hold.resolve(); reader.dispose(); }
+    expect(clock.count()).toBe(0); expect(h.waiting.size).toBe(0); expect(h.listeners.size).toBe(0);
+  });
+  it('observes a captured renewal failure during backoff and retries once without purging a valid capture', async () => {
+    const clock=manualClock(), hold=gate<void>(); let attempts=0;
+    const h=createConnectConsumerFixture({authorityLifetimeMs:30000,monotonicNow:clock.now,timer:clock.timer,retry:{...connectReaderRetry,delaysMs:[30,40]}}), reader=new ConsumerReader(h.ports);
+    try {
+      reader.start(); await until(()=>reader.getSnapshot().phase==='ready'); reader.open('instance:alpha'); await until(()=>Boolean(reader.getSnapshot().panels[0].catalog.page) && h.waiting.has('instance:alpha'));
+      const page=reader.getSnapshot().panels[0].catalog.page;
+      h.negotiate(async (id,dispatch)=> { const response=h.negotiated(id,dispatch); if(++attempts===1) await hold.promise; return response; });
+      clock.advance(15000); await until(()=>attempts===1); h.failEvents('instance:alpha',new PilotClientError('unavailable',503,true));
+      await until(()=>reader.getSnapshot().panels[0].phase==='offline'); hold.reject(new PilotClientError('unavailable',503,true));
+      await until(()=>attempts===2 && h.waiting.has('instance:alpha')); expect(reader.getSnapshot().panels[0].catalog.page).toBe(page);
+      h.emit('instance:alpha',[]); await until(()=>reader.getSnapshot().panels[0].phase==='ready');
+      expect(h.calls.filter(c=>c.dispatch.kind==='negotiate')).toHaveLength(3); expect(h.calls.filter(c=>c.dispatch.kind==='submit')).toHaveLength(1);
+    } finally { hold.resolve(); reader.dispose(); }
+  });
+  it('keeps established feed invalidations while hidden without new UI reads or renewal', async () => {
+    const clock=manualClock();
+    const h=createConnectConsumerFixture({authorityLifetimeMs:30000,monotonicNow:clock.now,timer:clock.timer}), reader=new ConsumerReader(h.ports);
+    try {
+      reader.start(); await until(()=>reader.getSnapshot().phase==='ready'); reader.open('instance:alpha'); await until(()=>Boolean(reader.getSnapshot().panels[0].catalog.page) && h.waiting.has('instance:alpha'));
+      reader.setPanelVisible(reader.getSnapshot().panels[0].key,false);
+      expect(h.waiting.has('instance:alpha')).toBe(true);
+      h.emit('instance:alpha',[{kind:'conversations.changed',scope:{instance_id:'instance:alpha'},revision:1}]);
+      await until(()=>reader.getSnapshot().panels[0].catalog.page===null); expect(reader.getSnapshot().panels[0].error).toBeNull(); clock.advance(60000);
+      expect(h.calls.filter(c=>c.dispatch.kind==='submit')).toHaveLength(1); expect(h.calls.filter(c=>c.dispatch.kind==='negotiate')).toHaveLength(1);
+    } finally { reader.dispose(); }
+  });
+  for(const invalidation of ['hidden','revoked','credential'] as const) it(`ignores a shared renewal retired while recovery waits: ${invalidation}`, async () => {
+    const clock=manualClock(), hold=gate<void>(); let signal: AbortSignal | undefined;
+    const h=createConnectConsumerFixture({authorityLifetimeMs:30000,monotonicNow:clock.now,timer:clock.timer,retry:{...connectReaderRetry,delaysMs:[10,20]}}), reader=new ConsumerReader(h.ports);
+    try {
+      reader.start(); await until(()=>reader.getSnapshot().phase==='ready'); reader.open('instance:alpha'); await until(()=>Boolean(reader.getSnapshot().panels[0].catalog.page) && h.waiting.has('instance:alpha'));
+      h.negotiate(async (id,dispatch,s)=> { signal=s; const response=h.negotiated(id,dispatch); await hold.promise; return response; });
+      clock.advance(15000); await until(()=>Boolean(signal)); h.failEvents('instance:alpha',new PilotClientError('unavailable',503,true)); await new Promise(r=>setTimeout(r,40));
+      if(invalidation==='hidden') { reader.setPanelVisible(reader.getSnapshot().panels[0].key,false); clock.advance(31000); }
+      else if(invalidation==='credential') h.changeCredential();
+      else {
+        h.directoryRead(async request=> { const page=h.directory(request); if(request.item_type==='instance_access') page.items=page.items.map(item=>'ref' in item && item.ref.instance_id==='instance:alpha' ? h.access('instance:alpha',true) : item); return page; });
+        await h.owner()!.refreshDirectory();
+      }
+      expect(signal!.aborted).toBe(true); hold.resolve(); await new Promise(r=>setTimeout(r,15));
+      if(invalidation==='credential') expect(reader.getSnapshot().phase).toBe('ended');
+      else { expect(reader.getSnapshot().panels[0].catalog.page).toBeNull(); expect(reader.getSnapshot().panels[0].phase).not.toBe('ready'); }
+      expect(h.calls.filter(c=>c.dispatch.kind==='negotiate')).toHaveLength(2);
+      expect(h.waiting.size).toBe(0); expect(h.calls.filter(c=>c.dispatch.kind==='submit')).toHaveLength(1);
+    } finally { hold.resolve(); reader.dispose(); }
+  });
+  it('aborts initial preparation while hidden, ignores its late success and starts a fresh visible context', async () => {
+    const clock=manualClock(), old=gate<void>(), next=gate<void>(); const signals: AbortSignal[]=[];
+    const h=createConnectConsumerFixture({authorityLifetimeMs:30000,monotonicNow:clock.now,timer:clock.timer}), reader=new ConsumerReader(h.ports);
+    h.negotiate(async (id,dispatch,signal)=> { const response=h.negotiated(id,dispatch); signals.push(signal); await (signals.length===1?old:next).promise; return response; });
+    try {
+      reader.start(); await until(()=>reader.getSnapshot().phase==='ready'); reader.open('instance:alpha'); await until(()=>signals.length===1);
+      const key=reader.getSnapshot().panels[0].key; reader.setPanelVisible(key,false); expect(signals[0].aborted).toBe(true);
+      old.resolve(); await new Promise(r=>setTimeout(r,15)); expect(h.calls.map(c=>c.dispatch.kind)).toEqual(['negotiate']); expect(h.waiting.size).toBe(0);
+      reader.setPanelVisible(key,true); await until(()=>signals.length===2); expect(reader.getSnapshot().panels[0].catalog.page).toBeNull();
+      next.resolve(); await until(()=>Boolean(reader.getSnapshot().panels[0].catalog.page) && h.waiting.has('instance:alpha'));
+      expect(h.calls.filter(c=>c.dispatch.kind==='submit')).toHaveLength(1);
+    } finally { old.resolve(); next.resolve(); reader.dispose(); }
+    expect(clock.count()).toBe(0); expect(h.waiting.size).toBe(0); expect(h.listeners.size).toBe(0);
+  });
+  it('keeps shared initial preparation and a desired read for the remaining visible subscriber', async () => {
+    const hold=gate<void>(); let signal: AbortSignal | undefined;
+    const h=createConnectConsumerFixture({authorityLifetimeMs:30000}), owner=h.ports.createOwner();
+    h.negotiate(async (id,dispatch,s)=> { signal=s; const response=h.negotiated(id,dispatch); await hold.promise; return response; });
+    try {
+      await owner.refreshDirectory(); const first=owner.acquire('instance:alpha'), second=owner.acquire('instance:alpha');
+      const body={instance_id:'instance:alpha',kind:'conversation' as const};
+      const retired=first.read('conversations.catalog',body).catch(error=>error), kept=second.read('conversations.catalog',body);
+      await until(()=>Boolean(signal)); first.setVisible(false); expect(signal!.aborted).toBe(false);
+      expect(await retired).toMatchObject({code:'context_changed'}); await expect(first.read('conversations.catalog',body)).rejects.toMatchObject({code:'context_changed'});
+      hold.resolve(); expect((await kept).response.type).toBe('response');
+      expect(h.calls.filter(c=>c.dispatch.kind==='negotiate')).toHaveLength(1); expect(h.calls.filter(c=>c.dispatch.kind==='submit')).toHaveLength(1);
+      first.release(); second.release();
+    } finally { hold.resolve(); owner.dispose(); }
+  });
+});
