@@ -195,13 +195,24 @@ export class ConversationManager {
     if (request.operation === 'conversation.acknowledge' && this.deps.captures.hasNativeContent) {
       const deadline = await authorize(); check();
       const ticket = this.tickets.get(request.body.read_token);
-      if (!ticket || ticket.expires <= this.now() || ticket.binding !== this.binding(delivery, request.body.ref)) fail('snapshot_expired');
-      const catalog = await this.deps.captures.refreshCatalogMetadata(true); check();
+      if (!ticket) fail('snapshot_expired');
+      const authorizedUntil = Date.parse(deadline);
+      const checkTicket = () => {
+        check();
+        if (this.tickets.get(request.body.read_token) !== ticket || !Number.isFinite(ticket.expires) || ticket.expires <= this.now() ||
+          ticket.binding !== this.binding(delivery, request.body.ref) || ticket.conversationId !== request.body.ref.conversation_id) fail('snapshot_expired');
+        if (!Number.isFinite(authorizedUntil) || authorizedUntil <= this.now()) fail('unavailable');
+      };
+      checkTicket();
+      const catalog = await this.deps.captures.refreshCatalogMetadata(true); checkTicket();
       if (!catalog.refs.some(ref => stableJson(ref) === stableJson(request.body.ref))) fail('not_found');
-      const current = await this.deps.source.nativeContent!.version(request.body.ref.conversation_id); check();
+      const current = await this.deps.source.nativeContent!.version(request.body.ref.conversation_id); checkTicket();
       if (current.incarnation !== ticket.incarnation) fail('stale_revision');
-      await this.deps.source.acknowledge(ticket.conversationId, ticket.observed, deadline); check();
-      await this.deps.source.synchronize(); return { acknowledged: true };
+      // SQLite rechecks this bound after its own waits, before committing.
+      const executeBefore = new Date(Math.min(authorizedUntil, ticket.expires)).toISOString();
+      checkTicket();
+      await this.deps.source.acknowledge(ticket.conversationId, ticket.observed, executeBefore); check();
+      await this.deps.source.synchronize(); check(); return { acknowledged: true };
     }
     if (request.operation === 'conversation.window' && this.deps.captures.hasNativeContent) {
       const backward = body.direction === 'backward';

@@ -51,7 +51,7 @@ function setup(count = 140, quota = 8*1024*1024, storage = memory()) {
   const manager=new ConversationManager({instanceId:'instance',source,captures,storage:memory(),now:()=>clock});
   const delivery=(body:unknown,operation='conversation.window'):ContentDelivery=>({transport_version:'2.0',type:'delivery',request_id:`request-${++req}`,instance_id:'instance',account_id:'account',source_session_id:'session',expires_at:new Date(clock+300000).toISOString(),capabilities:['conversations-1','conversation-history-1'],request:{contract_version:'2.0',type:'request',request_id:`request-${req}`,account_id:'account',operation,body} as ContentRequest});
   const read=async(body:unknown={ref})=>manager.handle(delivery(body),policy,async()=>new Date(clock+10000).toISOString()) as Promise<NativeCapturePage & {read_token:string|null}>;
-  return {source,deps,captures,manager,rows,storage,batches,acknowledged,delivery,read,policy:()=>policy,clock:()=>clock,setPolicy:(secrets:string[])=>{policy={revision:'visible-1',secrets};},setRuntime:(value:ConversationActivity)=>{runtime=value;},setRevision:(value:bigint)=>{revision=value;},bump:()=>revision++,expire:()=>{clock+=300000;},prefix:(n:number)=>{maxPrefix=n;},counts:()=>({metadataReads,versions,legacy})};
+  return {source,deps,captures,manager,rows,storage,batches,acknowledged,delivery,read,policy:()=>policy,clock:()=>clock,setPolicy:(secrets:string[])=>{policy={revision:'visible-1',secrets};},setRuntime:(value:ConversationActivity)=>{runtime=value;},setRevision:(value:bigint)=>{revision=value;},bump:()=>revision++,advance:(ms:number)=>{clock+=ms;},expire:()=>{clock+=300000;},prefix:(n:number)=>{maxPrefix=n;},counts:()=>({metadataReads,versions,legacy})};
 }
 const continuation=(page:NativeCapturePage)=>({snapshot_id:page.page.snapshot_id,cursor:page.page.next_cursor!});
 
@@ -224,4 +224,56 @@ test('cumulative retained catalogues respect 8 MiB independently of the 24 MiB o
 test('token decimals above 2^53 stay exact while unsafe public totals refuse before bodies',async()=>{
   const s=setup(2);s.setRevision(9007199254740993n);const page=await s.captures.conversationWindow(scope,ref);expect(page.contentToken.revision).toBe('9007199254740993');
   const oversized=setup(2);const original=oversized.source.nativeContent!.metadata;oversized.source.nativeContent!.metadata=async input=>{const page=await original(input);if(page.opening)page.opening.total_raw='9007199254740993';return page;};await expect(oversized.read()).rejects.toThrow('resource_limit');expect(oversized.batches).toHaveLength(0);
+});
+
+
+for (const boundary of ['metadata', 'version'] as const) test(`native ACK refuses ticket expiry during ${boundary} without reading more bodies`, async () => {
+  const s=setup(4);const page=await s.read();s.advance(299999);
+  const bodies=s.batches.length;const versions=s.counts().versions;
+  if(boundary==='metadata'){
+    const original=s.captures.refreshCatalogMetadata.bind(s.captures);
+    s.captures.refreshCatalogMetadata=async(...args)=>{const value=await original(...args);s.advance(2);return value;};
+  }else{
+    const original=s.source.nativeContent!.version;
+    s.source.nativeContent!.version=async id=>{const value=await original(id);s.advance(2);return value;};
+  }
+  await expect(s.manager.handle(s.delivery({ref,read_token:page.read_token},'conversation.acknowledge'),s.policy(),async()=>new Date(s.clock()+10000).toISOString())).rejects.toThrow('snapshot_expired');
+  expect(s.acknowledged).toEqual([]);expect(s.batches).toHaveLength(bodies);expect(s.counts().legacy).toBe(0);
+  expect(s.counts().versions-versions).toBe(boundary==='metadata'?0:1);
+});
+
+test('native ACK bounds the backend deadline by both authority and absolute ticket expiry',async()=>{
+  for(const authorityMs of [5000,400000]){
+    const s=setup(4);const page=await s.read();const expires=Date.parse(page.page.expires_at);const authorizedUntil=s.clock()+authorityMs;let received:string|undefined;
+    const original=s.source.acknowledge;s.source.acknowledge=async(id,observed,executeBefore)=>{received=executeBefore;await original(id,observed,executeBefore);};
+    expect(await s.manager.handle(s.delivery({ref,read_token:page.read_token},'conversation.acknowledge'),s.policy(),async()=>new Date(authorizedUntil).toISOString())).toEqual({acknowledged:true});
+    expect(received).toBe(new Date(Math.min(authorizedUntil,expires)).toISOString());expect(s.acknowledged).toEqual([[2,4]]);
+  }
+});
+
+test('a backend wait reaching the ticket deadline cannot acknowledge despite a still-live authorization',async()=>{
+  const s=setup(4);const page=await s.read();const expires=Date.parse(page.page.expires_at);s.advance(299999);const gate=barrier();let received:string|undefined;
+  const original=s.source.acknowledge;s.source.acknowledge=async(id,observed,executeBefore)=>{
+    received=executeBefore;await gate.wait();
+    // Model the existing native pre-commit deadline guard after SQLite waits.
+    if(!executeBefore||Date.parse(executeBefore)<=s.clock())throw new Error('unavailable');
+    await original(id,observed,executeBefore);
+  };
+  const bodies=s.batches.length;const operation=s.manager.handle(s.delivery({ref,read_token:page.read_token},'conversation.acknowledge'),s.policy(),async()=>new Date(s.clock()+10000).toISOString());
+  await gate.reached;expect(received).toBe(new Date(expires).toISOString());s.advance(1);gate.release();await expect(operation).rejects.toThrow('unavailable');
+  expect(s.acknowledged).toEqual([]);expect(s.batches).toHaveLength(bodies);expect(s.counts().legacy).toBe(0);
+});
+
+test('native ACK rechecks the ticket binding and manager epoch after the final version wait',async()=>{
+  for(const boundary of ['binding','epoch'] as const){
+    const s=setup(4);const page=await s.read();const delivery=s.delivery({ref,read_token:page.read_token},'conversation.acknowledge');const original=s.source.nativeContent!.version;
+    s.source.nativeContent!.version=async id=>{const token=await original(id);if(boundary==='epoch')s.manager.clear();else delivery.source_session_id='other-session';return token;};
+    await expect(s.manager.handle(delivery,s.policy(),async()=>new Date(s.clock()+10000).toISOString())).rejects.toThrow(boundary==='epoch'?'unavailable':'snapshot_expired');expect(s.acknowledged).toEqual([]);
+  }
+});
+
+test('native ACK rejects invalid and nonfuture authorization deadlines before effect',async()=>{
+  for(const deadline of ['invalid','2026-01-01T00:00:00.000Z']){
+    const s=setup(4);const page=await s.read();const bodies=s.batches.length;await expect(s.manager.handle(s.delivery({ref,read_token:page.read_token},'conversation.acknowledge'),s.policy(),async()=>deadline)).rejects.toThrow('unavailable');expect(s.acknowledged).toEqual([]);expect(s.batches).toHaveLength(bodies);
+  }
 });
