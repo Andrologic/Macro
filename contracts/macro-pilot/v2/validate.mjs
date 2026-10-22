@@ -32,6 +32,17 @@ export function validateMessage(message) {
     }
   }
   walk(message);
+  if (message.type === 'negotiated') {
+    const selected = (message.capabilities ?? []).includes('read-authority-1');
+    const hasAuthority = Object.hasOwn(message, 'read_authority');
+    reject(selected !== hasAuthority, 'read authority selection mismatch');
+    if (hasAuthority) {
+      const proof = message.read_authority;
+      reject(message.selected_version !== '2.0' || !message.instance_id || proof.instance_id !== message.instance_id, 'read authority target mismatch');
+      const lifetime = Date.parse(proof.expires_at) - Date.parse(proof.issued_at);
+      reject(!Number.isFinite(lifetime) || lifetime <= 0 || lifetime > 30000, 'read authority lifetime');
+    }
+  }
   if (['negotiate', 'negotiated', 'poll'].includes(message.type)) {
     reject(message.type === 'negotiated' && !message.instance_id && (message.capabilities ?? []).length > 0, 'account cannot select instance capabilities');
     reject((message.capabilities ?? []).includes('task-actions-1') && !(message.capabilities ?? []).includes('task-details-1'), 'task actions require details capability');

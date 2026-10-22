@@ -1,0 +1,39 @@
+{
+  "transport_version": "2.0",
+  "type": "delivery",
+  "request_id": "request-demo",
+  "instance_id": "instance-demo",
+  "source_session_id": "session-demo",
+  "account_id": "account-demo",
+  "expires_at": "2026-01-01T00:01:00Z",
+  "request": {
+    "contract_version": "2.0",
+    "request_id": "request-demo",
+    "account_id": "account-demo",
+    "type": "request",
+    "operation": "conversation.read",
+    "body": {
+      "ref": {
+        "instance_id": "instance-demo",
+        "kind": "conversation",
+        "conversation_id": "conversation-demo"
+      }
+    }
+  },
+  "capabilities": [
+    "task-details-1",
+    "task-actions-1",
+    "network-reliability-1",
+    "conversations-1",
+    "conversation-history-1",
+    "conversation-interactions-1",
+    "conversation-models-1",
+    "host-telemetry-1",
+    "project-icons-1",
+    "attachment-transfer-1",
+    "conversation-attachments-1",
+    "conversation-files-1",
+    "conversation-reflections-1",
+    "read-authority-1"
+  ]
+}
