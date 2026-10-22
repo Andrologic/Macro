@@ -3,7 +3,8 @@ import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from 'nod
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { execFileSync } from 'node:child_process';
-import { sourceFingerprint, stageVerifiedBinary, validateNativeArgs, validateContentBaseline } from './native-sqlite';
+import { createHash } from 'node:crypto';
+import { sourceFingerprint, stageVerifiedBinary, validateNativeArgs, validateContentBaseline, validateCurrentContentBaseline, nativeContentFixture } from './native-sqlite';
 
 test('native fingerprint detects untracked and tracked source changes, excludes Cargo outputs', () => {
   const root = mkdtempSync(join(tmpdir(), 'macro-native-provenance-'));
@@ -139,5 +140,75 @@ test('rejects audit adversaries starting with a valid content report', () => {
       Reflect.deleteProperty(altered.contract_checks,key);
       expect(()=>validateContentBaseline(altered,pilot)).toThrow('contract');
     }
+  }
+});
+
+function nativePilot() {
+  const legacy = contentPilot();
+  const report = {...legacy, schema:4, fixture:nativeContentFixture, percentile:'nearest-rank',
+    raw_observation_order:'execution order, warmup excluded'};
+  report.fixture_sha256 = createHash('sha256').update(nativeContentFixture)
+    .update(readFileSync(new URL('../../src-tauri/examples/performance-sqlite/content_baseline.rs', import.meta.url))).digest('hex');
+  Object.assign(report.admission_controls, {native_large_receipt_refused:true,native_prefix_exact:true,
+    native_missing_suffix_refused:true,native_stale_token_refused:true});
+  for (const entry of report.cases) {
+    entry.runtime.migrations.push(13);
+    Object.assign(entry.checks,{native_fields_positions_tokens:true,native_mutations_before_reset:true,
+      native_admission_bytes:true,native_reopen:true});
+    const size = entry.initial_messages;
+    for (const name of ['native_version','native_metadata_open100','native_metadata_after50','native_window50']) {
+      const outcome:Record<string,unknown> = {outcome:'ok'};
+      if (name === 'native_version') outcome.token = {version:1,incarnation:'a'.repeat(32),revision:'123'};
+      else {
+        Object.assign(outcome,{serialized_bytes:42,admission_estimate_bytes:4096});
+        if (name === 'native_window50') Object.assign(outcome,{rows:50,consumed_count:50,start_position:size-50});
+        else {
+          const offset = name === 'native_metadata_open100' ? 0 : 50;
+          Object.assign(outcome,{offset,rows:Math.min(100,size-offset),opening:offset===0,has_more:size>offset+100});
+        }
+      }
+      entry.cells[name] = {raw_ms:[1,2,3],summary:{unit:'ms',count:3,p50:2,p95:3,max:3},
+        outcomes:Array.from({length:3},()=>structuredClone(outcome))};
+    }
+  }
+  return report;
+}
+
+test('keeps historical evidence valid and rejects mixed native protocol identities', () => {
+  expect(()=>validateContentBaseline(contentPilot(),true)).not.toThrow();
+  expect(()=>validateCurrentContentBaseline(contentPilot(),true)).toThrow('protocol 4');
+  const valid = nativePilot();
+  expect(()=>validateContentBaseline(valid,true)).not.toThrow();
+  expect(()=>validateCurrentContentBaseline(valid,true)).not.toThrow();
+  const altered = nativePilot(); altered.fixture_sha256 = 'b'.repeat(64);
+  expect(()=>validateCurrentContentBaseline(altered,true)).toThrow('hash');
+  const oldRuntime = nativePilot(); oldRuntime.cases[0].runtime.migrations.pop();
+  expect(()=>validateContentBaseline(oldRuntime,true)).toThrow('runtime');
+  const oldProtocol = nativePilot(); oldProtocol.schema=3;
+  expect(()=>validateContentBaseline(oldProtocol,true)).toThrow('runtime');
+  const oldFixture = nativePilot(); oldFixture.fixture = 'content-v2:synthetic;schema12';
+  expect(()=>validateContentBaseline(oldFixture,true)).toThrow('fixture');
+  const newRuntime = contentPilot(); newRuntime.cases[0].runtime.migrations.push(13);
+  expect(()=>validateContentBaseline(newRuntime,true)).toThrow('runtime');
+});
+
+test('rejects missing native controls, truncated pages, unsafe tokens and byte/count mismatches', () => {
+  const mutations:Array<(value:ReturnType<typeof nativePilot>)=>void> = [
+    v=>{delete v.cases[0].cells.native_version;},
+    v=>{Reflect.deleteProperty(v.admission_controls,'native_prefix_exact');},
+    v=>{Reflect.deleteProperty(v.cases[0].checks,'native_mutations_before_reset');},
+    v=>{v.cases[0].cells.native_metadata_after50.outcomes[0].rows=100;},
+    v=>{v.cases[0].cells.native_metadata_after50.outcomes[0].opening=true;},
+    v=>{v.cases[2].cells.native_metadata_open100.outcomes[0].has_more=false;},
+    v=>{v.cases[0].cells.native_window50.outcomes[0].consumed_count=49;},
+    v=>{v.cases[0].cells.native_window50.outcomes[0].start_position=0;},
+    v=>{v.cases[0].cells.native_window50.outcomes[0].serialized_bytes=4097;},
+    v=>{v.cases[0].cells.native_window50.outcomes[0].admission_estimate_bytes=4_194_305;},
+    v=>{v.cases[0].cells.native_version.outcomes[0].token={version:1,incarnation:'a'.repeat(32),revision:'01'};},
+    v=>{v.cases[0].cells.native_version.outcomes[0].token={version:1,incarnation:'a'.repeat(32),revision:'9223372036854775808'};},
+  ];
+  for (const mutate of mutations) {
+    const report=nativePilot(); mutate(report);
+    expect(()=>validateContentBaseline(report,true)).toThrow();
   }
 });

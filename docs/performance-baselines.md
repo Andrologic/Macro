@@ -715,3 +715,63 @@ JavaScript, transport, production or UI speedup is established. The old Bun
 in-memory and historical 128 ms values are separate references. Full aggregate
 reports, process timestamps/load, manifests, source/binary fingerprints and
 superseded build failures remain outside Git.
+
+### Content protocol 4 after native admission
+
+`bun --no-install dev/performance/native-sqlite.ts --content-baseline --pilot`
+runs the current SQLite content pilot with one warmup and three retained samples
+at 100, 1,000 and 10,000 messages. It is not reference eligible. After independent
+adapter review, the same command without `--pilot` uses ten warmups and 100
+samples. A reference requires three fresh sequential processes on clean committed
+sources, with each process verified before starting the next.
+
+Protocol 4 requires exact migrations `[1,3,4,5,6,7,8,9,10,11,12,13]` and the
+production WAL/NORMAL/FK pool. Its distinct `content-v3-native` fixture retains
+the mixed-256 inputs, fourteen-field assistant, provenance v2 receipt,
+stream update schedule and batch/tail100 inputs of content-v2. Its definition
+and complete Rust content module produce a new SHA-256; content-v2 reports and
+hashes remain historical schema-12 evidence. The validator still reads protocol
+3 with its original runtime/cell checks, but a current run must publish protocol
+4 and the hash of its current fixture source. The older ordinary/diagnostic
+modes retain their schema-12 runtime guard and refuse the current bootstrap.
+
+The 38 existing content cells retain their boundaries and admission outcomes.
+Four additional cells at each size call the real native repository ports:
+
+| Cell | Timed work | Untimed input and result checks |
+| --- | --- | --- |
+| `native_version` | Content token transaction and commit | Exact incarnation and decimal revision against the stamp table |
+| `native_metadata_open100` | First metadata page, opening, descriptors and commit | First 100 ordered descriptors, exact totals/opening and next anchor |
+| `native_metadata_after50` | Continuation from descriptor 49, limit 100 | 50 rows at N=100, otherwise 100; opening absent and next anchor exact |
+| `native_window50` | Admission and joined body/receipt/revision fetch for the final 50 IDs, mapping and commit | Exact projected fields, requested order, consumed count and decimal revisions |
+
+These 50 cells retain 150 observations in the pilot or 5,000 per reference
+process. Native JSON byte counts are computed outside timing and checked against
+the existing 4 MiB admission estimate. They are not IPC or memory measurements.
+No new serialization timing cells are added. The N=10,000 bounded full-read
+refusal remains a refusal; the successful 50-body window has a different result
+volume and cannot be compared as the same operation.
+
+Fixture-derived fields and positions, independent legacy/SQL observations,
+FTS, metadata and row counts are checked before mutation resets. Each write and
+reset advances the native token without assuming an increment of one, and the
+final token and projected fields survive reopen. Native public controls cover a
+large receipt refusal, exact admitted prefix, invalid suffix and stale token.
+Existing native database tests provide the audited pre-fetch trace witnesses;
+the benchmark adds no trace instrumentation. The original legacy payload/fetch
+controls remain in place.
+
+The new fixture is a fresh file bootstrapped with migration 13. It does not time
+migration of an existing file. DML timings include the production triggers,
+metadata/FTS and commit, without isolating the causal cost of triggers. Validation
+and reset work stay outside timers but can affect cache and WAL state. Keep
+machine sharing, debug profile and OS cache limits in each report. No threshold
+or resource limit is raised for this protocol. Source/nonce handshake, private
+binary staging, complete stdout/stderr, cleanup and source stability checks stay
+required.
+
+This runner measures in-process Rust/SQLx/SQLite on disk. Capture construction,
+Tauri IPC, transport, displayed UI, RSS and heap remain unmeasured. A2 SQLite
+percentiles and A4 memory-port percentiles cannot be added to claim a complete
+path or global gain. This section defines the protocol; it does not announce a
+new accepted reference or a performance improvement.
