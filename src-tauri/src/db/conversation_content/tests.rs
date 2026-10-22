@@ -258,6 +258,12 @@ async fn concurrent_commit_between_admission_and_fetch_keeps_one_snapshot() {
     message(&pool, "m", "a", "assistant", "before").await;
     sqlx::query("INSERT INTO app_settings VALUES ('chat:assistant-visible-provenance:v1:m','receipt-before','now')").execute(&pool).await.unwrap();
     let input = window_input(&pool, "a", &["m"]).await;
+    let original_revision: i64 = sqlx::query_scalar(
+        "SELECT revision FROM conversation_response_versions WHERE message_id='m'",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
     let mut reader = pool.begin().await.unwrap();
     let pinned = token_in(&mut reader, "a", Some(&input.expected_token))
         .await
@@ -282,6 +288,10 @@ async fn concurrent_commit_between_admission_and_fetch_keeps_one_snapshot() {
     committed.await.unwrap();
     let old = fetch_body(&mut reader, &sizes[..count]).await.unwrap();
     assert_eq!(old[0].content, "before");
+    assert_eq!(
+        old[0].response_revision_decimal,
+        Some(original_revision.to_string())
+    );
     assert_eq!(old[0].provenance_json.as_deref(), Some("receipt-before"));
     assert_eq!(token_in(&mut reader, "a", None).await.unwrap(), pinned);
     reader.commit().await.unwrap();
@@ -693,7 +703,7 @@ async fn useful_fields_receipt_utf8_escapes_null_and_omitted_annexes() {
             .as_object()
             .unwrap()
             .len(),
-        9
+        10
     );
     admitted(&w, w.admission_estimate_bytes);
     for field in ["content", "tool_traces_json", "provider_turn_state_json"] {
@@ -1214,4 +1224,85 @@ async fn opening_preserves_pending_derived_revision_above_js_integer_precision()
     assert_eq!(metadata.read_revision, "9007199254740996");
     admitted(&page, page.admission_estimate_bytes);
     pool.close().await;
+}
+
+#[tokio::test]
+async fn response_revision_is_exact_optional_and_admitted_before_raw_fetch() {
+    use std::sync::atomic::Ordering::SeqCst;
+    let (dir, initial) = fixture().await;
+    message(&initial, "answer", "a", "assistant", "final").await;
+    message(&initial, "user", "a", "user", "sent").await;
+    sqlx::query("UPDATE conversation_response_versions SET revision=9007199254740993 WHERE message_id='answer'").execute(&initial).await.unwrap();
+    let w = conversation_content_window(
+        &initial,
+        &window_input(&initial, "a", &["answer", "user"]).await,
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        w.items[0].response_revision_decimal.as_deref(),
+        Some("9007199254740993")
+    );
+    assert_eq!(w.items[1].response_revision_decimal, None);
+    admitted(&w, w.admission_estimate_bytes);
+    sqlx::query("DELETE FROM conversation_response_versions WHERE message_id='answer'")
+        .execute(&initial)
+        .await
+        .unwrap();
+    let w = conversation_content_window(&initial, &window_input(&initial, "a", &["answer"]).await)
+        .await
+        .unwrap();
+    assert_eq!(w.items[0].response_revision_decimal, None);
+    sqlx::query("INSERT INTO conversation_response_versions VALUES('answer','b',1,0)")
+        .execute(&initial)
+        .await
+        .unwrap();
+    initial.close().await;
+    let (pool, probe) = probe_pool(&dir).await;
+    code(
+        conversation_content_window(&pool, &window_input(&pool, "a", &["answer"]).await).await,
+        "unavailable",
+    );
+    assert_eq!(probe.bodies.load(SeqCst), 0);
+    sqlx::query(
+        "UPDATE conversation_response_versions SET conversation_id='a' WHERE message_id='answer'",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    for blob in [false, true] {
+        let value = "x".repeat(MAX_BYTES as usize + 1);
+        if blob {
+            sqlx::query(
+                "UPDATE conversation_response_versions SET revision=? WHERE message_id='answer'",
+            )
+            .bind(value.as_bytes())
+            .execute(&pool)
+            .await
+            .unwrap();
+        } else {
+            sqlx::query(
+                "UPDATE conversation_response_versions SET revision=? WHERE message_id='answer'",
+            )
+            .bind(&value)
+            .execute(&pool)
+            .await
+            .unwrap();
+        }
+        code(
+            conversation_content_window(&pool, &window_input(&pool, "a", &["answer"]).await).await,
+            "unavailable",
+        );
+        assert_eq!(probe.bodies.load(SeqCst), 0);
+        assert_eq!(probe.oversized_rows.load(SeqCst), usize::from(blob));
+        sqlx::query(
+            "SELECT revision FROM conversation_response_versions WHERE message_id='answer'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(probe.oversized_rows.load(SeqCst), usize::from(blob) + 1);
+    }
+    stop_probe(&pool).await;
+    drop(probe);
 }

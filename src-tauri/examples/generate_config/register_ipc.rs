@@ -48,6 +48,11 @@ pub fn register(registry: &mut Registry) -> Result<(), String> {
     registry.add::<ipc_contracts::db::CancelAgentRunInput>("db")?;
     registry.add::<ipc_contracts::db::TimeOutAgentRunInput>("db")?;
     registry.add::<ipc_contracts::db::Conversation>("db")?;
+    registry.add::<ipc_contracts::db::ConversationContentToken>("db")?;
+    registry.add::<ipc_contracts::db::ConversationContentMetadataInput>("db")?;
+    registry.add::<ipc_contracts::db::ConversationContentMetadataPage>("db")?;
+    registry.add::<ipc_contracts::db::ConversationContentWindowInput>("db")?;
+    registry.add::<ipc_contracts::db::ConversationContentWindow>("db")?;
     registry.add::<ipc_contracts::db::ConversationMetadata>("db")?;
     registry.add::<ipc_contracts::db::ConversationActionInput>("db")?;
     registry.add::<ipc_contracts::db::ConversationActionResult>("db")?;

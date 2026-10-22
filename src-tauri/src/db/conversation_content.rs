@@ -453,7 +453,7 @@ async fn body_sizes(
     db: &mut SqliteConnection,
     input: &ConversationContentWindowInput,
 ) -> DbResult<Vec<SqliteRow>> {
-    let query = format!("SELECT CAST(request.key AS INTEGER) AS ordinal, m.rowid AS message_rowid, m.conversation_id = ? AS owned, m.role IN ('user','assistant') AS exported, {} FROM json_each(?) request LEFT JOIN messages m ON m.id = request.value COLLATE BINARY LEFT JOIN app_settings p ON m.role = 'assistant' AND p.key = ? || m.id COLLATE BINARY ORDER BY ordinal", lengths(BODY_FIELDS));
+    let query = format!("SELECT CAST(request.key AS INTEGER) AS ordinal, m.rowid AS message_rowid, m.conversation_id = ? AS owned, m.role IN ('user','assistant') AS exported, CASE WHEN v.message_id IS NULL OR (typeof(v.revision) = 'integer' AND v.revision > 0 AND v.conversation_id = m.conversation_id) THEN 1 ELSE 0 END AS version_valid, {} FROM json_each(?) request LEFT JOIN messages m ON m.id = request.value COLLATE BINARY LEFT JOIN app_settings p ON m.role = 'assistant' AND p.key = ? || m.id COLLATE BINARY LEFT JOIN conversation_response_versions v ON m.role = 'assistant' AND v.message_id = m.id COLLATE BINARY ORDER BY ordinal", lengths(BODY_FIELDS));
     let ids = serde_json::to_string(&input.ids).map_err(|_| fail("unavailable"))?;
     let rows = sqlx::query(sqlx::AssertSqlSafe(query))
         .bind(&input.conversation_id)
@@ -484,6 +484,13 @@ async fn body_sizes(
         {
             return Err(fail("validation_failed"));
         }
+        if row
+            .try_get::<i64, _>("version_valid")
+            .map_err(unavailable)?
+            != 1
+        {
+            return Err(fail("unavailable"));
+        }
     }
     Ok(rows)
 }
@@ -493,7 +500,10 @@ fn admit_body(rows: &[SqliteRow]) -> DbResult<(usize, u64)> {
     for row in rows {
         let next = add(
             estimate,
-            add(2048, text_cost(row_bytes(row, BODY_FIELDS.len())?)?)?,
+            add(
+                2048 + 6 * 19,
+                text_cost(row_bytes(row, BODY_FIELDS.len())?)?,
+            )?,
         )?;
         if next > MAX_BYTES {
             break;
@@ -513,7 +523,7 @@ async fn fetch_body(
     let mut items = Vec::with_capacity(rows.len());
     for row in rows {
         let id: i64 = row.try_get("message_rowid").map_err(unavailable)?;
-        let r = sqlx::query("SELECT m.id, m.conversation_id, m.role, m.content, m.created_at, m.completion_reason, m.provider_turn_state_json, m.tool_traces_json, p.value_json FROM messages m LEFT JOIN app_settings p ON m.role = 'assistant' AND p.key = ? || m.id COLLATE BINARY WHERE m.rowid = ?")
+        let r = sqlx::query("SELECT m.id, m.conversation_id, m.role, m.content, m.created_at, m.completion_reason, m.provider_turn_state_json, m.tool_traces_json, p.value_json, v.revision FROM messages m LEFT JOIN app_settings p ON m.role = 'assistant' AND p.key = ? || m.id COLLATE BINARY LEFT JOIN conversation_response_versions v ON m.role = 'assistant' AND v.message_id = m.id COLLATE BINARY WHERE m.rowid = ?")
             .bind(PROVENANCE_PREFIX).bind(id).fetch_one(&mut *db).await.map_err(unavailable)?;
         items.push(ConversationContentItem {
             id: r.try_get(0).map_err(unavailable)?,
@@ -525,6 +535,10 @@ async fn fetch_body(
             provider_turn_state_json: r.try_get(6).map_err(unavailable)?,
             tool_traces_json: r.try_get(7).map_err(unavailable)?,
             provenance_json: r.try_get(8).map_err(unavailable)?,
+            response_revision_decimal: r
+                .try_get::<Option<i64>, _>(9)
+                .map_err(unavailable)?
+                .map(|v| v.to_string()),
         });
     }
     Ok(items)

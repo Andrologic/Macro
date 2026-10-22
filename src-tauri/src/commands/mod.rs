@@ -1,4 +1,5 @@
 pub mod ai;
+pub mod conversation_content;
 pub mod conversation_management;
 mod external_apps;
 pub mod fs;

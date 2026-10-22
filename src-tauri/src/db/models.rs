@@ -646,32 +646,32 @@ pub struct ProjectRegistryDbRepairReport {
 }
 
 // Native repository contracts only. No transport capability is advertised by these DTOs.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ts_rs::TS)]
 pub struct ConversationContentToken {
     pub version: u8,
     pub incarnation: String,
     pub revision: String,
 }
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ts_rs::TS)]
 pub struct ConversationContentAnchor {
     pub created_at: String,
     pub id: String,
 }
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ts_rs::TS)]
 pub struct ConversationContentMetadataInput {
     pub conversation_id: String,
     pub expected_token: Option<ConversationContentToken>,
     pub after: Option<ConversationContentAnchor>,
     pub limit: u32,
 }
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ts_rs::TS)]
 pub struct ConversationContentDescriptor {
     pub id: String,
     pub conversation_id: String,
     pub role: String,
     pub created_at: String,
 }
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ts_rs::TS)]
 pub struct ConversationContentMetadata {
     pub conversation_id: String,
     pub revision: String,
@@ -683,14 +683,14 @@ pub struct ConversationContentMetadata {
     pub question_message_id: Option<String>,
     pub preview_message_id: Option<String>,
 }
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ts_rs::TS)]
 pub struct ConversationContentOpening {
     pub total_raw: String,
     pub total_exportable: String,
     pub conversation: Conversation,
     pub metadata: ConversationContentMetadata,
 }
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ts_rs::TS)]
 pub struct ConversationContentMetadataPage {
     pub token: ConversationContentToken,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -699,13 +699,13 @@ pub struct ConversationContentMetadataPage {
     pub next_after: Option<ConversationContentAnchor>,
     pub admission_estimate_bytes: u64,
 }
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ts_rs::TS)]
 pub struct ConversationContentWindowInput {
     pub conversation_id: String,
     pub expected_token: ConversationContentToken,
     pub ids: Vec<String>,
 }
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ts_rs::TS)]
 pub struct ConversationContentItem {
     pub id: String,
     pub conversation_id: String,
@@ -716,8 +716,9 @@ pub struct ConversationContentItem {
     pub provider_turn_state_json: Option<String>,
     pub tool_traces_json: Option<String>,
     pub provenance_json: Option<String>,
+    pub response_revision_decimal: Option<String>,
 }
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ts_rs::TS)]
 pub struct ConversationContentWindow {
     pub token: ConversationContentToken,
     pub items: Vec<ConversationContentItem>,
