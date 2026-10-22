@@ -1,0 +1,66 @@
+import { describe, expect, it } from "bun:test";
+import { blockDetails, durationText, edgeDetails, predicateText } from "./blockDetails";
+import type { ViewerCard } from "./viewer";
+
+const card = (kind: string, details: Record<string, unknown>, extra: Partial<ViewerCard> = {}): ViewerCard => ({
+  path: `/flow/steps/${kind}`, id: kind, title: kind, kind, mission: "", unresolved: false, inputs: [], outputs: [], branches: [], details, ...extra,
+});
+const declaration = (path: string, title: string, details: Record<string, unknown> = {}): ViewerCard => ({
+  path, id: path, title, kind: "Declaration", mission: "", unresolved: false, inputs: [], outputs: [], branches: [], details,
+});
+
+describe("block details read from AgSDL", () => {
+  const declarations = [
+    declaration("/configurations/project", "Project", { engine: "engine" }),
+    declaration("/configurations/fast", "Fast"), declaration("/configurations/thorough", "Thorough"),
+    declaration("/bindings/engine", "Engine title"), declaration("/bindings/tests", "Tests", { effects: "none" }),
+  ];
+
+  it("reads an agent's own instruction, configuration, tools, resources, results and visit limit", () => {
+    const agent = card("agent", { maxVisits: 2, agentDefinition: { configuration: "project", prompt: [{ ref: "shared" }, { value: "Review the change." }] } }, {
+      tools: [{ label: "Documentation", source: "unknown" }], capabilities: { skills: ["Evidence"], structuredResults: false, dynamicConfiguration: false, externalEffects: false },
+      inputs: [{ name: "brief", type: "" }], outputs: [{ name: "report", type: "text/plain" }],
+    });
+    expect(blockDetails(agent, declarations)).toEqual([
+      { key: "instructions", values: ["Review the change."] },
+      { key: "model", values: ["Engine title"] },
+      { key: "uses", values: ["Documentation", "Evidence"] },
+      { key: "receives", values: ["brief"] },
+      { key: "produces", values: ["report (text/plain)"] },
+      { key: "limit", values: ["2"] },
+    ]);
+  });
+
+  it("shows a configuration chosen at start as its selector and cases", () => {
+    const agent = card("agent", { agentDefinition: { configuration: { select: { path: ["resources", "mode", "value"] }, cases: { a: "fast", b: "thorough" } } } });
+    expect(blockDetails(agent, declarations).find(item => item.key === "model")?.values).toEqual(["resources.mode.value → Fast | Thorough"]);
+  });
+
+  it("reads call arguments and declared effects, unknown when omitted", () => {
+    expect(blockDetails(card("call", { binding: "tests", arguments: { suite: { value: "portal" }, input: { path: ["data", "report"] } } }), declarations)).toEqual([
+      { key: "arguments", values: ['suite = "portal"', "input = data.report"] },
+      { key: "effect", values: ["none"] },
+    ]);
+    expect(blockDetails(card("call", { binding: "missing" }), declarations)).toEqual([{ key: "effect", values: ["unknown"] }]);
+  });
+
+  it("reads approval timings, condition tests and join rules", () => {
+    expect(blockDetails(card("approval", { timeoutMs: 3600000, validForMs: 900000 }), declarations)).toEqual([
+      { key: "timeout", values: ["1 h"] }, { key: "validity", values: ["15 min"] },
+    ]);
+    expect(predicateText({ all: [{ equals: [{ path: ["data", "exitCode"] }, { value: 0 }] }, { not: { equals: [{ path: ["text"] }, { value: "" }] } }] }))
+      .toBe('data.exitCode = 0 ∧ ¬(text = "")');
+    expect(blockDetails(card("join", { mode: "first", remaining: "finish", accept: { equals: [{ path: ["choice"] }, { value: "ok" }] } }), declarations)).toEqual([
+      { key: "mode", values: ["first", "remaining: finish"] }, { key: "accept", values: ['choice = "ok"'] },
+    ]);
+    expect(durationText(45000)).toBe("45 s");
+  });
+
+  it("describes a connection by its rule and payload, never by its ends", () => {
+    const base = { id: "e", source: "a", target: "b", dependency: false };
+    expect(edgeDetails({ ...base, label: "accept", transfers: ["completion"] })).toEqual({ route: "choice", choice: "accept", transmits: ["completion"] });
+    expect(edgeDetails({ ...base, label: "onError" }).route).toBe("error");
+    expect(edgeDetails({ ...base, label: "approved" }).route).toBe("approved");
+    expect(edgeDetails({ ...base, label: "next" }).route).toBe("next");
+  });
+});

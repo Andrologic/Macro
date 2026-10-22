@@ -472,6 +472,19 @@ const agentRoles: Record<string, Record<string, string>> = {
   'demo-audio-feature': { scope: 'Analyste produit', implement: 'Développeur mobile', verify: 'Testeur' },
   'macro-chantier': { agent1: 'Concepteur', agent2: 'Développeur', agent3: 'Vérificateur' },
 };
+// Shared declarations carry readable titles, as an author would set them.
+const sharedTitles: Record<string, string> = {
+  '/bindings/engine': 'Macro AI', '/bindings/knowledge': 'Documentation du projet',
+  '/configurations/project': 'Projet', '/configurations/fast': 'Rapide', '/configurations/thorough': 'Approfondie',
+  '/content/projectGuidance': 'Consignes du projet', '/content/mode': 'Mode d’analyse', '/content/reference': 'Document de référence', '/content/policy': 'Politique de preuve',
+};
+for (const plan of demoPlans) {
+  const source = JSON.parse(plan.agsdl.source);
+  for (const [path, title] of Object.entries(sharedTitles)) {
+    const [, map, name] = path.split('/');
+    if (source[map] && Object.hasOwn(source[map], name) && !plan.agsdl.display!.cards![path]?.title) plan.agsdl.display!.cards![path] = { ...plan.agsdl.display!.cards![path], title };
+  }
+}
 for (const plan of demoPlans) for (const [agent, role] of Object.entries(agentRoles[plan.id] ?? {})) {
   plan.agsdl.display!.cards![`/agents/${agent}`] = { ...plan.agsdl.display!.cards![`/agents/${agent}`], title: role };
 }
