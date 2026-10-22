@@ -116,7 +116,7 @@ mod tests {
         let owner = DbPool::default();
         let diagnostic = "synthetic-initialization-detail".repeat(200_000);
         assert_eq!(diagnostic.len(), 6_200_000);
-        owner.set_failed(diagnostic.clone());
+        owner.set_failed(diagnostic.clone()).await;
         for read_page in [false, true] {
             for expected in [false, true] {
                 bounded_owner_error(read_catalog(&owner, read_page, expected).await, expected);
@@ -139,7 +139,9 @@ mod tests {
                 let request = read_catalog(&owner, read_page, expected);
                 tokio::pin!(request);
                 assert!(poll_fn(|cx| Poll::Ready(request.as_mut().poll(cx).is_pending())).await);
-                owner.set_failed("synthetic-initialization-detail".repeat(200_000));
+                owner
+                    .set_failed("synthetic-initialization-detail".repeat(200_000))
+                    .await;
                 bounded_owner_error(request.await, expected);
             }
         }
@@ -175,7 +177,7 @@ mod tests {
                 pool.close().await;
                 let (pool, probe) = probe_pool(&dir).await;
                 let owner = DbPool::default();
-                owner.set_ready(pool.clone());
+                owner.set_ready(pool.clone()).await;
                 let token = version(&owner, ConversationCatalogVersionInput::default())
                     .await
                     .unwrap();
@@ -220,13 +222,13 @@ mod tests {
                 .await
                 .unwrap();
                 match action {
-                    "replace" => owner.set_ready(pool.clone()),
-                    "initializing" => owner.set_initializing(),
-                    _ => owner.set_failed("synthetic"),
+                    "replace" => owner.set_ready(pool.clone()).await,
+                    "initializing" => owner.set_initializing().await,
+                    _ => owner.set_failed("synthetic").await,
                 }
                 probe.catalog_release.store(true, SeqCst);
                 assert_eq!(task.await.unwrap().unwrap_err().message, "stale_revision");
-                owner.set_ready(pool.clone());
+                owner.set_ready(pool.clone()).await;
                 let next = version(&owner, ConversationCatalogVersionInput::default())
                     .await
                     .unwrap();

@@ -702,18 +702,18 @@ pub fn run() {
                 match db::init_db(&app_handle).await {
                     Ok(pool) => match ai::chatgpt::recover_auth_mutations(&pool).await {
                         Ok(()) => {
-                            pool_state.set_ready(pool);
+                            pool_state.set_ready(pool).await;
                             tracing::info!("Database initialized successfully");
                         }
                         Err(error) => {
-                            pool_state.set_failed(error.clone());
+                            pool_state.set_failed(error.clone()).await;
                             tracing::error!(
                                 "Failed to recover durable authentication mutations: {error}"
                             );
                         }
                     },
                     Err(e) => {
-                        pool_state.set_failed(e.to_string());
+                        pool_state.set_failed(e.to_string()).await;
                         tracing::error!("Failed to initialize database: {}", e);
                     }
                 }

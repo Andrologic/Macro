@@ -1,6 +1,6 @@
 use super::version;
 use crate::db::{conversation_content, create_pool};
-use sqlx::{Connection, Row, SqliteConnection, SqlitePool};
+use sqlx::{Connection, SqliteConnection, SqlitePool};
 use tempfile::TempDir;
 
 pub(crate) async fn remove_reference_schema_in(db: &mut SqliteConnection) {
@@ -39,6 +39,13 @@ const INSERTS: &[&str] = &[
 #[tokio::test]
 async fn global_version_observes_all_five_families_without_changing_c1_c2() {
     let (_dir, pool) = fixture().await;
+    let c2 = crate::db::conversation_catalog::conversation_catalog_version(
+        &pool,
+        &"0".repeat(32),
+        &crate::db::models::ConversationCatalogVersionInput::default(),
+    )
+    .await
+    .unwrap();
     let c1 = conversation_content::conversation_content_version(&pool, "s")
         .await
         .unwrap();
@@ -72,6 +79,16 @@ async fn global_version_observes_all_five_families_without_changing_c1_c2() {
         conversation_content::conversation_content_version(&pool, "s")
             .await
             .unwrap()
+    );
+    assert_eq!(
+        c2,
+        crate::db::conversation_catalog::conversation_catalog_version(
+            &pool,
+            &"0".repeat(32),
+            &crate::db::models::ConversationCatalogVersionInput::default()
+        )
+        .await
+        .unwrap()
     );
     let before = token(&pool).await;
     sqlx::query("INSERT INTO e_source_captures(capture_id,binding_json,phase,revision,family,cursor_field,cursor_offset,row_ordinal,fields_count,rows_count,bytes_received,charge_bytes,created_at,progressed_at,expires_at,idle_ms,last_clock) VALUES('00000000-0000-0000-0000-000000000000','{}',0,0,0,0,0,0,0,0,0,216,0,0,1,1,0)").execute(&pool).await.unwrap();
