@@ -46,7 +46,8 @@ ni remplacé par celui d’un autre compte.
 ## Capture et effets
 
 Le runner et le CLI reçoivent un environnement remplacé, un HOME privé, un
-`CLAUDE_CONFIG_DIR` privé persistant et un répertoire de contexte vide, distinct du
+`CLAUDE_CONFIG_DIR` privé persistant, un `XDG_CACHE_HOME` privé séparé et un
+répertoire de contexte vide, distinct du
 workspace des outils. Les settings utilisateur/projet, plugins externes, mémoire,
 connecteurs, tâches d’arrière-plan, workflows et recherche d’outils MCP sont fermés.
 La présence d’une configuration système ou d’un ajout externe non qualifié rend

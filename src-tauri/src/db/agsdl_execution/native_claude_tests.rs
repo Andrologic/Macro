@@ -42,6 +42,7 @@ async fn simulated_claude_resumes_exactly_retains_preterminal_refs_and_refuses_a
         cli: "/synthetic/claude".into(),
         directory: directory.clone(),
         home: directory.join("home"),
+        cache: directory.join("cache"),
         config: directory.join("claude"),
         bootstrap,
         digest: "synthetic-profile".into(),

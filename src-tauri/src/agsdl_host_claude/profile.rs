@@ -28,6 +28,7 @@ pub(crate) struct Profile {
     pub cli: PathBuf,
     pub directory: PathBuf,
     pub home: PathBuf,
+    pub cache: PathBuf,
     pub config: PathBuf,
     pub bootstrap: PathBuf,
     pub digest: String,
@@ -170,7 +171,7 @@ impl Profile {
         Ok(())
     }
     pub fn identity(&self) -> String {
-        json!({"format":"macro-claude-controlled-profile/1","version":VERSION,"cliVersion":CLI_VERSION,"digest":self.digest,"toolPolicy":"macro-controlled","contextCwd":self.bootstrap}).to_string()
+        json!({"format":"macro-claude-controlled-profile/1","version":VERSION,"cliVersion":CLI_VERSION,"digest":self.digest,"toolPolicy":"macro-controlled","contextCwd":self.bootstrap,"cacheDirectory":self.cache}).to_string()
     }
     pub fn attestation(&self, scope: &Value) -> Result<String> {
         let root = Path::new(scope["root"].as_str().ok_or_else(context_error)?);
@@ -194,6 +195,7 @@ impl Profile {
         command
             .env_clear()
             .env("HOME", &self.home)
+            .env("XDG_CACHE_HOME", &self.cache)
             .env("CLAUDE_CONFIG_DIR", &self.config)
             .env("TMPDIR", self.directory.join("tmp"))
             .env("PATH", "/usr/bin:/bin")
@@ -322,12 +324,14 @@ pub(crate) fn prepare(manager: &ConfigManager) -> Result<Profile> {
     hash_dependency(&zod, &zod, &mut dependency_hash, &mut 0)?;
     let directory = manager.root().join("native-engines/claude-v1");
     let home = directory.join("home");
+    let cache = directory.join("cache");
     let config = directory.join("claude");
     let bootstrap = manager.root().join("native-contexts/claude-v1");
     for path in [
         manager.root().join("native-engines"),
         directory.clone(),
         home.clone(),
+        cache.clone(),
         config.clone(),
         directory.join("tmp"),
         manager.root().join("native-contexts"),
@@ -399,6 +403,7 @@ pub(crate) fn prepare(manager: &ConfigManager) -> Result<Profile> {
     }
     hash.update(directory.to_string_lossy().as_bytes());
     hash.update(bootstrap.to_string_lossy().as_bytes());
+    hash.update(cache.to_string_lossy().as_bytes());
     let profile = Profile {
         node,
         sdk,
@@ -406,6 +411,7 @@ pub(crate) fn prepare(manager: &ConfigManager) -> Result<Profile> {
         cli,
         directory,
         home,
+        cache,
         config,
         bootstrap,
         workspace,

@@ -4,14 +4,14 @@ import assert from 'node:assert/strict';
 import http from 'node:http';
 import { spawn } from 'node:child_process';
 import { createInterface } from 'node:readline';
-import { access, mkdtemp, mkdir, writeFile } from 'node:fs/promises';
+import { access, mkdtemp, mkdir, writeFile, readdir } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { resolve, join, dirname } from 'node:path';
 import { randomUUID } from 'node:crypto';
 const sdk = process.env.MACRO_CLAUDE_SDK, cli = process.env.MACRO_CLAUDE_CLI;
 assert(sdk && cli, 'Set explicit external SDK and CLI paths. This script never installs them.');
 const directory = await mkdtemp(join(tmpdir(), 'macro-claude-runner-'));
-for (const name of ['home','config','workspace','tmp']) await mkdir(join(directory,name),{ mode:0o700 });
+for (const name of ['home','cache','config','workspace','tmp']) await mkdir(join(directory,name),{ mode:0o700 });
 await writeFile(join(directory,'AGENTS.md'),'FOREIGN_AGENT_CONTEXT_MUST_NOT_APPEAR');
 await writeFile(join(directory,'CLAUDE.md'),'FOREIGN_CLAUDE_CONTEXT_MUST_NOT_APPEAR');
 await mkdir(join(directory,'workspace','.claude'));
@@ -46,7 +46,7 @@ async function run(currentMode, sessionId, resume=false) {
   mode=currentMode;requests=[];calls=[];results=[];
   const frames=[];let ready, terminal;
   const child=spawn(process.execPath,[resolve('src-tauri/src/agsdl_host_claude/runner.mjs')],{
-    detached:true,stdio:['pipe','pipe','pipe'],env:{PATH:'/usr/bin:/bin',HOME:join(directory,'home'),CLAUDE_CONFIG_DIR:join(directory,'config'),TMPDIR:join(directory,'tmp'),LANG:'C.UTF-8',ANTHROPIC_API_KEY:'sk-ant-synthetic-inert-loopback',ANTHROPIC_BASE_URL:`http://127.0.0.1:${server.address().port}`,CLAUDE_CODE_MAX_OUTPUT_TOKENS:'1024',ENABLE_TOOL_SEARCH:'false',CLAUDE_CODE_DISABLE_ADVISOR_TOOL:'1',CLAUDE_CODE_DISABLE_WORKFLOWS:'1',CLAUDE_CODE_DISABLE_AGENT_VIEW:'1',CLAUDE_CODE_DISABLE_TERMINAL_TITLE:'1',CLAUDE_CODE_MAX_RETRIES:'0',DISABLE_DOCTOR_COMMAND:'1',CLAUDE_CODE_DISABLE_CLAUDE_MDS:'1',CLAUDE_AGENT_SDK_DISABLE_BUILTIN_AGENTS:'1',CLAUDE_CODE_DISABLE_REFUSAL_FALLBACK:'1',CLAUDE_CODE_DISABLE_NONSTREAMING_FALLBACK:'1',CLAUDE_CODE_DISABLE_OFFICIAL_MARKETPLACE_AUTOINSTALL:'1',CLAUDE_CODE_DISABLE_POLICY_SKILLS:'1',CLAUDE_CODE_DISABLE_CRON:'1',CLAUDE_CODE_DISABLE_ARTIFACT:'1',CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC:'1',DISABLE_AUTOUPDATER:'1',DISABLE_TELEMETRY:'1',DISABLE_ERROR_REPORTING:'1',CLAUDE_CODE_DISABLE_AUTO_MEMORY:'1',CLAUDE_CODE_DISABLE_FILE_MENTIONS:'1',CLAUDE_CODE_DISABLE_BACKGROUND_TASKS:'1',ENABLE_CLAUDEAI_MCP_SERVERS:'false',CLAUDE_CODE_DISABLE_BUNDLED_SKILLS:'1'}
+    detached:true,stdio:['pipe','pipe','pipe'],env:{PATH:'/usr/bin:/bin',HOME:join(directory,'home'),XDG_CACHE_HOME:join(directory,'cache'),CLAUDE_CONFIG_DIR:join(directory,'config'),TMPDIR:join(directory,'tmp'),LANG:'C.UTF-8',ANTHROPIC_API_KEY:'sk-ant-synthetic-inert-loopback',ANTHROPIC_BASE_URL:`http://127.0.0.1:${server.address().port}`,CLAUDE_CODE_MAX_OUTPUT_TOKENS:'1024',ENABLE_TOOL_SEARCH:'false',CLAUDE_CODE_DISABLE_ADVISOR_TOOL:'1',CLAUDE_CODE_DISABLE_WORKFLOWS:'1',CLAUDE_CODE_DISABLE_AGENT_VIEW:'1',CLAUDE_CODE_DISABLE_TERMINAL_TITLE:'1',CLAUDE_CODE_MAX_RETRIES:'0',DISABLE_DOCTOR_COMMAND:'1',CLAUDE_CODE_DISABLE_CLAUDE_MDS:'1',CLAUDE_AGENT_SDK_DISABLE_BUILTIN_AGENTS:'1',CLAUDE_CODE_DISABLE_REFUSAL_FALLBACK:'1',CLAUDE_CODE_DISABLE_NONSTREAMING_FALLBACK:'1',CLAUDE_CODE_DISABLE_OFFICIAL_MARKETPLACE_AUTOINSTALL:'1',CLAUDE_CODE_DISABLE_POLICY_SKILLS:'1',CLAUDE_CODE_DISABLE_CRON:'1',CLAUDE_CODE_DISABLE_ARTIFACT:'1',CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC:'1',DISABLE_AUTOUPDATER:'1',DISABLE_TELEMETRY:'1',DISABLE_ERROR_REPORTING:'1',CLAUDE_CODE_DISABLE_AUTO_MEMORY:'1',CLAUDE_CODE_DISABLE_FILE_MENTIONS:'1',CLAUDE_CODE_DISABLE_BACKGROUND_TASKS:'1',ENABLE_CLAUDEAI_MCP_SERVERS:'false',CLAUDE_CODE_DISABLE_BUNDLED_SKILLS:'1'}
   });
   let stderr='';child.stderr.on('data',b=>{stderr+=b;});
   const input=createInterface({input:child.stdout});
@@ -98,6 +98,8 @@ try {
   const session=randomUUID();await run('success',session);await run('success',session,true);
   await run('host-deny',randomUUID());await run('native-deny',randomUUID());
   await run('lost-response',randomUUID());await run('missing-session',randomUUID(),true);
+  assert.deepEqual(await readdir(join(directory,'home')),[], 'CLI wrote outside its explicit private cache');
+  report.homeRemainedEmpty=true;
   console.log(JSON.stringify({realInference:false,cases:report.cases.map(c=>({mode:c.mode,resume:c.resume,requests:c.requests.length,calls:c.calls.length,result:c.terminal?.subtype})),report:process.env.MACRO_CLAUDE_QUALIFICATION_REPORT || join(directory,'report.json')}));
 } finally {
   server.closeAllConnections();server.close();
