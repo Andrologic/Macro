@@ -103,3 +103,14 @@ it('bounds historical directory observations and stays closed when the retained 
   count = 0; await expect(h.directory.read(signal(), () => {})).rejects.toMatchObject({ code: 'resource_limit' });
   h.directory.reset(); expect((await h.directory.read(signal(), () => {})).instances).toHaveLength(1);
 });
+
+it('separates heartbeat and relay presence from lifecycle contradictions without weakening access grants', async () => {
+  const h = harness(); await h.directory.read(signal(), () => {});
+  let present = false;
+  h.query(async request => page(request.item_type, request.item_type === 'instance'
+    ? [{ ...instance(), last_seen_at: '2026-01-01T00:01:00Z', connection_state: present ? 'reachable' : 'unreachable' }] : [syntheticAccess()]));
+  let denials = 0; await h.directory.read(signal(), () => { denials++; }); expect(denials).toBe(1);
+  present = true; await h.directory.read(signal(), () => { denials++; }); expect(denials).toBe(1);
+  h.query(async request => page(request.item_type, request.item_type === 'instance' ? [{ ...instance(), label: 'Conflicting name' }] : [syntheticAccess()]));
+  await expect(h.directory.read(signal(), () => {})).rejects.toMatchObject({ code: 'stale_revision' });
+});

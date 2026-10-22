@@ -29,6 +29,14 @@ export function validDirectoryRequest(context: ConsumerIdentity, request: Consum
     }));
 }
 
+// Relay presence and heartbeat are observations, not lifecycle revisions.
+function durableResource(resource: PilotInstance | PilotInstanceAccess): unknown {
+  if (resource.type === 'instance_access') return resource;
+  return { contract_version: resource.contract_version, type: resource.type, ref: resource.ref, label: resource.label,
+    supported_contract_versions: resource.supported_contract_versions, revision: resource.revision,
+    revoked: resource.connection_state === 'revoked' };
+}
+
 /** Bounded, non-atomic v1 discovery. Only a complete traversal may publish grants. */
 export class ConsumerDirectory {
   private readonly limits: Readonly<ConsumerLimits>;
@@ -78,7 +86,7 @@ export class ConsumerDirectory {
           if (identities.size >= this.limits.identities) throw new PilotClientError('resource_limit');
           identities.add(identity);
           const old = this.observed.get(identity);
-          if (old && (item.revision < old.revision || item.revision === old.revision && stableJson(old) !== stableJson(item))) throw new PilotClientError('stale_revision');
+          if (old && (item.revision < old.revision || item.revision === old.revision && stableJson(durableResource(old)) !== stableJson(durableResource(item)))) throw new PilotClientError('stale_revision');
         }
         for (const item of page.items) {
           const identity = `${type}:${stableJson(item.ref)}`;

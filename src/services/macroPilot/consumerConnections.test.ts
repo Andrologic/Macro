@@ -321,3 +321,116 @@ it('does not let an old retry timer retire a manually revalidated replacement', 
     expect(a.state().scope).toEqual(current); expect(a.state().phase).toBe('ready');
   } finally { h.owner.dispose(); }
 });
+
+it('keeps public discovery closed after a partial proof, restores only after completion, and fences deletion', async () => {
+  const h = harness(); await h.owner.refreshDirectory(); const a = h.owner.acquire('instance:a'), b = h.owner.acquire('instance:b');
+  try {
+    await until(() => h.waiting.size === 2);
+    await a.read('conversation.read', { ref: ref('instance:a') });
+    h.directory(async request => request.item_type === 'instance' ? h.page(request) : { malformed: true });
+    await expect(h.owner.refreshDirectory()).rejects.toMatchObject({ code: 'invalid_response' });
+    expect(a.state().phase).toBe('revalidating'); expect(b.state().phase).toBe('revalidating');
+    await expect(a.read('conversation.read', { ref: ref('instance:a') })).rejects.toMatchObject({ code: 'unavailable' });
+    const proof = defer<void>(); h.verify(() => proof.promise); h.directory(undefined);
+    const complete = h.owner.refreshDirectory(); expect(a.state().phase).toBe('revalidating'); proof.resolve(); await complete;
+    expect(a.state().phase).toBe('ready'); expect(b.state().phase).toBe('ready');
+    await b.read('conversation.read', { ref: ref('instance:b') });
+    const page = defer<unknown>(); h.directory(async request => request.item_type === 'instance' ? page.promise : h.page(request));
+    const pending = h.owner.refreshDirectory().catch(error => error);
+    await until(() => h.verifications() >= 4);
+    h.emit('instance:a', [{ kind: 'account.deleted', scope: { account_id: 'account:synthetic' }, revision: 1 }]);
+    await until(() => a.state().phase === 'error');
+    page.resolve(h.page({ contract_version: '1.0', type: 'page_request', item_type: 'instance', limit: 2 }));
+    expect(await pending).toBeInstanceOf(PilotClientError); expect(h.owner.directorySnapshot()).toBeNull();
+  } finally {
+    h.owner.dispose(); a.release(); b.release(); a.release();
+    await until(() => h.owner.diagnostics().activeReads === 0);
+    expect(h.owner.diagnostics().subscribers).toBe(0);
+  }
+});
+it('cancels queued removed resources before ACK and never dispatches their old desire', async () => {
+  const h = harness(); await h.owner.refreshDirectory(); const a = h.owner.acquire('instance:a'), detail = h.owner.acquire('instance:a'), listing = h.owner.acquire('instance:a');
+  try {
+    await until(() => h.waiting.has('instance:a')); const gate = defer<unknown>();
+    h.read(async (id, dispatch) => dispatch.request.type === 'request' && dispatch.request.operation === 'projects.list' ? gate.promise : h.terminal(id, dispatch));
+    const blocking = a.read('projects.list', { instance_id: 'instance:a' });
+    const queued = detail.read('conversation.window', { ref: ref('instance:a') }).catch(error => error);
+    const catalogRead = listing.read('conversations.catalog', { instance_id: 'instance:a', kind: 'conversation' }).catch(error => error);
+    await until(() => h.calls.some(call => call.dispatch.kind === 'submit'));
+    h.emit('instance:a', [{ kind: 'conversation.removed', scope: ref('instance:a'), revision: 8 }]);
+    await until(() => h.waiting.has('instance:a'));
+    expect(await queued).toMatchObject({ code: 'not_found' }); expect(await catalogRead).toMatchObject({ code: 'context_changed' });
+    expect(h.waiting.get('instance:a')!.request.after_sequence).toBe(1);
+    const sent = h.calls.find(call => call.dispatch.kind === 'submit')!; gate.resolve(h.terminal(sent.id, sent.dispatch)); await blocking;
+    expect(h.calls.filter(call => call.dispatch.kind === 'submit')).toHaveLength(1);
+  } finally { h.owner.dispose(); }
+});
+it('uses only comparable operation clocks and retires old floors at a new stream', async () => {
+  const h = harness(); await h.owner.refreshDirectory(); const a = h.owner.acquire('instance:a');
+  try {
+    await until(() => h.waiting.has('instance:a')); const initial = await a.read('conversation.read', { ref: ref('instance:a') });
+    h.emit('instance:a', [{ kind: 'conversations.changed', scope: { instance_id: 'instance:a' }, revision: 100 },
+      { kind: 'conversation.changed', scope: ref('instance:a'), revision: 100 },
+      { kind: 'conversation.resource_changed', scope: ref('instance:a'), revision: 200 }]);
+    await until(() => h.waiting.has('instance:a'));
+    expect((await a.read('conversations.catalog', { instance_id: 'instance:a', kind: 'conversation' })).response.result.page.revision).toBeLessThan(100);
+    expect((await a.read('conversation.window', { ref: ref('instance:a') })).response.result.page.revision).toBeLessThan(200);
+    h.emit('instance:a', [], true); await until(() => h.waiting.has('instance:a'));
+    expect(a.state().resources[initial.resourceKey]).toMatchObject({ revision: null, legacyRevision: null });
+    expect((await a.read('conversation.read', { ref: ref('instance:a'), consistency: 'network-reliability-1' })).response.result.page.revision).toBe(1);
+    h.emit('instance:a', [{ kind: 'conversation.changed', scope: ref('instance:a'), revision: 8 }]); await until(() => h.waiting.has('instance:a'));
+    await expect(a.read('conversation.read', { ref: ref('instance:a') })).rejects.toMatchObject({ code: 'stale_revision' });
+  } finally { h.owner.dispose(); }
+});
+it('retires every queued desire at a spontaneous stream reset while keeping access denial separate', async () => {
+  const h = harness(); await h.owner.refreshDirectory(); const a = h.owner.acquire('instance:a'), queued = h.owner.acquire('instance:a');
+  try {
+    await until(() => h.waiting.has('instance:a')); const gate = defer<unknown>(); h.read(async () => gate.promise);
+    const active = a.read('projects.list', { instance_id: 'instance:a' }).catch(error => error);
+    const waiting = queued.read('conversation.read', { ref: ref('instance:a') }).catch(error => error);
+    await until(() => h.calls.some(call => call.dispatch.kind === 'submit'));
+    h.emit('instance:a', [], true); await until(() => h.waiting.has('instance:a'));
+    expect(await active).toMatchObject({ code: 'context_changed' }); expect(await waiting).toMatchObject({ code: 'context_changed' });
+    gate.resolve({ malformed: true }); h.read(undefined);
+    expect(h.calls.filter(call => call.dispatch.kind === 'submit')).toHaveLength(1);
+    await a.read('conversation.read', { ref: ref('instance:a'), consistency: 'network-reliability-1' });
+    h.directory(async request => request.item_type === 'instance' ? h.page(request) : { ...h.page(request), items: [h.access('instance:a', 1, 'revoked'), h.access('instance:b')] });
+    await h.owner.refreshDirectory(); expect(a.state().error).toBe('forbidden');
+    await expect(a.read('conversation.read', { ref: ref('instance:a') })).rejects.toBeInstanceOf(PilotClientError);
+  } finally { h.owner.dispose(); }
+});
+
+it('coalesces a manual retry with public proof while retiring the old preparation', async () => {
+  const h = harness(); await h.owner.refreshDirectory(); const a = h.owner.acquire('instance:a');
+  try {
+    const proof = defer<void>(); h.verify(() => proof.promise);
+    const refresh = h.owner.refreshDirectory(); const manual = h.owner.retryTarget('instance:a');
+    expect(a.state().phase).toBe('revalidating'); proof.resolve(); await Promise.all([refresh, manual]);
+    await until(() => h.waiting.has('instance:a')); expect(a.state().phase).toBe('ready');
+    await a.read('conversation.read', { ref: ref('instance:a') });
+  } finally { h.owner.dispose(); }
+});
+it('lets public authority proof supersede an internal recovery without keeping the old desire', async () => {
+  const h = harness(); await h.owner.refreshDirectory(); const a = h.owner.acquire('instance:a'), b = h.owner.acquire('instance:b');
+  try {
+    await until(() => h.waiting.size === 2); const proof = defer<void>(); h.verify(() => proof.promise);
+    h.failEvents('instance:a', new PilotClientError('offline')); await until(() => h.verifications() === 2);
+    expect(b.state().phase).toBe('ready'); const refresh = h.owner.refreshDirectory(); expect(b.state().phase).toBe('revalidating');
+    proof.resolve(); await refresh; await until(() => h.waiting.size === 2);
+    expect(a.state().phase).toBe('ready'); expect(b.state().phase).toBe('ready');
+    await Promise.all([a.read('conversation.read', { ref: ref('instance:a') }), b.read('conversation.read', { ref: ref('instance:b') })]);
+  } finally { h.owner.dispose(); }
+});
+
+it('does not erase a known content floor for a reset that reuses the same stream identity', async () => {
+  const h = harness(); await h.owner.refreshDirectory(); const a = h.owner.acquire('instance:a');
+  try {
+    await until(() => h.waiting.has('instance:a')); await a.read('conversation.read', { ref: ref('instance:a') });
+    h.emit('instance:a', [{ kind: 'conversation.resource_changed', scope: ref('instance:a'), revision: 100 }]);
+    await until(() => h.waiting.has('instance:a'));
+    const pending = h.waiting.get('instance:a')!; h.waiting.delete('instance:a'); pending.cleanup();
+    pending.done.resolve({ contract_version: '2.0', type: 'events.page', request_id: pending.request.request_id,
+      account_id: 'account:synthetic', stream_id: pending.request.stream_id, after_sequence: 0, next_sequence: 0, reset: true, events: [] });
+    await until(() => a.state().phase === 'error'); expect(a.state().error).toBe('invalid_response');
+  } finally { h.owner.dispose(); }
+});

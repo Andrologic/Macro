@@ -30,6 +30,10 @@ export interface ConsumerLease {
 }
 interface Desired {
   key: string;
+  resourceKey: string;
+  ownerVersion: number;
+  authorityEpoch: number;
+  resume: boolean;
   operation: ConsumerOperation;
   body: ContentRequest<ConsumerOperation>['body'];
   options: ReadOptions;
@@ -44,6 +48,7 @@ interface Job { desired: Desired; subscribers: Set<Subscriber>; controller: Abor
 interface Slot { signal: AbortSignal; run(): Promise<unknown>; resolve(value: unknown): void; reject(error: unknown): void; cleanup(): void }
 interface Entry {
   id: string; client: PilotTargetClient; subscribers: Set<Subscriber>; life: AbortController;
+  authorityValid: boolean; authorityEpoch: number; streamId: string | null;
   ready: boolean; preparing: Promise<void> | null; monitoring: Promise<void> | null; recovering: Promise<void> | null;
   retries: number; retryDeadline: number | null; controller: AbortController; recoveryController: AbortController;
   job: Job | null; slot: Slot | null; active: boolean; blocked: boolean; notifyQueued: boolean;
@@ -67,6 +72,9 @@ export class ConsumerConnections {
   private readonly controller = new AbortController();
   private unsubscribe: () => void;
   private catalog: ConsumerDirectorySnapshot | null = null;
+  private authorityEpoch = 0;
+  private discoveryController: AbortController | null = null;
+  private discoveryMode: { kind: 'public' | 'targets'; entries: Set<Entry> } | null = null;
   private discovering: Promise<ConsumerDirectorySnapshot> | null = null;
   private accountRevalidation: Promise<unknown> | null = null;
   private activeReads = 0;
@@ -91,24 +99,49 @@ export class ConsumerConnections {
     if (entry.controller.signal.aborted || this.entries.get(entry.id) !== entry) throw changed();
   }
   directorySnapshot(): ConsumerDirectorySnapshot | null { this.check(); return this.catalog ? structuredClone(this.catalog) : null; }
-  /** Single-flight account proof and directory traversal. Callers cannot cancel each other's discovery. */
+  /** Public discovery closes all protected views until the complete proof succeeds. */
   refreshDirectory(): Promise<ConsumerDirectorySnapshot> {
     this.check();
     if (this.accountTerminal) throw new PilotClientError('unauthorized');
-    if (this.discovering) return this.discovering;
+    if (this.discovering && this.discoveryMode?.kind === 'public') return this.discovering;
+    this.authorityEpoch++;
+    for (const entry of this.entries.values()) this.lockAuthority(entry);
+    return this.discover({ kind: 'public', entries: new Set() });
+  }
+  private refreshTarget(entry: Entry): Promise<ConsumerDirectorySnapshot> {
+    this.current(entry);
+    if (this.accountTerminal) throw new PilotClientError('unauthorized');
+    if (this.discovering) {
+      this.discoveryMode?.entries.add(entry);
+      return this.discovering;
+    }
+    return this.discover({ kind: 'targets', entries: new Set([entry]) });
+  }
+  private discover(mode: { kind: 'public' | 'targets'; entries: Set<Entry> }): Promise<ConsumerDirectorySnapshot> {
+    const previous = this.discovering;
+    this.discoveryController?.abort();
+    const controller = new AbortController(); this.discoveryController = controller; this.discoveryMode = mode;
     this.catalog = null;
-    const signal = this.controller.signal;
+    const epoch = this.authorityEpoch;
+    const signal = AbortSignal.any([this.controller.signal, controller.signal]);
+    const check = () => {
+      this.check(signal);
+      if (this.accountTerminal || epoch !== this.authorityEpoch) throw changed();
+    };
     const pending = (async () => {
-      await guarded(this.directoryTransport.verify(this.identity, signal), signal); this.check(signal);
+      // Retire an interrupted target traversal before starting the public one.
+      if (previous) await guarded(previous.catch(() => undefined), signal);
+      check();
+      await guarded(this.directoryTransport.verify(this.identity, signal), signal); check();
       const result = await this.directory.read(signal, resource => {
-        this.check(signal);
+        check();
         const entry = this.entries.get(resource.ref.instance_id);
         if (entry) {
           if (resource.type === 'instance_access') entry.client.setAccess(resource);
           this.block(entry, new PilotClientError(resource.type === 'instance' && resource.connection_state === 'unreachable' ? 'unavailable' : 'forbidden'));
         }
       });
-      this.check(signal);
+      check();
       for (const entry of this.entries.values()) {
         const access = result.accesses.find(value => value.ref.instance_id === entry.id);
         const instance = result.instances.find(value => value.ref.instance_id === entry.id);
@@ -116,33 +149,42 @@ export class ConsumerConnections {
           this.block(entry, new PilotClientError(access?.state === 'revoked' ? 'forbidden' : 'unavailable'));
           continue;
         }
+        const wasAuthorized = entry.authorityValid;
+        const selected = mode.kind === 'public' || mode.entries.has(entry);
         const before = entry.client.scope().generation;
         entry.client.setAccess(access);
-        const changed = before !== entry.client.scope().generation;
-        if (changed) this.fence(entry);
-        if (entry.state.phase !== 'error' || changed) entry.blocked = false;
+        const accessChanged = before !== entry.client.scope().generation;
+        if (accessChanged) this.fence(entry);
+        if (mode.entries.has(entry) || selected && entry.state.phase !== 'error' || accessChanged && (selected || wasAuthorized)) entry.blocked = false;
+        if (selected || accessChanged && wasAuthorized) entry.authorityValid = true;
+        if (entry.authorityValid && !entry.blocked) { entry.state.phase = entry.ready ? 'ready' : 'connecting'; entry.state.error = null; this.notify(entry); }
       }
-      this.catalog = result;
-      for (const entry of this.entries.values()) if (!entry.blocked && !entry.ready) this.start(entry);
+      check(); this.catalog = result;
+      for (const entry of this.entries.values()) if (entry.authorityValid && !entry.blocked && !entry.ready) this.start(entry);
       return structuredClone(result);
     })();
     this.discovering = pending;
-    void pending.finally(() => { if (this.discovering === pending) this.discovering = null; }).catch(() => {});
+    void pending.finally(() => {
+      if (this.discovering === pending) { this.discovering = null; this.discoveryController = null; this.discoveryMode = null; }
+    }).catch(() => {});
     return pending;
   }
-  /** Foreground/offline authority is closed until the shared proof succeeds. */
-  async revalidate(): Promise<void> {
-    this.check();
-    for (const entry of this.entries.values()) { this.fence(entry); entry.blocked = true; }
-    await this.refreshDirectory(); this.check();
-    for (const entry of this.entries.values()) if (!entry.blocked) this.start(entry);
+  private lockAuthority(entry: Entry): void {
+    entry.authorityValid = false; entry.authorityEpoch++;
+    entry.recoveryController.abort(); entry.recoveryController = new AbortController(); entry.recovering = null;
+    this.invalidate(entry);
+    for (const subscriber of entry.subscribers) this.cancel(entry, subscriber);
+    if (!entry.blocked) entry.state.phase = 'revalidating';
+    this.notify(entry);
   }
+  /** Foreground/account revalidation has the same closed public discovery semantics. */
+  async revalidate(): Promise<void> { await this.refreshDirectory(); this.check(); }
   async retryTarget(instanceId: string): Promise<void> {
     this.check(); const entry = this.entries.get(instanceId);
     if (!entry) throw changed();
     this.fence(entry); entry.blocked = true;
     entry.retries = 0; entry.retryDeadline = null;
-    await this.refreshDirectory(); this.current(entry);
+    await this.refreshTarget(entry); this.current(entry);
     if (entry.blocked) throw new PilotClientError('forbidden');
     await this.ensureReady(entry);
   }
@@ -158,7 +200,7 @@ export class ConsumerConnections {
     if (!entry) {
       if (this.entries.size >= this.limits.targets) throw new PilotClientError('resource_limit');
       entry = { id: instanceId, client: new PilotTargetClient(this.transport, instanceId, { access }), subscribers: new Set(), life: new AbortController(),
-        ready: false, preparing: null, monitoring: null, recovering: null, retries: 0, retryDeadline: null, controller: new AbortController(), recoveryController: new AbortController(),
+        authorityValid: true, authorityEpoch: 0, streamId: null, ready: false, preparing: null, monitoring: null, recovering: null, retries: 0, retryDeadline: null, controller: new AbortController(), recoveryController: new AbortController(),
         job: null, slot: null, active: false, blocked: false, notifyQueued: false,
         stamp: 0, state: { phase: 'connecting', version: 0, error: null, projectsRevision: null, catalogRevision: null, projectsVersion: 0, catalogVersion: 0 }, resources: new Map() };
       this.entries.set(instanceId, entry);
@@ -172,7 +214,7 @@ export class ConsumerConnections {
       read: async (operation, body, options = {}) => this.request(target, subscriber, operation, body, options) as unknown as Promise<SharedConsumerReadPage<typeof operation>>,
       release: () => {
         if (subscriber.released) return;
-        subscriber.released = true; subscriber.notify = undefined; this.cancel(target, subscriber); target.subscribers.delete(subscriber); this.subscriberCount--;
+        subscriber.released = true; subscriber.notify = undefined; this.cancel(target, subscriber); if (target.subscribers.delete(subscriber)) this.subscriberCount--;
         this.prune(target);
         if (!target.subscribers.size) { this.entries.delete(target.id); this.closeEntry(target); }
       },
@@ -203,6 +245,7 @@ export class ConsumerConnections {
   }
   private request(entry: Entry, subscriber: Subscriber, operation: ConsumerOperation, body: ContentRequest<ConsumerOperation>['body'], options: ReadOptions): Promise<ConsumerReadPage> {
     this.current(entry); if (subscriber.released) return Promise.reject(changed());
+    if (!entry.authorityValid) return Promise.reject(new PilotClientError('unavailable'));
     if (entry.blocked) return Promise.reject(new PilotClientError(entry.state.error ?? 'unavailable'));
     // Bound caller-owned continuation metadata before making any retained copy.
     if ((options.seenIdentities?.size ?? 0) > this.limits.identities) return Promise.reject(new PilotClientError('resource_limit'));
@@ -236,7 +279,7 @@ export class ConsumerConnections {
     const signal = AbortSignal.any([entry.controller.signal, expiry.signal, ...(options.signal ? [options.signal] : [])]);
     const promise = new Promise<ConsumerReadPage>((resolve, reject) => {
       const abort = () => this.cancel(entry, subscriber);
-      const desired: Desired = { key, operation, body: saved.body, options: { previous: saved.previous, seenIdentities: saved.seenIdentities }, signal,
+      const desired: Desired = { key, resourceKey, ownerVersion: entry.resources.get(resourceKey)?.version ?? stamp, authorityEpoch: entry.authorityEpoch, resume: false, operation, body: saved.body, options: { previous: saved.previous, seenIdentities: saved.seenIdentities }, signal,
         deadline: this.clock.now() + this.retry.deadlineMs, resolve, reject, cleanup: () => { expiry.dispose(); signal.removeEventListener('abort', abort); } };
       subscriber.desired = desired;
       signal.addEventListener('abort', abort, { once: true });
@@ -244,6 +287,17 @@ export class ConsumerConnections {
       else if (entry.job?.desired.key === key && !entry.job.controller.signal.aborted) entry.job.subscribers.add(subscriber);
     });
     this.runNext(entry); return promise;
+  }
+  private checkDesired(entry: Entry, desired: Desired, scope?: string): void {
+    this.current(entry, desired.signal);
+    if (this.accountTerminal || !entry.authorityValid || entry.authorityEpoch !== desired.authorityEpoch) throw changed();
+    const resource = entry.resources.get(desired.resourceKey);
+    if (resource?.removed) throw new PilotClientError('not_found');
+    const version = resource?.version ?? (desired.resourceKey === 'projects' ? entry.state.projectsVersion : entry.state.catalogVersion);
+    if (version !== desired.ownerVersion || scope && stableJson(entry.client.scope()) !== scope) throw new PilotClientError('snapshot_expired');
+  }
+  private cancelDesired(entry: Entry, predicate: (desired: Desired) => boolean, error: unknown = changed()): void {
+    for (const subscriber of entry.subscribers) if (subscriber.desired && predicate(subscriber.desired)) this.cancel(entry, subscriber, error);
   }
   private runNext(entry: Entry): void {
     if (entry.job || entry.blocked || entry.controller.signal.aborted) return;
@@ -261,15 +315,21 @@ export class ConsumerConnections {
         try {
           if (entry.recovering) await guarded(entry.recovering, signal);
           await guarded(this.ensureReady(entry), signal);
-          const result = await this.slot(entry, signal, () => { job.dispatched = true; return entry.client.read(desired.operation, desired.body, { ...desired.options, signal }); });
-          this.current(entry, signal);
+          this.checkDesired(entry, desired);
+          const scope = stableJson(entry.client.scope());
+          const result = await this.slot(entry, signal, () => { this.checkDesired(entry, desired, scope); job.dispatched = true; return entry.client.read(desired.operation, desired.body, { ...desired.options, signal }); });
+          this.current(entry, signal); this.checkDesired(entry, desired, scope);
           if (this.clock.now() >= desired.deadline) throw new PilotClientError('snapshot_expired');
           const ref = (desired.body as { ref?: object }).ref;
           const resourceKey = ref ? stableJson(ref) : desired.operation === 'projects.list' ? 'projects' : 'catalog';
           const resource = entry.resources.get(resourceKey);
           const resultRevision = (result.response.result as { page?: { revision: number }; revision?: number }).page?.revision ?? (result.response.result as { revision?: number }).revision;
-          const known = resource ? (desired.body as { consistency?: string }).consistency === 'network-reliability-1' ? resource.revision : null
-            : resourceKey === 'projects' ? entry.state.projectsRevision : entry.state.catalogRevision;
+          // Only the primary captures share numeric clocks with host events.
+          const known = desired.operation === 'conversation.read' && resource
+            ? (desired.body as { consistency?: string }).consistency === 'network-reliability-1'
+              ? resource.revision : resource.legacyRevision === null && entry.state.catalogRevision === null ? null : Math.max(resource.legacyRevision ?? -1, entry.state.catalogRevision ?? -1)
+            : desired.operation === 'projects.list' ? entry.state.projectsRevision
+              : desired.operation === 'conversations.list' ? entry.state.catalogRevision : null;
           if (known !== null && resultRevision !== undefined && resultRevision < known) throw new PilotClientError('stale_revision');
           if (resource) resource.invalidated = false;
           return { ...result, resourceKey, ownerVersion: resource?.version ?? (resourceKey === 'projects' ? entry.state.projectsVersion : entry.state.catalogVersion) } as SharedConsumerReadPage;
@@ -290,7 +350,11 @@ export class ConsumerConnections {
       const desired = subscriber.desired;
       if (!desired || desired.key !== job.desired.key) continue;
       subscriber.desired = null; desired.cleanup();
-      if (error) desired.reject(error); else desired.resolve(structuredClone(page!));
+      if (error) desired.reject(error);
+      else {
+        try { this.checkDesired(entry, desired, stableJson(page!.scope)); desired.resolve(structuredClone(page!)); }
+        catch (failure) { desired.reject(failure); }
+      }
     }
     job.subscribers.clear();
     if (error && !job.controller.signal.aborted && !(error instanceof PilotClientError && error.code === 'context_changed')) this.block(entry, error);
@@ -319,30 +383,32 @@ export class ConsumerConnections {
     }
   }
   private start(entry: Entry): void {
-    const life = entry.life;
+    const life = entry.life; const epoch = entry.authorityEpoch;
     void this.ensureReady(entry).catch(error => {
-      if (life.signal.aborted || entry.controller.signal.aborted) return;
+      if (life.signal.aborted || entry.controller.signal.aborted || !entry.authorityValid || epoch !== entry.authorityEpoch) return;
       if (consumerRetryable(error)) void this.recover(entry, error).catch(() => {});
       else this.block(entry, error);
     });
   }
   private ensureReady(entry: Entry): Promise<void> {
     this.current(entry);
+    if (!entry.authorityValid) return Promise.reject(new PilotClientError('unavailable'));
     if (entry.blocked) return Promise.reject(new PilotClientError(entry.state.error ?? 'unavailable'));
     if (entry.ready) return Promise.resolve();
     if (entry.preparing) return entry.preparing;
-    const life = entry.life;
+    const life = entry.life; const epoch = entry.authorityEpoch;
     const signal = AbortSignal.any([life.signal, entry.controller.signal]);
+    const check = () => { this.current(entry, signal); if (!entry.authorityValid || epoch !== entry.authorityEpoch || this.accountTerminal) throw changed(); };
     const pending = (async () => {
-      await this.slot(entry, signal, () => entry.client.negotiate(signal)); this.current(entry, signal);
-      const batch = await entry.client.events(signal); this.current(entry, signal);
-      this.apply(entry, batch); this.current(entry, signal);
+      await this.slot(entry, signal, () => entry.client.negotiate(signal)); check();
+      const batch = await entry.client.events(signal); check();
+      this.apply(entry, batch); check();
       entry.ready = true; entry.state.phase = 'ready'; entry.state.error = null; this.notify(entry);
     })();
     entry.preparing = pending;
     void pending.then(() => {
       if (!signal.aborted) queueMicrotask(() => this.monitor(entry, life));
-    }, () => {}).finally(() => { if (entry.preparing === pending) entry.preparing = null; });
+    }, () => {}).finally(() => { if (entry.preparing === pending) { entry.preparing = null; if (epoch !== entry.authorityEpoch && entry.authorityValid && !entry.blocked && !entry.ready) this.start(entry); } });
     return pending;
   }
   private monitor(entry: Entry, life: AbortController): void {
@@ -368,7 +434,18 @@ export class ConsumerConnections {
   }
   private apply(entry: Entry, batch: ConsumerEventBatch): void {
     this.current(entry);
-    if (batch.page.reset) { this.invalidate(entry); if (entry.job?.dispatched) this.cancelJob(entry); }
+    if (batch.page.reset) {
+      if (entry.streamId === batch.page.stream_id) throw new PilotClientError('invalid_response');
+      const previous = entry.streamId;
+      this.invalidate(entry, true);
+      this.cancelDesired(entry, desired => previous !== null && !desired.resume, changed());
+      for (const subscriber of entry.subscribers) if (subscriber.desired && !subscriber.desired.options.previous) {
+        const desired = subscriber.desired;
+        desired.ownerVersion = entry.resources.get(desired.resourceKey)?.version ?? (desired.resourceKey === 'projects' ? entry.state.projectsVersion : entry.state.catalogVersion);
+        desired.authorityEpoch = entry.authorityEpoch; desired.resume = false;
+      }
+    }
+    entry.streamId = batch.page.stream_id;
     let account = false, deleted = false;
     for (const event of batch.page.events) {
       const change = event.change;
@@ -377,12 +454,17 @@ export class ConsumerConnections {
         continue;
       }
       if (change.kind === 'projects.changed') {
-        if (change.revision > (entry.state.projectsRevision ?? -1)) { entry.state.projectsRevision = change.revision; entry.state.projectsVersion = ++entry.stamp; if (entry.job?.desired.operation === 'projects.list') this.cancelJob(entry); }
+        if (change.revision > (entry.state.projectsRevision ?? -1)) { entry.state.projectsRevision = change.revision; entry.state.projectsVersion = ++entry.stamp; this.cancelDesired(entry, desired => desired.operation === 'projects.list'); }
       }
       else if (change.kind === 'conversations.changed') {
-        if (change.revision > (entry.state.catalogRevision ?? -1)) { entry.state.catalogRevision = change.revision; entry.state.catalogVersion = ++entry.stamp; if (entry.job?.desired.operation.startsWith('conversations.')) this.cancelJob(entry); }
+        if (change.revision > (entry.state.catalogRevision ?? -1)) { entry.state.catalogRevision = change.revision; entry.state.catalogVersion = ++entry.stamp; this.cancelDesired(entry, desired => desired.operation.startsWith('conversations.')); }
       }
       else if ('conversation_id' in change.scope) {
+        if (change.kind === 'conversation.removed') {
+          entry.state.catalogRevision = Math.max(entry.state.catalogRevision ?? -1, change.revision);
+          entry.state.catalogVersion = ++entry.stamp;
+          this.cancelDesired(entry, desired => desired.operation.startsWith('conversations.'));
+        }
         const key = stableJson(change.scope); const state = entry.resources.get(key);
         if (state) {
           const domain = change.kind === 'conversation.resource_changed' ? 'revision' : change.kind === 'conversation.changed' ? 'legacyRevision' : null;
@@ -390,7 +472,7 @@ export class ConsumerConnections {
           if (domain) state[domain] = change.revision;
           if (change.kind === 'conversation.removed') state.removed = true;
           state.invalidated = true; state.version = ++entry.stamp;
-          if ([...entry.job?.subscribers ?? []].some(value => value.resource === key)) this.cancelJob(entry);
+          this.cancelDesired(entry, desired => desired.resourceKey === key, change.kind === 'conversation.removed' ? new PilotClientError('not_found') : changed());
         }
       }
     }
@@ -400,6 +482,7 @@ export class ConsumerConnections {
     if (account) this.revalidateAccount(deleted);
   }
   private revalidateAccount(deleted = false): void {
+    if (deleted && !this.accountTerminal) { this.authorityEpoch++; this.discoveryController?.abort(); }
     this.accountTerminal ||= deleted;
     if (deleted) {
       this.catalog = null;
@@ -418,25 +501,27 @@ export class ConsumerConnections {
       });
   }
 
-  private invalidate(entry: Entry): void {
-    entry.state.catalogRevision = null; entry.state.projectsRevision = null; entry.state.catalogVersion = ++entry.stamp; entry.state.projectsVersion = ++entry.stamp;
+  private invalidate(entry: Entry, retireClocks = false): void {
+    if (retireClocks) { entry.state.catalogRevision = null; entry.state.projectsRevision = null; } entry.state.catalogVersion = ++entry.stamp; entry.state.projectsVersion = ++entry.stamp;
     this.prune(entry);
     for (const subscriber of entry.subscribers) if (subscriber.resource && !entry.resources.has(subscriber.resource)) entry.resources.set(subscriber.resource, { revision: null, legacyRevision: null, removed: false, invalidated: true, version: ++entry.stamp });
-    for (const state of entry.resources.values()) { state.invalidated = true; state.version = ++entry.stamp; }
+    for (const state of entry.resources.values()) { if (retireClocks) { state.revision = null; state.legacyRevision = null; state.removed = false; } state.invalidated = true; state.version = ++entry.stamp; }
   }
   private fence(entry: Entry, preserveRead = false): void {
+    entry.authorityValid = false; entry.authorityEpoch++;
     entry.life.abort(); entry.life = new AbortController(); entry.client.reset();
     entry.preparing = null; entry.ready = false; this.invalidate(entry);
     if (!preserveRead) {
       entry.recoveryController.abort(); entry.recoveryController = new AbortController(); entry.recovering = null;
       for (const subscriber of entry.subscribers) this.cancel(entry, subscriber);
     }
-    entry.state.phase = 'revalidating'; entry.state.catalogRevision = null; entry.state.projectsRevision = null;
+    entry.state.phase = 'revalidating';
     this.notify(entry);
   }
   private recover(entry: Entry, error: unknown): Promise<void> {
     if (entry.recovering) return entry.recovering;
     if (!consumerRetryable(error)) return Promise.reject(error);
+    if (entry.job) for (const subscriber of entry.job.subscribers) if (subscriber.desired && !subscriber.desired.options.previous) subscriber.desired.resume = true;
     this.fence(entry, true); entry.blocked = true;
     if (entry.retryDeadline === null) entry.retryDeadline = this.clock.now() + this.retry.deadlineMs;
     const expiry = deadline(Math.max(1, entry.retryDeadline - this.clock.now()));
@@ -451,7 +536,7 @@ export class ConsumerConnections {
         await guarded(this.clock.sleep(delay, signal), signal); this.current(entry, signal);
         if (this.clock.now() >= entry.retryDeadline!) throw new PilotClientError('snapshot_expired');
         try {
-          await guarded(this.refreshDirectory(), signal); this.current(entry, signal);
+          await guarded(this.refreshTarget(entry), signal); this.current(entry, signal);
           if (this.clock.now() >= entry.retryDeadline!) throw new PilotClientError('snapshot_expired');
           if (entry.blocked) throw new PilotClientError(entry.state.error ?? 'forbidden');
           await guarded(this.ensureReady(entry), signal); this.current(entry, signal); return;
@@ -473,13 +558,13 @@ export class ConsumerConnections {
   private closeEntry(entry: Entry): void {
     entry.controller.abort(); entry.life.abort(); entry.recoveryController.abort(); entry.client.dispose();
     if (entry.slot) { entry.slot.cleanup(); entry.slot.reject(changed()); entry.slot = null; }
-    for (const subscriber of entry.subscribers) { subscriber.notify = undefined; this.cancel(entry, subscriber); }
+    for (const subscriber of entry.subscribers) { subscriber.released = true; subscriber.notify = undefined; this.cancel(entry, subscriber); }
     entry.job?.cleanup(); entry.job = null; entry.preparing = null; entry.monitoring = null; entry.recovering = null;
     entry.subscribers.clear(); entry.resources.clear();
   }
   dispose(): void {
     if (this.closed) return;
-    this.closed = true; this.controller.abort(); this.directory.reset(); this.catalog = null; this.discovering = null; this.accountRevalidation = null; this.unsubscribe();
+    this.closed = true; this.controller.abort(); this.discoveryController?.abort(); this.directory.reset(); this.catalog = null; this.discovering = null; this.accountRevalidation = null; this.unsubscribe();
     for (const entry of this.entries.values()) this.closeEntry(entry);
     this.entries.clear(); this.subscriberCount = 0;
   }
