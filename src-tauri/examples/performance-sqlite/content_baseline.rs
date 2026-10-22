@@ -18,7 +18,7 @@ const PREFIX: &str = "chat:assistant-visible-provenance:v1:";
 const COUNT: &str =
     "SELECT COUNT(*) FROM messages WHERE conversation_id = ? AND role IN ('user','assistant')";
 const FIXTURE: &str =
-    "content-v5-native-inactive-storage:mixed-256;assistant-14-fields;receipt-v2;update-latest-marker-256+64*i;batch100;tail100;schema15;metadata100;after50;window50";
+    "content-v6-native-source-capture:mixed-256;assistant-14-fields;receipt-v2;update-latest-marker-256+64*i;batch100;tail100;schema16;metadata100;after50;window50";
 
 #[derive(Default)]
 struct Cell {
@@ -396,7 +396,7 @@ async fn validate_native(
     native_reads(pool, &expected, &mut BTreeMap::new(), 0, 1).await?;
     Ok(expected.token)
 }
-async fn check_runtime(pool: &SqlitePool, path: &std::path::Path) -> Result<Value> {
+pub(super) async fn check_runtime(pool: &SqlitePool, path: &std::path::Path) -> Result<Value> {
     assert_path(pool, path).await?;
     let versions: Vec<i64> =
         sqlx::query_scalar("SELECT version FROM schema_migrations ORDER BY version")
@@ -411,12 +411,12 @@ async fn check_runtime(pool: &SqlitePool, path: &std::path::Path) -> Result<Valu
     let fk: i64 = sqlx::query_scalar("PRAGMA foreign_keys")
         .fetch_one(pool)
         .await?;
-    if versions != [1, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
+    if versions != [1, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]
         || journal != "wal"
         || sync != 1
         || fk != 1
     {
-        return Err("Content baseline requires exact schema15/WAL/NORMAL/FK runtime".into());
+        return Err("Content baseline requires exact schema16/WAL/NORMAL/FK runtime".into());
     }
     Ok(
         json!({"migrations":versions,"journal_mode":journal,"synchronous":sync,"foreign_keys":fk,
@@ -850,7 +850,7 @@ pub(super) async fn run(pilot: bool) -> Result<Value> {
         cases.push(finish_case(pool, directory, outcome).await?);
     }
     Ok(
-        json!({"schema":6,"mode":"content-baseline","pilot":pilot,"reference_eligible":!pilot,
+        json!({"schema":7,"mode":"content-baseline","pilot":pilot,"reference_eligible":!pilot,
         "warmup":warmup,"samples":samples,"percentile":"nearest-rank","raw_observation_order":"execution order, warmup excluded",
         "fixture_sha256":format!("{:x}",Sha256::digest([FIXTURE.as_bytes(),include_str!("content_baseline.rs").as_bytes()].concat())),"fixture":FIXTURE,
         "boundary":"real Rust repository/SQLx/on-disk SQLite; no IPC, transport, capture, app or provider",
