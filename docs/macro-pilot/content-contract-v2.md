@@ -104,7 +104,12 @@ null-version negotiation cannot include it. The closed object contains:
 | `producer_generation` | Current authenticated producer incarnation. |
 | `session_revision`, `access_revision` | Exact nonnegative safe-integer authorization revisions; zero is valid. |
 | `permissions` | Exactly `["supervise"]`, never an action grant. |
-| `issued_at`, `expires_at` | Asserted date-times with a strictly positive lifetime of at most 30 seconds. |
+| `issued_at`, `expires_at` | Asserted RFC 3339 date-times, zero to three fractional second digits, with a strictly positive lifetime of at most 30 seconds. |
+
+The two proof timestamps have millisecond precision at most. Reject greater
+fractional precision; do not round or truncate an incoming timestamp into
+conformance. A positive representable lifetime is at least one millisecond.
+This restriction concerns only these new proof fields, not existing timestamps.
 
 The relay sets expiration to the earliest of issuance plus 30 seconds, session
 expiration and current producer-presence expiration. It verifies the audience,
@@ -119,6 +124,23 @@ current rights, generation freshness or present-time validity. Each client must
 check all of these against its trusted transport/session state before publishing
 or renewing protected content. A schema-valid old or wrong-audience proof is not
 authority. No client-supplied proof authorizes a server request.
+
+The proof's RAM scope includes the normalized relay origin from authenticated
+transport configuration, its complete audience and selection, and a local
+connection generation. The origin is not another wire field or a claimed
+request identity. Never reuse a proof from another origin, even when all wire
+identifiers match. Changing relay origin or rotating the transport credential
+invalidates the local generation even when account, session and device IDs
+remain unchanged. Never place the credential itself in a scope key or proof.
+
+Advance the local generation and invalidate the affected publication context
+before aborting requests, locking display or purging data. Capture the exact
+attempt, origin and local generation before each wait. Recheck them after
+credential and network waits and immediately before admission or rendering.
+An aborted or retired attempt cannot publish, restart renewal or unlock data.
+A late success cannot override a known authority refusal or revocation, nor
+revalidate an old context after suspension. Only a fresh, explicitly admitted
+attempt in the current context can establish authority again.
 
 A client records a monotonic timestamp before the exact negotiation attempt.
 Its local authority deadline is that timestamp plus `expires_at - issued_at`:
