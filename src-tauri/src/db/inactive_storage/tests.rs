@@ -626,3 +626,300 @@ async fn seal_rejects_missing_dependencies_and_corruption_and_preserves_c1_c2_to
         0
     );
 }
+
+use crate::db::pilot_files as files;
+const FILE_TIME: i64 = 1_800_000_000_000;
+fn date(time: i64) -> String {
+    chrono::DateTime::from_timestamp_millis(time)
+        .unwrap()
+        .to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
+}
+async fn file_scope(pool: &SqlitePool, instance: &str, session: &str) -> files::PilotFileScope {
+    sqlx::query("INSERT OR IGNORE INTO conversations(id,title,scope_mode,created_at,updated_at) VALUES('file-chat','Synthetic','Chat','now','now')").execute(pool).await.unwrap();
+    let scope = files::PilotFileScope {
+        account_id: "synthetic-account".into(),
+        session_id: session.into(),
+        instance_id: instance.into(),
+        authority_binding: "synthetic-generation".into(),
+        r#ref: files::PilotFileRef {
+            conversation_id: "file-chat".into(),
+            conversation_kind: files::PilotConversationKind::Chat,
+            workspace_id: Some("workspace:configuration".into()),
+            project_id: None,
+            task_id: None,
+        },
+    };
+    files::authorize(
+        pool,
+        files::PilotFileAuthorizeInput {
+            scope: scope.clone(),
+            execute_before: date(FILE_TIME + 3_600_000),
+            active: true,
+        },
+        &|| FILE_TIME,
+    )
+    .await
+    .unwrap();
+    scope
+}
+fn file_begin(
+    scope: &files::PilotFileScope,
+    intent: &str,
+    bytes: i64,
+) -> files::PilotFileBeginInput {
+    files::PilotFileBeginInput {
+        scope: scope.clone(),
+        execute_before: date(FILE_TIME + 3_600_000),
+        intent_id: intent.into(),
+        batch_id: intent.into(),
+        file_name: "synthetic.txt".into(),
+        mime_type: "text/plain".into(),
+        total_bytes: bytes,
+        sha256: digest(b"synthetic"),
+        intent_expires_at: date(FILE_TIME + 900_000),
+    }
+}
+async fn retained(store: &InactiveStorage) -> i64 {
+    let mut tx = store.tx().await.unwrap();
+    inactive_budget::retained(&mut tx).await.unwrap()
+}
+
+#[tokio::test]
+async fn first_e_admission_counts_all_staging_but_never_retroactively_caps_ordinary_assets() {
+    let (_dir, store, clock) = fixture().await;
+    clock.store(FILE_TIME, Ordering::SeqCst);
+    store
+        .authority
+        .as_ref()
+        .unwrap()
+        .write()
+        .await
+        .policy
+        .budget = 4096;
+    for instance in ["first", "second"] {
+        let scope = file_scope(&store.pool, instance, "old-session").await;
+        files::begin(&store.pool, file_begin(&scope, instance, 2500), &|| {
+            FILE_TIME
+        })
+        .await
+        .unwrap();
+    }
+    // An ordinary pre-existing asset is deliberately larger than the E test
+    // budget. Ordinary assets are outside this preparation-owned domain.
+    sqlx::query("INSERT INTO messages(id,conversation_id,role,content,created_at) VALUES('old-message','file-chat','user','old','now')").execute(&store.pool).await.unwrap();
+    sqlx::query("INSERT INTO pilot_message_attachments(id,owner_key,instance_id,ref_key,message_id,file_name,mime_type,total_bytes,sha256,data) VALUES('ordinary','old','old','old','old-message','old.txt','text/plain',65536,?,zeroblob(65536))").bind(digest(&[])).execute(&store.pool).await.unwrap();
+    let (begin, _) = intent(&[(RecordKind::Message { role: Role::User }, b"x".to_vec())]);
+    assert_eq!(
+        store
+            .begin(json(&begin).unwrap().as_bytes())
+            .await
+            .unwrap_err(),
+        "resource_limit"
+    );
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM e_inactive_domain")
+            .fetch_one(&store.pool)
+            .await
+            .unwrap(),
+        0
+    );
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM e_inactive_imports")
+            .fetch_one(&store.pool)
+            .await
+            .unwrap(),
+        0
+    );
+    let third = file_scope(&store.pool, "third", "new-session").await;
+    files::begin(
+        &store.pool,
+        file_begin(&third, "legacy-still-works", 1),
+        &|| FILE_TIME,
+    )
+    .await
+    .unwrap();
+    sqlx::query("UPDATE pilot_file_transfers SET state='aborted',data=X''")
+        .execute(&store.pool)
+        .await
+        .unwrap();
+    let receipt = store.begin(json(&begin).unwrap().as_bytes()).await.unwrap();
+    assert!(receipt.charge_bytes < 4096);
+    assert_eq!(
+        retained(&store).await,
+        receipt.charge_bytes + inactive_budget::DOMAIN_BYTES
+    );
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>(
+            "SELECT length(data) FROM pilot_message_attachments WHERE id='ordinary'"
+        )
+        .fetch_one(&store.pool)
+        .await
+        .unwrap(),
+        65536
+    );
+}
+
+#[tokio::test]
+async fn common_reservation_race_is_atomic_and_budget_survives_normal_reopen_session_and_restart() {
+    let (dir, store, clock) = fixture().await;
+    clock.store(FILE_TIME, Ordering::SeqCst);
+    let scope = file_scope(&store.pool, "file-instance", "first-session").await;
+    let payload = b"bounded payload";
+    let (begin, headers) = intent(&[(RecordKind::Message { role: Role::User }, payload.to_vec())]);
+    let base = JOURNAL_BYTES + json(&begin).unwrap().len() as i64 + inactive_budget::DOMAIN_BYTES;
+    let extra = RECORD_BYTES
+        + json(&headers[0]).unwrap().len() as i64
+        + MAPPING_BYTES
+        + FRAGMENT_META_BYTES
+        + payload.len() as i64
+        + payload.len().min(22) as i64;
+    // The literal scanner retains at most secret.len()-1 = 22 bytes.
+    let cap = base + extra;
+    store
+        .authority
+        .as_ref()
+        .unwrap()
+        .write()
+        .await
+        .policy
+        .budget = cap;
+    let receipt = store.begin(json(&begin).unwrap().as_bytes()).await.unwrap();
+    let frame = json(&Append {
+        record: headers[0].clone(),
+        offset: 0,
+        sha256: digest(payload),
+    })
+    .unwrap();
+    let (e, file) = tokio::join!(
+        store.append(&receipt.key, frame.as_bytes(), payload),
+        files::begin(&store.pool, file_begin(&scope, "racing", extra), &|| {
+            FILE_TIME
+        })
+    );
+    assert_eq!(usize::from(e.is_ok()) + usize::from(file.is_ok()), 1);
+    assert_eq!(
+        if let Err(error) = &e {
+            error
+        } else {
+            file.as_ref().unwrap_err()
+        },
+        "resource_limit"
+    );
+    assert_eq!(retained(&store).await, cap);
+    assert_charge(&store, &receipt.key).await;
+    if e.is_err() {
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM e_inactive_records")
+                .fetch_one(&store.pool)
+                .await
+                .unwrap(),
+            0
+        );
+    }
+    let pool = store.pool.clone();
+    drop(store);
+    pool.close().await;
+    let pool = create_pool(&dir.path().join("target.db")).await.unwrap();
+    let closed = InactiveStorage::closed(pool.clone());
+    assert_eq!(
+        closed.begin(b"invalid").await.unwrap_err(),
+        "inactive_storage_disabled"
+    );
+    let new_scope = file_scope(&pool, "other-instance", "new-session").await;
+    assert_eq!(
+        files::begin(&pool, file_begin(&new_scope, "after-restart", 1), &|| {
+            FILE_TIME
+        })
+        .await
+        .unwrap_err(),
+        "resource_limit"
+    );
+    let resumed = active(pool, clock);
+    assert_eq!(retained(&resumed).await, cap);
+    let tombstone = resumed.abort_receiving(&receipt.key).await.unwrap();
+    assert_eq!(tombstone.charge_bytes, receipt.charge_bytes);
+    let after = retained(&resumed).await;
+    assert_eq!(
+        resumed.abort_receiving(&receipt.key).await.unwrap(),
+        tombstone
+    );
+    assert_eq!(retained(&resumed).await, after);
+    assert_eq!(after, base + if e.is_err() { extra } else { 0 });
+}
+
+#[tokio::test]
+async fn finalized_attachment_promotion_releases_one_owned_reservation_and_keeps_ordinary_copy() {
+    use base64::{engine::general_purpose::STANDARD, Engine};
+    let (_dir, store, clock) = fixture().await;
+    clock.store(FILE_TIME, Ordering::SeqCst);
+    let scope = file_scope(&store.pool, "instance", "session").await;
+    let (begin, _) = intent(&[(
+        RecordKind::Message { role: Role::User },
+        b"history".to_vec(),
+    )]);
+    store.begin(json(&begin).unwrap().as_bytes()).await.unwrap();
+    let baseline = retained(&store).await;
+    let bytes = b"ordinary text asset";
+    let mut input = file_begin(&scope, "asset", bytes.len() as i64);
+    input.sha256 = digest(bytes);
+    let received = files::begin(&store.pool, input.clone(), &|| FILE_TIME)
+        .await
+        .unwrap();
+    assert_eq!(retained(&store).await, baseline + bytes.len() as i64);
+    files::chunk(
+        &store.pool,
+        files::PilotFileChunkInput {
+            scope: scope.clone(),
+            execute_before: input.execute_before.clone(),
+            transfer_id: received.transfer_id.clone(),
+            offset_bytes: 0,
+            data_base64: STANDARD.encode(bytes),
+            sha256: digest(bytes),
+        },
+        &|| FILE_TIME,
+    )
+    .await
+    .unwrap();
+    let transfer = files::PilotFileTransferInput {
+        scope: scope.clone(),
+        execute_before: input.execute_before.clone(),
+        transfer_id: received.transfer_id.clone(),
+    };
+    let finalized = files::finalize(&store.pool, transfer.clone(), &|| FILE_TIME)
+        .await
+        .unwrap();
+    assert_eq!(retained(&store).await, baseline + bytes.len() as i64);
+    let prep = files::PilotPrepareSendInput {
+        scope: scope.clone(),
+        execute_before: input.execute_before.clone(),
+        intent_expires_at: input.intent_expires_at,
+        send_intent_id: "send".into(),
+        content: "Synthetic".into(),
+        attachment_ids: vec![finalized.attachment_id.unwrap()],
+        expected_revision: 1,
+    };
+    let sent = files::prepare_send(&store.pool, prep.clone(), &|| FILE_TIME)
+        .await
+        .unwrap();
+    assert_eq!(retained(&store).await, baseline);
+    files::prepare_send(&store.pool, prep, &|| FILE_TIME)
+        .await
+        .unwrap();
+    assert_eq!(retained(&store).await, baseline);
+    assert_eq!(
+        files::abort(&store.pool, transfer, &|| FILE_TIME)
+            .await
+            .unwrap_err(),
+        "intent_conflict"
+    );
+    assert_eq!(
+        sqlx::query_scalar::<_, Vec<u8>>(
+            "SELECT data FROM pilot_message_attachments WHERE message_id=?"
+        )
+        .bind(sent.message.id)
+        .fetch_one(&store.pool)
+        .await
+        .unwrap(),
+        bytes
+    );
+}
