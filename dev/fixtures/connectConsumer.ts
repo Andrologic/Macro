@@ -66,7 +66,10 @@ export function createConnectConsumerFixture(options: { authorityLifetimeMs?: nu
       }
       if (dispatch.kind === 'events') {
         const stream = streams.get(id)!;
-        if (dispatch.request.stream_id === null) return { status: 200, data: { contract_version: '2.0', type: 'events.page', request_id: dispatch.request.request_id, account_id: identity.accountId, stream_id: stream.id, after_sequence: 0, next_sequence: 0, reset: true, events: [] } };
+        if (dispatch.request.stream_id === null) {
+          stream.id = `stream:synthetic:${++sequence}`; stream.sequence = 0;
+          return { status: 200, data: { contract_version: '2.0', type: 'events.page', request_id: dispatch.request.request_id, account_id: identity.accountId, stream_id: stream.id, after_sequence: 0, next_sequence: 0, reset: true, events: [] } };
+        }
         return { status: 200, data: await new Promise((resolve, reject) => {
           const abort = () => { if (waiting.get(id)?.request === dispatch.request) waiting.delete(id); reject(new PilotClientError('context_changed')); };
           waiting.set(id, { request: dispatch.request, resolve, reject, cleanup: () => signal.removeEventListener('abort', abort) });
