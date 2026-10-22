@@ -3,7 +3,7 @@
 mod types;
 use super::inactive_budget;
 use sha2::{Digest, Sha256};
-use sqlx::{Row, Sqlite, SqlitePool, Transaction};
+use sqlx::{Connection, Row, Sqlite, SqlitePool, Transaction};
 use std::sync::Arc;
 use tokio::sync::{OwnedRwLockReadGuard, RwLock};
 pub(crate) use types::*;
@@ -11,6 +11,59 @@ pub(crate) use types::*;
 type Result<T> = std::result::Result<T, String>;
 type Tx<'a> = Transaction<'a, Sqlite>;
 type Clock = Arc<dyn Fn() -> i64 + Send + Sync>;
+
+// SQLite may auto-rollback while SQLx retains depth1; a sent BEGIN may
+// conversely still report depth0. Only an acknowledged COMMIT is reusable.
+// The native pool has min_connections=0 and optimize_on_close disabled.
+struct Lease {
+    connection: Option<sqlx::pool::PoolConnection<Sqlite>>,
+    committed: bool,
+    #[cfg(test)]
+    cleanup_started: Option<std::sync::mpsc::Sender<()>>,
+}
+impl std::ops::Deref for Lease {
+    type Target = sqlx::SqliteConnection;
+    fn deref(&self) -> &Self::Target {
+        self.connection.as_ref().unwrap()
+    }
+}
+impl std::ops::DerefMut for Lease {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        self.connection.as_mut().unwrap()
+    }
+}
+struct CloseWake(std::thread::Thread);
+impl std::task::Wake for CloseWake {
+    fn wake(self: Arc<Self>) {
+        self.0.unpark();
+    }
+    fn wake_by_ref(self: &Arc<Self>) {
+        self.0.unpark();
+    }
+}
+impl Drop for Lease {
+    fn drop(&mut self) {
+        if !self.committed {
+            // ponytail: abandonment blocks this thread until the native worker
+            // closes; normal composition is disabled, not a UI latency promise.
+            // This polls only SQLx close, without a runtime/nested executor or
+            // timeout that could release the earlier authority guard too soon.
+            let Some(connection) = self.connection.take() else {
+                return;
+            };
+            let waker = std::task::Waker::from(Arc::new(CloseWake(std::thread::current())));
+            let mut context = std::task::Context::from_waker(&waker);
+            let mut close = Box::pin(connection.close());
+            while std::future::Future::poll(close.as_mut(), &mut context).is_pending() {
+                #[cfg(test)]
+                if let Some(observer) = self.cleanup_started.take() {
+                    let _ = observer.send(());
+                }
+                std::thread::park();
+            }
+        }
+    }
+}
 
 // No deserialization or production constructor can create this authority.
 struct Authority {
@@ -32,6 +85,8 @@ pub(crate) struct InactiveStorage {
     pool: SqlitePool,
     authority: Option<Arc<RwLock<Authority>>>,
     clock: Clock,
+    #[cfg(test)]
+    lease_cleanup_started: Option<std::sync::mpsc::Sender<()>>,
 }
 impl InactiveStorage {
     pub fn closed(pool: SqlitePool) -> Self {
@@ -39,6 +94,8 @@ impl InactiveStorage {
             pool,
             authority: None,
             clock: Arc::new(|| 0),
+            #[cfg(test)]
+            lease_cleanup_started: None,
         }
     }
     async fn authorize(&self) -> Result<OwnedRwLockReadGuard<Authority>> {
@@ -54,8 +111,13 @@ impl InactiveStorage {
         }
         Ok(authority)
     }
-    async fn tx(&self) -> Result<Tx<'_>> {
-        self.pool.begin_with("BEGIN IMMEDIATE").await.map_err(db)
+    async fn lease(&self) -> Result<Lease> {
+        Ok(Lease {
+            connection: Some(self.pool.acquire().await.map_err(db)?),
+            committed: false,
+            #[cfg(test)]
+            cleanup_started: self.lease_cleanup_started.clone(),
+        })
     }
     async fn load(&self, tx: &mut Tx<'_>, key: &str, authority: &Authority) -> Result<Journal> {
         if identity_key(&authority.identity)? != key {
@@ -92,7 +154,8 @@ impl InactiveStorage {
         }
         let key = identity_key(&begin.identity)?;
         let canonical = json(&begin)?;
-        let mut tx = self.tx().await?;
+        let mut lease = self.lease().await?;
+        let mut tx = lease.begin_with("BEGIN IMMEDIATE").await.map_err(db)?;
         let existing: Option<String> =
             sqlx::query_scalar("SELECT begin_json FROM e_inactive_imports WHERE identity_key=?")
                 .bind(&key)
@@ -105,6 +168,7 @@ impl InactiveStorage {
             }
             let result = self.load(&mut tx, &key, &authority).await?.receipt(&key);
             tx.commit().await.map_err(db)?;
+            lease.committed = true;
             return Ok(result);
         }
         let policy = &authority.policy;
@@ -127,6 +191,7 @@ impl InactiveStorage {
             .bind(&key).bind(&canonical).bind(charge).bind(now).bind(now).bind(expires).bind(policy.idle_ms).bind(now).execute(&mut *tx).await.map_err(db)?;
         let result = self.load(&mut tx, &key, &authority).await?.receipt(&key);
         tx.commit().await.map_err(db)?;
+        lease.committed = true;
         Ok(result)
     }
     pub async fn append(&self, key: &str, control: &[u8], payload: &[u8]) -> Result<AppendAck> {
@@ -143,7 +208,8 @@ impl InactiveStorage {
             return Err("integrity_failed".into());
         }
         let canonical = json(&input.record)?;
-        let mut tx = self.tx().await?;
+        let mut lease = self.lease().await?;
+        let mut tx = lease.begin_with("BEGIN IMMEDIATE").await.map_err(db)?;
         let journal = self.load(&mut tx, key, &authority).await?;
         let record=sqlx::query("SELECT header_json,received_bytes,complete,utf8_tail,scan_tail FROM e_inactive_records WHERE import_id=? AND ordinal=?")
             .bind(journal.id).bind(input.record.ordinal as i64).fetch_optional(&mut *tx).await.map_err(db)?;
@@ -165,6 +231,7 @@ impl InactiveStorage {
                 revision: row.get("ack_revision"),
             };
             tx.commit().await.map_err(db)?;
+            lease.committed = true;
             return Ok(ack);
         }
         if journal.phase != Phase::Receiving {
@@ -264,6 +331,7 @@ impl InactiveStorage {
             .bind(revision).bind(journal.next_record+i64::from(complete)).bind(total).bind(extra).bind(now).bind(now).bind(journal.id).execute(&mut *tx).await.map_err(db)?;
         journal.check_time((self.clock)())?;
         tx.commit().await.map_err(db)?;
+        lease.committed = true;
         Ok(AppendAck {
             ordinal: input.record.ordinal,
             next_offset: end,
@@ -273,14 +341,17 @@ impl InactiveStorage {
     }
     pub async fn status(&self, key: &str) -> Result<Receipt> {
         let authority = self.authorize().await?;
-        let mut tx = self.tx().await?;
+        let mut lease = self.lease().await?;
+        let mut tx = lease.begin_with("BEGIN IMMEDIATE").await.map_err(db)?;
         let receipt = self.load(&mut tx, key, &authority).await?.receipt(key);
         tx.commit().await.map_err(db)?;
+        lease.committed = true;
         Ok(receipt)
     }
     pub async fn abort_receiving(&self, key: &str) -> Result<Receipt> {
         let authority = self.authorize().await?;
-        let mut tx = self.tx().await?;
+        let mut lease = self.lease().await?;
+        let mut tx = lease.begin_with("BEGIN IMMEDIATE").await.map_err(db)?;
         let journal = self.load(&mut tx, key, &authority).await?;
         if journal.phase == Phase::SealedStorage {
             return Err("storage_pinned".into());
@@ -303,15 +374,18 @@ impl InactiveStorage {
         }
         let receipt = self.load(&mut tx, key, &authority).await?.receipt(key);
         tx.commit().await.map_err(db)?;
+        lease.committed = true;
         Ok(receipt)
     }
     pub async fn seal_storage(&self, key: &str) -> Result<SealedStorage> {
         let authority = self.authorize().await?;
-        let mut tx = self.tx().await?;
+        let mut lease = self.lease().await?;
+        let mut tx = lease.begin_with("BEGIN IMMEDIATE").await.map_err(db)?;
         let mut journal = self.load(&mut tx, key, &authority).await?;
         if journal.phase == Phase::SealedStorage {
             let receipt = journal.receipt(key);
             tx.commit().await.map_err(db)?;
+            lease.committed = true;
             return Ok(SealedStorage {
                 receipt,
                 manifest_sha256: journal.begin.manifest_sha256,
@@ -335,6 +409,8 @@ impl InactiveStorage {
             journal.revision += 1;
         }
         tx.commit().await.map_err(db)?;
+        lease.committed = true;
+        drop(lease);
         // No write transaction is kept while hashing payloads or scanning index pages.
         let mut manifest = Manifest::new(&journal.begin)?;
         let mut mapping = Sha256::new();
@@ -393,7 +469,8 @@ impl InactiveStorage {
         if bytes != journal.begin.bytes || manifest_hash != journal.begin.manifest_sha256 {
             return Err("integrity_failed".into());
         }
-        let mut tx = self.tx().await?;
+        let mut lease = self.lease().await?;
+        let mut tx = lease.begin_with("BEGIN IMMEDIATE").await.map_err(db)?;
         let current = self.load(&mut tx, key, &authority).await?;
         if current.phase != Phase::Verifying || current.revision != journal.revision {
             return Err("stale_revision".into());
@@ -413,6 +490,7 @@ impl InactiveStorage {
             .bind(mapping_hash).bind(journal.id).execute(&mut *tx).await.map_err(db)?;
         let receipt = self.load(&mut tx, key, &authority).await?.receipt(key);
         tx.commit().await.map_err(db)?;
+        lease.committed = true;
         Ok(SealedStorage {
             receipt,
             manifest_sha256: manifest_hash,
@@ -431,7 +509,8 @@ impl InactiveStorage {
         {
             return Err("resource_limit".into());
         }
-        let mut tx = self.tx().await?;
+        let mut lease = self.lease().await?;
+        let mut tx = lease.begin_with("BEGIN IMMEDIATE").await.map_err(db)?;
         let journal = self.load(&mut tx, key, &authority).await?;
         if journal.phase != Phase::SealedStorage {
             return Err("not_sealed".into());
@@ -460,6 +539,7 @@ impl InactiveStorage {
                 offset: f.offset,
             });
         tx.commit().await.map_err(db)?;
+        lease.committed = true;
         Ok(Readback { fragments, next })
     }
 }

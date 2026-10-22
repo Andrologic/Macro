@@ -1,9 +1,9 @@
 import { expect, it, spyOn } from "bun:test";
-import { writeFile } from "node:fs/promises";
+import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { UseChatStoreScenarioContext } from "../useChatStore.test";
 import { buildMessageState } from "../chat/chatMessageState";
-import { LOCAL_INSTRUCTION, REQUIRED_FACTS, readPortableProofArchive } from "../../test-utils/portableHistoryProof";
+import { LOCAL_INSTRUCTION, REQUIRED_FACTS, readPortableProofArchive, validatePortableProofDependencies } from "../../test-utils/portableHistoryProof";
 import type { StreamMessage } from "../../services/streamingChat";
 import * as compaction from "../../services/contextCompaction";
 import type { ChatMessage } from "../../types";
@@ -56,6 +56,15 @@ async function compactedSourceProof(c: UseChatStoreScenarioContext,
     const saved = [...writes].reverse().find(([value]) => value.conversation_id === sourceId)![0];
     expect(saved.summary_text).toContain(marker);
     const record = c.createDbConversationCompactionState(saved);
+    // Source authority is still generated locally above. The recovered old
+    // checkpoint is data only on the target, never installed as its authority.
+    const storageRoot = process.env.MACRO_INACTIVE_STORAGE_PROOF_DIR;
+    const importedRecord: Record<string, unknown> = storageRoot ? (JSON.parse(await readFile(join(storageRoot, "stored-checkpoint-provenance.json"), "utf8")) as { persistedRecord: Record<string, unknown> }).persistedRecord : saved;
+    if (storageRoot) {
+      expect(importedRecord.fingerprint).toBe(record.fingerprint);
+      expect(importedRecord.policy_version).toBe(saved.policy_version);
+      expect(importedRecord.summary_text).toBe(record.summary_text);
+    }
     c.dbGetConversationCompactionStateMock.mockImplementation((...args: unknown[]) => Promise.resolve(args[0] === sourceId ? record : null) as never);
     const source = await c.loadChatStore(); populate(source.useChatStore, sourceId);
     const generatedBeforeContinuation = summaryCalls;
@@ -64,7 +73,7 @@ async function compactedSourceProof(c: UseChatStoreScenarioContext,
       if (!isSource) configure("macro-ai");
       const current = isSource ? source : await c.loadChatStore();
       const id = isSource ? sourceId : targetId;
-      if (!isSource) populate(current.useChatStore, id, String(saved.summary_text));
+      if (!isSource) populate(current.useChatStore, id, String(importedRecord.summary_text));
       const before = c.streamChatMock.mock.calls.length;
       try { await current.useChatStore.getState().sendMessage({ conversationId: id, content: LOCAL_INSTRUCTION }); } catch { /* transport sentinel */ }
       await c.flushAsyncWork();
@@ -105,7 +114,17 @@ export function registerPortableHistoryProofScenarios(c: UseChatStoreScenarioCon
     c.sendChatNonStreamingMock.mockImplementation(async () => { throw new Error("provider_nonstream_forbidden"); });
     c.streamChatMock.mockImplementation(async () => { throw new Error("provider_stream_forbidden"); });
     try {
-      for (const count of [300, 600, 1200]) {
+      // E storage reuses fd6's scale evidence, and exercises the real host only
+      // with the 300-message archive reconstructed from sealed target readback.
+      const storageProof = process.env.MACRO_INACTIVE_STORAGE_PROOF_DIR;
+      if (storageProof && storageProof !== root) throw new Error("storage_readback_directory_mismatch");
+      if (storageProof) {
+        const damaged = JSON.parse(await readFile(join(storageProof, "negative-fact-dependencies.json"), "utf8"));
+        expect(() => validatePortableProofDependencies(damaged)).toThrow("missing_indispensable_context");
+        const controls = JSON.parse(await readFile(join(storageProof, "storage-negative-controls.json"), "utf8"));
+        expect(controls.corrupt_asset_refused).toBe(true); expect(controls.removed_asset_refused).toBe(true);
+      }
+      for (const count of storageProof ? [300] : [300, 600, 1200]) {
         const streamed = await readPortableProofArchive(join(root!, `archive-${count}.ndjson`));
         expect(streamed.messages).toHaveLength(0);
         expect(streamed.stats.materializedContentBytes).toBe(0);

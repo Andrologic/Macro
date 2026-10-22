@@ -49,6 +49,13 @@ pub(super) async fn admit_e(
         }
         return admit(db, extra).await;
     }
+    let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM e_inactive_imports")
+        .fetch_one(&mut *db)
+        .await
+        .map_err(|_| "database_unavailable")?;
+    if count != 0 {
+        return Err("database_unavailable".into());
+    }
     let total = retained(db).await?;
     if extra < 0
         || budget <= 0

@@ -122,9 +122,12 @@ pub(crate) async fn create_pool(db_path: &Path) -> DbResult<SqlitePool> {
         .foreign_keys(true)
         .journal_mode(sqlx::sqlite::SqliteJournalMode::Wal)
         .synchronous(sqlx::sqlite::SqliteSynchronous::Normal)
+        // Preserve the defaults required by E's abandoned-lease shutdown.
+        .optimize_on_close(false, None::<u32>)
         .busy_timeout(std::time::Duration::from_secs(30));
 
     let pool = SqlitePoolOptions::new()
+        .min_connections(0)
         .max_connections(5)
         .connect_with(options)
         .await?;

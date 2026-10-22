@@ -40,6 +40,7 @@ fn active(pool: SqlitePool, clock: Arc<AtomicI64>) -> InactiveStorage {
             },
         }))),
         clock: Arc::new(move || clock.load(Ordering::SeqCst)),
+        lease_cleanup_started: None,
     }
 }
 fn intent(records: &[(RecordKind, Vec<u8>)]) -> (Begin, Vec<RecordHeader>) {
@@ -242,8 +243,9 @@ async fn fixture() -> (TempDir, InactiveStorage, Arc<AtomicI64>) {
     (dir, store, clock)
 }
 async fn assert_charge(store: &InactiveStorage, key: &str) {
-    let mut tx = store.tx().await.unwrap();
     let authority = store.authorize().await.unwrap();
+    let mut lease = store.lease().await.unwrap();
+    let mut tx = lease.begin_with("BEGIN IMMEDIATE").await.unwrap();
     let journal = store.load(&mut tx, key, &authority).await.unwrap();
     assert_eq!(journal.charge, charge(&mut tx, journal.id).await.unwrap());
 }
@@ -680,8 +682,73 @@ fn file_begin(
     }
 }
 async fn retained(store: &InactiveStorage) -> i64 {
-    let mut tx = store.tx().await.unwrap();
+    let mut lease = store.lease().await.unwrap();
+    let mut tx = lease.begin_with("BEGIN IMMEDIATE").await.unwrap();
     inactive_budget::retained(&mut tx).await.unwrap()
+}
+
+#[tokio::test]
+async fn missing_persisted_domain_refuses_new_e_and_attachment_admission_without_repair() {
+    let (_dir, store, clock) = fixture().await;
+    clock.store(FILE_TIME, Ordering::SeqCst);
+    let (mut begin, _) = intent(&[(RecordKind::Message { role: Role::User }, b"x".to_vec())]);
+    let original = store.begin(json(&begin).unwrap().as_bytes()).await.unwrap();
+    let scope = file_scope(&store.pool, "instance", "session").await;
+    sqlx::query("DELETE FROM e_inactive_domain")
+        .execute(&store.pool)
+        .await
+        .unwrap();
+    {
+        let mut authority = store.authority.as_ref().unwrap().write().await;
+        authority.identity.transfer = "different-transfer".into();
+        authority.policy.budget *= 2;
+        begin.identity = authority.identity.clone();
+    }
+    for _ in 0..2 {
+        assert_eq!(
+            store
+                .begin(json(&begin).unwrap().as_bytes())
+                .await
+                .unwrap_err(),
+            "database_unavailable"
+        );
+        assert_eq!(
+            files::begin(&store.pool, file_begin(&scope, "no-repair", 1), &|| {
+                FILE_TIME
+            })
+            .await
+            .unwrap_err(),
+            "database_unavailable"
+        );
+    }
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM e_inactive_domain")
+            .fetch_one(&store.pool)
+            .await
+            .unwrap(),
+        0
+    );
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM e_inactive_imports")
+            .fetch_one(&store.pool)
+            .await
+            .unwrap(),
+        1
+    );
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT charge_bytes FROM e_inactive_imports")
+            .fetch_one(&store.pool)
+            .await
+            .unwrap(),
+        original.charge_bytes
+    );
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM pilot_file_transfers")
+            .fetch_one(&store.pool)
+            .await
+            .unwrap(),
+        0
+    );
 }
 
 #[tokio::test]
@@ -922,4 +989,300 @@ async fn finalized_attachment_promotion_releases_one_owned_reservation_and_keeps
         .unwrap(),
         bytes
     );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn seal_revalidates_revision_after_abort_and_holds_authority_through_final_write() {
+    for abort in [true, false] {
+        let (_dir, mut store, _clock) = fixture().await;
+        let (begin, headers) = intent(&[(
+            RecordKind::Message { role: Role::User },
+            b"history".to_vec(),
+        )]);
+        let receipt = store.begin(json(&begin).unwrap().as_bytes()).await.unwrap();
+        append_record(&store, &receipt.key, &headers[0], b"history").await;
+        let barrier = Arc::new(std::sync::Barrier::new(2));
+        let rendezvous = barrier.clone();
+        let calls = AtomicI64::new(0);
+        store.clock = Arc::new(move || {
+            let call = calls.fetch_add(1, Ordering::SeqCst) + 1;
+            if call == if abort { 2 } else { 3 } {
+                rendezvous.wait();
+                rendezvous.wait();
+            }
+            100
+        });
+        let store = Arc::new(store);
+        let worker = store.clone();
+        let key = receipt.key.clone();
+        let sealing = tokio::spawn(async move { worker.seal_storage(&key).await });
+        barrier.wait();
+        assert!(
+            store.authority.as_ref().unwrap().try_write().is_err(),
+            "authority must remain locked during paged verification and final write"
+        );
+        if abort {
+            store.abort_receiving(&receipt.key).await.unwrap();
+        }
+        barrier.wait();
+        let result = sealing.await.unwrap();
+        if abort {
+            assert_eq!(result.unwrap_err(), "stale_revision");
+            assert_eq!(
+                store.status(&receipt.key).await.unwrap().phase,
+                Phase::Aborted
+            );
+        } else {
+            assert_eq!(result.unwrap().receipt.phase, Phase::SealedStorage);
+        }
+        store.authority.as_ref().unwrap().write().await.enabled = false;
+        assert_eq!(
+            store.readback(&receipt.key, None, 1).await.unwrap_err(),
+            "inactive_storage_disabled"
+        );
+    }
+}
+
+#[tokio::test]
+async fn migration15_failure_rolls_back_and_does_not_change_existing_content_tokens() {
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().join("upgrade.db");
+    let pool = create_pool(&path).await.unwrap();
+    let before: (String, i64) =
+        sqlx::query_as("SELECT incarnation,revision FROM conversation_catalog_version")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    remove_reference_schema_in(&mut *pool.acquire().await.unwrap()).await;
+    sqlx::raw_sql("CREATE TRIGGER synthetic_reject_15 BEFORE INSERT ON schema_migrations WHEN NEW.version=15 BEGIN SELECT RAISE(ABORT,'synthetic'); END").execute(&pool).await.unwrap();
+    assert!(crate::db::run_migrations(&pool).await.is_err());
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>(
+            "SELECT COUNT(*) FROM sqlite_master WHERE name LIKE 'e_inactive_%'"
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap(),
+        0
+    );
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT MAX(version) FROM schema_migrations")
+            .fetch_one(&pool)
+            .await
+            .unwrap(),
+        14
+    );
+    sqlx::query("DROP TRIGGER synthetic_reject_15")
+        .execute(&pool)
+        .await
+        .unwrap();
+    pool.close().await;
+    let pool = create_pool(&path).await.unwrap();
+    let after: (String, i64) =
+        sqlx::query_as("SELECT incarnation,revision FROM conversation_catalog_version")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(before, after);
+}
+
+#[path = "lifetime_tests.rs"]
+mod lifetime;
+#[path = "proof.rs"]
+mod proof;
+
+#[tokio::test]
+async fn sqlite_full_rolls_back_payload_mapping_and_charge_before_ack() {
+    let (dir, original, clock) = fixture().await;
+    original.pool.close().await;
+    let pool = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect_with(
+            sqlx::sqlite::SqliteConnectOptions::new()
+                .filename(dir.path().join("target.db"))
+                .foreign_keys(true),
+        )
+        .await
+        .unwrap();
+    let store = active(pool, clock);
+    let payload = vec![b'x'; FRAGMENT_BYTES];
+    let (begin, headers) = intent(&[(RecordKind::Message { role: Role::User }, payload.clone())]);
+    let receipt = store.begin(json(&begin).unwrap().as_bytes()).await.unwrap();
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("PRAGMA freelist_count")
+            .fetch_one(&store.pool)
+            .await
+            .unwrap(),
+        0
+    );
+    let pages: i64 = sqlx::query_scalar("PRAGMA page_count")
+        .fetch_one(&store.pool)
+        .await
+        .unwrap();
+    sqlx::query(sqlx::AssertSqlSafe(format!(
+        "PRAGMA max_page_count={pages}"
+    )))
+    .execute(&store.pool)
+    .await
+    .unwrap();
+    let control = json(&Append {
+        record: headers[0].clone(),
+        offset: 0,
+        sha256: digest(&payload),
+    })
+    .unwrap();
+    assert_eq!(
+        store
+            .append(&receipt.key, control.as_bytes(), &payload)
+            .await
+            .unwrap_err(),
+        "database_unavailable"
+    );
+    assert_eq!(store.status(&receipt.key).await.unwrap(), receipt);
+    for table in [
+        "e_inactive_records",
+        "e_inactive_fragments",
+        "e_inactive_mapping",
+    ] {
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>(sqlx::AssertSqlSafe(format!(
+                "SELECT COUNT(*) FROM {table}"
+            )))
+            .fetch_one(&store.pool)
+            .await
+            .unwrap(),
+            0
+        );
+    }
+    sqlx::query(sqlx::AssertSqlSafe(format!(
+        "PRAGMA max_page_count={}",
+        pages + 100
+    )))
+    .execute(&store.pool)
+    .await
+    .unwrap();
+    sqlx::raw_sql("CREATE TEMP TABLE successful_connection_marker(value INTEGER); INSERT INTO successful_connection_marker VALUES(123)").execute(&store.pool).await.unwrap();
+    let ack = store
+        .append(&receipt.key, control.as_bytes(), &payload)
+        .await
+        .unwrap();
+    assert_eq!(
+        ack.revision, 1,
+        "failed append must not publish a revision or ACK"
+    );
+    store.seal_storage(&receipt.key).await.unwrap();
+    store.status(&receipt.key).await.unwrap();
+    store.readback(&receipt.key, None, 1).await.unwrap();
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT value FROM successful_connection_marker")
+            .fetch_one(&store.pool)
+            .await
+            .unwrap(),
+        123,
+        "successful owner operations must reuse the same pooled connection"
+    );
+}
+
+#[tokio::test]
+async fn cancelled_lease_rolls_back_and_discards_unfinished_connection_without_replaying_work() {
+    let (_dir, store, _clock) = fixture().await;
+    let (begin, _) = intent(&[(
+        RecordKind::Message { role: Role::User },
+        b"history".to_vec(),
+    )]);
+    let receipt = store.begin(json(&begin).unwrap().as_bytes()).await.unwrap();
+    let store = Arc::new(store);
+    let worker = store.clone();
+    let key = receipt.key.clone();
+    let (entered, waiting) = tokio::sync::oneshot::channel();
+    let task = tokio::spawn(async move {
+        let authority = worker.authorize().await.unwrap();
+        let mut lease = worker.lease().await.unwrap();
+        let mut tx = lease.begin_with("BEGIN IMMEDIATE").await.unwrap();
+        let journal = worker.load(&mut tx, &key, &authority).await.unwrap();
+        sqlx::query("UPDATE e_inactive_imports SET revision=revision+1,received_bytes=1,charge_bytes=charge_bytes+1 WHERE id=?").bind(journal.id).execute(&mut *tx).await.unwrap();
+        entered.send(()).unwrap();
+        std::future::pending::<()>().await;
+        tx.commit().await.unwrap();
+    });
+    waiting.await.unwrap();
+    task.abort();
+    assert!(task.await.unwrap_err().is_cancelled());
+    assert_eq!(store.status(&receipt.key).await.unwrap(), receipt);
+    assert_charge(&store, &receipt.key).await;
+    assert_eq!(
+        store.begin(json(&begin).unwrap().as_bytes()).await.unwrap(),
+        receipt
+    );
+}
+
+#[tokio::test]
+async fn e_and_attachment_reservations_enforce_the_same_boundary_in_both_orders() {
+    for file_first in [true, false] {
+        let (_dir, store, clock) = fixture().await;
+        clock.store(FILE_TIME, Ordering::SeqCst);
+        let scope = file_scope(&store.pool, "instance", "session").await;
+        let payload = b"payload";
+        let (begin, headers) =
+            intent(&[(RecordKind::Message { role: Role::User }, payload.to_vec())]);
+        let base =
+            JOURNAL_BYTES + json(&begin).unwrap().len() as i64 + inactive_budget::DOMAIN_BYTES;
+        let extra = RECORD_BYTES
+            + json(&headers[0]).unwrap().len() as i64
+            + MAPPING_BYTES
+            + FRAGMENT_META_BYTES
+            + 2 * payload.len() as i64;
+        store
+            .authority
+            .as_ref()
+            .unwrap()
+            .write()
+            .await
+            .policy
+            .budget = base + extra;
+        let receipt = store.begin(json(&begin).unwrap().as_bytes()).await.unwrap();
+        let control = json(&Append {
+            record: headers[0].clone(),
+            offset: 0,
+            sha256: digest(payload),
+        })
+        .unwrap();
+        if file_first {
+            files::begin(&store.pool, file_begin(&scope, "first", extra), &|| {
+                FILE_TIME
+            })
+            .await
+            .unwrap();
+            assert_eq!(
+                store
+                    .append(&receipt.key, control.as_bytes(), payload)
+                    .await
+                    .unwrap_err(),
+                "resource_limit"
+            );
+            assert_eq!(store.status(&receipt.key).await.unwrap(), receipt);
+        } else {
+            store
+                .append(&receipt.key, control.as_bytes(), payload)
+                .await
+                .unwrap();
+            assert_eq!(
+                files::begin(&store.pool, file_begin(&scope, "second", extra), &|| {
+                    FILE_TIME
+                })
+                .await
+                .unwrap_err(),
+                "resource_limit"
+            );
+            assert_eq!(
+                sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM pilot_file_transfers")
+                    .fetch_one(&store.pool)
+                    .await
+                    .unwrap(),
+                0
+            );
+        }
+        assert_eq!(retained(&store).await, base + extra);
+        assert_charge(&store, &receipt.key).await;
+    }
 }
