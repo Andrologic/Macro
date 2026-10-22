@@ -42,6 +42,7 @@ it('captures three different engines and revisits only the same three declaratio
   expect(configurations[0].nativeEngine).toBeUndefined();
   expect(record(configurations[1].nativeEngine).adapter).toBe('claude-sdk-v1');
   expect(record(configurations[2].nativeEngine).adapter).toBe('codex-app-server-v1');
+  expect(record(decode(compiled.plan!.agents[2].settingsJson)).maxTurns).toBeUndefined();
   const steps = record(record(document.flow).steps);
   expect(Object.values(steps).filter(step => record(step).type === 'agent').map(step => record(step).agent))
     .toEqual(['macro', 'claude', 'codex', 'macro', 'claude', 'codex']);
