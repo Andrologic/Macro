@@ -120,14 +120,15 @@ export function createAssistantStreamRuntime(ports: ChatAssistantStreamPorts) {
         console.warn("Failed to delete empty assistant message after stream error:", error);
       }
     };
-    const contextDiagnosticsBaseline: StreamContextDiagnosticsBaseline = {
+    // Isolate once per generation; diagnostics retain this read-only snapshot across deltas.
+    const contextDiagnosticsBaseline: StreamContextDiagnosticsBaseline = structuredClone({
       ...params.contextDiagnosticsBaselineSeed,
       sessionId: params.sessionId,
       assistantMessageId: params.assistantMessage.id,
       orderedMessages: ports.messages.ordered(
         params.conversationId,
-      ).map(message => structuredClone(message)),
-    };
+      ),
+    });
     ports.diagnostics.record({
       conversationId: params.conversationId,
       sessionId: params.sessionId,
