@@ -674,8 +674,8 @@ export class ConsumerConnections {
         // Only a still-healthy feed confirms ordinary renewal; an exhausted recovery stays offline.
         if (!entry.recovering && entry.ready && entry.authorityValid && entry.state.phase === 'ready') {
           entry.presentationDeadline = entry.client.readAuthority()?.deadline ?? null; entry.retries = 0; entry.retryDeadline = null;
-          this.notify(entry);
         }
+        this.notify(entry);
       }).catch(error => {
         if (signal.aborted || entry.authorityEpoch !== generation) return;
         if (consumerRetryable(error)) void this.recover(entry, error).catch(() => {});

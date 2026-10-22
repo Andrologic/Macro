@@ -516,3 +516,32 @@ describe('ordinary renewal after the recovery budget', () => {
     expect(clock.count()).toBe(0); expect(h.waiting.size).toBe(0); expect(h.listeners.size).toBe(0);
   });
 });
+
+
+for(const elapsed of [1000,1001]) it(`notifies the subscribed projection when an unconfirmed proof contracts to M16000, observed at ${15000+elapsed}`, async () => {
+  const clock=manualClock(), hold=gate<void>(); let signal: AbortSignal | undefined;
+  const h=createConnectConsumerFixture({authorityLifetimeMs:30000,monotonicNow:clock.now,timer:clock.timer,retry:{...connectReaderRetry,delaysMs:[5,10],deadlineMs:60,maxDelayMs:20,pollIntervalMs:5}}), reader=new ConsumerReader(h.ports);
+  let projection=reader.getSnapshot();
+  // Like useSyncExternalStore, read only when notified; never pull at the authority deadline.
+  const unsubscribe=reader.subscribe(()=> { projection=reader.getSnapshot(); });
+  try {
+    reader.start(); await until(()=>projection.phase==='ready'); reader.open('instance:alpha');
+    await until(()=>Boolean(projection.panels[0]?.catalog.page) && h.waiting.has('instance:alpha'));
+    const original=projection.panels[0].catalog.page;
+    h.negotiate(async (id,dispatch,s)=> {
+      signal=s; const response=h.negotiated(id,dispatch);
+      response.read_authority!.expires_at=new Date(Date.parse(response.read_authority!.issued_at)+1000).toISOString();
+      await hold.promise; return response;
+    });
+    clock.advance(15000); await until(()=>Boolean(signal));
+    h.failEvents('instance:alpha',new PilotClientError('unavailable',503,true));
+    await until(()=>projection.panels[0].phase==='offline'); await new Promise(r=>setTimeout(r,110));
+    hold.resolve(); await new Promise(r=>setTimeout(r,15)); expect(projection.panels[0].catalog.page).toBe(original);
+    clock.advance(elapsed); await new Promise(r=>setTimeout(r,2));
+    expect(projection.panels[0].catalog.page).toBeNull(); expect(projection.panels[0].phase).toBe('authority_expired');
+    expect(projection.panels[0].label).toBe(''); expect(projection.panels[0].passive).toBe(true);
+    expect(h.calls.filter(c=>c.dispatch.kind==='submit')).toHaveLength(1); expect(h.calls.filter(c=>c.dispatch.kind==='negotiate')).toHaveLength(2);
+    expect(h.calls.filter(c=>c.dispatch.kind==='events')).toHaveLength(2); expect(h.waiting.size).toBe(0);
+  } finally { unsubscribe(); hold.resolve(); reader.dispose(); }
+  expect(clock.count()).toBe(0); expect(h.waiting.size).toBe(0); expect(h.listeners.size).toBe(0);
+});
