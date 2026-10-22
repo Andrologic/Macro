@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, mock } from 'bun:test';
+import { afterEach, describe, expect, it, mock, spyOn } from 'bun:test';
 import { act, StrictMode } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import en from '../../i18n/locales/en.json';
@@ -90,4 +90,24 @@ it('keeps B7 RAM passive offline, removes selection/copy paths, and strips prote
   await settle(() => !document.body.textContent!.includes('instance:alpha message'));
   expect(document.body.textContent).not.toContain('Alpha Chat 1'); expect(panel.getAttribute('aria-label')).toBe('Computer');
   expect(fixture.owner()!.diagnostics().subscribers).toBe(2);
+});
+
+it('revalidates a pagehide/pageshow return without visibilitychange and removes the lifecycle listeners', async () => {
+  const additions=spyOn(window,'addEventListener'), removals=spyOn(window,'removeEventListener');
+  try {
+    const {fixture}=await mount({authorityLifetimeMs:30000}); await add('instance:alpha');
+    const before=fixture.calls.filter(c=>c.dispatch.kind==='negotiate').length;
+    await act(async ()=>window.dispatchEvent(new Event('pagehide')));
+    expect(document.body.textContent).not.toContain('Alpha Chat 1'); expect(document.body.textContent).not.toContain('Alpha PC');
+    expect(fixture.owner()!.diagnostics()).toMatchObject({targets:0,subscribers:0});
+    await act(async ()=>window.dispatchEvent(new Event('pageshow')));
+    await settle(()=>document.body.textContent!.includes('Alpha Chat 1'));
+    expect(fixture.calls.filter(c=>c.dispatch.kind==='negotiate')).toHaveLength(before+1);
+    const lifecycleAdded=additions.mock.calls.filter(([type])=>type==='pageshow' || type==='pagehide');
+    expect(lifecycleAdded.length).toBeGreaterThan(0);
+    await act(async ()=>root.unmount());
+    const lifecycleRemoved=removals.mock.calls.filter(([type])=>type==='pageshow' || type==='pagehide');
+    expect(lifecycleRemoved).toEqual(lifecycleAdded); expect(fixture.listeners.size).toBe(0);
+    const count=fixture.calls.length; window.dispatchEvent(new Event('pageshow')); expect(fixture.calls).toHaveLength(count);
+  } finally { additions.mockRestore(); removals.mockRestore(); }
 });

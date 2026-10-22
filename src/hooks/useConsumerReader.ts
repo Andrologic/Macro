@@ -11,9 +11,9 @@ export function useConsumerReader(ports: ConsumerReaderPorts) {
     current.setTransportOnline(navigator.onLine !== false); current.start(available());
     const changed = () => { current.setAvailable(available()); current.setTransportOnline(navigator.onLine !== false); };
     const suspend = () => current.setAvailable(false);
-    window.addEventListener('pagehide', suspend);
+    window.addEventListener('pagehide', suspend); window.addEventListener('pageshow', changed);
     document.addEventListener('visibilitychange', changed); window.addEventListener('online', changed); window.addEventListener('offline', changed);
-    return () => { window.removeEventListener('pagehide', suspend); document.removeEventListener('visibilitychange', changed); window.removeEventListener('online', changed); window.removeEventListener('offline', changed); current.dispose(); };
+    return () => { window.removeEventListener('pagehide', suspend); window.removeEventListener('pageshow', changed); document.removeEventListener('visibilitychange', changed); window.removeEventListener('online', changed); window.removeEventListener('offline', changed); current.dispose(); };
   }, [ports]);
   return { reader, state };
 }
