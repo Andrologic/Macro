@@ -1090,6 +1090,7 @@
       "verify": "Computer prüfen",
       "twoLimit": "Höchstens zwei Computer. Schließe ein Feld, um einen anderen auszuwählen.",
       "locked": "Inhalte sind im Hintergrund oder offline gesperrt. Eine neue Prüfung ist erforderlich.",
+      "passive": "Vorübergehend offline lesen. Kopieren und Navigation erfordern eine erneut geprüfte Verbindung.",
       "thisComputer": "Dieser Computer",
       "closeComputer": "{{computer}} schließen",
       "chat": "Chat",
@@ -1115,6 +1116,8 @@
         "ready": "Bereit",
         "revalidating": "Zugriff prüfen",
         "error": "Nicht verfügbar",
+        "offline": "Vorübergehend offline lesen",
+        "authority_expired": "Lesen gesperrt · Zugriff wird geprüft",
         "locked": "Gesperrt"
       },
       "attention": {

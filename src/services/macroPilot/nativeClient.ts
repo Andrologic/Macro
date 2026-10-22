@@ -4,6 +4,7 @@ import { FILE_OPERATIONS } from './attachmentFilesHost';
 import { createBrowserQaDependencies } from './browserQa';
 import { PilotClientError, type PilotClientErrorCode } from './clientError';
 export { PilotClientError, type PilotClientErrorCode } from './clientError';
+import { capabilityCompatibilityError, type ConsumerSessionObservation } from './readAuthority';
 import { PilotAccountClient, type PilotAccountConfirmation } from './accountClient';
 import { validateContentMessage, validateContentResponse } from './contentProtocol';
 export type { PilotAccountCatalog, PilotAccountConfirmation } from './accountClient';
@@ -366,6 +367,7 @@ export class MacroPilotNativeClient {
   private cleanupPromise: Promise<void> | null = null;
   private cleanupScheduled = false;
   private vaultFence = 0;
+  private consumerGeneration = 0;
   private lastVaultScope: PilotSecretScope | null = null;
   private vaultRecovering = false;
   // Restored credentials alone cannot restart a producer until a fresh /me succeeds.
@@ -593,6 +595,7 @@ export class MacroPilotNativeClient {
       const lease = await this.ensureVault();
       this.checkContext(context);
       if (lease && lease.status !== 'ready') throw this.vaultFailure(lease.status);
+      if (scope.kind === 'session_token') { this.consumerGeneration++; this.publish({}); }
       await this.dependencies.secretWrite(scope, secret, lease?.generation);
       this.checkContext(context);
     } catch (error) { this.checkContext(context); throw this.vaultFailure(error); }
@@ -741,7 +744,7 @@ export class MacroPilotNativeClient {
       id: () => createOpaqueId('request', this.dependencies),
       now: () => this.dependencies.now().getTime(),
       send: async (context, instanceId, dispatch, signal) => {
-        this.checkContext(context.key);
+        this.checkConsumerContext(context);
         const current = this.consumerIdentity();
         if (current.key !== context.key || dispatch.request.type !== 'negotiate' && dispatch.request.account_id !== current.accountId) {
           throw new PilotClientError('context_changed');
@@ -750,9 +753,10 @@ export class MacroPilotNativeClient {
         const saved = structuredClone(dispatch);
         const wire = consumerWire(instanceId, saved);
         try {
-          return await this.sendRequest(wire.method, wire.path, wire.body,
-            { authenticated: true, signal, beforeSend: async () => { this.consumerIdentity(); this.checkContext(context.key); } },
+          const result = await this.sendRequest(wire.method, wire.path, wire.body,
+            { authenticated: true, signal, beforeSend: async () => { this.checkConsumerContext(context); } },
             'consumer', saved.request.request_id, saved);
+          this.checkConsumerContext(context); return result;
         } catch (error) {
           if (!signal.aborted && error instanceof PilotClientError && ['unauthorized', 'session_revoked'].includes(error.code)) {
             try { await this.verifyConsumerSession(context, signal); }
@@ -774,13 +778,13 @@ export class MacroPilotNativeClient {
       context: () => this.consumerIdentity(),
       verify: (context, signal) => this.verifyConsumerSession(context, signal),
       query: async (context, request, signal) => {
-        this.checkContext(context.key);
+        this.checkConsumerContext(context);
         if (!validDirectoryRequest(this.consumerIdentity(), request)) throw new PilotClientError('invalid_configuration');
         const saved = structuredClone(request);
         try {
           const result = await this.sendRequest('POST', '/directory/query', saved,
-            { authenticated: true, signal, beforeSend: async () => { this.consumerIdentity(); this.checkContext(context.key); } }, 'consumer-directory');
-          this.checkContext(context.key);
+            { authenticated: true, signal, beforeSend: async () => { this.checkConsumerContext(context); } }, 'consumer-directory');
+          this.checkConsumerContext(context);
           if (result.status !== 200 || !validateA1(result.data) || !isRecord(result.data) || result.data.type !== 'page' || result.data.item_type !== saved.item_type) throw new PilotClientError('invalid_response');
           return result.data;
         } catch (error) {
@@ -799,13 +803,18 @@ export class MacroPilotNativeClient {
     if (this.sessionVerification) throw new PilotClientError('vault_suspended');
     if (this.vaultLease && this.vaultLease.status !== 'ready') throw this.vaultFailure(this.vaultLease.status);
     return { key: this.contextKey(), configurationId: state.configurationId, relayOrigin: normalizeOrigin(state.relayOrigin),
-      accountId: state.account.account_id, sessionId: state.deviceSession.ref.session_id, epoch: this.epoch };
+      accountId: state.account.account_id, sessionId: state.deviceSession.ref.session_id, epoch: this.epoch, credentialGeneration: this.consumerGeneration + this.vaultFence };
+  }
+
+  private checkConsumerContext(context: ConsumerIdentity): void {
+    const current = this.consumerIdentity();
+    if (current.key !== context.key || current.credentialGeneration !== context.credentialGeneration) throw new PilotClientError('context_changed');
   }
 
   /** A remote producer can also lose its session. Only /me proves ours invalid. */
-  private async verifyConsumerSession(context: ConsumerIdentity, signal: AbortSignal): Promise<void> {
+  private async verifyConsumerSession(context: ConsumerIdentity, signal: AbortSignal): Promise<ConsumerSessionObservation | void> {
     const check = () => {
-      this.checkContext(context.key);
+      this.checkConsumerContext(context);
       if (signal.aborted) throw new PilotClientError('context_changed');
     };
     check();
@@ -822,9 +831,10 @@ export class MacroPilotNativeClient {
     const account = isRecord(data) && isRecord(data.account) ? data.account : null;
     const session = isRecord(data) && isRecord(data.device_session) ? data.device_session : null;
     const ref = session && isRecord(session.ref) ? session.ref : null;
-    if (account?.account_id !== context.accountId || ref?.account_id !== context.accountId ||
+    if (!validateA1(account) || !validateA1(session) || account?.account_id !== context.accountId || ref?.account_id !== context.accountId ||
       ref?.session_id !== context.sessionId || session?.state !== 'active' ||
       session?.device_id !== this.persisted?.deviceSession?.device_id || result.status !== 200) throw new PilotClientError('invalid_response');
+    return { deviceId: session.device_id as string, sessionRevision: session.revision as number };
   }
 
   /** Producer A2 uses the same native credentials, origin and lifecycle fence as v1. */
@@ -980,7 +990,10 @@ export class MacroPilotNativeClient {
       throw new PilotClientError('invalid_response', response.status, false, responseRequestId);
     }
     if (v2) {
-      const responseHeader = response.headers.get('x-request-id');
+      if (consumer?.kind === 'negotiate' || extension === 'producer' && isRecord(body) && body.type === 'poll') {
+        const compatibility = capabilityCompatibilityError(response.status, responseHeader, requestId, data);
+        if (compatibility) throw compatibility;
+      }
       const expectedHeader = extension === 'producer' && isRecord(body) && body.type === 'poll' && isRecord(data) && data.type === 'delivery' ? data.request_id : requestId;
       if (responseHeader && responseHeader !== expectedHeader) throw new PilotClientError('invalid_response');
       // Before authentication the relay may return a transport error, with no account envelope.

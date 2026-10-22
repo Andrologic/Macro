@@ -13,9 +13,10 @@ const { ConnectConsumerLauncher } = await import('./ConnectConsumerLauncher');
 let root: Root, container: HTMLDivElement;
 afterEach(async () => { if (root) await act(async () => root.unmount()); container?.remove(); });
 const settle = async (check: () => boolean) => { const end = Date.now() + 5000; while (!check() && Date.now() < end) await act(async () => { await new Promise(done => setTimeout(done, 3)); }); expect(check()).toBe(true); };
-async function mount() {
+async function mount(options: Parameters<typeof createConnectConsumerFixture>[0] = {}) {
+  Object.defineProperty(navigator, 'onLine', { configurable: true, value: true });
   Object.defineProperty(document, 'hidden', { configurable: true, value: false });
-  const fixture = createConnectConsumerFixture(); const close = mock(() => {});
+  const fixture = createConnectConsumerFixture(options); const close = mock(() => {});
   container = document.createElement('div'); document.body.appendChild(container); root = createRoot(container);
   await act(async () => root.render(<StrictMode><Dialog title="Settings" onClose={() => {}}><ConnectConsumerDialog ports={fixture.ports} onClose={close} /></Dialog></StrictMode>));
   await settle(() => document.querySelectorAll('option').length === 4); return { fixture, close };
@@ -66,4 +67,27 @@ describe('Connect reader DOM', () => {
     expect(document.body.textContent).not.toContain('Alpha Chat 1'); expect(document.body.textContent).not.toContain('Alpha PC'); expect(fixture.owner()!.diagnostics().subscribers).toBe(0);
     await act(async () => fixture.changeAccount()); expect(close).toHaveBeenCalled();
   });
+});
+
+it('keeps B7 RAM passive offline, removes selection/copy paths, and strips protected DOM at authority expiry', async () => {
+  let now=0; const timers=new Map<object,{at:number;run():void}>();
+  const timer=(run:()=>void,ms:number)=> { const key={}; timers.set(key,{at:now+ms,run}); return ()=> { timers.delete(key); }; };
+  const { fixture } = await mount({ authorityLifetimeMs: 30000, monotonicNow:()=>now, timer }); await add('instance:alpha');
+  await act(async () => [...document.querySelectorAll<HTMLButtonElement>('button')].find(b => b.textContent?.includes('Alpha Chat 1'))!.click());
+  await settle(() => document.body.textContent!.includes('instance:alpha message'));
+  let panel = document.querySelector<HTMLElement>('section[aria-label="Alpha PC"]')!;
+  const text = [...panel.querySelectorAll('p')].find(p => p.textContent?.includes('instance:alpha message'))!;
+  const range = document.createRange(); range.selectNodeContents(text); window.getSelection()!.addRange(range);
+  await act(async () => { Object.defineProperty(navigator, 'onLine', { configurable: true, value: false }); window.dispatchEvent(new Event('offline')); });
+  expect(document.body.textContent).toContain('instance:alpha message'); expect(document.body.textContent).not.toContain('Alpha PC');
+  expect(window.getSelection()!.toString()).toBe('');
+  panel = document.querySelector('section')!;
+  for (const event of ['copy','cut','dragstart']) expect(text.dispatchEvent(new Event(event, { bubbles:true, cancelable:true }))).toBe(false);
+  expect(text.dispatchEvent(new KeyboardEvent('keydown', { key:'c', ctrlKey:true, bubbles:true, cancelable:true }))).toBe(false);
+  expect([...panel.querySelectorAll<HTMLButtonElement>('button')].filter(b => b.textContent !== 'Close').every(b => b.disabled)).toBe(true);
+  expect(document.querySelectorAll('img,video,iframe,a[href]')).toHaveLength(0);
+  await act(async () => { now=30000; for(const [key,value] of [...timers]) if(value.at<=now) { timers.delete(key); value.run(); } });
+  await settle(() => !document.body.textContent!.includes('instance:alpha message'));
+  expect(document.body.textContent).not.toContain('Alpha Chat 1'); expect(panel.getAttribute('aria-label')).toBe('Computer');
+  expect(fixture.owner()!.diagnostics().subscribers).toBe(2);
 });

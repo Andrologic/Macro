@@ -11,7 +11,7 @@ import '../src/index.css';
 
 if (!import.meta.env.DEV || !['127.0.0.1', 'localhost', '[::1]'].includes(location.hostname)) throw new Error('Synthetic Connect QA requires DEV and loopback.');
 await i18n.use(initReactI18next).init({ lng: 'en', fallbackLng: 'en', resources: { en: { translation: en }, fr: { translation: fr } }, interpolation: { escapeValue: false }, showSupportNotice: false });
-const fixture = createConnectConsumerFixture();
+const fixture = createConnectConsumerFixture({ authorityLifetimeMs: 30000 });
 let delayed = false, denied = false;
 const releases = new Set<() => void>();
 fixture.read(async (id, dispatch, signal) => {

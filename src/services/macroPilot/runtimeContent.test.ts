@@ -1,3 +1,4 @@
+import type { ReadAuthoritySupport } from './readAuthority';
 import { afterAll, beforeEach, expect, it, mock } from 'bun:test';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -153,7 +154,7 @@ let requestSequence = 0;
 function request(operation: ContentRequest['operation'], body: unknown, requestId = `request:${++requestSequence}`): ContentRequest {
   return { contract_version: '2.0', type: 'request', account_id: accountId, request_id: requestId, operation, body } as ContentRequest;
 }
-function harness() {
+function harness(readAuthoritySupport?: ReadAuthoritySupport) {
   const project = (value: { id: string; name: string; path: string }) => ({ ...value, mountName: value.id,
     created_at: '2026-01-01T00:00:00Z', status: 'active' as const, gitSetupState: 'ready' as const,
     metadata: { description: '', tags: [], team_members: [], api_contracts: [], dependencies: [] } });
@@ -171,6 +172,7 @@ function harness() {
   const events: ContentEvent[] = [];
   const requests: Array<{ path: string; body: Record<string, unknown>; headers: Headers }> = [];
   let wake: (() => void) | undefined;
+  let rejectReadAuthority: 'canonical' | 'malformed' | 'header' | '401' | '403' | undefined;
   let rejectReliability = false;
   let acknowledgedLegacyPoll = false;
   let acknowledgeIdlePoll = false;
@@ -209,6 +211,14 @@ function harness() {
       const signal = init?.signal;
       if (path.endsWith('/poll')) {
         if (path.includes('/v1/')) { await new Promise<void>(resolve => { if (signal?.aborted) resolve(); else signal?.addEventListener('abort', () => resolve(), { once: true }); }); throw Error('aborted'); }
+        if (rejectReadAuthority && (body.capabilities as string[] | undefined)?.includes('read-authority-1')) {
+          const status = rejectReadAuthority === '401' ? 401 : rejectReadAuthority === '403' ? 403 : 400;
+          const requestId = headers.get('x-request-id')!;
+          return json(rejectReadAuthority === 'malformed' ? { code: 'validation_failed' } : {
+            contract_version: '1.0', type: 'error', request_id: rejectReadAuthority === 'header' ? 'request:other' : requestId,
+            error: { code: rejectReadAuthority === '401' ? 'unauthorized' : rejectReadAuthority === '403' ? 'forbidden' : 'validation_failed', message: 'Synthetic rejection', retryable: false },
+          }, status);
+        }
         if (rejectReliability && (body.capabilities as string[] | undefined)?.includes('network-reliability-1')) return json({ code: 'validation_failed' }, 422);
         if (rejectReliability && !acknowledgedLegacyPoll) { acknowledgedLegacyPoll = true; return new Response(null, { status: 204 }); }
         if (acknowledgeIdlePoll) { acknowledgeIdlePoll = false; return new Response(null, { status: 204 }); }
@@ -240,7 +250,7 @@ function harness() {
       throw Error(`Unexpected HTTP: ${path}`);
     },
   });
-  const runtime = new PilotRuntime(client, undefined, desktopStorePorts);
+  const runtime = new PilotRuntime(client, undefined, desktopStorePorts, readAuthoritySupport);
   function enqueue(input: ContentRequest, source = 'session:mobile') {
     const delivery: ContentDelivery = { transport_version: '2.0', type: 'delivery', request_id: input.request_id, instance_id: instanceId, account_id: accountId, source_session_id: source, expires_at: deliveredRequests.get(input.request_id)?.expires_at ?? new Date(Date.now() + 60_000).toISOString(), request: input, ...(input.operation === 'conversations.search' ? { capabilities: ['conversations-1'] } : input.operation === 'conversation.files.list' ? { authority_binding: 'grant:files', capabilities: ['conversation-files-1'] } : input.operation === 'conversation.reflections.read' ? { authority_binding: 'grant:reflections',capabilities: ['conversations-1','conversation-reflections-1'] } : input.operation === 'instance.telemetry' || input.operation === 'project.icon' ? { capabilities: ['host-telemetry-1', 'project-icons-1'] } : 'consistency' in input.body ? { capabilities: ['task-details-1', 'network-reliability-1'] } : {}) };
     expect(validateContentMessage(delivery)).toBe(true);
@@ -256,6 +266,7 @@ function harness() {
   return { client, runtime, deliver, enqueue, results, events, requests, values,
     rejectResults: (count: number) => { rejectResults = count; },
     authorizationDuration: (ms: number) => { authorizationMs = ms; },
+    rejectAuthority: (mode: typeof rejectReadAuthority) => { rejectReadAuthority = mode; },
     legacyRelay: () => { rejectReliability = true; },
     acceptIdlePoll: () => { acknowledgeIdlePoll = true; },
     waitDisconnect: (wait: Promise<void>, failures = 0) => { disconnectWait = wait; disconnectFailures = failures; },
@@ -1012,3 +1023,31 @@ it('keeps the canonical search response after lost acknowledgement and stale red
     expect(h.results.filter(r => r.request_id === input.request_id)).toHaveLength(1);
   } finally { await h.runtime.stop(); }
 }, 10000);
+
+it('keeps the producer B7 offer absent without an independently demonstrated lifecycle barrier', async () => {
+  const h=harness(); h.acceptIdlePoll();
+  try {
+    await h.runtime.start(); await until(()=>h.requests.some(r=>r.path.includes('/v2/') && r.path.endsWith('/poll')));
+    expect(h.requests.filter(r=>r.path.includes('/v2/') && r.path.endsWith('/poll')).every(r=>!(r.body.capabilities as string[]).includes('read-authority-1'))).toBe(true);
+  } finally { await h.runtime.stop(); }
+});
+it('drops only B7 after a closed correlated old-relay error while keeping the local producer alive', async () => {
+  const h=harness({suspensionBarrierVerified:true}); h.rejectAuthority('canonical');
+  try {
+    await h.runtime.start(); await until(()=>h.requests.filter(r=>r.path.includes('/v2/') && r.path.endsWith('/poll')).length>=2);
+    const polls=h.requests.filter(r=>r.path.includes('/v2/') && r.path.endsWith('/poll'));
+    expect(polls[0].body.capabilities).toContain('read-authority-1');
+    expect(polls[1].body.capabilities).toEqual((polls[0].body.capabilities as string[]).filter(c=>c!=='read-authority-1'));
+    expect(polls[0].headers.get('x-request-id')).not.toBe(polls[1].headers.get('x-request-id'));
+    expect(h.client.getState().status).toBe('connected'); expect(h.runtime.isStarted()).toBe(true);
+  } finally { await h.runtime.stop(); }
+});
+for(const mode of ['malformed','header','401','403'] as const) it(`never downgrades a producer B7 offer after ${mode}`, async () => {
+  const h=harness({suspensionBarrierVerified:true}); h.rejectAuthority(mode);
+  try {
+    await h.runtime.start(); await until(()=>h.requests.some(r=>r.path.includes('/v2/') && r.path.endsWith('/poll')));
+    if(mode!=='401') await until(()=>h.requests.filter(r=>r.path.includes('/v2/') && r.path.endsWith('/poll')).length>=2);
+    else await until(()=>h.client.getState().deviceSession===null);
+    expect(h.requests.filter(r=>r.path.includes('/v2/') && r.path.endsWith('/poll')).every(r=>(r.body.capabilities as string[]).includes('read-authority-1'))).toBe(true);
+  } finally { await h.runtime.stop(); }
+});

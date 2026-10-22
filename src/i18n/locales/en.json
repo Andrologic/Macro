@@ -1118,6 +1118,7 @@
       "verify": "Verify computers",
       "twoLimit": "Two computers maximum. Close a panel to choose another.",
       "locked": "Contents are locked while hidden or offline. A new check is required.",
+      "passive": "Temporary offline reading. Copying and navigation require a fresh connection.",
       "thisComputer": "This computer",
       "closeComputer": "Close {{computer}}",
       "chat": "Chat",
@@ -1143,6 +1144,8 @@
         "ready": "Ready",
         "revalidating": "Checking access",
         "error": "Unavailable",
+        "offline": "Temporary offline reading",
+        "authority_expired": "Reading locked · checking access",
         "locked": "Locked"
       },
       "attention": {

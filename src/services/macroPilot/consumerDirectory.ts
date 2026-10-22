@@ -1,3 +1,4 @@
+import type { ConsumerSessionObservation } from './readAuthority';
 import type { ConsumerIdentity } from './consumerTransport';
 import type { PilotInstance, PilotInstanceAccess } from './nativeClient';
 import { PilotClientError } from './clientError';
@@ -15,7 +16,7 @@ export interface ConsumerDirectoryRequest {
 export interface ConsumerDirectoryTransport {
   context(): ConsumerIdentity;
   query(context: ConsumerIdentity, request: ConsumerDirectoryRequest, signal: AbortSignal): Promise<unknown>;
-  verify(context: ConsumerIdentity, signal: AbortSignal): Promise<void>;
+  verify(context: ConsumerIdentity, signal: AbortSignal): Promise<ConsumerSessionObservation | void>;
 }
 export interface ConsumerDirectorySnapshot {
   context: ConsumerIdentity;
