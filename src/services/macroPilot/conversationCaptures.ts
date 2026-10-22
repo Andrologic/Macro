@@ -64,6 +64,7 @@ interface Observation {
   metadata?: unknown;
 }
 export interface CatalogObservation { revision: number; refs: ConversationRef[]; resources: Record<string, number> }
+export interface HostCatalogObservation { projects: number | null; conversations: CatalogObservation | null; error?: unknown }
 type ContentObservation = { kind: 'legacy'; hash: string } | { kind: 'native'; source_epoch: string; token: ConversationContentToken };
 interface ResourceRevision { revision: number; fingerprint: string; transcript?: string; content?: ContentObservation }
 export interface NativeCapturePage extends CapturePage<MessageItem> { responseRevisions: Array<{ id: string; revision: string | null }>; contentToken: ConversationContentToken }
@@ -164,6 +165,31 @@ export class ConversationCaptures {
       const { observation, revision, resources } = await this.observe(false, watched);
       const refs = observation.conversations.map(conversation => this.reference(conversation, observation)).filter((ref): ref is ConversationRef => ref !== null);
       return { revision, refs, resources };
+    });
+  }
+  /** Observe both host catalogs from the same verified source pair. This is not
+   * a cache: reads and delivery validation still inspect their own fresh source. */
+  refreshHostCatalogs(): Promise<HostCatalogObservation> {
+    return this.serial(async () => {
+      const epoch = this.epoch;
+      const check = () => { if (epoch !== this.epoch) throw new ConversationCaptureError('unavailable'); };
+      this.pruneExpiredCaptures();
+      const watched = new Set<string>();
+      for (const capture of this.captures.values()) if (capture.conversationId) watched.add(capture.conversationId);
+      try {
+        const result = await this.observe(false, watched, true); check();
+        if (result.projectsRevision === null) throw new ConversationCaptureError('unavailable');
+        const refs = result.observation.conversations.map(conversation => this.reference(conversation, result.observation))
+          .filter((ref): ref is ConversationRef => ref !== null);
+        return { projects: result.projectsRevision, conversations: { revision: result.revision, refs, resources: result.resources } };
+      } catch (error) {
+        check();
+        // A failed conversation catalog must not hide an independently valid
+        // project change. Partial full observations never publish a catalog.
+        let projects: number | null = null;
+        try { projects = (await this.observe(true)).revision; } catch { check(); }
+        check(); return { projects, conversations: null, error };
+      }
     });
   }
   /** Fresh identity/activity validation without hydrating histories. */
@@ -431,7 +457,7 @@ export class ConversationCaptures {
     }
     return structuredClone({ projects, tasks, conversations, transcripts, policy, ...(!source.nativeContent && source.catalogMetadata ? { metadata: await source.catalogMetadata() } : {}) });
   }
-  private async observe(projectsOnly = false, transcriptIds?: ReadonlySet<string>): Promise<{ observation: Observation; revision: number; resources: Record<string, number> }> {
+  private async observe(projectsOnly = false, transcriptIds?: ReadonlySet<string>, includeProjects = false): Promise<{ observation: Observation; revision: number; resources: Record<string, number>; projectsRevision: number | null }> {
     // Bound complete catalog inspection, including both observations and retry.
     const epoch = this.epoch; const sourceEpoch = this.sourceEpoch;
     const guard = () => { if (epoch !== this.epoch) throw new ConversationCaptureError('unavailable'); };
@@ -459,6 +485,15 @@ export class ConversationCaptures {
           if (record.content.kind === 'native') { if (typeof record.content.source_epoch !== 'string' || !record.content.source_epoch) throw new ConversationCaptureError('unavailable'); checkToken(record.content.token); }
           else if (record.content.kind !== 'legacy' || typeof record.content.hash !== 'string') throw new ConversationCaptureError('unavailable');
         }
+      }
+      let projectsRevision: number | null = null;
+      if (includeProjects && !projectsOnly) {
+        // Match load(true) exactly, including policy, without another source read.
+        const projectFingerprint = await digest({ projects: observation.projects, tasks: [], conversations: [], transcripts: [], policy: observation.policy });
+        const oldProjects = journal.projects;
+        projectsRevision = oldProjects ? oldProjects.revision + Number(oldProjects.fingerprint !== projectFingerprint) : 1;
+        if (!Number.isSafeInteger(projectsRevision)) throw new ConversationCaptureError('resource_limit');
+        journal.projects = { revision: projectsRevision, fingerprint: projectFingerprint };
       }
       const section = projectsOnly ? 'projects' : 'conversations';
       const old = journal[section];
@@ -509,7 +544,7 @@ export class ConversationCaptures {
       guard();
       if (!await this.deps.storage.compareAndSwap(previous, next)) { guard(); continue; }
       guard();
-      return { observation, revision, resources };
+      return { observation, revision, resources, projectsRevision };
     }
     throw new ConversationCaptureError('content_unavailable');
   }

@@ -336,3 +336,17 @@ No offline authority duration is invented. There is no on-disk consumer cache,
 mutation, conversation read receipt, file access, reflection or interaction in
 D2a. Future mutation support requires its own intent receipts and reconciliation
 on the original target after a lost acknowledgement.
+
+### Host catalog observations
+
+ContentHost preparation and observation share one verified pair of complete
+catalog source reads. The projects fingerprint is projected exactly as the
+standalone projects observation, with its own durable revision. A stable host
+pass calls the projects source twice instead of four times. Conversation source
+reads and the two-read consistency check remain unchanged. This counts source
+calls, not IPC traffic, network bytes, heap or display latency.
+
+If the conversation observation fails, a separate projects-only observation may
+still report a valid project change. A partial catalog is never published. Reads
+and delivery validation keep their fresh checks; this adds no timed cache or
+read authority. Sequenced outbox events and acknowledgement retries are unchanged.
