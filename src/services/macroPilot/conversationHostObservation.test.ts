@@ -95,7 +95,7 @@ it('retires an in-flight observation on clear without starting a fallback in the
   const pending = f.captures.refreshHostCatalogs(); await started;
   f.captures.clear(); release();
   await expect(pending).rejects.toThrow('unavailable');
-  expect(await f.storage.load()).toBeNull(); expect(f.reads.projects).toBe(2);
+  expect(await f.storage.load()).toBeNull(); expect(f.reads.projects).toBe(1); // Stop immediately after the invalidated await.
 });
 it('keeps the verified project pair and retries a source change during assembly', async () => {
   const f = fixture(); const original = f.deps.source.projects; let calls = 0;
