@@ -29,7 +29,9 @@ It records C capability after the first authenticated v2 producer poll on that
 instance; capability expires when producer presence is lost. Otherwise the
 selection is null. A missing endpoint means unavailable extension.
 
-Negotiation grants no authority. Re-negotiate after session replacement, loss
+Negotiation grants no operation permission. The optional `read-authority-1`
+proof below attests a bounded period of already granted read access only.
+Re-negotiate after session replacement, loss
 of capability or producer reconnect for instance content. Selection is bound
 to the authenticated session and optional instance. Every v2 request rechecks
 its matching selection. Account management works without an associated or
@@ -78,6 +80,118 @@ are closed v2 `error` messages without raw Git/provider details. Retryable is
 true only for unavailable/instance_offline. Authentication failures before a
 trusted account/request can be established use the existing transport error
 form; never echo a claimed account ID as authenticated identity.
+
+## Bounded read authority `read-authority-1`
+
+This optional instance capability is a contract foundation, not a declaration
+that a producer, relay or client currently implements it. Do not advertise it
+until the complete authenticated path implements the stateful rules below.
+There is no new endpoint, JWT, bearer credential or durable transcript cache.
+Version 1 remains frozen. An older peer may select 2.0 without this capability;
+that selection supplies no authority to continue displaying protected content
+through a network failure. A compatibility retry omitting an unknown capability
+must never turn an authentication or authorization failure into a downgrade.
+
+An instance `negotiated` response selecting this capability must include exactly
+one `read_authority` object; otherwise that field is forbidden. Account-only or
+null-version negotiation cannot include it. The closed object contains:
+
+| Field | Meaning |
+| --- | --- |
+| `authority_binding` | Opaque identifier for this unchanged authority context, preserved during ordinary renewal. |
+| `account_id`, `session_id`, `device_id` | Exact authenticated audience; never identities supplied by an untrusted request body. |
+| `instance_id` | Exact negotiated route instance. |
+| `producer_generation` | Current authenticated producer incarnation. |
+| `session_revision`, `access_revision` | Exact nonnegative safe-integer authorization revisions; zero is valid. |
+| `permissions` | Exactly `["supervise"]`, never an action grant. |
+| `issued_at`, `expires_at` | Asserted RFC 3339 date-times, zero to three fractional second digits, with a strictly positive lifetime of at most 30 seconds. |
+
+The two proof timestamps have millisecond precision at most. Reject greater
+fractional precision; do not round or truncate an incoming timestamp into
+conformance. A positive representable lifetime is at least one millisecond.
+This restriction concerns only these new proof fields, not existing timestamps.
+
+The relay sets expiration to the earliest of issuance plus 30 seconds, session
+expiration and current producer-presence expiration. It verifies the audience,
+revisions, association, permission and producer generation when constructing the
+proof and immediately before returning it. A clock discontinuity retires the
+proof context. Renewal may preserve a binding only while all bound identities,
+revisions and producer generation remain unchanged.
+
+Schema and stateless helpers check the closed shape, selected capability,
+instance correlation and lifetime. They cannot establish authenticated audience,
+current rights, generation freshness or present-time validity. Each client must
+check all of these against its trusted transport/session state before publishing
+or renewing protected content. A schema-valid old or wrong-audience proof is not
+authority. No client-supplied proof authorizes a server request.
+
+The proof's RAM scope includes the normalized relay origin from authenticated
+transport configuration, its complete audience and selection, and a local
+connection generation. The origin is not another wire field or a claimed
+request identity. Never reuse a proof from another origin, even when all wire
+identifiers match. Changing relay origin or rotating the transport credential
+invalidates the local generation even when account, session and device IDs
+remain unchanged. Never place the credential itself in a scope key or proof.
+
+On context invalidation, advance the local generation and invalidate the
+affected publication context before aborting requests, locking display or
+purging data. Context invalidation includes known revocation or authority
+refusal, suspension, replacement of audience/origin/selection, credential
+rotation and purge. Capture the exact attempt, origin and local generation
+before each wait. Recheck them after credential and network waits and
+immediately before admission or rendering. An aborted or retired attempt cannot
+publish, restart renewal or unlock data. A late success cannot override a known
+authority refusal or revocation, nor revalidate an old context after suspension.
+Only a fresh, explicitly admitted attempt in the current context can establish
+authority after such an invalidation.
+
+Simple proof expiration immediately locks protected access without advancing
+the local generation or cancelling an otherwise current renewal. Its response
+may unlock still-valid captures only if its own deadline remains valid, its
+attempt is still current, the audience/selection remain unchanged and required
+continuity checks pass. It cannot revive an expired or purged capture. This is
+distinct from the context invalidations above.
+
+A client records a monotonic timestamp before the exact negotiation attempt.
+Its local authority deadline is that timestamp plus `expires_at - issued_at`:
+all time awaiting credentials, response delivery and retries consumes the period.
+Each retry starts its own attempt; a late response cannot borrow a later attempt's
+clock. Local display requires both a current authority proof and the original
+capture's remaining lifetime. Equality with either deadline is expired. Local
+activity, new pages and feed events cannot extend either deadline.
+
+While a target has visible readers, a single shared renewal may run halfway
+through the remaining period. Keep the still-valid proof and pages during an
+ordinary renewal; do not reset the feed, reread transcripts or clear healthy
+other targets. Stop renewal after the last visible reader leaves. Suspension
+requires fresh rights and continuity validation before displaying data again.
+
+A network failure may leave already received content visible in RAM, read-only,
+for the remaining authority/capture period. At expiry lock its display until
+successful revalidation; do not claim that memory has been erased. Confirmed
+revocation, account/session/target replacement or an audience/generation mismatch
+purges the affected protected state and cancels its outstanding reads. Retention
+also remains subject to the aggregate memory budget and capture invalidations.
+There is no promise of instantaneous remote revocation discovery while offline.
+
+This proof can govern display of successful, already authorized instance read
+results from the following existing operations. Each operation retains its
+normal permissions, capability, correlation, policy and capture checks:
+
+- `projects.list`, `conversations.list`, `conversation.read`,
+  `conversations.catalog`, `conversations.search`, `conversation.window`;
+- `task.cards.list`, `task.get`, `task.artifacts.list`, `task.artifact.read`,
+  `conversation.tools.list`, `conversation.tool.read`;
+- `review.get`, `diff.files`, `diff.read`, `instance.telemetry`, `project.icon`;
+- `conversation.files.list`, `conversation.file.capture`,
+  `conversation.file.read`, `conversation.reflections.read`,
+  `conversation.interactions`.
+
+Account/session management reads, transfer/send-status receipts and all mutations
+are excluded. Sending, retrying an effect, replying to a question, approving,
+changing a model, reviewing, copying/exporting protected content and every other
+action require their existing fresh authorization. Offline display never enables
+an action or changes an idempotency/reconciliation rule.
 
 ## Scope and access
 

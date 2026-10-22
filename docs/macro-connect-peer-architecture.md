@@ -169,9 +169,11 @@ une panne réseau. Une révocation entraîne le retrait des données protégées
 l'annulation des requêtes. Un délai de cache n'est jamais une durée d'autorisation.
 
 Pour le premier lot, seule la RAM du processus est concernée. L'affichage hors
-ligne reste borné par l'échéance d'autorité reçue et par l'expiration actuelle de
-la capture. Le client ne prolonge aucune des deux par une activité locale. Il
-verrouille les données si cette preuve manque ou expire. Une révocation distante
+ligne reste borné à 30 secondes au maximum après la dernière vérification des
+droits, par l'échéance d'autorité reçue et par l'expiration actuelle de la capture.
+La durée est décomptée dès le départ de la demande avec une horloge monotone ;
+le délai réseau la réduit. Le client ne prolonge aucune des deux par une activité
+locale. Il verrouille les données si cette preuve manque ou expire. Une révocation distante
 n'est détectable qu'après un échange réussi ; le produit ne promet pas un effacement
 instantané pendant une coupure. Les actions restent désactivées jusqu'à revalidation.
 
