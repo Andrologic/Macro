@@ -77,14 +77,30 @@ export function projectWorkflowAgentTasks(plan: ArchitectPlanRecord, snapshot: P
     const activation = projection.activations.find(item => item.work.activationId === approval.work.activationId);
     if (!activation || !sameWork(activation.work, approval.work as PublicActivation['work'])) throw new Error('Approval activation differs');
   }
-  const agents = object(readDocument(snapshot.authoredSource).agents);
+  const document = readDocument(snapshot.authoredSource);
+  const agents = object(document.agents);
+  const steps = object(object(document.flow).steps);
+  // A committed failure with onError atomically schedules its authored successor.
+  // Historical failures on that path are not unresolved requests for the run.
+  const unownedProblems = projection.activations.filter(item => {
+    if (item.work.agentInstanceId !== null) return false;
+    if (item.workState !== 'terminal') return item.workState === 'uncertain' || item.stopState.kind === 'uncertain';
+    const onError = item.work.step?.length === 1 ? object(steps[item.work.step[0]]).onError : undefined;
+    return item.terminalKind === 'failed' && !(Array.isArray(onError) && onError.length > 0);
+  });
+  const runAttention: WorkflowAgentTaskReference['runAttention'] = unownedProblems.length ? {
+    state: unownedProblems.some(item => item.workState !== 'terminal') ? 'uncertain' : 'failed',
+    activationIds: unownedProblems.map(item => item.work.activationId),
+  } : undefined;
   return projection.agents.map((agent, index) => {
     if (!Object.hasOwn(agents, agent.agentName)) throw new Error('Agent is absent from captured source');
     const items = projection.activations.filter(item => item.work.agentInstanceId === agent.agentInstanceId);
     const state = agentState(items, approvals, projection.systemStop);
     const reference: WorkflowAgentTaskReference = { systemStartId: snapshot.systemStartId, source: snapshot.source,
       agentInstanceId: agent.agentInstanceId, agentName: agent.agentName, cursor: projection.cursor, state,
-      activationIds: items.map(item => item.work.activationId), interactionRequired: ['approval', 'uncertain', 'failed'].includes(state) };
+      activationIds: items.map(item => item.work.activationId),
+      runAttention: index === 0 ? runAttention : undefined,
+      interactionRequired: ['approval', 'uncertain', 'failed'].includes(state) || index === 0 && !!runAttention };
     return { id: workflowAgentTaskId(snapshot.systemStartId, agent.agentInstanceId), plan_id: plan.id,
       project_id: owner.projectId, project_ids: [owner.projectId], context_project_ids: [], title: agent.agentName,
       description: '', status: statuses[state], dependencies: [], estimated_changes: [], workflow_execution: reference,
@@ -150,7 +166,8 @@ export async function loadWorkflowAgentTasks(plans: ArchitectPlanRecord[], proje
   ports: WorkflowAgentTaskPorts = nativePorts): Promise<CatalogedImplementTask[]> {
   const tasks = new Map<string, CatalogedImplementTask>();
   const seenPlans = new Set<string>();
-  for (const plan of plans.filter(isWorkflowPlan)) {
+  // The durable owner is independent of mutable design kind and provenance.
+  for (const plan of plans.filter(plan => plan.agsdl !== undefined)) {
     const planKey = JSON.stringify([plan.targetBranch, plan.id]);
     if (seenPlans.has(planKey)) continue;
     seenPlans.add(planKey);

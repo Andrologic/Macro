@@ -89,11 +89,37 @@ describe('createLoadImplementTaskCatalog', () => {
     const again = await load(initial.tasks);
     expect(again.tasks.map(task => task.id)).toEqual(initial.tasks.map(task => task.id));
     f.plan.agsdl!.design!.kind = 'blueprint';
-    expect((await load(initial.tasks)).tasks).toEqual([]);
+    delete f.plan.agsdl!.design!.origin;
+    const changed = await load(initial.tasks);
+    expect(changed.tasks.map(task => task.id)).toEqual(initial.tasks.map(task => task.id));
+    expect(changed.plans).toHaveLength(1);
+  });
+
+  it('retains legacy nodes in migrated AgSDL plans that have no native run', async () => {
+    const f = await workflowTaskFixture();
+    f.plan.status = 'in_progress';
+    f.plan.agsdl!.design!.kind = 'blueprint';
+    delete f.plan.agsdl!.design!.origin;
+    f.plan.nodes = [{ id: 'legacy', title: 'Historical work', description: '', type: 'task', status: 'pending', dependencies: [], projectId: 'project' }];
+    f.ports.runs = async () => ({ runs: [], nextCursor: null });
+    const load = createLoadImplementTaskCatalog({
+      getAppState: () => ({ selectedGroupId: null, selectedProjectId: null, projectGroups: [],
+        standaloneProjects: [{ id: 'project', name: 'Synthetic project', path: '/synthetic/project', directEdit: true }],
+        activeArchitectPlanId: null, activePlanContext: null, planNodes: [], predictedBranches: [] } as never),
+      listArchitectPlans: async () => ({ activePlanId: null, plans: [{ ...toSummary(f.plan), hasAgsdl: true }] }),
+      listArchitectPlanTargetBranches: async () => ['develop'], getArchitectPlan: async () => f.plan,
+      getGitFlowBaseBranch: () => 'develop', resolveTargetBranch: value => String(value || 'develop'), buildImplementTaskCatalog,
+      loadWorkflowAgentTasks: (plans, projects) => loadWorkflowAgentTasks(plans, projects, f.ports),
+    });
+    const catalog = await load([]);
+    expect(catalog.tasks.some(task => task.title === 'Historical work')).toBe(true);
+    expect(catalog.tasks.some(task => task.task_source === 'agsdl')).toBe(false);
   });
 
   it('preserves canonical workflow ownership when the active legacy projection still contains nodes', async () => {
     const f = await workflowTaskFixture();
+    f.plan.agsdl!.design!.kind = 'blueprint';
+    delete f.plan.agsdl!.design!.origin;
     f.plan.status = 'in_progress';
     f.plan.nodes = [{ id: 'legacy', title: 'Old node', description: '', type: 'task', status: 'pending', dependencies: [], projectId: 'project' }];
     const load = createLoadImplementTaskCatalog({

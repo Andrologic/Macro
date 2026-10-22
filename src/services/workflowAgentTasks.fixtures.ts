@@ -43,3 +43,23 @@ export async function workflowTaskFixture() {
   };
   return { plan, snapshot, projection, activation, approvals, summary, calls, ports };
 }
+
+/** A captured Call failure between a successful author and an unvisited reviewer. */
+export async function workflowCallFailureFixture(onError = false) {
+  const f = await workflowTaskFixture();
+  const doc = JSON.parse(f.snapshot.authoredSource);
+  doc.bindings.inspect = { contract: { identity: 'synthetic/inspect', version: '1' }, implementation: { identity: 'synthetic/local-inspect', version: '1' }, effects: 'none' };
+  doc.flow.steps.work.next = ['inspect'];
+  doc.flow.steps.inspect = { type: 'call', binding: 'inspect', arguments: {}, next: ['review'], ...(onError ? { onError: ['review'] } : {}) };
+  doc.flow.steps.review = { type: 'agent', agent: 'reviewer', next: [] };
+  const authoredSource = JSON.stringify(doc);
+  Object.assign(f.snapshot, { authoredSource, source: { ...f.snapshot.source, sourceSha256: id(await sourceDigest(authoredSource)) } });
+  f.projection.source = structuredClone(f.snapshot.source);
+  f.summary.source = f.snapshot.source;
+  f.plan.agsdl!.source = authoredSource;
+  const call = f.activation('2', 'terminal', 'failed');
+  call.work.agentInstanceId = null;
+  call.work.step = ['inspect'];
+  f.projection.activations = [f.activation('1', 'terminal', 'completed'), call];
+  return f;
+}

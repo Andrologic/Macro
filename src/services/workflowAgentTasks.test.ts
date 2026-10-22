@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'bun:test';
 import { loadWorkflowAgentTasks, projectWorkflowAgentTasks, refreshWorkflowAgentTasks, retainWorkflowTaskOrder, workflowAgentTaskId } from './workflowAgentTasks';
-import { workflowTaskFixture } from './workflowAgentTasks.fixtures';
+import { workflowCallFailureFixture, workflowTaskFixture } from './workflowAgentTasks.fixtures';
 import { id } from './agsdlExecution/conformanceFixtures';
 import { visibleTaskQueueTasks } from './taskQueueVisibility';
 import { resolveTaskQueueAttention } from './taskQueueAttention';
@@ -99,12 +99,14 @@ describe('native workflow Agent Task projection', () => {
     await expect(loadWorkflowAgentTasks([f.plan], null, f.ports)).rejects.toThrow('capture differs');
   });
 
-  it('excludes blueprints and other projects before any native read', async () => {
+  it('excludes other projects and confirms absence of retained runs before excluding a blueprint', async () => {
     const f = await workflowTaskFixture();
     expect(await loadWorkflowAgentTasks([f.plan], ['other'], f.ports)).toEqual([]);
-    f.plan.agsdl!.design!.kind = 'blueprint';
-    expect(await loadWorkflowAgentTasks([f.plan], null, f.ports)).toEqual([]);
     expect(f.calls).toEqual([]);
+    f.plan.agsdl!.design!.kind = 'blueprint';
+    f.ports.runs = async () => { f.calls.push('runs'); return { runs: [], nextCursor: null }; };
+    expect(await loadWorkflowAgentTasks([f.plan], null, f.ports)).toEqual([]);
+    expect(f.calls).toEqual(['runs']);
   });
 
   it('fails closed on incomplete approvals, duplicate instances or mismatched activations', async () => {
@@ -150,5 +152,68 @@ describe('native workflow Agent Task projection', () => {
       pendingToolApprovalByConversationId: {}, runningTaskIds: new Set() });
     expect(attention.get(tasks[0].id)?.kind).toBe('approval');
     expect(visibleTaskQueueTasks(tasks, { ...options, attentionByTaskId: attention }).map(task => task.id)).toEqual([tasks[0].id]);
+  });
+});
+
+describe('run-level supervision without fabricated pure Tasks', () => {
+  const options = { showBlockedTasks: false, showWithoutInteraction: false, showArchived: false,
+    runningTaskIds: new Set<string>(), attentionByTaskId: new Map<string, unknown>(), mergeWorkflowRuntimeByTaskId: {} };
+  const attentionFor = (tasks: ReturnType<typeof projectWorkflowAgentTasks>) => resolveTaskQueueAttention({ tasks,
+    conversations: [], questionnaireDraftsByConversationId: {}, pendingToolApprovalByConversationId: {}, runningTaskIds: new Set() });
+  it('keeps one existing row visible for a failed Call while preserving Agent outcomes and exact run identity', async () => {
+    const f = await workflowCallFailureFixture();
+    const tasks = await loadWorkflowAgentTasks([f.plan], null, f.ports);
+    expect(tasks.map(task => task.status)).toEqual(['Completed', 'Blocked']);
+    expect(tasks).toHaveLength(2);
+    expect(tasks[0].workflow_execution!.runAttention).toEqual({ state: 'failed', activationIds: [id('activation-2')] });
+    const attention = attentionFor(tasks);
+    expect([...attention.keys()]).toEqual([tasks[0].id]);
+    const visible = visibleTaskQueueTasks(tasks, { ...options, attentionByTaskId: attention });
+    expect(visible.map(task => task.id)).toEqual([tasks[0].id]);
+    expect(visible[0].workflow_execution!.systemStartId).toBe(f.snapshot.systemStartId);
+  });
+  it.each(['call', 'prepare', 'condition'])('surfaces unresolved uncertainty in a %s without changing the Agent status', async kind => {
+    const f = await workflowCallFailureFixture();
+    const doc = JSON.parse(f.snapshot.authoredSource);
+    doc.flow.steps.inspect.type = kind;
+    Object.assign(f.snapshot, { authoredSource: JSON.stringify(doc) });
+    const step = f.projection.activations[1];
+    step.workState = 'uncertain'; step.terminalKind = null;
+    const tasks = projectWorkflowAgentTasks(f.plan, f.snapshot, f.projection, []);
+    expect(tasks[0].status).toBe('Completed');
+    expect(tasks[0].workflow_execution!.runAttention?.state).toBe('uncertain');
+    expect(visibleTaskQueueTasks(tasks, options)).toHaveLength(1);
+  });
+  it('clears uncertainty after recovery and does not alert on an authored onError continuation or its eventual success', async () => {
+    const f = await workflowCallFailureFixture(true);
+    f.projection.activations[1].workState = 'uncertain';
+    f.projection.activations[1].terminalKind = null;
+    let tasks = projectWorkflowAgentTasks(f.plan, f.snapshot, f.projection, []);
+    expect(attentionFor(tasks).size).toBe(1);
+    f.projection.activations[1].workState = 'terminal';
+    f.projection.activations[1].terminalKind = 'failed';
+    const recovery = f.activation('3', 'queued', null, 'reviewer');
+    recovery.work.step = ['review'];
+    f.projection.activations.push(recovery);
+    for (const state of ['queued', 'active', 'terminal'] as const) {
+      recovery.workState = state; recovery.terminalKind = state === 'terminal' ? 'completed' : null;
+      tasks = projectWorkflowAgentTasks(f.plan, f.snapshot, f.projection, []);
+      expect(tasks.every(task => !task.workflow_execution!.runAttention)).toBe(true);
+      expect(attentionFor(tasks).size).toBe(0);
+      expect(visibleTaskQueueTasks(tasks, options)).toEqual([]);
+    }
+    expect(tasks.map(task => task.status)).toEqual(['Completed', 'Completed']);
+  });
+  it('rediscovers captured runs and approvals when current provenance, kind and source change', async () => {
+    const f = await workflowTaskFixture();
+    const initial = await loadWorkflowAgentTasks([f.plan], null, f.ports);
+    f.plan.agsdl!.design = { version: 1, kind: 'blueprint', purpose: 'Edited', context: '', rules: [], requirements: [] };
+    f.plan.agsdl!.source = '{"contract":"agsdl-0.2.0","id":"edited","agents":{},"configurations":{},"bindings":{}}';
+    f.approvals.push({ approvalId: 'approval', work: f.projection.activations[0].work, toolName: 'write', summary: '', status: 'pending' });
+    const reloaded = await loadWorkflowAgentTasks([f.plan], null, f.ports);
+    expect(reloaded.map(task => task.id)).toEqual(initial.map(task => task.id));
+    expect(reloaded[0].workflow_execution!.state).toBe('approval');
+    expect(reloaded[0].workflow_execution!.source).toEqual(f.snapshot.source);
+    expect(f.snapshot.authoredSource).not.toBe(f.plan.agsdl!.source);
   });
 });

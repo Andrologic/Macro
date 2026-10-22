@@ -1,5 +1,5 @@
 import { create } from "zustand";
-import { adaptationChanges, readDesign, withDocumentDesign, type AgsdlEnvelopeMetadata, type DesignMetadata } from "../services/agsdl/design";
+import { adaptationChanges, readDesign, retainDesignOrigin, withDocumentDesign, type AgsdlEnvelopeMetadata, type DesignMetadata } from "../services/agsdl/design";
 import {
   migrateArchitectPlanToAgsdl,
   updateArchitectPlan,
@@ -132,7 +132,7 @@ export const useAgsdlStore = create<AgsdlState>((set, get) => {
         throw new AgsdlUserError("agsdl.viewer.editConflict", "The document changed. Read it again before editing.");
       const nextAnnexes = annexes ?? current.annexes;
       const metadataSource = metadata === undefined ? current : metadata;
-      const nextMetadata = structuredClone({ design: metadataSource.design, display: metadataSource.display, migration: metadataSource.migration });
+      const nextMetadata = structuredClone({ design: retainDesignOrigin(current.design, metadataSource.design), display: metadataSource.display, migration: metadataSource.migration });
       if (
         new TextEncoder().encode(source + Object.values(nextAnnexes).join("") + JSON.stringify(nextMetadata))
           .length > MAX_AGSDL_BYTES

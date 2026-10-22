@@ -789,6 +789,7 @@ describe('useTaskStore refreshFromPlan selection reconciliation', () => {
     expect(getTaskLifecycleCapabilities(tasks[0]).canRename).toBe(false);
     await expect(useTaskStore.getState().setTaskStatus(tasks[0].id, 'InProgress')).rejects.toMatchObject({ code: 'NATIVE_WORKFLOW_OWNED' });
     await expect(useTaskStore.getState().renameTask(tasks[0].id, 'Other')).rejects.toMatchObject({ code: 'NATIVE_WORKFLOW_OWNED' });
+    await expect(useTaskStore.getState().runTaskCommands(tasks[0].id)).rejects.toMatchObject({ code: 'NATIVE_WORKFLOW_OWNED' });
     fail = true;
     await useTaskStore.getState().refreshWorkflowTasks();
     const stale = useTaskStore.getState().tasks.find((task: ImplementTask) => task.id === tasks[0].id)!;

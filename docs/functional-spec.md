@@ -295,6 +295,16 @@ Trois capacités restent distinctes :
 - le démarrage depuis le produit, fermé tant que sa qualification physique n’est
   pas faite.
 
+Le suivi des runs conservés reste disponible après une modification du design ou
+un changement de source. Une omission de provenance dans une édition ordinaire
+conserve celle de la copie. Les tâches sont projetées depuis la source capturée
+et le journal, indépendamment du blueprint courant. Un échec non traité ou un
+état incertain dans une étape sans instance Agent garde une ligne existante du
+run visible par défaut et ouvre son graphe. Le statut de l’Agent reste inchangé.
+Un échec suivi par son `onError` ne maintient pas cette alerte historique. Les
+lignes natives proposent la consultation du graphe, sans renommage ni activation
+des anciennes tâches.
+
 #### Visualisation AgSDL
 
 Le panneau droit Architect présente un canvas AgSDL non éditable. La conversation

@@ -33,6 +33,7 @@ export function readDesign(source: string, metadata?: DesignMetadata): DesignMet
 /** Patch owned fields only, keeping opaque fields and unrelated source spans intact. */
 export function designChanges(source: string, design: DesignMetadata): AgsdlChange[] {
   if (!valid(design)) throw new DesignMetadataError();
+  design = updateDesignMetadata(readDesign(source), design);
   if (readDocument(source).contract === AGSDL_CONTRACT) throw new Error('AgSDL 0.2 design metadata belongs in the editor envelope. Use setDesign.');
   const previous = readDesign(source);
   const root = object(readDocument(source).root);
@@ -76,6 +77,11 @@ export function validDisplayMetadata(value: unknown): value is AgsdlDisplayMetad
   return isRecord(value.cards) && Object.values(value.cards).every(card =>
     isRecord(card) && fields.every(field => card[field] === undefined || typeof card[field] === 'string'));
 }
+/** Omission during an ordinary edit must not detach a launched copy from its blueprint. */
+export function retainDesignOrigin(previous: DesignMetadata | undefined, next: DesignMetadata | undefined): DesignMetadata | undefined {
+  if (!previous?.origin) return next;
+  return { ...(next ?? previous), origin: { ...previous.origin, ...next?.origin } };
+}
 /** Preserve unrelated metadata and row extensions while updating owned design fields. */
 export function updateDesignMetadata(previous: DesignMetadata | undefined, design: DesignMetadata): DesignMetadata {
   if (!valid(design) || (previous !== undefined && !valid(previous))) throw new DesignMetadataError();
@@ -89,7 +95,8 @@ export function updateDesignMetadata(previous: DesignMetadata | undefined, desig
       return row;
     });
   }
-  if (design.origin === undefined) delete merged.origin;
+  merged.origin = retainDesignOrigin(previous, design)?.origin;
+  if (merged.origin === undefined) delete merged.origin;
   return merged;
 }
 /** Source text is immutable when only Macro design metadata changes in 0.2. */

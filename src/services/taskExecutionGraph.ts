@@ -9,6 +9,7 @@ import { resolveTaskReference } from './durableIdentity';
 import * as ipc from './tauriIpc';
 import { isWorkflowAgentTask, workflowAgentTaskId, workflowTaskAgentPaths } from './workflowAgentTasks';
 import { sourceDigest } from './agsdlExecution/compiler';
+import { pointerPart } from './agsdl/document';
 
 export interface TaskExecutionGraph {
   title: string;
@@ -59,7 +60,9 @@ export async function loadTaskExecutionGraph(task: CatalogedImplementTask, tasks
         sameSource(candidate.workflow_execution.source, snapshot.source));
       if (linked) taskPaths[path] = linked.id;
     }
-    const selectedPath = Object.keys(taskPaths).find(path => path.startsWith('/flow/') && taskPaths[path] === task.id) ??
+    const problem = projection.activations.find(item => ref.runAttention?.activationIds.includes(item.work.activationId));
+    const problemPath = problem?.work.step?.length === 1 ? `/flow/steps/${pointerPart(problem.work.step[0])}` : undefined;
+    const selectedPath = problemPath ?? Object.keys(taskPaths).find(path => path.startsWith('/flow/') && taskPaths[path] === task.id) ??
       Object.keys(taskPaths).find(path => taskPaths[path] === task.id);
     if (!selectedPath) throw new Error('Workflow Agent path is absent');
     const approvals = await ipc.readExecutionApprovals({ systemStartId: snapshot.systemStartId, source: snapshot.source });

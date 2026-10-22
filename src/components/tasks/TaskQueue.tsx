@@ -399,7 +399,10 @@ const TaskItem: React.FC<TaskItemProps> = ({
   const reviewNextAction = showMergeWorkflowPresentation || showReviewPresentation
     ? multiRepoPresentation?.nextActionLabel
     : null;
-  const nextAction = pendingRequestLabel || reviewNextAction;
+  const runAttentionLabel = task.workflow_execution?.runAttention
+    ? `${t(`agsdl.execution.state.${task.workflow_execution.runAttention.state}`, task.workflow_execution.runAttention.state === 'failed' ? 'Failed' : 'Uncertain')} · ${t('implement.viewExecutionGraph', 'View workflow')}`
+    : null;
+  const nextAction = runAttentionLabel || pendingRequestLabel || reviewNextAction;
   const instruction = nextAction || waitingReason;
   const secondaryText = instruction || task.description;
 
@@ -1391,7 +1394,7 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className, excludedProjectIds
       groupName: getProjectGroupByProjectId(projectGroups, project.id)?.name ?? null,
       taskCount: queueVisibleTasks.filter((task) =>
         !task.archived_at &&
-        task.status !== 'Completed' &&
+        (task.status !== 'Completed' || !!task.workflow_execution?.runAttention) &&
         taskMatchesProjectId(task, project.id)
       ).length,
       isReadOnly: Boolean(project.isReadOnly),
@@ -1453,7 +1456,7 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className, excludedProjectIds
     () => new Map(
       projectFilteredTasks.map((task) => [
         task.id,
-        resolveTaskQueueStatusGroup(
+        task.workflow_execution?.runAttention ? 'waiting' : resolveTaskQueueStatusGroup(
           task.status,
           task.is_blocked,
           resolveTaskMergeWorkflowPresentationState(
@@ -1470,7 +1473,7 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className, excludedProjectIds
     [attentionByTaskId, resolvedWaitTaskIds, mergeWorkflowRuntimeByTaskId, projectFilteredTasks, runningTaskIds]
   );
   const totalActiveTaskCount = useMemo(
-    () => queueVisibleTasks.filter((task) => !task.archived_at && task.status !== 'Completed').length,
+    () => queueVisibleTasks.filter((task) => !task.archived_at && (task.status !== 'Completed' || !!task.workflow_execution?.runAttention)).length,
     [queueVisibleTasks]
   );
 
@@ -1503,6 +1506,7 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className, excludedProjectIds
   };
 
   const canRunTaskCommandsForTask = (task: ImplementTask): boolean =>
+    task.task_source !== 'agsdl' &&
     !isPlanFinalizationTask(task) &&
     !taskCommandsDisabled &&
     !isManualDraftPendingInitialization(task) &&
@@ -1701,16 +1705,16 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className, excludedProjectIds
     const archived = Boolean(task.archived_at);
     const actions: TaskActionDescriptor[] = [
       { key: 'execution_graph', label: t('implement.viewExecutionGraph', 'View workflow'), icon: 'workflow' },
-      {
-        key: 'rename',
-        label: t('common.rename', 'Rename'),
-        icon: 'edit',
-        disabled: taskMutationDisabled,
-        title: taskMutationDisabled ? taskMutationDisabledTitle : undefined,
-      },
     ];
+    if (capabilities.canRename) actions.push({
+      key: 'rename',
+      label: t('common.rename', 'Rename'),
+      icon: 'edit',
+      disabled: taskMutationDisabled,
+      title: taskMutationDisabled ? taskMutationDisabledTitle : undefined,
+    });
 
-    if (!archived && !task.draft && ['InProgress', 'AwaitingResponse'].includes(task.status)) {
+    if (task.task_source !== 'agsdl' && !archived && !task.draft && ['InProgress', 'AwaitingResponse'].includes(task.status)) {
       const reason = getStartReviewDisabledReason(task);
       actions.push({ key: 'start_review', label: t('implement.startReview', 'Start review'), icon: 'eye', disabled: Boolean(reason), title: reason });
     }
@@ -2473,9 +2477,10 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className, excludedProjectIds
                       isAssistantRunning={runningTaskIds.has(row.task.id)}
                       taskCommandRunStatus={taskCommandRuns[row.task.id]?.status ?? null}
                       canRunTaskCommands={canRunTaskCommandsForTask(row.task)}
-                      showRunTaskCommands={!isPlanFinalizationTask(row.task)}
+                      showRunTaskCommands={row.task.task_source !== 'agsdl' && !isPlanFinalizationTask(row.task)}
                       runTaskCommandsTitle={getRunTaskCommandsTitle(row.task)}
                       onSelect={() => {
+                        if (row.task.task_source === 'agsdl') { setExecutionGraphTask(row.task); return; }
                         const attention = attentionByTaskId.get(row.task.id);
                         void activateTask(row.task.id).then(async () => {
                           if (attention?.conversationId &&
@@ -2583,6 +2588,8 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className, excludedProjectIds
                 try {
                   await renameTask(renameTarget.id, value || '');
                   setRenameTarget(null);
+                } catch (error) {
+                  notify.error(toServiceError(error).message);
                 } finally {
                   setPendingTaskId((current) => (current === renameTarget.id ? null : current));
                 }

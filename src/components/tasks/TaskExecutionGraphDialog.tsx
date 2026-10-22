@@ -73,8 +73,9 @@ export default function TaskExecutionGraphDialog({ task, onClose }: { task: Cata
     return [[path, { taskId: task.id, title: task.title, state: resolveTaskStatusIndicatorState(task.status, running.has(task.id), task.task_source, resolveTaskMergeWorkflowPresentationState(mergeRuntime[task.id], task.merge_workflow_summary, task.status), task.is_blocked, Boolean(supervision.attentionByTaskId.get(task.id) && supervision.attentionByTaskId.get(task.id)?.kind !== 'review'), supervision.resolvedWaitTaskIds.has(task.id)) } satisfies TrackedTask]];
   })), [view, tasks, running, mergeRuntime, supervision]);
   const native = useMemo(() => view?.projection ? nativeCardActivations(system.cards, view.projection, view.approvals ?? []) : view?.activity ?? {}, [system, view]);
+  const canOpenTask = (path: string) => !!tracked[path] && tasks.some(task => task.id === tracked[path].taskId && task.task_source !== 'agsdl');
   const openTask = (path: string) => {
-    if (!tracked[path]) return;
+    if (!canOpenTask(path)) return;
     void useTaskStore.getState().activateTask(tracked[path].taskId).then(() => {
       useAppStore.getState().setMode('Implement'); onClose();
     }).catch(() => setError(true));
@@ -91,8 +92,8 @@ export default function TaskExecutionGraphDialog({ task, onClose }: { task: Cata
       {error || (view && !document) ? <div role="alert" className="m-auto flex items-center gap-2 text-sm text-muted-foreground"><Icon name="alert-circle" size={16} />{t('implement.executionGraphError', 'The workflow could not be loaded.')}<button className="text-primary" onClick={() => setAttempt(value => value + 1)}>{t('common.retry', 'Retry')}</button></div>
         : view === undefined ? <div role="status" className="m-auto"><SpinnerIcon size={20} /></div>
         : !view ? <p className="m-auto px-6 text-center text-sm text-muted-foreground">{t('implement.executionGraphEmpty', 'No AgSDL execution is linked to this task.')}</p>
-        : <WorkflowGraph onInspect={setInspected} onOpenTask={openTask} selectionMode="select" cards={system.cards} edges={system.edges} selected={selected} select={setSelected} title={card => tracked[card.path]?.title || card.title} trackedTasks={tracked} nativeActivations={native} />}
-      {selected && tracked[selected] && <button type="button" className="absolute bottom-4 right-4 z-10 flex items-center gap-2 rounded-lg border border-border bg-card px-3 py-2 text-xs text-primary shadow-lg transition-colors hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary" onClick={() => openTask(selected)}><Icon name="message-square" size={14} />{t('implement.openGraphTask', 'Open task')}</button>}
+        : <WorkflowGraph onInspect={setInspected} onOpenTask={task.task_source === 'agsdl' ? undefined : openTask} selectionMode="select" cards={system.cards} edges={system.edges} selected={selected} select={setSelected} title={card => tracked[card.path]?.title || card.title} trackedTasks={tracked} nativeActivations={native} />}
+      {selected && canOpenTask(selected) && <button type="button" className="absolute bottom-4 right-4 z-10 flex items-center gap-2 rounded-lg border border-border bg-card px-3 py-2 text-xs text-primary shadow-lg transition-colors hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary" onClick={() => openTask(selected)}><Icon name="message-square" size={14} />{t('implement.openGraphTask', 'Open task')}</button>}
     </div>
     {inspectedCard && <Dialog title={tracked[inspected]?.title || inspectedCard.title} onClose={() => setInspected('')} closeOnBackdropClick panelClassName="agsdl-detail-modal">
       <header><strong>{tracked[inspected]?.title || inspectedCard.title}</strong><button type="button" className="agsdl-icon-button" aria-label={t('common.close', 'Close')} onClick={() => setInspected('')}><Icon name="x" size={16} /></button></header>
@@ -103,7 +104,7 @@ export default function TaskExecutionGraphDialog({ task, onClose }: { task: Cata
             incoming={system.edges.filter(edge => edge.target === inspected).map(edge => system.cards.find(card => card.path === edge.source)?.title || '')}
             outgoing={system.edges.filter(edge => edge.source === inspected).map(edge => system.cards.find(card => card.path === edge.target)?.title || '')} />}
       </section>
-      {tracked[inspected] && <footer><button className="agsdl-action-button" onClick={() => openTask(inspected)}><Icon name="message-square" size={14} />{t('implement.openGraphTask', 'Open task')}</button></footer>}
+      {canOpenTask(inspected) && <footer><button className="agsdl-action-button" onClick={() => openTask(inspected)}><Icon name="message-square" size={14} />{t('implement.openGraphTask', 'Open task')}</button></footer>}
     </Dialog>}
   </Dialog>;
 }

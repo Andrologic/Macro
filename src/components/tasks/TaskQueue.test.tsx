@@ -555,6 +555,61 @@ describe('TaskQueue', () => {
     expect(document.querySelector('[role="dialog"]')).toBeNull();
   });
 
+  it('keeps a failed Call visible by default, opens its captured graph on click and hides native legacy actions', async () => {
+    const { workflowCallFailureFixture } = await import('../../services/workflowAgentTasks.fixtures');
+    const { projectWorkflowAgentTasks } = await import('../../services/workflowAgentTasks');
+    const f = await workflowCallFailureFixture();
+    const tasks = projectWorkflowAgentTasks(f.plan, f.snapshot, f.projection, []);
+    seedTasks(tasks.map(task => ({ ...task })));
+    useViewFilterStore.setState({ implement: { ...DEFAULT_IMPLEMENT_VIEW_FILTERS }, isHydrated: true });
+    const activateTask = mock(async () => { throw new Error('Native rows must not activate legacy Tasks'); });
+    useTaskStore.setState({ activateTask });
+    const seen: Array<[string, unknown]> = [];
+    installTauriRuntimeMock(mock(async (command, payload) => {
+      seen.push([command, payload]);
+      if (command === 'execution_read_snapshot') return f.snapshot;
+      if (command === 'execution_read_projection') return f.projection;
+      if (command === 'execution_pending_approvals') return { approvals: [], incomplete: false };
+      return null;
+    }));
+    await act(async () => { root?.render(<TaskQueueComponent />); await flushRender(); });
+    const cards = document.querySelectorAll<HTMLElement>('[data-tour-id="implement-task-card"]');
+    expect(cards).toHaveLength(1);
+    expect(cards[0].textContent).toContain('View workflow');
+    expect(tasks[0].status).toBe('Completed');
+    expect(cards[0].querySelector('button[title="Run commands"]')).toBeNull();
+    const waiting = [...document.querySelectorAll<HTMLButtonElement>('button')].find(button => button.textContent === 'Waiting1')!;
+    expect(waiting).toBeDefined();
+    await act(async () => { waiting.click(); await flushRender(); });
+    expect(document.querySelectorAll('[data-tour-id="implement-task-card"]')).toHaveLength(1);
+    expect(useViewFilterStore.getState().implement.status).toBe('waiting');
+    await act(async () => { cards[0].querySelector<HTMLButtonElement>('button[aria-haspopup="menu"]')!.click(); await flushRender(); });
+    const actions = [...document.querySelectorAll('[role="menuitem"]')].map(item => item.textContent);
+    expect(actions).toContain('View workflow');
+    for (const action of ['Rename', 'Start review', 'Reopen', 'Archive', 'Delete']) expect(actions).not.toContain(action);
+    await act(async () => { document.activeElement!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })); await flushRender(); });
+    await act(async () => { cards[0].click(); await import('./TaskExecutionGraphDialog'); await flushRender(); });
+    expect(activateTask).not.toHaveBeenCalled();
+    expect(document.querySelector('[role="dialog"]')?.textContent).toContain('Workflow execution');
+    expect([...document.querySelectorAll('[role="dialog"] button')].some(button => button.textContent === 'Open task')).toBe(false);
+    expect(seen.some(([command, payload]) => command === 'execution_read_snapshot' &&
+      (payload as { systemStartId?: string })?.systemStartId === f.snapshot.systemStartId)).toBe(true);
+  });
+
+  it.each(['exception', 'service'] as const)('reports a rejected rename from a %s error, clears pending state and keeps the dialog available for retry', async kind => {
+    seedTasks([makeTask('task-1', 'Pending')]);
+    useTaskStore.setState({ renameTask: mock(async () => { throw kind === 'exception' ? new Error('Rename persistence failed') : { code: 'io', message: 'Rename persistence failed' }; }) });
+    await openReviewAction();
+    const rename = [...document.querySelectorAll<HTMLButtonElement>('[role="menuitem"]')].find(button => button.textContent === 'Rename')!;
+    await act(async () => { rename.click(); await import('../ui/ConfirmPromptModal'); await flushRender(); });
+    const confirm = [...document.querySelectorAll<HTMLButtonElement>('[role="dialog"] button')].find(button => button.textContent === 'Rename')!;
+    expect(confirm).toBeDefined();
+    await act(async () => { confirm.click(); await flushRender(); });
+    expect(notifyMock.error).toHaveBeenCalledWith('Rename persistence failed');
+    expect(document.querySelector('[role="dialog"]')).not.toBeNull();
+    expect(confirm.disabled).toBe(false);
+  });
+
   it.each(['InProgress', 'AwaitingResponse'] as const)('enters review from %s without sending a message', async (status) => {
     seedTasks([makeTask('task-1', status, { conversation_id: 'conversation-1' })]);
     const setTaskStatus = mock(async (taskId: string, nextStatus: TaskStatus) => {

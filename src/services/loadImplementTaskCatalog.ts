@@ -332,7 +332,7 @@ export const createLoadImplementTaskCatalog = (
             const plan = await dependencies.getArchitectPlan(branchName, planId);
             if (!plan && requiresCompleteRead) throw new Error('A referenced Architect plan could not be read.');
             return plan
-              ? isWorkflowPlan(plan) ? plan : retargetPlanForExecution(plan, {
+              ? plan.agsdl ? plan : retargetPlanForExecution(plan, {
                   scopedProjectIds: reconciliationProjectIds,
                   knownProjectIds: validProjectIds,
                 })
@@ -353,8 +353,18 @@ export const createLoadImplementTaskCatalog = (
         loadedPlans.filter((plan): plan is ArchitectPlanRecord => Boolean(plan && plan.status !== 'deleted')),
       );
 
+    const workflowTasks = await dependencies.loadWorkflowAgentTasks?.(plans, reconciliationProjectIds) ?? [];
+    const nativePlanKeys = new Set(workflowTasks.map(task => JSON.stringify([task.plan_storage_branch, task.plan_id])));
+    const hasNativeWorkflow = (plan: ArchitectPlanRecord) => isWorkflowPlan(plan) ||
+      nativePlanKeys.has(JSON.stringify([plan.targetBranch, plan.id]));
+
+    // Discover retained owners before applying the historical execution retargeting.
+    plans = plans.map(plan => hasNativeWorkflow(plan) ? plan : retargetPlanForExecution(plan, {
+      scopedProjectIds: reconciliationProjectIds, knownProjectIds: validProjectIds,
+    }));
+
     const activePlan = buildExecutableActivePlanRecord(appState);
-    const activeIsWorkflow = activePlan && plans.some(plan => isWorkflowPlan(plan) && plan.id === activePlan.id && plan.targetBranch === activePlan.targetBranch);
+    const activeIsWorkflow = activePlan && plans.some(plan => hasNativeWorkflow(plan) && plan.id === activePlan.id && plan.targetBranch === activePlan.targetBranch);
     if (activePlan && !activeIsWorkflow && !options?.persistedOnly) {
       plans = upsertPlanRecord(
         plans,
@@ -365,7 +375,7 @@ export const createLoadImplementTaskCatalog = (
       );
     }
     plans = await Promise.all(plans.map(async (plan) => {
-      if (isWorkflowPlan(plan)) return plan;
+      if (hasNativeWorkflow(plan)) return plan;
       const migration = migrateLegacyPlanExecutionModes(plan, appState);
       if (options?.persistedOnly || !migration.changed || !dependencies.updateArchitectPlan) {
         return migration.plan;
@@ -389,16 +399,15 @@ export const createLoadImplementTaskCatalog = (
     );
 
     const catalog = dependencies.buildImplementTaskCatalog({
-      plans: plans.filter(plan => !isWorkflowPlan(plan)),
+      plans: plans.filter(plan => !hasNativeWorkflow(plan)),
       // Engine tasks are regenerated from native identities, never retained as
       // fallback rows when a run disappears or the metadata scope changes.
       fallbackTasks: reconciledFallbackTasks.filter(task => task.task_source !== 'agsdl'),
     });
-    const workflowTasks = await dependencies.loadWorkflowAgentTasks?.(plans, reconciliationProjectIds) ?? [];
     catalog.tasks.push(...workflowTasks);
     if (workflowTasks.length) {
       catalog.source = catalog.hasStandaloneTasks ? 'mixed' : 'architect';
-      for (const plan of plans.filter(isWorkflowPlan)) {
+      for (const plan of plans.filter(hasNativeWorkflow)) {
         const tasks = workflowTasks.filter(task => task.plan_id === plan.id && task.plan_storage_branch === plan.targetBranch);
         if (!tasks.length) continue;
         catalog.plans.push({ id: plan.id, locatorKey: toPlanLocatorKey({ branchName: plan.targetBranch, planId: plan.id }),
@@ -411,7 +420,7 @@ export const createLoadImplementTaskCatalog = (
 
     const runtimeEntries = (
       await Promise.all(
-        plans.filter(plan => !isWorkflowPlan(plan)).map(async (plan) => {
+        plans.filter(plan => !hasNativeWorkflow(plan)).map(async (plan) => {
           const runtime = await readArchitectPlanRuntime({
             branchName: plan.targetBranch,
             planId: plan.id,

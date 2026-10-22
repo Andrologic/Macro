@@ -81,3 +81,18 @@ describe('Macro design metadata history', () => {
     expect(state()).toEqual(before);
   });
 });
+
+it('preserves copy provenance through design updates, envelope replacement and source edits', () => {
+  const store = useAgsdlStore.getState();
+  const origin = { branchName: 'develop', planId: 'blueprint', name: 'Blueprint', revision: 1 };
+  store.setDesign(target, { ...state().design!, origin });
+  const { origin: _omitted, ...design } = state().design!;
+  store.setDesign(target, { ...design, context: 'Edited' });
+  expect(state().design!.origin).toEqual(origin);
+  store.replace(target, state().source, undefined, undefined, { design });
+  expect(state().design!.origin).toEqual(origin);
+  store.replace(target, state().source, undefined, undefined, {});
+  expect(state().design!.origin).toEqual(origin);
+  store.edit(target, [{ op: 'set', path: '/id', valueJson: '"edited-copy"' }]);
+  expect(state().design!.origin).toEqual(origin);
+});

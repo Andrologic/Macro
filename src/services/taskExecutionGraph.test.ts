@@ -76,3 +76,23 @@ it('rejects a snapshot from another scope and stops discovery after closing the 
   await expect(loadTaskExecutionGraph(task, [task], controller.signal)).rejects.toThrow();
   expect(invoke).toHaveBeenCalledTimes(1);
 });
+
+it('opens the signalled pure activation in the exact captured run without attributing it to an Agent', async () => {
+  const { workflowCallFailureFixture } = await import('./workflowAgentTasks.fixtures');
+  const { projectWorkflowAgentTasks } = await import('./workflowAgentTasks');
+  const f = await workflowCallFailureFixture();
+  const tasks = projectWorkflowAgentTasks(f.plan, f.snapshot, f.projection, []);
+  const seen: string[] = [];
+  installTauriRuntimeMock(mock(async (command, args) => {
+    seen.push(command);
+    if (command === 'execution_read_snapshot') { expect(args?.systemStartId).toBe(f.snapshot.systemStartId); return f.snapshot; }
+    if (command === 'execution_read_projection') return f.projection;
+    if (command === 'execution_pending_approvals') return { approvals: [], incomplete: false };
+    throw new Error(`Unexpected ${command}`);
+  }));
+  const graph = await loadTaskExecutionGraph(tasks[0], tasks);
+  expect(graph?.selectedPath).toBe('/flow/steps/inspect');
+  expect(graph?.source).toBe(f.snapshot.authoredSource);
+  expect(graph?.taskPaths['/flow/steps/inspect']).toBeUndefined();
+  expect(seen).not.toContain('execution_list_runs');
+});

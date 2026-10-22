@@ -152,3 +152,17 @@ describe('adaptation support assertions', () => {
     expect(adaptationChanges(source, before, { ...before, requirements: [{ ...before.requirements[0], value: 'old' }] })).toEqual([]);
   });
 });
+
+it('preserves blueprint provenance when ordinary design edits omit origin in both editions', () => {
+  const origin = { branchName: 'develop', planId: 'blueprint', name: 'Blueprint', revision: 2 };
+  const next = { ...defaultDesign(), context: 'Edited context' };
+  const modern = createEmptySystemDocument('Copy');
+  modern.design!.origin = origin;
+  expect(withDocumentDesign(modern.source, next, modern).design?.origin).toEqual(origin);
+  expect(withDocumentDesign(modern.source, { ...next, origin: { planId: 'blueprint', name: 'Blueprint', revision: 2 } }, modern).design?.origin).toEqual(origin);
+  const legacy = JSON.parse(createEmptySystem('Copy'));
+  legacy.root.annotations.macroDesign.origin = origin;
+  const edited = applyChanges(JSON.stringify(legacy), designChanges(JSON.stringify(legacy), next));
+  expect(readDesign(edited).origin).toEqual(origin);
+  expect(readDesign(edited).context).toBe('Edited context');
+});
