@@ -652,3 +652,111 @@ in `DEVELOPMENT.md`; a config directory override alone is insufficient.
    browser/WebView/toolchain versions, source SHA, lifecycle action counts and
    boundaries. Repeat in three fresh processes. This protocol requires an
    authorized browser/native driver and has not been executed by the Bun runner.
+
+### Executed history stages, 2026-10-22
+
+Three fresh processes per runner measured clean source
+`f4b1dd00cd4d7f453fcd0ee07bd578e37839386a`, based on product revision
+`57ca43aeaf79e66732667e564ea4af8b3410261c`. This lot adds developer tooling only.
+Environment was Linux 7.0.0-1019-nvidia arm64, 20 logical CPUs, 121.625 GiB,
+Bun 1.3.14, Rust/Cargo 1.95.0. The OS did not expose a CPU model. The lockfile
+SHA-256 was `1e49b5eaeebc035002a02f5367bc01bcea6dc0aa64c3f3b81ebed1b229408e4c`.
+Runs were sequential with other chantier benchmarks/builds paused, but shared
+host load was uncontrolled. These are observations, not regression thresholds.
+Raw JSON, logs and the external capture wrapper remain outside Git.
+
+All timing cells are medians of three process-level p50 / p95 values in
+milliseconds. They are not percentiles of pooled observations. Each process
+used 10 warmups and 100 retained observations per case; none were discarded.
+
+| Messages | Native repository/SQLx read | Rust JSON serialization | Serialized bytes |
+| ---: | ---: | ---: | ---: |
+| 100 | 1.622 / 1.965 | 1.857 / 1.870 | 62,401 |
+| 1,000 | 14.324 / 16.353 | 18.556 / 18.663 | 624,001 |
+| 10,000 | 124.367 / 133.677 | 185.665 / 187.159 | 6,240,001 |
+
+The native build used the documented dev profile, one Cargo job and shared
+cache, locked/offline dependencies and a verified private executable per run.
+The source fingerprint was
+`6610d8a22aaeb327e2302229d53032d959c1696eb0aa4b4a2e3c2dff4f7b2b87`.
+SQLite was 3.46.0 with migrations `[1,3,4,5,6,7,8,9,10]`, WAL, synchronous 1
+and foreign keys on. All path/content/metadata/integrity/reopen/cleanup checks
+passed. One preparatory smoke was rejected because developer source changed
+during its build; its output was excluded. The frozen-source smoke and all
+three final runs passed.
+
+The 185.665 ms serialization median is for an **unoptimized dev example**,
+not a release Tauri command or an observed native IPC encode duration. Both full
+repository materialization and serialization scale with payload in this build.
+An optimized-build reproduction and a native trace are required before deciding
+whether either explains product latency. These data do not isolate SQL execution
+from SQLx decoding, and cannot justify pagination or a storage change.
+
+| Messages | Fixture | Bun JSON decode | Production persistence mapping | Message indexing | Transcript items |
+| ---: | --- | ---: | ---: | ---: | ---: |
+| 100 | Plain | 0.049 / 0.055 | 0.016 / 0.023 | 0.014 / 0.022 | 0.014 / 0.022 |
+| 1,000 | Plain | 0.420 / 0.604 | 0.053 / 0.104 | 0.112 / 0.137 | 0.044 / 0.072 |
+| 10,000 | Plain | 3.743 / 5.592 | 0.297 / 0.627 | 1.012 / 1.952 | 0.305 / 0.647 |
+| 100 | Nested | 0.170 / 0.179 | 0.140 / 0.169 | 0.010 / 0.014 | 0.007 / 0.013 |
+| 1,000 | Nested | 1.431 / 1.786 | 1.010 / 1.463 | 0.095 / 0.113 | 0.050 / 0.058 |
+| 10,000 | Nested | 14.384 / 17.470 | 10.780 / 15.596 | 1.182 / 1.873 | 0.448 / 0.592 |
+
+At 10,000 messages, plain/nested JSON contained 6,100,001 / 15,383,891 bytes.
+Nested parsers add visible work to real frontend mapping in Bun. Their cost is
+separate from transport and from the diagnostics copy measured elsewhere. These
+fixtures do not establish real-user payload distributions or WebView latency.
+No stage percentile is added to a different stage, engine or process.
+
+### Executed resource cycles, 2026-10-22
+
+Each of the three complete JS runs passed 10,000 cycles. Each ended with 10,000
+settled stream promises, 10,000 cancelled Web Streams, 10,000 delivered
+EventTarget events and 5,000 cancelled chat turns. Projected runtime states,
+active-stream registry entries, owned timers and subagent timers all reached
+zero. Reopening the same history retained 100 messages. Subagent snapshots
+reached 10,000 and stayed at 10,000 after dispose, then reached zero after
+explicit releaseRun. A further completed run after unsubscribe delivered no
+notification to the removed listener.
+
+Memory in those complete runs included prior history timing allocations.
+Separate fresh processes therefore called the same exported `resourceCycles`
+helper without the preceding history benchmark. To reproduce the additional
+returned-owner boundary from a clean repository root:
+
+```sh
+bun --no-install --eval '
+import { resourceCycles } from "./dev/performance/history-resources.ts";
+import { assertCleanBuildSource } from "./dev/performance/build-provenance.ts";
+const head = assertCleanBuildSource(process.cwd());
+const retention = await resourceCycles(10_000, 1_000);
+await new Promise(resolve => setImmediate(resolve));
+await new Promise(resolve => setImmediate(resolve));
+Bun.gc(true);
+const afterReturnedOwnerAndIdle = process.memoryUsage();
+if (assertCleanBuildSource(process.cwd()) !== head) throw new Error("Source changed");
+console.log(JSON.stringify({ head, bun: Bun.version, retention, afterReturnedOwnerAndIdle }));
+' > /tmp/macro-resources-isolated.json
+```
+
+The retained data returned by the helper contains numeric checkpoints, not the
+runtime owner. Two macrotask turns allow host cleanup to progress after the
+helper returns. The executed external wrapper also recorded environment,
+lockfile and its own source hashes, and rechecked HEAD/cleanliness. This boundary
+is stronger than reading process memory immediately inside the loop, but is
+still not a heap retaining-path inspection.
+
+| Fresh process | Initial heap / RSS MiB | At 10,000 cycles heap / RSS MiB | After releaseRun, owner still live | After helper return, two turns and GC |
+| ---: | ---: | ---: | ---: | ---: |
+| 1 | 1.062 / 58.488 | 11.111 / 159.945 | 11.111 / 147.312 | 5.005 / 135.887 |
+| 2 | 1.065 / 59.719 | 11.133 / 160.215 | 11.133 / 161.465 | 5.004 / 161.652 |
+| 3 | 1.062 / 59.004 | 11.108 / 159.496 | 11.108 / 160.590 | 5.001 / 160.777 |
+
+These whole-process values mix module/JIT initialization, allocation pools,
+cleared timer handles and intentional history/run data. In particular, immediate
+heap accounting did not drop after releaseRun, although public snapshot count
+became zero; after returning and yielding it fell to about 5 MiB. RSS did not
+return to its initial value. Neither observation identifies a retaining owner
+or establishes a leak. The executed evidence confirms the tested release
+contracts and explicit data retention only. WebView heaps, DOM/listeners,
+xterm/RAF, native PTYs/process groups and app shutdown remain unmeasured; use
+the separate native/WebView protocol above before making claims about them.
