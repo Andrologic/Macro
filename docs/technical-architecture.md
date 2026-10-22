@@ -1060,11 +1060,27 @@ archives antérieures à 14 restent validées contre leur schéma sans modificat
 puis seule une copie est migrée. Le remplacement arbitraire du fichier sous un
 pool ouvert ne fait pas partie de ce contrat.
 
-Ces ports ne branchent pas encore la source primaire et n'ajoutent ni cache
-TypeScript ni autorité réseau ou management. Un futur assembleur doit abandonner
-toutes ses pages en cas de stale_revision et contrôler le token à la clôture.
-La pagination ne borne pas la taille totale du catalogue, les deux observations
-et leurs copies restent soumises aux quotas existants.
+La source desktop primaire branche ces ports dans `ConversationCaptures`. Ce
+propriétaire assemble les quinze valeurs sans normalisation, valide le parcours
+BINARY complet et contrôle le token à la clôture, après les lectures dynamiques.
+Il conserve un seul catalogue immuable dans son époque. Chaque réutilisation
+confirme fraîchement le token ; projets, tâches, activité et tokens des transcripts
+surveillés restent relus pour chacune des deux observations. Le tri public et les
+empreintes du journal CAS v4 sont conservés. Le token catalogue ne devient pas une
+horloge publique. Une erreur d'un port déclaré ne déclenche aucun repli historique.
+Le management garde explicitement sa source actuelle.
+
+La paire observée et le CAS gardent leurs deux tentatives et leur délai initial.
+Un abandon retire le cache ; une génération différente retire aussi les captures
+et continuations de l'ancienne époque. La validation d'émission repasse par ce
+même lecteur, y compris à chaud. Cette paire ne couvre pas les mutations futures.
+
+Les réservations précèdent pages, projections, copies, encodages, digests et
+parsing du journal. Le cache, les captures et les observations simultanées sont
+comptés ensemble dans le budget existant, avec une facturation conservatrice des
+lignes partagées. La pagination ne borne pas la taille totale admissible. Cette
+comptabilité déclarée ne borne ni les allocations amont IPC/stores/stockage ni le
+heap ou le RSS du processus.
 
 ### 9.4 `fs`
 

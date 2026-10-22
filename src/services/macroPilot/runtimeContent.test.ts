@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawn } from 'node:child_process';
 import { createInterface } from 'node:readline';
+import { Buffer } from 'node:buffer';
 import type { ContentCapture, ContentDelivery, ContentDeliveryResult, ContentEvent, ContentRequest } from './contentProtocol';
 import type { DbConversation, DbMessage } from '../tauriIpc';
 
@@ -27,6 +28,22 @@ let extraProjects: Array<{ id: string; name: string; path: string }> = [];
 const conversation: DbConversation = { id: 'chat:one', title: 'Global chat', description: null, scope_mode: 'Chat', task_id: null, project_id: null, group_id: null, provider_id: null, model_id: null, reasoning_effort: null, created_at: '2026-01-01T00:00:00Z', updated_at: '2026-01-01T00:00:00Z', last_message: null, message_count: 1, is_pinned: false };
 let conversations: DbConversation[] = [];
 let messages: DbMessage[] = [];
+// Synthetic schema14 catalog at the actual desktop invoke boundary. The token
+// depends on persisted rows, so existing mutation/authorization tests keep their
+// source changes visible when the primary owner reuses a sealed catalog.
+async function catalogRead(command: string, args: Record<string, unknown>) {
+  const input = args.input as { expected_token: unknown; after?: { id: string } | null; limit: number };
+  const rows = structuredClone(conversations).sort((a, b) => Buffer.compare(Buffer.from(a.id), Buffer.from(b.id)));
+  const hash = new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(JSON.stringify(rows))));
+  const hex = Array.from(hash, byte => byte.toString(16).padStart(2, '0')).join('');
+  const token = { version: 1, generation: 'd'.repeat(32), incarnation: 'e'.repeat(32), revision: BigInt(`0x${hex.slice(0, 15)}`).toString() };
+  if (input.expected_token && JSON.stringify(input.expected_token) !== JSON.stringify(token)) throw new Error('stale_revision');
+  if (command === 'db_conversation_catalog_version') return token;
+  const start = input.after ? rows.findIndex(row => row.id === input.after!.id) + 1 : 0;
+  const items = rows.slice(start, start + input.limit);
+  return { token, ...(!input.after ? { total_raw: String(rows.length) } : {}), items,
+    next_after: start + items.length < rows.length ? { id: items.at(-1)!.id } : null, admission_estimate_bytes: 8192 };
+}
 // Synthetic schema13 adapter for the real desktop IPC composition. It derives
 // tokens only from content dependencies, never the observation journal itself.
 async function contentToken(conversationId: string) {
@@ -59,6 +76,7 @@ const nativeSnapshots = new Map<string, Record<string, unknown>>();
 const core = await import('@tauri-apps/api/core');
 mock.module('@tauri-apps/api/core', () => ({ ...core, invoke: async (command: string, args: Record<string, unknown> = {}) => {
   nativeCalls.push(command);
+  if (command.startsWith('db_conversation_catalog_')) return catalogRead(command, args);
   if (command.startsWith('db_conversation_content_')) return contentRead(command,args);
   if (bridge && (command === 'db_get_app_setting' || command === 'db_compare_and_swap_app_setting' || command === 'pilot_review_commit')) return bridge(command, args);
   if (command === 'db_get_app_setting') return settings.has(String(args.key)) ? { value_json: settings.get(String(args.key)) } : null;
@@ -805,7 +823,7 @@ it('keeps demand-only producers idle across observation, stop and restart withou
   const oldRuntime = runtimeWindow.__TAURI_INTERNALS__;
   runtimeWindow.__TAURI_INTERNALS__ = { invoke: () => {} };
   const h = harness(); h.acceptIdlePoll();
-  const metadataCalls = () => nativeCalls.filter(command => command === 'db_list_conversations').length;
+  const metadataCalls = () => nativeCalls.filter(command => command === 'db_conversation_catalog_version').length;
   const demandCalls = () => nativeCalls.filter(command => /^(?:host_telemetry_read|workspace_resolve_project_icons|db_get_pilot_reflection_message|pilot_files_)/.test(command));
   try {
     await h.runtime.start();
