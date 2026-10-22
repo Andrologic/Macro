@@ -349,6 +349,10 @@ export async function normalizePortableChatHistory(
           if (!mime || !mimes[mime]) fail('unsupported_asset');
           const release = budget.reserve(512 + field.bytes * 16);
           try {
+            const sizeField = row.fields[4];
+            if (sizeField.sql_type !== 1 || sizeField.bytes !== 8 || await small(row, 5) !== field.sha256) fail('invalid_asset');
+            const sizeBytes = await load(sizeField);
+            if (new DataView(sizeBytes.buffer, sizeBytes.byteOffset, 8).getBigInt64(0, true) !== BigInt(field.bytes)) fail('invalid_asset');
             const bytes = await load(field);
             if (inspectAttachmentContent(bytes, mime!, initial) !== 'available') fail('unsafe_asset');
             const previous = assets.get(JSON.stringify([owner, mime, field.sha256]));

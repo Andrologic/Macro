@@ -7,7 +7,7 @@ import { PortableWorkBudget } from './portableHistoryInspection';
 import { buildToolContextBlock } from './toolPresentation';
 
 const encoder = new TextEncoder(), decoder = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true });
-export const policy = { revision: 'synthetic-policy', secrets: secretForms(['fixture-private-token']) };
+export const policy = { revision: 'policy-1', secrets: secretForms(['synthetic-private-token']) };
 export async function fixture(provider: 'codex' | 'macro-ai', change?: (messages: unknown[][]) => void) {
   const final = 'A complete final answer.';
   const reflection = 'OBSERVABLE_REFLECTION_é🙂';
@@ -18,7 +18,7 @@ export async function fixture(provider: 'codex' | 'macro-ai', change?: (messages
     ? [...buildAssistantProviderInputItemsFromTurn('', [call]), buildFunctionCallOutputProviderInputItem('call', 'PROVIDER_ONLY_FACT'), ...buildAssistantProviderInputItemsFromTurn(final, [])]
     : [buildAssistantChatCompletionProviderItem({ visibleContent: '', apiContent: '', reasoningContent: '', reasoningDetails: [], toolCalls: [call] }), buildToolChatCompletionProviderItem('call', 'PROVIDER_ONLY_FACT'), buildAssistantChatCompletionProviderItem({ visibleContent: visible, apiContent: final, reasoningContent: reflection, reasoningDetails: [], toolCalls: [] })];
   const state = provider === 'codex' ? buildChatGptProviderTurnState('local-session', [
-    { type: 'reasoning', summary: [{ type: 'summary_text', text: reflection }], encrypted_content: 'fixture-private-token' },
+    { type: 'reasoning', summary: [{ type: 'summary_text', text: reflection }], encrypted_content: 'synthetic-private-token' },
     ...buildAssistantProviderInputItemsFromTurn(final, []),
   ]) : null;
   const storedReceipts = new Map<string, string>();

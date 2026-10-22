@@ -10,8 +10,8 @@ test('recognized real Codex and Macro AI producers keep exact data and exclude p
     expect(f.budget.used).toBe(0);
     const archive = JSON.stringify(f.output);
     expect(archive).toContain('PROVIDER_ONLY_FACT'); expect(archive).toContain('HIDDEN_ONLY_FACT'); expect(archive).toContain('CITATION_FACT'); expect(archive).toContain(f.reflection);
-    expect(archive).not.toContain('fixture-private-token');
-    expect(archive).not.toContain(await portableDigest(encoder.encode('fixture-private-token')));
+    expect(archive).not.toContain('synthetic-private-token');
+    expect(archive).not.toContain(await portableDigest(encoder.encode('synthetic-private-token')));
     const argumentRecord = f.output.find(record => record.text.includes('arguments_json'))!;
     expect(JSON.parse(argumentRecord.text).arguments_json).toBe(f.args);
     const before = f.output.splice(0); const second = await f.run();
@@ -40,7 +40,7 @@ test('hidden-only inverse requires complete unambiguous producer framing', () =>
 });
 
 test('policy invalidation and decoded JSON secret refuse; reservations release', async () => {
-  const f = await fixture('codex', messages => { messages[1][9] = JSON.stringify([{ type: 'function_call', call_id: 'call', name: 'read_sources', arguments: '{"value":"fixture-private-\\u0074oken"}' }]); });
+  const f = await fixture('codex', messages => { messages[1][9] = JSON.stringify([{ type: 'function_call', call_id: 'call', name: 'read_sources', arguments: '{"value":"synthetic-private-\\u0074oken"}' }]); });
   await expect(f.run()).rejects.toThrow('unsafe_content'); expect(f.budget.used).toBe(0);
   const valid = await fixture('codex'); let checks = 0;
   await expect(normalizePortableChatHistory(valid.source, async () => ({ ...policy, revision: checks++ ? 'changed' : policy.revision }), valid.budget, { append: async () => {} })).rejects.toThrow('policy_changed');
@@ -75,4 +75,14 @@ test('unknown or omitted source limitations refuse before target publication', a
     await expect(normalizePortableChatHistoryTwoPass({ ...f.source, limits }, async () => policy, f.budget, { append: async () => { writes++; } })).rejects.toThrow('integrity_failed');
   }
   expect(writes).toBe(0); expect(f.budget.used).toBe(0);
+});
+
+test('owned asset digest and declared byte length must agree with the actual captured BLOB', async () => {
+  for (const wrong of ['length', 'digest']) {
+    const f = await fixture('codex'), bytes = encoder.encode('required asset'), sha = await portableDigest(bytes);
+    await f.appendRow(8, ['asset', 'u', 'synthetic.txt', 'text/plain', BigInt(bytes.length + (wrong === 'length' ? 1 : 0)), wrong === 'digest' ? '0'.repeat(64) : sha, bytes]);
+    let writes = 0;
+    await expect(normalizePortableChatHistoryTwoPass(f.source, async () => policy, f.budget, { append: async () => { writes++; } })).rejects.toThrow('invalid_asset');
+    expect(writes).toBe(0); expect(f.budget.used).toBe(0);
+  }
 });
