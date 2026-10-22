@@ -51,13 +51,11 @@ fn architect_allowed_tool_ids() -> &'static [&'static str] {
         "git_diff",
         "git_get_tree",
         "plan_create",
-        "strategy_generate",
         "plan_list",
         "plan_get",
         "plan_update",
-        "strategy_get",
-        "strategy_update",
-        "strategy_delete",
+        "agsdl_get",
+        "agsdl_update",
     ]
 }
 
@@ -372,6 +370,21 @@ mod tests {
         assert!(!policy
             .allowed_tool_ids
             .contains(&"strategy_generate".to_string()));
+    }
+
+    #[test]
+    fn agsdl_authoring_is_scoped_to_architect() {
+        for tool in ["agsdl_get", "agsdl_update"] {
+            assert!(get_mode_policy("Architect")
+                .allowed_tool_ids
+                .contains(&tool.to_string()));
+            assert!(!get_mode_policy("Chat")
+                .allowed_tool_ids
+                .contains(&tool.to_string()));
+            assert!(!get_mode_policy("Implement")
+                .allowed_tool_ids
+                .contains(&tool.to_string()));
+        }
     }
 
     #[test]

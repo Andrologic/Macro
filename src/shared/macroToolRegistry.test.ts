@@ -52,6 +52,23 @@ describe('macroToolRegistry', () => {
     'grep',
   ];
 
+  it('exposes revision-guarded AgSDL authoring only in Architect across providers', () => {
+    for (const id of ['agsdl_get', 'agsdl_update']) {
+      expect(getToolModePolicy('Architect').allowedToolIds).toContain(id);
+      expect(getToolModePolicy('Chat').allowedToolIds).not.toContain(id);
+      expect(getToolModePolicy('Implement').allowedToolIds).not.toContain(id);
+      expect(filterCopilotSupportedToolIds([id])).toEqual([id]);
+    }
+    expect(requireObjectParameters('agsdl_update').required).toEqual(['plan_id', 'target_branch', 'expected_revision']);
+    expect(requireObjectParameters('agsdl_update').properties?.design_json).toMatchObject({ type: 'string' });
+    expect(requireObjectParameters('agsdl_update').properties?.display_json).toMatchObject({ type: 'string' });
+    expect(requireObjectParameters('agsdl_get').required).toEqual(['plan_id', 'target_branch']);
+    expect(requireObjectParameters('agsdl_get').properties?.section).toMatchObject({ enum: ['outline', 'outline_entry', 'source', 'guide', 'report', 'design', 'display', 'models', 'annex_ids', 'error'] });
+    for (const key of ['offset', 'limit', 'report_index', 'entry_index']) expect(requireObjectParameters('agsdl_get').properties?.[key]).toMatchObject({ type: 'number' });
+    expect(requireObjectParameters('agsdl_get').properties?.cursor).toMatchObject({ type: 'string' });
+    expect(requireObjectParameters('agsdl_get').properties?.expected_revision).toMatchObject({ type: 'string' });
+  });
+
   it('contains unique ids', () => {
     const ids = MACRO_TOOL_REGISTRY.map((entry) => entry.id);
     expect(new Set(ids).size).toBe(ids.length);

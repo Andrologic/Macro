@@ -30,6 +30,7 @@ The repo uses:
 | Script | Description |
 | --- | --- |
 | `bun run dev` | Start the Vite frontend dev server only. |
+| `bun run dev:demo` | Explore the real UI with isolated synthetic data. See [Demo mode](docs/demo-mode.md). |
 | `bun run tauri:dev` | Run Macro as a desktop app in development mode. |
 | `bun run tauri:dev:browser` | Run the Tauri backend and expose its UI to a local browser for debugging. |
 | `bun run build` | Build the frontend for production. |
@@ -87,13 +88,21 @@ while Tauri runs as a hidden host and executes IPC commands for the browser.
 Backend events used by configuration, terminals, authentication, downloads, and
 streaming chat are relayed to the browser as well.
 
+The bridge has a single browser owner. Connecting another tab or a Playwright
+browser replaces the previous connection with WebSocket close code `4009`.
+Do not open an automation browser on a runtime currently being tested by a person.
+Finish and close automation before handing over the demo. A replaced tab does
+not reconnect automatically, which prevents competing tabs from repeatedly
+stealing the session. Reload that tab explicitly to reclaim it; the startup
+error screen's Retry button also reloads the page in browser runtime mode.
+
 This bridge is intentionally unavailable in production builds: enabling its
 Cargo feature in a release build is a compile-time error. The dedicated launcher
 creates a new 256-bit token for every run and gives it to the Tauri host and Vite,
 which injects it into the local browser page. The token is therefore visible in
 that page's DevTools; it protects against unrelated browser origins, not against
 a hostile process already running on the machine. The WebSocket server also
-requires the exact `http://127.0.0.1:1422` browser origin and binds only to
+requires the exact configured loopback browser origin and binds only to
 `127.0.0.1:1430`. Always use `bun run tauri:dev:browser`; do not expose either
 local port through a proxy.
 
@@ -103,6 +112,9 @@ absolute merged browser-runtime config whose identifier matches
 `com.macro.desktop.qa.*`. The launcher rejects the ordinary production identifier.
 It also derives a dedicated log directory under the operating system's temporary
 directory; the QA host therefore neither reads nor writes Macro's production logs.
+If port 1422 is occupied, set `build.devUrl` in the merged QA config to another
+`http://127.0.0.1:<port>` origin. The launcher uses that port for Vite and the
+bridge origin check; the authenticated WebSocket remains on port 1430.
 Before creating fixtures, inspect the native process's open SQLite files and call
 `workspace_get_bootstrap`; continue only when both point to the intended isolated
 profile and synthetic workspace.
@@ -253,3 +265,11 @@ explicitly authorized emergency.
 - `src-tauri/` - Rust/Tauri backend.
 - `public/` - static assets and themes.
 - `docs/` - product, architecture, and roadmap references.
+
+The QA browser bridge defaults to port 1430. Set
+`MACRO_TAURI_BROWSER_BRIDGE_PORT` to an unused loopback port when another QA
+session owns that port. The launcher passes the same validated port to the native
+bridge and browser client. Values must be canonical decimal integers from 1 to
+65535. The UI port remains controlled by the QA config's `build.devUrl`.
+Use a separate `com.macro.desktop.qa.*` identifier and data directory; leave
+other sessions running.

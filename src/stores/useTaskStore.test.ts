@@ -289,6 +289,7 @@ const createConversationMock = mock(async () => ({ id: 'conv-1' }));
 const sendMessageMock = mock(async () => undefined);
 const deleteConversationMock = mock(async () => undefined);
 let completeLinkedTaskConversationDeletionImpl: ((conversationId: string) => Promise<boolean>) | null = null;
+const discardArchitectPlanPendingDraftMock = mock((_params: { targetBranch: string; planId: string }) => undefined);
 const completeLinkedTaskConversationDeletionMock = mock(async (conversationId: string) => {
   if (completeLinkedTaskConversationDeletionImpl) {
     return completeLinkedTaskConversationDeletionImpl(conversationId);
@@ -471,6 +472,7 @@ mock.module('./useChatStore', () => ({
       sendMessage: sendMessageMock,
       deleteConversation: deleteConversationMock,
       completeLinkedTaskConversationDeletion: completeLinkedTaskConversationDeletionMock,
+      discardArchitectPlanPendingDraft: discardArchitectPlanPendingDraftMock,
       lastError: null,
       conversations: chatStoreConversations,
       conversationRuntimeById: chatStoreRuntimeById,
@@ -540,6 +542,7 @@ beforeEach(() => {
   gitWorkflowSessions.clear();
   foreignWorkflowRepositories.clear();
   gitWorkflowMock.mockClear();
+  workspaceRestoreManualFeatureMock.mockClear();
   chatStoreConversations = [];
   chatStoreRuntimeById = {};
   dbGetAppSettingMock.mockClear();
@@ -597,6 +600,17 @@ const createBlockedFinalizationError = () =>
     repositories: [blockedRepository],
     blockedRepositories: [blockedRepository],
   });
+
+describe('clearPlanRuntimeState', () => {
+  it('drops the pending draft of an archived or deleted plan only when its branch is known', async () => {
+    const { useTaskStore } = await loadIsolatedTaskStore();
+    discardArchitectPlanPendingDraftMock.mockClear();
+    useTaskStore.getState().clearPlanRuntimeState({ planId: 'plan-1', deletedWorktreeKeys: [] });
+    expect(discardArchitectPlanPendingDraftMock).not.toHaveBeenCalled();
+    useTaskStore.getState().clearPlanRuntimeState({ planId: 'plan-1', branchName: 'release/2.0', deletedWorktreeKeys: [] });
+    expect(discardArchitectPlanPendingDraftMock).toHaveBeenCalledWith({ targetBranch: 'release/2.0', planId: 'plan-1' });
+  });
+});
 
 describe('clearPlanRuntimeStateSnapshot', () => {
   it('removes deleted worktrees and clears active plan runtime when the active plan is cleaned up', () => {
@@ -748,6 +762,52 @@ describe('getPlanActivationCandidateTask', () => {
 });
 
 describe('useTaskStore refreshFromPlan selection reconciliation', () => {
+  it('refreshes native Agent Tasks in place, marks read failures stale and rejects legacy status writes', async () => {
+    const { workflowTaskFixture } = await import('../services/workflowAgentTasks.fixtures');
+    const { projectWorkflowAgentTasks } = await import('../services/workflowAgentTasks');
+    const f = await workflowTaskFixture();
+    const tasks = projectWorkflowAgentTasks(f.plan, f.snapshot, f.projection, []);
+    const { useTaskStore, getTaskLifecycleCapabilities } = await loadIsolatedTaskStore();
+    useTaskStore.setState({ tasks: [buildTask(), ...tasks] });
+    let fail = false;
+    let release: (() => void) | undefined;
+    installTauriRuntimeMock(async command => {
+      if (command === 'execution_read_snapshot') {
+        if (fail) throw new Error('Native read interrupted');
+        if (release !== undefined) await new Promise<void>(resolve => { release = resolve; });
+        return f.snapshot;
+      }
+      if (command === 'execution_read_projection') return f.projection;
+      if (command === 'execution_pending_approvals') return { approvals: [], incomplete: false };
+      throw new Error(`Unexpected ${command}`);
+    });
+    f.projection.activations[0] = f.activation('1', 'terminal', 'completed');
+    f.projection.cursor = '11' as typeof f.projection.cursor;
+    await useTaskStore.getState().refreshWorkflowTasks();
+    expect(useTaskStore.getState().tasks.find((task: ImplementTask) => task.id === tasks[0].id)?.status).toBe('Completed');
+    expect(useTaskStore.getState().tasks).toHaveLength(3);
+    expect(getTaskLifecycleCapabilities(tasks[0]).canRename).toBe(false);
+    await expect(useTaskStore.getState().setTaskStatus(tasks[0].id, 'InProgress')).rejects.toMatchObject({ code: 'NATIVE_WORKFLOW_OWNED' });
+    await expect(useTaskStore.getState().renameTask(tasks[0].id, 'Other')).rejects.toMatchObject({ code: 'NATIVE_WORKFLOW_OWNED' });
+    await expect(useTaskStore.getState().runTaskCommands(tasks[0].id)).rejects.toMatchObject({ code: 'NATIVE_WORKFLOW_OWNED' });
+    fail = true;
+    await useTaskStore.getState().refreshWorkflowTasks();
+    const stale = useTaskStore.getState().tasks.find((task: ImplementTask) => task.id === tasks[0].id)!;
+    expect(stale.status).toBe('Blocked'); expect(stale.workflow_execution?.stale).toBe(true);
+    expect(useTaskStore.getState().tasks.find((task: ImplementTask) => task.id === 'task-1')?.status).toBe('Pending');
+    fail = false;
+    await useTaskStore.getState().refreshWorkflowTasks();
+    expect(useTaskStore.getState().tasks.find((task: ImplementTask) => task.id === tasks[0].id)?.workflow_execution?.stale).toBeUndefined();
+    release = () => undefined;
+    const pending = useTaskStore.getState().refreshWorkflowTasks();
+    await flushPromises();
+    appStoreState.selectedProjectId = 'other-project';
+    useTaskStore.setState({ tasks: [buildTask({ id: 'other-task' })] });
+    release();
+    await pending;
+    expect(useTaskStore.getState().tasks.map((task: ImplementTask) => task.id)).toEqual(['other-task']);
+  });
+
   it('does not continue catalog recovery after the bootstrap owner stops', async () => {
     let release!: () => void;
     let entered!: () => void;
@@ -1940,6 +2000,27 @@ describe('useTaskStore merge workflow review loading', () => {
         })],
       }),
     ]);
+  });
+
+  it('preserves the archived Direct and selection when native restoration rejects admission', async () => {
+    const task = buildStandaloneTask({ id: 'archived-direct', task_source: 'standalone',
+      standalone_kind: 'manual_feature', task_kind: 'direct', draft: false,
+      status: 'Completed', archived_at: '2026-01-01', archive_reason: 'merged' });
+    const { useTaskStore } = await loadIsolatedTaskStore();
+    const refresh = mock(async () => undefined);
+    const activate = mock(async () => undefined);
+    const { useAppStore } = await import('./useAppStore');
+    const selectedBefore = useAppStore.getState().selectedTaskId;
+    useTaskStore.setState({ tasks: [task], refreshFromPlan: refresh, activateTask: activate });
+    workspaceRestoreManualFeatureMock.mockImplementationOnce(async () => {
+      throw new Error('Direct-edit project already has an active task: Other Direct');
+    });
+    await expect(useTaskStore.getState().restoreTask(task.id)).rejects.toThrow('Other Direct');
+    expect(useTaskStore.getState().lastError).toContain('Other Direct');
+    expect(useTaskStore.getState().getTaskById(task.id)).toBe(task);
+    expect(useAppStore.getState().selectedTaskId).toBe(selectedBefore);
+    expect(refresh).not.toHaveBeenCalled();
+    expect(activate).not.toHaveBeenCalled();
   });
 
   it('blocks restore and a second cleanup while archived worktree cleanup is running', async () => {
@@ -4555,6 +4636,38 @@ describe('useTaskStore task status transition guards', () => {
     blockedRepositories: [],
     message: 'Resolve the repository blockers before retrying the merge.',
     lastLoadedAt: '2026-04-22T10:00:00.000Z',
+  });
+
+  it.each(['fr', 'en'] as const)('%s refuses completion with localized open todo labels and unchanged task state', async (language) => {
+    const { default: i18n } = await import('../i18n');
+    const { loadTranslation } = await import('../i18n/resources');
+    const planService = await import('../services/architectPlanService');
+    const previousLanguage = i18n.language;
+    const previousResources = i18n.hasResourceBundle(language, 'translation')
+      ? structuredClone(i18n.getResourceBundle(language, 'translation')) : null;
+    i18n.addResourceBundle(language, 'translation', await loadTranslation(language), true, true);
+    await i18n.changeLanguage(language);
+    const planRead = spyOn(planService, 'getArchitectPlan').mockResolvedValue(null);
+    try {
+      const { useTaskStore } = await loadIsolatedTaskStore();
+      const task = buildTask({ status: 'InReview', todos: [
+        { id: 'a', title: 'Relire <A>', status: 'pending' },
+        { id: 'b', title: 'Vérifier B: C', status: 'in-progress' },
+        { id: 'done', title: 'Déjà terminé', status: 'done' },
+      ] });
+      useTaskStore.setState({ tasks: [task], lastError: null });
+      await useTaskStore.getState().setTaskStatus('task-1', 'Completed');
+      expect(useTaskStore.getState().lastError).toBe(language === 'fr'
+        ? 'Impossible de terminer la tâche tant que des todos restent ouverts : Relire <A>, Vérifier B: C'
+        : 'Cannot complete task while todos remain open: Relire <A>, Vérifier B: C');
+      expect(useTaskStore.getState().getTaskById('task-1')).toEqual(task);
+      expect(workspaceUpdateStandaloneTaskStatusMock).not.toHaveBeenCalled();
+    } finally {
+      planRead.mockRestore();
+      i18n.removeResourceBundle(language, 'translation');
+      if (previousResources) i18n.addResourceBundle(language, 'translation', previousResources);
+      await i18n.changeLanguage(previousLanguage || 'en');
+    }
   });
 
   it('allows merge-workflow blocked tasks to complete after blockers are resolved', async () => {

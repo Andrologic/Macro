@@ -31,6 +31,8 @@ const CLIENT_KEYS: &[&str] = &[
     "macro_chat_message_images",
     "macro_chat_composer_drafts_v1",
     "macro_chat_questionnaire_drafts",
+    "macro_chat_queued_submissions_v1",
+    "macro_chat_unsaved_assistant_responses_v1",
 ];
 type Result<T> = std::result::Result<T, String>;
 
@@ -284,9 +286,15 @@ async fn check_database(path: &Path) -> Result<()> {
         || !versions.contains(&1)
         || !versions.contains(&3)
         || !versions.contains(&4)
+        || versions
+            .iter()
+            .any(|v| *v >= 6 && !versions.contains(&(v - 1)))
     {
         return Err("Incompatible database schema".into());
     }
+    let visible_search_at_v10 = crate::db::visible_search_at_v10(&mut db)
+        .await
+        .map_err(|e| e.to_string())?;
     let reference_dir = tempfile::tempdir().map_err(|e| e.to_string())?;
     let reference = crate::db::create_pool(&reference_dir.path().join("reference.db"))
         .await
@@ -294,7 +302,7 @@ async fn check_database(path: &Path) -> Result<()> {
     // Compare the archive with the schema its migration stamps describe. Do
     // not migrate the untrusted archive until its original objects pass this
     // strict comparison; startup validation migrates a temporary copy later.
-    if !versions.contains(&10) {
+    if !versions.contains(&15) && !visible_search_at_v10 {
         sqlx::raw_sql(
             "DROP TRIGGER messages_search_insert;
              DROP TRIGGER messages_search_delete;
@@ -310,6 +318,57 @@ async fn check_database(path: &Path) -> Result<()> {
             .execute(&reference)
             .await
             .map_err(|e| e.to_string())?;
+    }
+    for (version, table) in [
+        (16, "engine_native_operations"),
+        (14, "engine_effect_processes"),
+        (13, "engine_ui_intents"),
+    ] {
+        if !versions.contains(&version) {
+            sqlx::query(sqlx::AssertSqlSafe(format!("DROP TABLE {table}")))
+                .execute(&reference)
+                .await
+                .map_err(|e| e.to_string())?;
+        }
+    }
+    if !versions.contains(&12) {
+        for statement in [
+            "DROP TABLE engine_prepared_terminals",
+            "DROP TABLE engine_approvals",
+            "DROP TABLE engine_responses",
+            "DROP TABLE engine_response_closures",
+            "DROP TABLE engine_host_captures",
+        ] {
+            sqlx::query(statement)
+                .execute(&reference)
+                .await
+                .map_err(|e| e.to_string())?;
+        }
+    }
+    if !versions.contains(&11) {
+        for statement in [
+            "DROP TABLE engine_events",
+            "DROP TABLE engine_effects",
+            "DROP TABLE engine_deliveries",
+            "DROP TABLE engine_systems",
+        ] {
+            sqlx::query(statement)
+                .execute(&reference)
+                .await
+                .map_err(|e| e.to_string())?;
+        }
+    }
+    if !versions.contains(&10) || (visible_search_at_v10 && !versions.contains(&15)) {
+        for statement in [
+            "DROP TRIGGER tool_result_requires_completion_insert",
+            "DROP TRIGGER tool_result_requires_completion_update",
+            "ALTER TABLE tool_invocations DROP COLUMN result_json",
+        ] {
+            sqlx::query(statement)
+                .execute(&reference)
+                .await
+                .map_err(|e| e.to_string())?;
+        }
     }
     if !versions.contains(&9) {
         sqlx::query("DROP TRIGGER conversation_goal_audit_run_status")
@@ -355,6 +414,7 @@ async fn check_database(path: &Path) -> Result<()> {
             || table == "agent_run_transitions"
             || table == "conversation_goals"
             || table.starts_with("conversation_goal_")
+            || table.starts_with("engine_")
         {
             // This table has no legacy schema variants. Compare its full DDL
             // so a backup cannot omit its CHECK constraints while retaining
@@ -1253,7 +1313,7 @@ mod tests {
              DROP TRIGGER messages_search_update_insert;
              DROP TABLE message_search;
              DROP VIEW message_search_content;
-             DELETE FROM schema_migrations WHERE version = 10;",
+             DELETE FROM schema_migrations WHERE version = 15;",
         )
         .execute(&mut *db)
         .await
@@ -1263,6 +1323,26 @@ mod tests {
             .await
             .unwrap();
 
+        for statement in [
+            "DROP TABLE engine_native_operations",
+            "DROP TABLE engine_effect_processes",
+            "DROP TABLE engine_ui_intents",
+            "DROP TABLE engine_prepared_terminals",
+            "DROP TABLE engine_approvals",
+            "DROP TABLE engine_responses",
+            "DROP TABLE engine_response_closures",
+            "DROP TABLE engine_host_captures",
+            "DROP TABLE engine_events",
+            "DROP TABLE engine_effects",
+            "DROP TABLE engine_deliveries",
+            "DROP TABLE engine_systems",
+            "DROP TRIGGER tool_result_requires_completion_insert",
+            "DROP TRIGGER tool_result_requires_completion_update",
+            "ALTER TABLE tool_invocations DROP COLUMN result_json",
+            "DELETE FROM schema_migrations WHERE version >= 10",
+        ] {
+            sqlx::query(statement).execute(&mut *db).await.unwrap();
+        }
         sqlx::query("DROP TRIGGER conversation_goal_audit_run_status")
             .execute(&mut *db)
             .await
@@ -1443,7 +1523,7 @@ mod tests {
                 .fetch_one(&pool)
                 .await
                 .unwrap(),
-            10
+            16
         );
         assert_eq!(
             sqlx::query_scalar::<_, String>(
@@ -1467,6 +1547,38 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn validates_both_published_v10_archive_schemas_without_migrating_them() {
+        for visible_search in [false, true] {
+            let temp = tempfile::tempdir().unwrap();
+            let database = temp.path().join("published.db");
+            let mut old =
+                crate::db::migration_tests::published_branch_database(&database, visible_search)
+                    .await;
+            let stamps: Vec<(i64, String, String)> = sqlx::query_as(
+                "SELECT version,name,applied_at FROM schema_migrations ORDER BY version",
+            )
+            .fetch_all(&mut old)
+            .await
+            .unwrap();
+            check_database(&database).await.unwrap();
+            assert_eq!(
+                sqlx::query_as::<_, (i64, String, String)>(
+                    "SELECT version,name,applied_at FROM schema_migrations ORDER BY version"
+                )
+                .fetch_all(&mut old)
+                .await
+                .unwrap(),
+                stamps
+            );
+            sqlx::query("UPDATE schema_migrations SET name='unknown_010' WHERE version=10")
+                .execute(&mut old)
+                .await
+                .unwrap();
+            assert!(check_database(&database).await.is_err());
+        }
+    }
+
+    #[tokio::test]
     async fn database_validation_accepts_current_and_rejects_unknown_migration_versions() {
         let (_temp, data, _config) = profile().await;
         let database = data.join("macro.db");
@@ -1476,7 +1588,7 @@ mod tests {
             .fetch_one(&mut db)
             .await
             .unwrap();
-        assert_eq!(version, 10);
+        assert_eq!(version, 16);
         sqlx::query("INSERT INTO schema_migrations VALUES (99, 'future', 'synthetic')")
             .execute(&mut db)
             .await
@@ -2074,6 +2186,74 @@ mod tests {
                 .unwrap(),
             b"modified"
         );
+    }
+    #[tokio::test]
+    async fn recovery_browser_state_round_trips_and_historical_restore_preserves_replaced_values() {
+        let (temp, data, config) = profile().await;
+        let browser = BTreeMap::from([
+            (
+                "macro_chat_queued_submissions_v1".into(),
+                r#"[{"id":"accepted-turn","input":{"content":"Queued instruction"}}]"#.into(),
+            ),
+            (
+                "macro_chat_unsaved_assistant_responses_v1".into(),
+                r#"{"fallback":{"id":"fallback","content":"Recovered answer"}}"#.into(),
+            ),
+        ]);
+        let archive = capture(&data, &config, browser.clone(), true)
+            .await
+            .unwrap();
+        validate(&archive).await.unwrap();
+        let path = temp.path().join("recovery.json");
+        write_new(&path, &serde_json::to_vec(&archive).unwrap()).unwrap();
+        assert_eq!(load_restore_archive(&path).await.unwrap().browser, browser);
+
+        // Version 1 archives predating recovery keys remain valid and replace the whole browser profile.
+        let historical = capture(&data, &config, BTreeMap::new(), true)
+            .await
+            .unwrap();
+        let dir = data.join("local-backup");
+        fs::create_dir_all(&dir).unwrap();
+        atomic(
+            &dir.join("incoming.json"),
+            &serde_json::to_vec(&historical).unwrap(),
+        )
+        .unwrap();
+        atomic(
+            &dir.join("request.json"),
+            &serde_json::to_vec(&Request {
+                operation: "restore".into(),
+                path: path.to_string_lossy().into(),
+                browser: browser.clone(),
+            })
+            .unwrap(),
+        )
+        .unwrap();
+        process_startup(&data, &config).await.unwrap();
+        let status: BackupStatus =
+            serde_json::from_slice(&fs::read(dir.join("status.json")).unwrap()).unwrap();
+        assert_eq!(status.browser, Some(BTreeMap::new()));
+        let preserved = PathBuf::from(status.path.unwrap());
+        let original = load_archive(&preserved).unwrap();
+        validate_raw(&original).unwrap();
+        assert_eq!(original.browser, browser);
+
+        // An interrupted native replacement recovers the same complete browser snapshot.
+        atomic(
+            &dir.join("restoring.json"),
+            &serde_json::to_vec(&RestoreJournal {
+                preserved: preserved.file_name().unwrap().to_string_lossy().into(),
+            })
+            .unwrap(),
+        )
+        .unwrap();
+        fs::write(data.join("macro.db"), b"partial replacement").unwrap();
+        process_startup(&data, &config).await.unwrap();
+        check_database(&data.join("macro.db")).await.unwrap();
+        let recovered: BackupStatus =
+            serde_json::from_slice(&fs::read(dir.join("status.json")).unwrap()).unwrap();
+        assert_eq!(recovered.browser, Some(browser));
+        assert!(preserved.exists());
     }
     #[tokio::test]
     async fn rejects_tampering_and_future_versions_without_touching_original() {
@@ -2756,5 +2936,45 @@ mod tests {
                 Some(&serde_json::json!(expected_secret))
             );
         }
+    }
+    #[tokio::test]
+    async fn engine_snapshot_constraint_tampering_is_rejected() {
+        let (_temp, data, _config) = profile().await;
+        let path = data.join("macro.db");
+        let mut db = connection(&path).await.unwrap();
+        sqlx::query("PRAGMA writable_schema=ON")
+            .execute(&mut db)
+            .await
+            .unwrap();
+        sqlx::query("UPDATE sqlite_master SET sql = replace(sql, 'CHECK (json_valid(snapshot_json))', '') WHERE name='engine_systems'").execute(&mut db).await.unwrap();
+        sqlx::query("PRAGMA writable_schema=OFF")
+            .execute(&mut db)
+            .await
+            .unwrap();
+        db.close().await.unwrap();
+        assert!(check_database(&path)
+            .await
+            .unwrap_err()
+            .contains("constraints"));
+    }
+    #[tokio::test]
+    async fn tool_result_constraint_tampering_is_rejected() {
+        let (_temp, data, _config) = profile().await;
+        let path = data.join("macro.db");
+        let mut db = connection(&path).await.unwrap();
+        sqlx::query("PRAGMA writable_schema=ON")
+            .execute(&mut db)
+            .await
+            .unwrap();
+        sqlx::query("UPDATE sqlite_master SET sql = replace(sql, 'CHECK (result_json IS NULL OR json_valid(result_json))', '') WHERE name='tool_invocations'").execute(&mut db).await.unwrap();
+        sqlx::query("PRAGMA writable_schema=OFF")
+            .execute(&mut db)
+            .await
+            .unwrap();
+        db.close().await.unwrap();
+        assert!(check_database(&path)
+            .await
+            .unwrap_err()
+            .contains("constraints"));
     }
 }

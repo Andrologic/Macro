@@ -65,6 +65,8 @@ L'application dispose déjà d'une base solide :
 - démarrage manuel des tâches autonomes avec progression visible et reprise sûre après échec
 - recherche locale compacte dans les listes Architect, Implement et Chat
 - brouillons de composer persistants par conversation ou tâche
+- références communes AgSDL, skills et fichiers avec identité stable, brouillons et messages conservés à travers l’envoi, le replay et le redémarrage
+- visualisation AgSDL des tâches liées par identifiant exact, sans création ni exécution de tâches par le document
 - tâches directes Git et édition directe des projets sans Git, avec checkpoints internes pour la review
 - contrats de domaine et adaptateurs de composition présents, avec extraction des workflows Chat, Tasks et Plans hors des stores
 - registres internes de vues, raccourcis et réglages présents, avec chargement différé des panneaux
@@ -123,10 +125,16 @@ postérieures.
 
 ### 3.3 AgSDL, Pilot et Connect à cette base
 
-La base `2f3dd1d3` ne contient ni l'éditeur AgSDL ni les parcours Macro Pilot
-et Macro Connect. Cette roadmap ne les déclare donc ni intégrés ni
-utilisables. Un travail présent sur une autre branche ne modifie pas cet
-état et doit être évalué sur sa propre révision avant d'être annoncé.
+Au point historique du 22 octobre 2026, la base `2f3dd1d3` ne contenait
+ni l'éditeur AgSDL ni les parcours Macro Pilot et Macro Connect.
+
+Le code courant contient désormais le [visualisateur et l'éditeur AgSDL](agsdl-editor.md)
+et le [moteur résident](agsdl-engine-architecture.md), avec les profils
+[Codex natif](agsdl-codex-native.md) et [Claude contrôlé](agsdl-claude-controlled.md)
+explicitement sélectionnés. Leur présence ne vaut ni nouvelle release publiée
+ni qualification des paquets. Les limites et les contrôles propres à ces
+parcours figurent dans le [bilan de qualification AgSDL](agsdl-qualification.md).
+Macro Pilot et Macro Connect ne sont pas déclarés livrés.
 
 La ligne publique 0.1 reste desktop local-first. Le kernel headless est un
 [prototype expérimental](../HEADLESS.md) ; la supervision mobile, les comptes

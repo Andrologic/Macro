@@ -18,6 +18,18 @@ function edge(report: ReturnType<typeof analyzeSources>, from: string, to: strin
 }
 
 describe('TypeScript import boundary analysis', () => {
+  it('follows local MJS modules used by vendored browser code', () => {
+    const report = analyzeSources({
+      'src/services/entry.ts': 'import { read } from "../vendor/reader.mjs"; export const value = read();',
+      'src/vendor/reader.mjs': 'import { answer } from "./core.mjs"; export const read = () => answer;',
+      'src/vendor/core.mjs': 'export const answer = 42;',
+    });
+    expect(report.diagnostics).toEqual([]);
+    expect(report.unresolved).toEqual([]);
+    edge(report, 'src/services/entry.ts', 'src/vendor/reader.mjs');
+    edge(report, 'src/vendor/reader.mjs', 'src/vendor/core.mjs');
+  });
+
   it('uses TSX-aware transpilation and preserves type/runtime import kinds', () => {
     const sources = {
       'src/fixture.tsx': readFileSync(join(fixtureRoot, 'tsx-import-fixture.tsx'), 'utf8'),

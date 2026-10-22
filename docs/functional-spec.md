@@ -110,16 +110,21 @@ Le contrat complet des fichiers, scopes et règles de sécurité est défini dan
 
 ### 5.1 Modèle mental principal
 
-Macro organise le travail de la façon suivante :
+Dans le parcours Architect actuel, l'utilisateur décrit son intention dans une
+conversation. L'IA inspecte le contexte, pose les questions nécessaires et aide
+à construire un système AgSDL. L'utilisateur peut consulter le graphe, modifier
+les propriétés prises en charge. L’en-tête du graphe propose « Enregistrer et
+exporter », puis l’agrandissement à droite. Un seul modal regroupe la conservation
+dans le projet, la création d’une copie blueprint et le téléchargement du document
+AgSDL ou d’une copie Macro complète. Les interfaces d’exécution et de fiche
+système restent retirées.
+La création depuis un blueprint reste disponible pour un plan vide. Cette
+conception ne lance pas les agents du graphe et ne crée pas de tâches Implement.
 
-1. l'utilisateur formule une intention
-2. l'IA inspecte le contexte utile et pose des questions ciblées si des informations importantes manquent
-3. l'utilisateur demande explicitement la génération de la stratégie
-4. l'IA génère la stratégie depuis la conversation, le périmètre du plan, les projets sélectionnés et le code inspecté
-5. la stratégie est validée
-6. les tâches d'implémentation sont exécutées dans l'ordre voulu avec un maximum de parallélisme possible
-7. l'utilisateur review les résultats
-8. le code est committé et intégré
+Implement continue d'exécuter les tâches autonomes et celles des plans
+historiques. Pour ces tâches, l'utilisateur supervise l'exécution, examine les
+changements, puis valide leur intégration. Le démarrage d'un nouveau plan AgSDL
+depuis le produit reste fermé tant qu'il n'est pas qualifié (section 7.1).
 
 ### 5.2 Unités fonctionnelles principales
 
@@ -130,8 +135,8 @@ Macro s'appuie sur les unités suivantes :
 - projet
 - plan
 - conversation
-- nœud de stratégie
-- branche prédictive
+- système AgSDL et ses composants
+- nœud de stratégie et branche prédictive des plans historiques
 - tâche d'implémentation
 - session de review
 
@@ -170,31 +175,30 @@ Un projet appartient à un groupe de projets.
 
 ### 6.4 Plan
 
-Un plan est l'unité principale de travail en mode Architect.
+Un plan est l’unité de conception en mode Architect. Il contient une conversation
+et le système AgSDL construit dans cette conversation. Les anciennes stratégies
+et leurs données d’exécution restent disponibles pour la migration et le suivi
+des tâches historiques.
 
-Un plan contient :
-- une conversation dédiée qui capture l'intention et les clarifications
-- la stratégie générée directement depuis cette conversation et le contexte du projet
-- la structure prédictive de branches associée à cette stratégie
-- les artefacts de relais produits par les tâches planifiées pour transmettre de l'information aux tâches dépendantes
+Le système décrit des responsabilités, des instructions, des échanges et des
+règles. Il peut être conçu progressivement, puis enregistré comme blueprint.
+Un blueprint est une copie réutilisable contenant les éléments à adapter au
+projet. L’adaptation crée une copie indépendante dans un autre plan ; elle
+conserve la provenance du modèle. Pour cette étape, un système conserve une
+seule conversation de conception, et les blueprints utilisent la persistance
+des plans existants.
 
-Un plan sert à définir une vague de travail cohérente.
-
-Exemples typiques :
-- une grosse fonctionnalité
-- une vague d'améliorations ciblée
-- un lot de livraison cohérent
-
-Plusieurs plans peuvent exister en parallèle pour un même groupe de projets.
-
-Plusieurs plans peuvent aussi être actifs en parallèle si leur exécution peut progresser simultanément.
-
-Lorsqu'un plan est terminé, il est archivé.
-Un plan archivé reste consultable pour l'audit et l'historique, mais n'est plus destiné à être modifié.
+Plusieurs plans peuvent coexister pour un projet ou un groupe. Concevoir le
+processus ne constitue pas son exécution. Les états historiques des plans
+continuent d’être conservés ; un plan archivé reste consultable.
 
 ### 6.5 Nœud de stratégie
 
-Un nœud de stratégie est une unité de la stratégie d'un plan générée par l'IA.
+Les sections 6.5, 6.6 et 6.8 décrivent les plans historiques encore suivis par
+Implement. Elles ne définissent pas l'exécution d'un document AgSDL.
+
+Un nœud de stratégie est une unité de la stratégie historique d'un plan générée
+par l'IA.
 
 Un nœud peut représenter :
 - une tranche fonctionnelle
@@ -218,13 +222,17 @@ Son but est de :
 
 ### 6.7 Tâche d'implémentation
 
-Une tâche d'implémentation est une unité de travail exécutable dérivée de la stratégie.
+Une tâche d'implémentation est une unité de travail exécutable. Elle peut être
+autonome ou provenir de la stratégie d'un plan historique.
 
 La tâche est l'unité suivie dans le mode Implement.
 
-Une tâche terminée avec succès se conclut toujours par un commit.
+Une tâche Git terminée avec succès se conclut par un commit. Une tâche en
+édition directe se conclut par l'acceptation des changements après review.
 
-La plupart des tâches sont créées à partir d'un plan valide, mais Macro doit aussi supporter des tâches autonomes pour les quick fixes ou les petites features ne justifiant pas un plan complet.
+Les plans AgSDL nouvellement conçus ne produisent pas encore de tâches
+Implement. Les tâches autonomes restent disponibles pour les travaux qui ne
+justifient pas un plan complet.
 
 ### 6.8 Artefact de relais
 
@@ -256,37 +264,105 @@ Le mode `Debug` ne fait plus partie de l'application ni de la spécification fon
 
 ### 7.1 Mode Architect
 
-Le mode Architect est le mode de planification et de structuration.
+Le mode Architect sert à concevoir des systèmes agentiques avec l’IA. La
+conversation recueille l’intention, le contexte et les précisions ; le panneau
+droit permet de comprendre le processus et d’inspecter ses composants.
 
-Son objectif est de permettre à l'utilisateur de :
-- exprimer une intention dans la conversation du plan
-- définir ou affiner le périmètre du travail
-- répondre à des questions ciblées lorsque des informations importantes manquent
-- demander explicitement la génération d'une stratégie
-- valider la structure d'exécution attendue
+L’utilisateur peut commencer de zéro, adapter un système existant ou utiliser
+un blueprint. Il peut modifier localement les instructions et la configuration
+prise en charge. Les changements de structure passent principalement par la
+conversation. L’objectif, le contexte partagé, les règles et les informations
+à compléter sont consultables dans la fiche de conception du système.
+L’adaptation présente d’abord les valeurs attendues pour le projet ; la définition
+de chaque champ se modifie par le chat. Après une copie, les informations manquantes
+s’ouvrent dans cette fiche. La bibliothèque permet de prévisualiser le point de
+départ et conserve les sources lisibles si une autre source échoue au chargement.
 
-Le mode Architect constitue le cœur méthodologique de Macro.
+Les contrôles de document et les champs à compléter accompagnent la conception
+progressive. Ils ne certifient pas l’exécution. Les agents peuvent conserver le
+moteur Macro ou choisir explicitement Codex ou Claude lorsque leur profil
+est disponible. Codex conserve ses outils natifs isolés ; Claude utilise les outils
+Macro contrôlés. Voir les profils [Codex](agsdl-codex-native.md) et
+[Claude](agsdl-claude-controlled.md).
 
-Fonctionnellement, il correspond au moment où un senior ou un lead technique briefe une équipe avant exécution.
+Trois capacités restent distinctes :
+- la conception du document, décrite ci-dessous, disponible ;
+- le suivi des exécutions : l’ouverture lit seulement l’état natif, sans contrôle
+  préalable, lancement ni acquittement implicite. Une demande en attente reste
+  prioritaire ; sinon la dernière exécution du plan, du projet et de la branche
+  s’affiche et une autre peut être choisie. Tant qu’aucun contrôle n’a été
+  demandé, la prise en charge s’affiche comme non vérifiée ;
+- le démarrage depuis le produit, fermé tant que sa qualification physique n’est
+  pas faite.
 
-Le mode Architect doit supporter :
-- une conversation par plan
-- l'inspection du code pour enrichir le contexte lorsque cela est utile
-- une stratégie générée par l'IA depuis la conversation et le contexte du projet
-- la déclaration d'artefacts critiques attendus par tâche
-- une visualisation des dépendances et de la structure prédictive
-- la validation d'un plan
-- la préparation automatique de la structure d'exécution après validation
+Le suivi des runs conservés reste disponible après une modification du design ou
+un changement de source. Une omission de provenance dans une édition ordinaire
+conserve celle de la copie. Les tâches sont projetées depuis la source capturée
+et le journal, indépendamment du blueprint courant. Un échec non traité ou un
+état incertain dans une étape sans instance Agent garde une ligne existante du
+run visible par défaut et ouvre son graphe. Le statut de l’Agent reste inchangé.
+Un échec suivi par son `onError` ne maintient pas cette alerte historique. Les
+lignes natives proposent la consultation du graphe, sans renommage ni activation
+des anciennes tâches.
 
-Le mode Architect n'est pas un simple mode descriptif.
-Il doit préparer concrètement la suite de l'implémentation.
+#### Visualisation AgSDL
+
+Le panneau droit Architect présente un canvas AgSDL non éditable. La conversation
+conserve sa place centrale. L’agent peut modifier le document ; une modale permet
+aussi de modifier le nom, les instructions et les propriétés prises en charge d’un
+composant dans un plan en brouillon. Les outils et ressources modifiables restent
+dans des sections repliées ; les contrats se modifient par le chat. Les références
+partagées conservent leur propriétaire.
+Le canvas propose une lecture de l’enchaînement ou des échanges déclarés. Des
+groupes explicitement nommés peuvent être repliés, sans changer le processus.
+Le canvas montre les participants, les relations déclarées, les conditions et
+les étapes d’approbation. Les interfaces du système et les terminaux de fin ne
+créent pas de nœuds. Le bouton de détails dans l’en-tête présente l’objectif du système et les valeurs
+à compléter. Les diagnostics détaillés sont joints au chat pour analyse.
+Les cartes affichent l’identité du composant. La modale d’un agent sépare son
+prompt, ses entrées, ses sorties prévues et ses outils/connexions. Chaque échange
+indique sa provenance ou ses destinataires déclarés ; les agents liés sont
+prévisualisables au survol et au focus, puis consultables au clic. Un bouton de
+retour permet de retrouver la fiche précédente sans quitter le graphe. Les paramètres
+des moteurs et des connexions restent repliés, avec leur configuration AgSDL.
+Les sorties du système se distinguent des tâches et aucun transfert n’est déduit
+du seul ordre d’exécution. Le graphe conserve son espace et son zoom. Les changements manuels sont enregistrés avec un contrôle
+de version ; une modification concurrente bloque l’écriture sans effacer la saisie.
+Les connexions sont sélectionnables pour consulter leur nature et les transferts
+explicitement déclarés, sans libellés permanents sur le canvas.
+Depuis les détails d’un composant ou d’une relation, une action joint sa référence
+au prochain message du chat sans modifier le texte saisi ni envoyer de message.
+La sélection est visible et retirable. Si le document a changé, elle doit être
+actualisée avant l’envoi. Les problèmes de validation sont rattachés aux composants
+lorsqu’un emplacement fiable permet d’identifier un composant. Ils peuvent alors
+être joints au chat pour préparer une correction.
+Les boutons Annuler et Rétablir parcourent les modifications de la session et
+enregistrent le document dans le plan en brouillon.
+La revue montre les composants modifiés et permet de déplier leurs valeurs avant
+et après. Un changement de modèle marque les appels de l’agent concerné ; une
+simple remise en forme du document n’affiche pas de revue vide.
+Le bouton d’agrandissement ouvre le visualisateur dans une modale sans modifier
+la disposition des panneaux.
+Les anciennes stratégies sont converties en déclarations AgSDL descriptives,
+avec conservation de leurs données et affichage explicite de leurs dépendances.
+L’ancienne interface de stratégie et ses outils de rédaction ne sont plus exposés.
+
+Le moteur Implement conserve ses données historiques pour les tâches existantes.
+Le parcours et les limites du visualisateur sont décrits dans
+[Visualisateur AgSDL](agsdl-editor.md). Les [contrats du moteur](agsdl-engine-architecture.md)
+définissent le propriétaire natif, le profil initial et les garanties. Le moteur
+est intégré, mais le produit ne démarre pas encore de document tant que sa
+qualification n’est pas faite.
 
 ### 7.2 Mode Implement
 
 Le mode Implement est le mode d'exécution et de review.
+Il exécute les tâches autonomes et celles des plans historiques. Les mentions
+de stratégie, de branches de plan et de finalisation dans cette section ne
+décrivent pas une capacité d'exécution des nouveaux documents AgSDL.
 
 Son objectif est de :
-- exécuter les tâches dérivées d'un ou plusieurs plans
+- exécuter les tâches des plans historiques et les tâches autonomes
 - gérer les questions de l'IA pendant l'exécution
 - présenter les changements générés pour review
 - permettre un ajustement humain si nécessaire
@@ -314,17 +390,21 @@ Lors du premier envoi d'une tâche indépendante encore au brouillon, Macro enre
 
 Avant ce premier envoi, l'instruction de démarrage flotte au bas de la conversation, au-dessus de toute la zone de composition et de ses contrôles, et non dans l'en-tête. La notice disparaît dès que le premier message est accepté. Macro vide alors le composer sans attendre la fin de la préparation. Si l'envoi échoue avant d'être accepté, Macro restaure le brouillon et ses pièces jointes.
 
-Macro persiste localement le brouillon non envoyé de chaque composer. Le texte, les images collées et les références de contexte sont isolés par conversation ou par contexte de tâche et reviennent après un redémarrage complet. Un envoi accepté efface le brouillon envoyé. Un échec le conserve. L'archivage ou la suppression définitive d'une conversation efface son brouillon, et Macro ignore au chargement tout brouillon invalide, archivé ou rattaché à une conversation absente.
+Macro persiste localement le brouillon non envoyé de chaque composer. Les sélections AgSDL utilisent les mêmes références que les skills, fichiers et sources : leur identité et leur révision sont sauvegardées avec le brouillon. Le texte, les images collées et les références de contexte sont isolés par conversation ou par contexte de tâche et reviennent après un redémarrage complet. Un envoi accepté efface le brouillon envoyé. Un échec le conserve. La restauration respecte les modifications faites pendant l’envoi et ne rattache pas les anciennes références à une nouvelle saisie. L’édition d’un message reprend ses références enregistrées ; annuler cette édition rend le brouillon précédent. L'archivage ou la suppression définitive d'une conversation efface son brouillon, et Macro ignore au chargement tout brouillon invalide, archivé ou rattaché à une conversation absente.
+
+Avant sa première conversation, un plan Architect garde son brouillon, références comprises, et le retrouve après un redémarrage. Le premier envoi crée la conversation du plan et l'y rattache aussitôt. Si cet envoi est refusé, par exemple faute de fournisseur, le brouillon revient dans cette conversation, qui est reprise après un redémarrage sans en créer une autre. L'archivage ou la suppression du plan efface ce brouillon ; un plan restauré repart d'un composer vide.
 
 La sauvegarde des brouillons applique les mêmes limites que leur restauration. Un dépassement ou une donnée illisible laisse la copie précédente intacte et affiche une erreur de persistance ; le contenu courant reste dans la session. Un chargement des conversations en échec ne suffit pas à supprimer leurs brouillons.
 
 Un message accepté en file pendant un tour actif est sauvegardé localement avec son mode, sa tâche ou son plan, ses références et son choix de modèle. La navigation suivante ne change pas cette intention. Macro conserve la soumission jusqu'à la sauvegarde du message et de ses images. Après une interruption ou un redémarrage, un panneau de récupération persistant permet de modifier le texte d'un message encore en attente, de le retirer ou de réessayer l'envoi, même lorsque les notifications sont désactivées. Un message déjà enregistré ne peut plus être modifié ni renvoyé. Les droits et les secrets sont relus avant l'exécution. Une conversation archivée garde sa file suspendue ; sa suppression définitive supprime aussi sa file.
 
+La sauvegarde locale du profil inclut les instructions en file et les réponses assistant de secours. Leur restauration conserve le texte et les identités, sans déclencher d'envoi. Une archive ancienne qui omet ces données remplace aussi ce périmètre : les valeurs plus récentes sont retirées du profil actif après conservation dans la copie de récupération. La restauration ne fusionne pas les profils et ne réassocie pas les chemins des projets.
+
 L'utilisateur peut joindre explicitement jusqu'à trois autres conversations du même projet comme sources de contexte. À l'envoi, Macro sélectionne au plus trois passages textuels pertinents par source dans la branche de transcript actuellement conservée, avec l'identifiant et la date de chaque message. En l'absence de correspondance lexicale, elle ne retient que le dernier passage et indique qu'il s'agit d'un repli récent. Les réponses incomplètes ne servent pas de source. La sélection est bornée et figée dans le message envoyé, où les citations restent consultables, y compris après une reprise ; un message en file conserve le choix des conversations et sélectionne les passages lorsqu'il part effectivement. Une conversation supprimée, devenue inaccessible ou encore active bloque la sélection. L'utilisateur peut retirer chaque source du composeur. Aucune mémoire automatique n'est créée.
 
-Le chat affiche au même emplacement flottant les informations et erreurs liées à la composition : erreur d'exécution Macro, incompatibilité entre une skill et le modèle choisi, conversation archivée et tâche bloquée. Ces notices restent au-dessus des contrôles sans modifier la hauteur du composer. Les réponses d'erreur de l'agent restent dans le transcript auquel elles appartiennent. Les questionnaires, les demandes d'approbation et la barre d'objectif gardent leurs interfaces dédiées, car l'utilisateur doit pouvoir agir directement dessus.
+Le chat affiche au même emplacement flottant les informations et erreurs liées à la composition : erreur d'exécution Macro, incompatibilité entre une skill et le modèle choisi, conversation archivée et tâche bloquée. Ces notices restent au-dessus des contrôles sans modifier la hauteur du composer. Les réponses d'erreur de l'agent restent dans la transcription à laquelle elles appartiennent. Les questionnaires, les demandes d'approbation et la barre d'objectif gardent leurs interfaces dédiées, car l'utilisateur doit pouvoir agir directement dessus.
 
-Pour chaque réponse, le chat rend consultable l'identité de chaque requête fournisseur, y compris les renvois internes des transports HTTP et natif, son texte brut et la portion retenue dans la réponse. Les tentatives partielles ou abandonnées et les chevauchements retirés restent consultables séparément. Un coût non attribuable à une tentative est affiché comme inconnu, jamais comme nul. La continuation d'une réponse incomplète se fait dans la session courante ; un redémarrage ne relance pas automatiquement la génération. Les tokens d'une tentative encore en cours au moment d'un crash peuvent manquer dans l'historique.
+Pour chaque réponse, le chat affiche le nombre de tentatives de génération dans un simple message, espacé du contenu et de l'indicateur d'activité, sans bloc dépliant. L'historique conserve l'identité de chaque requête fournisseur, y compris les renvois internes des transports HTTP et natif, son texte brut et la portion retenue dans la réponse. Les tentatives partielles ou abandonnées et les chevauchements retirés restent enregistrés séparément. Un coût non attribuable à une tentative reste inconnu, jamais nul. La continuation d'une réponse incomplète se fait dans la session courante ; un redémarrage ne relance pas automatiquement la génération. Les tokens d'une tentative encore en cours au moment d'un crash peuvent manquer dans l'historique.
 
 La création du nom sollicite le fournisseur configuré pendant au plus 15 secondes. Si cette requête échoue ou ne répond pas, Macro utilise un titre et un nom de branche locaux issus du premier message, puis poursuit la création de l'espace de travail. Le fournisseur de métadonnées ne peut donc pas bloquer indéfiniment le premier démarrage.
 
@@ -332,7 +412,14 @@ La progression reste liée à la conversation lorsque l'utilisateur consulte une
 
 Un dossier sans dépôt Git peut aussi être importé en édition directe. Dans ce mode, la création d'une tâche demande uniquement de sélectionner le projet : Macro choisit automatiquement le type `direct` et ne présente aucun choix de type ou de point de départ Git. Implement travaille dans le dossier source lui-même, sans branche, worktree, commit ni merge utilisateur. Macro crée un point de restauration privé avant la première modification et conserve le même parcours de revue : l'utilisateur ouvre les diffs, valide les fichiers, peut restaurer leur état initial, puis accepte les changements et termine la tâche. Une seule tâche `direct` peut être active par projet et les outils Git ne sont pas exposés à l'agent.
 
-Architect peut créer un plan direct, Git ou mixte. Chaque nœud conserve le mode de chacune de ses cibles. La préparation, l'exécution et la finalisation appliquent Git uniquement aux cibles Git. Les cibles directes utilisent leur dossier source et leur point de restauration privé. Le plan et son transcript restent dans les métadonnées locales du projet, même si Git est initialisé ensuite. Les nouvelles tâches peuvent utiliser Git, mais une cible déjà persistée en mode direct conserve ce mode jusqu'à la fin de la tâche.
+Pour les plans historiques, Architect pouvait créer un plan direct, Git ou
+mixte. Chaque nœud conserve le mode de chacune de ses cibles. La préparation,
+l'exécution et la finalisation appliquent Git uniquement aux cibles Git. Les
+cibles directes utilisent leur dossier source et leur point de restauration
+privé. Le plan et sa transcription restent dans les métadonnées locales du
+projet, même si Git est initialisé ensuite. Les nouvelles tâches autonomes
+peuvent utiliser Git, mais une cible déjà persistée en mode direct conserve ce
+mode jusqu'à la fin de la tâche.
 
 ### 7.3 Mode Chat
 
@@ -350,6 +437,12 @@ Le mode Chat n'est pas rattaché par défaut à un contexte projet autonome.
 Dans une conversation rattachée à un projet, l'utilisateur peut activer Goal avec un objectif libre, puis l'éditer, le mettre en pause, le reprendre ou l'arrêter. Macro conserve ce but dans les données natives et le recharge à l'ouverture de la conversation. L'objectif sert de critère de référence sans formulaire de critères distincts. Stop désactive le but courant ; les résultats déjà produits restent consultables.
 
 Après chaque tour exécutant confirmé par une réponse assistant enregistrée, un agent distinct en lecture seule vérifie l'objectif avec des preuves structurées. Son résultat devient un artefact de la conversation dans les métadonnées du projet. `continue` relance automatiquement l'exécutant avec un retour borné ; `achieved` termine le but ; `needs_user` attend une réponse ; `cannot_progress` le met en pause en expliquant le blocage. Reprendre lance un nouveau tour sans saisie supplémentaire. Un message utilisateur, y compris un message mis en file, a priorité sur une continuation automatique. Une erreur technique ou un verdict invalide arrête la boucle et laisse une reprise contrôlée ; quatre tours utiles ne constituent pas une limite.
+
+Une continuation automatique conserve le mode, le modèle et les références autorisées du tour exécutant de sa conversation. La navigation et le brouillon d’une autre conversation ne modifient pas cette intention. Après redémarrage, la reprise utilise la sélection enregistrée de la conversation Chat ; si elle manque, un nouveau message utilisateur doit établir le contexte.
+
+Une instruction mise en file reste récupérable après sa sauvegarde tant que l’assistant n’a pas démarré. Réessayer reprend le message existant. Si le démarrage a pu avoir lieu, Macro demande de vérifier la réponse et les effets des outils avant de retirer l’entrée de récupération et de continuer manuellement. Une direction ne devient consommable qu’après sa sauvegarde, par le tour auquel elle était destinée. Si ce tour s’est terminé pendant la sauvegarde, Macro conserve le message et signale sa non-transmission.
+
+Une direction pendant un tour actif est enregistrée dans la même file de récupération avant toute écriture DB et livraison au modèle. Elle conserve l'identité de son message utilisateur, ses images et le tour d'origine. La compaction et la dernière requête autorisée du budget ne la consomment pas. Une fin de tour, Stop ou un redémarrage laisse les directions restantes récupérables ; Réessayer reprend le même message sans doublon. Une remise possible au modèle exige une vérification manuelle des effets avant toute nouvelle exécution. Le retrait de l'entrée livrée exige une vraie fin de requête et l'enregistrement confirmé de l'assistant correspondant. Ce suivi local ne confirme pas l'application sémantique de l'instruction. Les passages de conversation acceptés restent identiques à la reprise, après vérification de l'accès à leur source. Supprimer un tour invalide aussi ses directions dont l'enregistrement est encore en cours. Si le retrait local refuse après la suppression, l'entrée restante ne peut plus être exécutée et demande un retrait manuel. Les placeholders vides abandonnés ne réapparaissent pas au rechargement.
 
 Il se distingue du mode Implement en ce que :
 - il n'est pas piloté par une stratégie de plan
@@ -417,30 +510,41 @@ dans la zone visible. La recherche du contenu reste locale, indexée et paginée
 Elle ne charge pas les transcriptions de toutes les conversations dans le frontend.
 
 Les filtres structurants des listes principales survivent aux changements de
-mode et aux redémarrages. Implement conserve le projet, le statut et la vue
-archivée. Le filtre « À traiter » regroupe les questionnaires actifs, les demandes
-d'approbation d'outil actives ou restaurées et les tâches en review. Une tâche
-n'y apparaît qu'une fois. Les tâches terminées ou archivées et les simples
-blocages de dépendances n'y entrent pas. Une demande active reste accessible
-même si la tâche porte aussi un blocage. Avant le chargement de la conversation,
-une attente durable reste visible, sauf si une exécution ou un workflow de
-merge indique déjà une autre activité. Le filtre se combine au projet et à la
-recherche. Un second clic sur le filtre actif affiche tous les statuts. Changer
-de projet conserve le filtre choisi ; consulter les archives le suspend et le
-retour aux tâches actives le rétablit. Une approbation en attente remplace le
-spinner par l'indicateur d'attente utilisateur, même si le moteur est encore en
-streaming. Ouvrir cette tâche donne accès à la conversation de la demande.
+mode et aux redémarrages. Implement conserve le projet, le statut, la visibilité
+des archives et les choix d’afficher les tâches bloquées ou sans interaction. La file regroupe les tâches dans quatre catégories exclusives :
+« À lancer », « En cours », « En attente » et « Terminées ». Les compteurs,
+les filtres et les sections utilisent le même regroupement, sans compter deux
+fois une tâche. Les brouillons restent séparés des compteurs ; les archives peuvent être incluses dans la liste.
+« En attente » regroupe les réponses et approbations attendues, les blocages
+et les échecs. La raison précise reste visible sur chaque carte. Une tâche en
+review reste « En cours » tant qu'aucune interaction utilisateur n'est attendue.
+Le bouton filtre dans l’en-tête propose trois cases indépendantes : « Archives », « Sans interaction » et « Tâches bloquées ». Les archives s’ajoutent à la liste avec une pastille dédiée, sans remplacer les tâches actives. Les tâches en cours ou terminées sans demande d’action suivent « Sans interaction », désactivé par défaut. Les tâches bloquées sans demande d’action suivent « Tâches bloquées », désactivé par défaut. Les tâches à lancer, brouillons, demandes de réponse ou d’approbation, erreurs et besoins de revalidation restent visibles. Les trois choix sont mémorisés ; le filtre reste ouvert pour permettre plusieurs réglages. Le clic droit du panneau conserve les actions de création et de gestion des projets.
+Les filtres ne modifient aucun état moteur. Une tâche bloquée masquée réapparaît dès qu’elle devient exécutable. La liste et les compteurs de statuts partagent la même visibilité, y compris les archives affichées, et ne comptent chaque tâche qu’une fois. Les compteurs des projets comptent les tâches actives visibles, sans les archives ni les tâches terminées.
+
+Le menu contextuel de chaque tâche propose « Voir le workflow ». Il ouvre un modal centré sur le graphe AgSDL de l’exécution, sélectionne le bloc lié à la tâche et affiche les indicateurs partagés de Macro. Le menu à trois points propose la même action. La consultation ne sélectionne pas une autre tâche, ne change pas de mode et ne lance rien. Les liens reposent sur les associations historiques explicites, jamais sur les titres ou l’ordre des blocs. Sans exécution liée, le modal affiche un état vide. Les cartes sélectionnées mettent leurs échanges en évidence ; « Ouvrir la tâche » permet de revenir à la conversation liée.
+
+Les états techniques du moteur sont conservés. Les anciens filtres « À traiter »,
+« Bloquées » et « Échec » sont repris sous « En attente ».
+Le filtre se combine au projet et à la recherche. Un second clic sur le filtre
+actif affiche tous les statuts. Changer de projet conserve le filtre choisi ;
+inclure les archives conserve le filtre de statut actif.
+Une approbation en attente remplace le spinner par l'indicateur d'attente
+utilisateur, même si le moteur est encore en streaming. Ouvrir cette tâche
+donne accès à la conversation de la demande.
 Architect et Chat conservent la vue active ou archivée. Les requêtes
 de recherche, la sélection multiple et les filtres propres aux boîtes de
 dialogue ou au terminal restent limités à la session d'interaction en cours.
 
-En mode Architect, le panneau gauche est la surface canonique de sélection du contexte et du plan. Il présente une seule profondeur : les groupes ou projets au premier niveau, puis leurs plans directement en dessous. La flèche et la ligne d'un projet basculent toutes deux son état développé ou réduit, même s'il ne contient encore aucun plan ; l'action « Créer le premier plan » suit cet état. Les plans épinglés sont proposés comme raccourcis sans dupliquer leur état. Le bouton d'ajout crée un projet, le bouton de gestion ouvre le navigateur de projets complet et le bouton associé à chaque projet ouvre le choix des types de plans compatibles avec son workflow Git.
+En mode Architect, le panneau gauche est la surface canonique de sélection du contexte et du plan. Il présente les groupes ou projets au premier niveau, puis leurs plans directement en dessous ou dans des dossiers visuels imbriqués. La Bibliothèque Macro utilise la même arborescence et les mêmes actions de classement, dans une portée indépendante des projets. Son bouton + et le clic droit sur son en-tête proposent « Nouveau blueprint » et « Nouveau dossier ». Ces dossiers sont une organisation locale du navigateur, sans déplacement de fichiers ni modification des documents AgSDL. Le glisser-déposer déplace un plan ou un dossier avec son contenu vers un dossier du même projet ; un dépôt sur la ligne du projet le remet à la racine. Le menu du plan propose la même action au clavier. Un dossier ne peut pas être déplacé dans lui-même ou ses descendants. Retirer un dossier remonte son contenu dans son parent, en conservant les plans et les sous-dossiers. Son menu contextuel propose « Nouveau blueprint » : un brouillon AgSDL indépendant est créé dans ce dossier et ouvert dans le chat, sans réutiliser un autre plan vide. Les restrictions de création du projet restent appliquées. La flèche et la ligne d'un projet basculent toutes deux son état développé ou réduit, même s'il ne contient encore aucun plan ; l'action « Créer le premier plan » suit cet état. Les plans épinglés sont proposés comme raccourcis sans dupliquer leur état. Le bouton d'ajout crée un projet, le bouton de gestion ouvre le navigateur de projets complet et le bouton associé à chaque projet ouvre le choix des types de plans compatibles avec son workflow Git.
+
+Dans les trois modes, le clic droit du panneau gauche propose les actions de l’élément visé sans l’activer ni changer le contexte courant. Un clic droit sur un blueprint, un dossier, une tâche ou une conversation retrouve les actions de son bouton de menu. Un projet propose aussi la création d’un blueprint et d’un dossier ; l’en-tête de la Bibliothèque Macro propose ses propres créations. Dans les zones vides ou sur les en-têtes généraux, le menu expose les actions du panneau, sans choisir arbitrairement un projet. Les champs de recherche conservent leur menu natif d’édition de texte. Un seul menu contextuel peut être ouvert à la fois. Les menus restent dans la fenêtre, se ferment au clic extérieur, au défilement ou à l’ouverture d’un dialogue, et permettent la navigation par flèches, Début, Fin et Échap.
+
 
 En mode Chat, la sélection multiple reste compacte tant qu'elle n'est pas utilisée. Son déclencheur est un bouton à icône placé dans l'en-tête, immédiatement avant la création d'une conversation. Le bandeau indiquant le nombre de conversations sélectionnées et les actions groupées n'est rendu qu'après activation du mode ; il s'ouvre à zéro sélection et disparaît à l'annulation.
 
 Le clic droit reprend les actions déjà disponibles sans créer une voie parallèle : sur un projet, il ouvre le choix du type de plan, l'action de développement ou de réduction et la gestion des projets ; sur un plan, il ouvre les actions d'épinglage, de renommage, d'archivage, de restauration ou de suppression selon ses capacités. Chaque ligne de plan affiche explicitement son type à la place d'un indicateur de statut non légendé.
 
-Les archives ne constituent pas une section dépliable dans l'arborescence active. Un bouton à icône dans l'en-tête du panneau permet de basculer entre les plans actifs et une vue dédiée aux plans archivés, de façon cohérente avec le mode Implement et sans réserver une barre en bas du panneau. Les actions d'archives et de création utilisent le même bouton carré dans les deux modes ; leur intitulé reste disponible au survol et pour les technologies d'assistance. Cette vue conserve les actions de restauration et de suppression sans mélanger les plans archivés aux projets en cours.
+Les archives ne constituent pas une section dépliable dans l'arborescence active. Un bouton à icône dans l'en-tête du panneau permet de basculer entre les plans actifs et une vue dédiée aux plans archivés, sans réserver une barre en bas du panneau. Les actions d'archives et de création utilisent les boutons carrés de l’en-tête ; leur intitulé reste disponible au survol et pour les technologies d'assistance. Cette vue conserve les actions de restauration et de suppression sans mélanger les plans archivés aux projets en cours.
 
 Le navigateur complet des projets sépare lui aussi les projets actifs des
 archives. Archiver un groupe archive chacun de ses projets sans retirer le
@@ -472,7 +576,7 @@ Le panneau droit doit accueillir les surfaces de lecture, de visualisation ou de
 
 Exemples :
 
-- graphe de stratégie
+- visualisateur AgSDL ou graphe d'un plan historique
 - review des changements
 - contexte, outils ou sources
 
@@ -638,7 +742,12 @@ Ce contrat ne couvre pas `CLAUDE.md`, les règles Cursor ni les imports de type
 
 ---
 
-## 11. Cycle de vie d'un plan
+## 11. Cycle de vie des plans historiques
+
+Cette section conserve le contrat des plans à stratégie encore exécutables par
+Implement. Pour les nouveaux plans AgSDL, la conception et ses limites sont
+décrites en section 7.1. Leur validation ne prépare ni tâches, ni branches, ni
+worktrees d'exécution.
 
 ### 11.1 Création du plan
 
@@ -659,6 +768,8 @@ L'IA doit :
 - construire la stratégie depuis la conversation du plan, l'intention exprimée, le périmètre, les projets sélectionnés et le code inspecté
 - organiser cette stratégie pour maximiser le parallélisme lorsque cela reste sans risque
 - maintenir chaque unité d'exécution à une taille limitée pour réduire la confusion de l'IA et les changements trop larges
+
+Si la stratégie est enregistrée mais que l'activation du plan ou la synchronisation de sa conversation échoue, le résultat signale la sauvegarde effective et l'échec du suivi. L'utilisateur sélectionne à nouveau le plan pour reprendre cette synchronisation, sans générer une nouvelle stratégie. Les nœuds, les todos et les contrats sauvegardés sont conservés. Un transcript local divergent reste intact et bloque la réconciliation.
 
 ### 11.3 Validation du plan
 
@@ -691,7 +802,10 @@ Ils ne sont plus destinés à être modifiés.
 
 ---
 
-## 12. Règles de génération de stratégie
+## 12. Règles de génération des stratégies historiques
+
+Ces règles documentent les plans à stratégie existants. L'éditeur AgSDL ne
+génère pas ce type de stratégie pour les nouveaux plans.
 
 ### 12.1 L'IA est responsable de la formalisation
 
@@ -722,9 +836,9 @@ Cette structuration existe pour réduire le risque et améliorer la qualité des
 
 ## 13. Modèle de tâche
 
-### 13.1 Tâches planifiées
+### 13.1 Tâches des plans historiques
 
-La plupart des tâches sont dérivées automatiquement d'un plan valide.
+Les tâches déjà planifiées proviennent d'une stratégie historique valide.
 
 Ces tâches héritent :
 - du contexte du plan
@@ -922,11 +1036,20 @@ Chaque tâche complétée doit se conclure par :
 - une validation utilisateur
 - la génération d'un commit
 
+La review reste liée à la tâche sélectionnée et à tous ses dépôts concernés.
+Changer le filtre global de projet ne retire pas de dépôt de cette review et
+ne réinitialise pas les validations déjà acquises pour la même tâche.
+
 ### 15.2 Validation à l'échelle du plan
 
 Lorsque toutes les tâches d'un plan sont terminées, Macro doit imposer une validation globale du plan avant merge du plan vers la branche de base configurée.
 
 Cette validation est distincte de la review tâche par tâche.
+
+L'archivage automatique des tâches terminées après leur intégration conserve
+leur contribution à la finalisation du plan. Les tâches retirées ou annulées
+restent exclues. La finalisation reste accessible tant que le plan attend son
+intégration et disparaît lorsque le plan est archivé.
 
 ### 15.3 Génération des commits
 
@@ -953,6 +1076,17 @@ Macro doit supporter une résolution automatique assistée par IA des merge conf
 Cette résolution automatique ne concerne que les conflits issus des merges pilotés par le logiciel et non les situations externes arbitraires.
 
 Chaque résolution est liée à sa tâche et à une session de fusion vérifiée. Une fusion externe ou appartenant à une autre tâche reste intacte. Une actualisation du statut conserve le brouillon du fichier ; le rechargement du contenu et le changement de fichier demandent confirmation si des modifications ne sont pas enregistrées. Choisir un côté supprimé conserve une intention de suppression jusqu'à l'enregistrement, distincte d'un fichier vide.
+
+Le diagnostic Git peut aussi ouvrir une conversation d'inspection sans tâche
+active. Elle se limite aux dépôts et conflits vérifiés et conserve des outils
+en lecture seule pendant ses échanges. Avant chaque envoi, y compris un envoi
+différé, Macro vérifie à nouveau la sélection, la tâche éventuelle, le chemin,
+la branche et le commit courant. Un changement incompatible conserve la
+demande et refuse son départ. Après redémarrage, l'utilisateur rouvre
+l'inspection depuis le diagnostic Git. Une nouvelle conversation reçoit alors
+un contexte vérifié. L'ancienne demande en attente reste conservée dans sa
+conversation d'origine et ne retrouve pas automatiquement l'autorisation
+d'envoi ; l'utilisateur doit reprendre sa demande dans la nouvelle inspection.
 
 Si le nettoyage échoue après l'intégration, une nouvelle tentative reprend les ressources restantes sans recréer les worktrees déjà supprimés. Un nouveau commit sur la branche source ou une cible ayant divergé du résultat enregistré bloque cette reprise.
 
@@ -1301,6 +1435,13 @@ Matrice fonctionnelle des raccourcis configurables :
 | Prompt précédent | Navigue dans l'historique de prompts vers le précédent | Compositeur focus et mode historique par raccourci |
 | Prompt suivant | Navigue dans l'historique de prompts vers le suivant | Compositeur focus et mode historique par raccourci |
 
+L’arrêt réserve la conversation jusqu’à la fin locale confirmée de son exécution,
+y compris les outils déjà lancés. Si Macro ne reçoit pas cette confirmation,
+le tour affiche une erreur et un nouvel envoi reste bloqué. Une nouvelle demande
+d’arrêt peut obtenir la confirmation manquante. Les effets déjà produits par un
+terminal ou un outil externe peuvent subsister ; leur résultat reste incertain
+lorsque Macro ne peut pas le confirmer.
+
 ---
 
 Le composeur réunit fournisseur et modèle dans un seul sélecteur. Son bouton affiche
@@ -1332,7 +1473,9 @@ Macro doit conserver suffisamment de métadonnées pour auditer :
 
 ### 22.2 Nature historique des artefacts de planification
 
-La conversation, les nœuds de stratégie et les branches prédictives sont durables comme historique, mais pas comme objets pilotés du futur une fois le plan clos.
+La conversation et le document AgSDL sont conservés avec le plan. Pour les
+plans historiques, les nœuds de stratégie et les branches prédictives restent
+durables pour l'audit, sans devenir des objets pilotés après clôture du plan.
 
 Leur utilité principale après exécution est :
 - l'audit
@@ -1366,14 +1509,29 @@ Les règles suivantes sont fondatrices :
 - Le mode Implement est piloté par les tâches et orienté review-first.
 - Le mode Chat est léger et indépendant.
 - Le multi-projet est une capacité de premier plan.
-- Un plan contient sa conversation et sa stratégie.
+- Un nouveau plan Architect contient sa conversation et son document AgSDL.
 - Plusieurs plans peuvent coexister en parallèle.
 - Les plans archivés restent lisibles mais non modifiables.
-- La stratégie est générée par l'IA à partir de la conversation et du contexte du projet, après une demande explicite.
-- La validation d'un plan prépare automatiquement branches et worktrees.
+- L'IA construit le document AgSDL avec l'utilisateur ; sa conception ne lance
+  pas le graphe. L'utilisateur peut vérifier puis lancer explicitement une
+  exécution depuis le panneau droit, avec un message d'entrée.
+- Le profil initial exécute les agents via le moteur Macro ou le profil natif
+  Codex explicitement sélectionné, leurs transmissions,
+  les préparations, les conditions et les outils locaux pris en charge. Les
+  compositions, Terminal, les MCP et les autres fournisseurs à processus externe
+  restent hors de ce profil ; le chat reçoit les diagnostics détaillés.
+  Les outils natifs Codex suivent le sandbox Codex capturé. Les approbations
+  d’outils Macro s’appliquent aux outils Macro.
+- Les exécutions conservent leur capture et leur historique après rechargement.
+  Stop attend une preuve native de terminaison locale. Après un crash, un
+  résultat perdu reste signalé et aucun effet n'est rejoué automatiquement.
+  L'arrêt ne signifie pas que les fichiers déjà modifiés ont été restaurés.
+- La préparation automatique des branches et worktrees concerne les plans
+  historiques exécutables, pas les nouveaux plans AgSDL.
 - Toute tâche Git complétée se termine par un commit. Une tâche en édition directe se termine par l'acceptation de son checkpoint, sans commit dans le projet utilisateur.
 - Une review humaine est obligatoire à la fin de chaque tâche.
-- Une tâche de finalisation synthétique converge depuis les feuilles de la stratégie et pilote l'intégration finale.
+- Pour un plan historique, une tâche de finalisation synthétique converge
+  depuis les feuilles de la stratégie et pilote l'intégration finale.
 - L'édition manuelle du code existe, mais comme mécanisme secondaire d'ajustement en review.
 - Les skills guident l'agent sans contourner la politique d'outils.
 - Le support du kernel distant fait partie de la cible produit.

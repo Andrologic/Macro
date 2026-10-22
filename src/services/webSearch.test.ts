@@ -352,3 +352,14 @@ describe('webSearch provider contracts', () => {
     expect(nativeWebFetchMock).not.toHaveBeenCalled();
   });
 });
+
+it('preserves a typed HTTP cleanup receipt when refusing an oversized search response', async () => {
+  const { StreamStopUnconfirmedError } = await import('./ai/streamCancellation');
+  const { webSearch } = await loadWebSearch();
+  const receipt = new StreamStopUnconfirmedError('Search body cleanup pending');
+  fetchMock.mockResolvedValueOnce(new Response(new ReadableStream({ cancel() { throw receipt; } }), {
+    headers: { 'content-length': String(8 * 1024 * 1024) },
+  }));
+  await expect(webSearch('synthetic', { tavilyApiKey: 'test-key' })).rejects.toBe(receipt);
+  expect(fetchMock).toHaveBeenCalledTimes(1);
+});

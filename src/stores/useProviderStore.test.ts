@@ -457,6 +457,24 @@ describe('useProviderStore secret resolution', () => {
     expect(useProviderStore.getState().selectedModelId).toBe('manual-model');
   });
 
+  it('returns local models while the context catalogue is still pending', async () => {
+    const { useProviderStore } = await loadProviderStore();
+    await useProviderStore.getState().loadProviderConfigs();
+    let release!: () => void;
+    const pending = new Promise<void>((resolve) => { release = resolve; });
+    useProviderStore.setState({ refreshLoadedModelContextCatalog: () => pending });
+    listProviderModelsMock.mockImplementationOnce(async () => [
+      dbModel('provider-openai', 'cached-model'),
+    ]);
+    try {
+      const models = await useProviderStore.getState().loadProviderModels('provider-openai');
+      expect(models.map((model: { id: string }) => model.id)).toEqual(['cached-model']);
+      expect(useProviderStore.getState().isLoadingModels).toBe(false);
+    } finally {
+      release();
+    }
+  });
+
   it('preserves new transport model selection after an old catalog wait', async () => {
     const { useProviderStore } = await loadProviderStore();
     await useProviderStore.getState().loadProviderConfigs();
@@ -2406,11 +2424,15 @@ describe('useProviderStore secret resolution', () => {
       selectedReasoningEffort: null,
     });
 
+    const refresh = mock(async () => { throw new Error('Unavailable catalogue endpoint'); });
+    providerStore.useProviderStore.setState({ refreshModelsForProviderIfNeeded: refresh });
+    const lifecycle = createLifecycleScope();
     const committed = await providerStore.useProviderStore.getState().commitRestoredSelection({
       providerId: 'provider-openai',
       modelId: 'gpt-5-pro',
       reasoningEffort: 'xhigh',
-    });
+    }, { lifecycle });
+    expect(refresh).not.toHaveBeenCalled();
 
     expect(committed).toEqual({
       providerId: 'provider-openai',

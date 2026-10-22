@@ -1539,7 +1539,13 @@ fn build_macro_sync_dto(
 ) -> Result<MacroBranchSyncDto> {
     let statuses = repo.statuses(Some(&mut get_status_options()))?;
     let conflicted_files = gather_macro_conflicted_files(repo)?;
-    let is_dirty = !statuses.is_empty();
+    // Match workspace metadata diagnostics: the root lock is operational state.
+    let is_dirty = statuses.iter().any(|entry| {
+        entry
+            .path()
+            .map(|path| path.trim_start_matches("./") != ".workspace.json.lock")
+            .unwrap_or(true)
+    });
     let has_origin = repo.find_remote(DEFAULT_REMOTE_NAME).is_ok();
 
     let mut has_upstream = false;
@@ -15934,7 +15940,7 @@ mod tests {
                 paths: None,
                 mode: GitDiffMode::Stat,
                 max_bytes: Some(8_192),
-                require_complete: false,
+                require_complete: true,
             },
         )
         .unwrap();
@@ -15951,7 +15957,7 @@ mod tests {
                 paths: None,
                 mode: GitDiffMode::NameOnly,
                 max_bytes: Some(8_192),
-                require_complete: false,
+                require_complete: true,
             },
         )
         .unwrap();
@@ -15963,7 +15969,7 @@ mod tests {
         let (temp, repo) = init_repo();
         fs::write(
             temp.path().join("new-untracked.txt"),
-            "first untracked line\nsecond untracked line\n",
+            "first untracked line\r\nsecond untracked line\r\nété",
         )
         .unwrap();
 
@@ -15985,6 +15991,131 @@ mod tests {
         assert!(patch.contains("diff --git a/new-untracked.txt b/new-untracked.txt"));
         assert!(patch.contains("+first untracked line"));
         assert!(patch.contains("+second untracked line"));
+        assert!(patch.ends_with(
+            "+first untracked line\r\n+second untracked line\r\n+été\n\\ No newline at end of file\n"
+        ));
+    }
+
+    fn complete_patch(repo: &Repository) -> Result<String> {
+        diff_repo(
+            repo,
+            None,
+            None,
+            DiffRequestOptions {
+                context_lines: Some(3),
+                ignore_whitespace: false,
+                paths: None,
+                mode: GitDiffMode::Patch,
+                max_bytes: Some(256 * 1024),
+                require_complete: true,
+            },
+        )
+    }
+
+    #[test]
+    fn test_git_diff_complete_preserves_text_bytes() {
+        let (temp, repo) = init_repo();
+        let before = "été\r\nancien";
+        let after = "été\r\nrévisé";
+        fs::write(temp.path().join("README.md"), before).unwrap();
+        commit_repo(&repo, "test: text baseline", true).unwrap();
+        fs::write(temp.path().join("README.md"), after).unwrap();
+
+        let old_oid = git2::Oid::hash_object(git2::ObjectType::Blob, before.as_bytes()).unwrap();
+        let new_oid = git2::Oid::hash_object(git2::ObjectType::Blob, after.as_bytes()).unwrap();
+        let expected = format!(
+            "diff --git a/README.md b/README.md\nindex {}..{} 100644\n--- a/README.md\n+++ b/README.md\n@@ -1,2 +1,2 @@\n été\r\n-ancien\n\\ No newline at end of file\n+révisé\n\\ No newline at end of file\n",
+            &old_oid.to_string()[..7], &new_oid.to_string()[..7],
+        );
+        assert_eq!(
+            complete_patch(&repo).unwrap().as_bytes(),
+            expected.as_bytes()
+        );
+    }
+
+    #[test]
+    fn test_git_diff_complete_preserves_multibyte_collector_boundary() {
+        let (temp, repo) = init_repo();
+        fs::write(temp.path().join("README.md"), "a".repeat(1_024) + "é\n").unwrap();
+        let expected = complete_patch(&repo).unwrap();
+        let accent = expected.find('é').expect("accent in patch");
+        // Place the head/tail split between the two bytes of the accent.
+        let max_bytes = (accent + 1) * 4 / 3;
+        assert_eq!(max_bytes - max_bytes / 4, accent + 1);
+        assert!(expected.len() <= max_bytes);
+        let patch = diff_repo(
+            &repo,
+            None,
+            None,
+            DiffRequestOptions {
+                context_lines: Some(3),
+                ignore_whitespace: false,
+                paths: None,
+                mode: GitDiffMode::Patch,
+                max_bytes: Some(max_bytes),
+                require_complete: true,
+            },
+        )
+        .unwrap();
+        assert_eq!(patch.as_bytes(), expected.as_bytes());
+    }
+
+    #[test]
+    fn test_git_diff_complete_rejects_binary_patches() {
+        for untracked in [false, true] {
+            let (temp, repo) = init_repo();
+            let path = if untracked { "new.bin" } else { "README.md" };
+            if !untracked {
+                fs::write(temp.path().join(path), b"binary\0before\n").unwrap();
+                commit_repo(&repo, "test: binary baseline", true).unwrap();
+            }
+            fs::write(temp.path().join(path), b"binary\0content\n").unwrap();
+            let error = complete_patch(&repo).expect_err("binary patch must fail");
+            assert!(
+                matches!(error, BackendError::Git { message } if message.contains("binary differences"))
+            );
+        }
+
+        // Attributes can classify UTF-8 content as binary without a NUL byte.
+        let (temp, repo) = init_repo();
+        fs::write(temp.path().join(".gitattributes"), "README.md -diff\n").unwrap();
+        commit_repo(&repo, "test: binary attribute", true).unwrap();
+        fs::write(temp.path().join("README.md"), "plain text\n").unwrap();
+        assert!(complete_patch(&repo)
+            .unwrap_err()
+            .to_string()
+            .contains("binary differences"));
+    }
+
+    #[test]
+    fn test_git_diff_complete_rejects_nul_forced_as_text() {
+        let (temp, repo) = init_repo();
+        fs::write(temp.path().join(".gitattributes"), "README.md diff\n").unwrap();
+        commit_repo(&repo, "test: text attribute", true).unwrap();
+        fs::write(temp.path().join("README.md"), b"forced\0text\n").unwrap();
+        let error = complete_patch(&repo).expect_err("NUL in text patch must fail");
+        assert!(matches!(error, BackendError::Git { message } if message.contains("NUL bytes")));
+    }
+
+    #[test]
+    fn test_git_diff_complete_rejects_invalid_utf8_without_partial_patch() {
+        let cases: [(&[u8], &[u8]); 3] = [
+            (b"old\n", b"new\xff\n"),
+            (b"old\xff\n", b"new\n"),
+            (b"context\xff\nold\n", b"context\xff\nnew\n"),
+        ];
+        for (before, after) in cases {
+            let (temp, repo) = init_repo();
+            fs::write(temp.path().join("z-invalid.txt"), before).unwrap();
+            commit_repo(&repo, "test: encoding baseline", true).unwrap();
+            fs::write(temp.path().join("README.md"), "valid change first\n").unwrap();
+            fs::write(temp.path().join("z-invalid.txt"), after).unwrap();
+            let error =
+                complete_patch(&repo).expect_err("invalid UTF-8 must reject the whole patch");
+            assert!(
+                matches!(error, BackendError::Git { message } if message.contains("invalid UTF-8"))
+            );
+        }
     }
 
     #[test]
@@ -16924,6 +17055,36 @@ mod tests {
         assert_eq!(diagnostic.state, "failed");
         assert_eq!(diagnostic.reason, Some("missing_origin"));
         assert_eq!(diagnostic.next_action, Some("configure_remote"));
+    }
+
+    #[test]
+    fn macro_sync_ignores_only_the_internal_workspace_lock() {
+        let (temp, repo) = init_macro_repo();
+        repo.remote(DEFAULT_REMOTE_NAME, "https://example.invalid/repo.git")
+            .unwrap();
+        fs::write(temp.path().join(".workspace.json.lock"), "").unwrap();
+
+        let dto = build_macro_sync_dto(&repo, temp.path(), false, None, None, None).unwrap();
+        assert!(!dto.is_dirty);
+        assert_eq!(dto.reason.as_deref(), Some("missing_upstream"));
+        assert_eq!(dto.next_action.as_deref(), Some("push"));
+
+        fs::write(temp.path().join("workspace.json"), "{}\n").unwrap();
+        let dto = build_macro_sync_dto(&repo, temp.path(), false, None, None, None).unwrap();
+        assert!(dto.is_dirty);
+        assert_eq!(dto.reason.as_deref(), Some("dirty"));
+        assert_eq!(dto.next_action.as_deref(), Some("commit"));
+    }
+
+    #[test]
+    fn macro_sync_preserves_nested_lock_names() {
+        let (temp, repo) = init_macro_repo();
+        repo.remote(DEFAULT_REMOTE_NAME, "https://example.invalid/repo.git")
+            .unwrap();
+        fs::create_dir(temp.path().join("nested")).unwrap();
+        fs::write(temp.path().join("nested/.workspace.json.lock"), "data").unwrap();
+        let dto = build_macro_sync_dto(&repo, temp.path(), false, None, None, None).unwrap();
+        assert!(dto.is_dirty);
     }
 
     #[test]

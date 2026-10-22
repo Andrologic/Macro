@@ -2220,6 +2220,49 @@ pub async fn execute_workspace_tool_controlled_with_options(
     }
 }
 
+/// Resident native ownership: cancellation is cooperative, never a dropped
+/// executor future. All inner filesystem/git joins finish before this returns.
+/// Post-write language-server diagnostics are outside this qualified transport.
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn execute_workspace_tool_owned(
+    root: PathBuf,
+    metadata_workspace: PathBuf,
+    git_state: GitState,
+    mode: String,
+    tool_id: String,
+    args: Value,
+    execution_id: String,
+    expected_roots: Arc<std::collections::BTreeMap<PathBuf, fs::WorkspaceRootIdentity>>,
+) -> CommandResult<String> {
+    let (cancellation, _registration) = register_tool_execution(Some(&execution_id))
+        .ok_or_else(|| command_error("Native execution identity is absent"))?;
+    if cancellation.is_cancelled() {
+        return Err(CommandError::from(BackendError::ToolExecutionCancelled {
+            message: "Tool execution cancelled before dispatch".into(),
+        }));
+    }
+    let workspace_path = Some(root.to_string_lossy().into_owned());
+    fs::with_expected_workspace_roots(
+        expected_roots,
+        execute_workspace_tool_inner(
+            root,
+            metadata_workspace,
+            git_state,
+            mode,
+            tool_id,
+            args,
+            workspace_path,
+            None,
+            None,
+            Some(false),
+            None,
+            Some(cancellation),
+            WorkspaceToolExecutionOptions::default(),
+        ),
+    )
+    .await
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn execute_workspace_tool_inner(
     default_workspace: PathBuf,

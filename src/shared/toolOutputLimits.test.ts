@@ -63,6 +63,50 @@ describe("tool output limits", () => {
     );
   });
 
+  it("preserves v1 FNV64 cursor fingerprints against fixed vectors and BigInt Unicode references", () => {
+    for (const [scope, fingerprint] of [
+      ["", "cbf29ce484222325"], ["a", "af63dc4c8601ec8c"], ["foobar", "85944171f73967e8"],
+      ["hello", "a430d84680aabd0b"], ["🔎é\uFEFF\0日本語", "036eab86680cc83d"],
+      ["glob\0src/**/*.ts", "b5672fc757fde62a"],
+    ]) expect(createToolCursor(scope, 17)).toBe(`v1:${fingerprint}:17`);
+    const reference = (scope: string) => {
+      let hash = 0xcbf29ce484222325n;
+      for (const byte of new TextEncoder().encode(scope)) hash = ((hash ^ BigInt(byte)) * 0x100000001b3n) & 0xffffffffffffffffn;
+      return `v1:${hash.toString(16).padStart(16, "0")}:17`;
+    };
+    const scopes = ["🔎é\uFEFF\0日本語", "glob\0src/**/*.ts", "\ud800", "\udfff", "\uFEFF".repeat(8192), "a".repeat(65536)];
+    let seed = 0x12345678;
+    const symbols = ["\0", "é", "\u0301", "🔎", "\uFEFF", "\ud800", "\udfff", "𐀀", "\r\n", "a"];
+    for (let count = 0; count < 64; count += 1) {
+      let scope = "";
+      for (let index = 0; index < count * 8; index += 1) {
+        seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0;
+        scope += symbols[seed % symbols.length];
+      }
+      scopes.push(scope);
+    }
+    for (const scope of scopes) {
+      const cursor = reference(scope);
+      expect(createToolCursor(scope, 17)).toBe(cursor);
+      expect(parseToolCursor(cursor, scope)).toBe(17);
+    }
+  });
+
+  it("preserves U+FEFF at raw page boundaries and retained truncation boundaries", () => {
+    const content = "a".repeat(5) + "\uFEFF" + "b".repeat(8);
+    const first = paginateTextBytes(content, { max_bytes: 5 }, "raw\0bom");
+    const second = paginateTextBytes(content, { cursor: first.nextCursor, max_bytes: 3 }, "raw\0bom");
+    const last = paginateTextBytes(content, { cursor: second.nextCursor }, "raw\0bom");
+    expect(second.content).toBe("\uFEFF");
+    expect(second.returnedBytes).toBe(new TextEncoder().encode(second.content).byteLength);
+    expect(first.content + second.content + last.content).toBe(content);
+    expect(paginateTextBytes("\uFEFFfirst", {}, "raw\0initial-bom").content).toBe("\uFEFFfirst");
+    const truncated = truncateUtf8Middle("\uFEFFhead-discarded-middle-\uFEFFz", 3, 4);
+    expect(truncated.head).toBe("\uFEFF");
+    expect(truncated.tail).toBe("\uFEFFz");
+    expect(truncated.retainedBytes).toBe(new TextEncoder().encode(truncated.head + truncated.tail).byteLength);
+  });
+
   it("returns a resumable item page with a hard-capped limit", () => {
     const result = paginateToolItems(
       ["a", "b", "c"],

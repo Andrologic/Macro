@@ -35,6 +35,15 @@ let notifyMock!: {
   dismiss: ReturnType<typeof mock>;
 };
 
+import { createInstance } from 'i18next';
+import fr from '../../i18n/locales/fr.json';
+import frImplement from '../../i18n/locales/segments/implement-fr.json';
+import enImplement from '../../i18n/locales/segments/implement-en.json';
+const frenchTranslator = createInstance();
+await frenchTranslator.init({ showSupportNotice: false, lng: 'fr', resources: { fr: { translation: { ...fr, implement: frImplement } } } });
+let frenchFinalization = false;
+let frenchTaskErrors = false;
+
 const translationMock = createTranslationMock({
   'errors.degraded.worktree.checkedOut.title': 'Macro could not prepare the task workspace',
   'errors.degraded.worktree.checkedOut.body':
@@ -47,6 +56,20 @@ const translationMock = createTranslationMock({
   'errors.degraded.worktree.missingBase.nextStep':
     'Create the branch or update the project Git workflow settings, then retry.',
 });
+
+const originalTranslate = translationMock.t;
+translationMock.t = (key, fallbackOrOptions, maybeOptions) => {
+  if ((frenchFinalization && key === 'architect.finalizationTaskTitle') ||
+    (frenchTaskErrors && key.startsWith('implement.errors.'))) {
+    const options = typeof fallbackOrOptions === 'object' ? fallbackOrOptions : maybeOptions;
+    return frenchTranslator.t(key, { ...options });
+  }
+  if (key.startsWith('implement.errors.') && typeof fallbackOrOptions === 'object') {
+    const leaf = key.slice('implement.errors.'.length) as keyof typeof enImplement.errors;
+    return originalTranslate(key, enImplement.errors[leaf] ?? fallbackOrOptions.defaultValue ?? key, fallbackOrOptions);
+  }
+  return originalTranslate(key, fallbackOrOptions, maybeOptions);
+};
 
 const createNotifyMock = () => ({
   info: mock(() => 'toast-info'),
@@ -419,8 +442,11 @@ describe('TaskQueue', () => {
   };
 
   beforeEach(async () => {
+    frenchFinalization = false;
+    frenchTaskErrors = false;
     useViewFilterStore.setState({
-      implement: { ...DEFAULT_IMPLEMENT_VIEW_FILTERS },
+      // Existing status and activity cases explicitly include background tasks.
+      implement: { ...DEFAULT_IMPLEMENT_VIEW_FILTERS, showWithoutInteraction: true },
       isHydrated: true,
     });
     taskQueueAppSettings = new Map<string, string>();
@@ -491,6 +517,99 @@ describe('TaskQueue', () => {
       .find((button) => button.textContent === 'Start review');
   };
 
+  it('opens the clicked task actions without activating it and offers panel actions on the background', async () => {
+    seedTasks([makeTask('task-1', 'InProgress'), makeTask('task-2', 'Pending', { title: 'Other task' })]);
+    await act(async () => { root?.render(<TaskQueueComponent />); await flushRender(); });
+    const card = [...document.querySelectorAll<HTMLElement>('[data-tour-id="implement-task-card"]')].find(item => item.textContent?.includes('Other task'))!;
+    const event = new window.MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: 90, clientY: 140 });
+    await act(async () => { card.dispatchEvent(event); await flushRender(); });
+    expect(event.defaultPrevented).toBe(true);
+    expect(useAppStore.getState().selectedTaskId).toBe('task-1');
+    expect(document.querySelectorAll('[role="menu"]')).toHaveLength(1);
+    const contextActions = document.querySelector('[role="menu"]')!.textContent;
+    await act(async () => { document.activeElement!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })); });
+    expect(useAppStore.getState().selectedTaskId).toBe('task-1');
+    await act(async () => { document.activeElement!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })); await flushRender(); });
+    expect(document.querySelector('[role="menu"]')).toBeNull();
+    await act(async () => { card.querySelector<HTMLButtonElement>('[aria-haspopup="menu"]')!.click(); await flushRender(); });
+    expect(document.querySelector('[role="menu"]')!.textContent).toBe(contextActions);
+    await act(async () => { container!.querySelector('aside')!.dispatchEvent(new window.MouseEvent('contextmenu', { bubbles: true, cancelable: true })); await flushRender(); });
+    expect(document.querySelectorAll('[role="menu"]')).toHaveLength(1);
+    expect(document.querySelector('[role="menu"]')?.textContent).toContain('Manage projects');
+    expect(document.querySelector('[role="menu"]')?.textContent).not.toBe(contextActions);
+  });
+
+  it('opens a task workflow from its context menu without activating the task or changing mode', async () => {
+    seedTasks([makeTask('task-1', 'Pending'), makeTask('task-2', 'Pending', { title: 'Another task' })]);
+    await act(async () => { root?.render(<TaskQueueComponent />); await flushRender(); });
+    const card = [...document.querySelectorAll<HTMLElement>('[data-tour-id="implement-task-card"]')].find(card => card.textContent?.includes('Another task'))!;
+    await act(async () => { card.dispatchEvent(new window.MouseEvent('contextmenu', { bubbles: true, cancelable: true })); await flushRender(); });
+    const action = [...document.querySelectorAll<HTMLButtonElement>('[role="menuitem"]')].find(button => button.textContent === 'View workflow')!;
+    expect(action).toBeDefined();
+    await act(async () => { action.click(); await import('./TaskExecutionGraphDialog'); await flushRender(); });
+    expect(document.querySelector('[role="dialog"]')?.textContent).toContain('Workflow execution');
+    expect(document.querySelector('[role="dialog"]')?.textContent).toContain('Another task');
+    expect(useAppStore.getState().selectedTaskId).toBe('task-1');
+    expect(useAppStore.getState().mode).toBe('Implement');
+    await act(async () => { document.querySelector<HTMLButtonElement>('[role="dialog"] button[aria-label="Close"]')!.click(); await flushRender(); });
+    expect(document.querySelector('[role="dialog"]')).toBeNull();
+  });
+
+  it('keeps a failed Call visible by default, opens its captured graph on click and hides native legacy actions', async () => {
+    const { workflowCallFailureFixture } = await import('../../services/workflowAgentTasks.fixtures');
+    const { projectWorkflowAgentTasks } = await import('../../services/workflowAgentTasks');
+    const f = await workflowCallFailureFixture();
+    const tasks = projectWorkflowAgentTasks(f.plan, f.snapshot, f.projection, []);
+    seedTasks(tasks.map(task => ({ ...task })));
+    useViewFilterStore.setState({ implement: { ...DEFAULT_IMPLEMENT_VIEW_FILTERS }, isHydrated: true });
+    const activateTask = mock(async () => { throw new Error('Native rows must not activate legacy Tasks'); });
+    useTaskStore.setState({ activateTask });
+    const seen: Array<[string, unknown]> = [];
+    installTauriRuntimeMock(mock(async (command, payload) => {
+      seen.push([command, payload]);
+      if (command === 'execution_read_snapshot') return f.snapshot;
+      if (command === 'execution_read_projection') return f.projection;
+      if (command === 'execution_pending_approvals') return { approvals: [], incomplete: false };
+      return null;
+    }));
+    await act(async () => { root?.render(<TaskQueueComponent />); await flushRender(); });
+    const cards = document.querySelectorAll<HTMLElement>('[data-tour-id="implement-task-card"]');
+    expect(cards).toHaveLength(1);
+    expect(cards[0].textContent).toContain('View workflow');
+    expect(tasks[0].status).toBe('Completed');
+    expect(cards[0].querySelector('button[title="Run commands"]')).toBeNull();
+    const waiting = [...document.querySelectorAll<HTMLButtonElement>('button')].find(button => button.textContent === 'Waiting1')!;
+    expect(waiting).toBeDefined();
+    await act(async () => { waiting.click(); await flushRender(); });
+    expect(document.querySelectorAll('[data-tour-id="implement-task-card"]')).toHaveLength(1);
+    expect(useViewFilterStore.getState().implement.status).toBe('waiting');
+    await act(async () => { cards[0].querySelector<HTMLButtonElement>('button[aria-haspopup="menu"]')!.click(); await flushRender(); });
+    const actions = [...document.querySelectorAll('[role="menuitem"]')].map(item => item.textContent);
+    expect(actions).toContain('View workflow');
+    for (const action of ['Rename', 'Start review', 'Reopen', 'Archive', 'Delete']) expect(actions).not.toContain(action);
+    await act(async () => { document.activeElement!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })); await flushRender(); });
+    await act(async () => { cards[0].click(); await import('./TaskExecutionGraphDialog'); await flushRender(); });
+    expect(activateTask).not.toHaveBeenCalled();
+    expect(document.querySelector('[role="dialog"]')?.textContent).toContain('Workflow execution');
+    expect([...document.querySelectorAll('[role="dialog"] button')].some(button => button.textContent === 'Open task')).toBe(false);
+    expect(seen.some(([command, payload]) => command === 'execution_read_snapshot' &&
+      (payload as { systemStartId?: string })?.systemStartId === f.snapshot.systemStartId)).toBe(true);
+  });
+
+  it.each(['exception', 'service'] as const)('reports a rejected rename from a %s error, clears pending state and keeps the dialog available for retry', async kind => {
+    seedTasks([makeTask('task-1', 'Pending')]);
+    useTaskStore.setState({ renameTask: mock(async () => { throw kind === 'exception' ? new Error('Rename persistence failed') : { code: 'io', message: 'Rename persistence failed' }; }) });
+    await openReviewAction();
+    const rename = [...document.querySelectorAll<HTMLButtonElement>('[role="menuitem"]')].find(button => button.textContent === 'Rename')!;
+    await act(async () => { rename.click(); await import('../ui/ConfirmPromptModal'); await flushRender(); });
+    const confirm = [...document.querySelectorAll<HTMLButtonElement>('[role="dialog"] button')].find(button => button.textContent === 'Rename')!;
+    expect(confirm).toBeDefined();
+    await act(async () => { confirm.click(); await flushRender(); });
+    expect(notifyMock.error).toHaveBeenCalledWith('Rename persistence failed');
+    expect(document.querySelector('[role="dialog"]')).not.toBeNull();
+    expect(confirm.disabled).toBe(false);
+  });
+
   it.each(['InProgress', 'AwaitingResponse'] as const)('enters review from %s without sending a message', async (status) => {
     seedTasks([makeTask('task-1', status, { conversation_id: 'conversation-1' })]);
     const setTaskStatus = mock(async (taskId: string, nextStatus: TaskStatus) => {
@@ -544,6 +663,7 @@ describe('TaskQueue', () => {
   });
 
   it.each(['archived', 'draft', 'blocked', 'no-capability'] as const)('respects review availability for %s', async (condition) => {
+    useViewFilterStore.getState().setImplementShowBlockedTasks(true);
     seedTasks([makeTask('task-1', 'InProgress', {
       archived_at: condition === 'archived' ? '2026-09-06' : null,
       draft: condition === 'draft', is_blocked: condition === 'blocked',
@@ -566,10 +686,11 @@ describe('TaskQueue', () => {
     expect(
       document.body.querySelector('[data-task-status-indicator-state="idle_prompt"]')
     ).not.toBeNull();
-    expect(document.body.querySelector('h2')?.parentElement?.className).toContain('h-7');
+    expect(document.body.querySelector('h2')).toBeNull();
   });
 
   it('lets users clear a status filter from the compact status controls', async () => {
+    useViewFilterStore.getState().setImplementShowBlockedTasks(true);
     seedTasks([
       makeTask('ready-task', 'Pending', { title: 'Ready task' }),
       makeTask('blocked-task', 'Blocked', { title: 'Blocked task', is_ready: false }),
@@ -581,7 +702,7 @@ describe('TaskQueue', () => {
     });
 
     const readyFilter = Array.from(document.body.querySelectorAll<HTMLButtonElement>('button'))
-      .find((button) => button.textContent?.includes('Ready'));
+      .find((button) => button.textContent?.includes('To launch'));
 
     await act(async () => {
       readyFilter?.dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
@@ -602,7 +723,165 @@ describe('TaskQueue', () => {
     expect(document.body.textContent).toContain('Blocked task');
   });
 
-  it('keeps reply-required, blocked and failed tasks in separate filter groups', async () => {
+  it('uses the same ready group for the summary, order and filter', async () => {
+    seedTasks([
+      makeTask('ready', 'Pending', { title: 'Ready item' }),
+      makeTask('working', 'InProgress', { title: 'Working item' }),
+      makeTask('waiting', 'AwaitingResponse', { title: 'Waiting item' }),
+      makeTask('reviewing', 'InReview', { title: 'Reviewing item' }),
+      makeTask('done', 'Completed', { title: 'Completed item' }),
+    ]);
+    await act(async () => { root?.render(<TaskQueueComponent />); await flushRender(); });
+    expect(getSectionSummaries()).toEqual([]);
+    expect(getLastVirtualListKeys()).toEqual(['task:ready', 'task:waiting', 'task:working', 'task:reviewing', 'task:done']);
+    const statusControls = document.body.querySelector('[aria-label="Task status summary"]');
+    expect(Array.from(statusControls?.querySelectorAll('button') ?? []).map(button => button.title)).toEqual(['To launch', 'Waiting', 'In progress', 'Completed']);
+    const readyFilter = document.body.querySelector<HTMLButtonElement>('button[title="To launch"]');
+    expect(readyFilter?.textContent?.replace(/\s/g, '')).toBe('Tolaunch1');
+    expect(document.body.textContent).toContain('Working item');
+    expect(document.body.textContent).toContain('Waiting item');
+    await act(async () => { readyFilter?.click(); await flushRender(); });
+    expect(getSectionSummaries()).toEqual([]);
+    expect(document.body.textContent).not.toContain('Working item');
+    expect(document.body.textContent).not.toContain('Waiting item');
+    expect(document.body.textContent).not.toContain('Reviewing item');
+  });
+
+  it('filters blocked tasks, preserves requests and failures, and updates counters without duplicates', async () => {
+    const dependent = makeTask('later', 'Blocked', { title: 'Later task', is_blocked: true, blocked_by_task_ids: ['task-1'], dependencies: ['task-1'] });
+    seedTasks([
+      makeTask('task-1', 'InProgress', { title: 'Active task' }), dependent, dependent,
+      makeTask('question', 'AwaitingResponse', { title: 'Needs answer' }),
+      makeTask('config', 'Blocked', { title: 'Needs setup', blocked_by_task_ids: [] }),
+      makeTask('failed', 'Failed', { title: 'Failed task' }),
+      makeTask('done', 'Completed', { title: 'Done task' }),
+    ]);
+    await act(async () => { root?.render(<TaskQueueComponent />); await flushRender(); });
+    expect(getLastVirtualListKeys()).not.toContain('task:later');
+    expect(getLastVirtualListKeys()).toContain('task:question');
+    expect(getLastVirtualListKeys()).toContain('task:failed');
+    expect(getLastVirtualListKeys()).not.toContain('task:config');
+    const waiting = () => document.querySelector<HTMLButtonElement>('button[title="Waiting"]')!;
+    expect(waiting().textContent).toBe('Waiting2');
+    const toggleAll = async () => {
+      await act(async () => { document.querySelector<HTMLButtonElement>('[data-tour-id="implement-task-filters"]')!.click(); await flushRender(); });
+      const toggle = [...document.querySelectorAll<HTMLButtonElement>('[role="menuitemcheckbox"]')].find(button => button.textContent === 'Blocked tasks')!;
+      await act(async () => { toggle.click(); await flushRender(); document.activeElement!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })); await flushRender(); });
+    };
+    await toggleAll();
+    expect(getLastVirtualListKeys().filter(key => key === 'task:later')).toHaveLength(1);
+    expect(waiting().textContent).toBe('Waiting4');
+    expect(useTaskStore.getState().tasks.find(task => task.id === 'later')?.status).toBe('Blocked');
+    await act(async () => { waiting().click(); await flushRender(); });
+    await toggleAll();
+    expect(getLastVirtualListKeys()).not.toContain('task:later');
+    expect(getLastVirtualListKeys()).toContain('task:question');
+    expect(waiting().textContent).toBe('Waiting2');
+    await act(async () => {
+      waiting().click();
+      useTaskStore.setState({ tasks: useTaskStore.getState().tasks.map(task => task.id === 'later' ? { ...task, status: 'Pending', is_blocked: false, blocked_by_task_ids: [] } : task) });
+      await flushRender();
+    });
+    expect(getLastVirtualListKeys()).toContain('task:later');
+    expect(document.querySelector<HTMLButtonElement>('button[title="To launch"]')!.textContent).toBe('To launch1');
+  });
+
+  it('defaults to actionable tasks while leaving background activity available in the filter', async () => {
+    useViewFilterStore.setState({ implement: { ...DEFAULT_IMPLEMENT_VIEW_FILTERS } });
+    seedTasks([
+      makeTask('ready', 'Pending', { title: 'Ready action' }),
+      makeTask('working', 'InProgress', { title: 'Background task' }),
+      makeTask('question', 'AwaitingResponse', { title: 'Needs reply' }),
+      makeTask('failed', 'Failed', { title: 'Needs repair' }),
+      makeTask('done', 'Completed', { title: 'Done task' }),
+    ]);
+    await act(async () => { root?.render(<TaskQueueComponent />); await flushRender(); });
+    expect(getLastVirtualListKeys()).toEqual(['task:ready', 'task:question', 'task:failed']);
+    expect(document.querySelector('button[title="In progress"]')!.textContent).toBe('In progress0');
+    await act(async () => { document.querySelector<HTMLButtonElement>('[data-tour-id="implement-task-filters"]')!.click(); await flushRender(); });
+    const background = [...document.querySelectorAll<HTMLButtonElement>('[role="menuitemcheckbox"]')].find(button => button.textContent === 'Without interaction')!;
+    expect(background.getAttribute('aria-checked')).toBe('false');
+    await act(async () => { background.click(); await flushRender(); });
+    expect(getLastVirtualListKeys()).toContain('task:working');
+    expect(getLastVirtualListKeys()).toContain('task:done');
+  });
+
+  it('combines the three filter checkboxes without closing the menu or double-counting tasks', async () => {
+    seedTasks([
+      makeTask('ready', 'Pending', { title: 'Ready action' }),
+      makeTask('working', 'InProgress', { title: 'Automatic task' }),
+      makeTask('question', 'AwaitingResponse', { title: 'Needs reply' }),
+      makeTask('blocked', 'Blocked', { title: 'Blocked task', is_blocked: true }),
+      makeTask('archive', 'Completed', { title: 'Old task', archived_at: '2026-01-01' }),
+    ]);
+    await act(async () => { root?.render(<TaskQueueComponent />); await flushRender(); });
+    const trigger = document.querySelector<HTMLButtonElement>('[data-tour-id="implement-task-filters"]')!;
+    await act(async () => { trigger.click(); await flushRender(); });
+    const option = (label: string) => [...document.querySelectorAll<HTMLButtonElement>('[role="menuitemcheckbox"]')].find(button => button.textContent === label)!;
+    await act(async () => { option('Without interaction').click(); await flushRender(); });
+    expect(getLastVirtualListKeys()).toEqual(['task:ready', 'task:question']);
+    expect(document.activeElement).toBe(option('Without interaction'));
+    expect(trigger.getAttribute('aria-expanded')).toBe('true');
+    await act(async () => { option('Blocked tasks').click(); option('Archives').click(); await flushRender(); });
+    expect(getLastVirtualListKeys()).toEqual(['task:ready', 'task:question', 'task:blocked', 'task:archive']);
+    expect(document.querySelector('button[title="Waiting"]')!.textContent).toBe('Waiting2');
+    expect(document.querySelector('button[title="Completed"]')!.textContent).toBe('Completed1');
+    expect(document.querySelector('[data-task-context-badge="archived"]')).not.toBeNull();
+    await act(async () => { document.activeElement!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })); await flushRender(); });
+    expect(document.activeElement).toBe(trigger);
+    await act(async () => { trigger.click(); await flushRender(); });
+    expect(option('Without interaction').getAttribute('aria-checked')).toBe('false');
+    expect(option('Blocked tasks').getAttribute('aria-checked')).toBe('true');
+    expect(option('Archives').getAttribute('aria-checked')).toBe('true');
+  });
+
+  it('excludes drafts and archives from the ready counter and filter', async () => {
+    seedTasks([
+      makeTask('ready', 'Pending', { title: 'Ready item' }),
+      makeTask('draft', 'Pending', { title: 'Draft item', draft: true, standalone_kind: 'manual_feature' }),
+      makeTask('archived', 'Pending', { title: 'Archived item', archived_at: '2026-01-01' }),
+    ]);
+    await act(async () => { root?.render(<TaskQueueComponent />); await flushRender(); });
+    const readyFilter = document.body.querySelector<HTMLButtonElement>('button[title="To launch"]');
+    expect(readyFilter?.textContent).toBe('To launch1');
+    expect(getSectionSummaries()).toEqual([]);
+    await act(async () => { readyFilter?.click(); await flushRender(); });
+    expect(getSectionSummaries()).toEqual([]);
+    expect(document.body.textContent).not.toContain('Draft item');
+    expect(document.body.textContent).not.toContain('Archived item');
+  });
+
+  it.each(['fr', 'en'])('%s shows a rejected Direct restore and keeps the archived task visible', async (language) => {
+    frenchTaskErrors = language === 'fr';
+    seedTasks([makeTask('archived-direct', 'Completed', {
+      title: 'Archived Direct', standalone_kind: 'manual_feature', task_kind: 'direct',
+      archived_at: '2026-01-01', archive_reason: 'merged',
+    })]);
+    const restoreTask = mock(async () => { throw new Error('Direct-edit project already has an active task: Other Direct'); });
+    useTaskStore.setState({ restoreTask: restoreTask as never });
+    await act(async () => { root?.render(<TaskQueueComponent />); await flushRender(); });
+    await act(async () => {
+      useViewFilterStore.getState().setImplementShowArchived(true);
+      await flushRender();
+    });
+    await act(async () => {
+      document.body.querySelector<HTMLButtonElement>('button[title="Task actions"]')?.click();
+      await flushRender();
+    });
+    const restore = Array.from(document.body.querySelectorAll<HTMLButtonElement>('[role="menuitem"]'))
+      .find((button) => button.textContent?.trim() === 'Restore');
+    expect(restore).toBeDefined();
+    await act(async () => { restore?.click(); await flushRender(); });
+    expect(restoreTask).toHaveBeenCalledWith('archived-direct');
+    expect(notifyMock.error).toHaveBeenCalledWith(language === 'fr'
+      ? 'Ce projet en édition directe possède déjà une tâche active : Other Direct'
+      : 'This direct-edit project already has an active task: Other Direct');
+    expect(document.body.textContent).toContain('Archived Direct');
+    expect(useTaskStore.getState().tasks[0].archived_at).toBe('2026-01-01');
+  });
+
+  it('filters reply-required, blocked and failed tasks through Waiting while preserving their reasons', async () => {
+    useViewFilterStore.getState().setImplementShowBlockedTasks(true);
     seedTasks([
       makeTask('waiting-task', 'AwaitingResponse', { title: 'Reply required task' }),
       makeTask('blocked-task', 'Blocked', { title: 'Actually blocked task', is_ready: false }),
@@ -677,53 +956,30 @@ describe('TaskQueue', () => {
       await flushRender();
     });
 
-    const needsReplyFilter = Array.from(document.body.querySelectorAll<HTMLButtonElement>('button'))
-      .find((button) => button.textContent?.includes('Needs reply'));
-    const blockedFilter = Array.from(document.body.querySelectorAll<HTMLButtonElement>('button'))
-      .find((button) => button.textContent?.includes('Blocked'));
-    const inProgressFilter = Array.from(document.body.querySelectorAll<HTMLButtonElement>('button'))
-      .find((button) => button.textContent?.includes('In progress'));
-    const failedFilter = Array.from(document.body.querySelectorAll<HTMLButtonElement>('button'))
-      .find((button) => button.textContent?.includes('Failed'));
-
-    expect(needsReplyFilter?.textContent).toContain('1');
-    expect(blockedFilter?.textContent).toContain('4');
-    expect(inProgressFilter?.textContent).toContain('1');
-    expect(failedFilter?.textContent).toContain('2');
-    expect(getSectionSummaries()).toContainEqual({ title: 'Blocked tasks', count: '4' });
-    expect(getSectionSummaries()).toContainEqual({ title: 'Failed tasks', count: '2' });
-    expect(getSectionSummaries().some((section) => section.title === 'Completed tasks')).toBe(false);
-    expect(document.body.textContent).toContain('Legacy status task');
-
-    await act(async () => {
-      blockedFilter?.dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
-      await flushRender();
-    });
-
-    expect(document.body.textContent).toContain('Actually blocked task');
-    expect(document.body.textContent).toContain('Dependency blocked task');
-    expect(document.body.textContent).toContain('Merge blocked task');
-    expect(document.body.textContent).toContain('Reblocked completed task');
-    expect(document.body.textContent).not.toContain('Reply required task');
+    const summary = document.body.querySelector('[aria-label="Task status summary"]')!;
+    const filters = [...summary.querySelectorAll<HTMLButtonElement>('button')];
+    expect(filters).toHaveLength(4);
+    expect(filters.map(button => button.textContent)).toEqual(['To launch0', 'Waiting8', 'In progress1', 'Completed0']);
+    expect(getSectionSummaries()).toEqual([]);
+    const waitingFilter = summary.querySelector<HTMLButtonElement>('[title="Waiting"]')!;
+    await act(async () => { waitingFilter.click(); await flushRender(); });
+    for (const title of ['Reply required task', 'Actually blocked task', 'Dependency blocked task', 'Failed task', 'Merge blocked task', 'Merge failed task', 'Legacy status task', 'Reblocked completed task']) {
+      expect(document.body.textContent).toContain(title);
+    }
     expect(document.body.textContent).not.toContain('Active task');
+    const reasons = [...document.body.querySelectorAll('[data-task-card-waiting-reason]')].map(element => element.textContent);
+    expect(reasons).toContain('Failed');
+    expect(reasons).toContain('Blocked');
+    for (const card of document.body.querySelectorAll('[data-tour-id="implement-task-card"]')) {
+      expect(card.querySelectorAll('p')).toHaveLength(1);
+    }
+    await act(async () => { summary.querySelector<HTMLButtonElement>('[title="In progress"]')!.click(); await flushRender(); });
+    expect(document.body.textContent).toContain('Active task');
     expect(document.body.textContent).not.toContain('Failed task');
-    expect(document.body.textContent).not.toContain('Merge failed task');
-    expect(document.body.textContent).not.toContain('Legacy status task');
-
-    await act(async () => {
-      failedFilter?.dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
-      await flushRender();
-    });
-
-    expect(document.body.textContent).toContain('Failed task');
-    expect(document.body.textContent).toContain('Merge failed task');
-    expect(document.body.textContent).not.toContain('Reply required task');
-    expect(document.body.textContent).not.toContain('Merge blocked task');
-    expect(document.body.textContent).not.toContain('Reblocked completed task');
-    expect(document.body.textContent).not.toContain('Legacy status task');
   });
 
   it('tracks mixed attention, pending approvals during streaming, resolution and navigation', async () => {
+    useViewFilterStore.getState().setImplementShowBlockedTasks(true);
     seedTasks([
       makeTask('task-1', 'InProgress', { conversation_id: 'conversation-1', title: 'Approval task' }),
       makeTask('review', 'InReview', { title: 'Review task' }),
@@ -740,14 +996,14 @@ describe('TaskQueue', () => {
       pendingToolApprovalByConversationId: { 'conversation-1': { toolCallId: 'call', summary: 'Approval' } } as never,
     });
     await act(async () => { root?.render(<TaskQueueComponent />); await flushRender(); });
-    const attentionFilter = document.body.querySelector<HTMLButtonElement>('button[title="Needs attention"]');
-    expect(attentionFilter?.textContent).toBe('Needs attention3');
-    expect(document.body.querySelector('button[title="Needs reply"]')?.textContent).toBe('Needs reply2');
+    const attentionFilter = document.body.querySelector<HTMLButtonElement>('button[title="Waiting"]');
+    expect(attentionFilter?.textContent).toBe('Waiting3');
+    expect(document.body.querySelector('button[title="Waiting"]')?.textContent).toBe('Waiting3');
     expect(document.body.querySelector('button[title="In progress"]')?.textContent).toBe('In progress1');
     expect(document.body.querySelector('[data-task-status-indicator-state="running"]')).toBeNull();
     await act(async () => { attentionFilter?.click(); await flushRender(); });
     expect(attentionFilter?.getAttribute('aria-pressed')).toBe('true');
-    expect(getLastVirtualListKeys()).toEqual(['section:attention', 'task:task-1', 'task:review', 'task:waiting']);
+    expect(getLastVirtualListKeys()).toEqual(['task:task-1', 'task:waiting', 'task:blocked']);
     expect(document.body.querySelectorAll('[role="button"][tabindex="0"]').length).toBe(3);
     expect(document.body.textContent).toContain('Next: open the approval request');
     await act(async () => { (getTaskCard() as HTMLElement)?.click(); await flushRender(); });
@@ -759,9 +1015,9 @@ describe('TaskQueue', () => {
         task.id === 'review' ? { ...task, status: 'Completed' } : task) });
       await flushRender();
     });
-    expect(getLastVirtualListKeys()).toEqual(['section:attention', 'task:waiting']);
-    expect(attentionFilter?.textContent).toBe('Needs attention1');
-    expect(useViewFilterStore.getState().implement.status).toBe('attention');
+    expect(getLastVirtualListKeys()).toEqual(['task:waiting', 'task:blocked']);
+    expect(attentionFilter?.textContent).toBe('Waiting2');
+    expect(useViewFilterStore.getState().implement.status).toBe('waiting');
     await act(async () => { attentionFilter?.click(); await flushRender(); });
     expect(document.body.querySelector('[data-task-status-indicator-state="running"]')).not.toBeNull();
   });
@@ -785,40 +1041,40 @@ describe('TaskQueue', () => {
       useChatStore.setState({ messagesByConversationId: { 'conversation-1': [question] } });
       await flushRender();
     });
-    expect(document.body.querySelector('button[title="Needs attention"]')?.textContent).toBe('Needs attention1');
+    expect(document.body.querySelector('button[title="Waiting"]')?.textContent).toBe('Waiting1');
     await act(async () => {
       useChatStore.setState({ messagesByConversationId: { 'conversation-1': [question, { ...message, id: 'reply', role: 'user' }] } });
       await flushRender();
     });
-    expect(document.body.querySelector('button[title="Needs attention"]')?.textContent).toBe('Needs attention0');
-    expect(document.body.querySelector('button[title="Needs reply"]')?.textContent).toBe('Needs reply0');
+    expect(document.body.querySelector('button[title="Waiting"]')?.textContent).toBe('Waiting0');
+    expect(document.body.querySelector('button[title="Waiting"]')?.textContent).toBe('Waiting0');
     expect(document.body.querySelector('[data-task-status-indicator-state="awaiting_response"]')).toBeNull();
     expect(document.body.querySelector('[data-task-status-indicator-state="idle_prompt"]')).not.toBeNull();
   });
 
   it('keeps the attention filter combined with project, search and archive navigation', async () => {
     seedTasks([
-      makeTask('first', 'InReview', { title: 'Alpha review' }),
-      makeTask('second', 'InReview', { title: 'Beta review', project_id: 'project-2', project_ids: ['project-2'] }),
-      makeTask('archived', 'InReview', { title: 'Archived review', archived_at: 'today' }),
+      makeTask('first', 'AwaitingResponse', { title: 'Alpha review' }),
+      makeTask('second', 'AwaitingResponse', { title: 'Beta review', project_id: 'project-2', project_ids: ['project-2'] }),
+      makeTask('archived', 'AwaitingResponse', { title: 'Archived review', archived_at: 'today' }),
     ]);
     useAppStore.setState({ standaloneProjects: [makeProject('project-2', '/tmp/project-2', 'Project Two')] });
-    useViewFilterStore.getState().setImplementStatusFilter('attention');
+    useViewFilterStore.getState().setImplementStatusFilter('waiting');
     await act(async () => { root?.render(<TaskQueueComponent />); await flushRender(); });
     await act(async () => {
       useViewFilterStore.getState().setImplementProjectFilter('project-2');
       await flushRender();
     });
-    expect(getLastVirtualListKeys()).toEqual(['section:attention', 'task:second']);
-    expect(useViewFilterStore.getState().implement.status).toBe('attention');
+    expect(getLastVirtualListKeys()).toEqual(['task:second']);
+    expect(useViewFilterStore.getState().implement.status).toBe('waiting');
     await act(async () => {
       useViewFilterStore.getState().setImplementProjectFilter('__all_projects__');
       useViewFilterStore.getState().setImplementShowArchived(true);
       await flushRender();
     });
-    expect(getLastVirtualListKeys()).toEqual(['section:archived', 'task:archived']);
+    expect(getLastVirtualListKeys()).toEqual(['task:first', 'task:second', 'task:archived']);
     await act(async () => { useViewFilterStore.getState().setImplementShowArchived(false); await flushRender(); });
-    expect(getLastVirtualListKeys()).toEqual(['section:attention', 'task:first', 'task:second']);
+    expect(getLastVirtualListKeys()).toEqual(['task:first', 'task:second']);
     await act(async () => {
       document.body.querySelector<HTMLButtonElement>('[data-tour-id="implement-search-toggle"]')?.click();
       await flushRender();
@@ -829,8 +1085,8 @@ describe('TaskQueue', () => {
       input?.dispatchEvent(new window.Event('input', { bubbles: true }));
       await flushRender();
     });
-    expect(getLastVirtualListKeys()).toEqual(['section:attention', 'task:second']);
-    expect(useViewFilterStore.getState().implement.status).toBe('attention');
+    expect(getLastVirtualListKeys()).toEqual(['task:second']);
+    expect(useViewFilterStore.getState().implement.status).toBe('waiting');
   });
 
   it('shows review next actions for one and multiple repositories without reusing another task summary', async () => {
@@ -928,7 +1184,7 @@ describe('TaskQueue', () => {
     });
 
     const readyFilter = Array.from(document.body.querySelectorAll<HTMLButtonElement>('button'))
-      .find((button) => button.textContent?.includes('Ready'));
+      .find((button) => button.textContent?.includes('To launch'));
     await act(async () => {
       readyFilter?.dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
       await flushRender();
@@ -1256,7 +1512,7 @@ describe('TaskQueue', () => {
     expect(openProjectGitFlowModal).toHaveBeenCalledWith('project-1');
   });
 
-  it('toggles between active-only and archived-only task lists', async () => {
+  it('adds archives to the active list and retains their cleanup actions', async () => {
     seedTasks([
       makeTask('task-1', 'Pending', {
         title: 'Active task',
@@ -1296,33 +1552,26 @@ describe('TaskQueue', () => {
       await flushRender();
     });
 
-    expect(getLastVirtualListKeys()).toEqual(['section:ready', 'task:task-1']);
-    expect(getSectionSummaries()).toEqual([{ title: 'Ready tasks', count: '1' }]);
+    expect(getLastVirtualListKeys()).toEqual(['task:task-1']);
+    expect(getSectionSummaries()).toEqual([]);
     expect(document.body.textContent).toContain('Active task');
     expect(document.body.textContent).not.toContain('Archived task');
 
-    const archiveToggle = document.body.querySelector<HTMLButtonElement>(
-      '[data-tour-id="implement-archive-toggle"]'
-    );
-    expect(archiveToggle).not.toBeNull();
-    expect(archiveToggle?.textContent).toBe('');
-    expect(archiveToggle?.getAttribute('aria-label')).toBe('Archives');
-    expect(archiveToggle?.getAttribute('aria-pressed')).toBe('false');
-
-    await act(async () => {
-      archiveToggle?.dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
-      await flushRender();
-    });
-
-    expect(getLastVirtualListKeys()).toEqual(['section:archived', 'task:archived-task']);
-    expect(getSectionSummaries()).toEqual([{ title: 'Archive', count: '1' }]);
-    expect(archiveToggle?.getAttribute('aria-pressed')).toBe('true');
-    expect(document.body.textContent).not.toContain('Active task');
+    const filterToggle = document.body.querySelector<HTMLButtonElement>('[data-tour-id="implement-task-filters"]')!;
+    expect(document.querySelector('[data-tour-id="implement-archive-toggle"]')).toBeNull();
+    await act(async () => { filterToggle.click(); await flushRender(); });
+    const archives = [...document.querySelectorAll<HTMLButtonElement>('[role="menuitemcheckbox"]')].find(button => button.textContent === 'Archives')!;
+    expect(archives.getAttribute('aria-checked')).toBe('false');
+    await act(async () => { archives.click(); await flushRender(); });
+    expect(archives.getAttribute('aria-checked')).toBe('true');
+    expect(getLastVirtualListKeys()).toEqual(['task:task-1', 'task:archived-task']);
+    expect(getSectionSummaries()).toEqual([]);
+    expect(document.body.textContent).toContain('Active task');
     expect(document.body.textContent).toContain('Archived task');
+    await act(async () => { document.activeElement!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })); await flushRender(); });
 
-    const taskActions = document.body.querySelector<HTMLButtonElement>(
-      'button[title="Task actions"]'
-    );
+    const archivedCard = [...document.querySelectorAll<HTMLElement>('[data-tour-id="implement-task-card"]')].find(card => card.textContent?.includes('Archived task'))!;
+    const taskActions = archivedCard.querySelector<HTMLButtonElement>('button[title="Task actions"]');
     await act(async () => {
       taskActions?.dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
       await flushRender();
@@ -1470,7 +1719,7 @@ describe('TaskQueue', () => {
     expect(options.actions.map((action) => action.label)).toEqual(['Open repository', 'Retry']);
   });
 
-  it('opens project management from an accessible compact header action', async () => {
+  it('provides three display filters and keeps project management in the context menu', async () => {
     seedStores('Pending');
 
     await act(async () => {
@@ -1479,14 +1728,14 @@ describe('TaskQueue', () => {
     });
 
     const manageProjectsButton = document.body.querySelector<HTMLButtonElement>(
-      '[data-tour-id="implement-manage-projects"]'
+      '[data-tour-id="implement-task-filters"]'
     );
     expect(manageProjectsButton).not.toBeNull();
     expect(manageProjectsButton?.tagName).toBe('BUTTON');
     expect(manageProjectsButton?.type).toBe('button');
     expect(manageProjectsButton?.tabIndex).toBe(0);
-    expect(manageProjectsButton?.getAttribute('aria-label')).toBe('Manage projects');
-    expect(manageProjectsButton?.getAttribute('title')).toBe('Manage projects');
+    expect(manageProjectsButton?.getAttribute('aria-label')).toBe('Task filters');
+    expect(manageProjectsButton?.getAttribute('title')).toBe('Task filters');
 
     const searchToggle = document.body.querySelector<HTMLButtonElement>(
       '[data-tour-id="implement-search-toggle"]'
@@ -1495,7 +1744,7 @@ describe('TaskQueue', () => {
       searchToggle?.click();
       await flushRender();
     });
-    expect(document.body.querySelector('[data-tour-id="implement-manage-projects"]')).toBeNull();
+    expect(document.body.querySelector('[data-tour-id="implement-task-filters"]')).toBeNull();
 
     await act(async () => {
       searchToggle?.click();
@@ -1503,10 +1752,15 @@ describe('TaskQueue', () => {
     });
 
     const restoredManageProjectsButton = document.body.querySelector<HTMLButtonElement>(
-      '[data-tour-id="implement-manage-projects"]'
+      '[data-tour-id="implement-task-filters"]'
     );
     await act(async () => {
       restoredManageProjectsButton?.click();
+      await flushRender();
+      expect(document.querySelectorAll('[role="menuitemcheckbox"]')).toHaveLength(3);
+      container!.querySelector('aside')!.dispatchEvent(new window.MouseEvent('contextmenu', { bubbles: true, cancelable: true }));
+      await flushRender();
+      [...document.querySelectorAll<HTMLButtonElement>('[role="menuitem"]')].find(button => button.textContent?.trim() === 'Manage projects')!.click();
       await flushRender();
     });
 
@@ -1824,7 +2078,7 @@ describe('TaskQueue', () => {
     expect(document.body.querySelector('[role="dialog"]')).toBeNull();
   });
 
-  it('keeps a newly created feature and its conversation through the real task refresh', async () => {
+  it.each(['feature', 'direct'] as const)('keeps a newly created %s and its conversation through the real task refresh', async (taskKind) => {
     const persistedTasks: Array<ReturnType<typeof makeTask>> = [];
     const persistedConversations: Array<Record<string, unknown>> = [];
     let concurrentRefresh: Promise<void> | null = null;
@@ -1890,12 +2144,14 @@ describe('TaskQueue', () => {
         persistedConversations.push(conversation);
         return conversation;
       }
+      if (command === 'git_status') return { branch: 'develop', is_clean: true, head_commit: { id: 'abc' } };
+      if (command === 'git_task_start_points') return { worktrees: [], branches: [] };
       if (command === 'db_list_conversations') return [...persistedConversations];
       if (command === 'db_list_conversation_citations') return [];
       if (command === 'workspace_create_manual_feature_draft') {
         persistedTasks.push(makeTask(String(payload?.taskId), 'Pending', {
           task_source: 'standalone', standalone_kind: 'manual_feature', draft: true,
-          conversation_id: payload?.conversationId, title: 'New feature',
+          conversation_id: payload?.conversationId, task_kind: taskKind, title: `New ${taskKind}`,
           assigned_branch: '', branch_name: '', execution_targets: [],
         }));
         return {};
@@ -1934,7 +2190,7 @@ describe('TaskQueue', () => {
       const findButton = (label: string) => Array.from(dialog?.querySelectorAll<HTMLButtonElement>('button') ?? [])
         .find((button) => button.textContent?.includes(label));
       await act(async () => { findButton('Project One')?.click(); await flushRender(); });
-      await act(async () => { findButton('Feature')?.click(); await flushRender(); });
+      await act(async () => { findButton(taskKind === 'direct' ? 'Direct' : 'Feature')?.click(); await flushRender(); });
       expect({ disabled: findButton('Create task')?.disabled, dialog: dialog?.textContent }).toEqual({ disabled: false, dialog: expect.any(String) });
       await act(async () => { findButton('Create task')?.click(); await flushRender(); });
       expect(notifyMock.error.mock.calls).toEqual([]);
@@ -2111,6 +2367,112 @@ describe('TaskQueue', () => {
     const pending = JSON.parse(taskQueueAppSettings.get('pendingLinkedTaskDeletions:v1') ?? '[]');
     expect(pending).toEqual([expect.objectContaining({ phase: 'task_deleting' })]);
     expect(pending[0].creationCommitted).toBeUndefined();
+  });
+
+  it.each(['direct', 'feature'] as const)('keeps %s creation choices and a durable error after selection fails', async (kind) => {
+    seedTasks([]);
+    useAppStore.setState({ projectGroups: [{ id: 'group-1', name: 'Project Group', isOpen: true,
+      projects: [{ ...makeProject('project-1', '/tmp/project-1', 'Project One', makeGitFlowSettings('develop', 'main')),
+        gitSetupState: 'ready' }],
+    }] as never });
+    installTauriRuntimeMock(mock(async (command, payload) => {
+      if (command === 'git_status') return { branch: 'develop', is_clean: true, head_commit: { id: 'abc' } };
+      if (command === 'git_task_start_points') return { worktrees: [], branches: [] };
+      const key = String(payload?.key ?? '');
+      if (command === 'db_get_app_setting') {
+        const value = taskQueueAppSettings.get(key);
+        return value === undefined ? null : { key, value_json: value, updated_at: '2026-01-01' };
+      }
+      if (command === 'db_compare_and_swap_app_setting') {
+        if ((taskQueueAppSettings.get(key) ?? null) !== (payload?.expectedValueJson ?? null)) return { applied: false };
+        taskQueueAppSettings.set(key, String(payload?.valueJson ?? ''));
+        return { applied: true };
+      }
+      return undefined;
+    }));
+    const createManualFeatureDraft = mock(async () => undefined);
+    const deleteManualFeatureDraft = mock(async () => undefined);
+    useTaskStore.setState({ createManualFeatureDraft: createManualFeatureDraft as never,
+      deleteManualFeatureDraft: deleteManualFeatureDraft as never, activateTask: mock(async () => undefined) as never });
+    useChatStore.setState({ createConversation: mock(async () => ({ id: 'new-conversation' })) as never,
+      selectConversation: mock(async () => false) as never, deleteConversation: mock(async () => undefined) as never });
+    await act(async () => { root?.render(<TaskQueueComponent />); await flushRender(); });
+    await act(async () => {
+      document.body.querySelector<HTMLButtonElement>('[data-tour-id="implement-create-task"]')?.click();
+      await flushRender();
+    });
+    const dialog = await waitForCreateDialog();
+    const button = (text: string) => Array.from(dialog.querySelectorAll<HTMLButtonElement>('button'))
+      .find((item) => item.textContent?.includes(text));
+    await act(async () => { button('Project One')?.click(); await flushRender(); });
+    await act(async () => { button(kind === 'direct' ? 'Direct' : 'Feature')?.click(); await flushRender(); });
+    expect(button('Create task')?.disabled).toBe(false);
+    await act(async () => { button('Create task')?.click(); await flushRender(); });
+    expect(dialog.querySelector('[role="alert"]')?.textContent).toContain('Impossible de sélectionner');
+    expect(button('Project One')?.getAttribute('aria-pressed')).toBe('true');
+    expect(button(kind === 'direct' ? 'Direct' : 'Feature')?.getAttribute('aria-pressed')).toBe('true');
+    expect(button('Create task')?.disabled).toBe(false);
+    expect(deleteManualFeatureDraft).toHaveBeenCalledTimes(1);
+    await act(async () => { useTaskStore.setState({ lastError: null }); await flushRender(); });
+    expect(dialog.querySelector('[role="alert"]')?.textContent).toContain('Impossible de sélectionner');
+  });
+
+  it.each(['fr', 'en'])('%s retries locked creation in the same dialogue with its Direct choices', async (language) => {
+    frenchTaskErrors = language === 'fr';
+    let locked = true;
+    seedTasks([]);
+    useAppStore.setState({ projectGroups: [{ id: 'group-1', name: 'Project Group', isOpen: true,
+      projects: [{ ...makeProject('project-1', '/tmp/project-1', 'Project One', makeGitFlowSettings('develop', 'main')),
+        gitSetupState: 'ready' }],
+    }] as never });
+    installTauriRuntimeMock(mock(async (command, payload) => {
+      if (command === 'git_status') return { branch: 'develop', is_clean: true, head_commit: { id: 'abc' } };
+      if (command === 'git_task_start_points') return { worktrees: [], branches: [] };
+      const key = String(payload?.key ?? '');
+      if (command === 'db_get_app_setting') {
+        const value = taskQueueAppSettings.get(key);
+        return value === undefined ? null : { key, value_json: value, updated_at: '2026-01-01' };
+      }
+      if (command === 'db_compare_and_swap_app_setting') {
+        if ((taskQueueAppSettings.get(key) ?? null) !== (payload?.expectedValueJson ?? null)) return { applied: false };
+        taskQueueAppSettings.set(key, String(payload?.valueJson ?? ''));
+        return { applied: true };
+      }
+      return undefined;
+    }));
+    const createManualFeatureDraft = mock(async () => undefined);
+    const deleteManualFeatureDraft = mock(async () => undefined);
+    useTaskStore.setState({ createManualFeatureDraft: createManualFeatureDraft as never,
+      deleteManualFeatureDraft: deleteManualFeatureDraft as never, activateTask: mock(async () => undefined) as never });
+    useChatStore.setState({ createConversation: mock(async () => {
+      if (locked) throw new Error('Database is locked');
+      return { id: 'new-conversation' };
+    }) as never,
+      selectConversation: mock(async () => true) as never, deleteConversation: mock(async () => undefined) as never });
+    await act(async () => { root?.render(<TaskQueueComponent />); await flushRender(); });
+    await act(async () => {
+      document.body.querySelector<HTMLButtonElement>('[data-tour-id="implement-create-task"]')?.click();
+      await flushRender();
+    });
+    const dialog = await waitForCreateDialog();
+    const button = (text: string) => Array.from(dialog.querySelectorAll<HTMLButtonElement>('button'))
+      .find((item) => item.textContent?.includes(text));
+    await act(async () => { button('Project One')?.click(); await flushRender(); });
+    await act(async () => { button('Direct')?.click(); await flushRender(); });
+    expect(button('Create task')?.disabled).toBe(false);
+    await act(async () => { button('Create task')?.click(); await flushRender(); });
+    expect(dialog.querySelector('[role="alert"]')?.textContent).toContain(language === 'fr' ? 'La base de données est verrouillée. Réessayez.' : 'The database is locked. Try again.');
+    expect(button('Project One')?.getAttribute('aria-pressed')).toBe('true');
+    expect(button('Direct')?.getAttribute('aria-pressed')).toBe('true');
+    expect(button('Create task')?.disabled).toBe(false);
+    expect(deleteManualFeatureDraft).not.toHaveBeenCalled();
+    expect(document.body.querySelector('[role="dialog"]')).toBe(dialog);
+    await act(async () => { useTaskStore.setState({ lastError: null }); await flushRender(); });
+    expect(dialog.querySelector('[role="alert"]')?.textContent).toContain(language === 'fr' ? 'La base de données est verrouillée. Réessayez.' : 'The database is locked. Try again.');
+    locked = false;
+    await act(async () => { button('Create task')?.click(); await flushRender(); });
+    expect(createManualFeatureDraft).toHaveBeenCalledTimes(1);
+    expect(document.body.querySelector('[role="dialog"]')).toBeNull();
   });
 
   it('opens task creation for a direct project without loading Git start points', async () => {
@@ -2297,6 +2659,9 @@ describe('TaskQueue', () => {
     expect(indicator?.className).toContain('text-amber-500');
     expect(taskCard?.className).not.toContain('bg-blue-500/5');
     expect(taskCard?.className).not.toContain('bg-amber-500/5');
+    expect(taskCard?.querySelectorAll('p')).toHaveLength(1);
+    expect(taskCard?.querySelector('p')?.className).toContain('text-amber-500');
+    expect(taskCard?.querySelector('p')?.getAttribute('title')).toBe(taskCard?.querySelector('p')?.textContent?.trim());
   });
 
   it('renders a spinner only for the streamed task', async () => {
@@ -2310,6 +2675,8 @@ describe('TaskQueue', () => {
     expect(
       document.body.querySelector('[data-task-status-indicator-state="running"]')
     ).not.toBeNull();
+    expect(document.body.querySelector('[data-task-status-indicator-state="running"]')?.className).toContain('text-sky-400');
+    expect(document.body.querySelector('[data-task-status-indicator-state="running"] [data-spinner-icon] .animate-spin')).not.toBeNull();
   });
 
   it('classifies a streamed task as in progress ahead of a stale waiting status', async () => {
@@ -2321,7 +2688,7 @@ describe('TaskQueue', () => {
     });
 
     const needsReplyFilter = Array.from(document.body.querySelectorAll<HTMLButtonElement>('button'))
-      .find((button) => button.textContent?.includes('Needs reply'));
+      .find((button) => button.textContent?.includes('Waiting'));
     const inProgressFilter = Array.from(document.body.querySelectorAll<HTMLButtonElement>('button'))
       .find((button) => button.textContent?.includes('In progress'));
 
@@ -2604,10 +2971,11 @@ describe('TaskQueue', () => {
     expect(`${icon.dataIcon} ${icon.className}`).toContain('sparkles');
   });
 
-  it('renders the standalone badge without a plan badge for independent tasks', async () => {
+  it.each(['direct', 'feature', 'bugfix', 'hotfix', null])('omits the inherited task classification %s from cards', async (taskKind) => {
     seedTasks([
       makeTask('standalone-1', 'Pending', {
         title: 'Standalone task',
+        task_kind: taskKind,
       }),
     ]);
 
@@ -2619,7 +2987,6 @@ describe('TaskQueue', () => {
     expect(getTaskCardFooter()).not.toBeNull();
     expect(getTaskContextBadges()).toEqual([
       { key: 'project', text: 'Project One' },
-      { key: 'standalone', text: 'Standalone' },
     ]);
     expect(document.body.querySelector('[data-task-context-badge="plan"]')).toBeNull();
   });
@@ -2639,9 +3006,7 @@ describe('TaskQueue', () => {
     });
 
     expect(document.body.querySelector('[data-task-context-badge="project"]')).toBeNull();
-    expect(getTaskContextBadges()).toEqual([
-      { key: 'standalone', text: 'Standalone' },
-    ]);
+    expect(getTaskContextBadges()).toEqual([]);
   });
 
   it('shows only the primary project badge for a multi-project task', async () => {
@@ -2685,7 +3050,6 @@ describe('TaskQueue', () => {
 
     expect(getTaskContextBadges()).toEqual([
       { key: 'project', text: 'Primary Project' },
-      { key: 'standalone', text: 'Standalone' },
     ]);
     expect(document.body.textContent).not.toContain('Secondary Project');
   });
@@ -2759,6 +3123,24 @@ describe('TaskQueue', () => {
     expect(getTaskCardNextAction()?.textContent).not.toContain('answer the pending request');
   });
 
+  it('displays the finalization card in French while retaining its task identity and technical title', async () => {
+    frenchFinalization = true;
+    const task = makeTask('plan-finalization:plan-1', 'Pending', {
+      title: 'Finalize plan: Plan été',
+      task_source: 'plan_finalization',
+      plan_id: 'plan-1',
+      plan_title: 'Plan été',
+      assigned_branch: 'develop',
+    });
+    seedTasks([task]);
+    await act(async () => { root?.render(<TaskQueueComponent />); await flushRender(); });
+    expect(document.body.textContent).toContain('Finaliser le plan : Plan été');
+    expect(document.body.textContent).not.toContain('Finalize plan: Plan été');
+    expect(useTaskStore.getState().tasks[0].id).toBe(task.id);
+    expect(useTaskStore.getState().tasks[0].title).toBe('Finalize plan: Plan été');
+    expect(useTaskStore.getState().tasks[0].task_source).toBe('plan_finalization');
+  });
+
   it('renders the synthetic plan finalization task in the operational status summary', async () => {
     seedTasks([
       makeTask('architect-complete-1', 'Completed', {
@@ -2797,7 +3179,7 @@ describe('TaskQueue', () => {
     expect(document.body.textContent).not.toContain('Plan ready for validation');
     expect(
       document.body.querySelector('[aria-label="Task status summary"]')?.textContent
-    ).toContain('Ready1');
+    ).toContain('To launch1');
     expect(document.body.querySelector('[data-task-context-badge="plan_finalization"]')?.textContent)
       .toContain('Plan finalization');
     expect(
@@ -2827,11 +3209,10 @@ describe('TaskQueue', () => {
 
     expect(taskCard?.querySelector('p')).toBeNull();
     expect(taskCard?.getAttribute('data-task-card-variant')).toBe('compact-draft');
-    expect(taskCard?.className).toContain('h-[96px]');
+    expect(taskCard?.className).toContain('h-[76px]');
     expect(getTaskCardFooter()).not.toBeNull();
     expect(getTaskContextBadges()).toEqual([
       { key: 'project', text: 'Project One' },
-      { key: 'standalone', text: 'Agent classification' },
       { key: 'draft', text: 'Draft' },
     ]);
   });
@@ -2858,8 +3239,10 @@ describe('TaskQueue', () => {
     const description = taskCard?.querySelector('p');
 
     expect(taskCard?.getAttribute('data-task-card-variant')).toBe('default');
-    expect(taskCard?.className).toContain('h-[112px]');
+    expect(taskCard?.className).toContain('h-[96px]');
     expect(description?.textContent).toBe('Describe the feature before kickoff');
+    expect(description?.title).toBe('Describe the feature before kickoff');
+    expect(taskCard?.querySelector('h3')?.title).toBe('Draft standalone task');
   });
 
   it('renders merge partial progress from the live merge workflow runtime', async () => {
@@ -2934,7 +3317,8 @@ describe('TaskQueue', () => {
     expect(
       document.body.querySelector('[data-task-status-indicator-state="merge_partial"]')
     ).not.toBeNull();
-    expect(getTaskCardProgressLabel()?.textContent).toBe('1 merged, 1 remaining');
+    expect(getTaskCardProgressLabel()).toBeNull();
+    expect(getTaskCard()?.querySelectorAll('p')).toHaveLength(1);
     expect(getTaskCardNextAction()?.textContent).toBe(
       'Next: resolve remaining merge blockers'
     );
@@ -2966,13 +3350,15 @@ describe('TaskQueue', () => {
     expect(
       document.body.querySelector('[data-task-status-indicator-state="merge_partial"]')
     ).not.toBeNull();
-    expect(getTaskCardProgressLabel()?.textContent).toBe('1 merged, 1 remaining');
+    expect(getTaskCardProgressLabel()).toBeNull();
+    expect(getTaskCard()?.querySelectorAll('p')).toHaveLength(1);
     expect(getTaskCardNextAction()?.textContent).toBe(
       'Next: continue merge for remaining repositories'
     );
   });
 
-  it('keeps virtual row keys stable when draft and blocked sections are inserted', async () => {
+  it('keeps virtual row keys stable when draft and blocked cards are inserted', async () => {
+    useViewFilterStore.getState().setImplementShowBlockedTasks(true);
     seedTasks([
       makeTask('ready-1', 'Pending', {
         title: 'Ready task',
@@ -2985,11 +3371,8 @@ describe('TaskQueue', () => {
       await flushRender();
     });
 
-    expect(getSectionSummaries()).toEqual([
-      { title: 'Ready tasks', count: '1' },
-    ]);
+    expect(getSectionSummaries()).toEqual([]);
     expect(getLastVirtualListKeys()).toEqual([
-      'section:ready',
       'task:ready-1',
     ]);
 
@@ -3016,14 +3399,9 @@ describe('TaskQueue', () => {
       await flushRender();
     });
 
-    expect(getSectionSummaries()).toEqual([
-      { title: 'Draft features', count: '1' },
-      { title: 'Ready tasks', count: '1' },
-    ]);
+    expect(getSectionSummaries()).toEqual([]);
     expect(getLastVirtualListKeys()).toEqual([
-      'section:drafts',
       'task:draft-1',
-      'section:ready',
       'task:ready-1',
     ]);
 
@@ -3056,19 +3434,10 @@ describe('TaskQueue', () => {
       await flushRender();
     });
 
-    expect(getSectionSummaries()).toEqual([
-      { title: 'Draft features', count: '1' },
-      { title: 'Ready tasks', count: '0' },
-      { title: 'Blocked tasks', count: '1' },
-      { title: 'Completed tasks', count: '1' },
-    ]);
+    expect(getSectionSummaries()).toEqual([]);
     expect(getLastVirtualListKeys()).toEqual([
-      'section:drafts',
       'task:draft-1',
-      'section:ready',
-      'section:blocked',
       'task:ready-1',
-      'section:completed',
       'task:done-1',
     ]);
   });

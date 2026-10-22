@@ -1779,6 +1779,84 @@ async fn mixed_mount_patch_rejects_read_only_target_before_any_write() {
 }
 
 #[tokio::test]
+async fn owned_workspace_waits_for_the_actual_write_after_stop_request() {
+    let workspace = TempDir::new().unwrap();
+    let root = workspace.path().canonicalize().unwrap();
+    let path = root.join("held.txt");
+    fs::write(&path, "original").unwrap();
+    let reached = Arc::new(Barrier::new(2));
+    let release = Arc::new(Barrier::new(2));
+    install_write_before_revalidation_hook(path.clone(), reached.clone(), release.clone());
+    let roots = Arc::new(std::collections::BTreeMap::from([(
+        root.clone(),
+        crate::fs::operations::workspace_root_identity(&root).unwrap(),
+    )]));
+    let id = "owned-write-stop-proof";
+    let task = tokio::spawn(execute_workspace_tool_owned(
+        root.clone(),
+        root,
+        GitState::new(),
+        "Implement".into(),
+        "write".into(),
+        json!({"path":"held.txt","content":"replacement","expected_revision":content_revision(b"original")}),
+        id.into(),
+        roots,
+    ));
+    tokio::time::timeout(Duration::from_secs(5), reached.wait())
+        .await
+        .unwrap();
+    assert!(tool_cancel_workspace(id.into()));
+    assert!(
+        !task.is_finished(),
+        "Stop cannot complete while the native write is held"
+    );
+    release.wait().await;
+    let _completed = tokio::time::timeout(Duration::from_secs(5), task)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(!TOOL_EXECUTION_CANCELLATION_REGISTRY
+        .lock()
+        .unwrap()
+        .active
+        .contains_key(id));
+    // Either committed or rolled back, but the owned call cannot leave this join running.
+    assert!(matches!(
+        fs::read_to_string(path).unwrap().as_str(),
+        "original" | "replacement"
+    ));
+}
+#[tokio::test]
+async fn owned_workspace_honors_pre_dispatch_stop_for_delete_and_git() {
+    let workspace = TempDir::new().unwrap();
+    let root = workspace.path().canonicalize().unwrap();
+    fs::write(root.join("kept.txt"), "keep").unwrap();
+    for tool in ["delete", "git_status"] {
+        let id = format!("owned-pre-stop-{tool}");
+        assert!(!tool_cancel_workspace(id.clone()));
+        let roots = Arc::new(std::collections::BTreeMap::from([(
+            root.clone(),
+            crate::fs::operations::workspace_root_identity(&root).unwrap(),
+        )]));
+        let error = execute_workspace_tool_owned(
+            root.clone(),
+            root.clone(),
+            GitState::new(),
+            "Implement".into(),
+            tool.into(),
+            json!({"path":"kept.txt"}),
+            id,
+            roots,
+        )
+        .await
+        .unwrap_err();
+        assert!(error.message.contains("cancelled before dispatch"));
+        assert_eq!(error.code(), Some("TOOL_EXECUTION_CANCELLED"));
+    }
+    assert_eq!(fs::read_to_string(root.join("kept.txt")).unwrap(), "keep");
+}
+
+#[tokio::test]
 async fn controlled_tool_errors_distinguish_cancellation_from_both_timeout_paths() {
     let workspace = TempDir::new().expect("workspace");
     git2::Repository::init(workspace.path()).expect("repository");

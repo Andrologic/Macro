@@ -3,7 +3,10 @@
 // integration makes the entry points reachable from the application.
 #[allow(dead_code)]
 pub mod agent_runs;
+#[allow(dead_code)]
+pub(crate) mod agsdl_execution;
 pub mod conversation_goals;
+pub(crate) mod exact_json;
 pub mod goal_audit_children;
 pub mod goal_audit_transitions;
 #[allow(dead_code)]
@@ -46,7 +49,8 @@ const MIGRATION_003_SQL: &str = include_str!("migrations/002_agent_runs.sql");
 const MIGRATION_004_VERSION: i64 = 4;
 const MIGRATION_004_NAME: &str = "004_message_search";
 const MIGRATION_004_SQL: &str = include_str!("migrations/004_message_search.sql");
-pub(crate) const SUPPORTED_MIGRATION_VERSIONS: &[i64] = &[1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
+pub(crate) const SUPPORTED_MIGRATION_VERSIONS: &[i64] =
+    &[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16];
 const MIGRATION_005_VERSION: i64 = 5;
 const MIGRATION_005_NAME: &str = "005_runtime_schema";
 const MIGRATION_005_CHECK_SQL: &str = include_str!("migrations/005_runtime_schema_check.sql");
@@ -73,11 +77,19 @@ pub async fn init_db(app_handle: &AppHandle) -> DbResult<SqlitePool> {
     let db_path = app_db_path(&app_dir);
 
     let pool = create_pool(&db_path).await?;
-    agent_runs::reconcile_active_agent_runs_after_restart(&pool).await?;
-    conversation_goals::reconcile_audits_after_restart(&pool).await?;
-    tool_invocations::reconcile_pending_after_restart(&pool).await?;
+    reconcile_runtime_after_restart(&pool).await?;
 
     Ok(pool)
+}
+
+/// The startup path used by init_db, exercised with real reopened SQLite pools.
+pub(crate) async fn reconcile_runtime_after_restart(pool: &SqlitePool) -> DbResult<()> {
+    agent_runs::reconcile_active_agent_runs_after_restart(pool).await?;
+    conversation_goals::reconcile_audits_after_restart(pool).await?;
+    tool_invocations::reconcile_pending_after_restart(pool).await?;
+    agsdl_execution::reconcile_after_restart(pool).await?;
+
+    Ok(())
 }
 
 /// Create a pool for the given database path.
@@ -143,6 +155,7 @@ async fn run_migrations_on_connection(connection: &mut SqliteConnection) -> DbRe
     let user_tables = list_user_tables(connection).await?;
     let applied_migrations = list_applied_migrations(connection).await?;
     validate_migration_history(&applied_migrations)?;
+    let visible_search_at_v10 = visible_search_at_v10(connection).await?;
     let is_legacy_database = !user_tables.is_empty() && applied_migrations.is_empty();
 
     if user_tables.is_empty() {
@@ -272,14 +285,60 @@ async fn run_migrations_on_connection(connection: &mut SqliteConnection) -> DbRe
         .await?;
     }
 
-    if !list_applied_migrations(connection).await?.contains(&10) {
-        apply_migration(
-            connection,
+    // Both branches shipped version 10. Preserve its published name and date.
+    // The develop variant needs tool results before the engine migrations run.
+    if visible_search_at_v10 && !applied_migrations.contains(&15) {
+        sqlx::raw_sql(include_str!("migrations/010_tool_results.sql"))
+            .execute(&mut *connection)
+            .await?;
+    }
+    for (version, name, sql) in [
+        (
             10,
-            "010_visible_message_search".to_string(),
-            MIGRATION_010_SQL.to_string(),
-        )
-        .await?;
+            "010_tool_results",
+            include_str!("migrations/010_tool_results.sql"),
+        ),
+        (
+            11,
+            "011_agsdl_execution",
+            include_str!("migrations/011_agsdl_execution.sql"),
+        ),
+        (
+            12,
+            "012_execution_host",
+            include_str!("migrations/012_execution_host.sql"),
+        ),
+        (
+            13,
+            "013_execution_ui_intents",
+            include_str!("migrations/013_execution_ui_intents.sql"),
+        ),
+        (
+            14,
+            "014_execution_process_receipts",
+            include_str!("migrations/014_execution_process_receipts.sql"),
+        ),
+        (
+            16,
+            "016_execution_native_operations",
+            include_str!("migrations/016_execution_native_operations.sql"),
+        ),
+    ] {
+        if !list_applied_migrations(connection)
+            .await?
+            .contains(&version)
+        {
+            apply_migration(connection, version, name.into(), sql.into()).await?;
+        }
+    }
+
+    if !applied_migrations.contains(&15) {
+        if !visible_search_at_v10 {
+            sqlx::raw_sql(MIGRATION_010_SQL)
+                .execute(&mut *connection)
+                .await?;
+        }
+        stamp_migration(connection, 15, "015_parallel_v10_reconciliation".into()).await?;
     }
 
     // Insert default providers if they don't exist
@@ -302,12 +361,34 @@ fn validate_migration_history(applied: &HashSet<i64>) -> DbResult<()> {
         || (applied.contains(&8) && !applied.contains(&7))
         || (applied.contains(&9) && !applied.contains(&8))
         || (applied.contains(&10) && !applied.contains(&9))
+        || (applied.contains(&11) && !applied.contains(&10))
+        || (applied.contains(&12) && !applied.contains(&11))
+        || (applied.contains(&13) && !applied.contains(&12))
+        || (applied.contains(&14) && !applied.contains(&13))
+        || (applied.contains(&15) && !applied.contains(&14))
+        || (applied.contains(&16) && !applied.contains(&15))
     {
         return Err(DbError::Migration(
             "Unsupported or inconsistent migration history; database left unchanged".to_string(),
         ));
     }
     Ok(())
+}
+
+// Version alone cannot distinguish the two published schemas. Reject unknown
+// identities before any schema work instead of silently skipping one variant.
+pub(crate) async fn visible_search_at_v10(connection: &mut SqliteConnection) -> DbResult<bool> {
+    let name: Option<String> =
+        sqlx::query_scalar("SELECT name FROM schema_migrations WHERE version = 10")
+            .fetch_optional(&mut *connection)
+            .await?;
+    match name.as_deref() {
+        None | Some("010_tool_results") => Ok(false),
+        Some("010_visible_message_search") => Ok(true),
+        Some(_) => Err(DbError::Migration(
+            "Unknown version 10 migration identity; database left unchanged".into(),
+        )),
+    }
 }
 
 async fn ensure_schema_migrations_table(connection: &mut SqliteConnection) -> DbResult<()> {
@@ -1700,7 +1781,7 @@ async fn insert_default_speech_provider(connection: &mut SqliteConnection) -> Db
 }
 
 #[cfg(test)]
-mod migration_tests;
+pub(crate) mod migration_tests;
 
 #[cfg(test)]
 mod tests {
@@ -2362,6 +2443,22 @@ mod tests {
         let temp_dir = TempDir::new().expect("temp dir");
         let db_path = temp_dir.path().join("macro.db");
         let pool = create_pool(&db_path).await.expect("initial pool");
+        for statement in [
+            "DROP TABLE engine_native_operations",
+            "DROP TABLE engine_effect_processes",
+            "DROP TABLE engine_ui_intents",
+            "DROP TABLE engine_prepared_terminals",
+            "DROP TABLE engine_approvals",
+            "DROP TABLE engine_host_captures",
+            "DROP TABLE engine_response_closures",
+            "DROP TABLE engine_responses",
+            "DROP TABLE engine_events",
+            "DROP TABLE engine_effects",
+            "DROP TABLE engine_deliveries",
+            "DROP TABLE engine_systems",
+        ] {
+            sqlx::query(statement).execute(&pool).await.unwrap();
+        }
         // Reproduce the historical agent-run schema before the later, non-idempotent
         // additive migrations. The missing metadata belongs to that schema.
         sqlx::raw_sql(

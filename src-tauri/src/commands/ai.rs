@@ -219,27 +219,72 @@ pub async fn ai_stream_chat(
     request: AiChatRequest,
 ) -> CommandResult<()> {
     validate_request_id(&request.request_id)?;
-    let pool = get_pool(&pool).await?;
-    match get_provider_type(&pool, &request.provider_id)
-        .await?
-        .as_str()
-    {
-        "chatgpt" => chatgpt::stream_chat(app_handle, pool, ai_state.inner().clone(), request)
-            .await
-            .map_err(command_error),
-        "copilot" => copilot::stream_chat(app_handle, pool, ai_state.inner().clone(), request)
-            .await
-            .map_err(command_error),
-        "openai" | "openrouter" | "ollama" | "lmstudio" => {
-            openai_compatible::stream_chat(app_handle, pool, ai_state.inner().clone(), request)
-                .await
+    let pool = pool.inner().clone();
+    let ai_state = ai_state.inner().clone();
+    let state_for_task = ai_state.clone();
+    let request_id = request.request_id.clone();
+    ai_state
+        .stream_tasks
+        .start(request_id.clone(), async move {
+            let result = async {
+                let pool = pool.wait_until_ready().await?;
+                match get_provider_type(&pool, &request.provider_id)
+                    .await?
+                    .as_str()
+                {
+                    "chatgpt" => {
+                        chatgpt::stream_chat(
+                            app_handle.clone(),
+                            pool,
+                            state_for_task.clone(),
+                            request,
+                        )
+                        .await
+                    }
+                    "copilot" => {
+                        copilot::stream_chat(
+                            app_handle.clone(),
+                            pool,
+                            state_for_task.clone(),
+                            request,
+                        )
+                        .await
+                    }
+                    "openai" | "openrouter" | "ollama" | "lmstudio" => {
+                        openai_compatible::stream_chat(
+                            app_handle.clone(),
+                            pool,
+                            state_for_task.clone(),
+                            request,
+                        )
+                        .await
+                    }
+                    provider_type => Err(format!(
+                        "Native streaming is not supported for {}.",
+                        provider_type
+                    )),
+                }
                 .map_err(command_error)
-        }
-        provider_type => Err(command_error(format!(
-            "Native streaming is not supported for {}.",
-            provider_type
-        ))),
-    }
+            }
+            .await;
+            if let Err(error) = result {
+                use tauri::Emitter;
+                let _ = app_handle.emit(
+                    "ai:error",
+                    crate::ai::types::AiStreamErrorEvent {
+                        request_id: request_id.clone(),
+                        message: error.message,
+                        status: None,
+                    },
+                );
+            }
+            state_for_task
+                .copilot_tool_writers
+                .lock()
+                .await
+                .remove(&request_id);
+        })
+        .map_err(command_error)
 }
 
 #[tauri::command]

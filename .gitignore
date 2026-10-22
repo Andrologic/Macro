@@ -76,3 +76,5 @@ target/
 *.p8
 *.p12
 *.key
+
+.demo-vite-cache/

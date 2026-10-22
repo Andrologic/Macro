@@ -2445,6 +2445,14 @@ pub async fn list_dir_internal(
     let should_recurse = recursive.unwrap_or(false);
     let depth_limit = max_depth.unwrap_or(u32::MAX);
 
+    if should_recurse && depth_limit == 0 {
+        // Probe root access without traversing the directory or returning children.
+        let _directory = tokio::fs::read_dir(&validated_path)
+            .await
+            .map_err(|e| io_error_to_backend_error(e, &validated_path))?;
+        return Ok(Vec::new());
+    }
+
     let mut entries = Vec::new();
 
     if should_recurse {
@@ -5172,6 +5180,114 @@ mod tests {
 
         assert!(result.is_ok());
         assert!(result.unwrap().is_empty());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn test_list_dir_zero_depth_rejects_unreadable_root() {
+        if unsafe { libc::geteuid() } == 0 {
+            eprintln!("Skipping unreadable-root check: root can bypass directory permissions");
+            return;
+        }
+
+        let workspace = setup_empty_workspace();
+        let selected = setup_empty_workspace();
+        let original_permissions = fs::metadata(selected.path()).unwrap().permissions();
+        struct RestorePermissions<'a>(&'a Path, fs::Permissions);
+        impl Drop for RestorePermissions<'_> {
+            fn drop(&mut self) {
+                fs::set_permissions(self.0, self.1.clone())
+                    .expect("restore test directory permissions");
+            }
+        }
+        let _restore = RestorePermissions(selected.path(), original_permissions);
+        fs::set_permissions(selected.path(), fs::Permissions::from_mode(0o000)).unwrap();
+        assert_eq!(
+            fs::read_dir(selected.path()).unwrap_err().kind(),
+            std::io::ErrorKind::PermissionDenied,
+            "fixture must deny directory access for the current user"
+        );
+
+        let result = list_dir_internal(
+            workspace.path(),
+            selected.path().to_string_lossy().into_owned(),
+            Some(true),
+            None,
+            Some(0),
+            Some(true),
+        )
+        .await;
+
+        assert!(
+            matches!(result, Err(BackendError::FilesystemPermissionDenied { .. })),
+            "unreadable selected directory was accepted: {result:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_list_dir_zero_depth_accepts_empty_and_large_selected_roots() {
+        let workspace = setup_empty_workspace();
+        let selected = setup_empty_workspace();
+        for populated in [false, true] {
+            if populated {
+                // An access probe must not consume the directory listing budget.
+                for index in 0..=DIRECTORY_LIST_LIMIT {
+                    fs::write(selected.path().join(format!("entry-{index}")), b"").unwrap();
+                }
+            }
+            let entries = list_dir_internal(
+                workspace.path(),
+                selected.path().to_string_lossy().into_owned(),
+                Some(true),
+                Some(true),
+                Some(0),
+                Some(true),
+            )
+            .await
+            .expect("readable selected directory should pass the access probe");
+            assert!(
+                entries.is_empty(),
+                "zero depth must not expose child entries"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn test_list_dir_zero_depth_preserves_path_errors() {
+        let workspace = setup_empty_workspace();
+        fs::write(workspace.path().join("file.txt"), b"content").unwrap();
+        for path in ["missing", "file.txt"] {
+            let result = list_dir_internal(
+                workspace.path(),
+                path.to_string(),
+                Some(true),
+                None,
+                Some(0),
+                Some(true),
+            )
+            .await;
+            match path {
+                "missing" => assert!(matches!(
+                    result,
+                    Err(BackendError::FilesystemNotFound { .. })
+                )),
+                _ => assert!(matches!(result, Err(BackendError::FilesystemIsFile { .. }))),
+            }
+        }
+        let outside = setup_empty_workspace();
+        let result = list_dir_internal(
+            workspace.path(),
+            outside.path().to_string_lossy().into_owned(),
+            Some(true),
+            None,
+            Some(0),
+            Some(false),
+        )
+        .await;
+        assert!(matches!(
+            result,
+            Err(BackendError::FilesystemPathOutsideWorkspace { .. })
+        ));
     }
 
     #[test]

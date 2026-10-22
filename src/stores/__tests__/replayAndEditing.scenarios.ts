@@ -27,6 +27,30 @@ export const registerReplayAndEditingScenarios = (
   } = context;
 
   describe('useChatStore replay and editing', () => {
+    it('rejects multiple AgSDL selections before direct edit persistence or replay', async () => {
+      const { useChatStore } = await loadChatStore();
+      const original = { id: 'replay-user', task_id: '', conversation_id: 'chat-conv', role: 'user' as const, content: 'Original request', timestamp: '2026-04-14T10:00:00.000Z' };
+      useChatStore.setState(createIdleChatStoreState({
+        conversations: [createConversation('chat-conv')], messages: [original],
+        selectedConversationId: 'chat-conv',
+      }));
+      for (const native of [false, true]) {
+        context.tauriAvailable = native;
+        await expect(useChatStore.getState().editMessage(original.id, 'Edited', {
+          replaceStructuredFields: true,
+          contextRefs: [
+            { id: 'first', kind: 'agsdl', title: 'First' },
+            { id: 'foreign', kind: 'agsdl', title: 'Foreign' },
+          ],
+        })).rejects.toThrow('Keep only one AgSDL selection');
+      }
+      expect(useChatStore.getState().messages).toEqual([original]);
+      expect(updateMessageMock).not.toHaveBeenCalled();
+      expect(dbPrepareConversationReplayMock).not.toHaveBeenCalled();
+      expect(deleteMessagesAfterMock).not.toHaveBeenCalled();
+      expect(streamChatMock).not.toHaveBeenCalled();
+    });
+
     it('durably rolls back a confirmed code rewind before a replay launches', async () => {
       context.tauriAvailable = true;
       let diskContent = 'original';

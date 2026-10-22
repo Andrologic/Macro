@@ -27,6 +27,8 @@ export async function sendMessage<Task extends SendTask, Recovery, Launch>(
   let lease: SendLease | null = null;
   let assistantMessageId: string | null = null;
   let launchError: unknown = null;
+  let releaseAdmission: (() => void) | undefined;
+  let admission: Promise<void> | undefined;
   const startedAt = Date.now();
   const timeline = (phase: string, context: Record<string, unknown> = {}) =>
     projection.timeline(phase, { requestId: lease?.sessionId ?? null, elapsedMs: Date.now() - startedAt, ...context });
@@ -54,14 +56,29 @@ export async function sendMessage<Task extends SendTask, Recovery, Launch>(
   });
   const saveUser = async (current: SendLease) => {
     let message: ChatMessage;
+    if (input.persistedUserMessage && (input.persistedUserMessage.conversation_id !== conversationId ||
+        input.persistedUserMessage.turn_id !== current.turnId || input.persistedUserMessage.role !== 'user')) {
+      throw new Error('The saved message does not belong to this submission.');
+    }
+    const messageId = input.persistedUserMessage?.id ?? input.userMessageId ?? (images?.length ? crypto.randomUUID() : undefined);
+    if (messageId && images?.length) {
+      if (!messages.saveImages) throw new Error('Image persistence is unavailable.');
+      messages.saveImages(messageId, images);
+      if (!isCurrent()) throw new DOMException('Send cancelled before saving text.', 'AbortError');
+    }
     try {
-      message = await createUserMessage(messages.persistence, {
-        conversationId, turnId: current.turnId, taskId: resolvedTaskId,
+      message = input.persistedUserMessage ?? await createUserMessage(messages.persistence, {
+        id: messageId, conversationId, turnId: current.turnId, taskId: resolvedTaskId,
         content, hiddenContext, providerInputItems, contextRefs,
       });
     } catch (error) {
-      throw new Error(`Failed to save the message before sending: ${toServiceError(error).message}`);
+      const saved = messageId ? await messages.readUser?.(conversationId, messageId) : undefined;
+      if (!saved || saved.id !== messageId || saved.role !== 'user' || saved.conversation_id !== conversationId || saved.turn_id !== current.turnId) {
+        throw new Error(`Failed to save the message before sending: ${toServiceError(error).message}`);
+      }
+      message = saved;
     }
+    if (messageId && message.id !== messageId) throw new Error('The saved message has a different identity.');
     messages.onUserPersisted?.(message);
     return message;
   };
@@ -73,6 +90,9 @@ export async function sendMessage<Task extends SendTask, Recovery, Launch>(
     owner.rememberSession(conversationId, current.sessionId);
     timeline('send_requested', { conversationId });
     setPreparing(conversationId, current);
+    preparation.onTurnCaptured?.(conversationId, current);
+    admission = new Promise<void>(resolve => { releaseAdmission = resolve; });
+    owner.track(conversationId, admission);
     await messages.ensureLoaded(conversationId);
     if (!isCurrent()) return cancelled();
     timeline('messages_ready', { conversationId });
@@ -99,6 +119,7 @@ export async function sendMessage<Task extends SendTask, Recovery, Launch>(
       }
       owner.set(previousConversationId, null);
       setPreparing(conversationId, current);
+      if (admission) owner.track(conversationId, admission);
     }
     const scopedConfiguration = await configuration.load({
       projectIds: executionContext.projectIds, focusProjectId: executionContext.focusedProjectId, mode,
@@ -210,20 +231,24 @@ export async function sendMessage<Task extends SendTask, Recovery, Launch>(
         throw new Error(`Failed to create the assistant message before streaming: ${toServiceError(error).message}`);
       }
       if (!isCurrent()) {
-        if (owner.latestSession(conversationId) === current.sessionId) {
+        if (owner.latestSession(conversationId) === current.sessionId && messages.canDeleteAfter?.(conversationId) !== false) {
           await deleteMessagesAfter(messages.persistence, conversationId, persistedUserMessage.id).catch(() => undefined);
         }
         return sentWithoutAssistant(persistedUserMessage);
       }
       assistantMessageId = assistant.id;
       projection.publishAssistant(assistant, mode, agentType);
+      if (!isCurrent()) return sentWithoutAssistant(persistedUserMessage);
       setPreparing(conversationId, current, assistant.id);
       timeline('provider_stream_start_requested', { conversationId, providerId, providerType: providerForUse.providerType });
+      messages.beforeAssistantStart?.(assistant);
+      if (!isCurrent()) return sentWithoutAssistant(persistedUserMessage);
       stream.start({
         ...request, sessionId: current.sessionId, assistantMessage: assistant,
         architectPlanAtSend: architectPlan, abortController,
         providerSupportsNativeToolCalling: configuration.supportsNativeToolCalling(providerId, modelId),
       }, launch);
+      messages.onAssistantStarted?.();
       if (firstManualFeatureMessage) tasks.completeLaunch(conversationId, current.sessionId);
     } catch (error) {
       if (!ownsTurn()) return sentWithoutAssistant(persistedUserMessage);
@@ -253,5 +278,7 @@ export async function sendMessage<Task extends SendTask, Recovery, Launch>(
       }
     } else projection.sendError(normalized.message);
     throw normalized;
+  } finally {
+    releaseAdmission?.();
   }
 }

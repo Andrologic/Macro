@@ -7,6 +7,11 @@ import {
 } from './fileChangesReviewScope';
 
 describe('fileChangesReviewScope', () => {
+  it('does not invent a legacy worktree or reuse stale repository scope for native Agent Tasks', () => {
+    const task = { project_id: 'project', assigned_branch: 'develop', task_source: 'agsdl', execution_targets: [] };
+    expect(getFileChangesExecutionTargets(task)).toEqual([]);
+    expect(getFileChangesTaskRepositoryIds(task, { fallbackRepositoryIds: ['old-project::worktree'] })).toEqual([]);
+  });
   it('builds a fallback execution target for single-project tasks', () => {
     expect(
       getFileChangesExecutionTargets(

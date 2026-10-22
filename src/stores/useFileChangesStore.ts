@@ -31,7 +31,6 @@ import {
   resolvePreparedTaskWorktreePath,
 } from '../services/preparedTaskWorktrees';
 import { resolveProjectExecutionMode } from '../services/projectExecutionMode';
-import { getGlobalProjectById, getRepositoryScopedProjectIds } from '../services/globalProjects';
 import { resolveStandaloneTargetBranchName } from '../services/standaloneTargetBranch';
 import {
   SmartCommitMessageGenerationError,
@@ -244,7 +243,7 @@ interface FileChangesTaskLike {
   title: string;
   description?: string | null;
   status: TaskStatus;
-  task_source: 'architect' | 'mixed' | 'fallback' | 'empty' | 'standalone' | 'plan_finalization';
+  task_source: 'architect' | 'mixed' | 'fallback' | 'empty' | 'standalone' | 'plan_finalization' | 'agsdl';
   project_id?: string | null;
   assigned_branch: string;
   base_branch?: string | null;
@@ -763,33 +762,6 @@ const mapReviewFileToEntry = (
   requiresHydration: false,
 });
 
-const getScopedExecutionTargets = (
-  deps: FileChangesStoreDependencies,
-  task: FileChangesTaskLike
-): TaskExecutionTarget[] => {
-  const executionTargets = getFileChangesExecutionTargets(
-    task,
-    deps.getGitFlowBaseBranch
-  );
-  const appState = deps.getAppState();
-  const shouldFilterByScope = Boolean(appState.selectedGroupId || appState.selectedProjectId);
-
-  if (!shouldFilterByScope) {
-    return executionTargets;
-  }
-
-  const scopedProjectIds = getRepositoryScopedProjectIds(
-    {
-      standaloneProjects: appState.standaloneProjects ?? [],
-      projectGroups: appState.projectGroups,
-    },
-    appState.selectedGroupId,
-    appState.selectedProjectId
-  );
-  const scopedProjectIdSet = new Set(scopedProjectIds);
-  return executionTargets.filter((target) => scopedProjectIdSet.has(target.projectId));
-};
-
 const resolveSelectedTask = (deps: FileChangesStoreDependencies): FileChangesTaskLike | null => {
   const selectedTaskId = deps.getAppState().selectedTaskId;
   if (!selectedTaskId) return null;
@@ -925,67 +897,6 @@ const buildAwaitingWorktreeMessage = (task: FileChangesTaskLike): string => {
   }
 
   return buildFirstChangesMessage();
-};
-
-const buildOutOfScopeMessage = (deps: FileChangesStoreDependencies): string => {
-  const appState = deps.getAppState();
-  const selectedGroup = getGlobalProjectById(
-    appState.projectGroups,
-    appState.selectedGroupId
-  );
-  const selectedProject = appState.selectedProjectId
-    ? appState.getProjectById(appState.selectedProjectId)
-    : null;
-  const selectedProjectInGroup =
-    Boolean(selectedGroup) &&
-    Boolean(
-      appState.selectedProjectId &&
-      selectedGroup?.subProjectIds.includes(appState.selectedProjectId)
-    );
-
-  if (selectedProjectInGroup) {
-    return tChanges(
-      'implement.taskOutsideSelectedSubprojectScope',
-      'This task has no changes in {{project}}.',
-      {
-        project: selectedProject?.name || tChanges(
-          'implement.selectedSubproject',
-          'the selected project'
-        ),
-      }
-    );
-  }
-
-  if (selectedGroup) {
-    return tChanges(
-      'implement.taskOutsideSelectedGlobalProjectScope',
-      'This task has no changes in {{project}}.',
-      {
-        project: selectedGroup.name || tChanges(
-          'implement.selectedGlobalProject',
-          'the selected group'
-        ),
-      }
-    );
-  }
-
-  if (selectedProject) {
-    return tChanges(
-      'implement.taskOutsideSelectedSubprojectScope',
-      'This task has no changes in {{project}}.',
-      {
-        project: selectedProject.name || tChanges(
-          'implement.selectedSubproject',
-          'the selected project'
-        ),
-      }
-    );
-  }
-
-  return tChanges(
-    'implement.taskOutsideCurrentRepositoryScope',
-    'This task has no changes in the current repository scope.'
-  );
 };
 
 const shouldTreatMissingWorktreeAsPending = (task: FileChangesTaskLike): boolean =>
@@ -1998,7 +1909,7 @@ export const createFileChangesStore = (
     const sameTask = previousState.currentTaskId === task.id;
     if (!sameTask) set({ reviewedChanges: {}, staleDirectRepositoryId: null });
     const reviewedBeforeLoad = sameTask ? previousState.reviewedChanges : {};
-    const scopedExecutionTargets = getScopedExecutionTargets(deps, task);
+    const scopedExecutionTargets = getFileChangesExecutionTargets(task, deps.getGitFlowBaseBranch);
     const requestedRepositoryIds = new Set(
       scopedExecutionTargets.map((target) => buildFileChangesRepositoryId(target))
     );
@@ -2042,27 +1953,6 @@ export const createFileChangesStore = (
     }
 
     try {
-      const executionTargets = getFileChangesExecutionTargets(
-        task,
-        deps.getGitFlowBaseBranch
-      );
-      if (executionTargets.length > 0 && scopedExecutionTargets.length === 0) {
-        if (isStaleRequest(nextLoadRequestId, task.id)) {
-          return;
-        }
-
-        set({
-          ...resetLoadState,
-          currentTaskId: task.id,
-          currentTaskLoadState: 'out_of_scope',
-          currentTaskLoadMessage: buildOutOfScopeMessage(deps),
-          isLoading: false,
-          lastError: null,
-          executionRecords,
-        });
-        return;
-      }
-
       const unsupportedTarget = scopedExecutionTargets.find((target) => {
         const project = deps.getAppState().getProjectById(target.projectId);
         return !getProjectCapabilities(project ?? { path: target.repoPath ?? '' }).review;

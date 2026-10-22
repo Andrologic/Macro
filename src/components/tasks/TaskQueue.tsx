@@ -1,7 +1,8 @@
-import { WorktreeDiagnosticsDialog } from './WorktreeDiagnosticsDialog';
+import { visibleTaskQueueTasks } from '../../services/taskQueueVisibility';
+import { groupTaskQueueLanes, TASK_QUEUE_LANES, type TaskQueueLane } from '../../services/taskQueueLanes';
+import { getPlanFinalizationTaskDisplayTitle } from '../../services/planFinalization';
 import { getWorktreeDiagnosticTargets, type WorktreeDiagnosticTarget } from '../../services/worktreeDiagnostics';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { createPortal } from 'react-dom';
 import { openPath } from '@tauri-apps/plugin-opener';
 import { useTranslation } from 'react-i18next';
 import { useShallow } from 'zustand/react/shallow';
@@ -68,6 +69,7 @@ import {
   resolveTaskMergeWorkflowPresentationState,
   resolveTaskMergeWorkflowProgressLabel,
 } from '../../services/taskMergeWorkflowPresentation';
+import { SidebarMenu, sidebarMenuPosition, isSidebarTextInput, type SidebarMenuPosition } from '../ui/SidebarMenu';
 import { Icon, IconName } from '../ui/Icon';
 import { SpinnerIcon } from '../ui/SpinnerIcon';
 import { PanelHeaderIconButton } from '../ui/PanelHeaderIconButton';
@@ -91,6 +93,7 @@ import {
 import { retargetTaskForProjectSelection } from '../../services/projectIdentityReconciliation';
 import { isStandaloneTaskKindCreatable } from '../../services/standaloneTaskKinds';
 import { TaskProjectFilter, type TaskProjectFilterOption } from './TaskProjectFilter';
+import { localizeTaskErrorMessage } from '../../services/taskErrorPresentation';
 import { toServiceError } from '../../services/contracts/errors';
 import { SearchBar } from '../ui/SearchBar';
 import { filterTasksByQuery } from './taskQueueSearch';
@@ -107,6 +110,9 @@ import {
 } from '../../services/linkedTaskDeletionSaga';
 import { withTaskLifecycleLock } from '../../services/taskLifecycleLease';
 
+// Keep diagnostics out of the task-list startup chunk now that the legacy graph is removed.
+const WorktreeDiagnosticsDialog = React.lazy(() => import('./WorktreeDiagnosticsDialog').then(module => ({ default: module.WorktreeDiagnosticsDialog })));
+
 const ConfirmPromptModal = React.lazy(() =>
   import('../ui/ConfirmPromptModal').then((module) => ({
     default: module.ConfirmPromptModal,
@@ -117,6 +123,7 @@ const TaskProjectCommandsModal = React.lazy(() =>
     default: module.TaskProjectCommandsModal,
   })),
 );
+const DemoBlueprintLaunchDialog = React.lazy(() => import('../../demo/DemoBlueprintLaunchDialog'));
 const CreateImplementTaskDialog = React.lazy(() =>
   import('./CreateImplementTaskDialog').then((module) => ({
     default: module.CreateImplementTaskDialog,
@@ -125,26 +132,18 @@ const CreateImplementTaskDialog = React.lazy(() =>
 
 interface TaskQueueProps {
   className?: string;
+  excludedProjectIds?: readonly string[];
 }
 
-type TaskListRow =
-  | {
-      kind: 'section';
-      id: string;
-      title: string;
-      count: number;
-      tone?: 'draft' | 'default' | 'success';
-    }
-  | {
-      kind: 'task';
-      id: string;
-      task: ImplementTask;
-      multiRepoPresentation: MultiRepoTaskPresentation | null;
-    };
+type TaskListRow = {
+  id: string;
+  task: ImplementTask;
+  multiRepoPresentation: MultiRepoTaskPresentation | null;
+};
 
 const statusConfig: Record<TaskStatus, { color: string; bgColor: string }> = {
   Pending: { color: 'text-muted-foreground', bgColor: 'bg-muted' },
-  InProgress: { color: 'text-amber-500', bgColor: 'bg-amber-500/10' },
+  InProgress: { color: 'text-sky-400', bgColor: 'bg-sky-400/10' },
   AwaitingResponse: { color: 'text-amber-500', bgColor: 'bg-amber-500/10' },
   InReview: { color: 'text-sky-400', bgColor: 'bg-sky-500/10' },
   Completed: { color: 'text-emerald-500', bgColor: 'bg-emerald-500/10' },
@@ -167,7 +166,7 @@ interface TaskMenuPosition {
   left: number;
 }
 
-const TASK_MENU_WIDTH = 176;
+const TASK_MENU_WIDTH = 208;
 const TASK_MENU_GAP = 6;
 const TASK_MENU_VIEWPORT_PADDING = 12;
 const TASK_MENU_ITEM_HEIGHT = 34;
@@ -219,7 +218,10 @@ interface MultiRepoTaskPresentation {
   nextActionLabel: string;
 }
 
+const TaskExecutionGraphDialog = React.lazy(() => import('./TaskExecutionGraphDialog'));
+
 type TaskActionKey =
+  | 'execution_graph'
   | 'start_review'
   | 'worktree_diagnostic'
   | 'project_settings'
@@ -242,7 +244,7 @@ interface TaskActionDescriptor {
 type TaskContextBadgeTone = 'default' | 'draft';
 
 interface TaskContextBadgeDescriptor {
-  key: 'project' | 'plan' | 'plan_finalization' | 'standalone' | 'draft';
+  key: 'project' | 'plan' | 'plan_finalization' | 'standalone' | 'draft' | 'archived';
   label: string;
   icon?: IconName;
   project?: Pick<Project, 'id' | 'path'>;
@@ -302,7 +304,6 @@ const TaskItem: React.FC<TaskItemProps> = ({
   const [showMenu, setShowMenu] = useState(false);
   const [menuPosition, setMenuPosition] = useState<TaskMenuPosition | null>(null);
   const menuButtonRef = useRef<HTMLButtonElement>(null);
-  const taskMenuRef = useRef<HTMLDivElement>(null);
   const trimmedPlanLabel = planLabel.trim();
   const contextBadges: TaskContextBadgeDescriptor[] = [];
   const trimmedProjectName = project?.name.trim() ?? '';
@@ -328,25 +329,8 @@ const TaskItem: React.FC<TaskItemProps> = ({
       icon: 'git-merge',
     });
   }
-  if (task.task_source === 'standalone') {
-    const taskKindLabel = task.task_kind === 'bugfix'
-      ? t('implement.taskKindBugfix', 'Bugfix')
-      : task.task_kind === 'hotfix'
-        ? t('implement.taskKindHotfix', 'Hotfix')
-        : task.task_kind === 'feature'
-          ? t('implement.taskKindFeature', 'Feature')
-          : task.task_kind === 'direct'
-            ? t('implement.taskKindDirect', 'Direct')
-          : task.draft
-            ? t('implement.taskKindPending', 'Agent classification')
-            : t('implement.standaloneBadge', 'Standalone');
-    contextBadges.push({
-      key: 'standalone',
-      label: taskKindLabel,
-      icon: task.task_kind === 'direct'
-        ? 'git-commit'
-        : task.task_kind ? getPlanKindIconName(task.task_kind) : 'sparkles',
-    });
+  if (task.archived_at) {
+    contextBadges.push({ key: 'archived', label: t('implement.archives', 'Archives'), icon: 'archive' });
   }
   if (task.draft) {
     contextBadges.push({
@@ -360,7 +344,7 @@ const TaskItem: React.FC<TaskItemProps> = ({
     task.standalone_kind === 'manual_feature' &&
     task.description.trim().length === 0;
   const status = isAssistantRunning
-    ? { color: 'text-amber-500', bgColor: 'bg-amber-500/10' }
+    ? { color: 'text-sky-400', bgColor: 'bg-sky-400/10' }
     : statusConfig[task.status] || statusConfig.Pending;
   const mergeWorkflowPresentation = useMemo(
     () =>
@@ -409,58 +393,18 @@ const TaskItem: React.FC<TaskItemProps> = ({
     !task.is_blocked && task.status !== 'Completed' && !task.archived_at
   );
   const lockTooltip = getDependencyBlockedMessage(task, t) ?? '';
-  useEffect(() => {
-    if (!showMenu) return;
-
-    const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') {
-        setShowMenu(false);
-      }
-    };
-
-    window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [showMenu]);
-
-  useEffect(() => {
-    if (!showMenu) return;
-
-    const handlePointerDown = (event: MouseEvent) => {
-      const target = event.target as Node;
-
-      if (
-        taskMenuRef.current?.contains(target) ||
-        menuButtonRef.current?.contains(target)
-      ) {
-        return;
-      }
-
-      setShowMenu(false);
-    };
-
-    document.addEventListener('mousedown', handlePointerDown);
-    return () => document.removeEventListener('mousedown', handlePointerDown);
-  }, [showMenu]);
-
-  useEffect(() => {
-    if (!showMenu) {
-      setMenuPosition(null);
-      return;
-    }
-
-    const updatePosition = () => {
-      setMenuPosition(getTaskMenuPosition(menuButtonRef.current, actions.length));
-    };
-
-    updatePosition();
-    window.addEventListener('resize', updatePosition);
-    window.addEventListener('scroll', updatePosition, true);
-
-    return () => {
-      window.removeEventListener('resize', updatePosition);
-      window.removeEventListener('scroll', updatePosition, true);
-    };
-  }, [actions.length, showMenu]);
+  const waitingReason = indicatorState === 'blocked' ? lockTooltip || t('implement.statusBlocked', 'Blocked')
+    : indicatorState === 'failed' ? t('implement.failed', 'Failed')
+    : indicatorState === 'awaiting_response' ? t('implement.statusWaiting', 'Needs reply') : null;
+  const reviewNextAction = showMergeWorkflowPresentation || showReviewPresentation
+    ? multiRepoPresentation?.nextActionLabel
+    : null;
+  const runAttentionLabel = task.workflow_execution?.runAttention
+    ? `${t(`agsdl.execution.state.${task.workflow_execution.runAttention.state}`, task.workflow_execution.runAttention.state === 'failed' ? 'Failed' : 'Uncertain')} · ${t('implement.viewExecutionGraph', 'View workflow')}`
+    : null;
+  const nextAction = runAttentionLabel || pendingRequestLabel || reviewNextAction;
+  const instruction = nextAction || waitingReason;
+  const secondaryText = instruction || task.description;
 
   return (
     <div
@@ -469,7 +413,13 @@ const TaskItem: React.FC<TaskItemProps> = ({
       data-task-card-variant={isCompactDraftFeatureCard ? 'compact-draft' : 'default'}
       data-tour-id="implement-task-card"
       onClick={onSelect}
+      onContextMenu={event => {
+        if (!actions.length) return;
+        event.preventDefault(); event.stopPropagation();
+        setMenuPosition(sidebarMenuPosition(event)); setShowMenu(true);
+      }}
       onKeyDown={(event) => {
+        if (event.target !== event.currentTarget) return;
         if (event.key === 'Enter' || event.key === ' ') {
           event.preventDefault();
           onSelect();
@@ -477,13 +427,13 @@ const TaskItem: React.FC<TaskItemProps> = ({
       }}
       className={cn(
         'relative w-full overflow-visible rounded-xl border text-left transition-all duration-200 group cursor-pointer',
-        isCompactDraftFeatureCard ? 'h-[96px]' : 'h-[112px]',
+        isCompactDraftFeatureCard ? 'h-[76px]' : 'h-[96px]',
         isSelected
           ? 'border-primary/30 bg-primary/10 shadow-[inset_0_1px_0_rgba(255,255,255,0.04)]'
           : 'border-border/70 bg-card/70 hover:border-primary/20 hover:bg-accent/30'
       )}
     >
-      <div className="grid h-full grid-rows-[auto,1fr,auto] p-1.5">
+      <div className={cn('grid h-full min-w-0 grid-cols-1 gap-y-1 p-1.5', isCompactDraftFeatureCard ? 'grid-rows-[auto,auto]' : 'grid-rows-[auto,1fr,auto]')}>
         {actions.length > 0 && (
           <button
             ref={menuButtonRef}
@@ -501,6 +451,7 @@ const TaskItem: React.FC<TaskItemProps> = ({
             onMouseDown={(event) => event.stopPropagation()}
             className="absolute right-1.5 top-1.5 inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
             title={t('implement.taskActions', 'Task actions')}
+            aria-label={t('implement.taskActions', 'Task actions')} aria-haspopup="menu" aria-expanded={showMenu}
           >
             <Icon name="more-vertical" size={13} />
           </button>
@@ -508,7 +459,7 @@ const TaskItem: React.FC<TaskItemProps> = ({
 
         <div className="flex items-center gap-2.5">
           <div className="relative shrink-0 group/lock">
-            <div className={cn('flex h-8 w-8 items-center justify-center rounded-lg', resolvedStatus.bgColor)}>
+            <div className={cn('flex h-7 w-7 items-center justify-center rounded-lg', resolvedStatus.bgColor)}>
               <TaskStatusIndicator
                 state={indicatorState}
                 layout="card"
@@ -525,132 +476,105 @@ const TaskItem: React.FC<TaskItemProps> = ({
           </div>
 
           <div className="min-w-0 flex-1">
-            <h3 className="pr-3 text-sm font-semibold leading-[1.1rem] text-foreground line-clamp-2">
-              {task.title}
+            <h3 title={getPlanFinalizationTaskDisplayTitle(task, t)} className="truncate pr-7 text-sm font-semibold leading-[1.1rem] text-foreground">
+              {getPlanFinalizationTaskDisplayTitle(task, t)}
             </h3>
           </div>
         </div>
 
-        <div className="min-h-0 space-y-1">
-          {pendingRequestLabel ? (
-            <p data-task-card-next-action="true" className="truncate text-[11px] leading-[1rem] text-amber-500" title={pendingRequestLabel}>
-              {pendingRequestLabel}
-            </p>
-          ) : showMergeWorkflowPresentation || showReviewPresentation ? (
-            <>
+        {!isCompactDraftFeatureCard && (
+          <div className="flex min-h-0 items-center overflow-hidden">
+            {secondaryText && (
               <p
-                data-task-card-progress-label="true"
-                className="truncate text-[12px] font-medium leading-[1.05rem] text-foreground/85"
+                data-task-card-next-action={nextAction ? 'true' : undefined}
+                data-task-card-waiting-reason={!nextAction && waitingReason ? 'true' : undefined}
+                title={secondaryText}
+                className={cn('min-w-0 flex-1 truncate text-xs leading-4', instruction ? 'text-amber-500' : 'text-muted-foreground')}
               >
-                {multiRepoPresentation?.progressLabel}
+                {secondaryText}
               </p>
-              <p
-                data-task-card-next-action="true"
-                title={multiRepoPresentation?.nextActionLabel}
-                className="truncate text-[11px] leading-[1rem] text-muted-foreground"
+            )}
+          </div>
+        )}
+
+        <div data-task-card-footer="true" className="flex h-7 min-w-0 items-center gap-1.5">
+          <div
+            className="flex min-w-0 flex-1 items-center gap-1.5 overflow-hidden"
+          >
+            {contextBadges.map((badge) => (
+              <span
+                key={badge.key}
+                data-task-context-badge={badge.key}
+                title={badge.title}
+                className={cn(
+                  'inline-flex min-w-0 max-w-full items-center gap-1 rounded-full border px-2 py-0.5 text-[10px] font-semibold',
+                  taskContextBadgeToneClassName[badge.tone ?? 'default']
+                )}
               >
-                {multiRepoPresentation?.nextActionLabel}
-              </p>
-            </>
-          ) : !isCompactDraftFeatureCard && task.description ? (
-            <p className="line-clamp-2 text-[13px] leading-[1.15rem] text-muted-foreground">
-              {task.description}
-            </p>
+                {badge.project ? (
+                  <ProjectIcon project={badge.project} size={10} className="text-current" />
+                ) : badge.icon ? (
+                  <Icon name={badge.icon} size={10} className="shrink-0 text-current" />
+                ) : null}
+                <span className="truncate">{badge.label}</span>
+              </span>
+            ))}
+          </div>
+
+          {taskCommandRunStatus ? (
+            <button
+              type="button"
+              onClick={(event) => {
+                event.stopPropagation();
+                onCancelTaskCommands();
+              }}
+              onMouseDown={(event) => event.stopPropagation()}
+              disabled={taskCommandRunStatus === 'cancelling'}
+              className={cn(
+                'inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md transition-colors',
+                taskCommandRunStatus === 'cancelling'
+                  ? 'cursor-not-allowed text-muted-foreground'
+                  : 'text-amber-500 hover:bg-accent/70'
+              )}
+              title={
+                taskCommandRunStatus === 'cancelling'
+                  ? t('implement.taskCommandCancelling', 'Cancelling...')
+                  : t('implement.cancelTaskCommands', 'Cancel run')
+              }
+            >
+              {taskCommandRunStatus === 'cancelling' ? (
+                <SpinnerIcon size={13} />
+              ) : (
+                <Icon name="x" size={13} />
+              )}
+            </button>
+          ) : showRunTaskCommands ? (
+            <button
+              type="button"
+              onClick={(event) => {
+                event.stopPropagation();
+                onRunTaskCommands();
+              }}
+              onMouseDown={(event) => event.stopPropagation()}
+              disabled={!canRunTaskCommands}
+              className={cn(
+                'inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md transition-colors',
+                canRunTaskCommands
+                  ? 'text-emerald-500 hover:bg-accent/70'
+                  : 'cursor-not-allowed text-muted-foreground/50'
+              )}
+              title={runTaskCommandsTitle || t('implement.runTaskCommands', 'Run commands')}
+            >
+              <Icon name="play" size={13} />
+            </button>
           ) : null}
         </div>
-
-        <div className="min-w-0 self-end pr-3">
-          {contextBadges.length > 0 && (
-            <div
-              data-task-card-footer="true"
-              className="flex min-w-0 items-center gap-1.5 overflow-hidden"
-            >
-              {contextBadges.map((badge) => (
-                <span
-                  key={badge.key}
-                  data-task-context-badge={badge.key}
-                  title={badge.title}
-                  className={cn(
-                    'inline-flex min-w-0 max-w-full items-center gap-1 rounded-full border px-2 py-0.5 text-[10px] font-semibold',
-                    taskContextBadgeToneClassName[badge.tone ?? 'default']
-                  )}
-                >
-                  {badge.project ? (
-                    <ProjectIcon project={badge.project} size={10} className="text-current" />
-                  ) : badge.icon ? (
-                    <Icon name={badge.icon} size={10} className="shrink-0 text-current" />
-                  ) : null}
-                  <span className="truncate">{badge.label}</span>
-                </span>
-              ))}
-            </div>
-          )}
-        </div>
-
-        {taskCommandRunStatus ? (
-          <button
-            type="button"
-            onClick={(event) => {
-              event.stopPropagation();
-              onCancelTaskCommands();
-            }}
-            onMouseDown={(event) => event.stopPropagation()}
-            disabled={taskCommandRunStatus === 'cancelling'}
-            className={cn(
-              'absolute bottom-1.5 right-1.5 inline-flex h-7 w-7 items-center justify-center rounded-md transition-colors',
-              taskCommandRunStatus === 'cancelling'
-                ? 'cursor-not-allowed text-muted-foreground'
-                : 'text-amber-500 hover:bg-accent/70'
-            )}
-            title={
-              taskCommandRunStatus === 'cancelling'
-                ? t('implement.taskCommandCancelling', 'Cancelling...')
-                : t('implement.cancelTaskCommands', 'Cancel run')
-            }
-          >
-            {taskCommandRunStatus === 'cancelling' ? (
-              <SpinnerIcon size={13} />
-            ) : (
-              <Icon name="x" size={13} />
-            )}
-          </button>
-        ) : showRunTaskCommands ? (
-          <button
-            type="button"
-            onClick={(event) => {
-              event.stopPropagation();
-              onRunTaskCommands();
-            }}
-            onMouseDown={(event) => event.stopPropagation()}
-            disabled={!canRunTaskCommands}
-            className={cn(
-              'absolute bottom-1.5 right-1.5 inline-flex h-7 w-7 items-center justify-center rounded-md transition-colors',
-              canRunTaskCommands
-                ? 'text-emerald-500 hover:bg-accent/70'
-                : 'cursor-not-allowed text-muted-foreground/50'
-            )}
-            title={runTaskCommandsTitle || t('implement.runTaskCommands', 'Run commands')}
-          >
-            <Icon name="play" size={13} />
-          </button>
-        ) : null}
       </div>
 
-      {showMenu && menuPosition && typeof document !== 'undefined'
-        ? createPortal(
-          <div
-            ref={taskMenuRef}
-            role="menu"
-            aria-label={t('implement.taskActions', 'Task actions')}
-            style={{
-              position: 'fixed',
-              top: `${menuPosition.top}px`,
-              left: `${menuPosition.left}px`,
-              width: `${TASK_MENU_WIDTH}px`,
-            }}
-            className="z-[12010] overflow-hidden rounded-lg border border-border bg-popover text-popover-foreground shadow-2xl"
-            onClick={(event) => event.stopPropagation()}
-          >
+      {showMenu && menuPosition && (
+          <SidebarMenu position={menuPosition} onClose={() => setShowMenu(false)} triggerRef={menuButtonRef}
+            aria-label={t('implement.taskActions', 'Task actions')} className="w-52">
+
             {actions.map((action) => (
               <button
                 key={action.key}
@@ -667,7 +591,7 @@ const TaskItem: React.FC<TaskItemProps> = ({
                 disabled={action.disabled}
                 title={action.title}
                 className={cn(
-                  'flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm',
+                  'flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-xs',
                   action.destructive
                     ? 'text-red-500 hover:bg-red-500/10'
                     : 'text-popover-foreground hover:bg-accent',
@@ -678,17 +602,20 @@ const TaskItem: React.FC<TaskItemProps> = ({
                 <span>{action.label}</span>
               </button>
             ))}
-          </div>,
-          document.body
-        )
-        : null}
+          </SidebarMenu>
+        )}
     </div>
   );
 };
 
 const MemoizedTaskItem = React.memo(TaskItem);
 
-const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
+const EMPTY_PROJECT_IDS: readonly string[] = [];
+const TaskQueueBase: React.FC<TaskQueueProps> = ({ className, excludedProjectIds = EMPTY_PROJECT_IDS }) => {
+  const [executionGraphTask, setExecutionGraphTask] = useState<ImplementTask | null>(null);
+  const filterTriggerRef = useRef<HTMLButtonElement>(null);
+  const [filterMenuPosition, setFilterMenuPosition] = useState<SidebarMenuPosition | null>(null);
+  const [panelMenuPosition, setPanelMenuPosition] = useState<SidebarMenuPosition | null>(null);
   const { t } = useTranslation();
   const runtimeCapabilities = getServiceRuntimeCapabilities();
   const {
@@ -800,21 +727,26 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
   const [pendingTaskId, setPendingTaskId] = useState<string | null>(null);
   const startingReviewsRef = useRef(new Set<string>());
   const {
-    implement: { projectId: projectFilter, status: statusFilter, showArchived },
+    implement: { projectId: projectFilter, status: statusFilter, showArchived, showBlockedTasks, showWithoutInteraction },
     setImplementProjectFilter,
     setImplementStatusFilter,
     setImplementShowArchived,
+    setImplementShowBlockedTasks,
+    setImplementShowWithoutInteraction,
     filtersHydrated,
   } = useViewFilterStore(useShallow((state) => ({
     implement: state.implement,
     setImplementProjectFilter: state.setImplementProjectFilter,
     setImplementStatusFilter: state.setImplementStatusFilter,
     setImplementShowArchived: state.setImplementShowArchived,
+    setImplementShowBlockedTasks: state.setImplementShowBlockedTasks,
+    setImplementShowWithoutInteraction: state.setImplementShowWithoutInteraction,
     filtersHydrated: state.isHydrated,
   })));
   const [searchQuery, setSearchQuery] = useState('');
   const [isSearchOpen, setIsSearchOpen] = useState(false);
   const [showCreateTaskDialog, setShowCreateTaskDialog] = useState(false);
+  const [createTaskError, setCreateTaskError] = useState<string | null>(null);
   const [renameTarget, setRenameTarget] = useState<ImplementTask | null>(null);
   const [confirmTarget, setConfirmTarget] = useState<{ task: ImplementTask; action: 'archive' | 'delete' } | null>(null);
   const [taskCommandModal, setTaskCommandModal] = useState<{
@@ -947,13 +879,20 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
       | { kind: 'worktree'; worktree: import('../../services/tauriIpc').GitAvailableWorktreeDto }
       | { kind: 'branch'; branch: import('../../services/tauriIpc').GitAvailableTaskBranchDto };
   }) => {
+    setCreateTaskError(null);
+    const reportCreationError = (message: string, description?: string) => {
+      const localizedMessage = localizeTaskErrorMessage(message, (key, options) => String(t(key, options)));
+      setCreateTaskError([localizedMessage, description].filter(Boolean).join(' '));
+      lastErrorToastRef.current = `no-task:${message}`;
+      notify.error(localizedMessage, description ? { description } : undefined);
+    };
     if (taskMutationDisabled || taskExecutionDisabled) {
-      notify.error(taskExecutionDisabled ? taskExecutionDisabledTitle : taskMutationDisabledTitle);
+      reportCreationError(taskExecutionDisabled ? taskExecutionDisabledTitle : taskMutationDisabledTitle);
       return;
     }
 
     if (isWorkspaceMissing) {
-      notify.error(
+      reportCreationError(
         workspaceState.kind === 'noProjectAvailable'
           ? t('project.emptyWorkspaceTitle', 'Ajoutez un projet pour commencer avec Macro.')
           : t('project.noProjectSelectedTitle', 'Sélectionnez un projet pour continuer.')
@@ -964,7 +903,7 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
     if (pendingTaskId) return;
     const targetProject = getProjectById(projectId) ?? null;
     if (!targetProject || targetProject.isReadOnly) {
-      notify.error(
+      reportCreationError(
         t(
           'implement.manualFeatureMissingProjects',
           'The selected project is not available for implementation.'
@@ -973,7 +912,7 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
       return;
     }
     if (!isStandaloneTaskKindCreatable(taskKind, targetProject.gitFlowSettings)) {
-      notify.error(
+      reportCreationError(
         t(
           'implement.taskKindUnavailableForProject',
           'This task type is not available for the selected project workflow.',
@@ -1085,6 +1024,7 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
               );
               if (persisted?.creationCommitted) creationCommitted = true;
             } catch (journalError) {
+              setCreateTaskError(`${toServiceError(error).message} ${toServiceError(journalError).message}`);
               notify.warning(
                 t('implement.manualFeatureCleanupPending', 'La tâche a été créée, mais la clôture de son journal reste en attente.'),
                 { description: `${toServiceError(error).message} ${toServiceError(journalError).message}` },
@@ -1173,13 +1113,11 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
           setSelectedTask(null);
           const message = toServiceError(error).message
             || t('implement.manualFeatureCreateFailed', 'Failed to create manual feature.');
-          notify.error(message, {
-            description: cleanupErrors.length > 0 ? cleanupErrors.join(' ') : undefined,
-          });
+          reportCreationError(message, cleanupErrors.length > 0 ? cleanupErrors.join(' ') : undefined);
         }
       });
     } catch (error) {
-      notify.error(toServiceError(error).message);
+      reportCreationError(toServiceError(error).message);
     } finally {
       releaseManualFeatureCreation(taskId);
       setPendingTaskId((current) => (current === taskId ? null : current));
@@ -1325,8 +1263,8 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
   }, [getProjectById, mergeWorkflowRuntimeByTaskId, reviewRepositoryModes, t]);
 
   const availableProjects = useMemo(
-    () => getAllProjects(projectGroups, standaloneProjects),
-    [projectGroups, standaloneProjects]
+    () => getAllProjects(projectGroups, standaloneProjects).filter(project => !excludedProjectIds.includes(project.id)),
+    [projectGroups, standaloneProjects, excludedProjectIds]
   );
 
   const retargetTaskForCurrentScope = useCallback(
@@ -1419,15 +1357,44 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
     t,
   ]);
 
+  const runningTaskIds = useMemo(
+    () =>
+      resolveRunningTaskIds({
+        conversations,
+        tasks,
+        selectedConversationId,
+        selectedTaskId,
+        conversationRuntimeById,
+        conversationCompactionStatusById,
+      }),
+    [
+      conversationCompactionStatusById,
+      conversationRuntimeById,
+      conversations,
+      selectedConversationId,
+      selectedTaskId,
+      tasks,
+    ]
+  );
+
+  const { attentionByTaskId, resolvedWaitTaskIds } = useMemo(() => resolveTaskQueueSupervision({
+    tasks, conversations, requestStateByConversationId: Object.fromEntries(JSON.parse(requestSignature)),
+    questionnaireDraftsByConversationId: {}, pendingToolApprovalByConversationId, runningTaskIds, mergeWorkflowRuntimeByTaskId,
+  }), [tasks, conversations, requestSignature, pendingToolApprovalByConversationId, runningTaskIds, mergeWorkflowRuntimeByTaskId]);
+
+  const queueVisibleTasks = useMemo(() => visibleTaskQueueTasks(tasks, {
+    showBlockedTasks, showWithoutInteraction, showArchived, runningTaskIds, attentionByTaskId, mergeWorkflowRuntimeByTaskId,
+  }), [tasks, showBlockedTasks, showWithoutInteraction, showArchived, runningTaskIds, attentionByTaskId, mergeWorkflowRuntimeByTaskId]);
+
   const projectFilterOptions = useMemo<TaskProjectFilterOption[]>(
     () => availableProjects.map((project) => ({
       id: project.id,
       name: project.name,
       path: project.path,
       groupName: getProjectGroupByProjectId(projectGroups, project.id)?.name ?? null,
-      taskCount: tasks.filter((task) =>
+      taskCount: queueVisibleTasks.filter((task) =>
         !task.archived_at &&
-        task.status !== 'Completed' &&
+        (task.status !== 'Completed' || !!task.workflow_execution?.runAttention) &&
         taskMatchesProjectId(task, project.id)
       ).length,
       isReadOnly: Boolean(project.isReadOnly),
@@ -1435,7 +1402,7 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
       gitSetupState: project.gitSetupState,
       gitFlowSettings: project.gitFlowSettings,
     })),
-    [availableProjects, projectGroups, tasks]
+    [availableProjects, projectGroups, queueVisibleTasks]
   );
   const editableProjectOptions = useMemo(
     () => projectFilterOptions.filter((project) => !project.isReadOnly),
@@ -1479,42 +1446,17 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
     setImplementProjectFilter,
   ]);
 
-  const runningTaskIds = useMemo(
-    () =>
-      resolveRunningTaskIds({
-        conversations,
-        tasks,
-        selectedConversationId,
-        selectedTaskId,
-        conversationRuntimeById,
-        conversationCompactionStatusById,
-      }),
-    [
-      conversationCompactionStatusById,
-      conversationRuntimeById,
-      conversations,
-      selectedConversationId,
-      selectedTaskId,
-      tasks,
-    ]
-  );
-
-  const { attentionByTaskId, resolvedWaitTaskIds } = useMemo(() => resolveTaskQueueSupervision({
-    tasks, conversations, requestStateByConversationId: Object.fromEntries(JSON.parse(requestSignature)),
-    questionnaireDraftsByConversationId: {}, pendingToolApprovalByConversationId, runningTaskIds, mergeWorkflowRuntimeByTaskId,
-  }), [tasks, conversations, requestSignature, pendingToolApprovalByConversationId, runningTaskIds, mergeWorkflowRuntimeByTaskId]);
-
   const projectFilteredTasks = useMemo(() => {
     if (projectFilter === ALL_PROJECTS_FILTER) {
-      return tasks;
+      return queueVisibleTasks;
     }
-    return tasks.filter((task) => taskMatchesProjectId(task, projectFilter));
-  }, [projectFilter, tasks]);
+    return queueVisibleTasks.filter((task) => taskMatchesProjectId(task, projectFilter));
+  }, [projectFilter, queueVisibleTasks]);
   const taskQueueStatusGroupById = useMemo(
     () => new Map(
       projectFilteredTasks.map((task) => [
         task.id,
-        resolveTaskQueueStatusGroup(
+        task.workflow_execution?.runAttention ? 'waiting' : resolveTaskQueueStatusGroup(
           task.status,
           task.is_blocked,
           resolveTaskMergeWorkflowPresentationState(
@@ -1531,39 +1473,18 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
     [attentionByTaskId, resolvedWaitTaskIds, mergeWorkflowRuntimeByTaskId, projectFilteredTasks, runningTaskIds]
   );
   const totalActiveTaskCount = useMemo(
-    () => tasks.filter((task) => !task.archived_at && task.status !== 'Completed').length,
-    [tasks]
+    () => queueVisibleTasks.filter((task) => !task.archived_at && (task.status !== 'Completed' || !!task.workflow_execution?.runAttention)).length,
+    [queueVisibleTasks]
   );
 
-  const statusCounts = useMemo(() => {
-    const activeTasks = projectFilteredTasks.filter((task) => !task.archived_at && (!task.draft || attentionByTaskId.has(task.id)));
-    return {
-      attention: activeTasks.filter((task) => attentionByTaskId.has(task.id)).length,
-      ready: activeTasks.filter((task) =>
-        taskQueueStatusGroupById.get(task.id) === 'ready'
-      ).length,
-      in_progress: activeTasks.filter((task) =>
-        taskQueueStatusGroupById.get(task.id) === 'in_progress'
-      ).length,
-      waiting: activeTasks.filter(
-        (task) => taskQueueStatusGroupById.get(task.id) === 'waiting'
-      ).length,
-      blocked: activeTasks.filter(
-        (task) => taskQueueStatusGroupById.get(task.id) === 'blocked'
-      ).length,
-      failed: activeTasks.filter(
-        (task) => taskQueueStatusGroupById.get(task.id) === 'failed'
-      ).length,
-    };
-  }, [attentionByTaskId, projectFilteredTasks, taskQueueStatusGroupById]);
+  const taskLanes = useMemo(() => groupTaskQueueLanes(projectFilteredTasks, taskQueueStatusGroupById, true), [projectFilteredTasks, taskQueueStatusGroupById]);
+  const laneByTaskId = useMemo(() => new Map(Object.entries(taskLanes).flatMap(([lane, items]) => items.map(task => [task.id, lane as TaskQueueLane] as const))), [taskLanes]);
+  const statusCounts = useMemo(() => ({ ready: taskLanes.ready.length, in_progress: taskLanes.in_progress.length, waiting: taskLanes.waiting.length, completed: taskLanes.completed.length }), [taskLanes]);
 
   const filteredTasks = useMemo(() => {
-    if (showArchived || statusFilter === 'all') return projectFilteredTasks;
-    return projectFilteredTasks.filter((task) => {
-      return statusFilter === 'attention' ? attentionByTaskId.has(task.id)
-        : taskQueueStatusGroupById.get(task.id) === statusFilter;
-    });
-  }, [attentionByTaskId, projectFilteredTasks, showArchived, statusFilter, taskQueueStatusGroupById]);
+    if (statusFilter === 'all') return projectFilteredTasks;
+    return projectFilteredTasks.filter(task => laneByTaskId.get(task.id) === statusFilter);
+  }, [projectFilteredTasks, statusFilter, laneByTaskId]);
 
   const getTaskPlanLabel = (task: ImplementTask): string => {
     if (task.task_source === 'standalone') {
@@ -1585,6 +1506,7 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
   };
 
   const canRunTaskCommandsForTask = (task: ImplementTask): boolean =>
+    task.task_source !== 'agsdl' &&
     !isPlanFinalizationTask(task) &&
     !taskCommandsDisabled &&
     !isManualDraftPendingInitialization(task) &&
@@ -1773,7 +1695,7 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
 
   const buildTaskActions = (task: ImplementTask): TaskActionDescriptor[] => {
     if (isPlanFinalizationTask(task)) {
-      return [];
+      return [{ key: 'execution_graph', label: t('implement.viewExecutionGraph', 'View workflow'), icon: 'workflow' }];
     }
 
     const capabilities = getTaskLifecycleCapabilities(
@@ -1782,29 +1704,19 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
     );
     const archived = Boolean(task.archived_at);
     const actions: TaskActionDescriptor[] = [
-      {
-        key: 'project_settings',
-        label: t('project.projectSettings', 'Paramètres du projet'),
-        icon: 'settings',
-        disabled: taskCommandsDisabled,
-        title: taskCommandsDisabled ? taskCommandsDisabledTitle : undefined,
-      },
-      {
-        key: 'rename',
-        label: t('common.rename', 'Rename'),
-        icon: 'edit',
-        disabled: taskMutationDisabled,
-        title: taskMutationDisabled ? taskMutationDisabledTitle : undefined,
-      },
+      { key: 'execution_graph', label: t('implement.viewExecutionGraph', 'View workflow'), icon: 'workflow' },
     ];
+    if (capabilities.canRename) actions.push({
+      key: 'rename',
+      label: t('common.rename', 'Rename'),
+      icon: 'edit',
+      disabled: taskMutationDisabled,
+      title: taskMutationDisabled ? taskMutationDisabledTitle : undefined,
+    });
 
-    if (!archived && !task.draft && ['InProgress', 'AwaitingResponse'].includes(task.status)) {
+    if (task.task_source !== 'agsdl' && !archived && !task.draft && ['InProgress', 'AwaitingResponse'].includes(task.status)) {
       const reason = getStartReviewDisabledReason(task);
       actions.push({ key: 'start_review', label: t('implement.startReview', 'Start review'), icon: 'eye', disabled: Boolean(reason), title: reason });
-    }
-
-    if (getWorktreeDiagnosticTargets(task, getProjectById).length > 0) {
-      actions.push({ key: 'worktree_diagnostic', label: t('implement.worktreeDiagnostic.title'), icon: 'folder-git-2' });
     }
 
     if (capabilities.canReopen) {
@@ -1837,6 +1749,18 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
       });
     }
 
+    actions.push({
+      key: 'project_settings',
+      label: t('project.projectSettings', 'Paramètres du projet'),
+      icon: 'settings',
+      disabled: taskCommandsDisabled,
+      title: taskCommandsDisabled ? taskCommandsDisabledTitle : undefined,
+    });
+
+    if (getWorktreeDiagnosticTargets(task, getProjectById).length > 0) {
+      actions.push({ key: 'worktree_diagnostic', label: t('implement.worktreeDiagnostic.title'), icon: 'folder-git-2' });
+    }
+
     if (!archived && capabilities.canArchive) {
       actions.push({
         key: 'archive',
@@ -1865,6 +1789,7 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
   };
 
   const handleTaskAction = async (task: ImplementTask, action: TaskActionKey) => {
+    if (action === 'execution_graph') { setExecutionGraphTask(task); return; }
     if (action === 'start_review') {
       if (startingReviewsRef.current.has(task.id)) return;
       const chat = useChatStore.getState();
@@ -1944,6 +1869,10 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
       } else if (action === 'reopen') {
         await reopenTask(task.id);
       }
+    } catch (error) {
+      const message = toServiceError(error).message;
+      lastErrorToastRef.current = `${task.id}:${message}`;
+      notify.error(localizeTaskErrorMessage(message, (key, options) => String(t(key, options))));
     } finally {
       setPendingTaskId((current) => (current === task.id ? null : current));
     }
@@ -2042,16 +1971,9 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
     );
   }
 
-  const visibleTasks = useMemo(() => {
-    if (showArchived) {
-      return filteredTasks.filter((task) => Boolean(task.archived_at));
-    }
-    return filteredTasks.filter((task) => !task.archived_at);
-  }, [filteredTasks, showArchived]);
-
   const searchedTasks = useMemo(
-    () => filterTasksByQuery(visibleTasks, searchQuery),
-    [searchQuery, visibleTasks],
+    () => filterTasksByQuery(filteredTasks, searchQuery),
+    [searchQuery, filteredTasks],
   );
 
   const draftTasks = useMemo(
@@ -2059,63 +1981,15 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
     [searchedTasks]
   );
 
-  const readyTasks = useMemo(() => {
-    return [...searchedTasks]
-      .filter((task) => {
-        const statusGroup = taskQueueStatusGroupById.get(task.id) ?? 'other';
-        return (
-          !task.draft &&
-          !task.archived_at &&
-          statusGroup !== 'blocked' &&
-          statusGroup !== 'failed' &&
-          task.status !== 'Completed'
-        );
-      })
-      .sort((a, b) => {
-        const byStatus =
-          (readyStatusOrder[a.status] ?? Number.MAX_SAFE_INTEGER) -
-          (readyStatusOrder[b.status] ?? Number.MAX_SAFE_INTEGER);
-        if (byStatus !== 0) return byStatus;
-        return a.sequence_index - b.sequence_index;
-      });
+  const tasksByStatusGroup = useMemo(() => {
+    const groups = groupTaskQueueLanes(searchedTasks, taskQueueStatusGroupById, true);
+    Object.values(groups).forEach(group => group.sort((a, b) => {
+      const byStatus = (readyStatusOrder[a.status] ?? Number.MAX_SAFE_INTEGER) - (readyStatusOrder[b.status] ?? Number.MAX_SAFE_INTEGER);
+      return byStatus || a.sequence_index - b.sequence_index;
+    }));
+    return groups;
   }, [searchedTasks, taskQueueStatusGroupById]);
 
-  const blockedTasks = useMemo(() => {
-    return [...searchedTasks]
-      .filter((task) =>
-        !task.draft &&
-        !task.archived_at &&
-        taskQueueStatusGroupById.get(task.id) === 'blocked'
-      )
-      .sort((a, b) => a.sequence_index - b.sequence_index);
-  }, [searchedTasks, taskQueueStatusGroupById]);
-
-  const failedTasks = useMemo(() => {
-    return [...searchedTasks]
-      .filter((task) =>
-        !task.draft &&
-        !task.archived_at &&
-        taskQueueStatusGroupById.get(task.id) === 'failed'
-      )
-      .sort((a, b) => a.sequence_index - b.sequence_index);
-  }, [searchedTasks, taskQueueStatusGroupById]);
-
-  const completedTasks = useMemo(() => {
-    return [...searchedTasks]
-      .filter((task) =>
-        !task.draft &&
-        !task.archived_at &&
-        task.status === 'Completed' &&
-        taskQueueStatusGroupById.get(task.id) === 'other'
-      )
-      .sort((a, b) => a.sequence_index - b.sequence_index);
-  }, [searchedTasks, taskQueueStatusGroupById]);
-
-  const archivedTasks = useMemo(() => {
-    return [...searchedTasks]
-      .filter((task) => Boolean(task.archived_at))
-      .sort((a, b) => a.sequence_index - b.sequence_index);
-  }, [searchedTasks]);
   const multiRepoPresentationByTaskId = useMemo(() => {
     const map = new Map<string, MultiRepoTaskPresentation | null>();
     searchedTasks.forEach((task) => {
@@ -2130,141 +2004,13 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
     return map;
   }, [buildMultiRepoPresentation, liveReviewSummary, reviewCurrentTaskId, reviewLoadState, reviewIsLoading, searchedTasks]);
   const taskListRows = useMemo<TaskListRow[]>(() => {
-    const rows: TaskListRow[] = [];
-
-    if (showArchived) {
-      if (archivedTasks.length > 0) {
-        rows.push({
-          kind: 'section',
-          id: 'section:archived',
-          title: t('common.archive', 'Archive'),
-          count: archivedTasks.length,
-          tone: 'default',
-        });
-        archivedTasks.forEach((task) => {
-          rows.push({
-            kind: 'task',
-            id: `task:${task.id}`,
-            task,
-            multiRepoPresentation: multiRepoPresentationByTaskId.get(task.id) ?? null,
-          });
-        });
-      }
-
-      return rows;
-    }
-
-    if (statusFilter === 'attention') {
-      rows.push({ kind: 'section', id: 'section:attention', title: t('implement.statusAttention', 'Needs attention'), count: searchedTasks.length });
-      searchedTasks.forEach((task) => rows.push({
-        kind: 'task', id: `task:${task.id}`, task,
-        multiRepoPresentation: multiRepoPresentationByTaskId.get(task.id) ?? null,
-      }));
-      return rows;
-    }
-
-    if (draftTasks.length > 0) {
-      rows.push({
-        kind: 'section',
-        id: 'section:drafts',
-        title: t('implement.manualFeatureDrafts', 'Draft features'),
-        count: draftTasks.length,
-        tone: 'draft',
-      });
-      draftTasks.forEach((task) => {
-        rows.push({
-          kind: 'task',
-          id: `task:${task.id}`,
-          task,
-          multiRepoPresentation: null,
-        });
-      });
-    }
-
-    rows.push({
-      kind: 'section',
-      id: 'section:ready',
-      title: t('implement.readyTasks', 'Ready tasks'),
-      count: readyTasks.length,
-      tone: 'default',
-    });
-    readyTasks.forEach((task) => {
-      rows.push({
-        kind: 'task',
-        id: `task:${task.id}`,
-        task,
-        multiRepoPresentation: multiRepoPresentationByTaskId.get(task.id) ?? null,
-      });
-    });
-
-    if (blockedTasks.length > 0) {
-      rows.push({
-        kind: 'section',
-        id: 'section:blocked',
-        title: t('implement.blockedTasks', 'Blocked tasks'),
-        count: blockedTasks.length,
-        tone: 'default',
-      });
-      blockedTasks.forEach((task) => {
-        rows.push({
-          kind: 'task',
-          id: `task:${task.id}`,
-          task,
-          multiRepoPresentation: multiRepoPresentationByTaskId.get(task.id) ?? null,
-        });
-      });
-    }
-
-    if (failedTasks.length > 0) {
-      rows.push({
-        kind: 'section',
-        id: 'section:failed',
-        title: t('implement.failedTasks', 'Failed tasks'),
-        count: failedTasks.length,
-        tone: 'default',
-      });
-      failedTasks.forEach((task) => {
-        rows.push({
-          kind: 'task',
-          id: `task:${task.id}`,
-          task,
-          multiRepoPresentation: multiRepoPresentationByTaskId.get(task.id) ?? null,
-        });
-      });
-    }
-
-    if (completedTasks.length > 0) {
-      rows.push({
-        kind: 'section',
-        id: 'section:completed',
-        title: t('implement.completedTasks', 'Completed tasks'),
-        count: completedTasks.length,
-        tone: 'success',
-      });
-      completedTasks.forEach((task) => {
-        rows.push({
-          kind: 'task',
-          id: `task:${task.id}`,
-          task,
-          multiRepoPresentation: multiRepoPresentationByTaskId.get(task.id) ?? null,
-        });
-      });
-    }
-
-    return rows;
-  }, [
-    archivedTasks,
-    blockedTasks,
-    completedTasks,
-    draftTasks,
-    failedTasks,
-    multiRepoPresentationByTaskId,
-    readyTasks,
-    searchedTasks,
-    statusFilter,
-    showArchived,
-    t,
-  ]);
+    const orderedTasks = [...draftTasks, ...TASK_QUEUE_LANES.flatMap(lane => tasksByStatusGroup[lane])];
+    return orderedTasks.map(task => ({
+      id: `task:${task.id}`,
+      task,
+      multiRepoPresentation: task.draft ? null : multiRepoPresentationByTaskId.get(task.id) ?? null,
+    }));
+  }, [draftTasks, multiRepoPresentationByTaskId, tasksByStatusGroup]);
   const getTaskListRowKey = useCallback((row: TaskListRow) => row.id, []);
   const {
     parentRef: taskListRef,
@@ -2274,7 +2020,7 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
   } = useVirtualList({
     items: taskListRows,
     getItemKey: getTaskListRowKey,
-    estimateSize: 112,
+    estimateSize: 96,
     overscan: 8,
     dynamicHeight: true,
     gap: 8,
@@ -2491,12 +2237,38 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
     taskErrorMatchesSelection,
   ]);
 
+  const openPanelMenu = (event: React.MouseEvent<HTMLElement>) => {
+    if (isSidebarTextInput(event.target)) return;
+    event.preventDefault(); event.stopPropagation(); setPanelMenuPosition(sidebarMenuPosition(event));
+  };
+  const panelMenu = panelMenuPosition && <SidebarMenu position={panelMenuPosition} onClose={() => setPanelMenuPosition(null)} aria-label={t('implement.tasks', 'Tasks')} className="w-52">
+        <button role="menuitem" type="button" disabled={Boolean(pendingTaskId) || editableProjectOptions.length === 0 || taskMutationDisabled || taskExecutionDisabled}
+          onClick={() => { setPanelMenuPosition(null); setCreateTaskError(null); setShowCreateTaskDialog(true); }} className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left hover:bg-accent disabled:opacity-50"><Icon name="plus" size={12} />{import.meta.env.DEV && import.meta.env.VITE_MACRO_DEMO === '1' ? t('implement.launchWorkflow', 'Launch a workflow') : t('implement.createStandaloneTask', 'Créer une tâche indépendante')}</button>
+        <button role="menuitem" type="button" onClick={() => { setPanelMenuPosition(null); openProjectNavigator(); }} className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left hover:bg-accent"><Icon name="settings" size={12} />{t('implement.manageProjects', 'Manage projects')}</button>
+      </SidebarMenu>;
+
+  const filterMenu = filterMenuPosition && <SidebarMenu position={filterMenuPosition} triggerRef={filterTriggerRef}
+    onClose={() => setFilterMenuPosition(null)} aria-label={t('implement.taskFilters', 'Task filters')} className="w-64">
+    {([
+      ['archive', t('implement.archives', 'Archives'), showArchived, setImplementShowArchived],
+      ['cpu', t('implement.tasksWithoutInteraction', 'Without interaction'), showWithoutInteraction, setImplementShowWithoutInteraction],
+      ['lock', t('implement.blockedTasks', 'Blocked tasks'), showBlockedTasks, setImplementShowBlockedTasks],
+    ] as const).map(([icon, label, checked, onChange]) => <button key={icon} role="menuitemcheckbox" aria-checked={checked} type="button"
+      onClick={event => { onChange(!checked); event.currentTarget.focus(); }}
+      className="flex w-full items-center gap-2 rounded px-2 py-2 text-left hover:bg-accent">
+      <Icon name={icon} size={14} className="text-muted-foreground" /><span className="flex-1">{label}</span>
+      <Icon name={checked ? 'check-square' : 'square'} size={14} className={checked ? 'text-primary' : 'text-muted-foreground'} />
+    </button>)}
+  </SidebarMenu>;
+
   if (isWorkspaceMissing) {
     return (
       <aside
         className={cn('h-full w-full bg-card border-r border-border flex items-center justify-center', className)}
         data-tour-id="implement-task-panel"
+        onContextMenu={openPanelMenu}
       >
+        {panelMenu}
         <ProjectWorkspaceEmptyState
           stateKind={workspaceState.kind}
           variant="secondary"
@@ -2510,7 +2282,10 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
     <aside
       className={cn('h-full w-full bg-card border-r border-border flex flex-col', className)}
       data-tour-id="implement-task-panel"
+      onContextMenu={openPanelMenu}
     >
+      {panelMenu}
+      {filterMenu}
       <div className="h-12 border-b border-border flex items-center justify-between gap-2 px-4">
         {isSearchOpen ? (
           <SearchBar
@@ -2547,15 +2322,8 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
           {!isSearchOpen && (
             <>
           <PanelHeaderIconButton
-            icon="archive"
-            label={t('implement.archives', 'Archives')}
-            pressed={showArchived}
-            onClick={() => setImplementShowArchived(!showArchived)}
-            data-tour-id="implement-archive-toggle"
-          />
-          <PanelHeaderIconButton
             icon="plus"
-            onClick={() => setShowCreateTaskDialog(true)}
+            onClick={() => { setCreateTaskError(null); setShowCreateTaskDialog(true); }}
             data-tour-id="implement-create-task"
             disabled={
               Boolean(pendingTaskId) ||
@@ -2574,14 +2342,19 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
                         'implement.readOnlyOnlyAction',
                         'At least one editable repository is required to create a standalone feature.'
                       )
-                    : t('implement.createStandaloneTask', 'Créer une tâche indépendante')
+                    : import.meta.env.DEV && import.meta.env.VITE_MACRO_DEMO === '1'
+                      ? t('implement.launchWorkflow', 'Launch a workflow')
+                      : t('implement.createStandaloneTask', 'Créer une tâche indépendante')
             }
           />
           <PanelHeaderIconButton
-            icon="settings"
-            label={t('implement.manageProjects', 'Manage projects')}
-            onClick={openProjectNavigator}
-            data-tour-id="implement-manage-projects"
+            ref={filterTriggerRef}
+            icon="list-filter"
+            label={t('implement.taskFilters', 'Task filters')}
+            pressed={showArchived || showBlockedTasks || !showWithoutInteraction}
+            onClick={event => { const rect = event.currentTarget.getBoundingClientRect(); setFilterMenuPosition(current => current ? null : { left: rect.right - 256, top: rect.bottom + 4 }); }}
+            aria-haspopup="menu" aria-expanded={Boolean(filterMenuPosition)}
+            data-tour-id="implement-task-filters"
           />
             </>
           )}
@@ -2598,18 +2371,15 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
           }}
         />
 
-        {!showArchived && (
-          <div
+        <div
             className="mt-2.5 grid grid-cols-[repeat(auto-fit,minmax(min(100%,6.5rem),1fr))] gap-1.5"
             aria-label={t('implement.taskStatusSummary', 'Task status summary')}
           >
             {([
-              ['attention', t('implement.statusAttention', 'Needs attention'), statusCounts.attention, 'bg-amber-400'],
-              ['ready', t('implement.statusReady', 'Ready'), statusCounts.ready, 'bg-emerald-400'],
-              ['in_progress', t('implement.statusInProgress', 'In progress'), statusCounts.in_progress, 'bg-sky-400'],
-              ['waiting', t('implement.statusWaiting', 'Needs reply'), statusCounts.waiting, 'bg-amber-400'],
-              ['blocked', t('implement.statusBlocked', 'Blocked'), statusCounts.blocked, 'bg-red-400'],
-              ['failed', t('implement.failed', 'Failed'), statusCounts.failed, 'bg-rose-500'],
+              ['ready', t('implement.queueToLaunch', 'To launch'), statusCounts.ready, 'bg-muted-foreground'],
+              ['waiting', t('implement.queueWaiting', 'Waiting'), statusCounts.waiting, 'bg-amber-400'],
+              ['in_progress', t('implement.queueInProgress', 'In progress'), statusCounts.in_progress, 'bg-sky-400'],
+              ['completed', t('implement.queueCompleted', 'Completed'), statusCounts.completed, 'bg-emerald-500'],
             ] as const).map(([filter, label, count, dotClassName]) => (
               <button
                 key={filter}
@@ -2630,20 +2400,36 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
               </button>
             ))}
           </div>
-        )}
       </div>
+
+      {executionGraphTask && (
+        <React.Suspense fallback={null}>
+          <TaskExecutionGraphDialog
+            task={executionGraphTask}
+            onClose={() => setExecutionGraphTask(null)}
+          />
+        </React.Suspense>
+      )}
 
       {showCreateTaskDialog && (
         <React.Suspense fallback={null}>
-          <CreateImplementTaskDialog
-            projects={projectFilterOptions}
-            initialProjectId={null}
-            isCreating={Boolean(pendingTaskId)}
-            onClose={() => {
-              if (!pendingTaskId) setShowCreateTaskDialog(false);
-            }}
-            onCreate={(input) => void handleCreateManualFeature(input)}
-          />
+          {import.meta.env.DEV && import.meta.env.VITE_MACRO_DEMO === '1' ? (
+            <DemoBlueprintLaunchDialog
+              projects={projectFilterOptions}
+              onClose={() => setShowCreateTaskDialog(false)}
+            />
+          ) : (
+            <CreateImplementTaskDialog
+              projects={projectFilterOptions}
+              initialProjectId={null}
+              isCreating={Boolean(pendingTaskId)}
+              creationError={createTaskError}
+              onClose={() => {
+                if (!pendingTaskId) setShowCreateTaskDialog(false);
+              }}
+              onCreate={(input) => void handleCreateManualFeature(input)}
+            />
+          )}
         </React.Suspense>
       )}
 
@@ -2678,56 +2464,37 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
                     className="absolute left-0 top-0 w-full"
                     style={{ transform: `translateY(${virtualRow.start}px)` }}
                   >
-                    {row.kind === 'section' ? (
-                      <div className="flex h-7 items-center justify-between gap-3 px-1">
-                        <h2
-                          className={cn(
-                            'truncate whitespace-nowrap text-xs font-semibold uppercase tracking-wide',
-                            row.tone === 'draft'
-                              ? 'text-sky-400'
-                              : row.tone === 'success'
-                                ? 'text-emerald-500'
-                                : 'text-foreground/80'
-                          )}
-                        >
-                          {row.title}
-                        </h2>
-                        <span className="shrink-0 text-xs tabular-nums text-muted-foreground">
-                          {row.count}
-                        </span>
-                      </div>
-                    ) : (
-                      <MemoizedTaskItem
-                        task={row.task}
-                        mergeWorkflowRuntime={mergeWorkflowRuntimeByTaskId[row.task.id] ?? null}
-                        multiRepoPresentation={row.multiRepoPresentation}
-                        attention={attentionByTaskId.get(row.task.id)}
-                        hasResolvedUserRequest={resolvedWaitTaskIds.has(row.task.id)}
-                        isSelected={selectedTaskId === row.task.id}
-                        project={getProjectById(row.task.project_id) ?? null}
-                        planLabel={getTaskPlanLabel(row.task)}
-                        planKind={planKindsById.get(row.task.plan_id) ?? null}
-                        isAssistantRunning={runningTaskIds.has(row.task.id)}
-                        taskCommandRunStatus={taskCommandRuns[row.task.id]?.status ?? null}
-                        canRunTaskCommands={canRunTaskCommandsForTask(row.task)}
-                        showRunTaskCommands={!isPlanFinalizationTask(row.task)}
-                        runTaskCommandsTitle={getRunTaskCommandsTitle(row.task)}
-                        onSelect={() => {
-                          const attention = attentionByTaskId.get(row.task.id);
-                          void activateTask(row.task.id).then(async () => {
-                            if (attention?.conversationId &&
-                              useAppStore.getState().mode === 'Implement' &&
-                              useAppStore.getState().selectedTaskId === row.task.id) {
-                              await selectConversation(attention.conversationId);
-                            }
-                          });
-                        }}
-                        onRunTaskCommands={() => void handleRunTaskCommands(row.task)}
-                        onCancelTaskCommands={() => void cancelTaskCommands(row.task.id)}
-                        actions={buildTaskActions(row.task)}
-                        onAction={(action) => void handleTaskAction(row.task, action)}
-                      />
-                    )}
+                    <MemoizedTaskItem
+                      task={row.task}
+                      mergeWorkflowRuntime={mergeWorkflowRuntimeByTaskId[row.task.id] ?? null}
+                      multiRepoPresentation={row.multiRepoPresentation}
+                      attention={attentionByTaskId.get(row.task.id)}
+                      hasResolvedUserRequest={resolvedWaitTaskIds.has(row.task.id)}
+                      isSelected={selectedTaskId === row.task.id}
+                      project={getProjectById(row.task.project_id) ?? null}
+                      planLabel={getTaskPlanLabel(row.task)}
+                      planKind={planKindsById.get(row.task.plan_id) ?? null}
+                      isAssistantRunning={runningTaskIds.has(row.task.id)}
+                      taskCommandRunStatus={taskCommandRuns[row.task.id]?.status ?? null}
+                      canRunTaskCommands={canRunTaskCommandsForTask(row.task)}
+                      showRunTaskCommands={row.task.task_source !== 'agsdl' && !isPlanFinalizationTask(row.task)}
+                      runTaskCommandsTitle={getRunTaskCommandsTitle(row.task)}
+                      onSelect={() => {
+                        if (row.task.task_source === 'agsdl') { setExecutionGraphTask(row.task); return; }
+                        const attention = attentionByTaskId.get(row.task.id);
+                        void activateTask(row.task.id).then(async () => {
+                          if (attention?.conversationId &&
+                            useAppStore.getState().mode === 'Implement' &&
+                            useAppStore.getState().selectedTaskId === row.task.id) {
+                            await selectConversation(attention.conversationId);
+                          }
+                        });
+                      }}
+                      onRunTaskCommands={() => void handleRunTaskCommands(row.task)}
+                      onCancelTaskCommands={() => void cancelTaskCommands(row.task.id)}
+                      actions={buildTaskActions(row.task)}
+                      onAction={(action) => void handleTaskAction(row.task, action)}
+                    />
                   </div>
                 );
               })}
@@ -2736,7 +2503,15 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
         )}
       </div>
 
-      {diagnostic && <WorktreeDiagnosticsDialog entries={diagnostic.entries} repairDisabled={taskMutationDisabled || runningTaskIds.has(diagnostic.task.id) || tasks.some((task) => task.id === diagnostic.task.id && (task.status === 'InProgress' || task.status === 'AwaitingResponse')) || Boolean(diagnostic.task.archived_at)} onClose={() => setDiagnostic(null)} />}
+      {diagnostic && (
+        <React.Suspense fallback={null}>
+          <WorktreeDiagnosticsDialog
+            entries={diagnostic.entries}
+            repairDisabled={taskMutationDisabled || runningTaskIds.has(diagnostic.task.id) || tasks.some((task) => task.id === diagnostic.task.id && (task.status === 'InProgress' || task.status === 'AwaitingResponse')) || Boolean(diagnostic.task.archived_at)}
+            onClose={() => setDiagnostic(null)}
+          />
+        </React.Suspense>
+      )}
       {taskCommandModal && (
         <React.Suspense fallback={null}>
           <TaskProjectCommandsModal
@@ -2813,6 +2588,8 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
                 try {
                   await renameTask(renameTarget.id, value || '');
                   setRenameTarget(null);
+                } catch (error) {
+                  notify.error(toServiceError(error).message);
                 } finally {
                   setPendingTaskId((current) => (current === renameTarget.id ? null : current));
                 }

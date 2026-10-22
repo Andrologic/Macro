@@ -80,6 +80,9 @@ impl CommandError {
             return Some(error.code());
         }
         // Compatibility for historical string-only producers outside the typed paths.
+        if self.message.starts_with("Web fetch destination blocked:") {
+            return Some("WEB_FETCH_DESTINATION_BLOCKED");
+        }
         if self.message.contains("Revision conflict:") {
             return Some("REVISION_CONFLICT");
         }

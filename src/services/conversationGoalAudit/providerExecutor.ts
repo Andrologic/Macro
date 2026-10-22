@@ -1,3 +1,4 @@
+import { StreamStopUnconfirmedError, preserveStreamStopError } from "../ai/streamCancellation";
 import type { StreamingChatOptions, StreamCompletionResult } from "../streamingChat";
 import { streamChat } from "../streamingChat";
 import { stripThinkingBlocksForModel } from "../ai/chatCompletionsCodec";
@@ -75,34 +76,35 @@ const hasValidChildBinding = (
 
 const abortError = (): DOMException => new DOMException("Aborted", "AbortError");
 
-const awaitAbortable = <T>(signal: AbortSignal, start: () => T | Promise<T>): Promise<T> =>
-  new Promise<T>((resolve, reject) => {
-    if (signal.aborted) {
-      reject(abortError());
-      return;
+// A rejected receipt is still missing proof. Keep the child slot reserved;
+// returning any error here would let SubagentRuntime admit its successor.
+const awaitStopReceipt = async (error: StreamStopUnconfirmedError): Promise<void> => {
+  try { await error.whenStopped; }
+  catch (failure) {
+    error.secondaryErrors.push(failure instanceof Error ? failure : new Error(String(failure)));
+    await new Promise<void>(() => {});
+  }
+};
+
+// Admission and streaming ports own work until their promise settles. A signal
+// revokes the next effect immediately; racing it against the promise would let
+// a child owner disappear while its provider or conversation write continues.
+const awaitOwned = async <T>(signal: AbortSignal, start: () => T | Promise<T>): Promise<T> => {
+  if (signal.aborted) throw abortError();
+  try {
+    const value = await start();
+    if (signal.aborted) throw abortError();
+    return value;
+  } catch (error) {
+    if (error instanceof StreamStopUnconfirmedError) {
+      // A child slot cannot be released by an unconfirmed cancellation error.
+      // Keep the typed error until a later receipt proves local task completion.
+      await awaitStopReceipt(error);
+      throw error;
     }
-    let settled = false;
-    const finish = (settle: () => void) => {
-      if (settled) return;
-      settled = true;
-      signal.removeEventListener("abort", onAbort);
-      settle();
-    };
-    const onAbort = () => finish(() => reject(abortError()));
-    signal.addEventListener("abort", onAbort, { once: true });
-    if (signal.aborted) {
-      onAbort();
-      return;
-    }
-    try {
-      Promise.resolve(start()).then(
-        (value) => finish(() => signal.aborted ? reject(abortError()) : resolve(value)),
-        (error) => finish(() => reject(signal.aborted ? abortError() : error)),
-      );
-    } catch (error) {
-      finish(() => reject(signal.aborted ? abortError() : error));
-    }
-  });
+    throw signal.aborted ? abortError() : error;
+  }
+};
 
 export const createGoalAuditProviderExecutor = (
   ports: GoalAuditProviderPorts,
@@ -118,7 +120,7 @@ export const createGoalAuditProviderExecutor = (
       !capabilities.includes("git.read")) {
       throw new Error("Goal auditor requires its exact read-only capability set.");
     }
-    const initialProvider = { ...await awaitAbortable(signal, () => ports.resolveProvider(input, signal)) };
+    const initialProvider = { ...await awaitOwned(signal, () => ports.resolveProvider(input, signal)) };
     const selection: GoalAuditEffectiveSelection = Object.freeze({
       providerId: initialProvider.providerId,
       modelId: input.authorization.model ?? initialProvider.modelId,
@@ -128,7 +130,7 @@ export const createGoalAuditProviderExecutor = (
       (selection.reasoningEffort !== undefined && !selection.reasoningEffort.trim())) {
       throw new Error("Invalid goal auditor provider selection.");
     }
-    const childConversation = await awaitAbortable(signal, () => ports.resolveChildConversation({
+    const childConversation = await awaitOwned(signal, () => ports.resolveChildConversation({
       runId: request.childRunId,
       parentConversationId: request.parentConversationId,
       selection,
@@ -142,7 +144,7 @@ export const createGoalAuditProviderExecutor = (
       parentConversationId: request.parentConversationId,
       childConversationId: childConversation.id,
     });
-    const provider = await awaitAbortable(signal, () => ports.resolveProvider(input, signal));
+    const provider = await awaitOwned(signal, () => ports.resolveProvider(input, signal));
     if (provider.providerId !== selection.providerId ||
       (input.authorization.model ?? provider.modelId) !== selection.modelId ||
       (provider.reasoningEffort ?? input.authorization.effort) !== selection.reasoningEffort ||
@@ -159,8 +161,11 @@ export const createGoalAuditProviderExecutor = (
       input.profile,
     );
     const allowed = new Set<string>(allowedToolIds);
+    const diagnosticFailures: unknown[] = [];
     const emitProgress = (event: SubagentProgressEvent) => {
-      if (!signal.aborted) onProgress?.(event);
+      if (signal.aborted) return;
+      try { onProgress?.(event); }
+      catch (error) { diagnosticFailures.push(error); }
     };
     const assertReadToolBinding = () => {
       if (!hasValidChildBinding(childConversation, readToolContext.runId, readToolContext.parentConversationId, selection) ||
@@ -168,45 +173,83 @@ export const createGoalAuditProviderExecutor = (
         throw new Error("Invalid goal auditor child conversation binding.");
       }
     };
+    const readWork = new Set<Promise<unknown>>();
+    const readFailures: unknown[] = [];
     let completion: StreamCompletionResult | undefined;
     let failure: Error | undefined;
-    await awaitAbortable(signal, () => (ports.stream ?? streamChat)({
-      sessionId: request.childRunId,
-      conversationId: readToolContext.childConversationId,
-      internalAgentProfile: "goal_auditor",
-      providerId: provider.providerId,
-      providerType: provider.providerType,
-      baseUrl: provider.baseUrl,
-      apiKey: provider.apiKey,
-      modelId: selection.modelId,
-      reasoningEffort: selection.reasoningEffort,
-      workspacePath: provider.workspacePath,
-      messages: [
-        { role: "system", content: input.systemPrompt },
-        { role: "user", content: input.authorization.serializedContext },
-      ],
-      allowedToolIds: [...allowedToolIds],
-      enableWebSearch: false,
-      enableWebFetch: false,
-      maxTurns: Math.min(input.authorization.remainingTurns ?? input.authorization.policy.limits.maxTurns ?? 4, 4),
-      signal,
-      onToken: (token) => emitProgress({ kind: "token", message: token }),
-      onToolCall: async (name, args, id) => {
-        if (signal.aborted) return { kind: "result", result: "Audit cancelled.", isError: true };
-        if (!allowed.has(name)) {
-          emitProgress({ kind: "tool_refused", message: name });
-          return { kind: "result", result: `Tool ${name} is not allowed for goal_auditor.`, isError: true };
-        }
-        assertReadToolBinding();
-        emitProgress({ kind: "tool_started", message: name });
-        if (signal.aborted) return { kind: "result", result: "Audit cancelled.", isError: true };
-        assertReadToolBinding();
-        return ports.executeReadTool(name, args, id, signal, readToolContext);
-      },
-      onToolResult: (name) => emitProgress({ kind: "tool_finished", message: name }),
-      onComplete: (result) => { if (!signal.aborted) completion = result; },
-      onError: (error) => { if (!signal.aborted) failure = error; },
-    }));
+    const reportedFailures: Error[] = [];
+    let streamFailed = false;
+    let streamFailure: unknown;
+    try {
+      if (signal.aborted) throw abortError();
+      await (ports.stream ?? streamChat)({
+          sessionId: request.childRunId,
+          conversationId: readToolContext.childConversationId,
+          internalAgentProfile: "goal_auditor",
+          providerId: provider.providerId,
+          providerType: provider.providerType,
+          baseUrl: provider.baseUrl,
+          apiKey: provider.apiKey,
+          modelId: selection.modelId,
+          reasoningEffort: selection.reasoningEffort,
+          workspacePath: provider.workspacePath,
+          messages: [
+            { role: "system", content: input.systemPrompt },
+            { role: "user", content: input.authorization.serializedContext },
+          ],
+          allowedToolIds: [...allowedToolIds],
+          enableWebSearch: false,
+          enableWebFetch: false,
+          maxTurns: Math.min(input.authorization.remainingTurns ?? input.authorization.policy.limits.maxTurns ?? 4, 4),
+          signal,
+          onToken: (token) => emitProgress({ kind: "token", message: token }),
+          onToolCall: async (name, args, id) => {
+            if (signal.aborted) return { kind: "result", result: "Audit cancelled.", isError: true };
+            if (!allowed.has(name)) {
+              emitProgress({ kind: "tool_refused", message: name });
+              return { kind: "result", result: `Tool ${name} is not allowed for goal_auditor.`, isError: true };
+            }
+            assertReadToolBinding();
+            emitProgress({ kind: "tool_started", message: name });
+            if (signal.aborted) return { kind: "result", result: "Audit cancelled.", isError: true };
+            assertReadToolBinding();
+            const work = (async () => ports.executeReadTool(name, args, id, signal, readToolContext))();
+            readWork.add(work);
+            void work.catch(error => {
+              readFailures.push(error);
+              if (!(error instanceof StreamStopUnconfirmedError)) emitProgress({ kind: "tool_failed", message: error instanceof Error ? error.message : String(error) });
+            });
+            try { return await work; }
+            finally { readWork.delete(work); }
+          },
+          onToolResult: (name) => emitProgress({ kind: "tool_finished", message: name }),
+          onComplete: (result) => { if (!signal.aborted) completion = result; },
+          onError: (error) => {
+            reportedFailures.push(error);
+            if (!signal.aborted || error instanceof StreamStopUnconfirmedError) failure = error;
+          },
+        });
+    } catch (error) {
+      streamFailed = true;
+      streamFailure = error;
+    }
+    // A provider can finish while an already-dispatched read still ignores Stop.
+    while (readWork.size) await Promise.all(Array.from(readWork, work => work.then(() => undefined, () => undefined)));
+    const failures = [...reportedFailures, ...readFailures, ...diagnosticFailures, ...(streamFailed ? [streamFailure] : [])];
+    const owners = [...new Set(failures.filter((error): error is StreamStopUnconfirmedError => error instanceof StreamStopUnconfirmedError))];
+    if (owners.length) {
+      let owner = owners[0];
+      for (const next of owners.slice(1)) owner = preserveStreamStopError(owner, next);
+      for (const diagnostic of failures) {
+        if (!(diagnostic instanceof StreamStopUnconfirmedError)) owner = preserveStreamStopError(owner, diagnostic);
+      }
+      await awaitStopReceipt(owner);
+      throw owner;
+    }
+    // Finite failures stay in the tool response and progress diagnostics.
+    // They are not evidence of a still-running executor.
+    if (streamFailed) throw streamFailure;
+    if (diagnosticFailures.length) throw diagnosticFailures[0];
     if (signal.aborted) throw abortError();
     if (failure) throw failure;
     if (!completion) throw new Error("Goal auditor provider completed without a result.");

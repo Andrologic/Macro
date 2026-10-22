@@ -1,3 +1,4 @@
+import { reportStreamError, withStreamCleanup } from "./ai/streamCancellation";
 import { useProviderStore } from '../stores/useProviderStore';
 import type { ReasoningEffort, ReasoningTransportMode } from '../types';
 import type { StreamingChatOptions } from './ai/contracts';
@@ -30,9 +31,9 @@ const disableReasoningEffortForSession = (
   }
 };
 
-const reasoningCompatibility = (options: Pick<StreamingChatOptions, 'providerId' | 'modelId'>) => ({
-  disableReasoning: () => disableReasoningForSession(options.providerId, options.modelId),
-  disableEffort: (effort: ReasoningEffort) => disableReasoningEffortForSession(options.providerId, options.modelId, effort),
+const reasoningCompatibility = (options: Pick<StreamingChatOptions, 'providerId' | 'modelId' | 'executionPolicy'>) => ({
+  disableReasoning: () => { if (options.executionPolicy !== 'native-serial') disableReasoningForSession(options.providerId, options.modelId); },
+  disableEffort: (effort: ReasoningEffort) => { if (options.executionPolicy !== 'native-serial') disableReasoningEffortForSession(options.providerId, options.modelId, effort); },
 });
 
 const resolveModelReasoningTransportMode = (
@@ -57,8 +58,8 @@ const captureInvocation = <T extends ChatOptions>(options: T) => {
   const abort = () => controller.abort();
   const captured = {
     ...options,
-    reasoningTransportMode: options.reasoningTransportMode ??
-      resolveModelReasoningTransportMode(options.providerId, options.modelId),
+    reasoningTransportMode: options.reasoningTransportMode ?? (options.executionPolicy === 'native-serial' ? 'none' :
+      resolveModelReasoningTransportMode(options.providerId, options.modelId)),
     signal: controller.signal,
   };
   const resources = createActiveStreamResources(captured.sessionId);
@@ -87,7 +88,7 @@ const loadUntilAborted = (
   signal.addEventListener('abort', abort, { once: true });
   // Always observe late module failures, even after cancellation has settled the caller.
   try {
-    load().then(resolve, reject).finally(() => signal.removeEventListener('abort', abort));
+    void withStreamCleanup(load, () => signal.removeEventListener('abort', abort)).then(resolve, reject);
   } catch (error) {
     signal.removeEventListener('abort', abort);
     reject(error);
@@ -108,43 +109,39 @@ export const createStreamingChatService = (
   return {
     async streamChat(options: StreamingChatOptions): Promise<void> {
       const invocation = captureInvocation(options);
-      try {
+      return withStreamCleanup(async () => {
         let runtime: StreamingChatExecution;
         try {
           runtime = await loadUntilAborted(loadExecution, invocation.options.signal);
           if (invocation.options.signal.aborted) throw new DOMException('Aborted', 'AbortError');
         } catch (error) {
           if (invocation.options.signal.aborted) {
-            try { invocation.options.onComplete(emptyStreamCompletionResult()); }
+            try { await invocation.options.onComplete(emptyStreamCompletionResult()); }
             catch (callbackError) {
-              invocation.options.onError(callbackError instanceof Error ? callbackError : new Error(String(callbackError)));
+              await reportStreamError(callbackError, invocation.options.onError);
             }
           } else {
-            invocation.options.onError(error instanceof Error ? error : new Error(String(error)));
+            await reportStreamError(error, invocation.options.onError);
           }
           return;
         }
         await runtime.streamChat(invocation.options, invocation.resources, reasoningCompatibility(invocation.options));
-      } finally {
-        invocation.dispose();
-      }
+      }, invocation.dispose);
     },
     async sendChatNonStreaming(options: ChatOptions): Promise<string> {
       const invocation = captureInvocation(options);
-      try {
+      return withStreamCleanup(async () => {
         let runtime: StreamingChatExecution;
         try {
           runtime = await loadUntilAborted(loadExecution, invocation.options.signal);
           if (invocation.options.signal.aborted) throw new DOMException('Aborted', 'AbortError');
         } catch (error) {
           const err = error instanceof Error ? error : new Error(String(error));
-          invocation.options.onError(err);
+          await reportStreamError(err, invocation.options.onError);
           throw err;
         }
         return await runtime.sendChatNonStreaming(invocation.options, invocation.resources, reasoningCompatibility(invocation.options));
-      } finally {
-        invocation.dispose();
-      }
+      }, invocation.dispose);
     },
   };
 };

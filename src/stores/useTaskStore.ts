@@ -7,6 +7,9 @@ export type { TaskCompletionRepositoryRecord } from '../services/taskPortsWorkfl
 import { loadPlanReview } from '../services/architectGitFlowService';
 import { create } from 'zustand';
 import { createTaskStartupWorkflow } from '../services/taskStartupWorkflow';
+import { isWorkflowAgentTask, refreshWorkflowAgentTasks, retainWorkflowTaskOrder } from '../services/workflowAgentTasks';
+import { assertLegacyTaskOwnership } from '../services/workflowTaskOwnership';
+import { startWorkflowTaskMonitor } from '../services/workflowTaskMonitor';
 import { withTaskLifecycleLock } from '../services/taskLifecycleLease';
 import { prepareTaskWorkspaces } from '../services/taskWorkspacePreparation';
 import { deriveTaskPlanStatusUpdate, projectTaskBranchStatus } from '../services/taskPlanStatusWorkflow';
@@ -1659,7 +1662,7 @@ export const getTaskLifecycleCapabilities = (
   task: CatalogedImplementTask,
   published = false
 ): TaskLifecycleCapabilities => {
-  if (isPlanFinalizationRuntimeTask(task)) {
+  if (isPlanFinalizationRuntimeTask(task) || task.task_source === 'agsdl') {
     return {
       isPublished: false,
       canRename: false,
@@ -1909,6 +1912,14 @@ const ensureAppSync = (lifecycle?: LifecycleContext): (() => void) => {
     }
   });
   scope.own(appSyncUnsubscribe);
+  scope.own(startWorkflowTaskMonitor({
+    enabled: () => scope.isActive() && useAppStore.getState().mode === 'Implement' &&
+      tauriIpc.isTauriAvailable() && getServiceRuntimeCapabilities().implementExecution &&
+      !(import.meta.env.DEV && import.meta.env.VITE_MACRO_DEMO === '1') &&
+      useTaskStore.getState().tasks.some(isWorkflowAgentTask),
+    refresh: () => scope.track(useTaskStore.getState().refreshWorkflowTasks(scope)),
+    schedule: callback => { const timer = setTimeout(callback, 3000); return () => clearTimeout(timer); },
+  }));
   return stop;
 };
 
@@ -2105,6 +2116,7 @@ interface TaskStore {
     creatingTaskId?: string;
   }) => Promise<void>;
   activateTask: (taskId: string, lifecycle?: LifecycleContext) => Promise<void>;
+  refreshWorkflowTasks: (lifecycle?: LifecycleContext) => Promise<void>;
   createManualFeatureDraft: (params: {
     taskId: string;
     conversationId: string;
@@ -2372,6 +2384,9 @@ export const useTaskStore = create<TaskStore>((set, get) => {
   // Catalog loads and task activation await metadata/filesystem work. Keep their
   // effects scoped to the latest request so a stale context cannot win a race.
   let refreshRequestId = 0;
+  let workflowRefreshRequestId = 0;
+  let workflowReadError: string | null = null;
+  const catalogRefreshes = new Set<number>();
   let creationRefreshBarrier: Promise<void> | null = null;
   let taskActivationRequestId = 0;
 
@@ -2402,6 +2417,7 @@ export const useTaskStore = create<TaskStore>((set, get) => {
     isTaskCommandRunActive(taskId) || isTaskConversationRuntimeActive(taskId);
 
   const acquireTaskOperation = (taskId: string, operation: TaskOperationKind): boolean => {
+    assertLegacyTaskOwnership(get().getTaskById(taskId), taskId);
     if (activeTaskOperations.has(taskId)) {
       return false;
     }
@@ -2820,6 +2836,7 @@ return ({
       });
     }
     const requestId = ++refreshRequestId;
+    catalogRefreshes.add(requestId);
     const appStateAtStart = useAppStore.getState();
     const selectionContextKey = `${appStateAtStart.selectedGroupId ?? ''}::${appStateAtStart.selectedProjectId ?? ''}`;
     const isCurrentRefresh = () => {
@@ -3139,7 +3156,8 @@ return ({
       const nextMergeWorkflowRuntimeByTaskId: Record<string, MergeWorkflowRuntimeState> =
         {};
       const nextPlanFinalizationRuntimeByPlanId: Record<string, PlanFinalizationRuntimeState> = {};
-      const tasks = catalog.tasks.map((task) => {
+      const tasks = retainWorkflowTaskOrder(get().tasks, catalog.tasks).map((task) => {
+        if (isWorkflowAgentTask(task)) return task;
         const existingMergeRuntime = get().mergeWorkflowRuntimeByTaskId[task.id];
         const persistedMergeSession = task.merge_workflow ?? null;
         const shouldCarryMergeRuntime =
@@ -3302,10 +3320,45 @@ return ({
       const normalized = toServiceError(error);
       set({ isLoading: false, lastError: normalized.message, publishedStandaloneTasks: {} });
     } finally {
+      catalogRefreshes.delete(requestId);
       if (options?.creatingTaskId) {
         creationRefreshBarrier = null;
         releaseCreationRefresh();
       }
+    }
+  },
+
+  refreshWorkflowTasks: async (lifecycle) => {
+    lifecycle?.assertActive();
+    if (catalogRefreshes.size) return;
+    const request = ++workflowRefreshRequestId;
+    const catalogRevision = refreshRequestId;
+    const app = useAppStore.getState();
+    const context = JSON.stringify([app.selectedGroupId, app.selectedProjectId]);
+    const current = () => lifecycle?.isActive() !== false && request === workflowRefreshRequestId &&
+      catalogRevision === refreshRequestId && context === JSON.stringify([
+        useAppStore.getState().selectedGroupId, useAppStore.getState().selectedProjectId,
+      ]);
+    try {
+      const workflow = await refreshWorkflowAgentTasks(get().tasks);
+      if (!current()) return;
+      const tasks = [...get().tasks.filter(task => !isWorkflowAgentTask(task)), ...retainWorkflowTaskOrder(get().tasks, workflow)];
+      if (new Set(tasks.map(task => task.id)).size !== tasks.length) throw new Error('Repeated workflow Task identity');
+      const clearError = workflowReadError !== null && get().lastError === workflowReadError;
+      workflowReadError = null;
+      set({ tasks, ...(clearError ? { lastError: null } : {}), planSummaries: get().planSummaries.map(plan => {
+        const agents = workflow.filter(task => task.plan_id === plan.id && task.plan_storage_branch === plan.storageBranch);
+        return agents.length ? { ...plan, taskCount: agents.length,
+          completedTaskCount: agents.filter(task => task.status === 'Completed').length,
+          activeTaskCount: agents.filter(task => task.status === 'InProgress').length } : plan;
+      }) });
+    } catch (error) {
+      if (!current()) return;
+      workflowReadError = toServiceError(error).message;
+      set({ tasks: get().tasks.map(task => isWorkflowAgentTask(task) ? {
+        ...task, status: 'Blocked', is_blocked: true,
+        workflow_execution: { ...task.workflow_execution!, stale: true, interactionRequired: true },
+      } : task), lastError: workflowReadError });
     }
   },
 
@@ -3334,6 +3387,13 @@ return ({
     };
 
     if (!task) {
+      return;
+    }
+
+    if (isWorkflowAgentTask(task)) {
+      if (!isCurrentTaskActivation()) return;
+      set({ activeBranchName: null, activeRepositoryPath: appState.getProjectById(task.project_id)?.path ?? null,
+        activeWorkspacePathOverridesByProjectId: {}, lastError: null });
       return;
     }
 
@@ -3799,6 +3859,7 @@ return ({
   },
 
   renameTask: async (taskId, title) => {
+    assertLegacyTaskOwnership(get().getTaskById(taskId), taskId);
     set({ lastError: null });
     assertTaskMutationRuntime('renameTask');
 
@@ -4721,6 +4782,7 @@ return ({
       const { cleanup } = await archivePlanAndCleanupBranches({ branchName, planId });
       get().clearPlanRuntimeState({
         planId,
+        branchName,
         deletedWorktreeKeys: cleanup.flatMap((repository) =>
           repository.deletedWorktrees.map((worktree) => worktree.worktreeKey)
         ),
@@ -4973,6 +5035,7 @@ return ({
   },
 
   setTaskStatus: async (taskId, status) => {
+    assertLegacyTaskOwnership(get().getTaskById(taskId), taskId);
     set({ lastError: null });
     assertTaskMutationRuntime('setTaskStatus');
 
@@ -5200,7 +5263,10 @@ return ({
     }
   },
 
-  clearPlanRuntimeState: ({ planId, deletedWorktreeKeys }) => {
+  clearPlanRuntimeState: ({ planId, branchName, deletedWorktreeKeys }) => {
+    if (planId && branchName) {
+      useChatStore.getState().discardArchitectPlanPendingDraft({ targetBranch: branchName, planId });
+    }
     const appState = useAppStore.getState();
     const nextRuntimeState = clearPlanRuntimeStateSnapshot({
       currentState: get(),

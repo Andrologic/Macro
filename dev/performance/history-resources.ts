@@ -142,7 +142,7 @@ export async function resourceCycles(cycles: number, checkpointEvery: number) {
     assert.equal(turns.latestSession(id), undefined);
     const stream = createActiveStreamResources(id);
     stream.stream = new ReadableStream({ cancel() { released++; } });
-    cancelStream(id);
+    await cancelStream(id);
     assert.equal(activeStreamResourcesBySessionId.has(id), false);
     const scope = createLifecycleScope();
     const target = new EventTarget();

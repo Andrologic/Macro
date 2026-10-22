@@ -4,6 +4,7 @@ import { createRoot, type Root } from 'react-dom/client';
 import type { McpInteractionRequest, McpInteractionResponse } from '../../types/generated/ipc';
 import { McpFormHost, type FormHostPort } from '../../services/mcp/formHost';
 import { Dialog } from '../ui/Dialog';
+import { notify } from '../ui/toastService';
 
 mock.module('react-i18next', () => ({
   useTranslation: () => ({
@@ -66,6 +67,29 @@ describe('global MCP form dialog', () => {
     container.remove();
   });
 
+  it('keeps the workspace usable when the host is unavailable and offers retry', async () => {
+    const notification = spyOn(notify, 'actionRequired').mockImplementation(() => 'qa-notification');
+    let attempts = 0;
+    const host = new McpFormHost({
+      open: async () => { if (++attempts === 1) throw new Error('transport closed'); return 'lease'; },
+      close: async () => undefined,
+      pending: async () => [],
+      respond: async () => undefined,
+    });
+    try {
+      await act(async () => { root.render(<><button>Workspace action</button><McpFormHostView host={host} /></>); });
+      expect(document.querySelector('[role="dialog"]')).toBeNull();
+      expect(container.textContent).toContain('Workspace action');
+      expect(notification).toHaveBeenCalledTimes(1);
+      const options = notification.mock.calls[0][1]!;
+      expect(options.actions[0].label).toBe('Retry');
+      await act(async () => { await options.actions[0].onClick(); });
+      expect(attempts).toBe(2);
+      expect(host.snapshot().status).toBe('ready');
+      expect(notification).toHaveBeenCalledTimes(1);
+    } finally { notification.mockRestore(); }
+  });
+
   it('stays visible across parent view changes and requires review before sending edited values', async () => {
     const { host, send, responses } = setup();
     await act(async () => { root.render(<><span>Chat</span><McpFormHostView host={host} /></>); await Promise.resolve(); });
@@ -96,8 +120,9 @@ describe('global MCP form dialog', () => {
     expect(document.querySelector('[role="dialog"]')).toBeNull();
   });
 
-  it('keeps an incoming form and its expiry error above an existing modal', async () => {
+  it('keeps an incoming form above an existing modal and releases it on expiry', async () => {
     const { host, send } = setup();
+    const warning = spyOn(notify, 'warning').mockImplementation(() => 'qa-expiry');
     const startedAt = 100_000;
     const clock = spyOn(Date, 'now').mockReturnValue(startedAt);
     const originalSetTimeout = globalThis.setTimeout;
@@ -132,17 +157,14 @@ describe('global MCP form dialog', () => {
       expect(expiryCallbacks).toHaveLength(1);
       clock.mockReturnValue(startedAt + 25);
       await act(async () => { expiryCallbacks[0](); });
-      const error = document.querySelector<HTMLElement>('[role="alert"]');
-      expect(error?.textContent).toContain('expired');
-      const noticeRoot = Array.from(document.querySelectorAll<HTMLElement>('[data-macro-dialog-root]'))
-        .find((candidate) => candidate.textContent?.includes('expired'));
-      expect(noticeRoot?.style.zIndex).toBe('14010');
-      expect(noticeRoot?.hasAttribute('inert')).toBe(false);
-      expect(releaseRoot?.hasAttribute('inert')).toBe(true);
-      await act(async () => { document.querySelector<HTMLButtonElement>('[aria-label="Dismiss"]')?.click(); });
-      expect(document.querySelector<HTMLElement>('[role="alert"]')).toBeNull();
+      expect(warning).toHaveBeenCalledTimes(1);
+      expect(warning.mock.calls[0][0]).toContain('expired');
+      expect(document.querySelector('[role="alert"]')).toBeNull();
+      expect(Array.from(document.querySelectorAll('[role="dialog"]'))
+        .some(candidate => candidate.textContent?.includes('MCP form request'))).toBe(false);
       expect(releaseRoot?.hasAttribute('inert')).toBe(false);
     } finally {
+      warning.mockRestore();
       timers.mockRestore();
       clock.mockRestore();
     }

@@ -247,6 +247,27 @@ describe('CreateImplementTaskDialog task type help', () => {
     expect(container.textContent).toContain('Resume work');
   });
 
+  it('preserves resume-work choices when catalog counts refresh the project options', async () => {
+    availableStartPoints = { worktrees: [], branches: [{ name: 'feature/resume', commit: 'abc' }] };
+    const onCreate = mock(() => undefined);
+    const render = (taskCount: number) => root.render(<CreateImplementTaskDialog
+      projects={[project('develop', 'Develop project', 'develop', 'main', { taskCount })]}
+      initialProjectId="develop" isCreating={false} onClose={() => undefined} onCreate={onCreate}
+    />);
+    await act(async () => { render(0); await Promise.resolve(); });
+    const button = (label: string) => Array.from(container.querySelectorAll<HTMLButtonElement>('button'))
+      .find((item) => item.textContent?.includes(label));
+    await act(async () => { button('Feature')?.click(); button('Resume work')?.click(); });
+    await act(async () => button('feature/resume')?.click());
+    await act(async () => { render(1); await Promise.resolve(); });
+    expect(button('Resume work')?.getAttribute('aria-pressed')).toBe('true');
+    expect(button('feature/resume')?.getAttribute('aria-pressed')).toBe('true');
+    await act(async () => button('Create task')?.click());
+    expect(onCreate).toHaveBeenCalledWith(expect.objectContaining({
+      taskKind: 'feature', startPoint: { kind: 'branch', branch: { name: 'feature/resume', commit: 'abc' } },
+    }));
+  });
+
   it('creates a Direct task on the current branch without a worktree start point', async () => {
     const onCreate = mock(() => undefined);
     await act(async () => {

@@ -1,3 +1,5 @@
+import { browserRuntimePort } from '../shared/browserRuntimePort.mjs';
+import { RuntimeCommandError } from './runtimeCommandError';
 import type {
   InvokeArgs,
   InvokeOptions,
@@ -9,9 +11,10 @@ import type {
   Options,
   UnlistenFn,
 } from '@tauri-apps/api/event';
+import { BROWSER_RUNTIME_SESSION_REPLACED_EVENT } from './browserRuntimeEvents';
 import type { McpInteractionRequest } from '../types/generated/ipc';
 
-const BRIDGE_PORT = 1430;
+const BRIDGE_PORT = browserRuntimePort(import.meta.env.VITE_TAURI_BROWSER_BRIDGE_PORT);
 const INITIAL_RECONNECT_DELAY_MS = 500;
 const MAX_RECONNECT_DELAY_MS = 10_000;
 const INVOKE_TIMEOUT_MS = 10 * 60_000;
@@ -27,6 +30,7 @@ type PendingRequest = {
   reject: (reason?: unknown) => void;
   resolve: (value: unknown) => void;
   timeout: ReturnType<typeof setTimeout>;
+  preserveErrorResponse: boolean;
 };
 
 type McpChannel = {
@@ -153,8 +157,10 @@ const handleMessage = (message: MessageEvent<string>): void => {
       const response = JSON.parse(String(envelope.payload ?? 'null')) as RpcResponse;
       if (response.status === 'success') {
         request.resolve(response.payload);
+      } else if (response.status === 'error') {
+        request.reject(request.preserveErrorResponse ? new RuntimeCommandError(response.payload) : response.payload);
       } else {
-        request.reject(response.payload);
+        request.reject(request.preserveErrorResponse ? new Error('Invalid runtime response status') : response.payload);
       }
     } catch (error) {
       request.reject(error);
@@ -232,6 +238,9 @@ const connect = (): Promise<WebSocket> => {
           reconnectTimer = null;
         }
         rejectPendingRequests(terminalDisconnectError);
+        if (typeof window !== 'undefined') {
+          window.dispatchEvent(new Event(BROWSER_RUNTIME_SESSION_REPLACED_EVENT));
+        }
         return;
       }
       rejectPendingRequests(browserRuntimeConnectionError('BROWSER_RUNTIME_CONNECTION_CLOSED'));
@@ -251,12 +260,23 @@ export async function invokeBrowserRuntime<T>(
   return invokeBrowserRuntimeWithId(++nextRequestId, command, args, options, timeoutMs);
 }
 
+/** Opt-in provenance for owners that must distinguish replies from lost IPC. */
+export async function invokeBrowserRuntimeWithReceipt<T>(
+  command: string,
+  args?: InvokeArgs,
+  options?: InvokeOptions,
+  timeoutMs: number = INVOKE_TIMEOUT_MS,
+): Promise<T> {
+  return invokeBrowserRuntimeWithId(++nextRequestId, command, args, options, timeoutMs, true);
+}
+
 async function invokeBrowserRuntimeWithId<T>(
   id: number,
   command: string,
   args?: InvokeArgs,
   options?: InvokeOptions,
   timeoutMs: number = INVOKE_TIMEOUT_MS,
+  preserveErrorResponse = false,
 ): Promise<T> {
   const bridgeSocket = await connect();
 
@@ -269,6 +289,7 @@ async function invokeBrowserRuntimeWithId<T>(
       resolve: (value) => resolve(value as T),
       reject,
       timeout,
+      preserveErrorResponse,
     });
     try {
       const wireArgs = args instanceof Uint8Array

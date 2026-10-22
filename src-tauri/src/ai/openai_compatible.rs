@@ -26,9 +26,48 @@ const MAX_SSE_BUFFER_BYTES: usize = 1_048_576;
 const MAX_ERROR_BODY_BYTES: usize = 16 * 1024;
 const MAX_ERROR_MESSAGE_CHARS: usize = 2_048;
 
+#[derive(Debug)]
+struct ChatCompletionError {
+    message: String,
+    status: Option<u16>,
+}
+
+impl From<String> for ChatCompletionError {
+    fn from(message: String) -> Self {
+        Self {
+            message,
+            status: None,
+        }
+    }
+}
+
+impl ChatCompletionError {
+    fn http(status: u16, message: String, api_key: &str) -> Self {
+        let api_key = api_key.trim();
+        Self {
+            message: if api_key.is_empty() {
+                message
+            } else {
+                message.replace(api_key, "[redacted]")
+            },
+            status: Some(status),
+        }
+    }
+
+    fn into_event(self, request_id: String) -> AiStreamErrorEvent {
+        AiStreamErrorEvent {
+            request_id,
+            message: self.message,
+            status: self.status,
+        }
+    }
+}
+
 #[derive(Debug, Default)]
 struct ChatCompletionAccumulator {
     output_text: String,
+    /// Provider content only, without reasoning or presentation tags.
+    visible_text: String,
     reasoning_summary: String,
     tool_calls: Vec<AiToolCall>,
     is_reasoning: bool,
@@ -38,55 +77,34 @@ struct ChatCompletionAccumulator {
 pub async fn stream_chat(
     app_handle: AppHandle,
     pool: SqlitePool,
-    ai_state: AiState,
+    _ai_state: AiState,
     request: AiChatRequest,
 ) -> Result<(), String> {
-    super::chatgpt::cancel_stream(&ai_state, &request.request_id).await?;
+    stream_chat_with_provider(app_handle, pool, request, None).await
+}
 
+/// Native execution supplies its revalidated descriptor to prevent a mutable
+/// provider row from changing the endpoint between admission and request build.
+pub(crate) async fn stream_chat_with_provider(
+    app_handle: AppHandle,
+    pool: SqlitePool,
+    request: AiChatRequest,
+    provider: Option<ProviderConfig>,
+) -> Result<(), String> {
     let request_id = request.request_id.clone();
-    let task_request_id = request.request_id.clone();
-    let task_provider_id = request.provider_id.clone();
-    let app_for_task = app_handle.clone();
-    let state_for_task = ai_state.clone();
-    let task_started_at = Instant::now();
-
-    let handle = tokio::spawn(async move {
-        let result = stream_chat_inner(app_for_task.clone(), pool, request).await;
-        if let Err(message) = result {
-            emit_timeline(
-                &app_for_task,
-                &task_request_id,
-                &task_provider_id,
-                "openai_compatible",
-                task_started_at,
-                "error",
-            );
-            let _ = app_for_task.emit(
-                "ai:error",
-                AiStreamErrorEvent {
-                    request_id: task_request_id.clone(),
-                    message,
-                },
-            );
-        }
-
-        let task_id = tokio::task::try_id();
-        let mut tasks = state_for_task.stream_tasks.lock().await;
-        if task_id
-            .map(|task_id| {
-                tasks
-                    .get(&task_request_id)
-                    .map(|handle| handle.id() == task_id)
-                    .unwrap_or(false)
-            })
-            .unwrap_or(false)
-        {
-            tasks.remove(&task_request_id);
-        }
-    });
-
-    let mut tasks = ai_state.stream_tasks.lock().await;
-    tasks.insert(request_id, handle);
+    let provider_id = request.provider_id.clone();
+    let started_at = Instant::now();
+    if let Err(error) = stream_chat_inner(app_handle.clone(), pool, request, provider).await {
+        emit_timeline(
+            &app_handle,
+            &request_id,
+            &provider_id,
+            "openai_compatible",
+            started_at,
+            "error",
+        );
+        let _ = app_handle.emit("ai:error", error.into_event(request_id));
+    }
     Ok(())
 }
 
@@ -94,12 +112,16 @@ async fn stream_chat_inner(
     app_handle: AppHandle,
     pool: SqlitePool,
     request: AiChatRequest,
-) -> Result<(), String> {
+    provider: Option<ProviderConfig>,
+) -> Result<(), ChatCompletionError> {
     let started_at = Instant::now();
-    let provider = repository::get_provider_config(&pool, &request.provider_id)
-        .await
-        .map_err(|error| error.to_string())?
-        .ok_or_else(|| format!("Provider {} not found.", request.provider_id))?;
+    let provider = match provider {
+        Some(provider) => provider,
+        None => repository::get_provider_config(&pool, &request.provider_id)
+            .await
+            .map_err(|error| error.to_string())?
+            .ok_or_else(|| format!("Provider {} not found.", request.provider_id))?,
+    };
     crate::core::provider_endpoint::validate_provider_endpoint(
         &provider.base_url,
         provider.is_local,
@@ -156,8 +178,18 @@ async fn stream_chat_inner(
             "Provider error response body",
         )
         .await
-        .map_err(|error| format!("Provider error {}: {}", status.as_u16(), error))?;
-        return Err(extract_provider_error(status.as_u16(), &error_body));
+        .map_err(|error| {
+            ChatCompletionError::http(
+                status.as_u16(),
+                format!("Provider error {}: {}", status.as_u16(), error),
+                &api_key,
+            )
+        })?;
+        return Err(ChatCompletionError::http(
+            status.as_u16(),
+            extract_provider_error(status.as_u16(), &error_body),
+            &api_key,
+        ));
     }
 
     let mut stream = response.bytes_stream();
@@ -175,7 +207,8 @@ async fn stream_chat_inner(
                 return Err(format!(
                     "Provider stream was idle for more than {} seconds.",
                     STREAM_IDLE_TIMEOUT.as_secs()
-                ))
+                )
+                .into())
             }
         };
         let chunk = chunk.map_err(|error| format!("Failed to read provider stream: {}", error))?;
@@ -242,6 +275,7 @@ async fn stream_chat_inner(
             AiStreamDoneEvent {
                 request_id: request.request_id.clone(),
                 output_text: accumulator.output_text,
+                visible_text: Some(accumulator.visible_text),
                 tool_calls: normalize_tool_calls(accumulator.tool_calls),
                 response_id: None,
                 output_items: None,
@@ -415,7 +449,7 @@ fn serialize_provider_input_items(
                 }
                 serialized.push(serde_json::json!({
                     "role": role,
-                    "content": responses_message_content_to_text(item.get("content")),
+                    "content": responses_message_content_to_chat(item.get("content"))?,
                 }));
             }
             "function_call" => append_responses_function_call(&mut serialized, item)?,
@@ -532,28 +566,56 @@ fn append_responses_function_call(messages: &mut Vec<Value>, item: &Value) -> Re
     Ok(())
 }
 
-fn responses_message_content_to_text(content: Option<&Value>) -> String {
+fn responses_message_content_to_chat(content: Option<&Value>) -> Result<Value, String> {
     let Some(content) = content else {
-        return String::new();
+        return Ok(Value::String(String::new()));
     };
-    if let Some(text) = content.as_str() {
-        return text.to_string();
+    if content.is_string() {
+        return Ok(content.clone());
     }
-    content
-        .as_array()
-        .into_iter()
-        .flatten()
-        .filter_map(|part| {
-            let kind = part.get("type").and_then(Value::as_str)?;
-            if kind != "output_text" && kind != "text" {
-                return None;
+    let mut parts = Vec::new();
+    let mut has_images = false;
+    for part in content.as_array().into_iter().flatten() {
+        match part.get("type").and_then(Value::as_str).unwrap_or_default() {
+            "input_text" | "output_text" | "text" => {
+                if let Some(text) = part
+                    .get("text")
+                    .and_then(Value::as_str)
+                    .or_else(|| part.get("value").and_then(Value::as_str))
+                {
+                    parts.push(serde_json::json!({ "type": "text", "text": text }));
+                }
             }
-            part.get("text")
-                .and_then(Value::as_str)
-                .or_else(|| part.get("value").and_then(Value::as_str))
-        })
-        .collect::<Vec<_>>()
-        .join("")
+            "input_image" => {
+                let url = part
+                    .get("image_url")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| "Persisted input_image is missing image_url.".to_string())?;
+                let mut image_url = serde_json::json!({ "url": url });
+                if let Some(detail) = part.get("detail") {
+                    image_url["detail"] = detail.clone();
+                }
+                parts.push(serde_json::json!({ "type": "image_url", "image_url": image_url }));
+                has_images = true;
+            }
+            "image_url" => {
+                parts.push(part.clone());
+                has_images = true;
+            }
+            _ => {}
+        }
+    }
+    if has_images {
+        Ok(Value::Array(parts))
+    } else {
+        Ok(Value::String(
+            parts
+                .iter()
+                .filter_map(|part| part.get("text").and_then(Value::as_str))
+                .collect::<Vec<_>>()
+                .join(""),
+        ))
+    }
 }
 
 fn serialize_message_content(content: &AiChatMessageContent) -> Result<Value, String> {
@@ -691,6 +753,52 @@ fn process_sse_event(
 
     let delta = choice.get("delta").unwrap_or(&Value::Null);
     let message = choice.get("message").unwrap_or(&Value::Null);
+    if let Some(tool_calls) = delta.get("tool_calls").and_then(Value::as_array) {
+        merge_tool_call_deltas(&mut accumulator.tool_calls, tool_calls);
+    }
+    if let Some(tool_calls) = message.get("tool_calls").and_then(Value::as_array) {
+        merge_tool_call_deltas(&mut accumulator.tool_calls, tool_calls);
+    }
+    for piece in chat_completion_pieces(delta, message, accumulator) {
+        if piece.visible {
+            emit_first_token_timeline(
+                app_handle,
+                request,
+                provider_type,
+                started_at,
+                emitted_first_token,
+            );
+            accumulator.visible_text.push_str(&piece.text);
+        }
+        emit_delta(app_handle, &request.request_id, &piece.text, accumulator)?;
+    }
+
+    if let Some(finish_reason) = choice.get("finish_reason").and_then(Value::as_str) {
+        accumulator.completion_reason = Some(normalize_finish_reason(finish_reason).to_string());
+    }
+
+    Ok(is_terminal_sse_value(&value))
+}
+
+/// One streamed fragment. Chat presentation receives every fragment, including
+/// the reasoning wrapped in <think>; only provider content is visible output.
+struct StreamPiece {
+    text: String,
+    visible: bool,
+}
+
+/// Classifies one Chat Completions choice using the provider's structured
+/// channels. Visible content keeps its exact bytes, spaces and line breaks.
+fn chat_completion_pieces(
+    delta: &Value,
+    message: &Value,
+    accumulator: &mut ChatCompletionAccumulator,
+) -> Vec<StreamPiece> {
+    let mut pieces = Vec::new();
+    let piece = |text: &str, visible: bool| StreamPiece {
+        text: text.to_string(),
+        visible,
+    };
     if let Some(reasoning) = delta
         .get("reasoning")
         .or_else(|| delta.get("reasoning_content"))
@@ -699,63 +807,31 @@ fn process_sse_event(
         if !reasoning.is_empty() {
             accumulator.reasoning_summary.push_str(reasoning);
             if !accumulator.is_reasoning {
-                emit_delta(app_handle, &request.request_id, "<think>", accumulator)?;
+                pieces.push(piece("<think>", false));
                 accumulator.is_reasoning = true;
             }
-            emit_delta(app_handle, &request.request_id, reasoning, accumulator)?;
+            pieces.push(piece(reasoning, false));
         }
     }
-
-    if let Some(tool_calls) = delta.get("tool_calls").and_then(Value::as_array) {
-        merge_tool_call_deltas(&mut accumulator.tool_calls, tool_calls);
-    }
-    if let Some(tool_calls) = message.get("tool_calls").and_then(Value::as_array) {
-        merge_tool_call_deltas(&mut accumulator.tool_calls, tool_calls);
-    }
-
-    let mut emitted_content_delta = false;
-    if let Some(content) = delta.get("content").and_then(Value::as_str) {
-        if !content.is_empty() {
-            if accumulator.is_reasoning {
-                emit_delta(app_handle, &request.request_id, "</think>", accumulator)?;
-                accumulator.is_reasoning = false;
-            }
-            emit_first_token_timeline(
-                app_handle,
-                request,
-                provider_type,
-                started_at,
-                emitted_first_token,
-            );
-            emit_delta(app_handle, &request.request_id, content, accumulator)?;
-            emitted_content_delta = true;
+    // A streamed delta wins; a full message is only a fallback for the same choice.
+    let content = delta
+        .get("content")
+        .and_then(Value::as_str)
+        .filter(|content| !content.is_empty())
+        .or_else(|| {
+            message
+                .get("content")
+                .and_then(Value::as_str)
+                .filter(|content| !content.is_empty())
+        });
+    if let Some(content) = content {
+        if accumulator.is_reasoning {
+            pieces.push(piece("</think>", false));
+            accumulator.is_reasoning = false;
         }
+        pieces.push(piece(content, true));
     }
-
-    if !emitted_content_delta {
-        if let Some(content) = message.get("content").and_then(Value::as_str) {
-            if !content.is_empty() {
-                if accumulator.is_reasoning {
-                    emit_delta(app_handle, &request.request_id, "</think>", accumulator)?;
-                    accumulator.is_reasoning = false;
-                }
-                emit_first_token_timeline(
-                    app_handle,
-                    request,
-                    provider_type,
-                    started_at,
-                    emitted_first_token,
-                );
-                emit_delta(app_handle, &request.request_id, content, accumulator)?;
-            }
-        }
-    }
-
-    if let Some(finish_reason) = choice.get("finish_reason").and_then(Value::as_str) {
-        accumulator.completion_reason = Some(normalize_finish_reason(finish_reason).to_string());
-    }
-
-    Ok(is_terminal_sse_value(&value))
+    pieces
 }
 
 fn process_sse_events_until_terminal<F>(events: Vec<String>, mut process: F) -> Result<bool, String>
@@ -1194,6 +1270,134 @@ mod tests {
     }
 
     #[test]
+    fn structured_reasoning_stays_out_of_exact_visible_text() {
+        let mut accumulator = ChatCompletionAccumulator::default();
+        let mut presented = String::new();
+        let mut visible = String::new();
+        let choices = [
+            serde_json::json!({ "delta": { "reasoning_content": "Plan " } }),
+            serde_json::json!({ "delta": { "reasoning": "ok.\n" } }),
+            serde_json::json!({ "delta": { "content": "  OK FLOW" } }),
+            serde_json::json!({ "delta": { "content": " MACRO\n\n" } }),
+            serde_json::json!({ "delta": {}, "message": { "content": "ignored only when a delta exists" } }),
+        ];
+        for (index, choice) in choices.iter().enumerate() {
+            let delta = choice.get("delta").unwrap_or(&Value::Null);
+            let message = if index == 4 {
+                &Value::Null
+            } else {
+                choice.get("message").unwrap_or(&Value::Null)
+            };
+            for piece in chat_completion_pieces(delta, message, &mut accumulator) {
+                presented.push_str(&piece.text);
+                if piece.visible {
+                    visible.push_str(&piece.text);
+                }
+            }
+        }
+        // The chat keeps its reasoning presentation; AgSDL receives exact visible text.
+        assert_eq!(presented, "<think>Plan ok.\n</think>  OK FLOW MACRO\n\n");
+        assert_eq!(visible, "  OK FLOW MACRO\n\n");
+        assert_eq!(accumulator.reasoning_summary, "Plan ok.\n");
+        assert!(!accumulator.is_reasoning);
+
+        // A complete message without a streamed delta is visible content too.
+        let mut accumulator = ChatCompletionAccumulator::default();
+        let pieces = chat_completion_pieces(
+            &serde_json::json!({ "reasoning_content": "R" }),
+            &serde_json::json!({ "content": "Réponse\r\n" }),
+            &mut accumulator,
+        );
+        let visible: String = pieces
+            .iter()
+            .filter(|p| p.visible)
+            .map(|p| p.text.as_str())
+            .collect();
+        assert_eq!(visible, "Réponse\r\n");
+        assert!(pieces.iter().any(|p| !p.visible && p.text == "</think>"));
+    }
+
+    #[test]
+    fn chat_completions_preserve_user_input_text_across_turns() {
+        let mut first = message("user", "Premier été.");
+        first.provider_input_items = Some(vec![serde_json::json!({
+            "type": "message", "role": "user",
+            "content": [{ "type": "input_text", "text": "Premier été." }]
+        })]);
+        let mut second = message("user", "Suivant déjà.");
+        second.provider_input_items = Some(vec![serde_json::json!({
+            "type": "message", "role": "user",
+            "content": [{ "type": "input_text", "text": "Suivant déjà." }]
+        })]);
+        let mut request = request(None);
+        request.messages = vec![first.clone()];
+        let first_body = build_chat_completions_request(&request, &provider("openai")).unwrap();
+        assert_eq!(first_body["messages"][0]["content"], "Premier été.");
+        request.messages = vec![first, message("assistant", "Réponse conservée."), second];
+        let second_body = build_chat_completions_request(&request, &provider("openai")).unwrap();
+        assert_eq!(
+            second_body["messages"],
+            serde_json::json!([
+                { "role": "user", "content": "Premier été." },
+                { "role": "assistant", "content": "Réponse conservée." },
+                { "role": "user", "content": "Suivant déjà." }
+            ])
+        );
+    }
+
+    #[test]
+    fn chat_completions_preserve_mixed_text_images_and_replay_contracts() {
+        let mut user = message("user", "Inspecte cette image.");
+        user.provider_input_items = Some(vec![serde_json::json!({
+            "type": "message", "role": "user",
+            "content": [
+                { "type": "input_text", "text": "Avant été." },
+                { "type": "input_image", "image_url": "data:image/png;base64,aW1hZ2U=", "detail": "high" },
+                { "type": "text", "text": "Après déjà." },
+                { "type": "image_url", "image_url": { "url": "https://example.com/image.png", "detail": "low" } }
+            ]
+        })]);
+        let mut assistant = message("assistant", "Analyse.");
+        let replay = serde_json::json!({
+            "type": "chat_completion_message", "role": "assistant", "content": "Analyse.",
+            "reasoning_content": "Reasoning", "reasoning_details": [{ "type": "reasoning.text", "text": "Details" }],
+            "tool_calls": [{ "id": "call-1", "type": "function", "function": { "name": "read", "arguments": "{}" } }]
+        });
+        assistant.provider_input_items = Some(vec![
+            replay.clone(),
+            serde_json::json!({
+                "type": "function_call_output", "call_id": "call-1", "output": "Result"
+            }),
+        ]);
+        let mut request = request(None);
+        request.messages = vec![user, assistant];
+        let body = build_chat_completions_request(&request, &provider("openrouter")).unwrap();
+        assert_eq!(
+            body["messages"][0]["content"],
+            serde_json::json!([
+                { "type": "text", "text": "Avant été." },
+                { "type": "image_url", "image_url": { "url": "data:image/png;base64,aW1hZ2U=", "detail": "high" } },
+                { "type": "text", "text": "Après déjà." },
+                { "type": "image_url", "image_url": { "url": "https://example.com/image.png", "detail": "low" } }
+            ])
+        );
+        for key in [
+            "content",
+            "reasoning_content",
+            "reasoning_details",
+            "tool_calls",
+        ] {
+            assert_eq!(body["messages"][1][key], replay[key]);
+        }
+        assert_eq!(
+            body["messages"][2],
+            serde_json::json!({
+                "role": "tool", "tool_call_id": "call-1", "content": "Result"
+            })
+        );
+    }
+
+    #[test]
     fn native_messages_merge_all_system_instructions_at_the_front() {
         let mut request = request(None);
         request.messages = vec![
@@ -1244,6 +1448,39 @@ mod tests {
         assert_eq!(messages[1]["tool_call_id"], "call_read_1");
         assert_eq!(messages[1]["content"], "314159");
         assert_eq!(messages[2]["role"], "user");
+    }
+
+    #[test]
+    fn http_error_events_keep_status_and_redact_the_known_api_key() {
+        for status in [400, 401, 403, 408, 429, 502, 503, 504] {
+            let message = extract_provider_error(
+                status,
+                r#"{"error":{"message":"Unavailable for Bearer synthetic-provider-key"}}"#,
+            );
+            let event = ChatCompletionError::http(status, message, "synthetic-provider-key")
+                .into_event("req-1".to_string());
+            let payload = serde_json::to_value(event).unwrap();
+            assert_eq!(payload["request_id"], "req-1");
+            assert_eq!(payload["status"], status);
+            assert!(payload["message"]
+                .as_str()
+                .unwrap()
+                .contains("Unavailable for Bearer [redacted]"));
+            assert!(!payload.to_string().contains("synthetic-provider-key"));
+        }
+        let body_timeout = ChatCompletionError::http(
+            503,
+            "Provider error response body timed out".to_string(),
+            "",
+        )
+        .into_event("req-1".to_string());
+        assert_eq!(serde_json::to_value(body_timeout).unwrap()["status"], 503);
+        let legacy: ChatCompletionError = "Legacy failure".to_string().into();
+        let payload = serde_json::to_value(legacy.into_event("req-1".to_string())).unwrap();
+        assert_eq!(
+            payload,
+            serde_json::json!({ "request_id": "req-1", "message": "Legacy failure" })
+        );
     }
 
     #[test]

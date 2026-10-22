@@ -12,6 +12,7 @@ interface AttentionTask {
   status: TaskStatus;
   archived_at?: string | null;
   is_blocked?: boolean;
+  workflow_execution?: { interactionRequired: boolean; state: string; stale?: boolean };
   merge_workflow_summary?: MergeWorkflowSummary | null;
 }
 
@@ -79,6 +80,12 @@ export const resolveTaskQueueSupervision = ({
   }
 
   for (const task of tasks) {
+    if (task.workflow_execution) {
+      if (!task.archived_at && task.workflow_execution.interactionRequired) result.set(task.id, {
+        kind: task.workflow_execution.state === 'approval' ? 'approval' : 'review', conversationId: null,
+      });
+      continue;
+    }
     if (task.archived_at || task.status === 'Completed') continue;
     const conversationIds = new Set(conversationIdsByTaskId.get(task.id) ?? []);
     if (task.conversation_id) {

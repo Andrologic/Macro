@@ -1,3 +1,4 @@
+import { StreamStopUnconfirmedError, preserveStreamStopError } from './streamCancellation';
 import type { ToolResultBlock } from '../../shared/toolResultContent';
 import { projectCopilotMessageContent } from './copilotPromptCodec';
 import {
@@ -48,6 +49,7 @@ const DONE_SUBMISSION_GRACE_MS = 5_000;
 
 export const streamNativeTurnViaTauri = async (params: {
   sessionId?: string;
+  nativeExecution?: StreamingChatOptions['nativeExecution'];
   providerId: string;
   providerType: string;
   modelId: string;
@@ -96,9 +98,51 @@ export const streamNativeTurnViaTauri = async (params: {
   }
 
   let fullContent = '';
+  let executionRegistered = false;
 
   return new Promise<StreamingTurnResult>((resolve, reject) => {
     let settled = false;
+    let cancellationRequested = false;
+    let cancellation: Promise<void> | undefined;
+    let finalization: Promise<void> | undefined;
+    let nativeStop: Promise<void> | undefined;
+    let stopUnconfirmed = false;
+    let confirmLocalStop!: () => void;
+    const localStopConfirmed = new Promise<void>(resolve => { confirmLocalStop = resolve; });
+    const ownedWork = new Set<Promise<unknown>>();
+    const ownedFailures: unknown[] = [];
+    const diagnosticFailures: unknown[] = [];
+    const diagnose = (error: unknown) => {
+      ownedFailures.push(error);
+      try { devLogger.warn('Native stream operation failed', formatToolExecutionError(error)); }
+      catch (secondary) { ownedFailures.push(secondary); }
+    };
+    const unconfirmedWork = new Set<StreamStopUnconfirmedError>();
+    const drainOwnedWork = async () => {
+      // Each rejection is recorded immediately, including work that settled
+      // before draining began. Ordinary failures ended locally; uncertain ones
+      // still require their own receipt.
+      while (ownedWork.size) await Promise.all([...ownedWork].map(work => work.then(() => undefined, () => undefined)));
+      for (const error of ownedFailures.splice(0)) {
+        if (error instanceof StreamStopUnconfirmedError) unconfirmedWork.add(error);
+        else diagnosticFailures.push(error);
+      }
+      for (const error of unconfirmedWork) if (error.stopped) unconfirmedWork.delete(error);
+    };
+    const uncertainStop = (reason: unknown) => {
+      let owner = new StreamStopUnconfirmedError(
+        `Native stream stop was not confirmed: ${formatToolExecutionError(reason)}`,
+        Promise.all([localStopConfirmed, ...Array.from(unconfirmedWork, error => error.whenStopped)]).then(() => undefined),
+      );
+      for (const error of unconfirmedWork) owner.secondaryErrors.push(error);
+      for (const error of diagnosticFailures) owner = preserveStreamStopError(owner, error);
+      return owner;
+    };
+    const own = <T>(work: Promise<T>): Promise<T> => {
+      ownedWork.add(work);
+      void work.then(() => ownedWork.delete(work), error => { ownedFailures.push(error); ownedWork.delete(work); });
+      return work;
+    };
     const nativeUnlisteners: UnlistenFn[] = [];
     let questionToolRequestCount = 0;
     let nativeToolRequestOrder = 0;
@@ -111,7 +155,7 @@ export const streamNativeTurnViaTauri = async (params: {
       isError?: boolean;
       errorKind?: ToolResult['error_kind'];
     };
-    type NativeSubmission = { id: string; result: string; items: unknown[]; hiddenContext?: string };
+    type NativeSubmission = { uncertain: boolean; id: string; result: string; items: unknown[]; hiddenContext?: string };
     type NativeRequest = {
       toolName: string;
       toolCallId: string;
@@ -135,14 +179,14 @@ export const streamNativeTurnViaTauri = async (params: {
     let deferredDonePayload: tauriIpc.AiStreamDoneEvent | undefined;
     let deferredDoneTimer: ReturnType<typeof setTimeout> | undefined;
 
-    const stopped = () => settled || params.signal?.aborted === true;
+    const stopped = () => settled || cancellationRequested || params.signal?.aborted === true;
     const emitToolTrace = (trace: ToolTrace) => {
       try { params.onToolTrace?.(trace); }
-      catch (error) { devLogger.warn('Native tool trace observer failed', formatToolExecutionError(error)); }
+      catch (error) { diagnose(error); }
     };
     const submitResult = async (request: NativeRequest, outcome: NativeOutcome) => {
       const submission: NativeSubmission = {
-        id: createStreamingRequestId(), result: outcome.result,
+        id: createStreamingRequestId(), result: outcome.result, uncertain: outcome.errorKind === 'uncertain',
         hiddenContext: outcome.hiddenContext,
         items: [
           { type: 'function_call', call_id: request.toolCallId, name: request.toolName, arguments: JSON.stringify(request.args) },
@@ -168,23 +212,37 @@ export const streamNativeTurnViaTauri = async (params: {
       const request = requests[nextToPublish];
       if (!request?.outcome) return;
       publishing = true;
-      void (async () => {
+      void own((async () => {
         try {
           await submitResult(request, request.outcome!);
         } catch (error) {
+          if (error instanceof StreamStopUnconfirmedError) {
+            diagnose(error);
+            finish(() => reject(error));
+            return;
+          }
           if (stopped() || deferredDonePayload) return;
           // The tool has already run. Submit an error once, without running it again;
           // only the bridge receipt can decide which submission was accepted.
           try {
-            await submitResult(request, {
-              result: `Error executing tool ${request.toolName}: ${formatToolExecutionError(error)}`,
-              isError: true,
-              errorKind: 'execution',
-            });
+            const previous = request.outcome!;
+            await submitResult(request, previous.errorKind === 'uncertain' || previous.errorKind === 'permission' || previous.errorKind === 'validation'
+              ? previous
+              : {
+                result: JSON.stringify({ outcome: 'unknown', invocation: { callId: request.toolCallId },
+                  toolName: request.toolName, reason: 'The provider did not confirm result acceptance.',
+                  instruction: 'The tool has already run. Inspect its original result and effects before retrying, including with a new call ID.' }),
+                isError: true, errorKind: 'uncertain',
+              });
           } catch (fallbackError) {
+            if (fallbackError instanceof StreamStopUnconfirmedError) {
+              diagnose(fallbackError);
+              finish(() => reject(fallbackError));
+              return;
+            }
             if (stopped()) return;
             submissionChannelFailed = true;
-            devLogger.warn('Native tool result fallback submission failed', formatToolExecutionError(fallbackError));
+            diagnose(fallbackError);
           }
         } finally {
           if (!settled) {
@@ -201,7 +259,7 @@ export const streamNativeTurnViaTauri = async (params: {
             else { publishReady(); startReady(); }
           }
         }
-      })();
+      })());
     };
 
     const executeRequest = async (request: NativeRequest) => {
@@ -235,9 +293,20 @@ export const streamNativeTurnViaTauri = async (params: {
             outcome.blocks = resolution.blocks;
             outcome.isError = resolution.isError === true;
             outcome.errorKind = resolution.errorKind;
+          } else {
+            outcome.result = JSON.stringify({ outcome: 'unknown', toolName, callId: toolCallId,
+              reason: 'The tool handler returned no execution result. Inspect its effects before retrying.' });
+            outcome.isError = true;
+            outcome.errorKind = 'uncertain';
           }
         }
       } catch (error) {
+        if (error instanceof StreamStopUnconfirmedError) {
+          cancellationRequested = true;
+          stopUnconfirmed = true;
+          finish(() => reject(error));
+          throw error;
+        }
         if (stopped()) return;
         outcome.result = `Error executing tool ${toolName}: ${formatToolExecutionError(error)}`;
         outcome.isError = true;
@@ -270,7 +339,7 @@ export const streamNativeTurnViaTauri = async (params: {
           batch_id: requestId, order: request.order, started_at_ms: Date.now(),
         });
         if (stopped()) return;
-        void executeRequest(request);
+        void own(executeRequest(request));
         if (!request.safeRead) return;
       }
     };
@@ -278,8 +347,8 @@ export const streamNativeTurnViaTauri = async (params: {
     const disposeListener = (unlisten: UnlistenFn) => {
       try {
         unlisten();
-      } catch {
-        // Completion can race listener setup and cleanup.
+      } catch (error) {
+        diagnose(error);
       }
     };
     const ownListener: typeof listen = async (event, handler) => {
@@ -289,17 +358,38 @@ export const streamNativeTurnViaTauri = async (params: {
       else nativeUnlisteners.push(unlisten);
       return unlisten;
     };
-    const finish = (fn: () => void) => {
-      if (settled) return;
+    const joinNativeOwner = () => nativeStop ??= own(
+      Promise.resolve().then(() => tauriIpc.aiCancelStream(requestId)).then(() => { confirmLocalStop(); }),
+    );
+    const finish = (fn: () => void): Promise<void> => {
+      if (finalization) return finalization;
       settled = true;
       if (deferredDoneTimer) clearTimeout(deferredDoneTimer);
-      params.signal?.removeEventListener('abort', signalHandler);
+      try { params.signal?.removeEventListener('abort', signalObserver); }
+      catch (error) { diagnose(error); }
       nativeUnlisteners.splice(0).forEach(disposeListener);
-      if (resources.tauriRequestId === requestId) {
-        resources.tauriRequestId = null;
-        if (!invocationResources) pruneActiveStreamResources(sessionId, resources);
-      }
-      fn();
+      // Events publish diagnostics/content, not a native task completion receipt.
+      // Every exit joins the supervisor, including spontaneous errors and done.
+      finalization = (async () => {
+        let nativeFailed = false;
+        let nativeFailure: unknown;
+        try { await joinNativeOwner(); }
+        catch (error) { nativeFailed = true; nativeFailure = error; }
+        await drainOwnedWork();
+        if (nativeFailed || unconfirmedWork.size) {
+          stopUnconfirmed = true;
+          throw uncertainStop(nativeFailed ? nativeFailure : [...unconfirmedWork][0]);
+        }
+        if (resources.tauriRequestId === requestId) {
+          resources.tauriRequestId = null;
+          if (!invocationResources) pruneActiveStreamResources(sessionId, resources);
+        }
+        if (executionRegistered) await params.nativeExecution?.requestEnded(requestId);
+        fn();
+      })();
+      // Event callbacks cannot await the receipt, but Stop returns this same join.
+      void finalization.catch(error => reject(error));
+      return finalization;
     };
 
     const completeDone = (payload: tauriIpc.AiStreamDoneEvent) => {
@@ -329,15 +419,15 @@ export const streamNativeTurnViaTauri = async (params: {
             providerInputItems: [...nativeToolItems],
           });
         } catch (error) {
-          devLogger.warn('Native live result observer failed', formatToolExecutionError(error));
+          diagnose(error);
         }
         if (stopped()) return;
         try { params.onToolResult?.(request.toolName, submission.result); }
-        catch (error) { devLogger.warn('Native tool result observer failed', formatToolExecutionError(error)); }
+        catch (error) { diagnose(error); }
         if (stopped()) return;
         emitToolTrace({
           tool_call_id: request.toolCallId, tool_name: request.toolName,
-          detail: request.detail, status: 'done', recovery_state: 'completed',
+          detail: request.detail, status: 'done', recovery_state: submission.uncertain ? 'unknown' : 'completed',
           execution_mode: request.safeRead ? 'parallel' : 'sequential',
           batch_id: requestId, order: request.order, completed_at_ms: Date.now(),
         });
@@ -358,6 +448,7 @@ export const streamNativeTurnViaTauri = async (params: {
         : requests.length ? acceptedHiddenContext.join('\n\n') || undefined : payload.hidden_context ?? undefined;
       finish(() => resolve({
         content: payload.output_text || fullContent || derivedOutputText,
+        visibleText: payload.visible_text,
         toolCalls: payload.tool_calls || [], providerInputItems, providerTurnState,
         reasoningSummary: payload.reasoning_summary ?? undefined,
         toolTraces: payload.tool_traces?.filter(trace => !localCallIds.has(trace.tool_call_id)) ?? undefined,
@@ -373,14 +464,34 @@ export const streamNativeTurnViaTauri = async (params: {
       completeDone(payload);
     };
 
-    const signalHandler = () => {
-      void tauriIpc.aiCancelStream(requestId).catch(() => {
-        // Ignore backend cancel failures
-      });
-      finish(() => reject(new DOMException('Aborted', 'AbortError')));
+    const signalHandler = (): Promise<void> => {
+      if (cancellation) return cancellation;
+      cancellationRequested = true;
+      cancellation = finish(() => reject(new DOMException('Aborted', 'AbortError')));
+      return cancellation;
     };
 
-    if (!invocationResources) resources.cancel = signalHandler;
+    const signalObserver = () => { void signalHandler(); };
+    const cancelInvocation = resources.cancel;
+    resources.cancel = () => {
+      if (stopUnconfirmed && settled) {
+        // Retrying cancellation is idempotent for this single-use request ID.
+        const retry = tauriIpc.aiCancelStream(requestId).then(async () => {
+          await drainOwnedWork();
+          await Promise.all(Array.from(unconfirmedWork, error => error.whenStopped));
+          unconfirmedWork.clear();
+          stopUnconfirmed = false;
+          confirmLocalStop();
+          if (resources.tauriRequestId === requestId) resources.tauriRequestId = null;
+          // The outer invocation already unwound after the uncertain result.
+          pruneActiveStreamResources(sessionId, resources);
+        });
+        void retry.catch(() => undefined);
+        return retry;
+      }
+      cancelInvocation?.();
+      return signalHandler();
+    };
 
     if (params.signal?.aborted) {
       signalHandler();
@@ -388,35 +499,36 @@ export const streamNativeTurnViaTauri = async (params: {
     }
 
     if (params.signal) {
-      params.signal.addEventListener('abort', signalHandler, { once: true });
+      params.signal.addEventListener('abort', signalObserver, { once: true });
     }
 
     void (async () => {
       try {
         await Promise.all([
           ownListener<tauriIpc.AiStreamTimelineEvent>('ai:timeline', (event) => {
-            if (settled || event.payload.request_id !== requestId) return;
-            params.onTimeline?.({
+            if (stopped() || event.payload.request_id !== requestId) return;
+            try { params.onTimeline?.({
               request_id: event.payload.request_id,
               provider_id: event.payload.provider_id,
               provider_type: event.payload.provider_type,
               phase: event.payload.phase,
               elapsed_ms: event.payload.elapsed_ms,
-            });
+            }); } catch (error) { diagnose(error); finish(() => reject(error)); }
           }),
           ownListener<tauriIpc.AiStreamChunkEvent>('ai:stream', (event) => {
-            if (settled || event.payload.request_id !== requestId) return;
+            if (stopped() || event.payload.request_id !== requestId) return;
             fullContent += event.payload.delta;
-            params.onDelta(event.payload.delta);
+            try { params.onDelta(event.payload.delta); }
+            catch (error) { diagnose(error); finish(() => reject(error)); }
           }),
           ownListener<tauriIpc.AiStreamToolTraceEvent>('ai:tool-trace', (event) => {
-            if (settled || event.payload.request_id !== requestId) return;
+            if (stopped() || event.payload.request_id !== requestId) return;
             if (event.payload.tool_trace.status === 'done' &&
               requests.some(request => request.toolCallId === event.payload.tool_trace.tool_call_id)) return;
             emitToolTrace(event.payload.tool_trace);
           }),
           ownListener<tauriIpc.AiToolRequestEvent>('ai:tool-request', (event) => {
-            if (settled || event.payload.request_id !== requestId) return;
+            if (stopped() || event.payload.request_id !== requestId) return;
             const toolName = event.payload.tool_name;
             const args = event.payload.args && typeof event.payload.args === 'object'
               ? event.payload.args : {};
@@ -429,7 +541,7 @@ export const streamNativeTurnViaTauri = async (params: {
             startReady();
           }),
           ownListener<tauriIpc.AiStreamDoneEvent>('ai:done', (event) => {
-            if (settled || event.payload.request_id !== requestId) return;
+            if (stopped() || event.payload.request_id !== requestId) return;
             // Completion may arrive before IPC settles the submitted result.
             deferredDonePayload = event.payload;
             if (pendingToolSubmissions.size === 0) flushDeferredDone();
@@ -438,19 +550,19 @@ export const streamNativeTurnViaTauri = async (params: {
             }, DONE_SUBMISSION_GRACE_MS);
           }),
           ownListener<tauriIpc.AiStreamErrorEvent>('ai:error', (event) => {
-            if (settled || event.payload.request_id !== requestId) return;
-            finish(() => reject(classifyProviderError(event.payload.message)));
+            if (stopped() || event.payload.request_id !== requestId) return;
+            finish(() => reject(classifyProviderError(event.payload.message, event.payload.status)));
           }),
         ]);
 
-        if (settled) return;
+        if (stopped()) return;
         if (params.signal?.aborted) {
           signalHandler();
           return;
         }
         const tools = normalizeNativeProviderTools(params.tools, params.providerType);
 
-        await tauriIpc.aiStreamChat({
+        const nativeRequest: Parameters<typeof tauriIpc.aiStreamChat>[0] = {
           requestId,
           providerId: params.providerId,
           modelId: params.modelId,
@@ -478,10 +590,22 @@ export const streamNativeTurnViaTauri = async (params: {
           focusedProjectId: params.focusedProjectId,
           allowedToolIds: params.allowedToolIds,
           copilotSendTimeoutMs: params.copilotSendTimeoutMs,
-        });
+        };
+        if (params.nativeExecution) {
+          const receipt = await own(params.nativeExecution.beforeRequest(requestId, nativeRequest));
+          if (receipt !== 'registered') throw new Error('CORRELATION: a duplicate provider effect cannot be redispatched.');
+          executionRegistered = true;
+          if (stopped() || params.signal?.aborted) { signalHandler(); return; }
+        }
+        await own((params.nativeExecution?.dispatch ?? tauriIpc.aiStreamChat)(nativeRequest));
       } catch (error) {
+        if (cancellationRequested) return;
         finish(() => reject(error instanceof Error ? error : new Error(String(error))));
       }
     })();
+  }).then(async result => {
+    // AgSDL retains only provider-visible text; chat presentation keeps result.content.
+    if (executionRegistered) await params.nativeExecution?.visibleMessage(requestId, result.visibleText ?? result.content);
+    return result;
   });
 };

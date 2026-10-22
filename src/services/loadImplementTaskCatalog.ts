@@ -25,6 +25,7 @@ import {
   retargetTaskForExecution,
 } from './projectIdentityReconciliation';
 import { resolveProjectExecutionMode } from './projectExecutionMode';
+import { isWorkflowPlan, loadWorkflowAgentTasks } from './workflowAgentTasks';
 
 interface ActivePlanContextState {
   id: string;
@@ -59,6 +60,7 @@ interface LoadImplementTaskCatalogDependencies {
   resolveTargetBranch: typeof resolveTargetBranch;
   buildImplementTaskCatalog: typeof buildImplementTaskCatalog;
   updateArchitectPlan?: typeof updateArchitectPlan;
+  loadWorkflowAgentTasks?: typeof loadWorkflowAgentTasks;
 }
 
 const migrateLegacyPlanExecutionModes = (
@@ -251,6 +253,7 @@ export const createLoadImplementTaskCatalog = (
     resolveTargetBranch,
     buildImplementTaskCatalog,
     updateArchitectPlan,
+    loadWorkflowAgentTasks,
   }
 ) => {
   return async (fallbackTasks: Task[], options?: { persistedOnly?: boolean }): Promise<ImplementTaskCatalog> => {
@@ -262,6 +265,11 @@ export const createLoadImplementTaskCatalog = (
       [appState.activePlanContext?.targetBranch || null],
       dependencies.resolveTargetBranch
     )[0] || null;
+    const knownWorkflowBranches = new Set(fallbackTasks
+      .filter(task => task.task_source === 'agsdl' &&
+        (!reconciliationProjectIds || reconciliationProjectIds.includes(task.project_id)))
+      .map(task => task.workflow_execution?.source.owner.branch)
+      .filter((branch): branch is string => !!branch));
     let plans: ArchitectPlanRecord[] = [];
 
     let discoveredTargetBranches: string[] = [];
@@ -275,6 +283,7 @@ export const createLoadImplementTaskCatalog = (
         [
           activeTargetBranch,
           ...discoveredTargetBranches,
+          ...knownWorkflowBranches,
           dependencies.getGitFlowBaseBranch(),
         ],
         dependencies.resolveTargetBranch
@@ -294,7 +303,7 @@ export const createLoadImplementTaskCatalog = (
                 ),
               };
             } catch (error) {
-              if (options?.persistedOnly) throw error;
+              if (options?.persistedOnly || knownWorkflowBranches.has(branchName)) throw error;
               return null;
             }
           })
@@ -306,26 +315,30 @@ export const createLoadImplementTaskCatalog = (
       const executablePlanRefs = dedupePlanRefs(
         planIndexes.flatMap(({ branchName, index }) =>
           index.plans
-            .filter((plan) => isExecutableImplementPlanStatus(plan.status))
+            .filter((plan) => isExecutableImplementPlanStatus(plan.status) || plan.hasAgsdl)
             .map((plan) => ({
               branchName,
               planId: plan.id,
             }))
         )
       );
+      const agsdlPlanRefs = new Set(planIndexes.flatMap(({ branchName, index }) => index.plans
+        .filter(plan => plan.hasAgsdl)
+        .map(plan => toPlanLocatorKey({ branchName, planId: plan.id }))));
       const loadedPlans = await Promise.all(
         executablePlanRefs.map(async ({ branchName, planId }) => {
+          const requiresCompleteRead = options?.persistedOnly || agsdlPlanRefs.has(toPlanLocatorKey({ branchName, planId }));
           try {
             const plan = await dependencies.getArchitectPlan(branchName, planId);
-            if (!plan && options?.persistedOnly) throw new Error('An Architect plan disappeared during admission.');
+            if (!plan && requiresCompleteRead) throw new Error('A referenced Architect plan could not be read.');
             return plan
-              ? retargetPlanForExecution(plan, {
+              ? plan.agsdl ? plan : retargetPlanForExecution(plan, {
                   scopedProjectIds: reconciliationProjectIds,
                   knownProjectIds: validProjectIds,
                 })
               : null;
           } catch (error) {
-            if (options?.persistedOnly) throw error;
+            if (requiresCompleteRead) throw error;
             return null;
           }
         })
@@ -340,8 +353,19 @@ export const createLoadImplementTaskCatalog = (
         loadedPlans.filter((plan): plan is ArchitectPlanRecord => Boolean(plan && plan.status !== 'deleted')),
       );
 
+    const workflowTasks = await dependencies.loadWorkflowAgentTasks?.(plans, reconciliationProjectIds) ?? [];
+    const nativePlanKeys = new Set(workflowTasks.map(task => JSON.stringify([task.plan_storage_branch, task.plan_id])));
+    const hasNativeWorkflow = (plan: ArchitectPlanRecord) => isWorkflowPlan(plan) ||
+      nativePlanKeys.has(JSON.stringify([plan.targetBranch, plan.id]));
+
+    // Discover retained owners before applying the historical execution retargeting.
+    plans = plans.map(plan => hasNativeWorkflow(plan) ? plan : retargetPlanForExecution(plan, {
+      scopedProjectIds: reconciliationProjectIds, knownProjectIds: validProjectIds,
+    }));
+
     const activePlan = buildExecutableActivePlanRecord(appState);
-    if (activePlan && !options?.persistedOnly) {
+    const activeIsWorkflow = activePlan && plans.some(plan => hasNativeWorkflow(plan) && plan.id === activePlan.id && plan.targetBranch === activePlan.targetBranch);
+    if (activePlan && !activeIsWorkflow && !options?.persistedOnly) {
       plans = upsertPlanRecord(
         plans,
         retargetPlanForExecution(activePlan, {
@@ -351,6 +375,7 @@ export const createLoadImplementTaskCatalog = (
       );
     }
     plans = await Promise.all(plans.map(async (plan) => {
+      if (hasNativeWorkflow(plan)) return plan;
       const migration = migrateLegacyPlanExecutionModes(plan, appState);
       if (options?.persistedOnly || !migration.changed || !dependencies.updateArchitectPlan) {
         return migration.plan;
@@ -374,13 +399,28 @@ export const createLoadImplementTaskCatalog = (
     );
 
     const catalog = dependencies.buildImplementTaskCatalog({
-      plans,
-      fallbackTasks: reconciledFallbackTasks,
+      plans: plans.filter(plan => !hasNativeWorkflow(plan)),
+      // Engine tasks are regenerated from native identities, never retained as
+      // fallback rows when a run disappears or the metadata scope changes.
+      fallbackTasks: reconciledFallbackTasks.filter(task => task.task_source !== 'agsdl'),
     });
+    catalog.tasks.push(...workflowTasks);
+    if (workflowTasks.length) {
+      catalog.source = catalog.hasStandaloneTasks ? 'mixed' : 'architect';
+      for (const plan of plans.filter(hasNativeWorkflow)) {
+        const tasks = workflowTasks.filter(task => task.plan_id === plan.id && task.plan_storage_branch === plan.targetBranch);
+        if (!tasks.length) continue;
+        catalog.plans.push({ id: plan.id, locatorKey: toPlanLocatorKey({ branchName: plan.targetBranch, planId: plan.id }),
+          slug: plan.slug, title: plan.title, label: plan.label, status: plan.status, storageBranch: plan.targetBranch,
+          targetBranch: plan.targetBranch, projectIds: [...new Set(tasks.map(task => task.project_id))],
+          taskCount: tasks.length, completedTaskCount: tasks.filter(task => task.status === 'Completed').length,
+          activeTaskCount: tasks.filter(task => task.status === 'InProgress').length });
+      }
+    }
 
     const runtimeEntries = (
       await Promise.all(
-        plans.map(async (plan) => {
+        plans.filter(plan => !hasNativeWorkflow(plan)).map(async (plan) => {
           const runtime = await readArchitectPlanRuntime({
             branchName: plan.targetBranch,
             planId: plan.id,

@@ -69,6 +69,9 @@ pub struct CompleteToolInvocationInput {
     #[ts(flatten)]
     pub identity: ToolInvocationIdentity,
     pub receipt_id: String,
+    #[serde(default)]
+    #[ts(optional)]
+    pub result_json: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, ts_rs::TS)]
@@ -83,6 +86,7 @@ pub struct ToolInvocation {
     pub remote_execution_id: Option<String>,
     pub status: ToolInvocationStatus,
     pub receipt_id: Option<String>,
+    pub result_json: Option<String>,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -143,6 +147,7 @@ fn map_row(row: SqliteRow) -> DbResult<ToolInvocation> {
         remote_execution_id: row.get("remote_execution_id"),
         status: ToolInvocationStatus::from_db(row.get("status"))?,
         receipt_id: row.get("receipt_id"),
+        result_json: row.get("result_json"),
         created_at: row.get("created_at"),
         updated_at: row.get("updated_at"),
     })
@@ -265,6 +270,10 @@ pub async fn complete(
 ) -> DbResult<ToolInvocation> {
     validate_identity(&input.identity)?;
     opaque_id(&input.receipt_id, "receipt_id")?;
+    if let Some(result) = &input.result_json {
+        super::exact_json::validate(result)
+            .map_err(|_| DbError::Validation("Invalid tool result JSON".into()))?;
+    }
     let mut connection = pool.acquire().await?;
     sqlx::query("PRAGMA synchronous = FULL")
         .execute(&mut *connection)
@@ -274,7 +283,13 @@ pub async fn complete(
         .await?
         .ok_or_else(|| DbError::Validation("Tool invocation not found".into()))?;
     if previous.status == ToolInvocationStatus::Completed {
-        if previous.receipt_id != Some(input.receipt_id) {
+        if previous.receipt_id != Some(input.receipt_id)
+            || !super::exact_json::equal_optional(
+                previous.result_json.as_deref(),
+                input.result_json.as_deref(),
+            )
+            .map_err(|_| DbError::Validation("Invalid tool result JSON".into()))?
+        {
             return Err(DbError::Validation(
                 "Conflicting tool invocation receipt".into(),
             ));
@@ -286,8 +301,9 @@ pub async fn complete(
         return Ok(previous);
     }
     let now = chrono::Utc::now().to_rfc3339();
-    sqlx::query("UPDATE tool_invocations SET status = 'completed', receipt_id = ?, updated_at = ? WHERE conversation_id = ? AND turn_id = ? AND message_id = ? AND call_id = ?")
+    sqlx::query("UPDATE tool_invocations SET status = 'completed', receipt_id = ?, result_json = ?, updated_at = ? WHERE conversation_id = ? AND turn_id = ? AND message_id = ? AND call_id = ?")
         .bind(&input.receipt_id)
+        .bind(&input.result_json)
         .bind(&now)
         .bind(&input.identity.conversation_id)
         .bind(&input.identity.turn_id)
@@ -336,6 +352,61 @@ pub async fn list_unresolved(
         .into_iter()
         .map(map_row)
         .collect()
+}
+
+/// Overlay confirmed receipts on chat reads without rewriting historical messages.
+/// The full journal identity and tool name must match; absence is never completion.
+pub(super) async fn project_completed_traces(
+    connection: &mut sqlx::SqliteConnection,
+    conversation_id: &str,
+    messages: &mut [super::models::Message],
+) -> DbResult<()> {
+    let receipts = sqlx::query("SELECT * FROM tool_invocations WHERE conversation_id = ? AND status = 'completed' AND receipt_id IS NOT NULL")
+        .bind(conversation_id)
+        .fetch_all(connection)
+        .await?
+        .into_iter()
+        .map(map_row)
+        .collect::<DbResult<Vec<_>>>()?;
+    for message in messages {
+        let Some(raw) = message.tool_traces_json.as_deref() else {
+            continue;
+        };
+        let Ok(Value::Array(mut traces)) = serde_json::from_str::<Value>(raw) else {
+            continue;
+        };
+        let mut changed = false;
+        for trace in &mut traces {
+            // Approval and denial are separate user decisions, not receipt states.
+            if !matches!(
+                trace.get("status").and_then(Value::as_str),
+                Some("running" | "done")
+            ) {
+                continue;
+            }
+            let receipt = receipts.iter().find(|receipt| {
+                receipt.conversation_id == message.conversation_id
+                    && Some(receipt.turn_id.as_str()) == message.turn_id.as_deref()
+                    && receipt.message_id == message.id
+                    && Some(receipt.call_id.as_str())
+                        == trace.get("tool_call_id").and_then(Value::as_str)
+                    && Some(receipt.tool_name.as_str())
+                        == trace.get("tool_name").and_then(Value::as_str)
+            });
+            if receipt.is_some() {
+                trace["status"] = Value::String("done".into());
+                trace["recovery_state"] = Value::String("completed".into());
+                changed = true;
+            }
+        }
+        if changed {
+            message.tool_traces_json = Some(
+                serde_json::to_string(&traces)
+                    .map_err(|error| DbError::Validation(error.to_string()))?,
+            );
+        }
+    }
+    Ok(())
 }
 
 pub async fn reconcile_pending_after_restart(pool: &SqlitePool) -> DbResult<()> {
@@ -394,6 +465,69 @@ mod tests {
         .unwrap()
         .id;
         (temp, pool, conversation_id)
+    }
+
+    #[tokio::test]
+    async fn chat_reads_project_exact_receipts_without_rewriting_history() {
+        let (_temp, pool, conversation_id) = setup().await;
+        let traces = json!([
+            {"tool_call_id":"call-1","tool_name":"write","status":"done","recovery_state":"unknown"},
+            {"tool_call_id":"other-call","tool_name":"write","status":"done","recovery_state":"unknown"},
+            {"tool_call_id":"call-1","tool_name":"read","status":"done","recovery_state":"unknown"},
+            {"tool_call_id":"call-1","tool_name":"write","status":"denied","recovery_state":"unknown"}
+        ]).to_string();
+        let message: crate::db::models::CreateMessageInput = serde_json::from_value(json!({
+            "id":"message-1", "conversation_id":conversation_id, "turn_id":"turn-1",
+            "role":"assistant", "content":"Synthetic", "tool_traces_json":traces
+        }))
+        .unwrap();
+        repository::create_message(&pool, message).await.unwrap();
+        record(&pool, input(&conversation_id)).await.unwrap();
+        assert_eq!(
+            repository::list_messages(&pool, &conversation_id)
+                .await
+                .unwrap()[0]
+                .tool_traces_json
+                .as_deref(),
+            Some(traces.as_str())
+        );
+        complete(
+            &pool,
+            CompleteToolInvocationInput {
+                identity: identity(&conversation_id),
+                receipt_id: "receipt-1".into(),
+                result_json: Some("{}".into()),
+            },
+        )
+        .await
+        .unwrap();
+        let loaded = repository::list_messages(&pool, &conversation_id)
+            .await
+            .unwrap();
+        let projected: Value =
+            serde_json::from_str(loaded[0].tool_traces_json.as_deref().unwrap()).unwrap();
+        assert_eq!(projected[0]["recovery_state"], "completed");
+        for index in 1..4 {
+            assert_eq!(projected[index]["recovery_state"], "unknown");
+        }
+        let persisted: String =
+            sqlx::query_scalar("SELECT tool_traces_json FROM messages WHERE id = 'message-1'")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(persisted, traces);
+        sqlx::query("UPDATE messages SET turn_id = 'other-turn' WHERE id = 'message-1'")
+            .execute(&pool)
+            .await
+            .unwrap();
+        assert_eq!(
+            repository::list_messages(&pool, &conversation_id)
+                .await
+                .unwrap()[0]
+                .tool_traces_json
+                .as_deref(),
+            Some(traces.as_str())
+        );
     }
 
     #[tokio::test]
@@ -480,6 +614,7 @@ mod tests {
         let completion = CompleteToolInvocationInput {
             identity: identity(&conversation_id),
             receipt_id: "accepted-1".into(),
+            result_json: None,
         };
         assert!(complete(&pool, completion).await.is_err());
         assert!(list_unresolved(&pool, &conversation_id)
@@ -491,7 +626,8 @@ mod tests {
             &pool,
             CompleteToolInvocationInput {
                 identity: identity(&conversation_id),
-                receipt_id: " ".into()
+                receipt_id: " ".into(),
+                result_json: None,
             }
         )
         .await
@@ -505,6 +641,7 @@ mod tests {
             CompleteToolInvocationInput {
                 identity: identity(&conversation_id),
                 receipt_id: "accepted-1".into(),
+                result_json: None,
             },
         )
         .await
@@ -524,7 +661,8 @@ mod tests {
             &pool,
             CompleteToolInvocationInput {
                 identity: identity(&conversation_id),
-                receipt_id: "accepted-2".into()
+                receipt_id: "accepted-2".into(),
+                result_json: None,
             }
         )
         .await
@@ -539,6 +677,7 @@ mod tests {
             CompleteToolInvocationInput {
                 identity: duplicate_receipt,
                 receipt_id: "accepted-1".into(),
+                result_json: None,
             }
         )
         .await
@@ -571,6 +710,7 @@ mod tests {
             CompleteToolInvocationInput {
                 identity: identity(&conversation_id),
                 receipt_id: "late-confirmation".into(),
+                result_json: None,
             },
         )
         .await
@@ -587,5 +727,68 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(count, 0);
+    }
+    #[tokio::test]
+    async fn exact_result_and_receipt_survive_reopen_and_conflicts_do_not_replace_them() {
+        let (temp, pool, conversation_id) = setup().await;
+        record(&pool, input(&conversation_id)).await.unwrap();
+        let payload = "{ \"value\": 9007199254740993, \"nullable\": null }";
+        complete(
+            &pool,
+            CompleteToolInvocationInput {
+                identity: identity(&conversation_id),
+                receipt_id: "stable-result".into(),
+                result_json: Some(payload.into()),
+            },
+        )
+        .await
+        .unwrap();
+        pool.close().await;
+        let reopened = create_pool(&temp.path().join("macro.db")).await.unwrap();
+        let retained = record(&reopened, input(&conversation_id)).await.unwrap();
+        assert!(!retained.is_new);
+        assert_eq!(retained.invocation.result_json.as_deref(), Some(payload));
+        complete(
+            &reopened,
+            CompleteToolInvocationInput {
+                identity: identity(&conversation_id),
+                receipt_id: "stable-result".into(),
+                result_json: Some(payload.into()),
+            },
+        )
+        .await
+        .unwrap();
+        assert!(complete(
+            &reopened,
+            CompleteToolInvocationInput {
+                identity: identity(&conversation_id),
+                receipt_id: "stable-result".into(),
+                result_json: Some("null".into())
+            }
+        )
+        .await
+        .is_err());
+        assert!(complete(
+            &reopened,
+            CompleteToolInvocationInput {
+                identity: identity(&conversation_id),
+                receipt_id: "stable-result".into(),
+                result_json: None
+            }
+        )
+        .await
+        .is_err());
+        complete(
+            &reopened,
+            CompleteToolInvocationInput {
+                identity: identity(&conversation_id),
+                receipt_id: "stable-result".into(),
+                result_json: Some("{\"nullable\":null,\"value\":9007199254740993e0}".into()),
+            },
+        )
+        .await
+        .unwrap();
+        let retained = record(&reopened, input(&conversation_id)).await.unwrap();
+        assert_eq!(retained.invocation.result_json.as_deref(), Some(payload));
     }
 }

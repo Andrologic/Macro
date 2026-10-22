@@ -4883,6 +4883,7 @@ mod tests {
     #[cfg(unix)]
     #[tokio::test]
     async fn inherited_output_pipes_are_bounded_and_the_process_group_is_reaped() {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
         let temp = TempDir::new().expect("temp dir");
         let child_pid_path = temp.path().join("background-child.pid");
         let terminal_store = TerminalSessionStore::default();
@@ -4895,8 +4896,8 @@ mod tests {
             child_pid_path.display()
         );
 
-        let completed = tokio::time::timeout(
-            Duration::from_secs(10),
+        let completed = tokio::time::timeout_at(
+            deadline,
             run_legacy_session_internal(
                 terminal_store,
                 "terminal-test".to_string(),
@@ -4915,14 +4916,25 @@ mod tests {
             .expect("child pid file")
             .parse::<u32>()
             .expect("child pid");
-        let child_probe = background_tokio_command("kill")
-            .args(["-0", &child_pid.to_string()])
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status()
-            .await
-            .expect("probe child process");
-        assert!(!child_probe.success(), "child process {child_pid} survived");
+        // SIGKILL delivery and orphan reaping are asynchronous. As in the live
+        // terminal test, wait for disappearance, within the same scenario limit.
+        let child_probe = tokio::time::timeout_at(deadline, async {
+            loop {
+                let probe = unsafe { libc::kill(child_pid as libc::pid_t, 0) };
+                if probe == -1 {
+                    assert_eq!(
+                        std::io::Error::last_os_error().raw_os_error(),
+                        Some(libc::ESRCH),
+                        "probe child process"
+                    );
+                    break probe;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("child process must disappear within the 10-second scenario limit");
+        assert_eq!(child_probe, -1, "child process {child_pid} survived");
     }
 
     #[cfg(unix)]

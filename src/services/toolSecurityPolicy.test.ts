@@ -6,6 +6,14 @@ import {
 } from "./toolSecurityPolicy";
 
 describe("toolSecurityPolicy", () => {
+  it("classifies AgSDL reads and document edits through the shared policy", () => {
+    expect(evaluateToolSecurity('agsdl_get', {}, { mode: 'Architect', riskLevel: 'balanced' }).normalizedCall.actionGroup).toBe('observe');
+    const edit = evaluateToolSecurity('agsdl_update', {}, { mode: 'Architect', riskLevel: 'balanced' });
+    expect(edit.normalizedCall.actionGroup).toBe('change');
+    expect(edit.decision).toBe('allow');
+    expect(evaluateToolSecurity('agsdl_update', {}, { mode: 'Architect', riskLevel: 'strict' }).decision).toBe('ask');
+  });
+
   it.each([
     ['C:/Repo', 'c:/repo/src/a.ts'],
     ['\\\\Server\\Share\\Repo', '//server/share/repo/src/a.ts'],
@@ -251,7 +259,7 @@ describe("toolSecurityPolicy", () => {
     expect(planResult.decision).toBe("allow");
   });
 
-  it("asks before modifying or replacing Architect records in balanced mode", () => {
+  it("denies the retired strategy generator in Architect mode", () => {
     const strategyResult = evaluateToolSecurity(
       "strategy_generate",
       { nodes: [{ title: "New plan", type: "task" }] },
@@ -262,7 +270,7 @@ describe("toolSecurityPolicy", () => {
       },
     );
 
-    expect(strategyResult.decision).toBe("ask");
+    expect(strategyResult.decision).toBe("deny");
   });
 
   it("ignores remembered grants for terminal commands", () => {

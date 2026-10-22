@@ -163,44 +163,28 @@ export const resolveChatErrorPresentation = (
   };
 };
 
-const formatLine = (label: string, value: string | number | boolean | undefined): string | null => {
-  if (value === undefined || value === "") {
-    return null;
-  }
-  return `- ${label}: \`${String(value)}\``;
-};
+export const PROVIDER_ERROR_BLOCK_LANGUAGE = 'macro-provider-error';
 
+// Keep the structured diagnostics in the durable transcript and model context.
+// The Markdown renderer presents this block as a compact, translated notice.
 export const buildProviderErrorTranscriptMarkdown = (
   presentation: ChatErrorPresentation,
-): string => {
-  const lines = [
-    `### ${presentation.title}`,
-    "",
-    presentation.message,
-    "",
-    ...[
-      formatLine("Provider", presentation.provider),
-      formatLine("Type provider", presentation.providerType),
-      formatLine("Modèle", presentation.model),
-      formatLine("Type d'erreur", presentation.kind),
-      formatLine("Statut HTTP", presentation.status),
-      formatLine("Code", presentation.code),
-      formatLine("Catégorie", presentation.type),
-      formatLine("Réessayable", presentation.retryable),
-      formatLine(
-        "Retry après",
-        presentation.retryAfterMs === undefined
-          ? undefined
-          : `${Math.ceil(presentation.retryAfterMs / 1000)}s`,
-      ),
-    ].filter((line): line is string => Boolean(line)),
-    "",
-    `Action recommandée: ${presentation.suggestedAction ?? "Relance la demande ou change de provider."}`,
-  ];
+): string => ['```' + PROVIDER_ERROR_BLOCK_LANGUAGE, JSON.stringify(presentation), '```'].join('\n');
 
-  if (presentation.rawExcerpt) {
-    lines.push("", "Détail brut provider:", "", "```text", presentation.rawExcerpt, "```");
+export const parseProviderErrorBlock = (content: string): ChatErrorPresentation | null => {
+  try {
+    const value: unknown = JSON.parse(content);
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+    const record = value as Record<string, unknown>;
+    if (record.origin !== 'provider' || record.displayTarget !== 'transcript' ||
+      typeof record.title !== 'string' || typeof record.message !== 'string') return null;
+    const strings = ['suggestedAction', 'provider', 'providerType', 'model', 'kind', 'code', 'type', 'rawExcerpt'];
+    if (strings.some((key) => record[key] !== undefined && typeof record[key] !== 'string')) return null;
+    if (record.retryable !== undefined && typeof record.retryable !== 'boolean') return null;
+    if (['status', 'retryAfterMs'].some((key) => record[key] !== undefined &&
+      (typeof record[key] !== 'number' || !Number.isFinite(record[key])))) return null;
+    return record as unknown as ChatErrorPresentation;
+  } catch {
+    return null;
   }
-
-  return lines.join("\n").trim();
 };

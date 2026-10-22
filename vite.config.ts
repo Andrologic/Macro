@@ -443,6 +443,7 @@ export default defineConfig(({ command, mode }) => {
   }
 
   return {
+    cacheDir: process.env.VITE_MACRO_DEMO === '1' ? '.demo-vite-cache' : 'node_modules/.vite',
     base: command === "build" ? "./" : "/",
     // Vite's prefix matching would expose arbitrary VITE_* secrets. Publish
     // exact non-secret keys below instead of opening a broad prefix.
@@ -450,6 +451,12 @@ export default defineConfig(({ command, mode }) => {
     define: {
       'import.meta.env.VITE_APP_VERSION': JSON.stringify(appVersion),
       ...publicDefines,
+      'import.meta.env.VITE_MACRO_DEMO': JSON.stringify(
+        command === 'build' ? '' : loadedEnv.VITE_MACRO_DEMO ?? '',
+      ),
+      'import.meta.env.VITE_TAURI_BROWSER_BRIDGE_PORT': JSON.stringify(
+        command === 'build' ? undefined : loadedEnv.VITE_TAURI_BROWSER_BRIDGE_PORT,
+      ) ?? 'undefined',
       'import.meta.env.VITE_TAURI_BROWSER_BRIDGE': JSON.stringify(
         command === 'build' ? '' : loadedEnv.VITE_TAURI_BROWSER_BRIDGE ?? '',
       ),
@@ -499,6 +506,7 @@ export default defineConfig(({ command, mode }) => {
 
       // Code splitting configuration
       rollupOptions: {
+        input: { main: resolve(projectRoot, "index.html"), agsdlHost: resolve(projectRoot, "agsdl-runtime-host.html") },
         output: {
           // Manual chunks for optimal code splitting
           manualChunks: manualChunk,
@@ -563,6 +571,9 @@ export default defineConfig(({ command, mode }) => {
         "react/jsx-dev-runtime",
         "sonner",
         "zustand",
+        // Pre-bundle React Flow for its CommonJS selector dependencies.
+        // The Architect panel still imports it lazily at runtime.
+        "@xyflow/react",
         "i18next",
         "react-i18next",
         "lucide-react",
@@ -576,7 +587,6 @@ export default defineConfig(({ command, mode }) => {
         "@codemirror/view",
         "@codemirror/state",
         "codemirror",
-        "@xyflow/react",
       ],
 
       // Force re-optimization when these change
@@ -587,7 +597,7 @@ export default defineConfig(({ command, mode }) => {
     // SERVER CONFIGURATION - Tauri Development
     // =============================================================================
     server: {
-      port: 1422,
+      port: Number(process.env.MACRO_TAURI_BROWSER_UI_PORT || 1422),
       strictPort: true,
       host: host || false,
       hmr: host

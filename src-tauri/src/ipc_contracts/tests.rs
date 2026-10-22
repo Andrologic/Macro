@@ -7,6 +7,7 @@ fn output_omission_matches_the_generated_contract() {
     let event = AiStreamDoneEvent {
         request_id: "request".into(),
         output_text: "done".into(),
+        visible_text: None,
         tool_calls: vec![],
         response_id: None,
         output_items: None,
