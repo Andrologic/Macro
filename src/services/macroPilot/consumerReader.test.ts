@@ -1,9 +1,11 @@
 import { describe, expect, it } from 'bun:test';
 import { ConsumerReader } from './consumerReader';
+import { ConsumerConnections } from './consumerConnections';
+import { connectReaderLimits, connectReaderRetry } from '../../composition/macroConnectConsumer';
 import { createConnectConsumerFixture } from '../../../dev/fixtures/connectConsumer';
 import { PilotClientError } from './clientError';
-import type { ContentConversationCard } from './contentProtocol';
-const until = async (check: () => boolean) => { const end = Date.now() + 5000; while (!check() && Date.now() < end) await new Promise(resolve => setTimeout(resolve, 2)); expect(check()).toBe(true); };
+import { validateExchange, type ContentConversationCard } from './contentProtocol';
+const until = async (check: () => boolean, diagnostic?: () => unknown) => { const end = Date.now() + 5000; while (!check() && Date.now() < end) await new Promise(resolve => setTimeout(resolve, 2)); if (!check() && diagnostic) console.error('Reader fixture timeout', JSON.stringify(diagnostic())); expect(check()).toBe(true); };
 const deferred = <T,>() => { let resolve!: (value: T) => void; const promise = new Promise<T>(done => { resolve = done; }); return { promise, resolve }; };
 const card = (reader: ConsumerReader, index = 0) => reader.getSnapshot().panels[index].catalog.page!.response.result.items[0] as ContentConversationCard;
 async function setup(two = false) {
@@ -57,17 +59,60 @@ describe('dialog-owned Connect reader', () => {
   });
   it('purges hidden/offline data, proves again on return, and retires the whole context on account change', async () => {
     const { h, reader } = await setup(true);
-    reader.setAvailable(false); expect(reader.getSnapshot()).toMatchObject({ phase: 'locked', choices: [] });
-    expect(reader.getSnapshot().panels.every(p => !p.catalog.page && !p.detail.page && !p.selected && !p.label)).toBe(true);
-    await until(() => h.owner()!.diagnostics().activeReads === 0); expect(h.owner()!.diagnostics()).toMatchObject({ targets: 0, subscribers: 0 });
-    reader.setAvailable(true); await until(() => reader.getSnapshot().phase === 'ready' && reader.getSnapshot().panels.every(p => Boolean(p.catalog.page)));
-    h.changeAccount(); expect(reader.getSnapshot()).toMatchObject({ phase: 'ended', panels: [], choices: [] }); expect(h.listeners.size).toBe(0);
+    try {
+      reader.setAvailable(false); expect(reader.getSnapshot()).toMatchObject({ phase: 'locked', choices: [] });
+      expect(reader.getSnapshot().panels.every(p => !p.catalog.page && !p.detail.page && !p.selected && !p.label)).toBe(true);
+      await until(() => h.owner()!.diagnostics().activeReads === 0); expect(h.owner()!.diagnostics()).toMatchObject({ targets: 0, subscribers: 0 });
+      reader.setAvailable(true); await until(() => reader.getSnapshot().phase === 'ready' && reader.getSnapshot().panels.every(p => Boolean(p.catalog.page)), () => ({
+        phase: reader.getSnapshot().phase, error: reader.getSnapshot().error,
+        panels: reader.getSnapshot().panels.map(p => ({ id: p.instanceId, phase: p.phase, error: p.error, catalog: { busy: p.catalog.busy, error: p.catalog.error, page: Boolean(p.catalog.page) } })),
+        owner: h.owner()?.diagnostics(), waiting: [...h.waiting.keys()], listeners: h.listeners.size,
+        calls: h.calls.slice(-12).map(c => ({ id: c.id, kind: c.dispatch.kind, request: c.dispatch.request, aborted: c.signal.aborted })),
+      }));
+      h.changeAccount(); expect(reader.getSnapshot()).toMatchObject({ phase: 'ended', panels: [], choices: [] }); expect(h.listeners.size).toBe(0);
+    } finally { reader.dispose(); }
+  });
+  it('keeps synthetic capture lifetime canonical when the clock advances between timestamp samples on recovery', async () => {
+    const { h, reader } = await setup(true); const now = Date.now;
+    try {
+      h.read(async (id, dispatch) => {
+        try {
+          Date.now = () => now() + 7;
+          const response = h.terminal(id, dispatch);
+          expect(validateExchange(dispatch.request, response)).toMatchObject({ valid: true });
+          expect(Date.parse(response.result.page.expires_at) - Date.parse(response.result.page.observed_at)).toBe(300_000);
+          return response;
+        } finally { Date.now = now; }
+      });
+      reader.setAvailable(false); reader.setAvailable(true);
+      await until(() => reader.getSnapshot().phase === 'ready' && reader.getSnapshot().panels.every(p => Boolean(p.catalog.page) || Boolean(p.error || p.catalog.error)));
+      expect(reader.getSnapshot().panels.map(p => ({ ready: Boolean(p.catalog.page), error: p.error, row: p.catalog.error }))).toEqual([
+        { ready: true, error: null, row: null }, { ready: true, error: null, row: null },
+      ]);
+    } finally { Date.now = now; reader.dispose(); }
   });
   it('does not publish a partial directory and ignores its late proof after disposal', async () => {
     const { h, reader } = await setup(true);
     h.directoryRead(async request => request.item_type === 'instance' ? h.directory(request) : { malformed: true });
     await reader.refresh(); expect(reader.getSnapshot().phase).toBe('error'); expect(reader.getSnapshot().choices).toHaveLength(0); expect(reader.getSnapshot().panels.every(p => !p.catalog.page && !p.selected)).toBe(true);
+    h.directoryRead(async request => h.directory(request)); await reader.refresh();
+    await until(() => reader.getSnapshot().phase === 'ready' && reader.getSnapshot().panels.every(p => Boolean(p.catalog.page)));
     const gate = deferred<unknown>(); h.directoryRead(async () => gate.promise); const pending = reader.refresh(); reader.dispose(); gate.resolve({}); await pending; expect(reader.getSnapshot().phase).toBe('ended');
+  });
+  it.each([false, true])('ends stale context during public proof, including after verify awaits: %s', async afterWait => {
+    const h = createConnectConsumerFixture(), gate = deferred<void>(); let stale = false, hold = false, entered = false;
+    const context = () => { if (stale) throw new PilotClientError('context_changed'); return h.ports.context(); };
+    let owner: ConsumerConnections | undefined;
+    const reader = new ConsumerReader({ ...h.ports, context, createOwner: () => owner = new ConsumerConnections({ ...h.transport, context }, {
+      context, verify: async () => { if (hold) { entered = true; await gate.promise; } }, query: async (_context, request) => h.directory(request),
+    }, connectReaderLimits, connectReaderRetry) });
+    try {
+      reader.start(); await until(() => reader.getSnapshot().phase === 'ready'); reader.open('instance:alpha'); await until(() => Boolean(reader.getSnapshot().panels[0].catalog.page));
+      hold = afterWait; stale = !afterWait; const proof = reader.refresh();
+      if (afterWait) { await until(() => entered); stale = true; gate.resolve(); }
+      await proof; expect(reader.getSnapshot()).toMatchObject({ phase: 'ended', panels: [], choices: [] });
+      expect(owner!.diagnostics()).toMatchObject({ targets: 0, subscribers: 0 }); expect(h.listeners.size).toBe(0);
+    } finally { gate.resolve(); reader.dispose(); }
   });
   it('applies tombstone/reset, confines refusal to its target and purges selection on filter change', async () => {
     const { h, reader } = await setup(true);

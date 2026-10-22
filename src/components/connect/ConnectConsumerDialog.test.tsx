@@ -47,6 +47,19 @@ describe('Connect reader DOM', () => {
     await act(async () => document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))); expect(close).toHaveBeenCalledTimes(1);
     await act(async () => root.unmount()); expect(fixture.owner()!.diagnostics()).toMatchObject({ targets: 0, subscribers: 0 }); expect(fixture.listeners.size).toBe(0);
   });
+  it('returns focus to the selected card, or its panel if that card left the current page', async () => {
+    await mount(); await add('instance:alpha');
+    const card = [...document.querySelectorAll<HTMLButtonElement>('button')].find(b => b.textContent?.includes('Alpha Chat 1'))!;
+    await act(async () => card.click()); await settle(() => document.body.textContent!.includes('instance:alpha message'));
+    await act(async () => { button('Back to conversations').focus(); button('Back to conversations').click(); });
+    expect(document.activeElement === card).toBe(true);
+    await act(async () => card.click()); await settle(() => document.body.textContent!.includes('instance:alpha message'));
+    await act(async () => button('Next page').click()); await settle(() => !card.isConnected && document.body.textContent!.includes('Alpha Chat 51'));
+    const panel = document.querySelector<HTMLElement>('section[aria-label="Alpha PC"]')!;
+    await act(async () => { button('Back to conversations').focus(); button('Back to conversations').click(); });
+    expect(document.activeElement === panel).toBe(true);
+    expect(document.querySelectorAll('h2').length).toBe(2); // One accessible title per nested dialog.
+  });
   it('removes protected DOM when hidden and closes after a context change', async () => {
     const { fixture, close } = await mount(); await add('instance:alpha'); expect(document.body.textContent).toContain('Alpha Chat 1');
     await act(async () => { Object.defineProperty(document, 'hidden', { configurable: true, value: true }); document.dispatchEvent(new Event('visibilitychange')); });

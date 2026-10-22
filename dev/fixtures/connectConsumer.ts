@@ -36,7 +36,8 @@ export function createConnectConsumerFixture() {
     const end = backward ? start : Math.min(total, start + 50); start = backward ? Math.max(0, start - 50) : start;
     if (!snapshots.has(snapshotId)) {
       if (snapshots.size >= 32) snapshots.delete(snapshots.keys().next().value!);
-      snapshots.set(snapshotId, { observed: new Date().toISOString(), expires: new Date(Date.now() + 300_000).toISOString(), total, backward });
+      const observed = Date.now();
+      snapshots.set(snapshotId, { observed: new Date(observed).toISOString(), expires: new Date(observed + 300_000).toISOString(), total, backward });
     }
     const snap = snapshots.get(snapshotId)!;
     const page = { snapshot_id: snapshotId, revision: 1, observed_at: snap.observed, expires_at: snap.expires, export_policy_revision: 'visible-1', offset: start, total,

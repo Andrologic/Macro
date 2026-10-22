@@ -27,9 +27,16 @@ function Navigation({ row, panel, kind, reader }: { row: ReaderRow; panel: Reade
 }
 function Panel({ panel, reader }: { panel: ReaderPanel; reader: ConsumerReader }) {
   const { t } = useTranslation();
+  const cardButtons = useRef(new Map<string, HTMLButtonElement>());
+  const panelElement = useRef<HTMLElement>(null);
+  const back = () => {
+    const card = panel.selected && cardButtons.current.get(JSON.stringify(panel.selected.ref));
+    reader.back(panel.key);
+    (card?.isConnected ? card : panelElement.current)?.focus();
+  };
   const cards = (panel.catalog.page?.response.result.items ?? []) as ContentConversationCard[];
   const messages = (panel.detail.page?.response.result.items ?? []) as ContentTranscriptMessage[];
-  return <section aria-label={panel.label || t('settings.connectReader.computer')} className="flex min-h-0 min-w-0 flex-col overflow-hidden rounded-lg border border-border bg-background/50">
+  return <section ref={panelElement} tabIndex={-1} aria-label={panel.label || t('settings.connectReader.computer')} className="flex min-h-0 min-w-0 flex-col overflow-hidden rounded-lg border border-border bg-background/50">
     <header className="flex items-center gap-2 border-b border-border px-3 py-2">
       <h3 className="min-w-0 flex-1 truncate text-sm font-semibold">{panel.label || t('settings.connectReader.computer')}</h3>
       <span role="status" className="text-xs text-muted-foreground">{t(`settings.connectReader.phase.${panel.phase}`, { defaultValue: t('common.loading') })}</span>
@@ -44,10 +51,10 @@ function Panel({ panel, reader }: { panel: ReaderPanel; reader: ConsumerReader }
           </Select>
         </div>
         <div className="min-h-0 flex-1 overflow-auto">
-          {cards.map(card => <button type="button" key={JSON.stringify([panel.key, card.ref])} aria-pressed={panel.selected?.ref.conversation_id === card.ref.conversation_id} onClick={() => reader.select(panel.key, card.ref)} className="block w-full border-b border-border/50 px-3 py-2 text-left hover:bg-accent focus-visible:outline-primary aria-pressed:bg-accent">
+          {cards.map(card => <button type="button" key={JSON.stringify([panel.key, card.ref])} ref={node => { const key = JSON.stringify(card.ref); if (node) cardButtons.current.set(key, node); else cardButtons.current.delete(key); }} aria-pressed={panel.selected?.ref.conversation_id === card.ref.conversation_id} onClick={() => reader.select(panel.key, card.ref)} className="block w-full border-b border-border/50 px-3 py-2 text-left hover:bg-accent focus-visible:outline-primary aria-pressed:bg-accent">
             <span className="block break-words text-sm font-medium">{card.pinned ? '• ' : ''}{card.title}</span>
             <span className="line-clamp-2 text-xs text-muted-foreground">{card.description}</span>
-            <span className="block text-xs text-muted-foreground">{card.project?.name} · {new Date(card.updated_at).toLocaleDateString()}</span>
+            <span className="block text-xs text-muted-foreground">{card.project && <>{card.project.name} · </>}{new Date(card.updated_at).toLocaleDateString()}</span>
             {card.unread && <span className="mr-2 text-xs text-primary">{t('settings.connectReader.unread')}</span>}
             {card.attention !== 'none' && <span className="text-xs text-muted-foreground">{t(`settings.connectReader.attention.${card.attention}`)}</span>}
           </button>)}
@@ -57,7 +64,7 @@ function Panel({ panel, reader }: { panel: ReaderPanel; reader: ConsumerReader }
       </div>
       <div className="flex min-h-0 min-w-0 flex-col">
         {panel.selected ? <>
-          <div className="border-b border-border p-2"><Button size="sm" variant="ghost" onClick={() => reader.back(panel.key)}>{t('settings.connectReader.back')}</Button><h4 className="break-words text-sm font-medium">{panel.selected.title || t('settings.connectReader.conversation')}</h4>
+          <div className="border-b border-border p-2"><Button size="sm" variant="ghost" onClick={back}>{t('settings.connectReader.back')}</Button><h4 className="break-words text-sm font-medium">{panel.selected.title || t('settings.connectReader.conversation')}</h4>
             <p className="text-xs text-muted-foreground">{t(panel.history ? 'settings.connectReader.conversation' : 'settings.connectReader.beginning')}</p>
             {panel.freshAnchor && <p role="status" className="text-xs text-muted-foreground">{t('settings.connectReader.newCapture')}</p>}
           </div>
@@ -81,7 +88,7 @@ export function ConnectConsumerDialog({ ports, onClose, returnFocusRef }: { port
   const [choice, setChoice] = useState(''); const [selectionError, setSelectionError] = useState<PilotClientErrorCode | null>(null); const select = useRef<HTMLSelectElement>(null);
   useEffect(() => { if (state.phase === 'ended') onClose(); }, [state.phase, onClose]);
   return <Dialog title={t('settings.connectReader.title')} onClose={onClose} initialFocusRef={select} returnFocusRef={returnFocusRef} panelClassName="flex h-[90vh] w-[96vw] max-w-[1440px] flex-col overflow-hidden rounded-xl border border-border bg-card shadow-xl">
-    <header className="flex items-start gap-3 border-b border-border p-3"><div className="min-w-0 flex-1"><h2 className="text-sm font-semibold">{t('settings.connectReader.title')}</h2><p className="text-xs text-muted-foreground">{t('settings.connectReader.help')}</p></div><Button size="sm" variant="ghost" onClick={onClose}>{t('common.close')}</Button></header>
+    <header className="flex items-start gap-3 border-b border-border p-3"><div className="min-w-0 flex-1"><p aria-hidden="true" className="text-sm font-semibold">{t('settings.connectReader.title')}</p><p className="text-xs text-muted-foreground">{t('settings.connectReader.help')}</p></div><Button size="sm" variant="ghost" onClick={onClose}>{t('common.close')}</Button></header>
     <div className="flex flex-wrap items-center gap-2 border-b border-border p-3">
       <select ref={select} aria-label={t('settings.connectReader.chooseComputer')} value={choice} onChange={event => { setChoice(event.target.value); setSelectionError(null); }} disabled={state.phase !== 'ready' || state.panels.length >= 2} className="max-w-xs rounded-md border border-border bg-background p-2 text-sm">
         <option value="">{t('settings.connectReader.chooseComputer')}</option>
@@ -94,7 +101,7 @@ export function ConnectConsumerDialog({ ports, onClose, returnFocusRef }: { port
       {state.phase === 'locked' && <p role="status" className="text-xs">{t('settings.connectReader.locked')}</p>}
       <ErrorMessage code={selectionError ?? state.error} />
     </div>
-    {reader && <div className={`grid min-h-0 flex-1 gap-3 p-3 ${state.panels.length === 2 ? 'grid-rows-2 min-[1000px]:grid-cols-2 min-[1000px]:grid-rows-1' : 'grid-cols-1'}`}>
+    {reader && <div className={`grid min-h-0 flex-1 auto-rows-[minmax(420px,1fr)] gap-3 overflow-y-auto p-3 min-[1000px]:auto-rows-[minmax(0,1fr)] ${state.panels.length === 2 ? 'grid-cols-1 min-[1000px]:grid-cols-2' : 'grid-cols-1'}`}>
       {state.panels.map(panel => <Panel key={panel.key} panel={panel} reader={reader} />)}
       {!state.panels.length && <p className="p-3 text-sm text-muted-foreground">{t('settings.connectReader.chooseComputer')}</p>}
     </div>}

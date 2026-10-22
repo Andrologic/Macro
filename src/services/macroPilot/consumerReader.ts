@@ -81,7 +81,7 @@ export class ConsumerReader {
     if (!available) this.retire('locked', 'offline');
     else void this.refresh();
   }
-  private current(owner: ConsumerConnections, generation: number): boolean {
+  private current(owner: ConsumerConnections | undefined, generation: number): boolean {
     if (this.closed || !this.available || this.owner !== owner || generation !== this.generation) return false;
     try { if (this.ports.context().key === this.identity?.key) return true; } catch { /* Retire below. */ }
     this.dispose(); return false;
@@ -112,7 +112,7 @@ export class ConsumerReader {
       for (const p of this.panels.values()) this.attach(p);
       this.publish('ready', null);
     } catch (error) {
-      if (!this.closed && generation === this.generation) { for (const p of this.panels.values()) { p.phase = 'error'; p.error = code(error); } this.publish('error', code(error)); }
+      if (this.current(this.owner, generation)) { for (const p of this.panels.values()) { p.phase = 'error'; p.error = code(error); } this.publish('error', code(error)); }
     } finally { if (generation === this.generation) { clearTimeout(this.proofTimer); this.proofTimer = undefined; } }
   }
   open(id: string): void {
