@@ -822,7 +822,7 @@ pub async fn update_git_worktree_project_access(
 
 pub async fn get_message(pool: &SqlitePool, id: &str) -> DbResult<Option<Message>> {
     let mut transaction = pool.begin().await?;
-    let size: Option<i64> = sqlx::query_scalar("SELECT length(CAST(content AS BLOB)) + COALESCE(length(CAST(hidden_context AS BLOB)),0) + COALESCE(length(CAST(provider_turn_state_json AS BLOB)),0) + COALESCE(length(CAST(tool_traces_json AS BLOB)),0) + COALESCE(length(CAST(provider_input_items_json AS BLOB)),0) + COALESCE(length(CAST(context_refs_json AS BLOB)),0) FROM messages WHERE id = ?").bind(id).fetch_optional(&mut *transaction).await?;
+    let size: Option<i64> = sqlx::query_scalar("SELECT length(CAST(content AS BLOB)) + COALESCE(length(CAST(hidden_context AS BLOB)),0) + COALESCE(length(CAST(provider_turn_state_json AS BLOB)),0) + COALESCE(length(CAST(tool_traces_json AS BLOB)),0) + COALESCE(length(CAST(provider_input_items_json AS BLOB)),0) + COALESCE(length(CAST(context_refs_json AS BLOB)),0) + COALESCE(length(CAST(generation_attempts_json AS BLOB)),0) FROM messages WHERE id = ?").bind(id).fetch_optional(&mut *transaction).await?;
     if size.is_some_and(|n| n > 4 * 1024 * 1024) {
         return Err(DbError::Validation("resource_limit".into()));
     }
@@ -891,7 +891,7 @@ pub async fn list_messages_bounded(
     conversation_id: &str,
 ) -> DbResult<Vec<Message>> {
     let mut tx = pool.begin().await?;
-    let size: i64 = sqlx::query_scalar("SELECT COALESCE(SUM(2048 + 6 * (length(CAST(id AS BLOB)) + length(CAST(conversation_id AS BLOB)) + length(CAST(content AS BLOB)) + COALESCE(length(CAST(hidden_context AS BLOB)),0) + COALESCE(length(CAST(provider_turn_state_json AS BLOB)),0) + COALESCE(length(CAST(tool_traces_json AS BLOB)),0) + COALESCE(length(CAST(provider_input_items_json AS BLOB)),0) + COALESCE(length(CAST(context_refs_json AS BLOB)),0) + COALESCE(length(CAST(turn_id AS BLOB)),0) + length(CAST(role AS BLOB)) + length(CAST(created_at AS BLOB)) + COALESCE(length(CAST(completion_reason AS BLOB)),0))),0) FROM messages WHERE conversation_id = ?")
+    let size: i64 = sqlx::query_scalar("SELECT COALESCE(SUM(2048 + 6 * (length(CAST(id AS BLOB)) + length(CAST(conversation_id AS BLOB)) + length(CAST(content AS BLOB)) + COALESCE(length(CAST(hidden_context AS BLOB)),0) + COALESCE(length(CAST(provider_turn_state_json AS BLOB)),0) + COALESCE(length(CAST(tool_traces_json AS BLOB)),0) + COALESCE(length(CAST(provider_input_items_json AS BLOB)),0) + COALESCE(length(CAST(context_refs_json AS BLOB)),0) + COALESCE(length(CAST(generation_attempts_json AS BLOB)),0) + COALESCE(length(CAST(turn_id AS BLOB)),0) + length(CAST(role AS BLOB)) + length(CAST(created_at AS BLOB)) + COALESCE(length(CAST(completion_reason AS BLOB)),0))),0) FROM messages WHERE conversation_id = ?")
         .bind(conversation_id).fetch_one(&mut *tx).await?;
     if size > 4 * 1024 * 1024 {
         return Err(DbError::Validation("resource_limit".into()));
@@ -3666,6 +3666,165 @@ mod tests {
             serde_json::to_value(listed).unwrap(),
             serde_json::to_value(reference).unwrap()
         );
+        pool.close().await;
+    }
+
+    // SELECT * evaluates this expression and fails. The size query must reject
+    // oversized rows without reaching that fetch, even before row decoding.
+    async fn install_admission_fetch_probe(pool: &SqlitePool) {
+        sqlx::query("ALTER TABLE messages RENAME TO admission_messages")
+            .execute(pool)
+            .await
+            .unwrap();
+        sqlx::query(
+            "CREATE VIEW messages AS SELECT *, abs(-9223372036854775808) AS hydration_probe FROM admission_messages",
+        )
+        .execute(pool)
+        .await
+        .unwrap();
+    }
+
+    async fn seed_admission_message(pool: &SqlitePool, id: &str, content: &str, attempts: &str) {
+        sqlx::query(
+            "INSERT INTO messages (id, conversation_id, role, content, created_at, generation_attempts_json) VALUES (?, 'admission-chat', 'assistant', ?, '2026-01-01', ?)",
+        )
+        .bind(id)
+        .bind(content)
+        .bind(serde_json::json!([{"rawText": attempts}]).to_string())
+        .execute(pool)
+        .await
+        .unwrap();
+    }
+
+    fn assert_admission_limit<T: std::fmt::Debug>(result: DbResult<T>) {
+        assert!(
+            matches!(&result, Err(DbError::Validation(reason)) if reason == "resource_limit"),
+            "expected SQL size rejection before SELECT * fetch, got {result:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn message_admission_rejects_generation_attempts_alone_before_fetch() {
+        let (_directory, pool) = test_pool().await;
+        seed_search_conversation(&pool, "admission-chat", "Synthetic admission").await;
+        seed_admission_message(
+            &pool,
+            "large-attempts",
+            "",
+            &"x".repeat(4 * 1024 * 1024 + 1),
+        )
+        .await;
+        install_admission_fetch_probe(&pool).await;
+        let single = get_message(&pool, "large-attempts").await;
+        let conversation = list_messages_bounded(&pool, "admission-chat").await;
+        assert_admission_limit(single);
+        assert_admission_limit(conversation);
+        pool.close().await;
+    }
+
+    #[tokio::test]
+    async fn message_admission_rejects_content_plus_generation_attempts_before_fetch() {
+        let (_directory, pool) = test_pool().await;
+        seed_search_conversation(&pool, "admission-chat", "Synthetic admission").await;
+        seed_admission_message(
+            &pool,
+            "combined-payload",
+            &"x".repeat(2 * 1024 * 1024),
+            &"y".repeat(2 * 1024 * 1024 + 1),
+        )
+        .await;
+        install_admission_fetch_probe(&pool).await;
+        assert_admission_limit(get_message(&pool, "combined-payload").await);
+        pool.close().await;
+    }
+
+    #[tokio::test]
+    async fn message_admission_rejects_cumulative_conversation_before_fetch() {
+        let (_directory, pool) = test_pool().await;
+        seed_search_conversation(&pool, "admission-chat", "Synthetic admission").await;
+        let attempts = "é".repeat(180_000);
+        for id in ["attempt-a", "attempt-b"] {
+            seed_admission_message(&pool, id, "", &attempts).await;
+        }
+        // Each row fits both existing budgets; only their combined bounded-list
+        // estimate exceeds 4 MiB. UTF-8 must be counted in bytes by SQLite.
+        assert!(get_message(&pool, "attempt-a").await.unwrap().is_some());
+        sqlx::query("DELETE FROM messages WHERE id = 'attempt-b'")
+            .execute(&pool)
+            .await
+            .unwrap();
+        assert_eq!(
+            list_messages_bounded(&pool, "admission-chat")
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
+        seed_admission_message(&pool, "attempt-b", "", &attempts).await;
+        install_admission_fetch_probe(&pool).await;
+        assert_admission_limit(list_messages_bounded(&pool, "admission-chat").await);
+        pool.close().await;
+    }
+
+    #[tokio::test]
+    async fn message_admission_preserves_small_nullable_utf8_rows_and_fetch_probe() {
+        let (_directory, pool) = test_pool().await;
+        seed_search_conversation(&pool, "admission-chat", "Synthetic admission").await;
+        for (id, populated) in [("small-a", true), ("small-b", false)] {
+            let value = |field: &str| populated.then(|| format!(r#"{{"{field}":"é界🙂"}}"#));
+            create_message(
+                &pool,
+                CreateMessageInput {
+                    id: Some(id.into()),
+                    conversation_id: "admission-chat".into(),
+                    turn_id: populated.then(|| "turn-é".into()),
+                    role: "assistant".into(),
+                    content: "Contenu é界🙂".into(),
+                    token_count: populated.then_some(37),
+                    tool_traces_json: value("tools"),
+                    hidden_context: value("hidden"),
+                    provider_input_items_json: value("inputs"),
+                    provider_turn_state_json: value("state"),
+                    context_refs_json: value("refs"),
+                    completion_reason: populated.then(|| "stop".into()),
+                    generation_attempts_json: value("attempts"),
+                },
+            )
+            .await
+            .unwrap();
+        }
+        let expected = list_messages(&pool, "admission-chat").await.unwrap();
+        let bounded = list_messages_bounded(&pool, "admission-chat")
+            .await
+            .unwrap();
+        assert_eq!(
+            serde_json::to_value(&bounded).unwrap(),
+            serde_json::to_value(&expected).unwrap()
+        );
+        for message in expected {
+            let single = get_message(&pool, &message.id).await.unwrap().unwrap();
+            assert_eq!(
+                serde_json::to_value(single).unwrap(),
+                serde_json::to_value(message).unwrap()
+            );
+        }
+        assert!(get_message(&pool, "missing").await.unwrap().is_none());
+        assert!(list_messages_bounded(&pool, "missing")
+            .await
+            .unwrap()
+            .is_empty());
+        install_admission_fetch_probe(&pool).await;
+        for error in [
+            get_message(&pool, "small-a").await.unwrap_err(),
+            list_messages_bounded(&pool, "admission-chat")
+                .await
+                .unwrap_err(),
+        ] {
+            assert!(
+                matches!(error, DbError::Sqlx(ref source) if source.to_string().contains("integer overflow")),
+                "fetch probe did not run: {error:?}"
+            );
+        }
         pool.close().await;
     }
 
