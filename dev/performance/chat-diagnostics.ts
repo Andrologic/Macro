@@ -1,4 +1,5 @@
 import { cpus, platform, release, arch, totalmem } from "node:os";
+import { execFileSync } from "node:child_process";
 import assert from "node:assert/strict";
 import type { ChatMessage, ConversationRuntimeState, ProviderTurnState, ToolTrace } from "../../src/types";
 import { EMPTY_CONVERSATION_RUNTIME } from "../../src/domains/chat/runtimeState";
@@ -224,7 +225,16 @@ export function runScenario(size: number, scenario: Scenario, samplesCount = obs
 
 if (import.meta.main) {
   const shaBefore = assertCleanBuildSource(root);
-  const rows = sizes.flatMap((size) => (["simple", "nested"] as const).map((scenario) => runScenario(size, scenario)));
+  const storeMode = process.argv.includes("--store");
+  const rows = storeMode ? sizes.map((size) => {
+    const output = execFileSync(process.execPath, [
+      "test", "src/stores/useChatStore.test.ts", "--test-name-pattern", "measures the live diagnostics callback connected to the store",
+    ], { cwd: root, encoding: "utf8", env: { ...process.env, MACRO_BENCHMARK_DIAGNOSTICS_STORE_SIZE: String(size) } });
+    const prefix = "MACRO_DIAGNOSTICS_STORE_RESULT=";
+    const row = output.split("\n").find(line => line.startsWith(prefix));
+    assert.ok(row, "Expected the real store measurement result");
+    return JSON.parse(row.slice(prefix.length));
+  }) : sizes.flatMap((size) => (["simple", "nested"] as const).map((scenario) => runScenario(size, scenario)));
   const environment = {
     timestamp: new Date().toISOString(), bun: Bun.version, platform: platform(), release: release(), arch: arch(),
     cpu: cpus()[0]?.model, cpuCount: cpus().length, memoryGiB: totalmem() / 2 ** 30,
@@ -234,10 +244,10 @@ if (import.meta.main) {
   assert.equal(environment.shaAfter, shaBefore, "Source changed during measurement");
   console.log(JSON.stringify({
     schema: 1,
-    kind: "chat-diagnostics-ordered-messages",
+    kind: storeMode ? "chat-diagnostics-store-deltas" : "chat-diagnostics-ordered-messages",
     provenance: environment,
-    protocol: { warmup, samples: observations, percentile: "nearest-rank", sequential: true, stop: "first diagnostics.record before transport" },
-    timing: { unit: "ms", orderedToRecord: "ordered() returns the already ordered fixture; the runtime structuredClone is timed", startToRecord: "runtime.start through the first diagnostics.record, including authority snapshots" },
+    protocol: { warmup, samples: observations, percentile: "nearest-rank", sequential: true, stop: storeMode ? "synchronous onLiveContextUpdate through runtime and real store; throttled async refresh excluded" : "first diagnostics.record before transport" },
+    timing: storeMode ? { unit: "ms", callbackToStore: "runtime callback through recordLiveStreamContextEstimate and refresh scheduling, after stream launch; synchronous deltas inside one throttle window" } : { unit: "ms", orderedToRecord: "ordered() returns the already ordered fixture; the runtime structuredClone is timed", startToRecord: "runtime.start through the first diagnostics.record, including authority snapshots" },
     rows,
     unavailable: ["provider transport", "native IO", "IPC", "browser/Tauri runtime"],
   }, null, 2));
