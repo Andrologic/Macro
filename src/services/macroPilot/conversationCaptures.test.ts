@@ -413,7 +413,7 @@ describe('negotiated independent conversation revisions', () => {
     const restart = new ConversationCaptures(env.deps);
     const page = await restart.conversationRead(selected, ref);
     expect(page.page.revision).toBeGreaterThanOrEqual(old.page.revision);
-    expect(JSON.parse(env.stored!).version).toBe(3);
+    expect(JSON.parse(env.stored!).version).toBe(4);
     expect(env.stored).not.toContain('Bonjour');
     expect(env.stored).not.toContain('boundary-secret');
   });

@@ -62,15 +62,20 @@ export function assistantProvenance(storage: AssistantProvenanceStorage = native
     recordInterrupted: async (messageId, content, providerDeltaText) => recordRange(messageId, content, providerDeltaText.trim()),
     readFinal: async (messageId, content) => {
       const raw = await storage.load(keyFor(messageId));
-      if (raw === null) return null;
-      try {
-        const record = object(JSON.parse(raw));
-        if (!record || record.version !== 2 || record.source !== 'provider-output' ||
-            !Number.isSafeInteger(record.start) || !Number.isSafeInteger(record.end) ||
-            (record.start as number) < 0 || (record.end as number) <= (record.start as number) || (record.end as number) > content.length ||
-            record.fingerprint !== await fingerprint(messageId, content)) return null;
-        return content.slice(record.start as number, record.end as number);
-      } catch { return null; }
+      return projectFinalProvenance(messageId, content, raw);
     },
   };
+}
+
+/** Validate a receipt already read in the same snapshot as its display content. */
+export async function projectFinalProvenance(messageId: string, content: string, raw: string | null): Promise<string | null> {
+  if (raw === null) return null;
+  try {
+    const record = object(JSON.parse(raw));
+    if (!record || record.version !== 2 || record.source !== 'provider-output' ||
+        !Number.isSafeInteger(record.start) || !Number.isSafeInteger(record.end) ||
+        (record.start as number) < 0 || (record.end as number) <= (record.start as number) || (record.end as number) > content.length ||
+        record.fingerprint !== await fingerprint(messageId, content)) return null;
+    return content.slice(record.start as number, record.end as number);
+  } catch { return null; }
 }

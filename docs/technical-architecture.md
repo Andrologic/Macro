@@ -981,7 +981,7 @@ natifs exposent un code et un chemin ; l'interface traduit le résumé et conser
 les messages techniques dans les détails du diagnostic.
 
 Les ports internes `repository::conversation_content_version`,
-`conversation_content_metadata` et `conversation_content_window` préparent une
+`conversation_content_metadata` et `conversation_content_window` alimentent les captures TypeScript par une
 lecture progressive du transcript. La migration 13 conserve une incarnation
 aléatoire de 128 bits et une révision entière par conversation. Les mutations des
 conversations, messages, métadonnées de gestion et reçus de provenance invalident
@@ -1000,16 +1000,49 @@ La fenêtre reçoit de 1 à 100 IDs distincts et vérifie leur appartenance ains
 leur rôle avant de rendre un préfixe. Les longueurs UTF-8 des huit champs utiles
 et du reçu brut sont admises avant leur hydratation, sous une estimation
 conservative de 4 194 304 octets. Chaque page utilise une transaction courte et
-un snapshot cohérent pour le token, l'admission et le fetch. Ces contrats natifs
-ne branchent pas encore les captures TypeScript et n'annoncent aucune capacité
-supplémentaire. Leur plafond ne vaut ni limite avant décodage IPC, ni borne RSS.
+un snapshot cohérent pour le token, l'admission et le fetch. Chaque assistant
+porte aussi sa révision de réponse décimale, ou null si elle est absente. Les
+types et propriétaires de ces révisions sont vérifiés avant le fetch brut. Les
+tickets de lecture portent seulement sur les réponses effectivement rendues et
+refusent une conversion numérique non sûre. Ces contrats internes n'annoncent
+aucune capacité supplémentaire. Leur plafond ne vaut ni limite avant décodage
+IPC, ni borne RSS.
+
+ConversationCaptures construit un catalogue de descripteurs immuable par capture,
+valide tous les rôles puis conserve le tri TypeScript sur les dates brutes. Les
+corps sont demandés par lots ciblés sur les places restantes de la page. Un seul
+reliquat brut de lot, borné à 4 Mio, et la page publique courante sont retenus et
+comptés au quota. Le reliquat est consommé ou libéré avant tout nouveau lot. Les
+frontières publiques dépendent des tailles rendues exactes, sans dépendre du
+reliquat. Le manager délègue directement ses fenêtres de 50 lignes, y compris
+backward et saut ancré, sans assembler le transcript complet. Les sources sans
+ports natifs conservent leur lecteur historique ; une erreur de port déclaré ne
+déclenche aucun repli vers ce lecteur.
+
+Le journal CAS v4 préserve les horloges et observations v2/v3 non visitées. Il
+distingue les anciennes empreintes des observations natives avec token et époque
+de source. L'horloge conversations avance au-delà de ses révisions préservées
+pour les seules ressources changées, avec retrait monotone des suppressions. Une
+perte CAS impose une nouvelle lecture du journal gagnant. Les namespaces desktop
+principal et management restent distincts. Deux propriétaires d'un même namespace
+avec des époques différentes peuvent se faire avancer mutuellement.
+
+Avant toute émission ou reprise, même pour une réponse retenue, une garde fraîche
+vérifie token, époque, binding, politique effective, références, activité runtime
+directe et expiration absolue de cinq minutes. Elle ne relit ni catalogue de
+messages, ni COUNT, ni corps inchangé. Les catalogues projets/tâches/conversations
+nécessaires restent observés hors token. Les quotas restent séparés : 24 Mio pour
+les captures principales, 8 Mio pour les captures management et le budget
+existant de 8 Mio du manager. Les réservations en vol et les reliquats sont
+comptés, sans déduire de ces quotas une borne RSS.
 
 Les sauvegardes antérieures à 13 restent comparées à leur schéma d'origine avant
 migration d'une copie. Une archive déclarant 13 doit conserver le DDL complet de
 la table de versions et tous les triggers attendus. Le démarrage rejette aussi
 un stamp 13 dont ces objets sont incomplets ou modifiés. Une restauration peut
-réintroduire un ancien token durable ; l'invalidation des captures par époque de
-source reste à réaliser lors du branchement frontend.
+réintroduire un ancien token durable ; une époque de source neuve au constructeur
+et à clear rend les anciens handles inutilisables. L'époque persistée n'est pas
+restaurée comme époque active.
 
 ### 9.4 `fs`
 
@@ -1838,7 +1871,7 @@ Le [contrat public v2](macro-pilot/content-contract-v2.md) sépare la négociati
 
 Les commandes natives `pilot_content_policy` et `pilot_review_commit` passent par les wrappers typés de `tauriIpc.ts`. La première fournit des valeurs du coffre uniquement pour détecter les contenus à ne pas exporter. La seconde conserve le verrou du dépôt, acquiert le verrou d'écriture SQLite, recontrôle la capture, les branches suivies, la politique et l'échéance, puis enregistre ensemble décision, reçu et événement. Elle ne modifie pas Git. Les écritures d'un éditeur externe après le dernier contrôle ne sont pas rendues atomiques avec SQLite.
 
-L’extension négociée [network-reliability-1](macro-pilot/network-reliability-contract.md) ajoute des révisions durables par conversation, des diagnostics provider issus d’une liste fermée et une lecture conditionnelle des projets. Le journal de captures migre en version 3 ; les reçus des commandes restent indépendants. Les réponses et événements destinés aux anciens clients conservent leurs règles de compatibilité décrites dans ce contrat.
+L’extension négociée [network-reliability-1](macro-pilot/network-reliability-contract.md) ajoute des révisions durables par conversation, des diagnostics provider issus d’une liste fermée et une lecture conditionnelle des projets. Les révisions historiques du journal de captures v3 sont conservées par le journal v4 des lectures natives ; les reçus des commandes restent indépendants. Les réponses et événements destinés aux anciens clients conservent leurs règles de compatibilité décrites dans ce contrat.
 
 Les budgets conservateurs sont de 24 Mio pour les captures de conversations, 32 Mio pour les captures natives et 7 Mio pour les métadonnées et réponses du host. Les limites de pagination, d'expiration et d'enveloppe restent celles du contrat. La préparation native refuse actuellement Windows et WSL pour le contenu v2 ; ACCOUNT et la supervision v1 gardent leurs capacités propres. Le [guide d'intégration](macro-pilot/content-consumer-guide.md) décrit les vérifications nécessaires avec un relais et un compagnon compatibles.
 

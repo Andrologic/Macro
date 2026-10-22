@@ -21,6 +21,9 @@ mock.module('@tauri-apps/api/core', () => ({ ...core, invoke: async (command: st
   calls.push(command);
   if (command === 'workspace_get_bootstrap') { bootstrapCalls++; throw new Error('unexpected workspace bootstrap during capture read'); }
   if (command === 'workspace_list_tasks') return { tasks: [] };
+  if (command === 'db_conversation_content_version') { if (unavailable) throw new Error('unavailable'); return {version:1,incarnation:'a'.repeat(32),revision:'1'}; }
+  if (command === 'db_conversation_content_metadata') return {token:{version:1,incarnation:'a'.repeat(32),revision:'1'},opening:{total_raw:'1',total_exportable:'1',conversation,metadata:{conversation_id:conversation.id,revision:'1',archived:false,response_revision:'0',read_revision:'0',pending_tool:false,provider_failed:false,question_message_id:null,preview_message_id:null}},items:[{id:message.id,conversation_id:message.conversation_id,role:message.role,created_at:message.created_at}],next_after:null,admission_estimate_bytes:8192};
+  if (command === 'db_conversation_content_window') { if (unavailable) throw new Error('unavailable'); return {token:{version:1,incarnation:'a'.repeat(32),revision:'1'},items:[{id:message.id,conversation_id:message.conversation_id,role:message.role,content:message.content,created_at:message.created_at,completion_reason:null,tool_traces_json:null,provider_turn_state_json:null,provenance_json:null,response_revision_decimal:null}],consumed_count:1,admission_estimate_bytes:8192}; }
   if (command === 'db_conversation_metadata') return [];
   if (command === 'db_list_conversations') return [structuredClone(conversation)];
   if (command === 'db_get_conversation') return structuredClone(conversation);
@@ -57,14 +60,15 @@ it('uses actual IPC wrappers and chat store with an unloaded cache, preserving U
   expect(useChatStore.getState()).toBe(state);
   expect(state.getConversationMessages(conversation.id)).toEqual([]);
   expect(message.hidden_context).toBe('private context');
-  expect(calls).toContain('db_list_messages'); expect(calls).toContain('db_get_conversation');
+  expect(calls).toContain('db_conversation_content_window'); expect(calls).toContain('db_conversation_content_metadata');
+  expect(calls).not.toContain('db_list_messages'); expect(calls).not.toContain('db_get_conversation');
   expect(calls.filter(c => /create|update|delete|rename/.test(c))).toEqual([]);
   unavailable = true;
   await expect(captures.conversationRead(scope, { instance_id: 'instance', kind: 'conversation', conversation_id: conversation.id })).rejects.toMatchObject({ code: 'unavailable', message: 'unavailable' });
 });
 
 
-it('new windows use the bounded native reader and preserve its safe resource error', async () => {
+it('historical bounded callers preserve the safe resource error without an unbounded fallback', async () => {
   const source = desktopConversationManagementSource(desktopStorePorts);
   const before = calls.filter(c => c === 'db_list_messages').length;
   expect(await source.listMessages(conversation.id)).toHaveLength(1);

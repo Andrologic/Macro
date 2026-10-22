@@ -27,10 +27,39 @@ let extraProjects: Array<{ id: string; name: string; path: string }> = [];
 const conversation: DbConversation = { id: 'chat:one', title: 'Global chat', description: null, scope_mode: 'Chat', task_id: null, project_id: null, group_id: null, provider_id: null, model_id: null, reasoning_effort: null, created_at: '2026-01-01T00:00:00Z', updated_at: '2026-01-01T00:00:00Z', last_message: null, message_count: 1, is_pinned: false };
 let conversations: DbConversation[] = [];
 let messages: DbMessage[] = [];
+// Synthetic schema13 adapter for the real desktop IPC composition. It derives
+// tokens only from content dependencies, never the observation journal itself.
+async function contentToken(conversationId: string) {
+  if (messagesUnavailable) throw new Error('unavailable');
+  await messageWait;
+  const conversation = conversations.find(c=>c.id===conversationId); if (!conversation) throw new Error('not_found');
+  const rows=messages.filter(m=>m.conversation_id===conversationId);
+  const receipts=[...settings].filter(([key])=>rows.some(m=>key===`chat:assistant-visible-provenance:v1:${m.id}`));
+  const hash=new Uint8Array(await crypto.subtle.digest('SHA-256',new TextEncoder().encode(JSON.stringify([conversation,rows,receipts]))));
+  const hex=Array.from(hash,b=>b.toString(16).padStart(2,'0')).join('');
+  return {version:1,incarnation:'b'.repeat(32),revision:BigInt(`0x${hex.slice(0,15)}`).toString()};
+}
+async function contentRead(command:string,args:Record<string,unknown>) {
+  const input=args.input as {conversation_id:string;expected_token?:unknown;after?:{id:string;created_at:string};limit:number;ids:string[]};
+  const conversationId=command==='db_conversation_content_version'?String(args.conversationId):input.conversation_id;
+  const token=await contentToken(conversationId);
+  if(command==='db_conversation_content_version')return token;
+  if(input.expected_token&&JSON.stringify(input.expected_token)!==JSON.stringify(token))throw new Error('stale_revision');
+  const rows=messages.filter(m=>m.conversation_id===conversationId);
+  if(command==='db_conversation_content_metadata'){
+    const descriptors=rows.map(({id,conversation_id,role,created_at})=>({id,conversation_id,role,created_at})).sort((a,b)=>a.created_at<b.created_at?-1:a.created_at>b.created_at?1:a.id<b.id?-1:1);
+    const start=input.after?descriptors.findIndex(d=>d.id===input.after!.id&&d.created_at===input.after!.created_at)+1:0;
+    const items=descriptors.slice(start,start+input.limit);const last=items.at(-1);
+    return {token,...(!input.after?{opening:{total_raw:String(rows.length),total_exportable:String(rows.filter(m=>m.role==='user'||m.role==='assistant').length),conversation:conversations.find(c=>c.id===conversationId),metadata:{conversation_id:conversationId,revision:'1',archived:false,response_revision:'0',read_revision:'0',pending_tool:false,provider_failed:false,question_message_id:null,preview_message_id:null}}}:{}),items,next_after:start+items.length<descriptors.length?last:null,admission_estimate_bytes:8192};
+  }
+  const items=input.ids.map(id=>{const m=rows.find(m=>m.id===id)!;return {id:m.id,conversation_id:m.conversation_id,role:m.role,content:m.content,created_at:m.created_at,completion_reason:m.completion_reason??null,provider_turn_state_json:m.provider_turn_state_json,tool_traces_json:m.tool_traces_json,provenance_json:settings.get(`chat:assistant-visible-provenance:v1:${m.id}`)??null,response_revision_decimal:m.role==='assistant'?String(rows.indexOf(m)+1):null};});
+  return {token,items,consumed_count:items.length,admission_estimate_bytes:4096+new TextEncoder().encode(JSON.stringify(items)).length*6};
+}
 const nativeSnapshots = new Map<string, Record<string, unknown>>();
 const core = await import('@tauri-apps/api/core');
 mock.module('@tauri-apps/api/core', () => ({ ...core, invoke: async (command: string, args: Record<string, unknown> = {}) => {
   nativeCalls.push(command);
+  if (command.startsWith('db_conversation_content_')) return contentRead(command,args);
   if (bridge && (command === 'db_get_app_setting' || command === 'db_compare_and_swap_app_setting' || command === 'pilot_review_commit')) return bridge(command, args);
   if (command === 'db_get_app_setting') return settings.has(String(args.key)) ? { value_json: settings.get(String(args.key)) } : null;
   if (command === 'db_compare_and_swap_app_setting') {
@@ -408,14 +437,14 @@ it('waits for a late native capture after logout and never reintroduces its resu
     expect(h.results).toHaveLength(0); expect(nativeSnapshots.size).toBe(0);
   } finally { release?.(); await h.runtime.stop(); }
 });
-it('serves a review while background transcripts are blocked and interleaves deliveries between Git observations', async () => {
+it('serves a review while background content-version observations are blocked and interleaves deliveries between Git observations', async () => {
   const h = harness(); let releaseMessages!: () => void; let releaseCapture!: () => void;
   try {
     await h.runtime.start(); await until(() => h.requests.some(r => r.path.includes('/v2/') && r.path.endsWith('/poll')));
     expect(await h.deliver(request('conversation.read', { ref: { instance_id: instanceId, kind: 'conversation', conversation_id: conversation.id } }))).toMatchObject({ type: 'response' });
-    const before = nativeCalls.filter(c => c === 'db_list_messages').length;
+    const before = nativeCalls.filter(c => c === 'db_conversation_content_version').length;
     messageWait = new Promise<void>(resolve => { releaseMessages = resolve; });
-    await until(() => nativeCalls.filter(c => c === 'db_list_messages').length > before);
+    await until(() => nativeCalls.filter(c => c === 'db_conversation_content_version').length > before);
     expect(await h.deliver(request('review.get', { ref }))).toMatchObject({ type: 'response' });
     releaseMessages(); messageWait = undefined;
     taskRecords = Array.from({ length: 10 }, (_, i) => ({ ...taskRecords[0], id: `task:many:${i}` }));
@@ -492,11 +521,14 @@ it('keeps first reads and pages valid while twelve unchanged review references a
       const journal = [...settings.entries()].find(([key]) => key.startsWith('macroPilot:content-host:v2:'))?.[1];
       return journal !== undefined && Object.keys(JSON.parse(journal).reviews).length === 12;
     }, 20_000);
-    expect(h.events).toHaveLength(0);
+    // The first native content observation advances the old metadata-only
+    // revision conservatively. Discovering unchanged Git refs adds no events.
+    expect(h.events.every(event => ['conversations.changed', 'conversation.changed', 'conversation.resource_changed'].includes(event.change.kind))).toBe(true);
+    const initialContentEvents = h.events.length; expect(initialContentEvents).toBeLessThanOrEqual(2);
     expect(await h.deliver(request('projects.list', { instance_id: instanceId, continuation: { snapshot_id: projects.result.page.snapshot_id, cursor: projects.result.page.next_cursor } }))).toMatchObject({ type: 'response', result: { page: { offset: 100, revision: projects.result.page.revision }, items: expect.any(Array) } });
     expect(await h.deliver(request('conversation.read', { ref: transcriptRef, continuation: { snapshot_id: transcript.result.page.snapshot_id, cursor: transcript.result.page.next_cursor } }))).toMatchObject({ type: 'response', result: { page: { offset: 100, revision: transcript.result.page.revision } } });
     expect(await h.deliver(request('diff.files', { ref, snapshot_id: review.result.snapshot_id }))).toMatchObject({ type: 'response' });
-    expect(h.events).toHaveLength(0);
+    expect(h.events).toHaveLength(initialContentEvents);
     nativeRevision = 'c'.repeat(64);
     const changed = await h.deliver(request('review.get', { ref }));
     expect(changed).toMatchObject({ type: 'response', result: { revision: review.result.revision + 1 } });
@@ -773,7 +805,7 @@ it('keeps demand-only producers idle across observation, stop and restart withou
   const oldRuntime = runtimeWindow.__TAURI_INTERNALS__;
   runtimeWindow.__TAURI_INTERNALS__ = { invoke: () => {} };
   const h = harness(); h.acceptIdlePoll();
-  const metadataCalls = () => nativeCalls.filter(command => command === 'db_conversation_metadata').length;
+  const metadataCalls = () => nativeCalls.filter(command => command === 'db_list_conversations').length;
   const demandCalls = () => nativeCalls.filter(command => /^(?:host_telemetry_read|workspace_resolve_project_icons|db_get_pilot_reflection_message|pilot_files_)/.test(command));
   try {
     await h.runtime.start();
@@ -799,7 +831,7 @@ it('keeps demand-only producers idle across observation, stop and restart withou
     expect(demandCalls()).toEqual([]);
     expect(nativeCalls.filter(command => command === 'db_list_messages')).toEqual([]);
     expect(h.events).toEqual([]);
-    console.log('SYNTHETIC_IDLE_PRODUCERS', JSON.stringify({ metadata_calls_during_idle: observations,
+    console.log('SYNTHETIC_IDLE_PRODUCERS', JSON.stringify({ identity_catalog_calls_during_idle: observations,
       telemetry_icon_reflection_file_calls: demandCalls().length, transcript_reads: 0,
       remote_results: h.results.length, changed_events: h.events.length, paused_native_calls: pausedCalls }));
   } finally { await h.runtime.stop(); runtimeWindow.__TAURI_INTERNALS__ = oldRuntime; }

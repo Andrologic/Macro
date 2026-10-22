@@ -194,7 +194,7 @@ test.each([false, true])('one relay permit covers repeated boundary checks, with
     } },
     commitReview: async () => false, reviewRefs: async () => [], resolveReview: async () => { throw new Error('unused'); },
     policy: async () => policy, now: () => clock,
-    conversationManagement: { clear: () => {}, handle: async (_delivery: unknown, _policy: unknown, beforeEffect: () => Promise<string>) => {
+    conversationManagement: { clear: () => {}, validateEmission: async () => {}, handle: async (_delivery: unknown, _policy: unknown, beforeEffect: () => Promise<string>) => {
       await beforeEffect();
       if (expire) clock = 5000;
       await beforeEffect();

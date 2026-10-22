@@ -23,7 +23,7 @@ interface Dependencies {
 interface Catalog { cards: ContentConversationCard[]; conversations: DbConversation[]; fingerprint: string; revision: number }
 type Items = ContentConversationCard[] | ContentConversationSearchHit[] | MessageItem[];
 interface Snapshot { binding: string; fingerprint: string; revision: number; observed: number; items: Items; cursors: Map<string, number>; bytes: number; ref?: ConversationRef; nativeSnapshot?: string; messageFingerprints?: Record<string, string> }
-interface ReadTicket { binding: string; conversationId: string; observed: number[]; expires: number }
+interface ReadTicket { binding: string; conversationId: string; observed: number[]; expires: number; incarnation?: string; bytes?: number }
 function fail(code: ConstructorParameters<typeof ConversationCaptureError>[0]): never { throw new ConversationCaptureError(code); }
 export async function conversationHash(value: unknown): Promise<string> {
   return Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(stableJson(value)))), b => b.toString(16).padStart(2, '0')).join('');
@@ -73,7 +73,7 @@ export class ConversationManager {
     for (const [key, t] of this.tickets) if (t.expires <= this.now()) this.tickets.delete(key);
   }
   private quota(extra = 0) {
-    if ([...this.snapshots.values()].reduce((n, s) => n + s.bytes + s.cursors.size * 128, this.tickets.size * 1024 + extra) > 8 * 1024 * 1024) fail('resource_limit');
+    if ([...this.snapshots.values()].reduce((n, s) => n + s.bytes + s.cursors.size * 128, [...this.tickets.values()].reduce((n, ticket) => n + (ticket.bytes ?? 1024), extra)) > 8 * 1024 * 1024) fail('resource_limit');
   }
   private async catalog(policy: TextPolicy): Promise<Catalog> {
     const epoch = this.epoch;
@@ -192,6 +192,60 @@ export class ConversationManager {
     if (!delivery.capabilities?.includes(CONVERSATION_CAPABILITY)) fail('validation_failed');
     const request = delivery.request;
     const body = request.body as Record<string, unknown>;
+    if (request.operation === 'conversation.acknowledge' && this.deps.captures.hasNativeContent) {
+      const deadline = await authorize(); check();
+      const ticket = this.tickets.get(request.body.read_token);
+      if (!ticket) fail('snapshot_expired');
+      const authorizedUntil = Date.parse(deadline);
+      const checkTicket = () => {
+        check();
+        if (this.tickets.get(request.body.read_token) !== ticket || !Number.isFinite(ticket.expires) || ticket.expires <= this.now() ||
+          ticket.binding !== this.binding(delivery, request.body.ref) || ticket.conversationId !== request.body.ref.conversation_id) fail('snapshot_expired');
+        if (!Number.isFinite(authorizedUntil) || authorizedUntil <= this.now()) fail('unavailable');
+      };
+      checkTicket();
+      const catalog = await this.deps.captures.refreshCatalogMetadata(true); checkTicket();
+      if (!catalog.refs.some(ref => stableJson(ref) === stableJson(request.body.ref))) fail('not_found');
+      const current = await this.deps.source.nativeContent!.version(request.body.ref.conversation_id); checkTicket();
+      if (current.incarnation !== ticket.incarnation) fail('stale_revision');
+      // SQLite rechecks this bound after its own waits, before committing.
+      const executeBefore = new Date(Math.min(authorizedUntil, ticket.expires)).toISOString();
+      checkTicket();
+      await this.deps.source.acknowledge(ticket.conversationId, ticket.observed, executeBefore); check();
+      await this.deps.source.synchronize(); check(); return { acknowledged: true };
+    }
+    if (request.operation === 'conversation.window' && this.deps.captures.hasNativeContent) {
+      const backward = body.direction === 'backward';
+      if (backward && !delivery.capabilities?.includes('conversation-history-1')) fail('validation_failed');
+      const target: Record<string, unknown> = { operation: request.operation, ...body }; delete target.continuation;
+      const binding = this.binding(delivery, target);
+      const continuation = request.body.continuation;
+      const retained = continuation ? this.snapshots.get(continuation.snapshot_id) : undefined;
+      if (continuation && (!retained || retained.binding !== binding)) fail('validation_failed');
+      const scope = { accountId: delivery.account_id, sessionId: delivery.source_session_id, instanceId: delivery.instance_id, reliability: true };
+      const result = await this.deps.captures.conversationWindow(scope, request.body.ref, continuation, backward, request.body.message_id); check();
+      let allocatedTicket: string | null = null;
+      try {
+        const observed = result.responseRevisions.map(item => {
+          if (item.revision === null || !/^[1-9][0-9]{0,18}$/.test(item.revision)) return fail('unavailable');
+          const value = BigInt(item.revision); if (value > BigInt(Number.MAX_SAFE_INTEGER)) return fail('resource_limit'); return Number(value);
+        });
+        const snapshotId = result.page.snapshot_id;
+        if (!this.snapshots.has(snapshotId)) {
+          const bytes = utf8Bytes(binding) + 2048; this.quota(bytes);
+          this.snapshots.set(snapshotId, { binding, fingerprint: '', revision: result.page.revision, observed: Date.parse(result.page.observed_at), items: [], cursors: new Map(), bytes, ref: request.body.ref, nativeSnapshot: snapshotId });
+        }
+        let token: string | null = null;
+        if (observed.length) { const binding = this.binding(delivery, request.body.ref); const bytes = 1024 + observed.length * 8 + utf8Bytes(binding); this.quota(bytes); token = crypto.randomUUID(); allocatedTicket = token; this.tickets.set(token, { binding, conversationId: request.body.ref.conversation_id, observed, expires: Date.parse(result.page.expires_at), incarnation: result.contentToken.incarnation, bytes }); }
+        await this.deps.captures.validateCached(scope, 'conversation.read', request.body.ref, snapshotId); check();
+        return { page: result.page, items: result.items, read_token: token };
+      } catch (error) {
+        if (allocatedTicket) this.tickets.delete(allocatedTicket);
+        this.snapshots.delete(result.page.snapshot_id);
+        this.deps.captures.release(result.page.snapshot_id);
+        throw error;
+      }
+    }
     const catalog = await this.catalog(policy); check();
     const backward = body.direction === 'backward';
     if (backward && !delivery.capabilities?.includes('conversation-history-1')) fail('validation_failed');

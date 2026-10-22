@@ -382,6 +382,86 @@
       "families": [
         "db"
       ],
+      "name": "ConversationContentAnchor",
+      "origin": "macro_lib::db::models::ConversationContentAnchor",
+      "path": "ConversationContentAnchor.ts"
+    },
+    {
+      "families": [
+        "db"
+      ],
+      "name": "ConversationContentDescriptor",
+      "origin": "macro_lib::db::models::ConversationContentDescriptor",
+      "path": "ConversationContentDescriptor.ts"
+    },
+    {
+      "families": [
+        "db"
+      ],
+      "name": "ConversationContentItem",
+      "origin": "macro_lib::db::models::ConversationContentItem",
+      "path": "ConversationContentItem.ts"
+    },
+    {
+      "families": [
+        "db"
+      ],
+      "name": "ConversationContentMetadata",
+      "origin": "macro_lib::db::models::ConversationContentMetadata",
+      "path": "ConversationContentMetadata.ts"
+    },
+    {
+      "families": [
+        "db"
+      ],
+      "name": "ConversationContentMetadataInput",
+      "origin": "macro_lib::db::models::ConversationContentMetadataInput",
+      "path": "ConversationContentMetadataInput.ts"
+    },
+    {
+      "families": [
+        "db"
+      ],
+      "name": "ConversationContentMetadataPage",
+      "origin": "macro_lib::db::models::ConversationContentMetadataPage",
+      "path": "ConversationContentMetadataPage.ts"
+    },
+    {
+      "families": [
+        "db"
+      ],
+      "name": "ConversationContentOpening",
+      "origin": "macro_lib::db::models::ConversationContentOpening",
+      "path": "ConversationContentOpening.ts"
+    },
+    {
+      "families": [
+        "db"
+      ],
+      "name": "ConversationContentToken",
+      "origin": "macro_lib::db::models::ConversationContentToken",
+      "path": "ConversationContentToken.ts"
+    },
+    {
+      "families": [
+        "db"
+      ],
+      "name": "ConversationContentWindow",
+      "origin": "macro_lib::db::models::ConversationContentWindow",
+      "path": "ConversationContentWindow.ts"
+    },
+    {
+      "families": [
+        "db"
+      ],
+      "name": "ConversationContentWindowInput",
+      "origin": "macro_lib::db::models::ConversationContentWindowInput",
+      "path": "ConversationContentWindowInput.ts"
+    },
+    {
+      "families": [
+        "db"
+      ],
       "name": "ConversationGoal",
       "origin": "macro_lib::db::conversation_goals::ConversationGoal",
       "path": "ConversationGoal.ts"
