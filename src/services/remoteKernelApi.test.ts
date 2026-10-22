@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
 import { setRemoteAuthToken } from './providers/remoteAuthToken';
+import { toServiceError } from './contracts/errors';
 import {
   __remoteKernelApiTestables,
   canUseRemoteKernel,
@@ -330,6 +331,54 @@ describe('remoteKernelApi', () => {
     expect(executeAttempts).toBe(1);
     expect(fetchCalls.filter((call) => call.url.includes('/tools/executions/'))).toHaveLength(1);
   });
+
+  for (const code of ['REVISION_CONFLICT', 'Database', undefined]) {
+    it(`preserves a recovered durable failure code ${code ?? 'with the historical fallback'}`, async () => {
+      setEnv('VITE_BACKEND_TRANSPORT', 'remote');
+      setEnv('VITE_REMOTE_API_BASE_URL', 'http://127.0.0.1:8787');
+      const body = {
+        ...(code ? { code } : {}),
+        message: 'The original operation could not be completed',
+        details: { operation: 'write' },
+      };
+      globalThis.fetch = mock(async (url: string | URL | Request, init?: RequestInit) => {
+        fetchCalls.push({ url: String(url), init });
+        if (String(url).includes('/mode-policy')) {
+          return jsonResponse({
+            allowed_tool_ids: ['write'],
+            enforce_macro_only_writes: false,
+            capabilities: ['content_revisions_v1', 'idempotent_tool_execution_v1'],
+          });
+        }
+        if (String(url).includes('/tools/executions/')) {
+          return jsonResponse({ state: 'completed', status_code: 400, body });
+        }
+        throw new TypeError('response lost after execution');
+      }) as unknown as typeof fetch;
+
+      const normalized = await executeRemoteWorkspaceTool({
+        mode: 'Implement',
+        toolId: 'write',
+        args: { path: 'src/durable.ts', content: 'next' },
+        focusedProjectId: 'project-1',
+      }).then(
+        () => { throw new Error('The durable failure must reject'); },
+        toServiceError,
+      );
+      expect(normalized).toEqual({
+        code: code ?? 'REMOTE_EXECUTION_COMPLETED_ERROR',
+        message: body.message,
+        details: { status: 400, body },
+      });
+      const executeCalls = fetchCalls.filter((call) => call.url.includes('/tools/execute'));
+      const statusCalls = fetchCalls.filter((call) => call.url.includes('/tools/executions/'));
+      expect(executeCalls).toHaveLength(2);
+      expect(statusCalls).toHaveLength(2);
+      expect(executeCalls[0].init?.body).toBe(executeCalls[1].init?.body);
+      const executionId = JSON.parse(String(executeCalls[0].init?.body)).execution_id;
+      expect(statusCalls.every((call) => call.url.endsWith(`/tools/executions/${executionId}`))).toBe(true);
+    });
+  }
 
   it('rejects a malformed durable completed mutation result', async () => {
     setEnv('VITE_BACKEND_TRANSPORT', 'remote');

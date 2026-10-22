@@ -779,7 +779,10 @@ champs provider adaptés restent des contrats frontend identifiés. Le canal
 `MCPRuntimeEvent` réservé au frontend n'a pas de DTO Rust à générer. Les erreurs
 natives, elles, dérivent du payload effectivement sérialisé par `CommandError` ;
 la normalisation des erreurs de service conserve aussi les rejets historiques
-sous forme de chaîne ou d'enveloppe distante.
+sous forme de chaîne ou d'enveloppe distante. Une erreur de mutation distante
+récupérée dans un résultat durable conserve aussi le code du corps backend ;
+un ancien corps sans code garde son repli générique. Cette projection ne change
+ni l'identité durable, ni la politique de relance de la mutation.
 
 
 Les exports de `ServiceProvider` restent raccordés au chargement dynamique des
