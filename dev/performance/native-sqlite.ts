@@ -16,6 +16,7 @@ export function sourceFingerprint(directory = root) {
 }
 
 type BuildIdentity = { sourceSha256: string; buildNonce: string };
+export const nativeContentFixture = 'content-v3-native:mixed-256;assistant-14-fields;receipt-v2;update-latest-marker-256+64*i;batch100;tail100;schema13;metadata100;after50;window50';
 export function stageVerifiedBinary(source: string, destination: string, expected: BuildIdentity,
   readIdentity: (binary: string) => unknown = (binary) =>
     JSON.parse(execFileSync(binary, ['--build-identity'], { encoding: 'utf8' }))) {
@@ -41,10 +42,16 @@ export function validateContentBaseline(value: unknown, pilot: boolean): void {
     return value as Record<string, unknown>;
   };
   const data = object(value);
+  const native = data.schema === 4;
   const samples = pilot ? 3 : 100;
-  if (data.schema !== 3 || data.mode !== 'content-baseline' || data.pilot !== pilot ||
+  if ((!native && data.schema !== 3) || data.mode !== 'content-baseline' || data.pilot !== pilot ||
       data.reference_eligible !== !pilot || data.warmup !== (pilot ? 1 : 10) || data.samples !== samples ||
       typeof data.fixture_sha256 !== 'string' || !/^[a-f0-9]{64}$/.test(data.fixture_sha256)) throw new Error('Invalid content baseline header');
+  if (native && (data.fixture !== nativeContentFixture || data.percentile !== 'nearest-rank' ||
+      data.raw_observation_order !== 'execution order, warmup excluded')) throw new Error('Invalid native content fixture');
+  if (native) for (const key of ['native_large_receipt_refused', 'native_prefix_exact', 'native_missing_suffix_refused', 'native_stale_token_refused']) {
+    if (object(data.admission_controls)[key] !== true) throw new Error('Missing native admission control');
+  }
   for (const key of ['seven_payload_fields_refused', 'sql_rejection_before_fetch', 'fetch_probe_negative_control', 'legacy_receipt_not_projected', 'cas_conflict_refused']) {
     if (object(data.admission_controls)[key] !== true) throw new Error('Missing content admission control');
   }
@@ -63,9 +70,11 @@ export function validateContentBaseline(value: unknown, pilot: boolean): void {
     if (entry.initial_messages !== size || entry.final_messages !== size ||
         entry.bounded_admitted !== (index < 2) || ['exact_14_fields', 'missing', 'writes_and_resets', 'metadata_fts', 'reopen', 'integrity', 'cleanup'].some(key => object(entry.checks)[key] !== true)) throw new Error('Invalid content fixture checks');
     const runtime = object(entry.runtime);
-    if (JSON.stringify(runtime.migrations) !== JSON.stringify([1,3,4,5,6,7,8,9,10,11,12]) || runtime.journal_mode !== 'wal' || runtime.synchronous !== 1 || runtime.foreign_keys !== 1) throw new Error('Invalid content runtime');
+    if (JSON.stringify(runtime.migrations) !== JSON.stringify([1,3,4,5,6,7,8,9,10,11,12,...(native ? [13] : [])]) || runtime.journal_mode !== 'wal' || runtime.synchronous !== 1 || runtime.foreign_keys !== 1) throw new Error('Invalid content runtime');
+    if (native && ['native_fields_positions_tokens','native_mutations_before_reset','native_admission_bytes','native_reopen'].some(key => object(entry.checks)[key] !== true)) throw new Error('Missing native fixture check');
     const cells = object(entry.cells);
-    const expected = [...names, ...(entry.bounded_admitted ? ['serde_bounded_messages'] : [])].sort();
+    const expected = [...names, ...(entry.bounded_admitted ? ['serde_bounded_messages'] : []),
+      ...(native ? ['native_version','native_metadata_open100','native_metadata_after50','native_window50'] : [])].sort();
     if (JSON.stringify(Object.keys(cells).sort()) !== JSON.stringify(expected)) throw new Error('Incomplete content cells');
     for (const [name, rawCell] of Object.entries(cells)) {
       const cell = object(rawCell);
@@ -88,10 +97,39 @@ export function validateContentBaseline(value: unknown, pilot: boolean): void {
           ? outcome.outcome !== 'ok' || outcome.rows !== size || 'rows_returned' in outcome
           : outcome.outcome !== 'resource_limit' || outcome.rows_returned !== 0 || 'rows' in outcome)) throw new Error('Invalid content bounded cardinality');
         if (name === 'provenance_cas' && outcome.applied !== true) throw new Error('Invalid content CAS');
+        if (name.startsWith('native_')) {
+          if (outcome.outcome !== 'ok') throw new Error('Invalid native outcome');
+          if (name === 'native_version') {
+            const token = object(outcome.token);
+            if (token.version !== 1 || typeof token.incarnation !== 'string' || !/^[a-f0-9]{32}$/.test(token.incarnation) ||
+                typeof token.revision !== 'string' || !/^(0|[1-9][0-9]{0,18})$/.test(token.revision) ||
+                BigInt(token.revision) > 9223372036854775807n) throw new Error('Invalid native token');
+          } else {
+            if (!Number.isSafeInteger(outcome.serialized_bytes) || Number(outcome.serialized_bytes) <= 0 ||
+                !Number.isSafeInteger(outcome.admission_estimate_bytes) || Number(outcome.admission_estimate_bytes) > 4_194_304 ||
+                Number(outcome.serialized_bytes) > Number(outcome.admission_estimate_bytes)) throw new Error('Invalid native bytes');
+            if (name === 'native_window50') {
+              if (outcome.rows !== 50 || outcome.consumed_count !== 50 || outcome.start_position !== size-50) throw new Error('Invalid native window');
+            } else {
+              const offset = name === 'native_metadata_open100' ? 0 : 50;
+              if (outcome.offset !== offset || outcome.rows !== Math.min(100,size-offset) ||
+                  outcome.opening !== (offset === 0) || outcome.has_more !== (size > offset+100)) throw new Error('Invalid native metadata page');
+            }
+          }
+        }
       }
       if (name === 'list_messages_bounded' && cell.outcomes.some(raw => object(raw).outcome !== (entry.bounded_admitted ? 'ok' : 'resource_limit'))) throw new Error('Unexpected content admission outcome');
     }
   }
+}
+
+/** The current executable cannot publish a historical report as a new run. */
+export function validateCurrentContentBaseline(value: unknown, pilot: boolean): void {
+  if (!value || typeof value !== 'object' || (value as Record<string, unknown>).schema !== 4) throw new Error('Current content run requires protocol 4');
+  validateContentBaseline(value, pilot);
+  const fixtureHash = createHash('sha256').update(nativeContentFixture)
+    .update(readFileSync(join(root, 'src-tauri/examples/performance-sqlite/content_baseline.rs'))).digest('hex');
+  if ((value as Record<string, unknown>).fixture_sha256 !== fixtureHash) throw new Error('Current content fixture hash mismatch');
 }
 
 async function run() {
@@ -128,9 +166,9 @@ async function run() {
       throw new Error('Sources changed during measurement; discard the report');
     }
     const measurement: unknown = JSON.parse(result);
-    if (content) validateContentBaseline(measurement, pilot);
+    if (content) validateCurrentContentBaseline(measurement, pilot);
     console.log(JSON.stringify({
-      provenance: { head, dirty, sourceSha256: fingerprint, binarySha256,
+      provenance: { head, dirty, sourceSha256: fingerprint, binarySha256, buildNonce: identity.buildNonce,
         cargoLockSha256: createHash('sha256').update(readFileSync(join(root, 'src-tauri/Cargo.lock'))).digest('hex'),
         cargoTargetCache: process.env.CARGO_TARGET_DIR ? 'explicit-shared-cache' : 'local-default',
         rustc: execFileSync('rustc', ['--version'], { encoding: 'utf8' }).trim(),
