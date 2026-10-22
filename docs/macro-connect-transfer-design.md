@@ -174,11 +174,16 @@ buffers bornés et expirables. Les blocs vérifiés restent sur les deux PC et l
 reprise utilise leur empreinte et leur offset. Le téléphone peut initier la cession
 sans télécharger puis réémettre tout l'historique.
 
-Les limites de paquet, de blocs, de messages, d'assets, de taille décompressée,
-de préparation sur disque et de réservations simultanées doivent être figées dans
-le contrat du point 3 avant toute émission. Les garde-fous v2 existants ne sont
-pas augmentés par défaut. L'import valide au fil de l'eau, refuse les traversées
-de chemin et remappe les identifiants sans transformer des traces en outils actifs.
+Le contrat du point 3 fixe avant émission l'admission des blocs, des traitements,
+des assets, de leur taille décompressée, de la préparation sur disque et des
+réservations simultanées. Ces limites de ressources ne deviennent pas un plafond
+arbitraire du nombre de messages ou de la longueur totale de l'historique.
+L'objectif est l'historique complet récupérable, même après compaction ; un contexte
+indispensable manquant impose un refus. Codex et Macro AI sont prioritaires pour
+la preuve du contexte fonctionnel normalisé, sans reprise de session identique.
+Les garde-fous v2 existants ne sont pas augmentés par défaut. L'import valide au
+fil de l'eau, refuse les traversées de chemin et remappe les identifiants sans
+transformer des traces historiques en outils actifs ou en instructions fiables.
 
 ## Preuves nécessaires avant activation
 
