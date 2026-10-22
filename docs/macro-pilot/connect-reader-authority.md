@@ -25,8 +25,10 @@ Each target has one proof, one renewal attempt and one renewal timer, shared by
 its visible readers. Panels start reading when they enter the visible viewport.
 Leaving the last visible reader cancels its UI requests, renewal and unfinished
 initial preparation. An already established feed keeps receiving invalidations.
-A preparation shared with another visible reader continues. A late cancelled
-negotiation cannot start bootstrap or monitoring; returning requires a fresh
+A preparation shared with another visible reader continues. Acquiring a new visible
+lease and showing an existing one use the same admission transition; both resume
+rights and continuity after zero visible demand without reopening known refusals.
+A late cancelled negotiation cannot start bootstrap or monitoring; returning requires a fresh
 context. Hiding the document or leaving
 the page purges the reader context; returning requires fresh rights and feed
 continuity.
@@ -42,7 +44,12 @@ Known refusal, audience replacement, credential generation change and
 suspension retire publication before aborting requests. A simple proof expiration
 does not cancel a current renewal. Recovery reuses the finite shared retry
 policy and any ordinary renewal already in flight, including one that settles
-during backoff. Rights and event continuity are checked before actions resume. After exhaustion, a relay that becomes healthy without a network or
+during backoff. A new proof received during recovery does not extend the target's
+confirmed presentation deadline until its own event continuity has been applied
+and acknowledged. Other targets' notifications cannot unlock its expired
+projection. Healthy ordinary renewal updates that deadline without resetting the
+feed or rereading content. Rights and event continuity are checked before actions
+resume. After exhaustion, a relay that becomes healthy without a network or
 visibility transition requires manual retry. There is no additional periodic
 retry loop.
 
@@ -62,9 +69,10 @@ account, vault, provider, relay or OAuth service.
 Open Alpha and Beta, then one conversation in each. Toggle synthetic offline.
 The existing text stays passive until its remaining proof expires. Verify that
 copy/cut/drag and copy shortcuts are blocked, directory names are hidden, and
-text/titles disappear at expiration. Toggle online, then click **Release
-continuity** once both pending feeds are waiting. This emits an empty page on
-each pending Alpha/Beta feed without resetting its stream. The finite retry and
+text/titles disappear at expiration. Toggle online, then press **Alt+Shift+C**
+while the reader modal is open once both pending feeds are waiting. The global
+shortcut also invokes the DEV **Release continuity · Alt+Shift+C** button's action.
+This emits an empty page on each pending Alpha/Beta feed without resetting its stream. The finite retry and
 cursor continuation can then finish. A stream reset invalidates only its target.
 Changing the synthetic account retires the whole reader. Exercise the layout at
 900×700, 1280×720 and 1440×900, including scrolling, focus and panel closure.

@@ -55,7 +55,7 @@ interface Slot { signal: AbortSignal; run(): Promise<unknown>; resolve(value: un
 interface Entry {
   id: string; client: PilotTargetClient; subscribers: Set<Subscriber>; life: AbortController;
   renewalTimer?: () => void; renewal: Promise<unknown> | null; renewalController: AbortController;
-  authorityValid: boolean; authorityEpoch: number; streamId: string | null;
+  authorityValid: boolean; authorityEpoch: number; presentationDeadline: number | null; streamId: string | null;
   ready: boolean; preparing: Promise<void> | null; monitoring: Promise<void> | null; recovering: Promise<void> | null;
   retries: number; retryDeadline: number | null; controller: AbortController; recoveryController: AbortController;
   job: Job | null; slot: Slot | null; active: boolean; blocked: boolean; notifyQueued: boolean;
@@ -168,6 +168,7 @@ export class ConsumerConnections {
         if (selected || accessChanged && wasAuthorized) {
           if (entry.client.readAuthority() && !accessChanged && !entry.blocked && this.demanded(entry)) await guarded(this.renew(entry, signal), signal);
           check(); entry.authorityValid = true;
+          if (entry.ready) entry.presentationDeadline = entry.client.readAuthority()?.deadline ?? null;
         }
         if (entry.authorityValid && !entry.blocked) { entry.state.phase = entry.ready ? 'ready' : 'connecting'; entry.state.error = null; this.scheduleRenewal(entry); this.notify(entry); }
       }
@@ -182,7 +183,7 @@ export class ConsumerConnections {
     return pending;
   }
   private lockAuthority(entry: Entry): void {
-    entry.authorityValid = false; entry.authorityEpoch++;
+    entry.authorityValid = false; entry.authorityEpoch++; entry.presentationDeadline = null;
     this.invalidate(entry);
     entry.renewalTimer?.(); entry.renewalTimer = undefined;
     entry.renewalController.abort(); entry.renewalController = new AbortController(); entry.renewal = null;
@@ -215,15 +216,16 @@ export class ConsumerConnections {
     if (!entry) {
       if (this.entries.size >= this.limits.targets) throw new PilotClientError('resource_limit');
       entry = { id: instanceId, client: new PilotTargetClient(this.transport, instanceId, { access, session: this.sessionObservation, monotonic: () => this.clock.now() }), subscribers: new Set(), life: new AbortController(),
-        renewal: null, renewalController: new AbortController(), authorityValid: true, authorityEpoch: 0, streamId: null, ready: false, preparing: null, monitoring: null, recovering: null, retries: 0, retryDeadline: null, controller: new AbortController(), recoveryController: new AbortController(),
+        renewal: null, renewalController: new AbortController(), authorityValid: true, authorityEpoch: 0, presentationDeadline: null, streamId: null, ready: false, preparing: null, monitoring: null, recovering: null, retries: 0, retryDeadline: null, controller: new AbortController(), recoveryController: new AbortController(),
         job: null, slot: null, active: false, blocked: false, notifyQueued: false,
         stamp: 0, state: { phase: 'connecting', version: 0, error: null, projectsRevision: null, catalogRevision: null, projectsVersion: 0, catalogVersion: 0 }, resources: new Map() };
       this.entries.set(instanceId, entry);
     }
     const target = entry;
     const subscriber: Subscriber = { visible: true, desired: null, resource: null, notify, released: false };
+    const demanded = this.demanded(target);
     target.subscribers.add(subscriber); this.subscriberCount++;
-    this.start(target);
+    this.updateDemand(target, demanded);
     return {
       state: () => { this.current(target); if (subscriber.released) throw changed(); return { ...target.state, scope: target.client.scope(), capabilities: target.client.capabilities(), authority: this.presentationAuthority(target), resources: Object.fromEntries([...target.resources].map(([key, value]) => [key, { ...value }])) }; },
       read: async (operation, body, options = {}) => this.request(target, subscriber, operation, body, options) as unknown as Promise<SharedConsumerReadPage<typeof operation>>,
@@ -231,13 +233,7 @@ export class ConsumerConnections {
         this.current(target); if (subscriber.released || subscriber.visible === visible) return;
         const demanded = [...target.subscribers].some(value => value.visible); subscriber.visible = visible;
         if (!visible) this.cancel(target, subscriber);
-        if (!this.demanded(target)) this.stopUndemanded(target);
-        else if (!demanded && target.client.readAuthority() && this.online) {
-          target.retries = 0; target.retryDeadline = null;
-          void this.recover(target, new PilotClientError('unavailable', 503, true)).catch(() => {});
-        } else if (!demanded && !target.ready && !target.blocked && this.online) {
-          void this.retryTarget(target.id).catch(() => {});
-        } else this.scheduleRenewal(target);
+        this.updateDemand(target, demanded);
       },
       release: () => {
         if (subscriber.released) return;
@@ -249,6 +245,14 @@ export class ConsumerConnections {
     };
   }
   private demanded(entry: Entry): boolean { return [...entry.subscribers].some(value => value.visible); }
+  private updateDemand(entry: Entry, wasDemanded: boolean): void {
+    if (!this.demanded(entry)) { this.stopUndemanded(entry); return; }
+    if (!this.online || entry.blocked) return;
+    if (!wasDemanded && (!entry.authorityValid || entry.ready && entry.client.readAuthority())) {
+      entry.retries = 0; entry.retryDeadline = null;
+      void this.recover(entry, new PilotClientError('unavailable', 503, true)).catch(() => {});
+    } else if (entry.authorityValid) { this.start(entry); this.scheduleRenewal(entry); }
+  }
   private stopUndemanded(entry: Entry): void {
     // An established feed still receives invalidations. Only unfinished preparation is retired.
     if (!entry.ready) this.fence(entry);
@@ -447,6 +451,7 @@ export class ConsumerConnections {
       await this.slot(entry, signal, () => entry.client.negotiate(signal)); check();
       const batch = await entry.client.events(signal); check();
       this.apply(entry, batch); check();
+      entry.presentationDeadline = entry.client.readAuthority()?.deadline ?? null;
       entry.ready = true; entry.state.phase = 'ready'; entry.state.error = null; this.scheduleRenewal(entry); this.notify(entry);
     })();
     entry.preparing = pending;
@@ -553,7 +558,7 @@ export class ConsumerConnections {
     for (const state of entry.resources.values()) { if (retireClocks) { state.revision = null; state.legacyRevision = null; state.removed = false; } state.invalidated = true; state.version = ++entry.stamp; }
   }
   private fence(entry: Entry, preserveRead = false): void {
-    entry.authorityValid = false; entry.authorityEpoch++;
+    entry.authorityValid = false; entry.authorityEpoch++; entry.presentationDeadline = null;
     // Retire publication and its stamps before any abort callback can run.
     this.invalidate(entry); entry.client.reset();
     entry.renewalTimer?.(); entry.renewalTimer = undefined;
@@ -610,6 +615,7 @@ export class ConsumerConnections {
             await guarded(renewal ?? this.renew(entry, signal), signal); check();
             const batch = await guarded(entry.client.events(signal), signal); check();
             this.apply(entry, batch); check();
+            entry.presentationDeadline = entry.client.readAuthority()?.deadline ?? null;
             entry.retries = 0; entry.retryDeadline = null;
             entry.state.phase = 'ready'; entry.state.error = null; this.scheduleRenewal(entry); this.notify(entry); queueMicrotask(() => this.monitor(entry, entry.life)); return;
           }
@@ -637,7 +643,10 @@ export class ConsumerConnections {
   }
   private presentationAuthority(entry: Entry): { deadline: number; valid: boolean } | undefined {
     const grant = entry.client.readAuthority();
-    return grant ? { deadline: grant.deadline, valid: entry.authorityValid && this.clock.now() < grant.deadline } : undefined;
+    // A new proof received during recovery cannot republish a capture before its own feed ACK.
+    if (!grant) return undefined;
+    const confirmed = Math.min(grant.deadline, entry.presentationDeadline ?? grant.deadline);
+    return { deadline: confirmed, valid: entry.authorityValid && entry.presentationDeadline !== null && this.clock.now() < confirmed };
   }
   private offline(entry: Entry): void { entry.state.phase = 'offline'; entry.state.error = 'unavailable'; this.notify(entry); }
   private renew(entry: Entry, signal: AbortSignal): Promise<unknown> {
@@ -663,7 +672,7 @@ export class ConsumerConnections {
       void pending.then(() => {
         this.current(entry, signal); if (entry.authorityEpoch !== generation) throw changed();
         // This is an ordinary renewal: no feed reset, discovery or content read.
-        if (!entry.recovering) { entry.retries = 0; entry.retryDeadline = null; }
+        if (!entry.recovering) { entry.presentationDeadline = entry.client.readAuthority()?.deadline ?? null; entry.retries = 0; entry.retryDeadline = null; }
         this.notify(entry);
       }).catch(error => {
         if (signal.aborted || entry.authorityEpoch !== generation) return;
@@ -696,7 +705,7 @@ export class ConsumerConnections {
     }
   }
   private closeEntry(entry: Entry): void {
-    entry.authorityValid = false; entry.authorityEpoch++; this.invalidate(entry); entry.client.reset();
+    entry.authorityValid = false; entry.authorityEpoch++; entry.presentationDeadline = null; this.invalidate(entry); entry.client.reset();
     entry.renewalTimer?.(); entry.renewalController.abort(); entry.renewal = null;
     entry.controller.abort(); entry.life.abort(); entry.recoveryController.abort(); entry.client.dispose();
     if (entry.slot) { entry.slot.cleanup(); entry.slot.reject(changed()); entry.slot = null; }

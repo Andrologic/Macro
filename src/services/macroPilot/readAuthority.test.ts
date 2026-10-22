@@ -270,6 +270,8 @@ describe('shared renewal and visible demand regressions', () => {
       hold.resolve(); await until(()=>h.waiting.has('instance:alpha'));
       expect(reader.getSnapshot().panels[0].phase).toBe('offline');
       expect(h.waiting.get('instance:alpha')!.request).toMatchObject({stream_id:before.stream_id,after_sequence:before.after_sequence});
+      clock.advance(15000); await until(()=>reader.getSnapshot().panels[0].phase==='authority_expired');
+      expect(reader.getSnapshot().panels[0].catalog.page).toBeNull(); expect(reader.getSnapshot().panels[1].catalog.page).toBe(pages[1]);
       h.emit('instance:alpha',[]); await until(()=>reader.getSnapshot().panels[0].phase==='ready');
       expect(reader.getSnapshot().panels.map(p=>p.catalog.page)).toEqual(pages);
       expect(h.calls.filter(c=>c.dispatch.kind==='submit')).toHaveLength(2);
@@ -350,5 +352,120 @@ describe('shared renewal and visible demand regressions', () => {
       expect(h.calls.filter(c=>c.dispatch.kind==='negotiate')).toHaveLength(1); expect(h.calls.filter(c=>c.dispatch.kind==='submit')).toHaveLength(1);
       first.release(); second.release();
     } finally { hold.resolve(); owner.dispose(); }
+  });
+});
+
+
+describe('visible lease admission uses one shared transition', () => {
+  for(const stage of ['established','initial'] as const) for(const admission of ['acquire','two-acquires','setVisible'] as const) it(`resumes ${stage} through ${admission} with shared preparation and continuity`, async () => {
+    const clock=manualClock(), hold=gate<void>(); let signal: AbortSignal | undefined;
+    const h=createConnectConsumerFixture({authorityLifetimeMs:30000,monotonicNow:clock.now,timer:clock.timer,retry:{...connectReaderRetry,delaysMs:[5,10]}}), owner=h.ports.createOwner();
+    if(stage==='initial') h.negotiate(async (id,dispatch,s)=> { const value=h.negotiated(id,dispatch); if(id==='instance:alpha') { signal=s; await hold.promise; } return value; });
+    try {
+      await owner.refreshDirectory(); const beta=owner.acquire('instance:beta'), first=owner.acquire('instance:alpha');
+      await until(()=>beta.state().phase==='ready' && (stage==='initial'?Boolean(signal):first.state().phase==='ready' && h.waiting.has('instance:alpha')));
+      const betaScope=beta.state().scope, version=first.state().catalogVersion;
+      if(stage==='established') await first.read('conversations.catalog',{instance_id:'instance:alpha',kind:'conversation'});
+      first.setVisible(false); if(stage==='initial') { expect(signal!.aborted).toBe(true); hold.resolve(); await new Promise(r=>setTimeout(r,5)); }
+      const leases=[first]; let visible=first;
+      if(admission==='setVisible') first.setVisible(true);
+      else { visible=owner.acquire('instance:alpha'); leases.push(visible); if(admission==='two-acquires') leases.push(owner.acquire('instance:alpha')); }
+      await until(()=>h.calls.filter(c=>c.id==='instance:alpha' && c.dispatch.kind==='negotiate').length===2 && h.waiting.has('instance:alpha'));
+      if(stage==='established') {
+        expect(visible.state().phase).toBe('offline'); expect(visible.state().catalogVersion).toBe(version);
+        h.emit('instance:alpha',[]);
+      }
+      await until(()=>visible.state().phase==='ready' && visible.state().authority!.valid);
+      expect(clock.count()).toBe(2); clock.advance(15000);
+      await until(()=>h.calls.filter(c=>c.id==='instance:alpha' && c.dispatch.kind==='negotiate').length===3 && visible.state().authority!.deadline>30000);
+      expect(visible.state().authority!.valid).toBe(true); expect(beta.state().phase).toBe('ready'); expect(beta.state().scope).toEqual(betaScope);
+      expect(h.calls.filter(c=>c.dispatch.kind==='submit')).toHaveLength(stage==='established'?1:0);
+      for(const lease of leases) lease.release(); beta.release();
+    } finally { hold.resolve(); owner.dispose(); }
+    expect(clock.count()).toBe(0); expect(h.waiting.size).toBe(0); expect(h.listeners.size).toBe(0);
+  });
+  for(const admission of ['acquire','two-acquires','setVisible'] as const) it(`keeps a known refusal closed through ${admission}`, async () => {
+    const clock=manualClock(), h=createConnectConsumerFixture({authorityLifetimeMs:30000,monotonicNow:clock.now,timer:clock.timer,retry:{...connectReaderRetry,delaysMs:[5,10]}}), owner=h.ports.createOwner();
+    try {
+      await owner.refreshDirectory(); const first=owner.acquire('instance:alpha'); await until(()=>first.state().phase==='ready' && h.waiting.has('instance:alpha'));
+      h.failEvents('instance:alpha',new PilotClientError('forbidden',403)); await until(()=>first.state().phase==='error'); first.setVisible(false);
+      const leases=[first]; let visible=first;
+      if(admission==='setVisible') first.setVisible(true);
+      else { visible=owner.acquire('instance:alpha'); leases.push(visible); if(admission==='two-acquires') leases.push(owner.acquire('instance:alpha')); }
+      clock.advance(31000); await new Promise(r=>setTimeout(r,30));
+      expect(visible.state().authority).toBeUndefined(); expect(visible.state().error).toBe('forbidden');
+      await expect(visible.read('conversations.catalog',{instance_id:'instance:alpha',kind:'conversation'})).rejects.toMatchObject({code:'unavailable'});
+      expect(h.calls.filter(c=>c.dispatch.kind==='negotiate')).toHaveLength(1); expect(h.waiting.size).toBe(0); expect(clock.count()).toBe(0);
+      for(const lease of leases) lease.release();
+    } finally { owner.dispose(); }
+  });
+  it('keeps preparation useful to the first reader when a second immediate acquire is hidden', async () => {
+    const hold=gate<void>(); let signal: AbortSignal | undefined;
+    const h=createConnectConsumerFixture({authorityLifetimeMs:30000}), owner=h.ports.createOwner();
+    h.negotiate(async (id,dispatch,s)=> { signal=s; const value=h.negotiated(id,dispatch); await hold.promise; return value; });
+    try {
+      await owner.refreshDirectory(); const first=owner.acquire('instance:alpha'), second=owner.acquire('instance:alpha');
+      await until(()=>Boolean(signal)); second.setVisible(false); expect(signal!.aborted).toBe(false);
+      hold.resolve(); await until(()=>first.state().phase==='ready'); expect(h.calls.filter(c=>c.dispatch.kind==='negotiate')).toHaveLength(1);
+      second.release(); first.release();
+    } finally { hold.resolve(); owner.dispose(); }
+  });
+});
+
+
+describe('per-target presentation confirmation', () => {
+  it('keeps an expired projection closed after continuity recovery exhausts despite a fresh proof', async () => {
+    const clock=manualClock();
+    const h=createConnectConsumerFixture({authorityLifetimeMs:30000,monotonicNow:clock.now,timer:clock.timer,retry:{...connectReaderRetry,delaysMs:[5,10]}}), reader=new ConsumerReader(h.ports);
+    try {
+      reader.start(); await until(()=>reader.getSnapshot().phase==='ready'); reader.open('instance:alpha'); reader.open('instance:beta');
+      await until(()=>reader.getSnapshot().panels.every(p=>p.catalog.page) && h.waiting.size===2);
+      reader.setTransportOnline(false); clock.advance(30001); reader.setTransportOnline(true);
+      await until(()=>h.waiting.size===2); h.failEvents('instance:alpha',new PilotClientError('unavailable',503,true));
+      await until(()=>h.waiting.has('instance:alpha') && h.calls.filter(c=>c.id==='instance:alpha' && c.dispatch.kind==='negotiate').length===3);
+      h.failEvents('instance:alpha',new PilotClientError('unavailable',503,true)); await new Promise(r=>setTimeout(r,30));
+      h.emit('instance:beta',[]); await until(()=>reader.getSnapshot().panels[1].phase==='ready');
+      expect(reader.getSnapshot().panels[0].catalog.page).toBeNull(); expect(reader.getSnapshot().panels[1].catalog.page).not.toBeNull();
+      expect(h.waiting.has('instance:alpha')).toBe(false); expect(h.calls.filter(c=>c.dispatch.kind==='submit')).toHaveLength(2);
+      expect(h.calls.filter(c=>c.id==='instance:alpha' && c.dispatch.kind==='negotiate')).toHaveLength(3);
+    } finally { reader.dispose(); }
+    expect(clock.count()).toBe(0); expect(h.waiting.size).toBe(0); expect(h.listeners.size).toBe(0);
+  });
+
+  for(const elapsed of [1000,30001]) for(const firstIndex of [0,1]) it(`requires each target's own continuity after ${elapsed}ms, first notification ${firstIndex}`, async () => {
+    const clock=manualClock();
+    const h=createConnectConsumerFixture({authorityLifetimeMs:30000,monotonicNow:clock.now,timer:clock.timer,retry:{...connectReaderRetry,delaysMs:[5,10]}}), reader=new ConsumerReader(h.ports);
+    try {
+      reader.start(); await until(()=>reader.getSnapshot().phase==='ready'); reader.open('instance:alpha'); reader.open('instance:beta');
+      await until(()=>reader.getSnapshot().panels.every(p=>p.catalog.page));
+      for(const p of reader.getSnapshot().panels) reader.select(p.key,(p.catalog.page!.response.result.items[0] as ContentConversationCard).ref);
+      await until(()=>reader.getSnapshot().panels.every(p=>p.detail.page) && h.waiting.size===2);
+      const original=reader.getSnapshot().panels.map(p=>({catalog:p.catalog.page,detail:p.detail.page})), other=1-firstIndex;
+      reader.setTransportOnline(false); clock.advance(elapsed);
+      expect(reader.getSnapshot().panels.every(p=>Boolean(p.catalog.page)=== (elapsed<30000))).toBe(true);
+      reader.setTransportOnline(true); await until(()=>h.waiting.size===2 && ['instance:alpha','instance:beta'].every(id=>h.calls.filter(c=>c.id===id && c.dispatch.kind==='negotiate').length===2));
+      const panels=reader.getSnapshot().panels;
+      h.emit(panels[firstIndex].instanceId,[]); await until(()=>reader.getSnapshot().panels[firstIndex].phase==='ready');
+      expect(reader.getSnapshot().panels[firstIndex].detail.page).toBe(original[firstIndex].detail);
+      expect(reader.getSnapshot().panels[other].catalog.page).toBe(elapsed<30000?original[other].catalog:null);
+      expect(reader.getSnapshot().panels[other].detail.page).toBe(elapsed<30000?original[other].detail:null);
+      expect(reader.getSnapshot().panels[other].passive).toBe(true); expect(h.waiting.has(panels[other].instanceId)).toBe(true);
+      if(elapsed<30000) {
+        // The new proof lasts until 31000, but pending continuity still uses the old 30000 bound.
+        clock.advance(30000-elapsed);
+        expect(reader.getSnapshot().panels[other].catalog.page).toBeNull(); expect(reader.getSnapshot().panels[other].detail.page).toBeNull();
+      }
+      h.emit(panels[other].instanceId,[]);
+      const negotiations=elapsed<30000?5:4;
+      await until(()=>reader.getSnapshot().panels.every(p=>p.phase==='ready') && h.calls.filter(c=>c.dispatch.kind==='negotiate').length===negotiations);
+      for(const [index,p] of reader.getSnapshot().panels.entries()) {
+        expect(p.catalog.page).toBe(original[index].catalog); expect(p.detail.page).toBe(original[index].detail);
+        expect(p.catalog.page!.captureDeadline).toBe(original[index].catalog!.captureDeadline);
+        expect(p.detail.page!.captureDeadline).toBe(original[index].detail!.captureDeadline);
+      }
+      expect(h.calls.filter(c=>c.dispatch.kind==='submit')).toHaveLength(4);
+      expect(h.calls.filter(c=>c.dispatch.kind==='negotiate')).toHaveLength(negotiations);
+    } finally { reader.dispose(); }
+    expect(clock.count()).toBe(0); expect(h.waiting.size).toBe(0); expect(h.listeners.size).toBe(0);
   });
 });
