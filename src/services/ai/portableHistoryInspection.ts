@@ -34,13 +34,12 @@ function inspectDecoded(value: unknown, policy: TextPolicy): void {
 
 /** The consumer must finish writing/consuming its copies before returning.
  * Only control/scalars may outlive this scope; no whole field is returned. */
-export async function withInspectedPortableText(
+export async function withAdmittedPortableText(
   bytes: number,
   load: () => Promise<Uint8Array>,
-  policy: TextPolicy,
   budget: PortableWorkBudget,
   json: boolean,
-  consume: (text: string, decoded: unknown) => Promise<void>,
+  consume: (text: string) => Promise<void>,
 ): Promise<void> {
   if (!Number.isSafeInteger(bytes) || bytes < 0) throw new Error('resource_limit');
   // Raw bytes, UTF-16, inspection encodings and derivation scratch. JSON also
@@ -49,11 +48,23 @@ export async function withInspectedPortableText(
   try {
     const raw = await load();
     if (raw.byteLength !== bytes) throw new Error('integrity_failed');
-    const text = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(raw);
+    await consume(new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(raw));
+  } finally { release(); }
+}
+
+export async function withInspectedPortableText(
+  bytes: number,
+  load: () => Promise<Uint8Array>,
+  policy: TextPolicy,
+  budget: PortableWorkBudget,
+  json: boolean,
+  consume: (text: string, decoded: unknown) => Promise<void>,
+): Promise<void> {
+  await withAdmittedPortableText(bytes, load, budget, json, async text => {
     const full = { ...policy, inspectionBytes: bytes };
     if (!inspectWholeText(text, full)) throw new Error('unsafe_content');
     const decoded = json ? parseStoredJsonStrict(text) : undefined;
     if (json) inspectDecoded(decoded, { ...full, inspectionBytes: bytes * 4 });
     await consume(text, decoded);
-  } finally { release(); }
+  });
 }

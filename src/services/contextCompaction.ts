@@ -556,13 +556,20 @@ export const buildContextCompactionDecisionAudit = (params: {
   };
 };
 
-const simpleHash = (value: string): string => {
+/** The archive verifier feeds the same UTF-16 units a field at a time. */
+export function createCompactionTextFingerprint() {
   let hash = 2166136261;
-  for (let index = 0; index < value.length; index += 1) {
-    hash ^= value.charCodeAt(index);
-    hash = Math.imul(hash, 16777619);
-  }
-  return (hash >>> 0).toString(16).padStart(8, '0');
+  return {
+    update(value: string) {
+      for (let index = 0; index < value.length; index++) {
+        hash ^= value.charCodeAt(index); hash = Math.imul(hash, 16777619);
+      }
+    },
+    finish: () => (hash >>> 0).toString(16).padStart(8, '0'),
+  };
+}
+const simpleHash = (value: string): string => {
+  const hash = createCompactionTextFingerprint(); hash.update(value); return hash.finish();
 };
 
 const truncateMiddle = (value: string, maxChars: number): string => {
@@ -1520,7 +1527,7 @@ const filterSourcePassagesForBoundary = (
   );
 };
 
-const buildSourceHashes = (
+export const buildSourceHashes = (
   citations: Citation[],
   sourcePassageIds: string[]
 ): Record<string, string> => {
@@ -1571,6 +1578,27 @@ const buildFingerprintInputs = (params: {
       ...params.interestingSourcePassageIds,
     ]),
   });
+
+/** Complete-source verification for an archived checkpoint, without rendering
+ * its summary or treating its captured system/tool hashes as current authority. */
+export function validateArchivedCompactionEvidence(
+  fingerprint: string,
+  fingerprintInputs: unknown,
+  messageEvidence: { id: string; role: string; contentHash: string; providerInputHash: string }[],
+  sourceEvidence: Record<string, string>,
+): boolean {
+  if (!fingerprintInputs || typeof fingerprintInputs !== 'object' || Array.isArray(fingerprintInputs)) return false;
+  const inputs = fingerprintInputs as Record<string, unknown>;
+  if (inputs.version !== SOURCE_PASSAGE_VERSION ||
+      !Array.isArray(inputs.usedSourcePassageIds) || !Array.isArray(inputs.interestingSourcePassageIds) ||
+      [...inputs.usedSourcePassageIds, ...inputs.interestingSourcePassageIds].some(id => typeof id !== 'string') ||
+      !Array.isArray(inputs.messages) || JSON.stringify(inputs.messages) !== JSON.stringify(messageEvidence) ||
+      simpleHash(JSON.stringify(fingerprintInputs)) !== fingerprint) return false;
+  const required = [...inputs.usedSourcePassageIds, ...inputs.interestingSourcePassageIds] as string[];
+  if (!inputs.sourceHashes || typeof inputs.sourceHashes !== 'object' || Array.isArray(inputs.sourceHashes)) return false;
+  const hashes = inputs.sourceHashes as Record<string, unknown>;
+  return Object.keys(hashes).length === new Set(required).size && required.every(id => sourceEvidence[id] !== undefined && hashes[id] === sourceEvidence[id]);
+}
 
 const computeCompactionFingerprint = (params: {
   messages: ChatMessage[];
