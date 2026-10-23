@@ -1,3 +1,5 @@
+#[cfg(test)]
+mod portable_normalization_io;
 // Durable agent-run persistence is implemented and tested ahead of its runtime
 // orchestration wiring. Keep the dormant internal API warning-free until that
 // integration makes the entry points reachable from the application.
