@@ -168,7 +168,7 @@ function Canvas({ cards, edges: connections, declarations = [], selected, select
         select: path => { setHighlighted(path); if (selectionMode === "select") select(path); }, inspect: path => { setHighlighted(path); (onInspect ?? select)(path); }, expand: group ? () => expandGroup(group.id) : undefined, focus: setHovered,
         incoming: [...new Set(presentation.edges.filter(edge => edge.target === card.path).map(edge => displayTitle(presentation.cards.find(item => item.path === edge.source)!)))],
         outgoing: [...new Set(presentation.edges.filter(edge => edge.source === card.path).map(edge => displayTitle(presentation.cards.find(item => item.path === edge.target)!)))],
-        details: group ? [] : blockDetails(card, declarations),
+        details: group ? [] : blockDetails(card, declarations, presentation.cards),
         attach: !group && onAttach ? () => onAttach(card.path) : undefined,
         openTask: !group && trackedTasks[card.path] && onOpenTask ? () => onOpenTask(card.path) : undefined,
         dismissSignal,

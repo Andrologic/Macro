@@ -63,6 +63,11 @@ describe("block details read from AgSDL", () => {
       { key: "mode", values: ["first", "remaining: finish"] }, { key: "accept", values: ['choice = "ok"'] },
     ]);
     expect(durationText(45000)).toBe("45 s");
+    // An approval shows what it authorizes: the scope of the step it calls.
+    const release = card("agent", { scope: { action: "release", resources: ["repository:portal/main"] } }, { id: "release" });
+    expect(blockDetails(card("approval", { call: "release", timeoutMs: 3600000 }), declarations, [release])).toEqual([
+      { key: "timeout", values: ["1 h"] }, { key: "action", values: ["release"] }, { key: "targets", values: ["repository:portal/main"] },
+    ]);
   });
 
   it("describes a connection by its rule and payload, never by its ends", () => {

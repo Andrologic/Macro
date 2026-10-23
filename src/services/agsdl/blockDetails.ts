@@ -35,7 +35,7 @@ export function durationText(ms: unknown): string {
 }
 
 /** Reads the configuration of one step from the projected document; never invents a value. */
-export function blockDetails(card: ViewerCard, declarations: ViewerCard[]): BlockDetail[] {
+export function blockDetails(card: ViewerCard, declarations: ViewerCard[], steps: ViewerCard[] = []): BlockDetail[] {
   const byPath = new Map(declarations.map(item => [item.path, item]));
   const title = (path: string, fallback: string) => byPath.get(path)?.title || fallback;
   const details: BlockDetail[] = [];
@@ -81,7 +81,9 @@ export function blockDetails(card: ViewerCard, declarations: ViewerCard[]): Bloc
   if (card.kind === "compose") add("agents", Object.entries(object(step.agents)).map(([parameter, agent]) => `${parameter} → ${title(`/agents/${String(agent)}`, String(agent))}`));
   if (card.kind === "prepare") add("transmits", card.inputs.map(input => input.name));
   // The scope names what an external effect touches, as the document declares it.
-  const scope = object(step.scope);
+  // An approval shows the scope of the step it authorizes.
+  const authorized = card.kind === "approval" ? steps.find(item => item.id === step.call)?.details : undefined;
+  const scope = object((authorized ?? step).scope);
   add("action", [typeof scope.action === "string" ? scope.action : undefined]);
   add("targets", list(scope.resources).filter((item): item is string => typeof item === "string"));
   // An object context reads field by field, like call arguments.
