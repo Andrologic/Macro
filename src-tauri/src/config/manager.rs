@@ -1926,16 +1926,6 @@ impl ConfigManager {
     }
 
     pub async fn effective_user_document(&self, kind: ConfigDocumentKind) -> Value {
-        self.with_effective_user_document(kind, Value::clone).await
-    }
-
-    /// Run a short synchronous native admission while the approved snapshot is
-    /// read-locked. A concurrent policy publication cannot split check and charge.
-    pub(crate) async fn with_effective_user_document<T>(
-        &self,
-        kind: ConfigDocumentKind,
-        operation: impl FnOnce(&Value) -> T,
-    ) -> T {
         let state = self.state.read().await;
         let mut effective = default_document(kind);
         if let Some(stored) = state.documents.get(&DocumentKey {
@@ -1944,7 +1934,39 @@ impl ConfigManager {
         }) {
             super::registry::merge_values(&mut effective, &stored.last_valid_value);
         }
-        operation(&effective)
+        effective
+    }
+
+    /// Hold the approved policy through a short native check-and-charge operation.
+    /// Decode only the four numeric fields, without cloning unrelated settings.
+    pub(crate) async fn with_connect_transfer_resources<T>(
+        &self,
+        operation: impl FnOnce(&ConnectTransferResources) -> T,
+    ) -> Result<T, ConfigApiError> {
+        let state = self.state.read().await;
+        let value = state
+            .documents
+            .get(&DocumentKey {
+                kind: ConfigDocumentKind::Settings,
+                scope: ConfigScope::User,
+            })
+            .and_then(|stored| stored.last_valid_value.get("connectTransferResources"));
+        let invalid = || {
+            ConfigApiError::new(
+                "config.settings.connect_resources_invalid",
+                "La politique de ressources Connect approuvée est invalide.",
+            )
+        };
+        let policy = match value {
+            Some(value) => ConnectTransferResources::deserialize(value).map_err(|_| invalid())?,
+            None => ConnectTransferResources::default(),
+        };
+        if !policy.valid() {
+            return Err(invalid());
+        }
+        let result = operation(&policy);
+        drop(state);
+        Ok(result)
     }
 
     pub async fn reload(

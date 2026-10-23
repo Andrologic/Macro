@@ -2,7 +2,7 @@
 //! Owners must retain each charge until the corresponding buffers and I/O are joined.
 #![allow(dead_code)] // Private prerequisite; the transfer owner is composed separately.
 
-use crate::config::{ConfigDocumentKind, ConfigManager, ConnectTransferResources};
+use crate::config::{ConfigManager, ConnectTransferResources};
 use std::path::Path;
 use std::sync::{Arc, LazyLock, Mutex, Weak};
 use std::time::{Duration, Instant};
@@ -26,22 +26,9 @@ pub(crate) async fn configured(
     manager: &ConfigManager,
 ) -> Result<ConnectTransferResources, ResourceError> {
     manager
-        .with_effective_user_document(ConfigDocumentKind::Settings, parse_policy)
+        .with_connect_transfer_resources(Clone::clone)
         .await
-}
-
-fn parse_policy(settings: &serde_json::Value) -> Result<ConnectTransferResources, ResourceError> {
-    let policy: ConnectTransferResources = serde_json::from_value(
-        settings
-            .get("connectTransferResources")
-            .cloned()
-            .ok_or(ResourceError::PolicyUnavailable)?,
-    )
-    .map_err(|_| ResourceError::PolicyUnavailable)?;
-    if !policy.valid() {
-        return Err(ResourceError::PolicyUnavailable);
-    }
-    Ok(policy)
+        .map_err(|_| ResourceError::PolicyUnavailable)
 }
 
 /// Admission is advisory about OS pressure. It does not promise a process RSS bound.
@@ -121,13 +108,10 @@ impl PolicySource {
         operation: impl FnOnce(&ConnectTransferResources) -> Result<T, ResourceError>,
     ) -> Result<T, ResourceError> {
         match self {
-            Self::Live(manager) => {
-                manager
-                    .with_effective_user_document(ConfigDocumentKind::Settings, |document| {
-                        operation(&parse_policy(document)?)
-                    })
-                    .await
-            }
+            Self::Live(manager) => manager
+                .with_connect_transfer_resources(operation)
+                .await
+                .map_err(|_| ResourceError::PolicyUnavailable)?,
             #[cfg(test)]
             Self::Fixed(policy) => operation(policy),
         }
@@ -154,9 +138,9 @@ impl WorkingOwner {
         manager: &ConfigManager,
     ) -> Result<WorkingLease, ResourceError> {
         manager
-            .with_effective_user_document(ConfigDocumentKind::Settings, |document| {
+            .with_connect_transfer_resources(|policy| {
                 self.admit_measured(
-                    &parse_policy(document)?,
+                    policy,
                     PolicySource::Live(manager.clone()),
                     crate::host_telemetry::available_memory()
                         .map_err(|_| ResourceError::MeasurementUnavailable)?,
@@ -164,6 +148,7 @@ impl WorkingOwner {
                 )
             })
             .await
+            .map_err(|_| ResourceError::PolicyUnavailable)?
     }
     #[cfg(test)]
     fn admit_with(
@@ -387,7 +372,8 @@ mod tests {
     #[tokio::test]
     async fn connect_resources_live_config_restricts_an_existing_lease() {
         use crate::config::{
-            ConfigChangeSource, ConfigPatchRequest, ConfigScope, JsonPatchOperation,
+            ConfigChangeSource, ConfigDocumentKind, ConfigPatchRequest, ConfigScope,
+            JsonPatchOperation,
         };
         let directory = tempfile::tempdir().unwrap();
         let manager = ConfigManager::initialize(directory.path().join("config"))
