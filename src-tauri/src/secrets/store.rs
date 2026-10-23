@@ -729,13 +729,34 @@ pub(super) fn with_specific_store_lock<T>(
     store: &LocalSecretStore,
     operation: impl FnOnce(&LocalSecretStore) -> Result<T, SecretError>,
 ) -> Result<T, SecretError> {
-    let _guard = STORE_MUTEX
-        .lock()
-        .map_err(|_| SecretError::PolicyUnavailable)?;
+    with_store_lock_mode(store, false, operation)
+}
+
+pub(super) fn with_specific_store_recovery_lock<T>(
+    store: &LocalSecretStore,
+    operation: impl FnOnce(&LocalSecretStore) -> Result<T, SecretError>,
+) -> Result<T, SecretError> {
+    with_store_lock_mode(store, true, operation)
+}
+
+fn with_store_lock_mode<T>(
+    store: &LocalSecretStore,
+    recovery: bool,
+    operation: impl FnOnce(&LocalSecretStore) -> Result<T, SecretError>,
+) -> Result<T, SecretError> {
+    let _guard = match STORE_MUTEX.lock() {
+        Ok(guard) => guard,
+        Err(poisoned) if recovery => poisoned.into_inner(),
+        Err(_) => return Err(SecretError::PolicyUnavailable),
+    };
     let file_guard = lock_store_file(store)?;
     let result = operation(store);
     let unlock_result = FileExt::unlock(&file_guard);
-    result.and_then(|value| unlock_result.map(|()| value).map_err(SecretError::from))
+    let result = result.and_then(|value| unlock_result.map(|()| value).map_err(SecretError::from));
+    if recovery && result.is_ok() {
+        STORE_MUTEX.clear_poison();
+    }
+    result
 }
 
 pub(super) fn parse_chatgpt_secret(serialized: &str) -> Result<Option<ChatGptSecret>, SecretError> {

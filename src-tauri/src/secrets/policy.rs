@@ -29,6 +29,19 @@ pub(crate) struct PolicyOwner {
     changed: tokio::sync::Notify,
 }
 
+struct PolicyGuard<'a> {
+    _gate: std::sync::MutexGuard<'a, ()>,
+    owner: &'a PolicyOwner,
+}
+impl Drop for PolicyGuard<'_> {
+    fn drop(&mut self) {
+        if std::thread::panicking() {
+            self.owner.revoke_now();
+            self.owner.persistence_failed.store(true, Ordering::SeqCst);
+        }
+    }
+}
+
 struct Mutation<'a> {
     owner: &'a PolicyOwner,
     revision: u64,
@@ -114,11 +127,27 @@ impl PolicyOwner {
         }
     }
 
-    fn lock(&self) -> Result<std::sync::MutexGuard<'_, ()>, SecretError> {
-        self.gate.lock().map_err(|_| {
-            self.revoke_now();
-            SecretError::PolicyUnavailable
-        })
+    fn lock(&self) -> Result<PolicyGuard<'_>, SecretError> {
+        self.gate
+            .lock()
+            .map(|gate| PolicyGuard {
+                _gate: gate,
+                owner: self,
+            })
+            .map_err(|_| {
+                self.revoke_now();
+                SecretError::PolicyUnavailable
+            })
+    }
+
+    fn recovery_lock(&self) -> PolicyGuard<'_> {
+        PolicyGuard {
+            _gate: self
+                .gate
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner()),
+            owner: self,
+        }
     }
 
     fn acknowledge_recovery(&self, ticket: RevocationTicket) -> Result<(), SecretError> {
@@ -126,21 +155,22 @@ impl PolicyOwner {
         if ticket.0 == u64::MAX {
             return Err(SecretError::PolicyUnavailable);
         }
-        self.acknowledged.store(ready, Ordering::SeqCst);
-        self.recovered_through.store(ready, Ordering::SeqCst);
         self.state
             .compare_exchange(ticket.0, ready, Ordering::SeqCst, Ordering::SeqCst)
             .map_err(|_| SecretError::PolicyUnavailable)?;
+        self.acknowledged.store(ready, Ordering::SeqCst);
+        self.recovered_through.store(ready, Ordering::SeqCst);
         self.persistence_failed.store(false, Ordering::SeqCst);
+        self.gate.clear_poison();
         Ok(())
     }
 
     pub(super) fn initialize(&self, directory: &Path) -> Result<(), SecretError> {
         let ticket = self.revoke_now();
-        let _gate = self.lock()?;
+        let _gate = self.recovery_lock();
         let result = (|| {
             let store = store::install_store_path(directory)?;
-            store::with_specific_store_lock(&store, |store| {
+            store::with_specific_store_recovery_lock(&store, |store| {
                 store.prepare_policy_file()?;
                 super::clear_caches();
                 Ok(())
@@ -163,7 +193,11 @@ impl PolicyOwner {
     }
 
     fn settle_inner(&self, ticket: RevocationTicket, explicit: bool) -> Result<(), SecretError> {
-        let _gate = self.lock()?;
+        let _gate = if explicit {
+            self.recovery_lock()
+        } else {
+            self.lock()?
+        };
         if !explicit && self.persistence_failed.load(Ordering::SeqCst) {
             return Err(SecretError::PolicyUnavailable);
         }
@@ -172,11 +206,16 @@ impl PolicyOwner {
         }
         let result = (|| {
             let store = store::default_store()?;
-            store::with_specific_store_lock(&store, |store| {
+            let rotate = |store: &LocalSecretStore| {
                 store.rotate_policy_file()?;
                 super::clear_caches();
                 Ok(())
-            })
+            };
+            if explicit {
+                store::with_specific_store_recovery_lock(&store, rotate)
+            } else {
+                store::with_specific_store_lock(&store, rotate)
+            }
         })();
         if let Err(error) = result {
             self.persistence_failed.store(true, Ordering::SeqCst);
@@ -364,6 +403,45 @@ mod tests {
         assert!(POLICY.settle(older).is_err());
         assert!(!POLICY.available());
         POLICY.settle(newer).unwrap();
+        assert!(POLICY.capture(|_, _| Ok(())).is_ok());
+    }
+    #[test]
+    fn explicit_recovery_after_panic_preserves_values_and_rotates_before_reopening() {
+        let _serial = super::super::lock_test_store();
+        let directory = tempfile::tempdir().unwrap();
+        super::super::init(directory.path()).unwrap();
+        let panic = std::panic::catch_unwind(|| {
+            let _ = POLICY.mutation::<()>(|store, mut data| {
+                data.api_keys
+                    .insert("synthetic".into(), "written-before-panic".into());
+                store.write_file(&data)?;
+                panic!("synthetic mutation panic");
+            });
+        });
+        assert!(panic.is_err());
+        assert!(!POLICY.available());
+        assert!(super::super::get_api_key("synthetic").is_err());
+        let path = directory.path().join("provider-secrets.json");
+        let bytes = std::fs::read(&path).unwrap();
+        std::fs::remove_file(&path).unwrap();
+        std::fs::create_dir(&path).unwrap();
+        assert!(POLICY.retry_invalidation().is_err());
+        assert!(POLICY.gate.is_poisoned());
+        std::fs::remove_dir(&path).unwrap();
+        std::fs::write(&path, &bytes).unwrap();
+        POLICY.retry_invalidation().unwrap();
+        assert!(!POLICY.gate.is_poisoned());
+        assert_ne!(std::fs::read(&path).unwrap(), bytes);
+        assert_eq!(
+            super::super::get_api_key("synthetic").unwrap().as_deref(),
+            Some("written-before-panic")
+        );
+        assert!(std::panic::catch_unwind(|| POLICY.capture::<()>(|_, _| {
+            panic!("synthetic capture panic");
+        }))
+        .is_err());
+        assert!(!POLICY.available());
+        super::super::init(directory.path()).unwrap();
         assert!(POLICY.capture(|_, _| Ok(())).is_ok());
     }
 }

@@ -33,9 +33,9 @@ async fn configured_speech_providers(
     let mut providers = Vec::with_capacity(definitions.len());
     for (id, definition) in definitions {
         let has_stored_api_key = if is_managed_provider(id) {
-            macro_ai::access_token().map_err(command_error)?.is_some()
+            macro_ai::access_token_async().await.map_err(command_error)?.is_some()
         } else {
-            secrets::get_api_key(&secret_id(id))
+            secrets::get_api_key_async(&secret_id(id)).await
                 .map_err(|error| command_error(error.to_string()))?
                 .is_some()
         };
@@ -209,7 +209,7 @@ pub async fn speech_create_provider_config(
     patch_speech_providers(config_manager.inner(), providers.clone()).await?;
 
     if let Some(api_key) = api_key.filter(|value| !value.trim().is_empty()) {
-        if let Err(error) = secrets::set_api_key(&secret_id(&id), api_key.trim()) {
+        if let Err(error) = secrets::set_api_key_async(&secret_id(&id), api_key.trim()).await {
             providers.remove(&id);
             if let Err(patch_error) =
                 patch_speech_providers(config_manager.inner(), providers).await
@@ -280,7 +280,7 @@ pub async fn speech_update_provider_config(
         next_is_local,
     )?;
     let previous_api_key = if params.api_key.is_some() {
-        secrets::get_api_key(&secret_id(&params.id)).map_err(|error| {
+        secrets::get_api_key_async(&secret_id(&params.id)).await.map_err(|error| {
             command_error(format!("Failed to access speech provider API key: {error}"))
         })?
     } else {
@@ -288,9 +288,9 @@ pub async fn speech_update_provider_config(
     };
     if let Some(api_key) = params.api_key.as_deref() {
         if api_key.trim().is_empty() {
-            secrets::delete_api_key(&secret_id(&params.id))
+            secrets::delete_api_key_async(&secret_id(&params.id)).await
         } else {
-            secrets::set_api_key(&secret_id(&params.id), api_key.trim())
+            secrets::set_api_key_async(&secret_id(&params.id), api_key.trim()).await
         }
         .map_err(|error| command_error(format!("Failed to update speech secret: {error}")))?;
     }
@@ -317,8 +317,8 @@ pub async fn speech_update_provider_config(
     if let Err(error) = patch_speech_providers(config_manager.inner(), providers).await {
         if params.api_key.is_some() {
             let _ = match previous_api_key {
-                Some(previous) => secrets::set_api_key(&secret_id(&params.id), &previous),
-                None => secrets::delete_api_key(&secret_id(&params.id)),
+                Some(previous) => secrets::set_api_key_async(&secret_id(&params.id), &previous).await,
+                None => secrets::delete_api_key_async(&secret_id(&params.id)).await,
             };
         }
         return Err(error);
@@ -408,14 +408,14 @@ pub async fn speech_delete_provider_config(
         .cloned()
         .unwrap_or_default();
     providers.remove(&id);
-    let previous_secret = secrets::get_api_key(&secret_id(&id)).map_err(|error| {
+    let previous_secret = secrets::get_api_key_async(&secret_id(&id)).await.map_err(|error| {
         command_error(format!("Failed to access speech provider API key: {error}"))
     })?;
-    secrets::delete_api_key(&secret_id(&id))
+    secrets::delete_api_key_async(&secret_id(&id)).await
         .map_err(|error| command_error(format!("Failed to delete speech secret: {error}")))?;
     if let Err(error) = patch_speech_providers(config_manager.inner(), providers).await {
         if let Some(previous_secret) = previous_secret.as_deref() {
-            if let Err(restore_error) = secrets::set_api_key(&secret_id(&id), previous_secret) {
+            if let Err(restore_error) = secrets::set_api_key_async(&secret_id(&id), previous_secret).await {
                 tracing::error!(
                     "Failed to restore speech secret for {id} after failed config update: {restore_error}"
                 );
@@ -464,7 +464,7 @@ pub async fn speech_transcribe(
                 .map_err(command_error)?,
         )
     } else {
-        secrets::get_api_key(&secret_id(&provider_id)).map_err(|error| {
+        secrets::get_api_key_async(&secret_id(&provider_id)).await.map_err(|error| {
             command_error(format!("Failed to access speech provider API key: {error}"))
         })?
     };

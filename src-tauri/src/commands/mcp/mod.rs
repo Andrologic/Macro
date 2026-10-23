@@ -78,7 +78,7 @@ pub async fn mcp_store_env_secret(
 
     let _authority = manager.lock_secret_references().await;
     let secret_id = build_mcp_env_secret_id(&server_id, key);
-    secrets::set_api_key(&secret_id, &value)
+    secrets::set_api_key_async(&secret_id, &value).await
         .map_err(|error| command_error(format!("Failed to store MCP env secret: {}", error)))?;
     runtime
         .invalidate_server(
@@ -106,7 +106,7 @@ pub async fn mcp_delete_env_secret(
 
     let _authority = manager.lock_secret_references().await;
     let secret_id = build_mcp_env_secret_id(&server_id, key);
-    secrets::delete_api_key(&secret_id)
+    secrets::delete_api_key_async(&secret_id).await
         .map_err(|error| command_error(format!("Failed to delete MCP env secret: {}", error)))?;
     runtime
         .invalidate_server(
@@ -132,7 +132,7 @@ pub async fn mcp_store_oauth_client_secret(
     }
 
     let _authority = manager.lock_secret_references().await;
-    secrets::set_api_key(&build_mcp_oauth_client_secret_id(&server_id), &value).map_err(
+    secrets::set_api_key_async(&build_mcp_oauth_client_secret_id(&server_id), &value).await.map_err(
         |error| command_error(format!("Failed to store MCP OAuth client secret: {error}")),
     )?;
     runtime
@@ -155,7 +155,7 @@ pub async fn mcp_delete_oauth_client_secret(
     }
 
     let _authority = manager.lock_secret_references().await;
-    secrets::delete_api_key(&build_mcp_oauth_client_secret_id(&server_id)).map_err(|error| {
+    secrets::delete_api_key_async(&build_mcp_oauth_client_secret_id(&server_id)).await.map_err(|error| {
         command_error(format!("Failed to delete MCP OAuth client secret: {error}"))
     })?;
     runtime

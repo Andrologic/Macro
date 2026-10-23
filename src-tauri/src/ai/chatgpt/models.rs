@@ -169,8 +169,8 @@ pub(super) async fn recover_pending_disconnect_locked(
         return Err("Le journal de déconnexion ChatGPT cible un autre fournisseur.".to_string());
     }
 
-    if let Err(delete_error) = secrets::delete_provider_secret(provider_id) {
-        match secrets::reload_chatgpt_secret(provider_id) {
+    if let Err(delete_error) = secrets::delete_provider_secret_async(provider_id).await {
+        match secrets::reload_chatgpt_secret_async(provider_id).await {
             Ok(None) => {
                 warn!(
                     provider_id = %provider_id,
@@ -247,7 +247,7 @@ async fn disconnect_auth_with_secret_delete<F>(
     delete_secret: F,
 ) -> Result<ProviderConfig, String>
 where
-    F: FnOnce(&str) -> Result<(), String>,
+    F: FnOnce(&str) -> Result<(), String> + Send + 'static,
 {
     let _auth_guard = lock_auth_mutation(provider_id).await?;
     recover_pending_disconnect_locked(pool, provider_id).await?;
@@ -255,7 +255,7 @@ where
         .await
         .map_err(db_error_to_string)?
         .ok_or_else(|| format!("Provider {provider_id} not found."))?;
-    let previous_secret = secrets::reload_chatgpt_secret(provider_id)
+    let previous_secret = secrets::reload_chatgpt_secret_async(provider_id).await
         .map_err(|error| format!("Impossible de lire le secret ChatGPT canonique : {error}"))?;
     let previous_metadata = ProviderAuthMetadata {
         auth_status: provider.auth_status,
@@ -266,8 +266,11 @@ where
     };
     let disconnected_metadata = disconnected_metadata();
     prepare_disconnect(pool, provider_id, &disconnected_metadata).await?;
-    if let Err(secret_error) = delete_secret(provider_id) {
-        match secrets::reload_chatgpt_secret(provider_id) {
+    let delete_id = provider_id.to_owned();
+    let deletion = secrets::blocking::run(move || delete_secret(&delete_id))
+        .await.map_err(|error| error.to_string())?;
+    if let Err(secret_error) = deletion {
+        match secrets::reload_chatgpt_secret_async(provider_id).await {
             Ok(None) => {
                 warn!(
                     provider_id = %provider_id,
@@ -410,7 +413,7 @@ async fn validate_model_session_locked(
         .await
         .map_err(db_error_to_string)?
         .ok_or_else(|| format!("Provider {provider_id} not found."))?;
-    let current_secret = secrets::reload_chatgpt_secret(provider_id)
+    let current_secret = secrets::reload_chatgpt_secret_async(provider_id).await
         .map_err(|error| format!("Failed to reload the current ChatGPT session: {error}"))?;
     let is_authenticated = provider.auth_status.as_deref() == Some("authenticated");
     let configuration_matches = provider.provider_type == expected_provider.provider_type
@@ -484,7 +487,7 @@ pub(crate) async fn available_models(
         .await
         .map_err(db_error_to_string)?
         .ok_or_else(|| format!("Provider {provider_id} not found."))?;
-    let secret = secrets::reload_chatgpt_secret(provider_id)
+    let secret = secrets::reload_chatgpt_secret_async(provider_id).await
         .map_err(|error| format!("Failed to reload the current ChatGPT session: {error}"))?;
     let mut models = repository::list_models_by_provider(pool, provider_id)
         .await
@@ -524,7 +527,7 @@ pub(crate) async fn persist_model_enrichments(
         .await
         .map_err(db_error_to_string)?
         .ok_or_else(|| format!("Provider {provider_id} not found."))?;
-    let secret = secrets::reload_chatgpt_secret(provider_id)
+    let secret = secrets::reload_chatgpt_secret_async(provider_id).await
         .map_err(|error| format!("Failed to reload the current ChatGPT session: {error}"))?;
     let Some(secret) = secret.filter(|_| {
         provider.provider_type == "chatgpt"

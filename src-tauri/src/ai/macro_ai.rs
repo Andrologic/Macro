@@ -154,19 +154,23 @@ pub fn access_token() -> Result<Option<String>, String> {
         .map_err(|error| format!("Failed to read the Macro AI access token: {error}"))
 }
 
+pub async fn access_token_async() -> Result<Option<String>, String> {
+    secrets::blocking::run(access_token).await.map_err(|error| error.to_string())?
+}
+
 pub async fn ensure_access_token(pool: &SqlitePool) -> Result<String, String> {
-    if let Some(token) = access_token()? {
+    if let Some(token) = access_token_async().await? {
         return Ok(token);
     }
     provision(pool).await?;
-    access_token()?.ok_or_else(|| "Macro AI activation returned no access token.".to_string())
+    access_token_async().await?.ok_or_else(|| "Macro AI activation returned no access token.".to_string())
 }
 
 pub async fn provision(pool: &SqlitePool) -> Result<MacroAiProvisioningStatus, String> {
     let _guard = provisioning_lock().lock().await;
     ensure_managed_provider_and_model(pool).await?;
 
-    if access_token()?.is_some() {
+    if access_token_async().await?.is_some() {
         repository::set_provider_has_stored_api_key(pool, PROVIDER_ID, true)
             .await
             .map_err(|error| error.to_string())?;
@@ -178,7 +182,8 @@ pub async fn provision(pool: &SqlitePool) -> Result<MacroAiProvisioningStatus, S
         });
     }
 
-    let identity = load_or_create_installation_identity()?;
+    let identity = secrets::blocking::run(load_or_create_installation_identity)
+        .await.map_err(|error| error.to_string())??;
     let client = reqwest::Client::builder()
         .connect_timeout(Duration::from_secs(10))
         .timeout(Duration::from_secs(20))
@@ -218,7 +223,7 @@ pub async fn provision(pool: &SqlitePool) -> Result<MacroAiProvisioningStatus, S
         return Err("Macro AI returned inconsistent activation metadata.".to_string());
     }
 
-    secrets::set_api_key(PROVIDER_ID, payload.access_token.trim())
+    secrets::set_api_key_async(PROVIDER_ID, payload.access_token.trim()).await
         .map_err(|error| format!("Failed to store the Macro AI access token: {error}"))?;
     repository::set_provider_has_stored_api_key(pool, PROVIDER_ID, true)
         .await

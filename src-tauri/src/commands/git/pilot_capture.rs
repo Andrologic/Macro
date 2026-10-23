@@ -67,7 +67,11 @@ pub fn pilot_review_release(snapshot_id: String) -> CaptureResult<()> {
 /// Detection-only secrets use the existing vault, including provider OAuth and MCP
 /// values. Never log this result or store it in a Pilot capture journal.
 #[tauri::command]
-pub fn pilot_content_policy() -> CaptureResult<Vec<String>> {
+pub async fn pilot_content_policy() -> CaptureResult<Vec<String>> {
+    crate::secrets::blocking::run(pilot_content_policy_sync).await.map_err(unavailable)?
+}
+
+fn pilot_content_policy_sync() -> CaptureResult<Vec<String>> {
     if !cfg!(unix) || std::env::var_os("WSL_INTEROP").is_some() {
         return Err("content_unavailable".into());
     }
@@ -114,7 +118,7 @@ pub async fn pilot_review_commit(
         let expected_secrets = input.request.secret_values.clone();
         runtime.block_on(verdict::commit(&pool, &repo, input, || {
             // Recheck after waiting for SQLite and immediately before commit.
-            if pilot_content_policy()?
+            if pilot_content_policy_sync()?
                 .iter()
                 .any(|value| !value.is_empty() && !expected_secrets.contains(value))
             {

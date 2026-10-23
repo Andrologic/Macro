@@ -514,7 +514,7 @@ pub async fn web_search_get_secret_status(
     provider: String,
 ) -> CommandResult<WebSearchSecretStatus> {
     let provider = normalize_provider(&provider)?;
-    let has_secret = secrets::get_api_key(&secret_id(provider))
+    let has_secret = secrets::get_api_key_async(&secret_id(provider)).await
         .map_err(|error| command_error(format!("Impossible de vérifier le secret : {error}")))?
         .is_some_and(|value| !value.trim().is_empty());
     Ok(WebSearchSecretStatus {
@@ -530,8 +530,8 @@ pub async fn web_search_set_secret(
 ) -> CommandResult<WebSearchSecretStatus> {
     let provider = normalize_provider(&input.provider)?;
     match input.value.as_deref().map(str::trim) {
-        Some(value) if !value.is_empty() => secrets::set_api_key(&secret_id(provider), value),
-        _ => secrets::delete_api_key(&secret_id(provider)),
+        Some(value) if !value.is_empty() => secrets::set_api_key_async(&secret_id(provider), value).await,
+        _ => secrets::delete_api_key_async(&secret_id(provider)).await,
     }
     .map_err(|error| command_error(format!("Impossible de mettre à jour le secret : {error}")))?;
 
@@ -607,7 +607,7 @@ async fn web_search_execute_owned(
         .and_then(|value| u32::try_from(value).ok())
         .unwrap_or(DEFAULT_MAX_RESULTS)
         .clamp(1, MAX_RESULTS);
-    let api_key = secrets::get_api_key(&secret_id(provider))
+    let api_key = secrets::get_api_key_async(&secret_id(provider)).await
         .map_err(|error| command_error(format!("Impossible de lire le secret : {error}")))?
         .filter(|value| !value.trim().is_empty())
         .ok_or_else(|| command_error("Aucune clé API de recherche web n’est configurée."))?;

@@ -172,4 +172,39 @@ mod tests {
         assert!(jobs.0.lock().unwrap().joins.is_empty());
         assert!(jobs.close_and_join().await.is_err());
     }
+    #[tokio::test(flavor = "current_thread")]
+    async fn real_secret_getter_waits_for_policy_gate_without_stalling_tokio() {
+        let _serial = super::super::lock_test_store();
+        let directory = tempfile::tempdir().unwrap();
+        super::super::init(directory.path()).unwrap();
+        super::super::set_api_key("synthetic", "stored").unwrap();
+        let (entered, started) = tokio::sync::oneshot::channel();
+        let (release, wait) = std::sync::mpsc::channel();
+        let holder = std::thread::spawn(move || {
+            super::super::policy::POLICY
+                .capture(|_, _| {
+                    entered.send(()).unwrap();
+                    wait.recv().unwrap();
+                    Ok(())
+                })
+                .unwrap();
+        });
+        tokio::time::timeout(Duration::from_secs(2), started)
+            .await
+            .unwrap()
+            .unwrap();
+        let mut reading = Box::pin(super::super::get_api_key_async("synthetic"));
+        assert!(
+            tokio::time::timeout(Duration::from_millis(20), &mut reading)
+                .await
+                .is_err()
+        );
+        release.send(()).unwrap();
+        let value = tokio::time::timeout(Duration::from_secs(2), reading)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(value.as_deref(), Some("stored"));
+        holder.join().unwrap();
+    }
 }

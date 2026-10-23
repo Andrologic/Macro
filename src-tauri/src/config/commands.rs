@@ -89,7 +89,7 @@ pub async fn list_orphan_secrets(
 ) -> Result<Vec<OrphanSecretDto>, ConfigApiError> {
     let documents = manager.secret_reference_documents().await;
     let (api_keys, sessions) = referenced_secret_ids(&documents);
-    let entries = crate::secrets::list_secret_metadata().map_err(|error| ConfigApiError {
+    let entries = crate::secrets::list_secret_metadata_async().await.map_err(|error| ConfigApiError {
         code: "config.secrets.read_failed".to_string(),
         message: format!("Impossible de lire les métadonnées des secrets : {error}"),
         document: None,
@@ -155,7 +155,7 @@ pub async fn delete_orphan_secret(
             diagnostics: Vec::new(),
         });
     }
-    crate::secrets::delete_secret_metadata(&request.id, &request.secret_type).map_err(|error| {
+    crate::secrets::delete_secret_metadata_async(&request.id, &request.secret_type).await.map_err(|error| {
         ConfigApiError {
             code: "config.secrets.delete_failed".to_string(),
             message: format!("Impossible de supprimer le secret orphelin : {error}"),

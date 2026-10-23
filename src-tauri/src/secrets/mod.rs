@@ -115,3 +115,42 @@ pub(crate) async fn get_api_key_async(provider_id: &str) -> Result<Option<String
     let provider_id = provider_id.to_owned();
     blocking::run(move || get_api_key(&provider_id)).await?
 }
+
+pub(crate) async fn set_api_key_async(id: &str, value: &str) -> Result<(), SecretError> {
+    let (id, value) = (id.to_owned(), value.to_owned());
+    blocking::run(move || set_api_key(&id, &value)).await?
+}
+pub(crate) async fn delete_api_key_async(id: &str) -> Result<(), SecretError> {
+    let id = id.to_owned();
+    blocking::run(move || delete_api_key(&id)).await?
+}
+pub(crate) async fn get_chatgpt_secret_async(
+    id: &str,
+) -> Result<Option<ChatGptSecret>, SecretError> {
+    let id = id.to_owned();
+    blocking::run(move || get_chatgpt_secret(&id)).await?
+}
+pub(crate) async fn reload_chatgpt_secret_async(
+    id: &str,
+) -> Result<Option<ChatGptSecret>, SecretError> {
+    let id = id.to_owned();
+    blocking::run(move || reload_chatgpt_secret(&id)).await?
+}
+pub(crate) async fn set_chatgpt_secret_async(
+    id: &str,
+    value: &ChatGptSecret,
+) -> Result<(), SecretError> {
+    let (id, value) = (id.to_owned(), value.clone());
+    blocking::run(move || set_chatgpt_secret(&id, &value)).await?
+}
+pub(crate) async fn delete_provider_secret_async(id: &str) -> Result<(), SecretError> {
+    let id = id.to_owned();
+    blocking::run(move || delete_provider_secret(&id)).await?
+}
+pub(crate) async fn list_secret_metadata_async() -> Result<Vec<SecretMetadata>, SecretError> {
+    blocking::run(list_secret_metadata).await?
+}
+pub(crate) async fn delete_secret_metadata_async(id: &str, kind: &str) -> Result<(), SecretError> {
+    let (id, kind) = (id.to_owned(), kind.to_owned());
+    blocking::run(move || delete_secret_metadata(&id, &kind)).await?
+}

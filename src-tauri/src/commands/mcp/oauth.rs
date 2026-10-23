@@ -29,7 +29,7 @@ use tauri_plugin_opener::OpenerExt;
 use tokio::sync::{oneshot, Mutex};
 use url::Url;
 
-use super::runtime_connector::{resolve_oauth_settings, ResolvedOAuthSettings};
+use super::runtime_connector::{resolve_oauth_settings_async, ResolvedOAuthSettings};
 use super::streamable_http::validate_endpoint;
 use super::types::McpRuntimeKey;
 use crate::commands::{command_error, CommandResult};
@@ -222,7 +222,7 @@ impl McpOAuthCredentialStore {
 #[async_trait::async_trait]
 impl CredentialStore for McpOAuthCredentialStore {
     async fn load(&self) -> Result<Option<StoredCredentials>, AuthError> {
-        let stored = secrets::get_api_key(&self.secret_id)
+        let stored = secrets::get_api_key_async(&self.secret_id).await
             .map_err(|_| AuthError::InternalError("OAuth credential store unavailable".into()))?;
         stored
             .map(|value| {
@@ -237,12 +237,12 @@ impl CredentialStore for McpOAuthCredentialStore {
         let encoded = serde_json::to_string(&credentials).map_err(|_| {
             AuthError::InternalError("OAuth credentials could not be encoded".into())
         })?;
-        secrets::set_api_key(&self.secret_id, &encoded)
+        secrets::set_api_key_async(&self.secret_id, &encoded).await
             .map_err(|_| AuthError::InternalError("OAuth credential store unavailable".into()))
     }
 
     async fn clear(&self) -> Result<(), AuthError> {
-        secrets::delete_api_key(&self.secret_id)
+        secrets::delete_api_key_async(&self.secret_id).await
             .map_err(|_| AuthError::InternalError("OAuth credential store unavailable".into()))
     }
 }
@@ -482,7 +482,7 @@ pub(crate) async fn authorize_interactively(
             "MCP OAuth is available only for Streamable HTTP servers.",
         ));
     };
-    let settings = resolve_oauth_settings(&key.server_id, definition)
+    let settings = resolve_oauth_settings_async(&key.server_id, definition).await
         .map_err(|error| command_error(error.to_string()))?
         .ok_or_else(|| command_error("MCP OAuth is not configured for this server."))?;
     let endpoint = validate_endpoint(url).await?;
@@ -553,7 +553,7 @@ pub(crate) async fn clear_credentials(
         ));
     };
     let endpoint = validate_endpoint(url).await?;
-    secrets::delete_api_key(&oauth_credential_secret_id(key, endpoint.url.as_str()))
+    secrets::delete_api_key_async(&oauth_credential_secret_id(key, endpoint.url.as_str())).await
         .map_err(|_| command_error("Stored MCP OAuth credentials could not be deleted."))
 }
 

@@ -41,6 +41,19 @@ fn server_enabled(server: &McpServerDto) -> bool {
         == Some(true)
 }
 
+pub(crate) async fn resolve_stdio_transport_async(
+    server: &McpServerDto,
+) -> CommandResult<(String, Vec<String>, HashMap<String, String>)> {
+    let server = server.clone();
+    secrets_blocking(move || resolve_stdio_transport(&server)).await
+}
+
+async fn secrets_blocking<T: Send + 'static>(
+    operation: impl FnOnce() -> CommandResult<T> + Send + 'static,
+) -> CommandResult<T> {
+    crate::secrets::blocking::run(operation).await.map_err(|error| command_error(error.to_string()))?
+}
+
 pub(crate) fn resolve_stdio_transport(
     server: &McpServerDto,
 ) -> CommandResult<(String, Vec<String>, HashMap<String, String>)> {
@@ -91,7 +104,7 @@ where
     F: FnOnce(tokio::process::ChildStdin, BufReader<tokio::process::ChildStdout>) -> Fut,
     Fut: std::future::Future<Output = CommandResult<T>>,
 {
-    let (command, args, env) = resolve_stdio_transport(server)?;
+    let (command, args, env) = resolve_stdio_transport_async(server).await?;
     let mut child_command = background_tokio_command(command);
     child_command
         .args(args)
