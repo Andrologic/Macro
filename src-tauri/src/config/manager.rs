@@ -1926,6 +1926,16 @@ impl ConfigManager {
     }
 
     pub async fn effective_user_document(&self, kind: ConfigDocumentKind) -> Value {
+        self.with_effective_user_document(kind, Value::clone).await
+    }
+
+    /// Run a short synchronous native admission while the approved snapshot is
+    /// read-locked. A concurrent policy publication cannot split check and charge.
+    pub(crate) async fn with_effective_user_document<T>(
+        &self,
+        kind: ConfigDocumentKind,
+        operation: impl FnOnce(&Value) -> T,
+    ) -> T {
         let state = self.state.read().await;
         let mut effective = default_document(kind);
         if let Some(stored) = state.documents.get(&DocumentKey {
@@ -1934,7 +1944,7 @@ impl ConfigManager {
         }) {
             super::registry::merge_values(&mut effective, &stored.last_valid_value);
         }
-        effective
+        operation(&effective)
     }
 
     pub async fn reload(
@@ -3384,6 +3394,92 @@ mod tests {
             .await
             .expect("manager");
         (temp, manager)
+    }
+
+    #[tokio::test]
+    async fn connect_resources_require_approval_and_preserve_last_valid_policy() {
+        let (_temp, manager) = manager().await;
+        let document = manager
+            .get_document(ConfigDocumentKind::Settings, ConfigScope::User)
+            .await
+            .unwrap();
+        let policy = super::super::ConnectTransferResources {
+            working_ceiling_mi_b: 64,
+            retained_ceiling_mi_b: 256,
+            disk_floor_mi_b: 512,
+            ..Default::default()
+        };
+        let result = manager
+            .apply_patch(ConfigPatchRequest {
+                kind: ConfigDocumentKind::Settings,
+                scope: ConfigScope::User,
+                expected_etag: document.etag,
+                patch: vec![JsonPatchOperation {
+                    op: "add".into(),
+                    path: "/connectTransferResources".into(),
+                    from: None,
+                    value: Some(serde_json::to_value(&policy).unwrap()),
+                }],
+                source: ConfigChangeSource::Agent,
+            })
+            .await
+            .unwrap();
+        assert_eq!(result.status, "pendingApproval");
+        assert_eq!(
+            crate::connect_resources::configured(&manager)
+                .await
+                .unwrap(),
+            Default::default()
+        );
+        manager
+            .accept_pending_change(&result.pending_change.unwrap().id)
+            .await
+            .unwrap();
+        assert_eq!(
+            crate::connect_resources::configured(&manager)
+                .await
+                .unwrap(),
+            policy
+        );
+        for (field, bad) in [
+            ("version", 2),
+            ("workingCeilingMiB", 63),
+            ("workingCeilingMiB", 4097),
+            ("retainedCeilingMiB", 255),
+            ("retainedCeilingMiB", 65537),
+            ("diskFloorMiB", 511),
+            ("diskFloorMiB", 65537),
+        ] {
+            let document = manager
+                .get_document(ConfigDocumentKind::Settings, ConfigScope::User)
+                .await
+                .unwrap();
+            let result = manager
+                .apply_patch(ConfigPatchRequest {
+                    kind: ConfigDocumentKind::Settings,
+                    scope: ConfigScope::User,
+                    expected_etag: document.etag,
+                    patch: vec![JsonPatchOperation {
+                        op: "add".into(),
+                        path: format!("/connectTransferResources/{field}"),
+                        from: None,
+                        value: Some(json!(bad)),
+                    }],
+                    source: ConfigChangeSource::UserInterface,
+                })
+                .await;
+            assert_eq!(
+                result.unwrap_err().code,
+                "config.document.validation_failed",
+                "{field}={bad}"
+            );
+            assert_eq!(
+                crate::connect_resources::configured(&manager)
+                    .await
+                    .unwrap(),
+                policy
+            );
+        }
     }
 
     #[tokio::test]

@@ -104,6 +104,7 @@ pub mod pilot_file_contracts {
         PilotPreparedSend, PilotSendMarkInput, PilotSendReadInput, PilotSendReceipt,
     };
 }
+mod connect_resources;
 mod dev_overrides;
 mod diagnostics;
 pub mod host_telemetry;

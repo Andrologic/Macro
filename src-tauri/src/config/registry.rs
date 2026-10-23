@@ -69,6 +69,7 @@ pub fn default_document(kind: ConfigDocumentKind) -> Value {
         ConfigDocumentKind::Settings => json!({
             "schemaVersion": CURRENT_SCHEMA_VERSION,
             "language": "en",
+            "connectTransferResources": ConnectTransferResources::default(),
             "appearance": {
                 "theme": "macro-dark",
                 "zoomMode": "auto",
@@ -631,6 +632,22 @@ pub fn validate_document(
         }
     }
 
+    if kind == ConfigDocumentKind::Settings && !read_only {
+        if let Some(resources) = value.get("connectTransferResources") {
+            if serde_json::from_value::<ConnectTransferResources>(resources.clone())
+                .is_ok_and(|policy| !policy.valid())
+            {
+                diagnostics.push(diagnostic(
+                    kind,
+                    scope,
+                    Some("/connectTransferResources".to_string()),
+                    "config.settings.connect_resources_out_of_range",
+                    "La politique de ressources Connect doit respecter la version 1 et ses bornes.",
+                ));
+            }
+        }
+    }
+
     if kind == ConfigDocumentKind::Providers && matches!(scope, ConfigScope::User) {
         let defaults = default_document(ConfigDocumentKind::Providers);
         let default_providers = defaults.get("providers").and_then(Value::as_object);
@@ -882,6 +899,14 @@ pub fn descriptors() -> Vec<ConfigDescriptor> {
             Restrictive,
             ApprovalRequired,
             Restart,
+        ),
+        descriptor(
+            Settings,
+            "/connectTransferResources",
+            &["user"],
+            Replace,
+            ApprovalRequired,
+            Live,
         ),
         descriptor(Settings, "/language", &["user"], Replace, Normal, Live),
         descriptor(Settings, "/appearance", &["user"], Deep, Normal, Live),

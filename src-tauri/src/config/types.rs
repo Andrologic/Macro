@@ -294,6 +294,40 @@ pub struct HeadlessSettings {
     pub auto_start: Option<bool>,
 }
 
+/// Native transfer budgets. This is an allocation policy, not a transcript limit.
+#[derive(Clone, Debug, Deserialize, JsonSchema, Serialize, TS, PartialEq, Eq)]
+#[serde(default, deny_unknown_fields, rename_all = "camelCase")]
+pub struct ConnectTransferResources {
+    #[schemars(range(min = 1, max = 1))]
+    pub version: u32,
+    #[schemars(range(min = 64, max = 4096))]
+    pub working_ceiling_mi_b: u32,
+    #[schemars(range(min = 256, max = 65536))]
+    pub retained_ceiling_mi_b: u32,
+    #[schemars(range(min = 512, max = 65536))]
+    pub disk_floor_mi_b: u32,
+}
+
+impl Default for ConnectTransferResources {
+    fn default() -> Self {
+        Self {
+            version: 1,
+            working_ceiling_mi_b: 512,
+            retained_ceiling_mi_b: 8192,
+            disk_floor_mi_b: 2048,
+        }
+    }
+}
+
+impl ConnectTransferResources {
+    pub(crate) fn valid(&self) -> bool {
+        self.version == 1
+            && (64..=4096).contains(&self.working_ceiling_mi_b)
+            && (256..=65536).contains(&self.retained_ceiling_mi_b)
+            && (512..=65536).contains(&self.disk_floor_mi_b)
+    }
+}
+
 #[derive(Clone, Debug, Deserialize, JsonSchema, Serialize, TS)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct SettingsDocument {
@@ -315,6 +349,8 @@ pub struct SettingsDocument {
     pub notifications: Option<NotificationSettings>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub applications: Option<ApplicationSettings>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub connect_transfer_resources: Option<ConnectTransferResources>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(type = "Record<string, unknown> | null")]
     pub extensions: Option<BTreeMap<String, Value>>,
