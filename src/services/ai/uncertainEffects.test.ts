@@ -10,12 +10,14 @@ import { toSdkToolResult } from '../../../copilot-bridge/src/sdkToolResult';
 
 // Regression of the audit's effects-probe: real dispatch, loop and accumulator,
 // with an in-memory journal and a scripted provider, no network or external effect.
+// This retains the ordinary conversation policy; globalChat admission and its
+// refusal after an unknown provider are exercised by the native lifecycle tests.
 test('lost acknowledgement reaches the next turn and reload as uncertain with its original identity', async () => {
   const rows = new Map<string, string>();
   let effects = 0;
   const name = 'mcp__synthetic__append_event';
   const invocation = {} as ToolInvocation;
-  const dispatch = createChatToolDispatch({ conversationId: 'c', turnId: 't', assistantMessageId: 'm',
+  const dispatch = createChatToolDispatch({ providerAdmission: { kind: 'conversation' }, conversationId: 'c', turnId: 't', assistantMessageId: 'm',
     allowedToolIds: [name], signal: new AbortController().signal } as unknown as FrozenToolCallContext, {
     journal: {
       isRemoteRuntime: () => false,

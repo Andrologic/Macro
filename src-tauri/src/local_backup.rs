@@ -3194,6 +3194,42 @@ mod content_backup_tests {
 mod content_legacy_backup_tests {
     use super::*;
     #[tokio::test]
+    async fn restore_reconciles_linked_running_goal_before_hold_and_keeps_foreign_goal_writable() {
+        let (_temp,data,config)=tests::profile().await;
+        let path=data.join("macro.db");
+        let mut db=connection(&path).await.unwrap();
+        assert_eq!(sqlx::query_scalar::<_,i64>("PRAGMA recursive_triggers").fetch_one(&mut db).await.unwrap(),1);
+        assert_eq!(sqlx::query_scalar::<_,i64>("PRAGMA trusted_schema").fetch_one(&mut db).await.unwrap(),1);
+        sqlx::raw_sql("INSERT INTO conversations(id,title,scope_mode,project_id,created_at,updated_at) VALUES('foreign','Foreign','Chat','project','t','t');
+            INSERT INTO agent_runs(id,parent_conversation_id,agent_profile,depth,status,prompt,attempt_count,created_at,updated_at,started_at) VALUES('run','conversation','synthetic',1,'running','Synthetic',1,'t','t','t');
+            INSERT INTO conversation_goals(goal_id,conversation_id,revision,objective,success_criteria_json,status,created_at,updated_at) VALUES('goal','conversation',1,'Synthetic','[]','auditing','t','t'),('foreign-goal','foreign',1,'Other','[]','active_ready','t','t');
+            INSERT INTO conversation_goal_audits(audit_id,conversation_id,goal_id,goal_revision,executor_turn_id,current_run_id,status,created_at,updated_at) VALUES('audit','conversation','goal',1,'turn','run','running','t','t');
+            INSERT INTO conversation_goal_audit_runs(audit_id,run_id,attempt,linked_at) VALUES('audit','run',1,'t');")
+            .execute(&mut db).await.unwrap();
+        db.close().await.unwrap();
+        let archive=capture(&data,&config,BTreeMap::new(),true).await.unwrap();
+        tests::queue_restore(&data,&archive);
+        process_startup(&data,&config).await.unwrap();
+        let status:BackupStatus=serde_json::from_slice(&fs::read(data.join("local-backup/status.json")).unwrap()).unwrap();
+        assert_eq!(status.code,Some(BackupStatusCode::Restored));
+        let pool=crate::db::create_pool(&path).await.unwrap();
+        assert_eq!(sqlx::query_scalar::<_,String>("SELECT status FROM agent_runs WHERE id='run'").fetch_one(&pool).await.unwrap(),"interrupted");
+        assert_eq!(sqlx::query_scalar::<_,String>("SELECT status FROM conversation_goals WHERE goal_id='goal'").fetch_one(&pool).await.unwrap(),"paused");
+        assert_eq!(sqlx::query_scalar::<_,String>("SELECT mode FROM chat_admission_owners WHERE conversation_id='conversation'").fetch_one(&pool).await.unwrap(),"restore_hold");
+        // These are the same official init_db reconcilers, now idempotent after
+        // restore installed its hold. No ordinary writer is opened afterward.
+        assert_eq!(crate::db::agent_runs::reconcile_active_agent_runs_after_restart(&pool).await.unwrap(),0);
+        assert_eq!(crate::db::conversation_goals::reconcile_audits_after_restart(&pool).await.unwrap(),0);
+        crate::db::tool_invocations::reconcile_pending_after_restart(&pool).await.unwrap();
+        crate::db::chat_admission::reconcile_after_restart(&pool).await.unwrap();
+        let owner=crate::core::db_state::DbPool::default();owner.set_ready(pool.clone()).await.unwrap();
+        sqlx::query("UPDATE conversation_goals SET objective='Still writable' WHERE goal_id='foreign-goal'").execute(&pool).await.unwrap();
+        assert!(sqlx::query("UPDATE conversation_goals SET objective='forbidden' WHERE goal_id='goal'").execute(&pool).await.is_err());
+        owner.set_initializing().await;
+        pool.close().await;
+    }
+
+    #[tokio::test]
     async fn exact_v15_v16_restore_preserves_inactive_bytes_and_holds_chat_before_ready() {
         for version in [15, 16] {
             let (_temp, data, config) = tests::profile().await;

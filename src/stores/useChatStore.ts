@@ -1,5 +1,6 @@
+import { readQueuedSubmissions } from './chat/chatQueuedSubmissions';
 import type { ProviderAdmission } from '../services/ipc/chatAdmission';
-import { beginChatAdmission, closeChatPreparation, finishChatResponse, retireChatBrowser, beginChatIntent, finishChatIntent, reserveChatResponse, responseCopyAdmission, recoverChatResponse, discardChatResponseCopy } from '../services/chatAdmission';
+import { ensureChatBrowser, beginChatAdmission, closeChatPreparation, finishChatResponse, retireChatBrowser, beginChatIntent, finishChatIntent, reserveChatResponse, responseCopyAdmission, recoverChatResponse, discardChatResponseCopy } from '../services/chatAdmission';
 import { acknowledgeDisplayedConversation } from '../services/conversationManagementService';
 import { getConflictAssistantContext, clearConflictAssistantContext, isConflictAssistantContextAllowed, revalidateConflictAssistantContext, scopeConflictAssistantExecutionContext } from '../services/conflictAssistantContext';
 import { type LifecycleContext, createLifecycleScope } from '../services/lifecycleScope';
@@ -18,7 +19,7 @@ import { createAssistantStreamRuntime } from "../services/chatAssistantStreamRun
 import { MCP_DISCOVERY_DEFINITIONS, shouldDiscoverMcpTools } from '../services/mcp/toolDiscovery';
 import type { AssistantStreamLaunch, PrepareAssistantStreamParams, FrozenToolCallContext, StreamContextDiagnosticsBaseline } from "../services/chatStreamContracts";
 import { create } from "zustand";
-import { persistToolApprovalRecovery, restoreToolApprovalRecovery, loadToolApprovalRecoveryMarkers } from "../services/toolApprovalRecovery";
+import { persistToolApprovalRecovery, restoreToolApprovalRecovery, loadToolApprovalRecoveryMarkers, drainToolApprovalRecoveryWrites } from "../services/toolApprovalRecovery";
 import {
   AppMode,
   AgentType,
@@ -368,6 +369,8 @@ import {
   saveQuestionnaireDraftsToStorage,
   activateQuestionnaireDraftWriter,
   retireQuestionnaireDraftWriter,
+  drainQuestionnaireDraftWrites,
+  readQuestionnaireDraftsFromStorage,
   saveUnsavedAssistantResponseToStorage,
   setActiveQuestionnaireDraftStep,
   setQuestionnaireDraftForConversation,
@@ -1140,6 +1143,7 @@ interface ChatStore {
   stopSubscriptions: () => void;
   drainSubscriptions: () => Promise<void>;
   initialize: (lifecycle?: LifecycleContext) => Promise<void>;
+  reconcileConversationAdmission: (conversationId: string) => Promise<{ runtime: string; handle: string }>;
   initializeCritical: (lifecycle?: LifecycleContext) => Promise<void>;
   resumeAfterInitialize: (lifecycle?: LifecycleContext) => Promise<void>;
 }
@@ -11211,6 +11215,44 @@ export const useChatStore = create<ChatStore>((set, get) => {
     };
   };
 
+  const reconcileConversationAdmission = async (conversationId: string): Promise<{ runtime: string; handle: string }> => {
+    const runtime = await ensureChatBrowser();
+    const inspect = async (mayRemoveStaleDraft: boolean): Promise<{ runtime: string; handle: string }> => {
+      // Capture before joining writers: a writer starting later invalidates the
+      // native revision, even if its browser copy is not visible yet.
+      const handle = await tauriIpc.chatAdmissionBeginReconciliation(runtime, conversationId);
+      await turnRuntime.drain(conversationId);
+      await queueRuntime?.joinWrites();
+      await drainToolApprovalRecoveryWrites();
+      await drainQuestionnaireDraftWrites();
+      const messages = await loadConversationMessages(chatPersistenceAdapters, { conversationId, conversations: get().conversations });
+      const drafts = readQuestionnaireDraftsFromStorage();
+      const active = resolveActiveConversationQuestionnaire(conversationId, messages, drafts[conversationId]);
+      if (mayRemoveStaleDraft && drafts[conversationId] && !active) {
+        // A persisted human response can have won before its handoff ACK was
+        // lost. Remove only the obsolete local draft; never send another turn.
+        const next = { ...drafts };
+        delete next[conversationId];
+        await saveQuestionnaireDraftsToStorage(next);
+        set(state => ({ questionnaireDraftsByConversationId: clearQuestionnaireDraftsForConversations(state.questionnaireDraftsByConversationId, [conversationId]) }));
+        return inspect(false);
+      }
+      const approvals = await loadToolApprovalRecoveryMarkers();
+      if (approvals.warning) throw new Error(approvals.warning);
+      const observed: tauriIpc.ChatBrowserInspection = {
+        queue: readQueuedSubmissions().filter(entry => entry.input.conversationId === conversationId).map(entry => entry.id),
+        unsaved: readUnsavedAssistantResponsesFromStorage().filter(message => message.conversation_id === conversationId).map(message => message.id),
+        approvals: approvals.markers[conversationId] ? [conversationId] : [],
+        questions: active ? [active.assistantMessageId] : [],
+        drafts: drafts[conversationId] ? [drafts[conversationId].assistantMessageId] : [],
+        steers: turnRuntime.pendingSteerIds(conversationId),
+      };
+      await tauriIpc.chatAdmissionCompleteReconciliation(runtime, handle, observed);
+      return { runtime, handle };
+    };
+    return inspect(true);
+  };
+
   const hydrateChatSnapshot = async (lifecycle?: LifecycleContext): Promise<void> => {
     lifecycle?.assertActive();
     resetNativeImageHydration();
@@ -11691,6 +11733,13 @@ export const useChatStore = create<ChatStore>((set, get) => {
     const restoredQueue = await getQueueRuntime();
     lifecycle?.assertActive();
     await restoredQueue.restore(conversations.map(conversation => conversation.id));
+    for (const conversation of conversations) {
+      if (!loadedConversationIds.has(conversation.id) || conversation.scope_mode !== 'Chat' ||
+          conversation.project_id || conversation.group_id || conversation.task_id) continue;
+      lifecycle?.assertActive();
+      try { await reconcileConversationAdmission(conversation.id); }
+      catch (error) { devLogger.info('Chat admission reconciliation remains pending', { conversationId: conversation.id, error: toServiceError(error).message }); }
+    }
     scheduleImplementAwaitingResponseReconciliation();
   };
 
@@ -15291,6 +15340,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
       }
     },
 
+    reconcileConversationAdmission,
     initializeCritical: async (lifecycle) => {
       lifecycle?.assertActive();
       // Retire waiters, then drain in-flight writes before reading recovery data.

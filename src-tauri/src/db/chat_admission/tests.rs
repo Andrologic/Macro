@@ -1326,6 +1326,13 @@ async fn response_recovery_reservation_survives_browser_loss_and_never_closes_un
         else { child.result_pending().await.unwrap(); child.completed().await.unwrap(); }
         runtime.close_browser(&owner, &crate::ai::AiState::default(), &crate::ai::admitted_http::AdmittedHttp::default(), "window", "old").await.unwrap();
         runtime.open_browser(owner.clone(), "window", "new").await.unwrap();
+        // An empty browser observation cannot erase an unknown provider, nor
+        // certify a completed provider whose response copy was never persisted.
+        let inspection = runtime.begin_reconciliation(&owner,"window","new","source").await.unwrap();
+        let error = runtime.complete_reconciliation(&owner,"window","new",&inspection,&no_browser_intentions()).await.unwrap_err().to_string();
+        assert!(error.contains(if uncertain {"work_unreconciled"} else {"response_recovery_missing"}), "{error}");
+        assert!(runtime.reserve_reconciled_source(&owner,"window","new",&inspection).await.is_err());
+        assert_eq!(sqlx::query_scalar::<_,String>("SELECT phase FROM chat_admission_operations WHERE operation_id=?").bind(&receipt.operation_id).fetch_one(&pool).await.unwrap(), "prepared");
         let identity = intents::response_recovery_identity(&owner, "source", "message").await.unwrap();
         assert_eq!(identity.id, context.handle);
         let recovered = runtime.begin_intent(&owner, "window", "new", identity, IntentMutation::Retain).await.unwrap();
@@ -1395,4 +1402,144 @@ async fn recovery_draft_can_reopen_but_old_receipts_cannot_close_new_writes() {
     runtime.finish_intent(&owner,"window",&reopened).await.unwrap();
     hold_restored_profile(&pool).await.unwrap();
     assert!(runtime.begin_intent(&owner,"window","browser",identity,IntentMutation::Retain).await.is_err());
+}
+
+fn no_browser_intentions() -> super::reconciliation::BrowserInspection {
+    super::reconciliation::BrowserInspection { queue:vec![],unsaved:vec![],approvals:vec![],questions:vec![],drafts:vec![],steers:vec![] }
+}
+
+#[tokio::test]
+async fn real_reservation_competes_with_admission_and_ordinary_writer() {
+    for competing_writer in [false,true] {
+        let (_dir,pool)=fixture().await;
+        let owner=crate::core::db_state::DbPool::default(); owner.set_ready(pool.clone()).await.unwrap();
+        let runtime=runtime::ChatAdmissionRuntime::default(); runtime.open_browser(owner.clone(),"window","browser").await.unwrap();
+        let handle=runtime.begin_reconciliation(&owner,"window","browser","source").await.unwrap();
+        assert!(runtime.reserve_reconciled_source(&owner,"window","browser",&handle).await.is_err());
+        runtime.complete_reconciliation(&owner,"window","browser",&handle,&no_browser_intentions()).await.unwrap();
+        // A lost inspection ACK is replayable, with no effect dispatch capability.
+        runtime.complete_reconciliation(&owner,"window","browser",&handle,&no_browser_intentions()).await.unwrap();
+        if competing_writer {
+            let (reserved,written)=tokio::join!(runtime.reserve_reconciled_source(&owner,"window","browser",&handle),repository::rename_conversation(&pool,"source","changed"));
+            assert_ne!(reserved.is_ok(),written.is_ok());
+        } else {
+            let (reserved,admitted)=tokio::join!(runtime.reserve_reconciled_source(&owner,"window","browser",&handle),OperationPermit::begin_turn(owner.clone(),"source","competing"));
+            assert_ne!(reserved.is_ok(),admitted.is_ok());
+        }
+    }
+}
+
+#[tokio::test]
+async fn inspection_revision_and_pending_browser_copies_refuse_reservation() {
+    use super::intents::{IntentIdentity,IntentKind,IntentMutation};
+    let (_dir,pool)=fixture().await;
+    let owner=crate::core::db_state::DbPool::default();owner.set_ready(pool.clone()).await.unwrap();
+    let runtime=runtime::ChatAdmissionRuntime::default();runtime.open_browser(owner.clone(),"window","browser").await.unwrap();
+    let handle=runtime.begin_reconciliation(&owner,"window","browser","source").await.unwrap();
+    let mut observed=no_browser_intentions();observed.drafts.push("message".into());
+    assert!(runtime.complete_reconciliation(&owner,"window","browser",&handle,&observed).await.is_err());
+    let copy=runtime.begin_intent(&owner,"window","browser",IntentIdentity{conversation_id:"source".into(),kind:IntentKind::Recovery,id:"questionnaire-draft".into()},IntentMutation::Retain).await.unwrap();
+    assert!(runtime.complete_reconciliation(&owner,"window","browser",&handle,&no_browser_intentions()).await.is_err());
+    runtime.finish_intent(&owner,"window",&copy).await.unwrap();
+    let current=runtime.begin_reconciliation(&owner,"window","browser","source").await.unwrap();
+    assert!(runtime.complete_reconciliation(&owner,"other","browser",&current,&no_browser_intentions()).await.is_err());
+    runtime.complete_reconciliation(&owner,"window","browser",&current,&no_browser_intentions()).await.unwrap();
+    runtime.reserve_reconciled_source(&owner,"window","browser",&current).await.unwrap();
+    assert!(repository::rename_conversation(&pool,"source","forbidden").await.is_err());
+    assert!(runtime.begin(owner,"window","browser","source","late").await.is_err());
+}
+
+#[tokio::test]
+async fn question_ack_loss_and_orphan_before_dispatch_reconcile_without_another_send() {
+    use super::intents::{self,IntentIdentity,IntentKind,IntentMutation};
+    for orphan_response in [false,true] {
+        let (_dir,pool)=fixture().await;
+        let owner=crate::core::db_state::DbPool::default();owner.set_ready(pool.clone()).await.unwrap();
+        let runtime=runtime::ChatAdmissionRuntime::default();runtime.open_browser(owner.clone(),"window","old").await.unwrap();
+        let context=runtime.begin(owner.clone(),"window","old","source","reply").await.unwrap();
+        let parent=runtime.parent("window",&context,"source").await.unwrap();
+        if orphan_response {
+            sqlx::query("INSERT INTO messages(id,conversation_id,role,content,created_at,turn_id) VALUES('orphan','source','assistant','','t','reply')").execute(&pool).await.unwrap();
+            intents::reserve_response(&parent,"window","orphan").await.unwrap();
+        } else {
+            let question=runtime.begin_intent(&owner,"window","old",IntentIdentity{conversation_id:"source".into(),kind:IntentKind::Question,id:"message".into()},IntentMutation::Retain).await.unwrap();
+            sqlx::query("INSERT INTO messages(id,conversation_id,role,content,created_at,turn_id) VALUES('answer','source','user','Human answer','t','reply')").execute(&pool).await.unwrap();
+            intents::complete_question_handoff(&parent,"window",&question,"answer").await.unwrap();
+            // COMMIT succeeded but the browser receives no ACK and closes preparation.
+            runtime.close_preparation("window",&context,"source").await.unwrap();
+        }
+        drop(parent);
+        runtime.close_browser(&owner,&crate::ai::AiState::default(),&crate::ai::admitted_http::AdmittedHttp::default(),"window","old").await.unwrap();
+        runtime.open_browser(owner.clone(),"window","new").await.unwrap();
+        let handle=runtime.begin_reconciliation(&owner,"window","new","source").await.unwrap();
+        runtime.complete_reconciliation(&owner,"window","new",&handle,&no_browser_intentions()).await.unwrap();
+        runtime.reserve_reconciled_source(&owner,"window","new",&handle).await.unwrap();
+        assert_eq!(sqlx::query_scalar::<_,i64>("SELECT count(*) FROM chat_admission_operations WHERE kind='provider'").fetch_one(&pool).await.unwrap(),0);
+        assert_eq!(sqlx::query_scalar::<_,i64>("SELECT count(*) FROM messages WHERE id='answer'").fetch_one(&pool).await.unwrap(),if orphan_response {0}else{1});
+    }
+}
+
+#[tokio::test]
+async fn reservation_attests_pool_connections_and_only_blocks_correlated_goal_writers() {
+    let (_dir,pool)=fixture().await;
+    let mut connections=Vec::new();
+    for _ in 0..5 { connections.push(pool.acquire().await.unwrap()); }
+    for connection in &mut connections {
+        assert_eq!(sqlx::query_scalar::<_,i64>("PRAGMA recursive_triggers").fetch_one(&mut **connection).await.unwrap(),1);
+        assert_eq!(sqlx::query_scalar::<_,i64>("PRAGMA trusted_schema").fetch_one(&mut **connection).await.unwrap(),1);
+    }
+    drop(connections);
+    sqlx::raw_sql("INSERT INTO conversations(id,title,scope_mode,created_at,updated_at) VALUES('other','Other','Chat','t','t');
+        INSERT INTO conversation_goals(rowid,goal_id,conversation_id,revision,objective,success_criteria_json,status,created_at,updated_at) VALUES(-1,'goal','source',1,'Goal','[]','active_ready','t','t');").execute(&pool).await.unwrap();
+    let owner=crate::core::db_state::DbPool::default();owner.set_ready(pool.clone()).await.unwrap();
+    let runtime=runtime::ChatAdmissionRuntime::default();runtime.open_browser(owner.clone(),"window","browser").await.unwrap();
+    let handle=runtime.begin_reconciliation(&owner,"window","browser","source").await.unwrap();
+    assert!(runtime.complete_reconciliation(&owner,"window","browser",&handle,&no_browser_intentions()).await.is_err());
+    sqlx::query("UPDATE conversation_goals SET status='achieved' WHERE goal_id='goal'").execute(&pool).await.unwrap();
+    runtime.complete_reconciliation(&owner,"window","browser",&handle,&no_browser_intentions()).await.unwrap();
+    runtime.reserve_reconciled_source(&owner,"window","browser",&handle).await.unwrap();
+    sqlx::query("INSERT INTO conversation_goals(goal_id,conversation_id,revision,objective,success_criteria_json,status,created_at,updated_at) VALUES('other-goal','other',1,'Other','[]','active_ready','t','t')").execute(&pool).await.unwrap();
+    sqlx::query("UPDATE conversation_goals SET objective='Still writable' WHERE goal_id='other-goal'").execute(&pool).await.unwrap();
+    assert!(sqlx::query("INSERT OR REPLACE INTO conversation_goals(rowid,goal_id,conversation_id,revision,objective,success_criteria_json,status,created_at,updated_at) VALUES(-1,'replacement','other',1,'Replacement','[]','achieved','t','t')").execute(&pool).await.is_err());
+    assert!(sqlx::query("UPDATE conversation_goals SET objective='forbidden' WHERE goal_id='goal'").execute(&pool).await.is_err());
+    let mut connection=pool.acquire().await.unwrap();
+    sqlx::query("PRAGMA recursive_triggers=OFF").execute(&mut *connection).await.unwrap();
+    // No global Goal guard was added: an unrelated mutation stays permitted.
+    // This does not claim REPLACE-victim protection on an external OFF connection.
+    sqlx::query("UPDATE conversation_goals SET objective='Unrelated' WHERE goal_id='other-goal'").execute(&mut *connection).await.unwrap();
+    sqlx::query("PRAGMA recursive_triggers=ON").execute(&mut *connection).await.unwrap();
+}
+
+#[tokio::test]
+async fn reservation_resolves_cross_audit_run_links_and_guards_their_writers() {
+    for through_link in [false,true] {
+        let (_dir,pool)=fixture().await;
+        sqlx::raw_sql("INSERT INTO conversations(id,title,scope_mode,created_at,updated_at) VALUES('other','Other','Chat','t','t');
+            INSERT INTO agent_runs(id,parent_conversation_id,agent_profile,depth,status,prompt,attempt_count,created_at,updated_at,started_at,finished_at) VALUES
+              ('source-run','source','synthetic',1,'completed','Synthetic',1,'t','t','t','t'),
+              ('other-run','other','synthetic',1,'completed','Synthetic',1,'t','t','t','t');
+            INSERT INTO agent_runs(id,parent_conversation_id,agent_profile,depth,status,prompt,created_at,updated_at) VALUES('unrelated','other','synthetic',1,'queued','Unrelated','t','t');
+            INSERT INTO conversation_goals(goal_id,conversation_id,revision,objective,success_criteria_json,status,created_at,updated_at) VALUES('other-goal','other',1,'Other','[]','achieved','t','t');")
+            .execute(&pool).await.unwrap();
+        sqlx::query("INSERT INTO conversation_goal_audits(audit_id,conversation_id,goal_id,goal_revision,executor_turn_id,current_run_id,status,created_at,updated_at) VALUES('audit','other','other-goal',1,'turn',?,'ready_for_verdict','t','t')")
+            .bind(if through_link {"other-run"}else{"source-run"}).execute(&pool).await.unwrap();
+        sqlx::query("INSERT INTO conversation_goal_audit_runs(audit_id,run_id,attempt,linked_at) VALUES('audit',?,1,'t')")
+            .bind(if through_link {"source-run"}else{"other-run"}).execute(&pool).await.unwrap();
+        assert!(sqlx::query("PRAGMA foreign_key_check").fetch_all(&pool).await.unwrap().is_empty());
+        let owner=crate::core::db_state::DbPool::default();owner.set_ready(pool.clone()).await.unwrap();
+        let runtime=runtime::ChatAdmissionRuntime::default();runtime.open_browser(owner.clone(),"window","browser").await.unwrap();
+        let handle=runtime.begin_reconciliation(&owner,"window","browser","source").await.unwrap();
+        assert!(runtime.complete_reconciliation(&owner,"window","browser",&handle,&no_browser_intentions()).await.unwrap_err().to_string().contains("related_work_pending"));
+        sqlx::query("UPDATE conversation_goal_audits SET status='applied' WHERE audit_id='audit'").execute(&pool).await.unwrap();
+        runtime.complete_reconciliation(&owner,"window","browser",&handle,&no_browser_intentions()).await.unwrap();
+        // The final reservation re-reads relations in its own transaction.
+        sqlx::query("UPDATE conversation_goal_audits SET status='queued' WHERE audit_id='audit'").execute(&pool).await.unwrap();
+        assert!(runtime.reserve_reconciled_source(&owner,"window","browser",&handle).await.unwrap_err().to_string().contains("related_work_pending"));
+        sqlx::query("UPDATE conversation_goal_audits SET status='applied' WHERE audit_id='audit'").execute(&pool).await.unwrap();
+        runtime.reserve_reconciled_source(&owner,"window","browser",&handle).await.unwrap();
+        assert!(sqlx::query("UPDATE agent_runs SET prompt='forbidden' WHERE id='other-run'").execute(&pool).await.is_err());
+        assert!(sqlx::query("DELETE FROM conversation_goal_audit_runs WHERE audit_id='audit'").execute(&pool).await.is_err());
+        assert!(sqlx::query("UPDATE conversation_goal_audits SET status='queued' WHERE audit_id='audit'").execute(&pool).await.is_err());
+        sqlx::query("UPDATE agent_runs SET prompt='Still independent' WHERE id='unrelated'").execute(&pool).await.unwrap();
+    }
 }

@@ -132,3 +132,13 @@ export function chatAdmissionPrepareResponseRecovery(runtime: string, conversati
 export function chatAdmissionRecoverResponse(receipt: ChatIntentReceipt, id: string, content: string, options?: MessageUpdateOptions): Promise<void> {
   return invoke('chat_admission_recover_response', { receipt, params: buildMessageUpdateParams(id, content, options) });
 }
+
+export interface ChatBrowserInspection {
+  queue: string[]; unsaved: string[]; approvals: string[]; questions: string[]; drafts: string[]; steers: string[];
+}
+export function chatAdmissionBeginReconciliation(runtime: string, conversationId: string): Promise<string> {
+  return invoke('chat_admission_begin_reconciliation', { runtime, conversationId });
+}
+export function chatAdmissionCompleteReconciliation(runtime: string, handle: string, observed: ChatBrowserInspection): Promise<void> {
+  return invoke('chat_admission_complete_reconciliation', { runtime, handle, observed });
+}

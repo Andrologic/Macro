@@ -78,6 +78,10 @@ const preserveRequestExtensions = (registry: RecoveryRegistry, conversationId: s
 
 // One writer prevents lost updates between conversations in this webview.
 let writes: Promise<void> = Promise.resolve();
+export const drainToolApprovalRecoveryWrites = async (): Promise<void> => {
+  let pending: Promise<void>;
+  do { pending = writes; await pending.catch(() => undefined); } while (pending !== writes);
+};
 export const persistToolApprovalRecovery = (
   conversationId: string,
   approval: Pick<PendingToolApproval, 'assistantMessageId' | 'toolCallId'> | null,

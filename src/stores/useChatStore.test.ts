@@ -892,6 +892,7 @@ const sendChatNonStreamingMock = mock((async (
     sendChatNonStreamingOnceImpls.shift() ?? sendChatNonStreamingImpl;
   return implementation(...args);
 }) as SendChatNonStreaming);
+const admissionInspections: import('../services/ipc/chatAdmission').ChatBrowserInspection[] = [];
 let syntheticToolCallId = 0;
 const streamChatMock = mock(async (options: {
   onToolCall?: (name: string, args: Record<string, unknown>, id?: string) => Promise<unknown>;
@@ -1887,6 +1888,7 @@ const registerUseChatStoreMocks = async () => {
       if (!remove()) throw new Error('The saved recovery copy could not be removed.');
     },
     retireChatBrowser: async () => undefined,
+    ensureChatBrowser: async () => 'store-unit-runtime',
     beginChatIntent: async (identity: { conversationId: string; kind: string; id: string }) => {
       if (!identity.conversationId || !identity.kind || !identity.id) throw new Error('Missing storage intent identity');
       return { kind: 'globalChat' as const, receipt: { operationId: crypto.randomUUID(), runtime: 'store-unit-runtime', revision: 0, identity } };
@@ -1898,6 +1900,16 @@ const registerUseChatStoreMocks = async () => {
     gitStatus: conflictGitStatusMock,
     isTauriAvailable: () => tauriAvailable,
     chatAdmissionFinishCompaction: async () => undefined,
+    chatAdmissionBeginReconciliation: async (runtime: string, conversationId: string) => {
+      if (runtime !== 'store-unit-runtime' || !conversationId) throw new Error('Missing browser inspection owner');
+      return 'inspection:' + conversationId;
+    },
+    chatAdmissionCompleteReconciliation: async (runtime: string, handle: string, observed: import('../services/ipc/chatAdmission').ChatBrowserInspection) => {
+      if (runtime !== 'store-unit-runtime' || !handle.startsWith('inspection:') ||
+          !['queue','unsaved','approvals','questions','drafts','steers'].every(key => Array.isArray(observed[key as keyof typeof observed]))) throw new Error('Incomplete browser inspection');
+      admissionInspections.push(structuredClone(observed));
+      if (Object.values(observed).some(entries => entries.length)) throw new Error('Browser intentions pending');
+    },
     chatAdmissionCompleteQuestionHandoff: async (context: { handle: string; runtime: string }, conversationId: string,
       responseMessageId: string, receipt: import('../services/ipc/chatAdmission').ChatIntentReceipt) => {
       if (!context.handle || !context.runtime || !responseMessageId || receipt.identity.kind !== 'question' ||
@@ -2937,6 +2949,7 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     dbMessageCounter = 0;
     chatSnapshotConversations = [];
     chatSnapshotMessages = [];
+    admissionInspections.length = 0;
     appSettingValues.clear();
     nativePreferenceValues = {};
     stateGetSnapshotMock.mockClear();
@@ -3097,6 +3110,41 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
       value: originalLocalStorage,
     });
     mock.restore();
+  });
+
+  it('inspects actual questionnaire history and removes a stale draft after a saved human reply without sending', async () => {
+    appState.mode = 'Chat'; tauriAvailable = true;
+    const conversation = { ...createConversation('inspection-chat'), scope_mode: 'Chat' as const };
+    chatSnapshotConversations = [{ ...conversation, description: null, group_id: null, project_id: null }];
+    chatSnapshotMessages = [{ id:'question',conversation_id:conversation.id,role:'assistant',
+      content:'Choose a direction.\n[quick-replies]\n- First\n- Second\n- Third\n[/quick-replies]',created_at:'2026-10-01T00:00:00Z' }];
+    const { useChatStore } = await loadChatStore();
+    useChatStore.setState(createIdleChatStoreState({ conversations:[conversation],selectedConversationId:conversation.id }));
+    await expect(useChatStore.getState().reconcileConversationAdmission(conversation.id)).rejects.toThrow('Browser intentions pending');
+    expect(admissionInspections.at(-1)?.questions).toEqual(['question']);
+    window.localStorage.setItem('macro_chat_questionnaire_drafts', JSON.stringify({ [conversation.id]: {
+      mode:'pending_reply',assistantMessageId:'question',currentStepIndex:0,answersByStepId:{q1:'First'},draftTextByStepId:{},
+    } }));
+    chatSnapshotMessages.push({ id:'answer',conversation_id:conversation.id,role:'user',content:'First',created_at:'2026-10-01T00:00:01Z' });
+    await useChatStore.getState().reconcileConversationAdmission(conversation.id);
+    expect(JSON.parse(window.localStorage.getItem('macro_chat_questionnaire_drafts')!)).toEqual({});
+    expect(admissionInspections.at(-1)?.questions).toEqual([]);
+    expect(createMessageMock).not.toHaveBeenCalled();
+    expect(streamChatMock).not.toHaveBeenCalled();
+    expect(sendChatNonStreamingMock).not.toHaveBeenCalled();
+  });
+
+  it('does not certify a browser inspection when a durable reader cannot inspect all saved data', async () => {
+    appState.mode = 'Chat'; tauriAvailable = true;
+    const conversation = { ...createConversation('inspection-invalid'), scope_mode:'Chat' as const };
+    chatSnapshotConversations=[{ ...conversation, description: null, group_id: null, project_id: null }];
+    const { useChatStore } = await loadChatStore();
+    useChatStore.setState(createIdleChatStoreState({ conversations:[conversation],selectedConversationId:conversation.id }));
+    window.localStorage.setItem('macro_chat_questionnaire_drafts','{unknown');
+    await expect(useChatStore.getState().reconcileConversationAdmission(conversation.id)).rejects.toThrow();
+    expect(admissionInspections).toHaveLength(0);
+    expect(window.localStorage.getItem('macro_chat_questionnaire_drafts')).toBe('{unknown');
+    expect(streamChatMock).not.toHaveBeenCalled();
   });
 
   it('retains automatic naming after a failed rename while metadata is pending', async () => {

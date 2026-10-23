@@ -176,6 +176,10 @@ export function createQueuedSubmissionRuntime(ports: QueuePorts) {
     return job.finally(() => jobs.delete(job));
   };
   return {
+    async joinWrites() {
+      let pending: Promise<void>;
+      do { pending = writes; await pending.catch(() => undefined); } while (pending !== writes);
+    },
     async retire() {
       retired = true;
       await Promise.allSettled([writes, ...jobs]);

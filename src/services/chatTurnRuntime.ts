@@ -53,6 +53,10 @@ export function createChatTurnRuntime(ports: {
   };
   return {
     read, set, update, matches, ownsCompletion,
+    pendingSteerIds: (id: string): string[] => [
+      ...(steers.get(id) ?? []).map(item => item.admission?.kind === 'globalChat' ? item.admission.receipt.identity.id : 'pending-steer'),
+      ...(consumedSteers.get(id) ?? []).map(item => item.receipt.identity.id),
+    ],
     assertCanSend: (id: string, input: { available: boolean; hasUnsavedResponse: boolean }) => {
       if (!input.available || ports.state.isDeleted(id)) throw new Error("This conversation is no longer available.");
       if (input.hasUnsavedResponse) throw new Error("Save or delete the unsaved assistant response before sending another message.");

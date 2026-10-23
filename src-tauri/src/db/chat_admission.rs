@@ -7,6 +7,7 @@ const MIGRATION: &str = include_str!("migrations/017_chat_admission.sql");
 const OBJECTS: &str = "name GLOB 'chat_admission_*' OR tbl_name GLOB 'chat_admission_*'";
 pub(crate) mod runtime;
 pub(crate) mod intents;
+pub(crate) mod reconciliation;
 
 static EXPECTED: OnceCell<Vec<(String, Option<String>)>> = OnceCell::const_new();
 
@@ -23,7 +24,8 @@ async fn expected_schema() -> DbResult<&'static Vec<(String, Option<String>)>> {
             "conversation_response_versions", "conversation_citations",
             "conversation_toolbox_state", "conversation_compactions",
             "conversation_compaction_events", "conversation_action_receipts",
-            "tool_invocations", "pilot_message_attachments", "pilot_file_sends", "app_settings"] {
+            "tool_invocations", "pilot_message_attachments", "pilot_file_sends", "app_settings",
+            "agent_runs", "agent_run_transitions", "conversation_goals", "conversation_goal_audits", "conversation_goal_audit_runs"] {
             sqlx::query(sqlx::AssertSqlSafe(format!(
                 "CREATE TABLE {table}(id TEXT,conversation_id TEXT,scope_mode TEXT,project_id TEXT,group_id TEXT,task_id TEXT)"
             ))).execute(&mut db).await?;
@@ -160,6 +162,10 @@ pub(crate) async fn hold_restored_profile(pool: &SqlitePool) -> DbResult<()> {
     let mut tx = lease.begin_with("BEGIN IMMEDIATE").await?;
     super::run_migrations_on_connection(&mut tx).await?;
     validate_schema(&mut tx).await?;
+    // The restore owner has established process quiescence. Reuse official
+    // startup reconciliation before installing holds, inside this transaction.
+    super::agent_runs::reconcile_active_agent_runs_after_restart_in(&mut tx).await?;
+    super::conversation_goals::reconcile_audits_after_restart_in(&mut tx).await?;
     // Reconcile tools while an ordinary restored owner is still writable.
     // A protected owner with pending tools is inconsistent and stays closed.
     super::tool_invocations::reconcile_pending_after_restart_in(&mut tx).await?;
@@ -318,6 +324,8 @@ impl OperationPermit {
                 }
             }
         }
+        sqlx::query("UPDATE chat_admission_owners SET revision=revision+1,browser_reconciled=0 WHERE conversation_id=?")
+            .bind(conversation).execute(&mut *tx).await?;
         tx.commit().await?;
         lease.committed = true;
         // Drop the SQLite lease before its source generation guard. The returned

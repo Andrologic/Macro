@@ -899,6 +899,8 @@ pub fn run() {
             commands::ai::ai_disconnect_provider_auth,
             commands::ai::ai_sync_provider_models,
             commands::chat_admission::chat_admission_open_browser,
+            commands::chat_admission::chat_admission_begin_reconciliation,
+            commands::chat_admission::chat_admission_complete_reconciliation,
             commands::chat_admission::chat_admission_begin_intent,
             commands::chat_admission::chat_admission_finish_intent,
             commands::chat_admission::chat_admission_write_approval_registry,

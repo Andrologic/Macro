@@ -80,6 +80,7 @@ struct BrowserOwner {
 #[derive(Default)]
 pub(crate) struct ChatAdmissionRuntime {
     turns: Mutex<HashMap<String, Turn>>,
+    inspections: Mutex<HashMap<String, super::reconciliation::Snapshot>>,
     browser: std::sync::Mutex<Option<BrowserOwner>>,
     browser_closed: tokio::sync::Notify,
     pages: std::sync::Mutex<HashMap<String, String>>,
@@ -282,6 +283,7 @@ impl ChatAdmissionRuntime {
             lease.committed = true;
         }
         self.turns.lock().await.retain(|_, turn| turn.caller != caller || turn.runtime != runtime);
+        self.inspections.lock().await.retain(|_, snapshot| snapshot.caller != caller || snapshot.browser != runtime);
         *self.browser.lock().unwrap_or_else(|e| e.into_inner()) = None;
         Ok(())
     }
@@ -359,6 +361,38 @@ impl ChatAdmissionRuntime {
             handle,
             runtime: runtime.into(),
         })
+    }
+
+    pub(crate) async fn begin_reconciliation(&self, owner: &DbPool, caller: &str, runtime: &str, conversation: &str) -> DbResult<String> {
+        let _lifecycle = self.lifecycle.lock().await;
+        self.check_browser(caller,runtime)?;
+        let snapshot = super::reconciliation::begin(owner,caller,runtime,conversation).await?;
+        let handle = uuid::Uuid::new_v4().to_string();
+        let mut inspections = self.inspections.lock().await;
+        // One current inspection per conversation, released with its browser.
+        inspections.retain(|_, old| old.conversation != conversation);
+        inspections.insert(handle.clone(),snapshot);
+        Ok(handle)
+    }
+
+    pub(crate) async fn complete_reconciliation(&self, owner: &DbPool, caller: &str, runtime: &str, handle: &str,
+        observed: &super::reconciliation::BrowserInspection) -> DbResult<()> {
+        let _lifecycle = self.lifecycle.lock().await;
+        self.check_browser(caller,runtime)?;
+        let mut inspections = self.inspections.lock().await;
+        let snapshot = inspections.get_mut(handle).filter(|snapshot| snapshot.caller==caller && snapshot.browser==runtime)
+            .ok_or_else(|| invalid("chat_admission_inspection_missing"))?;
+        super::reconciliation::complete(owner,snapshot,observed).await
+    }
+
+    #[allow(dead_code)]
+    pub(crate) async fn reserve_reconciled_source(&self, owner: &DbPool, caller: &str, runtime: &str, handle: &str) -> DbResult<()> {
+        let _lifecycle = self.lifecycle.lock().await;
+        self.check_browser(caller,runtime)?;
+        let inspections = self.inspections.lock().await;
+        let snapshot = inspections.get(handle).filter(|snapshot| snapshot.caller==caller && snapshot.browser==runtime)
+            .ok_or_else(|| invalid("chat_admission_inspection_missing"))?;
+        super::reconciliation::reserve(owner,snapshot).await
     }
 
     pub(crate) async fn begin_intent(&self, owner: &DbPool, caller: &str, runtime: &str,

@@ -425,3 +425,19 @@ pub(crate) async fn chat_admission_recover_response(
 ) -> CommandResult<()> {
     crate::db::chat_admission::intents::recover_response(&pool, window.label(), &receipt, params.take_input()).await.map_err(Into::into)
 }
+
+#[tauri::command]
+pub(crate) async fn chat_admission_begin_reconciliation(
+    pool: State<'_, DbPool>, admission_runtime: State<'_, ChatAdmissionRuntime>, window: WebviewWindow,
+    runtime: String, conversation_id: String,
+) -> CommandResult<String> {
+    admission_runtime.begin_reconciliation(&pool,window.label(),&runtime,&conversation_id).await.map_err(Into::into)
+}
+
+#[tauri::command]
+pub(crate) async fn chat_admission_complete_reconciliation(
+    pool: State<'_, DbPool>, admission_runtime: State<'_, ChatAdmissionRuntime>, window: WebviewWindow,
+    runtime: String, handle: String, observed: crate::db::chat_admission::reconciliation::BrowserInspection,
+) -> CommandResult<()> {
+    admission_runtime.complete_reconciliation(&pool,window.label(),&runtime,&handle,&observed).await.map_err(Into::into)
+}
