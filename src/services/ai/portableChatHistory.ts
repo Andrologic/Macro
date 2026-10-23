@@ -8,7 +8,7 @@ import { withAdmittedPortableText, PortableWorkBudget, samePortablePolicy, inspe
 import { recognizePortableProviderItems } from './portableProviderHistory';
 import { buildChatGptVisibleTurnContent } from './responsesCodec';
 import { buildToolContextBlock, formatToolTraceDetail, visitToolContextAttributes, decodeToolContextAttribute } from './toolPresentation';
-import { projectFinalProvenance } from '../macroPilot/assistantProvenance';
+import { projectFinalProvenance } from '../macroPilot/assistantProvenanceProjection';
 import { inspectWholeText, type TextPolicy } from '../macroPilot/conversationText';
 import { inspectAttachmentContent } from '../macroPilot/attachmentFilesHost';
 
@@ -566,13 +566,15 @@ const checkpointColumns = ['conversation_id', 'up_to_message_id', 'summary_text'
 
 /** Caller keeps the destination inactive and aborts its receiving attempt on any
  * error. Only a matching second pass may be handed to sealStorage afterwards. */
-export async function normalizePortableChatHistoryTwoPass(source: SealedHistorySource, policy: () => Promise<TextPolicy>, budget: PortableWorkBudget, sink: PortableSink) {
+export async function normalizePortableChatHistoryTwoPass(source: SealedHistorySource, policy: () => Promise<TextPolicy>, budget: PortableWorkBudget, sink: PortableSink, beforeEmission?: (first: Readonly<Awaited<ReturnType<typeof normalizePortableChatHistory>>>) => Promise<void>) {
   const current = await policy();
   const release = budget.reserve(512 + current.secrets.reduce((sum, secret) => sum + secret.length * 4 + 32, 0));
   const expected = { ...current, secrets: [...current.secrets] };
   const checked = async () => { const value = await policy(); if (!samePortablePolicy(expected, value)) fail('policy_changed'); return value; };
   try {
     const first = await normalizePortableChatHistory(source, checked, budget, { append: async () => {} });
+    await checked();
+    if (beforeEmission) { await beforeEmission(first); await checked(); }
     const second = await normalizePortableChatHistory(source, checked, budget, sink);
     if (JSON.stringify(first) !== JSON.stringify(second)) fail('normalization_changed');
     await checked(); return second;

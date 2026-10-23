@@ -1730,3 +1730,25 @@ it('does not count retained audio bytes as text tokens when replay sends a fallb
     expect(estimateBlockableTokensForStreamMessages([{ role: 'tool', content: 'audio retained', provider_input_items: [item] }], { context: { providerType } })).toBeLessThan(500);
   }
 });
+
+
+it('existing_only refuses before summary generation or fallback and preserves ordinary compaction', async () => {
+  const orderedMessages = [makeMessage('ref-u1', 'user', 'Remember the complete history.'),
+    makeMessage('ref-a1', 'assistant', 'Historical detail\n'.repeat(5000)),
+    makeMessage('ref-u2', 'user', 'Keep the facts.'), makeMessage('ref-a2', 'assistant', 'Facts retained.'),
+    makeMessage('ref-u3', 'user', 'Continue.')];
+  let summaries = 0;
+  const params = { systemMessage: 'Local reference.', orderedMessages,
+    preparedMessages: makePreparedMessages(orderedMessages), citations: [], toolDefinitions: [],
+    modelContextWindowTokens: 8_000, mode: 'manual' as const, forceCompaction: true,
+    budgetPolicy: { prune: false, reservedTokens: 1_200 },
+    generateSummary: async () => { summaries++; throw Error('synthetic summary unavailable'); } };
+  await expect(buildCompactedMessagesForRequest({ ...params, summaryPolicy: 'existing_only' }))
+    .rejects.toThrow('preparation_requires_compaction');
+  expect(summaries).toBe(0);
+  const ordinary = await buildCompactedMessagesForRequest(params);
+  expect(summaries).toBeGreaterThan(0); expect(ordinary.compactionState?.summarySource).toBe('fallback');
+  const reused = await buildCompactedMessagesForRequest({ ...params, mode: 'blocking', forceCompaction: false,
+    currentCompactionState: ordinary.compactionState, summaryPolicy: 'existing_only' });
+  expect(reused.usedExistingCompaction).toBe(true);
+});

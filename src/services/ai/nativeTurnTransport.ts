@@ -1,7 +1,7 @@
 import { MacroServiceError, toServiceError } from '../contracts/errors';
 import type { ChatIntentReceipt, ProviderAdmission } from '../ipc/chatAdmission';
 import type { ToolResultBlock } from '../../shared/toolResultContent';
-import { projectCopilotMessageContent } from './copilotPromptCodec';
+import { projectNativeMessages } from './nativeMessageProjection';
 import {
   buildAssistantProviderInputItemsFromTurn,
   buildFunctionCallOutputProviderInputItem,
@@ -470,18 +470,7 @@ export const streamNativeTurnViaTauri = async (params: {
           modelId: params.modelId,
           reasoningEffort: params.reasoningEffort ?? null,
           conversationId: params.conversationId ?? null,
-          messages: params.messages.map((message) => ({
-            role: message.role,
-            content: params.providerType === 'copilot' ? projectCopilotMessageContent(message) : message.content,
-            ...(message.tool_calls ? { tool_calls: message.tool_calls } : {}),
-            ...(message.tool_call_id ? { tool_call_id: message.tool_call_id } : {}),
-            ...(message.provider_input_items
-              ? { provider_input_items: message.provider_input_items }
-              : {}),
-            ...(params.providerType === 'chatgpt' && message.provider_turn_state
-              ? { provider_turn_state: message.provider_turn_state }
-              : {}),
-          })),
+          messages: projectNativeMessages(params.messages, params.providerType),
           tools,
           toolChoice: 'auto',
           parallelToolCalls: false,

@@ -96,3 +96,24 @@ test('unknown citation type, scope or disposition refuses before target writes',
     expect(writes).toBe(0); expect(f.budget.used).toBe(0);
   }
 });
+
+
+test('beforeEmission runs only after complete pass one and rechecks policy after its await', async () => {
+  const f = await fixture('codex');
+  let writes = 0, ready = 0, changed = false;
+  await expect(normalizePortableChatHistoryTwoPass(f.source,
+    async () => changed ? { ...policy, secrets: [...policy.secrets, 'changed-after-ready'] } : policy,
+    f.budget, { append: async () => { writes++; } }, async first => {
+      expect(first.records).toBeGreaterThan(0); expect(writes).toBe(0); ready++;
+      await Promise.resolve(); changed = true;
+    })).rejects.toThrow('policy_changed');
+  expect(ready).toBe(1); expect(writes).toBe(0); expect(f.budget.used).toBe(0);
+  const invalid = await fixture('codex', messages => { messages[0][11] = '[{"kind":"file","id":"required","title":"file"}]'; });
+  await expect(normalizePortableChatHistoryTwoPass(invalid.source, async () => policy,
+    invalid.budget, { append: async () => { writes++; } }, async () => { ready++; })).rejects.toThrow();
+  expect(ready).toBe(1); expect(writes).toBe(0); expect(invalid.budget.used).toBe(0);
+  changed = false;
+  const result = await normalizePortableChatHistoryTwoPass(f.source, async () => policy,
+    f.budget, { append: async () => { writes++; } }, async first => { expect(first.records).toBeGreaterThan(0); });
+  expect(writes).toBe(result.records); expect(f.budget.used).toBe(0);
+});
