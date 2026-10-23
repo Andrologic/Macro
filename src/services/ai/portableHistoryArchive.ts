@@ -1,10 +1,10 @@
+import { validatePortableMetadata, validatePortableHeader, validatePortableOriginLink } from '../../../contracts/macro-pilot/v2/portable-chat-history/validate.mjs';
 import type { ChatMessage } from '../../types';
 import type { Citation } from '../../types/citation';
-import { inspectAttachmentContent } from '../macroPilot/attachmentFilesHost';
-import { inspectWholeText, type TextPolicy } from '../macroPilot/conversationText';
-import { parseStoredJsonStrict, isRecord } from './jsonValues';
-import { PortableWorkBudget, samePortablePolicy, inspectPortableDecodedValue } from './portableHistoryInspection';
-import { PORTABLE_SOURCE_LIMITS, PORTABLE_LIMITS, portableDigest, portableRetainedJsonKind, inspectRetainedPortableContent, type PortableMetadata, type PortableRecord } from './portableChatHistory';
+import type { TextPolicy } from '../macroPilot/conversationText';
+import { parseStoredJsonStrict } from './jsonValues';
+import { PortableWorkBudget, samePortablePolicy } from './portableHistoryInspection';
+import { PORTABLE_SOURCE_LIMITS, portableDigest, portableRetainedJsonKind, inspectPortableRecordContent, type PortableMetadata, type PortableRecord } from './portableChatHistory';
 
 export interface PortableArchiveBinding { version: 1; importKey: string; manifest: string }
 export interface PortableArchiveFragment { record: PortableRecord; offset: number; bytes: Uint8Array; targetUuid: string | null }
@@ -24,25 +24,8 @@ export interface PortableProjection {
 }
 const decoder = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true });
 const fail = (code: string): never => { throw new Error(code); };
-function metadata(value: unknown): PortableMetadata {
-  if (!isRecord(value) || Object.keys(value).some(key => !['version', 'normalizer', 'policy', 'source', 'classification', 'reason', 'meaning', 'message', 'timestamp', 'sourceHash', 'sourceBytes', 'captureManifest', 'retained', 'sourceLimits', 'remainingLimits'].includes(key)) ||
-      value.version !== 1 || value.normalizer !== 'macro-portable-history-1' || typeof value.policy !== 'string' || typeof value.reason !== 'string' ||
-      !['retained_original', 'redundant_representation', 'excluded_local_metadata'].includes(String(value.classification)) ||
-      !isRecord(value.source) || Object.keys(value.source).some(key => !['ordinal', 'row', 'family', 'tag', 'sqlType', 'path'].includes(key)) ||
-      ['ordinal', 'row', 'family', 'tag', 'sqlType'].some(key => !Number.isSafeInteger(value.source && (value.source as Record<string, unknown>)[key]) || Number((value.source as Record<string, unknown>)[key]) < 0) ||
-      (value.meaning !== undefined && !['original', 'message', 'data', 'reflection', 'citation', 'asset', 'checkpoint'].includes(String(value.meaning))) ||
-      ['message', 'timestamp', 'sourceHash', 'captureManifest'].some(key => value[key] !== undefined && typeof value[key] !== 'string') ||
-      (value.classification === 'excluded_local_metadata' && (value.sourceHash !== undefined || value.sourceBytes !== undefined)) ||
-      (value.sourceBytes !== undefined && (!Number.isSafeInteger(value.sourceBytes) || Number(value.sourceBytes) < 0))) return fail('invalid_portable_metadata');
-  if (Number(value.source.sqlType) > 3 || Number(value.source.family) > 9 || Number(value.source.tag) >= [15,14,2,5,4,29,18,4,7,7][Number(value.source.family)]) fail('invalid_portable_metadata');
-  if (value.retained !== undefined && (!Number.isSafeInteger(value.retained) || Number(value.retained) < 0)) fail('invalid_portable_metadata');
-  for (const key of ['sourceHash', 'captureManifest']) if (value[key] !== undefined && !/^[a-f0-9]{64}$/.test(String(value[key]))) fail('invalid_portable_metadata');
-  for (const key of ['sourceLimits', 'remainingLimits']) if (value[key] !== undefined && (!Array.isArray(value[key]) || (value[key] as unknown[]).some(limit => typeof limit !== 'string' || !PORTABLE_LIMITS.includes(limit)))) fail('invalid_portable_metadata');
-  if (value.source.path !== undefined && (!Array.isArray(value.source.path) || value.source.path.some(part => typeof part !== 'string' && (!Number.isSafeInteger(part) || part < 0)))) fail('invalid_portable_metadata');
-  return value as unknown as PortableMetadata;
-}
+function metadata(value: unknown): PortableMetadata { return validatePortableMetadata(value); }
 const assetMime = { text_plain: 'text/plain', image_png: 'image/png', image_jpeg: 'image/jpeg', image_webp: 'image/webp' } as const;
-const textEntry = (record: PortableRecord) => record.entry.kind !== 'asset' || record.entry.mime === 'text_plain';
 const keyFor = (entry: PortableMetadata) => `${entry.source.family}:${entry.source.row}`;
 
 /** Ephemeral admitted metadata index. Payloads remain in native E storage.
@@ -75,7 +58,7 @@ export class PortableHistoryArchive {
         await this.page(cursor, async page => {
           if (!page.fragments.length) fail('integrity_failed');
           for (const fragment of page.fragments) {
-            const record = fragment.record;
+            const record = validatePortableHeader(fragment.record);
             if (record.ordinal !== current) {
               if (current >= 0 && offset !== this.headers[current].bytes) fail('integrity_failed');
               if (record.ordinal !== current + 1 || fragment.offset !== 0 || !Number.isSafeInteger(record.bytes) || record.bytes < 0 || !/^[a-f0-9]{64}$/.test(record.sha256)) fail('integrity_failed');
@@ -112,7 +95,8 @@ export class PortableHistoryArchive {
           if (![from, to, position].every(n => Number.isSafeInteger(n) && n >= 0) || this.headers[from]?.entry.kind !== 'message' ||
               (relation === 'asset_for_message' ? this.headers[to]?.entry.kind !== 'asset' : relation === 'citation_for_message' ? this.headers[to]?.entry.kind !== 'citation' : this.headers[to]?.entry.kind !== 'historical_text')) fail('invalid_association');
         } else if (!(header.entry.kind === 'historical_text' && header.entry.purpose === 'portable_metadata')) {
-          if (header.origin === undefined || !this.origins.has(header.origin) || this.origins.get(header.origin)!.classification !== 'retained_original') fail('invalid_origin');
+          if (header.origin === undefined || header.origin >= header.ordinal) fail('invalid_origin');
+          validatePortableOriginLink(header, this.origins.get(header.origin!));
         }
       }
       if (!samePortablePolicy(await this.policy(), policy)) fail('policy_changed');
@@ -155,16 +139,7 @@ export class PortableHistoryArchive {
       if (await portableDigest(bytes) !== header.sha256) fail('integrity_failed');
       const policy = await this.policy();
       if (this.policySnapshot && !samePortablePolicy(policy, this.policySnapshot)) fail('policy_changed');
-      if (header.entry.kind === 'asset') {
-        const mime = assetMime[header.entry.mime];
-        if (!mime || inspectAttachmentContent(bytes, mime, policy) !== 'available') fail('unsafe_asset');
-      }
-      if (textEntry(header)) {
-        const text = decoder.decode(bytes);
-        if (!inspectWholeText(text, { ...policy, inspectionBytes: bytes.length })) fail('unsafe_content');
-        if (isMetadata) inspectPortableDecodedValue(parseStoredJsonStrict(text), policy);
-        else if (origin) inspectRetainedPortableContent(origin, text, policy);
-      }
+      inspectPortableRecordContent(header, bytes, origin, policy);
       await consume(bytes, this.uuids[ordinal]);
     } finally { release(); }
   }

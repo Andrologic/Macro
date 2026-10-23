@@ -18,7 +18,7 @@ function portFor(output: Captured[]): PortableArchivePort {
     if (!bytes.length) fragments.push({ record: header, offset: 0, bytes, targetUuid });
     for (let offset = 0; offset < bytes.length; offset += 4093) fragments.push({ record: header, offset, bytes: bytes.slice(offset, offset + 4093), targetUuid });
   }
-  return { profile: 'portable_chat_history_v1', binding: { version: 1, importKey: 'parity', manifest: 'b'.repeat(64) }, records: fragments.length,
+  return { profile: 'portable_chat_history_v1', binding: { version: 1, importKey: 'parity', manifest: 'b'.repeat(64) }, records: output.length,
     async read(cursor, limit) {
       const start = cursor ? fragments.findIndex(fragment => fragment.record.ordinal === cursor.ordinal && fragment.offset === cursor.offset) : 0;
       const next = fragments[start + limit];

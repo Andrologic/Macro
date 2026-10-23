@@ -4,6 +4,10 @@
     {
       "path": "frame.schema.json",
       "id": "https://schemas.macro.andrologic.ai/macro-pilot/v2/portable-chat-history/frame.schema.json"
+    },
+    {
+      "path": "provider.schema.json",
+      "id": "https://schemas.macro.andrologic.ai/macro-pilot/v2/portable-chat-history/provider.schema.json"
     }
   ]
 }

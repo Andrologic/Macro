@@ -108,7 +108,7 @@ function portFor(output: { header: PortableRecord; text: string }[]): PortableAr
     if (!bytes.length) fragments.push({ record: header, offset: 0, bytes, targetUuid });
     for (let offset = 0; offset < bytes.length; offset += 4093) fragments.push({ record: header, offset, bytes: bytes.slice(offset, offset + 4093), targetUuid });
   }
-  return { profile: 'portable_chat_history_v1', binding: { version: 1, importKey: 'test', manifest: 'b'.repeat(64) }, records: fragments.length,
+  return { profile: 'portable_chat_history_v1', binding: { version: 1, importKey: 'test', manifest: 'b'.repeat(64) }, records: output.length,
     async read(cursor, limit) { const start = cursor ? fragments.findIndex(fragment => fragment.record.ordinal === cursor.ordinal && fragment.offset === cursor.offset) : 0; const next = fragments[start + limit]; return { fragments: fragments.slice(start, start + limit), next: next ? { ordinal: next.record.ordinal, offset: 0 } : null }; } };
 }
 
@@ -203,4 +203,17 @@ test('hidden-only formatter attributes are inspected after its own entity decodi
   let writes = 0;
   await expect(normalizePortableChatHistoryTwoPass(f.source, async () => ({ ...policy, secrets: [...policy.secrets, secret] }), f.budget, { append: async () => { writes++; } })).rejects.toThrow('unsafe_content');
   expect(writes).toBe(0); expect(f.budget.used).toBe(0);
+});
+
+test('decoded surrogates refuse before provider derivation or destination writes, without rewriting argument lexemes', async () => {
+  for (const where of ['text', 'argument', 'name']) {
+    const f = await fixture('codex', messages => {
+      const items = JSON.parse(String(messages[1][9]));
+      if (where === 'text') items.at(-1).content[0].text = '\uD800';
+      else if (where === 'name') items[0].name = '\uDC00';
+      else items[0].arguments = '{"required":"\\ud800"}';
+      messages[1][9] = JSON.stringify(items);
+    });
+    await refuseBeforeAppend(f, 'invalid_portable_unicode');
+  }
 });

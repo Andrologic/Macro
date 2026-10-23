@@ -1,3 +1,4 @@
+import { validatePortableCompactionJson as validateArchivedCompactionJson } from '../../contracts/macro-pilot/v2/portable-chat-history/validate.mjs';
 import { readTypedToolResult, projectToolResultText } from '../shared/toolResultContent';
 import type {
   ChatMessage,
@@ -1605,33 +1606,7 @@ const buildFingerprintInputs = (params: {
 
 /** Closed JSON forms written by the compaction owner. This validates archived
  * data only; it never installs a checkpoint or makes its summary authoritative. */
-export function validateArchivedCompactionJson(kind: 'tool_digest' | 'source_ids' | 'footprint', value: unknown): boolean {
-  const record = (entry: unknown): entry is Record<string, unknown> => !!entry && typeof entry === 'object' && !Array.isArray(entry);
-  if (kind === 'source_ids') return Array.isArray(value) && value.every(id => typeof id === 'string' && id.length > 0) && new Set(value).size === value.length;
-  if (kind === 'tool_digest') return Array.isArray(value) && value.every(entry => record(entry) &&
-    Object.keys(entry).every(key => ['tool_name', 'target', 'kind', 'evidence_excerpt', 'source_message_id', 'hash', 'timestamp'].includes(key)) &&
-    ['tool_name', 'target', 'evidence_excerpt', 'source_message_id', 'hash'].every(key => typeof entry[key] === 'string') &&
-    ['file_read', 'web_result', 'git_result', 'terminal_result', 'tool_result'].includes(String(entry.kind)) &&
-    (entry.timestamp === undefined || typeof entry.timestamp === 'string'));
-  if (!record(value)) return false;
-  const requiredNumbers = ['totalEstimatedTokens', 'messageTokens', 'hiddenContextTokens', 'systemTokens', 'toolSchemaTokens', 'imagePlaceholderTokens', 'citationTokens', 'modelContextWindowTokens', 'reservedTokens', 'usableContextTokens', 'totalContextRatio', 'usableContextRatio', 'hiddenContextRatio', 'hardStopRatio', 'toolTurnCount'] satisfies (keyof ContextFootprint)[];
-  const optionalNumbers = ['serializedPayloadTokens', 'visibleMessageTokens', 'providerInputTokens', 'imageCount', 'imagesWithKnownDimensions', 'imageTransportBytes', 'hardStopEstimatedTokens', 'summaryTokens', 'latestUserContextTokens', 'latestUserBlockableTokens', 'inputLimitTokens', 'outputLimitTokens', 'previousModelContextWindowTokens', 'marginTokens', 'outputReserveTokens'] satisfies (keyof ContextFootprint)[];
-  const booleans = ['isHardStop', 'isContextLimitAuthoritative', 'modelContextWindowShrank'] satisfies (keyof ContextFootprint)[];
-  const enums = {
-    threshold: ['none', 'background', 'blocking', 'degraded'],
-    reason: ['below_threshold', 'total_context_ratio', 'hidden_context_ratio', 'tool_turn_count', 'post_compaction_overflow', 'hard_stop_ratio', 'model_window_shrank', 'manual_compaction_required'],
-    imageEstimateConfidence: ['model_formula', 'provider_formula', 'fallback', 'unknown'],
-    contextLimitSource: ['model_metadata', 'provider_metadata', 'user_override', 'models_dev', 'provider_overflow_error', 'macro_fallback'],
-    contextLimitConfidence: ['verified', 'configured', 'catalog', 'learned', 'fallback'],
-  } satisfies Partial<Record<keyof ContextFootprint, string[]>>;
-  const allowed = new Set([...requiredNumbers, ...optionalNumbers, ...booleans, ...Object.keys(enums), 'contextLimitWarning']);
-  return Object.keys(value).every(key => allowed.has(key)) &&
-    requiredNumbers.every(key => typeof value[key] === 'number' && Number.isFinite(value[key]) && Number(value[key]) >= 0) &&
-    optionalNumbers.every(key => value[key] === undefined || (typeof value[key] === 'number' && Number.isFinite(value[key]) && (key === 'marginTokens' || Number(value[key]) >= 0))) &&
-    typeof value.isHardStop === 'boolean' && booleans.every(key => value[key] === undefined || typeof value[key] === 'boolean') &&
-    Object.entries(enums).every(([key, values]) => (value[key] === undefined && !['threshold', 'reason'].includes(key)) || values.includes(String(value[key]))) &&
-    (value.contextLimitWarning === undefined || typeof value.contextLimitWarning === 'string');
-}
+export { validatePortableCompactionJson as validateArchivedCompactionJson } from '../../contracts/macro-pilot/v2/portable-chat-history/validate.mjs';
 
 /** Complete-source verification for an archived checkpoint, without rendering
  * its summary or treating its captured system/tool hashes as current authority. */

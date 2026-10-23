@@ -16,3 +16,13 @@ export function decodePortableFrame(raw:string):unknown;
 export function portableLines(chunks:AsyncIterable<Uint8Array>):AsyncGenerator<string>;
 export interface PortableValidationPorts {reserve(bytes:number):()=>void;digest(bytes:Uint8Array):Promise<string>;inspect(header:PortableHeader,bytes:Uint8Array,origin:PortableOrigin|undefined,metadata:PortableOrigin|undefined):Promise<void>;append(header:PortableHeader,bytes:Uint8Array):Promise<void>}
 export function validatePortableArchive(lines:AsyncIterable<string>,contractSha:string,ports:PortableValidationPorts):Promise<{records:number;fragments:number;bytes:number;manifest:string}>;
+
+export function validatePortableCompactionJson(kind:'tool_digest'|'source_ids'|'footprint',value:unknown):boolean;
+
+export function validatePortableOriginLink(header:PortableHeader,origin:PortableOrigin|undefined):void;
+
+export function portableRetainedJsonKind(origin:Pick<PortableOrigin,'source'|'reason'>|undefined):'tool_digest'|'source_ids'|'footprint'|'tool_call'|'context_refs'|'provenance'|null;
+
+export function validatePortableProviderShape(value:unknown):void;
+
+export function validatePortableTypedResult(value:unknown,output:string):void;

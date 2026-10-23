@@ -406,6 +406,23 @@
       "fingerprint",
       "start",
       "end"
+    ],
+    "toolTrace": [
+      "tool_call_id",
+      "tool_name",
+      "detail",
+      "status",
+      "visible_offset",
+      "execution_mode",
+      "batch_id",
+      "order",
+      "started_at_ms",
+      "completed_at_ms",
+      "recovery_state"
+    ],
+    "portableToolCall": [
+      "tool",
+      "arguments_json"
     ]
   }
 }

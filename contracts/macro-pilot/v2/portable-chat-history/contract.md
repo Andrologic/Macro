@@ -42,7 +42,8 @@ in vocabulary and validator. Empty records require one empty fragment.
 records always counts distinct record headers, not fragments. bytes is the sum
 of declared record payload bytes, including origin metadata and zero association
 payloads. Fragments count actual frames; partitioning may vary without changing
-the content manifest. The native Begin.records counts those same headers;
+the content manifest. A receiver may repartition for native append; report
+portable input fragments and native append fragments separately. The native Begin.records counts those same headers;
 Begin.bytes is the same total payload. A readback port may count returned
 fragments separately and must not pass that count as record total. Native
 readback target UUIDs/importKey are local and absent from portable frames.
@@ -93,8 +94,7 @@ Source family1 tags9/10 are recognized only through the real Codex/Macro AI
 producer forms: Responses user input_text/input_image, assistant output_text,
 reasoning summary_text, function_call and function_call_output; or
 chat_completion_message assistant/tool with content, visible_content,
-reasoning_content and function tool_calls. Keys/status/role combinations close
-at the producer recognizer. Extra annotations/logprobs, reasoning details,
+reasoning_content and function tool_calls. Keys/status/role combinations are closed in provider.schema.json and recognition.md; the producer recognizer consumes the same schema. Extra annotations/logprobs, reasoning details,
 non-text typed results, incomplete outputs, unknown forms and lost indispensable
 context refuse. encrypted_content and response/session identifiers are excluded.
 Original arguments_json preserves numeric lexemes. Typed tool-result v1 text

@@ -1,6 +1,14 @@
+import Ajv2020 from 'ajv/dist/2020.js';
+import providerSchema from './provider.schema.json' with { type: 'json' };
 import { parseStoredJsonStrict } from '../strict-json.mjs';
 import vocabulary from './vocabulary.json' with { type: 'json' };
 export { vocabulary };
+let providerShape;
+export function validatePortableProviderShape(value) {
+  providerShape ??= new Ajv2020({strict:false,allErrors:false}).compile(providerSchema);
+  if(!providerShape(value))fail('unknown_required_shape');
+}
+
 export const FRAGMENT_BYTES = 4093;
 export const FRAME_BYTES = 8192;
 const fail = code => { throw new Error(code); };
@@ -83,6 +91,17 @@ export function validatePortableMetadata(v) {
   if (['complete_structured_hidden_representation','hidden_matches_complete_structured_results','recognized_hidden_only'].includes(v.reason)&&!at(1,8)) fail('invalid_portable_metadata');
   if (['owned_asset','identical_owned_asset'].includes(v.reason)&&!at(8,6)) fail('invalid_portable_metadata');
   if (v.reason==='sql_null' && s.sqlType!==0) fail('invalid_portable_metadata');
+  if(at(1,[9,10])&&s.path!==undefined) {
+    const p=s.path, ending=p.at(-1), textPath=(p.length===2&&['content','visible_content','reasoning_content'].includes(ending))||(p.length===4&&ending==='text');
+    if(v.reason==='local_identifier'&&!(p.length===2&&ending==='id'))fail('invalid_portable_metadata');
+    if(v.reason==='opaque_continuation'&&!(p.length===2&&ending==='encrypted_content'))fail('invalid_portable_metadata');
+    if(v.reason==='provider_tool_call'&&!(p.length===1||p.length===3&&p[1]==='tool_calls'))fail('invalid_portable_metadata');
+    if(v.reason==='inline_owned_image'&&!(p.length===4&&p[1]==='content'&&ending==='image_url'))fail('invalid_portable_metadata');
+    if(['recognized_identical_text','provider_final_matches_attributed_message','provider_display_matches_attributed_message'].includes(v.reason)&&!textPath)fail('invalid_portable_metadata');
+    if(v.reason==='recognized_history'&&!(textPath||p.length===1&&v.meaning==='data'))fail('invalid_portable_metadata');
+    if(v.meaning==='reflection'&&!(p.length===2&&ending==='reasoning_content'||p.length===4&&p[1]==='summary'&&ending==='text'))fail('invalid_portable_metadata');
+  }
+  if(at(1,[9,10])&&['local_identifier','opaque_continuation','provider_tool_call','inline_owned_image','recognized_identical_text','provider_final_matches_attributed_message','provider_display_matches_attributed_message','recognized_history'].includes(v.reason)&&s.path===undefined)fail('invalid_portable_metadata');
   const operational=[[0,7,8,9,10,11,12,13,14],[0,1,2,3,5,6,7,12,13],[0],[0,1,2,3,4],[0,1,2,3],[],[],[0,2,3],[0,1,5],[0,1,2,3,4,5,6]];
   if(v.reason==='local_operational_metadata'&&!operational[s.family].includes(s.tag))fail('invalid_portable_metadata');
   if(v.reason==='sql_null'&&!vocabulary.families[s.family].nullable.includes(vocabulary.families[s.family].columns[s.tag]))fail('invalid_portable_metadata');
@@ -93,6 +112,12 @@ export function validatePortableMetadata(v) {
   const meaning={provider_tool_call:'data',inline_owned_image:'asset',owned_asset:'asset',recognized_hidden_only:'data',complete_structured_hidden_representation:'original'}[v.reason];
   if(meaning&&v.meaning!==meaning)fail('invalid_portable_metadata');
   return v;
+}
+export function validatePortableOriginLink(header, origin) {
+  if(!origin || origin.classification!=='retained_original')fail('invalid_portable_origin');
+  const e=header.entry;
+  const valid=e.kind==='message'?origin.meaning==='message':e.kind==='asset'?origin.meaning==='asset':e.kind==='citation'?origin.meaning==='citation':e.kind==='historical_text'&&(e.purpose==='original_text'?origin.meaning==='original':e.purpose==='historical_data'&&['original','data','reflection','checkpoint'].includes(origin.meaning));
+  if(!valid)fail('invalid_portable_origin');
 }
 export function portableManifestInput(capture, policy, headers) {
   if (!hash(capture)||typeof policy!=='string') fail('invalid_portable_manifest');
@@ -106,7 +131,7 @@ export function validatePortableDescriptor(v, contractSha) {
 }
 /** Admission belongs to the caller and precedes parsing/UTF-8 materialization. */
 export function decodePortableFrame(raw) {
-  if(typeof raw!=='string'||raw.length>FRAME_BYTES||!raw.endsWith('\n')||raw.startsWith('\uFEFF')) fail('invalid_portable_frame');
+  if(typeof raw!=='string'||raw.length>FRAME_BYTES||!raw.endsWith('\n')||raw.slice(0,-1).includes('\n')||raw.includes('\r')||raw.startsWith('\uFEFF')) fail('invalid_portable_frame');
   assertPortableUnicode(raw);
   if(new TextEncoder().encode(raw).length>FRAME_BYTES) fail('invalid_portable_frame');
   return parseStoredJsonStrict(raw.slice(0,-1));
@@ -133,10 +158,12 @@ function unbase64(data) {
  * No result of this function is a native authority, F pin or activation. */
 export async function validatePortableArchive(lines, contractSha, ports) {
   if(!ports||typeof ports.reserve!=='function'||typeof ports.inspect!=='function'||typeof ports.digest!=='function'||typeof ports.append!=='function') fail('invalid_portable_ports');
-  const held=[ports.reserve(FRAME_BYTES*256+1024)], headers=[], origins=new Map(), messages=new Map(), links=[];
+  const reserve=bytes=>{if(!integer(bytes))fail('resource_limit');const release=ports.reserve(bytes);if(typeof release!=='function')fail('invalid_portable_ports');return release;};
+  const held=[], headers=[], origins=new Map(), messages=new Map(), links=[];
   let descriptor, active, buffer, releaseRecord, position=0, total=0, fragments=0;
   const checkedDigest=async bytes=>{ const result=await ports.digest(bytes);if(!hash(result))fail('invalid_portable_ports');return result; };
   try {
+    held.push(reserve(FRAME_BYTES*256+1024));
     for await (const line of lines) {
       const value=decodePortableFrame(line);
       if(!descriptor) {descriptor=validatePortableDescriptor(value,contractSha);continue;}
@@ -145,7 +172,8 @@ export async function validatePortableArchive(lines, contractSha, ports) {
       if(!active) {
         if(h.ordinal!==headers.length||value.offset!==0||h.ordinal>=descriptor.records)fail('invalid_portable_sequence');
         // Whole record inspection remains admitted O(record), not a heap claim.
-        releaseRecord=ports.reserve(512+h.bytes*256); active=h; position=0;buffer=new Uint8Array(h.bytes);
+        const json=h.entry.kind==='historical_text'&&h.entry.purpose==='portable_metadata'||portableRetainedJsonKind(h.origin===undefined?undefined:origins.get(h.origin));
+        releaseRecord=reserve(512+h.bytes*(json?256:16)); active=h; position=0;try {buffer=new Uint8Array(h.bytes);}catch{fail('resource_limit');}
       } else if(renderPortableHeader(h)!==renderPortableHeader(active))fail('invalid_portable_sequence');
       const bytes=unbase64(value.data);
       if(value.offset!==position||position+bytes.length>h.bytes||(!bytes.length&&(h.bytes!==0||position!==0)))fail('invalid_portable_sequence');
@@ -160,7 +188,7 @@ export async function validatePortableArchive(lines, contractSha, ports) {
           meta=validatePortableMetadata(parseStoredJsonStrict(text));
         }
         const origin=h.origin===undefined?undefined:origins.get(h.origin);
-        if(h.origin!==undefined&&(!origin||origin.classification!=='retained_original'||h.origin>=h.ordinal))fail('invalid_portable_origin');
+        if(h.origin!==undefined) { if(h.origin>=h.ordinal)fail('invalid_portable_origin'); validatePortableOriginLink(h,origin); }
         if(meta?.classification==='redundant_representation'&&(!headers[meta.retained]||headers[meta.retained].entry.kind==='association'))fail('invalid_portable_origin');
         if(h.entry.kind==='message') {
           if(origin.meaning!=='message'||typeof origin.message!=='string'||!origin.message||typeof origin.timestamp!=='string'||messages.has(origin.message))fail('invalid_portable_origin');
@@ -172,7 +200,7 @@ export async function validatePortableArchive(lines, contractSha, ports) {
           links.push(e);
         }
         await ports.inspect(h,buffer,origin,meta);
-        held.push(ports.reserve(1024+renderPortableHeader(h).length*8+(meta?buffer.length*256:0)));
+        held.push(reserve(1024+renderPortableHeader(h).length*8+(meta?buffer.length*256:0)));
         headers.push(h); if(meta)origins.set(h.ordinal,meta);
         total+=h.bytes;if(!integer(total)||total>descriptor.bytes)fail('invalid_portable_sequence');
         await ports.append(h,buffer); releaseRecord();releaseRecord=undefined;active=undefined;buffer=undefined;
@@ -187,9 +215,67 @@ export async function validatePortableArchive(lines, contractSha, ports) {
       if(o.message!==undefined&&h.entry.kind!=='message'&&!associated.has(`${messages.get(o.message)}:${h.ordinal}`))fail('invalid_portable_association');
     }
     for(const h of headers)if(h.entry.kind==='asset'&&!links.some(l=>l.to===h.ordinal&&l.relation==='asset_for_message'))fail('invalid_portable_association');
-    held.push(ports.reserve(1024+headers.reduce((n,h)=>n+renderPortableHeader(h).length*24,0)+roots[0].policy.length*12));
+    held.push(reserve(1024+headers.reduce((n,h)=>n+renderPortableHeader(h).length*24,0)+roots[0].policy.length*12));
     const manifestBytes=portableManifestInput(roots[0].captureManifest,roots[0].policy,headers);
     if(await checkedDigest(manifestBytes)!==descriptor.manifest_sha256)fail('invalid_portable_digest');
     return {records:headers.length,fragments,bytes:total,manifest:descriptor.manifest_sha256};
+  } catch(error) {
+    const code=error instanceof Error?error.message:'';
+    if(/^(invalid_portable_(ports|shape|unicode|header|metadata|manifest|descriptor|frame|sequence|digest|origin|association)|incomplete_portable_archive|invalid_json|ambiguous_json|resource_limit|unsafe_content|unsafe_asset|policy_changed|proof_file_allowance)$/.test(code))throw new Error(code);
+    fail('portable_unavailable');
   } finally { releaseRecord?.(); for(const release of held.reverse())release(); }
+}
+
+export function validatePortableCompactionJson(kind, value) {
+  const record = entry => !!entry && typeof entry === 'object' && !Array.isArray(entry);
+  if (kind === 'source_ids') return Array.isArray(value) && value.every(id => typeof id === 'string' && id.length > 0) && new Set(value).size === value.length;
+  if (kind === 'tool_digest') return Array.isArray(value) && value.every(entry => record(entry) &&
+    Object.keys(entry).every(key => ['tool_name', 'target', 'kind', 'evidence_excerpt', 'source_message_id', 'hash', 'timestamp'].includes(key)) &&
+    ['tool_name', 'target', 'evidence_excerpt', 'source_message_id', 'hash'].every(key => typeof entry[key] === 'string') &&
+    ['file_read', 'web_result', 'git_result', 'terminal_result', 'tool_result'].includes(String(entry.kind)) &&
+    (entry.timestamp === undefined || typeof entry.timestamp === 'string'));
+  if (!record(value)) return false;
+  const requiredNumbers = ['totalEstimatedTokens', 'messageTokens', 'hiddenContextTokens', 'systemTokens', 'toolSchemaTokens', 'imagePlaceholderTokens', 'citationTokens', 'modelContextWindowTokens', 'reservedTokens', 'usableContextTokens', 'totalContextRatio', 'usableContextRatio', 'hiddenContextRatio', 'hardStopRatio', 'toolTurnCount'];
+  const optionalNumbers = ['serializedPayloadTokens', 'visibleMessageTokens', 'providerInputTokens', 'imageCount', 'imagesWithKnownDimensions', 'imageTransportBytes', 'hardStopEstimatedTokens', 'summaryTokens', 'latestUserContextTokens', 'latestUserBlockableTokens', 'inputLimitTokens', 'outputLimitTokens', 'previousModelContextWindowTokens', 'marginTokens', 'outputReserveTokens'];
+  const booleans = ['isHardStop', 'isContextLimitAuthoritative', 'modelContextWindowShrank'];
+  const enums = {
+    threshold: ['none', 'background', 'blocking', 'degraded'],
+    reason: ['below_threshold', 'total_context_ratio', 'hidden_context_ratio', 'tool_turn_count', 'post_compaction_overflow', 'hard_stop_ratio', 'model_window_shrank', 'manual_compaction_required'],
+    imageEstimateConfidence: ['model_formula', 'provider_formula', 'fallback', 'unknown'],
+    contextLimitSource: ['model_metadata', 'provider_metadata', 'user_override', 'models_dev', 'provider_overflow_error', 'macro_fallback'],
+    contextLimitConfidence: ['verified', 'configured', 'catalog', 'learned', 'fallback'],
+  };
+  const allowed = new Set([...requiredNumbers, ...optionalNumbers, ...booleans, ...Object.keys(enums), 'contextLimitWarning']);
+  return Object.keys(value).every(key => allowed.has(key)) &&
+    requiredNumbers.every(key => typeof value[key] === 'number' && Number.isFinite(value[key]) && Number(value[key]) >= 0) &&
+    optionalNumbers.every(key => value[key] === undefined || (typeof value[key] === 'number' && Number.isFinite(value[key]) && (key === 'marginTokens' || Number(value[key]) >= 0))) &&
+    typeof value.isHardStop === 'boolean' && booleans.every(key => value[key] === undefined || typeof value[key] === 'boolean') &&
+    Object.entries(enums).every(([key, values]) => (value[key] === undefined && !['threshold', 'reason'].includes(key)) || values.includes(String(value[key]))) &&
+    (value.contextLimitWarning === undefined || typeof value.contextLimitWarning === 'string');
+}
+
+
+export function portableRetainedJsonKind(origin) {
+  if (!origin) return null;
+  const { family, tag } = origin.source;
+  if (family === 5) return ({ 3: 'tool_digest', 4: 'source_ids', 5: 'source_ids', 10: 'source_ids', 12: 'footprint', 13: 'footprint' })[tag] ?? null;
+  if (family === 1 && [9, 10].includes(tag) && origin.reason === 'provider_tool_call') return 'tool_call';
+  if ((family === 1 && tag === 11) || (family === 7 && tag === 1)) return 'context_refs';
+  if (family === 2 && tag === 1) return 'provenance';
+  return null;
+}
+
+/** Exact text-only subset of the existing tool-result normalizer. No fallback. */
+export function validatePortableTypedResult(value, output) {
+  if(value===undefined)return;
+  closed(value,vocabulary.providerKeys.typedResult);
+  if(value.version!==1||typeof value.isError!=='boolean'||!Array.isArray(value.blocks))fail('incomplete_result');
+  if(value.blocks.length>64)fail('unsupported_tool_result');
+  assertPortableUnicode(value.blocks);
+  let bytes=0;
+  for(const block of value.blocks) {
+    if(!object(block)||block.type!=='text'||typeof block.text!=='string'||JSON.stringify(block)!==JSON.stringify({type:'text',text:block.text}))fail('unsupported_tool_result');
+    bytes+=new TextEncoder().encode(block.text).length;if(bytes>8*1024*1024)fail('unsupported_tool_result');
+  }
+  if(value.blocks.map(block=>block.text).join('\n')!==output)fail('contradictory_result');
 }
