@@ -1,3 +1,5 @@
+mod policy_file;
+
 use fs2::FileExt;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -32,6 +34,8 @@ struct SecretMigrationJournal {
 pub enum SecretError {
     #[error("Secret store has not been initialized.")]
     StoreUnavailable,
+    #[error("Secret policy is unavailable; explicit recovery is required.")]
+    PolicyUnavailable,
     #[error("Secret storage error: {0}")]
     Io(#[from] std::io::Error),
     #[error("Secret serialization error: {0}")]
@@ -68,6 +72,14 @@ pub(super) struct SecretEnvelope<T> {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub(super) struct ProviderSecretsFile {
     pub(super) version: u8,
+    #[serde(
+        default,
+        rename = "policyEpoch",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub(super) policy_epoch: Option<uuid::Uuid>,
+    #[serde(skip)]
+    raw_chatgpt_sessions: BTreeMap<String, serde_json::Value>,
     #[serde(skip)]
     pub(super) api_keys: BTreeMap<String, String>,
     #[serde(default)]
@@ -94,6 +106,8 @@ struct SecretNamespaces {
 struct RawProviderSecretsFile {
     #[serde(default, rename = "version")]
     _version: u8,
+    #[serde(default, rename = "policyEpoch")]
+    policy_epoch: Option<uuid::Uuid>,
     #[serde(default)]
     api_keys: BTreeMap<String, String>,
     #[serde(default)]
@@ -106,6 +120,8 @@ impl Default for ProviderSecretsFile {
     fn default() -> Self {
         Self {
             version: SECRET_FILE_VERSION,
+            policy_epoch: None,
+            raw_chatgpt_sessions: BTreeMap::new(),
             api_keys: BTreeMap::new(),
             namespaces: SecretNamespaces::default(),
             chatgpt_sessions: BTreeMap::new(),
@@ -169,6 +185,7 @@ impl LocalSecretStore {
             uuid::Uuid::new_v4().simple()
         ));
         std::fs::rename(&self.path, &quarantined_path)?;
+        sync_parent_directory(&self.path)?;
         warn!(
             path = %self.path.display(),
             quarantined_path = %quarantined_path.display(),
@@ -336,7 +353,19 @@ fn serialize_provider_secrets(data: &ProviderSecretsFile) -> Result<Vec<u8>, Sec
     let mut persisted = data.clone();
     persisted.version = SECRET_FILE_VERSION;
     persisted.namespaces = SecretNamespaces::from_flat(&persisted.api_keys);
-    Ok(serde_json::to_vec_pretty(&persisted)?)
+    let mut value = serde_json::to_value(&persisted)?;
+    // Retain recognized legacy credentials, including id_token, until that
+    // specific session is replaced or removed by its ordinary writer.
+    for (id, raw) in &data.raw_chatgpt_sessions {
+        if data
+            .chatgpt_sessions
+            .get(id)
+            .is_some_and(|current| parse_chatgpt_secret_value(raw).as_ref() == Some(current))
+        {
+            value["chatgpt_sessions"][id] = raw.clone();
+        }
+    }
+    Ok(serde_json::to_vec_pretty(&value)?)
 }
 
 fn secret_digest(bytes: &[u8]) -> String {
@@ -443,6 +472,7 @@ fn parse_provider_secrets_file(contents: &str) -> Result<ProviderSecretsFile, se
     let mut api_keys = raw.namespaces.into_flat();
     api_keys.extend(raw.api_keys);
     let mut chatgpt_sessions = BTreeMap::new();
+    let raw_chatgpt_sessions = raw.chatgpt_sessions.clone();
 
     for (provider_id, value) in raw.chatgpt_sessions {
         if let Some(secret) = parse_chatgpt_secret_value(&value) {
@@ -457,6 +487,8 @@ fn parse_provider_secrets_file(contents: &str) -> Result<ProviderSecretsFile, se
 
     Ok(ProviderSecretsFile {
         version,
+        policy_epoch: raw.policy_epoch,
+        raw_chatgpt_sessions,
         api_keys,
         namespaces: SecretNamespaces::default(),
         chatgpt_sessions,
