@@ -4,7 +4,7 @@ import { useAppStore } from '../stores/useAppStore';
 import type { ArchitectPlanRecord } from './architectPlanService';
 import type { CatalogedImplementTask } from './implementTaskCatalog';
 import { recoverArchitectPlanReplicaMutations } from './architectPlanMutationPersistence';
-import { resolveArchitectPlanServiceDependencies } from './architectPlanReadContext';
+import { installArchitectPlanPorts, resolveArchitectPlanServiceDependencies } from './architectPlanReadContext';
 import * as initialService from './architectPlanArtifactService';
 
 const branchName = 'develop';
@@ -27,6 +27,7 @@ let onWrite: (() => void | Promise<void>) | undefined;
 let onRead: ((path: string) => void) | undefined;
 let onSetting: ((value: string) => void) | undefined;
 let importId = 0;
+let stopPlanPorts: () => void;
 const restart = async () => {
   service = await import(`./architectPlanArtifactService.ts?recovery=${++importId}`);
 };
@@ -41,6 +42,7 @@ const restore = (target: Map<string, string>, snapshot: Map<string, string>) => 
 };
 
 beforeEach(() => {
+  stopPlanPorts = installArchitectPlanPorts({ getAppState: () => useAppStore.getState() });
   files.clear(); settings.clear(); writes = 0; onWrite = undefined; onRead = undefined; onSetting = undefined;
   useAppStore.setState({
     standaloneProjects: roots.map((path, i) => ({
@@ -82,6 +84,7 @@ beforeEach(() => {
   }));
 });
 afterEach(() => {
+  stopPlanPorts();
   removeTauriRuntimeMock();
   useAppStore.setState({ standaloneProjects: [], projectGroups: [], selectedProjectId: null, selectedGroupId: null });
 });
@@ -198,6 +201,20 @@ describe('artifact durable recovery', () => {
     await expect(service.validateVisibleTaskArtifact({ branchName, plan, task, artifactId: artifact.id })).rejects.toThrow();
     restore(files, capturedFiles); restore(settings, capturedSettings);
   };
+
+  it('recovers under the injected registry when the global project selection differs', async () => {
+    await captureInterruptedValidation();
+    const appState = useAppStore.getState();
+    const stop = installArchitectPlanPorts({ getAppState: async () => appState });
+    try {
+      useAppStore.setState({ standaloneProjects: [], projectGroups: [], selectedProjectId: null });
+      await restart();
+      expect((await read()).reviews).toEqual([]);
+      expect(JSON.parse(settings.get(journalKey)!)).toEqual([]);
+    } finally {
+      stop();
+    }
+  });
 
   for (const change of ['add', 'remove']) {
     it(`blocks a pending validation after ${change} of an unrelated registered project`, async () => {
