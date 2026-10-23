@@ -306,8 +306,11 @@ impl OperationPermit {
         let uncertain: i64 = sqlx::query_scalar("WITH RECURSIVE ancestors(id,parent_id,local_closed_at,turn_id) AS (SELECT operation_id,parent_id,local_closed_at,turn_id FROM chat_admission_operations WHERE conversation_id=? AND incarnation=? AND kind IN ('provider','tool') AND phase='unknown' UNION SELECT p.operation_id,p.parent_id,p.local_closed_at,p.turn_id FROM chat_admission_operations p JOIN ancestors a ON a.parent_id=p.operation_id) SELECT EXISTS(SELECT 1 FROM ancestors WHERE parent_id IS NULL AND (local_closed_at IS NULL OR turn_id=?))")
             .bind(conversation).bind(&incarnation).bind(turn).fetch_one(&mut *tx).await?;
         if uncertain != 0 { return Err(invalid("chat_admission_effect_unreconciled")); }
-        let recovery: i64 = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM chat_admission_operations WHERE conversation_id=? AND incarnation=? AND kind='unsaved' AND phase NOT IN ('completed','no_effect'))")
-            .bind(conversation).bind(&incarnation).fetch_one(&mut *tx).await?;
+        // A response reservation retains the old copy; it does not own a new
+        // explicit turn once that uncertain root's physical lifetime is closed.
+        // Other completed/no-effect parents still require their ordinary copy ACK.
+        let recovery: i64 = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM chat_admission_operations copy WHERE copy.conversation_id=? AND copy.incarnation=? AND copy.kind='unsaved' AND copy.phase NOT IN ('completed','no_effect') AND NOT EXISTS(SELECT 1 FROM chat_admission_operations root WHERE root.operation_id=copy.parent_id AND root.parent_id IS NULL AND root.kind='turn' AND root.phase IN ('unknown','no_effect') AND EXISTS(WITH RECURSIVE family(id,kind,phase) AS (SELECT operation_id,kind,phase FROM chat_admission_operations WHERE parent_id=root.operation_id UNION ALL SELECT p.operation_id,p.kind,p.phase FROM chat_admission_operations p JOIN family f ON p.parent_id=f.id) SELECT 1 FROM family WHERE kind IN ('provider','tool') AND phase='unknown') AND root.local_closed_at IS NOT NULL AND root.turn_id<>? AND ?='turn'))")
+            .bind(conversation).bind(&incarnation).bind(turn).bind(purpose.as_str()).fetch_one(&mut *tx).await?;
         if recovery != 0 { return Err(invalid("chat_admission_response_recovery_pending")); }
         let active: i64 = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM chat_admission_operations WHERE conversation_id=? AND kind IN ('turn','compaction') AND parent_id IS NULL AND phase IN ('prepared','dispatched','result_pending'))")
             .bind(conversation).fetch_one(&mut *tx).await?;
@@ -884,7 +887,9 @@ pub(crate) async fn persist_response_in(
         let pending: i64 = sqlx::query_scalar("WITH RECURSIVE children(id,phase,kind,message_id) AS (SELECT operation_id,phase,kind,message_id FROM chat_admission_operations WHERE parent_id=? UNION SELECT p.operation_id,p.phase,p.kind,p.message_id FROM chat_admission_operations p JOIN children c ON p.parent_id=c.id) SELECT EXISTS(SELECT 1 FROM children WHERE phase NOT IN ('completed','no_effect') AND NOT (kind='unsaved' AND message_id=?))")
             .bind(operation).bind(input.id).fetch_one(&mut **tx).await?;
         if pending != 0 {
-            return Err(invalid("chat_admission_children_pending"));
+            let uncertain: i64 = sqlx::query_scalar("WITH RECURSIVE children(id,phase) AS (SELECT operation_id,phase FROM chat_admission_operations WHERE parent_id=? UNION SELECT p.operation_id,p.phase FROM chat_admission_operations p JOIN children c ON p.parent_id=c.id) SELECT EXISTS(SELECT 1 FROM children WHERE phase='unknown')")
+                .bind(operation).fetch_one(&mut **tx).await?;
+            return Err(invalid(if uncertain != 0 { "chat_admission_response_outcome_unknown" } else { "chat_admission_children_pending" }));
         }
         if unresolved_turn_tools(&mut **tx,conversation,operation).await? {
             return Err(invalid("chat_admission_tool_journal_unreconciled"));

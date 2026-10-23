@@ -1802,8 +1802,15 @@ mod tests {
         use crate::ai::{provider_work::{ProviderAdmission,ProviderWork,tests::{fixture_with_owner,HttpServer}},AiState,admitted_http::AdmittedHttp};
         use crate::db::chat_admission::reconciliation::BrowserInspection;
         use std::sync::Arc;
-        let server=HttpServer::start(vec![None,Some("HTTP/1.1 200 OK\r\nContent-Length: 14\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\ndata: [DONE]\n\n")]).await;
+        let server=HttpServer::start(vec![Some("HTTP/1.1 200 OK\r\nContent-Length: 53\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\ndata: {\"choices\":[{\"delta\":{\"content\":\"partial\"}}]}\n\n"),Some("HTTP/1.1 200 OK\r\nContent-Length: 14\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\ndata: [DONE]\n\n")]).await;
         let (_dir,pool,owner,runtime,first)=fixture_with_owner("first-request").await;
+        let root: String = sqlx::query_scalar("SELECT operation_id FROM chat_admission_operations WHERE parent_id IS NULL AND kind='turn'").fetch_one(&pool).await.unwrap();
+        let original = crate::db::chat_admission::runtime::ChatAdmissionContext { handle: root.clone(), runtime: "browser".into() };
+        let original_parent = runtime.parent("window", &original, "chat").await.unwrap();
+        sqlx::query("INSERT INTO messages(id,conversation_id,role,content,turn_id,created_at) VALUES('assistant','chat','assistant','','turn','t')").execute(&pool).await.unwrap();
+        let copy = crate::db::chat_admission::intents::reserve_response(&original_parent,"window","assistant").await.unwrap();
+        // A lost reservation ACK must retrieve the exact same copy owner.
+        assert_eq!(crate::db::chat_admission::intents::reserve_response(&original_parent,"window","assistant").await.unwrap().operation_id, copy.operation_id);
         let state=AiState::default();let http=AdmittedHttp::default();
         for (id,work) in [("first-request",first)] {
             let mut provider=provider("openai");provider.base_url=server.url.clone();
@@ -1812,14 +1819,29 @@ mod tests {
                 let mut request=request(None);request.request_id=id.into();request.conversation_id=Some("chat".into());
                 let body=build_chat_completions_request(&request,&provider)?;
                 let client=task_work.configure_http_client(reqwest::Client::builder()).no_proxy().build().unwrap();
-                send_chat_completions_request(&client,&provider,&request,"",&body,&task_work).await.map(|_|())
+                let (response, _) = send_chat_completions_request(&client,&provider,&request,"",&body,&task_work).await?;
+                let bytes = response.bytes().await.map_err(|e|e.to_string())?;
+                let events = SseParser::default().push(&bytes)?;
+                assert!(events.iter().any(|event| event.contains("partial")));
+                assert!(!events.iter().any(|event| event.contains("[DONE]")));
+                Err("EOF without a protocol terminal".into())
             }).unwrap();
             assert!(state.join_stream_task(id).await.unwrap().is_err());
         }
-        let before:i64=sqlx::query_scalar("SELECT count(*) FROM chat_admission_operations WHERE phase='unknown'").fetch_one(&pool).await.unwrap();
+        // Ordinary visible persistence does not certify the provider outcome.
+        let write = || crate::db::repository::UpdateMessageContentInput {
+            id: "assistant", turn_id: Some("turn".into()), content: "partial", token_count: None,
+            tool_traces_json: None, hidden_context: None, provider_input_items_json: None,
+            provider_turn_state_json: None, context_refs_json: None, completion_reason: Some("incomplete".into()), generation_attempts_json: None,
+        };
+        crate::db::repository::update_message_content(&pool,write()).await.unwrap();
+        assert!(runtime.finish_response("window",&original,"chat",write()).await.unwrap_err().to_string().contains("response_outcome_unknown"));
+        assert!(runtime.begin(owner.clone(),"window","browser","chat","before-join").await.is_err());
+        let before:i64=sqlx::query_scalar("SELECT count(*) FROM chat_admission_operations WHERE phase='unknown' AND kind IN ('provider','tool')").fetch_one(&pool).await.unwrap();
         assert!(before>0);
         runtime.retire_previous_unknown_turns(&owner,&state,&http,"window","browser","chat","new-user-turn").await.unwrap();
         assert!(runtime.begin(owner.clone(),"window","browser","chat","turn").await.is_err());
+        assert!(runtime.begin_root(owner.clone(),"window","browser","chat","new-compaction","new-compaction",crate::db::chat_admission::RootWorkKind::Compaction).await.is_err());
         let context=runtime.begin(owner.clone(),"window","browser","chat","new-user-turn").await.unwrap();
         let parent=runtime.parent("window",&context,"chat").await.unwrap();
         let next=Arc::new(ProviderWork::admit(&pool,&runtime,"window",ProviderAdmission::GlobalChat{context},Some("chat"),"next-request").await.unwrap());
@@ -1840,12 +1862,31 @@ mod tests {
         }).unwrap();
         state.join_stream_task("next-request").await.unwrap().unwrap();
         parent.finish_preparation().await.unwrap();
-        assert_eq!(sqlx::query_scalar::<_,i64>("SELECT count(*) FROM chat_admission_operations WHERE phase='unknown'").fetch_one(&pool).await.unwrap(),before);
+        assert_eq!(sqlx::query_scalar::<_,i64>("SELECT count(*) FROM chat_admission_operations WHERE phase='unknown' AND kind IN ('provider','tool')").fetch_one(&pool).await.unwrap(),before);
         let handle=runtime.begin_reconciliation(&owner,"window","browser","chat").await.unwrap();
         let empty=BrowserInspection{queue:vec![],unsaved:vec![],approvals:vec![],questions:vec![],drafts:vec![],steers:vec![]};
         assert!(runtime.complete_reconciliation(&owner,"window","browser",&handle,&empty).await.is_err());
         assert!(runtime.reserve_reconciled_source(&owner,"window","browser",&handle).await.is_err());
-        assert_eq!(server.stop().await,2); // One old send, one independent user send.
+        assert_eq!(sqlx::query_scalar::<_,String>("SELECT phase FROM chat_admission_operations WHERE operation_id=?").bind(&copy.operation_id).fetch_one(&pool).await.unwrap(),"prepared");
+        assert_eq!(sqlx::query_scalar::<_,String>("SELECT content FROM messages WHERE id='assistant'").fetch_one(&pool).await.unwrap(),"partial");
+        assert!(runtime.finish_response("window",&original,"chat",write()).await.is_err());
+        runtime.close_browser(&owner,&state,&http,"window","browser").await.unwrap();
+        // Reopen the actual file through official startup reconciliation.
+        let reopened = crate::db::create_pool(&_dir.path().join("synthetic.db")).await.unwrap();
+        let restarted = crate::core::db_state::DbPool::default();
+        restarted.set_ready(reopened.clone()).await.unwrap();
+        let reloaded = crate::db::chat_admission::runtime::ChatAdmissionRuntime::default();
+        assert!(reloaded.begin(restarted.clone(),"window","reload","chat","turn").await.is_err());
+        let independent = reloaded.begin(restarted.clone(),"window","reload","chat","after-restart").await.unwrap();
+        reloaded.parent("window",&independent,"chat").await.unwrap().finish_preparation().await.unwrap();
+        assert_eq!(sqlx::query_scalar::<_,i64>("SELECT count(*) FROM chat_admission_operations WHERE phase='unknown' AND kind IN ('provider','tool')").fetch_one(&pool).await.unwrap(),before);
+        let identity = crate::db::chat_admission::intents::response_recovery_identity(&restarted,"chat","assistant").await.unwrap();
+        let receipt = reloaded.begin_intent(&restarted,"window","reload",identity,crate::db::chat_admission::intents::IntentMutation::Retain).await.unwrap();
+        for _ in 0..2 {
+            assert!(crate::db::chat_admission::intents::recover_response(&restarted,"window",&receipt,write()).await.unwrap_err().to_string().contains("response_outcome_unknown"));
+        }
+        assert_eq!(sqlx::query_scalar::<_,String>("SELECT content FROM messages WHERE id='assistant'").fetch_one(&reopened).await.unwrap(),"partial");
+        assert_eq!(server.stop().await,2); // One partial old send, one independent user send.
     }
 
 }

@@ -1242,8 +1242,8 @@ const assistantPersistencePayloadMatches = (
 ): boolean =>
   persisted.content === recovered.content &&
   persisted.hidden_context === recovered.hidden_context &&
-  serializeAssistantPersistenceValue(persisted.tool_traces) ===
-    serializeAssistantPersistenceValue(recovered.tool_traces) &&
+  serializeAssistantPersistenceValue(persisted.tool_traces ?? []) ===
+    serializeAssistantPersistenceValue(recovered.tool_traces ?? []) &&
   serializeAssistantPersistenceValue(persisted.provider_input_items) ===
     serializeAssistantPersistenceValue(recovered.provider_input_items) &&
   serializeAssistantPersistenceValue(persisted.provider_turn_state) ===
@@ -2828,6 +2828,12 @@ export const useChatStore = create<ChatStore>((set, get) => {
         await turnRuntime.drain(copy.conversation_id);
         await recoverChatResponse(copy, async () => {}, () => removeUnsavedAssistantResponseFromStorage(messageId));
       } catch (error) {
+        // This branch only handles byte-equivalent persisted response copies.
+        // Their content is recoverable already. Keep the browser copy and its
+        // native reservation when the provider outcome is unknown, without
+        // mislabelling the saved content as a failed write that blocks all sends.
+        // Native admission still decides whether a distinct turn may start.
+        if (toServiceError(error).message.includes('chat_admission_response_outcome_unknown')) continue;
         const failed = { ...copy, persistence_state: 'failed' as const, persistence_error: toServiceError(error).message };
         merged.messages = merged.messages.map(message => message.id === messageId ? failed : message);
       }
@@ -2958,7 +2964,10 @@ export const useChatStore = create<ChatStore>((set, get) => {
       markConversationMessagesReady(conversationId);
       return;
     }
-    if (existingMessages.length > 0 && existingMessages.length >= knownMessageCount) {
+    // Recovery copies alone are not a loaded SQLite transcript. Read the
+    // durable rows before deciding whether their content is already saved.
+    if (existingMessages.length > 0 && existingMessages.length >= knownMessageCount &&
+        existingMessages.every(message => message.persistence_state === undefined)) {
       markConversationMessagesReady(conversationId);
       await hydrateNativeMessageImages(existingMessages, lifecycle);
       return;

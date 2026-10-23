@@ -743,6 +743,7 @@ let chatSnapshotMessages: Array<{
   content: string;
   created_at: string;
   tool_traces_json?: string | null;
+  turn_id?: string | null;
 }> = [];
 type ArchitectPlanConversationSyncRecord = {
   conversation_id: string;
@@ -894,6 +895,7 @@ const sendChatNonStreamingMock = mock((async (
     sendChatNonStreamingOnceImpls.shift() ?? sendChatNonStreamingImpl;
   return implementation(...args);
 }) as SendChatNonStreaming);
+let responseRecoveryError: string | undefined;
 let composerIntentGate: (() => Promise<void>) | undefined;
 const composerAdmissions: Array<{ conversationId: string; mutation: string }> = [];
 const retireComposerBrowserMock = mock(async () => {});
@@ -1886,6 +1888,7 @@ const registerUseChatStoreMocks = async () => {
       if (!remove()) throw new Error('The saved recovery copy could not be removed.');
     },
     recoverChatResponse: async (_message: unknown, persist: () => Promise<void>, remove: () => boolean) => {
+      if (responseRecoveryError) throw new Error(responseRecoveryError);
       await persist();
       if (!remove()) throw new Error('The saved recovery copy could not be removed.');
     },
@@ -2960,6 +2963,7 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     chatSnapshotConversations = [];
     chatSnapshotMessages = [];
     admissionInspections.length = 0;
+    responseRecoveryError = undefined;
     composerIntentGate = undefined;
     composerAdmissions.length = 0;
     retireComposerBrowserMock.mockClear();
@@ -3190,6 +3194,31 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     expect(streamChatMock).not.toHaveBeenCalled();
     expect(sendChatNonStreamingMock).not.toHaveBeenCalled();
     expect(createMessageMock).not.toHaveBeenCalled();
+  });
+
+  it('keeps an identical durable partial copy after unknown completion without blocking an independent send at hydration', async () => {
+    tauriAvailable = true;
+    appState.mode = 'Chat';
+    appState.selectedProjectId = null; appState.selectedGroupId = null;
+    chatSnapshotConversations = [{ ...createChatSnapshotConversation('chat-conv', { message_count: 1, scope_mode: 'Chat' }), project_id: null, group_id: null }];
+    chatSnapshotMessages = [{ id: 'assistant-1', conversation_id: 'chat-conv', role: 'assistant',
+      content: 'Partial preserved', turn_id: 'turn-1', created_at: '2026-08-30T08:01:00.000Z' }];
+    const copy = { id: 'assistant-1', turn_id: 'turn-1', task_id: '', conversation_id: 'chat-conv', role: 'assistant',
+      content: 'Partial preserved', timestamp: '2026-08-30T08:01:00.000Z', tool_traces: [], persistence_state: 'failed' };
+    window.localStorage.setItem('macro_chat_unsaved_assistant_responses_v1', JSON.stringify({ 'assistant-1': copy }));
+    responseRecoveryError = 'chat_admission_response_outcome_unknown';
+    const { useChatStore } = await loadChatStore();
+    await useChatStore.getState().initializeCritical();
+    await useChatStore.getState().selectConversation('chat-conv');
+    const message = useChatStore.getState().getConversationMessages('chat-conv').find((m: ChatMessage) => m.id === 'assistant-1');
+    expect(message?.content).toBe('Partial preserved');
+    expect(message?.persistence_state).toBeUndefined();
+    expect(window.localStorage.getItem('macro_chat_unsaved_assistant_responses_v1')).toContain('Partial preserved');
+    // The real store reaches its admission/transport ports; these ports remain
+    // synthetic here. Native permission is independently covered by SQLite.
+    await useChatStore.getState().sendMessage({ conversationId: 'chat-conv', content: 'Independent question' });
+    expect(streamChatMock).toHaveBeenCalled();
+    expect(window.localStorage.getItem('macro_chat_unsaved_assistant_responses_v1')).toContain('Partial preserved');
   });
 
   it('joins a real composer write before inspection and native browser retirement', async () => {

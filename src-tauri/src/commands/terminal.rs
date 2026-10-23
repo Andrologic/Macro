@@ -3795,6 +3795,10 @@ async fn run_legacy_session_owned(
     execution_id: Option<String>,
     native_cancel: Option<tokio_util::sync::CancellationToken>,
 ) -> CommandResult<TerminalSessionDto> {
+    // A process group is not a closed descendant owner: a command may fork
+    // with detached descriptors or leave the group. Neither shell exit nor
+    // best-effort termination can certify all of its effects have stopped.
+    let requires_physical_receipt = native_cancel.is_some();
     let native_cancel = native_cancel.unwrap_or_default();
     let trimmed_command = command.trim();
     if trimmed_command.is_empty() {
@@ -3955,7 +3959,7 @@ async fn run_legacy_session_owned(
     let output_result = finish_child_output(stdout_task, stderr_task, output).await;
     let exit_status = exit_status?;
     let (combined_output, output_truncated, drain_incomplete) = output_result?;
-    if drain_incomplete {
+    if drain_incomplete || requires_physical_receipt {
         drop(process_guard);
     } else {
         process_guard.disarm();
@@ -3992,7 +3996,24 @@ async fn run_legacy_session_owned(
 
     let dto = session.to_dto();
     session_run_guard.disarm();
+    if requires_physical_receipt {
+        // Preserve the session output for recovery, but never let spawn_tool
+        // convert this shell-only result into local_execution_closed. This is
+        // conservative on Windows too until the job's complete lifetime is joined.
+        return Err(command_error("chat_admission_terminal_descendants_unreconciled"));
+    }
     Ok(dto)
+}
+
+async fn run_admitted_legacy_session(
+    store: TerminalSessionStore, session_id: String, command: String,
+    timeout_ms: Option<u64>, execution_id: String,
+    cancel: tokio_util::sync::CancellationToken,
+    owner: Arc<crate::db::chat_admission::OperationPermit>,
+) -> CommandResult<TerminalSessionDto> {
+    let result = run_legacy_session_owned(store, session_id, command, timeout_ms, Some(execution_id), Some(cancel)).await;
+    if result.is_err() { let _ = owner.unknown().await; }
+    result
 }
 
 pub async fn read_legacy_session_internal(
@@ -4163,11 +4184,7 @@ pub async fn terminal_run(
         let execution_id = execution_id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
         let owner = work.clone();
         let received = reservation.spawn_tool(work, move |cancel| async move {
-            let result = run_legacy_session_owned(store, session_id, command, timeout_ms, Some(execution_id), Some(cancel)).await;
-            // A failed process cleanup is not a terminal physical receipt.
-            // Normal shell exit codes, including nonzero, return a session DTO.
-            if result.is_err() { let _ = owner.unknown().await; }
-            result
+            run_admitted_legacy_session(store, session_id, command, timeout_ms, execution_id, cancel, owner).await
         }).map_err(command_error)?;
         return received.await.map_err(command_error)?;
     }
@@ -5043,6 +5060,52 @@ mod tests {
             execution_generation: 0,
             #[cfg(windows)]
             windows_job: None,
+        }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn admitted_shell_results_never_certify_unowned_descendant_lifetimes() {
+        use crate::{ai::AiState, db::chat_admission::OperationPermit, core::db_state::DbPool};
+        // No simulated shell or process owner. Detached descriptors, normal
+        // exit, failure and timeout all exercise the actual admitted executor.
+        for (command, timeout, cancel_running) in [
+            ("sleep 30 </dev/null >/dev/null 2>&1 & printf '%s' $! > child.pid; printf kept", 2000, false),
+            ("printf kept", 2000, false), ("printf kept; exit 7", 2000, false),
+            ("printf kept; sleep 30", 100, false),
+            ("printf kept; touch started; sleep 30", 5000, true),
+        ] {
+            let temp = TempDir::new().unwrap();
+            let pool = crate::db::create_pool(&temp.path().join("test.db")).await.unwrap();
+            sqlx::query("INSERT INTO conversations(id,title,scope_mode,created_at,updated_at) VALUES('chat','Synthetic','Chat','t','t')").execute(&pool).await.unwrap();
+            let owner = DbPool::default(); owner.set_ready(pool.clone()).await.unwrap();
+            let parent = OperationPermit::begin_turn(owner,"chat","turn").await.unwrap();
+            let tool = Arc::new(parent.child(crate::db::chat_admission::WorkKind::Tool,Some("shell")).await.unwrap());
+            let state = AiState::default();
+            let store = TerminalSessionStore::default();
+            store.legacy_sessions.lock().await.insert("terminal-test".into(), legacy_test_session(temp.path()));
+            let executor = tool.clone(); let retained_store = store.clone();
+            let delivery = state.reserve_stream("shell".into()).unwrap().spawn_tool(tool, move |cancel| async move {
+                run_admitted_legacy_session(retained_store,"terminal-test".into(),command.into(),Some(timeout),"execution".into(),cancel,executor).await
+            }).unwrap();
+            if cancel_running {
+                for _ in 0..200 {
+                    if temp.path().join("started").exists() { break; }
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+                assert!(temp.path().join("started").exists());
+                let _ = state.cancel_stream_task("shell").await;
+            }
+            assert!(delivery.await.is_err());
+            let phase: (String, Option<String>) = sqlx::query_as("SELECT phase,local_closed_at FROM chat_admission_operations WHERE kind='tool'").fetch_one(&pool).await.unwrap();
+            assert_eq!(phase, ("unknown".into(),None));
+            let saved = read_legacy_session_internal(store,"terminal-test".into()).await.unwrap();
+            if timeout >= 2000 { assert!(saved.output.contains("kept"), "{}: {}", command, saved.output); }
+            else { assert!(saved.timed_out); }
+            // Explicit cleanup of the known probe child is not a closure proof.
+            if let Ok(pid) = std::fs::read_to_string(temp.path().join("child.pid")) {
+                let _ = background_command("kill").args(["-KILL",pid.trim()]).status();
+            }
         }
     }
 
