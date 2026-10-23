@@ -1,5 +1,8 @@
 import assert from 'node:assert/strict';
-import { readFileSync, readdirSync } from 'node:fs';
+import { readFileSync, readdirSync, mkdtempSync, writeFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import * as browser from '../v2/transfer-transit/decision-browser.generated.mjs';
 const directory = new URL('../v2/', import.meta.url);
 const read = path => JSON.parse(readFileSync(new URL(path, directory), 'utf8'));
@@ -52,9 +55,13 @@ if (!process.argv.includes('--csp')) {
     let source=readFileSync(url,'utf8');
     source=source.replaceAll("'../v2/transfer-decision-validate.mjs'",JSON.stringify(new URL('../v2/transfer-transit/decision-browser.generated.mjs',import.meta.url).href));
     source=source.replaceAll("'./transfer-decision-vectors.mjs'",JSON.stringify(new URL('./transfer-decision-vectors.mjs',import.meta.url).href));
-    const modified=await import('data:text/javascript;base64,'+Buffer.from(source).toString('base64'));
-    const baseline=await import(url.href);
-    const key=Object.keys(modified)[0];assert.deepEqual(modified[key](),baseline[key]());cases++;
+    const temporary=mkdtempSync(join(tmpdir(),'macro-transit-matrix-'));
+    try {
+      const path=join(temporary,'matrix.mjs');writeFileSync(path,source,{mode:0o600});
+      const modified=await import(pathToFileURL(path).href);
+      const baseline=await import(url.href);
+      const key=Object.keys(modified)[0];assert.deepEqual(modified[key](),baseline[key]());cases++;
+    } finally {rmSync(temporary,{recursive:true,force:true});}
   }
 }
 console.log(JSON.stringify({browserDecisionCases:cases,csp:process.argv.includes('--csp'),diagnosticsEmpty:browser.diagnosticsEmpty()}));
