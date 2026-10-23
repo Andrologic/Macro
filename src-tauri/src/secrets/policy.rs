@@ -3,9 +3,10 @@ use super::store::{self, LocalSecretStore, ProviderSecretsFile};
 use super::SecretError;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
-use std::sync::{LazyLock, Mutex};
+use std::sync::{Arc, LazyLock, Mutex};
 
-pub(crate) static POLICY: LazyLock<PolicyOwner> = LazyLock::new(PolicyOwner::new);
+pub(crate) static POLICY: LazyLock<Arc<PolicyOwner>> =
+    LazyLock::new(|| Arc::new(PolicyOwner::new()));
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) struct RevocationTicket(u64);
@@ -18,6 +19,8 @@ pub(crate) struct PolicyStamp {
 
 pub(crate) struct PolicyOwner {
     gate: Mutex<()>,
+    #[cfg(test)]
+    injected_store: Option<LocalSecretStore>,
     boot: uuid::Uuid,
     // Low bit means an explicit availability/recovery debt. Even revisions
     // can also be pending while an ordinary mutation owns a ticket.
@@ -62,6 +65,8 @@ impl PolicyOwner {
     pub(crate) fn new() -> Self {
         Self {
             gate: Mutex::new(()),
+            #[cfg(test)]
+            injected_store: None,
             boot: uuid::Uuid::new_v4(),
             state: AtomicU64::new(1),
             acknowledged: AtomicU64::new(0),
@@ -70,6 +75,45 @@ impl PolicyOwner {
             persistence_failed: AtomicBool::new(false),
             changed: tokio::sync::Notify::new(),
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn for_test(directory: &Path) -> Self {
+        let mut owner = Self::new();
+        owner.injected_store = Some(LocalSecretStore::new(
+            directory.join("provider-secrets.json"),
+        ));
+        owner
+    }
+
+    fn store(&self) -> Result<LocalSecretStore, SecretError> {
+        #[cfg(test)]
+        if let Some(store) = &self.injected_store {
+            return Ok(store.clone());
+        }
+        store::default_store()
+    }
+
+    fn install_store(&self, directory: &Path) -> Result<LocalSecretStore, SecretError> {
+        #[cfg(test)]
+        if let Some(store) = &self.injected_store {
+            std::fs::create_dir_all(directory)?;
+            return Ok(store.clone());
+        }
+        store::install_store_path(directory)
+    }
+
+    fn clear_caches(&self) {
+        #[cfg(test)]
+        if self.injected_store.is_some() {
+            return;
+        }
+        super::clear_caches();
+    }
+
+    #[cfg(test)]
+    pub(crate) fn qualification_stamp(&self) -> Result<PolicyStamp, SecretError> {
+        self.capture(|_, stamp| Ok(stamp))
     }
 
     /// Safe under Pilot operations/state: atomics and notification only.
@@ -169,10 +213,10 @@ impl PolicyOwner {
         let ticket = self.revoke_now();
         let _gate = self.recovery_lock();
         let result = (|| {
-            let store = store::install_store_path(directory)?;
+            let store = self.install_store(directory)?;
             store::with_specific_store_recovery_lock(&store, |store| {
                 store.prepare_policy_file()?;
-                super::clear_caches();
+                self.clear_caches();
                 Ok(())
             })
         })();
@@ -181,6 +225,41 @@ impl PolicyOwner {
             return Err(error);
         }
         self.acknowledge_recovery(ticket)
+    }
+
+    /// The blocking owner keeps all guards outside the async restore future.
+    pub(crate) fn startup<T>(
+        &self,
+        directory: &Path,
+        operation: impl FnOnce(&dyn Fn() -> Result<(), SecretError>) -> Result<T, String>,
+    ) -> Result<T, String> {
+        let ticket = self.revoke_now();
+        let _gate = self.recovery_lock();
+        let mut operation_error = None;
+        let result = (|| {
+            let store = self.install_store(directory)?;
+            store::with_specific_store_recovery_lock(&store, |store| {
+                let rotate_before_journal_removal =
+                    || store.prepare_restored_policy_file().map(|_| ());
+                let value = operation(&rotate_before_journal_removal).map_err(|error| {
+                    operation_error = Some(error);
+                    SecretError::PolicyUnavailable
+                })?;
+                store.prepare_policy_file()?;
+                self.clear_caches();
+                Ok(value)
+            })
+        })();
+        let value = match result {
+            Ok(value) => value,
+            Err(error) => {
+                self.persistence_failed.store(true, Ordering::SeqCst);
+                return Err(operation_error.unwrap_or_else(|| error.to_string()));
+            }
+        };
+        self.acknowledge_recovery(ticket)
+            .map_err(|error| error.to_string())?;
+        Ok(value)
     }
 
     /// The caller must have dropped all Pilot guards before entering here.
@@ -205,10 +284,10 @@ impl PolicyOwner {
             return Err(SecretError::PolicyUnavailable);
         }
         let result = (|| {
-            let store = store::default_store()?;
+            let store = self.store()?;
             let rotate = |store: &LocalSecretStore| {
                 store.rotate_policy_file()?;
-                super::clear_caches();
+                self.clear_caches();
                 Ok(())
             };
             if explicit {
@@ -236,7 +315,7 @@ impl PolicyOwner {
             {
                 return Err(SecretError::PolicyUnavailable);
             }
-            let store = store::default_store()?;
+            let store = self.store()?;
             store::with_specific_store_lock(&store, |store| {
                 let data = store.rotate_policy_file()?;
                 if !self.available() {
@@ -293,7 +372,7 @@ impl PolicyOwner {
         if !self.available() {
             return Err(SecretError::PolicyUnavailable);
         }
-        let store = store::default_store()?;
+        let store = self.store()?;
         store::with_specific_store_lock(&store, |store| read(&store.read_policy_file()?))
     }
 
@@ -303,7 +382,7 @@ impl PolicyOwner {
     ) -> Result<T, SecretError> {
         let _gate = self.lock()?;
         let revision = self.quiescent_revision()?;
-        let store = store::default_store()?;
+        let store = self.store()?;
         store::with_specific_store_lock(&store, |store| {
             let data = store.read_policy_file()?;
             let stamp = PolicyStamp {

@@ -176,8 +176,29 @@ fn recognized(value: &Value) -> Result<ProviderSecretsFile, SecretError> {
 
 impl LocalSecretStore {
     /// Caller owns the common gate and file lock. This path never repairs.
+    fn policy_file_exists(&self) -> Result<bool, SecretError> {
+        match std::fs::symlink_metadata(&self.path) {
+            Ok(metadata) if metadata.file_type().is_file() => Ok(true),
+            Ok(_) => Err(SecretError::PolicyUnavailable),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+            Err(error) => Err(error.into()),
+        }
+    }
+
+    fn restore_pending(&self) -> Result<bool, SecretError> {
+        let parent = self.path.parent().ok_or(SecretError::PolicyUnavailable)?;
+        Ok(parent.join("local-backup/restoring.json").try_exists()?)
+    }
+
     pub(in crate::secrets) fn read_policy_file(&self) -> Result<ProviderSecretsFile, SecretError> {
-        if self.migration_journal_path().try_exists()? {
+        self.read_policy_file_mode(false)
+    }
+
+    fn read_policy_file_mode(&self, restoring: bool) -> Result<ProviderSecretsFile, SecretError> {
+        if (!restoring && self.restore_pending()?) || self.migration_journal_path().try_exists()? {
+            return Err(SecretError::PolicyUnavailable);
+        }
+        if !self.policy_file_exists()? {
             return Err(SecretError::PolicyUnavailable);
         }
         let contents = std::fs::read_to_string(&self.path)?;
@@ -195,11 +216,29 @@ impl LocalSecretStore {
     pub(in crate::secrets) fn prepare_policy_file(
         &self,
     ) -> Result<ProviderSecretsFile, SecretError> {
+        self.prepare_policy_file_mode(false)
+    }
+
+    /// Only the startup owner, while holding the continuous restore exclusion.
+    pub(in crate::secrets) fn prepare_restored_policy_file(
+        &self,
+    ) -> Result<ProviderSecretsFile, SecretError> {
+        self.prepare_policy_file_mode(true)
+    }
+
+    fn prepare_policy_file_mode(
+        &self,
+        restoring: bool,
+    ) -> Result<ProviderSecretsFile, SecretError> {
+        if !restoring && self.restore_pending()? {
+            return Err(SecretError::PolicyUnavailable);
+        }
+        self.policy_file_exists()?;
         self.recover_pending_migration()?;
-        let contents = match std::fs::read_to_string(&self.path) {
-            Ok(contents) => contents,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => String::new(),
-            Err(error) => return Err(error.into()),
+        let contents = if self.policy_file_exists()? {
+            std::fs::read_to_string(&self.path)?
+        } else {
+            String::new()
         };
         let mut data = if contents.trim().is_empty() {
             ProviderSecretsFile::default()
@@ -223,7 +262,7 @@ impl LocalSecretStore {
         } else {
             self.write_file(&data)?;
         }
-        self.read_policy_file()
+        self.read_policy_file_mode(restoring)
     }
 
     /// Ordinary invalidation cannot repair or accept a missing epoch.
@@ -240,6 +279,28 @@ impl LocalSecretStore {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn restore_marker_blocks_capture_rotation_and_uncoordinated_initialization() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = LocalSecretStore::new(directory.path().join(SECRET_FILE_NAME));
+        with_test_store_file_lock(&store, |store| {
+            store.prepare_policy_file()?;
+            let before = std::fs::read(&store.path)?;
+            let backup = directory.path().join("local-backup");
+            std::fs::create_dir(&backup)?;
+            let marker = backup.join("restoring.json");
+            let opaque = b"existing restore journal bytes";
+            std::fs::write(&marker, opaque)?;
+            assert!(store.read_policy_file().is_err());
+            assert!(store.rotate_policy_file().is_err());
+            assert!(store.prepare_policy_file().is_err());
+            assert_eq!(std::fs::read(&store.path)?, before);
+            assert_eq!(std::fs::read(&marker)?, opaque);
+            Ok(())
+        })
+        .unwrap();
+    }
 
     #[test]
     fn policy_file_strict_reads_preserve_unknown_and_unreadable_inputs() {

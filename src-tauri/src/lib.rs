@@ -656,12 +656,6 @@ pub fn run() {
             })?;
             app.manage(config_manager);
             app.manage(config_watcher);
-            secrets::init(&app_data_dir).map_err(|error| {
-                std::io::Error::other(format!(
-                    "Failed to initialize provider secret storage: {}",
-                    error
-                ))
-            })?;
             finalize_desktop_workspace_path(&mut config, &app_data_dir).map_err(|error| {
                 std::io::Error::other(format!(
                     "Failed to resolve desktop workspace path: {}",
