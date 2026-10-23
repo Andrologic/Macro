@@ -88,3 +88,11 @@ defines the closed recoverable archive and its exact root identity. Run
 conformance and `bun contracts/macro-pilot/test/portable-transfer-composition.mjs`
 for synthetic F metadata composition. This adds no active supported-contract
 configuration, content route, native authority or transfer capability.
+
+## Inactive transfer transit contract
+
+`v2/transfer-transit/transfer-transit-contract.json` identifies the separate
+`transfer-transit-1` metadata/content envelope contract. Its closed DTOs and
+CSP-safe validator preserve the existing E/F owners and v2 poll. It adds no
+active route, supported context capability, native proof, staging or activation.
+See `v2/transfer-transit/contract.md` for adapter and admission prerequisites.

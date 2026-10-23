@@ -1,0 +1,95 @@
+{
+  "format": "transfer-transit-1",
+  "status": "contract_only_no_runtime_authority",
+  "content_contract_sha256": "c6ae7440ed0fb4d0bdccdfb936c4bf6ac5c441c96b642c1d9ccbd270b62bdcc6",
+  "resources": [
+    {
+      "path": "../portable-chat-history/portable-chat-history-contract.json",
+      "sha256": "c6ae7440ed0fb4d0bdccdfb936c4bf6ac5c441c96b642c1d9ccbd270b62bdcc6"
+    },
+    {
+      "path": "../strict-json.d.mts",
+      "sha256": "5f5445b3fd48cc754ba3a1240031b81060b4dc80effce7030f78748a49deb582"
+    },
+    {
+      "path": "../strict-json.mjs",
+      "sha256": "cb2256cfaca9d13d6e8fd617fc58f3db2f19016bb1097283c3501ae94dfc3eec"
+    },
+    {
+      "path": "../transfer-decision-schema-set.json",
+      "sha256": "0cc2484d7a953d3cbfb6584c02b87bf5c89331fcd0566bec2bcc168a1844d3e9"
+    },
+    {
+      "path": "../transfer-decision-validate.d.mts",
+      "sha256": "843087a92e1d725286922f4b2fd999944991f90043b854f30f8e733a35b456c9"
+    },
+    {
+      "path": "../transfer-decision-validate.mjs",
+      "sha256": "7441c95fb62364f3b50da70de3f6de486876ac369c03ae9395a0edd6c61319a1"
+    },
+    {
+      "path": "../transfer-decision.d.ts",
+      "sha256": "e91e4dfe94286f61c81049ecaebc2f56cc3c8847ba9ac67448dd11ed63bfb132"
+    },
+    {
+      "path": "../transfer-decision.md",
+      "sha256": "c0435adc9262a591fb00cb5a570d5ddb76051c525d6ab0b63e95e4f35214eb94"
+    },
+    {
+      "path": "../transfer-decision.schema.json",
+      "sha256": "33a9e9031ed97ecacd4b7e5582ae6ad332e3c384e8fe57318156208442f68a5e"
+    },
+    {
+      "path": "NOTICE.txt",
+      "sha256": "938fd36a154c2959238e3a99630112aaa33b9beab9bee52f38d2faaad30236f7"
+    },
+    {
+      "path": "contract.md",
+      "sha256": "d36186c4c98ec4c898a1c68073428caabb85e89233f2a38659279c19d80e543f"
+    },
+    {
+      "path": "decision-browser.generated.d.mts",
+      "sha256": "4881a713291eda25f335072b3cd8bb3d729595f4225bca4940c13ad8f968d516"
+    },
+    {
+      "path": "decision-browser.generated.mjs",
+      "sha256": "b3253383923a8a90bf9a114065e628b2930d5bfd0faf1ef47ba00072955e0622"
+    },
+    {
+      "path": "identities.generated.d.mts",
+      "sha256": "a40cf4fa5d952435d01ab907863b552f674b70eb23d48ca8144eec327e6e8353"
+    },
+    {
+      "path": "identities.generated.mjs",
+      "sha256": "d9bafdfd4ab165968caf1e67b023fa8bd0568ad58e7e4dfc54677437a204174a"
+    },
+    {
+      "path": "schema.json",
+      "sha256": "797d900e12637812784b747d9539c555e919d203422edb3ac445f46cfaeba2d6"
+    },
+    {
+      "path": "shape.generated.d.mts",
+      "sha256": "30dc2628b49ebea7691006184a68da9bbd4c0916b67a2acf9bc87a856b7ee1e1"
+    },
+    {
+      "path": "shape.generated.mjs",
+      "sha256": "ad95c9ce2c7d25bc2523fc01d489db3a7a40ccb76d0bc1acd153374199136350"
+    },
+    {
+      "path": "types.generated.d.mts",
+      "sha256": "cee230da100099943f59b3715382bba27cc3a12e1959966109768d73d1fcc897"
+    },
+    {
+      "path": "validate.d.mts",
+      "sha256": "e469108499e4b9476dcfdd3c0cede55f4f9dde6ebf389b2426ca0053cbaefa4a"
+    },
+    {
+      "path": "validate.mjs",
+      "sha256": "6f6d740201e6272c77f96c9efa1c0b718f6bd2e130e487fbc723ccf4f282b8bf"
+    },
+    {
+      "path": "vectors.json",
+      "sha256": "3f532fd28dbab371e9e629860ce8b09670f1dfa06fbeb591a1a44006bc96008a"
+    }
+  ]
+}
