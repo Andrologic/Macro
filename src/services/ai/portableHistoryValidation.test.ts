@@ -127,6 +127,7 @@ test('source-approved JSON is inspected decoded again under a stronger target po
   const budget = new PortableWorkBudget(128 * 1024 * 1024), stronger = { ...policy, secrets: [...policy.secrets, targetSecret] };
   const archive = new PortableHistoryArchive(portFor(f.output), async () => stronger, budget); await archive.open();
   await expect(archive.withRecord(raw.header.ordinal, async () => {})).rejects.toThrow('unsafe_content');
+  await expect(archive.withUuid(`00000000-0000-4000-8000-${String(raw.header.ordinal).padStart(12, '0')}`, async () => {})).rejects.toThrow('unsafe_content');
   await expect(archive.withProjection(async () => {})).rejects.toThrow('unsafe_content');
   archive.dispose(); expect(budget.used).toBe(0);
 });
@@ -151,6 +152,7 @@ test('reader open inspects escaped metadata and checkpoint JSON under the target
       await archive.open();
       const record = f.output.find(item => item.header.origin !== undefined && item.text.includes('new-target-'))!;
       await expect(archive.withRecord(record.header.ordinal, async () => { consumed = true; })).rejects.toThrow('unsafe_content');
+      await expect(archive.withUuid(`00000000-0000-4000-8000-${String(record.header.ordinal).padStart(12, '0')}`, async () => { consumed = true; })).rejects.toThrow('unsafe_content');
       await expect(archive.withProjection(async () => { consumed = true; })).rejects.toThrow('unsafe_content');
     }
     expect(consumed).toBe(false); archive.dispose(); expect(budget.used).toBe(0);

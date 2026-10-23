@@ -4,7 +4,7 @@ import { inspectAttachmentContent } from '../macroPilot/attachmentFilesHost';
 import { inspectWholeText, type TextPolicy } from '../macroPilot/conversationText';
 import { parseStoredJsonStrict, isRecord } from './jsonValues';
 import { PortableWorkBudget, samePortablePolicy, inspectPortableDecodedValue } from './portableHistoryInspection';
-import { PORTABLE_SOURCE_LIMITS, PORTABLE_LIMITS, portableDigest, portableRetainedJsonKind, inspectRetainedPortableJson, type PortableMetadata, type PortableRecord } from './portableChatHistory';
+import { PORTABLE_SOURCE_LIMITS, PORTABLE_LIMITS, portableDigest, portableRetainedJsonKind, inspectRetainedPortableContent, type PortableMetadata, type PortableRecord } from './portableChatHistory';
 
 export interface PortableArchiveBinding { version: 1; importKey: string; manifest: string }
 export interface PortableArchiveFragment { record: PortableRecord; offset: number; bytes: Uint8Array; targetUuid: string | null }
@@ -41,6 +41,7 @@ function metadata(value: unknown): PortableMetadata {
   if (value.source.path !== undefined && (!Array.isArray(value.source.path) || value.source.path.some(part => typeof part !== 'string' && (!Number.isSafeInteger(part) || part < 0)))) fail('invalid_portable_metadata');
   return value as unknown as PortableMetadata;
 }
+const assetMime = { text_plain: 'text/plain', image_png: 'image/png', image_jpeg: 'image/jpeg', image_webp: 'image/webp' } as const;
 const textEntry = (record: PortableRecord) => record.entry.kind !== 'asset' || record.entry.mime === 'text_plain';
 const keyFor = (entry: PortableMetadata) => `${entry.source.family}:${entry.source.row}`;
 
@@ -134,6 +135,8 @@ export class PortableHistoryArchive {
     const header = this.headers[ordinal]; if (!header) fail('missing_record');
     const isMetadata = header.entry.kind === 'historical_text' && header.entry.purpose === 'portable_metadata';
     const origin = header.origin === undefined ? undefined : this.origins.get(header.origin);
+    // Non-JSON 16x units include raw/UTF-16, decoded formatter attributes,
+    // and complete image UTF-8/Latin-1 inspection views before any callback.
     const release = this.budget.reserve(512 + header.bytes * (isMetadata || portableRetainedJsonKind(origin) ? 256 : 16));
     try {
       const bytes = new Uint8Array(header.bytes); let offset = 0, done = false;
@@ -152,11 +155,15 @@ export class PortableHistoryArchive {
       if (await portableDigest(bytes) !== header.sha256) fail('integrity_failed');
       const policy = await this.policy();
       if (this.policySnapshot && !samePortablePolicy(policy, this.policySnapshot)) fail('policy_changed');
+      if (header.entry.kind === 'asset') {
+        const mime = assetMime[header.entry.mime];
+        if (!mime || inspectAttachmentContent(bytes, mime, policy) !== 'available') fail('unsafe_asset');
+      }
       if (textEntry(header)) {
         const text = decoder.decode(bytes);
         if (!inspectWholeText(text, { ...policy, inspectionBytes: bytes.length })) fail('unsafe_content');
         if (isMetadata) inspectPortableDecodedValue(parseStoredJsonStrict(text), policy);
-        else if (origin) inspectRetainedPortableJson(origin, text, policy);
+        else if (origin) inspectRetainedPortableContent(origin, text, policy);
       }
       await consume(bytes, this.uuids[ordinal]);
     } finally { release(); }
@@ -205,8 +212,7 @@ export class PortableHistoryArchive {
           if (attached.has(to)) fail('invalid_association'); attached.add(to);
           await this.withRecord(to, async (bytes, uuid) => {
             if (target.entry.kind !== 'asset') fail('invalid_association');
-            const mime = { text_plain: 'text/plain', image_png: 'image/png', image_jpeg: 'image/jpeg', image_webp: 'image/webp' }[(target.entry as Extract<PortableRecord['entry'], { kind: 'asset' }>).mime];
-            if (inspectAttachmentContent(bytes, mime, policy) !== 'available') fail('unsafe_asset');
+            const mime = assetMime[(target.entry as Extract<PortableRecord['entry'], { kind: 'asset' }>).mime];
             if (mime === 'text/plain') additional.push({ origin: this.origins.get(target.origin!)!, ordinal: to, text: decoder.decode(bytes), uuid: uuid! });
             else {
               let binary = ''; for (let offset = 0; offset < bytes.length; offset += 8192) binary += String.fromCharCode(...bytes.subarray(offset, offset + 8192));

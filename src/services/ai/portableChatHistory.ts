@@ -6,7 +6,7 @@ import { parseStoredJsonStrict, isRecord } from './jsonValues';
 import { withAdmittedPortableText, PortableWorkBudget, samePortablePolicy, inspectPortableDecodedValue as inspect } from './portableHistoryInspection';
 import { recognizePortableProviderItems } from './portableProviderHistory';
 import { buildChatGptVisibleTurnContent } from './responsesCodec';
-import { buildToolContextBlock, formatToolTraceDetail } from './toolPresentation';
+import { buildToolContextBlock, formatToolTraceDetail, visitToolContextAttributes, decodeToolContextAttribute } from './toolPresentation';
 import { projectFinalProvenance } from '../macroPilot/assistantProvenance';
 import type { TextPolicy } from '../macroPilot/conversationText';
 import { inspectAttachmentContent } from '../macroPilot/attachmentFilesHost';
@@ -99,6 +99,15 @@ export function inspectRetainedPortableJson(origin: Pick<PortableMetadata, 'sour
   } else closed(decoded, ['version', 'source', 'fingerprint', 'start', 'end']);
   return decoded;
 }
+/** Reinspect only the encodings emitted by this normalizer, at source and at
+ * every target consumption. Hidden results remain exact text, not JSON or an
+ * inverse of an ambiguous formatter container. Decoded views stay in scope. */
+export function inspectRetainedPortableContent(origin: Pick<PortableMetadata, 'source' | 'reason'>, raw: string, policy: TextPolicy): void {
+  if (origin.source.family === 1 && origin.source.tag === 8) {
+    visitToolContextAttributes(raw, attributes => inspect(attributes, policy));
+  } else inspectRetainedPortableJson(origin, raw, policy);
+}
+
 /** Strict inverse for legacy hidden-only output. Ambiguous delimiters refuse.
  * Structured provider results need not use this inverse: they remain separate. */
 function recognizeHiddenHistoryParts(value: string): { block: string; id: string; name: string; detail?: string }[] {
@@ -114,11 +123,10 @@ function recognizeHiddenHistoryParts(value: string): { block: string; id: string
     if (end < 0) fail('incomplete_result');
     const result = remaining.slice(lineEnd + 2, end);
     if (result.includes('<tool_context') || result.includes('</tool_context>')) fail('ambiguous_hidden_shape');
-    const unescape = (s: string) => s.replace(/&quot;/g, '"').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&');
-    const block = buildToolContextBlock(unescape(match![1]), unescape(match![2]), match![3] === undefined ? undefined : unescape(match![3]), result);
+    const block = buildToolContextBlock(decodeToolContextAttribute(match![1]), decodeToolContextAttribute(match![2]), match![3] === undefined ? undefined : decodeToolContextAttribute(match![3]), result);
     const consumed = end + '\n</tool_context>'.length;
     if (block !== remaining.slice(0, consumed)) fail('unknown_hidden_shape');
-    results.push({ block: block!, id: unescape(match![1]), name: unescape(match![2]), ...(match![3] === undefined ? {} : { detail: unescape(match![3]) }) });
+    results.push({ block: block!, id: decodeToolContextAttribute(match![1]), name: decodeToolContextAttribute(match![2]), ...(match![3] === undefined ? {} : { detail: decodeToolContextAttribute(match![3]) }) });
     remaining = remaining.slice(consumed);
     if (remaining) { if (!remaining.startsWith('\n\n')) fail('unknown_hidden_shape'); remaining = remaining.slice(2); if (!remaining) fail('unknown_hidden_shape'); }
   }
@@ -173,7 +181,7 @@ export async function normalizePortableChatHistory(
   };
   const content = async (field: RawHistoryField, text: string, meaning: NonNullable<PortableMetadata['meaning']>, entry: PortableEntry, extra: Partial<PortableMetadata> = {}) => {
     inspect(text, initial);
-    inspectRetainedPortableJson({ source: { ordinal: field.ordinal, row: field.row, family: field.family, tag: field.tag, sqlType: field.sql_type }, reason: extra.reason ?? 'recognized_history' }, text, initial);
+    inspectRetainedPortableContent({ source: { ordinal: field.ordinal, row: field.row, family: field.family, tag: field.tag, sqlType: field.sql_type }, reason: extra.reason ?? 'recognized_history' }, text, initial);
     const origin = await metadata(field, 'retained_original', 'recognized_history', { meaning, ...extra });
     return emit(entry, encoder.encode(text), origin);
   };
