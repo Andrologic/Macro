@@ -3,7 +3,7 @@ export interface PortableOrigin { version:1; normalizer:'macro-portable-history-
 export type PortableEntry = {kind:'message';role:'user'|'assistant'} | {kind:'historical_text';purpose:'portable_metadata'|'original_text'|'historical_data'} | {kind:'citation'} | {kind:'asset';mime:'text_plain'|'image_png'|'image_jpeg'|'image_webp'} | {kind:'association';from:number;to:number;position:number;relation:'asset_for_message'|'citation_for_message'|'data_for_message'};
 export interface PortableHeader {ordinal:number;entry:PortableEntry;bytes:number;sha256:string;origin?:number}
 export interface PortableDescriptor {kind:'portable_archive';format:'portable-chat-history-1';content_contract_sha256:string;records:number;bytes:number;manifest_sha256:string}
-export const vocabulary: {format:string;profile:string;normalizer:string;families:{table:string;columns:string[];integers:string[];nullable:string[]}[];classifications:string[];meanings:string[];reasons:Record<string,string[]>;sourceLimits:string[];remainingLimits:string[];providerKeys:Record<string,string[]>;mime:Record<string,string>};
+export const vocabulary: {format:string;profile:string;normalizer:string;families:{table:string;columns:string[];integers:string[];nullable:string[];blobs?:string[]}[];classifications:string[];meanings:string[];reasons:Record<string,string[]>;sourceLimits:string[];remainingLimits:string[];providerKeys:Record<string,string[]>;mime:Record<string,string>};
 export const FRAGMENT_BYTES:4093;
 export const FRAME_BYTES:8192;
 export function assertPortableUnicode(value:unknown):void;
@@ -26,3 +26,5 @@ export function portableRetainedJsonKind(origin:Pick<PortableOrigin,'source'|'re
 export function validatePortableProviderShape(value:unknown):void;
 
 export function validatePortableTypedResult(value:unknown,output:string):void;
+
+export function validatePortableRedundancy(origin:PortableOrigin,target:PortableHeader|undefined,retainedOrigin:PortableOrigin|undefined,declarationOrdinal:number):void;

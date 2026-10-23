@@ -1,4 +1,4 @@
-import { validatePortableMetadata, validatePortableHeader, validatePortableOriginLink } from '../../../contracts/macro-pilot/v2/portable-chat-history/validate.mjs';
+import { validatePortableMetadata, validatePortableHeader, validatePortableOriginLink, validatePortableRedundancy } from '../../../contracts/macro-pilot/v2/portable-chat-history/validate.mjs';
 import type { ChatMessage } from '../../types';
 import type { Citation } from '../../types/citation';
 import type { TextPolicy } from '../macroPilot/conversationText';
@@ -88,7 +88,10 @@ export class PortableHistoryArchive {
       }
       const roots = [...this.origins.values()].filter(origin => origin.captureManifest !== undefined);
       if (roots.length !== 1 || !roots[0].sourceLimits || PORTABLE_SOURCE_LIMITS.some(limit => !roots[0].sourceLimits!.includes(limit)) || !roots[0].remainingLimits?.includes('not_F_admission') || roots[0].reason !== 'capture_provenance_only' || roots[0].source.family !== 0 || roots[0].source.tag !== 0) fail('missing_source_identity');
-      for (const origin of this.origins.values()) if (origin.classification === 'redundant_representation' && (origin.retained === undefined || !this.headers[origin.retained] || this.headers[origin.retained].entry.kind === 'association')) fail('invalid_origin');
+      for (const [declarationOrdinal, origin] of this.origins) if (origin.classification === 'redundant_representation') {
+        const target = this.headers[origin.retained!];
+        validatePortableRedundancy(origin, target, target?.origin === undefined ? undefined : this.origins.get(target.origin), declarationOrdinal);
+      }
       for (const header of this.headers) {
         if (header.entry.kind === 'association') {
           const { from, to, position, relation } = header.entry;

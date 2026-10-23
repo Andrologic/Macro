@@ -7,11 +7,19 @@
     },
     {
       "path": "contract.md",
-      "sha256": "1b1182d1ae54b14a988c78edc4ad3291db875d72b4bff5e477ecc5124d0dda01"
+      "sha256": "cec07bb4dc77c305b29175717b6f9fc12d430bd393a0c623ee15765a013b6e16"
     },
     {
       "path": "frame.schema.json",
       "sha256": "82b656b87d570a039639dd30cbed9ef79bfed6ee0bee03aa275233d828d33faf"
+    },
+    {
+      "path": "provider-validator.generated.d.mts",
+      "sha256": "407d38ecb2a1166240a7003b8f7314c702053ceb4e5ed9752ebe3fd98ace4a4c"
+    },
+    {
+      "path": "provider-validator.generated.mjs",
+      "sha256": "9650dbce58128747c5c193601233861c44ae151ec5530ec82d280fbe50281ebc"
     },
     {
       "path": "provider-vectors.json",
@@ -31,15 +39,15 @@
     },
     {
       "path": "validate.d.mts",
-      "sha256": "9b2b0eafb7ee072d953ccaa5bb126246b2ba466b47e8e8f456b127b695ec4da4"
+      "sha256": "56886904df201e694bec422ab0fb47e0f0b53372d9e6cfac52bfd01f829e191c"
     },
     {
       "path": "validate.mjs",
-      "sha256": "05aa90176f75109da559b46fb1d5a2dbc9657ee6636e6f9f61056fb05585a688"
+      "sha256": "d7bcf761cd27d5a44a3ca43c116ba6ef132d668b4e714a0e71c91a5e9492ca78"
     },
     {
       "path": "vocabulary.json",
-      "sha256": "3c5af12ec947a869a6ab5c391e8ac675b4ddc6832f61b0b4e8716b4441de5220"
+      "sha256": "ec24764d3ddb8ae30529c124133a253abd41e260b1444596393a8ba41bff8eb0"
     }
   ]
 }

@@ -5,7 +5,7 @@ import { readFileSync, writeFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { validatePortableTypedResult, validatePortableProviderShape, validatePortableHeader, renderPortableHeader, validatePortableMetadata, assertPortableUnicode, validatePortableArchive, portableManifestInput, portableLines, FRAME_BYTES, FRAGMENT_BYTES, vocabulary } from '../v2/portable-chat-history/validate.mjs';
 const dir=new URL('../v2/portable-chat-history/',import.meta.url), utf8=s=>new TextEncoder().encode(s), digest=async b=>createHash('sha256').update(b).digest('hex');
-const normative=['contract.md','recognition.md','frame.schema.json','schema-set.json','validate.d.mts','validate.mjs','vocabulary.json','provider.schema.json','provider-vectors.json','../strict-json.mjs'];
+const normative=['contract.md','recognition.md','frame.schema.json','schema-set.json','validate.d.mts','validate.mjs','vocabulary.json','provider.schema.json','provider-vectors.json','provider-validator.generated.mjs','provider-validator.generated.d.mts','../strict-json.mjs'];
 const root={format:'portable-chat-history-1',resources:normative.sort().map(path=>({path,sha256:createHash('sha256').update(readFileSync(new URL(path,dir))).digest('hex')}))};
 const rootBytes=JSON.stringify(root,null,2)+'\n', rootPath=new URL('portable-chat-history-contract.json',dir);
 if(process.argv.includes('--generate'))writeFileSync(rootPath,rootBytes); else assert.equal(readFileSync(rootPath,'utf8'),rootBytes);

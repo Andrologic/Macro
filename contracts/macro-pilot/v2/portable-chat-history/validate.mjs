@@ -1,12 +1,10 @@
-import Ajv2020 from 'ajv/dist/2020.js';
-import providerSchema from './provider.schema.json' with { type: 'json' };
+import providerShape from './provider-validator.generated.mjs';
 import { parseStoredJsonStrict } from '../strict-json.mjs';
 import vocabulary from './vocabulary.json' with { type: 'json' };
 export { vocabulary };
-let providerShape;
 export function validatePortableProviderShape(value) {
-  providerShape ??= new Ajv2020({strict:false,allErrors:false}).compile(providerSchema);
-  if(!providerShape(value))fail('unknown_required_shape');
+  try { if(!providerShape(value))fail('unknown_required_shape'); }
+  finally { providerShape.errors=null; } // No rejected-input diagnostic outlives admission.
 }
 
 export const FRAGMENT_BYTES = 4093;
@@ -66,6 +64,10 @@ export function validatePortableMetadata(v) {
   if (v.version !== 1 || v.normalizer !== vocabulary.normalizer || typeof v.policy !== 'string' || !vocabulary.classifications.includes(v.classification) || !vocabulary.reasons[v.classification].includes(v.reason)) fail('invalid_portable_metadata');
   const s=v.source; closed(s,['ordinal','row','family','tag','sqlType','path'],['ordinal','row','family','tag','sqlType']);
   if (![s.ordinal,s.row,s.family,s.tag,s.sqlType].every(integer) || s.sqlType>3 || !vocabulary.families[s.family] || s.tag>=vocabulary.families[s.family].columns.length) fail('invalid_portable_metadata');
+  const family=vocabulary.families[s.family], column=family.columns[s.tag];
+  const expected=family.integers.includes(column)?1:family.blobs?.includes(column)?3:2;
+  if(s.sqlType===0?!family.nullable.includes(column):s.sqlType!==expected)fail('invalid_portable_metadata');
+  if((s.sqlType===0)!==(v.reason==='sql_null'))fail('invalid_portable_metadata');
   if (s.path !== undefined && (!Array.isArray(s.path) || ![9,10].includes(s.tag) || s.family!==1 || s.path.some(p=>typeof p!=='string'&&!integer(p)))) fail('invalid_portable_metadata');
   if(s.path!==undefined) {
     const p=s.path;
@@ -117,6 +119,17 @@ export function validatePortableOriginLink(header, origin) {
   if(!origin || origin.classification!=='retained_original')fail('invalid_portable_origin');
   const e=header.entry;
   const valid=e.kind==='message'?origin.meaning==='message':e.kind==='asset'?origin.meaning==='asset':e.kind==='citation'?origin.meaning==='citation':e.kind==='historical_text'&&(e.purpose==='original_text'?origin.meaning==='original':e.purpose==='historical_data'&&['original','data','reflection','checkpoint'].includes(origin.meaning));
+  if(!valid)fail('invalid_portable_origin');
+}
+/** A redundant declaration must name recoverable payload, never another declaration. */
+export function validatePortableRedundancy(origin, target, retainedOrigin, declarationOrdinal) {
+  if(origin?.classification!=='redundant_representation' || !target || target.ordinal!==origin.retained || !integer(declarationOrdinal) || target.ordinal>=declarationOrdinal || target.origin===undefined || !retainedOrigin || retainedOrigin.classification!=='retained_original')fail('invalid_portable_origin');
+  validatePortableOriginLink(target,retainedOrigin);
+  const reason=origin.reason, e=target.entry;
+  const valid=reason==='recognized_identical_text'?e.kind==='historical_text'&&e.purpose==='historical_data'&&['original','data','reflection'].includes(retainedOrigin.meaning)&&retainedOrigin.reason==='recognized_history'&&retainedOrigin.source.family===1&&[9,10].includes(retainedOrigin.source.tag)&&retainedOrigin.source.row===origin.source.row
+    : ['provider_final_matches_attributed_message','provider_display_matches_attributed_message'].includes(reason)?e.kind==='message'&&e.role==='assistant'&&retainedOrigin.meaning==='message'&&retainedOrigin.source.row===origin.source.row&&(origin.message===undefined||retainedOrigin.message===origin.message)
+    : reason==='hidden_matches_complete_structured_results'?e.kind==='historical_text'&&e.purpose==='original_text'&&retainedOrigin.reason==='complete_structured_hidden_representation'&&retainedOrigin.source.row===origin.source.row
+    : reason==='identical_owned_asset'?e.kind==='asset'&&retainedOrigin.meaning==='asset':false;
   if(!valid)fail('invalid_portable_origin');
 }
 export function portableManifestInput(capture, policy, headers) {
@@ -189,7 +202,7 @@ export async function validatePortableArchive(lines, contractSha, ports) {
         }
         const origin=h.origin===undefined?undefined:origins.get(h.origin);
         if(h.origin!==undefined) { if(h.origin>=h.ordinal)fail('invalid_portable_origin'); validatePortableOriginLink(h,origin); }
-        if(meta?.classification==='redundant_representation'&&(!headers[meta.retained]||headers[meta.retained].entry.kind==='association'))fail('invalid_portable_origin');
+        if(meta?.classification==='redundant_representation') validatePortableRedundancy(meta,headers[meta.retained],origins.get(headers[meta.retained]?.origin),h.ordinal);
         if(h.entry.kind==='message') {
           if(origin.meaning!=='message'||typeof origin.message!=='string'||!origin.message||typeof origin.timestamp!=='string'||messages.has(origin.message))fail('invalid_portable_origin');
           messages.set(origin.message,h.ordinal);

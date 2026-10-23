@@ -145,7 +145,15 @@ export async function normalizePortableChatHistory(
   const messageRoles = new Map<string, string>();
   const assets = new Map<string, number>();
   const pendingRelations: { message: string; target: number; relation: 'data_for_message' | 'asset_for_message' | 'citation_for_message'; sourceRow?: number }[] = [];
-  const receipts = new Map<string, string>();
+  const receipts = new Map<string, { raw: string; bytes: number }>();
+  // The provenance owner parses its receipt independently of display size.
+  const projectReceipt = async (id: string, text: string) => {
+    const receipt = receipts.get(id);
+    if (!receipt) return null;
+    const release = budget.reserve(256 + receipt.bytes * 256);
+    try { return await projectFinalProvenance(id, text, receipt.raw); }
+    finally { release(); }
+  };
   const evidence: { id: string; role: string; contentHash: string; providerInputHash: string }[] = [];
   const citationEvidence: Record<string, string> = Object.create(null);
   let checkpoint: { boundary: string; fingerprint: string; inputs: unknown; captured: { used: unknown; interesting: unknown; pruned: unknown; sourceHashes: unknown; version: string; policyVersion: string; modelContextWindowTokens: string } } | null = null;
@@ -213,9 +221,14 @@ export async function normalizePortableChatHistory(
     await metadata(first!, 'excluded_local_metadata', 'capture_provenance_only', { captureManifest: source.manifest, sourceLimits: source.limits, remainingLimits: vocabulary.remainingLimits });
     // Provenance is read first, from the same immutable capture, not a live DB.
     for await (const row of source.rows()) if (row.family === 2) {
-      const key = await small(row, 0); const value = await small(row, 1);
-      if (!key?.startsWith('chat:assistant-visible-provenance:v1:') || value === null) fail('unknown_provenance');
-      closed(parseStoredJsonStrict(value!), vocabulary.providerKeys.provenance); receipts.set(key!.slice('chat:assistant-visible-provenance:v1:'.length), value!);
+      const key = await small(row, 0), field = row.fields.find(field => field.tag === 1);
+      if (!key?.startsWith('chat:assistant-visible-provenance:v1:') || !field || field.sql_type !== 2) fail('unknown_provenance');
+      await read(field!, true, async raw => {
+        closed(parseStoredJsonStrict(raw), vocabulary.providerKeys.provenance);
+        inspectRetainedPortableJson({ source: { ordinal: field!.ordinal, row: field!.row, family: 2, tag: 1, sqlType: 2 }, reason: 'recognized_history' }, raw, initial);
+        keep(256 + raw.length * 2);
+        receipts.set(key!.slice('chat:assistant-visible-provenance:v1:'.length), { raw, bytes: field!.bytes });
+      });
     }
     for await (const row of source.rows()) {
       const count = vocabulary.families[row.family]?.columns.length;
@@ -229,7 +242,7 @@ export async function normalizePortableChatHistory(
       if (row.family === 6) for (const field of row.fields) if (citationFields[field.tag] && field.sql_type === 2) { const release = budget.reserve(256 + field.bytes * 4); rowReleases.push(release); controls.push(release); }
       let checkpointBoundary = '', checkpointFingerprint = '', checkpointInputs: unknown = null;
       const captured = { used: null as unknown, interesting: null as unknown, pruned: [] as unknown, sourceHashes: null as unknown, version: '', policyVersion: '', modelContextWindowTokens: '' };
-      const rowCalls = new Map<string, { name: string; arguments: string }>(), rowResults = new Map<string, { text: string; name?: string }>();
+      const rowCalls = new Map<string, { name: string; arguments: string; argumentBytes: number }>(), rowResults = new Map<string, { text: string; name?: string }>();
       const rowTraces: { id: string; name: string; detail?: string }[] = [];
       const providerTextOrigins: { field: RawHistoryField; source: PortableMetadata['source']; kind: string }[] = [];
       let attributedFinalHash: string | null = null, attributedDisplayHash: string | null = null;
@@ -243,7 +256,7 @@ export async function normalizePortableChatHistory(
         if (messageIds.has(id!)) fail('integrity_failed'); keep(256 + id!.length * 2); messageIds.add(id!); contentHash.update(role! + ':');
         if (role === 'assistant') { keep(512); await read(row.fields[4], false, async raw => {
           inspect(raw, initial);
-          const final = raw ? await projectFinalProvenance(id!, raw, receipts.get(id!) ?? null) ?? fail('unknown_provenance') : raw;
+          const final = raw ? await projectReceipt(id!, raw) ?? fail('unknown_provenance') : raw;
           // Only digests survive this admitted preliminary field read. This
           // separates a repeated final from distinct intermediate provider text.
           attributedFinalHash = await portableDigest(encoder.encode(final));
@@ -306,7 +319,7 @@ export async function normalizePortableChatHistory(
                 inspect(parseStoredJsonStrict(part.arguments), initial);
                 if (calls.has(part.id) && calls.get(part.id) !== hash) fail('contradictory_result');
                 keep(256 + part.id.length * 2); calls.set(part.id, hash);
-                if (!rowCalls.has(part.id)) { keep(512 + (part.name.length + part.arguments.length) * 4); rowCalls.set(part.id, { name: part.name, arguments: part.arguments }); }
+                if (!rowCalls.has(part.id)) { keep(512 + (part.name.length + part.arguments.length) * 4); rowCalls.set(part.id, { name: part.name, arguments: part.arguments, argumentBytes: encoder.encode(part.arguments).length }); }
                 const target = await content(field, JSON.stringify({ tool: part.name, arguments_json: part.arguments }), 'data', { kind: 'historical_text', purpose: 'historical_data' }, { message: id!, source: sourceRef, reason: 'provider_tool_call' });
                 pendingRelations.push({ message: id!, target, relation: 'data_for_message' }); keep(128);
               } else if (part.kind === 'result') {
@@ -332,7 +345,7 @@ export async function normalizePortableChatHistory(
             if (displayHashes.size && !displayHashes.has(await portableDigest(encoder.encode(raw)))) fail('contradictory_provenance');
             let projected = raw;
             if (role === 'assistant' && raw) {
-              projected = await projectFinalProvenance(id!, raw, receipts.get(id!) ?? null) ?? fail('unknown_provenance');
+              projected = await projectReceipt(id!, raw) ?? fail('unknown_provenance');
               if (!finalHashes.has(await portableDigest(encoder.encode(projected)))) fail('contradictory_provenance');
               if (raw !== projected) {
                 const close = raw.indexOf('</think>');
@@ -359,10 +372,15 @@ export async function normalizePortableChatHistory(
               const blocks = rowTraces.map(trace => {
                 const call = rowCalls.get(trace.id), result = rowResults.get(trace.id);
                 if (!call || !result || trace.name !== call.name || (result.name !== undefined && result.name !== call.name)) fail('contradictory_result');
-                const args = parseStoredJsonStrict(call!.arguments);
-                const detail = isRecord(args) ? formatToolTraceDetail(call!.name, args) : undefined;
-                if (trace.detail !== detail) fail('contradictory_result');
-                return buildToolContextBlock(trace.id, call!.name, trace.detail, result!.text);
+                // Provider inspection ended before this hidden field. Re-admit
+                // the argument graph by its own bytes, not the hidden size.
+                const release = budget.reserve(256 + call!.argumentBytes * 256);
+                try {
+                  const args = parseStoredJsonStrict(call!.arguments);
+                  const detail = isRecord(args) ? formatToolTraceDetail(call!.name, args) : undefined;
+                  if (trace.detail !== detail) fail('contradictory_result');
+                  return buildToolContextBlock(trace.id, call!.name, trace.detail, result!.text);
+                } finally { release(); }
               }).filter((block): block is string => block !== null);
               if (blocks.join('\n\n').trim() !== raw) fail('contradictory_result');
               const target = await content(field, raw, 'original', { kind: 'historical_text', purpose: 'original_text' }, { message: id!, reason: 'complete_structured_hidden_representation' });
@@ -442,6 +460,7 @@ export async function normalizePortableChatHistory(
             const json = /json/.test(checkpointColumns[field.tag] ?? '');
             const decoded = [20, 21].includes(field.tag) ? parseStoredJsonStrict(raw) : inspectRetainedPortableJson({ source: { ordinal: field.ordinal, row: field.row, family: field.family, tag: field.tag, sqlType: field.sql_type }, reason: 'recognized_history' }, raw, initial);
             if (json && decoded === undefined) fail('unknown_required_shape');
+            if ([1, 8].includes(field.tag)) keep(256 + raw.length * 2);
             if (field.tag === 1) checkpointBoundary = raw;
             if (field.tag === 8) checkpointFingerprint = raw;
             if ([4, 5, 10, 20, 21].includes(field.tag)) keep(256 + field.bytes * 256);

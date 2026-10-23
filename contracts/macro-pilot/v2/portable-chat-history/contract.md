@@ -19,7 +19,11 @@ validate.mjs and vocabulary.json define the closed scalar, header, origin, frame
 sequence and dependency rules. The declaration is normative for the public
 module's interface and must agree with runtime vectors. A small JSON Schema
 registers frame shape; synchronous validation supplies relational semantics.
-No frontend dependency or second JSON parser belongs in this set. Strict JSON
+No frontend dependency or second JSON parser belongs in this set. Provider shape
+validation imports the deterministic standalone ESM generated from provider.schema.json
+through the existing Ajv standalone/esbuild development chain. The runtime never
+compiles a schema or generates code from strings. Schema and vectors remain the
+source; freshness is checked against the generated normative module. Strict JSON
 uses JSON.parse for syntax and rejects decoded duplicate keys. JSON numbers do
 not preserve arbitrary numeric precision: arguments_json remains exact original
 text and is inspected decoded without reserialization. Structural counters are
@@ -84,8 +88,16 @@ not erase limitations of the raw capture. Remaining limits include not_F_admissi
 and not_provider_session_resumption. Unknown limitations refuse.
 
 Every retained payload references its earlier retained_original origin metadata.
-Reasons/classifications are closed. Redundant representations reference an
-existing earlier retained record. Excluded operational state, opaque continuation,
+Each source sqlType must match the declared column: integer columns use1, owned
+attachment data uses3, remaining columns use2. Type0 is permitted only for a
+nullable column, and is equivalent to reason sql_null. All other reasons require
+the declared non-null type. Reasons/classifications are closed. Redundant representations reference an
+existing earlier recoverable payload with retained_original origin, never a metadata
+or association record. A provider final/display points to the same source row's
+assistant message; recognized_identical_text points to that row's provider text
+payload, including original/reflection/data; structured hidden points to the same
+row's complete_structured_hidden_representation original; identical_owned_asset
+points to an asset origin. The target payload must also satisfy its origin link. Excluded operational state, opaque continuation,
 local provider IDs and private checkpoint bindings have no value, isolated hash,
 length or recoverable payload. Observable reasoning/reflection remains historical
 data. Historical source IDs and admissible provenance are data, not authority.
@@ -139,6 +151,16 @@ Admission precedes raw strings, parsed graphs, inspection views, indexes and
 copies. reserve is mandatory and failing it causes no load/append. The host owns
 current private policy, not imported policyRevision or an isolated credential
 hash. Native E/source/staging/copy charges and attachment quotas remain unchanged.
+Receipt JSON admission uses the receipt's byte length before the preliminary
+load/parse and before every provenance-owner projection, independently of display
+length. Any retained raw receipt has its own string admission; a parsed receipt
+never outlives its JSON scope. Rejected shapes follow the same admission. Reader
+receipt originals use the same recognized JSON tariff before record/UUID callbacks;
+projection does not parse or consume original-only receipts. Reconstructing
+structured hidden data re-admits saved call arguments by their own UTF-8 bytes
+before parsing and formatting, independently of hidden text length. Retained
+checkpoint JSON graphs retain their own JSON charge; boundary/fingerprint strings
+retain their own string charge until evidence validation finishes.
 Working units are logical declared tariffs, not heap/RSS. Reader/projection may
 materialize O(N) under admission; block size never implies constant global memory.
 

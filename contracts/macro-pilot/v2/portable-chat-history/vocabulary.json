@@ -234,7 +234,10 @@
       "integers": [
         "total_bytes"
       ],
-      "nullable": []
+      "nullable": [],
+      "blobs": [
+        "data"
+      ]
     },
     {
       "table": "pilot_file_sends",
