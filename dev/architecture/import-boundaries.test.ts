@@ -230,6 +230,11 @@ describe('TypeScript import boundary analysis', () => {
 
     expect(report.explicitForbiddenEdges.map(({ id }) => id)).toEqual(EXPLICITLY_FORBIDDEN_EDGES.map(({ id }) => id));
     expect(report.explicitForbiddenEdges).toContainEqual(expect.objectContaining({
+      id: 'plan-artifacts-to-app-store',
+      from: 'src/services/architectPlanArtifactService.ts',
+      to: 'src/stores/useAppStore.ts',
+    }));
+    expect(report.explicitForbiddenEdges).toContainEqual(expect.objectContaining({
       id: 'streaming-execution-to-architect-chat',
       from: 'src/services/streamingChatExecution.ts',
       to: 'src/services/architectChat.ts',

@@ -15,6 +15,13 @@ export const OWNERS = Object.freeze(['Chat', 'Tasks/Plans', 'Providers', 'Shell'
 
 export const EXPLICITLY_FORBIDDEN_EDGES = Object.freeze([
   Object.freeze({
+    id: 'plan-artifacts-to-app-store',
+    from: 'src/services/architectPlanArtifactService.ts',
+    to: 'src/stores/useAppStore.ts',
+    owner: 'Tasks/Plans',
+    reason: 'Artifact operations use the project registry installed by Plans composition.',
+  }),
+  Object.freeze({
     id: 'streaming-chat-to-architect-chat',
     from: 'src/services/streamingChat.ts',
     to: 'src/services/architectChat.ts',

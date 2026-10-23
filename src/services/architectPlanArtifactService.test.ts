@@ -18,6 +18,13 @@ import {
 } from './architectPlanArtifactService';
 import { installTauriRuntimeMock, removeTauriRuntimeMock } from '../test-utils/tauriRuntime';
 import { useAppStore } from '../stores/useAppStore';
+import { installArchitectPlanPorts } from './architectPlanReadContext';
+
+let stopPlanPorts: () => void;
+beforeEach(() => {
+  stopPlanPorts = installArchitectPlanPorts({ getAppState: () => useAppStore.getState() });
+});
+afterEach(() => stopPlanPorts());
 
 const createPlan = (): Pick<ArchitectPlanRecord, 'nodes'> => ({
   nodes: [
@@ -299,6 +306,49 @@ describe('architectPlanArtifactService reviews and versions', () => {
       reviews: [],
     }, null, 2)}\n`);
   };
+
+  for (const placement of ['standalone', 'group']) {
+    it(`uses the injected ${placement} registry for task targets and artifact files`, async () => {
+      const project = {
+        ...useAppStore.getState().standaloneProjects[0]!,
+        id: 'injected-project',
+        path: '/injected-project',
+      };
+      const stop = installArchitectPlanPorts({
+        getAppState: async () => ({
+          standaloneProjects: placement === 'standalone' ? [project] : [],
+          projectGroups: [{
+            id: 'injected-group', name: 'Injected group', isOpen: true,
+            projects: [{ ...project, path: placement === 'standalone' ? '/duplicate-project' : project.path }],
+          }],
+          selectedProjectId: project.id,
+          selectedGroupId: placement === 'group' ? 'injected-group' : null,
+        }),
+      });
+      try {
+        const target = await resolveTaskArtifactTarget({
+          args: { task_id: apiTask.id },
+          executionContext: { taskId: apiTask.id } as never,
+          selectedTaskId: apiTask.id,
+          tasks: [apiTask],
+          getArchitectPlan: async () => ({
+            ...plan,
+            projectIds: ['stale-project'],
+            availableProjectIds: [project.id],
+          }),
+        });
+        expect(target.plan.projectIds).toEqual([project.id]);
+        const artifact = await putTaskArtifact({ target, args: { title: 'Injected notes', content: 'Notes' } });
+        const index = await readPlanTaskArtifactIndex({ branchName, planId: plan.id, projectIds: [project.id] });
+        expect(index.artifacts.map((entry) => entry.id)).toEqual([artifact.id]);
+        expect(fsCalls.length).toBeGreaterThan(0);
+        expect(fsCalls.every((call) => call.payload.workspacePath === project.path)).toBe(true);
+        expect(useAppStore.getState().selectedProjectId).toBe('project-1');
+      } finally {
+        stop();
+      }
+    });
+  }
 
   it('refuses to treat a corrupt existing index as an empty index', async () => {
     const indexPath = getPlanArtifactIndexPath(branchName, plan.id);

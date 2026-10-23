@@ -28,7 +28,7 @@ import { resolveArchitectPlanServiceDependencies } from './architectPlanReadCont
 import { buildValidProjectRegistrySnapshot } from './validProjectRegistry';
 import type { ArtifactFileMutation } from './architectPlanArtifactPersistence';
 import * as tauriIpc from './tauriIpc';
-import { useAppStore } from '../stores/useAppStore';
+import { getAllProjects } from './globalProjects';
 import { toServiceError } from './contracts/errors';
 import {
   collectKnownProjectIds,
@@ -56,8 +56,8 @@ const serializeArtifactMutation = enqueueArchitectPlanMutation;
 
 const withArtifactRecovery = async <T>(operation: (workspaceKey: string) => Promise<T>): Promise<T> => {
   if (!tauriIpc.isTauriAvailable()) return operation('');
-  const deps = resolveArchitectPlanServiceDependencies({ getAppState: () => useAppStore.getState() });
-  const registry = buildValidProjectRegistrySnapshot(useAppStore.getState());
+  const deps = resolveArchitectPlanServiceDependencies();
+  const registry = buildValidProjectRegistrySnapshot(await deps.getAppState());
   const workspaceKey = await resolveReplicaWorkspaceKey(deps, registry);
   return withReplicaTransactionLock(workspaceKey, async () => {
     await recoverArchitectPlanReplicaMutationsUnlocked(deps, registry, workspaceKey);
@@ -323,7 +323,7 @@ const resolveWorkspacePaths = async (params: {
   executionModesByProjectId?: Record<string, 'git' | 'direct'>;
   allowFallbackPaths?: boolean;
 }): Promise<ArtifactWorkspaceTarget[]> => {
-  const appState = useAppStore.getState();
+  const appState = await resolveArchitectPlanServiceDependencies().getAppState();
   const knownProjectIds = collectKnownProjectIds({
     standaloneProjects: appState.standaloneProjects,
     projectGroups: appState.projectGroups,
@@ -341,10 +341,9 @@ const resolveWorkspacePaths = async (params: {
     scopedProjectIds,
     knownProjectIds,
   });
+  const projects = getAllProjects(appState.projectGroups, appState.standaloneProjects);
   const registeredTargets = projectIds.flatMap((projectId): ArtifactWorkspaceTarget[] => {
-    const projectPath = typeof appState.getProjectById === 'function'
-      ? appState.getProjectById(projectId)?.path ?? null
-      : null;
+    const projectPath = projects.find((project) => project.id === projectId)?.path;
     if (!projectPath || filterNonWslProjectPaths([projectPath]).length === 0) {
       return [];
     }
@@ -666,7 +665,7 @@ export const resolveTaskArtifactTarget = async (
   if (!plan || plan.status === 'deleted') {
     throw toServiceError(`Cannot load plan metadata for task ${task.id}.`);
   }
-  const appState = useAppStore.getState();
+  const appState = await resolveArchitectPlanServiceDependencies().getAppState();
   const retargetedPlan = retargetPlanForExecution(plan, {
     scopedProjectIds: unique([
       ...(task.project_ids || []),
