@@ -1,6 +1,7 @@
 import { typedToolResult, type ToolResultBlock } from '../../shared/toolResultContent';
 import {
   type ToolCall,
+  type StreamMessageContent,
 } from './contracts';
 import type { ProviderTurnState } from '../../types';
 
@@ -226,3 +227,38 @@ export const compactToolResultForChatGptModelContext = (
 
   return `${truncateMiddle(result, contentBudget)}${truncationNotice}`;
 };
+
+export const buildProviderInputItemsFromContent = (
+    role: "user" | "assistant",
+    content: StreamMessageContent,
+  ): unknown[] => {
+    const parts =
+      typeof content === "string"
+        ? [
+            {
+              type: role === "user" ? "input_text" : "output_text",
+              text: content,
+            },
+          ]
+        : content.map((part) => {
+            if (part.type === "image_url") {
+              return {
+                type: "input_image",
+                image_url: part.image_url.url,
+              };
+            }
+
+            return {
+              type: role === "user" ? "input_text" : "output_text",
+              text: part.text || "",
+            };
+          });
+
+    return [
+      {
+        type: "message",
+        role,
+        content: parts,
+      },
+    ];
+  };

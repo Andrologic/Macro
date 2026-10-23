@@ -38,6 +38,7 @@ fn hash_file(path: &Path) -> String {
 }
 async fn put_record(source: &SqlitePool, ordinal: u64, kind: RecordKind, bytes: &[u8]) {
     let header = RecordHeader {
+        origin: None,
         ordinal,
         entry: kind,
         bytes: bytes.len() as u64,
@@ -171,6 +172,7 @@ async fn source_index(source: &SqlitePool, path: &Path, count: usize) -> (u64, u
                 assert_eq!(value["bytes"], bytes);
                 assert_eq!(value["sha256"], sha256);
                 let header = RecordHeader {
+                    origin: None,
                     ordinal,
                     entry: RecordKind::Message { role },
                     bytes,
@@ -679,6 +681,7 @@ async fn checkpoint_provenance(input: &Path, output: &Path) {
     let (_dir, store, _clock) = fixture().await;
     let bytes = file_bytes(&source);
     let header = RecordHeader {
+        origin: None,
         ordinal: 0,
         entry: RecordKind::HistoricalText {
             purpose: TextPurpose::Summary,
@@ -773,6 +776,7 @@ async fn inactive_storage_single_field_above_four_mib() {
         .unwrap();
     let token = (version.incarnation, version.revision.parse().unwrap());
     let header = RecordHeader {
+        origin: None,
         ordinal: 0,
         entry: RecordKind::Message { role: Role::User },
         bytes: bytes as u64,

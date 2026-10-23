@@ -1,0 +1,58 @@
+{
+  "decision_contract": "transfer-decision-1",
+  "type": "reconciliation_status",
+  "status": "terminal",
+  "transfer_id": "00000000-0000-0000-0000-000000000004",
+  "source": {
+    "relay_origin": "https://relay.example.test",
+    "account_id": "account-synthetic",
+    "source_instance_id": "source-synthetic",
+    "source_conversation_id": "chat-synthetic"
+  },
+  "epoch": "9007199254740993",
+  "revision": "5",
+  "phase": "committed",
+  "terminal": {
+    "decision_contract": "transfer-decision-1",
+    "type": "terminal_receipt",
+    "receipt_id": "00000000-0000-0000-0000-000000000032",
+    "transfer_id": "00000000-0000-0000-0000-000000000004",
+    "source": {
+      "relay_origin": "https://relay.example.test",
+      "account_id": "account-synthetic",
+      "source_instance_id": "source-synthetic",
+      "source_conversation_id": "chat-synthetic"
+    },
+    "epoch": "9007199254740993",
+    "target_instance_id": "target-synthetic",
+    "binding_digest": "e55b3a7a088968fceb10ccf848c4a5d304da3e16f81ee11f16931ce04247475b",
+    "frozen_digest": "94f0f343badf920801cdc19cccf626c12a5e8b91602d002a3024ffc80333e891",
+    "decision_revision": "4",
+    "outcome": "committed",
+    "reason": null,
+    "manifest_digest": "a21e8e04d4c009a7762c94ea57763439cbcce04deb49d4fdfe753caef889a57d",
+    "prepared": {
+      "format_version": "1",
+      "binding_digest": "e55b3a7a088968fceb10ccf848c4a5d304da3e16f81ee11f16931ce04247475b",
+      "manifest_digest": "a21e8e04d4c009a7762c94ea57763439cbcce04deb49d4fdfe753caef889a57d",
+      "import_id": "00000000-0000-0000-0000-000000000009",
+      "target_conversation_id": "new-chat-synthetic",
+      "lineage_id": "00000000-0000-0000-0000-000000000010",
+      "mapping_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "preparation_sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+    }
+  },
+  "activation": {
+    "decision_contract": "transfer-decision-1",
+    "type": "activation_receipt",
+    "receipt_id": "00000000-0000-0000-0000-000000000033",
+    "transfer_id": "00000000-0000-0000-0000-000000000004",
+    "terminal_digest": "18ba9ded5346e461fc7aec35442c77e34aed061b2e32eb7087438a23a2f4d6e5",
+    "target_instance_id": "target-synthetic",
+    "target_conversation_id": "new-chat-synthetic",
+    "prepared_digest": "d9209e0f816d61188d095f9d72cf27cf60f011d06407b82965daa92376418bfb",
+    "revision": "1"
+  },
+  "recovery_generation": "00000000-0000-0000-0000-000000000001",
+  "source_recovery": "intact"
+}

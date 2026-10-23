@@ -8,11 +8,21 @@ Lire le [plan](macro-connect-implementation-plan.md) pour les lots et leurs preu
 L'étape E de stockage cible reste interne et inactive. Son reçu de scellement
 atteste uniquement les records, fragments, associations et mappings conservés
 dans des tables dédiées. Il ne vaut ni admission du contexte, ni `target_ready`,
-ni autorisation F. La capture source et la normalisation réelle ne sont pas
-implémentées par cette étape. Les expériences locales reprennent des fixtures
-synthétiques Codex et Macro AI, y compris des sources récupérables après
-compaction. Elles ne prouvent pas une borne mémoire du prochain tour, dont la
-préparation actuelle matérialise encore l'historique. Aucune opération publique
+ni autorisation F. Une capture source brute native et une normalisation sémantique
+interne permettent maintenant une chaîne synthétique vers ce stockage cible.
+Le profil interne reconnaît des formes Codex et Macro AI, garde les originaux
+admissibles récupérables et refuse les dépendances indispensables non prises en
+charge. Les quatre couples passent par les vrais préparateurs et sérialiseurs,
+avec nouvelle compaction et récupération d'un fait omis depuis la seule cible.
+Les résumés restent des données historiques, y compris après une nouvelle
+compaction. Les médias reconnus sont conservés dans le prochain corps ; les
+attachments indispensables appartenant à un message assistant restent refusés.
+Cette chaîne passe aussi par le contrat fermé
+[portable-chat-history-1](../contracts/macro-pilot/v2/portable-chat-history/contract.md)
+et sa validation autonome avant tout import natif. Son identité décrit le format ;
+l'import vérifié au relais, sa configuration de support et l'admission F restent
+à composer. Ces contrôles ne prouvent pas une borne mémoire du prochain
+tour, dont la préparation actuelle matérialise encore l'historique. Aucune opération publique
 de transfert ou activation de conversation n'en découle.
 
 ## Périmètre du premier transfert

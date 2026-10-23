@@ -1,0 +1,14 @@
+{
+  "decision_contract": "transfer-decision-1",
+  "type": "producer_attestation",
+  "kind": "target_activated",
+  "format_version": "1",
+  "binding_digest": "e55b3a7a088968fceb10ccf848c4a5d304da3e16f81ee11f16931ce04247475b",
+  "subject_digest": "4620c07bd661ef19b69832a2b99b51113c53d7344322b1a418c0f030b26fe99c",
+  "producer_instance_id": "target-synthetic",
+  "producer_generation": "producer-target-synthetic",
+  "delivery_id": "00000000-0000-0000-0000-000000000035",
+  "challenge_id": "00000000-0000-0000-0000-000000000036",
+  "request_digest": "cf1a6e3f762b4e8bdb4332647a500b3b8f14107ef74786b285a076883f7b7a72",
+  "prior_receipt_digest": "18ba9ded5346e461fc7aec35442c77e34aed061b2e32eb7087438a23a2f4d6e5"
+}

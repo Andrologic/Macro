@@ -9,11 +9,16 @@ export type ExportText = { content_state: 'complete' | 'excerpt'; text: string }
 const encoder = new TextEncoder();
 export const utf8Bytes = (text: string): number => encoder.encode(text).length;
 const unsafe = /file:\/\/|\/(?:Users|home|private|var|tmp|opt|etc|root|Volumes)\/|[A-Za-z]:\\|gh[pousr]_|github_pat_|sk-[A-Za-z0-9_-]{16,}|-----BEGIN (?:[A-Z ]*PRIVATE KEY)-----/i;
-export function controlledText(text: string, policy: TextPolicy, maxBytes = 16384): ExportText {
+/** Inspect the entire admitted value. Display defaults remain independent. */
+export function inspectWholeText(text: string, policy: TextPolicy): boolean {
   if (utf8Bytes(text) > (policy.inspectionBytes ?? 1024 * 1024) || unsafe.test(text) ||
       policy.secrets.some(secret => secret.length > 0 && text.includes(secret)) || /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/u.test(text)) {
-    return { content_state: 'withheld', reason: 'unsafe_content' };
+    return false;
   }
+  return true;
+}
+export function controlledText(text: string, policy: TextPolicy, maxBytes = 16384): ExportText {
+  if (!inspectWholeText(text, policy)) return { content_state: 'withheld', reason: 'unsafe_content' };
   let bytes = 0; let result = '';
   for (const char of text) { const size = utf8Bytes(char); if (bytes + size > maxBytes) break; bytes += size; result += char; }
   return { content_state: result.length === text.length ? 'complete' : 'excerpt', text: result };

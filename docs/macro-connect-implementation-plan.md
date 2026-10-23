@@ -137,11 +137,26 @@ une autorité native de test permet les preuves synthétiques. Le budget du banc
 de preuve ne définit aucun plafond de production. Un domaine persistant commun
 couvre les octets de préparation E et le staging des attachments, sans plafonner
 rétroactivement les assets ordinaires. Les seuils propres aux attachments restent
-inchangés. Le protocole de mesure 6 distingue le schéma 15 des historiques 3/4/5.
+inchangés. Le protocole de mesure 6 distingue le schéma 15 des historiques 3/4/5 ; le
+protocole 7 identifie séparément le schéma 16 de capture source.
 
 Ce noyau ne constitue ni un importeur de Chat ni une admission de contexte.
-La capture source atomique, son index de dépendances, la normalisation réelle,
-le contrat portable normatif et les barrières F restent à réaliser. La
+La capture source brute possède désormais un snapshot composite vérifié, un
+index de relations et un readback segmenté. La normalisation interne
+`PortableChatHistoryV1` examine cette copie et conserve les originaux admissibles,
+leurs dérivés et leur provenance dans le noyau cible inactif. Les formes reconnues
+Codex et Macro AI ont des contrôles synthétiques sur les quatre couples, avec
+compaction cible et récupération d'un fait omis depuis l'archive cible. Le résumé
+importé et ses nouvelles compactions restent des données historiques, les seules
+instructions fiables viennent de la cible. Les formes inconnues ou un contexte
+indispensable manquant refusent. Les médias reconnus restent présents après
+compaction ; les pièces jointes indispensables d'un message assistant sont
+actuellement refusées explicitement. Ce profil interne ne constitue pas encore
+un format public accepté par le relais. Le contrat fermé
+[portable-chat-history-1](../contracts/macro-pilot/v2/portable-chat-history/contract.md)
+décrit désormais l'archive et vérifie son flux avant l'import natif inactif ;
+sa publication dans une liste de support active attend la composition F. Le raccord de production,
+les familles non reconnues et les barrières F restent à réaliser. La
 récupération complète sur disque est distincte de la préparation du prochain
 tour, qui matérialise actuellement le contexte en O(N). Aucune route publique,
 capacité de transfert, promotion ou activation n'est ajoutée par cette étape.

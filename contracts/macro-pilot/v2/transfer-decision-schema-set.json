@@ -1,0 +1,9 @@
+{
+  "root": "https://schemas.macro.andrologic.ai/macro-pilot/v2/transfer-decision.schema.json",
+  "resources": [
+    {
+      "path": "transfer-decision.schema.json",
+      "id": "https://schemas.macro.andrologic.ai/macro-pilot/v2/transfer-decision.schema.json"
+    }
+  ]
+}

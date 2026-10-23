@@ -5,6 +5,9 @@ import {
 export const isRecord = (value: unknown): value is Record<string, unknown> =>
   Boolean(value) && typeof value === 'object' && !Array.isArray(value);
 
+// One contract-owned syntax/duplicate-key implementation for E and F.
+export { parseStoredJsonStrict } from '../../../contracts/macro-pilot/v2/strict-json.mjs';
+
 export const deepCloneJsonValue = <T,>(value: T): T => {
   if (!isRecord(value) && !Array.isArray(value)) {
     return value;

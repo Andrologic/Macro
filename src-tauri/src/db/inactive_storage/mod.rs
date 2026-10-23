@@ -155,6 +155,7 @@ impl InactiveStorage {
         let mut lease = self.lease().await?;
         let mut tx = lease.begin_with("BEGIN IMMEDIATE").await.map_err(db)?;
         let journal = self.load(&mut tx, key, &authority).await?;
+        validate_profile_record(&journal.begin, &input.record)?;
         let record=sqlx::query("SELECT header_json,received_bytes,complete,utf8_tail,scan_tail FROM e_inactive_records WHERE import_id=? AND ordinal=?")
             .bind(journal.id).bind(input.record.ordinal as i64).fetch_optional(&mut *tx).await.map_err(db)?;
         if let Some(row) = &record {
@@ -372,6 +373,8 @@ impl InactiveStorage {
                     return Err("integrity_failed".into());
                 }
                 let record: RecordHeader = parse(row.get::<String, _>("header_json").as_bytes())?;
+                validate_record(&record)?;
+                validate_profile_record(&journal.begin, &record)?;
                 let mut offset = 0u64;
                 let mut hash = Sha256::new();
                 loop {
@@ -428,6 +431,13 @@ impl InactiveStorage {
             .bind(journal.id).fetch_one(&mut *tx).await.map_err(db)?;
         if invalid != 0 {
             return Err("invalid_association".into());
+        }
+        if current.begin.profile == Profile::PortableChatHistoryV1 {
+            let invalid:i64=sqlx::query_scalar("SELECT COUNT(*) FROM e_inactive_records r LEFT JOIN e_inactive_records o ON o.import_id=r.import_id AND o.ordinal=json_extract(r.header_json,'$.origin') WHERE r.import_id=? AND r.kind<>4 AND json_extract(r.header_json,'$.entry.purpose') IS NOT 'portable_metadata' AND (o.kind IS NULL OR o.kind<>1 OR json_extract(o.header_json,'$.entry.kind') IS NOT 'historical_text' OR json_extract(o.header_json,'$.entry.purpose') IS NOT 'portable_metadata')")
+                .bind(journal.id).fetch_one(&mut *tx).await.map_err(db)?;
+            if invalid != 0 {
+                return Err("invalid_origin".into());
+            }
         }
         inactive_budget::admit(&mut tx, 32).await?;
         sqlx::query("UPDATE e_inactive_imports SET phase=2,revision=revision+1,charge_bytes=charge_bytes+32,mapping_hash=? WHERE id=?")
@@ -564,6 +574,7 @@ fn validate_record(input: &RecordHeader) -> Result<()> {
     if input.ordinal > i64::MAX as u64
         || input.bytes > i64::MAX as u64
         || !hash_valid(&input.sha256)
+        || input.origin.is_some_and(|value| value > i64::MAX as u64)
     {
         return Err("invalid_frame".into());
     }
@@ -580,6 +591,42 @@ fn validate_record(input: &RecordHeader) -> Result<()> {
         }
     }
     Ok(())
+}
+fn validate_profile_record(begin: &Begin, input: &RecordHeader) -> Result<()> {
+    let portable = matches!(
+        input.entry,
+        RecordKind::HistoricalText {
+            purpose: TextPurpose::PortableMetadata
+                | TextPurpose::OriginalText
+                | TextPurpose::HistoricalData
+        }
+    );
+    match begin.profile {
+        Profile::SyntheticHistoryV1 if input.origin.is_some() || portable => {
+            Err("invalid_profile".into())
+        }
+        Profile::PortableChatHistoryV1 => {
+            let metadata = matches!(
+                input.entry,
+                RecordKind::HistoricalText {
+                    purpose: TextPurpose::PortableMetadata
+                }
+            );
+            let association = matches!(input.entry, RecordKind::Association { .. });
+            if metadata || association {
+                if input.origin.is_some() {
+                    return Err("invalid_origin".into());
+                }
+            } else if input
+                .origin
+                .is_none_or(|origin| origin >= begin.records || origin == input.ordinal)
+            {
+                return Err("invalid_origin".into());
+            }
+            Ok(())
+        }
+        _ => Ok(()),
+    }
 }
 fn utf8_tail(previous: &[u8], payload: &[u8], complete: bool) -> Result<Vec<u8>> {
     let mut joined = Vec::with_capacity(previous.len() + payload.len());

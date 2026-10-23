@@ -1,0 +1,119 @@
+{
+  "decision_contract": "transfer-decision-1",
+  "type": "transfer_record",
+  "binding": {
+    "transfer_id": "00000000-0000-0000-0000-000000000004",
+    "provenance": {
+      "source": {
+        "relay_origin": "https://relay.example.test",
+        "account_id": "account-synthetic",
+        "source_instance_id": "source-synthetic",
+        "source_conversation_id": "chat-synthetic"
+      },
+      "lineage_id": "00000000-0000-0000-0000-000000000002",
+      "installation_id": "00000000-0000-0000-0000-000000000003",
+      "birth_generation": "00000000-0000-0000-0000-000000000001"
+    },
+    "epoch": "9007199254740993",
+    "target_instance_id": "target-synthetic",
+    "relay_recovery_generation": "00000000-0000-0000-0000-000000000001",
+    "initiator": {
+      "account_id": "account-synthetic",
+      "session_id": "initiator-session-synthetic",
+      "device_id": "initiator-device-synthetic",
+      "session_revision": "9007199254740993",
+      "account_epoch": "9007199254740993",
+      "source_access_revision": "9007199254740993",
+      "target_access_revision": "9007199254740993"
+    },
+    "source_producer_generation": "producer-source-synthetic",
+    "target_producer_generation": "producer-target-synthetic"
+  },
+  "revision": "4",
+  "phase": "recovery_hold",
+  "frozen": {
+    "format_version": "1",
+    "binding_digest": "e55b3a7a088968fceb10ccf848c4a5d304da3e16f81ee11f16931ce04247475b",
+    "ownership_revision": "9007199254740993",
+    "content_incarnation": "0123456789abcdef0123456789abcdef",
+    "content_revision": "9007199254740993",
+    "sha256": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+  },
+  "manifest": {
+    "format_version": "1",
+    "binding_digest": "e55b3a7a088968fceb10ccf848c4a5d304da3e16f81ee11f16931ce04247475b",
+    "frozen_digest": "94f0f343badf920801cdc19cccf626c12a5e8b91602d002a3024ffc80333e891",
+    "content_contract_sha256": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+    "manifest_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "source_revision": "9007199254740993"
+  },
+  "prepared": {
+    "format_version": "1",
+    "binding_digest": "e55b3a7a088968fceb10ccf848c4a5d304da3e16f81ee11f16931ce04247475b",
+    "manifest_digest": "a21e8e04d4c009a7762c94ea57763439cbcce04deb49d4fdfe753caef889a57d",
+    "import_id": "00000000-0000-0000-0000-000000000009",
+    "target_conversation_id": "new-chat-synthetic",
+    "lineage_id": "00000000-0000-0000-0000-000000000010",
+    "mapping_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "preparation_sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+  },
+  "reserve_receipt": {
+    "decision_contract": "transfer-decision-1",
+    "type": "step_receipt",
+    "receipt_id": "00000000-0000-0000-0000-000000000018",
+    "operation": "reserve",
+    "transfer_id": "00000000-0000-0000-0000-000000000004",
+    "binding_digest": "e55b3a7a088968fceb10ccf848c4a5d304da3e16f81ee11f16931ce04247475b",
+    "subject_digest": "94f0f343badf920801cdc19cccf626c12a5e8b91602d002a3024ffc80333e891",
+    "previous_revision": "0",
+    "revision": "1",
+    "phase": "reserved"
+  },
+  "seal_receipt": {
+    "decision_contract": "transfer-decision-1",
+    "type": "step_receipt",
+    "receipt_id": "00000000-0000-0000-0000-000000000022",
+    "operation": "seal",
+    "transfer_id": "00000000-0000-0000-0000-000000000004",
+    "binding_digest": "e55b3a7a088968fceb10ccf848c4a5d304da3e16f81ee11f16931ce04247475b",
+    "subject_digest": "a21e8e04d4c009a7762c94ea57763439cbcce04deb49d4fdfe753caef889a57d",
+    "previous_revision": "1",
+    "revision": "2",
+    "phase": "sealed"
+  },
+  "ready_receipt": {
+    "decision_contract": "transfer-decision-1",
+    "type": "step_receipt",
+    "receipt_id": "00000000-0000-0000-0000-000000000026",
+    "operation": "ready",
+    "transfer_id": "00000000-0000-0000-0000-000000000004",
+    "binding_digest": "e55b3a7a088968fceb10ccf848c4a5d304da3e16f81ee11f16931ce04247475b",
+    "subject_digest": "d9209e0f816d61188d095f9d72cf27cf60f011d06407b82965daa92376418bfb",
+    "previous_revision": "2",
+    "revision": "3",
+    "phase": "target_ready"
+  },
+  "terminal": null,
+  "activation": null,
+  "retries": [
+    {
+      "operation": "reserve",
+      "operation_id": "00000000-0000-0000-0000-000000000015",
+      "request_digest": "6c63d93dae7fa5c5605b68718d89b0b5c136a13ec5ae18ea217bc97b29493f06",
+      "body_digest": "7b319651075d243a517a855695db6c0d720722661e29e59690b18ff943549030"
+    },
+    {
+      "operation": "seal",
+      "operation_id": "00000000-0000-0000-0000-000000000019",
+      "request_digest": "08e768257545f27b6e23cc728661c594e997675fc90d3bd2ee8e09d2eaa2a230",
+      "body_digest": "64dcd27741c77b28379c8b09b39564e586d8f7bb0f8b541b71fe84ccb8b0347e"
+    },
+    {
+      "operation": "ready",
+      "operation_id": "00000000-0000-0000-0000-000000000023",
+      "request_digest": "ffd39e13aa9a9d3b7d0db06cdbb022bfc210c4268665f168305c381278b59da5",
+      "body_digest": "f2a7d91e080d6477c39fce25f82d932dfc75d5c6b1e57e1c1d72d2c6ef5d59fe"
+    }
+  ],
+  "hold_phase": "target_ready"
+}

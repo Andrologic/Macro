@@ -1,0 +1,12 @@
+{
+  "decision_contract": "transfer-decision-1",
+  "type": "step_receipt",
+  "receipt_id": "00000000-0000-0000-0000-000000000022",
+  "operation": "seal",
+  "transfer_id": "00000000-0000-0000-0000-000000000004",
+  "binding_digest": "e55b3a7a088968fceb10ccf848c4a5d304da3e16f81ee11f16931ce04247475b",
+  "subject_digest": "a21e8e04d4c009a7762c94ea57763439cbcce04deb49d4fdfe753caef889a57d",
+  "previous_revision": "1",
+  "revision": "2",
+  "phase": "sealed"
+}

@@ -446,3 +446,5 @@ mod proof;
 
 #[path = "failure_tests.rs"]
 mod failure;
+#[path = "portable_normalization_proof.rs"]
+mod portable_normalization_proof;
