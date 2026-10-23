@@ -1,4 +1,5 @@
 import { createLifecycleScope } from '../services/lifecycleScope';
+import { installArchitectPlanPorts, type ArchitectPlanServiceAppState } from '../services/architectPlanReadContext';
 import { afterEach, beforeEach, describe, expect, it, mock, spyOn } from 'bun:test';
 import {
   REMOTE_UNSUPPORTED_IN_REMOTE_MODE,
@@ -511,7 +512,9 @@ const flushPromises = async () => {
   }
 };
 
+let releasePlanPorts: (() => void) | undefined;
 beforeEach(() => {
+  releasePlanPorts = installArchitectPlanPorts({ getAppState: () => appStoreState as unknown as ArchitectPlanServiceAppState });
   installTauriRuntimeMock();
   appStoreState.selectedTaskId = null;
   appStoreState.selectedGroupId = 'group-1';
@@ -571,6 +574,8 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  releasePlanPorts?.();
+  releasePlanPorts = undefined;
   removeTauriRuntimeMock();
 });
 

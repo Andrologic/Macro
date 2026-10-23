@@ -24,6 +24,7 @@ import type { AgsdlEditorDocument } from '../types/agsdl';
 import { createDeferred } from '../test-utils/deferred';
 import { allowChatToolInvocationJournal } from '../test-utils/chatToolInvocationJournal';
 import { installArchitectPlanRuntimePorts } from '../services/architectPlanRuntimeService';
+import { installArchitectPlanPorts } from '../services/architectPlanReadContext';
 import { recoverFailedPlanActivation } from '../components/architect/planActivationRecovery';
 import { registerComposerDraftQueueScenarios } from './__tests__/composerDraftQueue.scenarios';
 import { registerChatDirectionRecoveryScenarios } from './__tests__/chatDirectionRecovery.scenarios';
@@ -2772,6 +2773,7 @@ export type UseChatStoreScenarioContext = typeof useChatStoreScenarioContext;
 
 describe('useChatStore ensureArchitectConversationForPlan', () => {
   let localStorageMock: LocalStorageMock;
+  let releasePlanPorts: (() => void) | undefined;
   let releasePlanRuntimePorts: (() => void) | undefined;
 
   beforeEach(async () => {
@@ -2780,6 +2782,7 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     clearConflictAssistantContext('conflict-store');
     await registerUseChatStoreMocks();
     // Isolated stores bypass main.tsx, which installs Plans ports before bootstrap.
+    releasePlanPorts = installArchitectPlanPorts({ getAppState: () => appState });
     releasePlanRuntimePorts = installArchitectPlanRuntimePorts({ getProjectById: appState.getProjectById });
     localStorageMock = createLocalStorageMock();
     (globalThis as { window?: unknown }).window = {
@@ -3021,6 +3024,8 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
   afterEach(() => {
     releasePlanRuntimePorts?.();
     releasePlanRuntimePorts = undefined;
+    releasePlanPorts?.();
+    releasePlanPorts = undefined;
     Object.defineProperty(globalThis, 'window', {
       configurable: true,
       writable: true,
