@@ -1631,10 +1631,10 @@ async fn missing_physical_receipt_keeps_only_the_affected_chat_unreconciled() {
         let reservation=ai.reserve_stream("cleanup-failure".into()).unwrap();
         let work=Arc::new(parent.child(WorkKind::Tool,Some("cleanup-failure")).await.unwrap());
         let executed=work.clone();
-        let received=reservation.spawn_tool(work,move |_|async move {
+        let received=reservation.spawn_tool_outcome(work,move |_|async move {
             if panic { panic!("synthetic cleanup panic"); }
             executed.unknown().await.unwrap();
-            Err::<(),_>("synthetic cleanup failure".to_string())
+            Err::<crate::ai::stream_tasks::ToolOutcome<()>,_>("synthetic cleanup failure".to_string())
         }).unwrap();
         assert!(received.await.is_err());
         let http=crate::ai::admitted_http::AdmittedHttp::default();
@@ -1724,4 +1724,22 @@ async fn composer_draft_lost_ack_restart_and_reedit_preserve_receipt_identity() 
     runtime.complete_reconciliation(&owner, "window", "new", &handle, &no_browser_intentions()).await.unwrap();
     runtime.reserve_reconciled_source(&owner, "window", "new", &handle).await.unwrap();
     assert_eq!(sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM chat_admission_operations WHERE kind IN ('provider','tool')").fetch_one(&pool).await.unwrap(), 0);
+}
+
+#[tokio::test]
+async fn reservation_rechecks_physical_receipts_even_for_delivered_results() {
+    // Fault injection after a valid inspection demonstrates the reservation's
+    // own guard, rather than relying only on revision invalidation.
+    for kind in ["tool","provider"] {
+        let (_dir,pool)=fixture().await;
+        let owner=crate::core::db_state::DbPool::default();owner.set_ready(pool.clone()).await.unwrap();
+        let runtime=runtime::ChatAdmissionRuntime::default();runtime.open_browser(owner.clone(),"window","browser").await.unwrap();
+        let handle=runtime.begin_reconciliation(&owner,"window","browser","source").await.unwrap();
+        runtime.complete_reconciliation(&owner,"window","browser",&handle,&no_browser_intentions()).await.unwrap();
+        sqlx::query("INSERT INTO chat_admission_operations(operation_id,conversation_id,incarnation,runtime_generation,kind,phase,request_id) SELECT 'late','source',incarnation,runtime_generation,?,'completed','physical' FROM chat_admission_owners WHERE conversation_id='source'")
+            .bind(kind).execute(&pool).await.unwrap();
+        let error=runtime.reserve_reconciled_source(&owner,"window","browser",&handle).await.unwrap_err().to_string();
+        assert!(error.contains("local_lifetime_unreconciled"),"{error}");
+        assert_eq!(sqlx::query_scalar::<_,String>("SELECT mode FROM chat_admission_owners WHERE conversation_id='source'").fetch_one(&pool).await.unwrap(),"open");
+    }
 }

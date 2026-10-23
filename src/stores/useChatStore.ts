@@ -1,3 +1,5 @@
+import { buildMessageUpdateParams } from '../services/ipc/conversations';
+import { responseOptions } from '../services/chatResponsePayload';
 import { readQueuedSubmissions } from './chat/chatQueuedSubmissions';
 import type { ProviderAdmission } from '../services/ipc/chatAdmission';
 import { ensureChatBrowser, beginChatAdmission, closeChatPreparation, finishChatResponse, retireChatBrowser, beginChatIntent, finishChatIntent, reserveChatResponse, responseCopyAdmission, recoverChatResponse, discardChatResponseCopy } from '../services/chatAdmission';
@@ -1228,29 +1230,23 @@ const toComparableChatMessage = (
   createdAt: message.timestamp,
 });
 
-const serializeAssistantPersistenceValue = (value: unknown): string => {
-  try {
-    return JSON.stringify(value ?? null);
-  } catch {
-    return "__unserializable__";
-  }
-};
-
 const assistantPersistencePayloadMatches = (
   persisted: ChatMessage,
   recovered: ChatMessage,
-): boolean =>
-  persisted.content === recovered.content &&
-  persisted.hidden_context === recovered.hidden_context &&
-  serializeAssistantPersistenceValue(persisted.tool_traces ?? []) ===
-    serializeAssistantPersistenceValue(recovered.tool_traces ?? []) &&
-  serializeAssistantPersistenceValue(persisted.provider_input_items) ===
-    serializeAssistantPersistenceValue(recovered.provider_input_items) &&
-  serializeAssistantPersistenceValue(persisted.provider_turn_state) ===
-    serializeAssistantPersistenceValue(recovered.provider_turn_state) &&
-  serializeAssistantPersistenceValue(persisted.generation_attempts) ===
-    serializeAssistantPersistenceValue(recovered.generation_attempts) &&
-  persisted.completion_reason === recovered.completion_reason;
+): boolean => {
+  const comparable = (message: ChatMessage) => buildMessageUpdateParams(message.id, message.content, {
+    ...responseOptions(message),
+    // SQLite's reader omits empty tool traces. All other fields follow the
+    // real wire builder, including its null/absence normalization.
+    toolTraces: message.tool_traces ?? [],
+  });
+  try {
+    return JSON.stringify(comparable(persisted)) === JSON.stringify(comparable(recovered));
+  } catch {
+    // Two unserializable values cannot establish persisted-copy equivalence.
+    return false;
+  }
+};
 
 const mergeRecoveredAssistantResponses = (
   persistedMessages: ChatMessage[],

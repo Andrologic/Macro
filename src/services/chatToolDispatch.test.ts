@@ -1,3 +1,6 @@
+import { executeChatAgentTerminal } from './chatAgentTerminal';
+import type { ChatToolExecutionPorts } from './chatToolExecutionContracts';
+import type { TerminalSessionDto } from './tauriIpc';
 import { ToolResultPreservationError } from './toolResultArtifacts';
 import { describe, expect, mock, test } from 'bun:test';
 import { createChatToolDispatch, classifyChatToolEffect, type ChatToolDispatchPorts, type ChatToolInvocationJournal } from './chatToolDispatch';
@@ -271,5 +274,35 @@ for (const errorKind of ['permission', 'validation'] as const) {
     f.execute.mockImplementation(async () => ({ kind: 'result', result: 'Refused', isError: true, errorKind }));
     f.preserve.mockImplementation(async () => { throw new ToolResultPreservationError('Refused'); });
     expect(await f.dispatch('write', {}, 'refused')).toMatchObject({ errorKind, result: 'Refused' });
+  });
+}
+
+for (const exitCode of [0, 7]) {
+  test(`known terminal exit ${exitCode} reaches preservation and journal without redispatch`, async () => {
+    const f = fixture();
+    f.operation.providerAdmission = { kind: 'globalChat', context: { handle: 'native-root', runtime: 'browser' } };
+    const result: TerminalSessionDto = {
+      id: 'session', project_id: null, project_name: null, mount_name: null, workspace_path: null,
+      cwd: '/synthetic', status: exitCode === 0 ? 'completed' : 'failed', last_command: 'synthetic',
+      output: 'kept', exit_code: exitCode, timed_out: false, output_truncated: false, updated_at: 't',
+    };
+    const runCommand = mock(async () => result);
+    const terminal: ChatToolExecutionPorts['terminal'] = {
+      cachedSession: () => result, createSession: async () => result, readSession: async () => result,
+      runCommand, killSession: async () => result,
+    };
+    f.execute.mockImplementation(async (operation, name, args) => executeChatAgentTerminal(
+      terminal, name, args, operation.signal, () => true,
+      { context: { handle: 'native-root', runtime: 'browser' }, identity: {
+        conversationId: operation.conversationId, turnId: operation.turnId,
+        messageId: operation.assistantMessageId, callId: 'call',
+      } },
+    ));
+    const delivered = await f.dispatch('terminal_run', { session_id: 'session', command: 'synthetic' }, 'call');
+    expect(JSON.parse(delivered as string)).toMatchObject({ output: 'kept', exit_code: exitCode, status: result.status });
+    expect(f.events).toEqual(['record:terminal_run:external_effect', 'preserve', 'complete']);
+    expect(f.journal.markUnknown).not.toHaveBeenCalled();
+    expect(await f.dispatch('terminal_run', { session_id: 'session', command: 'synthetic' }, 'call')).toMatchObject({ isError: true });
+    expect(runCommand).toHaveBeenCalledTimes(1);
   });
 }

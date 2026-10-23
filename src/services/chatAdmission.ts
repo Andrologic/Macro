@@ -1,3 +1,4 @@
+import { responseOptions } from './chatResponsePayload';
 import * as ipc from './tauriIpc';
 import { MacroServiceError } from './contracts/errors';
 
@@ -61,15 +62,6 @@ export async function beginChatAdmission(conversationId: string, turnId: string,
 }
 
 export const closeChatPreparation = ipc.chatAdmissionClosePreparation;
-
-function responseOptions(message: import('../types').ChatMessage) {
-  return {
-    turnId: message.turn_id, toolTraces: message.tool_traces, hiddenContext: message.hidden_context,
-    providerInputItems: message.provider_input_items, providerTurnState: message.provider_turn_state,
-    contextRefs: message.context_refs, completionReason: message.completion_reason,
-    generationAttempts: message.generation_attempts,
-  };
-}
 
 async function removeResponseCopy(messageId: string, admission: ipc.ChatIntentAdmission, remove: () => boolean): Promise<void> {
   if (!remove()) throw new MacroServiceError('CHAT_RECOVERY_COPY_RETAINED', 'The saved recovery copy could not be removed.');

@@ -3221,6 +3221,44 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     expect(window.localStorage.getItem('macro_chat_unsaved_assistant_responses_v1')).toContain('Partial preserved');
   });
 
+  for (const delta of [
+    { context_refs: [{ kind: 'file', id: 'unique-source', title: 'Unique source', path: '/synthetic/source' }] },
+    { turn_id: 'different-turn' },
+    { content: 'Different preserved content' },
+    { hidden_context: 'Different hidden context' },
+    { tool_traces: [{ tool_call_id: 'call', tool_name: 'read', status: 'done' }] },
+    { provider_input_items: [{ type: 'message', role: 'assistant', content: 'different' }] },
+    { provider_turn_state: { providerId: 'synthetic', responseId: 'different' } },
+    { generation_attempts: [{ id: 'different' }] },
+    { completion_reason: 'interrupted' },
+  ]) {
+  it(`retains a differing recovery writer payload: ${Object.keys(delta)[0]}`, async () => {
+    tauriAvailable = true;
+    appState.mode = 'Chat';
+    appState.selectedProjectId = null; appState.selectedGroupId = null;
+    chatSnapshotConversations = [{ ...createChatSnapshotConversation('chat-conv', { message_count: 1, scope_mode: 'Chat' }), project_id: null, group_id: null }];
+    chatSnapshotMessages = [{ id: 'assistant-1', conversation_id: 'chat-conv', role: 'assistant',
+      content: 'Partial preserved', turn_id: 'turn-1', created_at: '2026-08-30T08:01:00.000Z' }];
+    const copy = { id: 'assistant-1', turn_id: 'turn-1', task_id: '', conversation_id: 'chat-conv', role: 'assistant',
+      content: 'Partial preserved', timestamp: '2026-08-30T08:01:00.000Z', tool_traces: [], persistence_state: 'failed', ...delta };
+    window.localStorage.setItem('macro_chat_unsaved_assistant_responses_v1', JSON.stringify({ 'assistant-1': copy }));
+    responseRecoveryError = 'chat_admission_response_outcome_unknown';
+    const { useChatStore } = await loadChatStore();
+    await useChatStore.getState().initializeCritical();
+    await useChatStore.getState().selectConversation('chat-conv');
+    const message = useChatStore.getState().getConversationMessages('chat-conv').find((m: ChatMessage) => m.id === 'assistant-1');
+    expect(message).toMatchObject(delta);
+    expect(message?.persistence_state).toBe('failed');
+    expect(window.localStorage.getItem('macro_chat_unsaved_assistant_responses_v1')).toContain(JSON.stringify(Object.values(delta)[0]).replace(/^"|"$/g, ''));
+    // The real store reaches its admission/transport ports; these ports remain
+    // synthetic here. Native permission is independently covered by SQLite.
+    await expect(useChatStore.getState().sendMessage({ conversationId: 'chat-conv', content: 'Independent question' })).rejects.toThrow();
+    expect(streamChatMock).not.toHaveBeenCalled();
+    expect(window.localStorage.getItem('macro_chat_unsaved_assistant_responses_v1')).toContain('assistant-1');
+  });
+
+  }
+
   it('joins a real composer write before inspection and native browser retirement', async () => {
     appState.mode = 'Chat'; tauriAvailable = true;
     const conversation = { ...createConversation('composer-race'), scope_mode: 'Chat' as const };

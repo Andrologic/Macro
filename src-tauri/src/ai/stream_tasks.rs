@@ -36,6 +36,13 @@ impl Drop for StreamReservation {
     }
 }
 
+/// Native settlement evidence; never accepted from IPC. Observing a shell
+/// result does not establish the lifetime of processes it may have started.
+pub(crate) enum ToolOutcome<T> {
+    PhysicallyClosed(T),
+    Observed(T),
+}
+
 impl StreamReservation {
     pub(crate) fn spawn_with_work<F, Fut>(
         self,
@@ -57,8 +64,9 @@ impl StreamReservation {
         })
     }
 
-    /// Own a tool future even if its IPC waiter disappears. A returned command
-    /// error is a physical return; a panic never manufactures a tool receipt.
+    /// Own a tool future even if its IPC waiter disappears. This entry point
+    /// requires successful executors to have physically joined their work.
+    /// A returned error or panic never manufactures a physical tool receipt.
     pub(crate) fn spawn_tool<T, E, F, Fut>(
         self,
         work: std::sync::Arc<crate::db::chat_admission::OperationPermit>,
@@ -69,6 +77,22 @@ impl StreamReservation {
         E: Send + 'static,
         F: FnOnce(CancellationToken) -> Fut + Send + 'static,
         Fut: Future<Output = Result<T, E>> + Send + 'static,
+    {
+        self.spawn_tool_outcome(work, move |cancel| async move {
+            run(cancel).await.map(ToolOutcome::PhysicallyClosed)
+        })
+    }
+
+    pub(crate) fn spawn_tool_outcome<T, E, F, Fut>(
+        self,
+        work: std::sync::Arc<crate::db::chat_admission::OperationPermit>,
+        run: F,
+    ) -> Result<BoxFuture<'static, Result<Result<T, E>, String>>, String>
+    where
+        T: Send + 'static,
+        E: Send + 'static,
+        F: FnOnce(CancellationToken) -> Fut + Send + 'static,
+        Fut: Future<Output = Result<ToolOutcome<T>, E>> + Send + 'static,
     {
         let state = self.state.clone();
         let request = self.request.clone();
@@ -90,9 +114,14 @@ impl StreamReservation {
             let outcome = AssertUnwindSafe(async move { run(cancel).await }).catch_unwind().await;
             let delivery = match outcome {
                 Ok(value) => {
-                    if value.is_ok() {
-                        work.local_execution_closed().await.map_err(|e| e.to_string())?;
-                    }
+                    let value = match value {
+                        Ok(ToolOutcome::PhysicallyClosed(value)) => {
+                            work.local_execution_closed().await.map_err(|e| e.to_string())?;
+                            Ok(value)
+                        }
+                        Ok(ToolOutcome::Observed(value)) => Ok(value),
+                        Err(error) => Err(error),
+                    };
                     async {
                         work.result_pending().await.map_err(|e| e.to_string())?;
                         work.completed().await.map_err(|e| e.to_string())?;

@@ -98,6 +98,11 @@ pub(super) async fn complete(owner: &DbPool, snapshot: &mut Snapshot, observed: 
 }
 
 async fn require_quiescent(db: &mut SqliteConnection, conversation: &str, incarnation: &str) -> DbResult<()> {
+    // Delivery of a known result is independent of physical closure. This
+    // check runs in both inspection and the actual reservation transaction.
+    let unclosed: i64 = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM chat_admission_operations WHERE conversation_id=? AND incarnation=? AND kind IN ('provider','tool') AND request_id IS NOT NULL AND phase<>'no_effect' AND local_closed_at IS NULL)")
+        .bind(conversation).bind(incarnation).fetch_one(&mut *db).await?;
+    if unclosed != 0 { return Err(invalid("chat_admission_local_lifetime_unreconciled: Command results may be available, but process closure is unproven. Local work may continue; conversation transfer remains blocked, including after restart.")); }
     let pending: i64 = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM chat_admission_operations WHERE conversation_id=? AND incarnation=? AND phase NOT IN ('completed','no_effect'))")
         .bind(conversation).bind(incarnation).fetch_one(&mut *db).await?;
     if pending != 0 || super::super::tool_invocations::has_unresolved_on_connection(&mut *db,conversation).await? { return Err(invalid("chat_admission_work_unreconciled")); }
