@@ -2,7 +2,7 @@
   "descriptor": {
     "kind": "portable_archive",
     "format": "portable-chat-history-1",
-    "content_contract_sha256": "f18fbedf20fe01df12cb472012b578d870b979a42b350e7f80d3efbc34b8102e",
+    "content_contract_sha256": "c6ae7440ed0fb4d0bdccdfb936c4bf6ac5c441c96b642c1d9ccbd270b62bdcc6",
     "records": 3,
     "bytes": 883,
     "manifest_sha256": "65bd8e19ef46f0a37849514c24aa9f09be3058160fec68f685b7e200302a1f8d"

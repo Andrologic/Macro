@@ -15,11 +15,11 @@
     },
     {
       "path": "provider-validator.generated.d.mts",
-      "sha256": "407d38ecb2a1166240a7003b8f7314c702053ceb4e5ed9752ebe3fd98ace4a4c"
+      "sha256": "50d6c32b493f4502414a2a44bda0d19512263f757028a6ab42b2dbf1f82a935c"
     },
     {
       "path": "provider-validator.generated.mjs",
-      "sha256": "9650dbce58128747c5c193601233861c44ae151ec5530ec82d280fbe50281ebc"
+      "sha256": "5b129ac7abe6fd493203f59fd8ca137b674f8682935ec8d1c2d7595d397444d3"
     },
     {
       "path": "provider-vectors.json",
@@ -43,7 +43,7 @@
     },
     {
       "path": "validate.mjs",
-      "sha256": "d7bcf761cd27d5a44a3ca43c116ba6ef132d668b4e714a0e71c91a5e9492ca78"
+      "sha256": "8777346ec612f7bf9bc65e1100f4d75da9155534314aeeea6cca0f8e98d1371d"
     },
     {
       "path": "vocabulary.json",

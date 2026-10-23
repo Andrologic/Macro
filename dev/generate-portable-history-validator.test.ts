@@ -12,10 +12,12 @@ test('portable provider validator is current, standalone and CSP-compatible', as
   expect(generated).not.toContain('node:'); expect(generated).not.toContain('compileSchema');
   const runtime = await readFile(resolve(root, 'contracts/macro-pilot/v2/portable-chat-history/validate.mjs'), 'utf8');
   expect(runtime).not.toContain('ajv');
-  const { default: shape } = await import('../contracts/macro-pilot/v2/portable-chat-history/provider-validator.generated.mjs');
+  const { default: shape, clearErrors } = await import('../contracts/macro-pilot/v2/portable-chat-history/provider-validator.generated.mjs');
   const { validatePortableProviderShape } = await import('../contracts/macro-pilot/v2/portable-chat-history/validate.mjs');
   expect(() => validatePortableProviderShape([{ type: 'unknown', untrustedKey: 'synthetic' }])).toThrow('unknown_required_shape');
   expect(shape.errors).toBeNull();
+  shape([{ type: 'message', role: 'assistant', content: [], unknown: 'synthetic' }]);
+  clearErrors(); expect(shape.errors).toBeNull();
 
   const child = Bun.spawn(['node', '--disallow-code-generation-from-strings', '--input-type=module', '-e', `
     import {validatePortableProviderShape} from './contracts/macro-pilot/v2/portable-chat-history/validate.mjs';

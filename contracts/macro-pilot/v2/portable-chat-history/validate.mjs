@@ -1,10 +1,10 @@
-import providerShape from './provider-validator.generated.mjs';
+import providerShape, { clearErrors } from './provider-validator.generated.mjs';
 import { parseStoredJsonStrict } from '../strict-json.mjs';
 import vocabulary from './vocabulary.json' with { type: 'json' };
 export { vocabulary };
 export function validatePortableProviderShape(value) {
   try { if(!providerShape(value))fail('unknown_required_shape'); }
-  finally { providerShape.errors=null; } // No rejected-input diagnostic outlives admission.
+  finally { clearErrors(); } // No rejected-input diagnostic outlives admission.
 }
 
 export const FRAGMENT_BYTES = 4093;

@@ -9,8 +9,14 @@ export async function generatePortableHistoryValidator(projectRoot: string): Pro
   const schema = JSON.parse(await readFile(resolve(projectRoot, 'contracts/macro-pilot/v2/portable-chat-history/provider.schema.json'), 'utf8'));
   const ajv = new Ajv2020({ strict: false, allErrors: false, code: { source: true, esm: true, optimize: 2 } });
   const standalone = standaloneCode(ajv, ajv.compile(schema));
+  // Standalone validators retain last errors on each generated sub-validator.
+  // Enumerate only identifiers in our controlled compiler output, then clear
+  // all of them at the admitted owner boundary, including rejected key names.
+  const validators = [...new Set([...standalone.matchAll(/\b([A-Za-z_$][\w$]*)\.errors\s*=/g)].map(match => match[1]))];
+  if (!validators.length) throw new Error('Standalone error slots changed; review generator');
+  const cleanup = `export function clearErrors(){${validators.map(name => `${name}.errors=null;`).join('')}}`;
   const bundled = await build({
-    stdin: { contents: standalone, resolveDir: projectRoot, loader: 'js' },
+    stdin: { contents: standalone + '\n' + cleanup, resolveDir: projectRoot, loader: 'js' },
     bundle: true, write: false, format: 'esm', platform: 'browser', target: 'es2022',
     legalComments: 'none', minify: true,
   });
