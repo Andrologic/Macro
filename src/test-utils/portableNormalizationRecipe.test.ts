@@ -2,6 +2,8 @@ import { expect, test } from 'bun:test';
 import { open, writeFile, unlink, mkdtemp, rm, readFile, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { createReadStream } from 'node:fs';
+import { portableContractSha, portableDescriptor, validatePortableRecipe } from './portableContractRecipe';
 import { normalizePortableChatHistoryTwoPass } from '../services/ai/portableChatHistory';
 import { PortableWorkBudget } from '../services/ai/portableHistoryInspection';
 import { policy } from '../services/ai/portableHistoryFixtures.testSupport';
@@ -27,7 +29,7 @@ test.skipIf(!root || process.env.MACRO_PORTABLE_NORMALIZATION_PHASE !== 'normali
       }
       expect(splitUtf8Boundary).toBe(true);
     } finally { releaseProbe(); }
-    const path = join(root!, `normalized-${provider}.ndjson`), output = await open(path, 'wx', 0o600);
+    const path = join(root!, `portable-payload-${provider}.ndjson`), output = await open(path, 'wx', 0o600);
     // Test-only disk allowance, independent of native E and of JS working units.
     const spoolAllowance = 128 * 1024 * 1024;
     const started = performance.now(); let spoolBytes = 0, fragments = 0, maxLineBytes = 0;
@@ -42,7 +44,20 @@ test.skipIf(!root || process.env.MACRO_PORTABLE_NORMALIZATION_PHASE !== 'normali
         if (!bytes.length) await write(0, bytes);
         for (let offset = 0; offset < bytes.length; offset += 4093) await write(offset, bytes.subarray(offset, offset + 4093));
       } });
-      measures.push({ source: provider, splitUtf8Boundary, ...source.stats, ...result, normalizedSpoolBytes: spoolBytes, normalizedFragments: fragments, maxNormalizedLineBytes: maxLineBytes, elapsedMs: performance.now() - started, logicalWorkPeak: budget.peak, logicalWorkAdmissions: budget.admissions });
+      await output.close();
+      const canonicalPath = join(root!, `portable-${provider}.ndjson`), canonical = await open(canonicalPath, 'wx', 0o600);
+      let portableBytes = 0;
+      const descriptor = JSON.stringify(portableDescriptor(result, await portableContractSha())) + '\n';
+      try {
+        await canonical.write(descriptor); portableBytes += Buffer.byteLength(descriptor);
+        const stream = createReadStream(path, { highWaterMark: 8192 });
+        try { for await (const chunk of stream) { if (portableBytes + chunk.length > spoolAllowance) throw new Error('proof_file_allowance'); await canonical.write(chunk); portableBytes += chunk.length; } }
+        finally { stream.destroy(); }
+      } finally { await canonical.close(); }
+      const validated = await validatePortableRecipe(canonicalPath, join(root!, `normalized-${provider}.ndjson`), budget, policy);
+      expect(validated.records).toBe(result.records); expect(validated.bytes).toBe(result.bytes); expect(validated.manifest).toBe(result.manifest);
+      expect(validated.normalizedFragments).toBe(fragments); expect(validated.normalizedSpoolBytes).toBe(spoolBytes);
+      measures.push({ source: provider, splitUtf8Boundary, portableBytes, portableContract: await portableContractSha(), validatedPortableRecords: validated.records, validatedPortableFragments: validated.fragments, nativeAppendFragments: validated.nativeAppendFragments, ...source.stats, ...result, normalizedSpoolBytes: spoolBytes, normalizedFragments: fragments, maxNormalizedLineBytes: maxLineBytes, elapsedMs: performance.now() - started, logicalWorkPeak: budget.peak, logicalWorkAdmissions: budget.admissions });
     } catch (error) { await output.close(); await unlink(path); throw error; }
     finally { await output.close(); }
     } finally { source.dispose(); expect(budget.used).toBe(0); }
