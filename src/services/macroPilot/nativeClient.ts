@@ -1,3 +1,4 @@
+import { checkMetadataReply, validateMetadataRequest, readProducerPollReply, TRANSFER_HEADER, TRANSFER_ADMISSION, TRANSFER_BODY_BYTES, type MetadataRequest, type TransferReception, type TransferMetadataOptions } from './transferTransport';
 import { REFLECTION_OPERATION } from './conversationReflections';
 import { CONVERSATION_READ_OPERATIONS, validateContentIntegrity } from './contentProtocol';
 import { FILE_OPERATIONS } from './attachmentFilesHost';
@@ -287,7 +288,7 @@ const abortable = <T>(work: Promise<T>, signal: AbortSignal): Promise<T> => new 
   void work.then(resolve, reject).finally(() => signal.removeEventListener('abort', aborted));
 });
 
-const readBoundedJson = async (response: Response, maxBytes: number, signal: AbortSignal): Promise<unknown> => {
+const readBoundedBody = async (response: Response, maxBytes: number, signal: AbortSignal): Promise<Uint8Array | null> => {
   if (response.status === 204 || response.status === 205) return null;
   const declaredLength = Number(response.headers.get('content-length'));
   if (Number.isFinite(declaredLength) && declaredLength > maxBytes) {
@@ -313,8 +314,7 @@ const readBoundedJson = async (response: Response, maxBytes: number, signal: Abo
     const bytes = new Uint8Array(size);
     let offset = 0;
     for (const chunk of chunks) { bytes.set(chunk, offset); offset += chunk.byteLength; }
-    try { return JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes)); }
-    catch { throw new PilotClientError('invalid_response', response.status); }
+    return bytes;
   } catch (error) {
     cancel();
     if (error instanceof PilotClientError) throw error;
@@ -350,6 +350,13 @@ const emptyPersistedState = (configurationId: string): PersistedPilotState => ({
   pendingSecretCleanup: [],
   attempt: null,
 });
+
+const readBoundedJson = async (response: Response, maxBytes: number, signal: AbortSignal): Promise<unknown> => {
+  const bytes = await readBoundedBody(response, maxBytes, signal);
+  if (bytes === null) return null;
+  try { return JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes)); }
+  catch { throw new PilotClientError('invalid_response', response.status); }
+};
 
 export class MacroPilotNativeClient {
   private publicState = emptyPublicState();
@@ -848,6 +855,39 @@ export class MacroPilotNativeClient {
     return this.sendRequest('POST', path, body, { ...options, authenticated: true, producer: true, signal }, 'producer', requestId);
   }
 
+  /** Inactive control transport. The future native owner supplies admission and
+   * the real emission guard. This does not accept work, freeze, pin or stage. */
+  async requestTransferMetadata(path: string, body: MetadataRequest, reception: TransferReception,
+    signal: AbortSignal, options: TransferMetadataOptions, consume: (reply: PilotResponse) => void | Promise<void>): Promise<void> {
+    if (typeof options?.reserve !== 'function' || typeof options.beforeSend !== 'function' || typeof consume !== 'function') throw new PilotClientError('invalid_configuration');
+    const context = this.contextKey();
+    const release = options.reserve(TRANSFER_ADMISSION);
+    if (typeof release !== 'function') throw new PilotClientError('resource_limit');
+    let releaseReply: (() => void) | undefined;
+    try {
+      // Request/expectation retention and the received JSON are independent
+      // graphs. Reserve both before dispatch; a 32MiB owner can refuse here.
+      releaseReply = options.reserve(TRANSFER_ADMISSION);
+      if (typeof releaseReply !== 'function') throw new PilotClientError('resource_limit');
+      const { codec, saved } = await validateMetadataRequest(path, body, reception);
+      this.checkContext(context);
+      if (signal.aborted) throw new PilotClientError('context_changed');
+      const producer = saved.body.type === 'proof.received' || saved.body.type === 'proof.result';
+      if (producer) {
+        const instance = this.publicState.instance?.ref.instance_id;
+        const actual = saved.body.type === 'proof.received' ? saved.body.exchange.instance_id : saved.body.type === 'proof.result' ? saved.body.attestation.producer_instance_id : undefined;
+        if (!instance || instance !== actual) throw new PilotClientError('invalid_configuration');
+      }
+      const reply = await this.sendRequest('POST', path, saved.body, { authenticated: true, producer, signal, beforeSend: options.beforeSend, onDispatch: options.onDispatch },
+        'transfer', saved.body.request_id, undefined, { codec, sent: saved.body, reception: saved.reception });
+      this.checkContext(context);
+      if (signal.aborted) throw new PilotClientError('context_changed');
+      // Borrowed metadata stays charged through the awaited callback. A future
+      // retaining native owner must acquire its own charge before retention.
+      await consume(reply);
+    } finally { try { releaseReply?.(); } finally { release(); } }
+  }
+
   /** Detection-only values. The caller must keep these out of journals and logs. */
   async contentSecretValues(): Promise<string[]> {
     const context = this.contextKey();
@@ -861,20 +901,20 @@ export class MacroPilotNativeClient {
 
   private async sendRequest<T = unknown>(
     method: string, path: string, body: unknown, options: PilotRequestOptions,
-    extension: boolean | 'producer' | 'consumer' | 'session-check' | 'consumer-directory' = false, requestId = createOpaqueId('request', this.dependencies), consumer?: ConsumerDispatch,
+    extension: boolean | 'producer' | 'consumer' | 'session-check' | 'consumer-directory' | 'transfer' = false, requestId = createOpaqueId('request', this.dependencies), consumer?: ConsumerDispatch, transfer?: { codec: Awaited<ReturnType<typeof validateMetadataRequest>>['codec']; sent: MetadataRequest; reception: TransferReception },
   ): Promise<PilotResponse<T>> {
     const readController = method === 'GET' ? new AbortController() : null;
     if (readController) this.pendingReads.add(readController);
     const signal = readController
       ? AbortSignal.any([readController.signal, ...(options.signal ? [options.signal] : [])])
       : options.signal;
-    try { return await this.sendRequestOnce<T>(method, path, body, { ...options, signal }, extension, requestId, consumer); }
+    try { return await this.sendRequestOnce<T>(method, path, body, { ...options, signal }, extension, requestId, consumer, transfer); }
     finally { if (readController) this.pendingReads.delete(readController); }
   }
 
   private async sendRequestOnce<T = unknown>(
     method: string, path: string, body: unknown, options: PilotRequestOptions,
-    extension: boolean | 'producer' | 'consumer' | 'session-check' | 'consumer-directory', requestId: string, consumer?: ConsumerDispatch,
+    extension: boolean | 'producer' | 'consumer' | 'session-check' | 'consumer-directory' | 'transfer', requestId: string, consumer?: ConsumerDispatch, transfer?: { codec: Awaited<ReturnType<typeof validateMetadataRequest>>['codec']; sent: MetadataRequest; reception: TransferReception },
   ): Promise<PilotResponse<T>> {
     if (!this.persisted?.relayOrigin) throw new PilotClientError('invalid_configuration');
     const context = this.contextKey();
@@ -934,9 +974,11 @@ export class MacroPilotNativeClient {
       let fetching: ReturnType<PilotClientDependencies['fetch']>;
       try { fetching = this.dependencies.fetch(url, init); }
       finally { options.onDispatch?.(); }
-      // A late response after an abort must not retain an unread native body.
+      // Request cancellation for an unread late body. This does not join native work.
       void fetching.then(result => { if (signal.aborted) void result.body?.cancel().catch(() => undefined); }, () => undefined);
-      response = await abortable(fetching, signal);
+      // Metadata retains its logical charge until fetch settles in JavaScript.
+      // Neither this Promise nor body cancellation joins the native HTTP owner.
+      response = extension === 'transfer' ? await fetching : await abortable(fetching, signal);
     } catch (error) {
       check();
       if (error instanceof PilotClientError) throw error;
@@ -945,23 +987,48 @@ export class MacroPilotNativeClient {
       }
       throw new PilotClientError('offline');
     }
-    check();
-    if (response.url && response.url !== url) {
-      void response.body?.cancel().catch(() => undefined);
-      throw new PilotClientError('redirect_refused', response.status);
-    }
     let data: unknown;
-    try { data = await readBoundedJson(response, extension && extension !== 'consumer-directory' ? 256 * 1024 : MAX_BODY_BYTES, signal); }
-    catch (error) {
+    try {
       check();
-      if (options.authenticated && !targetOnly && error instanceof PilotClientError && error.code === 'offline') {
-        this.publish({ status: 'offline', lastError: 'offline' });
-      }
+      if (response.url && response.url !== url) throw new PilotClientError('redirect_refused', response.status);
+      if (extension === 'transfer') {
+        if (!transfer || response.headers.get('X-Request-Id') !== requestId || response.headers.has(TRANSFER_HEADER)) throw new PilotClientError('invalid_response');
+        const decoded = await transfer.codec.withDecoded(async () => {
+          check(); return await readBoundedBody(response, TRANSFER_BODY_BYTES, signal);
+        }, { reserve: units => {
+          if (units > TRANSFER_ADMISSION) throw new PilotClientError('resource_limit');
+          // Borrow the separately reserved response graph. The request's
+          // retained graph has its own simultaneous reservation.
+          return () => undefined;
+        } }, message => { checkMetadataReply(transfer.codec, transfer.sent, message, transfer.reception); data = message; });
+        if (!decoded.valid) throw new PilotClientError('invalid_response');
+      } else if (extension === 'producer' && isRecord(body) && body.type === 'poll') {
+        const union = await readProducerPollReply(response, { offered: null, requestId,
+          instanceId: this.publicState.instance?.ref.instance_id ?? '', producerGeneration: null, connectionId: null,
+          reserve: () => { throw new PilotClientError('extension_unavailable'); },
+          load: async () => { throw new PilotClientError('extension_unavailable'); },
+          legacy: () => readBoundedJson(response, 256 * 1024, signal), validateContent: validateContentMessage,
+          consumeTransfer: () => { throw new PilotClientError('extension_unavailable'); } });
+        if (union.branch === 'transfer') throw new PilotClientError('extension_unavailable');
+        data = union.data;
+      } else data = await readBoundedJson(response, extension && extension !== 'consumer-directory' ? 256 * 1024 : MAX_BODY_BYTES, signal);
+    } catch (error) {
+      void response.body?.cancel().catch(() => undefined);
+      check();
+      if (options.authenticated && !targetOnly && error instanceof PilotClientError && error.code === 'offline') this.publish({ status: 'offline', lastError: 'offline' });
       throw error;
     }
     check();
     const responseHeader = response.headers.get('x-request-id');
     const responseRequestId = responseHeader || requestId;
+    if (extension === 'transfer') {
+      const wire = data as { type: string; code?: string; retryable?: boolean; result?: { kind: string; error?: { code: string; retryable: boolean } } };
+      const failure = wire.type === 'error' ? wire : wire.type === 'decision.reply' && wire.result?.kind === 'error' ? wire.result.error : null;
+      if (!response.ok && !failure) throw new PilotClientError('invalid_response', response.status);
+      if (failure && response.ok) throw new PilotClientError('invalid_response', response.status);
+      if (failure) throw new PilotClientError(failure.code as PilotClientErrorCode, response.status, failure.retryable ?? false, requestId);
+      return { status: response.status, data: data as T, requestId };
+    }
     if (extension === 'consumer-directory') {
       if (responseHeader !== requestId || !validateA1(data) || !isRecord(data)) throw new PilotClientError('invalid_response', response.status);
       if (data.type === 'error') {
