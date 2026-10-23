@@ -17,6 +17,7 @@ import {
   loadMessageImagesFromStorage,
   loadQuestionnaireDraftsFromStorage,
   loadUnsavedAssistantResponsesFromStorage,
+  readUnsavedAssistantResponsesFromStorage,
   removeUnsavedAssistantResponseFromStorage,
   saveComposerDraftsToStorage,
   saveMessageImagesToStorage,
@@ -86,6 +87,14 @@ describe("chatLocalSessionState", () => {
 
   afterEach(() => {
     restoreWindow();
+  });
+
+  it("refuses incomplete recovery inspection without changing the saved bytes", () => {
+    const raw = JSON.stringify({ invalid: { role: "assistant" } });
+    window.localStorage.setItem(UNSAVED_ASSISTANT_RESPONSES_STORAGE_KEY, raw);
+    expect(loadUnsavedAssistantResponsesFromStorage()).toEqual([]);
+    expect(() => readUnsavedAssistantResponsesFromStorage()).toThrow("Invalid saved response");
+    expect(window.localStorage.getItem(UNSAVED_ASSISTANT_RESPONSES_STORAGE_KEY)).toBe(raw);
   });
 
   it("persists questionnaire drafts defensively", () => {

@@ -319,3 +319,47 @@ pub(crate) async fn admit_tool(
         .await?;
     Ok((reservation, std::sync::Arc::new(work)))
 }
+
+
+#[derive(serde::Serialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub(crate) enum IntentAdmission {
+    GlobalChat { receipt: crate::db::chat_admission::intents::IntentReceipt },
+    Conversation,
+}
+
+#[tauri::command]
+pub(crate) async fn chat_admission_begin_intent(
+    pool: State<'_, DbPool>, admission_runtime: State<'_, ChatAdmissionRuntime>,
+    window: WebviewWindow, runtime: String,
+    identity: crate::db::chat_admission::intents::IntentIdentity, mutation: crate::db::chat_admission::intents::IntentMutation,
+) -> CommandResult<IntentAdmission> {
+    let page = admission_runtime.current_page(window.label());
+    let database = get_pool(&pool).await?;
+    let global: Option<i64> = sqlx::query_scalar("SELECT CASE WHEN scope_mode='Chat' AND project_id IS NULL AND group_id IS NULL AND task_id IS NULL THEN 1 ELSE 0 END FROM conversations WHERE id=?")
+        .bind(&identity.conversation_id).fetch_optional(&database).await.map_err(|error| command_error(error.to_string()))?;
+    match global {
+        Some(0) => return Ok(IntentAdmission::Conversation),
+        Some(1) => {},
+        None if matches!(mutation, crate::db::chat_admission::intents::IntentMutation::Remove) => {
+            // Deleting an orphaned local recovery copy cannot revive a chat.
+            // Keep every old native effect/marker untouched; IDs stay tombstoned.
+            let protected: i64 = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM chat_admission_owners WHERE conversation_id=? AND mode<>'removed')")
+                .bind(&identity.conversation_id).fetch_one(&database).await.map_err(|error| command_error(error.to_string()))?;
+            if protected != 0 { return Err(command_error("chat_admission_intent_not_open")); }
+            return Ok(IntentAdmission::Conversation);
+        },
+        _ => return Err(command_error("chat_admission_conversation_missing")),
+    }
+    admission_runtime.open_browser_on_page(pool.inner().clone(), window.label(), &runtime, &page).await?;
+    let receipt = admission_runtime.begin_intent(&pool, window.label(), &runtime, identity, mutation).await?;
+    Ok(IntentAdmission::GlobalChat { receipt })
+}
+
+#[tauri::command]
+pub(crate) async fn chat_admission_finish_intent(
+    pool: State<'_, DbPool>, admission_runtime: State<'_, ChatAdmissionRuntime>,
+    window: WebviewWindow, receipt: crate::db::chat_admission::intents::IntentReceipt,
+) -> CommandResult<()> {
+    admission_runtime.finish_intent(&pool, window.label(), &receipt).await.map_err(Into::into)
+}

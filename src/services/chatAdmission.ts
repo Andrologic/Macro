@@ -57,3 +57,17 @@ export async function finishChatResponse(context: ipc.ChatAdmissionContext, conv
     generationAttempts: message.generation_attempts,
   });
 }
+
+
+export async function beginChatIntent(identity: ipc.ChatIntentIdentity, mutation: 'retain' | 'remove' = 'retain'): Promise<ipc.ChatIntentAdmission> {
+  if (!ipc.isTauriAvailable()) {
+    throw new MacroServiceError('CHAT_ADMISSION_UNAVAILABLE', 'Chat admission requires the desktop backend.');
+  }
+  await retirement;
+  runtime ??= crypto.randomUUID();
+  return ipc.chatAdmissionBeginIntent(runtime, identity, mutation);
+}
+
+export async function finishChatIntent(admission: ipc.ChatIntentAdmission): Promise<void> {
+  if (admission.kind === 'globalChat') await ipc.chatAdmissionFinishIntent(admission.receipt);
+}

@@ -1,5 +1,5 @@
 import type { ProviderAdmission } from '../services/ipc/chatAdmission';
-import { beginChatAdmission, closeChatPreparation, finishChatResponse, retireChatBrowser } from '../services/chatAdmission';
+import { beginChatAdmission, closeChatPreparation, finishChatResponse, retireChatBrowser, beginChatIntent, finishChatIntent } from '../services/chatAdmission';
 import { acknowledgeDisplayedConversation } from '../services/conversationManagementService';
 import { getConflictAssistantContext, clearConflictAssistantContext, isConflictAssistantContextAllowed, revalidateConflictAssistantContext, scopeConflictAssistantExecutionContext } from '../services/conflictAssistantContext';
 import { type LifecycleContext, createLifecycleScope } from '../services/lifecycleScope';
@@ -1534,8 +1534,14 @@ export const useChatStore = create<ChatStore>((set, get) => {
   const queuedAdmissionStops = new Map<string, symbol>();
   let queueRuntime: QueuedSubmissionRuntime | undefined;
   let queueRuntimeLoading: Promise<QueuedSubmissionRuntime> | undefined;
-  const getQueueRuntime = (): Promise<QueuedSubmissionRuntime> => queueRuntimeLoading ??= import("./chat/chatQueuedSubmissionRuntime").then(({ createQueuedSubmissionRuntime }) => {
+  let queueRuntimeEpoch = 0;
+  const getQueueRuntime = (): Promise<QueuedSubmissionRuntime> => {
+    const epoch = queueRuntimeEpoch;
+    return queueRuntimeLoading ??= import("./chat/chatQueuedSubmissionRuntime").then(({ createQueuedSubmissionRuntime }) => {
+    if (epoch !== queueRuntimeEpoch) throw new Error('Queued submission owner has retired.');
     queueRuntime = createQueuedSubmissionRuntime({
+      admit: (entry, mutation) => beginChatIntent({ kind: 'queue', conversationId: entry.input.conversationId, id: entry.id }, mutation),
+      finish: finishChatIntent,
       blocked: id => isAppShutdownGateActive() || hasUnsavedAssistantResponse(id) ||
         useConversationArchiveStore.getState().archivedConversationIds.has(id) ||
         isConversationRuntimeActive(getConversationRuntimeSnapshot(get().conversationRuntimeById, id)),
@@ -1558,6 +1564,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
     });
     return queueRuntime;
   });
+  };
   const toolboxPersistenceTailsByConversationId = new Map<string, Promise<void>>();
   const contextDiagnosticsRequestIds = new Map<string, number>();
   const liveContextDiagnosticsRefreshByConversationId = new Map<
@@ -3618,7 +3625,13 @@ export const useChatStore = create<ChatStore>((set, get) => {
     architectConversationRecoveryContexts.clear();
     if (retired) {
       try { retired.stop(); } catch (error) { subscriptionCleanupFailures.push(error); }
-      finally { subscriptionRetirement = Promise.all([subscriptionRetirement, retired.drain(), retireChatBrowser()]).then(() => undefined); }
+      finally {
+        const queueRetirement = queueRuntime?.retire();
+        queueRuntimeEpoch += 1;
+        queueRuntime = undefined;
+        queueRuntimeLoading = undefined;
+        subscriptionRetirement = Promise.all([subscriptionRetirement, retired.drain(), queueRetirement, retireChatBrowser()]).then(() => undefined);
+      }
     }
   };
 
@@ -7650,11 +7663,11 @@ export const useChatStore = create<ChatStore>((set, get) => {
     };
   };
 
-  const applyLocalConversationRemoval = (conversationIds: string[]) => {
+  const applyLocalConversationRemoval = async (conversationIds: string[]) => {
     if (conversationIds.length === 0) {
       return;
     }
-    queueRuntime?.remove(conversationIds);
+    await queueRuntime?.remove(conversationIds);
     discardComposerDraftsForConversationIds(conversationIds);
     clearUnsavedAssistantResponsesForConversations(conversationIds);
     clearPendingArchitectConversationsForConversationIds(conversationIds);
@@ -8780,9 +8793,17 @@ export const useChatStore = create<ChatStore>((set, get) => {
     });
   };
 
-  const drainQueuedSubmissions = (conversationId: string): Promise<void> => queueRuntime
-    ? queueRuntime.drain(conversationId)
-    : getQueueRuntime().then(queue => queue.drain(conversationId));
+  const drainQueuedSubmissions = async (conversationId: string): Promise<void> => {
+    const epoch = queueRuntimeEpoch;
+    try {
+      const queue = queueRuntime ?? await getQueueRuntime();
+      if (epoch === queueRuntimeEpoch) await queue.drain(conversationId);
+    } catch (error) {
+      // A background drain whose owner retired before its lazy import completed
+      // has no work to dispatch. Other failures remain observable.
+      if (epoch === queueRuntimeEpoch) throw error;
+    }
+  };
 
   const buildUserMessageForSend = async (params: {
     id?: string;
@@ -11099,7 +11120,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
       try {
         await deletePersistedConversation(chatPersistenceAdapters, conversationId);
         await deleteConversationToolboxStateIfAvailable(conversationId);
-        applyLocalConversationRemoval([conversationId]);
+        await applyLocalConversationRemoval([conversationId]);
         try {
           if (!createdConversationCleanupSaga) {
             throw new Error('Génération de création de conversation introuvable.');
@@ -11634,7 +11655,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
     });
     const restoredQueue = await getQueueRuntime();
     lifecycle?.assertActive();
-    restoredQueue.restore(conversations.map(conversation => conversation.id));
+    await restoredQueue.restore(conversations.map(conversation => conversation.id));
     scheduleImplementAwaitingResponseReconciliation();
   };
 
@@ -13350,7 +13371,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
       clearAgentCodeCheckpoints(conversationId);
       clearConversationCitationsIfAvailable(conversationId);
       removeConversationSelectionData(conversationId);
-      applyLocalConversationRemoval([conversationId]);
+      await applyLocalConversationRemoval([conversationId]);
       await runCleanup("sélection", () =>
         hydrateSelectedConversationAfterRemoval([conversationId]),
       );
@@ -13453,7 +13474,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
           clearAgentCodeCheckpoints(conversationId);
           removeConversationSelectionData(conversationId);
         });
-        applyLocalConversationRemoval(uniqueIds);
+        await applyLocalConversationRemoval(uniqueIds);
         try {
           await hydrateSelectedConversationAfterRemoval(uniqueIds);
         } catch (error) {
@@ -13522,7 +13543,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
       clearAgentCodeCheckpoints(conversationId);
       clearConversationCitationsIfAvailable(conversationId);
       removeConversationSelectionData(conversationId);
-      applyLocalConversationRemoval([conversationId]);
+      await applyLocalConversationRemoval([conversationId]);
 
       try {
         await authorize();
@@ -14169,7 +14190,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
           useConversationArchiveStore.getState().archivedConversationIds.has(payload.conversationId)) {
           throw buildSendError(i18n.t('chat.queueUnavailable', 'This conversation can no longer accept queued messages.'));
         }
-        queue.accept(entry, queuedAdmissionStops.get(payload.conversationId) !== admissionStop);
+        await queue.accept(entry, queuedAdmissionStops.get(payload.conversationId) !== admissionStop);
         return "queued";
       }
 

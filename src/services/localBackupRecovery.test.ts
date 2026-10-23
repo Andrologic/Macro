@@ -45,10 +45,10 @@ it('restores recovery identities and text with queued work paused after hydratio
   const send = mock(async () => { throw new Error('Must remain paused'); });
   const read = mock(async () => []);
   const previews = mock(() => {});
-  const runtime = createQueuedSubmissionRuntime({ blocked: () => false, cancelled: () => false,
+  const runtime = createQueuedSubmissionRuntime({ admit: async () => ({ kind: 'conversation' }), finish: async () => {}, blocked: () => false, cancelled: () => false,
     read, send, publish: () => {}, saveImages: () => true, recovery: () => {},
     previews, pending: () => {}, attempted: () => {} });
-  runtime.restore([entry.input.conversationId]);
+  await runtime.restore([entry.input.conversationId]);
   await runtime.drain(entry.input.conversationId);
   expect(send).not.toHaveBeenCalled();
   expect(read).not.toHaveBeenCalled();

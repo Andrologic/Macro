@@ -10,7 +10,7 @@ export interface AssistantPersistenceRecoveryPorts {
     failed(params: { assistantMessage: ChatMessage; message: string }): string;
   };
   recovery: {
-    removeSavedCopy(id: string): void;
+    removeSavedCopy(id: string): boolean | Promise<boolean>;
     clearError(conversationId: string, messageId: string): void;
     resumeQueue(conversationId: string): void;
   };
@@ -38,13 +38,15 @@ export async function retryAssistantPersistence(messageId: string, ports: Assist
         generationAttempts: assistantMessage.generation_attempts,
       },
     });
+    if (!await ports.recovery.removeSavedCopy(messageId)) {
+      throw new Error("The saved recovery copy could not be removed. Retry recovery before continuing.");
+    }
   } catch (error) {
     const normalized = toServiceError(error);
     const message = normalized.message.startsWith("Failed to save assistant response:")
       ? normalized.message : `Failed to save assistant response: ${normalized.message}`;
     throw new Error(stillOwnsRetry() ? ports.messages.failed({ assistantMessage, message }) : message);
   }
-  ports.recovery.removeSavedCopy(messageId);
   if (!stillOwnsRetry()) return;
   ports.messages.patch(messageId, { persistence_state: undefined, persistence_error: undefined });
   ports.recovery.clearError(assistantMessage.conversation_id, messageId);

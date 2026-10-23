@@ -251,7 +251,7 @@ impl ChatAdmissionRuntime {
                 .bind(runtime).bind(caller).bind(&generation).fetch_all(&mut *tx).await?;
             // No later child can dispatch through a closed parent. An already
             // emitted effect keeps its uncertainty; cancellation is not success.
-            sqlx::query("WITH RECURSIVE owned(id) AS (SELECT operation_id FROM chat_admission_operations WHERE browser_runtime=? AND browser_caller=? AND runtime_generation=? UNION ALL SELECT p.operation_id FROM chat_admission_operations p JOIN owned o ON p.parent_id=o.id) UPDATE chat_admission_operations SET phase=CASE WHEN phase='prepared' THEN 'no_effect' ELSE 'unknown' END,revision=revision+1 WHERE operation_id IN (SELECT id FROM owned) AND phase IN ('prepared','dispatched','result_pending')")
+            sqlx::query("WITH RECURSIVE owned(id) AS (SELECT operation_id FROM chat_admission_operations WHERE browser_runtime=? AND browser_caller=? AND runtime_generation=? UNION ALL SELECT p.operation_id FROM chat_admission_operations p JOIN owned o ON p.parent_id=o.id) UPDATE chat_admission_operations SET phase=CASE WHEN phase='prepared' THEN 'no_effect' ELSE 'unknown' END,revision=revision+1 WHERE operation_id IN (SELECT id FROM owned) AND kind IN ('turn','provider','tool','compaction') AND phase IN ('prepared','dispatched','result_pending')")
                 .bind(runtime).bind(caller).bind(&generation).execute(&mut *tx).await?;
             let pending_tools: Vec<(String, String, String, String)> = sqlx::query_as("SELECT p.conversation_id,p.turn_id,p.message_id,p.call_id FROM chat_admission_operations p JOIN chat_admission_operations root ON root.operation_id=p.parent_id JOIN tool_invocations t ON t.conversation_id=p.conversation_id AND t.turn_id=p.turn_id AND t.message_id=p.message_id AND t.call_id=p.call_id WHERE root.browser_runtime=? AND root.browser_caller=? AND root.runtime_generation=? AND t.status='pending'")
                 .bind(runtime).bind(caller).bind(&generation).fetch_all(&mut *tx).await?;
@@ -359,6 +359,20 @@ impl ChatAdmissionRuntime {
             handle,
             runtime: runtime.into(),
         })
+    }
+
+    pub(crate) async fn begin_intent(&self, owner: &DbPool, caller: &str, runtime: &str,
+        identity: super::intents::IntentIdentity, mutation: super::intents::IntentMutation) -> DbResult<super::intents::IntentReceipt> {
+        let _lifecycle = self.lifecycle.lock().await;
+        self.check_browser(caller, runtime)?;
+        super::intents::begin(owner, caller, runtime, identity, mutation).await
+    }
+
+    pub(crate) async fn finish_intent(&self, owner: &DbPool, caller: &str,
+        receipt: &super::intents::IntentReceipt) -> DbResult<()> {
+        let _lifecycle = self.lifecycle.lock().await;
+        // The durable completed receipt is still readable after retirement.
+        super::intents::finish(owner, caller, receipt).await
     }
 
     pub(crate) async fn parent(

@@ -6,6 +6,7 @@ use tokio::sync::OnceCell;
 const MIGRATION: &str = include_str!("migrations/017_chat_admission.sql");
 const OBJECTS: &str = "name GLOB 'chat_admission_*' OR tbl_name GLOB 'chat_admission_*'";
 pub(crate) mod runtime;
+pub(crate) mod intents;
 
 static EXPECTED: OnceCell<Vec<(String, Option<String>)>> = OnceCell::const_new();
 
@@ -301,6 +302,19 @@ impl OperationPermit {
             .bind(&operation).bind(conversation).bind(&incarnation).bind(&generation).bind(purpose.as_str()).bind(turn)
             .bind(browser.map(|b| b.0)).bind(browser.map(|b| b.1)).bind(browser.map(|b| b.2))
             .execute(&mut *tx).await?;
+        if purpose == RootWorkKind::Turn {
+            if let Some((caller, runtime, _)) = browser {
+                let queued: Option<(String, String, Option<String>, String, String)> = sqlx::query_as("SELECT operation_id,phase,parent_id,browser_caller,browser_runtime FROM chat_admission_operations WHERE conversation_id=? AND incarnation=? AND kind='queue' AND browser_attempt=?")
+                    .bind(conversation).bind(&incarnation).bind(turn).fetch_optional(&mut *tx).await?;
+                if let Some((id, phase, parent, window, queue_runtime)) = queued {
+                    if parent.is_some() || !matches!(phase.as_str(), "prepared" | "unknown") || window != caller || queue_runtime != runtime {
+                        return Err(invalid("chat_admission_queue_already_claimed"));
+                    }
+                    sqlx::query("UPDATE chat_admission_operations SET parent_id=?,phase='result_pending',revision=revision+1 WHERE operation_id=?")
+                        .bind(&operation).bind(id).execute(&mut *tx).await?;
+                }
+            }
+        }
         tx.commit().await?;
         lease.committed = true;
         // Drop the SQLite lease before its source generation guard. The returned

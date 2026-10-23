@@ -3,6 +3,7 @@ import type { ChatMessage } from '../../types';
 import { chatSendFixture } from '../../test-utils/chatSendFixture';
 import { createDeferred } from '../../test-utils/deferred';
 import { captureQueuedSubmission, loadQueuedSubmissions, QUEUED_SUBMISSIONS_STORAGE_KEY } from './chatQueuedSubmissions';
+import type { ChatIntentAdmission } from '../../services/ipc/chatAdmission';
 import { createQueuedSubmissionRuntime, type QueuedSubmissionPreview } from './chatQueuedSubmissionRuntime';
 
 beforeEach(() => window.localStorage.removeItem(QUEUED_SUBMISSIONS_STORAGE_KEY));
@@ -15,22 +16,25 @@ const setup = () => {
   let previews: QueuedSubmissionPreview[] = [];
   const read = mock(async (_id: string): Promise<ChatMessage[]> => []);
   const send = mock(async (next: ReturnType<typeof entry>) => {
-    queue.complete(next);
+    await queue.complete(next);
     return { status: 'sent' as const, conversationId: next.input.conversationId, turnId: next.id, userMessageId: `user-${next.id}`, assistantMessageId: `assistant-${next.id}` };
   });
+  const admit = mock(async (): Promise<ChatIntentAdmission> => ({ kind: 'conversation' }));
+  const finish = mock(async (_admission: ChatIntentAdmission) => {});
   const queue = createQueuedSubmissionRuntime({
+    admit, finish,
     blocked: () => blocked, cancelled: () => false, read, send,
     publish: () => {}, saveImages: () => true, recovery: () => {}, pending: () => {}, attempted: () => {},
     previews: value => { previews = value; },
   });
-  return { queue, read, send, release: () => { blocked = false; }, previews: () => previews };
+  return { queue, read, send, admit, finish, release: () => { blocked = false; }, previews: () => previews };
 };
 
 describe('live queued messages', () => {
   it('shows accepted messages in order and removes a waiting message without sending it', async () => {
     const f = setup();
-    f.queue.accept(entry('first', 'Keep first'));
-    f.queue.accept(entry('second', 'Discard second'));
+    await f.queue.accept(entry('first', 'Keep first'));
+    await f.queue.accept(entry('second', 'Discard second'));
     expect(f.previews().map(x => [x.content, x.state])).toEqual([['Keep first', 'waiting'], ['Discard second', 'waiting']]);
     await f.queue.removeEntry('second');
     expect(loadQueuedSubmissions().map(x => x.id)).toEqual(['first']);
@@ -43,7 +47,7 @@ describe('live queued messages', () => {
     const f = setup();
     const messages = createDeferred<ChatMessage[]>();
     f.read.mockImplementationOnce(() => messages.promise);
-    f.queue.accept(entry('first'));
+    await f.queue.accept(entry('first'));
     f.release();
     const draining = f.queue.drain(entry('first').input.conversationId);
     expect(f.previews()[0].state).toBe('sending');
@@ -59,8 +63,8 @@ describe('live queued messages', () => {
     const sendDone = createDeferred<void>();
     const sendFirst = f.send.getMockImplementation()!;
     f.send.mockImplementationOnce(async x => { await sendDone.promise; return sendFirst(x); });
-    f.queue.accept(entry('first'));
-    f.queue.accept(entry('second'));
+    await f.queue.accept(entry('first'));
+    await f.queue.accept(entry('second'));
     f.release();
     const draining = f.queue.drain(entry('first').input.conversationId);
     await Promise.resolve();
@@ -76,8 +80,8 @@ describe('live queued messages', () => {
     const f = setup();
     const messages = createDeferred<ChatMessage[]>();
     f.read.mockImplementationOnce(() => messages.promise);
-    f.queue.accept(entry('first'));
-    f.queue.accept(entry('second'));
+    await f.queue.accept(entry('first'));
+    await f.queue.accept(entry('second'));
     const removal = f.queue.removeEntry('first');
     f.release();
     await f.queue.drain(entry('first').input.conversationId);
@@ -93,7 +97,7 @@ describe('live queued messages', () => {
     const messages = createDeferred<ChatMessage[]>();
     f.read.mockImplementationOnce(() => messages.promise.then(() => { throw new Error('History unavailable'); }));
     const first = entry('first');
-    f.queue.accept(first);
+    await f.queue.accept(first);
     const removal = f.queue.removeEntry('first');
     f.release();
     await f.queue.drain(first.input.conversationId);
@@ -106,7 +110,7 @@ describe('live queued messages', () => {
 
   it('retains the message if durable removal fails', async () => {
     const f = setup();
-    f.queue.accept(entry('first'));
+    await f.queue.accept(entry('first'));
     const storage = window.localStorage;
     const values = new Map([[QUEUED_SUBMISSIONS_STORAGE_KEY, storage.getItem(QUEUED_SUBMISSIONS_STORAGE_KEY)!]]);
     Object.defineProperty(window, 'localStorage', { configurable: true, value: {
@@ -125,7 +129,7 @@ describe('live queued messages', () => {
     const messages = createDeferred<ChatMessage[]>();
     f.read.mockImplementationOnce(() => messages.promise);
     const first = entry('first');
-    f.queue.accept(first);
+    await f.queue.accept(first);
     f.release();
     const draining = f.queue.drain(first.input.conversationId);
     f.queue.pause(first.input.conversationId);
@@ -135,5 +139,59 @@ describe('live queued messages', () => {
     expect(f.previews()[0].state).toBe('paused');
     await f.queue.retry(first.input.conversationId);
     expect(f.send).toHaveBeenCalledTimes(1);
+  });
+});
+
+
+describe('queued intent ownership', () => {
+  it('waits for admission before storing and joins an admission interrupted by retirement', async () => {
+    const f = setup();
+    const entered = createDeferred<void>();
+    const admission = createDeferred<ChatIntentAdmission>();
+    f.admit.mockImplementationOnce(() => { entered.resolve(); return admission.promise; });
+    const accepted = f.queue.accept(entry('pending'));
+    const rejected = accepted.then(() => null, error => error);
+    await entered.promise;
+    expect(loadQueuedSubmissions()).toEqual([]);
+    let retired = false;
+    const retirement = f.queue.retire().then(() => { retired = true; });
+    await Promise.resolve();
+    expect(retired).toBe(false);
+    admission.resolve({ kind: 'conversation' });
+    expect((await rejected)?.message).toContain('owner has retired');
+    await retirement;
+    expect(loadQueuedSubmissions()).toEqual([]);
+    expect(f.send).not.toHaveBeenCalled();
+  });
+
+  it('joins history loading on retirement and never starts its deferred send', async () => {
+    const f = setup();
+    const entered = createDeferred<void>();
+    const history = createDeferred<ChatMessage[]>();
+    f.read.mockImplementationOnce(() => { entered.resolve(); return history.promise; });
+    const next = entry('pending');
+    await f.queue.accept(next);
+    f.release();
+    const drain = f.queue.drain(next.input.conversationId);
+    await entered.promise;
+    let retired = false;
+    const retirement = f.queue.retire().then(() => { retired = true; });
+    await Promise.resolve();
+    expect(retired).toBe(false);
+    history.resolve([]);
+    await Promise.all([drain, retirement]);
+    expect(f.send).not.toHaveBeenCalled();
+    expect(loadQueuedSubmissions().map(x => x.id)).toEqual(['pending']);
+  });
+
+  it('does not resurrect a removed copy when its native ACK is lost', async () => {
+    const f = setup();
+    await f.queue.accept(entry('removed'));
+    f.finish.mockImplementationOnce(async () => { throw new Error('ACK lost'); });
+    await expect(f.queue.removeEntry('removed')).rejects.toThrow('ACK lost');
+    expect(loadQueuedSubmissions()).toEqual([]);
+    await f.queue.accept(entry('new'));
+    expect(loadQueuedSubmissions().map(x => x.id)).toEqual(['new']);
+    expect(f.send).not.toHaveBeenCalled();
   });
 });

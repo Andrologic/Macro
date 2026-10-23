@@ -1871,6 +1871,11 @@ const registerUseChatStoreMocks = async () => {
     closeChatPreparation: async () => undefined,
     finishChatResponse: async () => undefined,
     retireChatBrowser: async () => undefined,
+    beginChatIntent: async (identity: { conversationId: string; kind: string; id: string }) => {
+      if (!identity.conversationId || !identity.kind || !identity.id) throw new Error('Missing storage intent identity');
+      return { kind: 'globalChat' as const, receipt: { operationId: crypto.randomUUID(), runtime: 'store-unit-runtime', revision: 0, identity } };
+    },
+    finishChatIntent: async () => undefined,
   }));
   mock.module('../services/tauriIpc', () => ({
     ...actualTauriIpc,

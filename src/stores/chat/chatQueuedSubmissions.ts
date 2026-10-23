@@ -97,11 +97,17 @@ function parseQueue(raw: string): QueuedSubmission[] {
   return entries as QueuedSubmission[];
 }
 
+/** Full recovery read: callers deciding admission must not treat unreadable data as empty. */
+export function readQueuedSubmissions(): QueuedSubmission[] {
+  if (typeof window === 'undefined') throw new Error('Local storage is unavailable.');
+  const raw = window.localStorage.getItem(QUEUED_SUBMISSIONS_STORAGE_KEY);
+  return raw === null ? [] : parseQueue(raw);
+}
+
 export function loadQueuedSubmissions(): QueuedSubmission[] {
   if (typeof window === 'undefined') return [];
   try {
-    const raw = window.localStorage.getItem(QUEUED_SUBMISSIONS_STORAGE_KEY);
-    return raw === null ? [] : parseQueue(raw);
+    return readQueuedSubmissions();
   } catch (error) {
     reportPersistenceIssue(QUEUED_SUBMISSIONS_STORAGE_KEY, String(error));
     return [];

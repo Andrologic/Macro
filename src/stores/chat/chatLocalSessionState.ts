@@ -185,6 +185,25 @@ const parseUnsavedAssistantResponse = (value: unknown): ChatMessage | null => {
   };
 };
 
+/** Admission reconciliation must inspect every saved entry using the recovery codec. */
+export const readUnsavedAssistantResponsesFromStorage = (): ChatMessage[] => {
+  if (!hasLocalStorage()) throw new Error("Local storage is unavailable.");
+  const raw = window.localStorage.getItem(UNSAVED_ASSISTANT_RESPONSES_STORAGE_KEY);
+  if (raw === null) return [];
+  if (raw.length > MAX_UNSAVED_ASSISTANT_STORAGE_LENGTH) {
+    throw new Error("Saved responses exceed the recovery limit. Original data preserved.");
+  }
+  const parsed: unknown = JSON.parse(raw);
+  if (!isRecord(parsed) || Object.keys(parsed).length > MAX_UNSAVED_ASSISTANT_RESPONSES) {
+    throw new Error("Invalid saved responses. Original data preserved.");
+  }
+  return Object.entries(parsed).map(([id, value]) => {
+    const message = parseUnsavedAssistantResponse(value);
+    if (!message || message.id !== id) throw new Error("Invalid saved response. Original data preserved.");
+    return message;
+  });
+};
+
 export const loadUnsavedAssistantResponsesFromStorage = (): ChatMessage[] => {
   if (!hasLocalStorage()) return [];
   try {

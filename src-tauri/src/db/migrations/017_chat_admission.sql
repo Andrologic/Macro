@@ -39,6 +39,7 @@ CREATE TABLE chat_admission_operations (
  CHECK(parent_id IS NULL OR parent_id<>operation_id)
 );
 CREATE UNIQUE INDEX chat_admission_operations_browser_attempt ON chat_admission_operations(browser_caller,browser_runtime,conversation_id,kind,browser_attempt) WHERE browser_caller IS NOT NULL;
+CREATE UNIQUE INDEX chat_admission_intent_identity ON chat_admission_operations(conversation_id,incarnation,kind,browser_attempt) WHERE kind IN ('queue','steer','question','approval','unsaved');
 CREATE INDEX chat_admission_operations_owner ON chat_admission_operations(conversation_id,phase);
 CREATE INDEX chat_admission_operations_provider_id ON chat_admission_operations(conversation_id,incarnation,provider_id,phase) WHERE provider_id IS NOT NULL;
 CREATE INDEX chat_admission_operations_provider ON chat_admission_operations(conversation_id,incarnation,provider_context,phase) WHERE provider_context IS NOT NULL;

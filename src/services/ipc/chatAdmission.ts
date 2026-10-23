@@ -81,3 +81,24 @@ export function chatAdmissionOpenBrowser(runtime: string): Promise<void> {
 export function chatAdmissionCloseBrowser(runtime: string): Promise<void> {
   return invoke('chat_admission_close_browser', { runtime });
 }
+
+
+export interface ChatIntentIdentity {
+  conversationId: string;
+  kind: 'queue' | 'steer' | 'question' | 'approval' | 'unsaved';
+  id: string;
+}
+export interface ChatIntentReceipt {
+  operationId: string;
+  runtime: string;
+  revision: number;
+  identity: ChatIntentIdentity;
+}
+export type ChatIntentAdmission = { kind: 'conversation' } | { kind: 'globalChat'; receipt: ChatIntentReceipt };
+
+export function chatAdmissionBeginIntent(runtime: string, identity: ChatIntentIdentity, mutation: 'retain' | 'remove'): Promise<ChatIntentAdmission> {
+  return invoke('chat_admission_begin_intent', { runtime, identity, mutation });
+}
+export function chatAdmissionFinishIntent(receipt: ChatIntentReceipt): Promise<void> {
+  return invoke('chat_admission_finish_intent', { receipt });
+}

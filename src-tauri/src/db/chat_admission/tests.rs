@@ -1119,3 +1119,54 @@ async fn tool_constructor_panic_is_durable_unknown_and_releases_registration() {
     let phase: String = sqlx::query_scalar("SELECT phase FROM chat_admission_operations WHERE request_id='constructor-panic'").fetch_one(&pool).await.unwrap();
     assert_eq!(phase, "unknown");
 }
+
+#[tokio::test]
+async fn intent_receipts_survive_lost_ack_and_refuse_stale_browser_revisions() {
+    use super::intents::{IntentIdentity, IntentKind, IntentMutation};
+    let (_dir, pool) = fixture().await;
+    let owner = crate::core::db_state::DbPool::default();
+    owner.set_ready(pool.clone()).await.unwrap();
+    let runtime = runtime::ChatAdmissionRuntime::default();
+    runtime.open_browser(owner.clone(), "window", "old").await.unwrap();
+    let identity = IntentIdentity { conversation_id: "source".into(), kind: IntentKind::Queue, id: "queued".into() };
+    let first = runtime.begin_intent(&owner, "window", "old", identity.clone(), IntentMutation::Retain).await.unwrap();
+    let repeated = runtime.begin_intent(&owner, "window", "old", identity.clone(), IntentMutation::Retain).await.unwrap();
+    assert_eq!(first.operation_id, repeated.operation_id);
+    assert_eq!(first.revision, repeated.revision);
+    runtime.close_browser(&owner, &crate::ai::AiState::default(), &crate::ai::admitted_http::AdmittedHttp::default(), "window", "old").await.unwrap();
+    runtime.open_browser(owner.clone(), "window", "new").await.unwrap();
+    let retained = runtime.begin_intent(&owner, "window", "new", identity.clone(), IntentMutation::Retain).await.unwrap();
+    assert_eq!(retained.operation_id, first.operation_id);
+    assert_eq!(retained.revision, first.revision + 1);
+    assert!(runtime.finish_intent(&owner, "window", &first).await.is_err());
+    runtime.finish_intent(&owner, "window", &retained).await.unwrap();
+    runtime.finish_intent(&owner, "window", &retained).await.unwrap();
+    let replay = runtime.begin_intent(&owner, "window", "new", identity.clone(), IntentMutation::Remove).await.unwrap();
+    runtime.finish_intent(&owner, "window", &replay).await.unwrap();
+    assert!(runtime.begin_intent(&owner, "window", "new", identity, IntentMutation::Retain).await.is_err());
+    let count: i64 = sqlx::query_scalar("SELECT count(*) FROM chat_admission_operations WHERE kind='queue' AND phase='completed'").fetch_one(&pool).await.unwrap();
+    assert_eq!(count, 1);
+}
+
+#[tokio::test]
+async fn queued_intent_is_claimed_atomically_and_cannot_relaunch_after_retirement() {
+    use super::intents::{IntentIdentity, IntentKind, IntentMutation};
+    let (_dir, pool) = fixture().await;
+    let owner = crate::core::db_state::DbPool::default();
+    owner.set_ready(pool.clone()).await.unwrap();
+    let runtime = runtime::ChatAdmissionRuntime::default();
+    runtime.open_browser(owner.clone(), "window", "old").await.unwrap();
+    let identity = IntentIdentity { conversation_id: "source".into(), kind: IntentKind::Queue, id: "queued".into() };
+    let before = runtime.begin_intent(&owner, "window", "old", identity.clone(), IntentMutation::Retain).await.unwrap();
+    let parent = runtime.begin(owner.clone(), "window", "old", "source", "queued").await.unwrap();
+    let claimed: (String, String) = sqlx::query_as("SELECT parent_id,phase FROM chat_admission_operations WHERE operation_id=?").bind(&before.operation_id).fetch_one(&pool).await.unwrap();
+    assert_eq!(claimed, (parent.handle, "result_pending".into()));
+    assert!(runtime.finish_intent(&owner, "window", &before).await.is_err());
+    runtime.close_browser(&owner, &crate::ai::AiState::default(), &crate::ai::admitted_http::AdmittedHttp::default(), "window", "old").await.unwrap();
+    runtime.open_browser(owner.clone(), "window", "new").await.unwrap();
+    let removal = runtime.begin_intent(&owner, "window", "new", identity, IntentMutation::Remove).await.unwrap();
+    assert!(runtime.begin(owner.clone(), "window", "new", "source", "queued").await.is_err());
+    let count: i64 = sqlx::query_scalar("SELECT count(*) FROM chat_admission_operations WHERE kind='turn'").fetch_one(&pool).await.unwrap();
+    assert_eq!(count, 1, "the refused claim must roll back the new parent");
+    runtime.finish_intent(&owner, "window", &removal).await.unwrap();
+}
