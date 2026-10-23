@@ -115,7 +115,6 @@
     "@tauri-apps/plugin-opener": "2.5.4",
     "@tauri-apps/plugin-process": "2.3.1",
     "@tauri-apps/plugin-store": "2.4.4",
-    "@types/highlight.js": "10.1.0",
     "@xyflow/react": "12.10.2",
     "chevrotain": "11.1.2",
     "class-variance-authority": "0.7.1",
