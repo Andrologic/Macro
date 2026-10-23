@@ -79,10 +79,12 @@ interface TerminalStore extends TerminalVisibilityState {
   lastManualContext: ManualTerminalContext | null;
   upsertSession: (session: tauriIpc.TerminalSessionDto) => tauriIpc.TerminalSessionDto;
   createSession: (params: {
+    chatAdmission?: import('../services/ipc/chatAdmission').ChatToolAdmission;
     projectId?: string | null;
     cwd?: string | null;
   }) => Promise<tauriIpc.TerminalSessionDto>;
   runCommand: (params: {
+    chatAdmission?: import('../services/ipc/chatAdmission').ChatToolAdmission;
     sessionId: string;
     command: string;
     timeoutMs?: number | null;
@@ -91,7 +93,8 @@ interface TerminalStore extends TerminalVisibilityState {
   readSession: (sessionId: string) => Promise<tauriIpc.TerminalSessionDto>;
   killSession: (
     sessionId: string,
-    executionId?: string | null
+    executionId?: string | null,
+    chatAdmission?: import('../services/ipc/chatAdmission').ChatToolAdmission,
   ) => Promise<tauriIpc.TerminalSessionDto>;
   initialize: (context?: LifecycleContext, options?: { syncDisplayMetadata?: boolean }) => Promise<void>;
   startRuntime: (context?: LifecycleContext) => Promise<void>;
@@ -1097,11 +1100,11 @@ export const createTerminalStore = (initialPort?: TerminalLifecyclePort) => crea
       return session;
     },
 
-    createSession: async ({ projectId, cwd }) => {
+    createSession: async ({ projectId, cwd, chatAdmission }) => {
       const current = captureRuntime();
       assertCurrent(current);
       if (!projectId) {
-        const session = await acquisitionScope.track(tauriIpc.terminalCreateSession({
+        const session = await acquisitionScope.track(tauriIpc.terminalCreateSession({ chatAdmission,
           projectId: null,
           cwd: cwd ?? null,
         }));
@@ -1109,7 +1112,7 @@ export const createTerminalStore = (initialPort?: TerminalLifecyclePort) => crea
       }
 
       const resolvedProject = resolveSupportedTerminalProject(projectId);
-      const session = await acquisitionScope.track(tauriIpc.terminalCreateSession({
+      const session = await acquisitionScope.track(tauriIpc.terminalCreateSession({ chatAdmission,
         projectId: resolvedProject.projectId,
         cwd: resolveSessionCreationCwd({
           projectId: resolvedProject.projectId,
@@ -1120,10 +1123,10 @@ export const createTerminalStore = (initialPort?: TerminalLifecyclePort) => crea
       return current() ? get().upsertSession(session) : session;
     },
 
-    runCommand: async ({ sessionId, command, timeoutMs, executionId }) => {
+    runCommand: async ({ sessionId, command, timeoutMs, executionId, chatAdmission }) => {
       const current = captureRuntime();
       assertCurrent(current);
-      const session = await acquisitionScope.track(tauriIpc.terminalRun({
+      const session = await acquisitionScope.track(tauriIpc.terminalRun({ chatAdmission,
         sessionId,
         command,
         timeoutMs: timeoutMs ?? null,
@@ -1139,10 +1142,10 @@ export const createTerminalStore = (initialPort?: TerminalLifecyclePort) => crea
       return current() ? get().upsertSession(session) : session;
     },
 
-    killSession: async (sessionId, executionId) => {
+    killSession: async (sessionId, executionId, chatAdmission) => {
       const current = captureRuntime();
       // Cancellation belongs to the admitted execution, even after its UI retires.
-      const session = await acquisitionScope.track(tauriIpc.terminalKill(sessionId, executionId));
+      const session = await acquisitionScope.track(tauriIpc.terminalKill(sessionId, executionId, chatAdmission));
       return current() ? get().upsertSession(session) : session;
     },
 

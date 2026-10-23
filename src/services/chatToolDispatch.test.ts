@@ -12,6 +12,7 @@ function fixture() {
   const events: string[] = [];
   const controller = new AbortController();
   const operation = {
+    providerAdmission: { kind: 'conversation' },
     conversationId: 'conversation', turnId: 'turn', assistantMessageId: 'message',
     signal: controller.signal, allowedToolIds: ['read', 'write'],
   } as unknown as FrozenToolCallContext;

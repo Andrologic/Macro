@@ -810,4 +810,134 @@ async fn tool_intent_and_admitted_child_are_atomic_and_duplicates_never_dispatch
         .finish_response(response_write("not finished"))
         .await
         .is_err());
+    let tool = parent.tool_permit(&input().identity).await.unwrap();
+    let physical = tool
+        .child(WorkKind::Tool, Some("physical-write"))
+        .await
+        .unwrap();
+    physical.dispatched().await.unwrap();
+    assert!(parent
+        .finish_tool(input().identity, Some("receipt".into()))
+        .await
+        .is_err());
+    physical.result_pending().await.unwrap();
+    physical.completed().await.unwrap();
+    parent
+        .finish_tool(input().identity, Some("receipt".into()))
+        .await
+        .unwrap();
+    parent
+        .finish_tool(input().identity, Some("receipt".into()))
+        .await
+        .unwrap();
+    assert!(parent
+        .finish_tool(input().identity, Some("different-receipt".into()))
+        .await
+        .is_err());
+    assert!(tool
+        .child(WorkKind::Tool, Some("late-write"))
+        .await
+        .is_err());
+    let mut uncertain = input();
+    uncertain.identity.call_id = "uncertain-call".into();
+    let identity = uncertain.identity.clone();
+    parent.record_tool(uncertain).await.unwrap();
+    parent.finish_tool(identity.clone(), None).await.unwrap();
+    assert!(parent
+        .finish_tool(identity, Some("late-receipt".into()))
+        .await
+        .is_err());
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn tool_task_owns_a_real_child_and_waits_for_cleanup_before_its_receipt() {
+    use crate::db::tool_invocations::{
+        RecordToolInvocationInput, ToolEffectClass, ToolInvocationIdentity,
+    };
+    use tokio::io::AsyncBufReadExt;
+    let (_dir, pool) = fixture().await;
+    let owner = crate::core::db_state::DbPool::default();
+    owner.set_ready(pool.clone()).await.unwrap();
+    let parent = OperationPermit::begin_turn(owner, "source", "turn")
+        .await
+        .unwrap();
+    let identity = ToolInvocationIdentity {
+        conversation_id: "source".into(),
+        turn_id: "turn".into(),
+        message_id: "message".into(),
+        call_id: "process-call".into(),
+    };
+    parent
+        .record_tool(RecordToolInvocationInput {
+            identity: identity.clone(),
+            tool_name: "terminal_run".into(),
+            effect_class: ToolEffectClass::ExternalEffect,
+            arguments: serde_json::json!({"synthetic":true}),
+            remote_execution_id: None,
+        })
+        .await
+        .unwrap();
+    let tool = parent.tool_permit(&identity).await.unwrap();
+    let physical = std::sync::Arc::new(
+        tool.child(WorkKind::Tool, Some("physical-process"))
+            .await
+            .unwrap(),
+    );
+    let state = crate::ai::AiState::default();
+    let (started, ready) = tokio::sync::oneshot::channel();
+    let (release, cleanup) = tokio::sync::oneshot::channel();
+    let result = state
+        .reserve_stream("physical-process".into())
+        .unwrap()
+        .spawn_tool(physical, move |cancel| async move {
+            let mut child = tokio::process::Command::new("/bin/sh")
+                .args(["-c", "printf 'synthetic-ready\n' >&2; exec sleep 30"])
+                .stderr(std::process::Stdio::piped())
+                .kill_on_drop(true)
+                .spawn()
+                .unwrap();
+            let mut stderr = tokio::io::BufReader::new(child.stderr.take().unwrap()).lines();
+            assert_eq!(
+                stderr.next_line().await.unwrap().as_deref(),
+                Some("synthetic-ready")
+            );
+            started.send(()).unwrap();
+            cancel.cancelled().await;
+            child.start_kill().unwrap();
+            child.wait().await.unwrap();
+            assert!(stderr.next_line().await.unwrap().is_none());
+            cleanup.await.unwrap();
+            Ok::<_, String>("physical cleanup finished")
+        })
+        .unwrap();
+    tokio::time::timeout(std::time::Duration::from_secs(5), ready)
+        .await
+        .unwrap()
+        .unwrap();
+    let cancelling_state = state.clone();
+    let mut cancelled = tokio::spawn(async move {
+        cancelling_state
+            .cancel_stream_task("physical-process")
+            .await
+    });
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_millis(30), &mut cancelled)
+            .await
+            .is_err()
+    );
+    assert!(parent
+        .finish_tool(identity.clone(), Some("premature".into()))
+        .await
+        .is_err());
+    release.send(()).unwrap();
+    cancelled.await.unwrap().unwrap();
+    assert_eq!(result.await.unwrap().unwrap(), "physical cleanup finished");
+    assert!(state.join_stream_task("physical-process").await.is_none());
+    // Physical cancellation is not a claim that arbitrary shell effects did not occur.
+    parent.finish_tool(identity.clone(), None).await.unwrap();
+    assert!(parent
+        .finish_tool(identity, Some("invented-success".into()))
+        .await
+        .is_err());
 }

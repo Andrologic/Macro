@@ -84,6 +84,10 @@ export function createChatToolExecution(ports: ChatToolExecutionPorts) {
       taskId: taskIdAtSend,
       signal,
     } = operation;
+    const chatAdmission = operation.providerAdmission.kind === 'globalChat' ? {
+      context: operation.providerAdmission.context,
+      identity: { conversationId, turnId: operation.turnId, messageId: operation.assistantMessageId, callId: toolCallId ?? '' },
+    } : undefined;
     const isCurrentOperation = () => {
       const runtime = ports.runtime.read(conversationId);
       return !signal.aborted && acceptsAttempt() &&
@@ -440,6 +444,7 @@ export function createChatToolExecution(ports: ChatToolExecutionPorts) {
         executionMcpServers,
         {
           projectIds: executionMcpProjectIds,
+          chatAdmission: chatAdmission,
           signal,
         },
       );
@@ -542,7 +547,8 @@ export function createChatToolExecution(ports: ChatToolExecutionPorts) {
     }
 
     if (AGENT_TERMINAL_TOOL_IDS.has(normalizedToolName)) {
-      return executeChatAgentTerminal(ports.terminal, normalizedToolName, args, signal, isCurrentOperation);
+      return executeChatAgentTerminal(ports.terminal, normalizedToolName, args, signal, isCurrentOperation,
+        chatAdmission);
     }
 
     if (
@@ -624,6 +630,7 @@ export function createChatToolExecution(ports: ChatToolExecutionPorts) {
         args,
         mode,
         {
+          chatAdmission: chatAdmission,
           signal,
           workspacePath: executionContext.workspacePath,
           defaultWorkspacePath: executionContext.defaultWorkspacePath,

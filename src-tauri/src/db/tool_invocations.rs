@@ -185,7 +185,7 @@ fn arguments_digest(value: &Value) -> DbResult<String> {
     Ok(format!("{:x}", digest.finalize()))
 }
 
-async fn get_on_connection(
+pub(crate) async fn get_on_connection(
     connection: &mut sqlx::SqliteConnection,
     identity: &ToolInvocationIdentity,
 ) -> DbResult<Option<ToolInvocation>> {
@@ -270,14 +270,26 @@ pub async fn complete(
     pool: &SqlitePool,
     input: CompleteToolInvocationInput,
 ) -> DbResult<ToolInvocation> {
-    validate_identity(&input.identity)?;
-    opaque_id(&input.receipt_id, "receipt_id")?;
     let mut connection = pool.acquire().await?;
     sqlx::query("PRAGMA synchronous = FULL")
         .execute(&mut *connection)
         .await?;
     let mut tx = connection.begin_with("BEGIN IMMEDIATE").await?;
-    let previous = get_on_connection(&mut tx, &input.identity)
+    let row = complete_on_connection(&mut tx, input).await?;
+    tx.commit().await?;
+    sqlx::query("PRAGMA synchronous = NORMAL")
+        .execute(&mut *connection)
+        .await?;
+    Ok(row)
+}
+
+pub(crate) async fn complete_on_connection(
+    connection: &mut sqlx::SqliteConnection,
+    input: CompleteToolInvocationInput,
+) -> DbResult<ToolInvocation> {
+    validate_identity(&input.identity)?;
+    opaque_id(&input.receipt_id, "receipt_id")?;
+    let previous = get_on_connection(&mut *connection, &input.identity)
         .await?
         .ok_or_else(|| DbError::Validation("Tool invocation not found".into()))?;
     if previous.status == ToolInvocationStatus::Completed {
@@ -286,10 +298,6 @@ pub async fn complete(
                 "Conflicting tool invocation receipt".into(),
             ));
         }
-        tx.commit().await?;
-        sqlx::query("PRAGMA synchronous = NORMAL")
-            .execute(&mut *connection)
-            .await?;
         return Ok(previous);
     }
     let now = chrono::Utc::now().to_rfc3339();
@@ -300,14 +308,10 @@ pub async fn complete(
         .bind(&input.identity.turn_id)
         .bind(&input.identity.message_id)
         .bind(&input.identity.call_id)
-        .execute(&mut *tx).await?;
-    let row = get_on_connection(&mut tx, &input.identity)
+        .execute(&mut *connection).await?;
+    let row = get_on_connection(&mut *connection, &input.identity)
         .await?
         .expect("row locked by transaction");
-    tx.commit().await?;
-    sqlx::query("PRAGMA synchronous = NORMAL")
-        .execute(&mut *connection)
-        .await?;
     Ok(row)
 }
 
@@ -315,19 +319,27 @@ pub async fn mark_unknown(
     pool: &SqlitePool,
     identity: ToolInvocationIdentity,
 ) -> DbResult<ToolInvocation> {
-    validate_identity(&identity)?;
     let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
+    let row = mark_unknown_on_connection(&mut tx, identity).await?;
+    tx.commit().await?;
+    Ok(row)
+}
+
+pub(crate) async fn mark_unknown_on_connection(
+    connection: &mut sqlx::SqliteConnection,
+    identity: ToolInvocationIdentity,
+) -> DbResult<ToolInvocation> {
+    validate_identity(&identity)?;
     sqlx::query("UPDATE tool_invocations SET status = 'unknown', updated_at = ? WHERE conversation_id = ? AND turn_id = ? AND message_id = ? AND call_id = ? AND status = 'pending'")
         .bind(chrono::Utc::now().to_rfc3339())
         .bind(&identity.conversation_id)
         .bind(&identity.turn_id)
         .bind(&identity.message_id)
         .bind(&identity.call_id)
-        .execute(&mut *tx).await?;
-    let row = get_on_connection(&mut tx, &identity)
+        .execute(&mut *connection).await?;
+    let row = get_on_connection(&mut *connection, &identity)
         .await?
         .ok_or_else(|| DbError::Validation("Tool invocation not found".into()))?;
-    tx.commit().await?;
     Ok(row)
 }
 

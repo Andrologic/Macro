@@ -3725,6 +3725,7 @@ async function lspConversationFixture(params: {
     },
   } as Partial<MockAppState>);
   const operation: FrozenToolCallContext = {
+    providerAdmission: { kind: 'conversation' },
     conversationId: "conversation", sessionId: "session", turnId: "turn", assistantMessageId: "assistant",
     mode: "Implement", agentType: "build", taskId: "task", signal: controller.signal,
     allowedToolIds: ["write", "edit", "apply_patch"], scopedTurnConfiguration: null, mcpServers: [], riskLevel: "yolo",
@@ -3985,7 +3986,7 @@ for (const scenario of ['lost', 'command-name-in-error', 'refused', 'unavailable
         throw new Error(scenario === 'lost' ? 'reply lost after effect' : 'tool_execute_workspace transport closed');
       },
     } } as Partial<MockAppState>);
-    const dispatch = createChatToolDispatch({ conversationId: 'c', turnId: 't', assistantMessageId: 'm',
+    const dispatch = createChatToolDispatch({ providerAdmission: { kind: 'conversation' }, conversationId: 'c', turnId: 't', assistantMessageId: 'm',
       allowedToolIds: ['git_add'], signal: new AbortController().signal } as unknown as FrozenToolCallContext, {
       journal: { ...allowChatToolInvocationJournal,
         complete: async input => { completions++; return allowChatToolInvocationJournal.complete(input); },
@@ -4039,7 +4040,7 @@ for (const virtual of [false, true]) {
         fsReadFileWithOptions: async () => ({ content: effects ? 'new' : 'old', revision: effects ? 'applied' : 'before', is_binary: false, language: 'text', size: 3, encoding: 'utf-8' }),
       }} as Partial<MockAppState>);
       const rows = new Set<string>();
-      const dispatch = createChatToolDispatch({ conversationId: 'c', turnId: 't', assistantMessageId: 'm',
+      const dispatch = createChatToolDispatch({ providerAdmission: { kind: 'conversation' }, conversationId: 'c', turnId: 't', assistantMessageId: 'm',
         allowedToolIds: [tool], signal: new AbortController().signal } as unknown as FrozenToolCallContext, {
         journal: { ...allowChatToolInvocationJournal,
           record: async input => { const recorded = await allowChatToolInvocationJournal.record(input); const is_new = !rows.has(input.callId); rows.add(input.callId); return { ...recorded, is_new }; },
@@ -4075,7 +4076,7 @@ for (const message of ['Command tool_execute_workspace not found', 'Command tool
       isTauriAvailable: () => true,
       executeWorkspaceTool: async () => { calls++; throw message; },
     }} as Partial<MockAppState>);
-    const dispatch = createChatToolDispatch({ conversationId: 'c', turnId: 't', assistantMessageId: 'm', allowedToolIds: ['git_add'], signal: new AbortController().signal } as unknown as FrozenToolCallContext, {
+    const dispatch = createChatToolDispatch({ providerAdmission: { kind: 'conversation' }, conversationId: 'c', turnId: 't', assistantMessageId: 'm', allowedToolIds: ['git_add'], signal: new AbortController().signal } as unknown as FrozenToolCallContext, {
       journal: { ...allowChatToolInvocationJournal, markUnknown: async input => { unknowns++; return allowChatToolInvocationJournal.markUnknown(input); } },
       execute: async () => executeWorkspaceTool('git_add', { paths: ['a.txt'] }, 'Implement', { workspacePath: 'C:/dev/macro-api' }),
       preserve: async (_o, _n, _c, r) => r, boundError: async (_o, _n, _c, e) => e,
@@ -4094,7 +4095,7 @@ for (const checkpoint of [false, true]) {
       projectGroups: [], standaloneProjects: [], tauriModule: { isTauriAvailable: () => false },
       remoteKernelModule: { canUseRemoteKernel: () => true, executeRemoteWorkspaceTool: lost, executeRemoteWorkspaceToolDetailed: lost },
     } as Partial<MockAppState>);
-    const dispatch = createChatToolDispatch({ conversationId: 'c', turnId: 't', assistantMessageId: 'm', allowedToolIds: ['write'], signal: new AbortController().signal } as unknown as FrozenToolCallContext, {
+    const dispatch = createChatToolDispatch({ providerAdmission: { kind: 'conversation' }, conversationId: 'c', turnId: 't', assistantMessageId: 'm', allowedToolIds: ['write'], signal: new AbortController().signal } as unknown as FrozenToolCallContext, {
       journal: { ...allowChatToolInvocationJournal,
         markUnknown: async input => { unknowns++; return allowChatToolInvocationJournal.markUnknown(input); },
         complete: async input => { completions++; return allowChatToolInvocationJournal.complete(input); },
@@ -4112,7 +4113,7 @@ for (const checkpoint of [false, true]) {
 function checkpointReceiptDispatch(tool: string, args: Record<string, unknown>, execute: () => Promise<string | undefined>) {
   const counters = { completions: 0, unknowns: 0 };
   const rows = new Set<string>();
-  const dispatch = createChatToolDispatch({ conversationId: 'checkpoint-conversation', turnId: 't', assistantMessageId: 'm', allowedToolIds: [tool], signal: new AbortController().signal } as unknown as FrozenToolCallContext, {
+  const dispatch = createChatToolDispatch({ providerAdmission: { kind: 'conversation' }, conversationId: 'checkpoint-conversation', turnId: 't', assistantMessageId: 'm', allowedToolIds: [tool], signal: new AbortController().signal } as unknown as FrozenToolCallContext, {
     journal: { ...allowChatToolInvocationJournal,
       record: async input => { const row = await allowChatToolInvocationJournal.record(input); const is_new = !rows.has(input.callId); rows.add(input.callId); return { ...row, is_new }; },
       complete: async input => { counters.completions++; return allowChatToolInvocationJournal.complete(input); },

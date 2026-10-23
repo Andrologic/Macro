@@ -14,6 +14,15 @@ pub(crate) struct ChatAdmissionContext {
     pub runtime: String,
 }
 
+/// Captured local tool identity. It carries no reusable transfer authority.
+#[derive(Clone, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct ChatToolAdmission {
+    pub request_id: String,
+    pub context: ChatAdmissionContext,
+    pub identity: crate::db::tool_invocations::ToolInvocationIdentity,
+}
+
 struct Turn {
     caller: String,
     runtime: String,

@@ -326,6 +326,7 @@ describe('architectToolRuntime strategy scope', () => {
     runtime.params.strategyService.applyStrategyMutationPreview = apply;
     runtime.params.ensureArchitectConversationForPlan = async () => { throw new Error('replica unavailable'); };
     const operation = {
+      providerAdmission: { kind: 'conversation' },
       conversationId: 'conversation-1', turnId: 'turn-1', assistantMessageId: 'message-1',
       signal: new AbortController().signal, allowedToolIds: ['strategy_generate'],
     } as unknown as FrozenToolCallContext;

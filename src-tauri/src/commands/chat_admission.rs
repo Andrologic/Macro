@@ -234,3 +234,33 @@ pub(crate) async fn chat_admission_finish_compaction(
         .await
         .map_err(Into::into)
 }
+
+/// Reserve before asynchronous validation, then retain the actual executor task.
+pub(crate) async fn admit_tool(
+    runtime: &ChatAdmissionRuntime,
+    ai_state: &crate::ai::AiState,
+    caller: &str,
+    admission: crate::db::chat_admission::runtime::ChatToolAdmission,
+) -> CommandResult<(
+    crate::ai::stream_tasks::StreamReservation,
+    std::sync::Arc<crate::db::chat_admission::OperationPermit>,
+)> {
+    let reservation = ai_state
+        .reserve_stream(admission.request_id.clone())
+        .map_err(command_error)?;
+    let parent = runtime
+        .parent(
+            caller,
+            &admission.context,
+            &admission.identity.conversation_id,
+        )
+        .await?;
+    let tool = parent.tool_permit(&admission.identity).await?;
+    let work = tool
+        .child(
+            crate::db::chat_admission::WorkKind::Tool,
+            Some(&admission.request_id),
+        )
+        .await?;
+    Ok((reservation, std::sync::Arc::new(work)))
+}

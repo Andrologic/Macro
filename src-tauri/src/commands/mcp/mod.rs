@@ -263,12 +263,51 @@ pub async fn mcp_runtime_refresh_catalog(
 
 #[tauri::command]
 pub async fn mcp_runtime_call_tool(
+    admission_runtime: State<'_, crate::db::chat_admission::runtime::ChatAdmissionRuntime>,
+    ai_state: State<'_, crate::ai::AiState>,
+    window: tauri::WebviewWindow,
+    chat_admission: Option<crate::db::chat_admission::runtime::ChatToolAdmission>,
     runtime: State<'_, McpRuntimeManager>,
     key: McpRuntimeKey,
     tool_name: String,
     arguments: Value,
     operation_id: String,
 ) -> Result<McpCallToolResponse, McpRuntimeError> {
+    if let Some(admission) = chat_admission {
+        let (reservation, work) = super::chat_admission::admit_tool(
+            &admission_runtime,
+            &ai_state,
+            window.label(),
+            admission,
+        )
+        .await
+        .map_err(|e| McpRuntimeError::new("CHAT_ADMISSION_REFUSED", e.message))?;
+        let runtime = runtime.inner().clone();
+        let owner = work.clone();
+        let received = reservation
+            .spawn_tool(work, move |cancel| async move {
+                let execution = runtime.call_tool_owned(
+                    &key,
+                    &tool_name,
+                    arguments,
+                    operation_id.clone(),
+                    Some(owner),
+                );
+                tokio::pin!(execution);
+                tokio::select! {
+                    biased;
+                    _ = cancel.cancelled() => {
+                        runtime.cancel_operation(&operation_id).await;
+                        execution.await
+                    },
+                    result = &mut execution => result,
+                }
+            })
+            .map_err(|e| McpRuntimeError::new("CHAT_ADMISSION_REFUSED", e))?;
+        return received
+            .await
+            .map_err(|e| McpRuntimeError::new("CHAT_ADMISSION_UNCERTAIN", e))?;
+    }
     runtime
         .call_tool(&key, &tool_name, arguments, operation_id)
         .await

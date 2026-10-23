@@ -57,6 +57,59 @@ impl StreamReservation {
         })
     }
 
+    /// Own a tool future even if its IPC waiter disappears. A returned command
+    /// error is a physical return; a panic never manufactures a tool receipt.
+    pub(crate) fn spawn_tool<T, E, F, Fut>(
+        self,
+        work: std::sync::Arc<crate::db::chat_admission::OperationPermit>,
+        run: F,
+    ) -> Result<BoxFuture<'static, Result<Result<T, E>, String>>, String>
+    where
+        T: Send + 'static,
+        E: Send + 'static,
+        F: FnOnce(CancellationToken) -> Fut + Send + 'static,
+        Fut: Future<Output = Result<T, E>> + Send + 'static,
+    {
+        let state = self.state.clone();
+        let request = self.request.clone();
+        let (result, received) = tokio::sync::oneshot::channel();
+        self.launch(move |cancel| async move {
+            if cancel.is_cancelled() {
+                work.no_effect().await.map_err(|e| e.to_string())?;
+                let _ = result.send(Err("Native tool cancelled before dispatch.".into()));
+                return Ok(());
+            }
+            work.dispatched().await.map_err(|e| e.to_string())?;
+            let outcome = AssertUnwindSafe(run(cancel)).catch_unwind().await;
+            let delivery = match outcome {
+                Ok(value) => {
+                    async {
+                        work.result_pending().await.map_err(|e| e.to_string())?;
+                        work.completed().await.map_err(|e| e.to_string())?;
+                        Ok(value)
+                    }
+                    .await
+                }
+                Err(_) => {
+                    let _ = work.unknown().await;
+                    Err("Native tool task panicked.".into())
+                }
+            };
+            let settlement = delivery.as_ref().map(|_| ()).map_err(Clone::clone);
+            let _ = result.send(delivery);
+            settlement
+        })?;
+        Ok(async move {
+            let delivered = received.await;
+            // The result channel alone is not proof of task cleanup.
+            if let Some(joined) = state.join_stream_task(&request).await {
+                joined?;
+            }
+            delivered.map_err(|_| "chat_admission_tool_result_lost".to_string())?
+        }
+        .boxed())
+    }
+
     #[cfg(test)]
     fn spawn<F, Fut>(mut self, run: F) -> Result<(), String>
     where

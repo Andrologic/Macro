@@ -178,6 +178,12 @@ pub(crate) struct OperationPermit {
     _runtime: crate::core::db_state::ChatWorkLifetime,
 }
 
+impl std::fmt::Debug for OperationPermit {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("OperationPermit").finish_non_exhaustive()
+    }
+}
+
 #[derive(Clone, Copy, PartialEq, Eq, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) enum RootWorkKind {
@@ -342,6 +348,108 @@ impl OperationPermit {
         tx.commit().await?;
         lease.committed = true;
         Ok(result)
+    }
+
+    async fn tool_operation(
+        &self,
+        db: &mut SqliteConnection,
+        identity: &super::tool_invocations::ToolInvocationIdentity,
+    ) -> DbResult<(String, String)> {
+        if !matches!(
+            self.check(db).await?.as_str(),
+            "prepared" | "dispatched" | "result_pending"
+        ) {
+            return Err(invalid("chat_admission_parent_closed"));
+        }
+        sqlx::query_as("SELECT operation_id,phase FROM chat_admission_operations WHERE parent_id=? AND kind='tool' AND conversation_id=? AND turn_id=? AND message_id=? AND call_id=? AND runtime_generation=?")
+            .bind(&self.operation).bind(&identity.conversation_id).bind(&identity.turn_id)
+            .bind(&identity.message_id).bind(&identity.call_id).bind(&self.generation)
+            .fetch_optional(db).await?.ok_or_else(|| invalid("chat_admission_tool_identity"))
+    }
+
+    /// Link a physical native executor to the already durable tool intent.
+    pub(crate) async fn tool_permit(
+        &self,
+        identity: &super::tool_invocations::ToolInvocationIdentity,
+    ) -> DbResult<Self> {
+        let guard = self
+            .owner
+            .source_ready(Some(&self.generation))
+            .await
+            .map_err(|_| invalid("chat_admission_stale_generation"))?;
+        let mut lease = durable_lease(&guard.ready.pool).await?;
+        let mut tx = lease.begin_with("BEGIN IMMEDIATE").await?;
+        guard.ready.check_source_schema(&mut tx).await?;
+        let (operation, phase) = self.tool_operation(&mut tx, identity).await?;
+        if phase != "dispatched" {
+            return Err(invalid("chat_admission_tool_closed"));
+        }
+        tx.commit().await?;
+        lease.committed = true;
+        Ok(Self {
+            owner: self.owner.clone(),
+            generation: self.generation.clone(),
+            operation,
+            conversation: self.conversation.clone(),
+            incarnation: self.incarnation.clone(),
+            _runtime: guard.ready.retain_chat_work(),
+        })
+    }
+
+    /// The existing receipt and admission child close in the same transaction.
+    /// Absence of a receipt preserves uncertainty; it never authorizes a retry.
+    pub(crate) async fn finish_tool(
+        &self,
+        identity: super::tool_invocations::ToolInvocationIdentity,
+        receipt: Option<String>,
+    ) -> DbResult<super::tool_invocations::ToolInvocation> {
+        use super::tool_invocations::{self, CompleteToolInvocationInput, ToolInvocationStatus};
+        let guard = self
+            .owner
+            .source_ready(Some(&self.generation))
+            .await
+            .map_err(|_| invalid("chat_admission_stale_generation"))?;
+        let mut lease = durable_lease(&guard.ready.pool).await?;
+        let mut tx = lease.begin_with("BEGIN IMMEDIATE").await?;
+        guard.ready.check_source_schema(&mut tx).await?;
+        let (operation, phase) = self.tool_operation(&mut tx, &identity).await?;
+        let previous = tool_invocations::get_on_connection(&mut tx, &identity)
+            .await?
+            .ok_or_else(|| invalid("chat_admission_tool_identity"))?;
+        let (row, next) = if let Some(receipt_id) = receipt {
+            if phase == "unknown" || previous.status == ToolInvocationStatus::Unknown {
+                return Err(invalid("chat_admission_tool_unreconciled"));
+            }
+            let pending: i64 = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM chat_admission_operations WHERE parent_id=? AND phase NOT IN ('completed','no_effect'))")
+                .bind(&operation).fetch_one(&mut *tx).await?;
+            if pending != 0 {
+                return Err(invalid("chat_admission_children_pending"));
+            }
+            (
+                tool_invocations::complete_on_connection(
+                    &mut tx,
+                    CompleteToolInvocationInput {
+                        identity,
+                        receipt_id,
+                    },
+                )
+                .await?,
+                "completed",
+            )
+        } else {
+            let row = tool_invocations::mark_unknown_on_connection(&mut tx, identity).await?;
+            let next = if row.status == ToolInvocationStatus::Completed {
+                "completed"
+            } else {
+                "unknown"
+            };
+            (row, next)
+        };
+        sqlx::query("UPDATE chat_admission_operations SET phase=?,revision=revision+1 WHERE operation_id=? AND phase<>?")
+            .bind(next).bind(operation).bind(next).execute(&mut *tx).await?;
+        tx.commit().await?;
+        lease.committed = true;
+        Ok(row)
     }
 
     pub(crate) async fn provider_invocation(&self, request: &str) -> DbResult<Self> {

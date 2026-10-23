@@ -15,6 +15,7 @@ export async function executeChatAgentTerminal(
   args: Record<string, unknown>,
   signal: AbortSignal,
   isCurrent: () => boolean = () => true,
+  chatAdmission?: import('./ipc/chatAdmission').ChatToolAdmission,
 ): Promise<string> {
   const abortedResult = "Tool execution aborted";
   const isCurrentOperation = () => !signal.aborted && isCurrent();
@@ -43,6 +44,7 @@ export async function executeChatAgentTerminal(
 
   if (normalizedToolName === "terminal_create_session") {
     const session = await terminal.createSession({
+      chatAdmission,
       projectId: null,
       cwd: typeof args.cwd === "string" ? args.cwd : null,
     });
@@ -69,6 +71,7 @@ export async function executeChatAgentTerminal(
     if (!isCurrentOperation()) return abortedResult;
     const executionId = createTerminalToolExecutionId();
     const runPromise = terminal.runCommand({
+      chatAdmission,
       sessionId,
       command,
       executionId,
@@ -97,6 +100,6 @@ export async function executeChatAgentTerminal(
   }
 
   if (!isCurrentOperation()) return abortedResult;
-  const session = await terminal.killSession(sessionId);
+  const session = await terminal.killSession(sessionId, undefined, chatAdmission);
   return serializeAgentTerminalSession(session);
 }

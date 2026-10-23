@@ -51,6 +51,7 @@ export type StreamContextDiagnosticsBaselineSeed = Omit<
  * selected when the provider responds.
  */
 export interface FrozenToolCallContext {
+  providerAdmission: ProviderAdmission;
   architectPlanAtSend?: { planId: string; targetBranch: string };
   conversationId: string;
   sessionId: string;

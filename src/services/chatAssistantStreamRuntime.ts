@@ -123,6 +123,7 @@ export function createAssistantStreamRuntime(ports: ChatAssistantStreamPorts) {
       while (pendingEffects.size) await Promise.allSettled([...pendingEffects]);
     };
     const operation: FrozenToolCallContext = Object.freeze({
+          providerAdmission: params.providerAdmission,
           architectPlanAtSend: params.architectPlanAtSend,
           conversationId: params.conversationId,
           sessionId: params.sessionId,

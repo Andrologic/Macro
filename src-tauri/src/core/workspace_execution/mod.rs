@@ -2069,6 +2069,7 @@ pub async fn execute_workspace_tool_controlled(
 
 #[derive(Clone, Debug, Default)]
 pub struct WorkspaceToolExecutionOptions {
+    pub(crate) chat_work: Option<Arc<crate::db::chat_admission::OperationPermit>>,
     pub capture_checkpoint_snapshots: bool,
     pub raw_checkpoint_snapshot: bool,
     pub expected_workspace_roots:
@@ -2132,6 +2133,7 @@ pub async fn execute_workspace_tool_controlled_with_options(
         .map(|(cancellation, _)| cancellation.clone());
     let _guard = registration.map(|(_, guard)| guard);
     let cancellation = cancellation.unwrap_or_else(|| Arc::new(ToolCancellation::new()));
+    let chat_work = internal_options.chat_work.clone();
     let tool_label = tool_id.trim().to_string();
     let expected_workspace_roots = internal_options.expected_workspace_roots.clone();
     let inner_execution = execute_workspace_tool_inner(
@@ -2160,11 +2162,13 @@ pub async fn execute_workspace_tool_controlled_with_options(
     if execution_id.is_some() {
         tokio::select! {
             biased;
-            _ = cancellation.cancelled() => Err(command_error(format!(
-                "Tool execution cancelled: {tool_label}."
-            ))),
+            _ = cancellation.cancelled() => {
+                if chat_work.is_some() { let _ = (&mut execution).await; }
+                Err(command_error(format!("Tool execution cancelled: {tool_label}.")))
+            },
             _ = tokio::time::sleep(timeout_duration) => {
                 cancellation.cancel();
+                if chat_work.is_some() { let _ = (&mut execution).await; }
                 Err(command_error(format!(
                     "Tool execution timed out after {} seconds: {tool_label}. Narrow the path, pattern, or query before retrying.",
                     timeout_duration.as_secs()
@@ -2177,6 +2181,9 @@ pub async fn execute_workspace_tool_controlled_with_options(
             Ok(result) => result,
             Err(_) => {
                 cancellation.cancel();
+                if chat_work.is_some() {
+                    let _ = (&mut execution).await;
+                }
                 Err(command_error(format!(
                     "Tool execution timed out after {} seconds: {tool_label}. Narrow the path, pattern, or query before retrying.",
                     timeout_duration.as_secs()

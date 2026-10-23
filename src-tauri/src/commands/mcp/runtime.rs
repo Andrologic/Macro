@@ -775,6 +775,7 @@ impl McpRuntimeManager {
                     },
                 );
             ActiveOperationGuard {
+                cancellation_on_return: None,
                 operation_id,
                 operations: self.operations.clone(),
             }
@@ -847,6 +848,18 @@ impl McpRuntimeManager {
         arguments: serde_json::Value,
         operation_id: String,
     ) -> Result<McpCallToolResponse, McpRuntimeError> {
+        self.call_tool_owned(key, tool_name, arguments, operation_id, None)
+            .await
+    }
+
+    pub(crate) async fn call_tool_owned(
+        &self,
+        key: &McpRuntimeKey,
+        tool_name: &str,
+        arguments: serde_json::Value,
+        operation_id: String,
+        chat_work: Option<Arc<crate::db::chat_admission::OperationPermit>>,
+    ) -> Result<McpCallToolResponse, McpRuntimeError> {
         validate_key(key)?;
         if operation_id.trim().is_empty() {
             return Err(McpRuntimeError::new(
@@ -880,6 +893,7 @@ impl McpRuntimeManager {
         let _operation_guard = ActiveOperationGuard {
             operation_id: operation_id.clone(),
             operations: self.operations.clone(),
+            cancellation_on_return: chat_work.as_ref().map(|_| cancellation.clone()),
         };
 
         let _authority = tokio::select! {
@@ -1393,12 +1407,21 @@ impl McpRuntimeManager {
 }
 
 struct ActiveOperationGuard {
+    cancellation_on_return: Option<Arc<McpOperationCancellation>>,
     operation_id: String,
     operations: Arc<StdMutex<OperationRegistry>>,
 }
 
 impl Drop for ActiveOperationGuard {
     fn drop(&mut self) {
+        if let Some(cancellation) = &self.cancellation_on_return {
+            cancellation.cancel();
+            if let Some(context) = cancellation.interaction() {
+                context
+                    .broker
+                    .finish_operation(&context.key, &context.operation_id);
+            }
+        }
         self.operations
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())

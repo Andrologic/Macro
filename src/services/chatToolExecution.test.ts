@@ -38,6 +38,7 @@ const terminalSession: TerminalSessionDto = {
 function setup(tool = "read", riskLevel: ToolRiskLevel = "yolo", loadRuntime?: Parameters<typeof createChatToolExecution>[1]) {
   const abort = new AbortController();
   const operation: FrozenToolCallContext = {
+    providerAdmission: { kind: 'conversation' },
     conversationId: "conversation", sessionId: "session", turnId: "turn", assistantMessageId: "assistant",
     mode: "Implement", agentType: "build", taskId: "task", signal: abort.signal,
     executionContext: {

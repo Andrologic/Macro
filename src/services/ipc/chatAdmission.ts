@@ -61,3 +61,9 @@ export function chatAdmissionFinishCompaction(context: ChatAdmissionContext, con
   input: import('./conversations.types').DbUpsertConversationCompactionStateInput | null): Promise<void> {
   return invoke('chat_admission_finish_compaction', { context, conversationId, input });
 }
+
+/** Local tool association captured by the dispatch owner, never serialized in history. */
+export interface ChatToolAdmission {
+  context: ChatAdmissionContext;
+  identity: import('../../types/generated/ipc').ToolInvocationIdentity;
+}

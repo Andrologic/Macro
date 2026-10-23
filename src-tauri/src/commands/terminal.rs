@@ -3498,34 +3498,37 @@ where
 }
 
 async fn finish_child_output(
-    mut stdout_task: tokio::task::JoinHandle<CommandResult<()>>,
-    mut stderr_task: tokio::task::JoinHandle<CommandResult<()>>,
+    stdout_task: tokio::task::JoinHandle<CommandResult<()>>,
+    stderr_task: tokio::task::JoinHandle<CommandResult<()>>,
     output: Arc<StdMutex<BoundedChildOutput>>,
 ) -> CommandResult<(String, bool, bool)> {
-    let drain_result = tokio::time::timeout(
+    let abort_stdout = stdout_task.abort_handle();
+    let abort_stderr = stderr_task.abort_handle();
+    let drain = async move {
+        // Join both readers even when one fails. No detached stderr/stdout task
+        // may outlive the process owner's return.
+        let (stdout, stderr) = tokio::join!(stdout_task, stderr_task);
+        stdout
+            .map_err(|error| command_error(format!("Terminal stdout task failed: {error}")))??;
+        stderr
+            .map_err(|error| command_error(format!("Terminal stderr task failed: {error}")))??;
+        Ok::<(), crate::commands::CommandError>(())
+    };
+    tokio::pin!(drain);
+    let drain_incomplete = match tokio::time::timeout(
         Duration::from_millis(LEGACY_COMMAND_DRAIN_TIMEOUT_MS),
-        async {
-            (&mut stdout_task).await.map_err(|error| {
-                command_error(format!("Terminal stdout task failed: {}", error))
-            })??;
-            (&mut stderr_task).await.map_err(|error| {
-                command_error(format!("Terminal stderr task failed: {}", error))
-            })??;
-            Ok::<(), crate::commands::CommandError>(())
-        },
+        &mut drain,
     )
-    .await;
-
-    let drain_incomplete = match drain_result {
+    .await
+    {
         Ok(result) => {
             result?;
             false
         }
         Err(_) => {
-            stdout_task.abort();
-            stderr_task.abort();
-            let _ = stdout_task.await;
-            let _ = stderr_task.await;
+            abort_stdout.abort();
+            abort_stderr.abort();
+            let _ = drain.await;
             true
         }
     };
@@ -3873,19 +3876,18 @@ pub async fn run_legacy_session_internal(
 
     let kill_requested_before_registration = {
         let mut sessions = terminal_store.legacy_sessions.lock().await;
-        let session = sessions
-            .get_mut(&session_id)
-            .ok_or_else(|| command_error(format!("Unknown terminal session id: {}", session_id)))?;
-        if session.kill_requested {
-            true
-        } else {
-            session.pid = pid;
-            #[cfg(windows)]
-            {
-                session.windows_job = windows_job.clone();
+        match sessions.get_mut(&session_id) {
+            Some(session) if !session.kill_requested => {
+                session.pid = pid;
+                #[cfg(windows)]
+                {
+                    session.windows_job = windows_job.clone();
+                }
+                session.updated_at = current_timestamp();
+                false
             }
-            session.updated_at = current_timestamp();
-            false
+            // A removed session cannot abandon the already spawned child.
+            _ => true,
         }
     };
 
@@ -3902,31 +3904,42 @@ pub async fn run_legacy_session_internal(
             return Err(error);
         }
     }
-    let exit_status = if kill_requested_before_registration {
-        #[cfg(not(windows))]
-        let stopped = stop_legacy_child_tree(&mut child, pid).await?;
-        #[cfg(windows)]
-        let stopped = stop_legacy_child_tree(&mut child, windows_job.clone()).await?;
-        stopped
-    } else {
-        match tokio::time::timeout(Duration::from_millis(normalized_timeout_ms), child.wait()).await
-        {
-            Ok(result) => result.map_err(|error| {
-                command_error(format!("Failed to wait for terminal command: {}", error))
-            })?,
-            Err(_) => {
-                timed_out = true;
-                #[cfg(not(windows))]
-                let stopped = stop_legacy_child_tree(&mut child, pid).await?;
-                #[cfg(windows)]
-                let stopped = stop_legacy_child_tree(&mut child, windows_job.clone()).await?;
-                stopped
+    let exit_status = async {
+        Ok::<_, crate::commands::CommandError>(if kill_requested_before_registration {
+            #[cfg(not(windows))]
+            let stopped = stop_legacy_child_tree(&mut child, pid).await?;
+            #[cfg(windows)]
+            let stopped = stop_legacy_child_tree(&mut child, windows_job.clone()).await?;
+            stopped
+        } else {
+            match tokio::time::timeout(Duration::from_millis(normalized_timeout_ms), child.wait())
+                .await
+            {
+                Ok(result) => result.map_err(|error| {
+                    command_error(format!("Failed to wait for terminal command: {}", error))
+                })?,
+                Err(_) => {
+                    timed_out = true;
+                    #[cfg(not(windows))]
+                    let stopped = stop_legacy_child_tree(&mut child, pid).await?;
+                    #[cfg(windows)]
+                    let stopped = stop_legacy_child_tree(&mut child, windows_job.clone()).await?;
+                    stopped
+                }
             }
-        }
-    };
-
-    let (combined_output, output_truncated, drain_incomplete) =
-        finish_child_output(stdout_task, stderr_task, output).await?;
+        })
+    }
+    .await;
+    if exit_status.is_err() {
+        #[cfg(not(windows))]
+        let _ = stop_legacy_child_tree(&mut child, pid).await;
+        #[cfg(windows)]
+        let _ = stop_legacy_child_tree(&mut child, windows_job.clone()).await;
+    }
+    // Drain or abort-and-join both readers before propagating a wait error.
+    let output_result = finish_child_output(stdout_task, stderr_task, output).await;
+    let exit_status = exit_status?;
+    let (combined_output, output_truncated, drain_incomplete) = output_result?;
     if drain_incomplete {
         drop(process_guard);
     } else {
@@ -4063,6 +4076,10 @@ pub async fn kill_legacy_session_internal(
 
 #[tauri::command]
 pub async fn terminal_create_session(
+    admission_runtime: State<'_, crate::db::chat_admission::runtime::ChatAdmissionRuntime>,
+    ai_state: State<'_, crate::ai::AiState>,
+    window: tauri::WebviewWindow,
+    chat_admission: Option<crate::db::chat_admission::runtime::ChatToolAdmission>,
     workspace_root: State<'_, WorkspaceMetadataRoot>,
     git_state: State<'_, GitState>,
     terminal_store: State<'_, TerminalSessionStore>,
@@ -4070,6 +4087,26 @@ pub async fn terminal_create_session(
     cwd: Option<String>,
 ) -> CommandResult<TerminalSessionDto> {
     let workspace_path = workspace_root.inner().0.read().await.clone();
+    if let Some(admission) = chat_admission {
+        if project_id.is_some() {
+            return Err(command_error("chat_admission_manual_terminal_refused"));
+        }
+        let (reservation, work) = super::chat_admission::admit_tool(
+            &admission_runtime,
+            &ai_state,
+            window.label(),
+            admission,
+        )
+        .await?;
+        let git = git_state.inner().clone();
+        let store = terminal_store.inner().clone();
+        let received = reservation
+            .spawn_tool(work, move |_cancel| async move {
+                create_legacy_session_internal(workspace_path, git, store, project_id, cwd).await
+            })
+            .map_err(command_error)?;
+        return received.await.map_err(command_error)?;
+    }
     create_legacy_session_internal(
         workspace_path,
         git_state.inner().clone(),
@@ -4082,12 +4119,52 @@ pub async fn terminal_create_session(
 
 #[tauri::command]
 pub async fn terminal_run(
+    admission_runtime: State<'_, crate::db::chat_admission::runtime::ChatAdmissionRuntime>,
+    ai_state: State<'_, crate::ai::AiState>,
+    window: tauri::WebviewWindow,
+    chat_admission: Option<crate::db::chat_admission::runtime::ChatToolAdmission>,
     terminal_store: State<'_, TerminalSessionStore>,
     session_id: String,
     command: String,
     timeout_ms: Option<u64>,
     execution_id: Option<String>,
 ) -> CommandResult<TerminalSessionDto> {
+    if let Some(admission) = chat_admission {
+        let store = terminal_store.inner().clone();
+        if read_legacy_session_internal(store.clone(), session_id.clone())
+            .await?
+            .project_id
+            .is_some()
+        {
+            return Err(command_error("chat_admission_manual_terminal_refused"));
+        }
+        let (reservation, work) = super::chat_admission::admit_tool(
+            &admission_runtime,
+            &ai_state,
+            window.label(),
+            admission,
+        )
+        .await?;
+        let execution_id = execution_id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+        let owner = work.clone();
+        let received = reservation.spawn_tool(work, move |cancel| async move {
+            let execution = run_legacy_session_internal(store.clone(), session_id.clone(), command, timeout_ms, Some(execution_id.clone()));
+            tokio::pin!(execution);
+            let result = tokio::select! {
+                biased;
+                _ = cancel.cancelled() => {
+                    let _ = kill_legacy_session_internal(store, session_id, Some(execution_id)).await;
+                    execution.await
+                },
+                result = &mut execution => result,
+            };
+            // A failed process cleanup is not a terminal physical receipt.
+            // Normal shell exit codes, including nonzero, return a session DTO.
+            if result.is_err() { let _ = owner.unknown().await; }
+            result
+        }).map_err(command_error)?;
+        return received.await.map_err(command_error)?;
+    }
     run_legacy_session_internal(
         terminal_store.inner().clone(),
         session_id,
@@ -4108,10 +4185,42 @@ pub async fn terminal_read(
 
 #[tauri::command]
 pub async fn terminal_kill(
+    admission_runtime: State<'_, crate::db::chat_admission::runtime::ChatAdmissionRuntime>,
+    ai_state: State<'_, crate::ai::AiState>,
+    window: tauri::WebviewWindow,
+    chat_admission: Option<crate::db::chat_admission::runtime::ChatToolAdmission>,
     terminal_store: State<'_, TerminalSessionStore>,
     session_id: String,
     execution_id: Option<String>,
 ) -> CommandResult<TerminalSessionDto> {
+    if let Some(admission) = chat_admission {
+        let store = terminal_store.inner().clone();
+        if read_legacy_session_internal(store.clone(), session_id.clone())
+            .await?
+            .project_id
+            .is_some()
+        {
+            return Err(command_error("chat_admission_manual_terminal_refused"));
+        }
+        let (reservation, work) = super::chat_admission::admit_tool(
+            &admission_runtime,
+            &ai_state,
+            window.label(),
+            admission,
+        )
+        .await?;
+        let owner = work.clone();
+        let received = reservation
+            .spawn_tool(work, move |_cancel| async move {
+                let result = kill_legacy_session_internal(store, session_id, execution_id).await;
+                if result.is_err() {
+                    let _ = owner.unknown().await;
+                }
+                result
+            })
+            .map_err(command_error)?;
+        return received.await.map_err(command_error)?;
+    }
     kill_legacy_session_internal(terminal_store.inner().clone(), session_id, execution_id).await
 }
 
@@ -4125,6 +4234,25 @@ mod tests {
     use std::collections::HashMap;
     use std::fs;
     use tempfile::TempDir;
+
+    #[tokio::test]
+    async fn output_reader_failure_still_joins_the_other_reader() {
+        let (release, gate) = tokio::sync::oneshot::channel();
+        let stdout = tokio::spawn(async { Err(command_error("synthetic reader failure")) });
+        let stderr = tokio::spawn(async move {
+            let _ = gate.await;
+            Ok(())
+        });
+        let finished = tokio::spawn(finish_child_output(
+            stdout,
+            stderr,
+            Arc::new(StdMutex::new(BoundedChildOutput::default())),
+        ));
+        tokio::task::yield_now().await;
+        assert!(!finished.is_finished());
+        release.send(()).unwrap();
+        assert!(finished.await.unwrap().is_err());
+    }
 
     async fn terminal_lifecycle_fixture() -> (TempDir, DbPool, TerminalTabRecord) {
         let temp = TempDir::new().unwrap();

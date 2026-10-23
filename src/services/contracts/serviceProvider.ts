@@ -284,6 +284,7 @@ export interface ServiceProvider {
   mcpRuntimeDisconnect: (key: MCPRuntimeKey) => Promise<void>;
   mcpRuntimeRefreshCatalog: (key: MCPRuntimeKey) => Promise<MCPCatalogDto>;
   mcpRuntimeCallTool: (data: {
+    chatAdmission?: import('../ipc/chatAdmission').ChatToolAdmission;
     key: MCPRuntimeKey;
     toolName: string;
     arguments: Record<string, unknown>;
