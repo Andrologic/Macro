@@ -101,7 +101,7 @@ export interface SendModel {
 }
 
 export type StartSendStream = PrepareAssistantStreamParams & Pick<AssistantStreamLaunch,
-  'sessionId' | 'assistantMessage' | 'architectPlanAtSend' | 'abortController' | 'pilotActionToken'>;
+  'sessionId' | 'assistantMessage' | 'architectPlanAtSend' | 'abortController' | 'pilotActionToken' | 'completeMetadata'>;
 
 /** Ports expose domain operations, never a store or a generic state getter. */
 export interface ChatSendPorts<Task extends SendTask, Recovery, Launch> {
@@ -133,7 +133,7 @@ export interface ChatSendPorts<Task extends SendTask, Recovery, Launch> {
     materializeArchitectConversation(conversationId: string): Promise<string>;
     bindArchitectConversation(params: { architectPlan: ArchitectPlanAtSend; conversationId: string }): Promise<boolean>;
     syncArchitectMetadata(params: { branchName: string; planId: string; conversationId: string; reason: 'metadata_prefix' }): Promise<void>;
-    generateMetadata(params: SendModel & { conversationId: string; firstUserContent: string; architectPlan?: ArchitectPlanAtSend }): Promise<void>;
+    generateMetadata(params: SendModel & { providerAdmission: ProviderAdmission; signal: AbortSignal; conversationId: string; firstUserContent: string; architectPlan?: ArchitectPlanAtSend }): Promise<void>;
   };
   configuration: {
     load(params: { projectIds: string[]; focusProjectId: string | null; mode: AppMode }): Promise<ScopedTurnConfiguration | null>;

@@ -75,15 +75,18 @@ pub(crate) async fn chat_admission_begin(
 
 #[tauri::command]
 pub(crate) async fn chat_admission_close_preparation(
-    admission_runtime: State<'_, ChatAdmissionRuntime>,
-    window: WebviewWindow,
-    context: ChatAdmissionContext,
-    conversation_id: String,
+    pool: State<'_, DbPool>, admission_runtime: State<'_, ChatAdmissionRuntime>, window: WebviewWindow,
+    context: ChatAdmissionContext, conversation_id: String,
 ) -> CommandResult<()> {
-    admission_runtime
-        .close_preparation(window.label(), &context, &conversation_id)
-        .await
-        .map_err(Into::into)
+    let fingerprint = crate::db::chat_admission::runtime::completion_fingerprint("preparation", &())?;
+    if crate::db::chat_admission::runtime::replay_completion(&pool, window.label(), &context, &conversation_id, &fingerprint).await? {
+        return Ok(());
+    }
+    let result = admission_runtime.close_preparation(window.label(), &context, &conversation_id).await;
+    if result.is_err() && crate::db::chat_admission::runtime::replay_completion(&pool, window.label(), &context, &conversation_id, &fingerprint).await? {
+        return Ok(());
+    }
+    result.map_err(Into::into)
 }
 
 #[derive(serde::Serialize)]

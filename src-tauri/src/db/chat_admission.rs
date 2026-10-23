@@ -733,6 +733,31 @@ impl OperationPermit {
     pub(crate) async fn result_pending(&self) -> DbResult<()> {
         self.transition("dispatched", "result_pending").await
     }
+    /// Preparation can own a completed metadata request before an assistant
+    /// exists. Preserve that outcome instead of calling it no_effect.
+    pub(crate) async fn finish_preparation(&self) -> DbResult<()> {
+        let guard = self.owner.source_ready(Some(&self.generation)).await
+            .map_err(|_| invalid("chat_admission_stale_generation"))?;
+        let mut lease = durable_lease(&guard.ready.pool).await?;
+        let mut tx = lease.begin_with("BEGIN IMMEDIATE").await?;
+        guard.ready.check_source_schema(&mut tx).await?;
+        let phase = self.check(&mut tx).await?;
+        let unlaunched: i64 = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM chat_admission_operations WHERE operation_id=? AND parent_id IS NULL AND message_id IS NULL)")
+            .bind(&self.operation).fetch_one(&mut *tx).await?;
+        if phase != "prepared" || unlaunched == 0 { return Err(invalid("chat_admission_preparation_already_launched")); }
+        let pending: i64 = sqlx::query_scalar("WITH RECURSIVE children(id,phase) AS (SELECT operation_id,phase FROM chat_admission_operations WHERE parent_id=? UNION SELECT p.operation_id,p.phase FROM chat_admission_operations p JOIN children c ON p.parent_id=c.id) SELECT EXISTS(SELECT 1 FROM children WHERE phase NOT IN ('completed','no_effect'))")
+            .bind(&self.operation).fetch_one(&mut *tx).await?;
+        if pending != 0 { return Err(invalid("chat_admission_children_pending")); }
+        let effect: i64 = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM chat_admission_operations WHERE parent_id=? AND kind IN ('provider','tool') AND phase='completed')")
+            .bind(&self.operation).fetch_one(&mut *tx).await?;
+        let receipt = runtime::completion_fingerprint("preparation", &())?;
+        sqlx::query("UPDATE chat_admission_operations SET phase=?,completion_receipt=?,revision=revision+1 WHERE operation_id=?")
+            .bind(if effect == 0 { "no_effect" } else { "completed" }).bind(receipt).bind(&self.operation).execute(&mut *tx).await?;
+        tx.commit().await?;
+        lease.committed = true;
+        Ok(())
+    }
+
     pub(crate) async fn no_effect(&self) -> DbResult<()> {
         self.transition("prepared", "no_effect").await
     }

@@ -1346,3 +1346,30 @@ async fn response_recovery_reservation_survives_browser_loss_and_never_closes_un
         }
     }
 }
+
+#[tokio::test]
+async fn preparation_receipt_waits_for_metadata_and_replays_after_handle_ack() {
+    for uncertain in [false, true] {
+        let (_dir, pool) = fixture().await;
+        let owner = crate::core::db_state::DbPool::default();
+        owner.set_ready(pool.clone()).await.unwrap();
+        let runtime = runtime::ChatAdmissionRuntime::default();
+        let context = runtime.begin(owner.clone(), "window", "browser", "source", "turn").await.unwrap();
+        let parent = runtime.parent("window", &context, "source").await.unwrap();
+        let metadata = parent.provider_invocation("metadata-request").await.unwrap();
+        assert!(runtime.close_preparation("window", &context, "source").await.is_err());
+        metadata.dispatched().await.unwrap();
+        if uncertain { metadata.unknown().await.unwrap(); }
+        else { metadata.result_pending().await.unwrap(); metadata.completed().await.unwrap(); }
+        let result = runtime.close_preparation("window", &context, "source").await;
+        assert_eq!(result.is_err(), uncertain);
+        if !uncertain {
+            let fingerprint = runtime::completion_fingerprint("preparation", &()).unwrap();
+            assert!(runtime::replay_completion(&owner, "window", &context, "source", &fingerprint).await.unwrap());
+            runtime.acknowledge_completion(&owner, "window", &context, "source").await.unwrap();
+            assert!(runtime.parent("window", &context, "source").await.is_err());
+            assert!(runtime::replay_completion(&owner, "window", &context, "source", &fingerprint).await.unwrap());
+            assert_eq!(sqlx::query_scalar::<_,String>("SELECT phase FROM chat_admission_operations WHERE operation_id=?").bind(&context.handle).fetch_one(&pool).await.unwrap(), "completed");
+        }
+    }
+}

@@ -33,6 +33,7 @@ export async function sendMessage<Task extends SendTask, Recovery, Launch>(
   let lease: SendLease | null = null;
   let providerAdmission: Exclude<ProviderAdmission, { kind: 'utility' }> = { kind: 'conversation' };
   let handedToStream = false;
+  let completeMetadata: (() => Promise<void>) | undefined;
   let assistantMessageId: string | null = null;
   let launchError: unknown = null;
   const startedAt = Date.now();
@@ -228,7 +229,14 @@ export async function sendMessage<Task extends SendTask, Recovery, Launch>(
           if (!isCurrent()) return sentWithoutAssistant(persistedUserMessage);
         }
       }
-      if (!skipMetadata && !input.pilotTarget) void preparation.generateMetadata({ ...model, conversationId, firstUserContent: content, architectPlan });
+      if (!skipMetadata && !input.pilotTarget) {
+        const generate = () => preparation.generateMetadata({ ...model, conversationId, firstUserContent: content, architectPlan,
+          providerAdmission, signal: abortController.signal });
+        // Global metadata uses the same provider context after the main work
+        // joins, while its admitted parent still prevents a competing freeze.
+        if (providerAdmission.kind === 'globalChat') completeMetadata = generate;
+        else void generate().catch(() => {});
+      }
     }
     try {
       const request: PrepareAssistantStreamParams = {
@@ -277,7 +285,7 @@ export async function sendMessage<Task extends SendTask, Recovery, Launch>(
       await authorizePilotEffect();
       if (!isCurrent()) return sentWithoutAssistant(persistedUserMessage);
       await stream.start({
-        ...request, sessionId: current.sessionId, assistantMessage: assistant,
+        ...request, completeMetadata, sessionId: current.sessionId, assistantMessage: assistant,
         architectPlanAtSend: architectPlan, abortController,
         pilotActionToken: input.pilotTarget?.actionToken,
         providerSupportsNativeToolCalling: configuration.supportsNativeToolCalling(providerId, modelId),
@@ -315,6 +323,7 @@ export async function sendMessage<Task extends SendTask, Recovery, Launch>(
     throw normalized;
   } finally {
     if (!handedToStream && providerAdmission.kind === 'globalChat') {
+      if (completeMetadata) await Promise.allSettled([Promise.resolve().then(completeMetadata)]);
       await ports.admission.closePreparation(providerAdmission.context, conversationId);
     }
   }

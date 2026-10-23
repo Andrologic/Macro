@@ -18,8 +18,9 @@ export function chatAdmissionBegin(
   return invoke('chat_admission_begin', { runtime, conversationId, turnId, attemptId, purpose });
 }
 
-export function chatAdmissionClosePreparation(context: ChatAdmissionContext, conversationId: string): Promise<void> {
-  return invoke('chat_admission_close_preparation', { context, conversationId });
+export async function chatAdmissionClosePreparation(context: ChatAdmissionContext, conversationId: string): Promise<void> {
+  await invoke('chat_admission_close_preparation', { context, conversationId });
+  await chatAdmissionAcknowledgeCompletion(context, conversationId);
 }
 
 export type ChatWorkPhase = 'prepared' | 'dispatched' | 'result_pending' | 'completed' | 'no_effect' | 'unknown';

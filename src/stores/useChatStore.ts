@@ -8103,6 +8103,9 @@ export const useChatStore = create<ChatStore>((set, get) => {
 
   const requestConversationMetadata = async (params: {
     firstUserContent: string;
+    providerAdmission: import("../services/ipc/chatAdmission").ProviderAdmission;
+    conversationId?: string;
+    signal?: AbortSignal;
     providerId: string;
     providerType: string;
     baseUrl: string;
@@ -8111,7 +8114,9 @@ export const useChatStore = create<ChatStore>((set, get) => {
     reasoningEffort?: ReasoningEffort | null;
   }): Promise<{ title: string; description: string }> => {
     const output = await sendChatNonStreaming({
-          providerAdmission: { kind: 'utility' },
+      providerAdmission: params.providerAdmission,
+      conversationId: params.conversationId,
+      signal: params.signal,
       providerId: params.providerId,
       providerType: params.providerType,
       baseUrl: params.baseUrl,
@@ -8608,6 +8613,8 @@ export const useChatStore = create<ChatStore>((set, get) => {
 
   const maybeGenerateConversationMetadata = async (params: {
     conversationId: string;
+    providerAdmission: import("../services/ipc/chatAdmission").ProviderAdmission;
+    signal: AbortSignal;
     firstUserContent: string;
     providerId: string;
     providerType: string;
@@ -8674,6 +8681,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
             const metadata = await requestConversationMetadataWithRetries(
               {
                 firstUserContent,
+                providerAdmission: { kind: 'utility' },
                 ...metadataProviderContext,
               },
               ARCHITECT_PLAN_METADATA_ATTEMPT_LIMIT,
@@ -8709,13 +8717,14 @@ export const useChatStore = create<ChatStore>((set, get) => {
         return;
       }
 
+      if (params.signal.aborted) throw new DOMException('Metadata cancelled before dispatch.', 'AbortError');
       const metadata = await requestConversationMetadata({
-        firstUserContent,
+        firstUserContent, conversationId, providerAdmission: params.providerAdmission, signal: params.signal,
         ...metadataProviderContext,
-      }).catch(() => ({
-        title: getConversationFallbackTitle(firstUserContent),
-        description: getConversationFallbackDescription(firstUserContent),
-      }));
+      }).catch(error => {
+        if (params.providerAdmission.kind === 'globalChat') throw error;
+        return { title: getConversationFallbackTitle(firstUserContent), description: getConversationFallbackDescription(firstUserContent) };
+      });
 
       if (protectChatTitle) {
         await enqueueConversationMetadataWrite(conversationId, async () => {
@@ -12580,6 +12589,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
         const metadata = await requestConversationMetadataWithRetries(
           {
             firstUserContent: recovery.firstUserContent,
+            providerAdmission: { kind: 'utility' },
             ...providerContext,
           },
           ARCHITECT_PLAN_METADATA_ATTEMPT_LIMIT,

@@ -70,6 +70,7 @@ interface AdmittedStreamGroup {
   effects: Set<Promise<unknown>>;
   done: Promise<void>;
   finish?: () => Promise<void>;
+  completeMetadata?: () => Promise<void>;
   finishing?: Promise<void>;
   settle(): void;
 }
@@ -114,7 +115,7 @@ export function createAssistantStreamRuntime(ports: ChatAssistantStreamPorts) {
     if (admissionHandle && !group) {
       let settle!: () => void;
       const done = new Promise<void>(resolve => { settle = resolve; });
-      group = { active: new Set(), effects: new Set(), done, settle };
+      group = { active: new Set(), effects: new Set(), done, settle, completeMetadata: params.completeMetadata };
 
     }
     const pendingEffects = group?.effects ?? new Set<Promise<unknown>>();
@@ -669,7 +670,10 @@ export function createAssistantStreamRuntime(ports: ChatAssistantStreamPorts) {
           await drainEffects();
           if (shared.active.size) return shared.done;
           shared.finishing ??= (async () => {
-            try { await shared.finish!(); }
+            try {
+              if (shared.completeMetadata) await Promise.allSettled([Promise.resolve().then(shared.completeMetadata)]);
+              await shared.finish!();
+            }
             finally {
               if (admissionHandle && admittedStreams.get(admissionHandle) === shared) admittedStreams.delete(admissionHandle);
               shared.settle();

@@ -967,3 +967,26 @@ test('native response reservation precedes dispatch and cancellation while waiti
   expect(await starting).toBeInstanceOf(Error);
   expect(h.calls).toHaveLength(0);
 });
+
+test('metadata starts only after main provider completion and retains the parent through its writer', async () => {
+  const h = setup();
+  const metadata = deferred<void>();
+  const params = launch('a');
+  params.providerAdmission = { kind: 'globalChat', context: { handle: 'metadata-parent', runtime: 'browser' } };
+  let metadataStarted = false;
+  params.completeMetadata = async () => { metadataStarted = true; await metadata.promise; };
+  h.admission.reserveResponse = async () => {};
+  const finish = mock(async () => {});
+  h.admission.finishResponse = finish;
+  const stream = await h.start(params);
+  expect(metadataStarted).toBe(false);
+  stream.options.onComplete(result('Main response'));
+  stream.done.resolve();
+  await checkpoint();
+  expect(finish).not.toHaveBeenCalled();
+  expect(h.settled).not.toHaveBeenCalled();
+  expect(metadataStarted).toBe(true);
+  metadata.resolve();
+  await h.owner.drain('a');
+  expect(finish).toHaveBeenCalledTimes(1);
+});

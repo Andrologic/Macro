@@ -3317,7 +3317,7 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     expect(useChatStore.getState().conversations[0]?.title).toBe('Checkout refresh');
   });
 
-  it('names a default Chat title from another language and falls back when metadata generation fails', async () => {
+  it('keeps the title after an admitted global metadata failure without fallback', async () => {
     appState.mode = 'Chat';
     tauriAvailable = true;
     queueSendChatNonStreamingImplementation(async () => { throw new Error('provider unavailable'); });
@@ -3328,8 +3328,12 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     }));
     await useChatStore.getState().sendMessage({ conversationId: 'localized-title', content: 'Refresh checkout' });
     await flushAsyncWork();
-    expect(useChatStore.getState().conversations[0]?.title).toBe('Refresh checkout');
-    expect(updateConversationDetailsMock).toHaveBeenCalled();
+    expect(useChatStore.getState().conversations[0]?.title).toBe('Neues Gespräch');
+    expect(updateConversationDetailsMock).not.toHaveBeenCalled();
+    const request = sendChatNonStreamingMock.mock.calls[0]?.[0];
+    expect(request?.providerAdmission.kind).toBe('globalChat');
+    expect(request?.conversationId).toBe('localized-title');
+    expect(request?.signal).toBeInstanceOf(AbortSignal);
   });
 
   for (const scenario of ['without_review', 'with_review', 'owned_resolution', 'changed_workspace'] as const) it(`resumes the same Implement conversation after a todo-gated merge, ${scenario}`, async () => {

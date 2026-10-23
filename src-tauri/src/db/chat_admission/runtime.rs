@@ -28,7 +28,7 @@ pub(crate) async fn replay_completion(
         .map_err(|_| invalid("chat_admission_unavailable"))?;
     let mut db = guard.ready.pool.acquire().await?;
     guard.ready.check_source_schema(&mut db).await?;
-    let receipt: Option<String> = sqlx::query_scalar("SELECT completion_receipt FROM chat_admission_operations WHERE operation_id=? AND conversation_id=? AND browser_caller=? AND browser_runtime=? AND phase='completed' AND completion_receipt IS NOT NULL")
+    let receipt: Option<String> = sqlx::query_scalar("SELECT completion_receipt FROM chat_admission_operations WHERE operation_id=? AND conversation_id=? AND browser_caller=? AND browser_runtime=? AND phase IN ('completed','no_effect') AND completion_receipt IS NOT NULL")
         .bind(&context.handle).bind(conversation).bind(caller).bind(&context.runtime)
         .fetch_optional(&mut *db).await?;
     match receipt {
@@ -509,7 +509,7 @@ impl ChatAdmissionRuntime {
             .map_err(|_| invalid("chat_admission_unavailable"))?;
         let mut db = guard.ready.pool.acquire().await?;
         guard.ready.check_source_schema(&mut db).await?;
-        let complete: i64 = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM chat_admission_operations WHERE operation_id=? AND conversation_id=? AND browser_caller=? AND browser_runtime=? AND phase='completed' AND completion_receipt IS NOT NULL)")
+        let complete: i64 = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM chat_admission_operations WHERE operation_id=? AND conversation_id=? AND browser_caller=? AND browser_runtime=? AND phase IN ('completed','no_effect') AND completion_receipt IS NOT NULL)")
             .bind(&context.handle).bind(conversation).bind(caller).bind(&context.runtime)
             .fetch_one(&mut *db).await?;
         if complete == 0 { return Err(invalid("chat_admission_completion_missing")); }
@@ -540,12 +540,15 @@ impl ChatAdmissionRuntime {
                 .ok_or_else(|| invalid("chat_admission_invalid_handle"))?;
             match &turn.permit {
                 Some(permit) => permit.clone(),
-                None => return Ok(()),
+                None => return if turn.completion_receipt.as_deref() == Some(completion_fingerprint("preparation", &())?.as_str()) {
+                    Ok(())
+                } else { Err(invalid("chat_admission_completion_receipt_conflict")) },
             }
         };
-        permit.no_effect().await?;
+        permit.finish_preparation().await?;
         if let Some(turn) = self.turns.lock().await.get_mut(&context.handle) {
             turn.permit = None;
+            turn.completion_receipt = Some(completion_fingerprint("preparation", &())?);
         }
         Ok(())
     }

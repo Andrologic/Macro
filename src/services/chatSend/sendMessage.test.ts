@@ -539,3 +539,26 @@ it('retains a questionnaire handoff failure without starting the provider', asyn
   await expect(sendMessage({ ...f.input, questionIntent: receipt }, f.snapshot, f.ports)).rejects.toMatchObject({ message: 'Question receipt unavailable' });
   expect(f.ports.stream.start).not.toHaveBeenCalled();
 });
+
+it('keeps metadata under the captured parent even when main preparation fails', async () => {
+  const f = fixture();
+  const metadata = deferred<void>();
+  const started = deferred<void>();
+  const context = { handle: 'metadata-parent', runtime: 'browser' };
+  f.ports.admission.begin = async () => ({ kind: 'globalChat', context });
+  f.ports.admission.closePreparation = async (received) => { expect(received).toEqual(context); f.events.push('closed'); };
+  f.ports.preparation.generateMetadata = async params => {
+    expect(params.providerAdmission).toEqual({ kind: 'globalChat', context });
+    expect(params.signal).toBeInstanceOf(AbortSignal);
+    started.resolve();
+    await metadata.promise;
+  };
+  f.ports.stream.prepare = async () => { throw new Error('Synthetic main preparation failure'); };
+  const sending = f.run().then(() => null, error => error);
+  await started.promise;
+  await Promise.resolve();
+  expect(f.events).not.toContain('closed');
+  metadata.resolve();
+  expect(await sending).toMatchObject({ message: 'Synthetic main preparation failure' });
+  expect(f.events).toContain('closed');
+});

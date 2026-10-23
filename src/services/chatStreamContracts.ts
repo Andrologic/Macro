@@ -69,6 +69,7 @@ export interface FrozenToolCallContext {
 }
 
 export interface AssistantStreamLaunch {
+    completeMetadata?: () => Promise<void>;
     providerAdmission: ProviderAdmission;
     pilotActionToken?: symbol;
     architectPlanContext?: ArchitectPlanRecord | null;
