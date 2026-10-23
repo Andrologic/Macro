@@ -1937,6 +1937,42 @@ impl ConfigManager {
         effective
     }
 
+    /// Hold the approved policy through a short native check-and-charge operation.
+    /// Decode only the four numeric fields, without cloning unrelated settings.
+    pub(crate) async fn with_connect_transfer_resources<T>(
+        &self,
+        operation: impl FnOnce(&ConnectTransferResources) -> T,
+    ) -> Result<T, ConfigApiError> {
+        let state = self.state.read().await;
+        let value = state
+            .documents
+            .get(&DocumentKey {
+                kind: ConfigDocumentKind::Settings,
+                scope: ConfigScope::User,
+            })
+            .and_then(|stored| stored.last_valid_value.get("connectTransferResources"));
+        let invalid = || {
+            ConfigApiError::new(
+                "config.settings.connect_resources_invalid",
+                "La politique de ressources Connect approuvée est invalide.",
+            )
+        };
+        let policy = match value {
+            // The optional settings field uses null and absence interchangeably.
+            None | Some(serde_json::Value::Null) => ConnectTransferResources::default(),
+            Some(value) if value.is_object() => {
+                ConnectTransferResources::deserialize(value).map_err(|_| invalid())?
+            }
+            Some(_) => return Err(invalid()),
+        };
+        if !policy.valid() {
+            return Err(invalid());
+        }
+        let result = operation(&policy);
+        drop(state);
+        Ok(result)
+    }
+
     pub async fn reload(
         &self,
         kind: ConfigDocumentKind,
@@ -3384,6 +3420,235 @@ mod tests {
             .await
             .expect("manager");
         (temp, manager)
+    }
+
+    #[tokio::test]
+    async fn connect_resources_reject_non_object_shapes_before_publication() {
+        async fn patch(
+            manager: &ConfigManager,
+            value: Value,
+            source: ConfigChangeSource,
+        ) -> Result<ConfigPatchResult, ConfigApiError> {
+            let document = manager
+                .get_document(ConfigDocumentKind::Settings, ConfigScope::User)
+                .await?;
+            manager
+                .apply_patch(ConfigPatchRequest {
+                    kind: ConfigDocumentKind::Settings,
+                    scope: ConfigScope::User,
+                    expected_etag: document.etag,
+                    patch: vec![JsonPatchOperation {
+                        op: "add".into(),
+                        path: "/connectTransferResources".into(),
+                        from: None,
+                        value: Some(value),
+                    }],
+                    source,
+                })
+                .await
+        }
+        let (_temp, mut manager) = manager().await;
+        let root = manager.root().to_path_buf();
+        patch(
+            &manager,
+            json!({"workingCeilingMiB": 128}),
+            ConfigChangeSource::UserInterface,
+        )
+        .await
+        .unwrap();
+        let expected = crate::connect_resources::configured(&manager)
+            .await
+            .unwrap();
+        let document = manager
+            .get_document(ConfigDocumentKind::Settings, ConfigScope::User)
+            .await
+            .unwrap();
+        let bytes = fs::read(&document.file_path).unwrap();
+        for source in [ConfigChangeSource::UserInterface, ConfigChangeSource::Agent] {
+            for bad in [
+                json!([]),
+                json!([1]),
+                json!([1, 64]),
+                json!([1, 64, 256, 512]),
+                json!(true),
+                json!(false),
+                json!(1),
+                json!(1.5),
+                json!("policy"),
+            ] {
+                let error = patch(&manager, bad.clone(), source.clone())
+                    .await
+                    .unwrap_err();
+                assert_eq!(error.code, "config.document.validation_failed", "{bad}");
+                assert_eq!(fs::read(&document.file_path).unwrap(), bytes, "{bad}");
+                assert!(manager.list_pending_changes().await.is_empty(), "{bad}");
+                assert_eq!(
+                    crate::connect_resources::configured(&manager)
+                        .await
+                        .unwrap(),
+                    expected,
+                    "{bad}"
+                );
+
+                // Defensive consumer check: inject a corrupt in-memory value only.
+                // No malformed policy is published to disk by this test.
+                let key = DocumentKey {
+                    kind: ConfigDocumentKind::Settings,
+                    scope: ConfigScope::User,
+                };
+                let original = {
+                    let mut state = manager.state.write().await;
+                    let value = &mut state.documents.get_mut(&key).unwrap().last_valid_value
+                        ["connectTransferResources"];
+                    std::mem::replace(value, bad.clone())
+                };
+                let rejected = manager
+                    .with_connect_transfer_resources(|_| {
+                        panic!("invalid shape reached resource admission")
+                    })
+                    .await;
+                assert_eq!(
+                    rejected.unwrap_err().code,
+                    "config.settings.connect_resources_invalid",
+                    "{bad}"
+                );
+                manager
+                    .state
+                    .write()
+                    .await
+                    .documents
+                    .get_mut(&key)
+                    .unwrap()
+                    .last_valid_value["connectTransferResources"] = original;
+                drop(manager);
+                manager = ConfigManager::initialize(root.clone()).await.unwrap();
+                assert_eq!(fs::read(&document.file_path).unwrap(), bytes, "{bad}");
+                assert!(manager.list_pending_changes().await.is_empty());
+                assert_eq!(
+                    crate::connect_resources::configured(&manager)
+                        .await
+                        .unwrap(),
+                    expected,
+                    "{bad}"
+                );
+            }
+        }
+        // A valid partial object still follows the ordinary approval path.
+        let pending = patch(
+            &manager,
+            json!({"workingCeilingMiB": 64}),
+            ConfigChangeSource::Agent,
+        )
+        .await
+        .unwrap();
+        assert_eq!(pending.status, "pendingApproval");
+        assert_eq!(
+            crate::connect_resources::configured(&manager)
+                .await
+                .unwrap(),
+            expected
+        );
+        manager
+            .accept_pending_change(&pending.pending_change.unwrap().id)
+            .await
+            .unwrap();
+        drop(manager);
+        let manager = ConfigManager::initialize(root).await.unwrap();
+        let approved = crate::connect_resources::configured(&manager)
+            .await
+            .unwrap();
+        assert_eq!(approved.working_ceiling_mi_b, 64);
+        assert_eq!(
+            approved.retained_ceiling_mi_b,
+            expected.retained_ceiling_mi_b
+        );
+        assert_eq!(approved.disk_floor_mi_b, expected.disk_floor_mi_b);
+    }
+
+    #[tokio::test]
+    async fn connect_resources_require_approval_and_preserve_last_valid_policy() {
+        let (_temp, manager) = manager().await;
+        let document = manager
+            .get_document(ConfigDocumentKind::Settings, ConfigScope::User)
+            .await
+            .unwrap();
+        let policy = super::super::ConnectTransferResources {
+            working_ceiling_mi_b: 64,
+            retained_ceiling_mi_b: 256,
+            disk_floor_mi_b: 512,
+            ..Default::default()
+        };
+        let result = manager
+            .apply_patch(ConfigPatchRequest {
+                kind: ConfigDocumentKind::Settings,
+                scope: ConfigScope::User,
+                expected_etag: document.etag,
+                patch: vec![JsonPatchOperation {
+                    op: "add".into(),
+                    path: "/connectTransferResources".into(),
+                    from: None,
+                    value: Some(serde_json::to_value(&policy).unwrap()),
+                }],
+                source: ConfigChangeSource::Agent,
+            })
+            .await
+            .unwrap();
+        assert_eq!(result.status, "pendingApproval");
+        assert_eq!(
+            crate::connect_resources::configured(&manager)
+                .await
+                .unwrap(),
+            Default::default()
+        );
+        manager
+            .accept_pending_change(&result.pending_change.unwrap().id)
+            .await
+            .unwrap();
+        assert_eq!(
+            crate::connect_resources::configured(&manager)
+                .await
+                .unwrap(),
+            policy
+        );
+        for (field, bad) in [
+            ("version", 2),
+            ("workingCeilingMiB", 63),
+            ("workingCeilingMiB", 4097),
+            ("retainedCeilingMiB", 255),
+            ("retainedCeilingMiB", 65537),
+            ("diskFloorMiB", 511),
+            ("diskFloorMiB", 65537),
+        ] {
+            let document = manager
+                .get_document(ConfigDocumentKind::Settings, ConfigScope::User)
+                .await
+                .unwrap();
+            let result = manager
+                .apply_patch(ConfigPatchRequest {
+                    kind: ConfigDocumentKind::Settings,
+                    scope: ConfigScope::User,
+                    expected_etag: document.etag,
+                    patch: vec![JsonPatchOperation {
+                        op: "add".into(),
+                        path: format!("/connectTransferResources/{field}"),
+                        from: None,
+                        value: Some(json!(bad)),
+                    }],
+                    source: ConfigChangeSource::UserInterface,
+                })
+                .await;
+            assert_eq!(
+                result.unwrap_err().code,
+                "config.document.validation_failed",
+                "{field}={bad}"
+            );
+            assert_eq!(
+                crate::connect_resources::configured(&manager)
+                    .await
+                    .unwrap(),
+                policy
+            );
+        }
     }
 
     #[tokio::test]

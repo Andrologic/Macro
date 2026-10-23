@@ -84,6 +84,13 @@ impl Memory {
     }
 }
 
+/// Fresh native RAM measurement without the CPU sampling delay or telemetry cache.
+/// Available RAM follows the same platform-specific definition as host telemetry.
+pub(crate) fn available_memory() -> MeasurementResult<(u64, u64)> {
+    let memory = platform::memory()?;
+    Ok((memory.total, memory.total - memory.used))
+}
+
 // Keep OS reads behind this boundary so tests only supply synthetic counters.
 trait Collector {
     fn cpu(&mut self) -> MeasurementResult<CpuCounters>;
