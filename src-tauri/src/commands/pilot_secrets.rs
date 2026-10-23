@@ -180,16 +180,18 @@ async fn blocking<T: Send + 'static>(
 }
 
 #[tauri::command]
-pub fn pilot_vault_activate(
+pub async fn pilot_vault_activate(
     context: PilotVaultContext,
     generation: Option<String>,
 ) -> Result<VaultLease, PilotSecretError> {
-    manager()?.activate(context, generation.as_deref())
+    let manager = manager()?;
+    blocking(move || manager.activate(context, generation.as_deref())).await
 }
 
 #[tauri::command]
-pub fn pilot_vault_invalidate(generation: Option<String>) -> Result<VaultLease, PilotSecretError> {
-    manager()?.invalidate(generation.as_deref())
+pub async fn pilot_vault_invalidate(generation: Option<String>) -> Result<VaultLease, PilotSecretError> {
+    let manager = manager()?;
+    blocking(move || manager.invalidate(generation.as_deref())).await
 }
 
 #[tauri::command]

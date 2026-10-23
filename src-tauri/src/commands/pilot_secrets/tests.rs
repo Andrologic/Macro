@@ -98,6 +98,19 @@ fn gate(fake: &Fake) -> (mpsc::Receiver<()>, mpsc::Sender<()>) {
     *fake.gate.lock().unwrap() = Some((started_tx, release_rx));
     (started_rx, release_tx)
 }
+fn begin_transition<T: Send + 'static>(
+    manager: &Arc<Manager<Arc<Fake>>>, generation: &str,
+    action: impl FnOnce(Arc<Manager<Arc<Fake>>>) -> T + Send + 'static,
+) -> thread::JoinHandle<T> {
+    let owned = manager.clone();
+    let task = thread::spawn(move || action(owned));
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+    while !manager.revoked_since(generation) {
+        assert!(std::time::Instant::now() < deadline, "memory revocation must not await native I/O");
+        thread::sleep(std::time::Duration::from_millis(1));
+    }
+    task
+}
 fn secret() -> String {
     URL_SAFE_NO_PAD.encode([7; 32])
 }
@@ -185,12 +198,15 @@ fn invalidation_does_not_wait_for_io_or_recaches_late_result() {
         thread::spawn(move || manager.read(&scope(), &generation))
     };
     started.recv().unwrap();
-    let detached = manager.invalidate(Some(&generation)).unwrap();
-    assert_ne!(detached.generation, generation);
-    let next = manager.activate(context(), None).unwrap();
+    let previous = generation.clone();
+    let invalidating = begin_transition(&manager, &generation,
+        move |manager| manager.invalidate(Some(&previous)));
     fake.values.lock().unwrap().clear();
     release.send(()).unwrap();
     assert_eq!(task.join().unwrap(), Err(PilotSecretError::ContextChanged));
+    let detached = invalidating.join().unwrap().unwrap();
+    assert_ne!(detached.generation, generation);
+    let next = manager.activate(context(), None).unwrap();
     assert_eq!(manager.read(&scope(), &next.generation), Ok(None));
     assert_eq!(fake.reads.load(Ordering::SeqCst), 2);
     assert_eq!(
@@ -527,9 +543,12 @@ fn logout_with_resume_input_generation_invalidates_pending_interactive_result() 
     started.recv().unwrap();
     let in_flight = manager.activate(context(), None).unwrap();
     assert_ne!(in_flight.generation, generation);
-    let invalidated = manager.invalidate(Some(&generation)).unwrap();
-    assert_ne!(invalidated.generation, in_flight.generation);
+    let previous = generation.clone();
+    let invalidating = begin_transition(&manager, &in_flight.generation,
+        move |manager| manager.invalidate(Some(&previous)));
     release.send(()).unwrap();
+    let invalidated = invalidating.join().unwrap().unwrap();
+    assert_ne!(invalidated.generation, in_flight.generation);
     assert!(matches!(
         task.join().unwrap(),
         Err(PilotSecretError::ContextChanged)
@@ -624,8 +643,12 @@ fn logout_during_unlock_rejects_late_success_without_reading_any_scope() {
         thread::spawn(move || manager.resume(&[scope()], &generation))
     };
     started_rx.recv().unwrap();
-    manager.invalidate(Some(&generation)).unwrap();
+    let in_flight = manager.activate(context(), None).unwrap();
+    let previous = generation.clone();
+    let invalidating = begin_transition(&manager, &in_flight.generation,
+        move |manager| manager.invalidate(Some(&previous)));
     release_tx.send(()).unwrap();
+    invalidating.join().unwrap().unwrap();
     assert!(matches!(
         task.join().unwrap(),
         Err(PilotSecretError::ContextChanged)
@@ -721,18 +744,20 @@ fn logout_owner_change_and_relock_reject_inflight_silent_recovery() {
             thread::spawn(move || manager.recover_silently(&scopes, &generation))
         };
         started.recv().unwrap();
-        match transition {
-            "logout" => {
-                manager.invalidate(Some(&generation)).unwrap();
+        let previous = generation.clone();
+        let changing = begin_transition(&manager, &generation, move |manager| {
+            match transition {
+                "logout" => { manager.invalidate(Some(&previous)).map(|_| ()) }
+                "owner_change" => {
+                    let mut owner = context();
+                    owner.owner_id = "owner:other-01".into();
+                    manager.activate(owner, Some(&previous)).map(|_| ())
+                }
+                _ => { manager.suspend_for("screen_locked", true); Ok(()) }
             }
-            "owner_change" => {
-                let mut owner = context();
-                owner.owner_id = "owner:other-01".into();
-                manager.activate(owner, Some(&generation)).unwrap();
-            }
-            _ => manager.suspend_for("screen_locked", true),
-        }
+        });
         release.send(()).unwrap();
+        changing.join().unwrap().unwrap();
         assert!(matches!(
             task.join().unwrap(),
             Err(PilotSecretError::ContextChanged)
@@ -823,4 +848,68 @@ pub(super) fn qualification_backup_context(
         );
     }
     assert_eq!(fake.deletes.load(Ordering::SeqCst), 0);
+}
+
+#[test]
+fn policy_nonce_failure_prevents_pilot_writes_and_only_explicit_resume_recovers() {
+    let (manager, fake, generation) = setup();
+    let (policy, directory) = manager.policy_fixture();
+    let before = policy.qualification_stamp().unwrap();
+    manager.write(&scope(), &generation, &secret()).unwrap();
+    assert!(policy.qualification_stamp().unwrap() != before);
+    let path = directory.join("provider-secrets.json");
+    let held = directory.join("synthetic-held.json");
+    std::fs::rename(&path, &held).unwrap();
+    std::fs::create_dir(&path).unwrap();
+    assert_eq!(manager.write(&scope(), &generation, &secret()), Err(PilotSecretError::VaultUnavailable));
+    assert_eq!(manager.delete(&scope(), &generation), Err(PilotSecretError::VaultUnavailable));
+    assert_eq!(fake.writes.load(Ordering::SeqCst), 1);
+    assert_eq!(fake.deletes.load(Ordering::SeqCst), 0);
+    assert!(policy.qualification_stamp().is_err());
+    std::fs::remove_dir(&path).unwrap();
+    std::fs::rename(&held, &path).unwrap();
+    assert!(!policy.available());
+    let mut replacement = context();
+    replacement.owner_id = "owner:other-01".into();
+    assert!(manager.activate(replacement, Some(&generation)).is_err());
+    let refused = manager.activate(context(), None).unwrap();
+    assert_eq!(refused.status, VaultStatus::VaultUnavailable);
+    let resumed = manager.resume(&[scope()], &refused.generation).unwrap();
+    assert_eq!(resumed.status, VaultStatus::Ready);
+    assert_eq!(manager.read(&scope(), &resumed.generation), Ok(Some(secret())));
+    assert!(policy.qualification_stamp().unwrap() != before);
+}
+
+#[test]
+fn finish_keeps_native_refusal_and_persistence_debt_until_explicit_retry() {
+    let (manager, fake, generation) = setup();
+    let (policy, directory) = manager.policy_fixture();
+    let before = policy.qualification_stamp().unwrap();
+    fake.failures.lock().unwrap().insert(1, PilotSecretError::InterventionRequired);
+    let (started, release) = gate(&fake);
+    let reading = {
+        let manager = manager.clone();
+        let generation = generation.clone();
+        thread::spawn(move || manager.read(&scope(), &generation))
+    };
+    started.recv_timeout(std::time::Duration::from_secs(3)).unwrap();
+    // Synthetic filesystem fault after the admitted read, before finish settles.
+    let path = directory.join("provider-secrets.json");
+    let held = directory.join("synthetic-held.json");
+    std::fs::rename(&path, &held).unwrap();
+    std::fs::create_dir(&path).unwrap();
+    release.send(()).unwrap();
+    assert_eq!(reading.join().unwrap(), Err(PilotSecretError::InterventionRequired));
+    assert!(!policy.available());
+    assert!(policy.qualification_stamp().is_err());
+    std::fs::remove_dir(&path).unwrap();
+    std::fs::rename(&held, &path).unwrap();
+    assert!(!policy.available());
+    assert_eq!(manager.activate(context(), None).unwrap().status, VaultStatus::InterventionRequired);
+    assert_eq!(manager.read(&scope(), &generation), Err(PilotSecretError::InterventionRequired));
+    assert_eq!(fake.reads.load(Ordering::SeqCst), 1);
+    let resumed = manager.resume(&[scope()], &generation).unwrap();
+    assert_eq!(resumed.status, VaultStatus::Ready);
+    assert_eq!(fake.interactive.load(Ordering::SeqCst), 1);
+    assert!(policy.qualification_stamp().unwrap() != before);
 }

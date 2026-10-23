@@ -209,7 +209,7 @@ impl PolicyOwner {
         Ok(())
     }
 
-    pub(super) fn initialize(&self, directory: &Path) -> Result<(), SecretError> {
+    pub(crate) fn initialize(&self, directory: &Path) -> Result<(), SecretError> {
         let ticket = self.revoke_now();
         let _gate = self.recovery_lock();
         let result = (|| {
@@ -313,6 +313,9 @@ impl PolicyOwner {
             if !self.available()
                 || mutation.revision <= self.recovered_through.load(Ordering::SeqCst)
             {
+                // This queued operation never reached an effect. Preserve the
+                // existing revocation instead of creating a new failed debt.
+                mutation.completed = true;
                 return Err(SecretError::PolicyUnavailable);
             }
             let store = self.store()?;
@@ -336,6 +339,18 @@ impl PolicyOwner {
             .fetch_max(mutation.revision, Ordering::SeqCst);
         mutation.completed = true;
         Ok(value)
+    }
+
+    pub(crate) fn change<T>(&self, effect: impl FnOnce() -> T) -> Result<T, SecretError> {
+        self.mutation(|_, _| Ok(effect()))
+    }
+
+    pub(crate) fn inspect<T>(&self, read: impl FnOnce() -> T) -> Result<T, SecretError> {
+        let _gate = self.lock()?;
+        if !self.available() {
+            return Err(SecretError::PolicyUnavailable);
+        }
+        Ok(read())
     }
 
     pub(super) fn cached<T: Clone>(

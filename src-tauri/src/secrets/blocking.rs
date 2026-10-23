@@ -111,6 +111,29 @@ pub(crate) fn submit(operation: impl FnOnce() + Send + 'static) -> Result<(), Se
     JOBS.start(operation).map(|_| ())
 }
 
+/// A lifecycle caller can join its specific operation without closing other jobs.
+#[derive(Clone)]
+pub(crate) struct Completion(futures::future::Shared<BoxFuture<'static, bool>>);
+impl Completion {
+    pub(crate) fn wait(&self) -> bool {
+        futures::executor::block_on(self.0.clone())
+    }
+    pub(crate) fn completed(&self) -> bool {
+        self.0.clone().now_or_never().is_some()
+    }
+}
+pub(crate) fn submit_joined(
+    operation: impl FnOnce() -> Result<(), SecretError> + Send + 'static,
+) -> Result<Completion, SecretError> {
+    let (id, join, receive) = JOBS.start(operation)?;
+    Ok(Completion(async move {
+        let result = receive.await;
+        let joined = join.await;
+        let recorded = JOBS.finished(id, joined).is_ok();
+        joined && recorded && matches!(result, Ok(Ok(())))
+    }.boxed().shared()))
+}
+
 pub(crate) async fn shutdown() -> Result<(), SecretError> {
     JOBS.close_and_join().await
 }
