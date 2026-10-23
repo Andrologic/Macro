@@ -1,0 +1,33 @@
+{
+  "format": "portable-chat-history-1",
+  "resources": [
+    {
+      "path": "../strict-json.mjs",
+      "sha256": "cb2256cfaca9d13d6e8fd617fc58f3db2f19016bb1097283c3501ae94dfc3eec"
+    },
+    {
+      "path": "contract.md",
+      "sha256": "46ba6f82bc9448de4eb889c7c0b1e8f398a15d4d2877392298b13863fdeb1237"
+    },
+    {
+      "path": "frame.schema.json",
+      "sha256": "82b656b87d570a039639dd30cbed9ef79bfed6ee0bee03aa275233d828d33faf"
+    },
+    {
+      "path": "schema-set.json",
+      "sha256": "77114e2de8f4e3c822e93acbeb3f6c876ce006bd93b1717d5d17df4f7ea17052"
+    },
+    {
+      "path": "validate.d.mts",
+      "sha256": "bec178f51de003a7102c6af4691952dfcc42b8cf6e393195653f3c18e8bd014e"
+    },
+    {
+      "path": "validate.mjs",
+      "sha256": "64c84508093584a4a5b219e28dba8b6fa5c9853ff0c7b3503417c25197db8bbc"
+    },
+    {
+      "path": "vocabulary.json",
+      "sha256": "8a1939ae58b0cd2aa46fae7dcbca22dd62d1588551655557a56ee3914b2c2986"
+    }
+  ]
+}

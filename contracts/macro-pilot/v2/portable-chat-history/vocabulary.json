@@ -1,0 +1,411 @@
+{
+  "format": "portable-chat-history-1",
+  "profile": "portable_chat_history_v1",
+  "normalizer": "macro-portable-history-1",
+  "families": [
+    {
+      "table": "conversations",
+      "columns": [
+        "id",
+        "title",
+        "description",
+        "scope_mode",
+        "task_id",
+        "group_id",
+        "project_id",
+        "provider_id",
+        "model_id",
+        "reasoning_effort",
+        "created_at",
+        "updated_at",
+        "last_message",
+        "message_count",
+        "is_pinned"
+      ],
+      "integers": [
+        "message_count",
+        "is_pinned"
+      ],
+      "nullable": [
+        "description",
+        "task_id",
+        "group_id",
+        "project_id",
+        "provider_id",
+        "model_id",
+        "reasoning_effort",
+        "last_message"
+      ]
+    },
+    {
+      "table": "messages",
+      "columns": [
+        "id",
+        "conversation_id",
+        "turn_id",
+        "role",
+        "content",
+        "created_at",
+        "token_count",
+        "tool_traces_json",
+        "hidden_context",
+        "provider_input_items_json",
+        "provider_turn_state_json",
+        "context_refs_json",
+        "completion_reason",
+        "generation_attempts_json"
+      ],
+      "integers": [
+        "token_count"
+      ],
+      "nullable": [
+        "turn_id",
+        "token_count",
+        "tool_traces_json",
+        "hidden_context",
+        "provider_input_items_json",
+        "provider_turn_state_json",
+        "context_refs_json",
+        "completion_reason",
+        "generation_attempts_json"
+      ]
+    },
+    {
+      "table": "app_settings",
+      "columns": [
+        "key",
+        "value_json"
+      ],
+      "integers": [],
+      "nullable": []
+    },
+    {
+      "table": "conversation_management",
+      "columns": [
+        "conversation_id",
+        "revision",
+        "archived",
+        "response_revision",
+        "read_revision"
+      ],
+      "integers": [
+        "revision",
+        "archived",
+        "response_revision",
+        "read_revision"
+      ],
+      "nullable": []
+    },
+    {
+      "table": "conversation_response_versions",
+      "columns": [
+        "message_id",
+        "conversation_id",
+        "revision",
+        "read_revision"
+      ],
+      "integers": [
+        "revision",
+        "read_revision"
+      ],
+      "nullable": []
+    },
+    {
+      "table": "conversation_compactions",
+      "columns": [
+        "conversation_id",
+        "up_to_message_id",
+        "summary_text",
+        "tool_digest_json",
+        "used_source_passage_ids_json",
+        "interesting_source_passage_ids_json",
+        "estimated_tokens_before",
+        "estimated_tokens_after",
+        "fingerprint",
+        "version",
+        "pruned_tool_context_message_ids_json",
+        "reserved_tokens",
+        "footprint_before_json",
+        "footprint_after_json",
+        "degraded_reason",
+        "compaction_kind",
+        "compaction_pass",
+        "summary_format_version",
+        "summary_source",
+        "policy_version",
+        "fingerprint_inputs_json",
+        "source_hashes_json",
+        "model_context_window_tokens",
+        "provider_id",
+        "model_id",
+        "checkpoint_health",
+        "last_trigger",
+        "created_at",
+        "updated_at"
+      ],
+      "integers": [
+        "estimated_tokens_before",
+        "estimated_tokens_after",
+        "version",
+        "reserved_tokens",
+        "summary_format_version",
+        "policy_version",
+        "model_context_window_tokens"
+      ],
+      "nullable": [
+        "pruned_tool_context_message_ids_json",
+        "reserved_tokens",
+        "footprint_before_json",
+        "footprint_after_json",
+        "degraded_reason",
+        "compaction_kind",
+        "compaction_pass",
+        "summary_format_version",
+        "summary_source",
+        "policy_version",
+        "fingerprint_inputs_json",
+        "source_hashes_json",
+        "model_context_window_tokens",
+        "provider_id",
+        "model_id",
+        "checkpoint_health",
+        "last_trigger"
+      ]
+    },
+    {
+      "table": "conversation_citations",
+      "columns": [
+        "id",
+        "conversation_id",
+        "message_id",
+        "type",
+        "scope",
+        "source",
+        "title",
+        "snippet",
+        "content",
+        "url",
+        "favicon",
+        "path",
+        "language",
+        "size_bytes",
+        "kind",
+        "reason",
+        "created_at",
+        "updated_at"
+      ],
+      "integers": [
+        "size_bytes"
+      ],
+      "nullable": [
+        "snippet",
+        "content",
+        "url",
+        "favicon",
+        "path",
+        "language",
+        "size_bytes",
+        "kind",
+        "reason"
+      ]
+    },
+    {
+      "table": "conversation_toolbox_state",
+      "columns": [
+        "conversation_id",
+        "composer_context_refs_json",
+        "created_at",
+        "updated_at"
+      ],
+      "integers": [],
+      "nullable": []
+    },
+    {
+      "table": "pilot_message_attachments",
+      "columns": [
+        "id",
+        "message_id",
+        "file_name",
+        "mime_type",
+        "total_bytes",
+        "sha256",
+        "data"
+      ],
+      "integers": [
+        "total_bytes"
+      ],
+      "nullable": []
+    },
+    {
+      "table": "pilot_file_sends",
+      "columns": [
+        "message_id",
+        "turn_id",
+        "state",
+        "revision",
+        "attachment_ids_json",
+        "assistant_message_id",
+        "context_state"
+      ],
+      "integers": [
+        "revision"
+      ],
+      "nullable": [
+        "assistant_message_id"
+      ]
+    }
+  ],
+  "classifications": [
+    "retained_original",
+    "redundant_representation",
+    "excluded_local_metadata"
+  ],
+  "meanings": [
+    "original",
+    "message",
+    "data",
+    "reflection",
+    "citation",
+    "asset",
+    "checkpoint"
+  ],
+  "reasons": {
+    "excluded_local_metadata": [
+      "capture_provenance_only",
+      "sql_null",
+      "local_provider_continuation",
+      "opaque_continuation",
+      "local_identifier",
+      "private_checkpoint_binding",
+      "global_chat_scope",
+      "local_operational_metadata"
+    ],
+    "redundant_representation": [
+      "recognized_identical_text",
+      "provider_final_matches_attributed_message",
+      "provider_display_matches_attributed_message",
+      "hidden_matches_complete_structured_results",
+      "identical_owned_asset"
+    ],
+    "retained_original": [
+      "recognized_history",
+      "provider_tool_call",
+      "complete_structured_hidden_representation",
+      "recognized_hidden_only",
+      "inline_owned_image",
+      "owned_asset"
+    ]
+  },
+  "sourceLimits": [
+    "browser_unobserved",
+    "files_skills_other_chats_unobserved",
+    "opaque_json_semantics_unevaluated",
+    "runtime_intentions_unattested",
+    "not_normalized",
+    "not_F_admission"
+  ],
+  "remainingLimits": [
+    "not_F_admission",
+    "runtime_intentions_unattested",
+    "not_provider_session_resumption",
+    "recognized_shapes_only"
+  ],
+  "mime": {
+    "text_plain": "text/plain",
+    "image_png": "image/png",
+    "image_jpeg": "image/jpeg",
+    "image_webp": "image/webp"
+  },
+  "providerKeys": {
+    "responsesMessage": [
+      "type",
+      "id",
+      "status",
+      "role",
+      "content",
+      "channel"
+    ],
+    "responsesText": [
+      "type",
+      "text",
+      "annotations",
+      "logprobs"
+    ],
+    "responsesImage": [
+      "type",
+      "image_url"
+    ],
+    "responsesReasoning": [
+      "type",
+      "id",
+      "status",
+      "summary",
+      "encrypted_content"
+    ],
+    "responsesSummary": [
+      "type",
+      "text"
+    ],
+    "responsesCall": [
+      "type",
+      "id",
+      "status",
+      "call_id",
+      "name",
+      "arguments"
+    ],
+    "responsesResult": [
+      "type",
+      "call_id",
+      "output",
+      "macro_tool_result"
+    ],
+    "macroMessage": [
+      "type",
+      "role",
+      "content",
+      "visible_content",
+      "reasoning_content",
+      "reasoning_details",
+      "tool_calls",
+      "tool_call_id",
+      "tool_name",
+      "macro_tool_result"
+    ],
+    "macroCall": [
+      "id",
+      "type",
+      "function"
+    ],
+    "function": [
+      "name",
+      "arguments"
+    ],
+    "typedResult": [
+      "version",
+      "blocks",
+      "isError"
+    ],
+    "providerState": [
+      "provider",
+      "response_id",
+      "output_items"
+    ],
+    "contextRef": [
+      "id",
+      "kind",
+      "title",
+      "snippet",
+      "sourceLabel",
+      "url",
+      "contentHash"
+    ],
+    "provenance": [
+      "version",
+      "source",
+      "fingerprint",
+      "start",
+      "end"
+    ]
+  }
+}
