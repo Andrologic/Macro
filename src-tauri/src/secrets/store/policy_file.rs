@@ -279,10 +279,18 @@ impl LocalSecretStore {
                     unique_keys(&contents)?;
                     recognized(&value)?
                 }
-                Err(error) => {
+                Err(_) => {
+                    // Value also rejects valid JSON outside its number/depth
+                    // representation. IgnoredAny uses this parser's iterative
+                    // syntax-only path, without constructing a value tree.
+                    let syntax_error =
+                        match serde_json::from_str::<serde::de::IgnoredAny>(&contents) {
+                            Err(error) if error.is_syntax() || error.is_eof() => error,
+                            _ => return Err(SecretError::PolicyUnavailable),
+                        };
                     // Rename plus parent fsync establishes the durable refusal
                     // before a replacement document can be published.
-                    self.quarantine_corrupt_file(&error)?;
+                    self.quarantine_corrupt_file(&syntax_error)?;
                     ProviderSecretsFile::default()
                 }
             }
@@ -419,6 +427,43 @@ mod tests {
             Ok(())
         })
         .unwrap();
+    }
+
+    #[test]
+    fn startup_preserves_syntactically_valid_unrepresentable_documents() {
+        let _serial = crate::secrets::lock_test_store();
+        for version in [2, 99] {
+            for value in [
+                "1e999".to_string(),
+                "-1e999".to_string(),
+                format!("{}0{}", "[".repeat(140), "]".repeat(140)),
+            ] {
+                let directory = tempfile::tempdir().unwrap();
+                let path = directory.path().join(SECRET_FILE_NAME);
+                let original = format!(
+                    r#"{{"version":{version},"futureSecret":{value},"api_keys":{{"key":"synthetic-preserve"}}}}"#
+                );
+                assert!(serde_json::from_str::<Value>(&original).is_err());
+                assert!(serde_json::from_str::<serde::de::IgnoredAny>(&original).is_ok());
+                std::fs::write(&path, &original).unwrap();
+                let archive = directory.path().join("provider-secrets.json.v0.bak");
+                std::fs::write(&archive, b"historical synthetic bytes").unwrap();
+                assert!(crate::secrets::init(directory.path()).is_err());
+                assert!(!crate::secrets::policy::POLICY.available());
+                assert!(crate::secrets::policy::POLICY
+                    .capture_private(|| Ok(()))
+                    .is_err());
+                assert_eq!(std::fs::read(&path).unwrap(), original.as_bytes());
+                assert_eq!(
+                    std::fs::read(&archive).unwrap(),
+                    b"historical synthetic bytes"
+                );
+                assert!(!std::fs::read_dir(directory.path())
+                    .unwrap()
+                    .filter_map(Result::ok)
+                    .any(|entry| entry.file_name().to_string_lossy().contains(".corrupt-")));
+            }
+        }
     }
 
     #[test]
