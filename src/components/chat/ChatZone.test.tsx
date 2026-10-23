@@ -1,4 +1,4 @@
-import { afterAll, afterEach, beforeEach, describe, expect, it, jest, mock } from 'bun:test';
+import { afterAll, afterEach, beforeEach, describe, expect, it, jest, mock, spyOn } from 'bun:test';
 import React from 'react';
 import { act } from 'react';
 import { flushSync } from 'react-dom';
@@ -1652,12 +1652,17 @@ describe('ChatZone', () => {
       const acceptanceDeferred = createDeferred<'queued'>();
       const originalSave = chatState.saveComposerDraftForContext;
       const originalClear = chatState.clearComposerDraftForContext;
+      // This component test uses a non-global admission port; SQLite authority
+      // and the Global Chat writer are verified by the store/native suites.
+      spyOn(await import('../../services/chatAdmission'), 'beginChatIntent').mockResolvedValue({ kind: 'conversation' });
+      const { activateComposerDraftWriter, drainComposerDraftWrites } = await import('../../stores/chat/chatLocalSessionState');
+      activateComposerDraftWriter();
       const persistTextDrafts = () => {
-        expect(saveComposerDraftsToStorage(Object.fromEntries(
+        void saveComposerDraftsToStorage(Object.fromEntries(
           Object.entries(composerDraftsByContextKey).map(([key, draft]) => [key, {
             text: draft.text, images: [], contextRefs: [],
           }]),
-        ))).toBe(true);
+        ));
       };
       window.localStorage.removeItem(COMPOSER_DRAFTS_STORAGE_KEY);
       chatState = {
@@ -1688,7 +1693,8 @@ describe('ChatZone', () => {
         await acceptanceDeferred.promise;
       });
       expect(getComposerEditor().value).toBe(edited ? 'Nouvelle édition non envoyée.' : '');
-      // Observe durable state before pagehide or the 250 ms draft timer can repair it.
+      // Join admitted persistence before pagehide or the 250 ms timer can repair it.
+      await drainComposerDraftWrites();
       if (!edited) {
         expect(loadComposerDraftsFromStorage()['conversation:conv-1']).toBeUndefined();
       }
@@ -1696,6 +1702,7 @@ describe('ChatZone', () => {
         window.dispatchEvent(new window.Event('pagehide'));
         requireRoot().unmount();
       });
+      await drainComposerDraftWrites();
       const restored = loadComposerDraftsFromStorage();
       composerDraftsByContextKey = Object.fromEntries(Object.entries(restored).map(
         ([key, draft]) => [key, { text: draft.text, images: [], contextRefs: [] }],

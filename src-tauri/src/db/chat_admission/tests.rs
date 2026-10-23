@@ -1659,3 +1659,69 @@ async fn opaque_provider_without_local_receipt_is_not_closed_by_restart() {
     assert!(OperationPermit::begin_turn(owner,"source","new").await.is_err());
     assert_eq!(sqlx::query_scalar::<_,i64>("SELECT COUNT(*) FROM chat_admission_operations WHERE local_closed_at IS NOT NULL").fetch_one(&pool).await.unwrap(),0);
 }
+
+#[tokio::test]
+async fn composer_draft_invalidates_inspection_and_competes_with_reservation() {
+    use super::intents::{IntentIdentity, IntentKind, IntentMutation};
+    for draft_first in [false, true] {
+        let (_dir, pool) = fixture().await;
+        let owner = crate::core::db_state::DbPool::default();
+        owner.set_ready(pool.clone()).await.unwrap();
+        let runtime = runtime::ChatAdmissionRuntime::default();
+        runtime.open_browser(owner.clone(), "window", "browser").await.unwrap();
+        let handle = runtime.begin_reconciliation(&owner, "window", "browser", "source").await.unwrap();
+        runtime.complete_reconciliation(&owner, "window", "browser", &handle, &no_browser_intentions()).await.unwrap();
+        let identity = IntentIdentity { conversation_id: "source".into(), kind: IntentKind::Recovery, id: "composer-draft".into() };
+        if draft_first {
+            // This durable ACK must precede the browser's first localStorage write.
+            let copy = runtime.begin_intent(&owner, "window", "browser", identity.clone(), IntentMutation::Retain).await.unwrap();
+            assert!(runtime.reserve_reconciled_source(&owner, "window", "browser", &handle).await.is_err());
+            assert!(runtime.complete_reconciliation(&owner, "window", "browser", &handle, &no_browser_intentions()).await.is_err());
+            let editing = runtime.begin_reconciliation(&owner, "window", "browser", "source").await.unwrap();
+            let mut observed = no_browser_intentions(); observed.drafts.push("composer-draft".into());
+            assert!(runtime.complete_reconciliation(&owner, "window", "browser", &editing, &observed).await.is_err());
+            let replacement = runtime.begin_intent(&owner, "window", "browser", identity.clone(), IntentMutation::Retain).await.unwrap();
+            assert!(runtime.finish_intent(&owner, "window", &copy).await.is_err());
+            assert!(runtime.complete_reconciliation(&owner, "window", "browser", &editing, &no_browser_intentions()).await.is_err());
+            runtime.finish_intent(&owner, "window", &replacement).await.unwrap();
+            let empty = runtime.begin_reconciliation(&owner, "window", "browser", "source").await.unwrap();
+            runtime.complete_reconciliation(&owner, "window", "browser", &empty, &no_browser_intentions()).await.unwrap();
+            runtime.reserve_reconciled_source(&owner, "window", "browser", &empty).await.unwrap();
+        } else {
+            runtime.reserve_reconciled_source(&owner, "window", "browser", &handle).await.unwrap();
+        }
+        assert!(runtime.begin_intent(&owner, "window", "browser", identity, IntentMutation::Retain).await.is_err());
+        assert_eq!(sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM chat_admission_operations WHERE kind IN ('provider','tool')").fetch_one(&pool).await.unwrap(), 0);
+    }
+}
+
+#[tokio::test]
+async fn composer_draft_lost_ack_restart_and_reedit_preserve_receipt_identity() {
+    use super::intents::{IntentIdentity, IntentKind, IntentMutation};
+    let (_dir, pool) = fixture().await;
+    let owner = crate::core::db_state::DbPool::default(); owner.set_ready(pool.clone()).await.unwrap();
+    let runtime = runtime::ChatAdmissionRuntime::default();
+    runtime.open_browser(owner.clone(), "window", "old").await.unwrap();
+    let identity = IntentIdentity { conversation_id: "source".into(), kind: IntentKind::Recovery, id: "composer-draft".into() };
+    let saved = runtime.begin_intent(&owner, "window", "old", identity.clone(), IntentMutation::Retain).await.unwrap();
+    let removed = runtime.begin_intent(&owner, "window", "old", identity.clone(), IntentMutation::Remove).await.unwrap();
+    runtime.finish_intent(&owner, "window", &removed).await.unwrap();
+    // Simulate a committed removal whose ACK is lost, then a genuine new edit.
+    runtime.finish_intent(&owner, "window", &removed).await.unwrap();
+    let edited = runtime.begin_intent(&owner, "window", "old", identity.clone(), IntentMutation::Retain).await.unwrap();
+    assert_eq!(saved.operation_id, edited.operation_id);
+    assert!(runtime.finish_intent(&owner, "window", &removed).await.is_err());
+    runtime.close_browser(&owner, &crate::ai::AiState::default(), &crate::ai::admitted_http::AdmittedHttp::default(), "window", "old").await.unwrap();
+    runtime.open_browser(owner.clone(), "window", "new").await.unwrap();
+    let current = runtime.begin_intent(&owner, "window", "new", identity, IntentMutation::Retain).await.unwrap();
+    assert_eq!(current.operation_id, saved.operation_id);
+    assert!(runtime.finish_intent(&owner, "window", &edited).await.is_err());
+    let handle = runtime.begin_reconciliation(&owner, "window", "new", "source").await.unwrap();
+    let mut observed = no_browser_intentions(); observed.drafts.push("composer-draft".into());
+    assert!(runtime.complete_reconciliation(&owner, "window", "new", &handle, &observed).await.is_err());
+    runtime.finish_intent(&owner, "window", &current).await.unwrap();
+    let handle = runtime.begin_reconciliation(&owner, "window", "new", "source").await.unwrap();
+    runtime.complete_reconciliation(&owner, "window", "new", &handle, &no_browser_intentions()).await.unwrap();
+    runtime.reserve_reconciled_source(&owner, "window", "new", &handle).await.unwrap();
+    assert_eq!(sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM chat_admission_operations WHERE kind IN ('provider','tool')").fetch_one(&pool).await.unwrap(), 0);
+}

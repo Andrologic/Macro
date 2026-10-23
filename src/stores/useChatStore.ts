@@ -366,6 +366,10 @@ import {
   removeUnsavedAssistantResponseFromStorage,
   readUnsavedAssistantResponsesFromStorage,
   saveComposerDraftsToStorage,
+  readComposerDraftsFromStorage,
+  activateComposerDraftWriter,
+  retireComposerDraftWriter,
+  drainComposerDraftWrites,
   saveMessageImagesToStorage,
   saveQuestionnaireDraftsToStorage,
   activateQuestionnaireDraftWriter,
@@ -3655,10 +3659,11 @@ export const useChatStore = create<ChatStore>((set, get) => {
       finally {
         const queueRetirement = queueRuntime?.retire();
         const questionnaireRetirement = retireQuestionnaireDraftWriter();
+        const composerRetirement = retireComposerDraftWriter();
         queueRuntimeEpoch += 1;
         queueRuntime = undefined;
         queueRuntimeLoading = undefined;
-        subscriptionRetirement = Promise.all([subscriptionRetirement, retired.drain(), queueRetirement, questionnaireRetirement, retireChatBrowser()]).then(() => undefined);
+        subscriptionRetirement = Promise.all([subscriptionRetirement, retired.drain(), queueRetirement, questionnaireRetirement, composerRetirement.then(() => retireChatBrowser())]).then(() => undefined);
       }
     }
   };
@@ -3671,6 +3676,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
     }
     const scope = createLifecycleScope();
     activateQuestionnaireDraftWriter();
+    activateComposerDraftWriter();
     subscriptionScope = scope;
     const stop = () => { if (subscriptionScope === scope) stopSubscriptions(); };
     lifecycle?.signal.addEventListener("abort", stop, { once: true });
@@ -6176,7 +6182,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
   const persistComposerDrafts = (
     draftsByContextKey: Record<string, ComposerDraft>,
   ): void => {
-    saveComposerDraftsToStorage(serializeComposerDrafts(draftsByContextKey));
+    void saveComposerDraftsToStorage(serializeComposerDrafts(draftsByContextKey));
   };
 
   const restorePersistedComposerDrafts = (
@@ -6245,9 +6251,12 @@ export const useChatStore = create<ChatStore>((set, get) => {
         delete next[contextKey];
         changed = true;
       });
-      if (!changed) return state;
+      if (!changed && !conversationIds.some(id => id in state.pendingComposerDraftByConversationId)) return state;
       persistComposerDrafts(next);
-      return { composerDraftsByContextKey: next };
+      return { composerDraftsByContextKey: next,
+        pendingComposerDraftByConversationId: Object.fromEntries(Object.entries(state.pendingComposerDraftByConversationId)
+          .filter(([id]) => !conversationIdSet.has(id))),
+      };
     });
   };
 
@@ -7663,6 +7672,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
     }
     await queueRuntime?.remove(conversationIds);
     discardComposerDraftsForConversationIds(conversationIds);
+    for (const id of conversationIds) await drainComposerDraftWrites(id);
     for (const copy of readUnsavedAssistantResponsesFromStorage().filter(message => conversationIds.includes(message.conversation_id))) {
       await discardChatResponseCopy(copy, () => removeUnsavedAssistantResponseFromStorage(copy.id));
     }
@@ -11191,8 +11201,10 @@ export const useChatStore = create<ChatStore>((set, get) => {
       await queueRuntime?.joinWrites();
       await drainToolApprovalRecoveryWrites();
       await drainQuestionnaireDraftWrites();
+      await drainComposerDraftWrites(conversationId);
       const messages = await loadConversationMessages(chatPersistenceAdapters, { conversationId, conversations: get().conversations });
       const drafts = readQuestionnaireDraftsFromStorage();
+      const composerDrafts = readComposerDraftsFromStorage();
       const active = resolveActiveConversationQuestionnaire(conversationId, messages, drafts[conversationId]);
       if (mayRemoveStaleDraft && drafts[conversationId] && !active) {
         // A persisted human response can have won before its handoff ACK was
@@ -11210,7 +11222,10 @@ export const useChatStore = create<ChatStore>((set, get) => {
         unsaved: readUnsavedAssistantResponsesFromStorage().filter(message => message.conversation_id === conversationId).map(message => message.id),
         approvals: approvals.markers[conversationId] ? [conversationId] : [],
         questions: active ? [active.assistantMessageId] : [],
-        drafts: drafts[conversationId] ? [drafts[conversationId].assistantMessageId] : [],
+        drafts: [
+          ...(drafts[conversationId] ? [drafts[conversationId].assistantMessageId] : []),
+          ...(composerDrafts[`conversation:${conversationId}`] ? ['composer-draft'] : []),
+        ],
         steers: turnRuntime.pendingSteerIds(conversationId),
       };
       await tauriIpc.chatAdmissionCompleteReconciliation(runtime, handle, observed);
@@ -11603,6 +11618,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
           ),
         )
       : EMPTY_STRING_SET;
+    await drainComposerDraftWrites().catch(() => undefined);
     const composerDraftsByContextKey = restorePersistedComposerDrafts(
       hydratedVisibleConversations,
       archivedConversationIds,
@@ -13661,6 +13677,10 @@ export const useChatStore = create<ChatStore>((set, get) => {
       refreshConversationContextDiagnostics(conversationId, options),
 
     setComposerDraft: (conversationId, text) => {
+      const contextKey = `conversation:${conversationId}`;
+      const previous = get().getComposerDraftForContext(contextKey);
+      get().saveComposerDraftForContext(contextKey, { text, images: previous?.images ?? [], contextRefs: previous?.contextRefs ?? [] });
+      if (deletedConversationIds.has(conversationId) || useConversationArchiveStore.getState().archivedConversationIds.has(conversationId)) return;
       set((state) => ({
         pendingComposerDraftByConversationId: {
           ...state.pendingComposerDraftByConversationId,
@@ -13749,11 +13769,15 @@ export const useChatStore = create<ChatStore>((set, get) => {
 
     clearComposerDraftForContext: (contextKey) => {
       set((state) => {
-        if (!(contextKey in state.composerDraftsByContextKey)) return state;
+        const conversationId = contextKey.startsWith('conversation:') ? contextKey.slice('conversation:'.length) : null;
+        if (!(contextKey in state.composerDraftsByContextKey) &&
+            !(conversationId && conversationId in state.pendingComposerDraftByConversationId)) return state;
         const next = { ...state.composerDraftsByContextKey };
+        const pending = { ...state.pendingComposerDraftByConversationId };
         delete next[contextKey];
+        if (conversationId) delete pending[conversationId];
         persistComposerDrafts(next);
-        return { composerDraftsByContextKey: next };
+        return { composerDraftsByContextKey: next, pendingComposerDraftByConversationId: pending };
       });
     },
 
@@ -15388,6 +15412,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
         const normalized = toServiceError(error);
         console.error("Failed to initialize chat store:", normalized.message);
         const messageImagesByMessageId = loadMessageImagesFromStorage();
+        await drainComposerDraftWrites().catch(() => undefined);
         const composerDraftsByContextKey = restorePersistedComposerDrafts(
           [],
           EMPTY_STRING_SET,

@@ -1,3 +1,4 @@
+import { activateComposerDraftWriter, drainComposerDraftWrites } from './chat/chatLocalSessionState';
 import { reservePilotAction } from '../services/macroPilot/actionReservations';
 import { createGitCommitDto } from '../test-utils/gitCommit';
 import { loadQueuedSubmissions } from './chat/chatQueuedSubmissions';
@@ -893,6 +894,9 @@ const sendChatNonStreamingMock = mock((async (
     sendChatNonStreamingOnceImpls.shift() ?? sendChatNonStreamingImpl;
   return implementation(...args);
 }) as SendChatNonStreaming);
+let composerIntentGate: (() => Promise<void>) | undefined;
+const composerAdmissions: Array<{ conversationId: string; mutation: string }> = [];
+const retireComposerBrowserMock = mock(async () => {});
 const admissionInspections: import('../services/ipc/chatAdmission').ChatBrowserInspection[] = [];
 let syntheticToolCallId = 0;
 const streamChatMock = mock(async (options: {
@@ -1888,9 +1892,13 @@ const registerUseChatStoreMocks = async () => {
     discardChatResponseCopy: async (_message: unknown, remove: () => boolean) => {
       if (!remove()) throw new Error('The saved recovery copy could not be removed.');
     },
-    retireChatBrowser: async () => undefined,
+    retireChatBrowser: retireComposerBrowserMock,
     ensureChatBrowser: async () => 'store-unit-runtime',
-    beginChatIntent: async (identity: { conversationId: string; kind: string; id: string }) => {
+    beginChatIntent: async (identity: { conversationId: string; kind: string; id: string }, mutation = 'retain') => {
+      if (identity.id === 'composer-draft') {
+        composerAdmissions.push({ conversationId: identity.conversationId, mutation });
+        await composerIntentGate?.();
+      }
       if (!identity.conversationId || !identity.kind || !identity.id) throw new Error('Missing storage intent identity');
       return { kind: 'globalChat' as const, receipt: { operationId: crypto.randomUUID(), runtime: 'store-unit-runtime', revision: 0, identity } };
     },
@@ -2855,6 +2863,7 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     };
     (globalThis as { localStorage?: unknown }).localStorage = localStorageMock;
 
+    activateComposerDraftWriter();
     appState.mode = 'Architect';
     appState.agentType = 'build';
     appState.selectedGroupId = 'group-1';
@@ -2951,6 +2960,9 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     chatSnapshotConversations = [];
     chatSnapshotMessages = [];
     admissionInspections.length = 0;
+    composerIntentGate = undefined;
+    composerAdmissions.length = 0;
+    retireComposerBrowserMock.mockClear();
     appSettingValues.clear();
     nativePreferenceValues = {};
     stateGetSnapshotMock.mockClear();
@@ -3083,7 +3095,8 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     appState.switchProjectContext.mockClear();
   });
 
-  afterEach(() => {
+  afterEach(async () => {
+    await drainComposerDraftWrites().catch(() => undefined);
     releasePlanRuntimePorts?.();
     releasePlanRuntimePorts = undefined;
     Object.defineProperty(globalThis, 'window', {
@@ -3146,6 +3159,71 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     expect(admissionInspections).toHaveLength(0);
     expect(window.localStorage.getItem('macro_chat_questionnaire_drafts')).toBe('{unknown');
     expect(streamChatMock).not.toHaveBeenCalled();
+  });
+
+  it('inspects ordinary composer drafts through their shared writer and preserves transient handoffs', async () => {
+    appState.mode = 'Chat'; tauriAvailable = true;
+    const conversation = { ...createConversation('composer-inspection'), scope_mode: 'Chat' as const };
+    chatSnapshotConversations = [{ ...conversation, description: null, group_id: null, project_id: null }];
+    const { useChatStore } = await loadChatStore();
+    useChatStore.setState(createIdleChatStoreState({ conversations: [conversation], selectedConversationId: conversation.id }));
+    const state = useChatStore.getState();
+    state.saveComposerDraftForContext('context:Chat::none', { text: 'future chat', images: [], contextRefs: [] });
+    await state.reconcileConversationAdmission(conversation.id);
+    state.setComposerDraft(conversation.id, 'synthetic pending prompt');
+    expect(state.consumeComposerDraft(conversation.id)).toBe('synthetic pending prompt');
+    await expect(state.reconcileConversationAdmission(conversation.id)).rejects.toThrow('Browser intentions pending');
+    expect(admissionInspections.at(-1)?.drafts).toEqual(['composer-draft']);
+    state.acknowledgeComposerDraft(conversation.id);
+    await expect(state.reconcileConversationAdmission(conversation.id)).rejects.toThrow('Browser intentions pending');
+    state.clearComposerDraftForContext(`conversation:${conversation.id}`);
+    await state.reconcileConversationAdmission(conversation.id);
+    expect(admissionInspections.at(-1)?.drafts).toEqual([]);
+    expect(JSON.parse(window.localStorage.getItem('macro_chat_composer_drafts_v1')!)).toHaveProperty('context:Chat::none');
+    for (const raw of ['{unknown', JSON.stringify({ [`conversation:${conversation.id}`]: { text: 'draft', images: [], contextRefs: [], future: true } })]) {
+      window.localStorage.setItem('macro_chat_composer_drafts_v1', raw);
+      const count = admissionInspections.length;
+      await expect(state.reconcileConversationAdmission(conversation.id)).rejects.toThrow();
+      expect(admissionInspections).toHaveLength(count);
+      expect(window.localStorage.getItem('macro_chat_composer_drafts_v1')).toBe(raw);
+    }
+    expect(streamChatMock).not.toHaveBeenCalled();
+    expect(sendChatNonStreamingMock).not.toHaveBeenCalled();
+    expect(createMessageMock).not.toHaveBeenCalled();
+  });
+
+  it('joins a real composer write before inspection and native browser retirement', async () => {
+    appState.mode = 'Chat'; tauriAvailable = true;
+    const conversation = { ...createConversation('composer-race'), scope_mode: 'Chat' as const };
+    chatSnapshotConversations = [{ ...conversation, description: null, group_id: null, project_id: null }];
+    const { useChatStore } = await loadChatStore();
+    useChatStore.setState(createIdleChatStoreState({ conversations: [conversation], selectedConversationId: conversation.id }));
+    const entered = createDeferred<void>(), release = createDeferred<void>();
+    composerIntentGate = async () => { entered.resolve(); await release.promise; };
+    useChatStore.getState().saveComposerDraftForContext(`conversation:${conversation.id}`, { text: 'pending', images: [], contextRefs: [] });
+    await entered.promise;
+    expect(window.localStorage.getItem('macro_chat_composer_drafts_v1')).toBeNull();
+    const inspection = useChatStore.getState().reconcileConversationAdmission(conversation.id).catch((error: unknown) => error);
+    await flushAsyncWork();
+    expect(admissionInspections).toHaveLength(0);
+    useChatStore.getState().stopSubscriptions();
+    let drained = false;
+    const retiring = useChatStore.getState().drainSubscriptions().then(() => { drained = true; });
+    await Promise.resolve();
+    expect(drained).toBe(false); expect(retireComposerBrowserMock).not.toHaveBeenCalled();
+    release.resolve(); await retiring;
+    expect(String(await inspection)).toContain('not been saved');
+    expect(window.localStorage.getItem('macro_chat_composer_drafts_v1')).toBeNull();
+    expect(retireComposerBrowserMock).toHaveBeenCalledTimes(1);
+    expect(composerAdmissions).toEqual([{ conversationId: conversation.id, mutation: 'retain' }]);
+    expect(streamChatMock).not.toHaveBeenCalled();
+    expect(sendChatNonStreamingMock).not.toHaveBeenCalled();
+    composerIntentGate = undefined;
+    useChatStore.getState().startSubscriptions();
+    useChatStore.getState().saveComposerDraftForContext(`conversation:${conversation.id}`, { text: 'retry', images: [], contextRefs: [] });
+    await expect(useChatStore.getState().reconcileConversationAdmission(conversation.id)).rejects.toThrow('Browser intentions pending');
+    useChatStore.getState().discardComposerDraftForConversation(conversation.id);
+    await useChatStore.getState().reconcileConversationAdmission(conversation.id);
   });
 
   it('retains automatic naming after a failed rename while metadata is pending', async () => {
@@ -4863,7 +4941,7 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     const images = [{ id: 'synthetic-image', mimeType: 'image/png', dataUrl: 'data:image/png;base64,AQID', createdAt: '2026-10-02T00:00:00Z' }];
     const local = await import('./chat/chatLocalSessionState');
     const draft = { text: 'Inspect this diagram', images, contextRefs: [] };
-    local.saveComposerDraftsToStorage({ ['conversation:' + conversation.id]: draft });
+    await local.saveComposerDraftsToStorage({ ['conversation:' + conversation.id]: draft });
     const storage = window.localStorage, setItem = storage.setItem;
     storage.setItem = (key, value) => {
       if (key === 'macro_chat_message_images') throw new Error('synthetic image quota');

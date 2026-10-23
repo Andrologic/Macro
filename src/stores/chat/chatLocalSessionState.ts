@@ -309,12 +309,23 @@ function validateComposerDrafts(
   }
 
   for (const [contextKey, draft] of entries) {
-    if (!contextKey || contextKey.length > MAX_SHORT_FIELD_LENGTH) {
+    if (contextKey.length > MAX_SHORT_FIELD_LENGTH ||
+        !['conversation:', 'context:'].some(prefix => contextKey.startsWith(prefix) && contextKey.slice(prefix.length).trim())) {
       throw new ComposerDraftValidationError(
         `Invalid composer draft context key. Original data preserved.`,
       );
     }
-    if (!parseComposerDraft(draft)) {
+    const knownKeys = (value: unknown, keys: string[]): boolean =>
+      isRecord(value) && Object.keys(value).every(key => keys.includes(key));
+    const parsed = parseComposerDraft(draft);
+    if (!parsed || !knownKeys(draft, ['text', 'images', 'contextRefs']) ||
+        !parsed.images.every(image => knownKeys(image, ['id', 'mimeType', 'dataUrl', 'width', 'height', 'createdAt'])) ||
+        !parsed.contextRefs.every(ref => knownKeys(ref, [
+          'id', 'kind', 'title', 'subtitle', 'skillFilePath', 'contentHash', 'path', 'relativePath',
+          'projectId', 'projectName', 'snippet', 'sourceLabel', 'url', 'conversationId', 'sourceUpdatedAt', 'location', 'source',
+        ]) && (ref.location === undefined || knownKeys(ref.location, ['kind', 'uri'])) &&
+          (ref.source === undefined || knownKeys(ref.source, ['kind', 'rootPath', 'namespace', 'rootId', 'priority', 'projectId', 'projectName', 'skillRootPath']))) ||
+        (contextKey.startsWith('conversation:') && !contextKey.slice('conversation:'.length).trim())) {
       throw new ComposerDraftValidationError(
         `Composer draft "${contextKey}" exceeds a storage limit or has invalid content. Original data preserved.`,
       );
@@ -383,43 +394,87 @@ export const loadComposerDraftsFromStorage = (): Record<
   }
 };
 
+/** Unlike UI recovery, admission must inspect the whole document or refuse. */
+export const readComposerDraftsFromStorage = (): Record<string, PersistedComposerDraft> => {
+  if (!hasLocalStorage()) throw new Error('Composer storage is unavailable.');
+  const raw = window.localStorage.getItem(COMPOSER_DRAFTS_STORAGE_KEY);
+  if (raw === null) return {};
+  const parsed: unknown = JSON.parse(raw);
+  validateComposerDrafts(parsed);
+  return parsed;
+};
+
+let composerWrites: Promise<boolean> = Promise.resolve(true);
+let composerWriterGeneration = 0;
+let composerWriterRetired = false;
+const composerFailedContexts = new Set<string>();
+export const activateComposerDraftWriter = (): void => {
+  composerWriterRetired = false;
+  composerWriterGeneration += 1;
+};
+export const drainComposerDraftWrites = async (conversationId?: string): Promise<void> => {
+  let pending: Promise<boolean>;
+  do {
+    pending = composerWrites;
+    await pending;
+  } while (pending !== composerWrites);
+  if (conversationId === undefined ? composerFailedContexts.size > 0 : composerFailedContexts.has(`conversation:${conversationId}`)) {
+    throw new Error('The composer draft has not been saved. Keep this session open.');
+  }
+};
+export const retireComposerDraftWriter = async (): Promise<void> => {
+  composerWriterRetired = true;
+  composerWriterGeneration += 1;
+  let pending: Promise<boolean>;
+  do { pending = composerWrites; await pending; } while (pending !== composerWrites);
+};
+
 export const saveComposerDraftsToStorage = (
   draftsByContextKey: Record<string, PersistedComposerDraft>,
-): boolean => {
-  if (!hasLocalStorage()) {
-    reportPersistenceIssue(
-      COMPOSER_DRAFTS_STORAGE_KEY,
-      "The composer draft could not be saved. Keep this session open.",
-    );
-    return false;
-  }
-  try {
-    validateComposerDrafts(draftsByContextKey);
-    const previous = window.localStorage.getItem(COMPOSER_DRAFTS_STORAGE_KEY);
-    if (previous !== null) {
-      validateComposerDrafts(JSON.parse(previous) as unknown);
+): Promise<boolean> => {
+  // Snapshot synchronous setters before another edit can mutate their values.
+  const next = structuredClone(draftsByContextKey);
+  const generation = composerWriterGeneration;
+  const affected = new Set(Object.keys(next));
+  const assertOwner = () => {
+    if (composerWriterRetired || generation !== composerWriterGeneration) {
+      throw new Error('Composer draft owner has retired.');
     }
-    const serialized = JSON.stringify(draftsByContextKey);
-    if (typeof serialized !== "string") {
-      throw new ComposerDraftValidationError(
-        "The composer drafts could not be serialized. Original data preserved.",
-      );
+  };
+  const write = composerWrites.then(async () => {
+    assertOwner();
+    validateComposerDrafts(next);
+    const previous = readComposerDraftsFromStorage();
+    Object.keys(previous).forEach(key => affected.add(key));
+    const changed = [...new Set([...Object.keys(previous), ...Object.keys(next)])]
+      .filter(key => JSON.stringify(previous[key]) !== JSON.stringify(next[key]));
+    const admissions = [];
+    for (const key of changed) {
+      if (!key.startsWith('conversation:')) continue;
+      // Native classification preserves project/task scopes and deleted-chat
+      // copy cleanup. A context without a conversation grants no chat authority.
+      admissions.push({ key, admission: await beginChatIntent({
+        conversationId: key.slice('conversation:'.length), kind: 'recovery', id: 'composer-draft',
+      }, Object.hasOwn(next, key) ? 'retain' : 'remove') });
     }
-    window.localStorage.setItem(
-      COMPOSER_DRAFTS_STORAGE_KEY,
-      serialized,
-    );
+    assertOwner();
+    if (changed.length > 0) window.localStorage.setItem(COMPOSER_DRAFTS_STORAGE_KEY, JSON.stringify(next));
+    // Copy removal precedes its receipt; a lost ACK leaves a durable blocker.
+    for (const { key, admission } of admissions) {
+      if (!Object.hasOwn(next, key)) await finishChatIntent(admission);
+    }
+    composerFailedContexts.clear();
     clearPersistenceIssue(COMPOSER_DRAFTS_STORAGE_KEY);
     return true;
-  } catch (error) {
-    reportPersistenceIssue(
-      COMPOSER_DRAFTS_STORAGE_KEY,
-      error instanceof ComposerDraftValidationError
-        ? error.message
-        : "The composer draft could not be saved. Keep this session open.",
-    );
+  }).catch(error => {
+    affected.forEach(key => composerFailedContexts.add(key));
+    reportPersistenceIssue(COMPOSER_DRAFTS_STORAGE_KEY,
+      error instanceof ComposerDraftValidationError ? error.message
+        : 'The composer draft could not be saved. Keep this session open.');
     return false;
-  }
+  });
+  composerWrites = write;
+  return write;
 };
 
 const isQuestionnaireDraft = (
