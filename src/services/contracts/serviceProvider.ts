@@ -306,6 +306,7 @@ export interface ServiceProvider {
   }) => Promise<SkillResourceReadDto>;
   runSkillScript: (
     data: SkillScriptRunRequest & {
+      chatAdmission?: import('../ipc/chatAdmission').ChatToolAdmission;
       projectRoots?: SkillProjectRoot[];
       workspacePath?: string | null;
       workspaceRoot?: SkillScriptWorkspaceDto | null;

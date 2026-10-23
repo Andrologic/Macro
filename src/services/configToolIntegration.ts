@@ -1,3 +1,4 @@
+import type { ChatToolAdmission } from './ipc/chatAdmission';
 import type {
   ConfigDocumentKind,
   ConfigScope,
@@ -59,6 +60,7 @@ const readPatch = (value: unknown): JsonPatchOperation[] => {
 export const handleConfigToolCall = async (
   toolName: string,
   args: Record<string, unknown>,
+  chatAdmission?: ChatToolAdmission,
 ): Promise<string | undefined> => {
   if (toolName === 'config_list') {
     const projectIds = Array.isArray(args.project_ids)
@@ -91,7 +93,7 @@ export const handleConfigToolCall = async (
       expectedEtag,
       patch: readPatch(args.patch),
       source: 'agent',
-    }), null, 2);
+    }, chatAdmission), null, 2);
   }
 
   return undefined;

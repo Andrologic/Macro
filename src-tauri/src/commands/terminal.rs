@@ -3784,6 +3784,18 @@ pub async fn run_legacy_session_internal(
     timeout_ms: Option<u64>,
     execution_id: Option<String>,
 ) -> CommandResult<TerminalSessionDto> {
+    run_legacy_session_owned(terminal_store, session_id, command, timeout_ms, execution_id, None).await
+}
+
+async fn run_legacy_session_owned(
+    terminal_store: TerminalSessionStore,
+    session_id: String,
+    command: String,
+    timeout_ms: Option<u64>,
+    execution_id: Option<String>,
+    native_cancel: Option<tokio_util::sync::CancellationToken>,
+) -> CommandResult<TerminalSessionDto> {
+    let native_cancel = native_cancel.unwrap_or_default();
     let trimmed_command = command.trim();
     if trimmed_command.is_empty() {
         return Err(command_error("Command cannot be empty"));
@@ -3800,7 +3812,7 @@ pub async fn run_legacy_session_internal(
                 "A command is already running in this session",
             ));
         }
-        if execution_id
+        if native_cancel.is_cancelled() || execution_id
             .as_ref()
             .is_some_and(|id| session.pending_kill_execution_ids.remove(id))
         {
@@ -3912,14 +3924,17 @@ pub async fn run_legacy_session_internal(
             let stopped = stop_legacy_child_tree(&mut child, windows_job.clone()).await?;
             stopped
         } else {
-            match tokio::time::timeout(Duration::from_millis(normalized_timeout_ms), child.wait())
-                .await
-            {
-                Ok(result) => result.map_err(|error| {
+            let waited = tokio::select! {
+                biased;
+                _ = native_cancel.cancelled() => None,
+                result = tokio::time::timeout(Duration::from_millis(normalized_timeout_ms), child.wait()) => Some(result),
+            };
+            match waited {
+                Some(Ok(result)) => result.map_err(|error| {
                     command_error(format!("Failed to wait for terminal command: {}", error))
                 })?,
-                Err(_) => {
-                    timed_out = true;
+                outcome => {
+                    timed_out = outcome.is_some();
                     #[cfg(not(windows))]
                     let stopped = stop_legacy_child_tree(&mut child, pid).await?;
                     #[cfg(windows)]
@@ -4148,16 +4163,7 @@ pub async fn terminal_run(
         let execution_id = execution_id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
         let owner = work.clone();
         let received = reservation.spawn_tool(work, move |cancel| async move {
-            let execution = run_legacy_session_internal(store.clone(), session_id.clone(), command, timeout_ms, Some(execution_id.clone()));
-            tokio::pin!(execution);
-            let result = tokio::select! {
-                biased;
-                _ = cancel.cancelled() => {
-                    let _ = kill_legacy_session_internal(store, session_id, Some(execution_id)).await;
-                    execution.await
-                },
-                result = &mut execution => result,
-            };
+            let result = run_legacy_session_owned(store, session_id, command, timeout_ms, Some(execution_id), Some(cancel)).await;
             // A failed process cleanup is not a terminal physical receipt.
             // Normal shell exit codes, including nonzero, return a session DTO.
             if result.is_err() { let _ = owner.unknown().await; }
@@ -5038,6 +5044,32 @@ mod tests {
             #[cfg(windows)]
             windows_job: None,
         }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn native_cancellation_while_waiting_for_registration_never_launches() {
+        let temp = TempDir::new().unwrap();
+        let store = TerminalSessionStore::default();
+        let mut sessions = store.legacy_sessions.lock().await;
+        sessions.insert("terminal-test".into(), legacy_test_session(temp.path()));
+        let cancel = tokio_util::sync::CancellationToken::new();
+        let run = run_legacy_session_owned(store.clone(), "terminal-test".into(),
+            "printf launched > should-not-exist".into(), Some(1_000),
+            Some("native-pre-registration".into()), Some(cancel.clone()));
+        tokio::pin!(run);
+        // The real session mutex is the rendezvous, before execution registration.
+        assert!(futures::poll!(&mut run).is_pending());
+        cancel.cancel();
+        drop(sessions);
+        let result = run.await.unwrap();
+        assert_eq!(result.status, "killed");
+        assert!(!temp.path().join("should-not-exist").exists());
+        let sessions = store.legacy_sessions.lock().await;
+        let session = sessions.get("terminal-test").unwrap();
+        assert_eq!(session.execution_generation, 0);
+        assert!(session.pid.is_none());
+        assert!(!session.run_in_progress);
     }
 
     #[cfg(unix)]

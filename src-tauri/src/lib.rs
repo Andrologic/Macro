@@ -504,6 +504,11 @@ pub fn run() {
     let builder = builder.plugin(tauri_remote_ui::init());
 
     let app = builder
+        .on_page_load(|webview, payload| {
+            if matches!(payload.event(), tauri::webview::PageLoadEvent::Started) {
+                commands::chat_admission::retire_browser_from_native(webview.app_handle(), webview.window().label());
+            }
+        })
         .manage(AppQuitState::default())
         .manage(DbPool::default())
         .manage(diagnostics::DiagnosticReportStore::default())
@@ -893,10 +898,13 @@ pub fn run() {
             commands::ai::ai_cancel_chatgpt_auth,
             commands::ai::ai_disconnect_provider_auth,
             commands::ai::ai_sync_provider_models,
+            commands::chat_admission::chat_admission_open_browser,
+            commands::chat_admission::chat_admission_close_browser,
             commands::chat_admission::chat_admission_begin,
             commands::chat_admission::chat_admission_close_preparation,
             commands::chat_admission::chat_admission_join_provider,
             commands::chat_admission::chat_admission_finish_response,
+            commands::chat_admission::chat_admission_acknowledge_completion,
             commands::chat_admission::chat_admission_finish_compaction,
             commands::chat_admission::chat_admission_http_start,
             commands::chat_admission::chat_admission_http_read,
@@ -1130,8 +1138,10 @@ pub fn run() {
     app.run(|app_handle, event| match event {
         tauri::RunEvent::WindowEvent {
             event: tauri::WindowEvent::Destroyed,
+            label,
             ..
         } => {
+            commands::chat_admission::retire_browser_from_native(app_handle, &label);
             commands::pilot_secrets::suspend("window_destroyed");
         }
         tauri::RunEvent::ExitRequested { api, code, .. } if code.is_none() => {

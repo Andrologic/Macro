@@ -151,7 +151,7 @@ describe("chat tool execution policy and frozen ownership", () => {
     enabled.resolve(true);
     expect(await pending).toBe("script result");
     expect(f.ports.handlers.skill).toHaveBeenCalledWith(
-      "skill_run_script", args, "conversation", undefined, f.operation.executionContext,
+      "skill_run_script", args, "conversation", undefined, f.operation.executionContext, undefined,
     );
   });
 

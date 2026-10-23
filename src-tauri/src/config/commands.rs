@@ -368,9 +368,30 @@ pub fn config_validate(
 pub async fn config_patch(
     app: AppHandle,
     manager: State<'_, ConfigManager>,
+    admission_runtime: State<'_, crate::db::chat_admission::runtime::ChatAdmissionRuntime>,
+    ai_state: State<'_, crate::ai::AiState>,
+    window: tauri::WebviewWindow,
+    chat_admission: Option<crate::db::chat_admission::runtime::ChatToolAdmission>,
     mut request: ConfigPatchRequest,
 ) -> Result<ConfigPatchResult, ConfigApiError> {
     request.source = ConfigChangeSource::Agent;
+    if let Some(admission) = chat_admission {
+        let admission_error = |message: String| ConfigApiError {
+            code: "CHAT_ADMISSION_REFUSED".into(), message, document: None, diagnostics: Vec::new(),
+        };
+        let (reservation, work) = crate::commands::chat_admission::admit_tool(
+            &admission_runtime, &ai_state, window.label(), admission,
+        ).await.map_err(|error| admission_error(error.message))?;
+        let manager = manager.inner().clone();
+        let received = reservation.spawn_tool(work, move |_cancel| async move {
+            // The configuration owner's file transactions run to completion;
+            // dropping the browser waiter never detaches this writer.
+            let result = manager.apply_patch(request).await?;
+            emit_patch_events(&app, &result);
+            Ok::<_, ConfigApiError>(result)
+        }).map_err(admission_error)?;
+        return received.await.map_err(admission_error)?;
+    }
     let result = manager.apply_patch(request).await?;
     emit_patch_events(&app, &result);
     Ok(result)

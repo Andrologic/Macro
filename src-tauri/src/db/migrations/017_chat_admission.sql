@@ -8,6 +8,15 @@ CREATE TABLE chat_admission_owners (
  browser_reconciled INTEGER NOT NULL DEFAULT 0 CHECK(browser_reconciled IN (0,1)),
  runtime_generation TEXT
 );
+-- A browser registration is local to this database generation. Retired rows
+-- are receipts, never reusable authority after reload or restore.
+CREATE TABLE chat_admission_browsers (
+ runtime TEXT PRIMARY KEY,
+ caller TEXT NOT NULL,
+ runtime_generation TEXT NOT NULL,
+ phase TEXT NOT NULL CHECK(phase IN ('active','retiring','retired'))
+);
+CREATE UNIQUE INDEX chat_admission_one_browser ON chat_admission_browsers((1)) WHERE phase IN ('active','retiring');
 CREATE TABLE chat_admission_operations (
  operation_id TEXT PRIMARY KEY CHECK(length(trim(operation_id))>0),
  conversation_id TEXT NOT NULL REFERENCES chat_admission_owners(conversation_id),
@@ -22,9 +31,14 @@ CREATE TABLE chat_admission_operations (
  call_id TEXT,
  provider_id TEXT,
  provider_context TEXT,
+ browser_caller TEXT,
+ browser_runtime TEXT,
+ browser_attempt TEXT,
+ completion_receipt TEXT,
  revision INTEGER NOT NULL DEFAULT 0 CHECK(typeof(revision)='integer' AND revision>=0),
  CHECK(parent_id IS NULL OR parent_id<>operation_id)
 );
+CREATE UNIQUE INDEX chat_admission_operations_browser_attempt ON chat_admission_operations(browser_caller,browser_runtime,conversation_id,kind,browser_attempt) WHERE browser_caller IS NOT NULL;
 CREATE INDEX chat_admission_operations_owner ON chat_admission_operations(conversation_id,phase);
 CREATE INDEX chat_admission_operations_provider_id ON chat_admission_operations(conversation_id,incarnation,provider_id,phase) WHERE provider_id IS NOT NULL;
 CREATE INDEX chat_admission_operations_provider ON chat_admission_operations(conversation_id,incarnation,provider_context,phase) WHERE provider_context IS NOT NULL;

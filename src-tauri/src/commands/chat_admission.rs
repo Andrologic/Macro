@@ -1,7 +1,41 @@
 use super::{command_error, get_pool, CommandResult, DbPool};
 use crate::ai::provider_work::ProviderAdmission;
 use crate::db::chat_admission::runtime::{ChatAdmissionContext, ChatAdmissionRuntime};
-use tauri::{State, WebviewWindow};
+use tauri::{Manager, State, WebviewWindow};
+
+#[tauri::command]
+pub(crate) async fn chat_admission_open_browser(
+    pool: State<'_, DbPool>, admission_runtime: State<'_, ChatAdmissionRuntime>,
+    window: WebviewWindow, runtime: String,
+) -> CommandResult<()> {
+    admission_runtime.open_browser(pool.inner().clone(), window.label(), &runtime).await.map_err(Into::into)
+}
+
+#[tauri::command]
+pub(crate) async fn chat_admission_close_browser(
+    pool: State<'_, DbPool>, admission_runtime: State<'_, ChatAdmissionRuntime>,
+    ai_state: State<'_, crate::ai::AiState>, http: State<'_, crate::ai::admitted_http::AdmittedHttp>,
+    window: WebviewWindow, runtime: String,
+) -> CommandResult<()> {
+    admission_runtime.close_browser(&pool, &ai_state, &http, window.label(), &runtime).await.map_err(Into::into)
+}
+
+/// Native lifecycle owns this task even when no JavaScript waiter survives.
+pub(crate) fn retire_browser_from_native(app: &tauri::AppHandle, caller: &str) {
+    let Some(runtime) = app.try_state::<ChatAdmissionRuntime>() else { return; };
+    let page = runtime.invalidate_page(caller);
+    let app = app.clone();
+    let caller = caller.to_owned();
+    tauri::async_runtime::spawn(async move {
+        let result = app.state::<ChatAdmissionRuntime>().close_previous_page(
+            &app.state::<DbPool>(), &app.state::<crate::ai::AiState>(),
+            &app.state::<crate::ai::admitted_http::AdmittedHttp>(), &caller, &page,
+        ).await;
+        if let Err(error) = result {
+            tracing::error!(%error, "Chat browser retirement remains blocked");
+        }
+    });
+}
 
 #[tauri::command]
 pub(crate) async fn chat_admission_begin(
@@ -14,6 +48,7 @@ pub(crate) async fn chat_admission_begin(
     attempt_id: String,
     purpose: crate::db::chat_admission::RootWorkKind,
 ) -> CommandResult<ProviderAdmission> {
+    let page = admission_runtime.current_page(window.label());
     let database = get_pool(&pool).await?;
     let global: Option<i64> = sqlx::query_scalar("SELECT CASE WHEN scope_mode='Chat' AND project_id IS NULL AND group_id IS NULL AND task_id IS NULL THEN 1 ELSE 0 END FROM conversations WHERE id=?")
         .bind(&conversation_id).fetch_optional(&database).await.map_err(|error| command_error(error.to_string()))?;
@@ -22,6 +57,7 @@ pub(crate) async fn chat_admission_begin(
         Some(1) => {}
         _ => return Err(command_error("chat_admission_conversation_missing")),
     }
+    admission_runtime.open_browser_on_page(pool.inner().clone(), window.label(), &runtime, &page).await?;
     admission_runtime
         .begin_root(
             pool.inner().clone(),
@@ -204,35 +240,54 @@ pub(crate) async fn chat_admission_http_finish(
 
 #[tauri::command]
 pub(crate) async fn chat_admission_finish_response(
+    pool: State<'_, DbPool>,
     admission_runtime: State<'_, ChatAdmissionRuntime>,
     window: WebviewWindow,
     context: ChatAdmissionContext,
     conversation_id: String,
     mut params: super::DbUpdateMessageParams,
 ) -> CommandResult<()> {
-    admission_runtime
-        .finish_response(
-            window.label(),
-            &context,
-            &conversation_id,
-            params.take_input(),
-        )
-        .await
-        .map_err(Into::into)
+    let input = params.take_input();
+    let fingerprint = crate::db::chat_admission::runtime::completion_fingerprint("response", &input)?;
+    if crate::db::chat_admission::runtime::replay_completion(&pool, window.label(), &context, &conversation_id, &fingerprint).await? {
+        return Ok(());
+    }
+    let result = admission_runtime.finish_response(window.label(), &context, &conversation_id, input).await;
+    if result.is_err() && crate::db::chat_admission::runtime::replay_completion(&pool, window.label(), &context, &conversation_id, &fingerprint).await? {
+        return Ok(());
+    }
+    result.map_err(Into::into)
 }
 
 #[tauri::command]
 pub(crate) async fn chat_admission_finish_compaction(
+    pool: State<'_, DbPool>,
     admission_runtime: State<'_, ChatAdmissionRuntime>,
     window: WebviewWindow,
     context: ChatAdmissionContext,
     conversation_id: String,
     input: Option<crate::db::models::UpsertConversationCompactionStateInput>,
 ) -> CommandResult<()> {
-    admission_runtime
-        .finish_compaction(window.label(), &context, &conversation_id, input)
-        .await
-        .map_err(Into::into)
+    let fingerprint = crate::db::chat_admission::runtime::completion_fingerprint("compaction", &input)?;
+    if crate::db::chat_admission::runtime::replay_completion(&pool, window.label(), &context, &conversation_id, &fingerprint).await? {
+        return Ok(());
+    }
+    let result = admission_runtime.finish_compaction(window.label(), &context, &conversation_id, input).await;
+    if result.is_err() && crate::db::chat_admission::runtime::replay_completion(&pool, window.label(), &context, &conversation_id, &fingerprint).await? {
+        return Ok(());
+    }
+    result.map_err(Into::into)
+}
+
+#[tauri::command]
+pub(crate) async fn chat_admission_acknowledge_completion(
+    pool: State<'_, DbPool>,
+    admission_runtime: State<'_, ChatAdmissionRuntime>,
+    window: WebviewWindow,
+    context: ChatAdmissionContext,
+    conversation_id: String,
+) -> CommandResult<()> {
+    admission_runtime.acknowledge_completion(&pool, window.label(), &context, &conversation_id).await.map_err(Into::into)
 }
 
 /// Reserve before asynchronous validation, then retain the actual executor task.

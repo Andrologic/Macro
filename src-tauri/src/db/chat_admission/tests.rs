@@ -695,6 +695,7 @@ async fn concurrent_final_response_retries_share_the_exact_local_receipt() {
     let owner = crate::core::db_state::DbPool::default();
     owner.set_ready(pool.clone()).await.unwrap();
     let runtime = runtime::ChatAdmissionRuntime::default();
+    runtime.open_browser(owner.clone(), "window", "browser").await.unwrap();
     let context = runtime
         .begin_root(
             owner.clone(),
@@ -722,7 +723,7 @@ async fn concurrent_final_response_retries_share_the_exact_local_receipt() {
     assert_eq!(context.handle, same.handle);
     assert!(runtime
         .begin_root(
-            owner,
+            owner.clone(),
             "window",
             "browser",
             "source",
@@ -754,6 +755,19 @@ async fn concurrent_final_response_retries_share_the_exact_local_receipt() {
             .unwrap(),
         "saved"
     );
+    let fingerprint = runtime::completion_fingerprint("response", &response_write("saved")).unwrap();
+    assert!(runtime::replay_completion(&owner, "window", &context, "source", &fingerprint).await.unwrap());
+    runtime.acknowledge_completion(&owner, "window", &context, "source").await.unwrap();
+    runtime.acknowledge_completion(&owner, "window", &context, "source").await.unwrap();
+    assert!(runtime.parent("window", &context, "source").await.is_err());
+    drop(runtime);
+    // A lost IPC ACK can be replayed after destruction of all live handles.
+    assert!(runtime::replay_completion(&owner, "window", &context, "source", &fingerprint).await.unwrap());
+    assert!(!runtime::replay_completion(&owner, "other-window", &context, "source", &fingerprint).await.unwrap());
+    assert!(runtime::replay_completion(&owner, "window", &context, "source", "response:different").await.is_err());
+    let replacement = runtime::ChatAdmissionRuntime::default();
+    assert!(replacement.parent("window", &context, "source").await.is_err());
+
 }
 
 #[tokio::test]
@@ -940,4 +954,168 @@ async fn tool_task_owns_a_real_child_and_waits_for_cleanup_before_its_receipt() 
         .finish_tool(identity, Some("invented-success".into()))
         .await
         .is_err());
+}
+
+#[tokio::test]
+async fn browser_retirement_joins_owned_work_and_preserves_uncertainty() {
+    use std::sync::Arc;
+    let (_dir, pool) = fixture().await;
+    let owner = crate::core::db_state::DbPool::default();
+    owner.set_ready(pool.clone()).await.unwrap();
+    let runtime = Arc::new(runtime::ChatAdmissionRuntime::default());
+    let context = runtime.begin(owner.clone(), "window", "browser", "source", "turn").await.unwrap();
+    assert!(runtime.open_browser(owner.clone(), "second", "other").await.is_err());
+    let parent = runtime.parent("window", &context, "source").await.unwrap();
+    let work = Arc::new(parent.child(WorkKind::Tool, Some("browser-child")).await.unwrap());
+    let ai = crate::ai::AiState::default();
+    let http = Arc::new(crate::ai::admitted_http::AdmittedHttp::default());
+    let (started, ready) = tokio::sync::oneshot::channel();
+    let (cancelled, observed) = tokio::sync::oneshot::channel();
+    let (release, cleanup) = tokio::sync::oneshot::channel();
+    let result = ai.reserve_stream("browser-child".into()).unwrap().spawn_tool(work, move |cancel| async move {
+        started.send(()).unwrap();
+        cancel.cancelled().await;
+        cancelled.send(()).unwrap();
+        cleanup.await.unwrap();
+        Ok::<_, String>(())
+    }).unwrap();
+    ready.await.unwrap();
+    let closing_runtime = runtime.clone();
+    let closing_owner = owner.clone();
+    let closing_ai = ai.clone();
+    let closing_http = http.clone();
+    let mut closing = tokio::spawn(async move {
+        closing_runtime.close_browser(&closing_owner, &closing_ai, &closing_http, "window", "browser").await
+    });
+    observed.await.unwrap();
+    assert!(runtime.parent("window", &context, "source").await.is_err());
+    assert!(tokio::time::timeout(std::time::Duration::from_millis(30), &mut closing).await.is_err());
+    let phase: String = sqlx::query_scalar("SELECT phase FROM chat_admission_browsers WHERE runtime='browser'").fetch_one(&pool).await.unwrap();
+    assert_eq!(phase, "retiring");
+    release.send(()).unwrap();
+    closing.await.unwrap().unwrap();
+    assert!(result.await.is_err());
+    assert!(ai.join_stream_task("browser-child").await.is_none());
+    let phases: Vec<String> = sqlx::query_scalar("SELECT phase FROM chat_admission_operations WHERE request_id='browser-child'").fetch_all(&pool).await.unwrap();
+    assert_eq!(phases, ["unknown"]);
+    runtime.close_browser(&owner, &ai, &http, "window", "browser").await.unwrap();
+    assert!(runtime.open_browser(owner.clone(), "window", "browser").await.is_err());
+    runtime.open_browser(owner.clone(), "window", "fresh-browser").await.unwrap();
+    // A new browser does not reconcile an uncertain provider/tool context.
+    assert!(runtime.parent("window", &context, "source").await.is_err());
+}
+
+#[tokio::test]
+async fn browser_close_before_registration_tombstones_delayed_open() {
+    let (_dir, pool) = fixture().await;
+    let owner = crate::core::db_state::DbPool::default();
+    owner.set_ready(pool.clone()).await.unwrap();
+    let runtime = runtime::ChatAdmissionRuntime::default();
+    let ai = crate::ai::AiState::default();
+    let http = crate::ai::admitted_http::AdmittedHttp::default();
+    runtime.close_browser(&owner, &ai, &http, "window", "delayed").await.unwrap();
+    runtime.close_browser(&owner, &ai, &http, "window", "delayed").await.unwrap();
+    assert!(runtime.open_browser(owner.clone(), "window", "delayed").await.is_err());
+    assert!(runtime.close_browser(&owner, &ai, &http, "other", "delayed").await.is_err());
+    runtime.open_browser(owner, "window", "fresh").await.unwrap();
+}
+
+#[tokio::test]
+async fn browser_retirement_removes_http_receiver_after_real_transport_join() {
+    use crate::ai::{admitted_http::{AdmittedHttp, HttpPart}, provider_work::{ProviderAdmission, ProviderWork, tests::HttpServer}, AiState};
+    let (_dir, pool) = fixture().await;
+    let owner = crate::core::db_state::DbPool::default();
+    owner.set_ready(pool.clone()).await.unwrap();
+    let runtime = runtime::ChatAdmissionRuntime::default();
+    let context = runtime.begin(owner.clone(), "window", "browser", "source", "turn").await.unwrap();
+    let work = std::sync::Arc::new(ProviderWork::admit(&pool, &runtime, "window", ProviderAdmission::GlobalChat { context }, Some("source"), "browser-http").await.unwrap());
+    let server = HttpServer::start(vec![Some("HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}")]).await;
+    let ai = AiState::default();
+    let http = AdmittedHttp::default();
+    let client = reqwest::Client::new();
+    let request = client.post(&server.url).body("synthetic").build().unwrap();
+    http.start("window", "browser-http".into(), ai.reserve_stream("browser-http".into()).unwrap(), work, "synthetic-provider".into(), client, request).await.unwrap();
+    assert!(matches!(http.read("window", "browser-http").await.unwrap(), HttpPart::Headers { .. }));
+    assert!(matches!(http.read("window", "browser-http").await.unwrap(), HttpPart::Bytes { .. }));
+    assert!(matches!(http.read("window", "browser-http").await.unwrap(), HttpPart::End));
+    // The browser disappears before the codec ACK. EOF alone cannot complete it.
+    runtime.close_browser(&owner, &ai, &http, "window", "browser").await.unwrap();
+    assert!(http.read("window", "browser-http").await.is_err());
+    assert!(ai.join_stream_task("browser-http").await.is_none());
+    let phases: Vec<String> = sqlx::query_scalar("SELECT phase FROM chat_admission_operations WHERE kind='provider'").fetch_all(&pool).await.unwrap();
+    assert_eq!(phases, ["unknown", "unknown"]);
+    assert_eq!(server.stop().await, 1);
+}
+
+#[tokio::test]
+async fn cancellation_while_writer_is_locked_never_polls_the_tool_executor() {
+    use std::sync::{Arc, atomic::{AtomicBool, Ordering}};
+    let (_dir, pool) = fixture().await;
+    let owner = crate::core::db_state::DbPool::default();
+    owner.set_ready(pool.clone()).await.unwrap();
+    let parent = OperationPermit::begin_turn(owner, "source", "turn").await.unwrap();
+    let tool = Arc::new(parent.child(WorkKind::Tool, Some("pre-poll")).await.unwrap());
+    let mut writer = pool.acquire().await.unwrap();
+    sqlx::query("BEGIN IMMEDIATE").execute(&mut *writer).await.unwrap();
+    let ai = crate::ai::AiState::default();
+    let polled = Arc::new(AtomicBool::new(false));
+    let execution = polled.clone();
+    let result = ai.reserve_stream("pre-poll".into()).unwrap().spawn_tool(tool, move |_| async move {
+        execution.store(true, Ordering::SeqCst);
+        Ok::<_, String>(())
+    }).unwrap();
+    // Cancellation owns the pre-registered task even while SQLite holds it.
+    let cancelling = ai.clone();
+    let mut joined = tokio::spawn(async move { cancelling.cancel_stream_task("pre-poll").await });
+    assert!(tokio::time::timeout(std::time::Duration::from_millis(30), &mut joined).await.is_err());
+    sqlx::query("COMMIT").execute(&mut *writer).await.unwrap();
+    joined.await.unwrap().unwrap();
+    assert!(result.await.is_err());
+    assert!(!polled.load(Ordering::SeqCst));
+    let phase: String = sqlx::query_scalar("SELECT phase FROM chat_admission_operations WHERE request_id='pre-poll'").fetch_one(&pool).await.unwrap();
+    assert_eq!(phase, "no_effect");
+}
+
+
+#[tokio::test]
+async fn native_page_change_retires_an_open_still_waiting_for_sqlite() {
+    let (_dir, pool) = fixture().await;
+    let owner = crate::core::db_state::DbPool::default();
+    owner.set_ready(pool.clone()).await.unwrap();
+    let runtime = runtime::ChatAdmissionRuntime::default();
+    let ai = crate::ai::AiState::default();
+    let http = crate::ai::admitted_http::AdmittedHttp::default();
+    let mut writer = pool.acquire().await.unwrap();
+    sqlx::query("BEGIN IMMEDIATE").execute(&mut *writer).await.unwrap();
+    let opening = runtime.open_browser(owner.clone(), "window", "old-browser");
+    tokio::pin!(opening);
+    assert!(futures::poll!(opening.as_mut()).is_pending());
+    let page = runtime.invalidate_page("window");
+    sqlx::query("COMMIT").execute(&mut *writer).await.unwrap();
+    assert!(opening.await.is_err());
+    runtime.close_previous_page(&owner, &ai, &http, "window", &page).await.unwrap();
+    runtime.open_browser(owner.clone(), "window", "new-browser").await.unwrap();
+    // A delayed callback for an older page must not close this replacement.
+    runtime.close_previous_page(&owner, &ai, &http, "window", "older-page").await.unwrap();
+    runtime.begin_root(owner, "window", "new-browser", "source", "turn", "attempt", RootWorkKind::Turn).await.unwrap();
+}
+
+
+#[tokio::test]
+async fn tool_constructor_panic_is_durable_unknown_and_releases_registration() {
+    let (_dir, pool) = fixture().await;
+    let owner = crate::core::db_state::DbPool::default();
+    owner.set_ready(pool.clone()).await.unwrap();
+    let parent = OperationPermit::begin_turn(owner, "source", "turn").await.unwrap();
+    let tool = std::sync::Arc::new(parent.child(WorkKind::Tool, Some("constructor-panic")).await.unwrap());
+    let ai = crate::ai::AiState::default();
+    let result = ai.reserve_stream("constructor-panic".into()).unwrap().spawn_tool(tool, |_| {
+        panic!("synthetic constructor panic");
+        #[allow(unreachable_code)]
+        std::future::ready(Ok::<(), String>(()))
+    }).unwrap();
+    assert!(result.await.is_err());
+    assert!(ai.join_stream_task("constructor-panic").await.is_none());
+    let phase: String = sqlx::query_scalar("SELECT phase FROM chat_admission_operations WHERE request_id='constructor-panic'").fetch_one(&pool).await.unwrap();
+    assert_eq!(phase, "unknown");
 }

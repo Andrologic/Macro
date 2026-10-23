@@ -370,7 +370,7 @@ export function createChatToolExecution(ports: ChatToolExecutionPorts) {
       ) {
         return "Web search is not configured for this provider.";
       }
-      const results = await webSearch(query, { ...webSearchOptions, signal });
+      const results = await webSearch(query, { ...webSearchOptions, signal, chatAdmission });
       if (!isCurrentOperation()) {
         return TOOL_EXECUTION_ABORTED_RESULT;
       }
@@ -387,7 +387,7 @@ export function createChatToolExecution(ports: ChatToolExecutionPorts) {
       if (!enableWebFetch) {
         return "Web fetch is disabled for this provider.";
       }
-      const fetched = await fetchWebPage(url, signal);
+      const fetched = await fetchWebPage(url, signal, chatAdmission);
       if (!isCurrentOperation()) {
         return TOOL_EXECUTION_ABORTED_RESULT;
       }
@@ -410,7 +410,7 @@ export function createChatToolExecution(ports: ChatToolExecutionPorts) {
       return ports.sources.readFile(conversationId, args);
     }
 
-    const configToolResult = await handleConfigToolCall(normalizedToolName, args);
+    const configToolResult = await handleConfigToolCall(normalizedToolName, args, chatAdmission);
     if (!isCurrentOperation()) return TOOL_EXECUTION_ABORTED_RESULT;
     if (configToolResult !== undefined) {
       return configToolResult;
@@ -419,6 +419,7 @@ export function createChatToolExecution(ports: ChatToolExecutionPorts) {
     const configVirtualScopeResult = await ports.handlers.configVirtualScope(
       normalizedToolName,
       args,
+      chatAdmission,
     );
     if (!isCurrentOperation()) return TOOL_EXECUTION_ABORTED_RESULT;
     if (configVirtualScopeResult !== undefined) {
@@ -431,6 +432,7 @@ export function createChatToolExecution(ports: ChatToolExecutionPorts) {
       conversationId,
       undefined,
       executionContext,
+      chatAdmission,
     );
     if (!isCurrentOperation()) return TOOL_EXECUTION_ABORTED_RESULT;
     if (skillToolResult !== undefined) {

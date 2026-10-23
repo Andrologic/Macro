@@ -50,7 +50,7 @@ impl StreamReservation {
             let result = if cancel.is_cancelled() {
                 Err("AI stream cancelled before launch.".into())
             } else {
-                run_catching_panic(run(cancel)).await
+                run_catching_panic(async move { run(cancel).await }).await
             };
             let settled = work.settle(&result).await;
             result.and(settled)
@@ -80,7 +80,14 @@ impl StreamReservation {
                 return Ok(());
             }
             work.dispatched().await.map_err(|e| e.to_string())?;
-            let outcome = AssertUnwindSafe(run(cancel)).catch_unwind().await;
+            // Admission itself awaits SQLite. Cancellation during that wait
+            // must not start an executor which has never been polled.
+            if cancel.is_cancelled() {
+                work.cancelled_before_execution().await.map_err(|e| e.to_string())?;
+                let _ = result.send(Err("Native tool cancelled before execution.".into()));
+                return Ok(());
+            }
+            let outcome = AssertUnwindSafe(async move { run(cancel).await }).catch_unwind().await;
             let delivery = match outcome {
                 Ok(value) => {
                     async {
@@ -141,7 +148,7 @@ impl StreamReservation {
         let completion = self.completion.take().expect("reserved stream completion");
         let handle = tokio::spawn(async move {
             let cancel = self.cancel.clone();
-            let result = run_catching_panic(run(cancel)).await;
+            let result = run_catching_panic(async move { run(cancel).await }).await;
             // Reservation drop happens after the provider future is dropped.
             drop(self);
             result

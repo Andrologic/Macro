@@ -164,4 +164,4 @@ impl ProviderAttempt {
 
 #[cfg(test)]
 #[path = "provider_work_tests.rs"]
-pub(super) mod tests;
+pub(crate) mod tests;

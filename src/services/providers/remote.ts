@@ -430,6 +430,7 @@ export const readSkillResource: ServiceProvider['readSkillResource'] = async (da
 };
 
 export const runSkillScript: ServiceProvider['runSkillScript'] = async (data) => {
+  if (data.chatAdmission) throw new Error('Admitted skill scripts require the desktop backend.');
   const config = ensureRemoteConfig();
   return remoteSkillRequest<SkillScriptRunResult>(
     'runSkillScript',

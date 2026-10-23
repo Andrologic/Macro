@@ -50,20 +50,34 @@ export function chatAdmissionHttpFinish(context: ChatAdmissionContext, conversat
   return invoke('chat_admission_http_finish', { context, conversationId, requestId, outcome });
 }
 
-export function chatAdmissionFinishResponse(context: ChatAdmissionContext, conversationId: string,
+export async function chatAdmissionFinishResponse(context: ChatAdmissionContext, conversationId: string,
   id: string, content: string, options?: MessageUpdateOptions): Promise<void> {
-  return invoke('chat_admission_finish_response', {
+  await invoke('chat_admission_finish_response', {
     context, conversationId, params: buildMessageUpdateParams(id, content, options),
   });
+  await chatAdmissionAcknowledgeCompletion(context, conversationId);
 }
 
-export function chatAdmissionFinishCompaction(context: ChatAdmissionContext, conversationId: string,
+export async function chatAdmissionFinishCompaction(context: ChatAdmissionContext, conversationId: string,
   input: import('./conversations.types').DbUpsertConversationCompactionStateInput | null): Promise<void> {
-  return invoke('chat_admission_finish_compaction', { context, conversationId, input });
+  await invoke('chat_admission_finish_compaction', { context, conversationId, input });
+  await chatAdmissionAcknowledgeCompletion(context, conversationId);
 }
 
 /** Local tool association captured by the dispatch owner, never serialized in history. */
 export interface ChatToolAdmission {
   context: ChatAdmissionContext;
   identity: import('../../types/generated/ipc').ToolInvocationIdentity;
+}
+
+export function chatAdmissionAcknowledgeCompletion(context: ChatAdmissionContext, conversationId: string): Promise<void> {
+  return invoke('chat_admission_acknowledge_completion', { context, conversationId });
+}
+
+export function chatAdmissionOpenBrowser(runtime: string): Promise<void> {
+  return invoke('chat_admission_open_browser', { runtime });
+}
+
+export function chatAdmissionCloseBrowser(runtime: string): Promise<void> {
+  return invoke('chat_admission_close_browser', { runtime });
 }

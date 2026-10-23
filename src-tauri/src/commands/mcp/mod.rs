@@ -286,22 +286,9 @@ pub async fn mcp_runtime_call_tool(
         let owner = work.clone();
         let received = reservation
             .spawn_tool(work, move |cancel| async move {
-                let execution = runtime.call_tool_owned(
-                    &key,
-                    &tool_name,
-                    arguments,
-                    operation_id.clone(),
-                    Some(owner),
-                );
-                tokio::pin!(execution);
-                tokio::select! {
-                    biased;
-                    _ = cancel.cancelled() => {
-                        runtime.cancel_operation(&operation_id).await;
-                        execution.await
-                    },
-                    result = &mut execution => result,
-                }
+                runtime.call_tool_owned(
+                    &key, &tool_name, arguments, operation_id, Some(owner), Some(cancel),
+                ).await
             })
             .map_err(|e| McpRuntimeError::new("CHAT_ADMISSION_REFUSED", e))?;
         return received

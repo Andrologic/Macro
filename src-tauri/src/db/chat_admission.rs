@@ -101,6 +101,9 @@ pub(crate) async fn remove_reference_schema_in(db: &mut SqliteConnection) -> DbR
     sqlx::query("DROP TABLE chat_admission_operations")
         .execute(&mut *db)
         .await?;
+    sqlx::query("DROP TABLE chat_admission_browsers")
+        .execute(&mut *db)
+        .await?;
     sqlx::query("DROP TABLE chat_admission_owners")
         .execute(&mut *db)
         .await?;
@@ -140,6 +143,8 @@ pub(crate) async fn reconcile_after_restart(pool: &SqlitePool) -> DbResult<()> {
     validate_schema(&mut tx).await?;
     sqlx::query("UPDATE chat_admission_operations SET phase='unknown',revision=revision+1 WHERE phase IN ('prepared','dispatched')")
         .execute(&mut *tx).await?;
+    sqlx::query("UPDATE chat_admission_browsers SET phase='retired' WHERE phase<>'retired'")
+        .execute(&mut *tx).await?;
     sqlx::query("UPDATE chat_admission_owners SET browser_reconciled=0,runtime_generation=NULL")
         .execute(&mut *tx)
         .await?;
@@ -157,6 +162,8 @@ pub(crate) async fn hold_restored_profile(pool: &SqlitePool) -> DbResult<()> {
     // Reconcile tools while an ordinary restored owner is still writable.
     // A protected owner with pending tools is inconsistent and stays closed.
     super::tool_invocations::reconcile_pending_after_restart_in(&mut tx).await?;
+    sqlx::query("UPDATE chat_admission_browsers SET phase='retired' WHERE phase<>'retired'")
+        .execute(&mut *tx).await?;
     sqlx::query("UPDATE chat_admission_owners SET mode='restore_hold',revision=revision+1,browser_reconciled=0,runtime_generation=NULL WHERE mode IN ('open','frozen')")
         .execute(&mut *tx).await?;
     sqlx::query("UPDATE chat_admission_operations SET phase='unknown',revision=revision+1 WHERE phase IN ('prepared','dispatched')")
@@ -247,6 +254,16 @@ impl OperationPermit {
         turn: &str,
         purpose: RootWorkKind,
     ) -> DbResult<Self> {
+        Self::begin_root_owned(owner, conversation, turn, purpose, None).await
+    }
+
+    async fn begin_root_owned(
+        owner: crate::core::db_state::DbPool,
+        conversation: &str,
+        turn: &str,
+        purpose: RootWorkKind,
+        browser: Option<(&str, &str, &str)>,
+    ) -> DbResult<Self> {
         if conversation.trim().is_empty() || turn.trim().is_empty() {
             return Err(invalid("chat_admission_invalid_identity"));
         }
@@ -258,6 +275,11 @@ impl OperationPermit {
         let mut lease = durable_lease(&guard.ready.pool).await?;
         let mut tx = lease.begin_with("BEGIN IMMEDIATE").await?;
         guard.ready.check_source_schema(&mut tx).await?;
+        if let Some((caller, runtime, _)) = browser {
+            let current: i64 = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM chat_admission_browsers WHERE runtime=? AND caller=? AND runtime_generation=? AND phase='active')")
+                .bind(runtime).bind(caller).bind(&generation).fetch_one(&mut *tx).await?;
+            if current == 0 { return Err(invalid("chat_admission_browser_closed")); }
+        }
         let incarnation: Option<String> = sqlx::query_scalar("SELECT o.incarnation FROM chat_admission_owners o JOIN conversations c ON c.id=o.conversation_id WHERE c.id=? AND c.scope_mode='Chat' AND c.project_id IS NULL AND c.group_id IS NULL AND c.task_id IS NULL AND o.mode='open'")
             .bind(conversation).fetch_optional(&mut *tx).await?;
         let incarnation =
@@ -275,8 +297,9 @@ impl OperationPermit {
             return Err(invalid("chat_admission_busy"));
         }
         let operation = uuid::Uuid::new_v4().to_string();
-        sqlx::query("INSERT INTO chat_admission_operations(operation_id,conversation_id,incarnation,runtime_generation,kind,phase,turn_id) VALUES(?,?,?,?,?,'prepared',?)")
+        sqlx::query("INSERT INTO chat_admission_operations(operation_id,conversation_id,incarnation,runtime_generation,kind,phase,turn_id,browser_caller,browser_runtime,browser_attempt) VALUES(?,?,?,?,?,'prepared',?,?,?,?)")
             .bind(&operation).bind(conversation).bind(&incarnation).bind(&generation).bind(purpose.as_str()).bind(turn)
+            .bind(browser.map(|b| b.0)).bind(browser.map(|b| b.1)).bind(browser.map(|b| b.2))
             .execute(&mut *tx).await?;
         tx.commit().await?;
         lease.committed = true;
@@ -584,6 +607,7 @@ impl OperationPermit {
         &self,
         input: super::repository::UpdateMessageContentInput<'_>,
     ) -> DbResult<()> {
+        let receipt = runtime::completion_fingerprint("response", &input)?;
         let guard = self
             .owner
             .source_ready(Some(&self.generation))
@@ -614,8 +638,8 @@ impl OperationPermit {
         }
         let message = input.id.to_owned();
         super::repository::update_message_content_with_connection(&mut tx, input).await?;
-        sqlx::query("UPDATE chat_admission_operations SET phase='completed',message_id=?,revision=revision+1 WHERE operation_id=?")
-            .bind(message).bind(&self.operation).execute(&mut *tx).await?;
+        sqlx::query("UPDATE chat_admission_operations SET phase='completed',message_id=?,completion_receipt=?,revision=revision+1 WHERE operation_id=?")
+            .bind(message).bind(receipt).bind(&self.operation).execute(&mut *tx).await?;
         tx.commit().await?;
         lease.committed = true;
         Ok(())
@@ -625,6 +649,7 @@ impl OperationPermit {
         &self,
         input: Option<super::models::UpsertConversationCompactionStateInput>,
     ) -> DbResult<()> {
+        let receipt = runtime::completion_fingerprint("compaction", &input)?;
         let guard = self
             .owner
             .source_ready(Some(&self.generation))
@@ -679,8 +704,8 @@ impl OperationPermit {
                 return Err(invalid("chat_admission_compaction_changed"));
             }
         }
-        sqlx::query("UPDATE chat_admission_operations SET phase='completed',revision=revision+1 WHERE operation_id=?")
-            .bind(&self.operation).execute(&mut *tx).await?;
+        sqlx::query("UPDATE chat_admission_operations SET phase='completed',completion_receipt=?,revision=revision+1 WHERE operation_id=?")
+            .bind(receipt).bind(&self.operation).execute(&mut *tx).await?;
         tx.commit().await?;
         lease.committed = true;
         Ok(())
@@ -716,6 +741,10 @@ impl OperationPermit {
     /// Only a transport owner with a confirmed pre-prompt rejection may use
     /// this transition. A timeout, disconnect or partial response is unknown.
     pub(crate) async fn rejected_before_prompt(&self) -> DbResult<()> {
+        self.transition("dispatched", "no_effect").await
+    }
+    /// The native task owner has not polled the executor future at all.
+    pub(crate) async fn cancelled_before_execution(&self) -> DbResult<()> {
         self.transition("dispatched", "no_effect").await
     }
     pub(crate) async fn unknown(&self) -> DbResult<()> {

@@ -1,3 +1,4 @@
+import type { ChatToolAdmission } from './ipc/chatAdmission';
 import type {
   ConfigDocument,
   ConfigDocumentKind,
@@ -232,10 +233,12 @@ export const configurationGetDocument = (
 
 export const configurationApplyPatch = (
   request: ConfigPatchRequest,
+  chatAdmission?: ChatToolAdmission,
 ): Promise<ConfigPatchResult> => isNativeConfigClientAvailable()
   ? request.source === 'agent'
-    ? tauriIpc.configApplyAgentPatch(request)
+    ? tauriIpc.configApplyAgentPatch(request, chatAdmission)
     : tauriIpc.configApplyPatch(request)
+  : chatAdmission ? Promise.reject(new Error('Admitted configuration changes require the desktop backend.'))
   : remoteRequest<ConfigPatchResult>('/config/patch', {
       method: 'POST',
       body: JSON.stringify({

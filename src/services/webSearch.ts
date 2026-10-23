@@ -1,3 +1,4 @@
+import type { ChatToolAdmission } from './ipc/chatAdmission';
 /**
  * Web Search Service
  * Provides web search capabilities using Tavily API (AI-optimized search)
@@ -23,6 +24,7 @@ export interface WebSearchOptions {
   maxResults?: number;
   includeRawContent?: boolean;
   signal?: AbortSignal;
+  chatAdmission?: ChatToolAdmission;
 }
 
 const WEB_SEARCH_TIMEOUT_MS = 30_000;
@@ -61,6 +63,7 @@ const createWebSearchExecutionId = (): string => globalThis.crypto.randomUUID();
 const executeNativeWebOperation = <T>(
   request: (executionId?: string) => Promise<T>,
   signal?: AbortSignal,
+  chatAdmission?: ChatToolAdmission,
 ): Promise<T> => {
   if (!signal) return request();
   if (signal.aborted) return Promise.reject(abortReason(signal));
@@ -70,6 +73,14 @@ const executeNativeWebOperation = <T>(
   const cancel = () => {
     void cancelWebSearchExecution(executionId).catch(() => undefined);
   };
+  if (chatAdmission) {
+    signal.addEventListener('abort', cancel, { once: true });
+    if (signal.aborted) cancel();
+    return nativeRequest.then(result => {
+      if (signal.aborted) throw abortReason(signal);
+      return result;
+    }).finally(() => signal.removeEventListener('abort', cancel));
+  }
   return waitForSearchOrAbort(nativeRequest, signal, cancel);
 };
 
@@ -129,6 +140,15 @@ export async function webSearch(
     signal,
   } = options;
   const resultCount = clampSearchResultCount(maxResults);
+  if (options.chatAdmission) {
+    if (!isTauriAvailable() || tavilyApiKey || braveApiKey) {
+      throw new Error('Admitted web search requires the configured desktop transport.');
+    }
+    return executeNativeWebOperation(executionId => webSearchExecute({
+      query, includeRawContent, executionId, chatAdmission: options.chatAdmission,
+    }), signal, options.chatAdmission);
+  }
+
 
   if (provider === 'tavily' && tavilyApiKey) {
     return searchWithTavily(query, tavilyApiKey, resultCount, includeRawContent, signal);
@@ -483,6 +503,7 @@ async function fetchFaviconDataUrl(
   pageUrl: string,
   html: string,
   signal?: AbortSignal,
+  chatAdmission?: ChatToolAdmission,
 ): Promise<string | undefined> {
   for (const faviconUrl of getFaviconCandidates(html, pageUrl)) {
     if (signal?.aborted) throw abortReason(signal);
@@ -491,9 +512,11 @@ async function fetchFaviconDataUrl(
         (executionId) => webFetchExecute({
           url: faviconUrl,
           resourceKind: 'favicon',
+          ...(chatAdmission ? { chatAdmission } : {}),
           ...(executionId ? { executionId } : {}),
         }),
         signal,
+        chatAdmission,
       );
       const bytes = base64ToBytes(resource.bodyBase64);
       if (bytes.byteLength === 0 || bytes.byteLength > MAX_FAVICON_BYTES) continue;
@@ -546,6 +569,7 @@ function htmlToText(html: string): { title: string; content: string } {
 export async function fetchWebPage(
   inputUrl: string,
   signal?: AbortSignal,
+  chatAdmission?: ChatToolAdmission,
 ): Promise<WebFetchResult> {
   if (signal?.aborted) throw abortReason(signal);
   const normalizedUrl = normalizeUrl(inputUrl);
@@ -572,16 +596,18 @@ export async function fetchWebPage(
     (executionId) => webFetchExecute({
       url: normalizedUrl,
       resourceKind: 'page',
+      ...(chatAdmission ? { chatAdmission } : {}),
       ...(executionId ? { executionId } : {}),
     }),
     signal,
+    chatAdmission,
   );
   if (signal?.aborted) throw abortReason(signal);
   const fetchedUrl = resource.url;
   const html = new TextDecoder().decode(base64ToBytes(resource.bodyBase64));
   const { title, content } = htmlToText(html);
   const snippet = content.slice(0, 350);
-  const favicon = await fetchFaviconDataUrl(fetchedUrl, html, signal);
+  const favicon = await fetchFaviconDataUrl(fetchedUrl, html, signal, chatAdmission);
   if (signal?.aborted) throw abortReason(signal);
 
   return {

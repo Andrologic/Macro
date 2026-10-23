@@ -55,6 +55,7 @@ impl std::error::Error for McpRuntimeError {}
 
 #[derive(Default)]
 pub struct McpOperationCancellation {
+    native: Option<tokio_util::sync::CancellationToken>,
     cancelled: AtomicBool,
     notify: Notify,
     interaction: StdMutex<Option<McpInteractionContext>>,
@@ -99,6 +100,7 @@ impl McpOperationCancellation {
 
     pub fn is_cancelled(&self) -> bool {
         self.cancelled.load(Ordering::Acquire)
+            || self.native.as_ref().is_some_and(|token| token.is_cancelled())
     }
 
     pub async fn cancelled(&self) {
@@ -109,7 +111,11 @@ impl McpOperationCancellation {
             if self.is_cancelled() {
                 return;
             }
-            notified.await;
+            if let Some(native) = &self.native {
+                tokio::select! { _ = notified => {}, _ = native.cancelled() => return }
+            } else {
+                notified.await;
+            }
         }
     }
 }
@@ -848,7 +854,7 @@ impl McpRuntimeManager {
         arguments: serde_json::Value,
         operation_id: String,
     ) -> Result<McpCallToolResponse, McpRuntimeError> {
-        self.call_tool_owned(key, tool_name, arguments, operation_id, None)
+        self.call_tool_owned(key, tool_name, arguments, operation_id, None, None)
             .await
     }
 
@@ -859,6 +865,7 @@ impl McpRuntimeManager {
         arguments: serde_json::Value,
         operation_id: String,
         chat_work: Option<Arc<crate::db::chat_admission::OperationPermit>>,
+        native_cancel: Option<tokio_util::sync::CancellationToken>,
     ) -> Result<McpCallToolResponse, McpRuntimeError> {
         validate_key(key)?;
         if operation_id.trim().is_empty() {
@@ -867,7 +874,7 @@ impl McpRuntimeManager {
                 "MCP operation id cannot be empty.",
             ));
         }
-        let cancellation = Arc::new(McpOperationCancellation::default());
+        let cancellation = Arc::new(McpOperationCancellation { native: native_cancel, ..Default::default() });
         {
             let mut operations = self
                 .operations
@@ -957,7 +964,11 @@ impl McpRuntimeManager {
         drop(permit);
         if let Err(error) = &result {
             if error.code != OPERATION_CANCELLED && session.is_closed() {
-                self.schedule_reconnect(key.clone(), error.clone());
+                if chat_work.is_some() {
+                    self.reconnect_after_failure(key, error.clone()).await;
+                } else {
+                    self.schedule_reconnect(key.clone(), error.clone());
+                }
             }
         }
         result
@@ -1904,6 +1915,22 @@ mod tests {
 
         assert_eq!(call.await.unwrap().unwrap_err().code, OPERATION_CANCELLED);
         assert_eq!(session.call_count.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn native_cancellation_before_first_poll_never_calls_the_session() {
+        let session = Arc::new(FakeSession::default());
+        let (manager, _) = manager(session.clone());
+        let key = connected_key(&manager).await;
+        let cancel = tokio_util::sync::CancellationToken::new();
+        let call = manager.call_tool_owned(&key, "echo", serde_json::json!({}),
+            "native-pre-registration".into(), None, Some(cancel.clone()));
+        // Construct the actual executor future, cancel before its first poll.
+        cancel.cancel();
+        let error = call.await.unwrap_err();
+        assert_eq!(error.code, OPERATION_CANCELLED);
+        assert_eq!(session.call_count.load(Ordering::SeqCst), 0);
+        assert!(manager.active_operation_ids().await.is_empty());
     }
 
     #[tokio::test]

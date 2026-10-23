@@ -1,5 +1,5 @@
 import type { ProviderAdmission } from '../services/ipc/chatAdmission';
-import { beginChatAdmission, closeChatPreparation, finishChatResponse } from '../services/chatAdmission';
+import { beginChatAdmission, closeChatPreparation, finishChatResponse, retireChatBrowser } from '../services/chatAdmission';
 import { acknowledgeDisplayedConversation } from '../services/conversationManagementService';
 import { getConflictAssistantContext, clearConflictAssistantContext, isConflictAssistantContextAllowed, revalidateConflictAssistantContext, scopeConflictAssistantExecutionContext } from '../services/conflictAssistantContext';
 import { type LifecycleContext, createLifecycleScope } from '../services/lifecycleScope';
@@ -3618,7 +3618,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
     architectConversationRecoveryContexts.clear();
     if (retired) {
       try { retired.stop(); } catch (error) { subscriptionCleanupFailures.push(error); }
-      finally { subscriptionRetirement = Promise.all([subscriptionRetirement, retired.drain()]).then(() => undefined); }
+      finally { subscriptionRetirement = Promise.all([subscriptionRetirement, retired.drain(), retireChatBrowser()]).then(() => undefined); }
     }
   };
 

@@ -1870,6 +1870,7 @@ const registerUseChatStoreMocks = async () => {
     },
     closeChatPreparation: async () => undefined,
     finishChatResponse: async () => undefined,
+    retireChatBrowser: async () => undefined,
   }));
   mock.module('../services/tauriIpc', () => ({
     ...actualTauriIpc,

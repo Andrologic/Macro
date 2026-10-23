@@ -250,6 +250,27 @@ describe('webSearch provider contracts', () => {
     await new Promise((resolve) => setTimeout(resolve, 0));
   });
 
+  it('waits for admitted native cleanup after abort and forwards the exact tool owner', async () => {
+    const { webSearch } = await loadWebSearch({ tauriAvailable: true });
+    let release!: (value: unknown[]) => void;
+    nativeWebSearchMock.mockImplementationOnce(() => new Promise<unknown[]>(resolve => { release = resolve; }));
+    const controller = new AbortController();
+    const chatAdmission = { context: { handle: 'local-handle', runtime: 'local-browser' },
+      identity: { conversationId: 'chat', turnId: 'turn', messageId: 'message', callId: 'call' } };
+    let finished = false;
+    const work = webSearch('synthetic', { configured: true, signal: controller.signal, chatAdmission })
+      .then(() => { finished = true; }, (error: unknown) => { finished = true; throw error; });
+    const rejected = work.then(() => null, (error: unknown) => error);
+    controller.abort();
+    await Promise.resolve();
+    expect(finished).toBe(false);
+    expect(nativeWebSearchMock.mock.calls[0]?.[0]?.chatAdmission).toEqual(chatAdmission);
+    expect(nativeWebCancelMock).toHaveBeenCalledTimes(1);
+    release([]);
+    expect(await rejected).toMatchObject({ name: 'AbortError' });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
   it('cancels native page fetches and does not swallow the abort in favicon fallback', async () => {
     const { fetchWebPage } = await loadWebSearch({ tauriAvailable: true });
     let resolveNative!: (resource: never) => void;
