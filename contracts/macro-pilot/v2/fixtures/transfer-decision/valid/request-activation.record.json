@@ -1,0 +1,21 @@
+{
+  "decision_contract": "transfer-decision-1",
+  "type": "decision_request",
+  "operation": "activation.record",
+  "operation_id": "00000000-0000-0000-0000-000000000034",
+  "expected_revision": "4",
+  "body": {
+    "activation": {
+      "decision_contract": "transfer-decision-1",
+      "type": "activation_receipt",
+      "receipt_id": "00000000-0000-0000-0000-000000000033",
+      "transfer_id": "00000000-0000-0000-0000-000000000004",
+      "terminal_digest": "18ba9ded5346e461fc7aec35442c77e34aed061b2e32eb7087438a23a2f4d6e5",
+      "target_instance_id": "target-synthetic",
+      "target_conversation_id": "new-chat-synthetic",
+      "prepared_digest": "d9209e0f816d61188d095f9d72cf27cf60f011d06407b82965daa92376418bfb",
+      "revision": "1"
+    }
+  },
+  "transfer_id": "00000000-0000-0000-0000-000000000004"
+}

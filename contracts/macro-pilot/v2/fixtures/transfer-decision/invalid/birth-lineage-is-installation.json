@@ -1,0 +1,22 @@
+{
+  "decision_contract": "transfer-decision-1",
+  "type": "decision_request",
+  "operation": "lineage.create",
+  "operation_id": "00000000-0000-0000-0000-000000000011",
+  "expected_revision": "0",
+  "body": {
+    "provenance": {
+      "source": {
+        "relay_origin": "https://relay.example.test",
+        "account_id": "account-synthetic",
+        "source_instance_id": "source-synthetic",
+        "source_conversation_id": "chat-synthetic"
+      },
+      "lineage_id": "00000000-0000-0000-0000-000000000002",
+      "installation_id": "00000000-0000-0000-0000-000000000002",
+      "birth_generation": "00000000-0000-0000-0000-000000000001"
+    },
+    "mode": "created",
+    "creation_digest": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+  }
+}

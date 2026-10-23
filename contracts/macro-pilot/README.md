@@ -77,3 +77,7 @@ projection, read [machine resource contracts](v2/machine-resources.md).
 
 Pour le transfert, l’envoi et l’export des fichiers avec leurs gardes, lire
 [fichiers de conversation](v2/conversation-files.md).
+
+The separate metadata-only [transfer-decision-1 contract](v2/transfer-decision.md)
+defines durable transfer decisions and recovery bindings. Its own registry does
+not change the existing roots or enable transfer support.

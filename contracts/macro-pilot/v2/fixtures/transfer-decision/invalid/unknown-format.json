@@ -1,0 +1,20 @@
+{
+  "decision_contract": "transfer-decision-1",
+  "type": "decision_request",
+  "operation": "ready",
+  "operation_id": "00000000-0000-0000-0000-000000000023",
+  "expected_revision": "2",
+  "body": {
+    "prepared": {
+      "format_version": "2",
+      "binding_digest": "e55b3a7a088968fceb10ccf848c4a5d304da3e16f81ee11f16931ce04247475b",
+      "manifest_digest": "a21e8e04d4c009a7762c94ea57763439cbcce04deb49d4fdfe753caef889a57d",
+      "import_id": "00000000-0000-0000-0000-000000000009",
+      "target_conversation_id": "new-chat-synthetic",
+      "lineage_id": "00000000-0000-0000-0000-000000000010",
+      "mapping_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "preparation_sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+    }
+  },
+  "transfer_id": "00000000-0000-0000-0000-000000000004"
+}

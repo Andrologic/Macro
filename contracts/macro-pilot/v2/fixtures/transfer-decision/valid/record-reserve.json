@@ -1,0 +1,69 @@
+{
+  "decision_contract": "transfer-decision-1",
+  "type": "transfer_record",
+  "binding": {
+    "transfer_id": "00000000-0000-0000-0000-000000000004",
+    "provenance": {
+      "source": {
+        "relay_origin": "https://relay.example.test",
+        "account_id": "account-synthetic",
+        "source_instance_id": "source-synthetic",
+        "source_conversation_id": "chat-synthetic"
+      },
+      "lineage_id": "00000000-0000-0000-0000-000000000002",
+      "installation_id": "00000000-0000-0000-0000-000000000003",
+      "birth_generation": "00000000-0000-0000-0000-000000000001"
+    },
+    "epoch": "9007199254740993",
+    "target_instance_id": "target-synthetic",
+    "relay_recovery_generation": "00000000-0000-0000-0000-000000000001",
+    "initiator": {
+      "account_id": "account-synthetic",
+      "session_id": "initiator-session-synthetic",
+      "device_id": "initiator-device-synthetic",
+      "session_revision": "9007199254740993",
+      "account_epoch": "9007199254740993",
+      "source_access_revision": "9007199254740993",
+      "target_access_revision": "9007199254740993"
+    },
+    "source_producer_generation": "producer-source-synthetic",
+    "target_producer_generation": "producer-target-synthetic"
+  },
+  "revision": "1",
+  "phase": "reserved",
+  "frozen": {
+    "format_version": "1",
+    "binding_digest": "e55b3a7a088968fceb10ccf848c4a5d304da3e16f81ee11f16931ce04247475b",
+    "ownership_revision": "9007199254740993",
+    "content_incarnation": "0123456789abcdef0123456789abcdef",
+    "content_revision": "9007199254740993",
+    "sha256": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+  },
+  "manifest": null,
+  "prepared": null,
+  "reserve_receipt": {
+    "decision_contract": "transfer-decision-1",
+    "type": "step_receipt",
+    "receipt_id": "00000000-0000-0000-0000-000000000018",
+    "operation": "reserve",
+    "transfer_id": "00000000-0000-0000-0000-000000000004",
+    "binding_digest": "e55b3a7a088968fceb10ccf848c4a5d304da3e16f81ee11f16931ce04247475b",
+    "subject_digest": "94f0f343badf920801cdc19cccf626c12a5e8b91602d002a3024ffc80333e891",
+    "previous_revision": "0",
+    "revision": "1",
+    "phase": "reserved"
+  },
+  "seal_receipt": null,
+  "ready_receipt": null,
+  "terminal": null,
+  "activation": null,
+  "retries": [
+    {
+      "operation": "reserve",
+      "operation_id": "00000000-0000-0000-0000-000000000015",
+      "request_digest": "6c63d93dae7fa5c5605b68718d89b0b5c136a13ec5ae18ea217bc97b29493f06",
+      "body_digest": "7b319651075d243a517a855695db6c0d720722661e29e59690b18ff943549030"
+    }
+  ],
+  "hold_phase": null
+}
