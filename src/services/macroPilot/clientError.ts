@@ -1,4 +1,11 @@
 export type PilotClientErrorCode =
+  | 'unsupported_version'
+  | 'unsupported_context'
+  | 'stale_epoch'
+  | 'authority_changed'
+  | 'producer_changed'
+  | 'instance_offline'
+  | 'recovery_hold'
   | 'extension_unavailable'
   | 'snapshot_expired'
   | 'resource_limit'
