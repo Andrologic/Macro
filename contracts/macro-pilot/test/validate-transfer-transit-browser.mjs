@@ -12,7 +12,7 @@ for (const kind of ['valid', 'invalid']) for (const file of readdirSync(new URL(
   assert.equal(browser.validateObject(value).valid, kind === 'valid', file);
   assert.equal(browser.diagnosticsEmpty(), true); cases++;
 }
-for (const value of [{z:'é🙂\0', a:['é', '\ud83d\ude00']}, {b:'\\\"\n',a:128}]) {
+for (const value of [{z:'é🙂\0', a:['é', '\ud83d\ude00']}, {b:'\\"\n',a:128}]) {
   assert.equal(typeof browser.fingerprint('source-key', value), 'string'); cases++;
 }
 // Rejected nested property names and throwing getters must leave no input in
@@ -45,7 +45,7 @@ if (!process.argv.includes('--csp')) {
       assert.deepEqual(browser.validateExchange(x.request,broken,stage==='birth'?undefined:s.expectation(x.request.operation)),original.validateExchange(x.request,broken,stage==='birth'?undefined:s.expectation(x.request.operation)));cases+=3;
     }
   }
-  for (const value of [{z:'é🙂\0',a:['é','\ud83d\ude00']},{b:'\\\"\n',a:128}]) for (const domain of ['source-key','transfer-binding','retry-body','attestation']) {
+  for (const value of [{z:'é🙂\0',a:['é','\ud83d\ude00']},{b:'\\"\n',a:128}]) for (const domain of ['source-key','transfer-binding','retry-body','attestation']) {
     assert.equal(browser.fingerprint(domain,value),original.fingerprint(domain,value));cases++;
   }
   // Execute the actual audited relational/reception matrices against the same
