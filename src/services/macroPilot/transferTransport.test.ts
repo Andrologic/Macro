@@ -254,3 +254,109 @@ describe('producer response union, no native owner',()=>{
     const a=await loadTransferCodec(),b=await loadTransferCodec();expect(a).toBe(b);expect(a.LIMITS.admission).toBe(TRANSFER_ADMISSION);expect(a.LIMITS.body).toBe(98304);expect(a.diagnosticsEmpty()).toBe(true);
   });
 });
+
+
+describe('dispatch observer failure ownership', () => {
+  for (const kind of ['transfer', 'ordinary'] as const) {
+    it.each(['resolve', 'reject'] as const)(`${kind} observes late fetch %s after a throwing observer`, async settlement => {
+      const h = harness();
+      await h.client.initialize();
+      const x = proofReceived();
+      let entered!: () => void;
+      let resolveFetch!: (value: Response) => void;
+      let rejectFetch!: (error: Error) => void;
+      const started = new Promise<void>(resolve => { entered = resolve; });
+      let fetched = 0, ended = false, cancelled = 0, consumed = false;
+      h.deps.fetch = () => {
+        fetched++;
+        entered();
+        return new Promise<Response>((resolve, reject) => { resolveFetch = resolve; rejectFetch = reject; });
+      };
+      const options = { ...h.options, onDispatch: () => { h.options.onDispatch(); throw Error('observer failed'); } };
+      const request = kind === 'transfer'
+        ? h.client.requestTransferMetadata(x.path, x.sent, x.reception, signal(), options, () => { consumed = true; })
+        : h.client.request('POST', '/observer', {}, { ...options, authenticated: true });
+      const pending = request.catch(error => error).finally(() => { ended = true; });
+      await started;
+      await new Promise(resolve => setTimeout(resolve, 0));
+      expect(h.dispatches).toBe(1);
+      expect(h.live).toBe(kind === 'transfer' ? 2 : 0);
+      expect(ended).toBe(kind === 'ordinary');
+      if (settlement === 'resolve') resolveFetch(new Response(new ReadableStream({ cancel() { cancelled++; } })));
+      else rejectFetch(Error('late fetch failed'));
+      const error = await pending;
+      await new Promise(resolve => setTimeout(resolve, 0));
+      expect(error).toMatchObject({ code: 'offline', retryable: false });
+      expect(h.client.getState().status).toBe('offline');
+      expect(consumed).toBe(false);
+      expect(cancelled).toBe(settlement === 'resolve' ? 1 : 0);
+      expect(h.live).toBe(0);
+      expect(h.dispatches).toBe(1);
+      expect(fetched).toBe(1);
+    });
+    it.each(['succeeds', 'throws'] as const)(`${kind} notifies once if fetch throws synchronously and observer %s`, async observerState => {
+      const h = harness();
+      await h.client.initialize();
+      const x = proofReceived();
+      let fetched = 0, consumed = false;
+      h.deps.fetch = () => { fetched++; throw Error('synchronous fetch failure'); };
+      const options = { ...h.options, onDispatch: () => {
+        h.options.onDispatch();
+        if (observerState === 'throws') throw Error('observer failed');
+      } };
+      const pending = kind === 'transfer'
+        ? h.client.requestTransferMetadata(x.path, x.sent, x.reception, signal(), options, () => { consumed = true; })
+        : h.client.request('POST', '/observer', {}, { ...options, authenticated: true });
+      await expect(pending).rejects.toMatchObject({ code: 'offline', retryable: false });
+      expect(h.dispatches).toBe(1);
+      expect(fetched).toBe(1);
+      expect(consumed).toBe(false);
+      expect(h.live).toBe(0);
+    });
+  }
+  for (const invalidation of ['abort', 'configuration'] as const) {
+    it.each(['resolve', 'reject'] as const)(`transfer keeps ownership through ${invalidation} and late fetch %s`, async settlement => {
+      const h = harness();
+      await h.client.initialize();
+      const x = proofReceived();
+      const controller = new AbortController();
+      let entered!: () => void;
+      let resolveFetch!: (value: Response) => void;
+      let rejectFetch!: (error: Error) => void;
+      let requestSignal: AbortSignal | undefined;
+      const started = new Promise<void>(resolve => { entered = resolve; });
+      let fetched = 0, cancelled = 0, consumed = false, ended = false;
+      h.deps.fetch = (url, init) => {
+        if (String(url).endsWith('/me')) return Promise.resolve(response({ account, device_session: session }, 'bootstrap'));
+        fetched++;
+        requestSignal = init?.signal ?? undefined;
+        entered();
+        return new Promise<Response>((resolve, reject) => { resolveFetch = resolve; rejectFetch = reject; });
+      };
+      const options = { ...h.options, onDispatch: () => { h.options.onDispatch(); throw Error('observer failed'); } };
+      const pending = h.client.requestTransferMetadata(x.path, x.sent, x.reception, controller.signal, options, () => { consumed = true; })
+        .catch(error => error).finally(() => { ended = true; });
+      await started;
+      if (invalidation === 'abort') controller.abort();
+      else {
+        const snapshot = await h.deps.getStateSnapshot();
+        h.deps.getStateSnapshot = async () => ({ ...snapshot, values: { ...snapshot.values,
+          macro_pilot_native_v1: { ...(snapshot.values.macro_pilot_native_v1 as Record<string, unknown>), configurationId: 'config:replacement' },
+        } });
+        await h.client.initialize();
+      }
+      await new Promise(resolve => setTimeout(resolve, 0));
+      expect(requestSignal?.aborted).toBe(invalidation === 'abort');
+      expect(ended).toBe(false);
+      expect(h.live).toBe(2);
+      if (settlement === 'resolve') resolveFetch(new Response(new ReadableStream({ cancel() { cancelled++; } })));
+      else rejectFetch(Error('late fetch failed'));
+      expect(await pending).toMatchObject({ code: 'context_changed', retryable: false });
+      expect(cancelled).toBe(settlement === 'resolve' ? 1 : 0);
+      expect(consumed).toBe(false);
+      expect(h.live).toBe(0);
+      expect(h.dispatches).toBe(1);
+      expect(fetched).toBe(1);
+    });
+  }
+});

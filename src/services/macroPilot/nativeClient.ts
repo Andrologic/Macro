@@ -963,6 +963,7 @@ export class MacroPilotNativeClient {
     if (extension) signal = AbortSignal.any([...signals, AbortSignal.timeout(30_000)]);
     check();
     let response: Response;
+    let dispatchFailed = false;
     try {
       const init = {
         method,
@@ -973,15 +974,23 @@ export class MacroPilotNativeClient {
       };
       let fetching: ReturnType<PilotClientDependencies['fetch']>;
       try { fetching = this.dependencies.fetch(url, init); }
-      finally { options.onDispatch?.(); }
-      // Request cancellation for an unread late body. This does not join native work.
-      void fetching.then(result => { if (signal.aborted) void result.body?.cancel().catch(() => undefined); }, () => undefined);
-      // Metadata retains its logical charge until fetch settles in JavaScript.
-      // Neither this Promise nor body cancellation joins the native HTTP owner.
+      catch (error) { fetching = Promise.reject(error); }
+      // Own both outcomes before notifying an observer that can throw. Its
+      // failure makes the dispatch uncertain, so never consume a late body.
+      void fetching.then(result => {
+        if (signal.aborted || dispatchFailed) void result.body?.cancel().catch(() => undefined);
+      }, () => undefined);
+      try { options.onDispatch?.(); }
+      catch { dispatchFailed = true; }
+      // Ordinary requests retain their existing prompt failure/abort behavior.
+      // Metadata keeps both logical charges until the real JS fetch settles,
+      // including when the observer fails. This never joins native HTTP work.
+      if (dispatchFailed && extension !== 'transfer') throw new PilotClientError('offline');
       response = extension === 'transfer' ? await fetching : await abortable(fetching, signal);
+      if (dispatchFailed) throw new PilotClientError('offline');
     } catch (error) {
       check();
-      if (error instanceof PilotClientError) throw error;
+      if (error instanceof PilotClientError && !dispatchFailed) throw error;
       if (options.authenticated && !targetOnly) {
         this.publish({ status: 'offline', lastError: 'offline' });
       }
