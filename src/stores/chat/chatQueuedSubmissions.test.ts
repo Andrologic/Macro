@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
 import { chatSendFixture } from '../../test-utils/chatSendFixture';
 import { usePersistenceHealth } from '../../services/persistenceHealth';
-import { captureQueuedSubmission, loadQueuedSubmissions, saveQueuedSubmissions, QUEUED_SUBMISSIONS_STORAGE_KEY } from './chatQueuedSubmissions';
+import { captureQueuedSubmission, loadQueuedSubmissions, readQueuedSubmissions, saveQueuedSubmissions, QUEUED_SUBMISSIONS_STORAGE_KEY } from './chatQueuedSubmissions';
 
 const previousWindow = globalThis.window;
 beforeEach(() => {
@@ -61,6 +61,7 @@ describe('queued submissions local recovery', () => {
   it('preserves corrupt recovery data and reports it instead of overwriting it', () => {
     window.localStorage.setItem(QUEUED_SUBMISSIONS_STORAGE_KEY, '{broken');
     expect(loadQueuedSubmissions()).toEqual([]);
+    expect(() => readQueuedSubmissions()).toThrow();
     expect(saveQueuedSubmissions([])).toBe(false);
     expect(window.localStorage.getItem(QUEUED_SUBMISSIONS_STORAGE_KEY)).toBe('{broken');
     expect(usePersistenceHealth.getState().issues[QUEUED_SUBMISSIONS_STORAGE_KEY]).toBeDefined();

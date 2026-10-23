@@ -1,10 +1,12 @@
+import { fetchProviderWithTimeout, type ProviderHttpResponse } from './admittedHttpTransport';
+import { MacroServiceError } from '../contracts/errors';
 import type { StreamingChatOptions, ToolCall, StreamCompletionReason } from './contracts';
 import type { ReasoningEffort } from '../../types';
 import type { ToolCallingAdapter } from './toolCallingLoop';
 import { ProviderRuntimeError, classifyReasoningRejection, extractProviderErrorMessage, extractSseProviderError } from './providerErrors';
 import { resolveChatCompletionProviderProfile, buildChatCompletionMessages, validateChatCompletionMessageSequence, applyToolsToChatCompletionsRequest, chatCompletionMessagesHaveToolHistory, hasReplayableReasoningContent, appendReasoningDetails, buildAssistantChatCompletionProviderItem, buildToolChatCompletionProviderItem } from './chatCompletionsCodec';
 import { applyReasoningToChatCompletionsRequest, shouldRequestProviderReasoning } from '../providerProtocolProfiles';
-import { GENERIC_RETRY_MAX_ATTEMPTS, GENERIC_STREAM_IDLE_TIMEOUT_MS, GENERIC_REQUEST_TIMEOUT_MS, getRetryDelayMs, sleep, fetchWithTimeout, readStreamChunkWithIdleTimeout } from './httpTransport';
+import { GENERIC_RETRY_MAX_ATTEMPTS, GENERIC_STREAM_IDLE_TIMEOUT_MS, GENERIC_REQUEST_TIMEOUT_MS, getRetryDelayMs, sleep, readStreamChunkWithIdleTimeout } from './httpTransport';
 import { createSseEventParser, extractSseData } from './sse';
 import { getValidToolCalls, hasCompleteToolCallBatch } from './toolCallProtocol';
 import { logStreamingDiagnostic, classifyProviderDiagnosticCategory, emitStreamTimeline } from './streamDiagnostics';
@@ -88,6 +90,8 @@ export function createChatCompletionsAdapter(sourceOptions: StreamingChatOptions
   let emittedFirstToken = false;
   const streamTurn: ToolCallingAdapter['streamTurn'] = async ({ messages: currentMessages, tools, turnCount, onDelta, onRetry }) => {
     let consecutiveStreamRetryCount = 0;
+    let http: ProviderHttpResponse | undefined;
+    try {
     while (true) {
       let response: Response | null = null;
       let requestAttempt = 0;
@@ -121,7 +125,8 @@ export function createChatCompletionsAdapter(sourceOptions: StreamingChatOptions
             has_tool_history: chatCompletionMessagesHaveToolHistory(requestMessages),
           });
           emitGenericTimeline('provider_request_sent');
-          const candidateResponse = await fetchWithTimeout(
+          http = await fetchProviderWithTimeout(
+            options,
             `${baseUrl}/chat/completions`,
             {
               method: 'POST',
@@ -132,8 +137,14 @@ export function createChatCompletionsAdapter(sourceOptions: StreamingChatOptions
             options.signal
           );
 
+          const candidateResponse = http.response;
           if (!candidateResponse.ok) {
-            throw await extractProviderErrorMessage(candidateResponse);
+            const rejection = await extractProviderErrorMessage(candidateResponse);
+            const phase = await http.finish('uncertain');
+            if (phase !== undefined && phase !== 'no_effect') {
+              throw new MacroServiceError('CHAT_ADMISSION_UNCERTAIN', 'The provider may have accepted this request.');
+            }
+            throw rejection;
           }
 
           response = candidateResponse;
@@ -148,7 +159,7 @@ export function createChatCompletionsAdapter(sourceOptions: StreamingChatOptions
             status: error instanceof ProviderRuntimeError ? error.status : undefined,
             error_name: error instanceof Error ? error.name : 'UnknownError',
           });
-          if (error instanceof Error && error.name === 'AbortError') throw error;
+          if (error instanceof MacroServiceError || (error instanceof Error && error.name === 'AbortError')) throw error;
 
           const runtimeError =
             error instanceof ProviderRuntimeError
@@ -233,6 +244,7 @@ export function createChatCompletionsAdapter(sourceOptions: StreamingChatOptions
       let turnContent = ''; // The text generated *in this specific turn*
       let turnApiContent = '';
       let turnReasoningContent = '';
+      let receivedProviderTerminal = false;
       const turnCompletion = {
         reason: undefined as StreamCompletionReason | undefined,
       };
@@ -267,6 +279,7 @@ export function createChatCompletionsAdapter(sourceOptions: StreamingChatOptions
           return false;
         }
         if (data === '[DONE]') {
+          receivedProviderTerminal = true;
           turnCompletion.reason ??= hasCompleteToolCallBatch(toolCalls)
             ? 'completed'
             : 'incomplete';
@@ -316,6 +329,7 @@ export function createChatCompletionsAdapter(sourceOptions: StreamingChatOptions
         const message = choice?.message ?? {};
         if (typeof choice?.finish_reason === 'string') {
           const finishReason = choice.finish_reason.trim();
+          receivedProviderTerminal ||= finishReason.length > 0;
           turnCompletion.reason =
             finishReason === 'length' ||
             finishReason === 'max_tokens' ||
@@ -428,6 +442,7 @@ export function createChatCompletionsAdapter(sourceOptions: StreamingChatOptions
         activeResources.reader = null;
         activeResources.stream = null;
 
+        await http?.finish('uncertain');
         if (error instanceof Error && error.name === 'AbortError') throw error;
 
         const runtimeError =
@@ -440,6 +455,7 @@ export function createChatCompletionsAdapter(sourceOptions: StreamingChatOptions
             });
 
         if (
+          options.providerAdmission.kind !== 'globalChat' &&
           runtimeError.retryable &&
           turnContent.length === 0 &&
           getValidToolCalls(toolCalls).length === 0 &&
@@ -454,16 +470,18 @@ export function createChatCompletionsAdapter(sourceOptions: StreamingChatOptions
           continue;
         }
 
-        throw runtimeError;
+        if (options.providerAdmission.kind !== 'globalChat') throw runtimeError;
+        receivedProviderTerminal = false;
       }
 
       activeResources.reader = null;
       activeResources.stream = null;
       endThinking();
       turnCompletion.reason ??= 'incomplete';
+      const admissionOutcome = await http?.finish(receivedProviderTerminal ? 'completed' : 'uncertain');
 
       return {
-        result: { content: turnContent, toolCalls, completionReason: turnCompletion.reason },
+        result: { content: turnContent, toolCalls, completionReason: turnCompletion.reason, admissionOutcome },
         projectAssistant: (content, calls, recovering) => {
           const item = buildAssistantChatCompletionProviderItem({
             visibleContent: content, apiContent: recovering ? content : turnApiContent,
@@ -473,6 +491,9 @@ export function createChatCompletionsAdapter(sourceOptions: StreamingChatOptions
           return { items: item ? [item] : [] };
         },
       };
+    }
+    } finally {
+      await http?.finish('uncertain');
     }
   };
   const adapter: ToolCallingAdapter = {

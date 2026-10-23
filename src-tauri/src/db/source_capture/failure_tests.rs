@@ -7,6 +7,7 @@ async fn one_connection() -> (TempDir, SqlitePool, SourceCapture, Arc<AtomicI64>
 }
 async fn connections(maximum: u32) -> (TempDir, SqlitePool, SourceCapture, Arc<AtomicI64>) {
     let (dir, old, c, clock) = capture_fixture().await;
+    c.owner.set_initializing().await;
     old.close().await;
     let pool = sqlx::sqlite::SqlitePoolOptions::new()
         .min_connections(0)

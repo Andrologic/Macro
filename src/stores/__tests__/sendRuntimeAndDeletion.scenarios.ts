@@ -1855,7 +1855,8 @@ export const registerSendRuntimeAndDeletionScenarios = (
       appState.mode = 'Chat';
       context.tauriAvailable = true;
       const deferredA = createDeferred<Array<ReturnType<typeof createChatMessageRecord>>>();
-      listMessagesMock.mockImplementationOnce(async () => deferredA.promise);
+      const loadStarted = createDeferred<void>();
+      listMessagesMock.mockImplementationOnce(async () => { loadStarted.resolve(undefined); return deferredA.promise; });
       const { useChatStore } = await loadChatStore();
       useChatStore.setState(createIdleChatStoreState({
         conversations: [
@@ -1869,7 +1870,7 @@ export const registerSendRuntimeAndDeletionScenarios = (
       const sendA = useChatStore.getState().sendMessage({
         conversationId: 'chat-a', content: 'late A',
       });
-      await Promise.resolve();
+      await loadStarted.promise;
       expect(listMessagesMock).toHaveBeenCalledWith('chat-a');
       expect(useChatStore.getState().getConversationRuntime('chat-a').phase).toBe('preparing');
       useChatStore.getState().stopConversationStream('chat-a');

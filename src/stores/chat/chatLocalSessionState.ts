@@ -1,3 +1,4 @@
+import { beginChatIntent, finishChatIntent } from '../../services/chatAdmission';
 import { reportPersistenceIssue, clearPersistenceIssue } from "../../services/persistenceHealth";
 import type {
   ChatMessage,
@@ -185,6 +186,25 @@ const parseUnsavedAssistantResponse = (value: unknown): ChatMessage | null => {
   };
 };
 
+/** Admission reconciliation must inspect every saved entry using the recovery codec. */
+export const readUnsavedAssistantResponsesFromStorage = (): ChatMessage[] => {
+  if (!hasLocalStorage()) throw new Error("Local storage is unavailable.");
+  const raw = window.localStorage.getItem(UNSAVED_ASSISTANT_RESPONSES_STORAGE_KEY);
+  if (raw === null) return [];
+  if (raw.length > MAX_UNSAVED_ASSISTANT_STORAGE_LENGTH) {
+    throw new Error("Saved responses exceed the recovery limit. Original data preserved.");
+  }
+  const parsed: unknown = JSON.parse(raw);
+  if (!isRecord(parsed) || Object.keys(parsed).length > MAX_UNSAVED_ASSISTANT_RESPONSES) {
+    throw new Error("Invalid saved responses. Original data preserved.");
+  }
+  return Object.entries(parsed).map(([id, value]) => {
+    const message = parseUnsavedAssistantResponse(value);
+    if (!message || message.id !== id) throw new Error("Invalid saved response. Original data preserved.");
+    return message;
+  });
+};
+
 export const loadUnsavedAssistantResponsesFromStorage = (): ChatMessage[] => {
   if (!hasLocalStorage()) return [];
   try {
@@ -224,45 +244,30 @@ const writeUnsavedAssistantResponsesToStorage = (
   }
 };
 
-export const saveUnsavedAssistantResponseToStorage = (
-  message: ChatMessage,
-): boolean => {
-  const existing = loadUnsavedAssistantResponsesFromStorage().filter(
-    (candidate) => candidate.id !== message.id,
-  );
-  const failedMessage = parseUnsavedAssistantResponse({
-    ...message,
-    persistence_state: "failed",
-  });
-  if (!failedMessage) return false;
-  return writeUnsavedAssistantResponsesToStorage(
-    [...existing, failedMessage]
-      .sort(
-        (left, right) =>
-          new Date(left.timestamp).getTime() - new Date(right.timestamp).getTime(),
-      )
-      .slice(-MAX_UNSAVED_ASSISTANT_RESPONSES),
-  );
+export const saveUnsavedAssistantResponseToStorage = (message: ChatMessage): boolean => {
+  try {
+    const existing = readUnsavedAssistantResponsesFromStorage().filter(candidate => candidate.id !== message.id);
+    const failedMessage = parseUnsavedAssistantResponse({ ...message, persistence_state: "failed" });
+    if (!failedMessage || existing.length >= MAX_UNSAVED_ASSISTANT_RESPONSES) return false;
+    return writeUnsavedAssistantResponsesToStorage([...existing, failedMessage]);
+  } catch { return false; }
 };
 
-export const removeUnsavedAssistantResponseFromStorage = (
-  messageId: string,
-): boolean =>
-  writeUnsavedAssistantResponsesToStorage(
-    loadUnsavedAssistantResponsesFromStorage().filter(
-      (message) => message.id !== messageId,
-    ),
-  );
+export const removeUnsavedAssistantResponseFromStorage = (messageId: string): boolean => {
+  try {
+    return writeUnsavedAssistantResponsesToStorage(
+      readUnsavedAssistantResponsesFromStorage().filter(message => message.id !== messageId),
+    );
+  } catch { return false; }
+};
 
-export const clearUnsavedAssistantResponsesForConversations = (
-  conversationIds: string[],
-): boolean => {
-  const ids = new Set(conversationIds);
-  return writeUnsavedAssistantResponsesToStorage(
-    loadUnsavedAssistantResponsesFromStorage().filter(
-      (message) => !ids.has(message.conversation_id),
-    ),
-  );
+export const clearUnsavedAssistantResponsesForConversations = (conversationIds: string[]): boolean => {
+  try {
+    const ids = new Set(conversationIds);
+    return writeUnsavedAssistantResponsesToStorage(
+      readUnsavedAssistantResponsesFromStorage().filter(message => !ids.has(message.conversation_id)),
+    );
+  } catch { return false; }
 };
 
 export const parseComposerDraft = (value: unknown): PersistedComposerDraft | null => {
@@ -304,12 +309,23 @@ function validateComposerDrafts(
   }
 
   for (const [contextKey, draft] of entries) {
-    if (!contextKey || contextKey.length > MAX_SHORT_FIELD_LENGTH) {
+    if (contextKey.length > MAX_SHORT_FIELD_LENGTH ||
+        !['conversation:', 'context:'].some(prefix => contextKey.startsWith(prefix) && contextKey.slice(prefix.length).trim())) {
       throw new ComposerDraftValidationError(
         `Invalid composer draft context key. Original data preserved.`,
       );
     }
-    if (!parseComposerDraft(draft)) {
+    const knownKeys = (value: unknown, keys: string[]): boolean =>
+      isRecord(value) && Object.keys(value).every(key => keys.includes(key));
+    const parsed = parseComposerDraft(draft);
+    if (!parsed || !knownKeys(draft, ['text', 'images', 'contextRefs']) ||
+        !parsed.images.every(image => knownKeys(image, ['id', 'mimeType', 'dataUrl', 'width', 'height', 'createdAt'])) ||
+        !parsed.contextRefs.every(ref => knownKeys(ref, [
+          'id', 'kind', 'title', 'subtitle', 'skillFilePath', 'contentHash', 'path', 'relativePath',
+          'projectId', 'projectName', 'snippet', 'sourceLabel', 'url', 'conversationId', 'sourceUpdatedAt', 'location', 'source',
+        ]) && (ref.location === undefined || knownKeys(ref.location, ['kind', 'uri'])) &&
+          (ref.source === undefined || knownKeys(ref.source, ['kind', 'rootPath', 'namespace', 'rootId', 'priority', 'projectId', 'projectName', 'skillRootPath']))) ||
+        (contextKey.startsWith('conversation:') && !contextKey.slice('conversation:'.length).trim())) {
       throw new ComposerDraftValidationError(
         `Composer draft "${contextKey}" exceeds a storage limit or has invalid content. Original data preserved.`,
       );
@@ -378,43 +394,87 @@ export const loadComposerDraftsFromStorage = (): Record<
   }
 };
 
+/** Unlike UI recovery, admission must inspect the whole document or refuse. */
+export const readComposerDraftsFromStorage = (): Record<string, PersistedComposerDraft> => {
+  if (!hasLocalStorage()) throw new Error('Composer storage is unavailable.');
+  const raw = window.localStorage.getItem(COMPOSER_DRAFTS_STORAGE_KEY);
+  if (raw === null) return {};
+  const parsed: unknown = JSON.parse(raw);
+  validateComposerDrafts(parsed);
+  return parsed;
+};
+
+let composerWrites: Promise<boolean> = Promise.resolve(true);
+let composerWriterGeneration = 0;
+let composerWriterRetired = false;
+const composerFailedContexts = new Set<string>();
+export const activateComposerDraftWriter = (): void => {
+  composerWriterRetired = false;
+  composerWriterGeneration += 1;
+};
+export const drainComposerDraftWrites = async (conversationId?: string): Promise<void> => {
+  let pending: Promise<boolean>;
+  do {
+    pending = composerWrites;
+    await pending;
+  } while (pending !== composerWrites);
+  if (conversationId === undefined ? composerFailedContexts.size > 0 : composerFailedContexts.has(`conversation:${conversationId}`)) {
+    throw new Error('The composer draft has not been saved. Keep this session open.');
+  }
+};
+export const retireComposerDraftWriter = async (): Promise<void> => {
+  composerWriterRetired = true;
+  composerWriterGeneration += 1;
+  let pending: Promise<boolean>;
+  do { pending = composerWrites; await pending; } while (pending !== composerWrites);
+};
+
 export const saveComposerDraftsToStorage = (
   draftsByContextKey: Record<string, PersistedComposerDraft>,
-): boolean => {
-  if (!hasLocalStorage()) {
-    reportPersistenceIssue(
-      COMPOSER_DRAFTS_STORAGE_KEY,
-      "The composer draft could not be saved. Keep this session open.",
-    );
-    return false;
-  }
-  try {
-    validateComposerDrafts(draftsByContextKey);
-    const previous = window.localStorage.getItem(COMPOSER_DRAFTS_STORAGE_KEY);
-    if (previous !== null) {
-      validateComposerDrafts(JSON.parse(previous) as unknown);
+): Promise<boolean> => {
+  // Snapshot synchronous setters before another edit can mutate their values.
+  const next = structuredClone(draftsByContextKey);
+  const generation = composerWriterGeneration;
+  const affected = new Set(Object.keys(next));
+  const assertOwner = () => {
+    if (composerWriterRetired || generation !== composerWriterGeneration) {
+      throw new Error('Composer draft owner has retired.');
     }
-    const serialized = JSON.stringify(draftsByContextKey);
-    if (typeof serialized !== "string") {
-      throw new ComposerDraftValidationError(
-        "The composer drafts could not be serialized. Original data preserved.",
-      );
+  };
+  const write = composerWrites.then(async () => {
+    assertOwner();
+    validateComposerDrafts(next);
+    const previous = readComposerDraftsFromStorage();
+    Object.keys(previous).forEach(key => affected.add(key));
+    const changed = [...new Set([...Object.keys(previous), ...Object.keys(next)])]
+      .filter(key => JSON.stringify(previous[key]) !== JSON.stringify(next[key]));
+    const admissions = [];
+    for (const key of changed) {
+      if (!key.startsWith('conversation:')) continue;
+      // Native classification preserves project/task scopes and deleted-chat
+      // copy cleanup. A context without a conversation grants no chat authority.
+      admissions.push({ key, admission: await beginChatIntent({
+        conversationId: key.slice('conversation:'.length), kind: 'recovery', id: 'composer-draft',
+      }, Object.hasOwn(next, key) ? 'retain' : 'remove') });
     }
-    window.localStorage.setItem(
-      COMPOSER_DRAFTS_STORAGE_KEY,
-      serialized,
-    );
+    assertOwner();
+    if (changed.length > 0) window.localStorage.setItem(COMPOSER_DRAFTS_STORAGE_KEY, JSON.stringify(next));
+    // Copy removal precedes its receipt; a lost ACK leaves a durable blocker.
+    for (const { key, admission } of admissions) {
+      if (!Object.hasOwn(next, key)) await finishChatIntent(admission);
+    }
+    composerFailedContexts.clear();
     clearPersistenceIssue(COMPOSER_DRAFTS_STORAGE_KEY);
     return true;
-  } catch (error) {
-    reportPersistenceIssue(
-      COMPOSER_DRAFTS_STORAGE_KEY,
-      error instanceof ComposerDraftValidationError
-        ? error.message
-        : "The composer draft could not be saved. Keep this session open.",
-    );
+  }).catch(error => {
+    affected.forEach(key => composerFailedContexts.add(key));
+    reportPersistenceIssue(COMPOSER_DRAFTS_STORAGE_KEY,
+      error instanceof ComposerDraftValidationError ? error.message
+        : 'The composer draft could not be saved. Keep this session open.');
     return false;
-  }
+  });
+  composerWrites = write;
+  return write;
 };
 
 const isQuestionnaireDraft = (
@@ -437,41 +497,71 @@ const isQuestionnaireDraft = (
   );
 };
 
-export const loadQuestionnaireDraftsFromStorage = (): Record<
-  string,
-  ConversationQuestionnaireDraft
-> => {
+/** Admission reads must preserve an unknown document instead of certifying it empty. */
+export const readQuestionnaireDraftsFromStorage = (): Record<string, ConversationQuestionnaireDraft> => {
+  if (!hasLocalStorage()) throw new Error('Questionnaire storage is unavailable.');
+  const raw = window.localStorage.getItem(QUESTIONNAIRE_DRAFTS_STORAGE_KEY);
+  if (raw === null) return {};
+  const parsed: unknown = JSON.parse(raw);
+  if (!isRecord(parsed) || !Object.values(parsed).every(isQuestionnaireDraft)) {
+    throw new Error('Saved questionnaire drafts are invalid. Original data preserved.');
+  }
+  return parsed as Record<string, ConversationQuestionnaireDraft>;
+};
+
+export const loadQuestionnaireDraftsFromStorage = (): Record<string, ConversationQuestionnaireDraft> => {
   if (!hasLocalStorage()) return {};
   try {
-    const raw = window.localStorage.getItem(QUESTIONNAIRE_DRAFTS_STORAGE_KEY);
-    if (!raw) return {};
-    const parsed = JSON.parse(raw) as unknown;
-    if (!isRecord(parsed)) {
-      return {};
-    }
-    return Object.fromEntries(
-      Object.entries(parsed).filter(([, value]) =>
-        isQuestionnaireDraft(value),
-      ),
-    ) as Record<string, ConversationQuestionnaireDraft>;
-  } catch {
-    return {};
-  }
+    const parsed: unknown = JSON.parse(window.localStorage.getItem(QUESTIONNAIRE_DRAFTS_STORAGE_KEY) ?? '{}');
+    return isRecord(parsed) ? Object.fromEntries(Object.entries(parsed).filter(([, value]) => isQuestionnaireDraft(value))) as Record<string, ConversationQuestionnaireDraft> : {};
+  } catch { return {}; }
+};
+
+let questionnaireWrites: Promise<void> = Promise.resolve();
+let questionnaireWriterGeneration = 0;
+let questionnaireWriterRetired = false;
+export const activateQuestionnaireDraftWriter = (): void => { questionnaireWriterRetired = false; questionnaireWriterGeneration += 1; };
+export const retireQuestionnaireDraftWriter = async (): Promise<void> => {
+  questionnaireWriterRetired = true;
+  questionnaireWriterGeneration += 1;
+  await drainQuestionnaireDraftWrites();
+};
+export const drainQuestionnaireDraftWrites = async (): Promise<void> => {
+  let pending: Promise<void>;
+  do { pending = questionnaireWrites; await pending.catch(() => undefined); } while (pending !== questionnaireWrites);
 };
 
 export const saveQuestionnaireDraftsToStorage = (
   draftsByConversationId: Record<string, ConversationQuestionnaireDraft>,
-) => {
-  if (!hasLocalStorage()) return;
-  try {
-    window.localStorage.setItem(
-      QUESTIONNAIRE_DRAFTS_STORAGE_KEY,
-      JSON.stringify(draftsByConversationId),
-    );
+): Promise<void> => {
+  const next = structuredClone(draftsByConversationId);
+  const generation = questionnaireWriterGeneration;
+  const assertOwner = () => {
+    if (questionnaireWriterRetired || generation !== questionnaireWriterGeneration) throw new Error('Questionnaire draft owner has retired.');
+  };
+  const write = questionnaireWrites.catch(() => undefined).then(async () => {
+    assertOwner();
+    const previous = readQuestionnaireDraftsFromStorage();
+    const changed = [...new Set([...Object.keys(previous), ...Object.keys(next)])]
+      .filter(id => JSON.stringify(previous[id]) !== JSON.stringify(next[id]));
+    const admissions = [];
+    for (const conversationId of changed) {
+      admissions.push({ conversationId, admission: await beginChatIntent({ conversationId,
+        kind: 'recovery', id: 'questionnaire-draft' }, Object.hasOwn(next, conversationId) ? 'retain' : 'remove') });
+    }
+    assertOwner();
+    window.localStorage.setItem(QUESTIONNAIRE_DRAFTS_STORAGE_KEY, JSON.stringify(next));
+    for (const { conversationId, admission } of admissions) {
+      if (!Object.hasOwn(next, conversationId)) await finishChatIntent(admission);
+    }
     clearPersistenceIssue(QUESTIONNAIRE_DRAFTS_STORAGE_KEY);
-  } catch {
-    reportPersistenceIssue(QUESTIONNAIRE_DRAFTS_STORAGE_KEY, "The questionnaire draft could not be saved. Keep this session open.");
-  }
+  });
+  questionnaireWrites = write;
+  // Existing synchronous UI setters remain optimistic; their durable writer is
+  // admitted and joined separately. Failed writes remain visible to reconciliation.
+  void write.catch(() => reportPersistenceIssue(QUESTIONNAIRE_DRAFTS_STORAGE_KEY,
+    "The questionnaire draft could not be saved. Keep this session open."));
+  return write;
 };
 
 export const MAX_MESSAGE_IMAGES_STORAGE_LENGTH = 40_000_000;

@@ -1,6 +1,6 @@
 import type { ChatToolExecutionPorts, PendingToolApprovalResolution } from "./chatToolExecutionContracts";
 import type { PendingToolApproval } from "../types";
-import { persistToolApprovalRecovery } from "./toolApprovalRecovery";
+import { admitToolApprovalRecovery, persistToolApprovalRecovery } from "./toolApprovalRecovery";
 
 /** Keep the recovery action until both the closed trace and its marker are durable. */
 export async function requestChatToolApproval({
@@ -22,7 +22,9 @@ export async function requestChatToolApproval({
       if (ports.approvals.pending(conversationId)?.recoveryState === "interrupted") {
         return { kind: "deny", reason: "Resolve the interrupted tool request before continuing." } as PendingToolApprovalResolution;
       }
-      // Persist the transcript first. The recovery marker contains identifiers only.
+      // The durable blocker precedes both the trace and the aggregate recovery copy.
+      await admitToolApprovalRecovery(conversationId, pendingApproval);
+      if (!isCurrentOperation()) return { kind: "expired" } as PendingToolApprovalResolution;
       ports.runtime.updateTrace(assistantMessageId, pendingApproval.toolCallId, "pending_approval", { tool_name: pendingApproval.toolId, detail: pendingApproval.detail });
       const assistantMessage = ports.runtime.messages(conversationId).find((message) => message.id === assistantMessageId);
       try {

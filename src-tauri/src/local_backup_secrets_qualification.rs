@@ -231,10 +231,11 @@ async fn secret_consumer_child() {
     let attached = mode == "rollback";
     if attached && root.join("expected-raw.json").exists() {
         let expected = load_archive(&root.join("expected-raw.json")).unwrap();
-        assert_raw(
+        super::qualification::assert_held_files(
             &capture_raw(&data, &config, BTreeMap::new()).unwrap(),
             &expected,
-        );
+        )
+        .await;
         for name in expected.files.keys() {
             let path = raw_destination(name, &data, &config).unwrap();
             private(&path);

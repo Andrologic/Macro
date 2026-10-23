@@ -1,3 +1,4 @@
+import type { ChatIntentAdmission, ChatIntentReceipt } from "./ipc/chatAdmission";
 import type { ConversationRuntimeState } from "../types";
 import { isConversationRuntimeActive } from "../domains/chat/runtimeState";
 
@@ -26,7 +27,8 @@ export function createChatTurnRuntime(ports: {
   const generations = new Map<string, symbol>();
   const completions = new Map<string, ChatTurnIdentity>();
   const streams = new Map<string, Promise<void>>();
-  const steers = new Map<string, Array<{ sessionId: string | null; turnId: string | null; message: import("./streamingChat").StreamMessage }>>();
+  const steers = new Map<string, Array<{ sessionId: string | null; turnId: string | null; message: import("./streamingChat").StreamMessage; admission?: ChatIntentAdmission }>>();
+  const consumedSteers = new Map<string, Array<{ sessionId: string; turnId: string | null; receipt: ChatIntentReceipt }>>();
   const read = ports.state.read;
   const set = ports.state.project;
   const matches = (identity: ChatTurnIdentity, phase?: ConversationRuntimeState["phase"]) => {
@@ -51,6 +53,10 @@ export function createChatTurnRuntime(ports: {
   };
   return {
     read, set, update, matches, ownsCompletion,
+    pendingSteerIds: (id: string): string[] => [
+      ...(steers.get(id) ?? []).map(item => item.admission?.kind === 'globalChat' ? item.admission.receipt.identity.id : 'pending-steer'),
+      ...(consumedSteers.get(id) ?? []).map(item => item.receipt.identity.id),
+    ],
     assertCanSend: (id: string, input: { available: boolean; hasUnsavedResponse: boolean }) => {
       if (!input.available || ports.state.isDeleted(id)) throw new Error("This conversation is no longer available.");
       if (input.hasUnsavedResponse) throw new Error("Save or delete the unsaved assistant response before sending another message.");
@@ -59,8 +65,8 @@ export function createChatTurnRuntime(ports: {
     latestSession: (id: string) => sessions.get(id),
     rememberSession: (id: string, session: string) => { sessions.set(id, session); },
     forgetSession: (id: string) => { sessions.delete(id); },
-    forget: (id: string) => { sessions.delete(id); generations.delete(id); completions.delete(id); steers.delete(id); },
-    reset: () => { sessions.clear(); generations.clear(); completions.clear(); steers.clear(); },
+    forget: (id: string) => { sessions.delete(id); generations.delete(id); completions.delete(id); steers.delete(id); consumedSteers.delete(id); },
+    reset: () => { sessions.clear(); generations.clear(); completions.clear(); steers.clear(); consumedSteers.clear(); },
     transfer: (previous: string, next: string, session: string) => {
       if (ports.state.isDeleted(next) || sessions.get(previous) !== session) return false;
       const existing = sessions.get(next);
@@ -127,6 +133,7 @@ export function createChatTurnRuntime(ports: {
         if (streams.get(id) !== promise) return;
         streams.delete(id);
         steers.delete(id);
+        consumedSteers.delete(id);
         queueMicrotask(() => ports.settled(id));
       };
       void promise.then(release, release);
@@ -142,20 +149,28 @@ export function createChatTurnRuntime(ports: {
       }
     },
     enqueueSteer: (id: string, message: import("./streamingChat").StreamMessage,
-      expected: Pick<ConversationRuntimeState, "sessionId" | "turnId"> = read(id)) => {
+      expected: Pick<ConversationRuntimeState, "sessionId" | "turnId"> = read(id), admission?: ChatIntentAdmission) => {
       const current = read(id);
       if (ports.state.isDeleted(id) || !isConversationRuntimeActive(current) ||
           current.phase === 'persisting' || !expected.sessionId || !expected.turnId ||
           current.sessionId !== expected.sessionId || current.turnId !== expected.turnId) return false;
-      steers.set(id, [...(steers.get(id) ?? []), { sessionId: expected.sessionId, turnId: expected.turnId, message }]);
+      steers.set(id, [...(steers.get(id) ?? []), { sessionId: expected.sessionId, turnId: expected.turnId, message, admission }]);
       return true;
     },
     consumeSteers: (identity: ChatTurnIdentity) => {
       if (!matches(identity, "streaming")) return [];
       const pending = steers.get(identity.conversationId) ?? [];
       steers.delete(identity.conversationId);
-      return pending.filter(item => item.sessionId === identity.sessionId && item.turnId === identity.turnId).map(item => item.message);
+      const selected = pending.filter(item => item.sessionId === identity.sessionId && item.turnId === identity.turnId);
+      const receipts = selected.flatMap(item => item.admission?.kind === 'globalChat'
+        ? [{ sessionId: identity.sessionId, turnId: identity.turnId, receipt: item.admission.receipt }] : []);
+      consumedSteers.set(identity.conversationId, [...(consumedSteers.get(identity.conversationId) ?? []), ...receipts]);
+      return selected.map(item => item.message);
     },
+    providerSteerReceipts: (identity: ChatTurnIdentity): ChatIntentReceipt[] =>
+      (consumedSteers.get(identity.conversationId) ?? [])
+        .filter(item => item.sessionId === identity.sessionId && item.turnId === identity.turnId)
+        .map(item => item.receipt),
   };
 }
 

@@ -1,3 +1,4 @@
+import type { ChatAdmissionContext, ProviderAdmission } from './ipc/chatAdmission';
 import { safeProviderFailure } from './chatErrorPresentation';
 import { snapshotScopedMcpServers } from "./mcp/runtimeSnapshot";
 import { createChatToolDispatch, type ChatToolDispatchPorts } from "./chatToolDispatch";
@@ -21,6 +22,11 @@ const OVERFLOW_RECOVERY_FAILURE_MESSAGE = "The selected model still rejected thi
 type Lifecycle = ChatStreamLifecycleRuntimeAdapters;
 export interface ChatAssistantStreamPorts {
  owner: ChatTurnRuntime;
+ admission: {
+  reserveResponse(context: ChatAdmissionContext, conversationId: string, messageId: string): Promise<void>;
+  finishResponse(context: ChatAdmissionContext, conversationId: string, message: ChatMessage): Promise<void>;
+  closePreparation(context: ChatAdmissionContext, conversationId: string): Promise<void>;
+ };
  isDeleted(id: string): boolean;
  messages: {
   get(id: string): ChatMessage | undefined;
@@ -35,7 +41,7 @@ export interface ChatAssistantStreamPorts {
   adapters: ChatPersistenceAdapters;
   complete: Lifecycle["persistAssistantStreamResult"];
   partial: Lifecycle["persistAssistantPartialStreamResult"];
-  failed(params: {assistantMessage: ChatMessage; message: string; sessionId: string; turnId: string | null}): void;
+  failed(params: {assistantMessage: ChatMessage; message: string; sessionId: string; turnId: string | null; providerAdmission: ProviderAdmission}): void;
   sync(mode: AppMode, conversationId: string, plan?: {planId: string; targetBranch: string}): Promise<void>;
  };
  tasks: { status: Lifecycle["getTaskStatus"]; failed(id: string, pilotActionToken?: symbol): Promise<void>; awaitingResponse(id: string, pilotActionToken?: symbol): Promise<void> | void };
@@ -59,8 +65,21 @@ export interface ChatAssistantStreamPorts {
  transport: ChatStreamTransport;
 }
 
+interface AdmittedStreamGroup {
+  active: Set<symbol>;
+  effects: Set<Promise<unknown>>;
+  done: Promise<void>;
+  finish?: () => Promise<void>;
+  completeMetadata?: () => Promise<void>;
+  finishing?: Promise<void>;
+  settle(): void;
+}
+
 export function createAssistantStreamRuntime(ports: ChatAssistantStreamPorts) {
-  const start = (input: AssistantStreamLaunch): void => {
+  // Overflow recovery shares the same admitted parent. Its predecessor still
+  // owns callbacks and writes until both physical lifecycles have returned.
+  const admittedStreams = new Map<string, AdmittedStreamGroup>();
+  const start = async (input: AssistantStreamLaunch): Promise<void> => {
     // Capture execution authority before transport callbacks can suspend or UI selections change.
     const params: AssistantStreamLaunch = {
       ...input,
@@ -83,11 +102,33 @@ export function createAssistantStreamRuntime(ports: ChatAssistantStreamPorts) {
       turnId: streamTurnId, assistantMessageId: params.assistantMessage.id };
     const abortController = params.abortController ?? new AbortController();
     if (abortController.signal.aborted) {
-      return;
+      throw new DOMException('Assistant preparation was cancelled before dispatch.', 'AbortError');
+    }
+    if (params.providerAdmission.kind === 'globalChat') {
+      await ports.admission.reserveResponse(params.providerAdmission.context, params.conversationId, params.assistantMessage.id);
     }
     const shouldAcceptStreamUpdate = ports.owner.claimStream(identity, abortController);
-    if (!shouldAcceptStreamUpdate) return;
+    if (!shouldAcceptStreamUpdate) throw new Error("Assistant preparation no longer owns this turn.");
+    const admissionHandle = params.providerAdmission.kind === 'globalChat' ? params.providerAdmission.context.handle : null;
+    let group = admissionHandle ? admittedStreams.get(admissionHandle) : undefined;
+    if (group?.finishing) throw new Error('Chat admission is already finalizing.');
+    if (admissionHandle && !group) {
+      let settle!: () => void;
+      const done = new Promise<void>(resolve => { settle = resolve; });
+      group = { active: new Set(), effects: new Set(), done, settle, completeMetadata: params.completeMetadata };
+
+    }
+    const pendingEffects = group?.effects ?? new Set<Promise<unknown>>();
+    const trackEffect = <T>(pending: Promise<T>): Promise<T> => {
+      pendingEffects.add(pending);
+      void pending.then(() => pendingEffects.delete(pending), () => pendingEffects.delete(pending));
+      return pending;
+    };
+    const drainEffects = async () => {
+      while (pendingEffects.size) await Promise.allSettled([...pendingEffects]);
+    };
     const operation: FrozenToolCallContext = Object.freeze({
+          providerAdmission: params.providerAdmission,
           architectPlanAtSend: params.architectPlanAtSend,
           conversationId: params.conversationId,
           sessionId: params.sessionId,
@@ -258,6 +299,7 @@ export function createAssistantStreamRuntime(ports: ChatAssistantStreamPorts) {
       try {
         const streamLaunch = await ports.prepare({
           turnCapabilities: params,
+          providerAdmission: params.providerAdmission,
           conversationId: params.conversationId,
           replyToMessageId: params.replyToMessageId,
           userContent: params.userContent,
@@ -318,7 +360,7 @@ export function createAssistantStreamRuntime(ports: ChatAssistantStreamPorts) {
                 }
               : runtime,
         );
-        start({
+        await start({
           ...params,
           messagesForRequest: streamLaunch.messagesForRequest,
           contextDiagnosticsBaselineSeed:
@@ -429,19 +471,21 @@ export function createAssistantStreamRuntime(ports: ChatAssistantStreamPorts) {
         },
         clearLiveStreamContextEstimate: ports.diagnostics.clear,
         refreshConversationContextDiagnostics: ports.diagnostics.refresh,
-        persistAssistantStreamResult: ports.persistence.complete,
-        persistAssistantPartialStreamResult: ports.persistence.partial,
+        persistAssistantStreamResult: (...args) => trackEffect(ports.persistence.complete(...args)),
+        persistAssistantPartialStreamResult: (...args) => trackEffect(ports.persistence.partial(...args)),
         consolidatePendingToolBoundaryCompactionAfterPersistence,
-        syncMacroMetadataAfterStream: (mode, conversationId) => ports.persistence.sync(mode, conversationId, params.architectPlanAtSend),
+        syncMacroMetadataAfterStream: (mode, conversationId) => trackEffect(ports.persistence.sync(mode, conversationId, params.architectPlanAtSend)),
         setCompletionPersistenceError: ({ message }) => {
           ports.owner.failCompletion(identity, () => {
             const assistantMessage = ports.messages.get(identity.assistantMessageId);
             if (assistantMessage?.role === "assistant") ports.persistence.failed({
-              assistantMessage, message, sessionId: identity.sessionId, turnId: identity.turnId,
+              assistantMessage, message, sessionId: identity.sessionId, turnId: identity.turnId, providerAdmission: params.providerAdmission,
             });
           });
         },
-        clearCompletionPersistenceOwnership: () => ports.owner.releaseCompletion(identity),
+        clearCompletionPersistenceOwnership: () => {
+          if (params.providerAdmission.kind !== 'globalChat') ports.owner.releaseCompletion(identity);
+        },
         maybeMarkImplementTaskFailedAfterStreamError,
         tryRecoverFromOverflow,
         removeEmptyAssistantPlaceholder: ports.messages.removeEmpty,
@@ -481,8 +525,34 @@ export function createAssistantStreamRuntime(ports: ChatAssistantStreamPorts) {
       },
     });
 
+    const dispatchTool = createChatToolDispatch(operation, ports.tools, shouldAcceptStreamUpdate, finalizeReplayRecoveryAfterProgress, params.mcpTools);
+    if (group) group.finish = async () => {
+          const admission = params.providerAdmission;
+          if (admission.kind !== 'globalChat') return;
+          const message = ports.messages.get(params.assistantMessage.id);
+          try {
+            // A failed save remains under its existing explicit recovery flow.
+            if (message?.persistence_state === 'failed' || message?.persistence_state === 'retrying') return;
+            if (message) await ports.admission.finishResponse(admission.context, params.conversationId, message);
+            else await ports.admission.closePreparation(admission.context, params.conversationId);
+          } catch (error) {
+            if (ports.owner.latestSession(params.conversationId) === params.sessionId) {
+              ports.owner.set(params.conversationId, {
+                phase: 'error', sessionId: params.sessionId, turnId: streamTurnId,
+                assistantMessageId: message?.id ?? null, abortController: null,
+                lastError: toServiceError(error).message, lastErrorOrigin: 'macro', lastErrorDisplayTarget: 'composer',
+              });
+            }
+          } finally {
+            ports.owner.releaseCompletion(identity);
+          }
+    };
+    const streamTicket = Symbol();
+    group?.active.add(streamTicket);
+    if (group && admissionHandle) admittedStreams.set(admissionHandle, group);
     const streamPromise = runAssistantStream({
       streamChatImpl: ports.transport,
+      providerAdmission: params.providerAdmission,
       conversationId: params.conversationId,
       mode: params.modeAtSend,
       internalAgentProfile: params.internalAgentProfile,
@@ -550,7 +620,7 @@ export function createAssistantStreamRuntime(ports: ChatAssistantStreamPorts) {
         const message = ports.messages.get(params.assistantMessage.id);
         if (message) {
           try {
-            await ports.persistence.partial(message);
+            await trackEffect(ports.persistence.partial(message));
           } catch (error) {
             console.warn("Failed to persist generation attempts during stream:", error);
           }
@@ -568,6 +638,7 @@ export function createAssistantStreamRuntime(ports: ChatAssistantStreamPorts) {
         return [...compactedMessages, ...ports.owner.consumeSteers(identity)];
       },
       consumePendingSteers: () => shouldAcceptStreamUpdate() ? ports.owner.consumeSteers(identity) : [],
+      providerSteerReceipts: () => ports.owner.providerSteerReceipts(identity),
       onLiveContextUpdate: (snapshot) => {
         if (!shouldAcceptStreamUpdate()) {
           return;
@@ -589,9 +660,29 @@ export function createAssistantStreamRuntime(ports: ChatAssistantStreamPorts) {
           elapsedMs: event.elapsed_ms,
         });
       },
-      onToolCall: createChatToolDispatch(operation, ports.tools, shouldAcceptStreamUpdate, finalizeReplayRecoveryAfterProgress, params.mcpTools),
+      onToolCall: (...args) => trackEffect(dispatchTool(...args)),
     });
-    ports.owner.track(params.conversationId, streamPromise);
+    const finished = params.providerAdmission.kind === 'globalChat'
+      ? streamPromise.finally(async () => {
+          const shared = group!;
+          shared.active.delete(streamTicket);
+          if (shared.active.size) return shared.done;
+          await drainEffects();
+          if (shared.active.size) return shared.done;
+          shared.finishing ??= (async () => {
+            try {
+              if (shared.completeMetadata) await Promise.allSettled([Promise.resolve().then(shared.completeMetadata)]);
+              await shared.finish!();
+            }
+            finally {
+              if (admissionHandle && admittedStreams.get(admissionHandle) === shared) admittedStreams.delete(admissionHandle);
+              shared.settle();
+            }
+          })();
+          await shared.finishing;
+        })
+      : streamPromise;
+    ports.owner.track(params.conversationId, finished);
   };
   return { start };
 }

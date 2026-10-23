@@ -93,3 +93,18 @@ transaction, preserving their timestamps and application data. Canonical
 versions 6 through 9 are then supplied. The historical Pilot version 5 stamp
 is reconciled with the frozen runtime schema before becoming the canonical
 version 5. Failure rolls back the entire transition.
+
+Version 17 adds local global-chat ownership and a durable operation journal.
+Ownership survives transcript deletion. Ordinary writers reject frozen, ceded,
+restored, or removed owners; a deleted chat ID cannot be recreated. An accepted
+replacement of an open chat gets a new incarnation. The guards use actual
+REPLACE deletions, so native connections enable `recursive_triggers`. Their
+configuration check requires `trusted_schema=ON`; validation rejects OFF rather
+than changing that setting. Ready attests the exact admission schema.
+
+Official restoration migrates the schema and installs read-only ownership in
+one transaction before clearing its restore marker. This path does not seed
+provider settings. Normal startup retains its provider seeding and reconciles
+unfinished local operations as unknown. These tables expose no transfer command
+and do not activate an inactive import. Provider and browser admission still
+require their runtime integration.

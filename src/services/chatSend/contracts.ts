@@ -1,3 +1,4 @@
+import type { ChatAdmissionContext, ChatIntentReceipt, ProviderAdmission } from '../ipc/chatAdmission';
 import type {
   AgentType, AppMode, ChatMessage, ProviderConfig,
   ReasoningEffort, StandaloneTaskLaunchStep,
@@ -31,6 +32,8 @@ export interface ChatSendInput {
   contextRefs?: ChatMessage['context_refs'];
   /** Stable identity used to reconcile a deferred send after a restart. */
   submissionTurnId?: string;
+  /** Captured local questionnaire receipt; never persisted or sent to a provider. */
+  questionIntent?: ChatIntentReceipt;
   pilotTarget?: ({ mode: 'Chat'; taskId?: never } | { mode?: never; taskId: string }) & {
     actionToken: symbol;
     beforeEffect?: () => Promise<void>;
@@ -98,11 +101,16 @@ export interface SendModel {
 }
 
 export type StartSendStream = PrepareAssistantStreamParams & Pick<AssistantStreamLaunch,
-  'sessionId' | 'assistantMessage' | 'architectPlanAtSend' | 'abortController' | 'pilotActionToken'>;
+  'sessionId' | 'assistantMessage' | 'architectPlanAtSend' | 'abortController' | 'pilotActionToken' | 'completeMetadata'>;
 
 /** Ports expose domain operations, never a store or a generic state getter. */
 export interface ChatSendPorts<Task extends SendTask, Recovery, Launch> {
   owner: ChatSendOwner;
+  admission: {
+    begin(conversationId: string, turnId: string, attemptId: string): Promise<Exclude<ProviderAdmission, { kind: 'utility' }>>;
+    closePreparation(context: ChatAdmissionContext, conversationId: string): Promise<void>;
+    handoffQuestion(context: ChatAdmissionContext, conversationId: string, responseMessageId: string, receipt: ChatIntentReceipt): Promise<void>;
+  };
   messages: {
     persistence: ChatPersistenceAdapters;
     onUserPersisted?(message: ChatMessage): void;
@@ -125,7 +133,7 @@ export interface ChatSendPorts<Task extends SendTask, Recovery, Launch> {
     materializeArchitectConversation(conversationId: string): Promise<string>;
     bindArchitectConversation(params: { architectPlan: ArchitectPlanAtSend; conversationId: string }): Promise<boolean>;
     syncArchitectMetadata(params: { branchName: string; planId: string; conversationId: string; reason: 'metadata_prefix' }): Promise<void>;
-    generateMetadata(params: SendModel & { conversationId: string; firstUserContent: string; architectPlan?: ArchitectPlanAtSend }): Promise<void>;
+    generateMetadata(params: SendModel & { providerAdmission: ProviderAdmission; signal: AbortSignal; conversationId: string; firstUserContent: string; architectPlan?: ArchitectPlanAtSend }): Promise<void>;
   };
   configuration: {
     load(params: { projectIds: string[]; focusProjectId: string | null; mode: AppMode }): Promise<ScopedTurnConfiguration | null>;
@@ -159,6 +167,6 @@ export interface ChatSendPorts<Task extends SendTask, Recovery, Launch> {
   };
   stream: {
     prepare(params: PrepareAssistantStreamParams): Promise<Launch>;
-    start(params: StartSendStream, launch: Launch): void;
+    start(params: StartSendStream, launch: Launch): void | Promise<void>;
   };
 }

@@ -1,3 +1,4 @@
+import { activateComposerDraftWriter, drainComposerDraftWrites } from './chat/chatLocalSessionState';
 import { reservePilotAction } from '../services/macroPilot/actionReservations';
 import { createGitCommitDto } from '../test-utils/gitCommit';
 import { loadQueuedSubmissions } from './chat/chatQueuedSubmissions';
@@ -742,6 +743,7 @@ let chatSnapshotMessages: Array<{
   content: string;
   created_at: string;
   tool_traces_json?: string | null;
+  turn_id?: string | null;
 }> = [];
 type ArchitectPlanConversationSyncRecord = {
   conversation_id: string;
@@ -893,6 +895,11 @@ const sendChatNonStreamingMock = mock((async (
     sendChatNonStreamingOnceImpls.shift() ?? sendChatNonStreamingImpl;
   return implementation(...args);
 }) as SendChatNonStreaming);
+let responseRecoveryError: string | undefined;
+let composerIntentGate: (() => Promise<void>) | undefined;
+const composerAdmissions: Array<{ conversationId: string; mutation: string }> = [];
+const retireComposerBrowserMock = mock(async () => {});
+const admissionInspections: import('../services/ipc/chatAdmission').ChatBrowserInspection[] = [];
 let syntheticToolCallId = 0;
 const streamChatMock = mock(async (options: {
   onToolCall?: (name: string, args: Record<string, unknown>, id?: string) => Promise<unknown>;
@@ -1862,10 +1869,64 @@ const registerUseChatStoreMocks = async () => {
     ...actualPreferences,
   }));
 
+  // These store tests replace transports and persistence with ports, including
+  // browser-only scenarios. They do not establish native admission authority.
+  mock.module('../services/chatAdmission', () => ({
+    beginChatAdmission: async (conversationId: string, turnId: string, attemptId: string) => {
+      if (!conversationId || !turnId || !attemptId) throw new Error('Missing admission identity in store fixture');
+      return { kind: 'globalChat' as const, context: { handle: crypto.randomUUID(), runtime: 'store-unit-runtime' } };
+    },
+    closeChatPreparation: async () => undefined,
+    reserveChatResponse: async (context: { handle: string; runtime: string }, conversationId: string, messageId: string) => {
+      if (!context.handle || !context.runtime || !conversationId || !messageId) throw new Error('Missing response reservation identity');
+    },
+    responseCopyAdmission: (messageId: string, admission: { kind: string }) => {
+      if (!messageId || !['globalChat', 'conversation'].includes(admission.kind)) throw new Error('Missing response copy authority');
+      return admission;
+    },
+    finishChatResponse: async (_context: unknown, _conversationId: string, _message: unknown, remove: () => boolean) => {
+      if (!remove()) throw new Error('The saved recovery copy could not be removed.');
+    },
+    recoverChatResponse: async (_message: unknown, persist: () => Promise<void>, remove: () => boolean) => {
+      if (responseRecoveryError) throw new Error(responseRecoveryError);
+      await persist();
+      if (!remove()) throw new Error('The saved recovery copy could not be removed.');
+    },
+    discardChatResponseCopy: async (_message: unknown, remove: () => boolean) => {
+      if (!remove()) throw new Error('The saved recovery copy could not be removed.');
+    },
+    retireChatBrowser: retireComposerBrowserMock,
+    ensureChatBrowser: async () => 'store-unit-runtime',
+    beginChatIntent: async (identity: { conversationId: string; kind: string; id: string }, mutation = 'retain') => {
+      if (identity.id === 'composer-draft') {
+        composerAdmissions.push({ conversationId: identity.conversationId, mutation });
+        await composerIntentGate?.();
+      }
+      if (!identity.conversationId || !identity.kind || !identity.id) throw new Error('Missing storage intent identity');
+      return { kind: 'globalChat' as const, receipt: { operationId: crypto.randomUUID(), runtime: 'store-unit-runtime', revision: 0, identity } };
+    },
+    finishChatIntent: async () => undefined,
+  }));
   mock.module('../services/tauriIpc', () => ({
     ...actualTauriIpc,
     gitStatus: conflictGitStatusMock,
     isTauriAvailable: () => tauriAvailable,
+    chatAdmissionFinishCompaction: async () => undefined,
+    chatAdmissionBeginReconciliation: async (runtime: string, conversationId: string) => {
+      if (runtime !== 'store-unit-runtime' || !conversationId) throw new Error('Missing browser inspection owner');
+      return 'inspection:' + conversationId;
+    },
+    chatAdmissionCompleteReconciliation: async (runtime: string, handle: string, observed: import('../services/ipc/chatAdmission').ChatBrowserInspection) => {
+      if (runtime !== 'store-unit-runtime' || !handle.startsWith('inspection:') ||
+          !['queue','unsaved','approvals','questions','drafts','steers'].every(key => Array.isArray(observed[key as keyof typeof observed]))) throw new Error('Incomplete browser inspection');
+      admissionInspections.push(structuredClone(observed));
+      if (Object.values(observed).some(entries => entries.length)) throw new Error('Browser intentions pending');
+    },
+    chatAdmissionCompleteQuestionHandoff: async (context: { handle: string; runtime: string }, conversationId: string,
+      responseMessageId: string, receipt: import('../services/ipc/chatAdmission').ChatIntentReceipt) => {
+      if (!context.handle || !context.runtime || !responseMessageId || receipt.identity.kind !== 'question' ||
+          receipt.identity.conversationId !== conversationId) throw new Error('Missing explicit questionnaire handoff');
+    },
     conversationMetadata: async () => chatSnapshotConversations.map(c => ({ conversation_id: c.id, revision: 1,
       archived: Array.isArray(nativePreferenceValues.chatArchivedConversationIds) && nativePreferenceValues.chatArchivedConversationIds.includes(c.id),
       response_revision: 0, read_revision: 0, pending_tool: false, question_message_id: null })),
@@ -1936,6 +1997,21 @@ const registerUseChatStoreMocks = async () => {
     deleteConversations: deleteConversationsMock,
     dbGetAppSetting: dbGetAppSettingMock,
     dbSetAppSetting: dbSetAppSettingMock,
+    // Unit IO port. Native SQLite tests prove the reserved writer's admission and scope checks.
+    chatAdmissionWriteApprovalRegistry: async (conversationId: string,
+      admission: import('../services/ipc/chatAdmission').ChatIntentAdmission,
+      expected: string | null, value: string | null) => {
+      if (!conversationId || !admission || admission.kind !== 'globalChat' ||
+          admission.receipt.identity.conversationId !== conversationId || admission.receipt.identity.kind !== 'approval') {
+        throw new Error('Missing explicit approval admission');
+      }
+      const key = 'toolApprovalRecovery:v1';
+      const current = appSettingValues.get(key) ?? null;
+      if (current === value) return;
+      if (current !== expected) throw new Error('Stale approval registry');
+      if (value === null) await dbDeleteAppSettingMock(key);
+      else await dbSetAppSettingMock({ key, valueJson: value });
+    },
     dbCompareAndSwapAppSetting: dbCompareAndSwapAppSettingMock,
     dbDeleteAppSetting: dbDeleteAppSettingMock,
     gitBranchList: gitBranchListMock,
@@ -2790,6 +2866,7 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     };
     (globalThis as { localStorage?: unknown }).localStorage = localStorageMock;
 
+    activateComposerDraftWriter();
     appState.mode = 'Architect';
     appState.agentType = 'build';
     appState.selectedGroupId = 'group-1';
@@ -2885,6 +2962,11 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     dbMessageCounter = 0;
     chatSnapshotConversations = [];
     chatSnapshotMessages = [];
+    admissionInspections.length = 0;
+    responseRecoveryError = undefined;
+    composerIntentGate = undefined;
+    composerAdmissions.length = 0;
+    retireComposerBrowserMock.mockClear();
     appSettingValues.clear();
     nativePreferenceValues = {};
     stateGetSnapshotMock.mockClear();
@@ -3017,7 +3099,8 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     appState.switchProjectContext.mockClear();
   });
 
-  afterEach(() => {
+  afterEach(async () => {
+    await drainComposerDraftWrites().catch(() => undefined);
     releasePlanRuntimePorts?.();
     releasePlanRuntimePorts = undefined;
     Object.defineProperty(globalThis, 'window', {
@@ -3045,6 +3128,169 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
       value: originalLocalStorage,
     });
     mock.restore();
+  });
+
+  it('inspects actual questionnaire history and removes a stale draft after a saved human reply without sending', async () => {
+    appState.mode = 'Chat'; tauriAvailable = true;
+    const conversation = { ...createConversation('inspection-chat'), scope_mode: 'Chat' as const };
+    chatSnapshotConversations = [{ ...conversation, description: null, group_id: null, project_id: null }];
+    chatSnapshotMessages = [{ id:'question',conversation_id:conversation.id,role:'assistant',
+      content:'Choose a direction.\n[quick-replies]\n- First\n- Second\n- Third\n[/quick-replies]',created_at:'2026-10-01T00:00:00Z' }];
+    const { useChatStore } = await loadChatStore();
+    useChatStore.setState(createIdleChatStoreState({ conversations:[conversation],selectedConversationId:conversation.id }));
+    await expect(useChatStore.getState().reconcileConversationAdmission(conversation.id)).rejects.toThrow('Browser intentions pending');
+    expect(admissionInspections.at(-1)?.questions).toEqual(['question']);
+    window.localStorage.setItem('macro_chat_questionnaire_drafts', JSON.stringify({ [conversation.id]: {
+      mode:'pending_reply',assistantMessageId:'question',currentStepIndex:0,answersByStepId:{q1:'First'},draftTextByStepId:{},
+    } }));
+    chatSnapshotMessages.push({ id:'answer',conversation_id:conversation.id,role:'user',content:'First',created_at:'2026-10-01T00:00:01Z' });
+    await useChatStore.getState().reconcileConversationAdmission(conversation.id);
+    expect(JSON.parse(window.localStorage.getItem('macro_chat_questionnaire_drafts')!)).toEqual({});
+    expect(admissionInspections.at(-1)?.questions).toEqual([]);
+    expect(createMessageMock).not.toHaveBeenCalled();
+    expect(streamChatMock).not.toHaveBeenCalled();
+    expect(sendChatNonStreamingMock).not.toHaveBeenCalled();
+  });
+
+  it('does not certify a browser inspection when a durable reader cannot inspect all saved data', async () => {
+    appState.mode = 'Chat'; tauriAvailable = true;
+    const conversation = { ...createConversation('inspection-invalid'), scope_mode:'Chat' as const };
+    chatSnapshotConversations=[{ ...conversation, description: null, group_id: null, project_id: null }];
+    const { useChatStore } = await loadChatStore();
+    useChatStore.setState(createIdleChatStoreState({ conversations:[conversation],selectedConversationId:conversation.id }));
+    window.localStorage.setItem('macro_chat_questionnaire_drafts','{unknown');
+    await expect(useChatStore.getState().reconcileConversationAdmission(conversation.id)).rejects.toThrow();
+    expect(admissionInspections).toHaveLength(0);
+    expect(window.localStorage.getItem('macro_chat_questionnaire_drafts')).toBe('{unknown');
+    expect(streamChatMock).not.toHaveBeenCalled();
+  });
+
+  it('inspects ordinary composer drafts through their shared writer and preserves transient handoffs', async () => {
+    appState.mode = 'Chat'; tauriAvailable = true;
+    const conversation = { ...createConversation('composer-inspection'), scope_mode: 'Chat' as const };
+    chatSnapshotConversations = [{ ...conversation, description: null, group_id: null, project_id: null }];
+    const { useChatStore } = await loadChatStore();
+    useChatStore.setState(createIdleChatStoreState({ conversations: [conversation], selectedConversationId: conversation.id }));
+    const state = useChatStore.getState();
+    state.saveComposerDraftForContext('context:Chat::none', { text: 'future chat', images: [], contextRefs: [] });
+    await state.reconcileConversationAdmission(conversation.id);
+    state.setComposerDraft(conversation.id, 'synthetic pending prompt');
+    expect(state.consumeComposerDraft(conversation.id)).toBe('synthetic pending prompt');
+    await expect(state.reconcileConversationAdmission(conversation.id)).rejects.toThrow('Browser intentions pending');
+    expect(admissionInspections.at(-1)?.drafts).toEqual(['composer-draft']);
+    state.acknowledgeComposerDraft(conversation.id);
+    await expect(state.reconcileConversationAdmission(conversation.id)).rejects.toThrow('Browser intentions pending');
+    state.clearComposerDraftForContext(`conversation:${conversation.id}`);
+    await state.reconcileConversationAdmission(conversation.id);
+    expect(admissionInspections.at(-1)?.drafts).toEqual([]);
+    expect(JSON.parse(window.localStorage.getItem('macro_chat_composer_drafts_v1')!)).toHaveProperty('context:Chat::none');
+    for (const raw of ['{unknown', JSON.stringify({ [`conversation:${conversation.id}`]: { text: 'draft', images: [], contextRefs: [], future: true } })]) {
+      window.localStorage.setItem('macro_chat_composer_drafts_v1', raw);
+      const count = admissionInspections.length;
+      await expect(state.reconcileConversationAdmission(conversation.id)).rejects.toThrow();
+      expect(admissionInspections).toHaveLength(count);
+      expect(window.localStorage.getItem('macro_chat_composer_drafts_v1')).toBe(raw);
+    }
+    expect(streamChatMock).not.toHaveBeenCalled();
+    expect(sendChatNonStreamingMock).not.toHaveBeenCalled();
+    expect(createMessageMock).not.toHaveBeenCalled();
+  });
+
+  it('keeps an identical durable partial copy after unknown completion without blocking an independent send at hydration', async () => {
+    tauriAvailable = true;
+    appState.mode = 'Chat';
+    appState.selectedProjectId = null; appState.selectedGroupId = null;
+    chatSnapshotConversations = [{ ...createChatSnapshotConversation('chat-conv', { message_count: 1, scope_mode: 'Chat' }), project_id: null, group_id: null }];
+    chatSnapshotMessages = [{ id: 'assistant-1', conversation_id: 'chat-conv', role: 'assistant',
+      content: 'Partial preserved', turn_id: 'turn-1', created_at: '2026-08-30T08:01:00.000Z' }];
+    const copy = { id: 'assistant-1', turn_id: 'turn-1', task_id: '', conversation_id: 'chat-conv', role: 'assistant',
+      content: 'Partial preserved', timestamp: '2026-08-30T08:01:00.000Z', tool_traces: [], persistence_state: 'failed' };
+    window.localStorage.setItem('macro_chat_unsaved_assistant_responses_v1', JSON.stringify({ 'assistant-1': copy }));
+    responseRecoveryError = 'chat_admission_response_outcome_unknown';
+    const { useChatStore } = await loadChatStore();
+    await useChatStore.getState().initializeCritical();
+    await useChatStore.getState().selectConversation('chat-conv');
+    const message = useChatStore.getState().getConversationMessages('chat-conv').find((m: ChatMessage) => m.id === 'assistant-1');
+    expect(message?.content).toBe('Partial preserved');
+    expect(message?.persistence_state).toBeUndefined();
+    expect(window.localStorage.getItem('macro_chat_unsaved_assistant_responses_v1')).toContain('Partial preserved');
+    // The real store reaches its admission/transport ports; these ports remain
+    // synthetic here. Native permission is independently covered by SQLite.
+    await useChatStore.getState().sendMessage({ conversationId: 'chat-conv', content: 'Independent question' });
+    expect(streamChatMock).toHaveBeenCalled();
+    expect(window.localStorage.getItem('macro_chat_unsaved_assistant_responses_v1')).toContain('Partial preserved');
+  });
+
+  for (const delta of [
+    { context_refs: [{ kind: 'file', id: 'unique-source', title: 'Unique source', path: '/synthetic/source' }] },
+    { turn_id: 'different-turn' },
+    { content: 'Different preserved content' },
+    { hidden_context: 'Different hidden context' },
+    { tool_traces: [{ tool_call_id: 'call', tool_name: 'read', status: 'done' }] },
+    { provider_input_items: [{ type: 'message', role: 'assistant', content: 'different' }] },
+    { provider_turn_state: { providerId: 'synthetic', responseId: 'different' } },
+    { generation_attempts: [{ id: 'different' }] },
+    { completion_reason: 'interrupted' },
+  ]) {
+  it(`retains a differing recovery writer payload: ${Object.keys(delta)[0]}`, async () => {
+    tauriAvailable = true;
+    appState.mode = 'Chat';
+    appState.selectedProjectId = null; appState.selectedGroupId = null;
+    chatSnapshotConversations = [{ ...createChatSnapshotConversation('chat-conv', { message_count: 1, scope_mode: 'Chat' }), project_id: null, group_id: null }];
+    chatSnapshotMessages = [{ id: 'assistant-1', conversation_id: 'chat-conv', role: 'assistant',
+      content: 'Partial preserved', turn_id: 'turn-1', created_at: '2026-08-30T08:01:00.000Z' }];
+    const copy = { id: 'assistant-1', turn_id: 'turn-1', task_id: '', conversation_id: 'chat-conv', role: 'assistant',
+      content: 'Partial preserved', timestamp: '2026-08-30T08:01:00.000Z', tool_traces: [], persistence_state: 'failed', ...delta };
+    window.localStorage.setItem('macro_chat_unsaved_assistant_responses_v1', JSON.stringify({ 'assistant-1': copy }));
+    responseRecoveryError = 'chat_admission_response_outcome_unknown';
+    const { useChatStore } = await loadChatStore();
+    await useChatStore.getState().initializeCritical();
+    await useChatStore.getState().selectConversation('chat-conv');
+    const message = useChatStore.getState().getConversationMessages('chat-conv').find((m: ChatMessage) => m.id === 'assistant-1');
+    expect(message).toMatchObject(delta);
+    expect(message?.persistence_state).toBe('failed');
+    expect(window.localStorage.getItem('macro_chat_unsaved_assistant_responses_v1')).toContain(JSON.stringify(Object.values(delta)[0]).replace(/^"|"$/g, ''));
+    // The real store reaches its admission/transport ports; these ports remain
+    // synthetic here. Native permission is independently covered by SQLite.
+    await expect(useChatStore.getState().sendMessage({ conversationId: 'chat-conv', content: 'Independent question' })).rejects.toThrow();
+    expect(streamChatMock).not.toHaveBeenCalled();
+    expect(window.localStorage.getItem('macro_chat_unsaved_assistant_responses_v1')).toContain('assistant-1');
+  });
+
+  }
+
+  it('joins a real composer write before inspection and native browser retirement', async () => {
+    appState.mode = 'Chat'; tauriAvailable = true;
+    const conversation = { ...createConversation('composer-race'), scope_mode: 'Chat' as const };
+    chatSnapshotConversations = [{ ...conversation, description: null, group_id: null, project_id: null }];
+    const { useChatStore } = await loadChatStore();
+    useChatStore.setState(createIdleChatStoreState({ conversations: [conversation], selectedConversationId: conversation.id }));
+    const entered = createDeferred<void>(), release = createDeferred<void>();
+    composerIntentGate = async () => { entered.resolve(); await release.promise; };
+    useChatStore.getState().saveComposerDraftForContext(`conversation:${conversation.id}`, { text: 'pending', images: [], contextRefs: [] });
+    await entered.promise;
+    expect(window.localStorage.getItem('macro_chat_composer_drafts_v1')).toBeNull();
+    const inspection = useChatStore.getState().reconcileConversationAdmission(conversation.id).catch((error: unknown) => error);
+    await flushAsyncWork();
+    expect(admissionInspections).toHaveLength(0);
+    useChatStore.getState().stopSubscriptions();
+    let drained = false;
+    const retiring = useChatStore.getState().drainSubscriptions().then(() => { drained = true; });
+    await Promise.resolve();
+    expect(drained).toBe(false); expect(retireComposerBrowserMock).not.toHaveBeenCalled();
+    release.resolve(); await retiring;
+    expect(String(await inspection)).toContain('not been saved');
+    expect(window.localStorage.getItem('macro_chat_composer_drafts_v1')).toBeNull();
+    expect(retireComposerBrowserMock).toHaveBeenCalledTimes(1);
+    expect(composerAdmissions).toEqual([{ conversationId: conversation.id, mutation: 'retain' }]);
+    expect(streamChatMock).not.toHaveBeenCalled();
+    expect(sendChatNonStreamingMock).not.toHaveBeenCalled();
+    composerIntentGate = undefined;
+    useChatStore.getState().startSubscriptions();
+    useChatStore.getState().saveComposerDraftForContext(`conversation:${conversation.id}`, { text: 'retry', images: [], contextRefs: [] });
+    await expect(useChatStore.getState().reconcileConversationAdmission(conversation.id)).rejects.toThrow('Browser intentions pending');
+    useChatStore.getState().discardComposerDraftForConversation(conversation.id);
+    await useChatStore.getState().reconcileConversationAdmission(conversation.id);
   });
 
   it('retains automatic naming after a failed rename while metadata is pending', async () => {
@@ -3265,7 +3511,7 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     expect(useChatStore.getState().conversations[0]?.title).toBe('Checkout refresh');
   });
 
-  it('names a default Chat title from another language and falls back when metadata generation fails', async () => {
+  it('keeps the title after an admitted global metadata failure without fallback', async () => {
     appState.mode = 'Chat';
     tauriAvailable = true;
     queueSendChatNonStreamingImplementation(async () => { throw new Error('provider unavailable'); });
@@ -3276,8 +3522,12 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     }));
     await useChatStore.getState().sendMessage({ conversationId: 'localized-title', content: 'Refresh checkout' });
     await flushAsyncWork();
-    expect(useChatStore.getState().conversations[0]?.title).toBe('Refresh checkout');
-    expect(updateConversationDetailsMock).toHaveBeenCalled();
+    expect(useChatStore.getState().conversations[0]?.title).toBe('Neues Gespräch');
+    expect(updateConversationDetailsMock).not.toHaveBeenCalled();
+    const request = sendChatNonStreamingMock.mock.calls[0]?.[0];
+    expect(request?.providerAdmission.kind).toBe('globalChat');
+    expect(request?.conversationId).toBe('localized-title');
+    expect(request?.signal).toBeInstanceOf(AbortSignal);
   });
 
   for (const scenario of ['without_review', 'with_review', 'owned_resolution', 'changed_workspace'] as const) it(`resumes the same Implement conversation after a todo-gated merge, ${scenario}`, async () => {
@@ -4758,7 +5008,7 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     const images = [{ id: 'synthetic-image', mimeType: 'image/png', dataUrl: 'data:image/png;base64,AQID', createdAt: '2026-10-02T00:00:00Z' }];
     const local = await import('./chat/chatLocalSessionState');
     const draft = { text: 'Inspect this diagram', images, contextRefs: [] };
-    local.saveComposerDraftsToStorage({ ['conversation:' + conversation.id]: draft });
+    await local.saveComposerDraftsToStorage({ ['conversation:' + conversation.id]: draft });
     const storage = window.localStorage, setItem = storage.setItem;
     storage.setItem = (key, value) => {
       if (key === 'macro_chat_message_images') throw new Error('synthetic image quota');

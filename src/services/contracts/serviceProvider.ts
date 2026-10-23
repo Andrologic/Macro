@@ -284,6 +284,7 @@ export interface ServiceProvider {
   mcpRuntimeDisconnect: (key: MCPRuntimeKey) => Promise<void>;
   mcpRuntimeRefreshCatalog: (key: MCPRuntimeKey) => Promise<MCPCatalogDto>;
   mcpRuntimeCallTool: (data: {
+    chatAdmission?: import('../ipc/chatAdmission').ChatToolAdmission;
     key: MCPRuntimeKey;
     toolName: string;
     arguments: Record<string, unknown>;
@@ -305,6 +306,7 @@ export interface ServiceProvider {
   }) => Promise<SkillResourceReadDto>;
   runSkillScript: (
     data: SkillScriptRunRequest & {
+      chatAdmission?: import('../ipc/chatAdmission').ChatToolAdmission;
       projectRoots?: SkillProjectRoot[];
       workspacePath?: string | null;
       workspaceRoot?: SkillScriptWorkspaceDto | null;

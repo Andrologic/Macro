@@ -8,16 +8,19 @@ import type {
 } from "./terminal.types";
 
 export async function terminalCreateSession(params: {
+  chatAdmission?: import('./chatAdmission').ChatToolAdmission;
   projectId?: string | null;
   cwd?: string | null;
 }): Promise<TerminalSessionDto> {
   return invoke<TerminalSessionDto>("terminal_create_session", {
     projectId: params.projectId ?? null,
+    ...(params.chatAdmission ? { chatAdmission: { ...params.chatAdmission, requestId: crypto.randomUUID() } } : {}),
     cwd: params.cwd ?? null,
   });
 }
 
 export async function terminalRun(params: {
+  chatAdmission?: import('./chatAdmission').ChatToolAdmission;
   sessionId: string;
   command: string;
   timeoutMs?: number | null;
@@ -28,6 +31,7 @@ export async function terminalRun(params: {
     command: params.command,
     timeoutMs: params.timeoutMs ?? null,
     executionId: params.executionId ?? null,
+    ...(params.chatAdmission ? { chatAdmission: { ...params.chatAdmission, requestId: params.executionId ?? crypto.randomUUID() } } : {}),
   });
 }
 
@@ -40,9 +44,11 @@ export async function terminalRead(
 export async function terminalKill(
   sessionId: string,
   executionId?: string | null,
+  chatAdmission?: import('./chatAdmission').ChatToolAdmission,
 ): Promise<TerminalSessionDto> {
   return invoke<TerminalSessionDto>("terminal_kill", {
     sessionId,
+    ...(chatAdmission ? { chatAdmission: { ...chatAdmission, requestId: crypto.randomUUID() } } : {}),
     executionId: executionId ?? null,
   });
 }

@@ -44,6 +44,14 @@ pub(crate) fn command_error(message: impl Into<String>) -> CommandError {
 
 impl CommandError {
     pub fn code(&self) -> Option<&'static str> {
+        if self
+            .message
+            .strip_prefix("Validation error: ")
+            .unwrap_or(&self.message)
+            .starts_with("chat_admission_")
+        {
+            return Some("CHAT_ADMISSION_REFUSED");
+        }
         if self.message.starts_with("Web fetch destination blocked:") {
             return Some("WEB_FETCH_DESTINATION_BLOCKED");
         }

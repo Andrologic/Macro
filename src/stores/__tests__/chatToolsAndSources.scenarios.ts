@@ -400,6 +400,10 @@ export const registerChatToolsAndSourcesScenarios = (
       expect(terminalCreateSessionFromChatMock).toHaveBeenCalledWith({
         projectId: null,
         cwd: 'C:/Users/test/Documents',
+        chatAdmission: {
+          context: { handle: expect.any(String), runtime: 'store-unit-runtime' },
+          identity: { conversationId: 'chat-conv', turnId: expect.any(String), messageId: expect.any(String), callId: expect.any(String) },
+        },
       });
       const parsed = JSON.parse(String(result));
       expect(parsed.cwd).toBe('C:/Users/test/Documents');
@@ -2005,7 +2009,10 @@ export const registerChatToolsAndSourcesScenarios = (
       );
       expect(webSearchMock).toHaveBeenCalledWith(
         'Macro chat sources',
-        { ...context.streamingWebSearchConfig.webSearchOptions, signal: streamOptions.signal },
+        { ...context.streamingWebSearchConfig.webSearchOptions, signal: streamOptions.signal, chatAdmission: {
+          context: { handle: expect.any(String), runtime: 'store-unit-runtime' },
+          identity: { conversationId: 'chat-conv', turnId: expect.any(String), messageId: expect.any(String), callId: 'call-web-search' },
+        } },
       );
       expect(String(searchResult)).toContain('Search Result');
       expect(context.citationRecords.some((citation) => citation.url === 'https://example.com/search-result')).toBe(true);
@@ -2015,7 +2022,10 @@ export const registerChatToolsAndSourcesScenarios = (
         { url: 'https://example.com/page' },
         'call-web-fetch',
       );
-      expect(fetchWebPageMock).toHaveBeenCalledWith('https://example.com/page', streamOptions.signal);
+      expect(fetchWebPageMock).toHaveBeenCalledWith('https://example.com/page', streamOptions.signal, {
+        context: { handle: expect.any(String), runtime: 'store-unit-runtime' },
+        identity: { conversationId: 'chat-conv', turnId: expect.any(String), messageId: expect.any(String), callId: 'call-web-fetch' },
+      });
       expect(String(fetchResult)).toContain('Fetched full page content');
       expect(context.citationRecords.some((citation) => citation.content === 'Fetched full page content.')).toBe(true);
 

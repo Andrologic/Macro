@@ -329,7 +329,7 @@ describe('streamingChat native request ownership', () => {
     });
     const firstTokens: string[] = [];
     const secondTokens: string[] = [];
-    const start = (onToken: (token: string) => void) => streamChat({
+    const start = (onToken: (token: string) => void) => streamChat({ providerAdmission: { kind: 'utility' },
       sessionId: 'shared-session',
       providerId: 'chatgpt',
       providerType: 'chatgpt',
@@ -542,7 +542,7 @@ describe('streamingChat SSE stream handling', () => {
     const onComplete = mock(() => undefined);
     const onError = mock(() => undefined);
 
-    await streamChat({
+    await streamChat({ providerAdmission: { kind: 'utility' },
       providerId: 'provider-1',
       providerType: 'openai',
       baseUrl: 'https://provider.invalid',
@@ -581,7 +581,7 @@ describe('streamingChat SSE stream handling', () => {
     const onError = mock(() => undefined);
     const onComplete = mock(() => undefined);
 
-    await streamChat({
+    await streamChat({ providerAdmission: { kind: 'utility' },
       providerId: 'provider-1',
       providerType: 'openai',
       baseUrl: 'https://provider.invalid',
@@ -633,7 +633,7 @@ describe('streamingChat SSE stream handling', () => {
     const attemptUpdates: Array<NonNullable<StreamCompletionResult['generationAttempts']>> = [];
     const attemptProgress: Array<NonNullable<StreamCompletionResult['generationAttempts']>[number]> = [];
 
-    await streamChat({
+    await streamChat({ providerAdmission: { kind: 'utility' },
       providerId: 'provider-1',
       providerType: 'openai',
       baseUrl: 'https://provider.invalid',
@@ -716,7 +716,7 @@ describe('streamingChat SSE stream handling', () => {
     const emitted: string[] = [];
     const onComplete = mock(() => undefined);
 
-    await streamChat({
+    await streamChat({ providerAdmission: { kind: 'utility' },
       providerId: 'provider-1',
       providerType: 'openai',
       baseUrl: 'https://provider.invalid',
@@ -1317,7 +1317,7 @@ describe('streamingChat tool rendering helpers', () => {
     });
     const { streamChat } = await loadStreamingChat(fetchMock);
 
-    await streamChat({
+    await streamChat({ providerAdmission: { kind: 'utility' },
       providerId: 'openai-provider',
       providerType: 'openai',
       baseUrl: 'https://api.openai.com/v1',
@@ -1370,7 +1370,7 @@ describe('streamingChat tool rendering helpers', () => {
     });
     const { streamChat } = await loadStreamingChat(fetchMock);
 
-    await streamChat({
+    await streamChat({ providerAdmission: { kind: 'utility' },
       providerId: 'openai-provider',
       providerType: 'openai',
       baseUrl: 'https://api.openai.com/v1',
@@ -1416,7 +1416,7 @@ describe('streamingChat tool rendering helpers', () => {
     });
     const onComplete = mock((_result: StreamCompletionResult) => undefined);
 
-    await streamChat({
+    await streamChat({ providerAdmission: { kind: 'utility' },
       providerId: 'copilot', providerType: 'copilot', baseUrl: 'copilot://cli', modelId: 'gpt-test',
       reasoningEffort: 'high', reasoningTransportMode: 'openai_effort',
       messages: [{ role: 'user', content: 'Answer.' }],
@@ -2098,7 +2098,7 @@ describe('streamingChat tool rendering helpers', () => {
       invokeImpl,
     });
 
-    await streamChat({
+    await streamChat({ providerAdmission: { kind: 'utility' },
       providerId: 'opencode-go',
       providerType: 'openai',
       baseUrl: 'https://opencode.ai/zen/go/v1',
@@ -2193,7 +2193,7 @@ describe('streamingChat tool rendering helpers', () => {
     );
     const { streamChat } = await loadStreamingChat(fetchMock);
 
-    await streamChat({
+    await streamChat({ providerAdmission: { kind: 'utility' },
       providerId: 'provider-1',
       providerType: 'openai',
       baseUrl: 'https://example.com',
@@ -2276,7 +2276,7 @@ describe('streamingChat tool rendering helpers', () => {
     const onToolCall = mock(async () => 'must not execute');
     const { streamChat } = await loadStreamingChat(fetchMock);
 
-    await streamChat({
+    await streamChat({ providerAdmission: { kind: 'utility' },
       providerId: 'andrologic',
       providerType: 'openai',
       baseUrl: 'https://example.invalid/v1',
@@ -2338,7 +2338,7 @@ describe('streamingChat tool rendering helpers', () => {
     );
     const { streamChat } = await loadStreamingChat(fetchMock);
 
-    await streamChat({
+    await streamChat({ providerAdmission: { kind: 'utility' },
       providerId: 'custom',
       providerType: 'openai',
       baseUrl: 'https://example.invalid/v1',
@@ -2395,7 +2395,7 @@ describe('streamingChat tool rendering helpers', () => {
     });
     const { streamChat } = await loadStreamingChat(fetchMock);
 
-    await streamChat({
+    await streamChat({ providerAdmission: { kind: 'utility' },
       providerId: 'custom',
       providerType: 'openai',
       baseUrl: 'https://example.invalid/v1',
@@ -2496,7 +2496,7 @@ describe('streamingChat tool rendering helpers', () => {
     let pending = true;
     const { streamChat } = await loadStreamingChat(fetchMock);
 
-    await streamChat({
+    await streamChat({ providerAdmission: { kind: 'utility' },
       providerId: 'provider-1',
       providerType: 'openai',
       baseUrl: 'https://example.com',
@@ -2566,7 +2566,7 @@ describe('streamingChat tool rendering helpers', () => {
     });
     const { streamChat } = await loadStreamingChat(fetchMock);
 
-    await streamChat({
+    await streamChat({ providerAdmission: { kind: 'utility' },
       providerId: 'opencode-go',
       providerType: 'openai',
       baseUrl: 'https://opencode.ai/zen/go/v1',
@@ -2683,7 +2683,7 @@ describe('streamingChat tool rendering helpers', () => {
     const { streamChat } = await loadStreamingChat(fetchMock);
     const onError = mock(() => undefined);
 
-    await streamChat({
+    await streamChat({ providerAdmission: { kind: 'utility' },
       providerId: 'openrouter',
       providerType: 'openrouter',
       baseUrl: 'https://openrouter.ai/api/v1',
@@ -2790,7 +2790,7 @@ describe('streamingChat tool rendering helpers', () => {
     const { streamChat } = await loadStreamingChat(fetchMock);
     const onComplete = mock((_: StreamCompletionResult) => undefined);
 
-    await streamChat({
+    await streamChat({ providerAdmission: { kind: 'utility' },
       providerId: 'openrouter',
       providerType: 'openrouter',
       baseUrl: 'https://openrouter.ai/api/v1',
@@ -2873,7 +2873,7 @@ describe('streamingChat tool rendering helpers', () => {
     const { streamChat } = await loadStreamingChat(fetchMock);
     const onComplete = mock((_: StreamCompletionResult) => undefined);
 
-    await streamChat({
+    await streamChat({ providerAdmission: { kind: 'utility' },
       providerId: 'provider-1',
       providerType: 'openai',
       baseUrl: 'https://example.com',
@@ -2933,7 +2933,7 @@ describe('streamingChat tool rendering helpers', () => {
     const onToolCall = mock(async () => 'FILE: README.md\n\nok');
     const onComplete = mock((_: StreamCompletionResult) => undefined);
 
-    await streamChat({
+    await streamChat({ providerAdmission: { kind: 'utility' },
       providerId: 'provider-1',
       providerType: 'openai',
       baseUrl: 'https://example.com',
@@ -3010,7 +3010,7 @@ describe('streamingChat tool rendering helpers', () => {
     const onToolCall = mock(async () => 'FILE: file.md\n\nok');
     const onComplete = mock((_: StreamCompletionResult) => undefined);
 
-    await streamChat({
+    await streamChat({ providerAdmission: { kind: 'utility' },
       providerId: 'provider-1',
       providerType: 'openai',
       baseUrl: 'https://example.com',
@@ -3083,7 +3083,7 @@ describe('streamingChat tool rendering helpers', () => {
     const attemptUpdates: Array<NonNullable<StreamCompletionResult['generationAttempts']>> = [];
     const attemptProgress: Array<NonNullable<StreamCompletionResult['generationAttempts']>[number]> = [];
 
-    await streamChat({
+    await streamChat({ providerAdmission: { kind: 'utility' },
       providerId: 'openrouter',
       providerType: 'openrouter',
       baseUrl: 'https://openrouter.ai/api/v1',
@@ -3144,7 +3144,7 @@ describe('streamingChat tool rendering helpers', () => {
     }));
     const onComplete = mock(() => undefined);
 
-    await streamChat({
+    await streamChat({ providerAdmission: { kind: 'utility' },
       providerId: 'provider-1',
       providerType: 'openai',
       baseUrl: 'https://example.com',
@@ -3241,7 +3241,7 @@ describe('streamingChat tool rendering helpers', () => {
     }));
     const onComplete = mock(() => undefined);
 
-    await streamChat({
+    await streamChat({ providerAdmission: { kind: 'utility' },
       providerId: 'provider-1',
       providerType: 'openai',
       baseUrl: 'https://example.com',
@@ -3343,7 +3343,7 @@ describe('streamingChat tool rendering helpers', () => {
     }));
     const onComplete = mock(() => undefined);
 
-    await streamChat({
+    await streamChat({ providerAdmission: { kind: 'conversation' },
       conversationId: 'conv-1',
       providerId: 'copilot',
       providerType: 'copilot',
@@ -3426,7 +3426,7 @@ describe('streamingChat tool rendering helpers', () => {
     const streamed: string[] = [];
     const onComplete = mock(() => undefined);
 
-    await streamChat({
+    await streamChat({ providerAdmission: { kind: 'conversation' },
       conversationId: 'conv-1',
       providerId: 'copilot',
       providerType: 'copilot',
@@ -3525,7 +3525,7 @@ describe('streamingChat tool rendering helpers', () => {
     const onComplete = mock((_result: unknown) => undefined);
     const onToolCall = mock(async () => 'must not run');
 
-    await streamChat({
+    await streamChat({ providerAdmission: { kind: 'conversation' },
       conversationId: 'conv-1',
       providerId: 'copilot',
       providerType: 'copilot',
@@ -3610,7 +3610,7 @@ describe('streamingChat tool rendering helpers', () => {
     const onComplete = mock((_result: unknown) => undefined);
     const onToolCall = mock(async () => 'must not run');
 
-    await streamChat({
+    await streamChat({ providerAdmission: { kind: 'utility' },
       providerId: 'openai-generic',
       providerType: 'openai',
       baseUrl: 'https://example.test',
@@ -3684,7 +3684,7 @@ describe('streamingChat tool rendering helpers', () => {
     const { streamChat } = await loadStreamingChat(fetchMock);
     const onComplete = mock((_result: StreamCompletionResult) => undefined);
 
-    await streamChat({
+    await streamChat({ providerAdmission: { kind: 'utility' },
       providerId: 'openai-generic',
       providerType: 'openai',
       baseUrl: 'https://example.test',
@@ -3737,7 +3737,7 @@ describe('streamingChat tool rendering helpers', () => {
     const { streamChat } = await loadStreamingChat(fetchMock);
     const onComplete = mock((_result: StreamCompletionResult) => undefined);
 
-    await streamChat({
+    await streamChat({ providerAdmission: { kind: 'utility' },
       providerId: 'openai-generic',
       providerType: 'openai',
       baseUrl: 'https://example.test',
@@ -3823,7 +3823,7 @@ describe('streamingChat tool rendering helpers', () => {
     }));
     const onComplete = mock((_result: unknown) => undefined);
 
-    await streamChat({
+    await streamChat({ providerAdmission: { kind: 'conversation' },
       conversationId: 'conv-1',
       providerId: 'copilot',
       providerType: 'copilot',
@@ -3898,7 +3898,7 @@ describe('streamingChat tool rendering helpers', () => {
       forceTauriAvailable: true,
     });
 
-    await streamChat({
+    await streamChat({ providerAdmission: { kind: 'conversation' },
       conversationId: 'conv-1',
       providerId: 'copilot',
       providerType: 'copilot',
@@ -3954,7 +3954,7 @@ describe('streamingChat tool rendering helpers', () => {
       forceTauriAvailable: true,
     });
 
-    await streamChat({
+    await streamChat({ providerAdmission: { kind: 'conversation' },
       conversationId: 'conv-1',
       providerId: providerType,
       providerType,
@@ -4024,7 +4024,7 @@ describe('streamingChat tool rendering helpers', () => {
     });
     const { streamChat } = await loadStreamingChat(fetchMock);
 
-    await streamChat({
+    await streamChat({ providerAdmission: { kind: 'utility' },
       providerId: 'provider-1',
       providerType: 'openai',
       baseUrl: 'https://example.com',
@@ -4122,7 +4122,7 @@ describe('streamingChat tool rendering helpers', () => {
     const onToolTracesUpdate = mock((_toolTraces: unknown) => undefined);
     const onComplete = mock((_result: unknown) => undefined);
 
-    await streamChat({
+    await streamChat({ providerAdmission: { kind: 'conversation' },
       conversationId: 'conv-1',
       providerId: 'copilot',
       providerType: 'copilot',
@@ -4210,7 +4210,7 @@ describe('streamingChat tool rendering helpers', () => {
     }));
     const { __testables, cancelStream, streamChat } = await loadStreamingChat(fetchMock);
 
-    void streamChat({
+    void streamChat({ providerAdmission: { kind: 'utility' },
       sessionId: 'session-a',
       providerId: 'provider-1',
       providerType: 'openai',
@@ -4223,7 +4223,7 @@ describe('streamingChat tool rendering helpers', () => {
         throw error;
       },
     });
-    void streamChat({
+    void streamChat({ providerAdmission: { kind: 'utility' },
       sessionId: 'session-b',
       providerId: 'provider-1',
       providerType: 'openai',
@@ -4282,7 +4282,7 @@ describe('streamingChat tool rendering helpers', () => {
     );
     const { streamChat } = await loadStreamingChat(fetchMock);
 
-    await streamChat({
+    await streamChat({ providerAdmission: { kind: 'utility' },
       providerId: 'anthropic',
       providerType: 'anthropic',
       baseUrl: 'https://api.anthropic.com/v1',
@@ -4342,7 +4342,7 @@ describe('streamingChat shared tool batch cancellation', () => {
         const completed: StreamCompletionResult[] = [];
         const onResult = mock(() => undefined);
         const onError = mock(() => undefined);
-        await streamChat({
+        await streamChat({ providerAdmission: { kind: 'utility' },
           providerId: 'fixture', providerType: transport === 'native' ? 'chatgpt' : 'openai',
           baseUrl: 'https://example.invalid', apiKey: 'fixture-key', modelId: 'fixture',
           messages: [{ role: 'user', content: 'Inspect the page' }], allowedToolIds: [toolName],
@@ -4380,6 +4380,7 @@ describe('streamingChat transport lifetime', () => {
     const completed: StreamCompletionResult[] = [];
     const errors: Error[] = [];
     const options = {
+      providerAdmission: { kind: 'utility' as const },
       sessionId: 'overlapping-http', providerId: 'custom', providerType: 'custom',
       modelId: 'model', baseUrl: 'https://example.invalid', messages: [],
       onToken: () => undefined,
@@ -4423,7 +4424,7 @@ describe('streamingChat transport lifetime', () => {
     });
     const results: string[] = [];
     const traces: unknown[] = [];
-    const run = streamChat({
+    const run = streamChat({ providerAdmission: { kind: 'utility' },
       providerId: 'copilot', providerType: 'copilot', modelId: 'model', messages: [],
       allowedToolIds: ['read'], onToolCall: () => tool,
       onToolResult: (_name: string, result: string) => results.push(result),
@@ -4472,7 +4473,7 @@ describe('streamingChat transport lifetime', () => {
     });
     const traces: Array<Array<{ status: string; recovery_state?: string }>> = [];
     const completed = mock((_result: StreamCompletionResult) => undefined);
-    const run = streamChat({
+    const run = streamChat({ providerAdmission: { kind: 'utility' },
       providerId: 'copilot', providerType: 'copilot', modelId: 'model', messages: [],
       allowedToolIds: ['read'], onToolCall: () => 'file contents',
       onToolTracesUpdate: (value: ToolTrace[]) => traces.push(value),
@@ -4528,7 +4529,7 @@ describe('streamingChat transport lifetime', () => {
     });
     const live: LiveStreamContextSnapshot[] = [];
     const completed = mock((_result: StreamCompletionResult) => undefined);
-    const run = streamChat({
+    const run = streamChat({ providerAdmission: { kind: 'utility' },
       providerId: 'copilot', providerType: 'copilot', modelId: 'model', messages: [],
       allowedToolIds: ['question'],
       onToolCall: () => ({
@@ -4619,7 +4620,7 @@ describe('streamingChat transport lifetime', () => {
       }),
     });
     const completed = mock((_result: StreamCompletionResult) => undefined);
-    const run = streamChat({
+    const run = streamChat({ providerAdmission: { kind: 'utility' },
       providerId: 'copilot', providerType: 'copilot', modelId: 'model', messages: [],
       allowedToolIds: ['question'],
       onToolCall: () => ({
@@ -4670,7 +4671,7 @@ describe('streamingChat transport lifetime', () => {
     });
     const live: LiveStreamContextSnapshot[] = [];
     const completed = mock((_result: StreamCompletionResult) => undefined);
-    const run = streamChat({
+    const run = streamChat({ providerAdmission: { kind: 'utility' },
       providerId: 'copilot', providerType: 'copilot', modelId: 'model', messages: [],
       allowedToolIds: ['question'],
       onToolCall: () => ({
@@ -4732,7 +4733,7 @@ describe('streamingChat transport lifetime', () => {
       }),
     });
     const completed = mock((_result: StreamCompletionResult) => undefined);
-    const run = streamChat({
+    const run = streamChat({ providerAdmission: { kind: 'utility' },
       providerId: 'copilot', providerType: 'copilot', modelId: 'model', messages: [],
       allowedToolIds: ['read'], onToolCall: (_toolName: string, args: Record<string, unknown>) => String(args.path),
       onToken: () => undefined, onComplete: completed,
@@ -4799,6 +4800,7 @@ describe('streamingChat partial native listener setup', () => {
     const errors: Error[] = [];
     const completed = mock(() => undefined);
     const options = {
+      providerAdmission: { kind: 'utility' as const },
       sessionId: 'listener-race', providerId: 'copilot', providerType: 'copilot', modelId: 'model',
       messages: [], onToken: () => undefined, onComplete: completed,
       onError: (error: Error) => errors.push(error),
@@ -4854,7 +4856,7 @@ for (const ending of ['done', 'abort'] as const) {
         }
       }),
     });
-    await streamChat({
+    await streamChat({ providerAdmission: { kind: 'utility' },
       providerId: 'copilot', providerType: 'copilot', modelId: 'fixture', messages: [],
       allowedToolIds: ['mcp__fixture__read'], signal: controller.signal,
       mcpTools: [{ id: 'mcp__fixture__read', name: 'read', serverId: 'fixture', inputSchema: { type: 'object', properties: {} } }],
@@ -4886,7 +4888,7 @@ it('native Copilot replay names unavailable media without putting base64 in its 
       }
     }),
   });
-  await streamChat({ providerId: 'copilot', providerType: 'copilot', modelId: 'fixture',
+  await streamChat({ providerAdmission: { kind: 'utility' }, providerId: 'copilot', providerType: 'copilot', modelId: 'fixture',
     messages: [{ role: 'assistant', content: 'Earlier response', provider_input_items: [{ type: 'function_call_output', call_id: 'c', output: 'text fallback', macro_tool_result: { version: 1, blocks: fixture.content, isError: true } }] }],
     onToken() {}, onComplete() {}, onError(error: Error) { throw error; },
   });

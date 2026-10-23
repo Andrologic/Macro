@@ -1986,25 +1986,31 @@ pub async fn sync_models(
         .map_err(|error| error.to_string())
 }
 
-pub async fn stream_chat(
+pub(crate) async fn stream_chat(
     app_handle: AppHandle,
     pool: SqlitePool,
     ai_state: AiState,
     request: AiChatRequest,
+    reservation: crate::ai::stream_tasks::StreamReservation,
+    work: std::sync::Arc<crate::ai::provider_work::ProviderWork>,
 ) -> Result<(), String> {
-    cancel_stream(&ai_state, &request.request_id).await?;
-
-    let request_id = request.request_id.clone();
     let task_request_id = request.request_id.clone();
     let task_provider_id = request.provider_id.clone();
     let app_for_task = app_handle.clone();
     let state_for_task = ai_state.clone();
     let task_started_at = Instant::now();
 
-    let handle = tokio::spawn(async move {
-        let result =
-            stream_chat_inner(app_for_task.clone(), pool, state_for_task.clone(), request).await;
-        if let Err(message) = result {
+    reservation.spawn_with_work(work.clone(), move |cancel| async move {
+        let result = stream_chat_inner(
+            app_for_task.clone(),
+            pool,
+            state_for_task.clone(),
+            request,
+            cancel,
+            &work,
+        )
+        .await;
+        if let Err(message) = &result {
             emit_timeline(
                 &app_for_task,
                 &task_request_id,
@@ -2017,42 +2023,19 @@ pub async fn stream_chat(
                 "ai:error",
                 AiStreamErrorEvent {
                     request_id: task_request_id.clone(),
-                    message,
+                    message: message.clone(),
                     status: None,
                 },
             );
         }
-
-        let task_id = tokio::task::try_id();
-        let mut tasks = state_for_task.stream_tasks.lock().await;
-        let is_current_task = task_id
-            .map(|task_id| {
-                tasks
-                    .get(&task_request_id)
-                    .map(|handle| handle.id() == task_id)
-                    .unwrap_or(false)
-            })
-            .unwrap_or(false);
-        if is_current_task {
-            tasks.remove(&task_request_id);
-            let mut tool_writers = state_for_task.copilot_tool_writers.lock().await;
-            tool_writers.remove(&task_request_id);
-        }
-    });
-
-    let mut tasks = ai_state.stream_tasks.lock().await;
-    tasks.insert(request_id, handle);
-    Ok(())
+        result
+    })
 }
 
 pub async fn cancel_stream(ai_state: &AiState, request_id: &str) -> Result<(), String> {
-    crate::ai::chatgpt::cancel_stream(ai_state, request_id).await?;
-    {
-        let mut tool_writers = ai_state.copilot_tool_writers.lock().await;
-        tool_writers.remove(request_id);
-    }
-
-    Ok(())
+    // The owning task removes its writer before it exits. Removing it here
+    // after join could erase a newly registered request with the same ID.
+    ai_state.cancel_stream_task(request_id).await
 }
 
 pub async fn submit_tool_result(
@@ -2095,6 +2078,8 @@ async fn stream_chat_inner(
     pool: SqlitePool,
     ai_state: AiState,
     request: AiChatRequest,
+    cancel: tokio_util::sync::CancellationToken,
+    work: &crate::ai::provider_work::ProviderWork,
 ) -> Result<(), String> {
     let mut request = request;
     let started_at = Instant::now();
@@ -2120,189 +2105,220 @@ async fn stream_chat_inner(
             .or(provider_settings.copilot_send_timeout_ms),
     ));
 
-    let runtime = ensure_copilot_runtime_for_send(&app_handle, &ai_state).await?;
+    let runtime = tokio::select! {
+        biased;
+        _ = cancel.cancelled() => return Err("AI stream cancelled.".into()),
+        result = ensure_copilot_runtime_for_send(&app_handle, &ai_state) => result?,
+    };
     let payload = serde_json::to_string(&request)
         .map_err(|error| format!("Failed to serialize Copilot request: {}", error))?;
+    let attempt = work
+        .attempt(&provider.id, "copilot-local-bridge:send")
+        .await?;
     let mut child = spawn_bridge(&app_handle, &["send"], &bridge_envs(&app_handle, &runtime))?;
 
-    let stdin = child
-        .stdin
-        .take()
-        .ok_or_else(|| "AI runtime stdin is unavailable.".to_string())?;
-    let stdin = Arc::new(Mutex::new(stdin));
-    {
-        let mut writer = stdin.lock().await;
-        writer
-            .write_all(payload.as_bytes())
-            .await
-            .map_err(|error| format!("Failed to send AI runtime request: {}", error))?;
-        writer
-            .write_all(b"\n")
-            .await
-            .map_err(|error| format!("Failed to send AI runtime request newline: {}", error))?;
-        writer
-            .flush()
-            .await
-            .map_err(|error| format!("Failed to flush AI runtime request: {}", error))?;
-    }
-    timeline.emit("provider_request_sent");
-    {
-        let mut tool_writers = ai_state.copilot_tool_writers.lock().await;
-        tool_writers.insert(request.request_id.clone(), stdin);
-    }
+    let mut stderr_task = None;
+    let processing = async {
+        let stdin = child
+            .stdin
+            .take()
+            .ok_or_else(|| "AI runtime stdin is unavailable.".to_string())?;
+        let stdin = Arc::new(Mutex::new(stdin));
+        {
+            let mut writer = stdin.lock().await;
+            attempt.dispatched().await?;
+            writer
+                .write_all(payload.as_bytes())
+                .await
+                .map_err(|error| format!("Failed to send AI runtime request: {}", error))?;
+            writer
+                .write_all(b"\n")
+                .await
+                .map_err(|error| format!("Failed to send AI runtime request newline: {}", error))?;
+            writer
+                .flush()
+                .await
+                .map_err(|error| format!("Failed to flush AI runtime request: {}", error))?;
+        }
+        timeline.emit("provider_request_sent");
+        {
+            let mut tool_writers = ai_state.copilot_tool_writers.lock().await;
+            tool_writers.insert(request.request_id.clone(), stdin);
+        }
 
-    let stdout = child
-        .stdout
-        .take()
-        .ok_or_else(|| "AI runtime stdout is unavailable.".to_string())?;
-    let stderr = child
-        .stderr
-        .take()
-        .ok_or_else(|| "AI runtime stderr is unavailable.".to_string())?;
+        let stdout = child
+            .stdout
+            .take()
+            .ok_or_else(|| "AI runtime stdout is unavailable.".to_string())?;
+        let stderr = child
+            .stderr
+            .take()
+            .ok_or_else(|| "AI runtime stderr is unavailable.".to_string())?;
 
-    let mut stdout_reader = BufReader::new(stdout).lines();
-    let stderr_task = tokio::spawn(async move {
-        let mut stderr_reader = BufReader::new(stderr).lines();
-        let mut lines = Vec::new();
-        while let Ok(Some(line)) = stderr_reader.next_line().await {
+        let mut stdout_reader = BufReader::new(stdout).lines();
+        stderr_task = Some(tokio::spawn(async move {
+            let mut stderr_reader = BufReader::new(stderr).lines();
+            let mut lines = Vec::new();
+            while let Ok(Some(line)) = stderr_reader.next_line().await {
+                let trimmed = line.trim();
+                if !trimmed.is_empty() {
+                    lines.push(trimmed.to_string());
+                }
+            }
+            lines.join("\n")
+        }));
+
+        let mut saw_done = false;
+        let mut last_error: Option<(Option<String>, String)> = None;
+        let mut emitted_first_provider_event = false;
+        let mut emitted_first_token = false;
+
+        while let Some(line) = stdout_reader
+            .next_line()
+            .await
+            .map_err(|error| format!("Failed to read AI runtime output: {}", error))?
+        {
             let trimmed = line.trim();
-            if !trimmed.is_empty() {
-                lines.push(trimmed.to_string());
+            if trimmed.is_empty() {
+                continue;
+            }
+
+            let event = serde_json::from_str::<BridgeSendEvent>(trimmed)
+                .map_err(|error| format!("Invalid AI runtime event: {}", error))?;
+
+            match event {
+                BridgeSendEvent::Delta { delta } => {
+                    if !emitted_first_provider_event {
+                        emitted_first_provider_event = true;
+                        timeline.emit("first_provider_event");
+                    }
+                    if !emitted_first_token {
+                        emitted_first_token = true;
+                        timeline.emit("first_token");
+                    }
+                    app_handle
+                        .emit(
+                            "ai:stream",
+                            AiStreamChunkEvent {
+                                request_id: request.request_id.clone(),
+                                delta,
+                            },
+                        )
+                        .map_err(|error| error.to_string())?;
+                }
+                BridgeSendEvent::Done {
+                    content,
+                    reasoning_summary,
+                    hidden_context,
+                    accepted_submission_ids,
+                    tool_traces,
+                    completion_reason,
+                } => {
+                    saw_done = true;
+                    if !emitted_first_provider_event {
+                        emitted_first_provider_event = true;
+                        timeline.emit("first_provider_event");
+                    }
+                    timeline.emit("done");
+                    app_handle
+                        .emit(
+                            "ai:done",
+                            AiStreamDoneEvent {
+                                request_id: request.request_id.clone(),
+                                output_text: content,
+                                tool_calls: Vec::new(),
+                                response_id: None,
+                                output_items: None,
+                                provider_input_items: None,
+                                provider_turn_state: None,
+                                reasoning_summary,
+                                tool_traces,
+                                hidden_context,
+                                accepted_submission_ids: Some(accepted_submission_ids),
+                                completion_reason: completion_reason
+                                    .or_else(|| Some("incomplete".to_string())),
+                            },
+                        )
+                        .map_err(|error| error.to_string())?;
+                }
+                BridgeSendEvent::Error { code, message } => {
+                    if !emitted_first_provider_event {
+                        emitted_first_provider_event = true;
+                        timeline.emit("first_provider_event");
+                    }
+                    let mut status =
+                        bridge_send_error_to_status(&runtime, code.as_deref(), message.as_str());
+                    normalize_status_auth_source(&mut status);
+                    let _ = persist_provider_status(&pool, &provider.id, &status).await;
+                    last_error = Some((code, message));
+                }
+                BridgeSendEvent::ToolTrace { tool_trace } => {
+                    if !emitted_first_provider_event {
+                        emitted_first_provider_event = true;
+                        timeline.emit("first_provider_event");
+                    }
+                    app_handle
+                        .emit(
+                            "ai:tool-trace",
+                            AiStreamToolTraceEvent {
+                                request_id: request.request_id.clone(),
+                                tool_trace,
+                            },
+                        )
+                        .map_err(|error| error.to_string())?;
+                }
+                BridgeSendEvent::ToolRequest {
+                    request_id,
+                    tool_call_id,
+                    tool_name,
+                    args,
+                } => {
+                    if !emitted_first_provider_event {
+                        emitted_first_provider_event = true;
+                        timeline.emit("first_provider_event");
+                    }
+                    app_handle
+                        .emit(
+                            "ai:tool-request",
+                            CopilotToolRequestEvent {
+                                request_id,
+                                tool_call_id,
+                                tool_name,
+                                args,
+                            },
+                        )
+                        .map_err(|error| error.to_string())?;
+                }
+                BridgeSendEvent::Progress { .. } | BridgeSendEvent::LoginComplete { .. } => {}
             }
         }
-        lines.join("\n")
-    });
 
-    let mut saw_done = false;
-    let mut last_error: Option<(Option<String>, String)> = None;
-    let mut emitted_first_provider_event = false;
-    let mut emitted_first_token = false;
-
-    while let Some(line) = stdout_reader
-        .next_line()
+        Ok::<_, String>((saw_done, last_error))
+    };
+    let result = tokio::select! {
+        biased;
+        _ = cancel.cancelled() => Err("AI stream cancelled.".to_string()),
+        result = crate::ai::stream_tasks::run_catching_panic(processing) => result,
+    };
+    // All exits after spawn pass here, including invalid events, failed writes
+    // and cancellation. The stream task owns the child until wait completes.
+    ai_state
+        .copilot_tool_writers
+        .lock()
         .await
-        .map_err(|error| format!("Failed to read AI runtime output: {}", error))?
-    {
-        let trimmed = line.trim();
-        if trimmed.is_empty() {
-            continue;
-        }
-
-        let event = serde_json::from_str::<BridgeSendEvent>(trimmed)
-            .map_err(|error| format!("Invalid AI runtime event: {}", error))?;
-
-        match event {
-            BridgeSendEvent::Delta { delta } => {
-                if !emitted_first_provider_event {
-                    emitted_first_provider_event = true;
-                    timeline.emit("first_provider_event");
-                }
-                if !emitted_first_token {
-                    emitted_first_token = true;
-                    timeline.emit("first_token");
-                }
-                app_handle
-                    .emit(
-                        "ai:stream",
-                        AiStreamChunkEvent {
-                            request_id: request.request_id.clone(),
-                            delta,
-                        },
-                    )
-                    .map_err(|error| error.to_string())?;
-            }
-            BridgeSendEvent::Done {
-                content,
-                reasoning_summary,
-                hidden_context,
-                accepted_submission_ids,
-                tool_traces,
-                completion_reason,
-            } => {
-                saw_done = true;
-                if !emitted_first_provider_event {
-                    emitted_first_provider_event = true;
-                    timeline.emit("first_provider_event");
-                }
-                timeline.emit("done");
-                app_handle
-                    .emit(
-                        "ai:done",
-                        AiStreamDoneEvent {
-                            request_id: request.request_id.clone(),
-                            output_text: content,
-                            tool_calls: Vec::new(),
-                            response_id: None,
-                            output_items: None,
-                            provider_input_items: None,
-                            provider_turn_state: None,
-                            reasoning_summary,
-                            tool_traces,
-                            hidden_context,
-                            accepted_submission_ids: Some(accepted_submission_ids),
-                            completion_reason: completion_reason
-                                .or_else(|| Some("incomplete".to_string())),
-                        },
-                    )
-                    .map_err(|error| error.to_string())?;
-            }
-            BridgeSendEvent::Error { code, message } => {
-                if !emitted_first_provider_event {
-                    emitted_first_provider_event = true;
-                    timeline.emit("first_provider_event");
-                }
-                let mut status =
-                    bridge_send_error_to_status(&runtime, code.as_deref(), message.as_str());
-                normalize_status_auth_source(&mut status);
-                let _ = persist_provider_status(&pool, &provider.id, &status).await;
-                last_error = Some((code, message));
-            }
-            BridgeSendEvent::ToolTrace { tool_trace } => {
-                if !emitted_first_provider_event {
-                    emitted_first_provider_event = true;
-                    timeline.emit("first_provider_event");
-                }
-                app_handle
-                    .emit(
-                        "ai:tool-trace",
-                        AiStreamToolTraceEvent {
-                            request_id: request.request_id.clone(),
-                            tool_trace,
-                        },
-                    )
-                    .map_err(|error| error.to_string())?;
-            }
-            BridgeSendEvent::ToolRequest {
-                request_id,
-                tool_call_id,
-                tool_name,
-                args,
-            } => {
-                if !emitted_first_provider_event {
-                    emitted_first_provider_event = true;
-                    timeline.emit("first_provider_event");
-                }
-                app_handle
-                    .emit(
-                        "ai:tool-request",
-                        CopilotToolRequestEvent {
-                            request_id,
-                            tool_call_id,
-                            tool_name,
-                            args,
-                        },
-                    )
-                    .map_err(|error| error.to_string())?;
-            }
-            BridgeSendEvent::Progress { .. } | BridgeSendEvent::LoginComplete { .. } => {}
-        }
+        .remove(&request.request_id);
+    let cleanup = crate::ai::stream_tasks::finish_child_stream(
+        &mut child,
+        stderr_task,
+        &cancel,
+        result.is_err(),
+    )
+    .await;
+    let (saw_done, last_error) = result?;
+    let (status, stderr_output) = cleanup?;
+    if cancel.is_cancelled() {
+        return Err("AI stream cancelled.".into());
     }
-
-    let status = child
-        .wait()
-        .await
-        .map_err(|error| format!("Failed to wait for AI runtime process: {}", error))?;
-    let stderr_output = stderr_task.await.unwrap_or_default();
 
     if saw_done {
         return Ok(());

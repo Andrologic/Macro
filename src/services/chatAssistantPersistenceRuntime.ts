@@ -1,5 +1,5 @@
 import type { ChatMessage } from "../types";
-import { persistAssistantCompletionResult, type ChatPersistenceAdapters } from "./chatPersistenceService";
+import { type ChatPersistenceAdapters } from "./chatPersistenceService";
 import { toServiceError } from "./contracts/errors";
 
 export interface AssistantPersistenceRecoveryPorts {
@@ -10,7 +10,7 @@ export interface AssistantPersistenceRecoveryPorts {
     failed(params: { assistantMessage: ChatMessage; message: string }): string;
   };
   recovery: {
-    removeSavedCopy(id: string): void;
+    save(message: ChatMessage): Promise<void>;
     clearError(conversationId: string, messageId: string): void;
     resumeQueue(conversationId: string): void;
   };
@@ -29,22 +29,13 @@ export async function retryAssistantPersistence(messageId: string, ports: Assist
   };
   ports.messages.patch(messageId, { persistence_state: "retrying" });
   try {
-    await persistAssistantCompletionResult(ports.persistence, {
-      assistantMessageId: messageId, persistedAssistant: assistantMessage,
-      result: {
-        visibleContent: assistantMessage.content, hiddenContext: assistantMessage.hidden_context,
-        providerInputItems: assistantMessage.provider_input_items, providerTurnState: assistantMessage.provider_turn_state,
-        toolTraces: assistantMessage.tool_traces ?? [], completionReason: assistantMessage.completion_reason,
-        generationAttempts: assistantMessage.generation_attempts,
-      },
-    });
+    await ports.recovery.save(assistantMessage);
   } catch (error) {
     const normalized = toServiceError(error);
     const message = normalized.message.startsWith("Failed to save assistant response:")
       ? normalized.message : `Failed to save assistant response: ${normalized.message}`;
     throw new Error(stillOwnsRetry() ? ports.messages.failed({ assistantMessage, message }) : message);
   }
-  ports.recovery.removeSavedCopy(messageId);
   if (!stillOwnsRetry()) return;
   ports.messages.patch(messageId, { persistence_state: undefined, persistence_error: undefined });
   ports.recovery.clearError(assistantMessage.conversation_id, messageId);

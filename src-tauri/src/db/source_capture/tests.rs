@@ -4,6 +4,13 @@ use sqlx::{Connection, SqliteConnection, SqlitePool};
 use tempfile::TempDir;
 
 pub(crate) async fn remove_reference_schema_in(db: &mut SqliteConnection) {
+    crate::db::chat_admission::remove_reference_schema_in(db)
+        .await
+        .unwrap();
+    sqlx::query("DELETE FROM schema_migrations WHERE version=17")
+        .execute(&mut *db)
+        .await
+        .unwrap();
     let names: Vec<String> = sqlx::query_scalar(
         "SELECT name FROM sqlite_master WHERE type='trigger' AND name GLOB 'e_source_version_*'",
     )

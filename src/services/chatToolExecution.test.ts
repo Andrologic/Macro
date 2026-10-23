@@ -20,7 +20,11 @@ const recovery = await import("./toolApprovalRecovery");
 const loadConfiguration = mock(async (): Promise<ScopedTurnConfiguration | null> => null);
 const saveRecovery = mock(async (_id: string, _approval: PendingToolApproval | null): Promise<void> => { });
 mock.module("./configurationClient", () => ({ ...configuration, loadScopedTurnConfiguration: loadConfiguration }));
-mock.module("./toolApprovalRecovery", () => ({ ...recovery, persistToolApprovalRecovery: saveRecovery }));
+mock.module("./toolApprovalRecovery", () => ({ ...recovery, persistToolApprovalRecovery: saveRecovery,
+  admitToolApprovalRecovery: async (conversationId: string, approval: PendingToolApproval) => {
+    if (!conversationId || !approval.assistantMessageId || !approval.toolCallId) throw new Error("Missing approval identity");
+    return { kind: "conversation" as const };
+  } }));
 const { createChatToolExecution } = await import("./chatToolExecution");
 
 function deferred<T>() {
@@ -38,6 +42,7 @@ const terminalSession: TerminalSessionDto = {
 function setup(tool = "read", riskLevel: ToolRiskLevel = "yolo", loadRuntime?: Parameters<typeof createChatToolExecution>[1]) {
   const abort = new AbortController();
   const operation: FrozenToolCallContext = {
+    providerAdmission: { kind: 'conversation' },
     conversationId: "conversation", sessionId: "session", turnId: "turn", assistantMessageId: "assistant",
     mode: "Implement", agentType: "build", taskId: "task", signal: abort.signal,
     executionContext: {
@@ -150,7 +155,7 @@ describe("chat tool execution policy and frozen ownership", () => {
     enabled.resolve(true);
     expect(await pending).toBe("script result");
     expect(f.ports.handlers.skill).toHaveBeenCalledWith(
-      "skill_run_script", args, "conversation", undefined, f.operation.executionContext,
+      "skill_run_script", args, "conversation", undefined, f.operation.executionContext, undefined,
     );
   });
 

@@ -350,6 +350,14 @@ impl McpInteractionBroker {
                     "Too many MCP interactions are pending.",
                 ));
             }
+            // Recheck while holding the same lock used by finish_operation.
+            // A callback arriving after native completion cannot reopen a prompt.
+            if cancellation.is_cancelled() {
+                return Err(error(
+                    "MCP_RUNTIME_OPERATION_CANCELLED",
+                    "MCP tool call was cancelled.",
+                ));
+            }
             state.pending.insert(
                 request_id.clone(),
                 Pending {
@@ -404,6 +412,15 @@ impl McpInteractionBroker {
             answer = receiver => answer.map_err(|_| error("MCP_INTERACTION_HOST_CLOSED", "The MCP interaction host closed.")),
         };
         result
+    }
+
+    /// Retire only callbacks of the native operation whose owner returned.
+    pub(crate) fn finish_operation(&self, key: &McpRuntimeKey, operation_id: &str) {
+        self.state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .pending
+            .retain(|_, pending| pending.key != *key || pending.operation_id != operation_id);
     }
 
     fn remove(&self, request_id: &str) {
@@ -682,6 +699,57 @@ mod tests {
                 .code,
             "MCP_INTERACTION_STALE"
         );
+    }
+
+    #[tokio::test]
+    async fn native_owner_return_retires_only_its_pending_callbacks() {
+        let broker = McpInteractionBroker::default();
+        let (lease, mut rx) = open(&broker);
+        let cancelled = Arc::new(McpOperationCancellation::default());
+        let b = broker.clone();
+        let c = cancelled.clone();
+        let target =
+            tokio::spawn(
+                async move { b.request(key("alpha"), "target".into(), prompts(), c).await },
+            );
+        let pending = rx.recv().await.unwrap();
+        let b = broker.clone();
+        let other_cancel = Arc::new(McpOperationCancellation::default());
+        let c = other_cancel.clone();
+        let other =
+            tokio::spawn(
+                async move { b.request(key("alpha"), "other".into(), prompts(), c).await },
+            );
+        let other_pending = rx.recv().await.unwrap();
+        cancelled.cancel();
+        broker.finish_operation(&key("alpha"), "target");
+        assert_eq!(
+            broker.pending_request_ids(&lease).unwrap(),
+            vec![other_pending.request_id]
+        );
+        assert_eq!(
+            broker
+                .respond(
+                    &lease,
+                    McpInteractionResponse {
+                        request_id: pending.request_id,
+                        key: pending.key,
+                        operation_id: pending.operation_id,
+                        answers: vec![],
+                    }
+                )
+                .unwrap_err()
+                .code,
+            "MCP_INTERACTION_STALE"
+        );
+        assert!(target.await.unwrap().is_err());
+        assert!(broker
+            .request(key("alpha"), "target".into(), prompts(), cancelled)
+            .await
+            .is_err());
+        other_cancel.cancel();
+        assert!(other.await.unwrap().is_err());
+        assert!(broker.pending_request_ids(&lease).unwrap().is_empty());
     }
 
     #[tokio::test]

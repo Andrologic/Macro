@@ -158,6 +158,7 @@ impl Fixture {
             path,
             vec![self.project.clone()],
             root,
+            None,
         )
         .await
     }

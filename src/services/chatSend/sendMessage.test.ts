@@ -501,3 +501,64 @@ describe('Pilot attachment durable launch guards', () => {
     expect(f.createMessage).not.toHaveBeenCalled();
   });
 });
+
+it('hands a questionnaire to the admitted turn only after the human answer is durable', async () => {
+  const f = fixture('Chat');
+  const context = { handle: 'new-parent', runtime: 'browser' };
+  const receipt = { operationId: 'question', runtime: 'browser', revision: 0,
+    identity: { conversationId: f.input.conversationId, kind: 'question' as const, id: 'question-message' } };
+  const entered = deferred();
+  const handoff = deferred();
+  f.ports.admission.begin = async () => ({ kind: 'globalChat', context });
+  f.ports.admission.closePreparation = async () => {};
+  f.ports.admission.handoffQuestion = async (actual, conversation, response, captured) => {
+    expect(actual).toEqual(context);
+    expect(conversation).toBe(f.input.conversationId);
+    expect(response).toBeTruthy();
+    expect(captured).toEqual(receipt);
+    expect(f.createMessage.mock.calls.filter(call => call[1] === 'user')).toHaveLength(1);
+    entered.resolve();
+    await handoff.promise;
+  };
+  const sending = sendMessage({ ...f.input, questionIntent: receipt }, f.snapshot, f.ports);
+  await entered.promise;
+  expect(f.ports.stream.start).not.toHaveBeenCalled();
+  handoff.resolve();
+  await sending;
+  expect(f.ports.stream.start).toHaveBeenCalledTimes(1);
+  expect(JSON.stringify(f.createMessage.mock.calls)).not.toContain('new-parent');
+});
+
+it('retains a questionnaire handoff failure without starting the provider', async () => {
+  const f = fixture('Chat');
+  const receipt = { operationId: 'question', runtime: 'browser', revision: 0,
+    identity: { conversationId: f.input.conversationId, kind: 'question' as const, id: 'question-message' } };
+  f.ports.admission.begin = async () => ({ kind: 'globalChat', context: { handle: 'parent', runtime: 'browser' } });
+  f.ports.admission.closePreparation = async () => {};
+  f.ports.admission.handoffQuestion = async () => { throw new Error('Question receipt unavailable'); };
+  await expect(sendMessage({ ...f.input, questionIntent: receipt }, f.snapshot, f.ports)).rejects.toMatchObject({ message: 'Question receipt unavailable' });
+  expect(f.ports.stream.start).not.toHaveBeenCalled();
+});
+
+it('keeps metadata under the captured parent even when main preparation fails', async () => {
+  const f = fixture();
+  const metadata = deferred<void>();
+  const started = deferred<void>();
+  const context = { handle: 'metadata-parent', runtime: 'browser' };
+  f.ports.admission.begin = async () => ({ kind: 'globalChat', context });
+  f.ports.admission.closePreparation = async (received) => { expect(received).toEqual(context); f.events.push('closed'); };
+  f.ports.preparation.generateMetadata = async params => {
+    expect(params.providerAdmission).toEqual({ kind: 'globalChat', context });
+    expect(params.signal).toBeInstanceOf(AbortSignal);
+    started.resolve();
+    await metadata.promise;
+  };
+  f.ports.stream.prepare = async () => { throw new Error('Synthetic main preparation failure'); };
+  const sending = f.run().then(() => null, error => error);
+  await started.promise;
+  await Promise.resolve();
+  expect(f.events).not.toContain('closed');
+  metadata.resolve();
+  expect(await sending).toMatchObject({ message: 'Synthetic main preparation failure' });
+  expect(f.events).toContain('closed');
+});

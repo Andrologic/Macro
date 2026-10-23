@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it } from 'bun:test';
-import { COMPOSER_DRAFTS_STORAGE_KEY } from '../chat/chatLocalSessionState';
+import { COMPOSER_DRAFTS_STORAGE_KEY, drainComposerDraftWrites } from '../chat/chatLocalSessionState';
 import type { useChatStore as UseChatStore } from '../useChatStore';
 
 interface ComposerDraftQueueScenarioContext {
@@ -107,6 +107,7 @@ export const registerComposerDraftQueueScenarios = (
         }],
       });
 
+      await drainComposerDraftWrites();
       ({ useChatStore } = await context.loadChatStore());
       await useChatStore.getState().initializeCritical();
 
@@ -121,7 +122,7 @@ export const registerComposerDraftQueueScenarios = (
       });
     });
 
-    it('keeps two persisted conversation drafts isolated', () => {
+    it('keeps two persisted conversation drafts isolated', async () => {
       useChatStore.getState().saveComposerDraftForContext('conversation:conv-a', {
         text: 'Draft A',
         images: [],
@@ -137,6 +138,7 @@ export const registerComposerDraftQueueScenarios = (
         .toBe('Draft A');
       expect(useChatStore.getState().getComposerDraftForContext('conversation:conv-b')?.text)
         .toBe('Draft B');
+      await drainComposerDraftWrites();
       const persisted = JSON.parse(
         window.localStorage.getItem(COMPOSER_DRAFTS_STORAGE_KEY) ?? '{}',
       ) as Record<string, { text?: string }>;

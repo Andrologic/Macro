@@ -1,3 +1,4 @@
+import { isChatAdmissionFailure } from './contracts/errors';
 import { validatePortableCompactionJson as validateArchivedCompactionJson } from '../../contracts/macro-pilot/v2/portable-chat-history/validate.mjs';
 import { readTypedToolResult, projectToolResultText } from '../shared/toolResultContent';
 import type {
@@ -2256,7 +2257,8 @@ const buildCompactionState = async (params: {
         usedSourcePassages,
         interestingSourcePassages,
       })) ?? null;
-  } catch {
+  } catch (error) {
+    if (isChatAdmissionFailure(error)) throw error;
     summaryText = null;
   }
 

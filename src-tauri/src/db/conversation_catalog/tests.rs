@@ -107,7 +107,7 @@ async fn replace_covers_text_keys_explicit_rowid_and_double_victims() {
             "INSERT INTO conversations(id,title,created_at,updated_at) VALUES ('d','upsert','x','x') ON CONFLICT(id) DO UPDATE SET title=excluded.title",
             "UPDATE OR REPLACE conversations SET id='d' WHERE id='a'",
             "DELETE FROM conversations",
-            "INSERT INTO conversations(id,title,created_at,updated_at) VALUES ('d','same ID recreated','x','x')",
+            "INSERT INTO conversations(id,title,created_at,updated_at) VALUES ('new-d','new identity after deletion','x','x')",
         ] {
             // ID renames need the caller to permit existing child foreign keys.
             let renames_id=statement.starts_with("UPDATE OR REPLACE conversations SET id=");
@@ -118,7 +118,7 @@ async fn replace_covers_text_keys_explicit_rowid_and_double_victims() {
             assert_ne!(before,token_in(&mut db, GENERATION, None).await.unwrap(),"recursive={recursive}: {statement}");
         }
         let before = token_in(&mut db, GENERATION, None).await.unwrap();
-        sqlx::query("INSERT OR IGNORE INTO conversations(id,title,created_at,updated_at) VALUES ('d','ignored','x','x')").execute(&mut *db).await.unwrap();
+        sqlx::query("INSERT OR IGNORE INTO conversations(id,title,created_at,updated_at) VALUES ('new-d','ignored','x','x')").execute(&mut *db).await.unwrap();
         assert_eq!(before, token_in(&mut db, GENERATION, None).await.unwrap());
         drop(db);
         pool.close().await;
@@ -258,7 +258,7 @@ async fn mutations_between_pages_and_final_version_retire_the_assembly() {
         "INSERT INTO conversations(id,title,created_at,updated_at) VALUES ('c','C','x','x')",
         "DELETE FROM conversations WHERE id='c'",
         "INSERT OR REPLACE INTO conversations(id,title,created_at,updated_at) VALUES ('b','replaced','x','x')",
-        "DELETE FROM conversations WHERE id='b'; INSERT INTO conversations(id,title,created_at,updated_at) VALUES ('b','recreated','x','x')",
+        "DELETE FROM conversations WHERE id='b'; INSERT INTO conversations(id,title,created_at,updated_at) VALUES ('new-b','new identity','x','x')",
     ] {
         let mut request=input();request.limit=1;
         let first=conversation_catalog_page(&pool,GENERATION,&request).await.unwrap();

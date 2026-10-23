@@ -619,6 +619,10 @@ pub async fn delete_conversations(pool: &SqlitePool, ids: &[String]) -> DbResult
 }
 
 pub async fn delete_app_setting(pool: &SqlitePool, key: &str) -> DbResult<bool> {
+    if key == super::chat_admission::intents::APPROVAL_REGISTRY_KEY {
+        return Err(super::DbError::Validation("chat_admission_reserved_setting".into()));
+    }
+
     let result = sqlx::query("DELETE FROM app_settings WHERE key = ?")
         .bind(key)
         .execute(pool)
@@ -1238,6 +1242,7 @@ pub async fn import_messages(
     Ok(inserted)
 }
 
+#[derive(serde::Serialize)]
 pub struct UpdateMessageContentInput<'a> {
     pub id: &'a str,
     pub turn_id: Option<String>,
@@ -1256,6 +1261,17 @@ pub async fn update_message_content(
     pool: &SqlitePool,
     input: UpdateMessageContentInput<'_>,
 ) -> DbResult<()> {
+    // Acquire the writer before any reads, including admitted final writes.
+    let mut transaction = pool.begin_with("BEGIN IMMEDIATE").await?;
+    update_message_content_with_connection(&mut transaction, input).await?;
+    transaction.commit().await?;
+    Ok(())
+}
+
+pub(crate) async fn update_message_content_with_connection(
+    connection: &mut sqlx::SqliteConnection,
+    input: UpdateMessageContentInput<'_>,
+) -> DbResult<()> {
     let UpdateMessageContentInput {
         id,
         turn_id,
@@ -1270,13 +1286,10 @@ pub async fn update_message_content(
         generation_attempts_json,
     } = input;
 
-    // Acquire the writer before any reads. A deferred WAL transaction cannot
-    // upgrade a stale read snapshot while another writer holds the database.
-    let mut transaction = pool.begin_with("BEGIN IMMEDIATE").await?;
     let conversation_id: Option<String> =
         sqlx::query_scalar("SELECT conversation_id FROM messages WHERE id = ?")
             .bind(id)
-            .fetch_optional(&mut *transaction)
+            .fetch_optional(&mut *connection)
             .await?;
 
     sqlx::query(
@@ -1297,15 +1310,13 @@ pub async fn update_message_content(
     .bind(completion_reason)
     .bind(generation_attempts_json)
     .bind(id)
-    .execute(&mut *transaction)
+    .execute(&mut *connection)
     .await?;
 
     if let Some(conversation_id) = conversation_id {
-        refresh_conversation_metadata_with_connection(&mut *transaction, conversation_id, None)
+        refresh_conversation_metadata_with_connection(&mut *connection, conversation_id, None)
             .await?;
     }
-
-    transaction.commit().await?;
 
     Ok(())
 }
@@ -2724,6 +2735,14 @@ pub async fn get_conversation_compaction_state(
     pool: &SqlitePool,
     conversation_id: &str,
 ) -> DbResult<Option<ConversationCompactionStateRecord>> {
+    let mut connection = pool.acquire().await?;
+    get_conversation_compaction_state_with_connection(&mut connection, conversation_id).await
+}
+
+async fn get_conversation_compaction_state_with_connection(
+    connection: &mut sqlx::SqliteConnection,
+    conversation_id: &str,
+) -> DbResult<Option<ConversationCompactionStateRecord>> {
     let row = sqlx::query(
         r#"
         SELECT conversation_id, up_to_message_id, summary_text, tool_digest_json,
@@ -2740,7 +2759,7 @@ pub async fn get_conversation_compaction_state(
         "#,
     )
     .bind(conversation_id)
-    .fetch_optional(pool)
+    .fetch_optional(connection)
     .await?;
 
     Ok(row.map(|row| ConversationCompactionStateRecord {
@@ -2828,6 +2847,17 @@ pub async fn upsert_conversation_compaction_state(
     pool: &SqlitePool,
     input: UpsertConversationCompactionStateInput,
 ) -> DbResult<ConversationCompactionStateRecord> {
+    let mut transaction = pool.begin_with("BEGIN IMMEDIATE").await?;
+    let result =
+        upsert_conversation_compaction_state_with_connection(&mut transaction, input).await?;
+    transaction.commit().await?;
+    Ok(result)
+}
+
+pub(crate) async fn upsert_conversation_compaction_state_with_connection(
+    connection: &mut sqlx::SqliteConnection,
+    input: UpsertConversationCompactionStateInput,
+) -> DbResult<ConversationCompactionStateRecord> {
     let now = chrono::Utc::now().to_rfc3339();
     let conversation_id = input.conversation_id.clone();
 
@@ -2909,10 +2939,10 @@ pub async fn upsert_conversation_compaction_state(
     .bind(&input.last_trigger)
     .bind(&now)
     .bind(&now)
-    .execute(pool)
+    .execute(&mut *connection)
     .await?;
 
-    get_conversation_compaction_state(pool, &conversation_id)
+    get_conversation_compaction_state_with_connection(connection, &conversation_id)
         .await?
         .ok_or_else(|| sqlx::Error::RowNotFound.into())
 }
@@ -3039,6 +3069,10 @@ pub async fn set_app_setting(
     key: &str,
     value_json: &str,
 ) -> DbResult<AppSettingRecord> {
+    if key == super::chat_admission::intents::APPROVAL_REGISTRY_KEY {
+        return Err(super::DbError::Validation("chat_admission_reserved_setting".into()));
+    }
+
     let now = chrono::Utc::now().to_rfc3339();
 
     sqlx::query(
@@ -3069,6 +3103,10 @@ pub async fn compare_and_swap_app_setting(
     expected_value_json: Option<&str>,
     value_json: &str,
 ) -> DbResult<CompareAndSwapAppSettingResult> {
+    if key == super::chat_admission::intents::APPROVAL_REGISTRY_KEY {
+        return Err(super::DbError::Validation("chat_admission_reserved_setting".into()));
+    }
+
     let now = chrono::Utc::now().to_rfc3339();
     let result = sqlx::query(
         r#"

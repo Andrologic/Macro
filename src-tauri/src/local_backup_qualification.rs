@@ -61,6 +61,83 @@ fn assert_raw_files(actual: &Archive, expected: &Archive) {
     }
 }
 
+// Restore intentionally changes only local ownership and uncertain work. All
+// other SQL values and all other managed files must still match the preservation.
+pub(super) async fn assert_held_files(actual: &Archive, expected: &Archive) {
+    use sqlx::Row;
+    assert_eq!(
+        actual.files.keys().collect::<Vec<_>>(),
+        expected.files.keys().collect::<Vec<_>>()
+    );
+    for (name, entry) in &expected.files {
+        if name != "data/macro.db" {
+            assert_eq!(actual.files[name].data, entry.data, "{name}");
+        }
+    }
+    let temp = tempfile::tempdir().unwrap();
+    let mut snapshots = Vec::new();
+    for (label, archive) in [("actual", actual), ("expected", expected)] {
+        let path = temp.path().join(format!("{label}.db"));
+        fs::write(
+            &path,
+            STANDARD
+                .decode(&archive.files["data/macro.db"].data)
+                .unwrap(),
+        )
+        .unwrap();
+        let mut db = connection(&path).await.unwrap();
+        let tables: Vec<String> = sqlx::query_scalar("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name").fetch_all(&mut db).await.unwrap();
+        let mut snapshot = BTreeMap::new();
+        for table in tables {
+            let columns: Vec<String> =
+                sqlx::query_scalar("SELECT name FROM pragma_table_info(?) ORDER BY cid")
+                    .bind(&table)
+                    .fetch_all(&mut db)
+                    .await
+                    .unwrap();
+            let projections: Vec<String> = columns.iter().map(|column| {
+                let expression = match (label, table.as_str(), column.as_str()) {
+                    ("expected", "chat_admission_owners", "mode") => "CASE WHEN mode IN ('open','frozen') THEN 'restore_hold' ELSE mode END".into(),
+                    ("expected", "chat_admission_owners", "revision") => "revision+CASE WHEN mode IN ('open','frozen') THEN 1 ELSE 0 END".into(),
+                    ("expected", "chat_admission_owners", "browser_reconciled") => "CASE WHEN mode IN ('open','frozen') THEN 0 ELSE browser_reconciled END".into(),
+                    ("expected", "chat_admission_owners", "runtime_generation") => "CASE WHEN mode IN ('open','frozen') THEN NULL ELSE runtime_generation END".into(),
+                    ("expected", "chat_admission_operations", "phase") => "CASE WHEN phase IN ('prepared','dispatched') THEN 'unknown' ELSE phase END".into(),
+                    ("expected", "chat_admission_operations", "revision") => "revision+CASE WHEN phase IN ('prepared','dispatched') THEN 1 ELSE 0 END".into(),
+                    _ => format!("\"{}\"", column.replace('"', "\"\"")),
+                };
+                format!("typeof({expression}) || ':' || hex(CAST({expression} AS BLOB))")
+            }).collect();
+            let sql = format!(
+                "SELECT {} FROM \"{}\"",
+                projections.join(","),
+                table.replace('"', "\"\"")
+            );
+            let mut rows: Vec<Vec<String>> = sqlx::query(sqlx::AssertSqlSafe(sql))
+                .fetch_all(&mut db)
+                .await
+                .unwrap()
+                .into_iter()
+                .map(|row| {
+                    (0..columns.len())
+                        .map(|i| row.get::<String, _>(i))
+                        .collect()
+                })
+                .collect();
+            rows.sort();
+            snapshot.insert(table, rows);
+        }
+        db.close().await.unwrap();
+        snapshots.push(snapshot);
+    }
+    assert_eq!(
+        snapshots[0].keys().collect::<Vec<_>>(),
+        snapshots[1].keys().collect::<Vec<_>>()
+    );
+    for (table, rows) in &snapshots[1] {
+        assert_eq!(&snapshots[0][table], rows, "restored table {table}");
+    }
+}
+
 #[tokio::test]
 async fn startup_wal_round_trip_preserves_all_message_and_conversation_fields_on_reopen() {
     let (temp, data, config) = profile().await;
@@ -279,6 +356,7 @@ async fn interruption_child() {
     } else {
         let original = capture_raw(&data, &config, browser_fixture("original")).unwrap();
         let marker = RestoreJournal {
+            phase: RestorePhase::Rollback,
             preserved: format!("preserved-{}.json", uuid::Uuid::new_v4()),
         };
         preserve_raw(&original, &preserved_path(&dir, &marker).unwrap()).unwrap();
@@ -408,10 +486,11 @@ async fn killed_subprocess_recovers_at_five_restore_boundaries() {
         };
         assert_eq!(recovered.code, Some(code));
         if phase != "preserved-before-journal" {
-            assert_raw_files(
+            assert_held_files(
                 &capture_raw(&data, &config, receiver_browser.clone()).unwrap(),
                 &expected,
-            );
+            )
+            .await;
             assert_eq!(recovered.browser.as_ref(), Some(&receiver_browser));
             if phase == "replaced-before-status" {
                 proof(
@@ -444,6 +523,7 @@ async fn damaged_preservation_blocks_recovery_and_retains_journal_for_retry() {
     let dir = data.join("local-backup");
     fs::create_dir_all(&dir).unwrap();
     let marker = RestoreJournal {
+        phase: RestorePhase::Rollback,
         preserved: format!("preserved-{}.json", uuid::Uuid::new_v4()),
     };
     let path = preserved_path(&dir, &marker).unwrap();
@@ -467,10 +547,11 @@ async fn damaged_preservation_blocks_recovery_and_retains_journal_for_retry() {
     fs::write(&path, serde_json::to_vec(&original).unwrap()).unwrap();
     process_startup(&data, &config).await.unwrap();
     assert_eq!(status(&data).code, Some(BackupStatusCode::RolledBack));
-    assert_raw_files(
+    assert_held_files(
         &capture_raw(&data, &config, BTreeMap::new()).unwrap(),
         &original,
-    );
+    )
+    .await;
     assert!(path.exists());
 }
 

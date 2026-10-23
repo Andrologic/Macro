@@ -1,3 +1,4 @@
+import type { ChatToolAdmission } from './chatAdmission';
 import type { OmitFields } from './compatibility.types';
 /** config IPC wrappers and frontend adapters. */
 
@@ -54,8 +55,11 @@ export async function configApplyPatch(
 
 export async function configApplyAgentPatch(
   request: ConfigPatchRequest,
+  chatAdmission?: ChatToolAdmission,
 ): Promise<ConfigPatchResult> {
-  return invoke<ConfigPatchResult>("config_patch", { request });
+  return invoke<ConfigPatchResult>("config_patch", {
+    request, ...(chatAdmission ? { chatAdmission: { ...chatAdmission, requestId: crypto.randomUUID() } } : {}),
+  });
 }
 
 export async function configResetPath(input: {

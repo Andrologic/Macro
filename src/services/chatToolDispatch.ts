@@ -1,3 +1,4 @@
+import type { ChatAdmissionContext } from './ipc/chatAdmission';
 import { formatToolExecutionError } from './ai/toolCallResolution';
 import { ToolResultPreservationError } from './toolResultArtifacts';
 import type { FrozenToolCallContext } from "./chatStreamContracts";
@@ -12,9 +13,9 @@ import type { CompleteToolInvocationInput, RecordToolInvocationInput, RecordTool
 export interface ChatToolInvocationJournal {
   /** The remote kernel has its own execution journal for supported mutations. */
   isRemoteRuntime(): boolean;
-  record(input: RecordToolInvocationInput): Promise<RecordToolInvocationResult>;
-  complete(input: CompleteToolInvocationInput): Promise<ToolInvocation>;
-  markUnknown(identity: ToolInvocationIdentity): Promise<ToolInvocation>;
+  record(input: RecordToolInvocationInput, context?: ChatAdmissionContext): Promise<RecordToolInvocationResult>;
+  complete(input: CompleteToolInvocationInput, context?: ChatAdmissionContext): Promise<ToolInvocation>;
+  markUnknown(identity: ToolInvocationIdentity, context?: ChatAdmissionContext): Promise<ToolInvocation>;
 }
 
 const READ_ONLY_TOOLS = new Set([
@@ -86,7 +87,7 @@ export function createChatToolDispatch(
     });
     const markUnknown = async () => {
       if (!journalState.localIntent) return;
-      try { await ports.journal.markUnknown(journalState.localIntent); } catch { /* Pending becomes unknown on restart. */ }
+      try { await ports.journal.markUnknown(journalState.localIntent, operation.providerAdmission.kind === 'globalChat' ? operation.providerAdmission.context : undefined); } catch { /* Pending becomes unknown on restart. */ }
     };
     const executeJournaled = async (name: string, executionArgs: Record<string, unknown>) => {
       const identity: ToolInvocationIdentity = {
@@ -115,7 +116,7 @@ export function createChatToolDispatch(
         const recorded = await ports.journal.record({
           ...identity, toolName: name, effectClass: classifyChatToolEffect(name),
           arguments: canonicalArgs as RecordToolInvocationInput['arguments'], remoteExecutionId: null,
-        });
+        }, operation.providerAdmission.kind === 'globalChat' ? operation.providerAdmission.context : undefined);
         if (!recorded.is_new) {
           return journalFailure('Tool execution refused because this invocation was already recorded. Inspect its outcome before retrying.');
         }
@@ -218,7 +219,7 @@ export function createChatToolDispatch(
       try {
         // Confirm the executor response after optional large-result preservation.
         // Short results are not journaled; Copilot acceptance is separate.
-        await ports.journal.complete({ ...journalState.localIntent, receiptId: globalThis.crypto?.randomUUID?.() ?? 'local-executor-response' });
+        await ports.journal.complete({ ...journalState.localIntent, receiptId: globalThis.crypto?.randomUUID?.() ?? 'local-executor-response' }, operation.providerAdmission.kind === 'globalChat' ? operation.providerAdmission.context : undefined);
       } catch {
         await markUnknown();
         return refusal ?? uncertain('The tool result was preserved, but durable completion could not be confirmed.');

@@ -190,3 +190,20 @@ describe("chatTurnRuntime ownership", () => {
     expect(fail).not.toHaveBeenCalled();
   });
 });
+
+test('only consumed steers reach provider receipts and their metadata stays out of messages', () => {
+  const h = setup();
+  const a = h.begin('a');
+  const receipt = { operationId: 'steer-op', runtime: 'browser', revision: 0,
+    identity: { conversationId: 'a', kind: 'steer' as const, id: 'steer-message' } };
+  const message = { role: 'user' as const, content: 'Direction' };
+  expect(h.runtime.enqueueSteer('a', message, a.identity, { kind: 'globalChat', receipt })).toBe(true);
+  expect(h.runtime.providerSteerReceipts(a.identity)).toEqual([]);
+  expect(h.runtime.consumeSteers(a.identity)).toEqual([message]);
+  expect(h.runtime.providerSteerReceipts(a.identity)).toEqual([receipt]);
+  expect(JSON.stringify(message)).not.toContain('steer-op');
+  const b = h.begin('a', 'successor');
+  expect(h.runtime.providerSteerReceipts(b.identity)).toEqual([]);
+  h.runtime.reset();
+  expect(h.runtime.providerSteerReceipts(a.identity)).toEqual([]);
+});

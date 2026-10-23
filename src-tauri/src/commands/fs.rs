@@ -37,6 +37,10 @@ pub async fn fs_read_file(
 #[tauri::command]
 #[allow(clippy::too_many_arguments)]
 pub async fn fs_write_file(
+    admission_runtime: tauri::State<'_, crate::db::chat_admission::runtime::ChatAdmissionRuntime>,
+    ai_state: tauri::State<'_, crate::ai::AiState>,
+    window: tauri::WebviewWindow,
+    chat_admission: Option<crate::db::chat_admission::runtime::ChatToolAdmission>,
     workspace_root: tauri::State<'_, WorkspaceRoot>,
     git_state: tauri::State<'_, GitState>,
     path: String,
@@ -48,31 +52,51 @@ pub async fn fs_write_file(
     expected_revision: Option<String>,
     unix_mode: Option<u32>,
 ) -> Result<WriteResultDto, BackendError> {
-    let effective_path = if is_macro_scoped_path(&path) {
-        map_macro_virtual_path(&path)
-    } else {
-        path.clone()
-    };
     let workspace = workspace_root.inner().read().await.clone();
-    let workspace = resolve_workspace_for_path(
-        workspace,
-        git_state.inner().clone(),
-        workspace_path.map(PathBuf::from),
-        &path,
-        allow_outside_workspace,
-        workspace_scope.as_deref(),
-    )
-    .await?;
-    write_file_internal_with_revision_and_mode(
-        &workspace,
-        effective_path,
-        content,
-        create_dirs,
-        allow_outside_workspace,
-        expected_revision.as_deref(),
-        unix_mode,
-    )
-    .await
+    let git_state = git_state.inner().clone();
+    let execution = async move {
+        let effective_path = if is_macro_scoped_path(&path) {
+            map_macro_virtual_path(&path)
+        } else {
+            path.clone()
+        };
+        let workspace = resolve_workspace_for_path(
+            workspace,
+            git_state,
+            workspace_path.map(PathBuf::from),
+            &path,
+            allow_outside_workspace,
+            workspace_scope.as_deref(),
+        )
+        .await?;
+        write_file_internal_with_revision_and_mode(
+            &workspace,
+            effective_path,
+            content,
+            create_dirs,
+            allow_outside_workspace,
+            expected_revision.as_deref(),
+            unix_mode,
+        )
+        .await
+    };
+    if let Some(admission) = chat_admission {
+        let (reservation, work) = super::chat_admission::admit_tool(
+            &admission_runtime,
+            &ai_state,
+            window.label(),
+            admission,
+        )
+        .await
+        .map_err(|e| BackendError::Validation(e.message))?;
+        // Filesystem operations have no interruption contract. Retain and join
+        // the real future even after its webview disappears.
+        let received = reservation
+            .spawn_tool(work, move |_cancel| execution)
+            .map_err(BackendError::Validation)?;
+        return received.await.map_err(BackendError::Validation)?;
+    }
+    execution.await
 }
 
 #[tauri::command]
@@ -179,6 +203,10 @@ pub async fn fs_exists(
 
 #[tauri::command]
 pub async fn fs_delete(
+    admission_runtime: tauri::State<'_, crate::db::chat_admission::runtime::ChatAdmissionRuntime>,
+    ai_state: tauri::State<'_, crate::ai::AiState>,
+    window: tauri::WebviewWindow,
+    chat_admission: Option<crate::db::chat_admission::runtime::ChatToolAdmission>,
     workspace_root: tauri::State<'_, WorkspaceRoot>,
     git_state: tauri::State<'_, GitState>,
     path: String,
@@ -187,28 +215,48 @@ pub async fn fs_delete(
     workspace_path: Option<String>,
     expected_revision: Option<String>,
 ) -> Result<(), BackendError> {
-    let effective_path = if is_macro_scoped_path(&path) {
-        map_macro_virtual_path(&path)
-    } else {
-        path.clone()
-    };
     let workspace = workspace_root.inner().read().await.clone();
-    let workspace = resolve_workspace_for_path(
-        workspace,
-        git_state.inner().clone(),
-        workspace_path.map(PathBuf::from),
-        &path,
-        None,
-        workspace_scope.as_deref(),
-    )
-    .await?;
-    delete_path_internal_with_revision(
-        &workspace,
-        effective_path,
-        recursive,
-        expected_revision.as_deref(),
-    )
-    .await
+    let git_state = git_state.inner().clone();
+    let execution = async move {
+        let effective_path = if is_macro_scoped_path(&path) {
+            map_macro_virtual_path(&path)
+        } else {
+            path.clone()
+        };
+        let workspace = resolve_workspace_for_path(
+            workspace,
+            git_state,
+            workspace_path.map(PathBuf::from),
+            &path,
+            None,
+            workspace_scope.as_deref(),
+        )
+        .await?;
+        delete_path_internal_with_revision(
+            &workspace,
+            effective_path,
+            recursive,
+            expected_revision.as_deref(),
+        )
+        .await
+    };
+    if let Some(admission) = chat_admission {
+        let (reservation, work) = super::chat_admission::admit_tool(
+            &admission_runtime,
+            &ai_state,
+            window.label(),
+            admission,
+        )
+        .await
+        .map_err(|e| BackendError::Validation(e.message))?;
+        // Filesystem operations have no interruption contract. Retain and join
+        // the real future even after its webview disappears.
+        let received = reservation
+            .spawn_tool(work, move |_cancel| execution)
+            .map_err(BackendError::Validation)?;
+        return received.await.map_err(BackendError::Validation)?;
+    }
+    execution.await
 }
 
 #[tauri::command]

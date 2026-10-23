@@ -1,3 +1,4 @@
+import type { ProviderAdmission } from './ipc/chatAdmission';
 import type { Citation } from "../types/citation";
 import type { AppMode, AgentType, ChatMessage, ContextFootprint, ContextCompactionKind, ProviderConfig, ReasoningEffort, MCPTool, MCPServer, ToolRiskLevel } from "../types";
 import type { StreamMessage } from "./ai/contracts";
@@ -50,6 +51,7 @@ export type StreamContextDiagnosticsBaselineSeed = Omit<
  * selected when the provider responds.
  */
 export interface FrozenToolCallContext {
+  providerAdmission: ProviderAdmission;
   architectPlanAtSend?: { planId: string; targetBranch: string };
   conversationId: string;
   sessionId: string;
@@ -67,6 +69,8 @@ export interface FrozenToolCallContext {
 }
 
 export interface AssistantStreamLaunch {
+    completeMetadata?: () => Promise<void>;
+    providerAdmission: ProviderAdmission;
     pilotActionToken?: symbol;
     architectPlanContext?: ArchitectPlanRecord | null;
     architectPlanAtSend?: { planId: string; targetBranch: string };
@@ -131,6 +135,7 @@ export type ChatTurnCapabilities = Pick<AssistantStreamLaunch,
 >;
 
 export interface PrepareAssistantStreamParams {
+    providerAdmission: ProviderAdmission;
   architectPlanAtSend?: { planId: string; targetBranch: string };
     turnCapabilities?: ChatTurnCapabilities;
     conversationId: string;

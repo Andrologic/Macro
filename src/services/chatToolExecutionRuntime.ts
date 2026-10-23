@@ -1,3 +1,4 @@
+import { beginChatIntent } from "./chatAdmission";
 import type { FrozenToolCallContext } from "./chatStreamContracts";
 import type { ToolCallResolution } from "./streamingChat";
 import type { PendingToolApproval } from "../types";
@@ -84,6 +85,10 @@ export function createChatToolExecution(ports: ChatToolExecutionPorts) {
       taskId: taskIdAtSend,
       signal,
     } = operation;
+    const chatAdmission = operation.providerAdmission.kind === 'globalChat' ? {
+      context: operation.providerAdmission.context,
+      identity: { conversationId, turnId: operation.turnId, messageId: operation.assistantMessageId, callId: toolCallId ?? '' },
+    } : undefined;
     const isCurrentOperation = () => {
       const runtime = ports.runtime.read(conversationId);
       return !signal.aborted && acceptsAttempt() &&
@@ -346,6 +351,8 @@ export function createChatToolExecution(ports: ChatToolExecutionPorts) {
 
     if (normalizedToolName === "question") {
       const questionnaire = validateQuestionToolArgs(args);
+      if (chatAdmission) await beginChatIntent({ conversationId, kind: 'question', id: assistantMessageId });
+      if (!isCurrentOperation()) return TOOL_EXECUTION_ABORTED_RESULT;
       return {
         kind: "interrupt",
         result: `Questionnaire queued for the user with ${questionnaire.questions.length} question(s).`,
@@ -366,7 +373,7 @@ export function createChatToolExecution(ports: ChatToolExecutionPorts) {
       ) {
         return "Web search is not configured for this provider.";
       }
-      const results = await webSearch(query, { ...webSearchOptions, signal });
+      const results = await webSearch(query, { ...webSearchOptions, signal, chatAdmission });
       if (!isCurrentOperation()) {
         return TOOL_EXECUTION_ABORTED_RESULT;
       }
@@ -383,7 +390,7 @@ export function createChatToolExecution(ports: ChatToolExecutionPorts) {
       if (!enableWebFetch) {
         return "Web fetch is disabled for this provider.";
       }
-      const fetched = await fetchWebPage(url, signal);
+      const fetched = await fetchWebPage(url, signal, chatAdmission);
       if (!isCurrentOperation()) {
         return TOOL_EXECUTION_ABORTED_RESULT;
       }
@@ -406,7 +413,7 @@ export function createChatToolExecution(ports: ChatToolExecutionPorts) {
       return ports.sources.readFile(conversationId, args);
     }
 
-    const configToolResult = await handleConfigToolCall(normalizedToolName, args);
+    const configToolResult = await handleConfigToolCall(normalizedToolName, args, chatAdmission);
     if (!isCurrentOperation()) return TOOL_EXECUTION_ABORTED_RESULT;
     if (configToolResult !== undefined) {
       return configToolResult;
@@ -415,6 +422,7 @@ export function createChatToolExecution(ports: ChatToolExecutionPorts) {
     const configVirtualScopeResult = await ports.handlers.configVirtualScope(
       normalizedToolName,
       args,
+      chatAdmission,
     );
     if (!isCurrentOperation()) return TOOL_EXECUTION_ABORTED_RESULT;
     if (configVirtualScopeResult !== undefined) {
@@ -427,6 +435,7 @@ export function createChatToolExecution(ports: ChatToolExecutionPorts) {
       conversationId,
       undefined,
       executionContext,
+      chatAdmission,
     );
     if (!isCurrentOperation()) return TOOL_EXECUTION_ABORTED_RESULT;
     if (skillToolResult !== undefined) {
@@ -440,6 +449,7 @@ export function createChatToolExecution(ports: ChatToolExecutionPorts) {
         executionMcpServers,
         {
           projectIds: executionMcpProjectIds,
+          chatAdmission: chatAdmission,
           signal,
         },
       );
@@ -542,7 +552,8 @@ export function createChatToolExecution(ports: ChatToolExecutionPorts) {
     }
 
     if (AGENT_TERMINAL_TOOL_IDS.has(normalizedToolName)) {
-      return executeChatAgentTerminal(ports.terminal, normalizedToolName, args, signal, isCurrentOperation);
+      return executeChatAgentTerminal(ports.terminal, normalizedToolName, args, signal, isCurrentOperation,
+        chatAdmission);
     }
 
     if (
@@ -624,6 +635,7 @@ export function createChatToolExecution(ports: ChatToolExecutionPorts) {
         args,
         mode,
         {
+          chatAdmission: chatAdmission,
           signal,
           workspacePath: executionContext.workspacePath,
           defaultWorkspacePath: executionContext.defaultWorkspacePath,

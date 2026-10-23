@@ -1,3 +1,5 @@
+import { fetchProviderWithTimeout, type ProviderHttpResponse } from './ai/admittedHttpTransport';
+import { MacroServiceError } from './contracts/errors';
 import { runToolCallingLoop } from './ai/toolCallingLoop';
 import { createNativeAdapter } from './ai/nativeAdapter';
 import { createChatCompletionsAdapter } from './ai/chatCompletionsAdapter';
@@ -5,7 +7,7 @@ import type { ReasoningCompatibility } from './ai/reasoningCompatibility';
 import { resolveChatCompletionProviderProfile, buildChatCompletionMessages, validateChatCompletionMessageSequence, buildAssistantChatCompletionProviderItem, appendReasoningDetails, applyToolsToChatCompletionsRequest } from './ai/chatCompletionsCodec';
 import { buildNativeReasoningVisibleTurnContent } from './ai/responsesCodec';
 import { emptyStreamCompletionResult, createStreamAccumulator } from './ai/streamAccumulator';
-import { GENERIC_RETRY_MAX_ATTEMPTS, GENERIC_REQUEST_TIMEOUT_MS, getRetryDelayMs, sleep, fetchWithTimeout } from './ai/httpTransport';
+import { GENERIC_RETRY_MAX_ATTEMPTS, GENERIC_REQUEST_TIMEOUT_MS, getRetryDelayMs, sleep } from './ai/httpTransport';
 import { streamNativeTurnViaTauri } from './ai/nativeTurnTransport';
 import type { StreamingChatOptions, StreamingTurnResult } from './ai/contracts';
 import type { ActiveStreamResources } from './ai/streamResources';
@@ -100,7 +102,7 @@ export async function streamChat(options: StreamingChatOptions, resources: Activ
     try {
       return await streamChatViaNativeToolCallingProvider(effectiveOptions, resources, compatibility);
     } catch (error) {
-      if (options.providerType === 'ollama' || options.providerType === 'lmstudio') {
+      if (options.providerAdmission.kind === 'globalChat' || options.providerType === 'ollama' || options.providerType === 'lmstudio') {
         throw error;
       }
       // Generic native streaming reads keys from Macro's local secret store. If
@@ -148,6 +150,7 @@ export async function sendChatNonStreaming(options: Omit<StreamingChatOptions, '
       while (true) {
         try {
           turn = await streamNativeTurnViaTauri({
+            providerAdmission: options.providerAdmission,
             sessionId: options.sessionId,
             conversationId: options.conversationId,
             providerId,
@@ -191,6 +194,9 @@ export async function sendChatNonStreaming(options: Omit<StreamingChatOptions, '
           throw error;
         }
       }
+      if (turn.admissionOutcome !== undefined && turn.admissionOutcome !== 'completed') {
+        throw new MacroServiceError('CHAT_ADMISSION_UNCERTAIN', 'The provider result is not confirmed.');
+      }
       onComplete({
         visibleContent:
           providerType === 'chatgpt' || providerType === 'copilot'
@@ -228,6 +234,7 @@ export async function sendChatNonStreaming(options: Omit<StreamingChatOptions, '
     headers['X-Title'] = 'Macro';
   }
 
+  let http: ProviderHttpResponse | undefined;
   try {
     let currentReasoningEffort = reasoningEffort;
     let providerReasoningEnabled = true;
@@ -259,7 +266,8 @@ export async function sendChatNonStreaming(options: Omit<StreamingChatOptions, '
       );
       applyToolsToChatCompletionsRequest(requestBody, [], profile, requestMessages);
 
-      const candidateResponse = await fetchWithTimeout(
+      http = await fetchProviderWithTimeout(
+        options,
         `${baseUrl}/chat/completions`,
         {
           method: 'POST',
@@ -270,12 +278,17 @@ export async function sendChatNonStreaming(options: Omit<StreamingChatOptions, '
         options.signal
       );
 
+      const candidateResponse = http.response;
       if (candidateResponse.ok) {
         response = candidateResponse;
         break;
       }
 
       const runtimeError = await extractProviderErrorMessage(candidateResponse);
+      const phase = await http.finish('uncertain');
+      if (phase !== undefined && phase !== 'no_effect') {
+        throw new MacroServiceError('CHAT_ADMISSION_UNCERTAIN', 'The provider may have accepted this request.');
+      }
       const reasoningRejection = classifyReasoningRejection(runtimeError.message);
       if (
         shouldRequestProviderReasoning(profile, currentReasoningEffort, {
@@ -314,6 +327,10 @@ export async function sendChatNonStreaming(options: Omit<StreamingChatOptions, '
 
     const data = await response.json();
     const message = data.choices?.[0]?.message || {};
+    const phase = await http?.finish(data.choices?.[0]?.message ? 'completed' : 'uncertain');
+    if (phase !== undefined && phase !== 'completed') {
+      throw new MacroServiceError('CHAT_ADMISSION_UNCERTAIN', 'The provider result is not confirmed.');
+    }
     const messageContent = message.content || '';
     const reasoning = message.reasoning || message.reasoning_content || '';
     const reasoningDetails: unknown[] = [];
@@ -337,5 +354,7 @@ export async function sendChatNonStreaming(options: Omit<StreamingChatOptions, '
     const err = error instanceof Error ? error : new Error(String(error));
     onError(err);
     throw err;
+  } finally {
+    await http?.finish('uncertain');
   }
 }

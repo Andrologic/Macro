@@ -1,4 +1,5 @@
 import i18n from '../../i18n';
+import type { ChatIntentAdmission } from '../../services/ipc/chatAdmission';
 import type { ChatMessage } from '../../types';
 import type { ChatSendResult, SendImage } from '../../services/chatSend/contracts';
 import { toServiceError } from '../../services/contracts/errors';
@@ -7,6 +8,8 @@ import { captureQueuedSubmission, loadQueuedSubmissions, saveQueuedSubmissions, 
 export type QueuedSubmissionRecoveries = Record<string, { count: number; error?: string }>;
 export type QueuedSubmissionPreview = { id: string; conversationId: string; content: string; state: 'waiting' | 'sending' | 'paused' };
 interface QueuePorts {
+  admit(entry: QueuedSubmission, mutation: 'retain' | 'remove'): Promise<ChatIntentAdmission>;
+  finish(admission: ChatIntentAdmission): Promise<void>;
   blocked(id: string): boolean;
   cancelled(id: string): boolean;
   read(id: string): Promise<ChatMessage[]>;
@@ -22,12 +25,15 @@ interface QueuePorts {
 /** Owns deferred submissions only; the chat runtime still owns active turns. */
 export function createQueuedSubmissionRuntime(ports: QueuePorts) {
   let entries = loadQueuedSubmissions();
+  let retired = false;
+  const jobs = new Set<Promise<void>>();
   const paused = new Set(entries.map(entry => entry.input.conversationId));
   const draining = new Set<string>();
   const attempted = new Map<string, string>();
   const claimed = new Set<string>();
   let recoveries: QueuedSubmissionRecoveries = {};
   const publishRecovery = () => {
+    if (retired) return;
     ports.recovery(recoveries);
     ports.pending(entries.map(entry => ({ id: entry.id, conversationId: entry.input.conversationId })));
     ports.attempted(Array.from(attempted, ([id, conversationId]) => ({ id, conversationId })));
@@ -68,12 +74,33 @@ export function createQueuedSubmissionRuntime(ports: QueuePorts) {
     }));
     publishRecovery();
   };
-  const persist = (next: QueuedSubmission[]) => {
-    if (!saveQueuedSubmissions(next)) throw new Error(i18n.t(
-      'chat.queueSaveFailed', 'Queued messages could not be saved. Keep this session open and try again.',
-    ));
-    entries = next;
-    refreshRecovery();
+  const admissions = new Map<string, ChatIntentAdmission>();
+  let writes: Promise<void> = Promise.resolve();
+  const persist = (update: (current: QueuedSubmission[]) => QueuedSubmission[]) => {
+    const write = writes.catch(() => undefined).then(async () => {
+      if (retired) throw new Error('Queued submission owner has retired.');
+      const next = update(entries);
+      const removed = entries.filter(entry => !next.some(candidate => candidate.id === entry.id));
+      for (const entry of [...next.filter(entry => !entries.includes(entry)), ...removed]) {
+        admissions.set(entry.id, await ports.admit(entry, removed.includes(entry) ? 'remove' : 'retain'));
+      }
+      if (retired) throw new Error('Queued submission owner has retired.');
+      if (!saveQueuedSubmissions(next)) throw new Error(i18n.t(
+        'chat.queueSaveFailed', 'Queued messages could not be saved. Keep this session open and try again.',
+      ));
+      // Keep later serialized mutations based on what was actually saved,
+      // even when the following native ACK is lost. Never reinsert a removed copy.
+      entries = next;
+      for (const entry of removed) {
+        const admission = admissions.get(entry.id);
+        if (!admission) throw new Error('Queued submission admission is missing.');
+        await ports.finish(admission);
+        admissions.delete(entry.id);
+      }
+      refreshRecovery();
+    });
+    writes = write;
+    return write;
   };
   const pause = (id: string, error?: string) => {
     const count = entries.filter(entry => entry.input.conversationId === id).length;
@@ -88,7 +115,7 @@ export function createQueuedSubmissionRuntime(ports: QueuePorts) {
       throw new Error(i18n.t('chat.queueImagesSaveFailed', 'The message is saved, but its images still need saving. Retry the queued submission.'));
     }
   };
-  const complete = (entry: QueuedSubmission) => persist(entries.filter(candidate => candidate.id !== entry.id));
+  const complete = (entry: QueuedSubmission) => persist(current => current.filter(candidate => candidate.id !== entry.id));
   const assertCanDispatch = (entry: QueuedSubmission) => {
     const id = entry.input.conversationId;
     if (!claimed.has(entry.id) || paused.has(id) || ports.cancelled(id) ||
@@ -98,10 +125,13 @@ export function createQueuedSubmissionRuntime(ports: QueuePorts) {
   };
   const beforeAssistantStart = (entry: QueuedSubmission) => {
     assertCanDispatch(entry);
-    persist(entries.map(candidate => candidate.id === entry.id ? { ...candidate, assistantStartAttempted: true } : candidate));
+    return persist(current => {
+      assertCanDispatch(entry);
+      return current.map(candidate => candidate.id === entry.id ? { ...candidate, assistantStartAttempted: true } : candidate);
+    });
   };
-  const drain = async (id: string): Promise<void> => {
-    if (draining.has(id) || paused.has(id) || ports.blocked(id)) return;
+  const drainInner = async (id: string): Promise<void> => {
+    if (retired || draining.has(id) || paused.has(id) || ports.blocked(id)) return;
     const next = entries.find(entry => entry.input.conversationId === id);
     if (!next || mutating.has(next.id) || ports.cancelled(id)) return;
     draining.add(id);
@@ -109,8 +139,9 @@ export function createQueuedSubmissionRuntime(ports: QueuePorts) {
     publishRecovery();
     let continueQueue = false;
     try {
+      admissions.set(next.id, await ports.admit(next, 'retain'));
       const persisted = await ports.read(id);
-      if (ports.cancelled(id) || paused.has(id) || !entries.some(entry => entry.id === next.id)) return;
+      if (retired || ports.cancelled(id) || paused.has(id) || !entries.some(entry => entry.id === next.id)) return;
       const saved = persisted.find(message => message.role === 'user' && message.turn_id === next.id);
       if (saved) {
         ports.publish(saved);
@@ -118,7 +149,7 @@ export function createQueuedSubmissionRuntime(ports: QueuePorts) {
       }
       const assistant = persisted.find(message => message.role === 'assistant' && message.turn_id === next.id);
       if (assistant?.completion_reason === 'completed') {
-        complete(next);
+        await complete(next);
       } else if (next.assistantStartAttempted || assistant) {
         throw new Error(i18n.t('chat.queueAssistantInterrupted',
           'This saved instruction may have started executing. Review the response and tool effects, then remove this recovery entry before continuing manually.'));
@@ -136,13 +167,26 @@ export function createQueuedSubmissionRuntime(ports: QueuePorts) {
       claimed.delete(next.id);
       draining.delete(id);
       publishRecovery();
-      if (continueQueue) queueMicrotask(() => void drain(id));
+      if (continueQueue && !retired) queueMicrotask(() => void drain(id));
     }
   };
+  const drain = (id: string): Promise<void> => {
+    const job = drainInner(id);
+    jobs.add(job);
+    return job.finally(() => jobs.delete(job));
+  };
   return {
+    async joinWrites() {
+      let pending: Promise<void>;
+      do { pending = writes; await pending.catch(() => undefined); } while (pending !== writes);
+    },
+    async retire() {
+      retired = true;
+      await Promise.allSettled([writes, ...jobs]);
+    },
     capture: captureQueuedSubmission,
-    accept(entry: QueuedSubmission, pausedOnAccept = false) {
-      persist([...entries, entry]);
+    async accept(entry: QueuedSubmission, pausedOnAccept = false) {
+      await persist(current => [...current, entry]);
       if (pausedOnAccept) pause(entry.input.conversationId);
       queueMicrotask(() => void drain(entry.input.conversationId));
     },
@@ -166,13 +210,13 @@ export function createQueuedSubmissionRuntime(ports: QueuePorts) {
       await pendingEntry(id);
       try {
         if (!content.trim()) throw new Error(i18n.t('chat.queueEmptyMessage', 'The queued message cannot be empty.'));
-        persist(entries.map(candidate => candidate.id === id ? { ...candidate, input: { ...candidate.input, content } } : candidate));
+        await persist(current => current.map(candidate => candidate.id === id ? { ...candidate, input: { ...candidate.input, content } } : candidate));
       } finally { mutating.delete(id); }
     },
     async removeEntry(id: string) {
       const entry = await pendingEntry(id, true);
       try {
-        persist(entries.filter(candidate => candidate.id !== id));
+        await persist(current => current.filter(candidate => candidate.id !== id));
         if (!entries.some(candidate => candidate.input.conversationId === entry.input.conversationId)) {
           paused.delete(entry.input.conversationId);
         }
@@ -182,17 +226,15 @@ export function createQueuedSubmissionRuntime(ports: QueuePorts) {
         queueMicrotask(() => void drain(entry.input.conversationId));
       }
     },
-    remove(ids: readonly string[]) {
-      const remaining = entries.filter(entry => !ids.includes(entry.input.conversationId));
-      if (remaining.length !== entries.length) saveQueuedSubmissions(remaining);
-      // Deletion is authoritative even if local cleanup fails; storage reports the failure.
-      entries = remaining;
+    async remove(ids: readonly string[]) {
+      await persist(current => current.filter(entry => !ids.includes(entry.input.conversationId)));
       ids.forEach(id => paused.delete(id));
       refreshRecovery();
     },
-    restore(conversationIds: readonly string[]) {
-      const retained = entries.filter(entry => conversationIds.includes(entry.input.conversationId));
-      if (retained.length !== entries.length && saveQueuedSubmissions(retained)) entries = retained;
+    async restore(conversationIds: readonly string[]) {
+      if (entries.some(entry => !conversationIds.includes(entry.input.conversationId))) {
+        await persist(current => current.filter(entry => conversationIds.includes(entry.input.conversationId)));
+      }
       for (const id of paused) pause(id);
     },
   };

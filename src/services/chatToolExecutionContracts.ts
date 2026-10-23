@@ -77,10 +77,10 @@ export interface ChatToolExecutionPorts {
   };
   terminal: {
     cachedSession(id: string): TerminalSessionDto | undefined;
-    createSession(params: { projectId?: string | null; cwd?: string | null }): Promise<TerminalSessionDto>;
+    createSession(params: { chatAdmission?: import('./ipc/chatAdmission').ChatToolAdmission; projectId?: string | null; cwd?: string | null }): Promise<TerminalSessionDto>;
     readSession(id: string): Promise<TerminalSessionDto>;
-    runCommand(params: { sessionId: string; command: string; timeoutMs?: number | null; executionId?: string | null }): Promise<TerminalSessionDto>;
-    killSession(id: string, executionId?: string | null): Promise<TerminalSessionDto>;
+    runCommand(params: { chatAdmission?: import('./ipc/chatAdmission').ChatToolAdmission; sessionId: string; command: string; timeoutMs?: number | null; executionId?: string | null }): Promise<TerminalSessionDto>;
+    killSession(id: string, executionId?: string | null, chatAdmission?: import('./ipc/chatAdmission').ChatToolAdmission): Promise<TerminalSessionDto>;
   };
   workspace: {
     executor(): Promise<Pick<typeof import("./workspaceToolExecutor"),

@@ -1,3 +1,4 @@
+import type { ChatIntentReceipt, ChatWorkPhase, ProviderAdmission } from '../ipc/chatAdmission';
 import type { AppMode, ChatCompletionReason, GenerationAttempt, MCPTool, ProjectMount, ProviderTurnState, ReasoningEffort, ReasoningTransportMode, ToolTrace } from '../../types';
 import type { InternalAgentProfile } from '../internalAgentProfile';
 import type { ImageContextMetadata } from '../contextTokenEstimation';
@@ -123,6 +124,9 @@ export interface StreamingFollowUpCompactionResult {
 }
 
 export interface StreamingChatOptions {
+  providerAdmission: ProviderAdmission;
+  /** Local receipts for steers already included in this request, never provider content. */
+  providerSteerReceipts?: () => ChatIntentReceipt[];
   sessionId?: string;
   conversationId?: string;
   mode?: AppMode;
@@ -193,6 +197,8 @@ export interface StreamingChatOptions {
 }
 
 export interface StreamingTurnResult {
+  /** Native journal receipt, or failure to obtain it. Never sent to a provider. */
+  admissionOutcome?: ChatWorkPhase | 'unavailable';
   content: string;
   toolCalls: ToolCall[];
   completionReason?: StreamCompletionReason;

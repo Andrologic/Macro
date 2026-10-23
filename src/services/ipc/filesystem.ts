@@ -30,6 +30,7 @@ export async function fsReadFileWithOptions(params: {
 }
 
 export async function fsWriteFile(params: {
+  chatAdmission?: import('./chatAdmission').ChatToolAdmission;
   path: string;
   content: string;
   createDirs?: boolean;
@@ -41,6 +42,7 @@ export async function fsWriteFile(params: {
 }): Promise<FsWriteResultDto> {
   return invoke<FsWriteResultDto>("fs_write_file", {
     path: params.path,
+    ...(params.chatAdmission ? { chatAdmission: { ...params.chatAdmission, requestId: crypto.randomUUID() } } : {}),
     content: params.content,
     createDirs: params.createDirs ?? null,
     allowOutsideWorkspace: params.allowOutsideWorkspace ?? null,
@@ -116,6 +118,7 @@ export async function fsExists(
 }
 
 export async function fsDelete(params: {
+  chatAdmission?: import('./chatAdmission').ChatToolAdmission;
   path: string;
   recursive?: boolean;
   workspaceScope?: WorkspaceScope;
@@ -124,6 +127,7 @@ export async function fsDelete(params: {
 }): Promise<void> {
   return invoke("fs_delete", {
     path: params.path,
+    ...(params.chatAdmission ? { chatAdmission: { ...params.chatAdmission, requestId: crypto.randomUUID() } } : {}),
     recursive: params.recursive ?? null,
     workspaceScope: params.workspaceScope ?? null,
     workspacePath: params.workspacePath ?? null,

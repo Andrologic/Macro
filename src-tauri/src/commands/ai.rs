@@ -221,32 +221,67 @@ pub async fn ai_sync_provider_models(
 }
 
 #[tauri::command]
-pub async fn ai_stream_chat(
+pub(crate) async fn ai_stream_chat(
     app_handle: AppHandle,
+    window: tauri::WebviewWindow,
+    admission_runtime: State<'_, crate::db::chat_admission::runtime::ChatAdmissionRuntime>,
+    admission: crate::ai::provider_work::ProviderAdmission,
     pool: State<'_, DbPool>,
     ai_state: State<'_, AiState>,
     request: AiChatRequest,
 ) -> CommandResult<()> {
     validate_request_id(&request.request_id)?;
+    let reservation = ai_state
+        .reserve_stream(request.request_id.clone())
+        .map_err(|message| CommandError { message })?;
     let pool = get_pool(&pool).await?;
-    match get_provider_type(&pool, &request.provider_id)
-        .await?
-        .as_str()
-    {
-        "chatgpt" => chatgpt::stream_chat(app_handle, pool, ai_state.inner().clone(), request)
+    let work = std::sync::Arc::new(
+        crate::ai::provider_work::ProviderWork::admit(
+            &pool,
+            admission_runtime.inner(),
+            window.label(),
+            admission,
+            request.conversation_id.as_deref(),
+            &request.request_id,
+        )
+        .await
+        .map_err(|message| CommandError { message })?,
+    );
+    let provider_type = match get_provider_type(&pool, &request.provider_id).await {
+        Ok(provider_type) => provider_type,
+        Err(error) => {
+            work.settle(&Err(error.message.clone()))
+                .await
+                .map_err(|message| CommandError { message })?;
+            return Err(error);
+        }
+    };
+    match provider_type.as_str() {
+        "chatgpt" => chatgpt::stream_chat(app_handle, pool, request, reservation, work)
             .await
             .map_err(|message| CommandError { message }),
-        "copilot" => copilot::stream_chat(app_handle, pool, ai_state.inner().clone(), request)
-            .await
-            .map_err(|message| CommandError { message }),
+        "copilot" => copilot::stream_chat(
+            app_handle,
+            pool,
+            ai_state.inner().clone(),
+            request,
+            reservation,
+            work,
+        )
+        .await
+        .map_err(|message| CommandError { message }),
         "openai" | "openrouter" | "ollama" | "lmstudio" => {
-            openai_compatible::stream_chat(app_handle, pool, ai_state.inner().clone(), request)
+            openai_compatible::stream_chat(app_handle, pool, request, reservation, work)
                 .await
                 .map_err(|message| CommandError { message })
         }
-        provider_type => Err(CommandError {
-            message: format!("Native streaming is not supported for {}.", provider_type),
-        }),
+        provider_type => {
+            let message = format!("Native streaming is not supported for {}.", provider_type);
+            work.settle(&Err(message.clone()))
+                .await
+                .map_err(|message| CommandError { message })?;
+            Err(CommandError { message })
+        }
     }
 }
 

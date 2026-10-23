@@ -1,3 +1,4 @@
+import type { ChatToolAdmission } from './ipc/chatAdmission';
 import type {
   ConfigDocument,
   ConfigDocumentKind,
@@ -84,6 +85,7 @@ const parseDocumentContent = (content: unknown, path: string): unknown => {
 const replaceDocument = async (
   target: ConfigVirtualTarget,
   value: unknown,
+  chatAdmission?: ChatToolAdmission,
 ): Promise<string> => {
   const current = await configurationGetDocument(target.kind, target.scope);
   const result = await configurationApplyPatch({
@@ -92,7 +94,7 @@ const replaceDocument = async (
     expectedEtag: current.etag,
     patch: [{ op: 'replace', path: '', value }],
     source: 'agent',
-  });
+  }, chatAdmission);
   return JSON.stringify({
     path: target.path,
     status: result.status,
@@ -133,11 +135,11 @@ export const listConfigPath = async (
   throw new Error(`Configuration directory does not exist: ${path}.`);
 };
 
-const applyConfigTextPatch = async (operation: ParsedPatchOperation): Promise<string> => {
+const applyConfigTextPatch = async (operation: ParsedPatchOperation, chatAdmission?: ChatToolAdmission): Promise<string> => {
   const target = parseConfigVirtualPath(operation.path);
   if (!target) throw new Error(`apply_patch path is outside @config: ${operation.path}.`);
   if (operation.kind === 'delete') {
-    return replaceDocument(target, minimalDocument(target.kind));
+    return replaceDocument(target, minimalDocument(target.kind), chatAdmission);
   }
   if (operation.kind === 'add') {
     throw new Error(`${target.path} already exists. Use an update section or config_patch.`);
@@ -149,12 +151,13 @@ const applyConfigTextPatch = async (operation: ParsedPatchOperation): Promise<st
     formatDocument(current),
     operation.hunks,
   );
-  return replaceDocument(target, parseDocumentContent(updatedContent, target.path));
+  return replaceDocument(target, parseDocumentContent(updatedContent, target.path), chatAdmission);
 };
 
 export const handleConfigVirtualScopeToolCall = async (
   toolName: string,
   args: Record<string, unknown>,
+  chatAdmission?: ChatToolAdmission,
 ): Promise<string | undefined> => {
   if (toolName === 'apply_patch') {
     const patchText = typeof args.patch_text === 'string' ? args.patch_text : '';
@@ -167,7 +170,7 @@ export const handleConfigVirtualScopeToolCall = async (
     if (operations.length !== 1) {
       throw new Error('Use one @config document per apply_patch call so ETag conflicts remain atomic.');
     }
-    return applyConfigTextPatch(operations[0]);
+    return applyConfigTextPatch(operations[0], chatAdmission);
   }
 
   if (!['list', 'read', 'write', 'edit', 'delete'].includes(toolName)) return undefined;
@@ -185,9 +188,9 @@ export const handleConfigVirtualScopeToolCall = async (
       : lines.length;
     return lines.slice(start - 1, end).join('\n');
   }
-  if (toolName === 'delete') return replaceDocument(target, minimalDocument(target.kind));
+  if (toolName === 'delete') return replaceDocument(target, minimalDocument(target.kind), chatAdmission);
   if (toolName === 'write') {
-    return replaceDocument(target, parseDocumentContent(args.content, target.path));
+    return replaceDocument(target, parseDocumentContent(args.content, target.path), chatAdmission);
   }
 
   const current = formatDocument(await configurationGetDocument(target.kind, target.scope));
@@ -198,5 +201,5 @@ export const handleConfigVirtualScopeToolCall = async (
   const updated = args.replace_all === true
     ? current.split(oldText).join(newText)
     : current.replace(oldText, newText);
-  return replaceDocument(target, parseDocumentContent(updated, target.path));
+  return replaceDocument(target, parseDocumentContent(updated, target.path), chatAdmission);
 };

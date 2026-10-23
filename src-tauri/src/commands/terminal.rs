@@ -3498,34 +3498,37 @@ where
 }
 
 async fn finish_child_output(
-    mut stdout_task: tokio::task::JoinHandle<CommandResult<()>>,
-    mut stderr_task: tokio::task::JoinHandle<CommandResult<()>>,
+    stdout_task: tokio::task::JoinHandle<CommandResult<()>>,
+    stderr_task: tokio::task::JoinHandle<CommandResult<()>>,
     output: Arc<StdMutex<BoundedChildOutput>>,
 ) -> CommandResult<(String, bool, bool)> {
-    let drain_result = tokio::time::timeout(
+    let abort_stdout = stdout_task.abort_handle();
+    let abort_stderr = stderr_task.abort_handle();
+    let drain = async move {
+        // Join both readers even when one fails. No detached stderr/stdout task
+        // may outlive the process owner's return.
+        let (stdout, stderr) = tokio::join!(stdout_task, stderr_task);
+        stdout
+            .map_err(|error| command_error(format!("Terminal stdout task failed: {error}")))??;
+        stderr
+            .map_err(|error| command_error(format!("Terminal stderr task failed: {error}")))??;
+        Ok::<(), crate::commands::CommandError>(())
+    };
+    tokio::pin!(drain);
+    let drain_incomplete = match tokio::time::timeout(
         Duration::from_millis(LEGACY_COMMAND_DRAIN_TIMEOUT_MS),
-        async {
-            (&mut stdout_task).await.map_err(|error| {
-                command_error(format!("Terminal stdout task failed: {}", error))
-            })??;
-            (&mut stderr_task).await.map_err(|error| {
-                command_error(format!("Terminal stderr task failed: {}", error))
-            })??;
-            Ok::<(), crate::commands::CommandError>(())
-        },
+        &mut drain,
     )
-    .await;
-
-    let drain_incomplete = match drain_result {
+    .await
+    {
         Ok(result) => {
             result?;
             false
         }
         Err(_) => {
-            stdout_task.abort();
-            stderr_task.abort();
-            let _ = stdout_task.await;
-            let _ = stderr_task.await;
+            abort_stdout.abort();
+            abort_stderr.abort();
+            let _ = drain.await;
             true
         }
     };
@@ -3781,6 +3784,22 @@ pub async fn run_legacy_session_internal(
     timeout_ms: Option<u64>,
     execution_id: Option<String>,
 ) -> CommandResult<TerminalSessionDto> {
+    run_legacy_session_owned(terminal_store, session_id, command, timeout_ms, execution_id, None).await
+}
+
+async fn run_legacy_session_owned(
+    terminal_store: TerminalSessionStore,
+    session_id: String,
+    command: String,
+    timeout_ms: Option<u64>,
+    execution_id: Option<String>,
+    native_cancel: Option<tokio_util::sync::CancellationToken>,
+) -> CommandResult<TerminalSessionDto> {
+    // A process group is not a closed descendant owner: a command may fork
+    // with detached descriptors or leave the group. Neither shell exit nor
+    // best-effort termination can certify all of its effects have stopped.
+    let requires_physical_receipt = native_cancel.is_some();
+    let native_cancel = native_cancel.unwrap_or_default();
     let trimmed_command = command.trim();
     if trimmed_command.is_empty() {
         return Err(command_error("Command cannot be empty"));
@@ -3797,7 +3816,7 @@ pub async fn run_legacy_session_internal(
                 "A command is already running in this session",
             ));
         }
-        if execution_id
+        if native_cancel.is_cancelled() || execution_id
             .as_ref()
             .is_some_and(|id| session.pending_kill_execution_ids.remove(id))
         {
@@ -3873,24 +3892,24 @@ pub async fn run_legacy_session_internal(
 
     let kill_requested_before_registration = {
         let mut sessions = terminal_store.legacy_sessions.lock().await;
-        let session = sessions
-            .get_mut(&session_id)
-            .ok_or_else(|| command_error(format!("Unknown terminal session id: {}", session_id)))?;
-        if session.kill_requested {
-            true
-        } else {
-            session.pid = pid;
-            #[cfg(windows)]
-            {
-                session.windows_job = windows_job.clone();
+        match sessions.get_mut(&session_id) {
+            Some(session) if !session.kill_requested => {
+                session.pid = pid;
+                #[cfg(windows)]
+                {
+                    session.windows_job = windows_job.clone();
+                }
+                session.updated_at = current_timestamp();
+                false
             }
-            session.updated_at = current_timestamp();
-            false
+            // A removed session cannot abandon the already spawned child.
+            _ => true,
         }
     };
 
     let normalized_timeout_ms = normalize_legacy_timeout_ms(timeout_ms);
     let mut timed_out = false;
+    let mut cancelled_by_native_owner = false;
     #[cfg(windows)]
     if !kill_requested_before_registration {
         if let Err(error) = launch_gate.release() {
@@ -3902,32 +3921,47 @@ pub async fn run_legacy_session_internal(
             return Err(error);
         }
     }
-    let exit_status = if kill_requested_before_registration {
-        #[cfg(not(windows))]
-        let stopped = stop_legacy_child_tree(&mut child, pid).await?;
-        #[cfg(windows)]
-        let stopped = stop_legacy_child_tree(&mut child, windows_job.clone()).await?;
-        stopped
-    } else {
-        match tokio::time::timeout(Duration::from_millis(normalized_timeout_ms), child.wait()).await
-        {
-            Ok(result) => result.map_err(|error| {
-                command_error(format!("Failed to wait for terminal command: {}", error))
-            })?,
-            Err(_) => {
-                timed_out = true;
-                #[cfg(not(windows))]
-                let stopped = stop_legacy_child_tree(&mut child, pid).await?;
-                #[cfg(windows)]
-                let stopped = stop_legacy_child_tree(&mut child, windows_job.clone()).await?;
-                stopped
+    let exit_status = async {
+        Ok::<_, crate::commands::CommandError>(if kill_requested_before_registration {
+            #[cfg(not(windows))]
+            let stopped = stop_legacy_child_tree(&mut child, pid).await?;
+            #[cfg(windows)]
+            let stopped = stop_legacy_child_tree(&mut child, windows_job.clone()).await?;
+            stopped
+        } else {
+            let waited = tokio::select! {
+                biased;
+                _ = native_cancel.cancelled() => None,
+                result = tokio::time::timeout(Duration::from_millis(normalized_timeout_ms), child.wait()) => Some(result),
+            };
+            match waited {
+                Some(Ok(result)) => result.map_err(|error| {
+                    command_error(format!("Failed to wait for terminal command: {}", error))
+                })?,
+                outcome => {
+                    timed_out = outcome.is_some();
+                    cancelled_by_native_owner = outcome.is_none();
+                    #[cfg(not(windows))]
+                    let stopped = stop_legacy_child_tree(&mut child, pid).await?;
+                    #[cfg(windows)]
+                    let stopped = stop_legacy_child_tree(&mut child, windows_job.clone()).await?;
+                    stopped
+                }
             }
-        }
-    };
-
-    let (combined_output, output_truncated, drain_incomplete) =
-        finish_child_output(stdout_task, stderr_task, output).await?;
-    if drain_incomplete {
+        })
+    }
+    .await;
+    if exit_status.is_err() {
+        #[cfg(not(windows))]
+        let _ = stop_legacy_child_tree(&mut child, pid).await;
+        #[cfg(windows)]
+        let _ = stop_legacy_child_tree(&mut child, windows_job.clone()).await;
+    }
+    // Drain or abort-and-join both readers before propagating a wait error.
+    let output_result = finish_child_output(stdout_task, stderr_task, output).await;
+    let exit_status = exit_status?;
+    let (combined_output, output_truncated, drain_incomplete) = output_result?;
+    if drain_incomplete || requires_physical_receipt {
         drop(process_guard);
     } else {
         process_guard.disarm();
@@ -3938,7 +3972,7 @@ pub async fn run_legacy_session_internal(
         .get_mut(&session_id)
         .ok_or_else(|| command_error(format!("Unknown terminal session id: {}", session_id)))?;
 
-    let was_killed = session.kill_requested || session.status == "killed";
+    let was_killed = cancelled_by_native_owner || session.kill_requested || session.status == "killed";
     session.output = combined_output;
     session.exit_code = exit_status.code();
     session.timed_out = timed_out;
@@ -3965,6 +3999,18 @@ pub async fn run_legacy_session_internal(
     let dto = session.to_dto();
     session_run_guard.disarm();
     Ok(dto)
+}
+
+async fn run_admitted_legacy_session(
+    store: TerminalSessionStore, session_id: String, command: String,
+    timeout_ms: Option<u64>, execution_id: String,
+    cancel: tokio_util::sync::CancellationToken,
+    owner: Arc<crate::db::chat_admission::OperationPermit>,
+) -> CommandResult<crate::ai::stream_tasks::ToolOutcome<TerminalSessionDto>> {
+    let result = run_legacy_session_owned(store, session_id, command, timeout_ms, Some(execution_id), Some(cancel)).await;
+    if result.is_err() { let _ = owner.unknown().await; }
+    // The DTO reports the observed shell outcome, not descendant quiescence.
+    result.map(crate::ai::stream_tasks::ToolOutcome::Observed)
 }
 
 pub async fn read_legacy_session_internal(
@@ -4063,6 +4109,10 @@ pub async fn kill_legacy_session_internal(
 
 #[tauri::command]
 pub async fn terminal_create_session(
+    admission_runtime: State<'_, crate::db::chat_admission::runtime::ChatAdmissionRuntime>,
+    ai_state: State<'_, crate::ai::AiState>,
+    window: tauri::WebviewWindow,
+    chat_admission: Option<crate::db::chat_admission::runtime::ChatToolAdmission>,
     workspace_root: State<'_, WorkspaceMetadataRoot>,
     git_state: State<'_, GitState>,
     terminal_store: State<'_, TerminalSessionStore>,
@@ -4070,6 +4120,26 @@ pub async fn terminal_create_session(
     cwd: Option<String>,
 ) -> CommandResult<TerminalSessionDto> {
     let workspace_path = workspace_root.inner().0.read().await.clone();
+    if let Some(admission) = chat_admission {
+        if project_id.is_some() {
+            return Err(command_error("chat_admission_manual_terminal_refused"));
+        }
+        let (reservation, work) = super::chat_admission::admit_tool(
+            &admission_runtime,
+            &ai_state,
+            window.label(),
+            admission,
+        )
+        .await?;
+        let git = git_state.inner().clone();
+        let store = terminal_store.inner().clone();
+        let received = reservation
+            .spawn_tool(work, move |_cancel| async move {
+                create_legacy_session_internal(workspace_path, git, store, project_id, cwd).await
+            })
+            .map_err(command_error)?;
+        return received.await.map_err(command_error)?;
+    }
     create_legacy_session_internal(
         workspace_path,
         git_state.inner().clone(),
@@ -4082,12 +4152,39 @@ pub async fn terminal_create_session(
 
 #[tauri::command]
 pub async fn terminal_run(
+    admission_runtime: State<'_, crate::db::chat_admission::runtime::ChatAdmissionRuntime>,
+    ai_state: State<'_, crate::ai::AiState>,
+    window: tauri::WebviewWindow,
+    chat_admission: Option<crate::db::chat_admission::runtime::ChatToolAdmission>,
     terminal_store: State<'_, TerminalSessionStore>,
     session_id: String,
     command: String,
     timeout_ms: Option<u64>,
     execution_id: Option<String>,
 ) -> CommandResult<TerminalSessionDto> {
+    if let Some(admission) = chat_admission {
+        let store = terminal_store.inner().clone();
+        if read_legacy_session_internal(store.clone(), session_id.clone())
+            .await?
+            .project_id
+            .is_some()
+        {
+            return Err(command_error("chat_admission_manual_terminal_refused"));
+        }
+        let (reservation, work) = super::chat_admission::admit_tool(
+            &admission_runtime,
+            &ai_state,
+            window.label(),
+            admission,
+        )
+        .await?;
+        let execution_id = execution_id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+        let owner = work.clone();
+        let received = reservation.spawn_tool_outcome(work, move |cancel| async move {
+            run_admitted_legacy_session(store, session_id, command, timeout_ms, execution_id, cancel, owner).await
+        }).map_err(command_error)?;
+        return received.await.map_err(command_error)?;
+    }
     run_legacy_session_internal(
         terminal_store.inner().clone(),
         session_id,
@@ -4108,10 +4205,42 @@ pub async fn terminal_read(
 
 #[tauri::command]
 pub async fn terminal_kill(
+    admission_runtime: State<'_, crate::db::chat_admission::runtime::ChatAdmissionRuntime>,
+    ai_state: State<'_, crate::ai::AiState>,
+    window: tauri::WebviewWindow,
+    chat_admission: Option<crate::db::chat_admission::runtime::ChatToolAdmission>,
     terminal_store: State<'_, TerminalSessionStore>,
     session_id: String,
     execution_id: Option<String>,
 ) -> CommandResult<TerminalSessionDto> {
+    if let Some(admission) = chat_admission {
+        let store = terminal_store.inner().clone();
+        if read_legacy_session_internal(store.clone(), session_id.clone())
+            .await?
+            .project_id
+            .is_some()
+        {
+            return Err(command_error("chat_admission_manual_terminal_refused"));
+        }
+        let (reservation, work) = super::chat_admission::admit_tool(
+            &admission_runtime,
+            &ai_state,
+            window.label(),
+            admission,
+        )
+        .await?;
+        let owner = work.clone();
+        let received = reservation
+            .spawn_tool(work, move |_cancel| async move {
+                let result = kill_legacy_session_internal(store, session_id, execution_id).await;
+                if result.is_err() {
+                    let _ = owner.unknown().await;
+                }
+                result
+            })
+            .map_err(command_error)?;
+        return received.await.map_err(command_error)?;
+    }
     kill_legacy_session_internal(terminal_store.inner().clone(), session_id, execution_id).await
 }
 
@@ -4125,6 +4254,25 @@ mod tests {
     use std::collections::HashMap;
     use std::fs;
     use tempfile::TempDir;
+
+    #[tokio::test]
+    async fn output_reader_failure_still_joins_the_other_reader() {
+        let (release, gate) = tokio::sync::oneshot::channel();
+        let stdout = tokio::spawn(async { Err(command_error("synthetic reader failure")) });
+        let stderr = tokio::spawn(async move {
+            let _ = gate.await;
+            Ok(())
+        });
+        let finished = tokio::spawn(finish_child_output(
+            stdout,
+            stderr,
+            Arc::new(StdMutex::new(BoundedChildOutput::default())),
+        ));
+        tokio::task::yield_now().await;
+        assert!(!finished.is_finished());
+        release.send(()).unwrap();
+        assert!(finished.await.unwrap().is_err());
+    }
 
     async fn terminal_lifecycle_fixture() -> (TempDir, DbPool, TerminalTabRecord) {
         let temp = TempDir::new().unwrap();
@@ -4910,6 +5058,130 @@ mod tests {
             #[cfg(windows)]
             windows_job: None,
         }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn admitted_shell_results_never_certify_unowned_descendant_lifetimes() {
+        use crate::{ai::AiState, core::db_state::DbPool};
+        use crate::db::{chat_admission::{runtime::ChatAdmissionRuntime, reconciliation::BrowserInspection}, tool_invocations::{ToolInvocationIdentity, RecordToolInvocationInput, ToolEffectClass}};
+        // No simulated shell or process owner. Detached descriptors, normal
+        // exit, failure and timeout all exercise the actual admitted executor.
+        for (command, timeout, cancel_running) in [
+            ("sleep 30 </dev/null >/dev/null 2>&1 & printf '%s' $! > child.pid; printf kept", 2000, false),
+            ("printf kept", 2000, false), ("printf kept; exit 7", 2000, false),
+            ("printf kept; sleep 30", 100, false),
+            ("printf kept; touch started; sleep 30", 5000, true),
+        ] {
+            let temp = TempDir::new().unwrap();
+            let pool = crate::db::create_pool(&temp.path().join("test.db")).await.unwrap();
+            sqlx::query("INSERT INTO conversations(id,title,scope_mode,created_at,updated_at) VALUES('chat','Synthetic','Chat','t','t')").execute(&pool).await.unwrap();
+            let owner = DbPool::default(); owner.set_ready(pool.clone()).await.unwrap();
+            let runtime = ChatAdmissionRuntime::default();
+            let context = runtime.begin(owner.clone(),"window","browser","chat","turn").await.unwrap();
+            let parent = runtime.parent("window",&context,"chat").await.unwrap();
+            sqlx::query("INSERT INTO messages(id,conversation_id,role,content,turn_id,created_at) VALUES('assistant','chat','assistant','','turn','t')").execute(&pool).await.unwrap();
+            let copy=crate::db::chat_admission::intents::reserve_response(&parent,"window","assistant").await.unwrap();
+            assert_eq!(crate::db::chat_admission::intents::reserve_response(&parent,"window","assistant").await.unwrap().operation_id,copy.operation_id);
+            let identity = ToolInvocationIdentity { conversation_id:"chat".into(),turn_id:"turn".into(),message_id:"assistant".into(),call_id:"call".into() };
+            let record = || RecordToolInvocationInput { identity:identity.clone(),tool_name:"terminal_run".into(),effect_class:ToolEffectClass::ExternalEffect,arguments:serde_json::json!({"command":command}),remote_execution_id:None };
+            assert!(parent.record_tool(record()).await.unwrap().is_new);
+            assert!(!parent.record_tool(record()).await.unwrap().is_new);
+            let marker = parent.tool_permit(&identity).await.unwrap();
+            let tool = Arc::new(marker.child(crate::db::chat_admission::WorkKind::Tool,Some("shell")).await.unwrap());
+            let state = AiState::default();
+            let store = TerminalSessionStore::default();
+            store.legacy_sessions.lock().await.insert("terminal-test".into(), legacy_test_session(temp.path()));
+            let executor = tool.clone(); let retained_store = store.clone();
+            let delivery = state.reserve_stream("shell".into()).unwrap().spawn_tool_outcome(tool, move |cancel| async move {
+                run_admitted_legacy_session(retained_store,"terminal-test".into(),command.into(),Some(timeout),"execution".into(),cancel,executor).await
+            }).unwrap();
+            if cancel_running {
+                for _ in 0..200 {
+                    if temp.path().join("started").exists() { break; }
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+                assert!(temp.path().join("started").exists());
+                let _ = state.cancel_stream_task("shell").await;
+            }
+            let observed = delivery.await.unwrap().unwrap();
+            let phase: (String, Option<String>) = sqlx::query_as("SELECT phase,local_closed_at FROM chat_admission_operations WHERE request_id='shell'").fetch_one(&pool).await.unwrap();
+            assert_eq!(phase, ("completed".into(),None));
+            let saved = read_legacy_session_internal(store,"terminal-test".into()).await.unwrap();
+            assert_eq!(observed.output, saved.output);
+            assert_eq!(observed.exit_code, saved.exit_code);
+            assert_eq!(observed.status, saved.status);
+            if timeout >= 2000 { assert!(saved.output.contains("kept"), "{}: {}", command, saved.output); }
+            else { assert!(saved.timed_out); }
+            if command.contains("exit 7") { assert_eq!(observed.exit_code, Some(7)); }
+            if cancel_running { assert_eq!(observed.status,"killed"); }
+            parent.finish_tool(identity.clone(),Some("observed-result".into())).await.unwrap();
+            parent.finish_tool(identity.clone(),Some("observed-result".into())).await.unwrap(); // lost completion ACK
+            assert!(!parent.record_tool(record()).await.unwrap().is_new);
+            let write = || crate::db::repository::UpdateMessageContentInput {
+                id:"assistant",content:&observed.output,token_count:None,tool_traces_json:None,hidden_context:None,
+                provider_input_items_json:None,provider_turn_state_json:None,context_refs_json:None,
+                completion_reason:None,generation_attempts_json:None,turn_id:Some("turn".into()),
+            };
+            runtime.finish_response("window",&context,"chat",write()).await.unwrap();
+            runtime.finish_response("window",&context,"chat",write()).await.unwrap();
+            runtime.acknowledge_completion(&owner,"window",&context,"chat").await.unwrap();
+            runtime.acknowledge_completion(&owner,"window",&context,"chat").await.unwrap();
+            // The browser removes its copy before this intent ACK. These calls
+            // prove the native barrier; real browser removal is tested in TS.
+            assert!(runtime.begin(owner.clone(),"window","browser","chat","next").await.is_err());
+            runtime.finish_intent(&owner,"window",&copy).await.unwrap();
+            runtime.finish_intent(&owner,"window",&copy).await.unwrap();
+            let next=runtime.begin(owner.clone(),"window","browser","chat","next").await.unwrap();
+            runtime.parent("window",&next,"chat").await.unwrap().finish_preparation().await.unwrap();
+            let empty=BrowserInspection{queue:vec![],unsaved:vec![],approvals:vec![],questions:vec![],drafts:vec![],steers:vec![]};
+            let inspection=runtime.begin_reconciliation(&owner,"window","browser","chat").await.unwrap();
+            assert!(runtime.complete_reconciliation(&owner,"window","browser",&inspection,&empty).await.unwrap_err().to_string().contains("local_lifetime_unreconciled"));
+            assert!(runtime.reserve_reconciled_source(&owner,"window","browser",&inspection).await.is_err());
+            drop(marker); drop(parent);
+            runtime.close_browser(&owner,&state,&crate::ai::admitted_http::AdmittedHttp::default(),"window","browser").await.unwrap();
+            let reopened=crate::db::create_pool(&temp.path().join("test.db")).await.unwrap();
+            let restarted=DbPool::default();restarted.set_ready(reopened.clone()).await.unwrap();
+            let reloaded=ChatAdmissionRuntime::default();
+            let next=reloaded.begin(restarted.clone(),"window","reload","chat","after-restart").await.unwrap();
+            reloaded.parent("window",&next,"chat").await.unwrap().finish_preparation().await.unwrap();
+            let inspection=reloaded.begin_reconciliation(&restarted,"window","reload","chat").await.unwrap();
+            assert!(reloaded.complete_reconciliation(&restarted,"window","reload",&inspection,&empty).await.unwrap_err().to_string().contains("local_lifetime_unreconciled"));
+            assert!(reloaded.reserve_reconciled_source(&restarted,"window","reload",&inspection).await.is_err());
+            let retained:(String,Option<String>)=sqlx::query_as("SELECT phase,local_closed_at FROM chat_admission_operations WHERE request_id='shell'").fetch_one(&reopened).await.unwrap();
+            assert_eq!(retained,("completed".into(),None));
+            assert_eq!(sqlx::query_scalar::<_,String>("SELECT status FROM tool_invocations WHERE call_id='call'").fetch_one(&reopened).await.unwrap(),"completed");
+            // Explicit cleanup of the known probe child is not a closure proof.
+            if let Ok(pid) = std::fs::read_to_string(temp.path().join("child.pid")) {
+                let _ = background_command("kill").args(["-KILL",pid.trim()]).status();
+            }
+        }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn native_cancellation_while_waiting_for_registration_never_launches() {
+        let temp = TempDir::new().unwrap();
+        let store = TerminalSessionStore::default();
+        let mut sessions = store.legacy_sessions.lock().await;
+        sessions.insert("terminal-test".into(), legacy_test_session(temp.path()));
+        let cancel = tokio_util::sync::CancellationToken::new();
+        let run = run_legacy_session_owned(store.clone(), "terminal-test".into(),
+            "printf launched > should-not-exist".into(), Some(1_000),
+            Some("native-pre-registration".into()), Some(cancel.clone()));
+        tokio::pin!(run);
+        // The real session mutex is the rendezvous, before execution registration.
+        assert!(futures::poll!(&mut run).is_pending());
+        cancel.cancel();
+        drop(sessions);
+        let result = run.await.unwrap();
+        assert_eq!(result.status, "killed");
+        assert!(!temp.path().join("should-not-exist").exists());
+        let sessions = store.legacy_sessions.lock().await;
+        let session = sessions.get("terminal-test").unwrap();
+        assert_eq!(session.execution_generation, 0);
+        assert!(session.pid.is_none());
+        assert!(!session.run_in_progress);
     }
 
     #[cfg(unix)]

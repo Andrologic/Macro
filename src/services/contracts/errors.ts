@@ -165,3 +165,7 @@ export const isWorkspaceStateUnavailableError = (error: unknown): boolean => {
     (message.includes('failed to read workspace state') && !isResourcePressureError(error))
   );
 };
+
+/** Admission failures must not become provider retries or local compaction fallbacks. */
+export const isChatAdmissionFailure = (error: unknown): boolean =>
+  toServiceError(error).code.startsWith('CHAT_ADMISSION_');

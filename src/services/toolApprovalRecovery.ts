@@ -1,5 +1,7 @@
 import type { ChatMessage, PendingToolApproval } from '../types';
 import * as tauriIpc from './tauriIpc';
+import { beginChatIntent, finishChatIntent } from './chatAdmission';
+import type { ChatIntentAdmission } from './ipc/chatAdmission';
 
 export const TOOL_APPROVAL_RECOVERY_KEY = 'toolApprovalRecovery:v1';
 const RECOVERY_FORMAT_ERROR = 'Saved tool approvals could not be restored: unsupported or invalid recovery data.';
@@ -7,6 +9,7 @@ const RECOVERY_FORMAT_ERROR = 'Saved tool approvals could not be restored: unsup
 type RecoveryMarker = { version: 1; conversationId: string; assistantMessageId: string; toolCallId: string };
 type RecoveryRegistry = {
   key: string;
+  original: string | null;
   document: Record<string, unknown>;
   requests: Record<string, unknown>;
   supported: boolean;
@@ -23,14 +26,14 @@ const readMarker = (value: unknown, conversationId: string): RecoveryMarker | nu
 
 const readRegistry = async (key: string): Promise<RecoveryRegistry> => {
   const setting = await tauriIpc.dbGetAppSetting(key);
-  if (!setting) return { key, document: { version: 1 }, requests: {}, supported: true };
+  if (!setting) return { key, original: null, document: { version: 1 }, requests: {}, supported: true };
   try {
     const document = JSON.parse(setting.value_json);
     if (document?.version === 1 && document.requests && typeof document.requests === 'object' && !Array.isArray(document.requests)) {
-      return { key, document, requests: document.requests, supported: true };
+      return { key, original: setting.value_json, document, requests: document.requests, supported: true };
     }
   } catch { /* Keep the original bytes until a new request needs to be saved. */ }
-  return { key, document: { version: 1, preservedData: [{ valueJson: setting.value_json }] }, requests: {}, supported: false };
+  return { key, original: setting.value_json, document: { version: 1, preservedData: [{ valueJson: setting.value_json }] }, requests: {}, supported: false };
 };
 
 export const loadToolApprovalRecoveryMarkers = async (): Promise<{ markers: Record<string, string>; warning: string | null }> => {
@@ -47,12 +50,18 @@ export const loadToolApprovalRecoveryMarkers = async (): Promise<{ markers: Reco
   return { markers, warning };
 };
 
-const writeRegistry = async (registry: RecoveryRegistry) => {
-  if (Object.keys(registry.requests).length === 0 && Object.keys(registry.document).every((key) => key === 'version' || key === 'requests')) await tauriIpc.dbDeleteAppSetting(registry.key);
-  else await tauriIpc.dbSetAppSetting({
-    key: registry.key,
-    valueJson: JSON.stringify({ ...registry.document, requests: registry.requests }),
-  });
+export const admitToolApprovalRecovery = (
+  conversationId: string, approval: Pick<PendingToolApproval, 'assistantMessageId' | 'toolCallId'>,
+  mutation: 'retain' | 'remove' = 'retain',
+): Promise<ChatIntentAdmission> => beginChatIntent({
+  conversationId, kind: 'approval', id: JSON.stringify([approval.assistantMessageId, approval.toolCallId]),
+}, mutation);
+
+const writeRegistry = async (registry: RecoveryRegistry, conversationId: string, admission: ChatIntentAdmission) => {
+  const empty = Object.keys(registry.requests).length === 0 &&
+    Object.keys(registry.document).every(key => key === 'version' || key === 'requests');
+  await tauriIpc.chatAdmissionWriteApprovalRegistry(conversationId, admission, registry.original,
+    empty ? null : JSON.stringify({ ...registry.document, requests: registry.requests }));
 };
 
 const preserveRequestExtensions = (registry: RecoveryRegistry, conversationId: string) => {
@@ -69,6 +78,10 @@ const preserveRequestExtensions = (registry: RecoveryRegistry, conversationId: s
 
 // One writer prevents lost updates between conversations in this webview.
 let writes: Promise<void> = Promise.resolve();
+export const drainToolApprovalRecoveryWrites = async (): Promise<void> => {
+  let pending: Promise<void>;
+  do { pending = writes; await pending.catch(() => undefined); } while (pending !== writes);
+};
 export const persistToolApprovalRecovery = (
   conversationId: string,
   approval: Pick<PendingToolApproval, 'assistantMessageId' | 'toolCallId'> | null,
@@ -77,15 +90,23 @@ export const persistToolApprovalRecovery = (
   const write = writes.catch(() => undefined).then(async () => {
     if (approval) {
       const registry = await readRegistry(TOOL_APPROVAL_RECOVERY_KEY);
+      const admission = await admitToolApprovalRecovery(conversationId, approval);
       preserveRequestExtensions(registry, conversationId);
       registry.requests[conversationId] = { version: 1, conversationId, assistantMessageId: approval.assistantMessageId, toolCallId: approval.toolCallId };
-      await writeRegistry(registry);
+      await writeRegistry(registry, conversationId, admission);
     } else {
       const registry = await readRegistry(TOOL_APPROVAL_RECOVERY_KEY);
-      if (!registry.supported || !readMarker(registry.requests[conversationId], conversationId)) return;
+      if (!registry.supported) throw new Error(RECOVERY_FORMAT_ERROR);
+      const previous = readMarker(registry.requests[conversationId], conversationId);
+      if (!previous) {
+        if (Object.hasOwn(registry.requests, conversationId)) throw new Error(RECOVERY_FORMAT_ERROR);
+        return;
+      }
+      const admission = await admitToolApprovalRecovery(conversationId, previous, 'remove');
       preserveRequestExtensions(registry, conversationId);
       delete registry.requests[conversationId];
-      await writeRegistry(registry);
+      await writeRegistry(registry, conversationId, admission);
+      await finishChatIntent(admission);
     }
   });
   writes = write;

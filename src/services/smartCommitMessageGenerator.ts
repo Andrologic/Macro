@@ -575,7 +575,7 @@ export const generateSmartCommitMessages = async (
     const systemPrompt = configuredPrompt || DEFAULT_SMART_COMMIT_PROMPT;
     const content = await sendChatNonStreaming({
       sessionId: `smart-review-commit-${input.task.id}`,
-      conversationId: `smart-review-commit-${input.task.id}`,
+      providerAdmission: { kind: 'utility' },
       mode: 'Implement',
       providerId,
       providerType: provider.providerType,

@@ -1,4 +1,5 @@
 pub mod ai;
+pub(crate) mod chat_admission;
 pub mod conversation_catalog;
 pub mod conversation_content;
 pub mod conversation_management;
@@ -158,6 +159,10 @@ pub async fn ai_get_dev_provider_overrides(
 #[tauri::command]
 #[allow(clippy::too_many_arguments)]
 pub async fn tool_execute_workspace(
+    admission_runtime: State<'_, crate::db::chat_admission::runtime::ChatAdmissionRuntime>,
+    ai_state: State<'_, crate::ai::AiState>,
+    window: tauri::WebviewWindow,
+    chat_admission: Option<crate::db::chat_admission::runtime::ChatToolAdmission>,
     workspace_root: State<'_, WorkspaceRoot>,
     workspace_metadata_root: State<'_, WorkspaceMetadataRoot>,
     git_state: State<'_, GitState>,
@@ -174,6 +179,37 @@ pub async fn tool_execute_workspace(
     let workspace = workspace_root.inner().read().await.clone();
     let metadata_workspace = workspace_metadata_root.inner().0.read().await.clone();
     let git_state = git_state.inner().clone();
+    if let Some(admission) = chat_admission {
+        let (reservation, work) = self::chat_admission::admit_tool(
+            &admission_runtime,
+            &ai_state,
+            window.label(),
+            admission,
+        )
+        .await?;
+        let execution_id = execution_id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+        let options = crate::core::workspace_execution::WorkspaceToolExecutionOptions {
+            chat_work: Some(work.clone()),
+            ..Default::default()
+        };
+        let received = reservation.spawn_tool(work, move |cancel| async move {
+            let execution = crate::core::workspace_execution::execute_workspace_tool_controlled_with_options(
+                workspace, metadata_workspace, git_state, mode, tool_id, args, workspace_path,
+                workspace_scope, project_mounts, virtual_root_enabled, focused_project_id,
+                Some(execution_id.clone()), options,
+            );
+            tokio::pin!(execution);
+            tokio::select! {
+                biased;
+                _ = cancel.cancelled() => {
+                    crate::core::workspace_execution::tool_cancel_workspace(execution_id);
+                    execution.await
+                },
+                result = &mut execution => result,
+            }
+        }).map_err(command_error)?;
+        return received.await.map_err(command_error)?;
+    }
     execute_workspace_tool_controlled(
         workspace,
         metadata_workspace,
@@ -503,31 +539,33 @@ pub struct DbUpdateMessageParams {
     generation_attempts_json: Option<String>,
 }
 
+impl DbUpdateMessageParams {
+    fn take_input(&mut self) -> repository::UpdateMessageContentInput<'_> {
+        repository::UpdateMessageContentInput {
+            id: &self.id,
+            turn_id: self.turn_id.take(),
+            content: &self.content,
+            token_count: self.token_count.take(),
+            tool_traces_json: self.tool_traces_json.take(),
+            hidden_context: self.hidden_context.take(),
+            provider_input_items_json: self.provider_input_items_json.take(),
+            provider_turn_state_json: self.provider_turn_state_json.take(),
+            context_refs_json: self.context_refs_json.take(),
+            completion_reason: self.completion_reason.take(),
+            generation_attempts_json: self.generation_attempts_json.take(),
+        }
+    }
+}
+
 #[tauri::command]
 pub async fn db_update_message(
     pool: State<'_, DbPool>,
-    params: DbUpdateMessageParams,
+    mut params: DbUpdateMessageParams,
 ) -> CommandResult<()> {
     let pool = get_pool(&pool).await?;
-
-    repository::update_message_content(
-        &pool,
-        repository::UpdateMessageContentInput {
-            id: &params.id,
-            turn_id: params.turn_id,
-            content: &params.content,
-            token_count: params.token_count,
-            tool_traces_json: params.tool_traces_json,
-            hidden_context: params.hidden_context,
-            provider_input_items_json: params.provider_input_items_json,
-            provider_turn_state_json: params.provider_turn_state_json,
-            context_refs_json: params.context_refs_json,
-            completion_reason: params.completion_reason,
-            generation_attempts_json: params.generation_attempts_json,
-        },
-    )
-    .await
-    .map_err(Into::into)
+    repository::update_message_content(&pool, params.take_input())
+        .await
+        .map_err(Into::into)
 }
 
 #[tauri::command]

@@ -1,3 +1,4 @@
+import { MacroServiceError } from './contracts/errors';
 import { describe, expect, it } from 'bun:test';
 
 import type { ChatMessage } from '../types';
@@ -1291,6 +1292,25 @@ describe('buildCompactedMessagesForRequest', () => {
     expect(result.compactionState?.summaryFormatVersion).toBe(3);
     expect(result.compactionState?.summarySource).toBe('model');
     expect(JSON.stringify(result.messages)).not.toContain('provider trace payload');
+  });
+
+  it('does not replace an uncertain provider admission with a local checkpoint', async () => {
+    const orderedMessages = [
+      makeMessage('u1', 'user', 'Retain the original facts.'),
+      makeMessage('a1', 'assistant', 'Synthetic context detail\n'.repeat(5000)),
+      makeMessage('u2', 'user', 'Review the retained facts.'),
+      makeMessage('a2', 'assistant', 'Retained facts reviewed.'),
+      makeMessage('u3', 'user', 'Continue.'),
+    ];
+    const error = new MacroServiceError('CHAT_ADMISSION_UNCERTAIN', 'Synthetic ambiguous emission');
+    let attempts = 0;
+    await expect(buildCompactedMessagesForRequest({
+      systemMessage: 'You are Macro.', preparedMessages: makePreparedMessages(orderedMessages),
+      orderedMessages, citations: [], toolDefinitions: [], modelContextWindowTokens: 8_000,
+      mode: 'manual', forceCompaction: true, budgetPolicy: { prune: false, reservedTokens: 1_200 },
+      generateSummary: async () => { attempts += 1; throw error; },
+    })).rejects.toBe(error);
+    expect(attempts).toBe(1);
   });
 
   it('records fallback summaries explicitly when model summarization fails', async () => {

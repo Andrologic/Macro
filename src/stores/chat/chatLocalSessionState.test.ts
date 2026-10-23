@@ -1,5 +1,5 @@
 import { usePersistenceHealth } from "../../services/persistenceHealth";
-import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it, mock } from "bun:test";
 
 import type {
   ChatMessage,
@@ -16,9 +16,18 @@ import {
   parseComposerDraft,
   loadMessageImagesFromStorage,
   loadQuestionnaireDraftsFromStorage,
+  readQuestionnaireDraftsFromStorage,
+  drainQuestionnaireDraftWrites,
+  activateQuestionnaireDraftWriter,
+  retireQuestionnaireDraftWriter,
   loadUnsavedAssistantResponsesFromStorage,
+  readUnsavedAssistantResponsesFromStorage,
   removeUnsavedAssistantResponseFromStorage,
   saveComposerDraftsToStorage,
+  readComposerDraftsFromStorage,
+  drainComposerDraftWrites,
+  activateComposerDraftWriter,
+  retireComposerDraftWriter,
   saveMessageImagesToStorage,
   saveQuestionnaireDraftsToStorage,
   saveUnsavedAssistantResponseToStorage,
@@ -27,6 +36,16 @@ import {
   type MessageImageAttachment,
   type PersistedComposerDraft,
 } from "./chatLocalSessionState";
+
+let admitDraft: (() => Promise<void>) | undefined;
+const finishDraft = mock(async () => {});
+mock.module('../../services/chatAdmission', () => ({
+  beginChatIntent: async (identity: import('../../services/ipc/chatAdmission').ChatIntentIdentity) => {
+    await admitDraft?.();
+    return { kind: 'globalChat', receipt: { operationId: 'draft-op', runtime: 'browser', revision: 0, identity } };
+  },
+  finishChatIntent: finishDraft,
+}));
 
 class MemoryLocalStorage {
   private readonly values = new Map<string, string>();
@@ -80,16 +99,30 @@ const draft: ConversationQuestionnaireDraft = {
 
 describe("chatLocalSessionState", () => {
   beforeEach(() => {
+    activateQuestionnaireDraftWriter();
+    activateComposerDraftWriter();
+    admitDraft = undefined;
+    finishDraft.mockClear();
     installWindowStorage();
     usePersistenceHealth.setState({ issues: {} });
   });
 
-  afterEach(() => {
+  afterEach(async () => {
+    await drainQuestionnaireDraftWrites().catch(() => undefined);
+    await drainComposerDraftWrites().catch(() => undefined);
     restoreWindow();
   });
 
-  it("persists questionnaire drafts defensively", () => {
-    saveQuestionnaireDraftsToStorage({ "conv-1": draft });
+  it("refuses incomplete recovery inspection without changing the saved bytes", () => {
+    const raw = JSON.stringify({ invalid: { role: "assistant" } });
+    window.localStorage.setItem(UNSAVED_ASSISTANT_RESPONSES_STORAGE_KEY, raw);
+    expect(loadUnsavedAssistantResponsesFromStorage()).toEqual([]);
+    expect(() => readUnsavedAssistantResponsesFromStorage()).toThrow("Invalid saved response");
+    expect(window.localStorage.getItem(UNSAVED_ASSISTANT_RESPONSES_STORAGE_KEY)).toBe(raw);
+  });
+
+  it("persists questionnaire drafts defensively", async () => {
+    await saveQuestionnaireDraftsToStorage({ "conv-1": draft });
     expect(loadQuestionnaireDraftsFromStorage()).toEqual({ "conv-1": draft });
 
     window.localStorage.setItem(
@@ -101,24 +134,66 @@ describe("chatLocalSessionState", () => {
     );
 
     expect(loadQuestionnaireDraftsFromStorage()).toEqual({ valid: draft });
+    const original = window.localStorage.getItem('macro_chat_questionnaire_drafts');
+    expect(() => readQuestionnaireDraftsFromStorage()).toThrow('invalid');
+    await expect(saveQuestionnaireDraftsToStorage({})).rejects.toThrow('invalid');
+    expect(window.localStorage.getItem('macro_chat_questionnaire_drafts')).toBe(original);
   });
 
-  it("clears draft persistence alerts after storage recovers", () => {
+  it("clears draft persistence alerts after storage recovers", async () => {
     const localStorage = window.localStorage;
     const setItem = localStorage.setItem;
     localStorage.setItem = () => { throw new Error("quota"); };
 
-    saveComposerDraftsToStorage({});
-    saveQuestionnaireDraftsToStorage({});
+    await saveComposerDraftsToStorage({ 'context:unbound': { text: 'draft', images: [], contextRefs: [] } });
+    await expect(saveQuestionnaireDraftsToStorage({})).rejects.toThrow("quota");
     expect(usePersistenceHealth.getState().issues).toEqual({
       macro_chat_composer_drafts_v1: "The composer draft could not be saved. Keep this session open.",
       macro_chat_questionnaire_drafts: "The questionnaire draft could not be saved. Keep this session open.",
     });
 
     localStorage.setItem = setItem;
-    saveComposerDraftsToStorage({});
-    saveQuestionnaireDraftsToStorage({});
+    await saveComposerDraftsToStorage({});
+    await saveQuestionnaireDraftsToStorage({});
     expect(usePersistenceHealth.getState().issues).toEqual({});
+  });
+
+  it('admits before durable draft writes and joins pending writes before inspection', async () => {
+    let release!: () => void;
+    admitDraft = () => new Promise<void>(resolve => { release = resolve; });
+    const writing = saveQuestionnaireDraftsToStorage({ 'conv-1': draft });
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(window.localStorage.getItem('macro_chat_questionnaire_drafts')).toBeNull();
+    let joined = false;
+    const joining = drainQuestionnaireDraftWrites().then(() => { joined = true; });
+    await Promise.resolve();
+    expect(joined).toBe(false);
+    release();
+    await writing;
+    await joining;
+    expect(readQuestionnaireDraftsFromStorage()).toEqual({ 'conv-1': draft });
+    admitDraft = async () => { throw new Error('native frozen'); };
+    await expect(saveQuestionnaireDraftsToStorage({})).rejects.toThrow('native frozen');
+    expect(readQuestionnaireDraftsFromStorage()).toEqual({ 'conv-1': draft });
+    expect(finishDraft).not.toHaveBeenCalled();
+    admitDraft = undefined;
+    await saveQuestionnaireDraftsToStorage({});
+    expect(readQuestionnaireDraftsFromStorage()).toEqual({});
+    expect(finishDraft).toHaveBeenCalledTimes(1);
+  });
+
+  it('retires a suspended draft writer before it can write after admission', async () => {
+    let release!: () => void;
+    admitDraft = () => new Promise<void>(resolve => { release = resolve; });
+    const writing = saveQuestionnaireDraftsToStorage({ 'conv-1': draft });
+    await Promise.resolve(); await Promise.resolve();
+    const retired = retireQuestionnaireDraftWriter();
+    release();
+    await expect(writing).rejects.toThrow('retired');
+    await retired;
+    expect(window.localStorage.getItem('macro_chat_questionnaire_drafts')).toBeNull();
+    await expect(saveQuestionnaireDraftsToStorage({})).rejects.toThrow('retired');
   });
 
   it("updates questionnaire draft maps without mutating the previous value", () => {
@@ -272,7 +347,7 @@ describe("chatLocalSessionState", () => {
     ).toBeNull();
   });
 
-  it("restores an interrupted retry as failed and prunes deleted conversations", () => {
+  it("restores an interrupted retry as failed without erasing unknown recovery data", () => {
     window.localStorage.setItem(
       UNSAVED_ASSISTANT_RESPONSES_STORAGE_KEY,
       JSON.stringify({
@@ -305,12 +380,105 @@ describe("chatLocalSessionState", () => {
       }),
     ]);
 
-    expect(clearUnsavedAssistantResponsesForConversations(["conv-1"])).toBe(true);
-    expect(loadUnsavedAssistantResponsesFromStorage()).toEqual([]);
+    const original = window.localStorage.getItem(UNSAVED_ASSISTANT_RESPONSES_STORAGE_KEY);
+    expect(clearUnsavedAssistantResponsesForConversations(["conv-1"])).toBe(false);
+    expect(window.localStorage.getItem(UNSAVED_ASSISTANT_RESPONSES_STORAGE_KEY)).toBe(original);
   });
 
-  it("round-trips a composer draft with an image and a context reference", () => {
-    saveComposerDraftsToStorage({
+  it('joins composer admission, replacement and removal before allowing inspection', async () => {
+    let release!: () => void;
+    const entered = new Promise<void>(resolve => {
+      admitDraft = () => { resolve(); return new Promise<void>(done => { release = done; }); };
+    });
+    const value = { 'conversation:composer': { text: 'first', images: [], contextRefs: [] } };
+    const first = saveComposerDraftsToStorage(value);
+    await entered;
+    let inspected = false;
+    const inspecting = drainComposerDraftWrites('composer').then(() => { inspected = true; });
+    await Promise.resolve();
+    expect(inspected).toBe(false);
+    expect(window.localStorage.getItem(COMPOSER_DRAFTS_STORAGE_KEY)).toBeNull();
+    release(); expect(await first).toBe(true); await inspecting;
+    admitDraft = undefined;
+    expect(readComposerDraftsFromStorage()).toEqual(value);
+    expect(await saveComposerDraftsToStorage({ 'conversation:composer': { ...value['conversation:composer'], text: 'edited' } })).toBe(true);
+    finishDraft.mockImplementationOnce(async () => {
+      expect(readComposerDraftsFromStorage()).toEqual({});
+      throw new Error('ACK lost');
+    });
+    expect(await saveComposerDraftsToStorage({})).toBe(false);
+    await expect(drainComposerDraftWrites('composer')).rejects.toThrow('not been saved');
+    // An independent re-edit is admitted again; failure never restores old bytes.
+    expect(readComposerDraftsFromStorage()).toEqual({});
+    expect(await saveComposerDraftsToStorage(value)).toBe(true);
+    await drainComposerDraftWrites('composer');
+    expect(await saveComposerDraftsToStorage({})).toBe(true);
+    expect(finishDraft).toHaveBeenCalledTimes(2);
+  });
+
+  it('preserves unknown composer documents and refuses unreadable inspection or failed writes', async () => {
+    const valid = { text: 'retained', images: [], contextRefs: [] };
+    for (const raw of ['{broken', JSON.stringify({ 'future:c': valid }), JSON.stringify({ 'conversation:c': { ...valid, future: true } }),
+      JSON.stringify({ 'conversation:c': { ...valid, images: [{ id: 'x' }] } })]) {
+      window.localStorage.setItem(COMPOSER_DRAFTS_STORAGE_KEY, raw);
+      expect(() => readComposerDraftsFromStorage()).toThrow();
+      expect(await saveComposerDraftsToStorage({})).toBe(false);
+      expect(window.localStorage.getItem(COMPOSER_DRAFTS_STORAGE_KEY)).toBe(raw);
+    }
+    window.localStorage.clear();
+    const read = window.localStorage.getItem;
+    window.localStorage.getItem = () => { throw new Error('storage unreadable'); };
+    expect(() => readComposerDraftsFromStorage()).toThrow('storage unreadable');
+    expect(await saveComposerDraftsToStorage({ 'conversation:c': valid })).toBe(false);
+    window.localStorage.getItem = read;
+    const write = window.localStorage.setItem;
+    window.localStorage.setItem = () => { throw new Error('quota'); };
+    expect(await saveComposerDraftsToStorage({ 'conversation:c': valid })).toBe(false);
+    await expect(drainComposerDraftWrites('c')).rejects.toThrow('not been saved');
+    window.localStorage.setItem = write;
+    expect(await saveComposerDraftsToStorage({ 'conversation:c': valid })).toBe(true);
+    expect(readComposerDraftsFromStorage()['conversation:c']).toEqual(valid);
+  });
+
+  it('does not mutate a composer copy when admission refuses or its ACK is lost', async () => {
+    const previous = { 'context:Chat::none': { text: 'unbound', images: [], contextRefs: [] } };
+    expect(await saveComposerDraftsToStorage(previous)).toBe(true);
+    const raw = window.localStorage.getItem(COMPOSER_DRAFTS_STORAGE_KEY);
+    admitDraft = async () => { throw new Error('admission refused or ACK lost'); };
+    expect(await saveComposerDraftsToStorage({ ...previous, 'conversation:refused': { text: 'keep in memory', images: [], contextRefs: [] } })).toBe(false);
+    expect(window.localStorage.getItem(COMPOSER_DRAFTS_STORAGE_KEY)).toBe(raw);
+    await expect(drainComposerDraftWrites('refused')).rejects.toThrow('not been saved');
+    await drainComposerDraftWrites('other');
+    expect(finishDraft).not.toHaveBeenCalled();
+    admitDraft = undefined;
+    expect(await saveComposerDraftsToStorage(previous)).toBe(true);
+  });
+
+  it('joins composer retirement during admission and keeps unbound contexts independent', async () => {
+    const value = { text: 'not dispatched', images: [], contextRefs: [] };
+    let release!: () => void;
+    let calls = 0;
+    const entered = new Promise<void>(resolve => {
+      admitDraft = () => { calls++; resolve(); return new Promise<void>(done => { release = done; }); };
+    });
+    expect(await saveComposerDraftsToStorage({ 'context:Chat::none': value })).toBe(true);
+    expect(calls).toBe(0);
+    const pending = saveComposerDraftsToStorage({ 'conversation:retired': value });
+    await entered;
+    let retired = false;
+    const retirement = retireComposerDraftWriter().then(() => { retired = true; });
+    await Promise.resolve(); expect(retired).toBe(false);
+    release(); expect(await pending).toBe(false); await retirement;
+    expect(readComposerDraftsFromStorage()).toEqual({ 'context:Chat::none': value });
+    expect(finishDraft).not.toHaveBeenCalled();
+    await drainComposerDraftWrites('unrelated');
+    activateComposerDraftWriter(); admitDraft = undefined;
+    expect(await saveComposerDraftsToStorage({ 'conversation:retired': value })).toBe(true);
+    expect(await saveComposerDraftsToStorage({})).toBe(true);
+  });
+
+  it("round-trips a composer draft with an image and a context reference", async () => {
+    await saveComposerDraftsToStorage({
       "conversation:conv-a": {
         text: "Inspect the screenshot and README.",
         images: [{
@@ -369,7 +537,7 @@ describe("chatLocalSessionState", () => {
       .toBeNull();
   });
 
-  it("rejects every composer draft writer limit and keeps the previous storage", () => {
+  it("rejects every composer draft writer limit and keeps the previous storage", async () => {
     const image: MessageImageAttachment = {
       id: "image-1",
       mimeType: "image/png",
@@ -385,7 +553,7 @@ describe("chatLocalSessionState", () => {
     const previous = {
       "conversation:previous": { text: "previous", images: [], contextRefs: [] },
     };
-    expect(saveComposerDraftsToStorage(previous)).toBe(true);
+    expect(await saveComposerDraftsToStorage(previous)).toBe(true);
     const previousRaw = window.localStorage.getItem(COMPOSER_DRAFTS_STORAGE_KEY);
     const overLimitCases: Array<Record<string, PersistedComposerDraft>> = [
       Object.fromEntries(Array.from({ length: 51 }, (_, index) => [
@@ -398,7 +566,7 @@ describe("chatLocalSessionState", () => {
     ];
 
     for (const candidate of overLimitCases) {
-      expect(saveComposerDraftsToStorage(candidate)).toBe(false);
+      expect(await saveComposerDraftsToStorage(candidate)).toBe(false);
       expect(window.localStorage.getItem(COMPOSER_DRAFTS_STORAGE_KEY)).toBe(previousRaw);
       expect(usePersistenceHealth.getState().issues[COMPOSER_DRAFTS_STORAGE_KEY]).toBeDefined();
     }
@@ -470,4 +638,15 @@ describe("chatLocalSessionState", () => {
     window.localStorage.setItem(COMPOSER_DRAFTS_STORAGE_KEY, "not-json");
     expect(loadComposerDraftsFromStorage()).toEqual({});
   });
+});
+
+it("does not overwrite an unreadable recovery entry during save or removal", () => {
+  const raw = JSON.stringify({ "unknown": { content: "Preserve original bytes", futureShape: true } });
+  window.localStorage.setItem(UNSAVED_ASSISTANT_RESPONSES_STORAGE_KEY, raw);
+  const message: ChatMessage = { id: "new", conversation_id: "chat", task_id: "", turn_id: "turn",
+    role: "assistant", content: "answer", timestamp: "2026-01-01", persistence_state: "failed" };
+  expect(saveUnsavedAssistantResponseToStorage(message)).toBe(false);
+  expect(removeUnsavedAssistantResponseFromStorage("unknown")).toBe(false);
+  expect(clearUnsavedAssistantResponsesForConversations(["chat"])).toBe(false);
+  expect(window.localStorage.getItem(UNSAVED_ASSISTANT_RESPONSES_STORAGE_KEY)).toBe(raw);
 });

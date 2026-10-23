@@ -42,6 +42,7 @@ async fn accepts_develop_v9_with_historical_pilot_v5_stamp() {
             (14, "014_conversation_catalog_version".into()),
             (15, "015_inactive_storage".into()),
             (16, "016_source_capture".into()),
+            (17, "017_chat_admission".into()),
         ]
     );
 }
@@ -352,13 +353,20 @@ unsafe extern "C" {
 unsafe extern "C" fn deny_schema_work(
     _: *mut std::ffi::c_void,
     action: i32,
-    _: *const std::ffi::c_char,
+    first: *const std::ffi::c_char,
     _: *const std::ffi::c_char,
     _: *const std::ffi::c_char,
     _: *const std::ffi::c_char,
 ) -> i32 {
+    // F attests this read-only connection configuration. Other PRAGMAs,
+    // including legacy table_info inspection, remain denied.
+    if action == 19
+        && !first.is_null()
+        && unsafe { std::ffi::CStr::from_ptr(first) }.to_bytes() == b"trusted_schema"
+    {
+        return 0;
+    }
     // SQLITE_DELETE, INSERT, READ, SELECT, TRANSACTION, UPDATE, FUNCTION.
-    // Deny PRAGMA too: the compatibility helpers inspect table_info.
     if [9, 18, 20, 21, 22, 23, 31].contains(&action) {
         0
     } else {

@@ -64,6 +64,7 @@ export const handleSkillToolCall = async (
   permissionSnapshot: SkillPermissionSnapshot | null =
     useSkillsStore.getState().getSkillPermissionSnapshot(conversationId),
   executionContext?: ProjectExecutionContext,
+  chatAdmission?: import('../ipc/chatAdmission').ChatToolAdmission,
 ): Promise<ToolResultResolution | string | undefined> => {
   if (normalizedToolName === 'skill_activate') {
     const skillId = readStringArg(args, 'skill_id', 'skillId');
@@ -123,7 +124,7 @@ export const handleSkillToolCall = async (
             : null,
       allowWorkspace:
         args.allow_workspace === true || args.allowWorkspace === true,
-    }, permissionSnapshot);
+    }, permissionSnapshot, chatAdmission);
     if (typeof result === 'string') return skillToolError(result);
     const formatted = formatScriptResult(result);
     return result.timedOut

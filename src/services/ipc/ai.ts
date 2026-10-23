@@ -1,3 +1,4 @@
+import type { ProviderAdmission } from './chatAdmission';
 /** ai IPC wrappers and frontend adapters. */
 
 import type {
@@ -128,6 +129,7 @@ export async function aiGetDevProviderOverrides(): Promise<DevProviderOverridesF
 }
 
 export async function aiStreamChat(params: {
+  providerAdmission: ProviderAdmission;
   requestId: string;
   providerId: string;
   modelId: string;
@@ -146,6 +148,7 @@ export async function aiStreamChat(params: {
   copilotSendTimeoutMs?: number | null;
 }): Promise<void> {
   return invoke("ai_stream_chat", {
+    admission: params.providerAdmission,
     request: {
       request_id: params.requestId,
       provider_id: params.providerId,

@@ -10,6 +10,7 @@ const accumulator = (): ToolBatchAccumulator => ({
   appendSystemChunk: mock(() => undefined),
 });
 const options = (onToolCall: StreamingChatOptions['onToolCall']): StreamingChatOptions => ({
+  providerAdmission: { kind: 'utility' },
   providerId: 'fixture', providerType: 'openai', baseUrl: 'https://example.invalid', modelId: 'fixture', messages: [],
   onToken: () => undefined, onComplete: () => undefined, onError: () => undefined, onToolCall,
 });
