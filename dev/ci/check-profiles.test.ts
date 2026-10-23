@@ -34,6 +34,7 @@ describe('local CI profiles', () => {
       'Check generated ipc contracts',
       'Run locked Rust tests for all targets',
       'Run locked Rust doc tests',
+      'Verify headless HTTP transport',
       'Verify native process interruption recovery',
     ]);
   });
@@ -138,5 +139,21 @@ test('process recovery is explicit in Linux native profiles and absent from fron
   }
   for (const profile of ['frontend', 'documentation', 'windows', 'windows-core', 'sidecar']) {
     expect(stepsForProfile(profile).some(entry => entry.args.includes('test:native:process-recovery'))).toBe(false);
+  }
+});
+
+
+test('native profiles reuse the headless HTTP smoke once after native compilation', () => {
+  for (const platform of ['linux', 'win32', 'darwin']) {
+    for (const profile of ['native', 'native-core', 'windows', 'windows-core', 'full']) {
+      const steps = stepsForProfile(profile, { platform });
+      const checks = steps.filter(entry => entry.args.includes('test:e2e:headless'));
+      expect(checks).toHaveLength(1);
+      expect(checks[0]).toMatchObject({ command: 'bun', args: ['run', 'test:e2e:headless'] });
+      expect(steps.indexOf(checks[0])).toBeGreaterThan(steps.findLastIndex(entry => entry.command === 'cargo'));
+    }
+  }
+  for (const profile of ['frontend', 'documentation', 'sidecar']) {
+    expect(stepsForProfile(profile).some(entry => entry.args.includes('test:e2e:headless'))).toBe(false);
   }
 });

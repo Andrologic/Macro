@@ -66,6 +66,7 @@ async function runBuild() {
   const processHandle = Bun.spawn([
     'cargo',
     'build',
+    '--locked',
     '--manifest-path',
     manifestPath,
     '--example',
