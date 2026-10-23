@@ -222,7 +222,8 @@ impl McpOAuthCredentialStore {
 #[async_trait::async_trait]
 impl CredentialStore for McpOAuthCredentialStore {
     async fn load(&self) -> Result<Option<StoredCredentials>, AuthError> {
-        let stored = secrets::get_api_key_async(&self.secret_id).await
+        let stored = secrets::get_api_key_async(&self.secret_id)
+            .await
             .map_err(|_| AuthError::InternalError("OAuth credential store unavailable".into()))?;
         stored
             .map(|value| {
@@ -237,12 +238,14 @@ impl CredentialStore for McpOAuthCredentialStore {
         let encoded = serde_json::to_string(&credentials).map_err(|_| {
             AuthError::InternalError("OAuth credentials could not be encoded".into())
         })?;
-        secrets::set_api_key_async(&self.secret_id, &encoded).await
+        secrets::set_api_key_async(&self.secret_id, &encoded)
+            .await
             .map_err(|_| AuthError::InternalError("OAuth credential store unavailable".into()))
     }
 
     async fn clear(&self) -> Result<(), AuthError> {
-        secrets::delete_api_key_async(&self.secret_id).await
+        secrets::delete_api_key_async(&self.secret_id)
+            .await
             .map_err(|_| AuthError::InternalError("OAuth credential store unavailable".into()))
     }
 }
@@ -255,14 +258,14 @@ pub(crate) trait McpBearerTokenProvider: Send + Sync {
 
 pub(crate) struct McpOAuthTokenProvider {
     manager: Arc<AuthorizationManager>,
-    refresh_single_flight: Mutex<()>,
+    refresh_single_flight: Arc<Mutex<()>>,
 }
 
 impl McpOAuthTokenProvider {
     pub(crate) fn new(manager: AuthorizationManager) -> Self {
         Self {
             manager: Arc::new(manager),
-            refresh_single_flight: Mutex::new(()),
+            refresh_single_flight: Arc::new(Mutex::new(())),
         }
     }
 }
@@ -272,18 +275,20 @@ impl McpBearerTokenProvider for McpOAuthTokenProvider {
         &'a self,
     ) -> Pin<Box<dyn Future<Output = CommandResult<String>> + Send + 'a>> {
         Box::pin(async move {
-            let _refresh_guard = self.refresh_single_flight.lock().await;
-            self.manager.get_access_token().await.map_err(|error| {
-                command_error(match error {
-                    AuthError::AuthorizationRequired => {
-                        "MCP OAuth authorization is required.".to_string()
-                    }
-                    AuthError::InsufficientScope { .. } => {
-                        "MCP OAuth authorization needs additional scopes.".to_string()
-                    }
-                    _ => "MCP OAuth token acquisition failed.".to_string(),
+            let guard = self.refresh_single_flight.clone().lock_owned().await;
+            secrets::blocking::with_guard(guard, self.manager.get_access_token())
+                .await
+                .map_err(|error| {
+                    command_error(match error {
+                        AuthError::AuthorizationRequired => {
+                            "MCP OAuth authorization is required.".to_string()
+                        }
+                        AuthError::InsufficientScope { .. } => {
+                            "MCP OAuth authorization needs additional scopes.".to_string()
+                        }
+                        _ => "MCP OAuth token acquisition failed.".to_string(),
+                    })
                 })
-            })
         })
     }
 }
@@ -482,7 +487,8 @@ pub(crate) async fn authorize_interactively(
             "MCP OAuth is available only for Streamable HTTP servers.",
         ));
     };
-    let settings = resolve_oauth_settings_async(&key.server_id, definition).await
+    let settings = resolve_oauth_settings_async(&key.server_id, definition)
+        .await
         .map_err(|error| command_error(error.to_string()))?
         .ok_or_else(|| command_error("MCP OAuth is not configured for this server."))?;
     let endpoint = validate_endpoint(url).await?;
@@ -553,7 +559,8 @@ pub(crate) async fn clear_credentials(
         ));
     };
     let endpoint = validate_endpoint(url).await?;
-    secrets::delete_api_key_async(&oauth_credential_secret_id(key, endpoint.url.as_str())).await
+    secrets::delete_api_key_async(&oauth_credential_secret_id(key, endpoint.url.as_str()))
+        .await
         .map_err(|_| command_error("Stored MCP OAuth credentials could not be deleted."))
 }
 

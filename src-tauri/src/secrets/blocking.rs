@@ -16,6 +16,22 @@ struct State {
 struct Jobs(Mutex<State>);
 static JOBS: LazyLock<Jobs> = LazyLock::new(Jobs::default);
 
+// Only secret workers inherit these owners. Dropping the caller still cancels
+// its network/SQL future; an already admitted blocking effect retains the real
+// business guards until it returns or unwinds. Nested scopes retain both owners.
+tokio::task_local! {
+    static BUSINESS_GUARDS: Vec<std::sync::Arc<dyn Send + Sync>>;
+}
+
+pub(crate) async fn with_guard<G: Send + Sync + 'static, T>(
+    guard: G,
+    operation: impl std::future::Future<Output = T>,
+) -> T {
+    let mut guards = BUSINESS_GUARDS.try_with(Clone::clone).unwrap_or_default();
+    guards.push(std::sync::Arc::new(guard));
+    BUSINESS_GUARDS.scope(guards, operation).await
+}
+
 impl Jobs {
     fn start<T: Send + 'static>(
         &self,
@@ -40,7 +56,9 @@ impl Jobs {
         let id = state.next;
         state.next = id.checked_add(1).ok_or(SecretError::PolicyUnavailable)?;
         let (send, receive) = tokio::sync::oneshot::channel();
+        let guards = BUSINESS_GUARDS.try_with(Clone::clone).unwrap_or_default();
         let handle = tauri::async_runtime::spawn_blocking(move || {
+            let _guards = guards;
             let value = operation();
             let _ = send.send(value);
         });
@@ -140,6 +158,23 @@ pub(crate) fn submit_joined(
 
 pub(crate) async fn shutdown() -> Result<(), SecretError> {
     JOBS.close_and_join().await
+}
+
+#[cfg(test)]
+pub(crate) async fn join_test_jobs() {
+    let jobs: Vec<_> = JOBS
+        .0
+        .lock()
+        .unwrap()
+        .joins
+        .iter()
+        .map(|(id, join)| (*id, join.clone()))
+        .collect();
+    for (id, join) in jobs {
+        let success = join.await;
+        JOBS.finished(id, success).unwrap();
+        assert!(success);
+    }
 }
 
 #[cfg(test)]

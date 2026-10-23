@@ -911,7 +911,8 @@ async fn configured_provider_configs(
             .and_then(Value::as_str)
             .unwrap_or("openai")
             .to_string();
-        let has_stored_api_key = secrets::get_api_key_async(id).await
+        let has_stored_api_key = secrets::get_api_key_async(id)
+            .await
             .map_err(|error| command_error(format!("Failed to inspect provider secret: {error}")))?
             .is_some();
         let is_local = definition
@@ -1264,7 +1265,8 @@ async fn reconcile_provider_secret_metadata(
     config: &mut ProviderConfig,
 ) -> CommandResult<()> {
     if config.provider_type == "chatgpt" {
-        let has_secret = secrets::get_chatgpt_secret_async(&config.id).await
+        let has_secret = secrets::get_chatgpt_secret_async(&config.id)
+            .await
             .map_err(|error| CommandError {
                 message: format!(
                     "Failed to access local ChatGPT session for {}: {}",
@@ -1301,7 +1303,8 @@ async fn reconcile_provider_secret_metadata(
     }
 
     if config.provider_type != "copilot" && !config.is_local && config.has_stored_api_key {
-        let has_key = secrets::get_api_key_async(&config.id).await
+        let has_key = secrets::get_api_key_async(&config.id)
+            .await
             .map_err(|error| CommandError {
                 message: format!(
                     "Failed to access local provider API key for {}: {}",
@@ -1351,12 +1354,14 @@ pub async fn db_reveal_provider_api_key(
         });
     }
 
-    let api_key = secrets::get_api_key_async(&id).await.map_err(|error| CommandError {
-        message: format!(
-            "Failed to access the local provider secret for {}: {}",
-            id, error
-        ),
-    })?;
+    let api_key = secrets::get_api_key_async(&id)
+        .await
+        .map_err(|error| CommandError {
+            message: format!(
+                "Failed to access the local provider secret for {}: {}",
+                id, error
+            ),
+        })?;
 
     Ok(api_key)
 }
@@ -1444,83 +1449,88 @@ pub async fn db_update_provider_config(
 
     let provider_id = params.id.clone();
     let lock = provider_mutation_lock(&provider_id);
-    let _guard = lock.lock().await;
-    let previous_config = configured_provider_configs(config_manager.inner(), &pool)
-        .await?
-        .into_iter()
-        .find(|provider| provider.id == provider_id)
-        .ok_or_else(|| command_error(format!("Provider {} not found", provider_id)))?;
-    let previous_api_key = if params.api_key.is_some() {
-        secrets::get_api_key_async(&provider_id).await.map_err(|error| {
-            command_error(format!(
-                "Failed to read the local provider secret for {}: {}",
-                provider_id, error
-            ))
-        })?
-    } else {
-        None
-    };
-    let provider_type = params
-        .provider_type
-        .as_deref()
-        .unwrap_or(&previous_config.provider_type)
-        .trim()
-        .to_string();
-    let is_local = params.is_local.unwrap_or(previous_config.is_local);
-    let name = params
-        .name
-        .as_deref()
-        .unwrap_or(&previous_config.name)
-        .trim()
-        .to_string();
-    let base_url = params
-        .base_url
-        .as_deref()
-        .unwrap_or(&previous_config.base_url)
-        .trim()
-        .to_string();
-    validate_ai_provider_fields(&name, &provider_type, &base_url, is_local)?;
-
-    if let Some(api_key) = params.api_key.as_deref() {
-        if api_key.trim().is_empty() {
-            secrets::delete_api_key_async(&provider_id).await
+    let _guard = lock.lock_owned().await;
+    crate::secrets::blocking::with_guard(_guard, async {
+        let previous_config = configured_provider_configs(config_manager.inner(), &pool)
+            .await?
+            .into_iter()
+            .find(|provider| provider.id == provider_id)
+            .ok_or_else(|| command_error(format!("Provider {} not found", provider_id)))?;
+        let previous_api_key = if params.api_key.is_some() {
+            secrets::get_api_key_async(&provider_id)
+                .await
+                .map_err(|error| {
+                    command_error(format!(
+                        "Failed to read the local provider secret for {}: {}",
+                        provider_id, error
+                    ))
+                })?
         } else {
-            secrets::set_api_key_async(&provider_id, api_key.trim()).await
+            None
+        };
+        let provider_type = params
+            .provider_type
+            .as_deref()
+            .unwrap_or(&previous_config.provider_type)
+            .trim()
+            .to_string();
+        let is_local = params.is_local.unwrap_or(previous_config.is_local);
+        let name = params
+            .name
+            .as_deref()
+            .unwrap_or(&previous_config.name)
+            .trim()
+            .to_string();
+        let base_url = params
+            .base_url
+            .as_deref()
+            .unwrap_or(&previous_config.base_url)
+            .trim()
+            .to_string();
+        validate_ai_provider_fields(&name, &provider_type, &base_url, is_local)?;
+
+        if let Some(api_key) = params.api_key.as_deref() {
+            if api_key.trim().is_empty() {
+                secrets::delete_api_key_async(&provider_id).await
+            } else {
+                secrets::set_api_key_async(&provider_id, api_key.trim()).await
+            }
+            .map_err(|error| command_error(format!("Failed to update provider secret: {error}")))?;
         }
-        .map_err(|error| command_error(format!("Failed to update provider secret: {error}")))?;
-    }
 
-    let has_api_key = params
-        .api_key
-        .as_deref()
-        .map(|key| !key.trim().is_empty())
-        .unwrap_or(previous_config.has_stored_api_key);
-    let is_enabled = if provider_type == "chatgpt" || provider_type == "copilot" {
-        params.is_enabled.unwrap_or(previous_config.is_enabled)
-    } else {
-        is_local || has_api_key
-    };
+        let has_api_key = params
+            .api_key
+            .as_deref()
+            .map(|key| !key.trim().is_empty())
+            .unwrap_or(previous_config.has_stored_api_key);
+        let is_enabled = if provider_type == "chatgpt" || provider_type == "copilot" {
+            params.is_enabled.unwrap_or(previous_config.is_enabled)
+        } else {
+            is_local || has_api_key
+        };
 
-    let definition = serde_json::json!({
-        "providerType": provider_type,
-        "name": name,
-        "enabled": is_enabled,
-        "baseUrl": base_url,
-        "isLocal": is_local,
-    });
-    if let Err(error) =
-        patch_provider_definition(config_manager.inner(), &provider_id, Some(definition)).await
-    {
-        if params.api_key.is_some() {
-            let _ = match previous_api_key {
-                Some(previous) => secrets::set_api_key_async(&provider_id, &previous).await,
-                None => secrets::delete_api_key_async(&provider_id).await,
-            };
+        let definition = serde_json::json!({
+            "providerType": provider_type,
+            "name": name,
+            "enabled": is_enabled,
+            "baseUrl": base_url,
+            "isLocal": is_local,
+        });
+        if let Err(error) =
+            patch_provider_definition(config_manager.inner(), &provider_id, Some(definition)).await
+        {
+            if params.api_key.is_some() {
+                let _ = match previous_api_key {
+                    Some(previous) => secrets::set_api_key_async(&provider_id, &previous).await,
+                    None => secrets::delete_api_key_async(&provider_id).await,
+                };
+            }
+            return Err(error);
         }
-        return Err(error);
-    }
 
-    Ok(())
+        Ok(())
+    })
+    .await
 }
 
 #[tauri::command]
@@ -1577,55 +1587,69 @@ pub async fn db_delete_provider_config(
     }
 
     let lock = provider_mutation_lock(&id);
-    let _guard = lock.lock().await;
-    let provider = configured_provider_configs(config_manager.inner(), &pool)
-        .await?
-        .into_iter()
-        .find(|provider| provider.id == id)
-        .ok_or_else(|| command_error(format!("Provider {} not found", id)))?;
-    let _chatgpt_auth_guard = if provider.provider_type == "chatgpt" {
-        Some(
-            crate::ai::chatgpt::lock_auth_mutation(&id)
-                .await
-                .map_err(command_error)?,
-        )
-    } else {
-        None
-    };
-    let escaped = id.replace('~', "~0").replace('/', "~1");
-    let previous_api_key = secrets::get_api_key_async(&id).await
-        .map_err(|error| command_error(format!("Failed to read provider secret: {error}")))?;
-    let previous_chatgpt_secret = secrets::get_chatgpt_secret_async(&id).await.map_err(|error| {
-        command_error(format!("Failed to read provider ChatGPT session: {error}"))
-    })?;
-    if let Err(error) = secrets::delete_api_key_async(&id).await {
-        return Err(command_error(format!(
-            "Failed to delete provider secret: {error}"
-        )));
-    }
-    if let Err(error) = secrets::delete_provider_secret_async(&id).await {
-        restore_deleted_provider_secrets(
-            &id,
-            previous_api_key.as_deref(),
-            previous_chatgpt_secret.as_ref(),
-        ).await;
-        return Err(command_error(format!(
-            "Failed to delete provider ChatGPT session: {error}"
-        )));
-    }
-    let is_builtin = crate::config::default_document(ConfigDocumentKind::Providers)
-        .pointer(&format!("/providers/{escaped}"))
-        .is_some();
-    let definition = is_builtin.then(|| serde_json::json!({ "deleted": true }));
-    if let Err(error) = patch_provider_definition(config_manager.inner(), &id, definition).await {
-        restore_deleted_provider_secrets(
-            &id,
-            previous_api_key.as_deref(),
-            previous_chatgpt_secret.as_ref(),
-        ).await;
-        return Err(error);
-    }
-    Ok(())
+    let _guard = lock.lock_owned().await;
+    crate::secrets::blocking::with_guard(_guard, async {
+        let provider = configured_provider_configs(config_manager.inner(), &pool)
+            .await?
+            .into_iter()
+            .find(|provider| provider.id == id)
+            .ok_or_else(|| command_error(format!("Provider {} not found", id)))?;
+        let _chatgpt_auth_guard = if provider.provider_type == "chatgpt" {
+            Some(
+                crate::ai::chatgpt::lock_auth_mutation(&id)
+                    .await
+                    .map_err(command_error)?,
+            )
+        } else {
+            None
+        };
+        crate::secrets::blocking::with_guard(_chatgpt_auth_guard, async {
+            let escaped = id.replace('~', "~0").replace('/', "~1");
+            let previous_api_key = secrets::get_api_key_async(&id).await.map_err(|error| {
+                command_error(format!("Failed to read provider secret: {error}"))
+            })?;
+            let previous_chatgpt_secret =
+                secrets::get_chatgpt_secret_async(&id)
+                    .await
+                    .map_err(|error| {
+                        command_error(format!("Failed to read provider ChatGPT session: {error}"))
+                    })?;
+            if let Err(error) = secrets::delete_api_key_async(&id).await {
+                return Err(command_error(format!(
+                    "Failed to delete provider secret: {error}"
+                )));
+            }
+            if let Err(error) = secrets::delete_provider_secret_async(&id).await {
+                restore_deleted_provider_secrets(
+                    &id,
+                    previous_api_key.as_deref(),
+                    previous_chatgpt_secret.as_ref(),
+                )
+                .await;
+                return Err(command_error(format!(
+                    "Failed to delete provider ChatGPT session: {error}"
+                )));
+            }
+            let is_builtin = crate::config::default_document(ConfigDocumentKind::Providers)
+                .pointer(&format!("/providers/{escaped}"))
+                .is_some();
+            let definition = is_builtin.then(|| serde_json::json!({ "deleted": true }));
+            if let Err(error) =
+                patch_provider_definition(config_manager.inner(), &id, definition).await
+            {
+                restore_deleted_provider_secrets(
+                    &id,
+                    previous_api_key.as_deref(),
+                    previous_chatgpt_secret.as_ref(),
+                )
+                .await;
+                return Err(error);
+            }
+            Ok(())
+        })
+        .await
+    })
+    .await
 }
 
 // ============ AI MODELS ============
@@ -2382,7 +2406,8 @@ mod tests {
         crate::secrets::delete_api_key(&provider_id).expect("delete API key");
         crate::secrets::delete_provider_secret(&provider_id).expect("delete ChatGPT session");
 
-        restore_deleted_provider_secrets(&provider_id, Some("api-key"), Some(&chatgpt_secret)).await;
+        restore_deleted_provider_secrets(&provider_id, Some("api-key"), Some(&chatgpt_secret))
+            .await;
 
         assert_eq!(
             crate::secrets::get_api_key(&provider_id)

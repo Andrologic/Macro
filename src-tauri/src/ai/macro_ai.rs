@@ -155,7 +155,9 @@ pub fn access_token() -> Result<Option<String>, String> {
 }
 
 pub async fn access_token_async() -> Result<Option<String>, String> {
-    secrets::blocking::run(access_token).await.map_err(|error| error.to_string())?
+    secrets::blocking::run(access_token)
+        .await
+        .map_err(|error| error.to_string())?
 }
 
 pub async fn ensure_access_token(pool: &SqlitePool) -> Result<String, String> {
@@ -163,78 +165,87 @@ pub async fn ensure_access_token(pool: &SqlitePool) -> Result<String, String> {
         return Ok(token);
     }
     provision(pool).await?;
-    access_token_async().await?.ok_or_else(|| "Macro AI activation returned no access token.".to_string())
+    access_token_async()
+        .await?
+        .ok_or_else(|| "Macro AI activation returned no access token.".to_string())
 }
 
 pub async fn provision(pool: &SqlitePool) -> Result<MacroAiProvisioningStatus, String> {
     let _guard = provisioning_lock().lock().await;
-    ensure_managed_provider_and_model(pool).await?;
+    crate::secrets::blocking::with_guard(_guard, async {
+        ensure_managed_provider_and_model(pool).await?;
 
-    if access_token_async().await?.is_some() {
+        if access_token_async().await?.is_some() {
+            repository::set_provider_has_stored_api_key(pool, PROVIDER_ID, true)
+                .await
+                .map_err(|error| error.to_string())?;
+            return Ok(MacroAiProvisioningStatus {
+                provider_id: PROVIDER_ID.to_string(),
+                model_id: DEFAULT_MODEL_ID.to_string(),
+                context_window_tokens: CONTEXT_WINDOW_TOKENS,
+                activated_now: false,
+            });
+        }
+
+        let identity = secrets::blocking::run(load_or_create_installation_identity)
+            .await
+            .map_err(|error| error.to_string())??;
+        let client = reqwest::Client::builder()
+            .connect_timeout(Duration::from_secs(10))
+            .timeout(Duration::from_secs(20))
+            .build()
+            .map_err(|error| format!("Failed to prepare Macro AI activation: {error}"))?;
+        let response = client
+            .post(BOOTSTRAP_URL)
+            .json(&BootstrapRequest {
+                installation_id: &identity.installation_id,
+                installation_proof: &identity.installation_proof,
+                client_version: env!("CARGO_PKG_VERSION"),
+                platform: std::env::consts::OS,
+            })
+            .send()
+            .await
+            .map_err(|error| format!("Macro AI activation is currently unavailable: {error}"))?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let error = response
+                .json::<BootstrapError>()
+                .await
+                .ok()
+                .and_then(|payload| payload.error)
+                .unwrap_or_else(|| "the activation service returned an error".to_string());
+            return Err(format!("Macro AI activation failed ({status}): {error}"));
+        }
+
+        let payload = response
+            .json::<BootstrapResponse>()
+            .await
+            .map_err(|error| {
+                format!("Macro AI returned an invalid activation response: {error}")
+            })?;
+        if payload.access_token.trim().is_empty()
+            || payload.model != DEFAULT_MODEL_ID
+            || payload.context_window_tokens != CONTEXT_WINDOW_TOKENS
+        {
+            return Err("Macro AI returned inconsistent activation metadata.".to_string());
+        }
+
+        secrets::set_api_key_async(PROVIDER_ID, payload.access_token.trim())
+            .await
+            .map_err(|error| format!("Failed to store the Macro AI access token: {error}"))?;
         repository::set_provider_has_stored_api_key(pool, PROVIDER_ID, true)
             .await
             .map_err(|error| error.to_string())?;
-        return Ok(MacroAiProvisioningStatus {
+
+        Ok(MacroAiProvisioningStatus {
             provider_id: PROVIDER_ID.to_string(),
             model_id: DEFAULT_MODEL_ID.to_string(),
             context_window_tokens: CONTEXT_WINDOW_TOKENS,
-            activated_now: false,
-        });
-    }
-
-    let identity = secrets::blocking::run(load_or_create_installation_identity)
-        .await.map_err(|error| error.to_string())??;
-    let client = reqwest::Client::builder()
-        .connect_timeout(Duration::from_secs(10))
-        .timeout(Duration::from_secs(20))
-        .build()
-        .map_err(|error| format!("Failed to prepare Macro AI activation: {error}"))?;
-    let response = client
-        .post(BOOTSTRAP_URL)
-        .json(&BootstrapRequest {
-            installation_id: &identity.installation_id,
-            installation_proof: &identity.installation_proof,
-            client_version: env!("CARGO_PKG_VERSION"),
-            platform: std::env::consts::OS,
+            activated_now: true,
         })
-        .send()
-        .await
-        .map_err(|error| format!("Macro AI activation is currently unavailable: {error}"))?;
-
-    if !response.status().is_success() {
-        let status = response.status();
-        let error = response
-            .json::<BootstrapError>()
-            .await
-            .ok()
-            .and_then(|payload| payload.error)
-            .unwrap_or_else(|| "the activation service returned an error".to_string());
-        return Err(format!("Macro AI activation failed ({status}): {error}"));
-    }
-
-    let payload = response
-        .json::<BootstrapResponse>()
-        .await
-        .map_err(|error| format!("Macro AI returned an invalid activation response: {error}"))?;
-    if payload.access_token.trim().is_empty()
-        || payload.model != DEFAULT_MODEL_ID
-        || payload.context_window_tokens != CONTEXT_WINDOW_TOKENS
-    {
-        return Err("Macro AI returned inconsistent activation metadata.".to_string());
-    }
-
-    secrets::set_api_key_async(PROVIDER_ID, payload.access_token.trim()).await
-        .map_err(|error| format!("Failed to store the Macro AI access token: {error}"))?;
-    repository::set_provider_has_stored_api_key(pool, PROVIDER_ID, true)
-        .await
-        .map_err(|error| error.to_string())?;
-
-    Ok(MacroAiProvisioningStatus {
-        provider_id: PROVIDER_ID.to_string(),
-        model_id: DEFAULT_MODEL_ID.to_string(),
-        context_window_tokens: CONTEXT_WINDOW_TOKENS,
-        activated_now: true,
     })
+    .await
 }
 
 #[cfg(test)]

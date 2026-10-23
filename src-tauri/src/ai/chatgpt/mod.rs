@@ -37,7 +37,7 @@ pub(crate) async fn lock_auth_mutation(provider_id: &str) -> Result<AuthMutation
     let process_guard = AUTH_MUTATION_LOCK.lock().await;
     let lock_path =
         crate::secrets::chatgpt_auth_lock_path(provider_id).map_err(|error| error.to_string())?;
-    let file_guard = tokio::task::spawn_blocking(move || {
+    crate::secrets::blocking::run(move || {
         let file = OpenOptions::new()
             .create(true)
             .read(true)
@@ -55,13 +55,11 @@ pub(crate) async fn lock_auth_mutation(provider_id: &str) -> Result<AuthMutation
                 lock_path.display()
             )
         })?;
-        Ok::<_, String>(file)
+        Ok::<_, String>(AuthMutationGuard {
+            _process_guard: process_guard,
+            _file_guard: file,
+        })
     })
     .await
-    .map_err(|error| format!("L’acquisition du verrou d’authentification a échoué : {error}"))??;
-
-    Ok(AuthMutationGuard {
-        _process_guard: process_guard,
-        _file_guard: file_guard,
-    })
+    .map_err(|error| format!("L’acquisition du verrou d’authentification a échoué : {error}"))?
 }
