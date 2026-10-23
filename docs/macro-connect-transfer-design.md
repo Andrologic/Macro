@@ -17,8 +17,11 @@ avec nouvelle compaction et récupération d'un fait omis depuis la seule cible.
 Les résumés restent des données historiques, y compris après une nouvelle
 compaction. Les médias reconnus sont conservés dans le prochain corps ; les
 attachments indispensables appartenant à un message assistant restent refusés.
-Cette chaîne n'est pas encore raccordée au contrat portable normatif du relais
-ni à une admission F. Ces contrôles ne prouvent pas une borne mémoire du prochain
+Cette chaîne passe aussi par le contrat fermé
+[portable-chat-history-1](../contracts/macro-pilot/v2/portable-chat-history/contract.md)
+et sa validation autonome avant tout import natif. Son identité décrit le format ;
+l'import vérifié au relais, sa configuration de support et l'admission F restent
+à composer. Ces contrôles ne prouvent pas une borne mémoire du prochain
 tour, dont la préparation actuelle matérialise encore l'historique. Aucune opération publique
 de transfert ou activation de conversation n'en découle.
 

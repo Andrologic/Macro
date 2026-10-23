@@ -1,4 +1,5 @@
 /** Internal E profile. These values are historical data, never F admission. */
+import { vocabulary, portableRetainedJsonKind, validatePortableMetadata, renderPortableHeader, portableManifestInput, type PortableEntry, type PortableHeader, type PortableOrigin } from '../../../contracts/macro-pilot/v2/portable-chat-history/validate.mjs';
 import { buildAssistantMessagePresentation, buildUserMessagePresentation } from '../chatDbMappers';
 import { createCompactionTextFingerprint, buildSourceHashes, validateArchivedCompactionEvidence, validateArchivedCompactionJson } from '../contextCompaction';
 import type { Citation } from '../../types/citation';
@@ -8,7 +9,7 @@ import { recognizePortableProviderItems } from './portableProviderHistory';
 import { buildChatGptVisibleTurnContent } from './responsesCodec';
 import { buildToolContextBlock, formatToolTraceDetail, visitToolContextAttributes, decodeToolContextAttribute } from './toolPresentation';
 import { projectFinalProvenance } from '../macroPilot/assistantProvenance';
-import type { TextPolicy } from '../macroPilot/conversationText';
+import { inspectWholeText, type TextPolicy } from '../macroPilot/conversationText';
 import { inspectAttachmentContent } from '../macroPilot/attachmentFilesHost';
 
 export interface RawHistoryField {
@@ -24,37 +25,16 @@ export interface SealedHistorySource {
   relations(): AsyncIterable<{ from: number; kind: number; position: number; to: number | null; status: number }>;
   read(field: RawHistoryField): AsyncIterable<Uint8Array>;
 }
-export type PortableEntry =
-  | { kind: 'message'; role: 'user' | 'assistant' }
-  | { kind: 'historical_text'; purpose: 'portable_metadata' | 'original_text' | 'historical_data' }
-  | { kind: 'citation' }
-  | { kind: 'asset'; mime: 'text_plain' | 'image_png' | 'image_jpeg' | 'image_webp' }
-  | { kind: 'association'; from: number; to: number; position: number; relation: 'data_for_message' | 'asset_for_message' | 'citation_for_message' };
-export interface PortableRecord { ordinal: number; entry: PortableEntry; bytes: number; sha256: string; origin?: number }
+export type { PortableEntry } from '../../../contracts/macro-pilot/v2/portable-chat-history/validate.mjs';
+export type PortableRecord = PortableHeader;
 export interface PortableSink {
   /** Must consume the bytes before resolving; no retained JS field cache. */
   append(header: PortableRecord, bytes: Uint8Array): Promise<void>;
 }
-export type PortableClassification = 'retained_original' | 'redundant_representation' | 'excluded_local_metadata';
-export interface PortableMetadata {
-  version: 1;
-  normalizer: 'macro-portable-history-1';
-  policy: string;
-  source: { ordinal: number; row: number; family: number; tag: number; sqlType: 0 | 1 | 2 | 3; path?: (string | number)[] };
-  classification: PortableClassification;
-  reason: string;
-  meaning?: 'original' | 'message' | 'data' | 'reflection' | 'citation' | 'asset' | 'checkpoint';
-  message?: string;
-  timestamp?: string;
-  sourceLimits?: readonly string[];
-  remainingLimits?: readonly string[];
-  retained?: number;
-  captureManifest?: string;
-  sourceHash?: string;
-  sourceBytes?: number;
-}
-export const PORTABLE_SOURCE_LIMITS: readonly string[] = ['browser_unobserved', 'files_skills_other_chats_unobserved', 'opaque_json_semantics_unevaluated', 'runtime_intentions_unattested', 'not_normalized', 'not_F_admission'];
-export const PORTABLE_LIMITS: readonly string[] = [...PORTABLE_SOURCE_LIMITS, 'not_provider_session_resumption', 'recognized_shapes_only'];
+export type PortableClassification = PortableOrigin['classification'];
+export type PortableMetadata = PortableOrigin;
+export const PORTABLE_SOURCE_LIMITS: readonly string[] = vocabulary.sourceLimits;
+export const PORTABLE_LIMITS: readonly string[] = [...new Set([...vocabulary.sourceLimits, ...vocabulary.remainingLimits])];
 const encoder = new TextEncoder();
 export async function portableDigest(bytes: Uint8Array): Promise<string> {
   return Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256', new Uint8Array(bytes))), b => b.toString(16).padStart(2, '0')).join('');
@@ -67,15 +47,7 @@ function closed(value: unknown, keys: readonly string[]): Record<string, unknown
 }
 /** Only JSON representations emitted by this normalizer are decoded again.
  * User prose, provider result text and excluded private bindings are not JSON. */
-export function portableRetainedJsonKind(origin: Pick<PortableMetadata, 'source' | 'reason'> | undefined): 'tool_digest' | 'source_ids' | 'footprint' | 'tool_call' | 'context_refs' | 'provenance' | null {
-  if (!origin) return null;
-  const { family, tag } = origin.source;
-  if (family === 5) return ({ 3: 'tool_digest', 4: 'source_ids', 5: 'source_ids', 10: 'source_ids', 12: 'footprint', 13: 'footprint' } as const)[tag as 3 | 4 | 5 | 10 | 12 | 13] ?? null;
-  if (family === 1 && [9, 10].includes(tag) && origin.reason === 'provider_tool_call') return 'tool_call';
-  if ((family === 1 && tag === 11) || (family === 7 && tag === 1)) return 'context_refs';
-  if (family === 2 && tag === 1) return 'provenance';
-  return null;
-}
+export { portableRetainedJsonKind } from '../../../contracts/macro-pilot/v2/portable-chat-history/validate.mjs';
 export function inspectRetainedPortableJson(origin: Pick<PortableMetadata, 'source' | 'reason'>, raw: string, policy: TextPolicy): unknown {
   const kind = portableRetainedJsonKind(origin);
   if (!kind) return undefined;
@@ -84,19 +56,19 @@ export function inspectRetainedPortableJson(origin: Pick<PortableMetadata, 'sour
   if (['tool_digest', 'source_ids', 'footprint'].includes(kind)) {
     if (!validateArchivedCompactionJson(kind as 'tool_digest' | 'source_ids' | 'footprint', decoded)) fail('unknown_required_shape');
   } else if (kind === 'tool_call') {
-    const call = closed(decoded, ['tool', 'arguments_json']); str(call.tool);
+    const call = closed(decoded, vocabulary.providerKeys.portableToolCall); str(call.tool);
     // Keep the original JSON string and its numeric lexemes verbatim. Parsing
     // is only inspection; the decoded arguments are never re-serialized.
     inspect(parseStoredJsonStrict(str(call.arguments_json)), policy);
   } else if (kind === 'context_refs') {
     if (!Array.isArray(decoded)) fail('unknown_required_shape');
     for (const item of decoded as unknown[]) {
-      const ref = closed(item, ['id', 'kind', 'title', 'snippet', 'sourceLabel', 'url', 'contentHash']);
+      const ref = closed(item, vocabulary.providerKeys.contextRef);
       if (ref.kind !== 'source') fail('required_external_context');
       str(ref.id);
       for (const key of ['title', 'snippet', 'sourceLabel', 'url', 'contentHash']) if (ref[key] !== undefined) str(ref[key]);
     }
-  } else closed(decoded, ['version', 'source', 'fingerprint', 'start', 'end']);
+  } else closed(decoded, vocabulary.providerKeys.provenance);
   return decoded;
 }
 /** Reinspect only the encodings emitted by this normalizer, at source and at
@@ -106,6 +78,22 @@ export function inspectRetainedPortableContent(origin: Pick<PortableMetadata, 's
   if (origin.source.family === 1 && origin.source.tag === 8) {
     visitToolContextAttributes(raw, attributes => inspect(attributes, policy));
   } else inspectRetainedPortableJson(origin, raw, policy);
+}
+
+/** One inspection owner for current-policy native readback and portable ingress.
+ * Caller admits bytes, parsed JSON and decoded image/attribute views first. */
+export function inspectPortableRecordContent(header: PortableRecord, bytes: Uint8Array, origin: PortableMetadata | undefined, policy: TextPolicy): void {
+  if (header.entry.kind === 'asset') {
+    const mime = vocabulary.mime[header.entry.mime];
+    if (!mime || inspectAttachmentContent(bytes, mime, policy) !== 'available') fail('unsafe_asset');
+  }
+  if (header.entry.kind !== 'asset' || header.entry.mime === 'text_plain') {
+    let text: string;
+    try { text = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(bytes); } catch { return fail('invalid_portable_unicode'); }
+    if (!inspectWholeText(text, { ...policy, inspectionBytes: bytes.length })) fail('unsafe_content');
+    if (header.entry.kind === 'historical_text' && header.entry.purpose === 'portable_metadata') inspect(parseStoredJsonStrict(text), policy);
+    else if (origin) inspectRetainedPortableContent(origin, text, policy);
+  }
 }
 
 /** Strict inverse for legacy hidden-only output. Ambiguous delimiters refuse.
@@ -149,7 +137,7 @@ export async function normalizePortableChatHistory(
   let ordinal = 0, retainedBytes = 0;
   const costs = { sourceLoads: 0, sourcePayloadBytes: 0, sourceChunks: 0, maxSourceChunkBytes: 0, maxAssembledFieldBytes: 0, textDecodes: 0, jsonFieldInspections: 0, fieldAndEmissionDigestInputCopyBytes: 0 };
   const digest = (bytes: Uint8Array) => { costs.fieldAndEmissionDigestInputCopyBytes += bytes.length; return portableDigest(bytes); };
-  const manifest: string[] = [];
+  const manifest: PortableRecord[] = [];
   const controls: (() => void)[] = [releasePolicy];
   const messageIds = new Set<string>(), citationIds = new Set<string>(), requiredCitations = new Set<string>();
   const calls = new Map<string, string>(), results = new Map<string, string>();
@@ -157,7 +145,15 @@ export async function normalizePortableChatHistory(
   const messageRoles = new Map<string, string>();
   const assets = new Map<string, number>();
   const pendingRelations: { message: string; target: number; relation: 'data_for_message' | 'asset_for_message' | 'citation_for_message'; sourceRow?: number }[] = [];
-  const receipts = new Map<string, string>();
+  const receipts = new Map<string, { raw: string; bytes: number }>();
+  // The provenance owner parses its receipt independently of display size.
+  const projectReceipt = async (id: string, text: string) => {
+    const receipt = receipts.get(id);
+    if (!receipt) return null;
+    const release = budget.reserve(256 + receipt.bytes * 256);
+    try { return await projectFinalProvenance(id, text, receipt.raw); }
+    finally { release(); }
+  };
   const evidence: { id: string; role: string; contentHash: string; providerInputHash: string }[] = [];
   const citationEvidence: Record<string, string> = Object.create(null);
   let checkpoint: { boundary: string; fingerprint: string; inputs: unknown; captured: { used: unknown; interesting: unknown; pruned: unknown; sourceHashes: unknown; version: string; policyVersion: string; modelContextWindowTokens: string } } | null = null;
@@ -166,8 +162,8 @@ export async function normalizePortableChatHistory(
   const keep = (bytes: number) => controls.push(budget.reserve(bytes));
   const emit = async (entry: PortableEntry, bytes: Uint8Array, origin?: number): Promise<number> => {
     const header: PortableRecord = { ordinal: ordinal++, entry, bytes: bytes.length, sha256: await digest(bytes), ...(origin === undefined ? {} : { origin }) };
-    const encoded = JSON.stringify(header); keep(1024 + encoded.length * 8);
-    manifest.push(encoded); retainedBytes += bytes.length;
+    const encoded = renderPortableHeader(header); keep(1024 + encoded.length * 8);
+    manifest.push(header); retainedBytes += bytes.length;
     await sink.append(header, bytes);
     return header.ordinal;
   };
@@ -176,6 +172,7 @@ export async function normalizePortableChatHistory(
       source: { ordinal: field.ordinal, row: field.row, family: field.family, tag: field.tag, sqlType: field.sql_type }, classification, reason, ...extra };
     // Excluded data never contributes a value hash, length, or isolated digest.
     if (classification === 'excluded_local_metadata') { delete value.sourceBytes; delete value.sourceHash; }
+    validatePortableMetadata(value);
     inspect(value, initial);
     return emit({ kind: 'historical_text', purpose: 'portable_metadata' }, encoder.encode(JSON.stringify(value)));
   };
@@ -221,15 +218,20 @@ export async function normalizePortableChatHistory(
     let first: RawHistoryField | undefined;
     for await (const row of source.rows()) { first = row.fields[0]; break; }
     if (!first || first.family !== 0 || first.tag !== 0) fail('missing_source_identity');
-    await metadata(first!, 'excluded_local_metadata', 'capture_provenance_only', { captureManifest: source.manifest, sourceLimits: source.limits, remainingLimits: ['not_F_admission', 'runtime_intentions_unattested', 'not_provider_session_resumption', 'recognized_shapes_only'] });
+    await metadata(first!, 'excluded_local_metadata', 'capture_provenance_only', { captureManifest: source.manifest, sourceLimits: source.limits, remainingLimits: vocabulary.remainingLimits });
     // Provenance is read first, from the same immutable capture, not a live DB.
     for await (const row of source.rows()) if (row.family === 2) {
-      const key = await small(row, 0); const value = await small(row, 1);
-      if (!key?.startsWith('chat:assistant-visible-provenance:v1:') || value === null) fail('unknown_provenance');
-      closed(parseStoredJsonStrict(value!), ['version', 'source', 'fingerprint', 'start', 'end']); receipts.set(key!.slice('chat:assistant-visible-provenance:v1:'.length), value!);
+      const key = await small(row, 0), field = row.fields.find(field => field.tag === 1);
+      if (!key?.startsWith('chat:assistant-visible-provenance:v1:') || !field || field.sql_type !== 2) fail('unknown_provenance');
+      await read(field!, true, async raw => {
+        closed(parseStoredJsonStrict(raw), vocabulary.providerKeys.provenance);
+        inspectRetainedPortableJson({ source: { ordinal: field!.ordinal, row: field!.row, family: 2, tag: 1, sqlType: 2 }, reason: 'recognized_history' }, raw, initial);
+        keep(256 + raw.length * 2);
+        receipts.set(key!.slice('chat:assistant-visible-provenance:v1:'.length), { raw, bytes: field!.bytes });
+      });
     }
     for await (const row of source.rows()) {
-      const count = [15, 14, 2, 5, 4, 29, 18, 4, 7, 7][row.family];
+      const count = vocabulary.families[row.family]?.columns.length;
       if (rowIds.has(row.row) || row.fields.length !== count || row.fields.some((f, index) => f.family !== row.family || f.row !== row.row || f.tag !== index || !Number.isSafeInteger(f.ordinal) || f.ordinal < 0 || !Number.isSafeInteger(f.bytes) || f.bytes < 0 || ![0, 1, 2, 3].includes(f.sql_type) || !/^[a-f0-9]{64}$/.test(f.sha256))) fail('integrity_failed');
       rowIds.add(row.row); keep(64);
       const contentHash = createCompactionTextFingerprint(), providerHash = createCompactionTextFingerprint();
@@ -240,7 +242,7 @@ export async function normalizePortableChatHistory(
       if (row.family === 6) for (const field of row.fields) if (citationFields[field.tag] && field.sql_type === 2) { const release = budget.reserve(256 + field.bytes * 4); rowReleases.push(release); controls.push(release); }
       let checkpointBoundary = '', checkpointFingerprint = '', checkpointInputs: unknown = null;
       const captured = { used: null as unknown, interesting: null as unknown, pruned: [] as unknown, sourceHashes: null as unknown, version: '', policyVersion: '', modelContextWindowTokens: '' };
-      const rowCalls = new Map<string, { name: string; arguments: string }>(), rowResults = new Map<string, { text: string; name?: string }>();
+      const rowCalls = new Map<string, { name: string; arguments: string; argumentBytes: number }>(), rowResults = new Map<string, { text: string; name?: string }>();
       const rowTraces: { id: string; name: string; detail?: string }[] = [];
       const providerTextOrigins: { field: RawHistoryField; source: PortableMetadata['source']; kind: string }[] = [];
       let attributedFinalHash: string | null = null, attributedDisplayHash: string | null = null;
@@ -254,7 +256,7 @@ export async function normalizePortableChatHistory(
         if (messageIds.has(id!)) fail('integrity_failed'); keep(256 + id!.length * 2); messageIds.add(id!); contentHash.update(role! + ':');
         if (role === 'assistant') { keep(512); await read(row.fields[4], false, async raw => {
           inspect(raw, initial);
-          const final = raw ? await projectFinalProvenance(id!, raw, receipts.get(id!) ?? null) ?? fail('unknown_provenance') : raw;
+          const final = raw ? await projectReceipt(id!, raw) ?? fail('unknown_provenance') : raw;
           // Only digests survive this admitted preliminary field read. This
           // separates a repeated final from distinct intermediate provider text.
           attributedFinalHash = await portableDigest(encoder.encode(final));
@@ -278,7 +280,7 @@ export async function normalizePortableChatHistory(
             let decoded = parseStoredJsonStrict(raw);
             if (field.tag === 9) { providerHash.update(JSON.stringify(decoded)); providerSeen = true; }
             if (field.tag === 10) {
-              const state = closed(decoded, ['provider', 'response_id', 'output_items']);
+              const state = closed(decoded, vocabulary.providerKeys.providerState);
               if (state.provider !== 'chatgpt' || (state.response_id !== undefined && typeof state.response_id !== 'string')) fail('unknown_required_shape');
               decoded = state.output_items;
               await metadata(field, 'excluded_local_metadata', 'local_provider_continuation');
@@ -317,7 +319,7 @@ export async function normalizePortableChatHistory(
                 inspect(parseStoredJsonStrict(part.arguments), initial);
                 if (calls.has(part.id) && calls.get(part.id) !== hash) fail('contradictory_result');
                 keep(256 + part.id.length * 2); calls.set(part.id, hash);
-                if (!rowCalls.has(part.id)) { keep(512 + (part.name.length + part.arguments.length) * 4); rowCalls.set(part.id, { name: part.name, arguments: part.arguments }); }
+                if (!rowCalls.has(part.id)) { keep(512 + (part.name.length + part.arguments.length) * 4); rowCalls.set(part.id, { name: part.name, arguments: part.arguments, argumentBytes: encoder.encode(part.arguments).length }); }
                 const target = await content(field, JSON.stringify({ tool: part.name, arguments_json: part.arguments }), 'data', { kind: 'historical_text', purpose: 'historical_data' }, { message: id!, source: sourceRef, reason: 'provider_tool_call' });
                 pendingRelations.push({ message: id!, target, relation: 'data_for_message' }); keep(128);
               } else if (part.kind === 'result') {
@@ -343,7 +345,7 @@ export async function normalizePortableChatHistory(
             if (displayHashes.size && !displayHashes.has(await portableDigest(encoder.encode(raw)))) fail('contradictory_provenance');
             let projected = raw;
             if (role === 'assistant' && raw) {
-              projected = await projectFinalProvenance(id!, raw, receipts.get(id!) ?? null) ?? fail('unknown_provenance');
+              projected = await projectReceipt(id!, raw) ?? fail('unknown_provenance');
               if (!finalHashes.has(await portableDigest(encoder.encode(projected)))) fail('contradictory_provenance');
               if (raw !== projected) {
                 const close = raw.indexOf('</think>');
@@ -370,10 +372,15 @@ export async function normalizePortableChatHistory(
               const blocks = rowTraces.map(trace => {
                 const call = rowCalls.get(trace.id), result = rowResults.get(trace.id);
                 if (!call || !result || trace.name !== call.name || (result.name !== undefined && result.name !== call.name)) fail('contradictory_result');
-                const args = parseStoredJsonStrict(call!.arguments);
-                const detail = isRecord(args) ? formatToolTraceDetail(call!.name, args) : undefined;
-                if (trace.detail !== detail) fail('contradictory_result');
-                return buildToolContextBlock(trace.id, call!.name, trace.detail, result!.text);
+                // Provider inspection ended before this hidden field. Re-admit
+                // the argument graph by its own bytes, not the hidden size.
+                const release = budget.reserve(256 + call!.argumentBytes * 256);
+                try {
+                  const args = parseStoredJsonStrict(call!.arguments);
+                  const detail = isRecord(args) ? formatToolTraceDetail(call!.name, args) : undefined;
+                  if (trace.detail !== detail) fail('contradictory_result');
+                  return buildToolContextBlock(trace.id, call!.name, trace.detail, result!.text);
+                } finally { release(); }
               }).filter((block): block is string => block !== null);
               if (blocks.join('\n\n').trim() !== raw) fail('contradictory_result');
               const target = await content(field, raw, 'original', { kind: 'historical_text', purpose: 'original_text' }, { message: id!, reason: 'complete_structured_hidden_representation' });
@@ -393,7 +400,7 @@ export async function normalizePortableChatHistory(
           await read(field, true, async raw => {
             const refs = parseStoredJsonStrict(raw); if (!Array.isArray(refs)) fail('unknown_required_shape');
             for (const value of refs as unknown[]) {
-              const ref = closed(value, ['id', 'kind', 'title', 'snippet', 'sourceLabel', 'url', 'contentHash']);
+              const ref = closed(value, vocabulary.providerKeys.contextRef);
               if (ref.kind !== 'source') fail('required_external_context');
               inspect(ref, initial); const citation = str(ref.id); keep(256 + citation.length * 2); requiredCitations.add(citation);
             }
@@ -403,7 +410,7 @@ export async function normalizePortableChatHistory(
         } else if (row.family === 2 && field.tag === 1) {
           const key = await small(row, 0), message = key!.slice('chat:assistant-visible-provenance:v1:'.length);
           await read(field, true, async raw => {
-            closed(parseStoredJsonStrict(raw), ['version', 'source', 'fingerprint', 'start', 'end']);
+            closed(parseStoredJsonStrict(raw), vocabulary.providerKeys.provenance);
             const target = await content(field, raw, 'original', { kind: 'historical_text', purpose: 'original_text' }, { message, sourceHash: field.sha256, sourceBytes: field.bytes });
             pendingRelations.push({ message, target, relation: 'data_for_message' }); keep(128);
           });
@@ -453,6 +460,7 @@ export async function normalizePortableChatHistory(
             const json = /json/.test(checkpointColumns[field.tag] ?? '');
             const decoded = [20, 21].includes(field.tag) ? parseStoredJsonStrict(raw) : inspectRetainedPortableJson({ source: { ordinal: field.ordinal, row: field.row, family: field.family, tag: field.tag, sqlType: field.sql_type }, reason: 'recognized_history' }, raw, initial);
             if (json && decoded === undefined) fail('unknown_required_shape');
+            if ([1, 8].includes(field.tag)) keep(256 + raw.length * 2);
             if (field.tag === 1) checkpointBoundary = raw;
             if (field.tag === 8) checkpointFingerprint = raw;
             if ([4, 5, 10, 20, 21].includes(field.tag)) keep(256 + field.bytes * 256);
@@ -483,7 +491,7 @@ export async function normalizePortableChatHistory(
           await read(field, true, async raw => {
             const refs = parseStoredJsonStrict(raw); if (!Array.isArray(refs)) fail('unknown_required_shape');
             for (const value of refs as unknown[]) {
-              const ref = closed(value, ['id', 'kind', 'title', 'snippet', 'sourceLabel', 'url', 'contentHash']);
+              const ref = closed(value, vocabulary.providerKeys.contextRef);
               if (ref.kind !== 'source') fail('required_external_context');
               inspect(ref, initial); const citation = str(ref.id); keep(256 + citation.length * 2); requiredCitations.add(citation);
             }
@@ -507,7 +515,7 @@ export async function normalizePortableChatHistory(
             if (!Array.isArray(traces)) fail('unknown_required_shape');
             keep(512 + field.bytes * 16);
             for (const rawTrace of traces as unknown[]) {
-              const trace = closed(rawTrace, ['tool_call_id', 'tool_name', 'detail', 'status', 'visible_offset', 'execution_mode', 'batch_id', 'order', 'started_at_ms', 'completed_at_ms', 'recovery_state']);
+              const trace = closed(rawTrace, vocabulary.providerKeys.toolTrace);
               if (trace.status !== 'done' || trace.recovery_state === 'unknown' || !rowCalls.has(str(trace.tool_call_id)) || !rowResults.has(str(trace.tool_call_id))) fail('incomplete_result');
               str(trace.tool_name); if (trace.detail !== undefined) str(trace.detail);
               if (rowTraces.some(item => item.id === trace.tool_call_id)) fail('unknown_required_shape');
@@ -551,7 +559,7 @@ export async function normalizePortableChatHistory(
       await emit({ kind: 'association', from: from!, to: link.target, position: position!, relation: link.relation }, new Uint8Array());
     }
     if (!samePortablePolicy(await policy(), initial)) fail('policy_changed');
-    return { records: ordinal, bytes: retainedBytes, manifest: await portableDigest(encoder.encode(JSON.stringify([source.manifest, initial.revision, manifest]))), policy: initial.revision, costs };
+    return { records: ordinal, bytes: retainedBytes, manifest: await portableDigest(portableManifestInput(source.manifest, initial.revision, manifest)), policy: initial.revision, costs };
   } finally { for (const release of controls.reverse()) release(); }
 }
 const checkpointColumns = ['conversation_id', 'up_to_message_id', 'summary_text', 'tool_digest_json', 'used_source_passage_ids_json', 'interesting_source_passage_ids_json', 'estimated_tokens_before', 'estimated_tokens_after', 'fingerprint', 'version', 'pruned_tool_context_message_ids_json', 'reserved_tokens', 'footprint_before_json', 'footprint_after_json', 'degraded_reason', 'compaction_kind', 'compaction_pass', 'summary_format_version', 'summary_source', 'policy_version', 'fingerprint_inputs_json', 'source_hashes_json', 'model_context_window_tokens', 'provider_id', 'model_id', 'checkpoint_health', 'last_trigger', 'created_at', 'updated_at'];

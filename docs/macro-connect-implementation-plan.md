@@ -152,7 +152,10 @@ instructions fiables viennent de la cible. Les formes inconnues ou un contexte
 indispensable manquant refusent. Les médias reconnus restent présents après
 compaction ; les pièces jointes indispensables d'un message assistant sont
 actuellement refusées explicitement. Ce profil interne ne constitue pas encore
-le contrat portable normatif accepté par le relais. Le raccord de production,
+un format public accepté par le relais. Le contrat fermé
+[portable-chat-history-1](../contracts/macro-pilot/v2/portable-chat-history/contract.md)
+décrit désormais l'archive et vérifie son flux avant l'import natif inactif ;
+sa publication dans une liste de support active attend la composition F. Le raccord de production,
 les familles non reconnues et les barrières F restent à réaliser. La
 récupération complète sur disque est distincte de la préparation du prochain
 tour, qui matérialise actuellement le contexte en O(N). Aucune route publique,

@@ -1,0 +1,53 @@
+{
+  "format": "portable-chat-history-1",
+  "resources": [
+    {
+      "path": "../strict-json.mjs",
+      "sha256": "cb2256cfaca9d13d6e8fd617fc58f3db2f19016bb1097283c3501ae94dfc3eec"
+    },
+    {
+      "path": "contract.md",
+      "sha256": "cec07bb4dc77c305b29175717b6f9fc12d430bd393a0c623ee15765a013b6e16"
+    },
+    {
+      "path": "frame.schema.json",
+      "sha256": "82b656b87d570a039639dd30cbed9ef79bfed6ee0bee03aa275233d828d33faf"
+    },
+    {
+      "path": "provider-validator.generated.d.mts",
+      "sha256": "50d6c32b493f4502414a2a44bda0d19512263f757028a6ab42b2dbf1f82a935c"
+    },
+    {
+      "path": "provider-validator.generated.mjs",
+      "sha256": "5b129ac7abe6fd493203f59fd8ca137b674f8682935ec8d1c2d7595d397444d3"
+    },
+    {
+      "path": "provider-vectors.json",
+      "sha256": "f20b174af9dcedb277f4d374ad96f346b1d2b36e9c17dd428049fa9d451ba68e"
+    },
+    {
+      "path": "provider.schema.json",
+      "sha256": "4cb9573c14450ae7deb69e61df76db5697165950dd978ab2b4eb3a3c8803cf07"
+    },
+    {
+      "path": "recognition.md",
+      "sha256": "d93b35690b1b809afeb330dee5d0661cac296b6663a5e3e94af6f7a3e0839d43"
+    },
+    {
+      "path": "schema-set.json",
+      "sha256": "71253b3472d7e9527c6ae892f866a203df85cf9fa58d1fca837863a45bb186e6"
+    },
+    {
+      "path": "validate.d.mts",
+      "sha256": "56886904df201e694bec422ab0fb47e0f0b53372d9e6cfac52bfd01f829e191c"
+    },
+    {
+      "path": "validate.mjs",
+      "sha256": "8777346ec612f7bf9bc65e1100f4d75da9155534314aeeea6cca0f8e98d1371d"
+    },
+    {
+      "path": "vocabulary.json",
+      "sha256": "ec24764d3ddb8ae30529c124133a253abd41e260b1444596393a8ba41bff8eb0"
+    }
+  ]
+}

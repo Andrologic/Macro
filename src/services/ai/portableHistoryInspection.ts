@@ -1,3 +1,4 @@
+import { assertPortableUnicode } from '../../../contracts/macro-pilot/v2/portable-chat-history/validate.mjs';
 import { inspectWholeText, type TextPolicy } from '../macroPilot/conversationText';
 import { parseStoredJsonStrict } from './jsonValues';
 
@@ -18,6 +19,7 @@ export class PortableWorkBudget {
 }
 
 export function inspectPortableDecodedValue(value: unknown, policy: TextPolicy): void {
+  assertPortableUnicode(value);
   const pending = [value];
   while (pending.length) {
     const entry = pending.pop();
