@@ -3194,6 +3194,52 @@ mod content_backup_tests {
 mod content_legacy_backup_tests {
     use super::*;
     #[tokio::test]
+    async fn exact_v15_v16_restore_preserves_inactive_bytes_and_holds_chat_before_ready() {
+        for version in [15, 16] {
+            let (_temp, data, config) = tests::profile().await;
+            let path = data.join("macro.db");
+            let mut db = connection(&path).await.unwrap();
+            crate::db::chat_admission::remove_reference_schema_in(&mut db).await.unwrap();
+            remove_reference_e_schema(&mut db, &(1..=version).collect::<Vec<_>>()).await.unwrap();
+            sqlx::query("DELETE FROM schema_migrations WHERE version>?").bind(version).execute(&mut db).await.unwrap();
+            // These are opaque stored bytes, not a portable-semantic fixture or
+            // an authority to open E. Backup must preserve even an incomplete import.
+            sqlx::raw_sql("INSERT INTO e_inactive_domain VALUES(1,1048576,8);
+                INSERT INTO e_inactive_imports VALUES(1,printf('%064d',1),'{}',0,0,0,7,512,1,1,10000,1000,1,NULL);
+                INSERT INTO e_inactive_records VALUES(1,0,'{}',0,NULL,NULL,NULL,NULL,7,0,x'',x'');
+                INSERT INTO e_inactive_fragments VALUES(1,0,0,zeroblob(32),x'00010203feff00',7,7,1);")
+                .execute(&mut db).await.unwrap();
+            let source_version: Option<(String, i64)> = if version == 16 {
+                Some(sqlx::query_as("SELECT incarnation,revision FROM e_source_version WHERE singleton=1").fetch_one(&mut db).await.unwrap())
+            } else { None };
+            db.close().await.unwrap();
+            let before = fs::read(&path).unwrap();
+            check_database(&path).await.unwrap();
+            assert_eq!(fs::read(&path).unwrap(), before);
+            let archive = capture(&data, &config, BTreeMap::new(), true).await.unwrap();
+            tests::queue_restore(&data, &archive);
+            process_startup(&data, &config).await.unwrap();
+            let status: BackupStatus = serde_json::from_slice(&fs::read(data.join("local-backup/status.json")).unwrap()).unwrap();
+            assert_eq!(status.code, Some(BackupStatusCode::Restored));
+            let pool = crate::db::create_pool(&path).await.unwrap();
+            assert_eq!(sqlx::query_scalar::<_,i64>("SELECT MAX(version) FROM schema_migrations").fetch_one(&pool).await.unwrap(),17);
+            assert_eq!(sqlx::query_scalar::<_,String>("SELECT mode FROM chat_admission_owners WHERE conversation_id='conversation'").fetch_one(&pool).await.unwrap(),"restore_hold");
+            assert_eq!(sqlx::query_scalar::<_,Vec<u8>>("SELECT data FROM e_inactive_fragments WHERE import_id=1").fetch_one(&pool).await.unwrap(),vec![0,1,2,3,254,255,0]);
+            assert_eq!(sqlx::query_scalar::<_,String>("SELECT begin_json FROM e_inactive_imports WHERE id=1").fetch_one(&pool).await.unwrap(),"{}");
+            assert_eq!(crate::db::repository::list_messages(&pool,"conversation").await.unwrap()[0].content,"Representative transcript");
+            if let Some(expected) = source_version {
+                assert_eq!(sqlx::query_as::<_,(String,i64)>("SELECT incarnation,revision FROM e_source_version WHERE singleton=1").fetch_one(&pool).await.unwrap(),expected);
+            }
+            let owner = crate::core::db_state::DbPool::default();
+            owner.set_ready(pool.clone()).await.unwrap();
+            assert!(sqlx::query("UPDATE messages SET content='forbidden' WHERE id='message'").execute(&pool).await.is_err());
+            assert_eq!(crate::db::inactive_storage::InactiveStorage::closed(pool.clone()).begin(b"{}").await.unwrap_err(),"inactive_storage_disabled");
+            owner.set_initializing().await;
+            pool.close().await;
+        }
+    }
+
+    #[tokio::test]
     async fn exact_v5_v9_and_v12_archives_validate_before_copy_migration() {
         for version in [5, 9, 12] {
             let (temp, data, _config) = tests::profile().await;
