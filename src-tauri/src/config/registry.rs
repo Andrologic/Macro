@@ -634,7 +634,15 @@ pub fn validate_document(
 
     if kind == ConfigDocumentKind::Settings && !read_only {
         if let Some(resources) = value.get("connectTransferResources") {
-            if serde_json::from_value::<ConnectTransferResources>(resources.clone())
+            if !resources.is_null() && !resources.is_object() {
+                diagnostics.push(diagnostic(
+                    kind,
+                    scope,
+                    Some("/connectTransferResources".to_string()),
+                    "config.schema.invalid",
+                    "La politique de ressources Connect doit être un objet ou null.",
+                ));
+            } else if serde_json::from_value::<ConnectTransferResources>(resources.clone())
                 .is_ok_and(|policy| !policy.valid())
             {
                 diagnostics.push(diagnostic(
