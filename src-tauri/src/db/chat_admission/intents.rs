@@ -306,3 +306,87 @@ pub(crate) async fn complete_question_handoff(
     lease.committed = true;
     Ok(())
 }
+
+/// Reserve the recovery copy before any provider dispatch. The message binding
+/// survives browser loss and never grants permission to dispatch a new turn.
+pub(crate) async fn reserve_response(parent: &super::OperationPermit, caller: &str, message: &str) -> DbResult<IntentReceipt> {
+    let guard = parent.owner.source_ready(Some(&parent.generation)).await
+        .map_err(|_| invalid("chat_admission_stale_generation"))?;
+    let mut lease = durable_lease(&guard.ready.pool).await?;
+    let mut tx = lease.begin_with("BEGIN IMMEDIATE").await?;
+    guard.ready.check_source_schema(&mut tx).await?;
+    parent.check(&mut tx).await?;
+    let runtime: Option<String> = sqlx::query_scalar("SELECT p.browser_runtime FROM chat_admission_operations p JOIN messages m ON m.id=? WHERE p.operation_id=? AND p.kind='turn' AND p.parent_id IS NULL AND p.phase IN ('prepared','dispatched','result_pending') AND p.browser_caller=? AND m.conversation_id=p.conversation_id AND m.role='assistant' AND m.turn_id=p.turn_id AND (p.message_id IS NULL OR p.message_id=m.id)")
+        .bind(message).bind(&parent.operation).bind(caller).fetch_optional(&mut *tx).await?;
+    let runtime = runtime.ok_or_else(|| invalid("chat_admission_response_identity_mismatch"))?;
+    let existing: Option<(String,i64,String)> = sqlx::query_as("SELECT operation_id,revision,phase FROM chat_admission_operations WHERE parent_id=? AND kind='unsaved' AND message_id=?")
+        .bind(&parent.operation).bind(message).fetch_optional(&mut *tx).await?;
+    let (operation_id, revision) = match existing {
+        Some((id,revision,phase)) if phase == "prepared" => (id,revision),
+        Some(_) => return Err(invalid("chat_admission_recovery_already_closed")),
+        None => {
+            let id = uuid::Uuid::new_v4().to_string();
+            sqlx::query("INSERT INTO chat_admission_operations(operation_id,conversation_id,incarnation,runtime_generation,kind,phase,parent_id,turn_id,message_id,browser_caller,browser_runtime,browser_attempt) SELECT ?,conversation_id,incarnation,runtime_generation,'unsaved','prepared',operation_id,turn_id,?,browser_caller,browser_runtime,operation_id FROM chat_admission_operations WHERE operation_id=?")
+                .bind(&id).bind(message).bind(&parent.operation).execute(&mut *tx).await?;
+            sqlx::query("UPDATE chat_admission_operations SET message_id=?,revision=revision+1 WHERE operation_id=?")
+                .bind(message).bind(&parent.operation).execute(&mut *tx).await?;
+            sqlx::query("UPDATE chat_admission_owners SET revision=revision+1,browser_reconciled=0 WHERE conversation_id=?")
+                .bind(&parent.conversation).execute(&mut *tx).await?;
+            (id,0)
+        }
+    };
+    tx.commit().await?;
+    lease.committed = true;
+    Ok(IntentReceipt { operation_id, runtime, revision, identity: IntentIdentity {
+        conversation_id: parent.conversation.clone(), kind: IntentKind::Unsaved, id: parent.operation.clone(),
+    } })
+}
+
+/// Find the native reservation for this exact saved response. Legacy copies
+/// without a reservation get a storage marker, never a fabricated parent.
+pub(crate) async fn response_recovery_identity(owner: &DbPool, conversation: &str, message: &str) -> DbResult<IntentIdentity> {
+    let guard = owner.source_ready(None).await.map_err(|_| invalid("chat_admission_unavailable"))?;
+    let rows: Vec<String> = sqlx::query_scalar("SELECT p.browser_attempt FROM chat_admission_operations p JOIN chat_admission_owners o ON o.conversation_id=p.conversation_id AND o.incarnation=p.incarnation WHERE p.conversation_id=? AND p.kind='unsaved' AND p.message_id=? AND p.phase<>'completed'")
+        .bind(conversation).bind(message).fetch_all(&guard.ready.pool).await?;
+    if rows.len() > 1 { return Err(invalid("chat_admission_recovery_ambiguous")); }
+    Ok(IntentIdentity { conversation_id: conversation.into(), kind: IntentKind::Unsaved,
+        id: rows.into_iter().next().unwrap_or_else(|| message.into()) })
+}
+
+/// A retired browser cannot dispatch again. Recovery may finish its known local
+/// writes, but an unknown provider/tool remains a blocker and leaves the copy.
+pub(crate) async fn recover_response(
+    owner: &DbPool, caller: &str, receipt: &IntentReceipt,
+    input: crate::db::repository::UpdateMessageContentInput<'_>,
+) -> DbResult<()> {
+    let guard = owner.source_ready(None).await.map_err(|_| invalid("chat_admission_unavailable"))?;
+    let mut lease = durable_lease(&guard.ready.pool).await?;
+    let mut tx = lease.begin_with("BEGIN IMMEDIATE").await?;
+    guard.ready.check_source_schema(&mut tx).await?;
+    let marker: Option<(Option<String>, Option<String>)> = sqlx::query_as("SELECT p.parent_id,p.message_id FROM chat_admission_operations p JOIN chat_admission_owners o ON o.conversation_id=p.conversation_id AND o.incarnation=p.incarnation JOIN chat_admission_browsers b ON b.runtime=p.browser_runtime AND b.caller=p.browser_caller AND b.phase='active' AND b.runtime_generation=? WHERE p.operation_id=? AND p.kind='unsaved' AND p.conversation_id=? AND p.browser_attempt=? AND p.browser_caller=? AND p.browser_runtime=? AND p.revision=? AND p.phase IN ('prepared','unknown') AND o.mode='open'")
+        .bind(&guard.ready.catalog_generation).bind(&receipt.operation_id).bind(&receipt.identity.conversation_id).bind(&receipt.identity.id).bind(caller).bind(&receipt.runtime).bind(receipt.revision).fetch_optional(&mut *tx).await?;
+    let (parent, message) = marker.ok_or_else(|| invalid("chat_admission_intent_receipt_conflict"))?;
+    if receipt.identity.kind.as_str() != "unsaved" || message.as_deref().is_some_and(|id| id != input.id) {
+        return Err(invalid("chat_admission_response_identity_mismatch"));
+    }
+    let fingerprint = super::runtime::completion_fingerprint("response", &input)?;
+    if let Some(parent) = parent {
+        let root: Option<(String,Option<String>)> = sqlx::query_as("SELECT p.phase,p.completion_receipt FROM chat_admission_operations p JOIN chat_admission_browsers b ON b.runtime=p.browser_runtime AND b.caller=p.browser_caller WHERE p.operation_id=? AND p.message_id=? AND p.conversation_id=? AND p.kind='turn' AND p.parent_id IS NULL AND b.phase='retired'")
+            .bind(&parent).bind(input.id).bind(&receipt.identity.conversation_id).fetch_optional(&mut *tx).await?;
+        match root {
+            Some((phase, saved)) if phase == "completed" && saved.as_deref() == Some(fingerprint.as_str()) => {},
+            Some((phase,_)) if matches!(phase.as_str(), "unknown" | "result_pending" | "no_effect") => {
+                super::persist_response_in(&mut tx, &parent, &receipt.identity.conversation_id, &fingerprint, input).await?;
+            },
+            _ => return Err(invalid("chat_admission_recovery_parent_not_retired")),
+        }
+    } else {
+        let valid: i64 = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM messages WHERE id=? AND conversation_id=? AND role='assistant')")
+            .bind(input.id).bind(&receipt.identity.conversation_id).fetch_one(&mut *tx).await?;
+        if valid == 0 || receipt.identity.id != input.id { return Err(invalid("chat_admission_response_identity_mismatch")); }
+        crate::db::repository::update_message_content_with_connection(&mut tx, input).await?;
+    }
+    tx.commit().await?;
+    lease.committed = true;
+    Ok(())
+}

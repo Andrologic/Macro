@@ -1869,7 +1869,23 @@ const registerUseChatStoreMocks = async () => {
       return { kind: 'globalChat' as const, context: { handle: crypto.randomUUID(), runtime: 'store-unit-runtime' } };
     },
     closeChatPreparation: async () => undefined,
-    finishChatResponse: async () => undefined,
+    reserveChatResponse: async (context: { handle: string; runtime: string }, conversationId: string, messageId: string) => {
+      if (!context.handle || !context.runtime || !conversationId || !messageId) throw new Error('Missing response reservation identity');
+    },
+    responseCopyAdmission: (messageId: string, admission: { kind: string }) => {
+      if (!messageId || !['globalChat', 'conversation'].includes(admission.kind)) throw new Error('Missing response copy authority');
+      return admission;
+    },
+    finishChatResponse: async (_context: unknown, _conversationId: string, _message: unknown, remove: () => boolean) => {
+      if (!remove()) throw new Error('The saved recovery copy could not be removed.');
+    },
+    recoverChatResponse: async (_message: unknown, persist: () => Promise<void>, remove: () => boolean) => {
+      await persist();
+      if (!remove()) throw new Error('The saved recovery copy could not be removed.');
+    },
+    discardChatResponseCopy: async (_message: unknown, remove: () => boolean) => {
+      if (!remove()) throw new Error('The saved recovery copy could not be removed.');
+    },
     retireChatBrowser: async () => undefined,
     beginChatIntent: async (identity: { conversationId: string; kind: string; id: string }) => {
       if (!identity.conversationId || !identity.kind || !identity.id) throw new Error('Missing storage intent identity');

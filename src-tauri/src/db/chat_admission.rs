@@ -292,6 +292,9 @@ impl OperationPermit {
         if uncertain != 0 {
             return Err(invalid("chat_admission_effect_unreconciled"));
         }
+        let recovery: i64 = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM chat_admission_operations WHERE conversation_id=? AND incarnation=? AND kind='unsaved' AND phase NOT IN ('completed','no_effect'))")
+            .bind(conversation).bind(&incarnation).fetch_one(&mut *tx).await?;
+        if recovery != 0 { return Err(invalid("chat_admission_response_recovery_pending")); }
         let active: i64 = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM chat_admission_operations WHERE conversation_id=? AND kind IN ('turn','compaction') AND parent_id IS NULL AND phase IN ('prepared','dispatched','result_pending'))")
             .bind(conversation).fetch_one(&mut *tx).await?;
         if active != 0 {
@@ -634,26 +637,7 @@ impl OperationPermit {
         if !matches!(phase.as_str(), "prepared" | "dispatched" | "result_pending") {
             return Err(invalid("chat_admission_parent_closed"));
         }
-        let matches: i64 = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM chat_admission_operations p JOIN messages m ON m.id=? WHERE p.operation_id=? AND p.parent_id IS NULL AND p.kind='turn' AND m.conversation_id=p.conversation_id AND m.role='assistant' AND m.turn_id=p.turn_id AND (? IS NULL OR ?=p.turn_id))")
-            .bind(input.id).bind(&self.operation).bind(&input.turn_id).bind(&input.turn_id)
-            .fetch_one(&mut *tx).await?;
-        if matches == 0 {
-            return Err(invalid("chat_admission_response_identity_mismatch"));
-        }
-        let pending: i64 = sqlx::query_scalar("WITH RECURSIVE children(id,phase) AS (SELECT operation_id,phase FROM chat_admission_operations WHERE parent_id=? UNION SELECT p.operation_id,p.phase FROM chat_admission_operations p JOIN children c ON p.parent_id=c.id) SELECT EXISTS(SELECT 1 FROM children WHERE phase NOT IN ('completed','no_effect'))")
-            .bind(&self.operation).fetch_one(&mut *tx).await?;
-        if pending != 0 {
-            return Err(invalid("chat_admission_children_pending"));
-        }
-        if super::tool_invocations::has_unresolved_on_connection(&mut tx, &self.conversation)
-            .await?
-        {
-            return Err(invalid("chat_admission_tool_journal_unreconciled"));
-        }
-        let message = input.id.to_owned();
-        super::repository::update_message_content_with_connection(&mut tx, input).await?;
-        sqlx::query("UPDATE chat_admission_operations SET phase='completed',message_id=?,completion_receipt=?,revision=revision+1 WHERE operation_id=?")
-            .bind(message).bind(receipt).bind(&self.operation).execute(&mut *tx).await?;
+        persist_response_in(&mut tx, &self.operation, &self.conversation, &receipt, input).await?;
         tx.commit().await?;
         lease.committed = true;
         Ok(())
@@ -788,7 +772,7 @@ impl OperationPermit {
         }
         if to == "completed" || to == "no_effect" {
             let query = if to == "no_effect" {
-                "SELECT EXISTS(SELECT 1 FROM chat_admission_operations WHERE parent_id=? AND phase<>'no_effect' AND NOT (kind='question' AND phase='completed'))"
+                "SELECT EXISTS(SELECT 1 FROM chat_admission_operations WHERE parent_id=? AND phase<>'no_effect' AND NOT (kind IN ('question','queue','unsaved') AND phase='completed'))"
             } else {
                 "SELECT EXISTS(SELECT 1 FROM chat_admission_operations WHERE parent_id=? AND phase NOT IN ('completed','no_effect'))"
             };
@@ -809,6 +793,35 @@ impl OperationPermit {
         lease.committed = true;
         Ok(())
     }
+}
+
+// Both live completion and recovery of a retired browser use the same writer.
+// The unsaved marker remains pending until its browser copy is actually removed.
+pub(crate) async fn persist_response_in(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>, operation: &str, conversation: &str,
+    receipt: &str, input: super::repository::UpdateMessageContentInput<'_>,
+) -> DbResult<()> {
+        let matches: i64 = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM chat_admission_operations p JOIN messages m ON m.id=? WHERE p.operation_id=? AND p.parent_id IS NULL AND p.kind='turn' AND m.conversation_id=p.conversation_id AND m.role='assistant' AND m.turn_id=p.turn_id AND (? IS NULL OR ?=p.turn_id))")
+            .bind(input.id).bind(operation).bind(&input.turn_id).bind(&input.turn_id)
+            .fetch_one(&mut **tx).await?;
+        if matches == 0 {
+            return Err(invalid("chat_admission_response_identity_mismatch"));
+        }
+        let pending: i64 = sqlx::query_scalar("WITH RECURSIVE children(id,phase,kind,message_id) AS (SELECT operation_id,phase,kind,message_id FROM chat_admission_operations WHERE parent_id=? UNION SELECT p.operation_id,p.phase,p.kind,p.message_id FROM chat_admission_operations p JOIN children c ON p.parent_id=c.id) SELECT EXISTS(SELECT 1 FROM children WHERE phase NOT IN ('completed','no_effect') AND NOT (kind='unsaved' AND message_id=?))")
+            .bind(operation).bind(input.id).fetch_one(&mut **tx).await?;
+        if pending != 0 {
+            return Err(invalid("chat_admission_children_pending"));
+        }
+        if super::tool_invocations::has_unresolved_on_connection(&mut **tx, conversation)
+            .await?
+        {
+            return Err(invalid("chat_admission_tool_journal_unreconciled"));
+        }
+        let message = input.id.to_owned();
+        super::repository::update_message_content_with_connection(&mut **tx, input).await?;
+        sqlx::query("UPDATE chat_admission_operations SET phase='completed',message_id=?,completion_receipt=?,revision=revision+1 WHERE operation_id=?")
+            .bind(message).bind(receipt).bind(operation).execute(&mut **tx).await?;
+    Ok(())
 }
 
 #[cfg(test)]

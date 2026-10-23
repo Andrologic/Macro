@@ -1,4 +1,5 @@
 import { expect, mock, test } from "bun:test";
+import { persistAssistantCompletionResult } from "./chatPersistenceService";
 import type { ChatMessage } from "../types";
 import { retryAssistantPersistence, type AssistantPersistenceRecoveryPorts } from "./chatAssistantPersistenceRuntime";
 
@@ -14,7 +15,7 @@ function fixture() {
     message = { ...message!, persistence_state: "failed", persistence_error: error }; return error;
   });
   const clearError = mock(() => {});
-  const removeSavedCopy = mock<AssistantPersistenceRecoveryPorts["recovery"]["removeSavedCopy"]>(() => true);
+  const removeSavedCopy = mock<(_id: string) => boolean | Promise<boolean>>(() => true);
   const resumeQueue = mock(() => {});
   const ports: AssistantPersistenceRecoveryPorts = {
     persistence: { isTauriAvailable: () => true, ipc: {
@@ -26,7 +27,16 @@ function fixture() {
       read: () => message,
       patch: (_id, fields) => { message = { ...message!, ...fields }; }, failed,
     },
-    recovery: { clearError, removeSavedCopy, resumeQueue },
+    recovery: { clearError, resumeQueue, save: async saved => {
+      await persistAssistantCompletionResult(ports.persistence, {
+        assistantMessageId: saved.id, persistedAssistant: saved,
+        result: { visibleContent: saved.content, hiddenContext: saved.hidden_context,
+          providerInputItems: saved.provider_input_items, providerTurnState: saved.provider_turn_state,
+          toolTraces: saved.tool_traces ?? [], completionReason: saved.completion_reason,
+          generationAttempts: saved.generation_attempts },
+      });
+      if (!await removeSavedCopy(saved.id)) throw new Error('The saved recovery copy could not be removed.');
+    } },
   };
   return { ports, update, failed, clearError, removeSavedCopy, resumeQueue, read: () => message, remove: () => { message = undefined; } };
 }

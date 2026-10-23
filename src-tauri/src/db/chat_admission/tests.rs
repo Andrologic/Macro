@@ -1306,3 +1306,43 @@ async fn questionnaire_handoff_requires_the_persisted_answer_and_admitted_parent
     // Closing this parent never claims a provider/tool effect succeeded.
     parent.no_effect().await.unwrap();
 }
+
+#[tokio::test]
+async fn response_recovery_reservation_survives_browser_loss_and_never_closes_unknown_provider() {
+    use super::intents::{self, IntentMutation};
+    for uncertain in [false, true] {
+        let (_dir, pool) = fixture().await;
+        let owner = crate::core::db_state::DbPool::default();
+        owner.set_ready(pool.clone()).await.unwrap();
+        let runtime = runtime::ChatAdmissionRuntime::default();
+        let context = runtime.begin(owner.clone(), "window", "old", "source", "turn").await.unwrap();
+        let parent = runtime.parent("window", &context, "source").await.unwrap();
+        let receipt = intents::reserve_response(&parent, "window", "message").await.unwrap();
+        assert_eq!(intents::reserve_response(&parent, "window", "message").await.unwrap().operation_id, receipt.operation_id);
+        assert!(intents::reserve_response(&parent, "window", "missing").await.is_err());
+        let child = parent.provider_invocation("request").await.unwrap();
+        child.dispatched().await.unwrap();
+        if uncertain { child.unknown().await.unwrap(); }
+        else { child.result_pending().await.unwrap(); child.completed().await.unwrap(); }
+        runtime.close_browser(&owner, &crate::ai::AiState::default(), &crate::ai::admitted_http::AdmittedHttp::default(), "window", "old").await.unwrap();
+        runtime.open_browser(owner.clone(), "window", "new").await.unwrap();
+        let identity = intents::response_recovery_identity(&owner, "source", "message").await.unwrap();
+        assert_eq!(identity.id, context.handle);
+        let recovered = runtime.begin_intent(&owner, "window", "new", identity, IntentMutation::Retain).await.unwrap();
+        assert!(intents::recover_response(&owner, "wrong-window", &recovered, response_write("saved")).await.is_err());
+        let result = intents::recover_response(&owner, "window", &recovered, response_write("saved")).await;
+        assert_eq!(result.is_err(), uncertain, "{result:?}");
+        if uncertain {
+            assert_eq!(sqlx::query_scalar::<_,String>("SELECT phase FROM chat_admission_operations WHERE request_id='request'").fetch_one(&pool).await.unwrap(), "unknown");
+            assert_eq!(sqlx::query_scalar::<_,String>("SELECT content FROM messages WHERE id='message'").fetch_one(&pool).await.unwrap(), "history");
+        } else {
+            // Lost recovery ACK replays the same native writer receipt. The
+            // remaining browser copy still blocks another turn until removal.
+            intents::recover_response(&owner, "window", &recovered, response_write("saved")).await.unwrap();
+            assert!(runtime.begin(owner.clone(), "window", "new", "source", "next").await.is_err());
+            runtime.finish_intent(&owner, "window", &recovered).await.unwrap();
+            runtime.finish_intent(&owner, "window", &recovered).await.unwrap();
+            runtime.begin(owner.clone(), "window", "new", "source", "next").await.unwrap();
+        }
+    }
+}

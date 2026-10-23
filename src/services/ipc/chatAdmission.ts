@@ -120,3 +120,14 @@ export function chatAdmissionCompleteQuestionHandoff(context: ChatAdmissionConte
   responseMessageId: string, receipt: ChatIntentReceipt): Promise<void> {
   return invoke('chat_admission_complete_question_handoff', { context, conversationId, responseMessageId, receipt });
 }
+
+export function chatAdmissionReserveResponse(context: ChatAdmissionContext, conversationId: string, messageId: string): Promise<ChatIntentReceipt> {
+  return invoke('chat_admission_reserve_response', { context, conversationId, messageId });
+}
+
+export function chatAdmissionPrepareResponseRecovery(runtime: string, conversationId: string, messageId: string, mutation: 'retain' | 'remove'): Promise<ChatIntentAdmission> {
+  return invoke('chat_admission_prepare_response_recovery', { runtime, conversationId, messageId, mutation });
+}
+export function chatAdmissionRecoverResponse(receipt: ChatIntentReceipt, id: string, content: string, options?: MessageUpdateOptions): Promise<void> {
+  return invoke('chat_admission_recover_response', { receipt, params: buildMessageUpdateParams(id, content, options) });
+}

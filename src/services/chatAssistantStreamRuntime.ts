@@ -1,4 +1,4 @@
-import type { ChatAdmissionContext } from './ipc/chatAdmission';
+import type { ChatAdmissionContext, ProviderAdmission } from './ipc/chatAdmission';
 import { safeProviderFailure } from './chatErrorPresentation';
 import { snapshotScopedMcpServers } from "./mcp/runtimeSnapshot";
 import { createChatToolDispatch, type ChatToolDispatchPorts } from "./chatToolDispatch";
@@ -23,6 +23,7 @@ type Lifecycle = ChatStreamLifecycleRuntimeAdapters;
 export interface ChatAssistantStreamPorts {
  owner: ChatTurnRuntime;
  admission: {
+  reserveResponse(context: ChatAdmissionContext, conversationId: string, messageId: string): Promise<void>;
   finishResponse(context: ChatAdmissionContext, conversationId: string, message: ChatMessage): Promise<void>;
   closePreparation(context: ChatAdmissionContext, conversationId: string): Promise<void>;
  };
@@ -40,7 +41,7 @@ export interface ChatAssistantStreamPorts {
   adapters: ChatPersistenceAdapters;
   complete: Lifecycle["persistAssistantStreamResult"];
   partial: Lifecycle["persistAssistantPartialStreamResult"];
-  failed(params: {assistantMessage: ChatMessage; message: string; sessionId: string; turnId: string | null}): void;
+  failed(params: {assistantMessage: ChatMessage; message: string; sessionId: string; turnId: string | null; providerAdmission: ProviderAdmission}): void;
   sync(mode: AppMode, conversationId: string, plan?: {planId: string; targetBranch: string}): Promise<void>;
  };
  tasks: { status: Lifecycle["getTaskStatus"]; failed(id: string, pilotActionToken?: symbol): Promise<void>; awaitingResponse(id: string, pilotActionToken?: symbol): Promise<void> | void };
@@ -77,7 +78,7 @@ export function createAssistantStreamRuntime(ports: ChatAssistantStreamPorts) {
   // Overflow recovery shares the same admitted parent. Its predecessor still
   // owns callbacks and writes until both physical lifecycles have returned.
   const admittedStreams = new Map<string, AdmittedStreamGroup>();
-  const start = (input: AssistantStreamLaunch): void => {
+  const start = async (input: AssistantStreamLaunch): Promise<void> => {
     // Capture execution authority before transport callbacks can suspend or UI selections change.
     const params: AssistantStreamLaunch = {
       ...input,
@@ -101,6 +102,9 @@ export function createAssistantStreamRuntime(ports: ChatAssistantStreamPorts) {
     const abortController = params.abortController ?? new AbortController();
     if (abortController.signal.aborted) {
       throw new DOMException('Assistant preparation was cancelled before dispatch.', 'AbortError');
+    }
+    if (params.providerAdmission.kind === 'globalChat') {
+      await ports.admission.reserveResponse(params.providerAdmission.context, params.conversationId, params.assistantMessage.id);
     }
     const shouldAcceptStreamUpdate = ports.owner.claimStream(identity, abortController);
     if (!shouldAcceptStreamUpdate) throw new Error("Assistant preparation no longer owns this turn.");
@@ -355,7 +359,7 @@ export function createAssistantStreamRuntime(ports: ChatAssistantStreamPorts) {
                 }
               : runtime,
         );
-        start({
+        await start({
           ...params,
           messagesForRequest: streamLaunch.messagesForRequest,
           contextDiagnosticsBaselineSeed:
@@ -474,7 +478,7 @@ export function createAssistantStreamRuntime(ports: ChatAssistantStreamPorts) {
           ports.owner.failCompletion(identity, () => {
             const assistantMessage = ports.messages.get(identity.assistantMessageId);
             if (assistantMessage?.role === "assistant") ports.persistence.failed({
-              assistantMessage, message, sessionId: identity.sessionId, turnId: identity.turnId,
+              assistantMessage, message, sessionId: identity.sessionId, turnId: identity.turnId, providerAdmission: params.providerAdmission,
             });
           });
         },

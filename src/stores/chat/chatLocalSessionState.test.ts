@@ -281,7 +281,7 @@ describe("chatLocalSessionState", () => {
     ).toBeNull();
   });
 
-  it("restores an interrupted retry as failed and prunes deleted conversations", () => {
+  it("restores an interrupted retry as failed without erasing unknown recovery data", () => {
     window.localStorage.setItem(
       UNSAVED_ASSISTANT_RESPONSES_STORAGE_KEY,
       JSON.stringify({
@@ -314,8 +314,9 @@ describe("chatLocalSessionState", () => {
       }),
     ]);
 
-    expect(clearUnsavedAssistantResponsesForConversations(["conv-1"])).toBe(true);
-    expect(loadUnsavedAssistantResponsesFromStorage()).toEqual([]);
+    const original = window.localStorage.getItem(UNSAVED_ASSISTANT_RESPONSES_STORAGE_KEY);
+    expect(clearUnsavedAssistantResponsesForConversations(["conv-1"])).toBe(false);
+    expect(window.localStorage.getItem(UNSAVED_ASSISTANT_RESPONSES_STORAGE_KEY)).toBe(original);
   });
 
   it("round-trips a composer draft with an image and a context reference", () => {
@@ -479,4 +480,15 @@ describe("chatLocalSessionState", () => {
     window.localStorage.setItem(COMPOSER_DRAFTS_STORAGE_KEY, "not-json");
     expect(loadComposerDraftsFromStorage()).toEqual({});
   });
+});
+
+it("does not overwrite an unreadable recovery entry during save or removal", () => {
+  const raw = JSON.stringify({ "unknown": { content: "Preserve original bytes", futureShape: true } });
+  window.localStorage.setItem(UNSAVED_ASSISTANT_RESPONSES_STORAGE_KEY, raw);
+  const message: ChatMessage = { id: "new", conversation_id: "chat", task_id: "", turn_id: "turn",
+    role: "assistant", content: "answer", timestamp: "2026-01-01", persistence_state: "failed" };
+  expect(saveUnsavedAssistantResponseToStorage(message)).toBe(false);
+  expect(removeUnsavedAssistantResponseFromStorage("unknown")).toBe(false);
+  expect(clearUnsavedAssistantResponsesForConversations(["chat"])).toBe(false);
+  expect(window.localStorage.getItem(UNSAVED_ASSISTANT_RESPONSES_STORAGE_KEY)).toBe(raw);
 });

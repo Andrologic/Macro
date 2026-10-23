@@ -1,5 +1,5 @@
 import type { ProviderAdmission } from '../services/ipc/chatAdmission';
-import { beginChatAdmission, closeChatPreparation, finishChatResponse, retireChatBrowser, beginChatIntent, finishChatIntent } from '../services/chatAdmission';
+import { beginChatAdmission, closeChatPreparation, finishChatResponse, retireChatBrowser, beginChatIntent, finishChatIntent, reserveChatResponse, responseCopyAdmission, recoverChatResponse, discardChatResponseCopy } from '../services/chatAdmission';
 import { acknowledgeDisplayedConversation } from '../services/conversationManagementService';
 import { getConflictAssistantContext, clearConflictAssistantContext, isConflictAssistantContextAllowed, revalidateConflictAssistantContext, scopeConflictAssistantExecutionContext } from '../services/conflictAssistantContext';
 import { type LifecycleContext, createLifecycleScope } from '../services/lifecycleScope';
@@ -356,13 +356,13 @@ import {
 } from "./chat/chatMessageState";
 import {
   EMPTY_MESSAGE_IMAGES,
-  clearUnsavedAssistantResponsesForConversations,
   clearQuestionnaireDraftsForConversations,
   loadComposerDraftsFromStorage,
   loadMessageImagesFromStorage,
   loadQuestionnaireDraftsFromStorage,
   loadUnsavedAssistantResponsesFromStorage,
   removeUnsavedAssistantResponseFromStorage,
+  readUnsavedAssistantResponsesFromStorage,
   saveComposerDraftsToStorage,
   saveMessageImagesToStorage,
   saveQuestionnaireDraftsToStorage,
@@ -2809,20 +2809,29 @@ export const useChatStore = create<ChatStore>((set, get) => {
     }));
   };
 
-  const replaceLoadedConversationMessages = (
+  const reconcileResponseCopies = async (persisted: ChatMessage[], recovered: ChatMessage[]) => {
+    const merged = mergeRecoveredAssistantResponses(persisted, recovered);
+    for (const messageId of merged.reconciledMessageIds) {
+      const copy = recovered.find(message => message.id === messageId)!;
+      try {
+        await turnRuntime.drain(copy.conversation_id);
+        await recoverChatResponse(copy, async () => {}, () => removeUnsavedAssistantResponseFromStorage(messageId));
+      } catch (error) {
+        const failed = { ...copy, persistence_state: 'failed' as const, persistence_error: toServiceError(error).message };
+        merged.messages = merged.messages.map(message => message.id === messageId ? failed : message);
+      }
+    }
+    return merged;
+  };
+
+  const replaceLoadedConversationMessages = async (
     conversationId: string,
     messages: ChatMessage[],
   ) => {
     const recoveredMessages = get()
       .getConversationMessages(conversationId)
       .filter((message) => message.persistence_state !== undefined);
-    const mergedConversation = mergeRecoveredAssistantResponses(
-      messages,
-      recoveredMessages,
-    );
-    mergedConversation.reconciledMessageIds.forEach((messageId) => {
-      removeUnsavedAssistantResponseFromStorage(messageId);
-    });
+    const mergedConversation = await reconcileResponseCopies(messages, recoveredMessages);
     set((state) => {
       const nextMessages = [
         ...state.messages.filter(
@@ -2969,7 +2978,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
         if (deletedConversationIds.has(conversationId)) {
           return;
         }
-        replaceLoadedConversationMessages(
+        await replaceLoadedConversationMessages(
           conversationId,
           loadedMessages,
         );
@@ -3051,13 +3060,23 @@ export const useChatStore = create<ChatStore>((set, get) => {
     message: string;
     sessionId?: string | null;
     turnId?: string | null;
+    providerAdmission?: import("../services/ipc/chatAdmission").ProviderAdmission;
   }): string => {
     const failedAssistant: ChatMessage = {
       ...params.assistantMessage,
       persistence_state: "failed",
       persistence_error: params.message,
     };
-    const recoverySaved = saveUnsavedAssistantResponseToStorage(failedAssistant);
+    // A retry without dispatch authority can retain its existing copy only.
+    let recoverySaved = false;
+    try {
+      if (params.providerAdmission) {
+        responseCopyAdmission(failedAssistant.id, params.providerAdmission);
+        recoverySaved = saveUnsavedAssistantResponseToStorage(failedAssistant);
+      } else {
+        recoverySaved = readUnsavedAssistantResponsesFromStorage().some(message => message.id === failedAssistant.id);
+      }
+    } catch { /* Preserve original recovery data and report the failed write. */ }
     const displayedMessage = recoverySaved
       ? params.message
       : `${params.message} Macro could not create a local recovery copy. Copy the response before closing the app.`;
@@ -7670,7 +7689,9 @@ export const useChatStore = create<ChatStore>((set, get) => {
     }
     await queueRuntime?.remove(conversationIds);
     discardComposerDraftsForConversationIds(conversationIds);
-    clearUnsavedAssistantResponsesForConversations(conversationIds);
+    for (const copy of readUnsavedAssistantResponsesFromStorage().filter(message => conversationIds.includes(message.conversation_id))) {
+      await discardChatResponseCopy(copy, () => removeUnsavedAssistantResponseFromStorage(copy.id));
+    }
     clearPendingArchitectConversationsForConversationIds(conversationIds);
     clearGitStageCommitChallengesForConversations(conversationIds);
     clearAssistantTurnContextsForConversations(conversationIds);
@@ -9429,7 +9450,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
         await params.replayRecovery.onLaunched();
       }
 
-      startAssistantStream({
+      await startAssistantStream({
         providerAdmission: params.providerAdmission,
         sessionId: params.sessionId,
         assistantMessage,
@@ -10042,7 +10063,13 @@ export const useChatStore = create<ChatStore>((set, get) => {
   });
 
   const { start: launchAssistantStream } = createAssistantStreamRuntime({
-    admission: { finishResponse: finishChatResponse, closePreparation: closeChatPreparation },
+    admission: {
+      reserveResponse: reserveChatResponse,
+      finishResponse: async (context, conversationId, message) => {
+        await finishChatResponse(context, conversationId, message, () => removeUnsavedAssistantResponseFromStorage(message.id));
+      },
+      closePreparation: closeChatPreparation,
+    },
     owner: turnRuntime,
     transport: streamChat,
     isDeleted: (id) => deletedConversationIds.has(id),
@@ -10119,7 +10146,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
     } else {
       architectTurns.delete(params.conversationId);
     }
-    launchAssistantStream(params);
+    return launchAssistantStream(params);
   };
 
   const persistAssistantPartialStreamResult = async (
@@ -11514,13 +11541,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
       loadUnsavedAssistantResponsesFromStorage().filter((message) =>
         visibleConversationIds.has(message.conversation_id),
       );
-    const recoveredMerge = mergeRecoveredAssistantResponses(
-      persistedVisibleMessages,
-      recoveredAssistantResponses,
-    );
-    recoveredMerge.reconciledMessageIds.forEach((messageId) => {
-      removeUnsavedAssistantResponseFromStorage(messageId);
-    });
+    const recoveredMerge = await reconcileResponseCopies(persistedVisibleMessages, recoveredAssistantResponses);
     const visibleMessages = recoveredMerge.messages;
     if (tauriIpc.isTauriAvailable()) {
       const sharedMetadata = await tauriIpc.conversationMetadata();
@@ -14548,7 +14569,16 @@ export const useChatStore = create<ChatStore>((set, get) => {
         failed: markAssistantPersistenceFailure,
       },
       recovery: {
-        removeSavedCopy: removeUnsavedAssistantResponseFromStorage,
+        save: async message => {
+          await turnRuntime.drain(message.conversation_id);
+          await recoverChatResponse(message, () => persistAssistantCompletionResult(chatPersistenceAdapters, {
+            assistantMessageId: message.id, persistedAssistant: message,
+            result: { visibleContent: message.content, hiddenContext: message.hidden_context,
+              providerInputItems: message.provider_input_items, providerTurnState: message.provider_turn_state,
+              toolTraces: message.tool_traces ?? [], completionReason: message.completion_reason,
+              generationAttempts: message.generation_attempts },
+          }), () => removeUnsavedAssistantResponseFromStorage(message.id));
+        },
         clearError: clearAssistantPersistenceError,
         resumeQueue: id => { void drainQueuedSubmissions(id); },
       },
@@ -14602,6 +14632,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
         );
       }
 
+      await discardChatResponseCopy(assistantMessage, () => removeUnsavedAssistantResponseFromStorage(messageId));
       set((state) => {
         const currentConversationMessages = sortMessagesChronologically(
           getConversationMessagesFromState(
@@ -14660,7 +14691,6 @@ export const useChatStore = create<ChatStore>((set, get) => {
           ),
         };
       });
-      removeUnsavedAssistantResponseFromStorage(messageId);
       clearAssistantPersistenceError(
         assistantMessage.conversation_id,
         messageId,

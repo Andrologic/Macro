@@ -276,7 +276,7 @@ export async function sendMessage<Task extends SendTask, Recovery, Launch>(
       if (!isCurrent()) return sentWithoutAssistant(persistedUserMessage);
       await authorizePilotEffect();
       if (!isCurrent()) return sentWithoutAssistant(persistedUserMessage);
-      stream.start({
+      await stream.start({
         ...request, sessionId: current.sessionId, assistantMessage: assistant,
         architectPlanAtSend: architectPlan, abortController,
         pilotActionToken: input.pilotTarget?.actionToken,

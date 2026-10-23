@@ -1,6 +1,23 @@
 import * as ipc from './tauriIpc';
 import { MacroServiceError } from './contracts/errors';
 
+const responseReservations = new Map<string, { context: ipc.ChatAdmissionContext; receipt: ipc.ChatIntentReceipt }>();
+
+export async function reserveChatResponse(context: ipc.ChatAdmissionContext, conversationId: string, messageId: string): Promise<void> {
+  const receipt = await ipc.chatAdmissionReserveResponse(context, conversationId, messageId);
+  responseReservations.set(messageId, { context, receipt });
+}
+
+export function responseCopyAdmission(messageId: string, admission: ipc.ProviderAdmission): ipc.ChatIntentAdmission {
+  if (admission.kind === 'conversation') return admission;
+  const reservation = responseReservations.get(messageId);
+  if (admission.kind !== 'globalChat' || !reservation || reservation.context.handle !== admission.context.handle ||
+      reservation.context.runtime !== admission.context.runtime) {
+    throw new MacroServiceError('CHAT_ADMISSION_REFUSED', 'The response recovery copy has no native admission.');
+  }
+  return { kind: 'globalChat', receipt: reservation.receipt };
+}
+
 let runtime: string | undefined;
 let registration: Promise<void> | undefined;
 let retirement: Promise<void> = Promise.resolve();
@@ -27,7 +44,7 @@ export function retireChatBrowser(): Promise<void> {
   retirement = retirement.then(async () => {
     await Promise.allSettled([pending]);
     await ipc.chatAdmissionCloseBrowser(captured);
-    if (runtime === captured) { runtime = undefined; registration = undefined; }
+    if (runtime === captured) { runtime = undefined; registration = undefined; responseReservations.clear(); }
   });
   return retirement;
 }
@@ -45,17 +62,48 @@ export async function beginChatAdmission(conversationId: string, turnId: string,
 
 export const closeChatPreparation = ipc.chatAdmissionClosePreparation;
 
-export async function finishChatResponse(context: ipc.ChatAdmissionContext, conversationId: string,
-  message: import('../types').ChatMessage): Promise<void> {
-  if (message.conversation_id !== conversationId || message.role !== 'assistant') {
-    throw new MacroServiceError('CHAT_ADMISSION_REFUSED', 'The final response does not belong to this turn.');
-  }
-  await ipc.chatAdmissionFinishResponse(context, conversationId, message.id, message.content, {
+function responseOptions(message: import('../types').ChatMessage) {
+  return {
     turnId: message.turn_id, toolTraces: message.tool_traces, hiddenContext: message.hidden_context,
     providerInputItems: message.provider_input_items, providerTurnState: message.provider_turn_state,
     contextRefs: message.context_refs, completionReason: message.completion_reason,
     generationAttempts: message.generation_attempts,
-  });
+  };
+}
+
+async function removeResponseCopy(messageId: string, admission: ipc.ChatIntentAdmission, remove: () => boolean): Promise<void> {
+  if (!remove()) throw new MacroServiceError('CHAT_RECOVERY_COPY_RETAINED', 'The saved recovery copy could not be removed.');
+  await finishChatIntent(admission);
+  responseReservations.delete(messageId);
+}
+
+export async function finishChatResponse(context: ipc.ChatAdmissionContext, conversationId: string,
+  message: import('../types').ChatMessage, removeCopy: () => boolean): Promise<void> {
+  if (message.conversation_id !== conversationId || message.role !== 'assistant') {
+    throw new MacroServiceError('CHAT_ADMISSION_REFUSED', 'The final response does not belong to this turn.');
+  }
+  const admission = responseCopyAdmission(message.id, { kind: 'globalChat', context });
+  await ipc.chatAdmissionFinishResponse(context, conversationId, message.id, message.content, responseOptions(message));
+  await removeResponseCopy(message.id, admission, removeCopy);
+}
+
+export async function recoverChatResponse(message: import('../types').ChatMessage,
+  persistConversation: () => Promise<void>, removeCopy: () => boolean): Promise<void> {
+  const current = responseReservations.get(message.id);
+  if (current) {
+    await finishChatResponse(current.context, message.conversation_id, message, removeCopy);
+    return;
+  }
+  if (!ipc.isTauriAvailable()) throw new MacroServiceError('CHAT_ADMISSION_UNAVAILABLE', 'Chat admission requires the desktop backend.');
+  await retirement;
+  runtime ??= crypto.randomUUID();
+  const admission = await ipc.chatAdmissionPrepareResponseRecovery(runtime, message.conversation_id, message.id, 'retain');
+  if (admission.kind === 'globalChat') {
+    await ipc.chatAdmissionRecoverResponse(admission.receipt, message.id, message.content, responseOptions(message));
+  } else {
+    await persistConversation();
+  }
+  await removeResponseCopy(message.id, admission, removeCopy);
 }
 
 
@@ -70,4 +118,13 @@ export async function beginChatIntent(identity: ipc.ChatIntentIdentity, mutation
 
 export async function finishChatIntent(admission: ipc.ChatIntentAdmission): Promise<void> {
   if (admission.kind === 'globalChat') await ipc.chatAdmissionFinishIntent(admission.receipt);
+}
+
+/** Explicit copy removal does not close its parent or any external effect. */
+export async function discardChatResponseCopy(message: import('../types').ChatMessage, removeCopy: () => boolean): Promise<void> {
+  if (!ipc.isTauriAvailable()) throw new MacroServiceError('CHAT_ADMISSION_UNAVAILABLE', 'Chat admission requires the desktop backend.');
+  await retirement;
+  runtime ??= crypto.randomUUID();
+  const admission = await ipc.chatAdmissionPrepareResponseRecovery(runtime, message.conversation_id, message.id, 'remove');
+  await removeResponseCopy(message.id, admission, removeCopy);
 }

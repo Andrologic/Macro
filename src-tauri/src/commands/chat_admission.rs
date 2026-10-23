@@ -387,3 +387,38 @@ pub(crate) async fn chat_admission_complete_question_handoff(
     let parent = admission_runtime.parent(window.label(), &context, &conversation_id).await?;
     crate::db::chat_admission::intents::complete_question_handoff(&parent, window.label(), &receipt, &response_message_id).await.map_err(Into::into)
 }
+
+#[tauri::command]
+pub(crate) async fn chat_admission_reserve_response(
+    admission_runtime: State<'_, ChatAdmissionRuntime>, window: WebviewWindow,
+    context: ChatAdmissionContext, conversation_id: String, message_id: String,
+) -> CommandResult<crate::db::chat_admission::intents::IntentReceipt> {
+    let parent = admission_runtime.parent(window.label(), &context, &conversation_id).await?;
+    crate::db::chat_admission::intents::reserve_response(&parent, window.label(), &message_id).await.map_err(Into::into)
+}
+
+#[tauri::command]
+pub(crate) async fn chat_admission_prepare_response_recovery(
+    pool: State<'_, DbPool>, admission_runtime: State<'_, ChatAdmissionRuntime>,
+    window: WebviewWindow, runtime: String, conversation_id: String, message_id: String,
+    mutation: crate::db::chat_admission::intents::IntentMutation,
+) -> CommandResult<IntentAdmission> {
+    let page = admission_runtime.current_page(window.label());
+    let database = get_pool(&pool).await?;
+    let mut connection = database.acquire().await.map_err(|error| command_error(error.to_string()))?;
+    let scope = crate::db::chat_admission::intents::classify_copy(&mut connection, &conversation_id, mutation).await?;
+    drop(connection);
+    if scope != crate::db::chat_admission::intents::IntentScope::GlobalChat { return Ok(IntentAdmission::Conversation); }
+    admission_runtime.open_browser_on_page(pool.inner().clone(), window.label(), &runtime, &page).await?;
+    let identity = crate::db::chat_admission::intents::response_recovery_identity(&pool, &conversation_id, &message_id).await?;
+    let receipt = admission_runtime.begin_intent(&pool, window.label(), &runtime, identity, mutation).await?;
+    Ok(IntentAdmission::GlobalChat { receipt })
+}
+
+#[tauri::command]
+pub(crate) async fn chat_admission_recover_response(
+    pool: State<'_, DbPool>, window: WebviewWindow,
+    receipt: crate::db::chat_admission::intents::IntentReceipt, mut params: super::DbUpdateMessageParams,
+) -> CommandResult<()> {
+    crate::db::chat_admission::intents::recover_response(&pool, window.label(), &receipt, params.take_input()).await.map_err(Into::into)
+}

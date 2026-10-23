@@ -243,45 +243,30 @@ const writeUnsavedAssistantResponsesToStorage = (
   }
 };
 
-export const saveUnsavedAssistantResponseToStorage = (
-  message: ChatMessage,
-): boolean => {
-  const existing = loadUnsavedAssistantResponsesFromStorage().filter(
-    (candidate) => candidate.id !== message.id,
-  );
-  const failedMessage = parseUnsavedAssistantResponse({
-    ...message,
-    persistence_state: "failed",
-  });
-  if (!failedMessage) return false;
-  return writeUnsavedAssistantResponsesToStorage(
-    [...existing, failedMessage]
-      .sort(
-        (left, right) =>
-          new Date(left.timestamp).getTime() - new Date(right.timestamp).getTime(),
-      )
-      .slice(-MAX_UNSAVED_ASSISTANT_RESPONSES),
-  );
+export const saveUnsavedAssistantResponseToStorage = (message: ChatMessage): boolean => {
+  try {
+    const existing = readUnsavedAssistantResponsesFromStorage().filter(candidate => candidate.id !== message.id);
+    const failedMessage = parseUnsavedAssistantResponse({ ...message, persistence_state: "failed" });
+    if (!failedMessage || existing.length >= MAX_UNSAVED_ASSISTANT_RESPONSES) return false;
+    return writeUnsavedAssistantResponsesToStorage([...existing, failedMessage]);
+  } catch { return false; }
 };
 
-export const removeUnsavedAssistantResponseFromStorage = (
-  messageId: string,
-): boolean =>
-  writeUnsavedAssistantResponsesToStorage(
-    loadUnsavedAssistantResponsesFromStorage().filter(
-      (message) => message.id !== messageId,
-    ),
-  );
+export const removeUnsavedAssistantResponseFromStorage = (messageId: string): boolean => {
+  try {
+    return writeUnsavedAssistantResponsesToStorage(
+      readUnsavedAssistantResponsesFromStorage().filter(message => message.id !== messageId),
+    );
+  } catch { return false; }
+};
 
-export const clearUnsavedAssistantResponsesForConversations = (
-  conversationIds: string[],
-): boolean => {
-  const ids = new Set(conversationIds);
-  return writeUnsavedAssistantResponsesToStorage(
-    loadUnsavedAssistantResponsesFromStorage().filter(
-      (message) => !ids.has(message.conversation_id),
-    ),
-  );
+export const clearUnsavedAssistantResponsesForConversations = (conversationIds: string[]): boolean => {
+  try {
+    const ids = new Set(conversationIds);
+    return writeUnsavedAssistantResponsesToStorage(
+      readUnsavedAssistantResponsesFromStorage().filter(message => !ids.has(message.conversation_id)),
+    );
+  } catch { return false; }
 };
 
 export const parseComposerDraft = (value: unknown): PersistedComposerDraft | null => {

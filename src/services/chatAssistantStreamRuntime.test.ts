@@ -123,6 +123,7 @@ function setup() {
   const unexpectedIpc = async (): Promise<never> => { throw new Error("Unexpected persistence IPC"); };
   const ports: ChatAssistantStreamPorts = {
     admission: {
+      reserveResponse: async () => { throw new Error('Unexpected global response reservation in a project fixture'); },
       finishResponse: async () => { throw new Error('Unexpected global chat finalization in a project fixture'); },
       closePreparation: async () => { throw new Error('Unexpected global chat preparation in a project fixture'); },
     },
@@ -171,7 +172,7 @@ function setup() {
     },
   };
   const runtime = createAssistantStreamRuntime(ports);
-  function start(params: AssistantStreamLaunch) {
+  async function start(params: AssistantStreamLaunch) {
     messages.set(params.assistantMessage.id, structuredClone(params.assistantMessage));
     owner.rememberSession(params.conversationId, params.sessionId);
     owner.set(params.conversationId, {
@@ -179,7 +180,7 @@ function setup() {
       assistantMessageId: params.assistantMessage.id, abortController: params.abortController,
       lastError: null,
     });
-    runtime.start(params);
+    await runtime.start(params);
     return calls.at(-1)!;
   }
   return {
@@ -211,8 +212,8 @@ describe("chatAssistantStreamRuntime with real lifecycle and orchestrator", () =
     const h = setup();
     const a = launch("a");
     const b = launch("b");
-    const streamA = h.start(a);
-    const streamB = h.start(b);
+    const streamA = await h.start(a);
+    const streamB = await h.start(b);
     const persistA = deferred<void>();
     h.complete.mockImplementationOnce(async (_id, messageId, completion) => {
       await persistA.promise;
@@ -257,13 +258,13 @@ describe("chatAssistantStreamRuntime with real lifecycle and orchestrator", () =
   test("late callbacks from a replaced session cannot write or execute tools", async () => {
     const h = setup();
     const old = launch("a", "old");
-    const oldStream = h.start(old);
+    const oldStream = await h.start(old);
     const pendingTool = deferred<string>();
     h.execute.mockImplementationOnce(async () => pendingTool.promise);
     const oldTool = oldStream.options.onToolCall?.("read", { path: "file.txt" }, "in-flight");
     await checkpoint();
     const next = launch("a", "next");
-    const nextStream = h.start(next);
+    const nextStream = await h.start(next);
     const diagnosticsBefore = h.record.mock.calls.length;
 
     oldStream.options.onToken("stale token");
@@ -300,7 +301,7 @@ describe("chatAssistantStreamRuntime with real lifecycle and orchestrator", () =
     test(`stop during a tool waits for partial persistence when transport ${transportExit}s`, async () => {
       const h = setup();
       const params = launch("a");
-      const stream = h.start(params);
+      const stream = await h.start(params);
       const tool = deferred<string>();
       const persistence = deferred<void>();
       h.execute.mockImplementationOnce(async () => tool.promise);
@@ -358,7 +359,7 @@ describe("chatAssistantStreamRuntime with real lifecycle and orchestrator", () =
     test(`stop persists the active ${buffered ? "buffered" : "visible"} generation attempt`, async () => {
       const h = setup();
       const params = launch("a");
-      const stream = h.start(params);
+      const stream = await h.start(params);
       const attempt = {
         id: "attempt-in-flight",
         status: buffered ? "abandoned" as const : "partial" as const,
@@ -385,7 +386,7 @@ describe("chatAssistantStreamRuntime with real lifecycle and orchestrator", () =
   test("stop before the first token persists an empty in-flight attempt", async () => {
     const h = setup();
     const params = launch("a");
-    const stream = h.start(params);
+    const stream = await h.start(params);
     const attempt = { id: "attempt-before-token", status: "partial" as const, rawText: "", acceptedText: "", costUsd: null };
     stream.options.onGenerationAttemptProgress?.(attempt);
 
@@ -401,7 +402,7 @@ describe("chatAssistantStreamRuntime with real lifecycle and orchestrator", () =
   test("a failed attempt checkpoint leaves the provider result and final persistence intact", async () => {
     const h = setup();
     const params = launch("a");
-    const stream = h.start(params);
+    const stream = await h.start(params);
     const attempts = [{ id: "attempt-1", status: "completed" as const, rawText: "Answer", acceptedText: "Answer", costUsd: null }];
     h.partial.mockRejectedValueOnce(new Error("SQLITE_BUSY"));
 
@@ -423,7 +424,7 @@ describe("chatAssistantStreamRuntime with real lifecycle and orchestrator", () =
   test("a provider error settles a running tool trace in the current session", async () => {
     const h = setup();
     const params = launch("a");
-    const stream = h.start(params);
+    const stream = await h.start(params);
     stream.options.onToolTracesUpdate?.([{ tool_call_id: "tool-1", tool_name: "read", status: "running" }]);
     stream.options.onError(new Error("provider failed"));
     stream.done.resolve();
@@ -438,7 +439,7 @@ describe("chatAssistantStreamRuntime with real lifecycle and orchestrator", () =
   test("failed completion persistence retains the answer and a new turn can succeed", async () => {
     const h = setup();
     const params = launch("a", "first");
-    const stream = h.start(params);
+    const stream = await h.start(params);
     h.complete.mockImplementationOnce(async () => { throw new Error("disk unavailable"); });
     stream.options.onComplete(result("Answer kept in memory"));
     stream.done.resolve();
@@ -454,7 +455,7 @@ describe("chatAssistantStreamRuntime with real lifecycle and orchestrator", () =
     expect(h.consolidate).not.toHaveBeenCalled();
 
     const retry = launch("a", "retry");
-    const next = h.start(retry);
+    const next = await h.start(retry);
     stream.options.onError(new Error("late first-turn error"));
     expect(h.owner.read("a")).toMatchObject({ phase: "streaming", sessionId: "retry", lastError: null });
     next.options.onComplete(result("Retried answer"));
@@ -482,7 +483,7 @@ describe("chatAssistantStreamRuntime with real lifecycle and orchestrator", () =
       };
       const failureEffect = deferred<void>();
       h.taskFailed.mockImplementationOnce(async () => failureEffect.promise);
-      const stream = h.start(params);
+      const stream = await h.start(params);
       if (content) stream.options.onToken(content);
       stream.options.onError(new Error("Provider connection lost"));
       await checkpoint();
@@ -515,7 +516,7 @@ describe("chatAssistantStreamRuntime with real lifecycle and orchestrator", () =
     test(`overflow recovery (${contextLimit} tokens) survives old transport settlement`, async () => {
       const h = setup();
       const params = launch("a");
-      const old = h.start(params);
+      const old = await h.start(params);
       const initialAttempt = { id: "before-overflow", status: "partial" as const, rawText: "", acceptedText: "", costUsd: null };
       const recoveredAttempt = { id: "after-overflow", status: "completed" as const, rawText: "Recovered answer", acceptedText: "Recovered answer", costUsd: null };
       await old.options.onGenerationAttemptsUpdate?.([initialAttempt]);
@@ -578,7 +579,7 @@ describe("chatAssistantStreamRuntime with real lifecycle and orchestrator", () =
   test("failed overflow preparation retains and retries persistence of the first attempt", async () => {
     const h = setup();
     const params = launch("a");
-    const old = h.start(params);
+    const old = await h.start(params);
     const attempt = { id: "overflow-first", status: "partial" as const, rawText: "", acceptedText: "", costUsd: null };
     h.partial.mockRejectedValueOnce(new Error("SQLITE_BUSY"));
     await old.options.onGenerationAttemptsUpdate?.([attempt]);
@@ -607,12 +608,12 @@ describe("chatAssistantStreamRuntime with real lifecycle and orchestrator", () =
     const originalContext = structuredClone(sent.executionContext);
     const originalConfiguration = structuredClone(sent.scopedTurnConfiguration);
     const originalPlan = structuredClone(sent.architectPlanAtSend);
-    const streamA = h.start(selected);
+    const streamA = await h.start(selected);
     const tool = deferred<string>();
     h.execute.mockImplementationOnce(async () => tool.promise);
     const toolResult = streamA.options.onToolCall?.("read", { path: "file.txt" }, "read-a");
     selected = launch("b");
-    const streamB = h.start(selected);
+    const streamB = await h.start(selected);
     // Simulate reuse of mutable configuration objects by an external selection owner.
     sent.executionContext.workspacePath = selected.executionContext.workspacePath;
     sent.executionContext.workspacePathsByProjectId["a-project"] = "/workspaces/b-project";
@@ -656,7 +657,7 @@ describe("chatAssistantStreamRuntime with real lifecycle and orchestrator", () =
     const h = setup();
     const params = launch("a");
     const originalPlan = structuredClone(params.architectPlanAtSend);
-    const stream = h.start(params);
+    const stream = await h.start(params);
     params.architectPlanAtSend!.planId = "b-plan";
     params.architectPlanAtSend!.targetBranch = "feature/other-workspace";
 
@@ -699,7 +700,7 @@ test("stream snapshot preserves MCP generation and isolates mutable server data"
   h.execute.mockImplementation((operation, name, args) => callScopedMcpTool(name, args, operation.mcpServers, {
     projectIds: operation.executionContext.projectIds, signal: operation.signal, deps: mcp.deps,
   }));
-  const stream = h.start(params);
+  const stream = await h.start(params);
   mcp.advance();
   mcp.scoped.servers[0].tools = [];
   const answer = await stream.options.onToolCall?.("mcp__docs__read", {}, "call");
@@ -729,7 +730,7 @@ for (const agentAtSend of ["build", "plan"] as const) {
     prep.ports.tools.mcpSnapshot = () => ({ servers: [], enabledTools: () => [] });
     prep.ports.tools.resolveScopedMcp = async () => ({ servers: [], tools: [], failures: [] });
     h.prepare.mockImplementation(request => prepareAssistantStreamLaunch(request, prep.ports));
-    const old = h.start(params);
+    const old = await h.start(params);
     selectedAgent = agentAtSend === "build" ? "plan" : "build";
     old.options.onError(new Error("maximum context length is 128000 tokens"));
     await checkpoint();
@@ -800,7 +801,7 @@ for (const changeGeneration of [false, true]) {
         projectIds: operation.executionContext.projectIds, signal: operation.signal, deps: mcp.deps,
       });
     });
-    const first = h.start(params);
+    const first = await h.start(params);
     if (changeGeneration) mcp.advance();
     first.options.onError(new Error("maximum context length is 128000 tokens"));
     await checkpoint();
@@ -826,7 +827,7 @@ for (const changeGeneration of [false, true]) {
 for (const mode of ['Chat', 'Architect', 'Implement'] as const) {
   test(`retains a structured safe provider failure in the actual ${mode} lifecycle`, async () => {
     const h = setup(); const params = launch('diagnostic'); params.modeAtSend = mode;
-    const stream = h.start(params);
+    const stream = await h.start(params);
     stream.options.onError(Object.assign(new Error('private prompt /private/profile token=synthetic-secret'), {
       name: 'ProviderRuntimeError', providerError: true, kind: 'rate_limited', status: 429,
       providerCode: 'insufficient_quota', providerRawBodyExcerpt: 'private response',
@@ -850,12 +851,17 @@ describe('admitted global chat physical completion', () => {
   test('waits for an already running tool and the native save receipt before releasing the queue', async () => {
     const h = setup();
     const params = admitted();
+    h.admission.reserveResponse = async (context, conversationId, messageId) => {
+      expect(context).toEqual(params.providerAdmission.context);
+      expect(conversationId).toBe(params.conversationId);
+      expect(messageId).toBe(params.assistantMessage.id);
+    };
     const tool = deferred<string>();
     const receipt = deferred<void>();
     const finish = mock(async () => receipt.promise);
     h.admission.finishResponse = finish;
     h.execute.mockImplementationOnce(async () => tool.promise);
-    const stream = h.start(params);
+    const stream = await h.start(params);
     const runningTool = stream.options.onToolCall?.('read', { path: 'synthetic.txt' }, 'running');
     await checkpoint();
     stream.options.onComplete(result('Saved response'));
@@ -879,10 +885,15 @@ describe('admitted global chat physical completion', () => {
   test('an overflow successor cannot close while its predecessor still owns the transport', async () => {
     const h = setup();
     const params = admitted();
+    h.admission.reserveResponse = async (context, conversationId, messageId) => {
+      expect(context).toEqual(params.providerAdmission.context);
+      expect(conversationId).toBe(params.conversationId);
+      expect(messageId).toBe(params.assistantMessage.id);
+    };
     const finish = mock(async () => undefined);
     h.admission.finishResponse = finish;
     h.prepare.mockImplementationOnce(async () => ({ ...params, messagesForRequest: [{ role: 'user', content: 'Compacted history' }] }));
-    const old = h.start(params);
+    const old = await h.start(params);
     old.options.onError(new Error('maximum context length is 128000 tokens'));
     await checkpoint();
     expect(h.calls).toHaveLength(2);
@@ -902,8 +913,13 @@ describe('admitted global chat physical completion', () => {
   test('a refused native completion retains an error after preserving the visible response', async () => {
     const h = setup();
     const params = admitted();
+    h.admission.reserveResponse = async (context, conversationId, messageId) => {
+      expect(context).toEqual(params.providerAdmission.context);
+      expect(conversationId).toBe(params.conversationId);
+      expect(messageId).toBe(params.assistantMessage.id);
+    };
     h.admission.finishResponse = async () => { throw new Error('Synthetic unresolved provider child'); };
-    const stream = h.start(params);
+    const stream = await h.start(params);
     stream.options.onComplete(result('Preserved response'));
     stream.done.resolve();
     await h.owner.drain('admitted');
@@ -913,12 +929,12 @@ describe('admitted global chat physical completion', () => {
   });
 });
 
-test('an aborted admitted preparation is not silently handed to a nonexistent stream', () => {
+test('an aborted admitted preparation is not silently handed to a nonexistent stream', async () => {
   const h = setup();
   const params = launch('a');
   params.providerAdmission = { kind: 'globalChat', context: { handle: 'synthetic-parent', runtime: 'browser' } };
   params.abortController!.abort();
-  expect(() => h.start(params)).toThrow('cancelled before dispatch');
+  await expect(h.start(params)).rejects.toThrow('cancelled before dispatch');
   expect(h.calls).toHaveLength(0);
 });
 
@@ -926,13 +942,28 @@ test('a synchronous setup failure leaves no admitted stream group to own a later
   const h = setup();
   const params = launch('a');
   params.providerAdmission = { kind: 'globalChat', context: { handle: 'synthetic-parent', runtime: 'browser' } };
+  h.admission.reserveResponse = async () => {};
   h.record.mockImplementationOnce(() => { throw new Error('Synthetic setup failure'); });
-  expect(() => h.start(params)).toThrow('Synthetic setup failure');
+  await expect(h.start(params)).rejects.toThrow('Synthetic setup failure');
   const finish = mock(async () => {});
   h.admission.finishResponse = finish;
-  const stream = h.start(params);
+  const stream = await h.start(params);
   stream.options.onComplete(result('answer'));
   stream.done.resolve();
   await h.owner.drain('a');
   expect(finish).toHaveBeenCalledTimes(1);
+});
+
+test('native response reservation precedes dispatch and cancellation while waiting never emits', async () => {
+  const h = setup();
+  const params = launch('a');
+  params.providerAdmission = { kind: 'globalChat', context: { handle: 'reserved-parent', runtime: 'browser' } };
+  const reservation = deferred<void>();
+  h.admission.reserveResponse = async () => reservation.promise;
+  const starting = h.start(params).then(() => null, error => error);
+  expect(h.calls).toHaveLength(0);
+  params.abortController!.abort();
+  reservation.resolve();
+  expect(await starting).toBeInstanceOf(Error);
+  expect(h.calls).toHaveLength(0);
 });
