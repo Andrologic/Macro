@@ -336,20 +336,14 @@ pub(crate) async fn chat_admission_begin_intent(
 ) -> CommandResult<IntentAdmission> {
     let page = admission_runtime.current_page(window.label());
     let database = get_pool(&pool).await?;
-    let global: Option<i64> = sqlx::query_scalar("SELECT CASE WHEN scope_mode='Chat' AND project_id IS NULL AND group_id IS NULL AND task_id IS NULL THEN 1 ELSE 0 END FROM conversations WHERE id=?")
-        .bind(&identity.conversation_id).fetch_optional(&database).await.map_err(|error| command_error(error.to_string()))?;
-    match global {
-        Some(0) => return Ok(IntentAdmission::Conversation),
-        Some(1) => {},
-        None if matches!(mutation, crate::db::chat_admission::intents::IntentMutation::Remove) => {
-            // Deleting an orphaned local recovery copy cannot revive a chat.
-            // Keep every old native effect/marker untouched; IDs stay tombstoned.
-            let protected: i64 = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM chat_admission_owners WHERE conversation_id=? AND mode<>'removed')")
-                .bind(&identity.conversation_id).fetch_one(&database).await.map_err(|error| command_error(error.to_string()))?;
-            if protected != 0 { return Err(command_error("chat_admission_intent_not_open")); }
-            return Ok(IntentAdmission::Conversation);
-        },
-        _ => return Err(command_error("chat_admission_conversation_missing")),
+    let mut connection = database.acquire().await.map_err(|error| command_error(error.to_string()))?;
+    let scope = crate::db::chat_admission::intents::classify_copy(&mut connection, &identity.conversation_id, mutation).await?;
+    drop(connection);
+    match scope {
+        crate::db::chat_admission::intents::IntentScope::GlobalChat => {},
+        // Only removal is classified Removed. This cleans up an orphaned copy
+        // without touching old markers/effects or reviving a tombstoned ID.
+        _ => return Ok(IntentAdmission::Conversation),
     }
     admission_runtime.open_browser_on_page(pool.inner().clone(), window.label(), &runtime, &page).await?;
     let receipt = admission_runtime.begin_intent(&pool, window.label(), &runtime, identity, mutation).await?;
@@ -362,4 +356,14 @@ pub(crate) async fn chat_admission_finish_intent(
     window: WebviewWindow, receipt: crate::db::chat_admission::intents::IntentReceipt,
 ) -> CommandResult<()> {
     admission_runtime.finish_intent(&pool, window.label(), &receipt).await.map_err(Into::into)
+}
+
+#[tauri::command]
+pub(crate) async fn chat_admission_write_approval_registry(
+    pool: State<'_, DbPool>, window: WebviewWindow, conversation_id: String,
+    receipt: Option<crate::db::chat_admission::intents::IntentReceipt>,
+    expected_value_json: Option<String>, value_json: Option<String>,
+) -> CommandResult<()> {
+    crate::db::chat_admission::intents::write_approval_registry(&pool, window.label(), &conversation_id,
+        receipt.as_ref(), expected_value_json.as_deref(), value_json.as_deref()).await.map_err(Into::into)
 }

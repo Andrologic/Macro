@@ -19,7 +19,7 @@ const setup = () => {
     await queue.complete(next);
     return { status: 'sent' as const, conversationId: next.input.conversationId, turnId: next.id, userMessageId: `user-${next.id}`, assistantMessageId: `assistant-${next.id}` };
   });
-  const admit = mock(async (): Promise<ChatIntentAdmission> => ({ kind: 'conversation' }));
+  const admit = mock(async (_entry: ReturnType<typeof entry>, _mutation: 'retain' | 'remove'): Promise<ChatIntentAdmission> => ({ kind: 'conversation' }));
   const finish = mock(async (_admission: ChatIntentAdmission) => {});
   const queue = createQueuedSubmissionRuntime({
     admit, finish,
@@ -194,4 +194,29 @@ describe('queued intent ownership', () => {
     expect(loadQueuedSubmissions().map(x => x.id)).toEqual(['new']);
     expect(f.send).not.toHaveBeenCalled();
   });
+});
+
+
+it('removes a persisted orphan copy through the removal classification without dispatch', async () => {
+  const f = setup();
+  let deleted = false;
+  f.admit.mockImplementation(async (next, mutation) => {
+    if (deleted) {
+      if (mutation !== 'remove') throw new Error('Deleted chat cannot retain work');
+      return { kind: 'conversation' };
+    }
+    return { kind: 'globalChat', receipt: { operationId: 'native-queue', runtime: 'browser', revision: 0,
+      identity: { conversationId: next.input.conversationId, kind: 'queue', id: next.id } } };
+  });
+  const queued = entry('orphan');
+  await f.queue.accept(queued);
+  expect(loadQueuedSubmissions()).toHaveLength(1);
+  // Native SQLite separately proves that repository deletion yields only this
+  // removal classification and leaves provider unknown + old marker intact.
+  deleted = true;
+  await f.queue.remove([queued.input.conversationId]);
+  expect(loadQueuedSubmissions()).toEqual([]);
+  expect(f.previews()).toEqual([]);
+  expect(f.finish).toHaveBeenCalledWith({ kind: 'conversation' });
+  expect(f.send).not.toHaveBeenCalled();
 });

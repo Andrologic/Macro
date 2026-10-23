@@ -1952,6 +1952,21 @@ const registerUseChatStoreMocks = async () => {
     deleteConversations: deleteConversationsMock,
     dbGetAppSetting: dbGetAppSettingMock,
     dbSetAppSetting: dbSetAppSettingMock,
+    // Unit IO port. Native SQLite tests prove the reserved writer's admission and scope checks.
+    chatAdmissionWriteApprovalRegistry: async (conversationId: string,
+      admission: import('../services/ipc/chatAdmission').ChatIntentAdmission,
+      expected: string | null, value: string | null) => {
+      if (!conversationId || !admission || admission.kind !== 'globalChat' ||
+          admission.receipt.identity.conversationId !== conversationId || admission.receipt.identity.kind !== 'approval') {
+        throw new Error('Missing explicit approval admission');
+      }
+      const key = 'toolApprovalRecovery:v1';
+      const current = appSettingValues.get(key) ?? null;
+      if (current === value) return;
+      if (current !== expected) throw new Error('Stale approval registry');
+      if (value === null) await dbDeleteAppSettingMock(key);
+      else await dbSetAppSettingMock({ key, valueJson: value });
+    },
     dbCompareAndSwapAppSetting: dbCompareAndSwapAppSettingMock,
     dbDeleteAppSetting: dbDeleteAppSettingMock,
     gitBranchList: gitBranchListMock,

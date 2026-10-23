@@ -34,6 +34,27 @@ pub(crate) struct IntentReceipt {
     pub identity: IntentIdentity,
 }
 
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum IntentScope { GlobalChat, Conversation, Removed }
+
+pub(crate) async fn classify_copy(
+    database: &mut sqlx::SqliteConnection, conversation: &str, mutation: IntentMutation,
+) -> DbResult<IntentScope> {
+    let global: Option<i64> = sqlx::query_scalar("SELECT CASE WHEN scope_mode='Chat' AND project_id IS NULL AND group_id IS NULL AND task_id IS NULL THEN 1 ELSE 0 END FROM conversations WHERE id=?")
+        .bind(conversation).fetch_optional(&mut *database).await?;
+    match global {
+        Some(0) => Ok(IntentScope::Conversation),
+        Some(1) => Ok(IntentScope::GlobalChat),
+        None if mutation == IntentMutation::Remove => {
+            let protected: i64 = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM chat_admission_owners WHERE conversation_id=? AND mode<>'removed')")
+                .bind(conversation).fetch_one(&mut *database).await?;
+            if protected != 0 { return Err(invalid("chat_admission_intent_not_open")); }
+            Ok(IntentScope::Removed)
+        },
+        _ => Err(invalid("chat_admission_conversation_missing")),
+    }
+}
+
 /// The storage owner calls this before changing its existing durable document.
 /// Retrying the same admitted mutation returns the same receipt.
 pub(crate) async fn begin(
@@ -110,6 +131,97 @@ pub(crate) async fn finish(owner: &DbPool, caller: &str, receipt: &IntentReceipt
                 .bind(&receipt.identity.conversation_id).execute(&mut *tx).await?;
         },
         _ => return Err(invalid("chat_admission_intent_receipt_conflict")),
+    }
+    tx.commit().await?;
+    lease.committed = true;
+    Ok(())
+}
+
+pub(crate) const APPROVAL_REGISTRY_KEY: &str = "toolApprovalRecovery:v1";
+
+/// Only the existing TS recovery codec interprets approval payloads. This check
+/// restricts its aggregate document mutation to one conversation and preserves
+/// every other entry and extension byte-for-value.
+fn approval_delta(expected: Option<&str>, value: Option<&str>, conversation: &str) -> DbResult<()> {
+    fn document(raw: Option<&str>) -> DbResult<serde_json::Map<String, serde_json::Value>> {
+        let value = match raw {
+            Some(raw) => serde_json::from_str(raw).map_err(|_| invalid("chat_admission_approval_unreadable"))?,
+            None => serde_json::json!({"version":1,"requests":{}}),
+        };
+        value.as_object().cloned().ok_or_else(|| invalid("chat_admission_approval_unreadable"))
+    }
+    let mut after = document(value)?;
+    // The TS codec may retain an unreadable root verbatim while accepting a
+    // fresh request. That envelope keeps its warning and cannot reconcile the
+    // unknown contents. No old bytes or unrelated readable entries may vanish.
+    let old = document(expected);
+    let supported_shape = old.as_ref().is_ok_and(|doc| doc.get("version") == Some(&serde_json::json!(1))
+        && doc.get("requests").is_some_and(serde_json::Value::is_object));
+    if expected.is_some() && !supported_shape {
+        let requests = after.remove("requests").and_then(|v| v.as_object().cloned())
+            .ok_or_else(|| invalid("chat_admission_approval_unreadable"))?;
+        if requests.keys().any(|key| key != conversation) || after != serde_json::json!({
+            "version":1,"preservedData":[{"valueJson":expected.unwrap()}]
+        }).as_object().unwrap().clone() {
+            return Err(invalid("chat_admission_approval_extension_conflict"));
+        }
+        return Ok(());
+    }
+    let mut before = old?;
+    let mut old_requests = before.remove("requests").and_then(|v| v.as_object().cloned())
+        .ok_or_else(|| invalid("chat_admission_approval_unreadable"))?;
+    let mut new_requests = after.remove("requests").and_then(|v| v.as_object().cloned())
+        .ok_or_else(|| invalid("chat_admission_approval_unreadable"))?;
+    let previous = old_requests.remove(conversation);
+    new_requests.remove(conversation);
+    if old_requests != new_requests { return Err(invalid("chat_admission_approval_other_conversation")); }
+    if before.get("preservedData") != after.get("preservedData") {
+        let old = before.remove("preservedData");
+        let mut preserved = match old { None => vec![], Some(serde_json::Value::Array(v)) => v, Some(v) => vec![v] };
+        let previous = previous.ok_or_else(|| invalid("chat_admission_approval_extension_conflict"))?;
+        preserved.push(serde_json::json!({"conversationId":conversation,"value":previous}));
+        if after.remove("preservedData") != Some(serde_json::Value::Array(preserved)) {
+            return Err(invalid("chat_admission_approval_extension_conflict"));
+        }
+    }
+    if before != after { return Err(invalid("chat_admission_approval_extension_conflict")); }
+    Ok(())
+}
+
+pub(crate) async fn write_approval_registry(
+    owner: &DbPool, caller: &str, conversation: &str, receipt: Option<&IntentReceipt>,
+    expected: Option<&str>, value: Option<&str>,
+) -> DbResult<()> {
+    approval_delta(expected, value, conversation)?;
+    let guard = owner.source_ready(None).await.map_err(|_| invalid("chat_admission_unavailable"))?;
+    let mut lease = durable_lease(&guard.ready.pool).await?;
+    let mut tx = lease.begin_with("BEGIN IMMEDIATE").await?;
+    guard.ready.check_source_schema(&mut tx).await?;
+    let retained = value.and_then(|raw| serde_json::from_str::<serde_json::Value>(raw).ok())
+        .and_then(|doc| doc.get("requests").and_then(|r| r.get(conversation)).cloned()).is_some();
+    let mutation = if retained { IntentMutation::Retain } else { IntentMutation::Remove };
+    match classify_copy(&mut tx, conversation, mutation).await? {
+        IntentScope::Conversation | IntentScope::Removed => {},
+        IntentScope::GlobalChat => {
+            let receipt = receipt.ok_or_else(|| invalid("chat_admission_intent_required"))?;
+            if receipt.identity.conversation_id != conversation || receipt.identity.kind.as_str() != "approval" {
+                return Err(invalid("chat_admission_intent_receipt_conflict"));
+            }
+            let admitted: i64 = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM chat_admission_operations p JOIN chat_admission_owners o ON o.conversation_id=p.conversation_id AND o.incarnation=p.incarnation JOIN chat_admission_browsers b ON b.runtime=p.browser_runtime AND b.caller=p.browser_caller AND b.runtime_generation=p.runtime_generation WHERE p.operation_id=? AND p.kind='approval' AND p.conversation_id=? AND p.browser_attempt=? AND p.browser_caller=? AND p.browser_runtime=? AND p.revision=? AND p.phase IN ('prepared','result_pending','unknown') AND o.mode='open' AND b.phase='active' AND b.runtime_generation=?)")
+                .bind(&receipt.operation_id).bind(conversation).bind(&receipt.identity.id).bind(caller).bind(&receipt.runtime).bind(receipt.revision).bind(&guard.ready.catalog_generation).fetch_one(&mut *tx).await?;
+            if admitted == 0 { return Err(invalid("chat_admission_intent_receipt_conflict")); }
+        },
+    }
+    let current: Option<String> = sqlx::query_scalar("SELECT value_json FROM app_settings WHERE key=?")
+        .bind(APPROVAL_REGISTRY_KEY).fetch_optional(&mut *tx).await?;
+    if current.as_deref() != value {
+        if current.as_deref() != expected { return Err(invalid("chat_admission_approval_stale_document")); }
+        if let Some(value) = value {
+            sqlx::query("INSERT INTO app_settings(key,value_json,updated_at) VALUES(?,?,?) ON CONFLICT(key) DO UPDATE SET value_json=excluded.value_json,updated_at=excluded.updated_at")
+                .bind(APPROVAL_REGISTRY_KEY).bind(value).bind(chrono::Utc::now().to_rfc3339()).execute(&mut *tx).await?;
+        } else {
+            sqlx::query("DELETE FROM app_settings WHERE key=?").bind(APPROVAL_REGISTRY_KEY).execute(&mut *tx).await?;
+        }
     }
     tx.commit().await?;
     lease.committed = true;

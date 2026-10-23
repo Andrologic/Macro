@@ -1170,3 +1170,81 @@ async fn queued_intent_is_claimed_atomically_and_cannot_relaunch_after_retiremen
     assert_eq!(count, 1, "the refused claim must roll back the new parent");
     runtime.finish_intent(&owner, "window", &removal).await.unwrap();
 }
+
+#[tokio::test]
+async fn approval_registry_cas_preserves_other_chats_and_reserves_generic_writers() {
+    use super::intents::{self, IntentIdentity, IntentKind, IntentMutation};
+    let (_dir, pool) = fixture().await;
+    sqlx::query("INSERT INTO conversations(id,title,scope_mode,created_at,updated_at) VALUES('other','Other','Chat','t','t')").execute(&pool).await.unwrap();
+    sqlx::query("UPDATE chat_admission_owners SET mode='frozen' WHERE conversation_id='other'").execute(&pool).await.unwrap();
+    let before = r#"{"version":1,"requests":{"other":{"opaque":"preserved"}}}"#;
+    sqlx::query("INSERT INTO app_settings(key,value_json,updated_at) VALUES(?,?,'t')").bind(intents::APPROVAL_REGISTRY_KEY).bind(before).execute(&pool).await.unwrap();
+    let owner = crate::core::db_state::DbPool::default();
+    owner.set_ready(pool.clone()).await.unwrap();
+    let runtime = runtime::ChatAdmissionRuntime::default();
+    runtime.open_browser(owner.clone(), "window", "browser").await.unwrap();
+    let receipt = runtime.begin_intent(&owner, "window", "browser", IntentIdentity {
+        conversation_id: "source".into(), kind: IntentKind::Approval, id: "approval-call".into(),
+    }, IntentMutation::Retain).await.unwrap();
+    let after = r#"{"version":1,"requests":{"other":{"opaque":"preserved"},"source":{"opaque":"new"}}}"#;
+    intents::write_approval_registry(&owner, "window", "source", Some(&receipt), Some(before), Some(after)).await.unwrap();
+    intents::write_approval_registry(&owner, "window", "source", Some(&receipt), Some(before), Some(after)).await.unwrap();
+    let foreign = r#"{"version":1,"requests":{"other":{"opaque":"changed"},"source":{"opaque":"new"}}}"#;
+    assert!(intents::write_approval_registry(&owner, "window", "source", Some(&receipt), Some(after), Some(foreign)).await.is_err());
+    assert!(intents::write_approval_registry(&owner, "window", "source", None, Some(after), Some(before)).await.is_err());
+    assert!(intents::write_approval_registry(&owner, "window", "source", Some(&receipt), None, Some(before)).await.is_err());
+    assert!(repository::set_app_setting(&pool, intents::APPROVAL_REGISTRY_KEY, "{}").await.is_err());
+    assert!(repository::delete_app_setting(&pool, intents::APPROVAL_REGISTRY_KEY).await.is_err());
+    assert!(repository::compare_and_swap_app_setting(&pool, intents::APPROVAL_REGISTRY_KEY, Some(after), "{}").await.is_err());
+    let stored = repository::get_app_setting(&pool, intents::APPROVAL_REGISTRY_KEY).await.unwrap().unwrap();
+    assert_eq!(stored.value_json, after);
+    intents::write_approval_registry(&owner, "window", "source", Some(&receipt), Some(after), Some(before)).await.unwrap();
+    runtime.finish_intent(&owner, "window", &receipt).await.unwrap();
+}
+
+#[tokio::test]
+async fn deleted_chat_allows_only_orphan_copy_cleanup_without_clearing_unknown_effects() {
+    use super::intents::{self, IntentIdentity, IntentKind, IntentMutation, IntentScope};
+    let (_dir, pool) = fixture().await;
+    let owner = crate::core::db_state::DbPool::default();
+    owner.set_ready(pool.clone()).await.unwrap();
+    let runtime = runtime::ChatAdmissionRuntime::default();
+    runtime.open_browser(owner.clone(), "window", "browser").await.unwrap();
+    let receipt = runtime.begin_intent(&owner, "window", "browser", IntentIdentity {
+        conversation_id: "source".into(), kind: IntentKind::Queue, id: "waiting".into(),
+    }, IntentMutation::Retain).await.unwrap();
+    let parent = OperationPermit::begin_turn(owner.clone(), "source", "active-turn").await.unwrap();
+    let provider = parent.provider_invocation("request").await.unwrap();
+    provider.dispatched().await.unwrap();
+    provider.unknown().await.unwrap();
+    repository::delete_conversation(&pool, "source").await.unwrap();
+    let mut connection = pool.acquire().await.unwrap();
+    assert_eq!(intents::classify_copy(&mut connection, "source", IntentMutation::Remove).await.unwrap(), IntentScope::Removed);
+    assert!(intents::classify_copy(&mut connection, "source", IntentMutation::Retain).await.is_err());
+    drop(connection);
+    assert!(OperationPermit::begin_turn(owner, "source", "forbidden").await.is_err());
+    let phases: Vec<(String, String)> = sqlx::query_as("SELECT kind,phase FROM chat_admission_operations WHERE conversation_id='source' ORDER BY kind").fetch_all(&pool).await.unwrap();
+    assert!(phases.contains(&("provider".into(), "unknown".into())));
+    assert!(phases.iter().any(|(kind,phase)| kind=="queue" && phase!="completed"));
+    assert_eq!(sqlx::query_scalar::<_,i64>("SELECT count(*) FROM chat_admission_operations WHERE operation_id=?").bind(receipt.operation_id).fetch_one(&pool).await.unwrap(), 1);
+}
+
+#[tokio::test]
+async fn approval_opaque_root_is_preserved_verbatim_without_granting_reconciliation() {
+    use super::intents::{self, IntentIdentity, IntentKind, IntentMutation};
+    let (_dir, pool) = fixture().await;
+    let opaque = "{unreadable";
+    sqlx::query("INSERT INTO app_settings(key,value_json,updated_at) VALUES(?,?,'t')").bind(intents::APPROVAL_REGISTRY_KEY).bind(opaque).execute(&pool).await.unwrap();
+    let owner = crate::core::db_state::DbPool::default();
+    owner.set_ready(pool.clone()).await.unwrap();
+    let runtime = runtime::ChatAdmissionRuntime::default();
+    runtime.open_browser(owner.clone(), "window", "browser").await.unwrap();
+    let receipt = runtime.begin_intent(&owner, "window", "browser", IntentIdentity {
+        conversation_id: "source".into(), kind: IntentKind::Approval, id: "new".into(),
+    }, IntentMutation::Retain).await.unwrap();
+    let preserved = serde_json::json!({"version":1,"preservedData":[{"valueJson":opaque}],"requests":{"source":{"opaque":"current"}}}).to_string();
+    let lost = serde_json::json!({"version":1,"requests":{"source":{"opaque":"current"}}}).to_string();
+    assert!(intents::write_approval_registry(&owner, "window", "source", Some(&receipt), Some(opaque), Some(&lost)).await.is_err());
+    intents::write_approval_registry(&owner, "window", "source", Some(&receipt), Some(opaque), Some(&preserved)).await.unwrap();
+    assert_eq!(sqlx::query_scalar::<_,i64>("SELECT browser_reconciled FROM chat_admission_owners WHERE conversation_id='source'").fetch_one(&pool).await.unwrap(),0);
+}

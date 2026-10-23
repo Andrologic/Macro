@@ -619,6 +619,10 @@ pub async fn delete_conversations(pool: &SqlitePool, ids: &[String]) -> DbResult
 }
 
 pub async fn delete_app_setting(pool: &SqlitePool, key: &str) -> DbResult<bool> {
+    if key == super::chat_admission::intents::APPROVAL_REGISTRY_KEY {
+        return Err(super::DbError::Validation("chat_admission_reserved_setting".into()));
+    }
+
     let result = sqlx::query("DELETE FROM app_settings WHERE key = ?")
         .bind(key)
         .execute(pool)
@@ -3065,6 +3069,10 @@ pub async fn set_app_setting(
     key: &str,
     value_json: &str,
 ) -> DbResult<AppSettingRecord> {
+    if key == super::chat_admission::intents::APPROVAL_REGISTRY_KEY {
+        return Err(super::DbError::Validation("chat_admission_reserved_setting".into()));
+    }
+
     let now = chrono::Utc::now().to_rfc3339();
 
     sqlx::query(
@@ -3095,6 +3103,10 @@ pub async fn compare_and_swap_app_setting(
     expected_value_json: Option<&str>,
     value_json: &str,
 ) -> DbResult<CompareAndSwapAppSettingResult> {
+    if key == super::chat_admission::intents::APPROVAL_REGISTRY_KEY {
+        return Err(super::DbError::Validation("chat_admission_reserved_setting".into()));
+    }
+
     let now = chrono::Utc::now().to_rfc3339();
     let result = sqlx::query(
         r#"

@@ -20,7 +20,11 @@ const recovery = await import("./toolApprovalRecovery");
 const loadConfiguration = mock(async (): Promise<ScopedTurnConfiguration | null> => null);
 const saveRecovery = mock(async (_id: string, _approval: PendingToolApproval | null): Promise<void> => { });
 mock.module("./configurationClient", () => ({ ...configuration, loadScopedTurnConfiguration: loadConfiguration }));
-mock.module("./toolApprovalRecovery", () => ({ ...recovery, persistToolApprovalRecovery: saveRecovery }));
+mock.module("./toolApprovalRecovery", () => ({ ...recovery, persistToolApprovalRecovery: saveRecovery,
+  admitToolApprovalRecovery: async (conversationId: string, approval: PendingToolApproval) => {
+    if (!conversationId || !approval.assistantMessageId || !approval.toolCallId) throw new Error("Missing approval identity");
+    return { kind: "conversation" as const };
+  } }));
 const { createChatToolExecution } = await import("./chatToolExecution");
 
 function deferred<T>() {

@@ -102,3 +102,11 @@ export function chatAdmissionBeginIntent(runtime: string, identity: ChatIntentId
 export function chatAdmissionFinishIntent(receipt: ChatIntentReceipt): Promise<void> {
   return invoke('chat_admission_finish_intent', { receipt });
 }
+
+export function chatAdmissionWriteApprovalRegistry(conversationId: string, admission: ChatIntentAdmission,
+  expectedValueJson: string | null, valueJson: string | null): Promise<void> {
+  return invoke('chat_admission_write_approval_registry', {
+    conversationId, receipt: admission.kind === 'globalChat' ? admission.receipt : null,
+    expectedValueJson, valueJson,
+  });
+}
