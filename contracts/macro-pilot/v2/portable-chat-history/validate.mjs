@@ -159,7 +159,7 @@ function unbase64(data) {
 export async function validatePortableArchive(lines, contractSha, ports) {
   if(!ports||typeof ports.reserve!=='function'||typeof ports.inspect!=='function'||typeof ports.digest!=='function'||typeof ports.append!=='function') fail('invalid_portable_ports');
   const reserve=bytes=>{if(!integer(bytes))fail('resource_limit');const release=ports.reserve(bytes);if(typeof release!=='function')fail('invalid_portable_ports');return release;};
-  const held=[], headers=[], origins=new Map(), messages=new Map(), links=[];
+  const held=[], headers=[], origins=new Map(), messages=new Map(), links=[], assetTargets=new Set(), positions=new Set();
   let descriptor, active, buffer, releaseRecord, position=0, total=0, fragments=0;
   const checkedDigest=async bytes=>{ const result=await ports.digest(bytes);if(!hash(result))fail('invalid_portable_ports');return result; };
   try {
@@ -197,6 +197,9 @@ export async function validatePortableArchive(lines, contractSha, ports) {
         if(h.entry.kind==='association') {
           const e=h.entry, target=headers[e.to];
           if(headers[e.from]?.entry.kind!=='message'||!target||(e.relation==='asset_for_message'?target.entry.kind!=='asset':e.relation==='citation_for_message'?target.entry.kind!=='citation':target.entry.kind!=='historical_text'))fail('invalid_portable_association');
+          const key=`${e.from}:${e.relation}:${e.position}`;
+          if(positions.has(key)||e.relation==='asset_for_message'&&assetTargets.has(e.to))fail('invalid_portable_association');
+          positions.add(key);if(e.relation==='asset_for_message')assetTargets.add(e.to);
           links.push(e);
         }
         await ports.inspect(h,buffer,origin,meta);
@@ -214,7 +217,7 @@ export async function validatePortableArchive(lines, contractSha, ports) {
       const o=origins.get(h.origin);
       if(o.message!==undefined&&h.entry.kind!=='message'&&!associated.has(`${messages.get(o.message)}:${h.ordinal}`))fail('invalid_portable_association');
     }
-    for(const h of headers)if(h.entry.kind==='asset'&&!links.some(l=>l.to===h.ordinal&&l.relation==='asset_for_message'))fail('invalid_portable_association');
+    for(const h of headers)if(h.entry.kind==='asset'&&!assetTargets.has(h.ordinal))fail('invalid_portable_association');
     held.push(reserve(1024+headers.reduce((n,h)=>n+renderPortableHeader(h).length*24,0)+roots[0].policy.length*12));
     const manifestBytes=portableManifestInput(roots[0].captureManifest,roots[0].policy,headers);
     if(await checkedDigest(manifestBytes)!==descriptor.manifest_sha256)fail('invalid_portable_digest');

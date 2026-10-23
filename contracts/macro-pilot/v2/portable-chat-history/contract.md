@@ -150,7 +150,9 @@ A source policy claim cannot waive current target policy. Fixed diagnostics cont
 no private input, property paths, filenames, provider messages or payload.
 
 Associations come after referenced message/target, payload empty, closed relation
-and position. Target mapping UUIDs are stable per import and not source IDs.
+and position. A from/relation/position tuple is unique, matching native storage;
+an asset target has one owning association. Membership is indexed, without a
+per-asset scan of all links. Target mapping UUIDs are stable per import and not source IDs.
 Ordering uses records and association positions, never target UUID sort. All
 selected dependencies must be recovered from target records/associations/mapping.
 Original/reflection records excluded from projection remain independently

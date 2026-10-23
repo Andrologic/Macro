@@ -7,7 +7,7 @@
     },
     {
       "path": "contract.md",
-      "sha256": "bc3e0173776ce4c2193724b42dce499b8f52460186bcc6e82d51333f1bf0f3ad"
+      "sha256": "1b1182d1ae54b14a988c78edc4ad3291db875d72b4bff5e477ecc5124d0dda01"
     },
     {
       "path": "frame.schema.json",
@@ -35,7 +35,7 @@
     },
     {
       "path": "validate.mjs",
-      "sha256": "cf64250ec1e8a886ee025b4ea1ccce33999f16610367c32a0f3c13d3f1c06428"
+      "sha256": "05aa90176f75109da559b46fb1d5a2dbc9657ee6636e6f9f61056fb05585a688"
     },
     {
       "path": "vocabulary.json",

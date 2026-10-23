@@ -31,6 +31,9 @@ let before=appends;await assert.rejects(run(lateManifest),{message:'invalid_port
 const lateAssociation=structuredClone(frames), bad={ordinal:3,entry:{kind:'association',from:999,to:2,position:0,relation:'data_for_message'},bytes:0,sha256:await digest(new Uint8Array())};
 lateAssociation[0].records=4;lateAssociation[0].manifest_sha256=await digest(portableManifestInput(capture,policy,[...headers,bad]));lateAssociation.push({header:bad,offset:0,data:''});
 before=appends;await assert.rejects(run(lateAssociation),{message:'invalid_portable_association'});assert.equal(appends-before,3);assert.equal(used,0);
+const duplicatePosition=structuredClone(frames), association={ordinal:3,entry:{kind:'association',from:2,to:1,position:0,relation:'data_for_message'},bytes:0,sha256:await digest(new Uint8Array())};
+const duplicate={...association,ordinal:4};duplicatePosition[0].records=5;duplicatePosition.push({header:association,offset:0,data:''},{header:duplicate,offset:0,data:''});
+await assert.rejects(run(duplicatePosition),{message:'invalid_portable_association'});assert.equal(used,0);
 for(const v of ['\uD800','\uDC00',{key:'\uD800'}, {'\uD800':'ok'}])assert.throws(()=>assertPortableUnicode(v),{message:'invalid_portable_unicode'});
 for(const v of ['\uFEFF','é🙂','\uD800\uDC00'])assert.doesNotThrow(()=>assertPortableUnicode(v));
 const args='{"integer":9007199254740993,"overflow":1e400}';assert.equal(new TextDecoder().decode(utf8(args)),args);
