@@ -1,3 +1,4 @@
+import { beginChatIntent, finishChatIntent } from '../../services/chatAdmission';
 import { reportPersistenceIssue, clearPersistenceIssue } from "../../services/persistenceHealth";
 import type {
   ChatMessage,
@@ -441,41 +442,71 @@ const isQuestionnaireDraft = (
   );
 };
 
-export const loadQuestionnaireDraftsFromStorage = (): Record<
-  string,
-  ConversationQuestionnaireDraft
-> => {
+/** Admission reads must preserve an unknown document instead of certifying it empty. */
+export const readQuestionnaireDraftsFromStorage = (): Record<string, ConversationQuestionnaireDraft> => {
+  if (!hasLocalStorage()) throw new Error('Questionnaire storage is unavailable.');
+  const raw = window.localStorage.getItem(QUESTIONNAIRE_DRAFTS_STORAGE_KEY);
+  if (raw === null) return {};
+  const parsed: unknown = JSON.parse(raw);
+  if (!isRecord(parsed) || !Object.values(parsed).every(isQuestionnaireDraft)) {
+    throw new Error('Saved questionnaire drafts are invalid. Original data preserved.');
+  }
+  return parsed as Record<string, ConversationQuestionnaireDraft>;
+};
+
+export const loadQuestionnaireDraftsFromStorage = (): Record<string, ConversationQuestionnaireDraft> => {
   if (!hasLocalStorage()) return {};
   try {
-    const raw = window.localStorage.getItem(QUESTIONNAIRE_DRAFTS_STORAGE_KEY);
-    if (!raw) return {};
-    const parsed = JSON.parse(raw) as unknown;
-    if (!isRecord(parsed)) {
-      return {};
-    }
-    return Object.fromEntries(
-      Object.entries(parsed).filter(([, value]) =>
-        isQuestionnaireDraft(value),
-      ),
-    ) as Record<string, ConversationQuestionnaireDraft>;
-  } catch {
-    return {};
-  }
+    const parsed: unknown = JSON.parse(window.localStorage.getItem(QUESTIONNAIRE_DRAFTS_STORAGE_KEY) ?? '{}');
+    return isRecord(parsed) ? Object.fromEntries(Object.entries(parsed).filter(([, value]) => isQuestionnaireDraft(value))) as Record<string, ConversationQuestionnaireDraft> : {};
+  } catch { return {}; }
+};
+
+let questionnaireWrites: Promise<void> = Promise.resolve();
+let questionnaireWriterGeneration = 0;
+let questionnaireWriterRetired = false;
+export const activateQuestionnaireDraftWriter = (): void => { questionnaireWriterRetired = false; questionnaireWriterGeneration += 1; };
+export const retireQuestionnaireDraftWriter = async (): Promise<void> => {
+  questionnaireWriterRetired = true;
+  questionnaireWriterGeneration += 1;
+  await drainQuestionnaireDraftWrites();
+};
+export const drainQuestionnaireDraftWrites = async (): Promise<void> => {
+  let pending: Promise<void>;
+  do { pending = questionnaireWrites; await pending.catch(() => undefined); } while (pending !== questionnaireWrites);
 };
 
 export const saveQuestionnaireDraftsToStorage = (
   draftsByConversationId: Record<string, ConversationQuestionnaireDraft>,
-) => {
-  if (!hasLocalStorage()) return;
-  try {
-    window.localStorage.setItem(
-      QUESTIONNAIRE_DRAFTS_STORAGE_KEY,
-      JSON.stringify(draftsByConversationId),
-    );
+): Promise<void> => {
+  const next = structuredClone(draftsByConversationId);
+  const generation = questionnaireWriterGeneration;
+  const assertOwner = () => {
+    if (questionnaireWriterRetired || generation !== questionnaireWriterGeneration) throw new Error('Questionnaire draft owner has retired.');
+  };
+  const write = questionnaireWrites.catch(() => undefined).then(async () => {
+    assertOwner();
+    const previous = readQuestionnaireDraftsFromStorage();
+    const changed = [...new Set([...Object.keys(previous), ...Object.keys(next)])]
+      .filter(id => JSON.stringify(previous[id]) !== JSON.stringify(next[id]));
+    const admissions = [];
+    for (const conversationId of changed) {
+      admissions.push({ conversationId, admission: await beginChatIntent({ conversationId,
+        kind: 'recovery', id: 'questionnaire-draft' }, Object.hasOwn(next, conversationId) ? 'retain' : 'remove') });
+    }
+    assertOwner();
+    window.localStorage.setItem(QUESTIONNAIRE_DRAFTS_STORAGE_KEY, JSON.stringify(next));
+    for (const { conversationId, admission } of admissions) {
+      if (!Object.hasOwn(next, conversationId)) await finishChatIntent(admission);
+    }
     clearPersistenceIssue(QUESTIONNAIRE_DRAFTS_STORAGE_KEY);
-  } catch {
-    reportPersistenceIssue(QUESTIONNAIRE_DRAFTS_STORAGE_KEY, "The questionnaire draft could not be saved. Keep this session open.");
-  }
+  });
+  questionnaireWrites = write;
+  // Existing synchronous UI setters remain optimistic; their durable writer is
+  // admitted and joined separately. Failed writes remain visible to reconciliation.
+  void write.catch(() => reportPersistenceIssue(QUESTIONNAIRE_DRAFTS_STORAGE_KEY,
+    "The questionnaire draft could not be saved. Keep this session open."));
+  return write;
 };
 
 export const MAX_MESSAGE_IMAGES_STORAGE_LENGTH = 40_000_000;

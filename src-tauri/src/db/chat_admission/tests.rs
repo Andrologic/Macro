@@ -1132,12 +1132,12 @@ async fn intent_receipts_survive_lost_ack_and_refuse_stale_browser_revisions() {
     let first = runtime.begin_intent(&owner, "window", "old", identity.clone(), IntentMutation::Retain).await.unwrap();
     let repeated = runtime.begin_intent(&owner, "window", "old", identity.clone(), IntentMutation::Retain).await.unwrap();
     assert_eq!(first.operation_id, repeated.operation_id);
-    assert_eq!(first.revision, repeated.revision);
+    assert_eq!(first.revision + 1, repeated.revision);
     runtime.close_browser(&owner, &crate::ai::AiState::default(), &crate::ai::admitted_http::AdmittedHttp::default(), "window", "old").await.unwrap();
     runtime.open_browser(owner.clone(), "window", "new").await.unwrap();
     let retained = runtime.begin_intent(&owner, "window", "new", identity.clone(), IntentMutation::Retain).await.unwrap();
     assert_eq!(retained.operation_id, first.operation_id);
-    assert_eq!(retained.revision, first.revision + 1);
+    assert_eq!(retained.revision, repeated.revision + 1);
     assert!(runtime.finish_intent(&owner, "window", &first).await.is_err());
     runtime.finish_intent(&owner, "window", &retained).await.unwrap();
     runtime.finish_intent(&owner, "window", &retained).await.unwrap();
@@ -1372,4 +1372,27 @@ async fn preparation_receipt_waits_for_metadata_and_replays_after_handle_ack() {
             assert_eq!(sqlx::query_scalar::<_,String>("SELECT phase FROM chat_admission_operations WHERE operation_id=?").bind(&context.handle).fetch_one(&pool).await.unwrap(), "completed");
         }
     }
+}
+
+#[tokio::test]
+async fn recovery_draft_can_reopen_but_old_receipts_cannot_close_new_writes() {
+    use super::intents::{IntentIdentity, IntentKind, IntentMutation};
+    let (_dir, pool) = fixture().await;
+    let owner = crate::core::db_state::DbPool::default();
+    owner.set_ready(pool.clone()).await.unwrap();
+    let runtime = runtime::ChatAdmissionRuntime::default();
+    runtime.open_browser(owner.clone(), "window", "browser").await.unwrap();
+    let identity = IntentIdentity { conversation_id: "source".into(), kind: IntentKind::Recovery, id: "questionnaire-draft".into() };
+    let first = runtime.begin_intent(&owner,"window","browser",identity.clone(),IntentMutation::Retain).await.unwrap();
+    let revision: i64 = sqlx::query_scalar("SELECT revision FROM chat_admission_owners WHERE conversation_id='source'").fetch_one(&pool).await.unwrap();
+    let changed = runtime.begin_intent(&owner,"window","browser",identity.clone(),IntentMutation::Retain).await.unwrap();
+    assert!(runtime.finish_intent(&owner,"window",&first).await.is_err());
+    assert!(sqlx::query_scalar::<_,i64>("SELECT revision FROM chat_admission_owners WHERE conversation_id='source'").fetch_one(&pool).await.unwrap()>revision);
+    runtime.finish_intent(&owner,"window",&changed).await.unwrap();
+    let reopened = runtime.begin_intent(&owner,"window","browser",identity.clone(),IntentMutation::Retain).await.unwrap();
+    assert_eq!(reopened.operation_id,first.operation_id);
+    assert!(runtime.finish_intent(&owner,"window",&changed).await.is_err());
+    runtime.finish_intent(&owner,"window",&reopened).await.unwrap();
+    hold_restored_profile(&pool).await.unwrap();
+    assert!(runtime.begin_intent(&owner,"window","browser",identity,IntentMutation::Retain).await.is_err());
 }

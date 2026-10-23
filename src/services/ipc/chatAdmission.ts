@@ -86,7 +86,7 @@ export function chatAdmissionCloseBrowser(runtime: string): Promise<void> {
 
 export interface ChatIntentIdentity {
   conversationId: string;
-  kind: 'queue' | 'steer' | 'question' | 'approval' | 'unsaved';
+  kind: 'queue' | 'steer' | 'question' | 'approval' | 'unsaved' | 'recovery';
   id: string;
 }
 export interface ChatIntentReceipt {

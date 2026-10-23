@@ -366,6 +366,8 @@ import {
   saveComposerDraftsToStorage,
   saveMessageImagesToStorage,
   saveQuestionnaireDraftsToStorage,
+  activateQuestionnaireDraftWriter,
+  retireQuestionnaireDraftWriter,
   saveUnsavedAssistantResponseToStorage,
   setActiveQuestionnaireDraftStep,
   setQuestionnaireDraftForConversation,
@@ -3647,10 +3649,11 @@ export const useChatStore = create<ChatStore>((set, get) => {
       try { retired.stop(); } catch (error) { subscriptionCleanupFailures.push(error); }
       finally {
         const queueRetirement = queueRuntime?.retire();
+        const questionnaireRetirement = retireQuestionnaireDraftWriter();
         queueRuntimeEpoch += 1;
         queueRuntime = undefined;
         queueRuntimeLoading = undefined;
-        subscriptionRetirement = Promise.all([subscriptionRetirement, retired.drain(), queueRetirement, retireChatBrowser()]).then(() => undefined);
+        subscriptionRetirement = Promise.all([subscriptionRetirement, retired.drain(), queueRetirement, questionnaireRetirement, retireChatBrowser()]).then(() => undefined);
       }
     }
   };
@@ -3662,6 +3665,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
       return () => { if (subscriptionScope === existing) stopSubscriptions(); };
     }
     const scope = createLifecycleScope();
+    activateQuestionnaireDraftWriter();
     subscriptionScope = scope;
     const stop = () => { if (subscriptionScope === scope) stopSubscriptions(); };
     lifecycle?.signal.addEventListener("abort", stop, { once: true });

@@ -10,10 +10,10 @@ pub(crate) enum IntentMutation { Retain, Remove }
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub(crate) enum IntentKind { Queue, Steer, Question, Approval, Unsaved }
+pub(crate) enum IntentKind { Queue, Steer, Question, Approval, Unsaved, Recovery }
 impl IntentKind {
     pub(crate) fn as_str(self) -> &'static str {
-        match self { Self::Queue => "queue", Self::Steer => "steer", Self::Question => "question", Self::Approval => "approval", Self::Unsaved => "unsaved" }
+        match self { Self::Queue => "queue", Self::Steer => "steer", Self::Question => "question", Self::Approval => "approval", Self::Unsaved => "unsaved", Self::Recovery => "recovery" }
     }
 }
 
@@ -56,7 +56,7 @@ pub(crate) async fn classify_copy(
 }
 
 /// The storage owner calls this before changing its existing durable document.
-/// Retrying the same admitted mutation returns the same receipt.
+/// Each new write invalidates an earlier browser reconciliation snapshot.
 pub(crate) async fn begin(
     owner: &DbPool, caller: &str, runtime: &str, identity: IntentIdentity, mutation: IntentMutation,
 ) -> DbResult<IntentReceipt> {
@@ -79,10 +79,16 @@ pub(crate) async fn begin(
             lease.committed = true;
             return Ok(IntentReceipt { operation_id: id, runtime: browser, revision: acknowledged_revision, identity });
         }
-        if !matches!(phase.as_str(), "prepared" | "dispatched" | "result_pending" | "unknown") {
+        if !matches!(phase.as_str(), "prepared" | "dispatched" | "result_pending" | "unknown")
+            && !(identity.kind.as_str() == "recovery" && matches!(phase.as_str(), "completed" | "no_effect")) {
             return Err(invalid("chat_admission_intent_already_closed"));
         }
         if window == caller && browser == runtime {
+            let revision = revision.checked_add(1).ok_or_else(|| invalid("chat_admission_revision_exhausted"))?;
+            sqlx::query("UPDATE chat_admission_operations SET revision=?,phase=CASE WHEN kind='recovery' THEN 'prepared' ELSE phase END WHERE operation_id=?")
+                .bind(revision).bind(&id).execute(&mut *tx).await?;
+            sqlx::query("UPDATE chat_admission_owners SET revision=revision+1,browser_reconciled=0 WHERE conversation_id=?")
+                .bind(&identity.conversation_id).execute(&mut *tx).await?;
             (id, revision)
         } else {
             // The one storage owner can retain a known surviving document entry
@@ -91,7 +97,7 @@ pub(crate) async fn begin(
                 .bind(&browser).bind(&window).fetch_one(&mut *tx).await?;
             if retired == 0 { return Err(invalid("chat_admission_intent_owner_active")); }
             let revision = revision.checked_add(1).ok_or_else(|| invalid("chat_admission_revision_exhausted"))?;
-            sqlx::query("UPDATE chat_admission_operations SET browser_caller=?,browser_runtime=?,runtime_generation=?,revision=? WHERE operation_id=?")
+            sqlx::query("UPDATE chat_admission_operations SET browser_caller=?,browser_runtime=?,runtime_generation=?,revision=?,phase=CASE WHEN kind='recovery' THEN 'prepared' ELSE phase END WHERE operation_id=?")
                 .bind(caller).bind(runtime).bind(&guard.ready.catalog_generation).bind(revision).bind(&id).execute(&mut *tx).await?;
             sqlx::query("UPDATE chat_admission_owners SET revision=revision+1,browser_reconciled=0 WHERE conversation_id=?")
                 .bind(&identity.conversation_id).execute(&mut *tx).await?;
