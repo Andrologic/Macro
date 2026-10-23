@@ -1543,3 +1543,119 @@ async fn reservation_resolves_cross_audit_run_links_and_guards_their_writers() {
         sqlx::query("UPDATE agent_runs SET prompt='Still independent' WHERE id='unrelated'").execute(&pool).await.unwrap();
     }
 }
+
+#[tokio::test]
+async fn independent_turn_waits_for_real_descendant_cleanup_and_preserves_unknown_tool() {
+    use std::sync::Arc;
+    use tokio::io::AsyncBufReadExt;
+    use crate::db::tool_invocations::{RecordToolInvocationInput,ToolInvocationIdentity,ToolEffectClass};
+    let (_dir,pool)=fixture().await;
+    let owner=crate::core::db_state::DbPool::default();owner.set_ready(pool.clone()).await.unwrap();
+    let runtime=Arc::new(runtime::ChatAdmissionRuntime::default());
+    let context=runtime.begin(owner.clone(),"window","browser","source","turn").await.unwrap();
+    let parent=runtime.parent("window",&context,"source").await.unwrap();
+    let provider=parent.provider_attempt_with_boundary("lost-provider","provider","context",ProviderBoundary::IndependentRequest).await.unwrap();
+    provider.dispatched().await.unwrap();provider.settle_provider_return(&Err("lost ACK".into())).await.unwrap();drop(provider);
+    let identity=ToolInvocationIdentity{conversation_id:"source".into(),turn_id:"turn".into(),message_id:"message".into(),call_id:"tool".into()};
+    parent.record_tool(RecordToolInvocationInput{identity:identity.clone(),tool_name:"terminal_run".into(),effect_class:ToolEffectClass::ExternalEffect,arguments:serde_json::json!({}),remote_execution_id:None}).await.unwrap();
+    let ai=crate::ai::AiState::default();let http=Arc::new(crate::ai::admitted_http::AdmittedHttp::default());
+    let reservation=ai.reserve_stream("descendant".into()).unwrap();
+    let marker=parent.tool_permit(&identity).await.unwrap();
+    let physical=Arc::new(marker.child(WorkKind::Tool,Some("descendant")).await.unwrap());drop(marker);
+    let (started,ready)=tokio::sync::oneshot::channel();
+    let (cancelled,observed)=tokio::sync::oneshot::channel();
+    let (release,cleanup)=tokio::sync::oneshot::channel();
+    let result=reservation.spawn_tool(physical,move |cancel|async move {
+        let mut child=tokio::process::Command::new("/bin/sh").args(["-c","printf 'synthetic-ready\n' >&2; exec sleep 30"])
+            .stderr(std::process::Stdio::piped()).kill_on_drop(true).spawn().unwrap();
+        let mut stderr=tokio::io::BufReader::new(child.stderr.take().unwrap()).lines();
+        assert_eq!(stderr.next_line().await.unwrap().as_deref(),Some("synthetic-ready"));started.send(()).unwrap();
+        cancel.cancelled().await;child.start_kill().unwrap();child.wait().await.unwrap();
+        assert!(stderr.next_line().await.unwrap().is_none());cancelled.send(()).unwrap();
+        cleanup.await.unwrap();Ok::<_,String>(())
+    }).unwrap();
+    ready.await.unwrap();
+    let r=runtime.clone();let o=owner.clone();let a=ai.clone();let h=http.clone();
+    let mut closing=tokio::spawn(async move {r.retire_previous_unknown_turns(&o,&a,&h,"window","browser","source","new-user-turn").await});
+    observed.await.unwrap();
+    assert!(tokio::time::timeout(std::time::Duration::from_millis(30),&mut closing).await.is_err());
+    assert!(owner.set_ready(pool.clone()).await.unwrap_err().message.contains("generation_busy"));
+    assert_eq!(sqlx::query_scalar::<_,i64>("SELECT local_closed_at IS NULL FROM chat_admission_operations WHERE operation_id=?").bind(&context.handle).fetch_one(&pool).await.unwrap(),1);
+    assert!(OperationPermit::begin_turn(owner.clone(),"source","new-user-turn").await.is_err());
+    release.send(()).unwrap();closing.await.unwrap().unwrap();assert!(result.await.is_err());
+    assert!(runtime.parent("window",&context,"source").await.is_err());
+    assert!(runtime.begin(owner.clone(),"window","browser","source","turn").await.is_err());
+    let next=runtime.begin(owner.clone(),"window","browser","source","new-user-turn").await.unwrap();
+    let next_parent=runtime.parent("window",&next,"source").await.unwrap();
+    assert!(next_parent.provider_attempt("opaque","provider","context").await.is_err());
+    let independent=next_parent.provider_attempt_with_boundary("independent","provider","context",ProviderBoundary::IndependentRequest).await.unwrap();
+    independent.no_effect().await.unwrap();
+    // The old unknown tool does not prevent this distinct turn's real writer.
+    sqlx::query("INSERT INTO messages(id,conversation_id,role,content,turn_id,created_at) VALUES('next-message','source','assistant','','new-user-turn','t')").execute(&pool).await.unwrap();
+    let mut write=response_write("New response");write.id="next-message";write.turn_id=Some("new-user-turn".into());
+    next_parent.finish_response(write).await.unwrap();
+    assert_eq!(sqlx::query_scalar::<_,String>("SELECT status FROM tool_invocations WHERE call_id='tool'").fetch_one(&pool).await.unwrap(),"unknown");
+    let inspection=runtime.begin_reconciliation(&owner,"window","browser","source").await.unwrap();
+    assert!(runtime.complete_reconciliation(&owner,"window","browser",&inspection,&no_browser_intentions()).await.is_err());
+    assert!(runtime.reserve_reconciled_source(&owner,"window","browser",&inspection).await.is_err());
+    drop(parent);drop(next_parent);drop(independent);
+}
+
+#[tokio::test]
+async fn official_startup_closes_only_local_lifetime_and_keeps_same_turn_blocked() {
+    let (_dir,pool)=fixture().await;
+    let owner=crate::core::db_state::DbPool::default();owner.set_ready(pool.clone()).await.unwrap();
+    let parent=OperationPermit::begin_turn(owner.clone(),"source","old-turn").await.unwrap();
+    let attempt=parent.provider_attempt_with_boundary("attempt","provider","context",ProviderBoundary::IndependentRequest).await.unwrap();
+    attempt.dispatched().await.unwrap();attempt.unknown().await.unwrap();drop(attempt);drop(parent);
+    owner.set_initializing().await;
+    reconcile_after_restart(&pool).await.unwrap();
+    owner.set_ready(pool.clone()).await.unwrap();
+    assert!(OperationPermit::begin_turn(owner.clone(),"source","old-turn").await.is_err());
+    let next=OperationPermit::begin_turn(owner,"source","new-turn").await.unwrap();
+    assert!(next.provider_attempt("opaque","provider","context").await.is_err());
+    next.provider_attempt_with_boundary("fresh","provider","context",ProviderBoundary::IndependentRequest).await.unwrap();
+    assert_eq!(sqlx::query_scalar::<_,String>("SELECT phase FROM chat_admission_operations WHERE request_id='attempt'").fetch_one(&pool).await.unwrap(),"unknown");
+}
+
+#[tokio::test]
+async fn missing_physical_receipt_keeps_only_the_affected_chat_unreconciled() {
+    use std::sync::Arc;
+    for panic in [false,true] {
+        let (_dir,pool)=fixture().await;
+        let owner=crate::core::db_state::DbPool::default();owner.set_ready(pool.clone()).await.unwrap();
+        let runtime=runtime::ChatAdmissionRuntime::default();
+        let context=runtime.begin(owner.clone(),"window","browser","source","old").await.unwrap();
+        let parent=runtime.parent("window",&context,"source").await.unwrap();
+        let ai=crate::ai::AiState::default();
+        let reservation=ai.reserve_stream("cleanup-failure".into()).unwrap();
+        let work=Arc::new(parent.child(WorkKind::Tool,Some("cleanup-failure")).await.unwrap());
+        let executed=work.clone();
+        let received=reservation.spawn_tool(work,move |_|async move {
+            if panic { panic!("synthetic cleanup panic"); }
+            executed.unknown().await.unwrap();
+            Err::<(),_>("synthetic cleanup failure".to_string())
+        }).unwrap();
+        assert!(received.await.is_err());
+        let http=crate::ai::admitted_http::AdmittedHttp::default();
+        assert!(runtime.retire_previous_unknown_turns(&owner,&ai,&http,"window","browser","source","next").await.unwrap_err().to_string().contains("local_lifetime_unreconciled"));
+        assert!(runtime.begin(owner.clone(),"window","browser","source","next").await.is_err());
+        drop(parent);drop(runtime);
+        owner.set_initializing().await;reconcile_after_restart(&pool).await.unwrap();owner.set_ready(pool.clone()).await.unwrap();
+        assert!(OperationPermit::begin_turn(owner.clone(),"source","after-restart").await.is_err());
+        sqlx::query("INSERT INTO conversations(id,title,scope_mode,created_at,updated_at) VALUES('unrelated','Other','Chat','t','t')").execute(&pool).await.unwrap();
+        OperationPermit::begin_turn(owner,"unrelated","independent").await.unwrap();
+    }
+}
+
+#[tokio::test]
+async fn opaque_provider_without_local_receipt_is_not_closed_by_restart() {
+    let (_dir,pool)=fixture().await;
+    let owner=crate::core::db_state::DbPool::default();owner.set_ready(pool.clone()).await.unwrap();
+    let parent=OperationPermit::begin_turn(owner.clone(),"source","old").await.unwrap();
+    let attempt=parent.provider_attempt("opaque","provider","bridge-session").await.unwrap();
+    attempt.dispatched().await.unwrap();attempt.unknown().await.unwrap();drop(attempt);drop(parent);
+    owner.set_initializing().await;reconcile_after_restart(&pool).await.unwrap();owner.set_ready(pool.clone()).await.unwrap();
+    assert!(OperationPermit::begin_turn(owner,"source","new").await.is_err());
+    assert_eq!(sqlx::query_scalar::<_,i64>("SELECT COUNT(*) FROM chat_admission_operations WHERE local_closed_at IS NOT NULL").fetch_one(&pool).await.unwrap(),0);
+}

@@ -90,6 +90,9 @@ impl StreamReservation {
             let outcome = AssertUnwindSafe(async move { run(cancel).await }).catch_unwind().await;
             let delivery = match outcome {
                 Ok(value) => {
+                    if value.is_ok() {
+                        work.local_execution_closed().await.map_err(|e| e.to_string())?;
+                    }
                     async {
                         work.result_pending().await.map_err(|e| e.to_string())?;
                         work.completed().await.map_err(|e| e.to_string())?;

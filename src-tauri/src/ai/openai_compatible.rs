@@ -646,7 +646,7 @@ async fn send_chat_completions_request(
         provider.base_url.trim_end_matches('/')
     );
     let url = reqwest::Url::parse(&url).map_err(|error| error.to_string())?;
-    let attempt = work.attempt(&provider.id, url.as_str()).await?;
+    let attempt = work.independent_request_attempt(&provider.id, url.as_str()).await?;
     let mut builder = client
         .post(url)
         .header(CONTENT_TYPE, "application/json")
@@ -1797,4 +1797,55 @@ mod tests {
             .fetch_all(&pool).await.unwrap();
         assert_eq!(phases, vec!["unknown", "unknown"]);
     }
+    #[tokio::test]
+    async fn independent_user_request_after_local_closure_keeps_old_unknown_and_refuses_cession() {
+        use crate::ai::{provider_work::{ProviderAdmission,ProviderWork,tests::{fixture_with_owner,HttpServer}},AiState,admitted_http::AdmittedHttp};
+        use crate::db::chat_admission::reconciliation::BrowserInspection;
+        use std::sync::Arc;
+        let server=HttpServer::start(vec![None,Some("HTTP/1.1 200 OK\r\nContent-Length: 14\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\ndata: [DONE]\n\n")]).await;
+        let (_dir,pool,owner,runtime,first)=fixture_with_owner("first-request").await;
+        let state=AiState::default();let http=AdmittedHttp::default();
+        for (id,work) in [("first-request",first)] {
+            let mut provider=provider("openai");provider.base_url=server.url.clone();
+            let task_work=work.clone();
+            state.reserve_stream(id.into()).unwrap().spawn_with_work(work,move |_|async move {
+                let mut request=request(None);request.request_id=id.into();request.conversation_id=Some("chat".into());
+                let body=build_chat_completions_request(&request,&provider)?;
+                let client=task_work.configure_http_client(reqwest::Client::builder()).no_proxy().build().unwrap();
+                send_chat_completions_request(&client,&provider,&request,"",&body,&task_work).await.map(|_|())
+            }).unwrap();
+            assert!(state.join_stream_task(id).await.unwrap().is_err());
+        }
+        let before:i64=sqlx::query_scalar("SELECT count(*) FROM chat_admission_operations WHERE phase='unknown'").fetch_one(&pool).await.unwrap();
+        assert!(before>0);
+        runtime.retire_previous_unknown_turns(&owner,&state,&http,"window","browser","chat","new-user-turn").await.unwrap();
+        assert!(runtime.begin(owner.clone(),"window","browser","chat","turn").await.is_err());
+        let context=runtime.begin(owner.clone(),"window","browser","chat","new-user-turn").await.unwrap();
+        let parent=runtime.parent("window",&context,"chat").await.unwrap();
+        let next=Arc::new(ProviderWork::admit(&pool,&runtime,"window",ProviderAdmission::GlobalChat{context},Some("chat"),"next-request").await.unwrap());
+        let mut provider=provider("openai");provider.base_url=server.url.clone();
+        let task_work=next.clone();
+        state.reserve_stream("next-request".into()).unwrap().spawn_with_work(next,move |_|async move {
+            let mut request=request(None);request.request_id="next-request".into();request.conversation_id=Some("chat".into());
+            request.messages=vec![message("user","A distinct user request")];
+            let body=build_chat_completions_request(&request,&provider)?;
+            assert_eq!(body["messages"][0]["content"],"A distinct user request");
+            assert!(body.get("previous_response_id").is_none());
+            let client=task_work.configure_http_client(reqwest::Client::builder()).no_proxy().build().unwrap();
+            let (response,_)=send_chat_completions_request(&client,&provider,&request,"",&body,&task_work).await?;
+            let bytes=response.bytes().await.map_err(|e|e.to_string())?;
+            let events=SseParser::default().push(&bytes)?;
+            assert_eq!(events.iter().filter_map(|s|extract_sse_data(s)).collect::<Vec<_>>(),["[DONE]"]);
+            Ok(())
+        }).unwrap();
+        state.join_stream_task("next-request").await.unwrap().unwrap();
+        parent.finish_preparation().await.unwrap();
+        assert_eq!(sqlx::query_scalar::<_,i64>("SELECT count(*) FROM chat_admission_operations WHERE phase='unknown'").fetch_one(&pool).await.unwrap(),before);
+        let handle=runtime.begin_reconciliation(&owner,"window","browser","chat").await.unwrap();
+        let empty=BrowserInspection{queue:vec![],unsaved:vec![],approvals:vec![],questions:vec![],drafts:vec![],steers:vec![]};
+        assert!(runtime.complete_reconciliation(&owner,"window","browser",&handle,&empty).await.is_err());
+        assert!(runtime.reserve_reconciled_source(&owner,"window","browser",&handle).await.is_err());
+        assert_eq!(server.stop().await,2); // One old send, one independent user send.
+    }
+
 }

@@ -35,6 +35,8 @@ CREATE TABLE chat_admission_operations (
  browser_runtime TEXT,
  browser_attempt TEXT,
  completion_receipt TEXT,
+ local_closed_at TEXT,
+ local_transport TEXT CHECK(local_transport IS NULL OR local_transport='http'),
  revision INTEGER NOT NULL DEFAULT 0 CHECK(typeof(revision)='integer' AND revision>=0),
  CHECK(parent_id IS NULL OR parent_id<>operation_id)
 );

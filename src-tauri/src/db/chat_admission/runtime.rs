@@ -277,6 +277,9 @@ impl ChatAdmissionRuntime {
             use sqlx::Connection;
             let mut tx = lease.begin_with("BEGIN IMMEDIATE").await?;
             guard.ready.check_source_schema(&mut tx).await?;
+            let roots:Vec<String>=sqlx::query_scalar("SELECT operation_id FROM chat_admission_operations WHERE parent_id IS NULL AND browser_runtime=? AND browser_caller=? AND runtime_generation=? AND local_closed_at IS NULL")
+                .bind(runtime).bind(caller).bind(&generation).fetch_all(&mut *tx).await?;
+            for root in roots { super::retirement::close_proven_root(&mut tx,&root).await?; }
             sqlx::query("UPDATE chat_admission_browsers SET phase='retired' WHERE runtime=? AND caller=? AND runtime_generation=? AND phase='retiring'")
                 .bind(runtime).bind(caller).bind(&generation).execute(&mut *tx).await?;
             tx.commit().await?;
@@ -308,6 +311,18 @@ impl ChatAdmissionRuntime {
             RootWorkKind::Turn,
         )
         .await
+    }
+
+    pub(crate) async fn retire_previous_unknown_turns(
+        &self, owner: &DbPool, ai: &crate::ai::AiState,
+        http: &crate::ai::admitted_http::AdmittedHttp,
+        caller: &str, runtime: &str, conversation: &str, turn: &str,
+    ) -> DbResult<()> {
+        let _lifecycle=self.lifecycle.lock().await;
+        self.check_browser(caller,runtime)?;
+        let closed=super::retirement::close_unknown_roots(owner,ai,http,caller,conversation,turn).await?;
+        self.turns.lock().await.retain(|handle,_|!closed.contains(handle));
+        Ok(())
     }
 
     pub(crate) async fn begin_root(

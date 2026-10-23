@@ -12,6 +12,19 @@ pub(crate) async fn fixture(
     ChatAdmissionRuntime,
     Arc<ProviderWork>,
 ) {
+    let (dir,pool,_owner,runtime,work)=fixture_with_owner(request).await;
+    (dir,pool,runtime,work)
+}
+
+pub(crate) async fn fixture_with_owner(
+    request: &str,
+) -> (
+    tempfile::TempDir,
+    SqlitePool,
+    DbPool,
+    ChatAdmissionRuntime,
+    Arc<ProviderWork>,
+) {
     let dir = tempfile::TempDir::new().unwrap();
     let pool = crate::db::create_pool(&dir.path().join("synthetic.db"))
         .await
@@ -22,7 +35,7 @@ pub(crate) async fn fixture(
     owner.set_ready(pool.clone()).await.unwrap();
     let runtime = ChatAdmissionRuntime::default();
     let context = runtime
-        .begin(owner, "window", "browser", "chat", "turn")
+        .begin(owner.clone(), "window", "browser", "chat", "turn")
         .await
         .unwrap();
     let work = ProviderWork::admit(
@@ -35,7 +48,7 @@ pub(crate) async fn fixture(
     )
     .await
     .unwrap();
-    (dir, pool, runtime, Arc::new(work))
+    (dir, pool, owner, runtime, Arc::new(work))
 }
 
 pub(crate) struct HttpServer {

@@ -41,6 +41,8 @@ pub(crate) fn retire_browser_from_native(app: &tauri::AppHandle, caller: &str) {
 pub(crate) async fn chat_admission_begin(
     pool: State<'_, DbPool>,
     admission_runtime: State<'_, ChatAdmissionRuntime>,
+    ai_state: State<'_, crate::ai::AiState>,
+    http: State<'_, crate::ai::admitted_http::AdmittedHttp>,
     window: WebviewWindow,
     runtime: String,
     conversation_id: String,
@@ -58,6 +60,7 @@ pub(crate) async fn chat_admission_begin(
         _ => return Err(command_error("chat_admission_conversation_missing")),
     }
     admission_runtime.open_browser_on_page(pool.inner().clone(), window.label(), &runtime, &page).await?;
+    admission_runtime.retire_previous_unknown_turns(&pool,&ai_state,&http,window.label(),&runtime,&conversation_id,&turn_id).await?;
     admission_runtime
         .begin_root(
             pool.inner().clone(),

@@ -8,6 +8,7 @@ const OBJECTS: &str = "name GLOB 'chat_admission_*' OR tbl_name GLOB 'chat_admis
 pub(crate) mod runtime;
 pub(crate) mod intents;
 pub(crate) mod reconciliation;
+pub(crate) mod retirement;
 
 static EXPECTED: OnceCell<Vec<(String, Option<String>)>> = OnceCell::const_new();
 
@@ -146,6 +147,12 @@ pub(crate) async fn reconcile_after_restart(pool: &SqlitePool) -> DbResult<()> {
     validate_schema(&mut tx).await?;
     sqlx::query("UPDATE chat_admission_operations SET phase='unknown',revision=revision+1 WHERE phase IN ('prepared','dispatched')")
         .execute(&mut *tx).await?;
+    // The old process cannot retain HTTP callbacks after exclusive startup.
+    // A child process or opaque runtime has no equivalent proof here.
+    sqlx::query("UPDATE chat_admission_operations SET local_closed_at=COALESCE(local_closed_at,?) WHERE local_transport='http'")
+        .bind(chrono::Utc::now().to_rfc3339()).execute(&mut *tx).await?;
+    let roots:Vec<String>=sqlx::query_scalar("SELECT operation_id FROM chat_admission_operations WHERE parent_id IS NULL AND local_closed_at IS NULL AND phase='unknown'").fetch_all(&mut *tx).await?;
+    for root in roots { retirement::close_proven_root(&mut tx,&root).await?; }
     sqlx::query("UPDATE chat_admission_browsers SET phase='retired' WHERE phase<>'retired'")
         .execute(&mut *tx).await?;
     sqlx::query("UPDATE chat_admission_owners SET browser_reconciled=0,runtime_generation=NULL")
@@ -183,6 +190,9 @@ pub(crate) async fn hold_restored_profile(pool: &SqlitePool) -> DbResult<()> {
 // The permit is native-only. Its fields cannot be reconstructed from an IPC
 // receipt or restored browser data. The frontend registry will own these values.
 #[allow(dead_code)]
+#[derive(Clone, Copy)]
+pub(crate) enum ProviderBoundary { ExistingContext, IndependentRequest }
+
 pub(crate) struct OperationPermit {
     owner: crate::core::db_state::DbPool,
     generation: String,
@@ -291,13 +301,11 @@ impl OperationPermit {
             .bind(conversation).fetch_optional(&mut *tx).await?;
         let incarnation =
             incarnation.ok_or_else(|| invalid("chat_admission_not_open_global_chat"))?;
-        // No provider owner currently attests a fresh runtime after an unknown
-        // effect. A changed browser session or provider ID is not that proof.
-        let uncertain: i64 = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM chat_admission_operations WHERE conversation_id=? AND incarnation=? AND kind IN ('provider','tool') AND phase='unknown')")
-            .bind(conversation).bind(&incarnation).fetch_one(&mut *tx).await?;
-        if uncertain != 0 {
-            return Err(invalid("chat_admission_effect_unreconciled"));
-        }
+        // Local retirement never resolves the remote outcome. Only a distinct
+        // user turn can proceed after the physical owner closed the old tree.
+        let uncertain: i64 = sqlx::query_scalar("WITH RECURSIVE ancestors(id,parent_id,local_closed_at,turn_id) AS (SELECT operation_id,parent_id,local_closed_at,turn_id FROM chat_admission_operations WHERE conversation_id=? AND incarnation=? AND kind IN ('provider','tool') AND phase='unknown' UNION SELECT p.operation_id,p.parent_id,p.local_closed_at,p.turn_id FROM chat_admission_operations p JOIN ancestors a ON a.parent_id=p.operation_id) SELECT EXISTS(SELECT 1 FROM ancestors WHERE parent_id IS NULL AND (local_closed_at IS NULL OR turn_id=?))")
+            .bind(conversation).bind(&incarnation).bind(turn).fetch_one(&mut *tx).await?;
+        if uncertain != 0 { return Err(invalid("chat_admission_effect_unreconciled")); }
         let recovery: i64 = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM chat_admission_operations WHERE conversation_id=? AND incarnation=? AND kind='unsaved' AND phase NOT IN ('completed','no_effect'))")
             .bind(conversation).bind(&incarnation).fetch_one(&mut *tx).await?;
         if recovery != 0 { return Err(invalid("chat_admission_response_recovery_pending")); }
@@ -517,15 +525,22 @@ impl OperationPermit {
         if provider.is_empty() || context.is_empty() {
             return Err(invalid("chat_admission_provider_context_missing"));
         }
-        self.admit_child(WorkKind::Provider, Some(request), Some((provider, context)))
+        self.admit_child(WorkKind::Provider, Some(request), Some((provider, context, ProviderBoundary::ExistingContext)))
             .await
+    }
+
+    /// Only a native owner constructing a complete independent request may use
+    /// this boundary. JavaScript and opaque HTTP submissions cannot select it.
+    pub(crate) async fn provider_attempt_with_boundary(&self, request: &str, provider: &str, context: &str, boundary: ProviderBoundary) -> DbResult<Self> {
+        if provider.is_empty() || context.is_empty() { return Err(invalid("chat_admission_provider_context_missing")); }
+        self.admit_child(WorkKind::Provider,Some(request),Some((provider,context,boundary))).await
     }
 
     async fn admit_child(
         &self,
         kind: WorkKind,
         request: Option<&str>,
-        context: Option<(&str, &str)>,
+        context: Option<(&str, &str, ProviderBoundary)>,
     ) -> DbResult<Self> {
         if matches!(kind, WorkKind::Turn) || request.is_some_and(|v| v.trim().is_empty()) {
             return Err(invalid("chat_admission_invalid_child"));
@@ -552,9 +567,13 @@ impl OperationPermit {
                 return Err(invalid("chat_admission_provider_unreconciled"));
             }
         }
-        if let Some((provider, context)) = context {
-            let unresolved: i64 = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM chat_admission_operations WHERE conversation_id=? AND incarnation=? AND (provider_id=? OR provider_context=?) AND phase NOT IN ('completed','no_effect'))")
-                .bind(&self.conversation).bind(&self.incarnation).bind(provider).bind(context).fetch_one(&mut *tx).await?;
+        if let Some((provider, context, boundary)) = context {
+            let query = match boundary {
+                ProviderBoundary::ExistingContext => "SELECT EXISTS(SELECT 1 FROM chat_admission_operations WHERE conversation_id=?1 AND incarnation=?2 AND (provider_id=?3 OR provider_context=?4) AND phase NOT IN ('completed','no_effect')) AND ?5 IS NOT NULL",
+                ProviderBoundary::IndependentRequest => "WITH RECURSIVE ancestors(id,parent_id,local_closed_at,turn_id) AS (SELECT operation_id,parent_id,local_closed_at,turn_id FROM chat_admission_operations WHERE conversation_id=?1 AND incarnation=?2 AND (provider_id=?3 OR provider_context=?4) AND phase NOT IN ('completed','no_effect') UNION SELECT p.operation_id,p.parent_id,p.local_closed_at,p.turn_id FROM chat_admission_operations p JOIN ancestors a ON a.parent_id=p.operation_id) SELECT EXISTS(SELECT 1 FROM ancestors WHERE parent_id IS NULL AND (local_closed_at IS NULL OR turn_id=(SELECT turn_id FROM chat_admission_operations WHERE operation_id=?5)))",
+            };
+            let unresolved: i64 = sqlx::query_scalar(query)
+                .bind(&self.conversation).bind(&self.incarnation).bind(provider).bind(context).bind(&self.operation).fetch_one(&mut *tx).await?;
             if unresolved != 0 {
                 return Err(invalid("chat_admission_provider_unreconciled"));
             }
@@ -563,6 +582,10 @@ impl OperationPermit {
         sqlx::query("INSERT INTO chat_admission_operations(operation_id,conversation_id,incarnation,parent_id,runtime_generation,kind,phase,turn_id,message_id,request_id,provider_id,provider_context) SELECT ?,conversation_id,incarnation,operation_id,runtime_generation,?,'prepared',turn_id,message_id,?,?,? FROM chat_admission_operations WHERE operation_id=?")
             .bind(&operation).bind(kind.as_str()).bind(request).bind(context.map(|v| v.0)).bind(context.map(|v| v.1)).bind(&self.operation)
             .execute(&mut *tx).await?;
+        if context.is_some_and(|(_,_,boundary)| matches!(boundary, ProviderBoundary::IndependentRequest)) {
+            sqlx::query("UPDATE chat_admission_operations SET local_transport='http' WHERE operation_id=? OR (operation_id=? AND kind='provider')")
+                .bind(&operation).bind(&self.operation).execute(&mut *tx).await?;
+        }
         tx.commit().await?;
         lease.committed = true;
         Ok(Self {
@@ -621,6 +644,8 @@ impl OperationPermit {
             sqlx::query("UPDATE chat_admission_operations SET phase=?,revision=revision+1 WHERE operation_id=?")
                 .bind(next).bind(&self.operation).execute(&mut *tx).await?;
         }
+        sqlx::query("UPDATE chat_admission_operations SET local_closed_at=COALESCE(local_closed_at,?) WHERE operation_id=? AND local_transport='http'")
+            .bind(chrono::Utc::now().to_rfc3339()).bind(&self.operation).execute(&mut *tx).await?;
         tx.commit().await?;
         lease.committed = true;
         Ok(())
@@ -678,9 +703,7 @@ impl OperationPermit {
         if pending != 0 {
             return Err(invalid("chat_admission_children_pending"));
         }
-        if super::tool_invocations::has_unresolved_on_connection(&mut tx, &self.conversation)
-            .await?
-        {
+        if unresolved_turn_tools(&mut tx,&self.conversation,&self.operation).await? {
             return Err(invalid("chat_admission_tool_journal_unreconciled"));
         }
         if let Some(input) = input {
@@ -766,6 +789,19 @@ impl OperationPermit {
         Ok(())
     }
 
+    /// The executable owner returned a successful result after its physical
+    /// cleanup. This receipt never changes the external-effect phase.
+    pub(crate) async fn local_execution_closed(&self) -> DbResult<()> {
+        let guard=self.owner.source_ready(Some(&self.generation)).await.map_err(|_| invalid("chat_admission_stale_generation"))?;
+        let mut lease=durable_lease(&guard.ready.pool).await?;
+        let mut tx=lease.begin_with("BEGIN IMMEDIATE").await?;
+        guard.ready.check_source_schema(&mut tx).await?;
+        self.check(&mut tx).await?;
+        sqlx::query("UPDATE chat_admission_operations SET local_closed_at=COALESCE(local_closed_at,?) WHERE operation_id=? AND kind='tool' AND request_id IS NOT NULL")
+            .bind(chrono::Utc::now().to_rfc3339()).bind(&self.operation).execute(&mut *tx).await?;
+        tx.commit().await?;lease.committed=true;Ok(())
+    }
+
     pub(crate) async fn no_effect(&self) -> DbResult<()> {
         self.transition("prepared", "no_effect").await
     }
@@ -828,6 +864,11 @@ impl OperationPermit {
     }
 }
 
+async fn unresolved_turn_tools(db: &mut SqliteConnection, conversation: &str, operation: &str) -> DbResult<bool> {
+    Ok(sqlx::query_scalar::<_,i64>("SELECT EXISTS(SELECT 1 FROM tool_invocations WHERE conversation_id=? AND turn_id=(SELECT turn_id FROM chat_admission_operations WHERE operation_id=?) AND status IN ('pending','unknown'))")
+        .bind(conversation).bind(operation).fetch_one(db).await? != 0)
+}
+
 // Both live completion and recovery of a retired browser use the same writer.
 // The unsaved marker remains pending until its browser copy is actually removed.
 pub(crate) async fn persist_response_in(
@@ -845,9 +886,7 @@ pub(crate) async fn persist_response_in(
         if pending != 0 {
             return Err(invalid("chat_admission_children_pending"));
         }
-        if super::tool_invocations::has_unresolved_on_connection(&mut **tx, conversation)
-            .await?
-        {
+        if unresolved_turn_tools(&mut **tx,conversation,operation).await? {
             return Err(invalid("chat_admission_tool_journal_unreconciled"));
         }
         let message = input.id.to_owned();

@@ -98,9 +98,9 @@ pub(super) async fn complete(owner: &DbPool, snapshot: &mut Snapshot, observed: 
 }
 
 async fn require_quiescent(db: &mut SqliteConnection, conversation: &str, incarnation: &str) -> DbResult<()> {
-    let pending: i64 = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM chat_admission_operations WHERE conversation_id=? AND incarnation=? AND phase NOT IN ('completed','no_effect')) OR EXISTS(SELECT 1 FROM tool_invocations WHERE conversation_id=? AND status IN ('pending','unknown'))")
-        .bind(conversation).bind(incarnation).bind(conversation).fetch_one(&mut *db).await?;
-    if pending != 0 { return Err(invalid("chat_admission_work_unreconciled")); }
+    let pending: i64 = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM chat_admission_operations WHERE conversation_id=? AND incarnation=? AND phase NOT IN ('completed','no_effect'))")
+        .bind(conversation).bind(incarnation).fetch_one(&mut *db).await?;
+    if pending != 0 || super::super::tool_invocations::has_unresolved_on_connection(&mut *db,conversation).await? { return Err(invalid("chat_admission_work_unreconciled")); }
     // Only associations of this chat matter. A Goal or run elsewhere is unrelated.
     // Match the effective Goal/audit/run links, including independent legacy
     // foreign keys. Pending audits are queued/running/ready_for_verdict; only
