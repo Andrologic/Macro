@@ -1,3 +1,4 @@
+import { beginChatIntent } from "./chatAdmission";
 import type { FrozenToolCallContext } from "./chatStreamContracts";
 import type { ToolCallResolution } from "./streamingChat";
 import type { PendingToolApproval } from "../types";
@@ -350,6 +351,8 @@ export function createChatToolExecution(ports: ChatToolExecutionPorts) {
 
     if (normalizedToolName === "question") {
       const questionnaire = validateQuestionToolArgs(args);
+      if (chatAdmission) await beginChatIntent({ conversationId, kind: 'question', id: assistantMessageId });
+      if (!isCurrentOperation()) return TOOL_EXECUTION_ABORTED_RESULT;
       return {
         kind: "interrupt",
         result: `Questionnaire queued for the user with ${questionnaire.questions.length} question(s).`,

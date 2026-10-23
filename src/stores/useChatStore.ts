@@ -1068,6 +1068,7 @@ interface ChatStore {
       onAssistantStarted?: (assistant: ChatMessage) => Promise<void>;
     };
     submissionTurnId?: string;
+    questionIntent?: tauriIpc.ChatIntentReceipt;
     persistedUserMessage?: ChatMessage;
   }, queuedSubmission?: QueuedSubmission, continuation?: QueuedSubmission) => Promise<ChatSendResult | ChatSendCancelledResult>;
   sendGoalContinuation: (conversationId: string, content: string) => Promise<ChatSendResult | ChatSendCancelledResult>;
@@ -14112,7 +14113,9 @@ export const useChatStore = create<ChatStore>((set, get) => {
         return null;
       }
 
+      const questionAdmission = await beginChatIntent({ conversationId, kind: 'question', id: activeQuestionnaire.assistantMessageId });
       const result = await get().sendMessage({
+        questionIntent: questionAdmission.kind === 'globalChat' ? questionAdmission.receipt : undefined,
         conversationId,
         content: responseArtifacts.visibleContent,
         taskId: activeQuestionnaire.taskId,
@@ -14370,7 +14373,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
           hasInterruptedApproval: (id) => get().pendingToolApprovalByConversationId[id]?.recoveryState === "interrupted",
           clearApprovalRecovery: (id) => persistToolApprovalRecovery(id, null),
         },
-        admission: { begin: beginChatAdmission, closePreparation: closeChatPreparation },
+        admission: { begin: beginChatAdmission, closePreparation: closeChatPreparation, handoffQuestion: tauriIpc.chatAdmissionCompleteQuestionHandoff },
         preparation: {
           authorizePilotEffect: async (conversationId, taskId) => {
             assertPilotConversationActionAllowed(conversationId, pilotTarget?.actionToken);

@@ -788,7 +788,7 @@ impl OperationPermit {
         }
         if to == "completed" || to == "no_effect" {
             let query = if to == "no_effect" {
-                "SELECT EXISTS(SELECT 1 FROM chat_admission_operations WHERE parent_id=? AND phase<>'no_effect')"
+                "SELECT EXISTS(SELECT 1 FROM chat_admission_operations WHERE parent_id=? AND phase<>'no_effect' AND NOT (kind='question' AND phase='completed'))"
             } else {
                 "SELECT EXISTS(SELECT 1 FROM chat_admission_operations WHERE parent_id=? AND phase NOT IN ('completed','no_effect'))"
             };

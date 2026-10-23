@@ -1,4 +1,4 @@
-import type { ChatAdmissionContext, ProviderAdmission } from '../ipc/chatAdmission';
+import type { ChatAdmissionContext, ChatIntentReceipt, ProviderAdmission } from '../ipc/chatAdmission';
 import type {
   AgentType, AppMode, ChatMessage, ProviderConfig,
   ReasoningEffort, StandaloneTaskLaunchStep,
@@ -32,6 +32,8 @@ export interface ChatSendInput {
   contextRefs?: ChatMessage['context_refs'];
   /** Stable identity used to reconcile a deferred send after a restart. */
   submissionTurnId?: string;
+  /** Captured local questionnaire receipt; never persisted or sent to a provider. */
+  questionIntent?: ChatIntentReceipt;
   pilotTarget?: ({ mode: 'Chat'; taskId?: never } | { mode?: never; taskId: string }) & {
     actionToken: symbol;
     beforeEffect?: () => Promise<void>;
@@ -107,6 +109,7 @@ export interface ChatSendPorts<Task extends SendTask, Recovery, Launch> {
   admission: {
     begin(conversationId: string, turnId: string, attemptId: string): Promise<Exclude<ProviderAdmission, { kind: 'utility' }>>;
     closePreparation(context: ChatAdmissionContext, conversationId: string): Promise<void>;
+    handoffQuestion(context: ChatAdmissionContext, conversationId: string, responseMessageId: string, receipt: ChatIntentReceipt): Promise<void>;
   };
   messages: {
     persistence: ChatPersistenceAdapters;

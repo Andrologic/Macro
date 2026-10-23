@@ -199,6 +199,11 @@ export async function sendMessage<Task extends SendTask, Recovery, Launch>(
       return sentWithoutAssistant(persistedUserMessage);
     };
     if (!isCurrent()) return returnSavedUser();
+    if (input.questionIntent) {
+      if (providerAdmission.kind !== 'globalChat') throw new Error('Questionnaire admission scope changed.');
+      await ports.admission.handoffQuestion(providerAdmission.context, conversationId, persistedUserMessage.id, input.questionIntent);
+      if (!isCurrent()) return returnSavedUser();
+    }
     if (messages.hasInterruptedApproval(conversationId)) {
       await authorizePilotEffect();
       await messages.clearApprovalRecovery(conversationId)

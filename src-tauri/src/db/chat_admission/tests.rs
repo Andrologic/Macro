@@ -1276,3 +1276,33 @@ async fn steer_handoff_requires_completed_provider_and_same_persisted_turn() {
     unknown.unknown().await.unwrap();
     assert!(intents::complete_steer_handoff(&parent, "window", "unknown-request", &[receipt]).await.is_err());
 }
+
+#[tokio::test]
+async fn questionnaire_handoff_requires_the_persisted_answer_and_admitted_parent() {
+    use super::intents::{self, IntentIdentity, IntentKind, IntentMutation};
+    let (_dir, pool) = fixture().await;
+    let owner = crate::core::db_state::DbPool::default();
+    owner.set_ready(pool.clone()).await.unwrap();
+    let runtime = runtime::ChatAdmissionRuntime::default();
+    runtime.open_browser(owner.clone(), "window", "browser").await.unwrap();
+    let question = runtime.begin_intent(&owner, "window", "browser", IntentIdentity {
+        conversation_id: "source".into(), kind: IntentKind::Question, id: "message".into(),
+    }, IntentMutation::Retain).await.unwrap();
+    assert!(runtime.finish_intent(&owner, "window", &question).await.is_err());
+    let context = runtime.begin(owner.clone(), "window", "browser", "source", "reply-turn").await.unwrap();
+    let parent = runtime.parent("window", &context, "source").await.unwrap();
+    assert!(intents::complete_question_handoff(&parent, "window", &question, "reply").await.is_err());
+    sqlx::query("INSERT INTO messages(id,conversation_id,role,content,created_at,turn_id) VALUES('reply','source','user','Human answer','t','reply-turn')").execute(&pool).await.unwrap();
+    intents::complete_question_handoff(&parent, "window", &question, "reply").await.unwrap();
+    intents::complete_question_handoff(&parent, "window", &question, "reply").await.unwrap();
+    assert!(intents::complete_question_handoff(&parent, "other-window", &question, "reply").await.is_err());
+    let state: (String, String, String) = sqlx::query_as("SELECT phase,parent_id,message_id FROM chat_admission_operations WHERE operation_id=?")
+        .bind(&question.operation_id).fetch_one(&pool).await.unwrap();
+    assert_eq!(state, ("completed".into(), context.handle, "reply".into()));
+    let provider = parent.provider_invocation("not-dispatched").await.unwrap();
+    assert!(parent.no_effect().await.is_err());
+    provider.no_effect().await.unwrap();
+    // The human answer can remain saved even if later preparation has no effect.
+    // Closing this parent never claims a provider/tool effect succeeded.
+    parent.no_effect().await.unwrap();
+}

@@ -115,3 +115,8 @@ export function chatAdmissionCompleteSteerHandoff(context: ChatAdmissionContext,
   requestId: string, receipts: ChatIntentReceipt[]): Promise<void> {
   return invoke('chat_admission_complete_steer_handoff', { context, conversationId, requestId, receipts });
 }
+
+export function chatAdmissionCompleteQuestionHandoff(context: ChatAdmissionContext, conversationId: string,
+  responseMessageId: string, receipt: ChatIntentReceipt): Promise<void> {
+  return invoke('chat_admission_complete_question_handoff', { context, conversationId, responseMessageId, receipt });
+}

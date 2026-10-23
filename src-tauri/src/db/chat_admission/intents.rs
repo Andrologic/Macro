@@ -122,8 +122,8 @@ pub(crate) async fn finish(owner: &DbPool, caller: &str, receipt: &IntentReceipt
     match current {
         Some((phase, revision)) if phase == "completed" && Some(revision) == receipt.revision.checked_add(1) => {},
         Some((phase, revision)) if matches!(phase.as_str(), "prepared" | "dispatched" | "result_pending" | "unknown") && revision == receipt.revision => {
-            if receipt.identity.kind.as_str() == "steer" {
-                return Err(invalid("chat_admission_steer_provider_required"));
+            if matches!(receipt.identity.kind.as_str(), "steer" | "question") {
+                return Err(invalid("chat_admission_intent_handoff_required"));
             }
             let active: i64 = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM chat_admission_browsers WHERE runtime=? AND caller=? AND runtime_generation=? AND phase='active')")
                 .bind(&receipt.runtime).bind(caller).bind(&guard.ready.catalog_generation).fetch_one(&mut *tx).await?;
@@ -266,6 +266,41 @@ pub(crate) async fn complete_steer_handoff(
             },
             _ => return Err(invalid("chat_admission_intent_receipt_conflict")),
         }
+    }
+    tx.commit().await?;
+    lease.committed = true;
+    Ok(())
+}
+
+/// A persisted human answer hands the pending questionnaire to an already
+/// admitted new turn. That parent remains durable before any provider dispatch.
+/// Questionnaire parsing stays in the existing TS codec.
+pub(crate) async fn complete_question_handoff(
+    parent: &super::OperationPermit, caller: &str, receipt: &IntentReceipt, response: &str,
+) -> DbResult<()> {
+    if receipt.identity.kind.as_str() != "question" || receipt.identity.conversation_id != parent.conversation {
+        return Err(invalid("chat_admission_intent_receipt_conflict"));
+    }
+    let guard = parent.owner.source_ready(Some(&parent.generation)).await
+        .map_err(|_| invalid("chat_admission_stale_generation"))?;
+    let mut lease = durable_lease(&guard.ready.pool).await?;
+    let mut tx = lease.begin_with("BEGIN IMMEDIATE").await?;
+    guard.ready.check_source_schema(&mut tx).await?;
+    parent.check(&mut tx).await?;
+    let answer: i64 = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM messages answer JOIN chat_admission_operations root ON root.operation_id=? AND root.conversation_id=answer.conversation_id AND root.turn_id=answer.turn_id JOIN messages question ON question.id=? AND question.conversation_id=answer.conversation_id AND question.role='assistant' WHERE answer.id=? AND answer.conversation_id=? AND answer.role='user' AND root.kind='turn' AND root.phase IN ('prepared','dispatched','result_pending'))")
+        .bind(&parent.operation).bind(&receipt.identity.id).bind(response).bind(&parent.conversation).fetch_one(&mut *tx).await?;
+    if answer == 0 { return Err(invalid("chat_admission_question_answer_missing")); }
+    let marker: Option<(String, i64, Option<String>)> = sqlx::query_as("SELECT p.phase,p.revision,p.parent_id FROM chat_admission_operations p JOIN chat_admission_browsers b ON b.runtime=p.browser_runtime AND b.caller=p.browser_caller AND b.runtime_generation=p.runtime_generation WHERE p.operation_id=? AND p.conversation_id=? AND p.incarnation=? AND p.kind='question' AND p.browser_attempt=? AND p.browser_caller=? AND p.browser_runtime=? AND p.runtime_generation=? AND b.phase='active'")
+        .bind(&receipt.operation_id).bind(&parent.conversation).bind(&parent.incarnation).bind(&receipt.identity.id).bind(caller).bind(&receipt.runtime).bind(&parent.generation).fetch_optional(&mut *tx).await?;
+    match marker {
+        Some((phase, revision, Some(previous))) if phase=="completed" && Some(revision)==receipt.revision.checked_add(1) && previous==parent.operation => {},
+        Some((phase, revision, None)) if matches!(phase.as_str(),"prepared"|"unknown") && revision==receipt.revision => {
+            sqlx::query("UPDATE chat_admission_operations SET parent_id=?,message_id=?,phase='completed',revision=revision+1 WHERE operation_id=?")
+                .bind(&parent.operation).bind(response).bind(&receipt.operation_id).execute(&mut *tx).await?;
+            sqlx::query("UPDATE chat_admission_owners SET revision=revision+1,browser_reconciled=0 WHERE conversation_id=?")
+                .bind(&parent.conversation).execute(&mut *tx).await?;
+        },
+        _ => return Err(invalid("chat_admission_intent_receipt_conflict")),
     }
     tx.commit().await?;
     lease.committed = true;

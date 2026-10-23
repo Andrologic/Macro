@@ -1882,6 +1882,11 @@ const registerUseChatStoreMocks = async () => {
     gitStatus: conflictGitStatusMock,
     isTauriAvailable: () => tauriAvailable,
     chatAdmissionFinishCompaction: async () => undefined,
+    chatAdmissionCompleteQuestionHandoff: async (context: { handle: string; runtime: string }, conversationId: string,
+      responseMessageId: string, receipt: import('../services/ipc/chatAdmission').ChatIntentReceipt) => {
+      if (!context.handle || !context.runtime || !responseMessageId || receipt.identity.kind !== 'question' ||
+          receipt.identity.conversationId !== conversationId) throw new Error('Missing explicit questionnaire handoff');
+    },
     conversationMetadata: async () => chatSnapshotConversations.map(c => ({ conversation_id: c.id, revision: 1,
       archived: Array.isArray(nativePreferenceValues.chatArchivedConversationIds) && nativePreferenceValues.chatArchivedConversationIds.includes(c.id),
       response_revision: 0, read_revision: 0, pending_tool: false, question_message_id: null })),
