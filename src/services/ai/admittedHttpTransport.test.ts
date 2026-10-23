@@ -11,7 +11,9 @@ let finishGate: Promise<void> | undefined;
 let finishPhase: ChatWorkPhase = 'completed';
 let readGate: Promise<AdmittedHttpPart> | undefined;
 let finishError: Error | undefined;
+const handoff = mock(async (_context: unknown, _conversation: string, _request: string, _receipts: unknown[]) => {});
 mock.module('../tauriIpc', () => ({ ...ipc,
+  chatAdmissionCompleteSteerHandoff: handoff,
   chatAdmissionHttpStart: async () => { starts += 1; if (startError) throw startError; },
   chatAdmissionHttpRead: async () => {
     if (readGate) return readGate;
@@ -39,6 +41,7 @@ const options = (): StreamingChatOptions => ({
 beforeEach(() => {
   parts = [];
   outcomes = [];
+  handoff.mockClear();
   starts = 0;
   startError = undefined;
   finishGate = undefined;
@@ -112,4 +115,33 @@ test('failed cleanup releases a pending headers read without certifying the effe
   }, 1)).rejects.toMatchObject({ code: 'CHAT_ADMISSION_UNAVAILABLE' });
   expect(outcomes).toEqual(['uncertain']);
   expect(starts).toBe(1);
+});
+
+
+test('HTTP handoff captures only already-consumed steers and waits for native completion', async () => {
+  setBody('synthetic');
+  const first = { operationId: 'first', runtime: 'test-runtime', revision: 0,
+    identity: { conversationId: 'synthetic-chat', kind: 'steer' as const, id: 'first-message' } };
+  let consumed = [first];
+  const captured = { ...options(), providerSteerReceipts: () => [...consumed] };
+  let finish!: () => void;
+  finishGate = new Promise<void>(resolve => { finish = resolve; });
+  const transport = await fetchProviderWithTimeout(captured, 'https://example.invalid/chat/completions', { method: 'POST', body: '{}' }, 1000);
+  consumed = [...consumed, { ...first, operationId: 'later' }];
+  const completed = transport.finish('completed');
+  await Promise.resolve();
+  expect(handoff).not.toHaveBeenCalled();
+  finish();
+  await completed;
+  expect(handoff.mock.calls[0]?.[3]).toEqual([first]);
+});
+
+test('an uncertain HTTP provider never acknowledges a steer', async () => {
+  setBody('synthetic');
+  finishPhase = 'unknown';
+  const captured = { ...options(), providerSteerReceipts: () => [{ operationId: 'held', runtime: 'test-runtime', revision: 0,
+    identity: { conversationId: 'synthetic-chat', kind: 'steer' as const, id: 'held-message' } }] };
+  const transport = await fetchProviderWithTimeout(captured, 'https://example.invalid/chat/completions', { method: 'POST', body: '{}' }, 1000);
+  expect(await transport.finish('uncertain')).toBe('unknown');
+  expect(handoff).not.toHaveBeenCalled();
 });

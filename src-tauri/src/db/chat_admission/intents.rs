@@ -122,6 +122,9 @@ pub(crate) async fn finish(owner: &DbPool, caller: &str, receipt: &IntentReceipt
     match current {
         Some((phase, revision)) if phase == "completed" && Some(revision) == receipt.revision.checked_add(1) => {},
         Some((phase, revision)) if matches!(phase.as_str(), "prepared" | "dispatched" | "result_pending" | "unknown") && revision == receipt.revision => {
+            if receipt.identity.kind.as_str() == "steer" {
+                return Err(invalid("chat_admission_steer_provider_required"));
+            }
             let active: i64 = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM chat_admission_browsers WHERE runtime=? AND caller=? AND runtime_generation=? AND phase='active')")
                 .bind(&receipt.runtime).bind(caller).bind(&guard.ready.catalog_generation).fetch_one(&mut *tx).await?;
             if active == 0 { return Err(invalid("chat_admission_browser_closed")); }
@@ -221,6 +224,47 @@ pub(crate) async fn write_approval_registry(
                 .bind(APPROVAL_REGISTRY_KEY).bind(value).bind(chrono::Utc::now().to_rfc3339()).execute(&mut *tx).await?;
         } else {
             sqlx::query("DELETE FROM app_settings WHERE key=?").bind(APPROVAL_REGISTRY_KEY).execute(&mut *tx).await?;
+        }
+    }
+    tx.commit().await?;
+    lease.committed = true;
+    Ok(())
+}
+
+/// A consumed steer is acknowledged only against a physically completed native
+/// provider invocation of the same turn. Removing it from a browser Map is not
+/// evidence of delivery. An uncertain provider never reaches this transition.
+pub(crate) async fn complete_steer_handoff(
+    parent: &super::OperationPermit, caller: &str, request: &str, receipts: &[IntentReceipt],
+) -> DbResult<()> {
+    let guard = parent.owner.source_ready(Some(&parent.generation)).await
+        .map_err(|_| invalid("chat_admission_stale_generation"))?;
+    let mut lease = durable_lease(&guard.ready.pool).await?;
+    let mut tx = lease.begin_with("BEGIN IMMEDIATE").await?;
+    guard.ready.check_source_schema(&mut tx).await?;
+    parent.check(&mut tx).await?;
+    let provider: Option<String> = sqlx::query_scalar("SELECT operation_id FROM chat_admission_operations WHERE parent_id=? AND request_id=? AND runtime_generation=? AND kind='provider' AND phase='completed'")
+        .bind(&parent.operation).bind(request).bind(&parent.generation).fetch_optional(&mut *tx).await?;
+    let provider = provider.ok_or_else(|| invalid("chat_admission_steer_provider_unconfirmed"))?;
+    for receipt in receipts {
+        if receipt.identity.kind.as_str() != "steer" || receipt.identity.conversation_id != parent.conversation {
+            return Err(invalid("chat_admission_intent_receipt_conflict"));
+        }
+        let marker: Option<(String, i64, Option<String>)> = sqlx::query_as("SELECT p.phase,p.revision,p.parent_id FROM chat_admission_operations p JOIN chat_admission_browsers b ON b.runtime=p.browser_runtime AND b.caller=p.browser_caller AND b.runtime_generation=p.runtime_generation JOIN messages m ON m.id=p.browser_attempt AND m.conversation_id=p.conversation_id AND m.role='user' JOIN chat_admission_operations root ON root.operation_id=? AND root.turn_id=m.turn_id WHERE p.operation_id=? AND p.conversation_id=? AND p.incarnation=? AND p.kind='steer' AND p.browser_attempt=? AND p.browser_caller=? AND p.browser_runtime=? AND p.runtime_generation=? AND b.phase='active'")
+            .bind(&parent.operation).bind(&receipt.operation_id).bind(&parent.conversation).bind(&parent.incarnation).bind(&receipt.identity.id).bind(caller).bind(&receipt.runtime).bind(&parent.generation).fetch_optional(&mut *tx).await?;
+        match marker {
+            Some((phase, revision, Some(previous))) if phase=="completed" && Some(revision)==receipt.revision.checked_add(1) => {
+                let same_turn: i64 = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM chat_admission_operations WHERE operation_id=? AND parent_id=? AND kind='provider' AND phase='completed')")
+                    .bind(previous).bind(&parent.operation).fetch_one(&mut *tx).await?;
+                if same_turn == 0 { return Err(invalid("chat_admission_intent_receipt_conflict")); }
+            },
+            Some((phase, revision, None)) if matches!(phase.as_str(),"prepared"|"unknown") && revision==receipt.revision => {
+                sqlx::query("UPDATE chat_admission_operations SET parent_id=?,phase='completed',revision=revision+1 WHERE operation_id=?")
+                    .bind(&provider).bind(&receipt.operation_id).execute(&mut *tx).await?;
+                sqlx::query("UPDATE chat_admission_owners SET revision=revision+1,browser_reconciled=0 WHERE conversation_id=?")
+                    .bind(&parent.conversation).execute(&mut *tx).await?;
+            },
+            _ => return Err(invalid("chat_admission_intent_receipt_conflict")),
         }
     }
     tx.commit().await?;

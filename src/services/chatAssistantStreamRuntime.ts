@@ -633,6 +633,7 @@ export function createAssistantStreamRuntime(ports: ChatAssistantStreamPorts) {
         return [...compactedMessages, ...ports.owner.consumeSteers(identity)];
       },
       consumePendingSteers: () => shouldAcceptStreamUpdate() ? ports.owner.consumeSteers(identity) : [],
+      providerSteerReceipts: () => ports.owner.providerSteerReceipts(identity),
       onLiveContextUpdate: (snapshot) => {
         if (!shouldAcceptStreamUpdate()) {
           return;

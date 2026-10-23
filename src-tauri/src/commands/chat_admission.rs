@@ -367,3 +367,13 @@ pub(crate) async fn chat_admission_write_approval_registry(
     crate::db::chat_admission::intents::write_approval_registry(&pool, window.label(), &conversation_id,
         receipt.as_ref(), expected_value_json.as_deref(), value_json.as_deref()).await.map_err(Into::into)
 }
+
+#[tauri::command]
+pub(crate) async fn chat_admission_complete_steer_handoff(
+    admission_runtime: State<'_, ChatAdmissionRuntime>, window: WebviewWindow,
+    context: ChatAdmissionContext, conversation_id: String, request_id: String,
+    receipts: Vec<crate::db::chat_admission::intents::IntentReceipt>,
+) -> CommandResult<()> {
+    let parent = admission_runtime.parent(window.label(), &context, &conversation_id).await?;
+    crate::db::chat_admission::intents::complete_steer_handoff(&parent, window.label(), &request_id, &receipts).await.map_err(Into::into)
+}

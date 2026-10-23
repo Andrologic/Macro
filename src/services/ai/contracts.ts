@@ -1,4 +1,4 @@
-import type { ChatWorkPhase, ProviderAdmission } from '../ipc/chatAdmission';
+import type { ChatIntentReceipt, ChatWorkPhase, ProviderAdmission } from '../ipc/chatAdmission';
 import type { AppMode, ChatCompletionReason, GenerationAttempt, MCPTool, ProjectMount, ProviderTurnState, ReasoningEffort, ReasoningTransportMode, ToolTrace } from '../../types';
 import type { InternalAgentProfile } from '../internalAgentProfile';
 import type { ImageContextMetadata } from '../contextTokenEstimation';
@@ -125,6 +125,8 @@ export interface StreamingFollowUpCompactionResult {
 
 export interface StreamingChatOptions {
   providerAdmission: ProviderAdmission;
+  /** Local receipts for steers already included in this request, never provider content. */
+  providerSteerReceipts?: () => ChatIntentReceipt[];
   sessionId?: string;
   conversationId?: string;
   mode?: AppMode;

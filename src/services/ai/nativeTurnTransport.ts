@@ -1,5 +1,5 @@
 import { MacroServiceError, toServiceError } from '../contracts/errors';
-import type { ProviderAdmission } from '../ipc/chatAdmission';
+import type { ChatIntentReceipt, ProviderAdmission } from '../ipc/chatAdmission';
 import type { ToolResultBlock } from '../../shared/toolResultContent';
 import { projectCopilotMessageContent } from './copilotPromptCodec';
 import {
@@ -50,6 +50,7 @@ const DONE_SUBMISSION_GRACE_MS = 5_000;
 
 export const streamNativeTurnViaTauri = async (params: {
   providerAdmission: ProviderAdmission;
+  steerReceipts?: ChatIntentReceipt[];
   sessionId?: string;
   providerId: string;
   providerType: string;
@@ -528,6 +529,14 @@ export const streamNativeTurnViaTauri = async (params: {
   // Preserve the complete received payload, including provider-only items, but
   // never let the tool loop resume an unresolved native request automatically.
   const completed = receipt.phase === 'completed' && !receipt.taskError;
+  if (completed && params.steerReceipts?.length) {
+    try {
+      await tauriIpc.chatAdmissionCompleteSteerHandoff(params.providerAdmission.context, params.conversationId!, requestId, params.steerReceipts);
+    } catch (error) {
+      devLogger.warn('Steer handoff could not be recorded', toServiceError(error));
+      return { ...result, admissionOutcome: 'unavailable', completionReason: 'admission_unresolved' };
+    }
+  }
   return {
     ...result,
     admissionOutcome: receipt.taskError && receipt.phase === 'completed' ? 'unavailable' : receipt.phase,

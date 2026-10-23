@@ -1,6 +1,6 @@
 import type { StreamingChatOptions } from './contracts';
 import type { ChatWorkPhase } from '../ipc/chatAdmission';
-import { chatAdmissionHttpStart, chatAdmissionHttpRead, chatAdmissionHttpFinish } from '../tauriIpc';
+import { chatAdmissionHttpStart, chatAdmissionHttpRead, chatAdmissionHttpFinish, chatAdmissionCompleteSteerHandoff } from '../tauriIpc';
 import { MacroServiceError } from '../contracts/errors';
 import { fetchWithTimeout } from './httpTransport';
 
@@ -10,7 +10,7 @@ export interface ProviderHttpResponse {
 }
 
 export async function fetchProviderWithTimeout(
-  options: Pick<StreamingChatOptions, 'providerAdmission' | 'providerId' | 'conversationId'>,
+  options: Pick<StreamingChatOptions, 'providerAdmission' | 'providerId' | 'conversationId' | 'providerSteerReceipts'>,
   url: string, init: RequestInit, timeoutMs: number, signal?: AbortSignal,
 ): Promise<ProviderHttpResponse> {
   if (options.providerAdmission.kind !== 'globalChat') {
@@ -23,6 +23,7 @@ export async function fetchProviderWithTimeout(
   }
   if (signal?.aborted) throw new DOMException('Aborted', 'AbortError');
   const requestId = crypto.randomUUID();
+  const steerReceipts = options.providerSteerReceipts?.() ?? [];
   // Normalize the actual destination before native comparison with provider configuration.
   const destination = new URL(url).href;
   const headers = Array.from(new Headers(init.headers).entries());
@@ -42,7 +43,12 @@ export async function fetchProviderWithTimeout(
     if (!finishing) {
       if (timeout !== undefined) clearTimeout(timeout);
       signal?.removeEventListener('abort', abort);
-      finishing = chatAdmissionHttpFinish(context, conversation, requestId, outcome).then(receipt => receipt.phase);
+      finishing = chatAdmissionHttpFinish(context, conversation, requestId, outcome).then(async receipt => {
+        if (receipt.phase === 'completed' && !receipt.taskError && steerReceipts.length) {
+          await chatAdmissionCompleteSteerHandoff(context, conversation, requestId, steerReceipts);
+        }
+        return receipt.phase;
+      });
     }
     return finishing;
   };

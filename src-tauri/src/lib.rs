@@ -902,6 +902,7 @@ pub fn run() {
             commands::chat_admission::chat_admission_begin_intent,
             commands::chat_admission::chat_admission_finish_intent,
             commands::chat_admission::chat_admission_write_approval_registry,
+            commands::chat_admission::chat_admission_complete_steer_handoff,
             commands::chat_admission::chat_admission_close_browser,
             commands::chat_admission::chat_admission_begin,
             commands::chat_admission::chat_admission_close_preparation,

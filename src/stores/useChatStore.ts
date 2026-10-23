@@ -14233,6 +14233,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
       // Save attachments first under a stable message ID. A rejected image write
       // leaves the composer intact and cannot create a duplicate text on retry.
       const messageId = crypto.randomUUID();
+      const steerAdmission = await beginChatIntent({ conversationId: payload.conversationId, kind: 'steer', id: messageId });
       if (payload.images?.length) {
         const next = { ...get().messageImagesByMessageId, [messageId]: payload.images };
         if (!persistMessageImageCache(next)) {
@@ -14260,7 +14261,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
       }
       get().addMessage(userMessage);
       clearComposerContextRefsIfRevisionMatches(payload.conversationId, revision);
-      if (!turnRuntime.enqueueSteer(payload.conversationId, steerMessage, runtime)) {
+      if (!turnRuntime.enqueueSteer(payload.conversationId, steerMessage, runtime, steerAdmission)) {
         throw buildSendError(i18n.t('chat.steerTurnEnded', 'The direction was saved, but its turn ended before delivery. Review it before continuing.'));
       }
       return "steered";

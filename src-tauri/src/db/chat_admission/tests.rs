@@ -1248,3 +1248,31 @@ async fn approval_opaque_root_is_preserved_verbatim_without_granting_reconciliat
     intents::write_approval_registry(&owner, "window", "source", Some(&receipt), Some(opaque), Some(&preserved)).await.unwrap();
     assert_eq!(sqlx::query_scalar::<_,i64>("SELECT browser_reconciled FROM chat_admission_owners WHERE conversation_id='source'").fetch_one(&pool).await.unwrap(),0);
 }
+
+#[tokio::test]
+async fn steer_handoff_requires_completed_provider_and_same_persisted_turn() {
+    use super::intents::{self, IntentIdentity, IntentKind, IntentMutation};
+    let (_dir, pool) = fixture().await;
+    let owner = crate::core::db_state::DbPool::default();
+    owner.set_ready(pool.clone()).await.unwrap();
+    let runtime = runtime::ChatAdmissionRuntime::default();
+    let context = runtime.begin(owner.clone(), "window", "browser", "source", "turn").await.unwrap();
+    let parent = runtime.parent("window", &context, "source").await.unwrap();
+    let receipt = runtime.begin_intent(&owner, "window", "browser", IntentIdentity {
+        conversation_id: "source".into(), kind: IntentKind::Steer, id: "steer-message".into(),
+    }, IntentMutation::Retain).await.unwrap();
+    sqlx::query("INSERT INTO messages(id,conversation_id,role,content,created_at,turn_id) VALUES('steer-message','source','user','Direction','t','turn')").execute(&pool).await.unwrap();
+    assert!(runtime.finish_intent(&owner, "window", &receipt).await.is_err());
+    let provider = parent.provider_invocation("request").await.unwrap();
+    assert!(intents::complete_steer_handoff(&parent, "window", "request", &[receipt.clone()]).await.is_err());
+    provider.dispatched().await.unwrap();
+    provider.result_pending().await.unwrap();
+    provider.completed().await.unwrap();
+    intents::complete_steer_handoff(&parent, "window", "request", &[receipt.clone()]).await.unwrap();
+    intents::complete_steer_handoff(&parent, "window", "request", &[receipt.clone()]).await.unwrap();
+    assert!(intents::complete_steer_handoff(&parent, "other-window", "request", &[receipt.clone()]).await.is_err());
+    let unknown = parent.provider_invocation("unknown-request").await.unwrap();
+    unknown.dispatched().await.unwrap();
+    unknown.unknown().await.unwrap();
+    assert!(intents::complete_steer_handoff(&parent, "window", "unknown-request", &[receipt]).await.is_err());
+}

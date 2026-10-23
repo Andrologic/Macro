@@ -110,3 +110,8 @@ export function chatAdmissionWriteApprovalRegistry(conversationId: string, admis
     expectedValueJson, valueJson,
   });
 }
+
+export function chatAdmissionCompleteSteerHandoff(context: ChatAdmissionContext, conversationId: string,
+  requestId: string, receipts: ChatIntentReceipt[]): Promise<void> {
+  return invoke('chat_admission_complete_steer_handoff', { context, conversationId, requestId, receipts });
+}
