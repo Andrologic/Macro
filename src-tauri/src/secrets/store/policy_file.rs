@@ -174,6 +174,37 @@ fn recognized(value: &Value) -> Result<ProviderSecretsFile, SecretError> {
     parse_provider_secrets_file(&value.to_string()).map_err(|_| SecretError::PolicyUnavailable)
 }
 
+impl ProviderSecretsFile {
+    pub(in crate::secrets) fn policy_values(&self) -> Result<Vec<String>, SecretError> {
+        let mut values: Vec<String> = self.api_keys.values().cloned().collect();
+        for secret in self.chatgpt_sessions.values() {
+            values.push(secret.access_token.clone());
+            values.push(secret.refresh_token.clone());
+        }
+        // Preserve only recognized legacy secret fields, not account/client
+        // metadata or an arbitrary copy of the storage document.
+        for raw in self.raw_chatgpt_sessions.values() {
+            let decoded;
+            let value = if let Some(serialized) = raw.as_str() {
+                decoded = serde_json::from_str::<Value>(serialized)
+                    .map_err(|_| SecretError::PolicyUnavailable)?;
+                &decoded
+            } else {
+                raw
+            };
+            if value.get("version").and_then(Value::as_u64) == Some(1)
+                && value.get("kind").and_then(Value::as_str) == Some("chatgpt")
+            {
+                let legacy: SecretEnvelope<LegacyChatGptSecret> =
+                    serde_json::from_value(value.clone())
+                        .map_err(|_| SecretError::PolicyUnavailable)?;
+                values.push(legacy.payload.id_token);
+            }
+        }
+        Ok(values)
+    }
+}
+
 impl LocalSecretStore {
     /// Caller owns the common gate and file lock. This path never repairs.
     fn policy_file_exists(&self) -> Result<bool, SecretError> {
@@ -417,5 +448,106 @@ mod tests {
             Ok(())
         })
         .unwrap();
+    }
+    #[test]
+    #[ignore]
+    fn repair_checkpoint_child() {
+        let directory =
+            std::path::PathBuf::from(std::env::var_os("MACRO_SYNTHETIC_REPAIR_DIRECTORY").unwrap());
+        let point = std::env::var("MACRO_SYNTHETIC_REPAIR_POINT").unwrap();
+        *REPAIR_CHECKPOINT.lock().unwrap() =
+            Some((directory.join(SECRET_FILE_NAME), point.clone()));
+        let result = crate::secrets::init(&directory);
+        assert_eq!(
+            point, "quarantine-sync-error",
+            "crash checkpoint was not reached"
+        );
+        assert!(result.is_err());
+        assert!(!crate::secrets::policy::POLICY.available());
+        assert!(crate::secrets::policy::POLICY
+            .capture_private(|| Ok(()))
+            .is_err());
+        assert!(crate::secrets::set_api_key("synthetic", "forbidden").is_err());
+        std::process::exit(74);
+    }
+
+    #[test]
+    fn interrupted_repairs_preserve_raw_bytes_and_require_fresh_startup() {
+        for point in [
+            "quarantine-rename",
+            "quarantine-synced",
+            "canonical-replaced",
+            "quarantine-sync-error",
+            "migration-journal",
+        ] {
+            let directory = tempfile::tempdir().unwrap();
+            let path = directory.path().join(SECRET_FILE_NAME);
+            let owner = crate::secrets::policy::PolicyOwner::for_test(directory.path());
+            owner.initialize(directory.path()).unwrap();
+            let old = owner.capture_private(|| Ok(())).unwrap();
+            let original: &[u8] = if point == "migration-journal" {
+                br#"{"version":0,"api_keys":{"test":"synthetic"}}"#
+            } else {
+                b"{ broken synthetic JSON"
+            };
+            std::fs::write(&path, original).unwrap();
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "secrets::store::policy_file::tests::repair_checkpoint_child",
+                    "--ignored",
+                    "--nocapture",
+                ])
+                .env("MACRO_SYNTHETIC_REPAIR_DIRECTORY", directory.path())
+                .env("MACRO_SYNTHETIC_REPAIR_POINT", point)
+                .output()
+                .unwrap();
+            assert_eq!(
+                output.status.code(),
+                Some(if point == "quarantine-sync-error" {
+                    74
+                } else {
+                    73
+                }),
+                "point={point}"
+            );
+            assert!(owner
+                .consume_private(&old, || Ok(()), |_, _| Ok(()))
+                .is_err());
+            let preserved = if point == "migration-journal" {
+                assert_eq!(std::fs::read(&path).unwrap(), original);
+                directory.path().join("provider-secrets.json.v0.bak")
+            } else {
+                std::fs::read_dir(directory.path())
+                    .unwrap()
+                    .filter_map(Result::ok)
+                    .find(|entry| {
+                        entry
+                            .file_name()
+                            .to_string_lossy()
+                            .starts_with("provider-secrets.json.corrupt-")
+                    })
+                    .unwrap()
+                    .path()
+            };
+            assert_eq!(std::fs::read(&preserved).unwrap(), original);
+            let before_retry = std::fs::read(&path).ok();
+            owner.initialize(directory.path()).unwrap();
+            let fresh = owner.capture_private(|| Ok(())).unwrap();
+            assert!(owner
+                .consume_private(&old, || Ok(()), |_, _| Ok(()))
+                .is_err());
+            assert!(owner
+                .consume_private(&fresh, || Ok(()), |_, _| Ok(()))
+                .is_ok());
+            if point == "migration-journal" {
+                assert_eq!(fresh.values(), ["synthetic"]);
+                assert!(!directory.path().join(SECRET_MIGRATION_FILE_NAME).exists());
+            } else {
+                assert!(fresh.values().is_empty());
+            }
+            assert_ne!(Some(std::fs::read(&path).unwrap()), before_retry);
+            assert_eq!(std::fs::read(&preserved).unwrap(), original);
+        }
     }
 }

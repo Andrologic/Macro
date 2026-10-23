@@ -123,6 +123,7 @@ fn validate_secret(secret: &str) -> Result<(), PilotSecretError> {
 }
 
 pub(super) trait Vault: Send + Sync {
+    fn silent_capture_supported(&self) -> bool { false }
     fn prepare_resume(&self, _kind: PilotSecretKind) -> Result<(), PilotSecretError> {
         Ok(())
     }

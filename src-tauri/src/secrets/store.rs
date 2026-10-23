@@ -185,7 +185,13 @@ impl LocalSecretStore {
             uuid::Uuid::new_v4().simple()
         ));
         std::fs::rename(&self.path, &quarantined_path)?;
+        #[cfg(test)]
+        repair_checkpoint(&self.path, "quarantine-rename")?;
+        #[cfg(test)]
+        repair_checkpoint(&self.path, "quarantine-sync-error")?;
         sync_parent_directory(&self.path)?;
+        #[cfg(test)]
+        repair_checkpoint(&self.path, "quarantine-synced")?;
         warn!(
             path = %self.path.display(),
             quarantined_path = %quarantined_path.display(),
@@ -311,6 +317,8 @@ impl LocalSecretStore {
         };
         let journal_bytes = serde_json::to_vec_pretty(&journal)?;
         write_private_file_atomically(&self.migration_journal_path(), &journal_bytes, || Ok(()))?;
+        #[cfg(test)]
+        repair_checkpoint(&self.path, "migration-journal")?;
         write_private_file_atomically(&self.path, &target, || {
             fail_migration_after_replace(&self.path)
         })?;
@@ -397,6 +405,8 @@ fn write_private_file_atomically(
         set_private_file_permissions(&temporary)?;
         replace_file(&temporary, path)?;
         after_replace()?;
+        #[cfg(test)]
+        repair_checkpoint(path, "canonical-replaced")?;
         set_private_file_permissions(path)?;
         sync_parent_directory(path)
     })();
@@ -404,6 +414,29 @@ fn write_private_file_atomically(
         let _ = std::fs::remove_file(&temporary);
     }
     result
+}
+
+// Armed only by the synthetic crash test child, never by production settings.
+#[cfg(test)]
+static REPAIR_CHECKPOINT: LazyLock<Mutex<Option<(PathBuf, String)>>> =
+    LazyLock::new(|| Mutex::new(None));
+
+#[cfg(test)]
+fn repair_checkpoint(path: &Path, point: &str) -> Result<(), std::io::Error> {
+    let mut hook = REPAIR_CHECKPOINT.lock().unwrap();
+    if hook
+        .as_ref()
+        .is_some_and(|(target, selected)| target == path && selected == point)
+    {
+        hook.take();
+        if point == "quarantine-sync-error" {
+            return Err(std::io::Error::other(
+                "synthetic parent synchronization failure",
+            ));
+        }
+        std::process::exit(73);
+    }
+    Ok(())
 }
 
 #[cfg(test)]

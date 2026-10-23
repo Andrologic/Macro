@@ -33,6 +33,20 @@ impl Cache {
     }
 }
 
+// Constructed only by a native connection owner, never accepted as an IPC DTO.
+#[derive(Clone, PartialEq, Eq)]
+pub(super) struct TransportIdentity {
+    pub(super) context: PilotVaultContext,
+    pub(super) generation: String,
+    pub(super) instance_creation_id: String,
+}
+#[derive(PartialEq, Eq)]
+pub(super) struct TransportPair {
+    identity: TransportIdentity,
+    pub(super) session_token: String,
+    pub(super) instance_key: String,
+}
+
 struct State {
     context: Option<PilotVaultContext>,
     resume_parent_generation: Option<String>,
@@ -60,7 +74,9 @@ pub(super) struct Manager<B> {
 impl<B> Drop for Manager<B> {
     fn drop(&mut self) {
         if let Ok(pending) = self.invalidations.lock() {
-            for job in pending.iter() { let _ = job.wait(); }
+            for job in pending.iter() {
+                let _ = job.wait();
+            }
         }
     }
 }
@@ -74,7 +90,9 @@ impl<B: Vault> Manager<B> {
         #[cfg(test)]
         let policy = {
             let owner = crate::secrets::policy::PolicyOwner::for_test(directory.path());
-            owner.initialize(directory.path()).expect("initialize synthetic policy");
+            owner
+                .initialize(directory.path())
+                .expect("initialize synthetic policy");
             Arc::new(owner)
         };
         Self {
@@ -99,33 +117,57 @@ impl<B: Vault> Manager<B> {
     }
 
     fn policy_error(&self, generation: &str) -> PilotSecretError {
-        if let Err(error) = self.current(generation) { return error; }
-        self.state().ok().and_then(|state| Self::ready(&state).err())
+        if let Err(error) = self.current(generation) {
+            return error;
+        }
+        self.state()
+            .ok()
+            .and_then(|state| Self::ready(&state).err())
             .unwrap_or(PilotSecretError::VaultUnavailable)
     }
 
     fn join_invalidations(&self) -> Result<(), PilotSecretError> {
-        let pending = self.invalidations.lock()
-            .map_err(|_| PilotSecretError::VaultUnavailable)?.clone();
+        let pending = self
+            .invalidations
+            .lock()
+            .map_err(|_| PilotSecretError::VaultUnavailable)?
+            .clone();
         // No gate, operations or state guard is held while joining.
         let complete = pending.iter().fold(true, |ok, job| job.wait() && ok);
-        self.invalidations.lock().map_err(|_| PilotSecretError::VaultUnavailable)?
+        self.invalidations
+            .lock()
+            .map_err(|_| PilotSecretError::VaultUnavailable)?
             .retain(|job| !job.completed());
-        if complete { Ok(()) } else { Err(PilotSecretError::VaultUnavailable) }
+        if complete {
+            Ok(())
+        } else {
+            Err(PilotSecretError::VaultUnavailable)
+        }
     }
 
     fn operation<T>(
-        &self, generation: &str, exclusive: bool, explicit: bool,
-        body: impl FnOnce(&mut Option<crate::secrets::policy::RevocationTicket>)
-            -> Result<T, PilotSecretError>,
+        &self,
+        generation: &str,
+        exclusive: bool,
+        explicit: bool,
+        body: impl FnOnce(
+            &mut Option<crate::secrets::policy::RevocationTicket>,
+        ) -> Result<T, PilotSecretError>,
     ) -> Result<T, PilotSecretError> {
         struct Active<'a>(&'a AtomicUsize);
         impl Drop for Active<'_> {
-            fn drop(&mut self) { self.0.fetch_sub(1, Ordering::SeqCst); }
+            fn drop(&mut self) {
+                self.0.fetch_sub(1, Ordering::SeqCst);
+            }
         }
         if exclusive {
-            self.active_operations.compare_exchange(0, 1, Ordering::SeqCst, Ordering::SeqCst)
-                .map_err(|_| self.current(generation).err().unwrap_or(PilotSecretError::Suspended))?;
+            self.active_operations
+                .compare_exchange(0, 1, Ordering::SeqCst, Ordering::SeqCst)
+                .map_err(|_| {
+                    self.current(generation)
+                        .err()
+                        .unwrap_or(PilotSecretError::Suspended)
+                })?;
         } else {
             self.active_operations.fetch_add(1, Ordering::SeqCst);
         }
@@ -133,14 +175,19 @@ impl<B: Vault> Manager<B> {
         let joined = self.join_invalidations();
         if explicit {
             if !self.policy.available() {
-                self.policy.retry_invalidation().map_err(|_| self.policy_error(generation))?;
+                self.policy
+                    .retry_invalidation()
+                    .map_err(|_| self.policy_error(generation))?;
             }
         } else {
             joined?;
         }
         let mut debt = None;
-        let result = self.policy.change(|| body(&mut debt))
-            .map_err(|_| self.policy_error(generation)).and_then(|value| value);
+        let result = self
+            .policy
+            .change(|| body(&mut debt))
+            .map_err(|_| self.policy_error(generation))
+            .and_then(|value| value);
         // change and the inner body have released gate/store/operations/state.
         if let Some(ticket) = debt {
             if self.policy.settle(ticket).is_err() && result.is_ok() {
@@ -150,43 +197,185 @@ impl<B: Vault> Manager<B> {
         result
     }
 
-    pub(super) fn read(&self, scope: &PilotSecretScope, generation: &str)
-        -> Result<Option<String>, PilotSecretError> {
+    pub(super) fn read(
+        &self,
+        scope: &PilotSecretScope,
+        generation: &str,
+    ) -> Result<Option<String>, PilotSecretError> {
         let key = entry_name(scope)?;
-        let cached = self.policy.inspect(|| {
-            let state = self.state()?;
-            self.current(generation)?;
-            Self::active(&state, scope)?;
-            Self::ready(&state)?;
-            Ok::<_, PilotSecretError>(state.cache.get(&key).cloned())
-        }).map_err(|_| self.policy_error(generation))??;
-        if let Some(value) = cached { return Ok(value); }
-        self.operation(generation, false, false, |debt| self.read_inner(debt, scope, generation))
+        let cached = self
+            .policy
+            .inspect(|| {
+                let state = self.state()?;
+                self.current(generation)?;
+                Self::active(&state, scope)?;
+                Self::ready(&state)?;
+                Ok::<_, PilotSecretError>(state.cache.get(&key).cloned())
+            })
+            .map_err(|_| self.policy_error(generation))??;
+        if let Some(value) = cached {
+            return Ok(value);
+        }
+        self.operation(generation, false, false, |debt| {
+            self.read_inner(debt, scope, generation)
+        })
     }
-    pub(super) fn write(&self, scope: &PilotSecretScope, generation: &str, secret: &str)
-        -> Result<(), PilotSecretError> {
+    pub(super) fn write(
+        &self,
+        scope: &PilotSecretScope,
+        generation: &str,
+        secret: &str,
+    ) -> Result<(), PilotSecretError> {
         entry_name(scope)?;
         validate_secret(secret)?;
-        self.operation(generation, false, false, |debt| self.write_inner(debt, scope, generation, secret))
+        self.operation(generation, false, false, |debt| {
+            self.write_inner(debt, scope, generation, secret)
+        })
     }
-    pub(super) fn delete(&self, scope: &PilotSecretScope, generation: &str)
-        -> Result<(), PilotSecretError> {
+    pub(super) fn delete(
+        &self,
+        scope: &PilotSecretScope,
+        generation: &str,
+    ) -> Result<(), PilotSecretError> {
         entry_name(scope)?;
-        self.operation(generation, false, false, |debt| self.delete_inner(debt, scope, generation))
+        self.operation(generation, false, false, |debt| {
+            self.delete_inner(debt, scope, generation)
+        })
     }
-    pub(super) fn resume(&self, scopes: &[PilotSecretScope], generation: &str)
-        -> Result<VaultLease, PilotSecretError> {
-        if scopes.is_empty() || scopes.len() > 8 { return Err(PilotSecretError::InvalidScope); }
-        for scope in scopes { entry_name(scope)?; }
-        self.operation(generation, true, true, |debt| self.resume_inner(debt, scopes, generation))
+    pub(super) fn resume(
+        &self,
+        scopes: &[PilotSecretScope],
+        generation: &str,
+    ) -> Result<VaultLease, PilotSecretError> {
+        if scopes.is_empty() || scopes.len() > 8 {
+            return Err(PilotSecretError::InvalidScope);
+        }
+        for scope in scopes {
+            entry_name(scope)?;
+        }
+        self.operation(generation, true, true, |debt| {
+            self.resume_inner(debt, scopes, generation)
+        })
     }
-    pub(super) fn recover_silently(&self, scopes: &[PilotSecretScope], generation: &str)
-        -> Result<VaultLease, PilotSecretError> {
-        self.operation(generation, true, false, |debt| self.recover_silently_inner(debt, scopes, generation))
+    pub(super) fn recover_silently(
+        &self,
+        scopes: &[PilotSecretScope],
+        generation: &str,
+    ) -> Result<VaultLease, PilotSecretError> {
+        self.operation(generation, true, false, |debt| {
+            self.recover_silently_inner(debt, scopes, generation)
+        })
+    }
+
+    fn read_transport_pair_locked(
+        &self,
+        identity: &TransportIdentity,
+        debt: &mut Option<crate::secrets::policy::RevocationTicket>,
+    ) -> Result<TransportPair, PilotSecretError> {
+        if !self.backend.silent_capture_supported() {
+            return Err(PilotSecretError::VaultUnavailable);
+        }
+        let scope = |kind, resource_id: String| PilotSecretScope {
+            configuration_id: identity.context.configuration_id.clone(),
+            relay_origin: identity.context.relay_origin.clone(),
+            kind,
+            resource_id,
+        };
+        let session = scope(
+            PilotSecretKind::SessionToken,
+            identity.context.owner_id.clone(),
+        );
+        let instance = scope(
+            PilotSecretKind::InstanceKey,
+            identity.instance_creation_id.clone(),
+        );
+        let keys = [entry_name(&session)?, entry_name(&instance)?];
+        let _operation = self
+            .operations
+            .lock()
+            .map_err(|_| PilotSecretError::VaultUnavailable)?;
+        {
+            let state = self.state()?;
+            self.current(&identity.generation)?;
+            if state.context.as_ref() != Some(&identity.context) {
+                return Err(PilotSecretError::ContextChanged);
+            }
+            Self::ready(&state)?;
+        }
+        let mut read = |scope: &PilotSecretScope, key: &str| {
+            let result = self.backend.read(key, scope.kind, false).and_then(|value| {
+                let value = value.ok_or(PilotSecretError::InvalidSecret)?;
+                validate_secret(&value)?;
+                Ok(value)
+            });
+            self.finish(debt, &identity.generation, result, |_, _| {})
+        };
+        let session_token = read(&session, &keys[0])?;
+        let instance_key = read(&instance, &keys[1])?;
+        Ok(TransportPair {
+            identity: identity.clone(),
+            session_token,
+            instance_key,
+        })
+    }
+
+    pub(super) fn capture_policy(
+        &self,
+        identity: &TransportIdentity,
+    ) -> Result<crate::secrets::policy::PolicySnapshot<TransportPair>, PilotSecretError> {
+        let mut debt = None;
+        let mut native_error = None;
+        let result = self.policy.capture_private(|| {
+            self.read_transport_pair_locked(identity, &mut debt)
+                .map_err(|error| {
+                    native_error = Some(error);
+                    crate::secrets::SecretError::PolicyUnavailable
+                })
+        });
+        if let Some(ticket) = debt {
+            let _ = self.policy.settle(ticket);
+        }
+        result.map_err(|_| native_error.unwrap_or_else(|| self.policy_error(&identity.generation)))
+    }
+
+    pub(super) fn consume_policy<T>(
+        &self,
+        snapshot: &crate::secrets::policy::PolicySnapshot<TransportPair>,
+        identity: &TransportIdentity,
+        effect: impl FnOnce(
+            &crate::secrets::policy::EmissionLease<'_>,
+            &TransportPair,
+        ) -> Result<T, crate::secrets::SecretError>,
+    ) -> Result<T, PilotSecretError> {
+        let mut debt = None;
+        let mut native_error = None;
+        let result = self.policy.consume_private(
+            snapshot,
+            || {
+                self.read_transport_pair_locked(identity, &mut debt)
+                    .map_err(|error| {
+                        native_error = Some(error);
+                        crate::secrets::SecretError::PolicyUnavailable
+                    })
+            },
+            effect,
+        );
+        if let Some(ticket) = debt {
+            let _ = self.policy.settle(ticket);
+        }
+        result.map_err(|_| native_error.unwrap_or_else(|| self.policy_error(&identity.generation)))
     }
 
     #[cfg(test)]
-    pub(super) fn policy_fixture(&self) -> (&crate::secrets::policy::PolicyOwner, &std::path::Path) {
+    pub(super) fn using_policy(mut self, policy: Arc<crate::secrets::policy::PolicyOwner>) -> Self {
+        self.policy = policy;
+        self
+    }
+
+    #[cfg(test)]
+    pub(super) fn policy_fixture(
+        &self,
+    ) -> (&crate::secrets::policy::PolicyOwner, &std::path::Path) {
         (&self.policy, self._store_directory.path())
     }
 
@@ -206,7 +395,9 @@ impl<B: Vault> Manager<B> {
             generation: self.generation.load(Ordering::Acquire).to_string(),
             status: if state.status == VaultStatus::Ready && !self.policy.available() {
                 VaultStatus::VaultUnavailable
-            } else { state.status },
+            } else {
+                state.status
+            },
         }
     }
 
@@ -278,17 +469,23 @@ impl<B: Vault> Manager<B> {
             self.advance(&mut state);
             (ticket, self.lease(&state).generation)
         };
-        self.policy.settle(ticket).map_err(|_| PilotSecretError::VaultUnavailable)?;
-        self.policy.change(|| {
-            let mut state = self.state()?;
-            self.current(&next)?;
-            if !self.policy.available() { return Err(PilotSecretError::VaultUnavailable); }
-            state.context = Some(context);
-            state.recovery_scopes.clear();
-            state.automatic_recovery = false;
-            state.recovery_inflight = false;
-            Ok(self.lease(&state))
-        }).map_err(|_| PilotSecretError::VaultUnavailable)?
+        self.policy
+            .settle(ticket)
+            .map_err(|_| PilotSecretError::VaultUnavailable)?;
+        self.policy
+            .change(|| {
+                let mut state = self.state()?;
+                self.current(&next)?;
+                if !self.policy.available() {
+                    return Err(PilotSecretError::VaultUnavailable);
+                }
+                state.context = Some(context);
+                state.recovery_scopes.clear();
+                state.automatic_recovery = false;
+                state.recovery_inflight = false;
+                Ok(self.lease(&state))
+            })
+            .map_err(|_| PilotSecretError::VaultUnavailable)?
     }
 
     pub(super) fn invalidate(
@@ -298,7 +495,8 @@ impl<B: Vault> Manager<B> {
         let (ticket, lease) = {
             let mut state = self.state()?;
             if !generation.is_some_and(|value| {
-                self.current(value).is_ok() || state.resume_parent_generation.as_deref() == Some(value)
+                self.current(value).is_ok()
+                    || state.resume_parent_generation.as_deref() == Some(value)
             }) {
                 return Ok(self.lease(&state));
             }
@@ -310,7 +508,9 @@ impl<B: Vault> Manager<B> {
             state.recovery_inflight = false;
             (ticket, self.lease(&state))
         };
-        self.policy.settle(ticket).map_err(|_| PilotSecretError::VaultUnavailable)?;
+        self.policy
+            .settle(ticket)
+            .map_err(|_| PilotSecretError::VaultUnavailable)?;
         // Return the current status after settlement, never a pre-settlement Ready.
         let state = self.state()?;
         self.current(&lease.generation)?;
@@ -331,7 +531,9 @@ impl<B: Vault> Manager<B> {
                     || state.recovery_inflight);
             state.recovery_inflight = false;
             self.advance(&mut state);
-            if state.status == VaultStatus::Ready { state.status = VaultStatus::Suspended; }
+            if state.status == VaultStatus::Ready {
+                state.status = VaultStatus::Suspended;
+            }
             tracing::info!(reason, status = ?state.status, automatic_recovery = state.automatic_recovery,
                 "Macro Connect credentials suspended");
             emit(&self.lease(&state));
@@ -432,9 +634,13 @@ impl<B: Vault> Manager<B> {
         result: Result<T, PilotSecretError>,
         cache: impl FnOnce(&mut State, &T),
     ) -> Result<T, PilotSecretError> {
-        if matches!(&result, Err(PilotSecretError::InterventionRequired
-            | PilotSecretError::Cancelled | PilotSecretError::VaultUnavailable
-            | PilotSecretError::InvalidSecret)) {
+        if matches!(
+            &result,
+            Err(PilotSecretError::InterventionRequired
+                | PilotSecretError::Cancelled
+                | PilotSecretError::VaultUnavailable
+                | PilotSecretError::InvalidSecret)
+        ) {
             *debt = Some(self.policy.revoke_now());
         }
         let mut state = self.state()?;
@@ -552,7 +758,12 @@ impl<B: Vault> Manager<B> {
                 .recovery_scopes
                 .retain(|known| entry_name(known).ok().as_ref() != Some(&key));
         }
-        self.finish(debt, generation, self.backend.delete(&key, scope.kind), |_, _| {})
+        self.finish(
+            debt,
+            generation,
+            self.backend.delete(&key, scope.kind),
+            |_, _| {},
+        )
     }
 
     fn failed_resume(
@@ -603,7 +814,8 @@ impl<B: Vault> Manager<B> {
             self.lease(&state)
         };
         self.current(&lease.generation)?;
-        if let Err(error) = self.finish(debt,
+        if let Err(error) = self.finish(
+            debt,
             &lease.generation,
             self.backend.prepare_resume(scopes[0].kind),
             |_, _| {},

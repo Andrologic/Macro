@@ -126,12 +126,16 @@ pub(crate) fn submit_joined(
     operation: impl FnOnce() -> Result<(), SecretError> + Send + 'static,
 ) -> Result<Completion, SecretError> {
     let (id, join, receive) = JOBS.start(operation)?;
-    Ok(Completion(async move {
-        let result = receive.await;
-        let joined = join.await;
-        let recorded = JOBS.finished(id, joined).is_ok();
-        joined && recorded && matches!(result, Ok(Ok(())))
-    }.boxed().shared()))
+    Ok(Completion(
+        async move {
+            let result = receive.await;
+            let joined = join.await;
+            let recorded = JOBS.finished(id, joined).is_ok();
+            joined && recorded && matches!(result, Ok(Ok(())))
+        }
+        .boxed()
+        .shared(),
+    ))
 }
 
 pub(crate) async fn shutdown() -> Result<(), SecretError> {
@@ -201,16 +205,16 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         super::super::init(directory.path()).unwrap();
         super::super::set_api_key("synthetic", "stored").unwrap();
+        // This test exercises a disk miss; cache hits must not wait for policy.
+        super::super::clear_caches();
         let (entered, started) = tokio::sync::oneshot::channel();
         let (release, wait) = std::sync::mpsc::channel();
         let holder = std::thread::spawn(move || {
-            super::super::policy::POLICY
-                .capture(|_, _| {
-                    entered.send(()).unwrap();
-                    wait.recv().unwrap();
-                    Ok(())
-                })
-                .unwrap();
+            super::super::policy::POLICY.capture(|_, _| {
+                entered.send(()).unwrap();
+                wait.recv().unwrap();
+                Ok(())
+            })
         });
         tokio::time::timeout(Duration::from_secs(2), started)
             .await
@@ -228,6 +232,7 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(value.as_deref(), Some("stored"));
-        holder.join().unwrap();
+        // The admitted cache miss revoked this older capture while waiting.
+        assert!(holder.join().unwrap().is_err());
     }
 }

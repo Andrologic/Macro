@@ -17,6 +17,47 @@ pub(crate) struct PolicyStamp {
     epoch: uuid::Uuid,
 }
 
+/// Native memory only. No serialization, digest, public boolean or restored handle.
+pub(crate) struct PolicySnapshot<P> {
+    stamp: PolicyStamp,
+    values: Vec<String>,
+    peer: P,
+}
+impl<P> PolicySnapshot<P> {
+    pub(crate) fn values(&self) -> &[String] {
+        &self.values
+    }
+    pub(crate) fn peer(&self) -> &P {
+        &self.peer
+    }
+}
+
+/// Borrowed only inside consume_private, whose gate/file guards remain held.
+/// The eventual transport must keep this scope through its last write and join.
+pub(crate) struct EmissionLease<'a> {
+    owner: &'a PolicyOwner,
+    stamp: PolicyStamp,
+}
+impl EmissionLease<'_> {
+    pub(crate) fn check(&self) -> Result<(), SecretError> {
+        if self.owner.quiescent_revision()? != self.stamp.revision {
+            return Err(SecretError::PolicyUnavailable);
+        }
+        Ok(())
+    }
+    pub(crate) async fn revoked(&self) {
+        loop {
+            let changed = self.owner.changed.notified();
+            tokio::pin!(changed);
+            changed.as_mut().enable();
+            if self.check().is_err() {
+                return;
+            }
+            changed.await;
+        }
+    }
+}
+
 pub(crate) struct PolicyOwner {
     gate: Mutex<()>,
     #[cfg(test)]
@@ -109,6 +150,11 @@ impl PolicyOwner {
             return;
         }
         super::clear_caches();
+    }
+
+    #[cfg(test)]
+    pub(crate) fn pending_for_test(&self) -> usize {
+        self.pending.load(Ordering::SeqCst)
     }
 
     #[cfg(test)]
@@ -359,15 +405,10 @@ impl PolicyOwner {
         read: impl FnOnce(&ProviderSecretsFile) -> T,
         publish: impl FnOnce(&T),
     ) -> Result<T, SecretError> {
-        // The cache lock is taken only inside the common gate.
-        {
-            let _gate = self.lock()?;
-            if !self.available() {
-                return Err(SecretError::PolicyUnavailable);
-            }
-            if let Some(value) = cached() {
-                return Ok(value);
-            }
+        // An ordinary cache hit neither reads the stores nor publishes policy.
+        // Release its cache lock before a miss acquires the common gate.
+        if let Some(value) = cached() {
+            return Ok(value);
         }
         self.mutation(|_, data| {
             let value = read(&data);
@@ -389,6 +430,39 @@ impl PolicyOwner {
         }
         let store = self.store()?;
         store::with_specific_store_lock(&store, |store| read(&store.read_policy_file()?))
+    }
+
+    pub(crate) fn capture_private<P>(
+        &self,
+        peer: impl FnOnce() -> Result<P, SecretError>,
+    ) -> Result<PolicySnapshot<P>, SecretError> {
+        self.capture(|data, stamp| {
+            Ok(PolicySnapshot {
+                stamp,
+                values: data.policy_values()?,
+                peer: peer()?,
+            })
+        })
+    }
+
+    pub(crate) fn consume_private<P: PartialEq, T>(
+        &self,
+        snapshot: &PolicySnapshot<P>,
+        peer: impl FnOnce() -> Result<P, SecretError>,
+        effect: impl FnOnce(&EmissionLease<'_>, &P) -> Result<T, SecretError>,
+    ) -> Result<T, SecretError> {
+        self.capture(|data, stamp| {
+            let current = peer()?;
+            if stamp != snapshot.stamp
+                || current != snapshot.peer
+                || data.policy_values()? != snapshot.values
+            {
+                return Err(SecretError::PolicyUnavailable);
+            }
+            let lease = EmissionLease { owner: self, stamp };
+            lease.check()?;
+            effect(&lease, &current)
+        })
     }
 
     pub(super) fn capture<T>(
@@ -443,6 +517,57 @@ mod tests {
             .unwrap();
         assert_eq!(value.as_deref(), Some("fresh"));
         assert!(before != after);
+    }
+
+    #[test]
+    fn ordinary_cache_hits_survive_revocation_and_a_held_policy_gate() {
+        let _serial = super::super::lock_test_store();
+        let directory = tempfile::tempdir().unwrap();
+        super::super::init(directory.path()).unwrap();
+        super::super::set_api_key("synthetic", "cached-key").unwrap();
+        let secret = super::super::ChatGptSecret {
+            access_token: "cached-access".into(),
+            refresh_token: "cached-refresh".into(),
+            access_token_expires_at: None,
+            account_id: None,
+            auth_source: "synthetic".into(),
+        };
+        super::super::set_chatgpt_secret("synthetic", &secret).unwrap();
+        let snapshot = POLICY.capture_private(|| Ok(())).unwrap();
+        let before = std::fs::read(directory.path().join("provider-secrets.json")).unwrap();
+        let gate = POLICY.lock().unwrap();
+        let ticket = POLICY.revoke_now();
+        let (sent, received) = mpsc::channel();
+        let reader = std::thread::spawn(move || {
+            let key = super::super::get_api_key("synthetic");
+            let chat = super::super::get_chatgpt_secret("synthetic");
+            sent.send((key, chat)).unwrap();
+        });
+        // Keep the gate held until the real getters have returned. Drop it even
+        // on timeout so a regression cannot strand the test's reader thread.
+        let result = received.recv_timeout(Duration::from_secs(2));
+        drop(gate);
+        reader.join().unwrap();
+        let (key, chat) = result.unwrap();
+        assert_eq!(key.unwrap().as_deref(), Some("cached-key"));
+        assert_eq!(chat.unwrap(), Some(secret));
+        assert!(!POLICY.available());
+        assert!(POLICY.capture_private(|| Ok(())).is_err());
+        assert!(POLICY
+            .consume_private(&snapshot, || Ok(()), |_, _| Ok(()))
+            .is_err());
+        assert!(super::super::get_api_key("uncached").is_err());
+        assert!(super::super::reload_chatgpt_secret("synthetic").is_err());
+        assert!(super::super::set_api_key("synthetic", "replacement").is_err());
+        assert_eq!(
+            std::fs::read(directory.path().join("provider-secrets.json")).unwrap(),
+            before
+        );
+        assert_eq!(
+            super::super::get_api_key("synthetic").unwrap().as_deref(),
+            Some("cached-key")
+        );
+        POLICY.settle(ticket).unwrap();
     }
 
     #[test]
@@ -537,5 +662,117 @@ mod tests {
         assert!(!POLICY.available());
         super::super::init(directory.path()).unwrap();
         assert!(POLICY.capture(|_, _| Ok(())).is_ok());
+    }
+    #[test]
+    fn private_material_includes_legacy_id_token_and_checks_fresh_values() {
+        for serialized in [false, true] {
+            let directory = tempfile::tempdir().unwrap();
+            let path = directory.path().join("provider-secrets.json");
+            let raw = serde_json::json!({"version":1,"kind":"chatgpt","payload":{
+                "access_token":"synthetic-access","refresh_token":"synthetic-refresh",
+                "id_token":"synthetic-id","account_id":"metadata-account",
+                "client_id":"metadata-client","last_refresh":null,"source":"oauth"
+            }});
+            let raw = if serialized {
+                serde_json::Value::String(raw.to_string())
+            } else {
+                raw
+            };
+            std::fs::write(
+                &path,
+                serde_json::json!({"version":2,"chatgpt_sessions":{"session":raw},
+                "namespaces":{"providers":{"key":"synthetic-key"}}})
+                .to_string(),
+            )
+            .unwrap();
+            let owner = PolicyOwner::for_test(directory.path());
+            owner.initialize(directory.path()).unwrap();
+            let captured = owner.capture_private(|| Ok(())).unwrap();
+            assert_eq!(
+                captured.values(),
+                [
+                    "synthetic-key",
+                    "synthetic-access",
+                    "synthetic-refresh",
+                    "synthetic-id"
+                ]
+            );
+            let mut changed: serde_json::Value =
+                serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+            let raw = &mut changed["chatgpt_sessions"]["session"];
+            let mut session = if let Some(text) = raw.as_str() {
+                serde_json::from_str(text).unwrap()
+            } else {
+                raw.clone()
+            };
+            session["payload"]["id_token"] = serde_json::json!("synthetic-replaced-id");
+            *raw = if serialized {
+                serde_json::Value::String(session.to_string())
+            } else {
+                session
+            };
+            // Same nonce, simulating an external value edit. Fresh comparison still rejects it.
+            std::fs::write(&path, changed.to_string()).unwrap();
+            assert!(owner
+                .consume_private(&captured, || Ok(()), |_, _| Ok(()))
+                .is_err());
+            assert!(owner
+                .capture_private(|| Ok(()))
+                .unwrap()
+                .values()
+                .contains(&"synthetic-replaced-id".to_string()));
+        }
+    }
+
+    #[test]
+    fn revocation_stops_right_but_keeps_lease_until_owned_scope_has_joined() {
+        let directory = tempfile::tempdir().unwrap();
+        let owner = Arc::new(PolicyOwner::for_test(directory.path()));
+        owner.initialize(directory.path()).unwrap();
+        let snapshot = Arc::new(owner.capture_private(|| Ok(())).unwrap());
+        let (entered, wait_entered) = mpsc::channel();
+        let (revoked, wait_revoked) = mpsc::channel();
+        let (release, wait_release) = mpsc::channel();
+        let emitting = {
+            let owner = owner.clone();
+            let snapshot = snapshot.clone();
+            std::thread::spawn(move || {
+                owner.consume_private(
+                    &snapshot,
+                    || Ok(()),
+                    |lease, _| {
+                        lease.check()?;
+                        entered.send(()).unwrap();
+                        futures::executor::block_on(lease.revoked());
+                        assert!(lease.check().is_err());
+                        revoked.send(()).unwrap();
+                        wait_release.recv().unwrap();
+                        Ok(())
+                    },
+                )
+            })
+        };
+        wait_entered.recv_timeout(Duration::from_secs(3)).unwrap();
+        let ticket = owner.revoke_now();
+        let (settled, wait_settled) = mpsc::channel();
+        let settling = {
+            let owner = owner.clone();
+            std::thread::spawn(move || {
+                let result = owner.settle(ticket);
+                settled.send(result.is_ok()).unwrap();
+                result
+            })
+        };
+        wait_revoked.recv_timeout(Duration::from_secs(3)).unwrap();
+        assert!(wait_settled
+            .recv_timeout(Duration::from_millis(30))
+            .is_err());
+        release.send(()).unwrap();
+        assert!(emitting.join().unwrap().is_err());
+        assert!(wait_settled.recv_timeout(Duration::from_secs(3)).unwrap());
+        settling.join().unwrap().unwrap();
+        assert!(owner
+            .consume_private(&snapshot, || Ok(()), |_, _| Ok(()))
+            .is_err());
     }
 }
