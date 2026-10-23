@@ -174,7 +174,7 @@ pub fn suspend(reason: &'static str) {
 async fn blocking<T: Send + 'static>(
     operation: impl FnOnce() -> Result<T, PilotSecretError> + Send + 'static,
 ) -> Result<T, PilotSecretError> {
-    tauri::async_runtime::spawn_blocking(operation)
+    crate::secrets::blocking::run(operation)
         .await
         .map_err(|_| PilotSecretError::VaultUnavailable)?
 }

@@ -1169,6 +1169,9 @@ pub fn run() {
             app_quit_state.mark_quitting("exit-requested");
             commands::git::cancel_all_git_reviews();
             shutdown_mcp_runtime(app_handle);
+            if tauri::async_runtime::block_on(secrets::blocking::shutdown()).is_err() {
+                tracing::warn!("Secret operation owner did not finish cleanly");
+            }
             fs::watcher::shutdown_watcher(app_handle);
         }
         tauri::RunEvent::Exit => {
@@ -1177,6 +1180,9 @@ pub fn run() {
             app_quit_state.mark_quitting("exit");
             commands::git::cancel_all_git_reviews();
             shutdown_mcp_runtime(app_handle);
+            if tauri::async_runtime::block_on(secrets::blocking::shutdown()).is_err() {
+                tracing::warn!("Secret operation owner did not finish cleanly");
+            }
             fs::watcher::shutdown_watcher(app_handle);
         }
         _ => {}

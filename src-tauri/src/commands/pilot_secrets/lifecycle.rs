@@ -69,11 +69,15 @@ fn recover(reason: &'static str) {
     let Some((scopes, generation)) = manager.take_recovery() else {
         return;
     };
-    tauri::async_runtime::spawn_blocking(move || {
+    if crate::secrets::blocking::submit(move || {
         let result = manager.recover_silently(&scopes, &generation);
         tracing::info!(mode = "silent", result = ?result.as_ref().map(|lease| lease.status),
             "Macro Connect credential recovery");
-    });
+    })
+    .is_err()
+    {
+        tracing::warn!("Credential recovery owner is closed");
+    }
 }
 
 define_class!(

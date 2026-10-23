@@ -1,4 +1,5 @@
 mod api_keys;
+pub(crate) mod blocking;
 mod chatgpt;
 pub(crate) mod policy;
 mod store;
@@ -108,4 +109,9 @@ pub(crate) fn chatgpt_auth_lock_path(provider_id: &str) -> Result<std::path::Pat
 pub(crate) fn harden_private_file(path: &Path) -> Result<(), SecretError> {
     store::set_private_file_permissions(path)?;
     Ok(())
+}
+
+pub(crate) async fn get_api_key_async(provider_id: &str) -> Result<Option<String>, SecretError> {
+    let provider_id = provider_id.to_owned();
+    blocking::run(move || get_api_key(&provider_id)).await?
 }
