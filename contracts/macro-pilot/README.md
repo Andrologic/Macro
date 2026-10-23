@@ -81,3 +81,10 @@ Pour le transfert, l’envoi et l’export des fichiers avec leurs gardes, lire
 The separate metadata-only [transfer-decision-1 contract](v2/transfer-decision.md)
 defines durable transfer decisions and recovery bindings. Its own registry does
 not change the existing roots or enable transfer support.
+
+The separate inactive [portable-chat-history-1 content contract](v2/portable-chat-history/contract.md)
+defines the closed recoverable archive and its exact root identity. Run
+`bun contracts/macro-pilot/test/validate-portable-chat-history.mjs` for offline
+conformance and `bun contracts/macro-pilot/test/portable-transfer-composition.mjs`
+for synthetic F metadata composition. This adds no active supported-contract
+configuration, content route, native authority or transfer capability.
