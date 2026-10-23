@@ -1958,8 +1958,9 @@ impl ConfigManager {
             )
         };
         let policy = match value {
+            // The optional settings field uses null and absence interchangeably.
+            None | Some(serde_json::Value::Null) => ConnectTransferResources::default(),
             Some(value) => ConnectTransferResources::deserialize(value).map_err(|_| invalid())?,
-            None => ConnectTransferResources::default(),
         };
         if !policy.valid() {
             return Err(invalid());

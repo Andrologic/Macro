@@ -370,6 +370,116 @@ impl Drop for TransitCharge {
 mod tests {
     use super::*;
     #[tokio::test]
+    async fn connect_resources_null_restores_defaults_through_approval_and_restart() {
+        use crate::config::{
+            ConfigChangeSource, ConfigDocumentKind, ConfigPatchRequest, ConfigScope,
+            JsonPatchOperation,
+        };
+        for source in [ConfigChangeSource::UserInterface, ConfigChangeSource::Agent] {
+            let directory = tempfile::tempdir().unwrap();
+            let root = directory.path().join("config");
+            let manager = ConfigManager::initialize(root.clone()).await.unwrap();
+            let owner = WorkingOwner::default();
+            let lease = owner
+                .admit_measured(
+                    &configured(&manager).await.unwrap(),
+                    PolicySource::Live(manager.clone()),
+                    (16 * 1024 * MIB, 8 * 1024 * MIB),
+                    Instant::now(),
+                )
+                .unwrap();
+            let held = lease.reserve(128 * MIB).await.unwrap();
+            for value in [
+                serde_json::json!({"workingCeilingMiB": 64}),
+                serde_json::Value::Null,
+            ] {
+                let document = manager
+                    .get_document(ConfigDocumentKind::Settings, ConfigScope::User)
+                    .await
+                    .unwrap();
+                let outcome = manager
+                    .apply_patch(ConfigPatchRequest {
+                        kind: ConfigDocumentKind::Settings,
+                        scope: ConfigScope::User,
+                        expected_etag: document.etag,
+                        patch: vec![JsonPatchOperation {
+                            op: "add".into(),
+                            path: "/connectTransferResources".into(),
+                            from: None,
+                            value: Some(value.clone()),
+                        }],
+                        source: if value.is_null() {
+                            source.clone()
+                        } else {
+                            ConfigChangeSource::UserInterface
+                        },
+                    })
+                    .await
+                    .unwrap();
+                if value.is_null() && matches!(source, ConfigChangeSource::Agent) {
+                    assert_eq!(outcome.status, "pendingApproval");
+                    assert_eq!(configured(&manager).await.unwrap().working_ceiling_mi_b, 64);
+                    assert!(matches!(
+                        lease.reserve(1).await,
+                        Err(ResourceError::ResourceLimit)
+                    ));
+                    manager
+                        .accept_pending_change(&outcome.pending_change.unwrap().id)
+                        .await
+                        .unwrap();
+                } else {
+                    assert_eq!(outcome.status, "applied");
+                }
+                assert_eq!(lease.0.allocation.lock().unwrap().charged, 128 * MIB);
+                if value.is_null() {
+                    assert_eq!(
+                        configured(&manager).await.unwrap(),
+                        ConnectTransferResources::default()
+                    );
+                    let remaining = lease.reserve(384 * MIB).await.unwrap();
+                    assert!(matches!(
+                        lease.reserve(1).await,
+                        Err(ResourceError::ResourceLimit)
+                    ));
+                    drop(remaining);
+                } else {
+                    assert!(matches!(
+                        lease.reserve(1).await,
+                        Err(ResourceError::ResourceLimit)
+                    ));
+                }
+            }
+            let document = manager
+                .get_document(ConfigDocumentKind::Settings, ConfigScope::User)
+                .await
+                .unwrap();
+            let persisted: serde_json::Value =
+                serde_json::from_slice(&std::fs::read(&document.file_path).unwrap()).unwrap();
+            assert_eq!(
+                persisted.get("connectTransferResources"),
+                Some(&serde_json::Value::Null)
+            );
+            drop(held);
+            drop(lease);
+            drop(manager);
+            let restarted = ConfigManager::initialize(root).await.unwrap();
+            assert_eq!(
+                configured(&restarted).await.unwrap(),
+                ConnectTransferResources::default()
+            );
+            let lease = owner
+                .admit_measured(
+                    &configured(&restarted).await.unwrap(),
+                    PolicySource::Live(restarted),
+                    (16 * 1024 * MIB, 8 * 1024 * MIB),
+                    Instant::now(),
+                )
+                .unwrap();
+            assert!(lease.reserve(512 * MIB).await.is_ok());
+        }
+    }
+
+    #[tokio::test]
     async fn connect_resources_live_config_restricts_an_existing_lease() {
         use crate::config::{
             ConfigChangeSource, ConfigDocumentKind, ConfigPatchRequest, ConfigScope,
