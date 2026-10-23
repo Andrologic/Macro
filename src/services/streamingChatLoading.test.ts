@@ -21,6 +21,7 @@ const deferred = <T>() => {
   return { promise, resolve, reject };
 };
 const options = (sessionId = 'pending'): StreamingChatOptions => ({
+  providerAdmission: { kind: 'utility' },
   sessionId, baseUrl: 'https://provider.example', providerId: 'provider', providerType: 'openai', modelId: 'model',
   messages: [{ role: 'user', content: 'hello' }],
   onToken: mock(() => undefined), onComplete: mock(() => undefined), onError: mock(() => undefined),

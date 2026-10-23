@@ -3589,6 +3589,7 @@ describe("tool catalogue to workspace execution", () => {
     const selected = applyEditingStrategyToToolIds(getImplementAgentToolPolicy("build").allowedToolIds, providerType, modelId);
     const allowedToolIds = providerType === "copilot" ? filterCopilotSupportedToolIds(selected) : selected;
     const options = {
+      providerAdmission: { kind: "utility" as const },
       providerId: providerType, providerType, modelId, baseUrl: "https://example.invalid", messages: [],
       allowedToolIds, maxTurns: 2, mode: "Implement" as const,
       onToken: () => undefined, onComplete: () => undefined, onError: () => undefined,
@@ -3773,7 +3774,7 @@ async function lspConversationFixture(params: {
       calls: [{id: "call", type: "function", function: {name: tool, arguments: JSON.stringify(args)}}],
       messages: [], allowedTools: new Set(operation.allowedToolIds), schemas: new Map(), batchId: "batch", usedToolNames: new Set(),
       accumulator: {beginToolTrace: () => {}, completeToolTrace: () => {}, addHiddenToolContext: () => {}, addHiddenContextBlock: () => {}, appendSystemChunk: () => {}},
-      options: {providerId: "fixture", providerType: "openai", baseUrl: "https://example.invalid", modelId: "fixture", messages: [], signal: controller.signal,
+      options: {providerAdmission: {kind: "utility"}, providerId: "fixture", providerType: "openai", baseUrl: "https://example.invalid", modelId: "fixture", messages: [], signal: controller.signal,
         onToken: () => {}, onComplete: () => {}, onError: () => {}, onToolCall: dispatch},
     });
     const result = batch.toolResults[0];

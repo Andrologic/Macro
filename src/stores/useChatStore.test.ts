@@ -1861,10 +1861,21 @@ const registerUseChatStoreMocks = async () => {
     ...actualPreferences,
   }));
 
+  // These store tests replace transports and persistence with ports, including
+  // browser-only scenarios. They do not establish native admission authority.
+  mock.module('../services/chatAdmission', () => ({
+    beginChatAdmission: async (conversationId: string, turnId: string, attemptId: string) => {
+      if (!conversationId || !turnId || !attemptId) throw new Error('Missing admission identity in store fixture');
+      return { kind: 'globalChat' as const, context: { handle: crypto.randomUUID(), runtime: 'store-unit-runtime' } };
+    },
+    closeChatPreparation: async () => undefined,
+    finishChatResponse: async () => undefined,
+  }));
   mock.module('../services/tauriIpc', () => ({
     ...actualTauriIpc,
     gitStatus: conflictGitStatusMock,
     isTauriAvailable: () => tauriAvailable,
+    chatAdmissionFinishCompaction: async () => undefined,
     conversationMetadata: async () => chatSnapshotConversations.map(c => ({ conversation_id: c.id, revision: 1,
       archived: Array.isArray(nativePreferenceValues.chatArchivedConversationIds) && nativePreferenceValues.chatArchivedConversationIds.includes(c.id),
       response_revision: 0, read_revision: 0, pending_tool: false, question_message_id: null })),

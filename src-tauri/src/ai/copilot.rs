@@ -1992,6 +1992,7 @@ pub(crate) async fn stream_chat(
     ai_state: AiState,
     request: AiChatRequest,
     reservation: crate::ai::stream_tasks::StreamReservation,
+    work: std::sync::Arc<crate::ai::provider_work::ProviderWork>,
 ) -> Result<(), String> {
     let task_request_id = request.request_id.clone();
     let task_provider_id = request.provider_id.clone();
@@ -1999,35 +2000,36 @@ pub(crate) async fn stream_chat(
     let state_for_task = ai_state.clone();
     let task_started_at = Instant::now();
 
-    reservation
-        .spawn(move |cancel| async move {
-            let result = stream_chat_inner(
-                app_for_task.clone(),
-                pool,
-                state_for_task.clone(),
-                request,
-                cancel,
-            )
-            .await;
-            if let Err(message) = result {
-                emit_timeline(
-                    &app_for_task,
-                    &task_request_id,
-                    &task_provider_id,
-                    "copilot",
-                    task_started_at,
-                    "error",
-                );
-                let _ = app_for_task.emit(
-                    "ai:error",
-                    AiStreamErrorEvent {
-                        request_id: task_request_id.clone(),
-                        message,
-                        status: None,
-                    },
-                );
-            }
-        })
+    reservation.spawn_with_work(work.clone(), move |cancel| async move {
+        let result = stream_chat_inner(
+            app_for_task.clone(),
+            pool,
+            state_for_task.clone(),
+            request,
+            cancel,
+            &work,
+        )
+        .await;
+        if let Err(message) = &result {
+            emit_timeline(
+                &app_for_task,
+                &task_request_id,
+                &task_provider_id,
+                "copilot",
+                task_started_at,
+                "error",
+            );
+            let _ = app_for_task.emit(
+                "ai:error",
+                AiStreamErrorEvent {
+                    request_id: task_request_id.clone(),
+                    message: message.clone(),
+                    status: None,
+                },
+            );
+        }
+        result
+    })
 }
 
 pub async fn cancel_stream(ai_state: &AiState, request_id: &str) -> Result<(), String> {
@@ -2077,6 +2079,7 @@ async fn stream_chat_inner(
     ai_state: AiState,
     request: AiChatRequest,
     cancel: tokio_util::sync::CancellationToken,
+    work: &crate::ai::provider_work::ProviderWork,
 ) -> Result<(), String> {
     let mut request = request;
     let started_at = Instant::now();
@@ -2109,6 +2112,9 @@ async fn stream_chat_inner(
     };
     let payload = serde_json::to_string(&request)
         .map_err(|error| format!("Failed to serialize Copilot request: {}", error))?;
+    let attempt = work
+        .attempt(&provider.id, "copilot-local-bridge:send")
+        .await?;
     let mut child = spawn_bridge(&app_handle, &["send"], &bridge_envs(&app_handle, &runtime))?;
 
     let mut stderr_task = None;
@@ -2120,6 +2126,7 @@ async fn stream_chat_inner(
         let stdin = Arc::new(Mutex::new(stdin));
         {
             let mut writer = stdin.lock().await;
+            attempt.dispatched().await?;
             writer
                 .write_all(payload.as_bytes())
                 .await

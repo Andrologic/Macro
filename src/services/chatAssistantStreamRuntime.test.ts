@@ -27,6 +27,7 @@ function launch(conversationId: string, sessionId = `${conversationId}-session`)
   const projectId = `${conversationId}-project`;
   const workspacePath = `/workspaces/${projectId}`;
   return {
+    providerAdmission: { kind: 'conversation' },
     sessionId, conversationId,
     assistantMessage: {
       id: `${sessionId}-assistant`, turn_id: `${sessionId}-turn`,
@@ -121,6 +122,10 @@ function setup() {
   const deleteMessagesAfter = mock(async (_conversationId: string, _messageId: string) => undefined);
   const unexpectedIpc = async (): Promise<never> => { throw new Error("Unexpected persistence IPC"); };
   const ports: ChatAssistantStreamPorts = {
+    admission: {
+      finishResponse: async () => { throw new Error('Unexpected global chat finalization in a project fixture'); },
+      closePreparation: async () => { throw new Error('Unexpected global chat preparation in a project fixture'); },
+    },
     owner, isDeleted: () => false,
     messages: {
       get: (id) => messages.get(id),
@@ -178,7 +183,7 @@ function setup() {
     return calls.at(-1)!;
   }
   return {
-    owner, runtime, start, calls, messages, saved, partials, statuses,
+    admission: ports.admission, owner, runtime, start, calls, messages, saved, partials, statuses,
     cancelTransport, settled, append, complete, partial, failed, sync, execute, preserve,
     prepare, consolidate, record, clear, recordOverflowLimit, deleteMessagesAfter, taskFailed,
   };
@@ -835,3 +840,99 @@ for (const mode of ['Chat', 'Architect', 'Implement'] as const) {
     if (mode === 'Implement') expect(h.taskFailed).toHaveBeenCalledTimes(1);
   });
 }
+
+
+describe('admitted global chat physical completion', () => {
+  const admitted = () => ({ ...launch('admitted'), providerAdmission: {
+    kind: 'globalChat' as const, context: { handle: 'synthetic-local-parent', runtime: 'synthetic-browser' },
+  } });
+
+  test('waits for an already running tool and the native save receipt before releasing the queue', async () => {
+    const h = setup();
+    const params = admitted();
+    const tool = deferred<string>();
+    const receipt = deferred<void>();
+    const finish = mock(async () => receipt.promise);
+    h.admission.finishResponse = finish;
+    h.execute.mockImplementationOnce(async () => tool.promise);
+    const stream = h.start(params);
+    const runningTool = stream.options.onToolCall?.('read', { path: 'synthetic.txt' }, 'running');
+    await checkpoint();
+    stream.options.onComplete(result('Saved response'));
+    stream.done.resolve();
+    await checkpoint();
+    expect(finish).not.toHaveBeenCalled();
+    expect(h.settled).not.toHaveBeenCalled();
+    tool.resolve('Synthetic tool result');
+    await runningTool;
+    await checkpoint();
+    expect(finish).toHaveBeenCalledTimes(1);
+    expect(h.owner.read('admitted').phase).toBe('persisting');
+    expect(h.settled).not.toHaveBeenCalled();
+    receipt.resolve();
+    await h.owner.drain('admitted');
+    await checkpoint();
+    expect(h.owner.read('admitted').phase).toBe('idle');
+    expect(h.settled.mock.calls).toEqual([['admitted']]);
+  });
+
+  test('an overflow successor cannot close while its predecessor still owns the transport', async () => {
+    const h = setup();
+    const params = admitted();
+    const finish = mock(async () => undefined);
+    h.admission.finishResponse = finish;
+    h.prepare.mockImplementationOnce(async () => ({ ...params, messagesForRequest: [{ role: 'user', content: 'Compacted history' }] }));
+    const old = h.start(params);
+    old.options.onError(new Error('maximum context length is 128000 tokens'));
+    await checkpoint();
+    expect(h.calls).toHaveLength(2);
+    const next = h.calls[1];
+    next.options.onComplete(result('Recovered response'));
+    next.done.resolve();
+    await checkpoint();
+    expect(finish).not.toHaveBeenCalled();
+    expect(h.settled).not.toHaveBeenCalled();
+    old.done.resolve();
+    await h.owner.drain('admitted');
+    expect(finish).toHaveBeenCalledTimes(1);
+    expect(h.saved.get(params.assistantMessage.id)?.visibleContent).toBe('Recovered response');
+    expect(h.owner.read('admitted').phase).toBe('idle');
+  });
+
+  test('a refused native completion retains an error after preserving the visible response', async () => {
+    const h = setup();
+    const params = admitted();
+    h.admission.finishResponse = async () => { throw new Error('Synthetic unresolved provider child'); };
+    const stream = h.start(params);
+    stream.options.onComplete(result('Preserved response'));
+    stream.done.resolve();
+    await h.owner.drain('admitted');
+    expect(h.saved.get(params.assistantMessage.id)?.visibleContent).toBe('Preserved response');
+    expect(h.owner.read('admitted').phase).toBe('error');
+    expect(h.owner.read('admitted').lastError).toContain('unresolved provider');
+  });
+});
+
+test('an aborted admitted preparation is not silently handed to a nonexistent stream', () => {
+  const h = setup();
+  const params = launch('a');
+  params.providerAdmission = { kind: 'globalChat', context: { handle: 'synthetic-parent', runtime: 'browser' } };
+  params.abortController!.abort();
+  expect(() => h.start(params)).toThrow('cancelled before dispatch');
+  expect(h.calls).toHaveLength(0);
+});
+
+test('a synchronous setup failure leaves no admitted stream group to own a later retry', async () => {
+  const h = setup();
+  const params = launch('a');
+  params.providerAdmission = { kind: 'globalChat', context: { handle: 'synthetic-parent', runtime: 'browser' } };
+  h.record.mockImplementationOnce(() => { throw new Error('Synthetic setup failure'); });
+  expect(() => h.start(params)).toThrow('Synthetic setup failure');
+  const finish = mock(async () => {});
+  h.admission.finishResponse = finish;
+  const stream = h.start(params);
+  stream.options.onComplete(result('answer'));
+  stream.done.resolve();
+  await h.owner.drain('a');
+  expect(finish).toHaveBeenCalledTimes(1);
+});

@@ -46,7 +46,7 @@ pub(crate) fn portable_history_proof_request(request: &AiChatRequest) -> Result<
     build_chat_completions_request(request, &provider)
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct ChatCompletionError {
     message: String,
     status: Option<u16>,
@@ -97,19 +97,20 @@ pub(crate) async fn stream_chat(
     pool: SqlitePool,
     request: AiChatRequest,
     reservation: crate::ai::stream_tasks::StreamReservation,
+    work: std::sync::Arc<crate::ai::provider_work::ProviderWork>,
 ) -> Result<(), String> {
     let task_request_id = request.request_id.clone();
     let task_provider_id = request.provider_id.clone();
     let app_for_task = app_handle.clone();
     let task_started_at = Instant::now();
 
-    reservation.spawn(move |cancel| async move {
+    reservation.spawn_with_work(work.clone(), move |cancel| async move {
         let result = tokio::select! {
             biased;
             _ = cancel.cancelled() => Err(ChatCompletionError::from("AI stream cancelled.".to_string())),
-            result = stream_chat_inner(app_for_task.clone(), pool, request) => result,
+            result = stream_chat_inner(app_for_task.clone(), pool, request, &work) => result,
         };
-        if let Err(error) = result {
+        if let Err(error) = &result {
             emit_timeline(
                 &app_for_task,
                 &task_request_id,
@@ -118,9 +119,10 @@ pub(crate) async fn stream_chat(
                 task_started_at,
                 "error",
             );
-            let _ = app_for_task.emit("ai:error", error.into_event(task_request_id.clone()));
+            let _ = app_for_task.emit("ai:error", error.clone().into_event(task_request_id.clone()));
         }
 
+        result.map_err(|error| error.message)
     })
 }
 
@@ -128,6 +130,7 @@ async fn stream_chat_inner(
     app_handle: AppHandle,
     pool: SqlitePool,
     request: AiChatRequest,
+    work: &crate::ai::provider_work::ProviderWork,
 ) -> Result<(), ChatCompletionError> {
     let started_at = Instant::now();
     let provider = repository::get_provider_config(&pool, &request.provider_id)
@@ -167,17 +170,19 @@ async fn stream_chat_inner(
         timeline.emit("auth_ready");
     }
     let request_body = build_chat_completions_request(&request, &provider)?;
-    let client = reqwest::Client::builder()
+    let client = work
+        .configure_http_client(reqwest::Client::builder())
         .connect_timeout(CONNECT_TIMEOUT)
         .build()
         .map_err(|error| error.to_string())?;
     timeline.emit("provider_request_sent");
-    let response =
-        send_chat_completions_request(&client, &provider, &request, &api_key, &request_body)
+    let (response, attempt) =
+        send_chat_completions_request(&client, &provider, &request, &api_key, &request_body, work)
             .await?;
 
     if !response.status().is_success() {
         let status = response.status();
+        attempt.http_rejection(status).await?;
         let error_body = await_http_operation(
             response.text(),
             ERROR_BODY_TIMEOUT,
@@ -260,6 +265,7 @@ async fn stream_chat_inner(
     }
 
     if !saw_completion {
+        attempt.uncertain().await?;
         accumulator.completion_reason = Some("incomplete".to_string());
     }
     ensure_terminal_completion_reason(&mut accumulator.completion_reason, &accumulator.tool_calls);
@@ -633,13 +639,16 @@ async fn send_chat_completions_request(
     request: &AiChatRequest,
     api_key: &str,
     body: &Value,
-) -> Result<reqwest::Response, String> {
+    work: &crate::ai::provider_work::ProviderWork,
+) -> Result<(reqwest::Response, crate::ai::provider_work::ProviderAttempt), String> {
     let url = format!(
         "{}/chat/completions",
         provider.base_url.trim_end_matches('/')
     );
+    let url = reqwest::Url::parse(&url).map_err(|error| error.to_string())?;
+    let attempt = work.attempt(&provider.id, url.as_str()).await?;
     let mut builder = client
-        .post(&url)
+        .post(url)
         .header(CONTENT_TYPE, "application/json")
         .header(ACCEPT, "text/event-stream")
         .header("x-client-request-id", request.request_id.clone())
@@ -664,8 +673,25 @@ async fn send_chat_completions_request(
             .header("X-Title", "Macro");
     }
 
+    if matches!(
+        work,
+        crate::ai::provider_work::ProviderWork::GlobalChat { .. }
+    ) {
+        // A timeout or transport error after send does not prove rejection.
+        // The owning task records uncertainty; no automatic second send follows.
+        let request = builder.build().map_err(|error| error.to_string())?;
+        attempt.dispatched().await?;
+        return await_http_operation(
+            client.execute(request),
+            RESPONSE_HEADERS_TIMEOUT,
+            "Provider response headers",
+        )
+        .await
+        .map(|response| (response, attempt));
+    }
+
     let mut last_error = None;
-    for attempt in 0..REQUEST_RETRY_ATTEMPTS {
+    for retry in 0..REQUEST_RETRY_ATTEMPTS {
         let Some(cloned_builder) = builder.try_clone() else {
             break;
         };
@@ -676,10 +702,10 @@ async fn send_chat_completions_request(
         )
         .await
         {
-            Ok(response) => return Ok(response),
+            Ok(response) => return Ok((response, attempt)),
             Err(error) => {
                 last_error = Some(error);
-                if attempt + 1 < REQUEST_RETRY_ATTEMPTS {
+                if retry + 1 < REQUEST_RETRY_ATTEMPTS {
                     sleep(Duration::from_millis(250)).await;
                 }
             }
@@ -692,6 +718,7 @@ async fn send_chat_completions_request(
         "Provider response headers",
     )
     .await
+    .map(|response| (response, attempt))
     .map_err(|error| {
         let previous = last_error
             .map(|message| format!(" Last retryable error: {}", message))
@@ -1696,5 +1723,78 @@ mod tests {
         let mut reason = None;
         ensure_terminal_completion_reason(&mut reason, &[call("")]);
         assert_eq!(reason.as_deref(), Some("completed"));
+    }
+    #[tokio::test]
+    async fn admitted_request_is_not_repeated_after_lost_headers_or_timeout() {
+        use crate::ai::provider_work::tests::{fixture, HttpServer};
+        for response in [None, Some("")] {
+            let server = HttpServer::start(vec![response]).await;
+            let (_dir, pool, _runtime, work) = fixture("native-request").await;
+            let mut provider = provider("openai");
+            provider.base_url = server.url.clone();
+            let client = reqwest::Client::builder()
+                .no_proxy()
+                .timeout(Duration::from_millis(100))
+                .build()
+                .unwrap();
+            let mut request = request(None);
+            request.request_id = "native-request".into();
+            request.conversation_id = Some("chat".into());
+            let error = send_chat_completions_request(
+                &client,
+                &provider,
+                &request,
+                "",
+                &serde_json::json!({"messages": []}),
+                &work,
+            )
+            .await
+            .err()
+            .expect("lost headers must not be successful");
+            work.settle(&Err(error)).await.unwrap();
+            let count = server.stop().await;
+            assert_eq!(count, 1);
+            let phases: Vec<String> = sqlx::query_scalar("SELECT phase FROM chat_admission_operations WHERE kind='provider' ORDER BY operation_id")
+                .fetch_all(&pool).await.unwrap();
+            assert_eq!(phases, vec!["unknown", "unknown"]);
+        }
+    }
+
+    #[tokio::test]
+    async fn native_cancel_joins_the_request_and_retains_unknown_after_emission() {
+        use crate::ai::provider_work::tests::{fixture, HttpServer};
+        let server = HttpServer::start(vec![Some("")]).await;
+        let (_dir, pool, _runtime, work) = fixture("native-request").await;
+        let mut provider = provider("openai");
+        provider.base_url = server.url.clone();
+        let state = crate::ai::AiState::default();
+        let task_work = work.clone();
+        state.reserve_stream("native-request".into()).unwrap()
+            .spawn_with_work(work, move |cancel| async move {
+                let client = reqwest::Client::builder().no_proxy().build().unwrap();
+                let mut request = request(None);
+                request.request_id = "native-request".into();
+                request.conversation_id = Some("chat".into());
+                let body = serde_json::json!({"messages": []});
+                tokio::select! {
+                    biased;
+                    _ = cancel.cancelled() => Err("Synthetic cancellation".into()),
+                    result = send_chat_completions_request(&client, &provider, &request, "", &body, &task_work) => result.map(|_| ()),
+                }
+            }).unwrap();
+        tokio::time::timeout(Duration::from_secs(5), server.received.notified())
+            .await
+            .unwrap();
+        let cancelled = tokio::time::timeout(
+            Duration::from_secs(5),
+            state.cancel_stream_task("native-request"),
+        )
+        .await
+        .unwrap();
+        assert!(cancelled.is_err());
+        assert_eq!(server.stop().await, 1);
+        let phases: Vec<String> = sqlx::query_scalar("SELECT phase FROM chat_admission_operations WHERE kind='provider' ORDER BY operation_id")
+            .fetch_all(&pool).await.unwrap();
+        assert_eq!(phases, vec!["unknown", "unknown"]);
     }
 }

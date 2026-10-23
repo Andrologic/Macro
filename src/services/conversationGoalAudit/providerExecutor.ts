@@ -171,6 +171,7 @@ export const createGoalAuditProviderExecutor = (
     let completion: StreamCompletionResult | undefined;
     let failure: Error | undefined;
     await awaitAbortable(signal, () => (ports.stream ?? streamChat)({
+      providerAdmission: { kind: 'conversation' },
       sessionId: request.childRunId,
       conversationId: readToolContext.childConversationId,
       internalAgentProfile: "goal_auditor",

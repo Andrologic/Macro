@@ -1,3 +1,4 @@
+import { isChatAdmissionFailure } from './contracts/errors';
 import { readTypedToolResult, projectToolResultText } from '../shared/toolResultContent';
 import type {
   ChatMessage,
@@ -2173,7 +2174,8 @@ const buildCompactionState = async (params: {
         usedSourcePassages,
         interestingSourcePassages,
       })) ?? null;
-  } catch {
+  } catch (error) {
+    if (isChatAdmissionFailure(error)) throw error;
     summaryText = null;
   }
 

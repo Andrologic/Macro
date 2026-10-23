@@ -14,6 +14,7 @@ describe("tool availability at the model boundary", () => {
   it('refuses a provider batch with a missing call ID before any tool runs', async () => {
     const handler = mock(() => 'unexpected');
     const options: StreamingChatOptions = {
+    providerAdmission: { kind: 'utility' },
       providerId: 'fixture', providerType: 'openai', modelId: 'model', baseUrl: 'https://example.invalid',
       messages: [], allowedToolIds: ['read'], maxTurns: 1,
       onToken: () => undefined, onComplete: () => undefined, onError: () => undefined,
@@ -38,6 +39,7 @@ describe("tool availability at the model boundary", () => {
     }));
     const handler = mock(() => 'unexpected');
     const options: StreamingChatOptions = {
+    providerAdmission: { kind: 'utility' },
       providerId: 'fixture', providerType: 'openai', modelId: 'model', baseUrl: 'https://example.invalid',
       messages: [], allowedToolIds: mcpTools.map(tool => tool.id), mcpTools, maxTurns: 1,
       onToken: () => undefined, onComplete: () => undefined, onError: () => undefined,
@@ -90,6 +92,7 @@ describe("tool availability at the model boundary", () => {
     const toolName = scenario === "invalid-ast" ? "ast_grep" : "apply_patch";
     let executed = false;
     const options: StreamingChatOptions = {
+    providerAdmission: { kind: 'utility' },
       providerId: "fixture", providerType: "openai", modelId: "gpt-5", baseUrl: "https://example.invalid", messages: [], allowedToolIds, maxTurns: 1,
       onToken: () => undefined, onComplete: () => undefined, onError: () => undefined,
       onToolCall: () => { executed = true; return "unexpected"; },

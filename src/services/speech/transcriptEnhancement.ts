@@ -132,7 +132,7 @@ export const enhanceSpeechTranscript = async ({
   const requestId = `speech-enhancement-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
   const response = await sendChatNonStreaming({
     sessionId: requestId,
-    conversationId: requestId,
+    providerAdmission: { kind: 'utility' },
     mode: context.mode,
     providerId,
     providerType: provider.providerType,

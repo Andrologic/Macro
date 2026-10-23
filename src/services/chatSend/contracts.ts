@@ -1,3 +1,4 @@
+import type { ChatAdmissionContext, ProviderAdmission } from '../ipc/chatAdmission';
 import type {
   AgentType, AppMode, ChatMessage, ProviderConfig,
   ReasoningEffort, StandaloneTaskLaunchStep,
@@ -103,6 +104,10 @@ export type StartSendStream = PrepareAssistantStreamParams & Pick<AssistantStrea
 /** Ports expose domain operations, never a store or a generic state getter. */
 export interface ChatSendPorts<Task extends SendTask, Recovery, Launch> {
   owner: ChatSendOwner;
+  admission: {
+    begin(conversationId: string, turnId: string, attemptId: string): Promise<Exclude<ProviderAdmission, { kind: 'utility' }>>;
+    closePreparation(context: ChatAdmissionContext, conversationId: string): Promise<void>;
+  };
   messages: {
     persistence: ChatPersistenceAdapters;
     onUserPersisted?(message: ChatMessage): void;

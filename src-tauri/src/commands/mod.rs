@@ -1,4 +1,5 @@
 pub mod ai;
+pub(crate) mod chat_admission;
 pub mod conversation_catalog;
 pub mod conversation_content;
 pub mod conversation_management;
@@ -503,31 +504,33 @@ pub struct DbUpdateMessageParams {
     generation_attempts_json: Option<String>,
 }
 
+impl DbUpdateMessageParams {
+    fn take_input(&mut self) -> repository::UpdateMessageContentInput<'_> {
+        repository::UpdateMessageContentInput {
+            id: &self.id,
+            turn_id: self.turn_id.take(),
+            content: &self.content,
+            token_count: self.token_count.take(),
+            tool_traces_json: self.tool_traces_json.take(),
+            hidden_context: self.hidden_context.take(),
+            provider_input_items_json: self.provider_input_items_json.take(),
+            provider_turn_state_json: self.provider_turn_state_json.take(),
+            context_refs_json: self.context_refs_json.take(),
+            completion_reason: self.completion_reason.take(),
+            generation_attempts_json: self.generation_attempts_json.take(),
+        }
+    }
+}
+
 #[tauri::command]
 pub async fn db_update_message(
     pool: State<'_, DbPool>,
-    params: DbUpdateMessageParams,
+    mut params: DbUpdateMessageParams,
 ) -> CommandResult<()> {
     let pool = get_pool(&pool).await?;
-
-    repository::update_message_content(
-        &pool,
-        repository::UpdateMessageContentInput {
-            id: &params.id,
-            turn_id: params.turn_id,
-            content: &params.content,
-            token_count: params.token_count,
-            tool_traces_json: params.tool_traces_json,
-            hidden_context: params.hidden_context,
-            provider_input_items_json: params.provider_input_items_json,
-            provider_turn_state_json: params.provider_turn_state_json,
-            context_refs_json: params.context_refs_json,
-            completion_reason: params.completion_reason,
-            generation_attempts_json: params.generation_attempts_json,
-        },
-    )
-    .await
-    .map_err(Into::into)
+    repository::update_message_content(&pool, params.take_input())
+        .await
+        .map_err(Into::into)
 }
 
 #[tauri::command]

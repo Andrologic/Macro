@@ -1,3 +1,5 @@
+import type { ProviderAdmission } from '../services/ipc/chatAdmission';
+import { beginChatAdmission, closeChatPreparation, finishChatResponse } from '../services/chatAdmission';
 import { acknowledgeDisplayedConversation } from '../services/conversationManagementService';
 import { getConflictAssistantContext, clearConflictAssistantContext, isConflictAssistantContextAllowed, revalidateConflictAssistantContext, scopeConflictAssistantExecutionContext } from '../services/conflictAssistantContext';
 import { type LifecycleContext, createLifecycleScope } from '../services/lifecycleScope';
@@ -55,7 +57,7 @@ import {
   ToolTrace,
   WorkspaceFileReference,
 } from "../types";
-import { toServiceError } from "../services/contracts/errors";
+import { isChatAdmissionFailure, toServiceError } from "../services/contracts/errors";
 import { isAppShutdownGateActive } from "../services/appShutdownGate";
 import {
   assertPilotConversationActionAllowed,
@@ -3961,27 +3963,15 @@ export const useChatStore = create<ChatStore>((set, get) => {
     }
   };
 
-  const persistConversationCompactionState = async (
-    state: ConversationCompactionState | null,
-  ): Promise<void> => {
-    if (!state?.conversationId) {
-      return;
+  const getCompactionFinalizationInput = (conversationId: string) => {
+    if (!conversationCompactionStateCache.has(conversationId)) {
+      throw buildSendError("Compaction state is unavailable for finalization.");
     }
+    const checkpoint = conversationCompactionStateCache.get(conversationId);
+    return checkpoint ? buildConversationCompactionInput(checkpoint) : null;
+  };
 
-    conversationCompactionStateCache.set(state.conversationId, state);
-    setConversationCompactionStatus(
-      state.conversationId,
-      resolveCompactionStatusFromState(state),
-    );
-    if (!tauriIpc.isTauriAvailable()) {
-      return;
-    }
-    if (typeof tauriIpc.dbUpsertConversationCompactionState !== "function") {
-      return;
-    }
-
-    try {
-      await tauriIpc.dbUpsertConversationCompactionState({
+  const buildConversationCompactionInput = (state: ConversationCompactionState): tauriIpc.DbUpsertConversationCompactionStateInput => ({
         conversation_id: state.conversationId,
         up_to_message_id: state.upToMessageId,
         summary_text: state.summaryText,
@@ -4020,6 +4010,28 @@ export const useChatStore = create<ChatStore>((set, get) => {
         checkpoint_health: state.checkpointHealth ?? null,
         last_trigger: state.lastTrigger ?? null,
       });
+
+  const persistConversationCompactionState = async (
+    state: ConversationCompactionState | null,
+  ): Promise<void> => {
+    if (!state?.conversationId) {
+      return;
+    }
+
+    conversationCompactionStateCache.set(state.conversationId, state);
+    setConversationCompactionStatus(
+      state.conversationId,
+      resolveCompactionStatusFromState(state),
+    );
+    if (!tauriIpc.isTauriAvailable()) {
+      return;
+    }
+    if (typeof tauriIpc.dbUpsertConversationCompactionState !== "function") {
+      return;
+    }
+
+    try {
+      await tauriIpc.dbUpsertConversationCompactionState(buildConversationCompactionInput(state));
     } catch (error) {
       console.error("Failed to persist conversation compaction state:", error);
     }
@@ -4232,6 +4244,8 @@ export const useChatStore = create<ChatStore>((set, get) => {
     modelId: string,
     reasoningEffort: ReasoningEffort | null | undefined,
     input: SummaryGenerationInput,
+    conversationId: string,
+    providerAdmission: ProviderAdmission,
   ): Promise<string | null> => {
     const modelContextWindowTokens = getSelectedModelContextWindowTokens(
       providerId,
@@ -4263,6 +4277,8 @@ export const useChatStore = create<ChatStore>((set, get) => {
 
       try {
         const output = await sendChatNonStreaming({
+          conversationId,
+          providerAdmission,
           providerId,
           providerType: providerConfig.providerType,
           baseUrl: providerConfig.baseUrl,
@@ -4280,6 +4296,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
         const summary = formatCompactionSummaryFromModelOutput(output);
         return summary || null;
       } catch (error) {
+        if (isChatAdmissionFailure(error)) throw error;
         lastError = error;
         if (!isProviderContextOverflowError(error)) {
           break;
@@ -4302,6 +4319,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
   };
 
   const compactConversationMessages = async (params: {
+    providerAdmission: ProviderAdmission;
     conversationId: string;
     providerId: string;
     modelId: string;
@@ -4431,6 +4449,8 @@ export const useChatStore = create<ChatStore>((set, get) => {
             params.modelId,
             params.reasoningEffort,
             input,
+            params.conversationId,
+            params.providerAdmission,
           );
         },
       }));
@@ -4700,7 +4720,12 @@ export const useChatStore = create<ChatStore>((set, get) => {
 
     const previousStatus =
       get().conversationCompactionStatusById[params.conversationId] ?? null;
+    let providerAdmission: ProviderAdmission | undefined;
+    let compactionFailure: unknown;
     try {
+      const compactionId = crypto.randomUUID();
+      providerAdmission = await beginChatAdmission(params.conversationId, compactionId, compactionId, 'compaction');
+      await getConversationCompactionState(params.conversationId);
       await ensureMessagesLoadedForConversation(params.conversationId);
       await ensureToolsLoaded();
       const orderedMessages = getOrderedConversationMessages(params.conversationId);
@@ -4837,6 +4862,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
         footprintAfter: footprint,
       });
       await compactConversationMessages({
+        providerAdmission,
         conversationId: params.conversationId,
         providerId: params.nextProviderId,
         modelId: params.nextModelId,
@@ -4863,9 +4889,19 @@ export const useChatStore = create<ChatStore>((set, get) => {
         },
       });
     } catch (error) {
+      compactionFailure = error;
       const normalized = toServiceError(error);
       setConversationCompactionStatus(params.conversationId, previousStatus);
       set({ lastError: normalized.message });
+    } finally {
+      if (providerAdmission?.kind === 'globalChat') {
+        try {
+          await tauriIpc.chatAdmissionFinishCompaction(providerAdmission.context, params.conversationId,
+            getCompactionFinalizationInput(params.conversationId));
+        } catch (error) {
+          if (!compactionFailure) set({ lastError: toServiceError(error).message });
+        }
+      }
     }
   };
 
@@ -8040,6 +8076,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
     reasoningEffort?: ReasoningEffort | null;
   }): Promise<{ title: string; description: string }> => {
     const output = await sendChatNonStreaming({
+          providerAdmission: { kind: 'utility' },
       providerId: params.providerId,
       providerType: params.providerType,
       baseUrl: params.baseUrl,
@@ -8264,6 +8301,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
       try {
         output = await Promise.race([
           sendChatNonStreaming({
+          providerAdmission: { kind: 'utility' },
             providerId: metadataProviderContext.providerId,
             providerType: metadataProviderContext.providerType,
             baseUrl: metadataProviderContext.baseUrl,
@@ -9237,6 +9275,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
   };
 
   const restartAssistantFromEditedMessage = async (params: {
+    providerAdmission: ProviderAdmission;
     architectPlanAtSend?: { planId: string; targetBranch: string };
     sessionId: string;
     turnId: string;
@@ -9307,6 +9346,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
 
     try {
       const streamLaunch = await prepareAssistantStreamLaunch({
+        providerAdmission: params.providerAdmission,
         conversationId: params.conversationId,
         replyToMessageId: params.messageId,
         userContent: params.userContent,
@@ -9368,6 +9408,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
       }
 
       startAssistantStream({
+        providerAdmission: params.providerAdmission,
         sessionId: params.sessionId,
         assistantMessage,
         conversationId: params.conversationId,
@@ -9499,7 +9540,13 @@ export const useChatStore = create<ChatStore>((set, get) => {
     });
     setConversationCompactionStatus(conversationId, admissionCompactionStatus);
 
+    let providerAdmission: ProviderAdmission | undefined;
+    let compactionFailure: unknown;
+    let outcome: ManualCompactionResult | undefined;
     try {
+      const compactionId = crypto.randomUUID();
+      providerAdmission = await beginChatAdmission(conversationId, compactionId, compactionId, 'compaction');
+      await getConversationCompactionState(conversationId);
       await ensureMessagesLoadedForConversation(conversationId);
       await ensureToolsLoaded();
 
@@ -9552,6 +9599,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
         internalAgentProfile,
       );
       const result = await compactConversationMessages({
+        providerAdmission,
         conversationId,
         providerId: selectedProviderId,
         modelId: selectedModelId,
@@ -9571,20 +9619,16 @@ export const useChatStore = create<ChatStore>((set, get) => {
 
       if (result.manualSkip) {
         setConversationCompactionStatus(conversationId, previousCompactionStatus);
-        return buildSkippedManualCompactionResult(
-          result,
-          result.manualSkip.reason,
-        );
-      }
-
-      if (!result.compactionState) {
+        outcome = buildSkippedManualCompactionResult(result, result.manualSkip.reason);
+      } else if (!result.compactionState) {
         setConversationCompactionStatus(conversationId, previousCompactionStatus);
-        return buildSkippedManualCompactionResult(result, "not_enough_history");
+        outcome = buildSkippedManualCompactionResult(result, "not_enough_history");
+      } else {
+        outcome = buildCompletedManualCompactionResult(result);
       }
-
-      return buildCompletedManualCompactionResult(result);
     } catch (error) {
       const normalized = toServiceError(error);
+      compactionFailure = normalized;
       if (isProviderContextOverflowError(error)) {
         setConversationCompactionStatus(conversationId, {
           ...previousCompactionStatus,
@@ -9597,7 +9641,6 @@ export const useChatStore = create<ChatStore>((set, get) => {
         setConversationCompactionStatus(conversationId, previousCompactionStatus);
       }
       set({ lastError: normalized.message });
-      throw normalized;
     } finally {
       if (
         get().conversationCompactionStatusById[conversationId]
@@ -9605,8 +9648,19 @@ export const useChatStore = create<ChatStore>((set, get) => {
       ) {
         setConversationCompactionStatus(conversationId, previousCompactionStatus);
       }
+      if (providerAdmission?.kind === 'globalChat') {
+        try {
+          await tauriIpc.chatAdmissionFinishCompaction(providerAdmission.context, conversationId,
+            getCompactionFinalizationInput(conversationId));
+        } catch (error) {
+          compactionFailure ??= toServiceError(error);
+        }
+      }
       conversationCompactionInProgress.delete(conversationId);
     }
+    if (compactionFailure) throw compactionFailure;
+    if (!outcome) throw buildSendError("Compaction did not produce a result.");
+    return outcome;
   };
 
   const refreshConversationContextDiagnostics = async (
@@ -9943,7 +9997,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
     policy: {
       loadBudget: loadContextBudgetPolicy,
       summarize: (turn, input) => generateCompactionSummary(turn.providerConfig, turn.selectedProviderId,
-        turn.selectedModelId, turn.selectedReasoningEffort, input),
+        turn.selectedModelId, turn.selectedReasoningEffort, input, turn.conversationId, turn.providerAdmission),
       estimate: (turn, messages) => estimateSerializedPayloadTokensForProvider({
         messages, providerType: turn.providerConfig.providerType, providerId: turn.selectedProviderId,
         baseUrl: turn.providerConfig.baseUrl, modelId: turn.selectedModelId,
@@ -9966,6 +10020,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
   });
 
   const { start: launchAssistantStream } = createAssistantStreamRuntime({
+    admission: { finishResponse: finishChatResponse, closePreparation: closeChatPreparation },
     owner: turnRuntime,
     transport: streamChat,
     isDeleted: (id) => deletedConversationIds.has(id),
@@ -14293,6 +14348,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
           hasInterruptedApproval: (id) => get().pendingToolApprovalByConversationId[id]?.recoveryState === "interrupted",
           clearApprovalRecovery: (id) => persistToolApprovalRecovery(id, null),
         },
+        admission: { begin: beginChatAdmission, closePreparation: closeChatPreparation },
         preparation: {
           authorizePilotEffect: async (conversationId, taskId) => {
             assertPilotConversationActionAllowed(conversationId, pilotTarget?.actionToken);
@@ -14777,6 +14833,8 @@ export const useChatStore = create<ChatStore>((set, get) => {
           .getState()
           .citations.filter((citation) => citation.conversationId === conversationId),
       };
+      let providerAdmission: ProviderAdmission | undefined;
+      let handedToStream = false;
       let replayPrepared = false;
       let replayRecoveryActive = false;
       const abortController = new AbortController();
@@ -14945,6 +15003,8 @@ export const useChatStore = create<ChatStore>((set, get) => {
       };
 
       try {
+        providerAdmission = await beginChatAdmission(conversationId, turnId, sessionId);
+        if (!isCurrentPreparation()) return;
         const resolvedApiKey =
           providerConfig.isLocal || providerHasAuthSession(providerConfig)
             ? providerConfig.apiKey
@@ -15062,6 +15122,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
         }
 
         const replayLaunched = await restartAssistantFromEditedMessage({
+          providerAdmission,
           sessionId,
           turnId,
           messageId,
@@ -15103,6 +15164,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
               }
             : undefined,
         });
+        handedToStream = replayLaunched;
         committedCodeReplay = replayLaunched;
         if (replayLaunched && isRetryingManualFeatureLaunch) {
           completeStandaloneTaskLaunch(conversationId, sessionId);
@@ -15135,13 +15197,17 @@ export const useChatStore = create<ChatStore>((set, get) => {
         if (!committedCodeReplay && replayRecoveryActive) {
           await restoreReplayRecovery();
         }
-        if (!committedCodeReplay && !replayRecoveryActive) {
+        if (providerAdmission && !committedCodeReplay && !replayRecoveryActive) {
           try {
             await forceRollbackPendingAgentCodeReplay(conversationId);
           } catch (rollbackError) {
             replayRecoveryBlockedConversationIds.add(conversationId);
             console.error("Failed to roll back replayed code:", rollbackError);
           }
+        }
+        if (!handedToStream && providerAdmission?.kind === 'globalChat') {
+          try { await closeChatPreparation(providerAdmission.context, conversationId); }
+          catch (error) { set({ lastError: toServiceError(error).message }); }
         }
       }
     },

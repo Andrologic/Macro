@@ -508,6 +508,8 @@ pub fn run() {
         .manage(DbPool::default())
         .manage(diagnostics::DiagnosticReportStore::default())
         .manage(AiState::default())
+        .manage(ai::admitted_http::AdmittedHttp::default())
+        .manage(db::chat_admission::runtime::ChatAdmissionRuntime::default())
         .manage(GitState::new())
         .manage(commands::mcp::McpRuntimeManager::production())
         .manage(commands::workspace::ProjectOperationStore::default())
@@ -891,6 +893,14 @@ pub fn run() {
             commands::ai::ai_cancel_chatgpt_auth,
             commands::ai::ai_disconnect_provider_auth,
             commands::ai::ai_sync_provider_models,
+            commands::chat_admission::chat_admission_begin,
+            commands::chat_admission::chat_admission_close_preparation,
+            commands::chat_admission::chat_admission_join_provider,
+            commands::chat_admission::chat_admission_finish_response,
+            commands::chat_admission::chat_admission_finish_compaction,
+            commands::chat_admission::chat_admission_http_start,
+            commands::chat_admission::chat_admission_http_read,
+            commands::chat_admission::chat_admission_http_finish,
             commands::ai::ai_stream_chat,
             commands::ai::ai_cancel_stream,
             commands::ai::ai_submit_tool_result,

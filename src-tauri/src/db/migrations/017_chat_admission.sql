@@ -20,10 +20,15 @@ CREATE TABLE chat_admission_operations (
  message_id TEXT,
  request_id TEXT,
  call_id TEXT,
+ provider_id TEXT,
+ provider_context TEXT,
  revision INTEGER NOT NULL DEFAULT 0 CHECK(typeof(revision)='integer' AND revision>=0),
  CHECK(parent_id IS NULL OR parent_id<>operation_id)
 );
 CREATE INDEX chat_admission_operations_owner ON chat_admission_operations(conversation_id,phase);
+CREATE INDEX chat_admission_operations_provider_id ON chat_admission_operations(conversation_id,incarnation,provider_id,phase) WHERE provider_id IS NOT NULL;
+CREATE INDEX chat_admission_operations_provider ON chat_admission_operations(conversation_id,incarnation,provider_context,phase) WHERE provider_context IS NOT NULL;
+CREATE UNIQUE INDEX chat_admission_operations_tool ON chat_admission_operations(conversation_id,turn_id,message_id,call_id) WHERE kind='tool' AND call_id IS NOT NULL;
 CREATE INDEX chat_admission_operations_parent ON chat_admission_operations(parent_id,phase);
 CREATE UNIQUE INDEX chat_admission_operations_request ON chat_admission_operations(runtime_generation,request_id) WHERE request_id IS NOT NULL;
 INSERT INTO chat_admission_owners(conversation_id)

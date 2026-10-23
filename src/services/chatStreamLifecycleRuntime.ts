@@ -393,10 +393,14 @@ export const createChatStreamLifecycleRuntime = (params: {
             message:
               result.completionReason === "length"
                 ? "Le fournisseur a de nouveau atteint sa limite de sortie après la tentative de reprise."
+                : result.completionReason === "admission_unresolved"
+                  ? "La fin de l’exécution n’a pas pu être confirmée. La réponse reçue a été conservée."
                 : result.completionReason === "incomplete"
                   ? "Le fournisseur a interrompu la réponse avant sa fin."
                   : `Le fournisseur a terminé la réponse avec le motif : ${result.completionReason}.`,
-            suggestedAction: "Relance la demande pour poursuivre la réponse.",
+            suggestedAction: result.completionReason === "admission_unresolved"
+              ? "Cette exécution doit être réconciliée avant toute relance."
+              : "Relance la demande pour poursuivre la réponse.",
           },
           assistantMessageId: stream.assistantMessageId,
         });

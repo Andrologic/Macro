@@ -23,6 +23,28 @@ async fn fixture() -> (TempDir, SqlitePool) {
 }
 
 #[tokio::test]
+async fn fresh_database_stamps_the_exact_admission_schema() {
+    let dir = TempDir::new().unwrap();
+    let pool = create_pool(&dir.path().join("fresh.db")).await.unwrap();
+    let versions: Vec<i64> =
+        sqlx::query_scalar("SELECT version FROM schema_migrations ORDER BY version")
+            .fetch_all(&pool)
+            .await
+            .unwrap();
+    assert_eq!(
+        versions,
+        [1, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17]
+    );
+    let stamp: String = sqlx::query_scalar("SELECT name FROM schema_migrations WHERE version=17")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(stamp, "017_chat_admission");
+    let mut connection = pool.acquire().await.unwrap();
+    super::validate_schema(&mut connection).await.unwrap();
+}
+
+#[tokio::test]
 async fn restored_source_rejects_writers_and_conflict_victims_without_blocking_new_chat() {
     let (_dir, pool) = fixture().await;
     sqlx::raw_sql("INSERT INTO pilot_message_attachments VALUES('asset','owner','instance','ref','message','file.txt','text/plain',1,'hash',X'61'); INSERT INTO pilot_file_sends(owner_key,ref_key,send_intent_id,scope_key,digest,message_id,turn_id,state,attachment_ids_json,context_state,intent_expires_at) VALUES('owner','ref','intent','scope','hash','message','turn','confirmed','[]','ready',1);")
@@ -151,11 +173,19 @@ async fn native_parent_waits_for_child_and_terminal_ack_can_be_retried() {
     );
     parent.dispatched().await.unwrap();
     let child = parent
-        .child(WorkKind::Provider, Some("request"))
+        .provider_attempt(
+            "request",
+            "synthetic-provider",
+            "synthetic-provider-context",
+        )
         .await
         .unwrap();
     assert!(parent
-        .child(WorkKind::Provider, Some("request"))
+        .provider_attempt(
+            "request",
+            "synthetic-provider",
+            "synthetic-provider-context"
+        )
         .await
         .is_err());
     child.dispatched().await.unwrap();
@@ -168,7 +198,7 @@ async fn native_parent_waits_for_child_and_terminal_ack_can_be_retried() {
     parent.completed().await.unwrap();
     parent.completed().await.unwrap();
     assert!(parent
-        .child(WorkKind::Provider, Some("late"))
+        .provider_attempt("late", "synthetic-provider", "synthetic-provider-context")
         .await
         .is_err());
     // A terminal receipt alone does not prove the task owning it has returned.
@@ -188,7 +218,11 @@ async fn unknown_provider_cannot_be_turned_into_completed_by_retry() {
         .unwrap();
     parent.dispatched().await.unwrap();
     let child = parent
-        .child(WorkKind::Provider, Some("request"))
+        .provider_attempt(
+            "request",
+            "synthetic-provider",
+            "synthetic-provider-context",
+        )
         .await
         .unwrap();
     child.dispatched().await.unwrap();
@@ -419,4 +453,361 @@ async fn provenance_guards_use_message_primary_key_for_old_and_new_keys() {
             );
         }
     }
+}
+
+#[tokio::test]
+async fn uncertain_provider_context_cannot_be_replayed_under_a_new_turn_or_generation() {
+    let (_dir, pool) = fixture().await;
+    let owner = crate::core::db_state::DbPool::default();
+    owner.set_ready(pool.clone()).await.unwrap();
+    let parent = OperationPermit::begin_turn(owner.clone(), "source", "turn-one")
+        .await
+        .unwrap();
+    parent.dispatched().await.unwrap();
+    let attempt = parent
+        .provider_attempt("attempt-one", "synthetic-provider", "context-one")
+        .await
+        .unwrap();
+    attempt.dispatched().await.unwrap();
+    attempt.unknown().await.unwrap();
+    parent.unknown().await.unwrap();
+    drop(attempt);
+    drop(parent);
+    owner.set_ready(pool.clone()).await.unwrap();
+    assert!(
+        OperationPermit::begin_turn(owner.clone(), "source", "turn-two")
+            .await
+            .is_err()
+    );
+    sqlx::query("INSERT INTO conversations(id,title,scope_mode,created_at,updated_at) VALUES('unrelated','Other','Chat','t','t')")
+        .execute(&pool).await.unwrap();
+    let other = OperationPermit::begin_turn(owner, "unrelated", "other-turn")
+        .await
+        .unwrap();
+    assert!(other
+        .child(WorkKind::Provider, Some("missing-context"))
+        .await
+        .is_err());
+    let safe = other
+        .provider_attempt("other-context", "other-provider", "context-two")
+        .await
+        .unwrap();
+    safe.no_effect().await.unwrap();
+    other.no_effect().await.unwrap();
+    let phase: String = sqlx::query_scalar(
+        "SELECT phase FROM chat_admission_operations WHERE request_id='attempt-one'",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(phase, "unknown");
+}
+
+#[tokio::test]
+async fn only_confirmed_rejection_allows_another_attempt_in_the_same_context() {
+    let (_dir, pool) = fixture().await;
+    let owner = crate::core::db_state::DbPool::default();
+    owner.set_ready(pool).await.unwrap();
+    let parent = OperationPermit::begin_turn(owner, "source", "turn")
+        .await
+        .unwrap();
+    let first = parent
+        .provider_attempt("attempt-one", "synthetic-provider", "context")
+        .await
+        .unwrap();
+    first.dispatched().await.unwrap();
+    assert!(parent
+        .provider_attempt("attempt-two", "synthetic-provider", "context")
+        .await
+        .is_err());
+    first.rejected_before_prompt().await.unwrap();
+    let second = parent
+        .provider_attempt("attempt-two", "synthetic-provider", "context")
+        .await
+        .unwrap();
+    second.no_effect().await.unwrap();
+    parent.no_effect().await.unwrap();
+}
+
+fn response_write(content: &str) -> repository::UpdateMessageContentInput<'_> {
+    repository::UpdateMessageContentInput {
+        id: "message",
+        turn_id: Some("turn".into()),
+        content,
+        token_count: None,
+        tool_traces_json: None,
+        hidden_context: Some("Synthetic hidden result".into()),
+        provider_input_items_json: Some(
+            "[{\"type\":\"message\",\"content\":\"synthetic\"}]".into(),
+        ),
+        provider_turn_state_json: None,
+        context_refs_json: None,
+        completion_reason: Some("completed".into()),
+        generation_attempts_json: None,
+    }
+}
+
+#[tokio::test]
+async fn response_and_parent_close_commit_together_after_children_finish() {
+    let (_dir, pool) = fixture().await;
+    sqlx::raw_sql("CREATE TRIGGER synthetic_save_failure BEFORE UPDATE ON messages WHEN EXISTS(SELECT 1 FROM app_settings WHERE key='synthetic-fail-write') BEGIN SELECT RAISE(ABORT,'synthetic write failure'); END;").execute(&pool).await.unwrap();
+    let owner = crate::core::db_state::DbPool::default();
+    owner.set_ready(pool.clone()).await.unwrap();
+    let parent = OperationPermit::begin_turn(owner.clone(), "source", "turn")
+        .await
+        .unwrap();
+    let child = parent
+        .child(WorkKind::Tool, Some("synthetic-tool"))
+        .await
+        .unwrap();
+    assert!(parent
+        .finish_response(response_write("new response"))
+        .await
+        .is_err());
+    assert_eq!(
+        sqlx::query_scalar::<_, String>("SELECT content FROM messages WHERE id='message'")
+            .fetch_one(&pool)
+            .await
+            .unwrap(),
+        "history"
+    );
+    child.no_effect().await.unwrap();
+    sqlx::query("INSERT INTO app_settings(key,value_json,updated_at) VALUES('synthetic-fail-write','true','t')").execute(&pool).await.unwrap();
+    let error = parent
+        .finish_response(response_write("new response"))
+        .await
+        .unwrap_err();
+    assert!(
+        error.to_string().contains("synthetic write failure"),
+        "{error}"
+    );
+    assert_eq!(
+        sqlx::query_scalar::<_, String>(
+            "SELECT phase FROM chat_admission_operations WHERE parent_id IS NULL"
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap(),
+        "prepared"
+    );
+    sqlx::query("DELETE FROM app_settings WHERE key='synthetic-fail-write'")
+        .execute(&pool)
+        .await
+        .unwrap();
+    parent
+        .finish_response(response_write("new response"))
+        .await
+        .unwrap();
+    let saved: (String, String, String) = sqlx::query_as(
+        "SELECT content,hidden_context,provider_input_items_json FROM messages WHERE id='message'",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        saved,
+        (
+            "new response".into(),
+            "Synthetic hidden result".into(),
+            "[{\"type\":\"message\",\"content\":\"synthetic\"}]".into()
+        )
+    );
+    assert_eq!(
+        sqlx::query_scalar::<_, String>(
+            "SELECT phase FROM chat_admission_operations WHERE parent_id IS NULL"
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap(),
+        "completed"
+    );
+    assert!(parent
+        .child(WorkKind::Tool, Some("late-tool"))
+        .await
+        .is_err());
+    let next = OperationPermit::begin_turn(owner, "source", "next-turn")
+        .await
+        .unwrap();
+    next.no_effect().await.unwrap();
+}
+
+#[tokio::test]
+async fn uncertain_provider_cannot_be_closed_by_saving_a_response() {
+    let (_dir, pool) = fixture().await;
+    let owner = crate::core::db_state::DbPool::default();
+    owner.set_ready(pool.clone()).await.unwrap();
+    let parent = OperationPermit::begin_turn(owner.clone(), "source", "turn")
+        .await
+        .unwrap();
+    let attempt = parent
+        .provider_attempt("attempt", "synthetic-provider", "synthetic-context")
+        .await
+        .unwrap();
+    attempt.dispatched().await.unwrap();
+    attempt.unknown().await.unwrap();
+    assert!(parent
+        .finish_response(response_write("not a terminal receipt"))
+        .await
+        .is_err());
+    assert!(OperationPermit::begin_turn(owner, "source", "new-turn")
+        .await
+        .is_err());
+    assert_eq!(
+        sqlx::query_scalar::<_, String>("SELECT content FROM messages WHERE id='message'")
+            .fetch_one(&pool)
+            .await
+            .unwrap(),
+        "history"
+    );
+}
+
+#[tokio::test]
+async fn local_compaction_root_is_distinct_and_excludes_concurrent_turns() {
+    let (_dir, pool) = fixture().await;
+    let owner = crate::core::db_state::DbPool::default();
+    owner.set_ready(pool.clone()).await.unwrap();
+    let compaction =
+        OperationPermit::begin_root(owner.clone(), "source", "compact", RootWorkKind::Compaction)
+            .await
+            .unwrap();
+    assert_eq!(
+        sqlx::query_scalar::<_, String>(
+            "SELECT kind FROM chat_admission_operations WHERE parent_id IS NULL"
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap(),
+        "compaction"
+    );
+    assert!(OperationPermit::begin_turn(owner, "source", "turn")
+        .await
+        .is_err());
+    assert!(compaction
+        .finish_response(response_write("not a turn"))
+        .await
+        .is_err());
+    compaction.no_effect().await.unwrap();
+}
+
+#[tokio::test]
+async fn concurrent_final_response_retries_share_the_exact_local_receipt() {
+    let (_dir, pool) = fixture().await;
+    let owner = crate::core::db_state::DbPool::default();
+    owner.set_ready(pool.clone()).await.unwrap();
+    let runtime = runtime::ChatAdmissionRuntime::default();
+    let context = runtime
+        .begin_root(
+            owner.clone(),
+            "window",
+            "browser",
+            "source",
+            "turn",
+            "attempt",
+            RootWorkKind::Turn,
+        )
+        .await
+        .unwrap();
+    let same = runtime
+        .begin_root(
+            owner.clone(),
+            "window",
+            "browser",
+            "source",
+            "turn",
+            "attempt",
+            RootWorkKind::Turn,
+        )
+        .await
+        .unwrap();
+    assert_eq!(context.handle, same.handle);
+    assert!(runtime
+        .begin_root(
+            owner,
+            "window",
+            "browser",
+            "source",
+            "turn",
+            "another-attempt",
+            RootWorkKind::Turn
+        )
+        .await
+        .is_err());
+    let (first, retry) = tokio::join!(
+        runtime.finish_response("window", &context, "source", response_write("saved")),
+        runtime.finish_response("window", &context, "source", response_write("saved")),
+    );
+    first.unwrap();
+    retry.unwrap();
+    assert!(runtime
+        .finish_response("window", &context, "source", response_write("different"))
+        .await
+        .is_err());
+    assert!(runtime
+        .finish_response("other-window", &context, "source", response_write("saved"))
+        .await
+        .is_err());
+    assert!(runtime.parent("window", &context, "source").await.is_err());
+    assert_eq!(
+        sqlx::query_scalar::<_, String>("SELECT content FROM messages WHERE id='message'")
+            .fetch_one(&pool)
+            .await
+            .unwrap(),
+        "saved"
+    );
+}
+
+#[tokio::test]
+async fn tool_intent_and_admitted_child_are_atomic_and_duplicates_never_dispatch() {
+    use crate::db::tool_invocations::{
+        RecordToolInvocationInput, ToolEffectClass, ToolInvocationIdentity,
+    };
+    let (_dir, pool) = fixture().await;
+    let owner = crate::core::db_state::DbPool::default();
+    owner.set_ready(pool.clone()).await.unwrap();
+    let parent = OperationPermit::begin_turn(owner, "source", "turn")
+        .await
+        .unwrap();
+    let input = || RecordToolInvocationInput {
+        identity: ToolInvocationIdentity {
+            conversation_id: "source".into(),
+            turn_id: "turn".into(),
+            message_id: "message".into(),
+            call_id: "call".into(),
+        },
+        tool_name: "write".into(),
+        effect_class: ToolEffectClass::WorkspaceMutation,
+        arguments: serde_json::json!({"path":"synthetic.txt"}),
+        remote_execution_id: None,
+    };
+    // Leave a child whose legacy journal row is absent. The existing unique
+    // identity constraint must fail after record_on_connection inserted it.
+    sqlx::query("INSERT INTO chat_admission_operations(operation_id,conversation_id,incarnation,parent_id,runtime_generation,kind,phase,turn_id,message_id,call_id) SELECT 'synthetic-conflict',conversation_id,incarnation,operation_id,runtime_generation,'tool','unknown',turn_id,'message','call' FROM chat_admission_operations WHERE parent_id IS NULL")
+        .execute(&pool).await.unwrap();
+    let error = parent.record_tool(input()).await.unwrap_err();
+    assert!(
+        error.to_string().contains("UNIQUE constraint failed"),
+        "{error}"
+    );
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM tool_invocations")
+            .fetch_one(&pool)
+            .await
+            .unwrap(),
+        0
+    );
+    sqlx::query("DELETE FROM chat_admission_operations WHERE operation_id='synthetic-conflict'")
+        .execute(&pool)
+        .await
+        .unwrap();
+    assert!(parent.record_tool(input()).await.unwrap().is_new);
+    assert!(!parent.record_tool(input()).await.unwrap().is_new);
+    let linked: (String, String, String) = sqlx::query_as("SELECT p.phase,p.message_id,p.call_id FROM chat_admission_operations p JOIN tool_invocations t ON t.conversation_id=p.conversation_id AND t.turn_id=p.turn_id AND t.message_id=p.message_id AND t.call_id=p.call_id WHERE p.kind='tool'").fetch_one(&pool).await.unwrap();
+    assert_eq!(
+        linked,
+        ("dispatched".into(), "message".into(), "call".into())
+    );
+    assert!(parent
+        .finish_response(response_write("not finished"))
+        .await
+        .is_err());
 }

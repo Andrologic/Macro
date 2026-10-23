@@ -37,10 +37,31 @@ impl Drop for StreamReservation {
 }
 
 impl StreamReservation {
-    pub(crate) fn spawn<F, Fut>(mut self, run: F) -> Result<(), String>
+    pub(crate) fn spawn_with_work<F, Fut>(
+        self,
+        work: std::sync::Arc<super::provider_work::ProviderWork>,
+        run: F,
+    ) -> Result<(), String>
     where
         F: FnOnce(CancellationToken) -> Fut + Send + 'static,
-        Fut: Future<Output = ()> + Send + 'static,
+        Fut: Future<Output = Result<(), String>> + Send + 'static,
+    {
+        self.launch(move |cancel| async move {
+            let result = if cancel.is_cancelled() {
+                Err("AI stream cancelled before launch.".into())
+            } else {
+                run_catching_panic(run(cancel)).await
+            };
+            let settled = work.settle(&result).await;
+            result.and(settled)
+        })
+    }
+
+    #[cfg(test)]
+    fn spawn<F, Fut>(mut self, run: F) -> Result<(), String>
+    where
+        F: FnOnce(CancellationToken) -> Fut + Send + 'static,
+        Fut: Future<Output = Result<(), String>> + Send + 'static,
     {
         if self.cancel.is_cancelled() {
             let completion = self.completion.take();
@@ -50,18 +71,24 @@ impl StreamReservation {
             }
             return Err("AI stream cancelled before launch.".into());
         }
+        self.launch(move |cancel| async move {
+            if cancel.is_cancelled() {
+                Ok(())
+            } else {
+                run(cancel).await
+            }
+        })
+    }
+
+    fn launch<F, Fut>(mut self, run: F) -> Result<(), String>
+    where
+        F: FnOnce(CancellationToken) -> Fut + Send + 'static,
+        Fut: Future<Output = Result<(), String>> + Send + 'static,
+    {
         let completion = self.completion.take().expect("reserved stream completion");
         let handle = tokio::spawn(async move {
             let cancel = self.cancel.clone();
-            let result = run_catching_panic(async move {
-                // Cancellation may race spawn. Do not invoke the provider
-                // closure if it won before the task first ran.
-                if !cancel.is_cancelled() {
-                    run(cancel).await;
-                }
-                Ok(())
-            })
-            .await;
+            let result = run_catching_panic(run(cancel)).await;
             // Reservation drop happens after the provider future is dropped.
             drop(self);
             result
@@ -114,7 +141,24 @@ impl AiState {
         F: FnOnce(CancellationToken) -> Fut + Send + 'static,
         Fut: Future<Output = ()> + Send + 'static,
     {
-        self.reserve_stream(request)?.spawn(run)
+        self.reserve_stream(request)?
+            .spawn(move |cancel| async move {
+                run(cancel).await;
+                Ok(())
+            })
+    }
+
+    pub(crate) async fn join_stream_task(&self, request: &str) -> Option<Result<(), String>> {
+        let joined = self
+            .stream_tasks
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(request)
+            .map(|task| task.joined.clone());
+        match joined {
+            Some(joined) => Some(joined.await),
+            None => None,
+        }
     }
 
     pub(crate) async fn cancel_stream_task(&self, request: &str) -> Result<(), String> {
@@ -212,6 +256,7 @@ mod tests {
         assert!(reservation
             .spawn(move |_| async move {
                 observed.store(true, std::sync::atomic::Ordering::SeqCst);
+                Ok(())
             })
             .is_err());
         cancellation.await.unwrap();

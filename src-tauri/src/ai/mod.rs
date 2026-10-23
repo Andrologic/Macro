@@ -1,8 +1,10 @@
+pub(crate) mod admitted_http;
 pub mod chatgpt;
 pub mod copilot;
 pub mod macro_ai;
 pub mod openai_compatible;
 pub mod provider_capabilities;
+pub(crate) mod provider_work;
 pub mod reasoning_catalog;
 pub(crate) mod stream_tasks;
 pub mod types;

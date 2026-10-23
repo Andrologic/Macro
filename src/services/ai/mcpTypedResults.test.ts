@@ -27,7 +27,7 @@ async function execute() {
   const runtime = await resolveScopedMcpRuntime({ fixture: { enabled: true, transport: { type: 'stdio', command: 'never-executed' } } }, [], { deps });
   const result = await runToolBatch({
     calls: [call], messages: [], allowedTools: new Set([toolName]), schemas: new Map(), batchId: 'fixture', usedToolNames: new Set(),
-    options: { providerId: 'fixture', providerType: 'openai', baseUrl: 'https://example.invalid', modelId: 'fixture', messages: [], onToken() {}, onComplete() {}, onError() {}, onToolCall: (name, args) => callScopedMcpTool(name, args, runtime.servers, { deps }) },
+    options: { providerAdmission: { kind: 'utility' }, providerId: 'fixture', providerType: 'openai', baseUrl: 'https://example.invalid', modelId: 'fixture', messages: [], onToken() {}, onComplete() {}, onError() {}, onToolCall: (name, args) => callScopedMcpTool(name, args, runtime.servers, { deps }) },
     accumulator: { beginToolTrace() {}, completeToolTrace() {}, addHiddenToolContext() {}, addHiddenContextBlock() {}, appendSystemChunk() {} },
   });
   return result.toolResults[0];

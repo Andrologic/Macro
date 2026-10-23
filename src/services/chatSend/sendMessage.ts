@@ -1,3 +1,4 @@
+import type { ProviderAdmission } from '../ipc/chatAdmission';
 import type { ChatMessage } from '../../types';
 import type { PrepareAssistantStreamParams } from '../chatStreamContracts';
 import {
@@ -30,6 +31,8 @@ export async function sendMessage<Task extends SendTask, Recovery, Launch>(
   };
   const abortController = new AbortController();
   let lease: SendLease | null = null;
+  let providerAdmission: Exclude<ProviderAdmission, { kind: 'utility' }> = { kind: 'conversation' };
+  let handedToStream = false;
   let assistantMessageId: string | null = null;
   let launchError: unknown = null;
   const startedAt = Date.now();
@@ -92,6 +95,10 @@ export async function sendMessage<Task extends SendTask, Recovery, Launch>(
     owner.rememberSession(conversationId, current.sessionId);
     timeline('send_requested', { conversationId });
     setPreparing(conversationId, current);
+    if (mode === 'Chat') {
+      providerAdmission = await ports.admission.begin(conversationId, current.turnId, current.sessionId);
+      if (!isCurrent()) return cancelled();
+    }
     await messages.ensureLoaded(conversationId);
     if (!isCurrent()) return cancelled();
     timeline('messages_ready', { conversationId });
@@ -220,6 +227,7 @@ export async function sendMessage<Task extends SendTask, Recovery, Launch>(
     }
     try {
       const request: PrepareAssistantStreamParams = {
+        providerAdmission,
         conversationId, replyToMessageId: persistedUserMessage.id, userContent: content, resolvedTaskId,
         modeAtSend: mode, agentTypeAtSend: agentType, providerId, modelId, reasoningEffort,
         architectPlanAtSend: snapshot.modelSelectionCaptured ? architectPlan : undefined,
@@ -269,6 +277,7 @@ export async function sendMessage<Task extends SendTask, Recovery, Launch>(
         pilotActionToken: input.pilotTarget?.actionToken,
         providerSupportsNativeToolCalling: configuration.supportsNativeToolCalling(providerId, modelId),
       }, launch);
+      handedToStream = true;
       await messages.onAssistantStarted?.(assistant);
       if (firstManualFeatureMessage) tasks.completeLaunch(conversationId, current.sessionId);
     } catch (error) {
@@ -299,5 +308,9 @@ export async function sendMessage<Task extends SendTask, Recovery, Launch>(
       }
     } else projection.sendError(normalized.message);
     throw normalized;
+  } finally {
+    if (!handedToStream && providerAdmission.kind === 'globalChat') {
+      await ports.admission.closePreparation(providerAdmission.context, conversationId);
+    }
   }
 }

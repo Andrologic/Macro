@@ -667,3 +667,5 @@ export * from "./ipc/pilotFiles";
 export * from './ipc/conversationContent';
 
 export * from './ipc/conversationCatalog';
+
+export * from './ipc/chatAdmission';

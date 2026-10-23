@@ -69,6 +69,7 @@ const waitFor = async (condition: () => boolean) => {
 };
 
 const turn = (overrides: Partial<NativeParams>) => streamNativeTurnViaTauri({
+  providerAdmission: { kind: 'utility' },
   providerId: 'copilot', providerType: 'copilot', modelId: 'fixture',
   messages: [], tools: [], allowedToolIds: ['read', 'write', 'question', 'mcp__fixture__read', 'unknown_tool'],
   onDelta() {}, ...overrides,

@@ -11,6 +11,7 @@ import {
 
 export const chatRequestPreparationFixture = () => {
   const params: PrepareAssistantStreamParams = {
+    providerAdmission: { kind: "conversation" },
     conversationId: "conversation", replyToMessageId: "user", userContent: "Read the attached file",
     resolvedTaskId: "", modeAtSend: "Chat", providerId: "provider", modelId: "model",
     providerSupportsNativeToolCalling: true,

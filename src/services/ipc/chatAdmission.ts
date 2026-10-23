@@ -1,0 +1,63 @@
+import { buildMessageUpdateParams, type MessageUpdateOptions } from './conversations';
+import { invoke } from '../tauriRuntimeBridge';
+
+/** Local native capability. Never persist it or include it in provider input. */
+export interface ChatAdmissionContext {
+  handle: string;
+  runtime: string;
+}
+
+export type ProviderAdmission =
+  | { kind: 'globalChat'; context: ChatAdmissionContext }
+  | { kind: 'conversation' }
+  | { kind: 'utility' };
+
+export function chatAdmissionBegin(
+  runtime: string, conversationId: string, turnId: string, attemptId: string, purpose: 'turn' | 'compaction',
+): Promise<Exclude<ProviderAdmission, { kind: 'utility' }>> {
+  return invoke('chat_admission_begin', { runtime, conversationId, turnId, attemptId, purpose });
+}
+
+export function chatAdmissionClosePreparation(context: ChatAdmissionContext, conversationId: string): Promise<void> {
+  return invoke('chat_admission_close_preparation', { context, conversationId });
+}
+
+export type ChatWorkPhase = 'prepared' | 'dispatched' | 'result_pending' | 'completed' | 'no_effect' | 'unknown';
+
+export function chatAdmissionJoinProvider(context: ChatAdmissionContext, conversationId: string, requestId: string): Promise<{
+  phase: ChatWorkPhase; taskError: string | null;
+}> {
+  return invoke('chat_admission_join_provider', { context, conversationId, requestId });
+}
+
+export type AdmittedHttpPart =
+  | { kind: 'headers'; status: number; url: string; headers: [string, string][] }
+  | { kind: 'bytes'; data: number[] }
+  | { kind: 'end' };
+
+export function chatAdmissionHttpStart(context: ChatAdmissionContext, conversationId: string, request: {
+  requestId: string; providerId: string; url: string; headers: [string, string][]; body: string;
+}): Promise<void> {
+  return invoke('chat_admission_http_start', { context, conversationId, request });
+}
+
+export function chatAdmissionHttpRead(requestId: string): Promise<AdmittedHttpPart> {
+  return invoke('chat_admission_http_read', { requestId });
+}
+
+export function chatAdmissionHttpFinish(context: ChatAdmissionContext, conversationId: string, requestId: string,
+  outcome: 'completed' | 'uncertain'): Promise<{ phase: ChatWorkPhase; taskError: string | null }> {
+  return invoke('chat_admission_http_finish', { context, conversationId, requestId, outcome });
+}
+
+export function chatAdmissionFinishResponse(context: ChatAdmissionContext, conversationId: string,
+  id: string, content: string, options?: MessageUpdateOptions): Promise<void> {
+  return invoke('chat_admission_finish_response', {
+    context, conversationId, params: buildMessageUpdateParams(id, content, options),
+  });
+}
+
+export function chatAdmissionFinishCompaction(context: ChatAdmissionContext, conversationId: string,
+  input: import('./conversations.types').DbUpsertConversationCompactionStateInput | null): Promise<void> {
+  return invoke('chat_admission_finish_compaction', { context, conversationId, input });
+}

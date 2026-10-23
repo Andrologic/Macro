@@ -31,7 +31,8 @@ test('lost acknowledgement reaches the next turn and reload as uncertain with it
     preserve: async (_op, _name, _id, value) => value,
     boundError: async (_op, _name, _id, error) => error,
   }, () => true, () => {});
-  const options: StreamingChatOptions = { providerId: 'synthetic', providerType: 'openai', modelId: 'synthetic',
+  const options: StreamingChatOptions = {
+    providerAdmission: { kind: 'utility' }, providerId: 'synthetic', providerType: 'openai', modelId: 'synthetic',
     baseUrl: 'https://example.invalid', messages: [{ role: 'user', content: 'Append one event' }],
     allowedToolIds: [name], mcpTools: [{ id: name, serverId: 'synthetic', name: 'append_event', inputSchema: { type: 'object', properties: {} } }],
     onToolCall: dispatch, onToken() {}, onComplete() {}, onError() {}, maxTurns: 5 };
