@@ -4,7 +4,7 @@ import { spawn } from 'node:child_process';
 import { createLinuxRuntimeWrapper } from './ai-runtime-linux-wrapper.mjs';
 
 const root = resolve(import.meta.dirname, '..');
-const entry = resolve(root, 'copilot-bridge', 'src', 'index.ts');
+const entry = resolve(root, 'copilot-bridge', 'src', 'entry.ts');
 const binariesDir = resolve(root, 'src-tauri', 'binaries');
 const bunExecutable = process.platform === 'win32' ? 'bun.exe' : 'bun';
 const OUTPUT_BASENAME = 'macro-ai-runtime';
