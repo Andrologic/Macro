@@ -697,22 +697,11 @@ pub(crate) fn set_private_file_permissions(_path: &Path) -> Result<(), std::io::
     Ok(())
 }
 
-pub(super) fn init_store(app_data_dir: &Path) -> Result<(), SecretError> {
+pub(super) fn install_store_path(app_data_dir: &Path) -> Result<LocalSecretStore, SecretError> {
     std::fs::create_dir_all(app_data_dir)?;
     let path = app_data_dir.join(SECRET_FILE_NAME);
     *SECRET_STORE_PATH.lock().expect("secret store path lock") = Some(path.clone());
-    let store = LocalSecretStore::new(path);
-    let _guard = STORE_MUTEX.lock().expect("secret store lock");
-    let file_guard = lock_store_file(&store)?;
-    store.recover_pending_migration()?;
-    let data = store.read_file()?;
-    if data.version < SECRET_FILE_VERSION && store.path.exists() {
-        store.migrate_versioned_file(&data)?;
-    } else if !store.path.exists() {
-        store.write_file(&data)?;
-    }
-    FileExt::unlock(&file_guard)?;
-    Ok(())
+    Ok(LocalSecretStore::new(path))
 }
 
 pub(super) fn default_store() -> Result<LocalSecretStore, SecretError> {
@@ -736,81 +725,17 @@ pub(super) fn chatgpt_auth_lock_path(provider_id: &str) -> Result<PathBuf, Secre
     Ok(parent.join(format!("chatgpt-auth-{}.lock", &digest[..24])))
 }
 
-pub(super) fn with_store_lock<T>(
+pub(super) fn with_specific_store_lock<T>(
+    store: &LocalSecretStore,
     operation: impl FnOnce(&LocalSecretStore) -> Result<T, SecretError>,
 ) -> Result<T, SecretError> {
-    let store = default_store()?;
-    let _guard = STORE_MUTEX.lock().expect("secret store lock");
-    let file_guard = lock_store_file(&store)?;
-    let result = operation(&store);
+    let _guard = STORE_MUTEX
+        .lock()
+        .map_err(|_| SecretError::PolicyUnavailable)?;
+    let file_guard = lock_store_file(store)?;
+    let result = operation(store);
     let unlock_result = FileExt::unlock(&file_guard);
     result.and_then(|value| unlock_result.map(|()| value).map_err(SecretError::from))
-}
-
-pub(super) fn read_provider_secret(provider_id: &str) -> Result<Option<String>, SecretError> {
-    with_store_lock(|store| Ok(store.read_file()?.api_keys.get(provider_id).cloned()))
-}
-
-pub(super) fn write_provider_secret(provider_id: &str, value: &str) -> Result<(), SecretError> {
-    with_store_lock(|store| {
-        store.update_file(|data| {
-            data.api_keys
-                .insert(provider_id.to_string(), value.to_string());
-        })
-    })
-}
-
-pub(super) fn delete_provider_secret_entry(provider_id: &str) -> Result<(), SecretError> {
-    with_store_lock(|store| {
-        store.update_file(|data| {
-            data.api_keys.remove(provider_id);
-        })
-    })
-}
-
-pub(super) fn list_provider_secret_ids() -> Result<Vec<String>, SecretError> {
-    with_store_lock(|store| Ok(store.read_file()?.api_keys.keys().cloned().collect()))
-}
-
-pub(super) fn list_chatgpt_secret_ids() -> Result<Vec<String>, SecretError> {
-    with_store_lock(|store| {
-        Ok(store
-            .read_file()?
-            .chatgpt_sessions
-            .keys()
-            .cloned()
-            .collect())
-    })
-}
-
-pub(super) fn read_chatgpt_secret(provider_id: &str) -> Result<Option<ChatGptSecret>, SecretError> {
-    with_store_lock(|store| {
-        Ok(store
-            .read_file()?
-            .chatgpt_sessions
-            .get(provider_id)
-            .cloned())
-    })
-}
-
-pub(super) fn write_chatgpt_secret(
-    provider_id: &str,
-    secret: &ChatGptSecret,
-) -> Result<(), SecretError> {
-    with_store_lock(|store| {
-        store.update_file(|data| {
-            data.chatgpt_sessions
-                .insert(provider_id.to_string(), secret.clone());
-        })
-    })
-}
-
-pub(super) fn delete_chatgpt_secret(provider_id: &str) -> Result<(), SecretError> {
-    with_store_lock(|store| {
-        store.update_file(|data| {
-            data.chatgpt_sessions.remove(provider_id);
-        })
-    })
 }
 
 pub(super) fn parse_chatgpt_secret(serialized: &str) -> Result<Option<ChatGptSecret>, SecretError> {

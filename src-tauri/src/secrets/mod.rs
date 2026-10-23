@@ -1,5 +1,6 @@
 mod api_keys;
 mod chatgpt;
+pub(crate) mod policy;
 mod store;
 
 #[cfg(test)]
@@ -59,28 +60,28 @@ fn metadata_for_api_key(id: String) -> SecretMetadata {
 }
 
 pub fn list_secret_metadata() -> Result<Vec<SecretMetadata>, SecretError> {
-    let mut entries = store::list_provider_secret_ids()?
-        .into_iter()
-        .map(metadata_for_api_key)
-        .collect::<Vec<_>>();
-    entries.extend(
-        store::list_chatgpt_secret_ids()?
-            .into_iter()
-            .map(|id| SecretMetadata {
-                secret_ref: format!("macro-secret://chatgpt/{id}"),
-                id,
-                namespace: "providers".to_string(),
-                secret_type: "chatgptSession".to_string(),
-            }),
-    );
-    entries.sort_by(|left, right| {
-        (&left.namespace, &left.id, &left.secret_type).cmp(&(
-            &right.namespace,
-            &right.id,
-            &right.secret_type,
-        ))
-    });
-    Ok(entries)
+    policy::POLICY.read(|data| {
+        let mut entries = data
+            .api_keys
+            .keys()
+            .cloned()
+            .map(metadata_for_api_key)
+            .collect::<Vec<_>>();
+        entries.extend(data.chatgpt_sessions.keys().map(|id| SecretMetadata {
+            secret_ref: format!("macro-secret://chatgpt/{id}"),
+            id: id.clone(),
+            namespace: "providers".to_string(),
+            secret_type: "chatgptSession".to_string(),
+        }));
+        entries.sort_by(|left, right| {
+            (&left.namespace, &left.id, &left.secret_type).cmp(&(
+                &right.namespace,
+                &right.id,
+                &right.secret_type,
+            ))
+        });
+        Ok(entries)
+    })
 }
 
 pub fn delete_secret_metadata(id: &str, secret_type: &str) -> Result<(), SecretError> {
@@ -92,10 +93,12 @@ pub fn delete_secret_metadata(id: &str, secret_type: &str) -> Result<(), SecretE
 }
 
 pub fn init(app_data_dir: &Path) -> Result<(), SecretError> {
-    store::init_store(app_data_dir)?;
+    policy::POLICY.initialize(app_data_dir)
+}
+
+fn clear_caches() {
     api_keys::clear_cache();
     chatgpt::clear_cache();
-    Ok(())
 }
 
 pub(crate) fn chatgpt_auth_lock_path(provider_id: &str) -> Result<std::path::PathBuf, SecretError> {
