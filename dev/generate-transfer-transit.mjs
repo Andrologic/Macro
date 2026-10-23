@@ -1,6 +1,7 @@
-import { readFile, writeFile } from 'node:fs/promises';
+import { readFile, writeFile, readdir } from 'node:fs/promises';
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import {createHash} from 'node:crypto';
 import Ajv2020 from 'ajv/dist/2020.js';
 import standaloneCode from 'ajv/dist/standalone/index.js';
 import { build } from 'esbuild';
@@ -8,14 +9,15 @@ import { build } from 'esbuild';
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const v2 = resolve(root, 'contracts/macro-pilot/v2');
 const directory = resolve(v2, 'transfer-transit');
-export async function standalone(schema, exports) {
+export async function standalone(schema, exports, dependencies = []) {
   const ajv = new Ajv2020({ strict: true, allErrors: false, code: { source: true, esm: true, optimize: 2 } });
+  for (const dependency of dependencies) ajv.addSchema(dependency);
   ajv.addSchema(schema);
   const compiled = Object.fromEntries(exports.map(name => [name, ajv.getSchema(`${schema.$id}#/$defs/${name}`)]));
   const source = standaloneCode(ajv, Object.fromEntries(Object.keys(compiled).map(name => [name, `${schema.$id}#/$defs/${name}`])));
   const slots = [...new Set([...source.matchAll(/\b([A-Za-z_$][\w$]*)\.errors\s*=/g)].map(m => m[1]))];
   if (!slots.length || slots.some(name => !/^validate\d+$/.test(name))) throw Error('Review standalone diagnostic slots');
-  return { source, cleanup: `export function clearErrors(){${slots.map(name => `${name}.errors=null;`).join('')}}`, empty: `export function diagnosticsEmpty(){return ${slots.map(name => `${name}.errors===null`).join('&&')}}`, exports: Object.keys(compiled) };
+  return { source, cleanup: `export function clearErrors(){${slots.map(name => `${name}.errors=null;`).join('')}}`, empty: `export function diagnosticsEmpty(){return ${slots.map(name => `${name}.errors==null`).join('&&')}}`, exports: Object.keys(compiled) };
 }
 async function bundle(contents, resolveDir) {
   const result = await build({ stdin: { contents, resolveDir, loader: 'js' }, bundle: true, write: false, platform: 'browser', format: 'esm', target: 'es2022', minify: true, legalComments: 'none' });
@@ -50,19 +52,63 @@ export const { validateObject, decodeDecision, validateExchange, validateProduce
   if (source.split(oldHash).length !== 2) throw Error('Decision hash implementation changed');
   source = source.replace(oldHash, "return bytesToHex(sha256.create().update(new TextEncoder().encode(`macro-connect-${domain}-1\\0`)).update(canonicalBytes(value)).digest());");
   const schema = JSON.parse(await readFile(resolve(v2, 'transfer-decision.schema.json'), 'utf8'));
+  const registry=JSON.parse(await readFile(resolve(v2,'transfer-decision-schema-set.json'),'utf8'));
+  if(registry.root!==schema.$id||JSON.stringify(registry.resources)!==JSON.stringify([{path:'transfer-decision.schema.json',id:schema.$id}]))throw Error('Review decision registry');
   const generated = await standalone(schema, Object.keys(schema.$defs));
   // Generated function names are isolated from the decision factory below.
   const shape = `${generated.source}\n${generated.cleanup}\n${generated.empty}\nexport const shapes={${generated.exports.join(',')}};`;
   const shapeBundle = await bundle(shape, v2);
-  // Use a data URL only while generating. Runtime receives a normal bundled ESM.
+  // Resolve a fixed in-memory compiler module only during generation.
   const plugin = { name: 'fixed-generated-shape', setup(b) { b.onResolve({ filter: /^generated-shape$/ }, () => ({ path: 'shape', namespace: 'fixed-shape' })); b.onLoad({ filter: /.*/, namespace: 'fixed-shape' }, () => ({ contents: shapeBundle })); } };
-  const result = await build({ stdin: { contents: `import {sha256} from '@noble/hashes/sha2.js';import {bytesToHex} from '@noble/hashes/utils.js';import {shapes,clearErrors,diagnosticsEmpty} from 'generated-shape';\n${source}\nexport {diagnosticsEmpty};export const {validateObject,decodeDecision,validateExchange,validateProducerAttestation,planDecision,planMaintenance}=createTransferDecisionValidator((value,definition)=>{try {return Object.hasOwn(shapes,definition)&&shapes[definition](value)===true;} finally {clearErrors();}});`, resolveDir: v2, loader: 'js' }, plugins: [plugin], bundle: true, write: false, platform: 'browser', format: 'esm', target: 'es2022', minify: true, legalComments: 'none' });
+  const result = await build({ stdin: { contents: `import {sha256} from '@noble/hashes/sha2.js';import {bytesToHex} from '@noble/hashes/utils.js';import {shapes,clearErrors,diagnosticsEmpty} from 'generated-shape';\n${source}\nexport {diagnosticsEmpty};export const sha256Bytes=bytes=>bytesToHex(sha256(bytes));export const {validateObject,decodeDecision,validateExchange,validateProducerAttestation,planDecision,planMaintenance}=createTransferDecisionValidator((value,definition)=>{try {return Object.hasOwn(shapes,definition)&&shapes[definition](value)===true;} finally {clearErrors();}});`, resolveDir: v2, loader: 'js' }, plugins: [plugin], bundle: true, write: false, platform: 'browser', format: 'esm', target: 'es2022', minify: true, legalComments: 'none' });
   // The original factory always selects a concrete definition for public DTOs.
   return '// Generated by dev/generate-transfer-transit.mjs. See NOTICE.txt. Do not edit.\n' + result.outputFiles[0].text;
 }
+export async function generateTransitShape() {
+  const schema = JSON.parse(await readFile(resolve(directory, 'schema.json'), 'utf8'));
+  const decision = JSON.parse(await readFile(resolve(v2, 'transfer-decision.schema.json'), 'utf8'));
+  const generated = await standalone(schema, ['message','session','cursor'], [decision]);
+  return bundle(`${generated.source}\n${generated.cleanup}\n${generated.empty}`, v2);
+}
+export async function generateTransitTypes() {
+  const schema = JSON.parse(await readFile(resolve(directory, 'schema.json'), 'utf8'));
+  const name = key => 'Transit' + key[0].toUpperCase() + key.slice(1);
+  const render = s => {
+    if (s.$ref) { const [base, key] = s.$ref.split('#/$defs/'); return base ? `DecisionDefinitions[${JSON.stringify(key)}]` : name(key); }
+    if ('const' in s) return JSON.stringify(s.const);
+    if (s.enum) return s.enum.map(JSON.stringify).join(' | ');
+    if (s.oneOf) return '(' + s.oneOf.map(render).join(' | ') + ')';
+    if (s.type === 'object') return '{' + Object.entries(s.properties).map(([key, value]) => JSON.stringify(key) + ': ' + render(value)).join('; ') + '}';
+    if (['string','boolean','null'].includes(s.type)) return s.type;
+    throw Error('Review type rendering');
+  };
+  return "// Generated by dev/generate-transfer-transit.mjs. Do not edit.\nimport type {DecisionDefinitions} from '../transfer-decision.js';\n" + Object.entries(schema.$defs).map(([key,value]) => `export type ${name(key)} = ${render(value)};`).join('\n') + '\n';
+}
+export async function generateIdentities() {
+  const paths=['transfer-decision-schema-set.json','transfer-decision.md','transfer-decision.schema.json','transfer-decision-validate.mjs','transfer-decision-validate.d.mts','transfer-decision.d.ts','strict-json.mjs'];
+  const resources=[];
+  for(const path of paths.sort())resources.push({path,sha256:createHash('sha256').update(await readFile(resolve(v2,path))).digest('hex')});
+  const identities={content_contract_sha256:createHash('sha256').update(await readFile(resolve(v2,'portable-chat-history/portable-chat-history-contract.json'))).digest('hex'),decision_resources:resources,decision_resource_set_sha256:createHash('sha256').update(JSON.stringify(resources)).digest('hex')};
+  return '// Generated dependency identities. Not a support claim or native proof.\nexport const IDENTITIES=Object.freeze('+JSON.stringify(identities)+');\n';
+}
+export async function generateManifest() {
+  const resources=[];
+  const normative=['NOTICE.txt','contract.md','decision-browser.generated.d.mts','decision-browser.generated.mjs','identities.generated.d.mts','identities.generated.mjs','schema.json','shape.generated.d.mts','shape.generated.mjs','types.generated.d.mts','validate.d.mts','validate.mjs','vectors.json'];
+  const names=(await readdir(directory)).filter(name=>name!=='transfer-transit-contract.json').sort();
+  if(JSON.stringify(names)!==JSON.stringify([...normative].sort()))throw Error('Review normative resource list');
+  for(const name of normative)resources.push({path:name,sha256:createHash('sha256').update(await readFile(resolve(directory,name))).digest('hex')});
+  for(const path of ['transfer-decision-schema-set.json','transfer-decision.md','transfer-decision.schema.json','transfer-decision-validate.mjs','transfer-decision-validate.d.mts','transfer-decision.d.ts','strict-json.mjs','strict-json.d.mts','portable-chat-history/portable-chat-history-contract.json'])resources.push({path:'../'+path,sha256:createHash('sha256').update(await readFile(resolve(v2,path))).digest('hex')});
+  resources.sort((a,b)=>a.path<b.path?-1:a.path>b.path?1:0);
+  return JSON.stringify({format:'transfer-transit-1',status:'contract_only_no_runtime_authority',content_contract_sha256:createHash('sha256').update(await readFile(resolve(v2,'portable-chat-history/portable-chat-history-contract.json'))).digest('hex'),resources},null,2)+'\n';
+}
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
-  const generated = await generateDecisionBrowser();
-  const path = resolve(directory, 'decision-browser.generated.mjs');
-  if (process.argv.includes('--check')) { if (await readFile(path, 'utf8') !== generated) throw Error('Stale decision browser'); }
-  else await writeFile(path, generated);
+  const outputs = {'decision-browser.generated.mjs':await generateDecisionBrowser(),'shape.generated.mjs':await generateTransitShape(),'types.generated.d.mts':await generateTransitTypes(),'identities.generated.mjs':await generateIdentities()};
+  for (const [name,generated] of Object.entries(outputs)) {
+    const path=resolve(directory,name);
+    if (process.argv.includes('--check')) { if (await readFile(path,'utf8')!==generated) throw Error('Stale transit artifact'); }
+    else await writeFile(path,generated);
+  }
+  const manifest=await generateManifest(),path=resolve(directory,'transfer-transit-contract.json');
+  if(process.argv.includes('--check')){if(await readFile(path,'utf8')!==manifest)throw Error('Stale transit manifest');}
+  else await writeFile(path,manifest);
 }
