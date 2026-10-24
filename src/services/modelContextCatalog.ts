@@ -1,4 +1,4 @@
-import { tauriFetch } from './tauriHttp';
+import type { tauriFetch } from './tauriHttp';
 import type { ModelContextLimitSource, ReasoningTransportMode } from '../types';
 
 export const MODELS_DEV_URL = 'https://models.dev/api.json';
@@ -412,9 +412,9 @@ export const refreshModelContextCatalog = async (params: {
   }
   if (refreshPromise) return refreshPromise;
 
-  const fetchImpl = params.fetchImpl ?? tauriFetch;
   refreshPromise = (async () => {
     try {
+      const fetchImpl = params.fetchImpl ?? (await import('./tauriHttp')).tauriFetch;
       const response = await fetchImpl(MODELS_DEV_URL, {
         method: 'GET',
         headers: { Accept: 'application/json' },
