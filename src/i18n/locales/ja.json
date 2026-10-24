@@ -542,6 +542,7 @@
     "maximize": "最大化する"
   },
   "chat": {
+    "historyUnknownDate": "日付不明",
     "conversationSourcesUsed": "出典付きの会話 {{count}} 件",
     "imageImportContextChanged": "会話が変更されました。画像は追加されていません。もう一度選択してください。",
     "imageImportFailed": "画像は追加されませんでした。有効なPNG、JPEG、GIF、WebPを使用してください。1画像2 MB、合計8 MB、最大10画像です。",

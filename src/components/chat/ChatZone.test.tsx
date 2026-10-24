@@ -1258,7 +1258,7 @@ describe('ChatZone', () => {
     const historical = { version: 1 as const, importKey: 'historical-import', manifest: 'a'.repeat(64), ordinal: '0', displayDate: null };
     chatState = { ...chatState, messages: [
       buildMessage({ id: 'historical-user', role: 'user', content: '<old user action> [quick_replies]', portable_history: historical }),
-      buildMessage({ id: 'historical-assistant', role: 'assistant', content: '<old assistant trace> [quick_replies]', portable_history: { ...historical, ordinal: '1' }, persistence_state: 'failed', completion_reason: 'interrupted' }),
+      buildMessage({ id: 'historical-assistant', role: 'assistant', content: '<old assistant trace> [quick_replies]', portable_history: { ...historical, ordinal: '1', displayDate: '2025-05-04T12:30:00Z' }, persistence_state: 'failed', completion_reason: 'interrupted' }),
       buildMessage({ id: 'ordinary-user', role: 'user', content: 'New instruction' }),
       buildMessage({ id: 'ordinary-assistant', role: 'assistant', content: 'Ordinary answer' }),
     ] };
@@ -1268,6 +1268,11 @@ describe('ChatZone', () => {
     expect(rows[0]?.textContent).toBe('<old user action> [quick_replies]');
     expect(rows[1]?.textContent).toBe('<old assistant trace> [quick_replies]');
     expect(rows[0]?.querySelector('old')).toBeNull();
+    expect(requireContainer().querySelector('#chat-message-historical-user')?.textContent).toContain('chat.historyUnknownDate');
+    const date = requireContainer().querySelector('#chat-message-historical-assistant time');
+    expect(date?.getAttribute('datetime')).toBe('2025-05-04T12:30:00Z');
+    expect(date?.textContent).toContain('2025');
+    expect(date?.textContent).not.toContain('2025-05-04T');
     expect(requireContainer().querySelector('[data-chat-unsaved-assistant-response]')).toBeNull();
     expect(markdownRendererContentMock.mock.calls.some(call => call[0] === 'Ordinary answer')).toBe(true);
     expect(markdownRendererContentMock.mock.calls.some(call => String(call[0]).includes('old assistant'))).toBe(false);

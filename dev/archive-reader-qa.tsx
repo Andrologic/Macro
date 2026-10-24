@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useLayoutEffect, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import i18n from 'i18next';
 import { initReactI18next } from 'react-i18next';
@@ -24,6 +24,31 @@ const rows: DbMessage[] = [
   { ...base, id: 'new-user', content: 'New local instruction. Copy, edit and regenerate remain ordinary actions.', created_at: '2026-10-24T12:00:00Z', portable_history: null },
 ];
 const messages = rows.map(row => mapDbMessageToChatMessage(row, new Map()));
+function QaRow({ message, index, copied, setCopied, setAction }: {
+  message: typeof messages[number]; index: number; copied: string;
+  setCopied(id: string): void; setAction(value: string): void;
+}) {
+  const [element, measureElement] = useState<HTMLElement | null>(null);
+  const [height, setHeight] = useState(240);
+  useLayoutEffect(() => {
+    if (!element) return;
+    const measure = () => setHeight(Math.ceil(element.getBoundingClientRect().height) + 24);
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, [element]);
+  // The real row is absolutely positioned by its virtualizer. Reserve its
+  // measured height explicitly; DEV classes are not Tailwind content inputs.
+  return <div style={{ position: 'relative', height }} className="border-b border-border" data-qa-row={message.id}>
+    <ChatMessageRowBase virtualMessage={{ index, key: message.id, size: height, start: 0, item: { kind: 'message', key: message.id, message, messageIndex: index } }}
+      measureElement={measureElement} assistantActivity={null} showToolTraces isEditing={false} messageImages={[]} isCopied={copied === message.id} isHighlighted={false}
+      onImageMouseDown={() => {}} onOpenImagePreview={() => {}} onEditCancel={() => {}}
+      onCopy={async (_content, id) => { setCopied(id); setAction(`Copy selected: ${id}`); }}
+      onEditStart={value => setAction(`Ordinary edit selected: ${value.id}`)} onRegenerate={async id => setAction(`Ordinary regenerate selected: ${id}`)}
+      onRetryPersistence={async () => { throw new Error('Historical retry must be absent'); }} onDeleteUnsavedResponse={async () => { throw new Error('Historical deletion must be absent'); }} />
+  </div>;
+}
 function Qa() {
   const [copied, setCopied] = useState('');
   const [action, setAction] = useState('No action selected.');
@@ -31,14 +56,7 @@ function Qa() {
     <h1 className="text-sm font-semibold">Global chat · Synthetic archive read data</h1>
     <p className="text-xs text-muted-foreground">DEV loopback only. Real conversation rows and mapper; no native IPC, transfer authority or provider. Historical rows keep Copy and raw text. The new user turn keeps its ordinary actions.</p>
     <button className="text-xs underline" onClick={() => void i18n.changeLanguage(i18n.language === 'en' ? 'fr' : 'en')}>EN / FR</button>
-    {messages.map((message, index) => <div key={message.id} className="relative min-h-48 border-b border-border" data-qa-row={message.id}>
-      <ChatMessageRowBase virtualMessage={{ index, key: message.id, size: 180, start: 0, item: { kind: 'message', key: message.id, message, messageIndex: index } }}
-        measureElement={() => {}} assistantActivity={null} showToolTraces isEditing={false} messageImages={[]} isCopied={copied === message.id} isHighlighted={false}
-        onImageMouseDown={() => {}} onOpenImagePreview={() => {}} onEditCancel={() => {}}
-        onCopy={async (_content, id) => { setCopied(id); setAction(`Copy selected: ${id}`); }}
-        onEditStart={value => setAction(`Ordinary edit selected: ${value.id}`)} onRegenerate={async id => setAction(`Ordinary regenerate selected: ${id}`)}
-        onRetryPersistence={async () => { throw new Error('Historical retry must be absent'); }} onDeleteUnsavedResponse={async () => { throw new Error('Historical deletion must be absent'); }} />
-    </div>)}
+    {messages.map((message, index) => <QaRow key={message.id} message={message} index={index} copied={copied} setCopied={setCopied} setAction={setAction} />)}
     <output className="block text-xs" aria-live="polite">{action}</output>
     <p className="text-xs text-muted-foreground">Archive resources, recovery and image reload remain closed pending the admitted reader port. This screen does not qualify them.</p>
   </main>;

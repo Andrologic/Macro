@@ -51,6 +51,7 @@ import { ModelDropdown } from '../ai/ModelDropdown';
 import { ReasoningDropdown } from '../ai/ReasoningDropdown';
 import { MarkdownRenderer } from './MarkdownRenderer';
 import { messageDisplayDate } from '../../services/chatHistoryDisplay';
+import { formatDate } from '../../i18n/format';
 import { useScrollMagnet } from '../../hooks/useScrollMagnet';
 import { useSpeechDictation } from '../../hooks/useSpeechDictation';
 import { ScrollSeparator } from './ScrollSeparator';
@@ -796,8 +797,9 @@ export const ChatMessageRowBase: React.FC<ChatMessageRowProps> = ({
   skillTurnFeedback,
   standaloneLaunchProgress,
 }) => {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
   const message = virtualMessage.item.message;
+  const historicalDate = message.portable_history ? messageDisplayDate(message) : null;
   const observedRow = useRef<HTMLDivElement | null>(null);
   useEffect(() => {
     if (!observedRow.current || message.portable_history || message.role !== 'assistant' || !message.content || assistantActivity || message.persistence_state === 'failed' || message.persistence_state === 'retrying') return;
@@ -903,7 +905,11 @@ export const ChatMessageRowBase: React.FC<ChatMessageRowProps> = ({
             <div className="text-sm leading-relaxed text-foreground">
               {message.portable_history && (
                 <div className="mb-1 text-[10px] text-muted-foreground">
-                  {messageDisplayDate(message) ?? t('common.unknown', 'Unknown')}
+                  {historicalDate ? (
+                    <time dateTime={historicalDate}>
+                      {formatDate(historicalDate, { dateStyle: 'medium', timeStyle: 'short' }, i18n.language)}
+                    </time>
+                  ) : t('chat.historyUnknownDate')}
                 </div>
               )}
               {message.portable_history ? (

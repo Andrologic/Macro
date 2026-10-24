@@ -571,6 +571,7 @@
     "maximize": "Maximize"
   },
   "chat": {
+    "historyUnknownDate": "Unknown date",
     "conversationSourcesUsed": "{{count}} cited conversation sources",
     "imageImportContextChanged": "Conversation changed. Images were not added; select them again.",
     "imageImportFailed": "No images added. Use valid PNG, JPEG, GIF or WebP images, up to 2 MB each, 8 MB total and 10 images.",
