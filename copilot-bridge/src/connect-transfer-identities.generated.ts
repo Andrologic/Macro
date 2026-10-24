@@ -98,7 +98,7 @@ export const TRANSFER_RESOURCES = [
   },
   {
     "path": "src/services/ai/portableHistoryArchive.ts",
-    "sha256": "0ade21fdcd6c3fed1ed1fb682236bf2ac353a8febcc7457c1854ee6938462ab5"
+    "sha256": "1fd9b89fc4b18ac1a7f0ab3328e90f46b04afa6fb08f5ed99ddd8bd1185da3ad"
   },
   {
     "path": "src/services/ai/portableHistoryInspection.ts",
@@ -304,5 +304,5 @@ export const TRANSFER_RESOURCES = [
 export const TRANSFER_HELLO = {
   "version": "macro-connect-transfer-1",
   "portable_contract_sha256": "c6ae7440ed0fb4d0bdccdfb936c4bf6ac5c441c96b642c1d9ccbd270b62bdcc6",
-  "preparation_set_sha256": "7de1ff341d4f860337b5f1f61dae40f4a6031c76483ecdd33d4571f2d4ae5b7a"
+  "preparation_set_sha256": "2a8b862f1e06ec7fd8a645fa7d83e1857aa4ce9114801723945d4134943eec97"
 } as const;
