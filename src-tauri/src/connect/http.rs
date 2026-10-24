@@ -1985,7 +1985,16 @@ mod tests {
                 if release_raw {
                     let mut tls = acceptor.accept(tcp).await.unwrap();
                     let end = tls.read(&mut byte).await;
-                    assert!(matches!(end, Ok(0)) || matches!(end, Err(ref e) if e.kind() == std::io::ErrorKind::UnexpectedEof));
+                    eprintln!("TCP-before-RAW TLS fixture read after Prepared drop: {end:?}");
+                    // Dropping Prepared destroys TCP without a TLS close_notify.
+                    // A peer reset also proves closure: this fixture observed
+                    // ConnectionReset on macOS after that abrupt drop.
+                    assert!(
+                        matches!(end, Ok(0))
+                            || matches!(end, Err(ref e) if matches!(e.kind(),
+                                std::io::ErrorKind::UnexpectedEof | std::io::ErrorKind::ConnectionReset)),
+                        "unexpected TLS fixture termination after Prepared drop: {end:?}"
+                    );
                 } else { assert_eq!(tcp.read(&mut byte).await.unwrap(), 0); }
             });
             let mut session = HttpSession::new(runtime.http_owner(&database).unwrap(), "localhost", address).unwrap();
