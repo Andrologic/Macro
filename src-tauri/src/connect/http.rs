@@ -442,24 +442,6 @@ impl Lane {
         tls: Option<Arc<TlsSettings>>,
     ) -> Result<Self> {
         let charge = budget.reserve(CONNECTION).map_err(|_| "transit_limit")?;
-        // TLS parsing and the codec raw graph share one heavy-allocation turn.
-        // This also serializes the two initial handshakes without raising quota.
-        let handshake_turn = if tls.is_some() {
-            Some(
-                super::codec::RAW_TURN
-                    .clone()
-                    .acquire_owned()
-                    .await
-                    .map_err(|_| "http_closed")?,
-            )
-        } else {
-            None
-        };
-        let handshake = if tls.is_some() {
-            Some(budget.reserve(HANDSHAKE).map_err(|_| "transit_limit")?)
-        } else {
-            None
-        };
         let socket = if address.is_ipv4() {
             TcpSocket::new_v4()
         } else {
@@ -478,6 +460,24 @@ impl Lane {
             return Err("http_socket_limit");
         }
         let stream = socket.connect(address).await.map_err(|_| "http_connect")?;
+        // TLS parsing and the codec raw graph share one heavy-allocation turn.
+        // This also serializes the two initial handshakes without raising quota.
+        let handshake_turn = if tls.is_some() {
+            Some(
+                super::codec::RAW_TURN
+                    .clone()
+                    .acquire_owned()
+                    .await
+                    .map_err(|_| "http_closed")?,
+            )
+        } else {
+            None
+        };
+        let handshake = if tls.is_some() {
+            Some(budget.reserve(HANDSHAKE).map_err(|_| "transit_limit")?)
+        } else {
+            None
+        };
         let io: Box<dyn Io> = match &tls {
             Some(settings) => {
                 let name = rustls::pki_types::ServerName::try_from(host.to_owned())
@@ -1962,6 +1962,134 @@ mod tests {
         let acceptor = tokio_rustls::TlsAcceptor::from(Arc::new(config));
         (acceptor, cert)
     }
+    #[tokio::test]
+    async fn tcp_connect_precedes_raw_but_tls_waits_and_cancel_closes_tcp() {
+        let (acceptor, cert) = synthetic_tls();
+        for release_raw in [false, true] {
+            let directory = tempfile::tempdir().unwrap();
+            let pool = crate::db::create_pool(&directory.path().join("tcp-before-raw.db")).await.unwrap();
+            let db = crate::core::db_state::DbPool::default();
+            db.set_ready(pool).await.unwrap();
+            let database = db.wait_until_ready_context().await.unwrap();
+            let runtime = super::super::TransferRuntime::default();
+            let budget = runtime.budget().unwrap();
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let address = listener.local_addr().unwrap();
+            let (silent, seen) = tokio::sync::oneshot::channel();
+            let acceptor = acceptor.clone();
+            let server = tokio::spawn(async move {
+                let (mut tcp, _) = listener.accept().await.unwrap();
+                let mut byte = [0];
+                assert!(tokio::time::timeout(Duration::from_millis(50), tcp.read(&mut byte)).await.is_err(), "TLS emitted before RAW admission");
+                silent.send(()).unwrap();
+                if release_raw {
+                    let mut tls = acceptor.accept(tcp).await.unwrap();
+                    let end = tls.read(&mut byte).await;
+                    eprintln!("TCP-before-RAW TLS fixture read after Prepared drop: {end:?}");
+                    // Dropping Prepared destroys TCP without a TLS close_notify.
+                    // A peer reset also proves closure: this fixture observed
+                    // ConnectionReset on macOS after that abrupt drop.
+                    assert!(
+                        matches!(end, Ok(0))
+                            || matches!(end, Err(ref e) if matches!(e.kind(),
+                                std::io::ErrorKind::UnexpectedEof | std::io::ErrorKind::ConnectionReset)),
+                        "unexpected TLS fixture termination after Prepared drop: {end:?}"
+                    );
+                } else { assert_eq!(tcp.read(&mut byte).await.unwrap(), 0); }
+            });
+            let mut session = HttpSession::new(runtime.http_owner(&database).unwrap(), "localhost", address).unwrap();
+            session.tls = Some(TlsSettings::with_roots(&budget, || {
+                let mut roots = rustls::RootCertStore::empty(); roots.add(cert.clone()).unwrap(); roots
+            }).unwrap());
+            let cancel = session.owner.cancel.clone();
+            let turn = super::super::codec::RAW_TURN.clone().acquire_owned().await.unwrap();
+            let mut opening = Box::pin(session.prepare(false));
+            tokio::select! {
+                result = &mut opening => panic!("opened before RAW: {:?}", result.err()),
+                result = tokio::time::timeout(Duration::from_secs(3), seen) => result.unwrap().unwrap(),
+            }
+            // TCP is accepted under CONNECTION, without HANDSHAKE reservation.
+            drop(budget.reserve(TRANSIT_INSTANCE_LIMIT - CONFIG - CONNECTION).unwrap());
+            if release_raw {
+                drop(turn);
+                let prepared = opening.await.unwrap();
+                drop(prepared);
+            } else {
+                cancel.cancel();
+                assert_eq!(opening.await.err(), Some("http_cancelled"));
+                drop(turn);
+            }
+            tokio::time::timeout(Duration::from_secs(3), server).await.unwrap().unwrap();
+            drop(session);
+            assert!(runtime.shutdown().await);
+            drop(budget.reserve(TRANSIT_INSTANCE_LIMIT).unwrap());
+        }
+    }
+
+    #[tokio::test]
+    async fn partial_tls_cancellation_and_total_deadline_keep_handshake_until_io_dies() {
+        for expire in [false, true] {
+            let directory = tempfile::tempdir().unwrap();
+            let pool = crate::db::create_pool(&directory.path().join("partial-tls.db")).await.unwrap();
+            let db = crate::core::db_state::DbPool::default();
+            db.set_ready(pool).await.unwrap();
+            let database = db.wait_until_ready_context().await.unwrap();
+            let runtime = super::super::TransferRuntime::default();
+            let budget = runtime.budget().unwrap();
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let address = listener.local_addr().unwrap();
+            let (accepted, tcp_ready) = tokio::sync::oneshot::channel();
+            let (partial, tls_partial) = tokio::sync::oneshot::channel();
+            let server = tokio::spawn(async move {
+                let (mut tcp, _) = listener.accept().await.unwrap();
+                accepted.send(()).unwrap();
+                let mut header = [0; 5];
+                tcp.read_exact(&mut header).await.unwrap();
+                assert_eq!(header[0], 22); // ClientHello handshake record.
+                let length = u16::from_be_bytes([header[3], header[4]]) as usize;
+                assert!(length <= 16_384);
+                let mut hello = vec![0; length];
+                tcp.read_exact(&mut hello).await.unwrap();
+                // An incomplete TLS record keeps the real parser Pending.
+                tcp.write_all(&[22, 3, 3, 0, 4, 2]).await.unwrap();
+                partial.send(()).unwrap();
+                let mut byte = [0];
+                let end = tcp.read(&mut byte).await;
+                assert!(matches!(end, Ok(0)) || matches!(end, Err(ref e) if e.kind() == std::io::ErrorKind::ConnectionReset));
+            });
+            let mut session = HttpSession::new(runtime.http_owner(&database).unwrap(), "localhost", address).unwrap();
+            let cancel = session.owner.cancel.clone();
+            let turn = super::super::codec::RAW_TURN.clone().acquire_owned().await.unwrap();
+            let started = tokio::time::Instant::now();
+            let mut opening = Box::pin(session.prepare(false));
+            tokio::select! {
+                result = &mut opening => panic!("unexpected early open: {:?}", result.err()),
+                result = tokio::time::timeout(Duration::from_secs(3), tcp_ready) => result.unwrap().unwrap(),
+            }
+            if expire { tokio::time::sleep_until(started + Duration::from_secs(26)).await; }
+            drop(turn);
+            tokio::select! {
+                result = &mut opening => panic!("TLS did not remain partial: {:?}", result.err()),
+                result = tokio::time::timeout(Duration::from_secs(3), tls_partial) => result.unwrap().unwrap(),
+            }
+            assert!(super::super::codec::RAW_TURN.clone().try_acquire_owned().is_err());
+            assert!(budget.reserve(TRANSIT_INSTANCE_LIMIT - CONFIG - CONNECTION).is_err());
+            if expire {
+                let result = tokio::time::timeout_at(started + Duration::from_secs(34), opening).await.unwrap();
+                assert_eq!(result.err(), Some("http_timeout"));
+                assert!(started.elapsed() >= Duration::from_secs(29));
+            } else {
+                cancel.cancel();
+                assert_eq!(opening.await.err(), Some("http_cancelled"));
+            }
+            drop(super::super::codec::RAW_TURN.clone().try_acquire_owned().unwrap());
+            tokio::time::timeout(Duration::from_secs(3), server).await.unwrap().unwrap();
+            drop(session);
+            assert!(runtime.shutdown().await);
+            drop(budget.reserve(TRANSIT_INSTANCE_LIMIT).unwrap());
+        }
+    }
+
     #[tokio::test]
     async fn real_tls_validates_the_synthetic_certificate_and_hostname() {
         let (acceptor, cert) = synthetic_tls();
