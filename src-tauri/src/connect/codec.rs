@@ -225,7 +225,9 @@ pub(crate) struct Codec {
     pub(super) scope_probe: Option<ScopeProbe>,
     input: Option<ChildStdin>,
     output: Option<ChildStdout>,
-    stderr: Option<JoinHandle<()>>,
+    stderr: Option<JoinHandle<std::io::Result<()>>>,
+    retirement_complete: bool,
+    retirement_failed: bool,
     scratch: Box<[u8; PAGE]>,
     budget: TransitInstance,
     raw: Option<TransitCharge>,
@@ -268,8 +270,9 @@ impl Codec {
             let mut scratch = [0u8; 4096];
             loop {
                 match error.read(&mut scratch).await {
-                    Ok(0) | Err(_) => break,
+                    Ok(0) => return Ok(()),
                     Ok(_) => scratch.fill(0),
+                    Err(error) => return Err(error),
                 }
             }
         });
@@ -280,6 +283,8 @@ impl Codec {
             input,
             output,
             stderr: Some(stderr),
+            retirement_complete: false,
+            retirement_failed: false,
             scratch: Box::new([0; PAGE]),
             bank_owner: BankOwner { budget: budget.clone(), gate: Arc::new(tokio::sync::Semaphore::new(1)), profile },
             budget,
@@ -528,38 +533,69 @@ impl Codec {
             sequence = sequence.checked_add(1).ok_or("codec_limit")?;
         }
     }
+    pub(crate) fn retirement_complete(&self) -> bool {
+        self.retirement_complete
+    }
     pub(crate) async fn retire(&mut self) -> bool {
-        // This private bundled codec does not spawn external children. Kill its
-        // dedicated Unix group as containment, but only Child::wait proves reap
-        // of the actually owned child; no universal descendant claim is made.
+        self.retire_until(tokio::time::Instant::now() + std::time::Duration::from_secs(10)).await
+    }
+    async fn retire_until(&mut self, deadline: tokio::time::Instant) -> bool {
+        if self.retirement_complete { return true; }
+        if self.retirement_failed { return false; }
+        // This private bundled codec does not spawn external children. The
+        // Unix group is containment; only wait proves reap of the owned Child.
         #[cfg(unix)]
         if let Some(pid) = self.child.id() {
-            unsafe {
-                libc::kill(-(pid as i32), libc::SIGKILL);
-            }
+            unsafe { libc::kill(-(pid as i32), libc::SIGKILL); }
         }
         let _ = self.child.start_kill();
-        self.input.take();
-        self.output.take();
-        let reaped = self.child.wait().await.is_ok();
-        let drained = match self.stderr.take() {
-            Some(task) => {
-                task.abort();
-                task.await
-                    .map(|_| true)
-                    .unwrap_or_else(|e| e.is_cancelled())
-            }
-            None => true,
-        };
-        if reaped && drained {
-            self.scratch.fill(0);
-            self.raw.take();
-            self.raw_turn.take();
-            self.bank.take();
-            true
-        } else {
-            false
+        if !matches!(tokio::time::timeout_at(deadline, self.child.wait()).await, Ok(Ok(_))) {
+            return false;
         }
+        // Retain every pipe across timeout. On Windows flush joins Tokio's
+        // pending Blocking write; shutdown alone would return immediately.
+        if let Some(input) = self.input.as_mut() {
+            match tokio::time::timeout_at(deadline, input.flush()).await {
+                Ok(Ok(())) => (),
+                // This error ends the flushed write only, not the other pipes.
+                // The Child was reaped; stdout EOF and stderr join still follow.
+                Ok(Err(error)) if error.kind() == std::io::ErrorKind::BrokenPipe => (),
+                _ => return false,
+            }
+        }
+        self.input.take();
+        // No drain after a framing refusal while the Child is alive. After
+        // reap, finish any owned read and consume pipe residue in fixed scratch.
+        // This also joins Tokio's internal Windows read before dropping stdout.
+        if let Some(output) = self.output.as_mut() {
+            loop {
+                match tokio::time::timeout_at(deadline, output.read(&mut self.scratch[..])).await {
+                    Ok(Ok(0)) => break,
+                    Ok(Ok(_)) => self.scratch.fill(0),
+                    _ => return false,
+                }
+            }
+        }
+        self.output.take();
+        if let Some(task) = self.stderr.as_mut() {
+            let result = match tokio::time::timeout_at(deadline, task).await {
+                Ok(result) => result,
+                Err(_) => return false,
+            };
+            // A completed JoinHandle can now be dropped. Never abort a drain
+            // whose nested Blocking read might still own a handle and buffer.
+            self.stderr.take();
+            if !matches!(result, Ok(Ok(()))) {
+                self.retirement_failed = true;
+                return false;
+            }
+        }
+        self.scratch.fill(0);
+        self.raw.take();
+        self.raw_turn.take();
+        self.bank.take();
+        self.retirement_complete = true;
+        true
     }
 }
 
@@ -644,5 +680,86 @@ mod buffer_ownership_tests {
         drop(bytes);
         assert!(Bytes::serialize(&budget, &format!("{value}a")).is_err());
         drop(budget.reserve(TRANSIT_INSTANCE_LIMIT).unwrap());
+    }
+}
+
+#[cfg(test)]
+mod retirement_tests {
+    use super::*;
+    use crate::connect_resources::{TransitOwner, TRANSIT_INSTANCE_LIMIT};
+
+    #[tokio::test]
+    async fn real_child_reap_finishes_owned_reads_writes_and_stderr_before_credit() {
+        for pending_write in [false, true] {
+            let directory = tempfile::tempdir().unwrap();
+            let pool = crate::db::create_pool(&directory.path().join("retire.db")).await.unwrap();
+            let db = crate::core::db_state::DbPool::default();
+            db.set_ready(pool.clone()).await.unwrap();
+            let ready = db.wait_until_ready_context().await.unwrap();
+            let budget = TransitOwner::default().instance(uuid::Uuid::new_v4()).unwrap();
+            let mut command = Command::new(super::super::runtime::test_bun());
+            command.arg("-e").arg("import {writeSync} from 'node:fs'; writeSync(2,new Uint8Array(4096)); setInterval(()=>{},1000)");
+            let mut codec = Codec::spawn(command, budget.clone(), ready.retain_chat_work(), Profile::Persistent).unwrap();
+            let pid = codec.pid();
+            if pending_write {
+                // One fixed page, repeatedly written to a Child that never reads.
+                // Direct cancellation leaves the actual pipe owner in Codec.
+                let page = [0u8; PAGE];
+                let write = async {
+                    loop { codec.input.as_mut().unwrap().write_all(&page).await.unwrap(); }
+                };
+                tokio::pin!(write);
+                assert!(tokio::time::timeout(std::time::Duration::from_millis(50), &mut write).await.is_err());
+            } else {
+                let mut header = [0; 32];
+                let read = codec.output.as_mut().unwrap().read_exact(&mut header);
+                tokio::pin!(read);
+                assert!(futures::poll!(&mut read).is_pending());
+            }
+            assert!(budget.reserve(TRANSIT_INSTANCE_LIMIT).is_err());
+            assert!(db.set_ready(pool.clone()).await.is_err());
+            assert!(codec.retire().await);
+            assert!(codec.retirement_complete());
+            assert!(codec.input.is_none() && codec.output.is_none() && codec.stderr.is_none());
+            #[cfg(unix)]
+            assert_eq!(unsafe { libc::kill(pid as i32, 0) }, -1);
+            // STARTUP remains owned by Codec until that last owner disappears.
+            assert!(budget.reserve(TRANSIT_INSTANCE_LIMIT).is_err());
+            drop(codec);
+            drop(budget.reserve(TRANSIT_INSTANCE_LIMIT).unwrap());
+            db.set_ready(pool).await.unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn retirement_timeout_keeps_unjoined_drain_and_credit_for_retry() {
+        let directory = tempfile::tempdir().unwrap();
+        let pool = crate::db::create_pool(&directory.path().join("retire-timeout.db")).await.unwrap();
+        let db = crate::core::db_state::DbPool::default();
+        db.set_ready(pool.clone()).await.unwrap();
+        let ready = db.wait_until_ready_context().await.unwrap();
+        let budget = TransitOwner::default().instance(uuid::Uuid::new_v4()).unwrap();
+        let mut command = Command::new(super::super::runtime::test_bun());
+        command.arg("-e").arg("setInterval(()=>{},1000)");
+        let mut codec = Codec::spawn(command, budget.clone(), ready.retain_chat_work(), Profile::Persistent).unwrap();
+        let drain = codec.stderr.take().unwrap();
+        let (release, held) = tokio::sync::oneshot::channel();
+        // Hold publication of the real drain's completion. This is not an
+        // emulation of Windows Blocking or an induced OS wait failure.
+        codec.stderr = Some(tokio::spawn(async move {
+            let _ = held.await;
+            drain.await.map_err(std::io::Error::other)?
+        }));
+        assert!(!codec.retire_until(tokio::time::Instant::now() + std::time::Duration::from_millis(200)).await);
+        assert!(!codec.retirement_complete());
+        assert!(codec.stderr.as_ref().is_some_and(|task| !task.is_finished()));
+        assert!(budget.reserve(TRANSIT_INSTANCE_LIMIT).is_err());
+        assert!(db.set_ready(pool.clone()).await.is_err());
+        release.send(()).unwrap();
+        assert!(codec.retire().await);
+        assert!(codec.stderr.is_none());
+        drop(codec);
+        drop(budget.reserve(TRANSIT_INSTANCE_LIMIT).unwrap());
+        db.set_ready(pool).await.unwrap();
     }
 }

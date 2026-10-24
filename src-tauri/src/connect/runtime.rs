@@ -38,6 +38,18 @@ struct State {
         std::sync::Weak<super::http::IdleLanes>,
     )>,
 }
+impl Drop for State {
+    fn drop(&mut self) {
+        if let Some(codec) = self.quarantine.take() {
+            if !codec.retirement_complete() {
+                // Last runtime owner is disappearing without proof of IO end.
+                // Keep the existing quarantine and its credits until process
+                // exit; dropping it could detach Windows Blocking operations.
+                std::mem::forget(codec);
+            }
+        }
+    }
+}
 #[derive(Clone, Default)]
 pub(crate) struct TransferRuntime(Arc<Mutex<State>>);
 // This completion is the last field of HttpSession. Its notification therefore
@@ -383,16 +395,19 @@ impl TransferRuntime {
 }
 
 #[cfg(test)]
+pub(super) fn test_bun() -> std::path::PathBuf {
+    std::env::split_paths(&std::env::var_os("PATH").unwrap())
+        .map(|dir| dir.join(if cfg!(windows) { "bun.exe" } else { "bun" }))
+        .find(|path| path.is_file())
+        .expect("installed Bun required")
+}
+
+#[cfg(test)]
 mod tests {
     use super::super::codec::Bytes;
     use super::*;
     use crate::connect_resources::TRANSIT_INSTANCE_LIMIT;
-    fn bun() -> std::path::PathBuf {
-        std::env::split_paths(&std::env::var_os("PATH").unwrap())
-            .map(|dir| dir.join("bun"))
-            .find(|path| path.is_file())
-            .expect("installed Bun required")
-    }
+    use super::test_bun as bun;
     async fn database() -> (tempfile::TempDir, DbPool, sqlx::SqlitePool) {
         let directory = tempfile::tempdir().unwrap();
         let pool = crate::db::create_pool(&directory.path().join("synthetic.db"))
