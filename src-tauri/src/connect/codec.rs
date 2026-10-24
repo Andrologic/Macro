@@ -45,6 +45,38 @@ impl Bytes {
     pub(crate) fn as_slice(&self) -> &[u8] {
         &self.data
     }
+    // The caller transfers the original reservoir and its unreleased admission.
+    pub(crate) fn adopt(data: Vec<u8>, charge: TransitCharge, capacity: usize) -> Result<Self> {
+        if data.len() > BODY || data.capacity() > capacity {
+            return Err("codec_limit");
+        }
+        Ok(Self {
+            data,
+            _charge: charge,
+        })
+    }
+    pub(crate) fn serialize(
+        budget: &TransitInstance,
+        value: &impl serde::Serialize,
+    ) -> Result<Self> {
+        struct Bounded(Vec<u8>);
+        impl std::io::Write for Bounded {
+            fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+                if bytes.len() > BODY - self.0.len() {
+                    return Err(std::io::Error::other("codec_limit"));
+                }
+                self.0.extend_from_slice(bytes);
+                Ok(bytes.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        let charge = budget.reserve(BODY as u64).map_err(|_| "transit_limit")?;
+        let mut writer = Bounded(Vec::with_capacity(BODY));
+        serde_json::to_writer(&mut writer, value).map_err(|_| "codec_input")?;
+        Self::adopt(writer.0, charge, BODY)
+    }
     pub(crate) fn copy(budget: &TransitInstance, source: &[u8]) -> Result<Self> {
         if source.len() > BODY {
             return Err("codec_limit");
@@ -56,6 +88,11 @@ impl Bytes {
             data: source.to_vec(),
             _charge: charge,
         })
+    }
+}
+impl AsRef<[u8]> for Bytes {
+    fn as_ref(&self) -> &[u8] {
+        self.as_slice()
     }
 }
 pub(crate) struct Input {
@@ -403,5 +440,50 @@ impl Codec {
         } else {
             false
         }
+    }
+}
+
+#[cfg(test)]
+mod buffer_ownership_tests {
+    use super::*;
+    use crate::connect_resources::{TransitOwner, TRANSIT_INSTANCE_LIMIT};
+
+    #[test]
+    fn adopted_capacity_and_shared_backing_remain_charged_until_last_owner() {
+        let owner = TransitOwner::default();
+        let budget = owner.instance(uuid::Uuid::new_v4()).unwrap();
+        let charge = budget.reserve(BODY as u64).unwrap();
+        let mut reservoir = Vec::with_capacity(BODY);
+        reservoir.extend_from_slice(b"{}");
+        let pointer = reservoir.as_ptr();
+        let bytes = Bytes::adopt(reservoir, charge, BODY).unwrap();
+        assert_eq!(bytes.as_slice().as_ptr(), pointer);
+        let shared = bytes::Bytes::from_owner(bytes);
+        let last = shared.clone();
+        drop(shared);
+        assert!(budget.reserve(TRANSIT_INSTANCE_LIMIT).is_err());
+        drop(
+            budget
+                .reserve(TRANSIT_INSTANCE_LIMIT - BODY as u64)
+                .unwrap(),
+        );
+        drop(last);
+        drop(budget.reserve(TRANSIT_INSTANCE_LIMIT).unwrap());
+        let charge = budget.reserve(32).unwrap();
+        assert!(Bytes::adopt(Vec::with_capacity(64), charge, 32).is_err());
+        drop(budget.reserve(TRANSIT_INSTANCE_LIMIT).unwrap());
+    }
+
+    #[test]
+    fn bounded_serialization_refuses_overflow_and_returns_its_admission() {
+        let owner = TransitOwner::default();
+        let budget = owner.instance(uuid::Uuid::new_v4()).unwrap();
+        let value = "a".repeat(BODY - 2);
+        let bytes = Bytes::serialize(&budget, &value).unwrap();
+        assert_eq!(bytes.as_slice().len(), BODY);
+        assert!(budget.reserve(TRANSIT_INSTANCE_LIMIT).is_err());
+        drop(bytes);
+        assert!(Bytes::serialize(&budget, &format!("{value}a")).is_err());
+        drop(budget.reserve(TRANSIT_INSTANCE_LIMIT).unwrap());
     }
 }
