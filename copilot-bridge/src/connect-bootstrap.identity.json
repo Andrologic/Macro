@@ -1,0 +1,102 @@
+{
+  "hello": {
+    "version": "macro-connect-codec-1",
+    "profile": "bootstrap",
+    "source_set_sha256": "a7efb6adb6a029598c606e596993b2bc19415b3fdc428713c0d7b35391cdffc2",
+    "content_sha256": "c6ae7440ed0fb4d0bdccdfb936c4bf6ac5c441c96b642c1d9ccbd270b62bdcc6",
+    "decision_resource_set_sha256": "6133c2d9ee204a175ae6c176b9c266d4378879c1637936ebd81e85daf4d0b97a",
+    "transit_resource_set_sha256": "1454bad31321e0d6467098f0309b5bb96050a396bb6fddecc938233cdf9c602d",
+    "authority_resource_set_sha256": "3d82d4b9909789ab0f8dc5f0ba06c751da56b1c0396613a2b29e2407302ab052",
+    "a1_resource_set_sha256": "200c4eb542e251b9743dad14ef31cb725c5c4724f2db5207076f81dff3112060"
+  },
+  "resources": [
+    {
+      "path": "bun.lock",
+      "sha256": "983bd37549e3af246138bf24d276f8b25dd8d7fda8c356352488fd3360384e64"
+    },
+    {
+      "path": "contracts/macro-pilot/v2/strict-json.mjs",
+      "sha256": "cb2256cfaca9d13d6e8fd617fc58f3db2f19016bb1097283c3501ae94dfc3eec"
+    },
+    {
+      "path": "contracts/macro-pilot/v2/transfer-authority/identities.generated.mjs",
+      "sha256": "1361863294442375cb7750fe1948ed5a8497e2e4e5b428a03db88496529eb515"
+    },
+    {
+      "path": "contracts/macro-pilot/v2/transfer-authority/shape.generated.mjs",
+      "sha256": "29765b0cb552cee304bbecba3a13c2b71b83a688d43dfdf2091c259321e38bce"
+    },
+    {
+      "path": "contracts/macro-pilot/v2/transfer-authority/validate.mjs",
+      "sha256": "15aeb52d33917f920f9e02204741ee62c880991ce846fc7446f7e88d932e794c"
+    },
+    {
+      "path": "contracts/macro-pilot/v2/transfer-transit/decision-browser.generated.mjs",
+      "sha256": "b3253383923a8a90bf9a114065e628b2930d5bfd0faf1ef47ba00072955e0622"
+    },
+    {
+      "path": "contracts/macro-pilot/v2/transfer-transit/identities.generated.mjs",
+      "sha256": "d9bafdfd4ab165968caf1e67b023fa8bd0568ad58e7e4dfc54677437a204174a"
+    },
+    {
+      "path": "contracts/macro-pilot/v2/transfer-transit/shape.generated.mjs",
+      "sha256": "ad95c9ce2c7d25bc2523fc01d489db3a7a40ccb76d0bc1acd153374199136350"
+    },
+    {
+      "path": "contracts/macro-pilot/v2/transfer-transit/validate.mjs",
+      "sha256": "6f6d740201e6272c77f96c9efa1c0b718f6bd2e130e487fbc723ccf4f282b8bf"
+    },
+    {
+      "path": "copilot-bridge/src/connect-bootstrap-operations.ts",
+      "sha256": "7535648a8c7f8bff7a5bba5640df08669df7b998e633c5519acec93374c2c6de"
+    },
+    {
+      "path": "copilot-bridge/src/connect-bootstrap.ts",
+      "sha256": "72d427a016dd6a491f279f5f425c7d923909ea30d4f4f81f0a34b89e5df8e404"
+    },
+    {
+      "path": "copilot-bridge/src/connect-codec-engine.ts",
+      "sha256": "72497cd166e54ed1c4fc9460cf877326e89e4d31ac7f0b10579349627bf79372"
+    },
+    {
+      "path": "copilot-bridge/src/connect-codec-framing.ts",
+      "sha256": "0c31de4476aee92f2ba4f391507d9eb376a23d220ff0bfd556338a35d5deb72a"
+    },
+    {
+      "path": "copilot-bridge/src/connect-codec-operations.ts",
+      "sha256": "c2173e52caf6193a6abb6787987ff1690192f0edf857ae258a96a934bdc102a3"
+    },
+    {
+      "path": "copilot-bridge/src/connect-codec-values.ts",
+      "sha256": "6137d47e7fdd3d13e1868fc87b566fad0ec1e93487c7caea77bd437aeeaf6b25"
+    },
+    {
+      "path": "copilot-bridge/src/entry.ts",
+      "sha256": "a3e136868451bf2c30ff7d9ee6e13898a713f686cd531b1f7e2daddeb90ead58"
+    },
+    {
+      "path": "copilot-bridge/tsconfig.json",
+      "sha256": "a9231f4e415e84142b68a3868dd629060eb7a4c3ff8fbd4ee095701b10746f71"
+    },
+    {
+      "path": "dev/generate-connect-transfer-identities.mjs",
+      "sha256": "2e0e54412cd9e8ad00a1f4fbc66844f6f786ad6eaf4b4dd3b178392080d16a25"
+    },
+    {
+      "path": "package.json",
+      "sha256": "8b56d77768d91cb7e373a59b1fa34589d48002db48d31569bbfc0843af798389"
+    },
+    {
+      "path": "src/services/macroPilot/protocol.ts",
+      "sha256": "49f83c52c616c32cc96e847932ee78c1d461dc25e57cb439523d358b16160cb8"
+    },
+    {
+      "path": "src/services/macroPilot/schemaValidators.generated.mjs",
+      "sha256": "f18939922e262e6bec745287bcb5f8a994eb817fafecb669289b22f0c2da32ca"
+    },
+    {
+      "path": "src/services/macroPilot/schemaValidators.ts",
+      "sha256": "19558271778a9a12509ea4c9eab0f20d0e55b7c8d89637cb9c5b1ba38ef70de3"
+    }
+  ]
+}

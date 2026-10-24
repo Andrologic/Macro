@@ -1,5 +1,3 @@
-import { validateA1 } from '../../src/services/macroPilot/protocol';
-import { clearErrors as clearA1, diagnosticsEmpty as a1DiagnosticsEmpty } from '../../src/services/macroPilot/schemaValidators';
 import * as authority from '../../contracts/macro-pilot/v2/transfer-authority/validate.mjs';
 import * as transit from '../../contracts/macro-pilot/v2/transfer-transit/validate.mjs';
 import * as decision from '../../contracts/macro-pilot/v2/transfer-transit/decision-browser.generated.mjs';
@@ -18,16 +16,6 @@ const exchange = (value: unknown) => canonical(decision.validateObject(value, 'e
 /** Fixed closed private expectations. No dispatched/authenticated fact comes from the body. */
 function validateFacts(op: Opcode, facts: Facts): void {
   switch (op) {
-    case 10:
-      closedKeys(facts, ['method', 'path', 'request_id_header', 'response_request_id_header', 'expected_origin', 'connection_origin', 'session_id', 'account_id', 'device_id', 'now_ms']);
-      requireCodec(facts.method === 'GET' && facts.path === '/pilot/v1/me');
-      for (const key of ['request_id_header', 'response_request_id_header']) id(facts[key], 'uuid');
-      for (const key of ['expected_origin', 'connection_origin']) { id(facts[key], 'origin'); requireCodec(new URL(facts[key]).protocol === 'https:'); }
-      requireCodec(facts.expected_origin === facts.connection_origin && facts.request_id_header === facts.response_request_id_header);
-      id(facts.session_id);
-      for (const key of ['account_id', 'device_id']) if (facts[key] !== null) id(facts[key]);
-      requireCodec(Number.isSafeInteger(facts.now_ms));
-      return;
     case 1:
       closedKeys(facts, ['request_id_header']); id(facts.request_id_header, 'uuid'); return;
     case 2:
@@ -104,6 +92,7 @@ export function bodyDescriptor(op: Opcode, facts?: Facts): { units: number; limi
 }
 
 export function prepareFacts(op: Opcode, bytes: Uint8Array, bank: ControlBank) {
+  requireCodec(op >= 1 && op <= 9, Reject.state);
   // The caller holds the full raw lease before UTF-8 decoding, JSON and validation.
   const raw = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(bytes);
   const value = parseStoredJsonStrict(raw) as Facts;
@@ -115,7 +104,7 @@ export function prepareFacts(op: Opcode, bytes: Uint8Array, bank: ControlBank) {
  * Each call acquires the actual maximum simultaneous closed slots before canonical code.
  * See connect-codec.md for path-by-path lifetimes and the maximum-vector checks. */
 export function validatorSlots(op: Opcode, facts: Facts): number {
-  if (op === 1 || op === 5 || op === 10) return 0;
+  if (op === 1 || op === 5) return 0;
   if (op === 2 || op === 3 || op === 6 || op === 8 || op === 9) return 3;
   if (op === 4) return 5;
   const chunk = measureClosed(facts.chunk);
@@ -136,10 +125,11 @@ export function reserveAdapter(units: number): { reserve(n: number): () => void;
   };
 }
 export const refuseLegacyContent = (): never => { throw new CanonicalFailure(); };
-export const cleanDiagnostics = (): void => { clearA1(); requireCodec(a1DiagnosticsEmpty() && transit.diagnosticsEmpty() && authority.diagnosticsEmpty(), Reject.state); };
+export const cleanDiagnostics = (): void => { requireCodec(transit.diagnosticsEmpty() && authority.diagnosticsEmpty(), Reject.state); };
 export type BodyResult = { status: 0 | 1 | 3; closed?: ReturnType<typeof copyClosed> };
 
 export async function validateBody(op: Opcode, bytes: Uint8Array, facts: Facts, contextStarted: number, bank: ControlBank): Promise<BodyResult> {
+  requireCodec(op >= 1 && op <= 9, Reject.state);
   const descriptor = bodyDescriptor(op, facts);
   const adapter = reserveAdapter(descriptor.units);
   const releasePlan = op === 6 ? bank.graphs('cursor-borrow', 1) : undefined;
@@ -154,29 +144,7 @@ export async function validateBody(op: Opcode, bytes: Uint8Array, facts: Facts, 
   const ports = { reserve: adapter.reserve, charges: { working: 0, copies: 0 } };
   let success = false, usesRaw = true;
   try {
-    if (op === 10) {
-      const release = adapter.reserve(RAW_UNITS);
-      try {
-        // The native owner granted the full graph before this first decode.
-        const raw = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(bytes);
-        const value = parseStoredJsonStrict(raw) as Facts;
-        closedKeys(value, ['transport_version', 'account', 'device_session']);
-        requireCodec(value.transport_version === '1.0');
-        const account = value.account, session = value.device_session;
-        requireCodec(validateA1(account) && validateA1(session));
-        requireCodec(account.type === 'account' && session.type === 'device_session' && session.state === 'active');
-        requireCodec(session.ref.account_id === account.account_id && session.ref.session_id === facts.session_id);
-        requireCodec(facts.account_id === null || account.account_id === facts.account_id);
-        requireCodec(facts.device_id === null || session.device_id === facts.device_id);
-        const now = facts.now_ms + Math.floor(performance.now() - contextStarted);
-        const expiry = session.expires_at === undefined ? null : Date.parse(session.expires_at);
-        requireCodec(expiry === null || Number.isFinite(expiry) && expiry > now);
-        capture({ account_id: account.account_id, session_id: session.ref.session_id,
-          device_id: session.device_id, session_revision: session.revision, expires_at_ms: expiry });
-        success = true;
-      } catch { success = false; }
-      finally { clearA1(); release(); }
-    } else if (op === 1) success = (await authority.withRequest(load, ports, facts.request_id_header, capture)).valid;
+    if (op === 1) success = (await authority.withRequest(load, ports, facts.request_id_header, capture)).valid;
     else if (op === 2) success = (await authority.withResponse(load, ports, facts.request, facts.expected, () => {
       const elapsed = performance.now() - contextStarted;
       requireCodec(Number.isFinite(elapsed) && elapsed >= 0);

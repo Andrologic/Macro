@@ -5,9 +5,9 @@ use super::{
 };
 use crate::{
     connect::{
-        codec::{Bytes, Input},
+        codec::{Bytes, Input, Profile},
         http::{HttpSession, Request, Response},
-        runtime::CodecHandle,
+        runtime::{CodecHandle, CodecLauncher},
         TransferRuntime,
     },
     connect_resources::{TransitCharge, TransitInstance},
@@ -55,6 +55,7 @@ struct SessionFacts {
     expires_at_ms: Option<u64>,
 }
 pub(crate) struct VerifiedTransport {
+    codec: Option<CodecHandle>,
     session: SessionFacts,
     authority: serde_json::Value,
     observation: PolicyObservation,
@@ -66,6 +67,10 @@ pub(crate) struct VerifiedTransport {
     _charge: TransitCharge,
 }
 impl VerifiedTransport {
+    pub(crate) async fn close(mut self) -> Result<()> {
+        if let Some(codec) = self.codec.take() { codec.close().await?; }
+        Ok(())
+    }
     /// Fresh at the persistent policy read; future effects still need consume_policy.
     pub(crate) async fn check(&self) -> Result<()> {
         self.check_local()?;
@@ -104,7 +109,7 @@ fn now_ms() -> Result<u64> {
 pub(crate) async fn bootstrap(
     intent: Intent,
     runtime: &TransferRuntime,
-    codec: &CodecHandle,
+    launcher: &CodecLauncher,
     ready: &DbReady,
     cancel: &CancellationToken,
 ) -> Result<VerifiedTransport> {
@@ -122,7 +127,7 @@ pub(crate) async fn bootstrap(
         .next()
         .ok_or("dns")?;
     bootstrap_owned(
-        manager, intent, runtime, codec, ready, address, false, cancel,
+        manager, intent, runtime, launcher, ready, address, false, cancel,
     )
     .await
 }
@@ -218,7 +223,30 @@ pub(super) async fn bootstrap_owned<B: Vault + 'static>(
     manager: Arc<Manager<B>>,
     intent: Intent,
     runtime: &TransferRuntime,
-    codec: &CodecHandle,
+    launcher: &CodecLauncher,
+    ready: &DbReady,
+    address: SocketAddr,
+    plain: bool,
+    cancel: &CancellationToken,
+) -> Result<VerifiedTransport> {
+    if !launcher.belongs_to(runtime) { return Err("codec_owner"); }
+    let mut codec = None;
+    let result = bootstrap_with_codec(manager, intent, runtime, launcher, &mut codec, ready, address, plain, cancel).await;
+    match result {
+        Ok(mut verified) => { verified.codec = codec.take(); Ok(verified) }
+        Err(error) => {
+            if let Some(codec) = codec.take() { codec.close().await?; }
+            Err(error)
+        }
+    }
+}
+
+async fn bootstrap_with_codec<B: Vault + 'static>(
+    manager: Arc<Manager<B>>,
+    intent: Intent,
+    runtime: &TransferRuntime,
+    launcher: &CodecLauncher,
+    active: &mut Option<CodecHandle>,
     ready: &DbReady,
     address: SocketAddr,
     plain: bool,
@@ -292,6 +320,9 @@ pub(super) async fn bootstrap_owned<B: Vault + 'static>(
         "response_request_id_header":response.request_id, "expected_origin":identity.context.relay_origin,
         "connection_origin":identity.context.relay_origin, "session_id":identity.context.owner_id,
         "account_id":intent.account_id, "device_id":intent.device_id, "now_ms":now_ms()?});
+    // Do not keep the short bootstrap child idle during network reception.
+    *active = Some(launcher.start(Profile::Bootstrap).await?);
+    let codec = active.as_ref().ok_or("codec_closed")?;
     let output = decode(codec, &budget, 10, &facts, response.body(), cancel).await?;
     let session: SessionFacts =
         serde_json::from_slice(output.bytes.as_slice()).map_err(|_| "codec_result")?;
@@ -299,6 +330,10 @@ pub(super) async fn bootstrap_owned<B: Vault + 'static>(
     drop(response);
     drop(facts);
     observation.check_local().map_err(|_| "policy_revoked")?;
+    // Reap the A1 process and all pipes before admitting the persistent profile.
+    active.take().ok_or("codec_closed")?.close().await?;
+    *active = Some(launcher.start(Profile::Persistent).await?);
+    let codec = active.as_ref().ok_or("codec_closed")?;
     let request_id = uuid::Uuid::new_v4();
     let producer = matches!(intent.scope, Scope::Producer { .. });
     let scope = match intent.scope {
@@ -376,6 +411,7 @@ pub(super) async fn bootstrap_owned<B: Vault + 'static>(
         .and_then(|expiry| expiry.checked_sub(now_ms().ok()?))
         .ok_or("authority_expired")?;
     let verified = VerifiedTransport {
+        codec: None,
         session,
         authority,
         observation,

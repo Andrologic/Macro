@@ -54,7 +54,7 @@ export const TRANSFER_RESOURCES = [
   },
   {
     "path": "copilot-bridge/src/entry.ts",
-    "sha256": "c8cbdaf216ce1b2515062fd182c163f3be811c253039cee3f8d16b21960c1733"
+    "sha256": "a3e136868451bf2c30ff7d9ee6e13898a713f686cd531b1f7e2daddeb90ead58"
   },
   {
     "path": "copilot-bridge/tsconfig.json",
@@ -62,7 +62,7 @@ export const TRANSFER_RESOURCES = [
   },
   {
     "path": "dev/generate-connect-transfer-identities.mjs",
-    "sha256": "54492fbdec8eb56ca80831ea935a06e9298c2c3358d2926cd67d5a72e22d15c6"
+    "sha256": "2e0e54412cd9e8ad00a1f4fbc66844f6f786ad6eaf4b4dd3b178392080d16a25"
   },
   {
     "path": "package.json",
@@ -304,5 +304,5 @@ export const TRANSFER_RESOURCES = [
 export const TRANSFER_HELLO = {
   "version": "macro-connect-transfer-1",
   "portable_contract_sha256": "c6ae7440ed0fb4d0bdccdfb936c4bf6ac5c441c96b642c1d9ccbd270b62bdcc6",
-  "preparation_set_sha256": "2a8b862f1e06ec7fd8a645fa7d83e1857aa4ce9114801723945d4134943eec97"
+  "preparation_set_sha256": "54678220ee5cdc91fb13f65021b32f2edb6636663d0207ca51cf77edd542c29a"
 } as const;
