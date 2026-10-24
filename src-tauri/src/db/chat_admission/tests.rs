@@ -33,7 +33,7 @@ async fn fresh_database_stamps_the_exact_admission_schema() {
             .unwrap();
     assert_eq!(
         versions,
-        [1, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18]
+        [1, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19]
     );
     let stamp: String = sqlx::query_scalar("SELECT name FROM schema_migrations WHERE version=17")
         .fetch_one(&pool)

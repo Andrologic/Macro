@@ -336,15 +336,22 @@ async fn prior_exchange(
     Ok(false)
 }
 async fn check_new_exchange(db: &mut SqliteConnection, input: &Exchange) -> DbResult<()> {
-    let role:Option<(String,String,String,i64,String)>=sqlx::query_as("SELECT local_role,source_generation,target_generation,restore_hold,phase FROM connect_transfers WHERE transfer_id=?")
+    let role:Option<(String,String,String,i64,String,Option<String>,Option<String>)>=sqlx::query_as("SELECT local_role,source_generation,target_generation,restore_hold,phase,resolution,terminal_outcome FROM connect_transfers WHERE transfer_id=?")
         .bind(&input.transfer_id).fetch_optional(db).await?;
-    let (role, source, target, hold, phase) =
+    let (role, source, target, hold, phase, resolution, terminal) =
         role.ok_or_else(|| invalid("connect_transfer_not_found"))?;
     if hold != 0
         || phase == "reconciliation_required"
         || input.producer_generation != if role == "source" { source } else { target }
     {
         return Err(invalid("connect_transfer_recovery_hold"));
+    }
+    if (terminal.is_some() || resolution.is_some())
+        && !(role == "target"
+            && resolution.as_deref() == Some("committed")
+            && input.kind == "target_activated")
+    {
+        return Err(invalid("connect_transfer_terminal"));
     }
     if (role == "source"
         && !matches!(
@@ -526,4 +533,4 @@ async fn record_local_result(
 
 #[cfg(test)]
 #[path = "tests.rs"]
-mod tests;
+pub(super) mod tests;

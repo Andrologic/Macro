@@ -1391,3 +1391,19 @@ async fn connect_transfer_import_lease_survives_ttl_and_blocks_destructive_abort
         1
     );
 }
+
+// Shared SQL-only fixture exercises the real E append/seal/readback owner. It
+// cannot exist in a product build and grants no native/network authority.
+pub(in crate::db) async fn seal_transfer_fixture(pool: SqlitePool, mut begin: Begin, records: Vec<(RecordKind, Vec<u8>)>) -> (InactiveStorage, String, SealedStorage) {
+    let headers:Vec<_>=records.iter().enumerate().map(|(n,(entry,bytes))|RecordHeader {ordinal:n as u64,entry:entry.clone(),bytes:bytes.len() as u64,sha256:digest(bytes),origin:None}).collect();
+    begin.records=headers.len() as u64;begin.bytes=records.iter().map(|(_,b)|b.len() as u64).sum();
+    let mut manifest=Manifest::new(&begin).unwrap();for header in &headers {manifest.record(header).unwrap();}begin.manifest_sha256=manifest.finish();
+    let store=active(pool.clone(),Arc::new(AtomicI64::new(0)));
+    {let mut a=store.authority.as_ref().unwrap().write().await;a.identity=begin.identity.clone();a.bindings=begin.bindings.clone();a.policy.budget=16_777_216;}
+    let receipt=store.begin(json(&begin).unwrap().as_bytes()).await.unwrap();
+    for (header,(_,bytes)) in headers.iter().zip(records.iter()) {append_record(&store,&receipt.key,header,bytes).await;}
+    let sealed=store.seal_storage(&receipt.key).await.unwrap();(store,receipt.key,sealed)
+}
+
+#[cfg(test)]
+pub(in crate::db) fn advance_transfer_fixture(store: &mut InactiveStorage, now: i64) { store.clock=Arc::new(move || now); }

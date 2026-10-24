@@ -95,7 +95,7 @@ pub(crate) async fn remove_reference_schema_in(db: &mut SqliteConnection) -> DbR
     let has_f:i64=sqlx::query_scalar("SELECT COUNT(*) FROM sqlite_master WHERE name='connect_transfers'").fetch_one(&mut *db).await?;
     if has_f!=0 {
         super::connect_transfer::remove_reference_schema_in(db).await?;
-        sqlx::query("DELETE FROM schema_migrations WHERE version=18").execute(&mut *db).await?;
+        sqlx::query("DELETE FROM schema_migrations WHERE version>=18").execute(&mut *db).await?;
     }
 
     let names: Vec<String> = sqlx::query_scalar(
