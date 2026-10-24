@@ -2,7 +2,7 @@
   "hello": {
     "version": "macro-connect-codec-1",
     "profile": "persistent",
-    "source_set_sha256": "f4611fb8e27406a7e88894bbd981c4c39ecb1c6cb3aae6fc706586647be4927d",
+    "source_set_sha256": "129d7e489d259b694ac4fea4cf93e9bb814b11b0bc6b9c473f318cc2463e3367",
     "content_sha256": "c6ae7440ed0fb4d0bdccdfb936c4bf6ac5c441c96b642c1d9ccbd270b62bdcc6",
     "decision_resource_set_sha256": "6133c2d9ee204a175ae6c176b9c266d4378879c1637936ebd81e85daf4d0b97a",
     "transit_resource_set_sha256": "1454bad31321e0d6467098f0309b5bb96050a396bb6fddecc938233cdf9c602d",
@@ -47,7 +47,7 @@
     },
     {
       "path": "copilot-bridge/src/connect-codec-engine.ts",
-      "sha256": "72497cd166e54ed1c4fc9460cf877326e89e4d31ac7f0b10579349627bf79372"
+      "sha256": "f5d8929059772cad1bdfd48c472d0abef44a5607f58e040a009af00074c283e8"
     },
     {
       "path": "copilot-bridge/src/connect-codec-framing.ts",
@@ -59,7 +59,7 @@
     },
     {
       "path": "copilot-bridge/src/connect-codec-values.ts",
-      "sha256": "6137d47e7fdd3d13e1868fc87b566fad0ec1e93487c7caea77bd437aeeaf6b25"
+      "sha256": "9dc2e0a6e199567cb8885713e00b1ac205fe74c41b1ec60208ab46138ff26dea"
     },
     {
       "path": "copilot-bridge/src/connect-codec.ts",

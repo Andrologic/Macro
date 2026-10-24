@@ -61,7 +61,10 @@ export function measureClosed(value: unknown): ClosedSize {
 /** Fixed slots of the parent's already acquired 2MiB bank, not another quota. */
 export class ControlBank {
   private readonly graph = new Set<string>();
+  // B always belongs to the native body/result reservoir. A belongs to
+  // native expectations until BEGIN phase2, then to Child validation/result.
   private readonly encoded = new Set<string>();
+  private bodyPhase = false;
   private readonly page = new Set<string>();
   peakGraphSlots = 0;
   private claim(set: Set<string>, name: string, count: number, limit: number): () => void {
@@ -75,8 +78,14 @@ export class ControlBank {
     };
   }
   graphs(name: string, count: number): () => void { return this.claim(this.graph, name, count, 8); }
-  bytes(name: string, length: number): () => void {
-    requireCodec(length <= BODY_BYTES, Reject.limit); return this.claim(this.encoded, name, 1, 2);
+  beginBody(): void {
+    requireCodec(!this.bodyPhase && this.encoded.size === 0, Reject.state);
+    this.bodyPhase = true;
+  }
+  bytes(name: 'validator-bytes' | 'result-bytes', length: number): () => void {
+    requireCodec(this.bodyPhase, Reject.credit);
+    requireCodec(Number.isSafeInteger(length) && length >= 0 && length <= BODY_BYTES, Reject.limit);
+    return this.claim(this.encoded, name, 1, 1);
   }
   pages(name: string, count: number): () => void { return this.claim(this.page, name, count, 4); }
   empty(): boolean { return this.graph.size === 0 && this.encoded.size === 0 && this.page.size === 0; }

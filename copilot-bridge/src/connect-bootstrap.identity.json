@@ -2,12 +2,12 @@
   "hello": {
     "version": "macro-connect-codec-1",
     "profile": "bootstrap",
-    "source_set_sha256": "4a989a5d7aeeb17638876ec262f5cdbc8bd25d472e7be63a48ec942c4838b3f9",
+    "source_set_sha256": "f88cd1f1e9ba0ef8c642868c10516fa315994c1fcc96144babea949f61466c57",
     "content_sha256": "c6ae7440ed0fb4d0bdccdfb936c4bf6ac5c441c96b642c1d9ccbd270b62bdcc6",
     "decision_resource_set_sha256": "6133c2d9ee204a175ae6c176b9c266d4378879c1637936ebd81e85daf4d0b97a",
     "transit_resource_set_sha256": "1454bad31321e0d6467098f0309b5bb96050a396bb6fddecc938233cdf9c602d",
     "authority_resource_set_sha256": "3d82d4b9909789ab0f8dc5f0ba06c751da56b1c0396613a2b29e2407302ab052",
-    "a1_resource_set_sha256": "fb15d35ea887c5f12ac285bb23f054eedb07c8c1bfe7ddc2b065cd05cc4eb185"
+    "a1_resource_set_sha256": "347a7ae835ff2d77c04c062187e5eb56bb211e5fc148b8156ba093b373aa220c"
   },
   "resources": [
     {
@@ -56,7 +56,7 @@
     },
     {
       "path": "copilot-bridge/src/connect-codec-engine.ts",
-      "sha256": "72497cd166e54ed1c4fc9460cf877326e89e4d31ac7f0b10579349627bf79372"
+      "sha256": "f5d8929059772cad1bdfd48c472d0abef44a5607f58e040a009af00074c283e8"
     },
     {
       "path": "copilot-bridge/src/connect-codec-framing.ts",
@@ -68,7 +68,7 @@
     },
     {
       "path": "copilot-bridge/src/connect-codec-values.ts",
-      "sha256": "6137d47e7fdd3d13e1868fc87b566fad0ec1e93487c7caea77bd437aeeaf6b25"
+      "sha256": "9dc2e0a6e199567cb8885713e00b1ac205fe74c41b1ec60208ab46138ff26dea"
     },
     {
       "path": "copilot-bridge/src/entry.ts",

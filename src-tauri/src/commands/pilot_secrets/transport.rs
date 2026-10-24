@@ -5,12 +5,12 @@ use super::{
 };
 use crate::{
     connect::{
-        codec::{Bytes, Input, Profile},
+        codec::{Bytes, Profile},
         http::{HttpSession, Request, Response},
         runtime::{CodecHandle, CodecLauncher},
         TransferRuntime,
     },
-    connect_resources::{TransitCharge, TransitInstance},
+    connect_resources::TransitCharge,
     core::db_state::DbReady,
     secrets::policy::{PolicyObservation, PolicySnapshot},
 };
@@ -200,21 +200,17 @@ async fn exchange<B: Vault + 'static>(
 
 async fn decode(
     codec: &CodecHandle,
-    budget: &TransitInstance,
     op: u16,
-    facts: &serde_json::Value,
+    facts: serde_json::Value,
     body: Bytes,
     cancel: &CancellationToken,
 ) -> Result<crate::connect::codec::Output> {
-    let input = Input {
-        op,
-        expectations: Bytes::serialize(budget, facts)?,
-        body,
-    };
+    let input = codec.admit(op)?.input(&facts, body)?;
+    drop(facts);
     let output = tokio::select! {
         biased;
         _ = cancel.cancelled() => return Err("http_cancelled"),
-        result = codec.run(input) => result?,
+        result = codec.run_admitted(input) => result?,
     };
     if output.status != 0 {
         return Err("invalid_response");
@@ -338,9 +334,8 @@ async fn bootstrap_with_codec<B: Vault + 'static>(
     let codec = active.as_ref().ok_or("codec_closed")?;
     let output = decode(
         codec,
-        &budget,
         10,
-        &facts,
+        facts,
         response.into_codec_body()?,
         cancel,
     )
@@ -348,7 +343,6 @@ async fn bootstrap_with_codec<B: Vault + 'static>(
     let session: SessionFacts =
         serde_json::from_slice(output.bytes.as_slice()).map_err(|_| "codec_result")?;
     drop(output);
-    drop(facts);
     observation.check_local().map_err(|_| "policy_revoked")?;
     // Reap the A1 process and all pipes before admitting the persistent profile.
     active.take().ok_or("codec_closed")?.close().await?;
@@ -368,12 +362,12 @@ async fn bootstrap_with_codec<B: Vault + 'static>(
         }
     };
     let request = serde_json::json!({"authority_contract":"transfer-authority-1","type":"preflight","request_id":request_id,"scope":scope});
+    drop(scope);
     let bytes = Bytes::serialize(&budget, &request)?;
     let valid = decode(
         codec,
-        &budget,
         1,
-        &serde_json::json!({"request_id_header":request_id}),
+        serde_json::json!({"request_id_header":request_id}),
         Bytes::copy(&budget, bytes.as_slice())?,
         cancel,
     )
@@ -405,11 +399,11 @@ async fn bootstrap_with_codec<B: Vault + 'static>(
         "response_request_id_header":response.request_id,"expected_origin":identity.context.relay_origin,
         "connection_origin":identity.context.relay_origin,"account_id":session.account_id},
         "time":{"now_ms":now_ms()?,"dispatch_age_ms":dispatch.elapsed().as_secs_f64()*1000.0}});
+    drop(request); // json! copied it into the now-owned op2 facts.
     let output = decode(
         codec,
-        &budget,
         2,
-        &facts,
+        facts,
         response.into_codec_body()?,
         cancel,
     )

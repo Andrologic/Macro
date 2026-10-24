@@ -136,6 +136,8 @@ export async function runCodec(profile: CodecProfile, input = 0, output = 1): Pr
       const descriptor = bodyDescriptor(job.op, expectation!.value as Record<string, any>);
       requireCodec(body.op === job.op && body.phase === 2);
       requireCodec(body.total <= descriptor.limit && (body.total > 0 || descriptor.limit === 0), Reject.limit);
+      // Native expectations and their backing are gone before this BEGIN.
+      job.bank.beginBody();
       job.phase = 2; job.total = body.total;
       pendingBytes = await phaseBytes(descriptor.limit, descriptor.units);
       try { result = await validateBody(job.op, pendingBytes, expectation!.value as Record<string, any>, job.started, job.bank); }
