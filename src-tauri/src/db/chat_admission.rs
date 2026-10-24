@@ -4,7 +4,7 @@ use sqlx::{Connection, QueryBuilder, Sqlite, SqliteConnection, SqlitePool};
 use tokio::sync::OnceCell;
 
 const MIGRATION: &str = include_str!("migrations/017_chat_admission.sql");
-const OBJECTS: &str = "name GLOB 'chat_admission_*' OR tbl_name GLOB 'chat_admission_*'";
+const OBJECTS: &str = "(name GLOB 'chat_admission_*' OR tbl_name GLOB 'chat_admission_*') AND name NOT GLOB 'connect_*'";
 pub(crate) mod runtime;
 pub(crate) mod intents;
 pub(crate) mod reconciliation;
@@ -92,6 +92,12 @@ pub(crate) async fn remove_reference_schema(pool: &SqlitePool) -> DbResult<()> {
 }
 
 pub(crate) async fn remove_reference_schema_in(db: &mut SqliteConnection) -> DbResult<()> {
+    let has_f:i64=sqlx::query_scalar("SELECT COUNT(*) FROM sqlite_master WHERE name='connect_transfers'").fetch_one(&mut *db).await?;
+    if has_f!=0 {
+        super::connect_transfer::remove_reference_schema_in(db).await?;
+        sqlx::query("DELETE FROM schema_migrations WHERE version=18").execute(&mut *db).await?;
+    }
+
     let names: Vec<String> = sqlx::query_scalar(
         "SELECT name FROM sqlite_master WHERE type='trigger' AND name GLOB 'chat_admission_*'",
     )
@@ -145,6 +151,7 @@ pub(crate) async fn reconcile_after_restart(pool: &SqlitePool) -> DbResult<()> {
     let mut lease = durable_lease(pool).await?;
     let mut tx = lease.begin_with("BEGIN IMMEDIATE").await?;
     validate_schema(&mut tx).await?;
+    super::connect_transfer::hold_in(&mut tx,false).await?;
     sqlx::query("UPDATE chat_admission_operations SET phase='unknown',revision=revision+1 WHERE phase IN ('prepared','dispatched')")
         .execute(&mut *tx).await?;
     // The old process cannot retain HTTP callbacks after exclusive startup.
@@ -169,6 +176,7 @@ pub(crate) async fn hold_restored_profile(pool: &SqlitePool) -> DbResult<()> {
     let mut tx = lease.begin_with("BEGIN IMMEDIATE").await?;
     super::run_migrations_on_connection(&mut tx).await?;
     validate_schema(&mut tx).await?;
+    super::connect_transfer::hold_in(&mut tx,true).await?;
     // The restore owner has established process quiescence. Reuse official
     // startup reconciliation before installing holds, inside this transaction.
     super::agent_runs::reconcile_active_agent_runs_after_restart_in(&mut tx).await?;

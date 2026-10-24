@@ -448,3 +448,76 @@ mod proof;
 mod failure;
 #[path = "portable_normalization_proof.rs"]
 mod portable_normalization_proof;
+
+#[tokio::test]
+async fn connect_transfer_capture_lease_survives_ttl_and_restart_without_opening_source() {
+    let (dir, pool, capture, clock) = capture_fixture().await;
+    let receipt = begin(&capture).await;
+    let runtime = crate::db::chat_admission::runtime::ChatAdmissionRuntime::default();
+    runtime
+        .open_browser(capture.owner.clone(), "window", "browser")
+        .await
+        .unwrap();
+    let inspection = runtime
+        .begin_reconciliation(&capture.owner, "window", "browser", "s")
+        .await
+        .unwrap();
+    runtime
+        .complete_reconciliation(
+            &capture.owner,
+            "window",
+            "browser",
+            &inspection,
+            &crate::db::chat_admission::reconciliation::BrowserInspection {
+                queue: vec![],
+                unsaved: vec![],
+                approvals: vec![],
+                questions: vec![],
+                drafts: vec![],
+                steers: vec![],
+            },
+        )
+        .await
+        .unwrap();
+    runtime
+        .reserve_reconciled_source(&capture.owner, "window", "browser", &inspection)
+        .await
+        .unwrap();
+    // This fixture installs only a lease relation after the real 017 freeze.
+    // No fixture authority is added to any production constructor.
+    sqlx::query("INSERT INTO connect_transfers(transfer_id,local_role,relay_origin,account_id,source_instance_id,source_conversation_id,source_epoch,target_instance_id,source_generation,target_generation,binding_digest,binding_json,expectation_json,reserve_request,fingerprint,local_generation,ownership_incarnation,ownership_revision,content_incarnation,content_revision,source_capture_id,phase,charge_bytes) SELECT '00000000-0000-4000-8000-000000000002','source','https://relay.invalid','account','source','s',1,'target','sg','tg',zeroblob(32),x'7b7d',x'7b7d',x'7b7d',zeroblob(32),json_extract(c.binding_json,'$.generation'),o.incarnation,o.revision,json_extract(c.binding_json,'$.content.incarnation'),json_extract(c.binding_json,'$.content.revision'),c.id,'reserved',512 FROM e_source_captures c JOIN chat_admission_owners o ON o.conversation_id='s' WHERE c.capture_id=?")
+        .bind(&receipt.capture_id).execute(&pool).await.unwrap();
+    clock.store(10_000_000, Ordering::SeqCst);
+    assert_eq!(
+        capture.expire().await.unwrap_err(),
+        "connect_transfer_leased"
+    );
+    copy_all(&capture).await;
+    let sealed = capture.seal_raw().await.unwrap();
+    assert_eq!(sealed.receipt.phase, 2);
+    assert!(sqlx::query("DELETE FROM e_source_fields")
+        .execute(&pool)
+        .await
+        .is_err());
+    capture.owner.set_initializing().await;
+    drop(capture);
+    drop(runtime);
+    pool.close().await;
+    let pool = create_pool(&dir.path().join("source.db")).await.unwrap();
+    crate::db::chat_admission::reconcile_after_restart(&pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        sqlx::query_scalar::<_, String>(
+            "SELECT mode FROM chat_admission_owners WHERE conversation_id='s'"
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap(),
+        "frozen"
+    );
+    assert!(sqlx::query("DELETE FROM e_source_captures")
+        .execute(&pool)
+        .await
+        .is_err());
+}

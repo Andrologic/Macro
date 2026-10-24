@@ -6,6 +6,7 @@ mod portable_normalization_io;
 #[allow(dead_code)]
 pub mod agent_runs;
 pub(crate) mod chat_admission;
+pub(crate) mod connect_transfer;
 pub(crate) mod conversation_catalog;
 #[allow(dead_code)]
 pub(crate) mod conversation_content;
@@ -86,6 +87,7 @@ pub(crate) async fn validate_source_opening(
     conversation_catalog::validate_schema(&mut tx).await?;
     source_capture::validate_schema(&mut tx).await?;
     chat_admission::validate_schema(&mut tx).await?;
+    connect_transfer::validate_schema(&mut tx).await?;
     let stamps: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM schema_migrations WHERE (version=13 AND name='013_conversation_content_versions') OR (version=14 AND name='014_conversation_catalog_version') OR (version=15 AND name='015_inactive_storage') OR (version=16 AND name='016_source_capture')")
         .fetch_one(&mut *tx).await?;
     if stamps != 4 {
@@ -109,7 +111,7 @@ const MIGRATION_004_VERSION: i64 = 4;
 const MIGRATION_004_NAME: &str = "004_message_search";
 const MIGRATION_004_SQL: &str = include_str!("migrations/004_message_search.sql");
 pub(crate) const SUPPORTED_MIGRATION_VERSIONS: &[i64] =
-    &[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17];
+    &[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18];
 const MIGRATION_005_VERSION: i64 = 5;
 const MIGRATION_005_NAME: &str = "005_runtime_schema";
 const MIGRATION_005_CHECK_SQL: &str = include_str!("migrations/005_runtime_schema_check.sql");
@@ -440,6 +442,11 @@ async fn run_migrations_on_connection(connection: &mut SqliteConnection) -> DbRe
             "017_chat_admission",
             include_str!("migrations/017_chat_admission.sql"),
         ),
+        (
+            18,
+            "018_connect_transfer",
+            include_str!("migrations/018_connect_transfer.sql"),
+        ),
     ] {
         if !list_applied_migrations(connection)
             .await?
@@ -453,6 +460,7 @@ async fn run_migrations_on_connection(connection: &mut SqliteConnection) -> DbRe
     conversation_catalog::validate_schema(connection).await?;
     source_capture::validate_schema(connection).await?;
     chat_admission::validate_schema(connection).await?;
+    connect_transfer::validate_schema(connection).await?;
 
     Ok(())
 }

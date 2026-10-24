@@ -1327,3 +1327,67 @@ pub(crate) async fn shared_attachment_reservation(
 }
 #[path = "portable_normalization_proof.rs"]
 mod portable_normalization_proof;
+
+#[tokio::test]
+async fn connect_transfer_import_lease_survives_ttl_and_blocks_destructive_abort() {
+    let directory = TempDir::new().unwrap();
+    let pool = create_pool(&directory.path().join("leased.db"))
+        .await
+        .unwrap();
+    let clock = Arc::new(AtomicI64::new(100));
+    let store = active(pool.clone(), clock.clone());
+    let payload = b"complete retained history".to_vec();
+    let (mut begin, headers) =
+        intent(&[(RecordKind::Message { role: Role::User }, payload.clone())]);
+    begin.identity.origin = "https://relay.invalid".into();
+    begin.identity.transfer = "00000000-0000-4000-8000-000000000001".into();
+    begin.identity.source_epoch = "1".into();
+    let mut manifest = Manifest::new(&begin).unwrap();
+    for header in &headers {
+        manifest.record(header).unwrap();
+    }
+    begin.manifest_sha256 = manifest.finish();
+    store.authority.as_ref().unwrap().write().await.identity = begin.identity.clone();
+    let receipt = store.begin(json(&begin).unwrap().as_bytes()).await.unwrap();
+    // Synthetic persisted relation only. No producer/pin or network receipt is
+    // manufactured, and normal InactiveStorage::closed remains unchanged.
+    sqlx::query("INSERT INTO connect_transfers(transfer_id,local_role,relay_origin,account_id,source_instance_id,source_conversation_id,source_epoch,target_instance_id,source_generation,target_generation,binding_digest,binding_json,expectation_json,reserve_request,fingerprint,inactive_import_id,phase,charge_bytes) SELECT '00000000-0000-4000-8000-000000000001','target',json_extract(begin_json,'$.identity.origin'),json_extract(begin_json,'$.identity.account_incarnation'),json_extract(begin_json,'$.identity.source_instance'),json_extract(begin_json,'$.identity.source_conversation'),1,json_extract(begin_json,'$.bindings.target_instance'),json_extract(begin_json,'$.bindings.source_generation'),json_extract(begin_json,'$.bindings.target_generation'),zeroblob(32),x'7b7d',x'7b7d',x'7b7d',zeroblob(32),id,'receiving',512 FROM e_inactive_imports WHERE identity_key=?")
+        .bind(&receipt.key).execute(&pool).await.unwrap();
+    clock.store(10_000_000, Ordering::SeqCst);
+    assert_eq!(
+        store.abort_receiving(&receipt.key).await.unwrap_err(),
+        "connect_transfer_leased"
+    );
+    append_record(&store, &receipt.key, &headers[0], &payload).await;
+    let sealed = store.seal_storage(&receipt.key).await.unwrap();
+    assert_eq!(sealed.receipt.phase, Phase::SealedStorage);
+    assert_eq!(
+        store
+            .readback(&receipt.key, None, 32)
+            .await
+            .unwrap()
+            .fragments[0]
+            .bytes,
+        payload
+    );
+    drop(store);
+    pool.close().await;
+    let pool = create_pool(&directory.path().join("leased.db"))
+        .await
+        .unwrap();
+    assert!(sqlx::query("DELETE FROM e_inactive_fragments")
+        .execute(&pool)
+        .await
+        .is_err());
+    assert!(sqlx::query("DELETE FROM e_inactive_imports")
+        .execute(&pool)
+        .await
+        .is_err());
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM e_inactive_fragments")
+            .fetch_one(&pool)
+            .await
+            .unwrap(),
+        1
+    );
+}
