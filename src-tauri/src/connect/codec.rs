@@ -92,10 +92,10 @@ impl JobBank {
     fn adopt(self: &Arc<Self>, bytes: Bytes, index: usize) -> Result<Bytes> {
         if bytes.data.capacity() > BODY { return Err("codec_limit"); }
         let slot = self.slot(index)?;
-        let Bytes { data, _charge } = bytes;
+        let Bytes { data, _charge, _receive } = bytes;
         // BANK and its exclusive slot already cover the same backing.
         drop(_charge);
-        Ok(Bytes { data, _charge: BytesCharge::Bank(slot) })
+        Ok(Bytes { data, _charge: BytesCharge::Bank(slot), _receive })
     }
 }
 impl Admission {
@@ -115,6 +115,8 @@ impl Admission {
 pub(crate) struct Bytes {
     data: Vec<u8>,
     _charge: BytesCharge,
+    // Released only after the received backing and its charge.
+    _receive: Option<tokio::sync::OwnedSemaphorePermit>,
 }
 impl Bytes {
     pub(crate) fn as_slice(&self) -> &[u8] {
@@ -128,7 +130,16 @@ impl Bytes {
         Ok(Self {
             data,
             _charge: BytesCharge::External(charge),
+            _receive: None,
         })
+    }
+    pub(crate) fn adopt_received(
+        data: Vec<u8>, charge: TransitCharge, capacity: usize,
+        permit: tokio::sync::OwnedSemaphorePermit,
+    ) -> Result<Self> {
+        let mut bytes = Self::adopt(data, charge, capacity)?;
+        bytes._receive = Some(permit);
+        Ok(bytes)
     }
     pub(crate) fn serialize(
         budget: &TransitInstance,
@@ -154,7 +165,7 @@ impl Bytes {
         let mut writer = Bounded(Vec::with_capacity(BODY));
         serde_json::to_writer(&mut writer, value).map_err(|_| "codec_input")?;
         if writer.0.capacity() > BODY { return Err("codec_limit"); }
-        Ok(Self { data: writer.0, _charge: charge })
+        Ok(Self { data: writer.0, _charge: charge, _receive: None })
     }
     pub(crate) fn copy(budget: &TransitInstance, source: &[u8]) -> Result<Self> {
         if source.len() > BODY {
@@ -166,6 +177,7 @@ impl Bytes {
         Ok(Self {
             data: source.to_vec(),
             _charge: BytesCharge::External(charge),
+            _receive: None,
         })
     }
 }
@@ -484,6 +496,7 @@ impl Codec {
         let mut result = Bytes {
             data: Vec::with_capacity(BODY),
             _charge: charge,
+            _receive: None,
         };
         let mut sequence = 0u32;
         let job = self.job;
@@ -577,7 +590,7 @@ mod buffer_ownership_tests {
         drop(body);
         let mut data = Vec::with_capacity(BODY);
         data.extend_from_slice(b"{}");
-        let result = Bytes { data, _charge: BytesCharge::Bank(bank.slot(1).unwrap()) };
+        let result = Bytes { data, _charge: BytesCharge::Bank(bank.slot(1).unwrap()), _receive: None };
         drop(child_a);
         drop(bank);
         let shared = bytes::Bytes::from_owner(result);

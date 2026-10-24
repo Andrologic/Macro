@@ -33,6 +33,9 @@ const CONFIG: u64 = 256 * 1024;
 const HEAD: usize = 8192;
 static HTTP_SESSION: std::sync::LazyLock<Arc<tokio::sync::Semaphore>> =
     std::sync::LazyLock::new(|| Arc::new(tokio::sync::Semaphore::new(1)));
+// Shared across sessions/generations, while an older backing may still survive.
+static HTTP_BODY: std::sync::LazyLock<Arc<tokio::sync::Semaphore>> =
+    std::sync::LazyLock::new(|| Arc::new(tokio::sync::Semaphore::new(1)));
 const V2_BODY: usize = 1024 * 1024; // Existing NativeClient wire limit, not a history limit.
 trait Io: AsyncRead + AsyncWrite + Unpin + Send {}
 impl<T: AsyncRead + AsyncWrite + Unpin + Send> Io for T {}
@@ -319,11 +322,17 @@ pub(crate) struct Response {
     body: Vec<u8>,
     _charge: TransitCharge,
     admitted_capacity: usize,
+    _body_permit: tokio::sync::OwnedSemaphorePermit,
     _database: Arc<crate::core::db_state::ChatWorkLifetime>,
 }
 impl Response {
     pub(crate) fn into_codec_body(self) -> Result<super::codec::Bytes> {
-        super::codec::Bytes::adopt(self.body, self._charge, self.admitted_capacity)
+        super::codec::Bytes::adopt_received(
+            self.body,
+            self._charge,
+            self.admitted_capacity,
+            self._body_permit,
+        )
     }
 
     pub(crate) fn body(&self) -> &[u8] {
@@ -563,75 +572,117 @@ impl Lane {
         result?;
         Ok(reply)
     }
-    async fn receive(
+    async fn drive<T>(&mut self, operation: impl Future<Output = Result<T>>) -> Result<T> {
+        tokio::pin!(operation);
+        let Some(driver) = self.driver.as_mut() else {
+            return operation.await;
+        };
+        let mut finished = false;
+        let result = tokio::select! {
+            result = &mut operation => result,
+            end = driver => {
+                finished = true;
+                match end {
+                    // Normal close can leave the complete response in Incoming.
+                    Ok(()) => operation.await,
+                    Err(_) => Err("http_connection_closed"),
+                }
+            },
+        };
+        if finished {
+            self.driver.take();
+        }
+        result
+    }
+    async fn headers(
         &mut self,
         budget: &TransitInstance,
         reply: Reply,
         limit: usize,
-        database: &Arc<crate::core::db_state::ChatWorkLifetime>,
-    ) -> Result<Response> {
+    ) -> Result<Head> {
         if limit > V2_BODY {
             return Err("http_body_limit");
         }
-        let driver = self.driver.as_mut().ok_or("http_closed")?;
-        // Reserve the raw reservoir before the driver can read even headers.
-        let charge = budget.reserve(limit as u64).map_err(|_| "transit_limit")?;
         let headers = budget.reserve(HEAD as u64).map_err(|_| "transit_limit")?;
         self.fence.stage.store(4, Ordering::SeqCst);
         self.fence.reader.wake();
-        let operation = async {
-            let response = reply.await.map_err(|_| "http_response")?;
-            if response.headers().len() > 32
-                || response
-                    .headers()
-                    .iter()
-                    .map(|(n, v)| n.as_str().len() + v.as_bytes().len())
-                    .sum::<usize>()
-                    > HEAD
-            {
-                return Err("http_headers_limit");
-            }
-            if response
+        let response = self
+            .drive(async { reply.await.map_err(|_| "http_response") })
+            .await?;
+        if response.headers().len() > 32
+            || response
                 .headers()
-                .get(http::header::CONTENT_ENCODING)
-                .is_some()
-            {
-                return Err("http_encoding");
+                .iter()
+                .map(|(n, v)| n.as_str().len() + v.as_bytes().len())
+                .sum::<usize>()
+                > HEAD
+        {
+            return Err("http_headers_limit");
+        }
+        if response
+            .headers()
+            .get(http::header::CONTENT_ENCODING)
+            .is_some()
+        {
+            return Err("http_encoding");
+        }
+        if let Some(value) = response.headers().get(http::header::CONTENT_LENGTH) {
+            let length: u64 = value
+                .to_str()
+                .map_err(|_| "http_length")?
+                .parse()
+                .map_err(|_| "http_length")?;
+            if length > limit as u64 {
+                return Err("http_body_limit");
             }
-            if let Some(value) = response.headers().get(http::header::CONTENT_LENGTH) {
-                let length: u64 = value
-                    .to_str()
-                    .map_err(|_| "http_length")?
-                    .parse()
-                    .map_err(|_| "http_length")?;
-                if length > limit as u64 {
-                    return Err("http_body_limit");
-                }
+        }
+        let mut ids = response.headers().get_all("x-request-id").iter();
+        if let Some(id) = ids.next() {
+            if id.as_bytes().len() > 128 || id.to_str().is_err() || ids.next().is_some() {
+                return Err("http_correlation");
             }
-            // Admission precedes allocation and the first body poll. Refusal
-            // closes this lane; no unadmitted body is drained to reuse a socket.
-            let mut result = Response {
-                _database: database.clone(),
-                status: response.status().as_u16(),
-                request_id: match response
-                    .headers()
-                    .get_all("x-request-id")
-                    .iter()
-                    .collect::<Vec<_>>()
-                    .as_slice()
-                {
-                    [] => None,
-                    [value] if value.as_bytes().len() <= 128 => {
-                        Some(value.to_str().map_err(|_| "http_correlation")?.into())
-                    }
-                    _ => return Err("http_correlation"),
-                },
-                _headers: headers,
-                body: Vec::with_capacity(limit),
-                admitted_capacity: limit,
-                _charge: charge,
-            };
-            let mut body = response.into_body();
+        }
+        Ok(Head {
+            response,
+            headers,
+            limit,
+        })
+    }
+    async fn collect(
+        &mut self,
+        budget: &TransitInstance,
+        head: Head,
+        permit: tokio::sync::OwnedSemaphorePermit,
+        database: &Arc<crate::core::db_state::ChatWorkLifetime>,
+    ) -> Result<Response> {
+        let Head {
+            response,
+            headers,
+            limit,
+        } = head;
+        // Only the selected lane allocates a complete reservoir. Incoming and
+        // TLS may already own read-ahead; their lane reservations remain live.
+        let charge = budget.reserve(limit as u64).map_err(|_| "transit_limit")?;
+        let mut result = Response {
+            _database: database.clone(),
+            status: response.status().as_u16(),
+            request_id: response
+                .headers()
+                .get("x-request-id")
+                .map(|v| {
+                    v.to_str()
+                        .map(str::to_owned)
+                        .map_err(|_| "http_correlation")
+                })
+                .transpose()?,
+            _headers: headers,
+            body: Vec::with_capacity(limit),
+            admitted_capacity: limit,
+            _charge: charge,
+            _body_permit: permit,
+        };
+        let mut body = response.into_body();
+        self.drive(async {
             while let Some(frame) = body.frame().await {
                 let frame = frame.map_err(|_| "http_body")?;
                 if let Some(data) = frame.data_ref() {
@@ -644,29 +695,26 @@ impl Lane {
                 }
             }
             Ok(result)
-        };
-        tokio::pin!(operation);
-        // No detached Hyper task. This select owns and polls the connection and
-        // response together. All callbacks and body frames leave this scope.
-        let mut driver_finished = false;
-        let result = tokio::select! {
-            result = &mut operation => result,
-            finished = driver => {
-                driver_finished = true;
-                match finished {
-                    // Hyper may have queued the entire response before its
-                    // normal Connection: close completion. Consume that queue.
-                    Ok(()) => operation.await,
-                    Err(_) => Err("http_connection_closed"),
-                }
-            },
-        };
-        if driver_finished {
-            // A completed driver must never be polled again, even by close.
-            self.driver.take();
-        }
-        result
+        })
+        .await
     }
+    #[cfg(test)]
+    async fn receive(
+        &mut self,
+        budget: &TransitInstance,
+        reply: Reply,
+        limit: usize,
+        database: &Arc<crate::core::db_state::ChatWorkLifetime>,
+    ) -> Result<Response> {
+        let head = self.headers(budget, reply, limit).await?;
+        let permit = HTTP_BODY
+            .clone()
+            .acquire_owned()
+            .await
+            .map_err(|_| "http_closed")?;
+        self.collect(budget, head, permit, database).await
+    }
+    #[cfg(test)]
     async fn exchange(
         &mut self,
         budget: &TransitInstance,
@@ -1006,7 +1054,122 @@ impl Prepared {
         })
     }
 }
+struct Head {
+    response: http::Response<hyper::body::Incoming>,
+    headers: TransitCharge,
+    limit: usize,
+}
+pub(crate) struct Ready {
+    head: Head,
+    prepared: Prepared,
+    deadline: tokio::time::Instant,
+    watch: Pin<Box<dyn Future<Output = &'static str> + Send>>,
+    observation: crate::secrets::policy::PolicyObservation,
+    cancel: CancellationToken,
+}
+impl Ready {
+    fn check(&self) -> Result<()> {
+        if self.cancel.is_cancelled() || self.prepared.owner.cancel.is_cancelled() {
+            return Err("http_cancelled");
+        }
+        self.observation
+            .check_local()
+            .map_err(|_| "policy_revoked")?;
+        if tokio::time::Instant::now() >= self.deadline {
+            return Err("http_timeout");
+        }
+        Ok(())
+    }
+    pub(crate) async fn collect(mut self) -> Result<Completed> {
+        self.check()?;
+        // Busy retains this exact Ready and deadline. It never re-emits a POST.
+        let operation = async {
+            let permit = HTTP_BODY
+                .clone()
+                .acquire_owned()
+                .await
+                .map_err(|_| "http_closed")?;
+            self.prepared
+                .lane
+                .as_mut()
+                .ok_or("http_closed")?
+                .collect(
+                    &self.prepared.owner.budget,
+                    self.head,
+                    permit,
+                    &self.prepared.owner.database,
+                )
+                .await
+        };
+        let response = tokio::select! {
+            biased;
+            _ = self.cancel.cancelled() => return Err("http_cancelled"),
+            _ = self.prepared.owner.cancel.cancelled() => return Err("http_cancelled"),
+            _ = self.observation.revoked_locally() => return Err("policy_revoked"),
+            result = tokio::time::timeout_at(self.deadline, operation) => result.map_err(|_| "http_timeout")?.map_err(body_error)?,
+        };
+        self.observation
+            .check_local()
+            .map_err(|_| "policy_revoked")?;
+        Ok(Completed {
+            response,
+            prepared: self.prepared,
+        })
+    }
+}
+fn body_error(error: &'static str) -> &'static str {
+    if error == "http_body_limit" {
+        "resource_limit"
+    } else {
+        error
+    }
+}
 impl Pending {
+    pub(crate) fn headers(
+        mut self,
+        limit: usize,
+        observation: crate::secrets::policy::PolicyObservation,
+        cancel: CancellationToken,
+    ) -> impl Future<Output = Result<Ready>> + Send {
+        // Capture on registration, not on the first eventual poll of this future.
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+        async move {
+            observation.check_local().map_err(|_| "policy_revoked")?;
+            let operation = self.prepared.lane.as_mut().ok_or("http_closed")?.headers(
+                &self.prepared.owner.budget,
+                self.reply,
+                limit,
+            );
+            let head = tokio::select! {
+                biased;
+                _ = cancel.cancelled() => return Err("http_cancelled"),
+                _ = self.prepared.owner.cancel.cancelled() => return Err("http_cancelled"),
+                _ = observation.revoked_locally() => return Err("policy_revoked"),
+                result = tokio::time::timeout_at(deadline, operation) => result.map_err(|_| "http_timeout")?.map_err(body_error)?,
+            };
+            observation.check_local().map_err(|_| "policy_revoked")?;
+            let app_cancel = self.prepared.owner.cancel.clone();
+            let watched_cancel = cancel.clone();
+            let watched_observation = observation.clone();
+            let watch = Box::pin(async move {
+                tokio::select! {
+                    biased;
+                    _ = watched_cancel.cancelled() => "http_cancelled",
+                    _ = app_cancel.cancelled() => "http_cancelled",
+                    _ = watched_observation.revoked_locally() => "policy_revoked",
+                    _ = tokio::time::sleep_until(deadline) => "http_timeout",
+                }
+            });
+            Ok(Ready {
+                head,
+                prepared: self.prepared,
+                deadline,
+                watch,
+                observation,
+                cancel,
+            })
+        }
+    }
     pub(crate) async fn receive(
         self,
         limit: usize,
@@ -1019,30 +1182,117 @@ impl Pending {
             .into_response())
     }
     pub(crate) async fn receive_owned(
-        mut self,
+        self,
         limit: usize,
         observation: &crate::secrets::policy::PolicyObservation,
         cancel: &CancellationToken,
     ) -> Result<Completed> {
-        observation.check_local().map_err(|_| "policy_revoked")?;
-        let operation = self.prepared.lane.as_mut().ok_or("http_closed")?.receive(
-            &self.prepared.owner.budget,
-            self.reply,
+        self.headers(limit, observation.clone(), cancel.clone())
+            .await?
+            .collect()
+            .await
+    }
+}
+
+type HeaderWait = Pin<Box<dyn Future<Output = Result<Ready>> + Send>>;
+/// Two owned HTTP states, not a queue of canonical jobs or durable expectations.
+/// next consumes this owner, so dropping its future destroys both held lanes.
+pub(crate) struct Reception {
+    owner: std::sync::Weak<super::runtime::HttpOwnership>,
+    waits: [Option<HeaderWait>; 2],
+    ready: [Option<Result<Ready>>; 2],
+    prefer_poll: bool,
+}
+impl HttpSession {
+    pub(crate) fn reception(&self) -> Reception {
+        Reception {
+            owner: Arc::downgrade(&self.owner),
+            waits: [None, None],
+            ready: [None, None],
+            prefer_poll: false,
+        }
+    }
+}
+impl Reception {
+    // On a busy/wrong owner insertion, return the untouched Pending to its caller.
+    pub(crate) fn push(
+        &mut self,
+        pending: Pending,
+        limit: usize,
+        observation: &crate::secrets::policy::PolicyObservation,
+        cancel: &CancellationToken,
+    ) -> std::result::Result<(), Pending> {
+        let index = usize::from(!pending.prepared.poll);
+        if !self.owner.ptr_eq(&Arc::downgrade(&pending.prepared.owner))
+            || self.waits[index].is_some()
+            || self.ready[index].is_some()
+        {
+            return Err(pending);
+        }
+        self.waits[index] = Some(Box::pin(pending.headers(
             limit,
-            &self.prepared.owner.database,
-        );
-        let response = tokio::select! {
-            biased;
-            _ = cancel.cancelled() => return Err("http_cancelled"),
-            _ = self.prepared.owner.cancel.cancelled() => return Err("http_cancelled"),
-            _ = observation.revoked_locally() => return Err("policy_revoked"),
-            result = tokio::time::timeout(Duration::from_secs(30), operation) => result.map_err(|_| "http_timeout")?.map_err(|error| if error == "http_body_limit" { "resource_limit" } else { error })?,
-        };
-        observation.check_local().map_err(|_| "policy_revoked")?;
-        Ok(Completed {
-            response,
-            prepared: self.prepared,
+            observation.clone(),
+            cancel.clone(),
+        )));
+        Ok(())
+    }
+    fn poll_headers(&mut self, cx: &mut Context<'_>) {
+        for index in 0..2 {
+            if let Some(wait) = &mut self.waits[index] {
+                if let Poll::Ready(result) = wait.as_mut().poll(cx) {
+                    self.waits[index] = None;
+                    self.ready[index] = Some(result);
+                }
+            }
+            if let Some(Ok(ready)) = &mut self.ready[index] {
+                let error = ready
+                    .check()
+                    .err()
+                    .or_else(|| match ready.watch.as_mut().poll(cx) {
+                        Poll::Ready(error) => Some(error),
+                        Poll::Pending => None,
+                    });
+                if let Some(error) = error {
+                    self.ready[index] = Some(Err(error));
+                }
+            }
+        }
+    }
+    pub(crate) async fn next(mut self) -> (Self, Option<(bool, Result<Completed>)>) {
+        let index = futures::future::poll_fn(|cx| {
+            self.poll_headers(cx);
+            let selected = match (self.ready[0].is_some(), self.ready[1].is_some()) {
+                (true, true) => Some(if self.prefer_poll { 0 } else { 1 }),
+                (true, false) => Some(0),
+                (false, true) => Some(1),
+                _ => None,
+            };
+            if selected.is_some() || self.waits.iter().all(Option::is_none) {
+                Poll::Ready(selected)
+            } else {
+                Poll::Pending
+            }
         })
+        .await;
+        let Some(index) = index else {
+            return (self, None);
+        };
+        self.prefer_poll = index == 1;
+        let result = match self.ready[index].take().unwrap() {
+            Err(error) => Err(error),
+            Ok(ready) => {
+                let collect = ready.collect();
+                tokio::pin!(collect);
+                futures::future::poll_fn(|cx| {
+                    // Advance only headers of the other lane, retaining its state
+                    // and processing its own timeout/cancellation while collecting.
+                    self.poll_headers(cx);
+                    collect.as_mut().poll(cx)
+                })
+                .await
+            }
+        };
+        (self, Some((index == 0, result)))
     }
 }
 
@@ -1340,19 +1590,25 @@ mod tests {
                 let cancel = CancellationToken::new();
                 let (mut poll, mut post) = session.lanes(lease);
                 let (a, b) = tokio::join!(
-                    poll.exchange(poll_request, 98_304, &cancel),
-                    post.exchange(post_request, 98_304, &cancel)
+                    async {
+                        let a = poll.exchange(poll_request, 98_304, &cancel).await?;
+                        assert_eq!(a.body, b"{}");
+                        Ok::<_, &'static str>(())
+                    },
+                    async {
+                        let b = post.exchange(post_request, 98_304, &cancel).await?;
+                        assert_eq!(b.status, 200);
+                        Ok::<_, &'static str>(())
+                    }
                 );
-                let a = a.unwrap();
-                let b = b.unwrap();
-                assert_eq!(a.body, b"{}");
-                assert_eq!(b.status, 200);
+                a.unwrap();
+                b.unwrap();
                 let next = Request::new(post.common.0, http::Method::POST, "/ack", b"{}").unwrap();
                 let c = post.exchange(next, 98_304, &cancel).await.unwrap();
                 drop((poll, post));
                 session.close().await;
                 assert!(session.budget.reserve(TRANSIT_INSTANCE_LIMIT).is_err());
-                drop((a, b, c));
+                drop(c);
                 assert!(session.budget.reserve(TRANSIT_INSTANCE_LIMIT).is_ok());
             })
         })
@@ -2062,6 +2318,483 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn selected_backing_survives_session_and_generation_until_last_reference() {
+        let directory = tempfile::tempdir().unwrap();
+        let policy = Arc::new(PolicyOwner::for_test(directory.path()));
+        policy.initialize(directory.path()).unwrap();
+        let snapshot = policy.capture_private(|| Ok(())).unwrap();
+        let observation = policy.observe(&snapshot).unwrap();
+        let pool = crate::db::create_pool(&directory.path().join("generation.db"))
+            .await
+            .unwrap();
+        let db = crate::core::db_state::DbPool::default();
+        db.set_ready(pool).await.unwrap();
+        let database = db.wait_until_ready_context().await.unwrap();
+        let runtime = super::super::TransferRuntime::default();
+        let budget = runtime.budget().unwrap();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            for _ in 0..2 {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                assert_eq!(request(&mut socket).await, Some(false));
+                socket
+                    .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\n{}")
+                    .await
+                    .unwrap();
+                let mut byte = [0];
+                assert_eq!(socket.read(&mut byte).await.unwrap(), 0);
+            }
+        });
+        let cancel = CancellationToken::new();
+        let mut session =
+            HttpSession::new(runtime.http_owner(&database).unwrap(), "localhost", address).unwrap();
+        session.use_plain_loopback();
+        let prepared = session.prepare(false).await.unwrap();
+        let pending = emit_private(
+            policy.clone(),
+            prepared,
+            Request::new(&budget, http::Method::POST, "/post", b"{}").unwrap(),
+        )
+        .await;
+        let response = pending
+            .receive(98_304, &observation, &cancel)
+            .await
+            .unwrap();
+        let pointer = response.body.as_ptr();
+        let backing = Bytes::from_owner(response.into_codec_body().unwrap());
+        let last = backing.clone();
+        drop(backing);
+        let old_generation = runtime.generation().unwrap();
+        runtime.revoke();
+        drop(session);
+        assert!(runtime.generation().unwrap() > old_generation);
+        assert_eq!(HTTP_BODY.available_permits(), 0);
+        let mut session =
+            HttpSession::new(runtime.http_owner(&database).unwrap(), "localhost", address).unwrap();
+        session.use_plain_loopback();
+        let prepared = session.prepare(false).await.unwrap();
+        let pending = emit_private(
+            policy.clone(),
+            prepared,
+            Request::new(&budget, http::Method::POST, "/post", b"{}").unwrap(),
+        )
+        .await;
+        let ready = pending
+            .headers(98_304, observation.clone(), cancel.clone())
+            .await
+            .unwrap();
+        let deadline = ready.deadline;
+        assert_eq!(last.as_ptr(), pointer);
+        assert_eq!(last.as_ref(), b"{}");
+        let receive = ready.collect();
+        tokio::pin!(receive);
+        assert!(
+            tokio::time::timeout(Duration::from_millis(30), &mut receive)
+                .await
+                .is_err()
+        );
+        assert!(tokio::time::Instant::now() < deadline);
+        drop(last);
+        let completed = receive.await.unwrap();
+        assert_eq!(completed.response.body, b"{}");
+        drop(completed);
+        drop(session);
+        tokio::time::timeout(Duration::from_secs(3), server)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(runtime.shutdown().await);
+        assert_eq!(HTTP_BODY.available_permits(), 1);
+        drop(budget.reserve(TRANSIT_INSTANCE_LIMIT).unwrap());
+    }
+
+    #[tokio::test]
+    async fn selected_future_abandonment_destroys_both_sockets_before_join() {
+        for headers_ready in [false, true] {
+            let directory = tempfile::tempdir().unwrap();
+            let policy = Arc::new(PolicyOwner::for_test(directory.path()));
+            policy.initialize(directory.path()).unwrap();
+            let snapshot = policy.capture_private(|| Ok(())).unwrap();
+            let observation = policy.observe(&snapshot).unwrap();
+            let pool = crate::db::create_pool(&directory.path().join("abandon-selection.db"))
+                .await
+                .unwrap();
+            let db = crate::core::db_state::DbPool::default();
+            db.set_ready(pool).await.unwrap();
+            let database = db.wait_until_ready_context().await.unwrap();
+            let runtime = super::super::TransferRuntime::default();
+            let budget = runtime.budget().unwrap();
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let address = listener.local_addr().unwrap();
+            let ended = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            let closed = ended.clone();
+            let server = tokio::spawn(async move {
+                let mut joins = tokio::task::JoinSet::new();
+                for _ in 0..2 {
+                    let (mut socket, _) = listener.accept().await.unwrap();
+                    let closed = closed.clone();
+                    joins.spawn(async move {
+                        request(&mut socket).await.unwrap();
+                        if headers_ready {
+                            socket
+                                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\n")
+                                .await
+                                .unwrap();
+                        }
+                        let mut byte = [0];
+                        assert_eq!(socket.read(&mut byte).await.unwrap(), 0);
+                        closed.fetch_add(1, Ordering::SeqCst);
+                    });
+                }
+                while let Some(join) = joins.join_next().await {
+                    join.unwrap();
+                }
+            });
+            let mut session =
+                HttpSession::new(runtime.http_owner(&database).unwrap(), "localhost", address)
+                    .unwrap();
+            session.use_plain_loopback();
+            let cancel = CancellationToken::new();
+            let mut reception = session.reception();
+            for poll in [true, false] {
+                let prepared = session.prepare(poll).await.unwrap();
+                let pending = emit_private(
+                    policy.clone(),
+                    prepared,
+                    Request::new(
+                        &budget,
+                        http::Method::POST,
+                        if poll { "/poll" } else { "/post" },
+                        b"{}",
+                    )
+                    .unwrap(),
+                )
+                .await;
+                assert!(reception
+                    .push(pending, 98_304, &observation, &cancel)
+                    .is_ok());
+            }
+            if headers_ready {
+                futures::future::poll_fn(|cx| {
+                    reception.poll_headers(cx);
+                    if reception.ready.iter().all(Option::is_some) {
+                        Poll::Ready(())
+                    } else {
+                        Poll::Pending
+                    }
+                })
+                .await;
+            }
+            let mut receiving = Box::pin(reception.next());
+            assert!(futures::poll!(&mut receiving).is_pending());
+            drop(session);
+            let shutdown = runtime.shutdown();
+            tokio::pin!(shutdown);
+            assert!(futures::poll!(&mut shutdown).is_pending());
+            assert_eq!(ended.load(Ordering::SeqCst), 0);
+            // No polling of receiving after cancellation: direct future drop
+            // must destroy its selected lane and the unselected lane together.
+            drop(receiving);
+            assert!(shutdown.await);
+            tokio::time::timeout(Duration::from_secs(3), server)
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(ended.load(Ordering::SeqCst), 2);
+            assert_eq!(HTTP_BODY.available_permits(), 1);
+            drop(budget.reserve(TRANSIT_INSTANCE_LIMIT).unwrap());
+        }
+    }
+
+    #[tokio::test]
+    async fn selected_headers_priority_fairness_and_last_backing_resume_same_post() {
+        let directory = tempfile::tempdir().unwrap();
+        let policy = Arc::new(PolicyOwner::for_test(directory.path()));
+        policy.initialize(directory.path()).unwrap();
+        let snapshot = policy.capture_private(|| Ok(())).unwrap();
+        let observation = policy.observe(&snapshot).unwrap();
+        let pool = crate::db::create_pool(&directory.path().join("selection.db"))
+            .await
+            .unwrap();
+        let db = crate::core::db_state::DbPool::default();
+        db.set_ready(pool).await.unwrap();
+        let database = db.wait_until_ready_context().await.unwrap();
+        let runtime = super::super::TransferRuntime::default();
+        let budget = runtime.budget().unwrap();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let emitted = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let requests = emitted.clone();
+        let server = tokio::spawn(async move {
+            let mut joins = tokio::task::JoinSet::new();
+            for _ in 0..2 {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                let requests = requests.clone();
+                joins.spawn(async move {
+                    while let Some(poll) = request(&mut socket).await {
+                        requests.fetch_add(1, Ordering::SeqCst);
+                        let response: &[u8] = if poll {
+                            b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\npp"
+                        } else {
+                            b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\naa"
+                        };
+                        socket.write_all(response).await.unwrap();
+                    }
+                });
+            }
+            while let Some(join) = joins.join_next().await {
+                join.unwrap();
+            }
+        });
+        let mut session =
+            HttpSession::new(runtime.http_owner(&database).unwrap(), "localhost", address).unwrap();
+        session.use_plain_loopback();
+        let cancel = CancellationToken::new();
+        let mut reception = session.reception();
+        for poll in [true, false] {
+            let prepared = session.prepare(poll).await.unwrap();
+            let request = Request::new(
+                &budget,
+                http::Method::POST,
+                if poll { "/poll" } else { "/post" },
+                b"{}",
+            )
+            .unwrap();
+            let pending = emit_private(policy.clone(), prepared, request).await;
+            assert!(reception
+                .push(pending, 98_304, &observation, &cancel)
+                .is_ok());
+        }
+        // Real drivers deliver both headers before selection. No complete body
+        // or global body permit has been acquired by either Ready.
+        futures::future::poll_fn(|cx| {
+            reception.poll_headers(cx);
+            if reception.ready.iter().all(Option::is_some) {
+                Poll::Ready(())
+            } else {
+                Poll::Pending
+            }
+        })
+        .await;
+        assert_eq!(HTTP_BODY.available_permits(), 1);
+        let (mut reception, selected) = reception.next().await;
+        let (poll, completed) = selected.unwrap();
+        assert!(!poll);
+        let response = completed
+            .unwrap()
+            .restore(&mut session, false, &observation, &cancel)
+            .await
+            .unwrap();
+        assert_eq!(response.body, b"aa");
+        let pointer = response.body.as_ptr();
+        let body = response.into_codec_body().unwrap();
+        let outgoing = Request::from_admitted(&budget, http::Method::POST, "/post", body).unwrap();
+        let retained = outgoing.body.clone();
+        let last = retained.clone();
+        assert_eq!(last.as_ptr(), pointer);
+        drop(retained);
+        assert_eq!(HTTP_BODY.available_permits(), 0);
+        // Issue the next POST on the same socket while the previous response's
+        // backing still exists. Its Ready must survive the busy body admission.
+        let prepared = session.prepare(false).await.unwrap();
+        let pending = emit_private(policy.clone(), prepared, outgoing).await;
+        assert!(reception
+            .push(pending, 98_304, &observation, &cancel)
+            .is_ok());
+        futures::future::poll_fn(|cx| {
+            reception.poll_headers(cx);
+            if reception.ready[1].is_some() {
+                Poll::Ready(())
+            } else {
+                Poll::Pending
+            }
+        })
+        .await;
+        let original_deadline = reception.ready[1]
+            .as_ref()
+            .unwrap()
+            .as_ref()
+            .unwrap()
+            .deadline;
+        let waiting = reception.next();
+        tokio::pin!(waiting);
+        assert!(
+            tokio::time::timeout(Duration::from_millis(30), &mut waiting)
+                .await
+                .is_err()
+        );
+        assert_eq!(emitted.load(Ordering::SeqCst), 3);
+        drop(last);
+        let (reception, selected) = waiting.await;
+        let (poll, completed) = selected.unwrap();
+        assert!(poll, "ready poll must precede the replacement POST");
+        let response = completed
+            .unwrap()
+            .restore(&mut session, true, &observation, &cancel)
+            .await
+            .unwrap();
+        assert_eq!(response.body, b"pp");
+        assert_eq!(
+            reception.ready[1]
+                .as_ref()
+                .unwrap()
+                .as_ref()
+                .unwrap()
+                .deadline,
+            original_deadline
+        );
+        let retained = Bytes::from_owner(response.into_codec_body().unwrap());
+        let waiting = reception.next();
+        tokio::pin!(waiting);
+        assert!(
+            tokio::time::timeout(Duration::from_millis(30), &mut waiting)
+                .await
+                .is_err()
+        );
+        drop(retained);
+        let (reception, selected) = waiting.await;
+        let (poll, completed) = selected.unwrap();
+        assert!(!poll);
+        assert_eq!(completed.as_ref().unwrap().response.body, b"aa");
+        drop(completed);
+        drop(reception);
+        assert_eq!(emitted.load(Ordering::SeqCst), 3, "no automatic POST retry");
+        drop(session);
+        tokio::time::timeout(Duration::from_secs(3), server)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(runtime.shutdown().await);
+        assert_eq!(HTTP_BODY.available_permits(), 1);
+        drop(budget.reserve(TRANSIT_INSTANCE_LIMIT).unwrap());
+    }
+
+    #[tokio::test]
+    async fn selected_slow_headers_and_lane_error_preserve_other_response() {
+        for malformed in [false, true] {
+            let directory = tempfile::tempdir().unwrap();
+            let policy = Arc::new(PolicyOwner::for_test(directory.path()));
+            policy.initialize(directory.path()).unwrap();
+            let snapshot = policy.capture_private(|| Ok(())).unwrap();
+            let observation = policy.observe(&snapshot).unwrap();
+            let pool = crate::db::create_pool(&directory.path().join("selection.db"))
+                .await
+                .unwrap();
+            let db = crate::core::db_state::DbPool::default();
+            db.set_ready(pool).await.unwrap();
+            let database = db.wait_until_ready_context().await.unwrap();
+            let runtime = super::super::TransferRuntime::default();
+            let budget = runtime.budget().unwrap();
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let address = listener.local_addr().unwrap();
+            let release = Arc::new(tokio::sync::Notify::new());
+            let gate = release.clone();
+            let server = tokio::spawn(async move {
+                let mut joins = tokio::task::JoinSet::new();
+                for _ in 0..2 {
+                    let (mut socket, _) = listener.accept().await.unwrap();
+                    let gate = gate.clone();
+                    joins.spawn(async move {
+                        let poll = request(&mut socket).await.unwrap();
+                        if poll {
+                            gate.notified().await;
+                        }
+                        if poll && malformed {
+                            socket
+                                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 98305\r\n\r\n")
+                                .await
+                                .unwrap();
+                        } else {
+                            socket
+                                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\n{}")
+                                .await
+                                .unwrap();
+                        }
+                        let mut byte = [0];
+                        assert_eq!(socket.read(&mut byte).await.unwrap(), 0);
+                    });
+                }
+                while let Some(join) = joins.join_next().await {
+                    join.unwrap();
+                }
+            });
+            let mut session =
+                HttpSession::new(runtime.http_owner(&database).unwrap(), "localhost", address)
+                    .unwrap();
+            session.use_plain_loopback();
+            let cancel = CancellationToken::new();
+            let mut reception = session.reception();
+            for poll in [true, false] {
+                let prepared = session.prepare(poll).await.unwrap();
+                let pending = emit_private(
+                    policy.clone(),
+                    prepared,
+                    Request::new(
+                        &budget,
+                        http::Method::POST,
+                        if poll { "/poll" } else { "/post" },
+                        b"{}",
+                    )
+                    .unwrap(),
+                )
+                .await;
+                assert!(reception
+                    .push(pending, 98_304, &observation, &cancel)
+                    .is_ok());
+                if poll && !malformed {
+                    // Exercise a real long-poll interval without holding body
+                    // admission. The original reception deadline keeps running.
+                    tokio::time::sleep(Duration::from_secs(25)).await;
+                    assert_eq!(HTTP_BODY.available_permits(), 1);
+                }
+            }
+            if malformed {
+                release.notify_one();
+                futures::future::poll_fn(|cx| {
+                    reception.poll_headers(cx);
+                    if reception.ready.iter().all(Option::is_some) {
+                        Poll::Ready(())
+                    } else {
+                        Poll::Pending
+                    }
+                })
+                .await;
+                reception.prefer_poll = true;
+                let (rest, selected) = reception.next().await;
+                let (poll, result) = selected.unwrap();
+                assert!(poll);
+                assert_eq!(result.err(), Some("resource_limit"));
+                reception = rest;
+            }
+            let (reception, selected) =
+                tokio::time::timeout(Duration::from_secs(2), reception.next())
+                    .await
+                    .unwrap();
+            let (poll, result) = selected.unwrap();
+            assert!(!poll, "POST cannot wait for the poll's headers");
+            assert_eq!(result.as_ref().unwrap().response.body, b"{}");
+            drop(result);
+            if !malformed {
+                release.notify_one();
+                let (rest, selected) = reception.next().await;
+                assert!(selected.as_ref().unwrap().0);
+                drop(selected);
+                drop(rest);
+            } else {
+                drop(reception);
+            }
+            drop(session);
+            tokio::time::timeout(Duration::from_secs(3), server)
+                .await
+                .unwrap()
+                .unwrap();
+            assert!(runtime.shutdown().await);
+            drop(budget.reserve(TRANSIT_INSTANCE_LIMIT).unwrap());
+        }
+    }
+
+    #[tokio::test]
     async fn completed_two_lanes_reuse_real_sockets_and_retire_idle_on_runtime_revoke() {
         let (acceptor, cert) = synthetic_tls();
         for (tls, revoke) in [(false, false), (false, true), (true, false), (true, true)] {
@@ -2186,7 +2919,7 @@ mod tests {
 
     #[tokio::test]
     async fn prepared_pending_completed_abandonment_and_restore_guards_close_socket() {
-        for phase in 0..7 {
+        for phase in 0..12 {
             let directory = tempfile::tempdir().unwrap();
             let policy = Arc::new(PolicyOwner::for_test(directory.path()));
             policy.initialize(directory.path()).unwrap();
@@ -2235,6 +2968,51 @@ mod tests {
                 let pending = emit_private(policy.clone(), prepared, request).await;
                 if phase == 1 {
                     drop(pending);
+                } else if phase >= 7 {
+                    let cancel = CancellationToken::new();
+                    let mut header_ready = pending
+                        .headers(98_304, observation.clone(), cancel.clone())
+                        .await
+                        .unwrap();
+                    match phase {
+                        7 => drop(header_ready),
+                        8 => {
+                            // Fault injection holds admission only. The previous
+                            // test exercises the same wait with a real backing.
+                            let permit = HTTP_BODY.clone().acquire_owned().await.unwrap();
+                            {
+                                let collect = header_ready.collect();
+                                tokio::pin!(collect);
+                                assert!(futures::poll!(&mut collect).is_pending());
+                            }
+                            drop(permit);
+                        }
+                        9 => {
+                            // Exercise the expiration branch without changing
+                            // the product's 30-second reception deadline.
+                            header_ready.deadline = tokio::time::Instant::now();
+                            assert_eq!(header_ready.collect().await.err(), Some("http_timeout"));
+                        }
+                        10 => {
+                            runtime.revoke();
+                            assert_eq!(header_ready.collect().await.err(), Some("http_cancelled"));
+                        }
+                        11 => {
+                            drop(session);
+                            let shutdown = runtime.shutdown();
+                            tokio::pin!(shutdown);
+                            assert!(
+                                futures::poll!(&mut shutdown).is_pending(),
+                                "Ready still owns IO"
+                            );
+                            drop(header_ready);
+                            server.await.unwrap();
+                            assert!(shutdown.await);
+                            drop(budget.reserve(TRANSIT_INSTANCE_LIMIT).unwrap());
+                            continue;
+                        }
+                        _ => unreachable!(),
+                    }
                 } else {
                     let cancel = CancellationToken::new();
                     let completed = pending
