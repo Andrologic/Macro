@@ -55,7 +55,7 @@
     },
     {
       "path": "copilot-bridge/src/entry.ts",
-      "sha256": "4b770cc07c7d16ac6f0f8b9f8dbb4ad61c8c57c1d77a18d869e4c7f2b00f4513"
+      "sha256": "c8cbdaf216ce1b2515062fd182c163f3be811c253039cee3f8d16b21960c1733"
     },
     {
       "path": "dev/generate-macro-pilot-validators.ts",

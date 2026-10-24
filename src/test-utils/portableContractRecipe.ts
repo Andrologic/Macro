@@ -2,7 +2,7 @@
  * The receiving spool is private staging, removed on every late refusal. */
 import { open, unlink } from 'node:fs/promises';
 import { createReadStream } from 'node:fs';
-import { portableLines, validatePortableArchive, type PortableHeader } from '../../contracts/macro-pilot/v2/portable-chat-history/validate.mjs';
+import { portableLines, validatePortableArchive } from '../../contracts/macro-pilot/v2/portable-chat-history/validate.mjs';
 import contractRoot from '../../contracts/macro-pilot/v2/portable-chat-history/portable-chat-history-contract.json';
 import { inspectPortableRecordContent, portableDigest } from '../services/ai/portableChatHistory';
 import type { PortableWorkBudget } from '../services/ai/portableHistoryInspection';
@@ -46,10 +46,4 @@ export async function validatePortableRecipe(path: string, destination: string, 
     throw error;
   } finally { stream?.destroy(); await output?.close(); release(); }
 }
-export function portableDescriptor(result: { records: number; bytes: number; manifest: string }, contractSha: string) {
-  return { kind: 'portable_archive', format: 'portable-chat-history-1', content_contract_sha256: contractSha,
-    records: result.records, bytes: result.bytes, manifest_sha256: result.manifest };
-}
-export function portableFragment(header: PortableHeader, offset: number, bytes: Uint8Array) {
-  return JSON.stringify({ header, offset, data: Buffer.from(bytes).toString('base64') }) + '\n';
-}
+export { portableDescriptor, portableFragment } from '../services/ai/portableArchiveWire';
