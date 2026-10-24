@@ -80,6 +80,7 @@ export type MockMessage = {
   generation_attempts?: import('../../types').ChatMessage['generation_attempts'];
   persistence_state?: 'failed' | 'retrying';
   persistence_error?: string;
+  portable_history?: import('../../types').ChatMessage['portable_history'];
 };
 
 export type MockChatState = {
@@ -1251,6 +1252,25 @@ describe('ChatZone', () => {
 
   afterAll(() => {
     mock.restore();
+  });
+
+  it('renders imported user and assistant text as inert history despite stale action flags', async () => {
+    const historical = { version: 1 as const, importKey: 'historical-import', manifest: 'a'.repeat(64), ordinal: '0', displayDate: null };
+    chatState = { ...chatState, messages: [
+      buildMessage({ id: 'historical-user', role: 'user', content: '<old user action> [quick_replies]', portable_history: historical }),
+      buildMessage({ id: 'historical-assistant', role: 'assistant', content: '<old assistant trace> [quick_replies]', portable_history: { ...historical, ordinal: '1' }, persistence_state: 'failed', completion_reason: 'interrupted' }),
+      buildMessage({ id: 'ordinary-assistant', role: 'assistant', content: 'Ordinary answer' }),
+    ] };
+    await act(async () => { requireRoot().render(<ChatZone />); });
+    const rows = requireContainer().querySelectorAll('[data-chat-historical-message="true"]');
+    expect(rows).toHaveLength(2);
+    expect(rows[0]?.textContent).toBe('<old user action> [quick_replies]');
+    expect(rows[1]?.textContent).toBe('<old assistant trace> [quick_replies]');
+    expect(rows[0]?.querySelector('old')).toBeNull();
+    expect(requireContainer().querySelector('[data-chat-unsaved-assistant-response]')).toBeNull();
+    expect(markdownRendererContentMock.mock.calls.some(call => call[0] === 'Ordinary answer')).toBe(true);
+    expect(markdownRendererContentMock.mock.calls.some(call => String(call[0]).includes('old assistant'))).toBe(false);
+    expect(requireContainer().querySelector('#chat-message-historical-user button[title="Regenerate"]')).toBeNull();
   });
 
   it('reveals the selected queue on queue-only publication and removes it reactively', async () => {

@@ -98,7 +98,7 @@ export const TRANSFER_RESOURCES = [
   },
   {
     "path": "src/services/ai/portableHistoryArchive.ts",
-    "sha256": "1fd9b89fc4b18ac1a7f0ab3328e90f46b04afa6fb08f5ed99ddd8bd1185da3ad"
+    "sha256": "0e21bd8446f9ca3d01281f5350497b4b52d7838b0d2fcd3679b2551119894b9c"
   },
   {
     "path": "src/services/ai/portableHistoryInspection.ts",
@@ -126,7 +126,7 @@ export const TRANSFER_RESOURCES = [
   },
   {
     "path": "src/services/chatDbMappers.ts",
-    "sha256": "9f8644961adbf25cc5ec9e96e7cf42949119edebf1f92c33433c426a0d9b6813"
+    "sha256": "f338d956bab224a664850774a0c369e622c3953bcd30d5f6439330805e3c61c8"
   },
   {
     "path": "src/services/chatMessagePreparation.ts",
@@ -134,7 +134,7 @@ export const TRANSFER_RESOURCES = [
   },
   {
     "path": "src/services/chatQuestionnaires.ts",
-    "sha256": "ece6a3ff84baecb6d49d1f3f7ef5579123974ee66ff71f7b019883c15a83daa7"
+    "sha256": "e0d24f440f148c54beddb83360823304ef7dd301c3568ce42ee0f545e79e9551"
   },
   {
     "path": "src/services/chatQuickReplies.ts",
@@ -158,7 +158,7 @@ export const TRANSFER_RESOURCES = [
   },
   {
     "path": "src/services/contextCompaction.ts",
-    "sha256": "2f68804ca8badb8dc170352fadbe44bd6ff48a86c07a3fcfefc8b347173e9d9f"
+    "sha256": "46354cbe9ecb6a4ec1e21d9082b89342b36023d78362d26d410f1bd251618c46"
   },
   {
     "path": "src/services/contextCompactionOrchestrator.ts",
@@ -304,5 +304,5 @@ export const TRANSFER_RESOURCES = [
 export const TRANSFER_HELLO = {
   "version": "macro-connect-transfer-1",
   "portable_contract_sha256": "c6ae7440ed0fb4d0bdccdfb936c4bf6ac5c441c96b642c1d9ccbd270b62bdcc6",
-  "preparation_set_sha256": "b1a02b6a0901f97c7586f40709be2eeb06aaca55a8d0b57698067c5d0503ba36"
+  "preparation_set_sha256": "a9c8fd9b38073ad9ac962cfe16de9462f41791887c67c7e7b5d82d734fd16a40"
 } as const;

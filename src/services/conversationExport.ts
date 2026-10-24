@@ -1,6 +1,7 @@
 import type { Citation } from '../stores/useCitationsStore';
 import type { MessageImageAttachment } from '../stores/useChatStore';
 import type { ChatMessage, Conversation, PersistedContextReference, ToolTrace } from '../types';
+import { messageDisplayDate } from './chatHistoryDisplay';
 
 export interface ConversationExportMessage extends ChatMessage {
   images: MessageImageAttachment[];
@@ -102,7 +103,7 @@ export const buildConversationMarkdownExport = ({
 
   messages.forEach((message, index) => {
     const role = message.role === 'user' ? 'User' : 'Assistant';
-    lines.push(`### ${index + 1}. ${role}`, '', `_${message.timestamp}_`, '');
+    lines.push(`### ${index + 1}. ${role}`, '', `_${messageDisplayDate(message) ?? 'Unknown date'}_`, '');
     lines.push(quoteMarkdown(message.content), '');
 
     if (message.context_refs?.length) {

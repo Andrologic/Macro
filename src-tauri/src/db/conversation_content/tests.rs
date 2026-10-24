@@ -1089,7 +1089,7 @@ async fn native_runtime_diagnostic_is_schema19_wal_normal_fk() {
             .unwrap();
     assert_eq!(
         migrations,
-        [1, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19]
+        [1, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20]
     );
     let mut db = pool.acquire().await.unwrap();
     let journal: String = sqlx::query_scalar("PRAGMA journal_mode")

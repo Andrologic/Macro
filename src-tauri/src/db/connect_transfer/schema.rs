@@ -29,6 +29,7 @@ async fn expected() -> DbResult<&'static Vec<(String, Option<String>)>> {
             }
             sqlx::raw_sql(MIGRATION).execute(&mut db).await?;
             sqlx::raw_sql(PUBLICATION).execute(&mut db).await?;
+            sqlx::raw_sql(include_str!("../migrations/020_connect_archive_lifecycle.sql")).execute(&mut db).await?;
             let objects = sqlx::query_as(sqlx::AssertSqlSafe(format!(
                 "SELECT name,sql FROM sqlite_master WHERE {OBJECTS} ORDER BY name"
             )))
@@ -53,7 +54,7 @@ pub(in crate::db) async fn validate_schema(db: &mut SqliteConnection) -> DbResul
             .push_bind(ddl)
             .push(")");
     }
-    query.push(" AND EXISTS(SELECT 1 FROM schema_migrations WHERE version=18 AND name='018_connect_transfer') AND EXISTS(SELECT 1 FROM schema_migrations WHERE version=19 AND name='019_connect_publication')");
+    query.push(" AND EXISTS(SELECT 1 FROM schema_migrations WHERE version=18 AND name='018_connect_transfer') AND EXISTS(SELECT 1 FROM schema_migrations WHERE version=19 AND name='019_connect_publication') AND EXISTS(SELECT 1 FROM schema_migrations WHERE version=20 AND name='020_connect_archive_lifecycle')");
     if query
         .build_query_scalar::<i64>()
         .fetch_one(&mut *db)
@@ -73,6 +74,7 @@ pub(in crate::db) async fn validate_schema(db: &mut SqliteConnection) -> DbResul
 }
 /// Fresh backup reference or synthetic legacy fixture only, never an archive.
 pub(crate) async fn remove_reference_schema_in(db: &mut SqliteConnection) -> DbResult<()> {
+    remove_reader_reference_in(db).await?;
     let names: Vec<String> = sqlx::query_scalar(
         "SELECT name FROM sqlite_master WHERE type='trigger' AND name GLOB 'connect_*'",
     )
@@ -92,5 +94,21 @@ pub(crate) async fn remove_reference_schema_in(db: &mut SqliteConnection) -> DbR
 pub(crate) async fn remove_publication_reference_in(db: &mut SqliteConnection) -> DbResult<()> {
     remove_reference_schema_in(db).await?;
     sqlx::raw_sql(MIGRATION).execute(db).await?;
+    Ok(())
+}
+
+/// For an empty F reference only. Ordinary conversations are not modified.
+/// Legacy fixtures may contain ordinary data but no F rows may be discarded.
+pub(crate) async fn remove_reader_reference_in(db: &mut SqliteConnection) -> DbResult<()> {
+    for table in ["connect_transfers", "connect_exchanges", "connect_raw_prefix", "connect_raw_chunks", "connect_preparations", "connect_projection_messages", "connect_projection_citations", "connect_projection_assets", "connect_projection_fields", "connect_projection_fragments", "conversation_portable_archives", "connect_activation_receipts", "connect_local_deletions", "connect_projection_display", "connect_publication_times"] {
+        let exists: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?")
+            .bind(table).fetch_one(&mut *db).await?;
+        if exists != 0 {
+            let populated: i64 = sqlx::query_scalar(sqlx::AssertSqlSafe(format!("SELECT EXISTS(SELECT 1 FROM {table})")))
+                .fetch_one(&mut *db).await?;
+            if populated != 0 { return Err(invalid("backup_reference_not_empty")); }
+        }
+    }
+    sqlx::raw_sql("DROP VIEW IF EXISTS connect_message_origins; DROP TRIGGER IF EXISTS connect_deletion_update; DROP TRIGGER IF EXISTS connect_deletion_delete; DROP TRIGGER IF EXISTS connect_publication_time_update; DROP TRIGGER IF EXISTS connect_publication_time_delete; DROP TRIGGER IF EXISTS connect_display_insert; DROP TRIGGER IF EXISTS connect_display_update; DROP TRIGGER IF EXISTS connect_display_delete; DROP TABLE IF EXISTS connect_projection_display; DROP TABLE IF EXISTS connect_publication_times; DROP TABLE IF EXISTS connect_local_deletions;").execute(db).await?;
     Ok(())
 }

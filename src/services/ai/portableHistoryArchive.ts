@@ -171,7 +171,8 @@ export class PortableHistoryArchive {
     if ([...this.origins.values()].some(origin => origin.policy !== policy.revision)) fail('policy_changed');
     const selected = this.headers.filter(header => header.entry.kind === 'message' || header.entry.kind === 'citation' || header.entry.kind === 'asset' ||
       (header.origin !== undefined && ['data', 'checkpoint'].includes(this.origins.get(header.origin)!.meaning ?? '')));
-    const release = this.budget.reserve(4096 + selected.reduce((total, header) => total + header.bytes * 16 + 1024, 0));
+    // Includes per-message display provenance and the final ordinal map.
+    const release = this.budget.reserve(4096 + selected.reduce((total, header) => total + header.bytes * 16 + 4096, 0));
     try {
       let messages: ChatMessage[] = [];
       const citations: Citation[] = [], images: PortableProjection['images'] = Object.create(null);
@@ -182,7 +183,7 @@ export class PortableHistoryArchive {
         const origin = this.origins.get(header.origin!)!;
         if (header.entry.kind === 'message') {
           if (origin.meaning !== 'message' || !origin.message || !origin.timestamp || owners.has(origin.message)) fail('invalid_portable_metadata');
-          const message: ChatMessage = { id: uuid!, task_id: '', conversation_id: binding.importKey, role: header.entry.role, content: decoder.decode(bytes), timestamp: origin.timestamp!, portable_history: binding };
+          const message: ChatMessage = { id: uuid!, task_id: '', conversation_id: binding.importKey, role: header.entry.role, content: decoder.decode(bytes), timestamp: origin.timestamp!, portable_history: { ...binding, sourceOrdinal: String(header.ordinal), displayDate: origin.timestamp!, inheritedFrom: null } };
           owners.set(origin.message!, message); messages.push(message);
         } else if (header.entry.kind === 'citation') {
           const key = keyFor(origin); let row = citationRows.get(key);
@@ -227,7 +228,7 @@ export class PortableHistoryArchive {
         if (item.origin.message && !owner) fail('missing_message');
         const message: ChatMessage = { id: item.uuid, task_id: '', conversation_id: binding.importKey, role: 'user',
           content: `[Historical archive data; record ${item.ordinal}; ${item.origin.meaning}]\n${item.text}`,
-          timestamp: owner?.timestamp ?? '1970-01-01T00:00:00.000Z', portable_history: binding };
+          timestamp: owner?.timestamp ?? '1970-01-01T00:00:00.000Z', portable_history: { ...binding, sourceOrdinal: String(item.ordinal), displayDate: owner?.timestamp ?? null, inheritedFrom: owner?.id ?? null } };
         const group = additions.get(owner ?? null) ?? []; group.push(message); additions.set(owner ?? null, group);
       }
       const ordered = messages.flatMap(message => [message, ...(additions.get(message) ?? [])]);
@@ -238,12 +239,19 @@ export class PortableHistoryArchive {
         const type = f.get(3), scope = f.get(4), kind = f.get(14);
         if (!['web', 'file', 'document', 'source_passage'].includes(type ?? '') || !['context', 'source'].includes(scope ?? '') || (kind !== undefined && !['interesting', 'used'].includes(kind))) fail('required_citation_missing');
         citations.push({ id: row.uuid, conversationId: binding.importKey, messageId: owners.get(row.message)?.id ?? row.uuid, type: type as Citation['type'], scope: scope as Citation['scope'], ...(kind === undefined ? {} : { kind: kind as Citation['kind'] }), source: f.get(5) ?? 'archive', title: f.get(6)!, snippet: f.get(7), content: f.get(8), timestamp: owners.get(row.message)?.timestamp ?? messages[0]?.timestamp ?? '1970-01-01T00:00:00.000Z' });
-        messages.push({ id: `${row.uuid}:data`, task_id: '', conversation_id: binding.importKey, role: 'user', content: `[Historical archive citation ${row.uuid}]\n${f.get(6)}\n${f.get(7) ?? ''}\n${f.get(8) ?? ''}`, timestamp: owners.get(row.message)?.timestamp ?? messages[0]?.timestamp ?? '1970-01-01T00:00:00.000Z', portable_history: binding });
+        const owner = owners.get(row.message);
+        messages.push({ id: `${row.uuid}:data`, task_id: '', conversation_id: binding.importKey, role: 'user', content: `[Historical archive citation ${row.uuid}]\n${f.get(6)}\n${f.get(7) ?? ''}\n${f.get(8) ?? ''}`, timestamp: owner?.timestamp ?? '1970-01-01T00:00:00.000Z', portable_history: { ...binding, sourceOrdinal: String(this.uuids.indexOf(row.uuid)), displayDate: owner?.timestamp ?? null, inheritedFrom: owner?.id ?? null } });
       }
       // Projection order is archive/association order. Source timestamps remain
       // in original metadata; derived timestamps prevent the ordinary store's
       // chronological sort from moving adjacent historical data or checkpoints.
-      messages.forEach((message, index) => { message.timestamp = new Date(index).toISOString(); });
+      const ordinals = new Map(messages.map((message, index) => [message.id, String(index)]));
+      messages.forEach((message, index) => {
+        message.timestamp = new Date(index).toISOString();
+        const origin = message.portable_history!;
+        origin.ordinal = String(index);
+        if (origin.inheritedFrom) origin.inheritedFrom = ordinals.get(origin.inheritedFrom) ?? null;
+      });
       if (!samePortablePolicy(await this.policy(), policy)) fail('policy_changed');
       await consume({ binding, messages, citations, images });
       if (!samePortablePolicy(await this.policy(), policy)) fail('policy_changed');

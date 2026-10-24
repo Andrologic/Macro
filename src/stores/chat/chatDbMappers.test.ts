@@ -1,4 +1,5 @@
 import { describe, expect, it } from "bun:test";
+import { resolveActiveConversationQuestionnaire } from '../../services/chatQuestionnaires';
 
 import type { Conversation } from "../../types";
 import type { DbConversation, DbMessage } from "../../services/tauriIpc";
@@ -48,6 +49,24 @@ const dbMessage = (patch: Partial<DbMessage> = {}): DbMessage => ({
 });
 
 describe("chatDbMappers", () => {
+  it("rehydrates imported text without turning old quick replies or traces into live actions", () => {
+    const content = "Pick one\n\n[quick-replies]\n- Oui\n- Non\n- Peut-être\n[/quick-replies]";
+    const historical = mapDbMessageToChatMessage(dbMessage({ content, portable_history: {
+      version: 1, importKey: "archive", manifest: "a".repeat(64), ordinal: "0",
+      sourceOrdinal: "0", displayDate: null, inheritedFrom: null,
+    }, tool_traces_json: '[{"tool_name":"question","status":"running"}]' }), new Map());
+    expect(historical.content).toBe(content);
+    expect(historical.choices).toBeUndefined();
+    expect(historical.questionnaire).toBeUndefined();
+    expect(historical.tool_traces).toBeUndefined();
+    expect(historical.provider_turn_state).toBeUndefined();
+    const ordinary = mapDbMessageToChatMessage(dbMessage({ content }), new Map());
+    expect(ordinary.choices).toHaveLength(3);
+    const reloaded = JSON.parse(JSON.stringify(historical));
+    expect(resolveActiveConversationQuestionnaire('conv-1', [{ ...reloaded, questionnaire: ordinary.questionnaire }])).toBeNull();
+    expect(resolveActiveConversationQuestionnaire('conv-1', [reloaded, { ...ordinary, id: 'new' }])?.assistantMessageId).toBe('new');
+  });
+
   it("maps database conversations and normalizes reasoning effort", () => {
     expect(normalizeReasoningEffort("high")).toBe("high");
     expect(normalizeReasoningEffort("max")).toBe("max");

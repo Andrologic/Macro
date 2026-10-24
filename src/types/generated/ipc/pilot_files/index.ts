@@ -27,3 +27,4 @@ export type { PilotSendMarkInput } from '../PilotSendMarkInput';
 export type { PilotSendReadInput } from '../PilotSendReadInput';
 export type { PilotSendReceipt } from '../PilotSendReceipt';
 export type { PilotSendState } from '../PilotSendState';
+export type { PortableMessageOrigin } from '../PortableMessageOrigin';

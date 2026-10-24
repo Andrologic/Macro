@@ -16,6 +16,13 @@ fn bytes(hex: &str) -> Vec<u8> {
         .map(|v| u8::from_str_radix(std::str::from_utf8(v).unwrap(), 16).unwrap())
         .collect()
 }
+#[test]
+fn connect_projection_without_display_metadata_preserves_pre020_fingerprint_shape() {
+    let header = Header::Message {
+        role: "user".into(), created_at: "1970-01-01T00:00:00.000Z".into(), display_date: None,
+    };
+    assert_eq!(serde_json::to_string(&header).unwrap(), r#"{"Message":{"role":"user","created_at":"1970-01-01T00:00:00.000Z"}}"#);
+}
 async fn staged() -> (
     tempfile::TempDir,
     SqlitePool,
@@ -23,6 +30,12 @@ async fn staged() -> (
     Allocation,
     inactive_storage::InactiveStorage,
     String,
+) {
+    staged_with_history(b"History remains recoverable".to_vec()).await
+}
+async fn staged_with_history(history: Vec<u8>) -> (
+    tempfile::TempDir, SqlitePool, Spec, Allocation,
+    inactive_storage::InactiveStorage, String,
 ) {
     let (dir, pool) = journal::fixture().await;
     let (transfer, begin_input) = journal::target_for_publication(&pool).await;
@@ -32,7 +45,7 @@ async fn staged() -> (
         vec![
             (
                 RecordKind::Message { role: Role::User },
-                b"History remains recoverable".to_vec(),
+                history,
             ),
             (
                 RecordKind::Asset {
@@ -130,12 +143,18 @@ async fn put(
     id
 }
 async fn fill(pool: &SqlitePool, spec: &Spec, allocation: &Allocation) {
+    fill_with_display(pool, spec, allocation, Some(DisplayDate {
+        original_date: Some("2025-06-01T12:00:00Z".into()), inherited_from: None,
+    })).await;
+}
+async fn fill_with_display(pool: &SqlitePool, spec: &Spec, allocation: &Allocation, display_date: Option<DisplayDate>) {
     put(
         pool,
         &spec.transfer_id,
         0,
         Some(0),
         Header::Message {
+            display_date,
             role: "user".into(),
             created_at: "1970-01-01T00:00:00.000Z".into(),
         },
@@ -149,6 +168,7 @@ async fn fill(pool: &SqlitePool, spec: &Spec, allocation: &Allocation) {
         1,
         None,
         Header::Message {
+            display_date: None,
             role: "assistant".into(),
             created_at: "1970-01-01T00:00:00.001Z".into(),
         },
@@ -189,6 +209,219 @@ async fn fill(pool: &SqlitePool, spec: &Spec, allocation: &Allocation) {
     finish(pool, &spec.transfer_id, &allocation.fingerprint, &[9; 32])
         .await
         .unwrap();
+}
+
+#[tokio::test]
+async fn connect_archive_origin_survives_all_product_reads_and_new_messages_are_ordinary() {
+    let (dir, pool, spec, allocation, _store, _key) = staged().await;
+    fill(&pool, &spec, &allocation).await;
+    pinned(&pool, &spec, &allocation).await;
+    let input = publish_input(&pool, &spec, &allocation).await;
+    let published = publish(&pool, &input).await.unwrap();
+    assert!(sqlx::query("UPDATE connect_projection_display SET original_date='2099-01-01T00:00:00Z'").execute(&pool).await.is_err());
+    let conversation = &published.conversation_id;
+    let publication_time: String = sqlx::query_scalar("SELECT published_at FROM connect_publication_times")
+        .fetch_one(&pool).await.unwrap();
+    assert!(!publication_time.starts_with("1970"));
+    let before = db::repository::get_conversation(&pool, conversation).await.unwrap().unwrap();
+    assert_eq!(before.updated_at, publication_time);
+    for messages in [
+        db::repository::list_messages(&pool, conversation).await.unwrap(),
+        db::repository::list_messages_bounded(&pool, conversation).await.unwrap(),
+        db::repository::list_all_messages(&pool).await.unwrap().into_iter().filter(|m| &m.conversation_id==conversation).collect(),
+        db::repository::get_chat_bootstrap_snapshot(&pool, &[conversation.clone()]).await.unwrap().messages_by_conversation_id.remove(conversation).unwrap(),
+    ] {
+        assert_eq!(messages.len(), 2);
+        let origin = messages[0].portable_history.as_ref().unwrap();
+        assert_eq!(origin.ordinal, "0");
+        assert_eq!(origin.display_date.as_deref(), Some("2025-06-01T12:00:00Z"));
+        assert_eq!(messages[0].created_at, "1970-01-01T00:00:00.000Z");
+        assert!(messages[1].portable_history.as_ref().unwrap().display_date.is_none());
+        assert!(db::repository::get_message(&pool, &messages[0].id).await.unwrap().unwrap().portable_history.is_some());
+    }
+    pool.close().await;
+    let pool = db::create_pool(&dir.path().join("journal.db")).await.unwrap();
+    assert_eq!(db::repository::get_conversation(&pool, conversation).await.unwrap().unwrap().updated_at, publication_time);
+    sqlx::query("INSERT INTO messages(id,conversation_id,role,content,created_at) VALUES('ordinary',?,'user','New ordinary activity','2026-10-24T12:00:00Z')")
+        .bind(conversation).execute(&pool).await.unwrap();
+    let messages = db::repository::list_messages(&pool, conversation).await.unwrap();
+    assert_eq!(messages.last().unwrap().id, "ordinary");
+    assert!(messages.last().unwrap().portable_history.is_none());
+    assert!(super::super::remove_reader_reference_in(&mut *pool.acquire().await.unwrap()).await.is_err());
+}
+
+#[tokio::test]
+async fn connect_history_native_mutations_refuse_but_new_local_messages_remain_editable() {
+    use db::repository::{self, UpdateMessageContentInput};
+    let (_dir, pool, spec, allocation, _store, _key) = staged().await;
+    fill(&pool, &spec, &allocation).await;
+    pinned(&pool, &spec, &allocation).await;
+    let input = publish_input(&pool, &spec, &allocation).await;
+    let published = publish(&pool, &input).await.unwrap();
+    let messages = repository::list_messages(&pool, &published.conversation_id).await.unwrap();
+    let historical = &messages[0];
+    let write = |id| UpdateMessageContentInput {
+        id, content: "changed", turn_id: None, token_count: None,
+        tool_traces_json: None, hidden_context: None, provider_input_items_json: None,
+        provider_turn_state_json: None, context_refs_json: None, completion_reason: None,
+        generation_attempts_json: None,
+    };
+    assert!(repository::update_message_content(&pool, write(&historical.id)).await.is_err());
+    assert!(repository::delete_messages_after(&pool, &published.conversation_id, &historical.id).await.is_err());
+    assert!(repository::trim_conversation_replay(&pool, &published.conversation_id, &historical.id, Some("[]"), true).await.is_err());
+    assert!(repository::prepare_conversation_replay(&pool, repository::PrepareConversationReplayInput {
+        conversation_id: &published.conversation_id, message_id: &historical.id,
+        session_id: "local-session", turn_id: "local-turn", replay_id: "invalid-history-replay",
+        content: "changed", hidden_context: None, provider_input_items_json: None,
+        code_checkpoints_json: Some("[]".into()), delete_context_compaction_state: true,
+    }).await.is_err());
+    assert_eq!(repository::list_messages(&pool, &published.conversation_id).await.unwrap()[0].content, historical.content);
+    assert!(repository::get_app_setting(&pool, &format!("agentCodeCheckpoints:{}", published.conversation_id)).await.unwrap().is_none());
+    sqlx::query("INSERT INTO messages(id,conversation_id,turn_id,role,content,created_at) VALUES('local-edit',?,'local-turn','user','ordinary','2026-10-24T12:00:00Z')")
+        .bind(&published.conversation_id).execute(&pool).await.unwrap();
+    repository::update_message_content(&pool, write("local-edit")).await.unwrap();
+    assert_eq!(repository::get_message(&pool, "local-edit").await.unwrap().unwrap().content, "changed");
+    repository::trim_conversation_replay(&pool, &published.conversation_id, "local-edit", None, false).await.unwrap();
+    assert_eq!(repository::list_messages(&pool, &published.conversation_id).await.unwrap().len(), 3);
+    // Even if an ordinary row has a date before the imported ordering prefix,
+    // an explicit replay cannot trim that prefix as a side effect.
+    sqlx::query("UPDATE messages SET created_at='1960-01-01T00:00:00Z' WHERE id='local-edit'").execute(&pool).await.unwrap();
+    assert!(repository::delete_messages_after(&pool, &published.conversation_id, "local-edit").await.is_err());
+    assert_eq!(repository::list_messages(&pool, &published.conversation_id).await.unwrap().len(), 3);
+}
+
+#[tokio::test]
+async fn connect_archive_reader_pages_empty_associations_and_native_uuid_without_ttl() {
+    use super::super::reader::{page_in, Selector};
+    let (_dir, pool, spec, allocation, _store, _key) = staged().await;
+    fill(&pool, &spec, &allocation).await;
+    pinned(&pool, &spec, &allocation).await;
+    let input = publish_input(&pool, &spec, &allocation).await;
+    let published = publish(&pool, &input).await.unwrap();
+    let mut db = pool.acquire().await.unwrap();
+    // Expiration and restart reconciliation do not remove a published archive.
+    let expires: i64 = sqlx::query_scalar("SELECT expires_at FROM e_inactive_imports").fetch_one(&mut *db).await.unwrap();
+    assert!(expires < chrono::Utc::now().timestamp_millis());
+    super::super::hold_in(&mut db, false).await.unwrap();
+    let mut page = page_in(&mut db, "catalog", &published.conversation_id, Selector::All, None, 1).await.unwrap();
+    assert_eq!(page.fragments.len(), 1);
+    assert_eq!(page.fragments[0].bytes, b"History remains recoverable");
+    let id = page.fragments[0].target_uuid.clone().unwrap();
+    let cursor = page.next.clone().unwrap();
+    assert!(page_in(&mut db, "new-catalog", &published.conversation_id, Selector::All, Some(&cursor), 1).await.is_err());
+    assert!(page_in(&mut db, "catalog", "foreign-conversation", Selector::All, Some(&cursor), 1).await.is_err());
+    assert!(page_in(&mut db, "catalog", &published.conversation_id, Selector::Ordinal(0), Some(&cursor), 1).await.is_err());
+    page = page_in(&mut db, "catalog", &published.conversation_id, Selector::All, Some(&cursor), 1).await.unwrap();
+    assert_eq!(page.fragments[0].record.ordinal, 1);
+    assert_eq!(page.fragments[0].bytes, b"synthetic image bytes");
+    page = page_in(&mut db, "catalog", &published.conversation_id, Selector::All, page.next.as_ref(), 1).await.unwrap();
+    assert_eq!(page.fragments[0].record.ordinal, 2);
+    assert!(matches!(page.fragments[0].record.entry, RecordKind::Association { .. }));
+    assert!(page.fragments[0].bytes.is_empty());
+    assert!(page.fragments[0].target_uuid.is_none());
+    assert!(page.next.is_none());
+    let by_uuid = page_in(&mut db, "catalog", &published.conversation_id, Selector::Uuid(&id), None, 1).await.unwrap();
+    assert_eq!(by_uuid.fragments[0].record.ordinal, 0);
+    assert!(by_uuid.next.is_none());
+    assert!(page_in(&mut db, "catalog", &published.conversation_id, Selector::Ordinal(3), None, 1).await.is_err());
+    assert!(page_in(&mut db, "catalog", &published.conversation_id, Selector::All, None, 0).await.is_err());
+}
+
+#[tokio::test]
+async fn connect_archive_reader_crosses_page_boundaries_without_truncating_a_large_record() {
+    use super::super::reader::{page_in, Selector};
+    let history = "Complete raw historical record café é🙂\n".repeat(6000).into_bytes();
+    let (_dir, pool, spec, allocation, _store, _key) = staged_with_history(history.clone()).await;
+    fill(&pool, &spec, &allocation).await;
+    pinned(&pool, &spec, &allocation).await;
+    let input = publish_input(&pool, &spec, &allocation).await;
+    let published = publish(&pool, &input).await.unwrap();
+    let mut db = pool.acquire().await.unwrap();
+    let mut cursor = None;
+    let mut content = Vec::new();
+    let mut image = Vec::new();
+    let mut associations = 0;
+    let mut pages = 0;
+    loop {
+        let page = page_in(&mut db, "catalog", &published.conversation_id, Selector::All, cursor.as_ref(), 3).await.unwrap();
+        assert!(!page.fragments.is_empty());
+        assert!(page.fragments.len() <= 3);
+        for fragment in page.fragments {
+            assert!(fragment.bytes.len() <= 4093);
+            match fragment.record.ordinal {
+                0 => { assert_eq!(fragment.offset as usize, content.len()); content.extend(fragment.bytes); }
+                1 => image.extend(fragment.bytes),
+                2 => { assert!(fragment.bytes.is_empty()); associations += 1; }
+                _ => panic!("unexpected archive record"),
+            }
+        }
+        pages += 1;
+        if page.next.is_none() { break; }
+        assert_ne!(page.next, cursor);
+        cursor = page.next;
+    }
+    assert!(pages > 20);
+    assert_eq!(content, history);
+    assert_eq!(image, b"synthetic image bytes");
+    assert_eq!(associations, 1);
+}
+
+// Construct an old database by removing 020 from a fresh empty reference and
+// then copying SQL-only fixture rows under the real 019 constraints. No guard
+// is removed from populated storage and no transport authority is synthesized.
+async fn pre020_copy(source: &std::path::Path, destination: &std::path::Path) {
+    let old = db::create_pool(destination).await.unwrap();
+    let mut connection = old.acquire().await.unwrap();
+    super::super::remove_reader_reference_in(&mut connection).await.unwrap();
+    sqlx::query("DELETE FROM schema_migrations WHERE version=20").execute(&mut *connection).await.unwrap();
+    sqlx::query("ATTACH DATABASE ? AS pre020").bind(source.to_str().unwrap()).execute(&mut *connection).await.unwrap();
+    let mut tx = connection.begin_with("BEGIN IMMEDIATE").await.unwrap();
+    for table in ["e_inactive_domain", "e_inactive_imports", "e_inactive_records", "e_inactive_fragments", "e_inactive_mapping", "connect_transfers", "connect_raw_prefix", "connect_raw_chunks", "connect_exchanges"] {
+        sqlx::query(sqlx::AssertSqlSafe(format!("INSERT INTO {table} SELECT * FROM pre020.{table}"))).execute(&mut *tx).await.unwrap();
+    }
+    sqlx::raw_sql("CREATE TEMP TABLE legacy_preparation AS SELECT * FROM pre020.connect_preparations; UPDATE legacy_preparation SET phase='preparing',pin_receipt=NULL,pin_fingerprint=NULL; INSERT INTO connect_preparations SELECT * FROM legacy_preparation;")
+        .execute(&mut *tx).await.unwrap();
+    for table in ["connect_projection_messages", "connect_projection_citations", "connect_projection_assets", "connect_projection_fields", "connect_projection_fragments"] {
+        sqlx::query(sqlx::AssertSqlSafe(format!("INSERT INTO {table} SELECT * FROM pre020.{table}"))).execute(&mut *tx).await.unwrap();
+    }
+    sqlx::query("UPDATE connect_preparations SET phase='prepared' WHERE transfer_id IN (SELECT transfer_id FROM pre020.connect_preparations WHERE phase IN ('prepared','pinned'))").execute(&mut *tx).await.unwrap();
+    sqlx::query("UPDATE connect_preparations SET phase='pinned',pin_receipt=(SELECT pin_receipt FROM pre020.connect_preparations s WHERE s.transfer_id=connect_preparations.transfer_id),pin_fingerprint=(SELECT pin_fingerprint FROM pre020.connect_preparations s WHERE s.transfer_id=connect_preparations.transfer_id) WHERE transfer_id IN (SELECT transfer_id FROM pre020.connect_preparations WHERE phase='pinned')").execute(&mut *tx).await.unwrap();
+    tx.commit().await.unwrap();
+    sqlx::query("DETACH DATABASE pre020").execute(&mut *connection).await.unwrap();
+    drop(connection);
+    old.close().await;
+}
+
+#[tokio::test]
+async fn connect_projection_019_partial_and_pinned_retries_survive_real_020_migration() {
+    for old_pin in [false, true] {
+        let (dir, pool, spec, allocation, _store, _key) = staged().await;
+        let legacy_entry = Entry {
+            transfer_id: spec.transfer_id.clone(), ordinal: 0, source_ordinal: Some(0),
+            header: Header::Message { role: "user".into(), created_at: "1970-01-01T00:00:00.000Z".into(), display_date: None },
+            fields: vec![Field { name: "content".into(), bytes: 27, sha256: hash(b"History remains recoverable") }],
+        };
+        let id = entry(&pool, &legacy_entry).await.unwrap();
+        if old_pin {
+            fill_with_display(&pool, &spec, &allocation, None).await;
+            pinned(&pool, &spec, &allocation).await;
+        }
+        let before: (Vec<u8>, Option<Vec<u8>>, Option<Vec<u8>>) = sqlx::query_as("SELECT fingerprint,pin_receipt,pin_fingerprint FROM connect_preparations WHERE transfer_id=?")
+            .bind(&spec.transfer_id).fetch_one(&pool).await.unwrap();
+        let destination = tempfile::tempdir().unwrap();
+        let path = destination.path().join("pre020.db");
+        pre020_copy(&dir.path().join("journal.db"), &path).await;
+        let migrated = db::create_pool(&path).await.unwrap();
+        assert_eq!(entry(&migrated, &legacy_entry).await.unwrap(), id);
+        if old_pin { pinned(&migrated, &spec, &allocation).await; }
+        let changed = Entry { header: Header::Message { role: "user".into(), created_at: "1970-01-01T00:00:00.000Z".into(), display_date: Some(DisplayDate { original_date: Some("2025-06-01T12:00:00Z".into()), inherited_from: None }) }, ..legacy_entry };
+        assert!(entry(&migrated, &changed).await.is_err());
+        let after: (Vec<u8>, Option<Vec<u8>>, Option<Vec<u8>>) = sqlx::query_as("SELECT fingerprint,pin_receipt,pin_fingerprint FROM connect_preparations WHERE transfer_id=?")
+            .bind(&spec.transfer_id).fetch_one(&migrated).await.unwrap();
+        assert_eq!(before, after);
+        assert_eq!(sqlx::query_scalar::<_,i64>("SELECT COUNT(*) FROM connect_projection_display").fetch_one(&migrated).await.unwrap(), 0);
+        assert_eq!(sqlx::query_scalar::<_,i64>("SELECT MAX(version) FROM schema_migrations").fetch_one(&migrated).await.unwrap(), 20);
+    }
 }
 async fn pinned(pool: &SqlitePool, spec: &Spec, allocation: &Allocation) {
     let projection_hash =
@@ -461,6 +694,7 @@ async fn connect_publication_restore_preserves_all_preparation_phases_before_rea
                     ordinal: 100,
                     source_ordinal: None,
                     header: Header::Message {
+            display_date: None,
                         role: "user".into(),
                         created_at: "t".into()
                     },
@@ -656,6 +890,7 @@ async fn connect_projection_has_no_256_message_cutoff_and_allocates_each_id_once
             ordinal,
             None,
             Header::Message {
+            display_date: None,
                 role: "user".into(),
                 created_at: format!("{ordinal:08}"),
             },

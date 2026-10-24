@@ -1773,6 +1773,15 @@
     },
     {
       "families": [
+        "db",
+        "pilot_files"
+      ],
+      "name": "PortableMessageOrigin",
+      "origin": "macro_lib::db::models::PortableMessageOrigin",
+      "path": "PortableMessageOrigin.ts"
+    },
+    {
+      "families": [
         "workspace"
       ],
       "name": "PredictedBranchDto",

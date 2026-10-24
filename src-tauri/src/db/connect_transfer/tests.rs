@@ -605,7 +605,9 @@ async fn connect_transfer_sqlite_full_returns_no_prefix_and_rolls_back_storage_c
 
 #[tokio::test]
 async fn connect_transfer_migration_and_stamp_roll_back_together() {
-    let (dir, pool) = fixture().await;
+    // A schema reference has no user conversations. Seeded journal fixtures do.
+    let dir = tempfile::tempdir().unwrap();
+    let pool = db::create_pool(&dir.path().join("journal.db")).await.unwrap();
     crate::db::connect_transfer::remove_reference_schema_in(&mut *pool.acquire().await.unwrap())
         .await
         .unwrap();

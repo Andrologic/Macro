@@ -13998,6 +13998,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
       const assistantMessage = findChatMessageInState(get(), messageId);
       if (
         !assistantMessage ||
+        assistantMessage.portable_history ||
         assistantMessage.role !== "assistant" ||
         assistantMessage.persistence_state !== "failed"
       ) {
@@ -14246,6 +14247,9 @@ export const useChatStore = create<ChatStore>((set, get) => {
         const message = "The message to edit is no longer available.";
         set({ lastError: message, sendState: "error" });
         throw buildSendError(message);
+      }
+      if (target.portable_history) {
+        throw buildSendError("Imported history is read-only. Start a new message to continue.");
       }
       assertPilotConversationActionAllowed(target.conversation_id);
       if (!options?.skipAgentCodeReplayCheck) {

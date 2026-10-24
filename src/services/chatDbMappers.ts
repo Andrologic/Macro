@@ -164,6 +164,17 @@ export const mapDbMessageToChatMessage = (
   message: DbMessage,
   conversationById: Map<string, Conversation>,
 ): ChatMessage => {
+  if (message.portable_history) {
+    return {
+      id: message.id,
+      task_id: "",
+      conversation_id: message.conversation_id,
+      role: message.role as "user" | "assistant",
+      content: message.content,
+      timestamp: message.created_at,
+      portable_history: { ...message.portable_history, version: 1 },
+    };
+  }
   const taskId = conversationById.get(message.conversation_id)?.task_id ?? "";
   if (message.role === "assistant") {
     const presentation = buildAssistantMessagePresentation(

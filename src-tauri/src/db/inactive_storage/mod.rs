@@ -576,6 +576,23 @@ fn validate_begin(input: &Begin) -> Result<()> {
     }
     Ok(())
 }
+/// Shared stored-header validation for the local published archive reader.
+/// This parses data only and never constructs inactive-storage authority.
+pub(in crate::db) fn published_record(
+    begin: &Begin,
+    bytes: &[u8],
+    kind: i64,
+    links: (Option<i64>, Option<i64>, Option<i64>, Option<i64>),
+) -> Result<RecordHeader> {
+    let record: RecordHeader = parse(bytes)?;
+    validate_record(&record)?;
+    validate_profile_record(begin, &record)?;
+    if record.entry.tag() != kind || record.entry.links() != links {
+        return Err("integrity_failed".into());
+    }
+    Ok(record)
+}
+
 fn validate_record(input: &RecordHeader) -> Result<()> {
     if input.ordinal > i64::MAX as u64
         || input.bytes > i64::MAX as u64

@@ -807,6 +807,7 @@ async fn prepared(t: &mut Tx<'_>, receipt: PilotSendReceipt) -> Result<PilotPrep
         .await
         .map_err(db)?;
     let message = Message {
+        portable_history: None,
         id: message_row.get("id"),
         conversation_id: message_row.get("conversation_id"),
         turn_id: message_row.get("turn_id"),

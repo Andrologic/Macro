@@ -35,7 +35,7 @@ import { normalizeArchitectToolId } from '../architectToolNames';
 import { sendChatCompletion } from './chatCompletions';
 import { loadImplementTaskCatalog } from '../loadImplementTaskCatalog';
 import { parseToolTracesJson } from '../toolTraceState';
-import { parseDbContextRefs } from '../chatDbMappers';
+import { mapDbMessageToChatMessage, parseDbContextRefs } from '../chatDbMappers';
 import {
   normalizeMCPServerSettingsInput,
   PersistedMCPServer,
@@ -77,7 +77,9 @@ const toConversationDto = (conversation: tauriIpc.DbConversation): Conversation 
   is_unread: false,
 });
 
-const toMessageDto = (message: tauriIpc.DbMessage): ChatMessage => ({
+const toMessageDto = (message: tauriIpc.DbMessage): ChatMessage => message.portable_history
+  ? mapDbMessageToChatMessage(message, new Map())
+  : ({
   id: message.id,
   task_id: '',
   conversation_id: message.conversation_id,

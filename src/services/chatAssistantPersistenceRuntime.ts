@@ -19,7 +19,7 @@ export interface AssistantPersistenceRecoveryPorts {
 /** Retry the captured response, independently of whichever conversation the UI now selects. */
 export async function retryAssistantPersistence(messageId: string, ports: AssistantPersistenceRecoveryPorts): Promise<void> {
   const assistantMessage = ports.messages.read(messageId);
-  if (!assistantMessage || assistantMessage.role !== "assistant" || assistantMessage.persistence_state !== "failed") {
+  if (!assistantMessage || assistantMessage.portable_history || assistantMessage.role !== "assistant" || assistantMessage.persistence_state !== "failed") {
     throw new Error("This assistant response is not waiting to be saved.");
   }
   const stillOwnsRetry = () => {

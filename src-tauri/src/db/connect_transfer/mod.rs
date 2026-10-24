@@ -4,6 +4,7 @@
 mod journal;
 mod preparation;
 mod publication;
+mod reader;
 mod schema;
 mod staging;
 mod terminal;
@@ -16,7 +17,7 @@ use sqlx::{SqliteConnection, SqlitePool};
 pub(super) use journal::Reservation;
 pub(super) use journal::{reserve_source, LocalReservation};
 pub(super) use schema::validate_schema;
-pub(crate) use schema::{remove_publication_reference_in, remove_reference_schema_in};
+pub(crate) use schema::{remove_publication_reference_in, remove_reference_schema_in, remove_reader_reference_in};
 const CONTROL: usize = 98_304;
 fn invalid(code: &str) -> DbError {
     DbError::Validation(code.into())

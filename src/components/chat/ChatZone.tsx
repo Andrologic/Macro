@@ -50,6 +50,7 @@ import { ProviderDropdown } from '../ai/ProviderDropdown';
 import { ModelDropdown } from '../ai/ModelDropdown';
 import { ReasoningDropdown } from '../ai/ReasoningDropdown';
 import { MarkdownRenderer } from './MarkdownRenderer';
+import { messageDisplayDate } from '../../services/chatHistoryDisplay';
 import { useScrollMagnet } from '../../hooks/useScrollMagnet';
 import { useSpeechDictation } from '../../hooks/useSpeechDictation';
 import { ScrollSeparator } from './ScrollSeparator';
@@ -799,7 +800,7 @@ const ChatMessageRowBase: React.FC<ChatMessageRowProps> = ({
   const message = virtualMessage.item.message;
   const observedRow = useRef<HTMLDivElement | null>(null);
   useEffect(() => {
-    if (!observedRow.current || message.role !== 'assistant' || !message.content || assistantActivity || message.persistence_state === 'failed' || message.persistence_state === 'retrying') return;
+    if (!observedRow.current || message.portable_history || message.role !== 'assistant' || !message.content || assistantActivity || message.persistence_state === 'failed' || message.persistence_state === 'retrying') return;
     // Capture this rendered message, before asynchronous reads can see a new turn.
     const displayed = { ...message };
     return observeConversationMessage(observedRow.current, () => {
@@ -810,17 +811,19 @@ const ChatMessageRowBase: React.FC<ChatMessageRowProps> = ({
   const citedConversations = message.context_refs?.filter(
     (ref) => ref.kind === 'conversation' && ref.conversationId && ref.snippet,
   ) ?? [];
-  const questionnaireResponseSummary = message.questionnaire_response_summary;
+  const questionnaireResponseSummary = message.portable_history ? undefined : message.questionnaire_response_summary;
   const isQuestionnaireResponseMessage = Boolean(questionnaireResponseSummary);
   const architectActionMessage =
-    message.role === 'user'
+    !message.portable_history && message.role === 'user'
       ? resolveArchitectButtonActionFromContent(message.content, t)
       : null;
   const isArchitectActionMessage = Boolean(architectActionMessage);
   const hasAssistantActivity =
+    !message.portable_history &&
     message.role === 'assistant' &&
     assistantActivity !== null;
   const hasAssistantCompletionNotice =
+    !message.portable_history &&
     message.role === 'assistant' &&
     Boolean(message.completion_reason && message.completion_reason !== 'completed');
   const hasAssistantVisibleBody =
@@ -828,6 +831,7 @@ const ChatMessageRowBase: React.FC<ChatMessageRowProps> = ({
     (message.content.trim().length > 0 ||
       (showToolTraces && (message.tool_traces?.length ?? 0) > 0));
   const hasAssistantPersistenceFailure =
+    !message.portable_history &&
     message.role === 'assistant' &&
     (message.persistence_state === 'failed' || message.persistence_state === 'retrying');
   const isRetryingAssistantPersistence = message.persistence_state === 'retrying';
@@ -897,7 +901,16 @@ const ChatMessageRowBase: React.FC<ChatMessageRowProps> = ({
             </div>
           ) : (
             <div className="text-sm leading-relaxed text-foreground">
-              {message.role === 'assistant' ? (
+              {message.portable_history && (
+                <div className="mb-1 text-[10px] text-muted-foreground">
+                  {messageDisplayDate(message) ?? t('common.unknown', 'Unknown')}
+                </div>
+              )}
+              {message.portable_history ? (
+                <div data-chat-historical-message="true" className="whitespace-pre-wrap break-words">
+                  {message.content}
+                </div>
+              ) : message.role === 'assistant' ? (
                 <>
                   <MarkdownRenderer
                     content={message.content}
@@ -997,7 +1010,7 @@ const ChatMessageRowBase: React.FC<ChatMessageRowProps> = ({
                   )}
                 </>
               )}
-              {message.role === 'user' && !questionnaireResponseSummary && !architectActionMessage && (
+              {message.role === 'user' && !message.portable_history && !questionnaireResponseSummary && !architectActionMessage && (
                 <SkillTurnFeedbackRow feedback={skillTurnFeedback} />
               )}
               {message.role === 'user' && messageImages.length > 0 && (
@@ -1025,7 +1038,7 @@ const ChatMessageRowBase: React.FC<ChatMessageRowProps> = ({
             </div>
           )}
 
-          {message.role === 'user' && !isEditing && !architectActionMessage && (
+          {message.role === 'user' && !message.portable_history && !isEditing && !architectActionMessage && (
             <div className="absolute bottom-2 right-2 flex items-center gap-1">
               <button
                 onClick={() => void onCopy(message.content, message.id)}
@@ -1086,7 +1099,7 @@ const ChatMessageRowBase: React.FC<ChatMessageRowProps> = ({
           )}
         </div>
       </div>
-      {message.role === 'user' && standaloneLaunchProgress && (
+      {message.role === 'user' && !message.portable_history && standaloneLaunchProgress && (
         <div
           data-testid="standalone-task-launch-progress-container"
           className="mx-auto w-full max-w-sm"
@@ -3516,6 +3529,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
 
   const handleEditStart = (message: ChatMessage) => {
     if (
+      message.portable_history ||
       composerEditSession ||
       goalComposerEditSession ||
       isConversationMutationPending ||
@@ -3626,6 +3640,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
   }, [deleteUnsavedAssistantResponse]);
 
   const handleRegenerate = async (messageId: string, content: string) => {
+    if (useChatStore.getState().messages.find(message => message.id === messageId)?.portable_history) return;
     await requestReplay({
       kind: 'regenerate',
       messageId,

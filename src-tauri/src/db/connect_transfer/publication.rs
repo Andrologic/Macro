@@ -69,7 +69,10 @@ pub(super) async fn publish(pool: &SqlitePool, input: &PublishWrite) -> DbResult
         )?,
         4096,
     )?;
-    super::preparation::grow(&mut tx, &input.transfer_id, extra).await?;
+    super::preparation::grow(&mut tx, &input.transfer_id, add(extra, 512)?).await?;
+    let published_at = chrono::Utc::now().to_rfc3339();
+    sqlx::query("INSERT INTO connect_publication_times VALUES(?,?)")
+        .bind(&input.transfer_id).bind(&published_at).execute(&mut *tx).await?;
     sqlx::query("INSERT INTO conversations(id,title,scope_mode,project_id,group_id,task_id,provider_id,model_id,reasoning_effort,created_at,updated_at,message_count,is_pinned) VALUES(?,?,'Chat',NULL,NULL,NULL,?,?,?,?,?,?,0)")
         .bind(&conversation).bind(row.get::<String,_>("title")).bind(row.get::<String,_>("provider_id")).bind(row.get::<String,_>("model_id")).bind(row.get::<Option<String>,_>("reasoning_effort")).bind(row.get::<String,_>("created_at")).bind(row.get::<String,_>("created_at")).bind(row.get::<i64,_>("message_count")).execute(&mut *tx).await?;
     let mut cursor = -1_i64;
@@ -167,7 +170,7 @@ pub(super) async fn publish(pool: &SqlitePool, input: &PublishWrite) -> DbResult
         .bind(receipt_charge)
         .execute(&mut *tx)
         .await?;
-    sqlx::query("UPDATE conversations SET last_message=(SELECT substr(content,1,100) FROM messages WHERE conversation_id=? ORDER BY created_at DESC,id DESC LIMIT 1),updated_at=COALESCE((SELECT created_at FROM messages WHERE conversation_id=? ORDER BY created_at DESC,id DESC LIMIT 1),updated_at) WHERE id=?").bind(&conversation).bind(&conversation).bind(&conversation).execute(&mut *tx).await?;
+    sqlx::query("UPDATE conversations SET last_message=(SELECT substr(m.content,1,100) FROM messages m JOIN connect_projection_messages pm ON pm.id=m.id WHERE pm.transfer_id=? ORDER BY pm.ordinal DESC LIMIT 1),updated_at=? WHERE id=?").bind(&input.transfer_id).bind(&published_at).bind(&conversation).execute(&mut *tx).await?;
     let owner=sqlx::query("UPDATE chat_admission_owners SET mode='open',browser_reconciled=0,runtime_generation=NULL WHERE conversation_id=?").bind(&conversation).execute(&mut *tx).await?;
     if owner.rows_affected() != 1 {
         return Err(invalid("connect_publication_owner_missing"));

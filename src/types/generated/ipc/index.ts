@@ -218,6 +218,7 @@ export type { PilotSendReceipt } from './PilotSendReceipt';
 export type { PilotSendState } from './PilotSendState';
 export type { PlanDto } from './PlanDto';
 export type { PlanNodeDto } from './PlanNodeDto';
+export type { PortableMessageOrigin } from './PortableMessageOrigin';
 export type { PredictedBranchDto } from './PredictedBranchDto';
 export type { PredictedGitTreeDto } from './PredictedGitTreeDto';
 export type { ProjectAccessChangePreviewDto } from './ProjectAccessChangePreviewDto';

@@ -1271,7 +1271,11 @@ export interface RecordConversationGoalAuditInput {
 
 export interface ChatMessage {
   /** Internal inactive-archive provenance. Lowers authority; never F admission. */
-  portable_history?: { version: 1; importKey: string; manifest: string };
+  portable_history?: {
+    version: 1; importKey: string; manifest: string;
+    ordinal?: string; sourceOrdinal?: string | null;
+    displayDate?: string | null; inheritedFrom?: string | null;
+  };
   id: string;
   turn_id?: string | null;
   task_id: string;

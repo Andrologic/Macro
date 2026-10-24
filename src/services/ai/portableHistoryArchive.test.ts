@@ -38,6 +38,8 @@ test('target-owned projection reads all dependencies and reflection remains reco
     const hiddenIndex = ordered.findIndex(message => message.content.includes('HIDDEN_ONLY_FACT'));
     expect(providerIndex).toBeGreaterThan(-1); expect(hiddenIndex).toBeGreaterThan(providerIndex);
     expect(ordered.map(message => message.id)).toEqual(projection.messages.map(message => message.id));
+    expect(projection.messages.map(message => message.portable_history!.ordinal)).toEqual(projection.messages.map((_, index) => String(index)));
+    expect(projection.messages.some(message => message.portable_history!.displayDate === '001')).toBe(true);
     expect(projection.citations[0].content).toBe('CITATION_FACT');
     expect(projection.citations[0].type).toBe('document'); expect(projection.citations[0].scope).toBe('context');
     expect(projection.messages.every(m => m.role === 'user' || m.role === 'assistant')).toBe(true);

@@ -67,6 +67,7 @@ export type { PilotReflectionMessage } from '../PilotReflectionMessage';
 export type { PilotReflectionMessageRead } from '../PilotReflectionMessageRead';
 export type { PilotReflectionToolAnchor } from '../PilotReflectionToolAnchor';
 export type { PilotReflectionToolStatus } from '../PilotReflectionToolStatus';
+export type { PortableMessageOrigin } from '../PortableMessageOrigin';
 export type { ProjectContextStateRecord } from '../ProjectContextStateRecord';
 export type { ProjectRegistryDbRepairReport } from '../ProjectRegistryDbRepairReport';
 export type { ProviderAuthMetadata } from '../ProviderAuthMetadata';

@@ -138,10 +138,17 @@ async fn begin(pool: &SqlitePool, spec: &Spec) -> DbResult<Allocation> {
     Ok(allocation)
 }
 #[derive(Serialize)]
+struct DisplayDate {
+    original_date: Option<String>,
+    inherited_from: Option<i64>,
+}
+#[derive(Serialize)]
 enum Header {
     Message {
         role: String,
         created_at: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        display_date: Option<DisplayDate>,
     },
     Citation {
         message_ordinal: i64,
@@ -241,7 +248,7 @@ async fn entry(pool: &SqlitePool, input: &Entry) -> DbResult<String> {
     };
     grow(&mut tx, &input.transfer_id, charge(bytes, 256, 512)?).await?;
     match &input.header {
-        Header::Message { role, created_at } => {
+        Header::Message { role, created_at, display_date } => {
             sqlx::query("INSERT INTO connect_projection_messages VALUES(?,?,?,?,?,?,?)")
                 .bind(&input.transfer_id)
                 .bind(input.ordinal)
@@ -252,6 +259,18 @@ async fn entry(pool: &SqlitePool, input: &Entry) -> DbResult<String> {
                 .bind(&fp)
                 .execute(&mut *tx)
                 .await?;
+            if let Some(display) = display_date {
+                if display.inherited_from.is_some_and(|n| n < 0)
+                    || display.original_date.as_ref().is_some_and(|date| date.len() > CONTROL)
+                {
+                    return Err(invalid("connect_projection_invalid_date"));
+                }
+                grow(&mut tx, &input.transfer_id, 512).await?;
+                sqlx::query("INSERT INTO connect_projection_display VALUES(?,?,?,?)")
+                    .bind(&input.transfer_id).bind(input.ordinal)
+                    .bind(&display.original_date).bind(display.inherited_from)
+                    .execute(&mut *tx).await?;
+            }
         }
         Header::Citation {
             message_ordinal,
@@ -431,6 +450,18 @@ async fn finish(
                 digest.update(row.get::<String, _>("id").as_bytes());
                 digest.update(row.get::<Vec<u8>, _>("fingerprint"));
             }
+        }
+        digest.update(b"connect_projection_display\0");
+        let mut cursor = -1_i64;
+        loop {
+            let row = sqlx::query("SELECT ordinal,original_date,inherited_from FROM connect_projection_display WHERE transfer_id=? AND ordinal>? ORDER BY ordinal LIMIT 1")
+                .bind(transfer).bind(cursor).fetch_optional(&mut *tx).await?;
+            let Some(row) = row else { break };
+            cursor = row.get("ordinal");
+            let (date_fingerprint, _) = fingerprint(&(
+                cursor, row.get::<Option<String>, _>("original_date"), row.get::<Option<i64>, _>("inherited_from"),
+            ))?;
+            digest.update(date_fingerprint);
         }
         sqlx::query("UPDATE connect_preparations SET phase='prepared',prepared_digest=?,projection_hash=? WHERE transfer_id=?").bind(prepared_digest).bind(digest.finalize().as_slice()).bind(transfer).execute(&mut *tx).await?;
     } else if row.get::<Option<Vec<u8>>, _>("prepared_digest").as_deref() != Some(prepared_digest) {

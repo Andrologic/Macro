@@ -466,6 +466,7 @@ const resolveQuestionnaireResponseEditSeed = (
   const responseMessage = messages.find(
     (message) =>
       message.id === responseMessageId &&
+      !message.portable_history &&
       message.role === "user" &&
       Boolean(message.questionnaire_response_summary),
   );
@@ -477,6 +478,7 @@ const resolveQuestionnaireResponseEditSeed = (
   const assistantMessage = messages.find(
     (message) =>
       message.id === summary.assistantMessageId &&
+      !message.portable_history &&
       message.role === "assistant" &&
       Boolean(message.questionnaire),
   );
@@ -561,6 +563,7 @@ export const resolveActiveConversationQuestionnaire = (
 
   for (let index = messages.length - 1; index >= 0; index -= 1) {
     const message = messages[index]!;
+    if (message.portable_history) continue;
     if (message.role === "user") {
       sawUserReplyAfterQuestionnaire = true;
       continue;
