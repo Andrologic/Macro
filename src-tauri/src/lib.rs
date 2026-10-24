@@ -105,6 +105,7 @@ pub mod pilot_file_contracts {
     };
 }
 mod connect_resources;
+mod connect;
 mod dev_overrides;
 mod diagnostics;
 pub mod host_telemetry;
@@ -515,6 +516,7 @@ pub fn run() {
         .manage(diagnostics::DiagnosticReportStore::default())
         .manage(AiState::default())
         .manage(ai::admitted_http::AdmittedHttp::default())
+        .manage(connect::TransferRuntime::default())
         .manage(db::chat_admission::runtime::ChatAdmissionRuntime::default())
         .manage(GitState::new())
         .manage(commands::mcp::McpRuntimeManager::production())
@@ -1148,6 +1150,7 @@ pub fn run() {
         } => {
             commands::chat_admission::retire_browser_from_native(app_handle, &label);
             commands::pilot_secrets::suspend("window_destroyed");
+            app_handle.state::<connect::TransferRuntime>().revoke();
         }
         tauri::RunEvent::ExitRequested { api, code, .. } if code.is_none() => {
             api.prevent_exit();
@@ -1163,6 +1166,9 @@ pub fn run() {
             app_quit_state.mark_quitting("exit-requested");
             commands::git::cancel_all_git_reviews();
             shutdown_mcp_runtime(app_handle);
+            if !tauri::async_runtime::block_on(app_handle.state::<connect::TransferRuntime>().shutdown()) {
+                tracing::warn!("Connect transport cleanup remains unreconciled");
+            }
             if tauri::async_runtime::block_on(secrets::blocking::shutdown()).is_err() {
                 tracing::warn!("Secret operation owner did not finish cleanly");
             }
@@ -1174,6 +1180,9 @@ pub fn run() {
             app_quit_state.mark_quitting("exit");
             commands::git::cancel_all_git_reviews();
             shutdown_mcp_runtime(app_handle);
+            if !tauri::async_runtime::block_on(app_handle.state::<connect::TransferRuntime>().shutdown()) {
+                tracing::warn!("Connect transport cleanup remains unreconciled");
+            }
             if tauri::async_runtime::block_on(secrets::blocking::shutdown()).is_err() {
                 tracing::warn!("Secret operation owner did not finish cleanly");
             }

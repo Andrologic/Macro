@@ -167,6 +167,7 @@ export interface MaybeCompactConversationParams {
   budgetPolicy?: ContextBudgetPolicy;
   forceCompaction?: boolean;
   forcePrune?: boolean;
+  summaryPolicy?: 'existing_only';
   generateSummary?: (input: SummaryGenerationInput) => Promise<string | null>;
   onCompactionStarted?: () => void;
 }
@@ -2197,6 +2198,7 @@ const buildCompactionState = async (params: {
   compactionPass?: CompactionPass;
   retainedUserTurns?: number;
   retainedRecentTokenBudget?: number;
+  summaryPolicy?: 'existing_only';
   generateSummary?: (input: SummaryGenerationInput) => Promise<string | null>;
 }): Promise<ConversationCompactionState | null> => {
   const boundaryIndex = getCompactionBoundaryIndex({
@@ -2230,6 +2232,8 @@ const buildCompactionState = async (params: {
   ) {
     return params.currentCompactionState;
   }
+
+  if (params.summaryPolicy === 'existing_only') throw new Error('preparation_requires_compaction');
 
   const compactableMessages = params.orderedMessages.slice(0, boundaryIndex + 1);
   const retainedMessages = params.orderedMessages.slice(boundaryIndex + 1);
@@ -2591,6 +2595,7 @@ export const maybeCompactConversation = async (
       compactionKind: params.mode,
       compactionPass,
       retainedRecentTokenBudget,
+      summaryPolicy: params.summaryPolicy,
       generateSummary: params.generateSummary,
     });
 
@@ -2691,6 +2696,7 @@ export const maybeCompactConversation = async (
       compactionPass,
       retainedUserTurns: 1,
       retainedRecentTokenBudget,
+      summaryPolicy: params.summaryPolicy,
       generateSummary: params.generateSummary,
     });
 
