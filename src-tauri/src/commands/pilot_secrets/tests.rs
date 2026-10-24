@@ -1283,7 +1283,7 @@ async fn private_bootstrap_real_relay_correlates_scope_and_keeps_controller_righ
     let ready = db.wait_until_ready_context().await.unwrap();
     let runtime = crate::connect::TransferRuntime::default();
     let budget = runtime.budget().unwrap();
-    let codec = runtime.source_codec(&executable("bun"), &std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../copilot-bridge/src/entry.ts"), &db).await.unwrap();
+    let codec = runtime.source_launcher(&executable("bun"), &std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../copilot-bridge/src/entry.ts"), &db).unwrap();
     let cancel = CancellationToken::new();
     let text = |value: &serde_json::Value, key: &str| value[key].as_str().unwrap().to_string();
     let fixture = |owner: &str, credentials: &str, controller: bool| {
@@ -1303,10 +1303,17 @@ async fn private_bootstrap_real_relay_correlates_scope_and_keeps_controller_righ
     let (manager, fake, intent) = fixture("a","a",false);
     let verified = transport::bootstrap_owned(manager.clone(), intent, &runtime, &codec, &ready, address, true, &cancel).await.unwrap();
     verified.check().await.unwrap();
+    let events = runtime.profile_events();
+    use crate::connect::codec::Profile;
+    assert_eq!(events.len(), 3);
+    assert_eq!((events[0].0, events[0].2), (Profile::Bootstrap, false));
+    assert_eq!(events[1], (Profile::Bootstrap, events[0].1, true));
+    assert_eq!((events[2].0, events[2].2), (Profile::Persistent, false));
+
     assert_eq!(fake.interactive.load(Ordering::SeqCst),0);
     assert_eq!(fake.resumes.load(Ordering::SeqCst),0);
     manager.policy_fixture().0.change(|| ()).unwrap();
-    assert_eq!(verified.check().await.err(),Some("policy_revoked"));drop(verified);
+    assert_eq!(verified.check().await.err(),Some("policy_revoked"));verified.close().await.unwrap();
     // A real second process rotates the same persistent policy epoch without
     // changing the first owner's local revision. A retained bootstrap must fail.
     let (manager, _, intent) = fixture("a","a",false);
@@ -1323,7 +1330,7 @@ async fn private_bootstrap_real_relay_correlates_scope_and_keeps_controller_righ
     drop(writer_input);
     assert!(tokio::time::timeout(std::time::Duration::from_secs(10), writer.wait()).await.unwrap().unwrap().success());
     assert_eq!(verified.check().await.err(), Some("policy_revoked"));
-    drop(verified);
+    verified.close().await.unwrap();
     let (manager, _, intent) = fixture("a","a",true);
     assert_eq!(transport::bootstrap_owned(manager,intent,&runtime,&codec,&ready,address,true,&cancel).await.err(),Some("authority_unavailable"));
     // B's token and instance key are both valid, in A's account. Selecting A's
@@ -1342,21 +1349,22 @@ async fn private_bootstrap_real_relay_correlates_scope_and_keeps_controller_righ
         assert_eq!(transport::bootstrap_owned(manager,intent,&runtime,&codec,&ready,address,true,&cancel).await.err(),Some(expected));
     }
     input.write_all(b"{\"mode\":\"normal\"}\n").await.unwrap();input.flush().await.unwrap();output.next_line().await.unwrap().unwrap();
-    let (manager, _, intent)=fixture("a","a",false);
-    let verified=transport::bootstrap_owned(manager.clone(),intent,&runtime,&codec,&ready,address,true,&cancel).await.unwrap();
     // Real /me serialization reads a short-lived session from synthetic SQLite.
     input.write_all(b"{\"shortSession\":true}\n").await.unwrap();input.flush().await.unwrap();output.next_line().await.unwrap().unwrap();
     let (short_manager, _, short_intent)=fixture("a","a",false);
     let short=transport::bootstrap_owned(short_manager.clone(),short_intent,&runtime,&codec,&ready,address,true,&cancel).await.unwrap();
     short.check().await.unwrap();
     tokio::time::sleep(std::time::Duration::from_millis(3100)).await;
-    assert_eq!(short.check().await.err(),Some("authority_expired"));drop(short);
+    assert_eq!(short.check().await.err(),Some("authority_expired"));short.close().await.unwrap();
     input.write_all(b"{\"restoreSession\":true}\n").await.unwrap();input.flush().await.unwrap();output.next_line().await.unwrap().unwrap();
+    let (manager, _, intent)=fixture("b","b",false);
+    let verified=transport::bootstrap_owned(manager.clone(),intent,&runtime,&codec,&ready,address,true,&cancel).await.unwrap();
     input.write_all(b"{\"revoke\":true}\n").await.unwrap();input.flush().await.unwrap();output.next_line().await.unwrap().unwrap();
+    runtime.revoke();assert_eq!(verified.check().await.err(),Some("transport_retired"));verified.close().await.unwrap();
+    let codec = runtime.source_launcher(&executable("bun"), &std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../copilot-bridge/src/entry.ts"), &db).unwrap();
     let (manager, _, intent)=fixture("a","a",false);
     assert_eq!(transport::bootstrap_owned(manager,intent,&runtime,&codec,&ready,address,true,&cancel).await.err(),Some("session_unavailable"));
-    runtime.revoke();assert_eq!(verified.check().await.err(),Some("transport_retired"));drop(verified);
-    codec.close().await.unwrap();assert!(runtime.shutdown().await);
+    assert!(runtime.shutdown().await);
     assert!(budget.reserve(crate::connect_resources::TRANSIT_INSTANCE_LIMIT).is_ok());
     input.write_all(b"{\"stop\":true}\n").await.unwrap();input.flush().await.unwrap();drop(input);
     assert!(tokio::time::timeout(std::time::Duration::from_secs(10),child.wait()).await.unwrap().unwrap().success());

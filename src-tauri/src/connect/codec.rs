@@ -20,6 +20,23 @@ pub(crate) static RAW_TURN: std::sync::LazyLock<std::sync::Arc<tokio::sync::Sema
 const STARTUP: u64 = 8 * PAGE as u64;
 type Result<T> = std::result::Result<T, &'static str>;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Profile { Bootstrap, Persistent }
+impl Profile {
+    pub(crate) fn command(self) -> &'static str {
+        match self { Self::Bootstrap => "connect-bootstrap", Self::Persistent => "connect-codec" }
+    }
+    pub(crate) fn accepts(self, op: u16) -> bool {
+        match self { Self::Bootstrap => op == 10, Self::Persistent => (1..=9).contains(&op) }
+    }
+    fn identity(self) -> &'static str {
+        match self {
+            Self::Bootstrap => include_str!("../../../copilot-bridge/src/connect-bootstrap.identity.json"),
+            Self::Persistent => include_str!("../../../copilot-bridge/src/connect-codec.identity.json"),
+        }
+    }
+}
+
 pub(crate) struct Bytes {
     data: Vec<u8>,
     _charge: TransitCharge,
@@ -115,7 +132,8 @@ pub(crate) struct Codec {
     raw_turn: Option<tokio::sync::OwnedSemaphorePermit>,
     bank: Option<TransitCharge>,
     _startup: TransitCharge,
-    _a1_module: TransitCharge,
+    _a1_module: Option<TransitCharge>,
+    profile: Profile,
     _database: ChatWorkLifetime,
     job: u64,
     lease: u64,
@@ -125,10 +143,11 @@ impl Codec {
         mut command: Command,
         budget: TransitInstance,
         lifetime: ChatWorkLifetime,
+        profile: Profile,
     ) -> Result<Self> {
         // Persistent generated A1 module reservation, held until Child retirement.
         // This is a logical module charge, not a bound on JSC code/VM or RSS.
-        let a1_module = budget.reserve(1_835_008).map_err(|_| "transit_limit")?;
+        let a1_module = if profile == Profile::Bootstrap { Some(budget.reserve(1_835_008).map_err(|_| "transit_limit")?) } else { None };
         let startup = budget.reserve(STARTUP).map_err(|_| "transit_limit")?;
         command
             .env_clear()
@@ -165,6 +184,7 @@ impl Codec {
             bank: None,
             _startup: startup,
             _a1_module: a1_module,
+            profile,
             _database: lifetime,
             job: 0,
             lease: 0,
@@ -216,6 +236,8 @@ impl Codec {
             .map_err(|_| "codec_eof")?;
         Ok(header)
     }
+    #[cfg(test)]
+    pub(crate) fn pid(&self) -> u32 { self.child.id().expect("live Child") }
     pub(crate) async fn hello(&mut self) -> Result<()> {
         #[derive(Deserialize)]
         #[serde(deny_unknown_fields)]
@@ -225,7 +247,10 @@ impl Codec {
             decision_resource_set_sha256: String,
             transit_resource_set_sha256: String,
             authority_resource_set_sha256: String,
-            a1_resource_set_sha256: String,
+            #[serde(default)]
+            a1_resource_set_sha256: Option<String>,
+            profile: String,
+            source_set_sha256: String,
         }
         let h = self
             .next(|h| h.exact(1, h.length, 0, 0, 0) && h.length > 0)
@@ -247,6 +272,8 @@ impl Codec {
         let digest = |value: &serde_json::Value| {
             format!("{:x}", Sha256::digest(serde_json::to_vec(value).unwrap()))
         };
+        let identity: serde_json::Value = serde_json::from_str(self.profile.identity()).map_err(|_| "codec_identity")?;
+        let expected = &identity["hello"];
         // Canonical generated dependency-set identity. A mismatch refuses before BEGIN.
         if a1["retained_units"] != 1_835_008u64
             || hello.version != "macro-connect-codec-1"
@@ -255,7 +282,12 @@ impl Codec {
                 != "6133c2d9ee204a175ae6c176b9c266d4378879c1637936ebd81e85daf4d0b97a"
             || hello.transit_resource_set_sha256 != digest(&transit["resources"])
             || hello.authority_resource_set_sha256 != digest(&authority["resources"])
-            || hello.a1_resource_set_sha256 != digest(&a1["resources"])
+            || hello.profile != expected["profile"]
+            || hello.source_set_sha256 != expected["source_set_sha256"]
+            || match self.profile {
+                Profile::Bootstrap => hello.a1_resource_set_sha256.as_deref() != Some(digest(&a1["resources"]).as_str()),
+                Profile::Persistent => hello.a1_resource_set_sha256.is_some(),
+            }
         {
             return Err("codec_identity");
         }
@@ -319,7 +351,7 @@ impl Codec {
         Ok(bank)
     }
     pub(crate) async fn run(&mut self, input: Input) -> Result<Output> {
-        if !(1..=10).contains(&input.op) || input.expectations.data.is_empty() {
+        if !self.profile.accepts(input.op) || input.expectations.data.is_empty() {
             return Err("codec_input");
         }
         self.job = self.job.checked_add(1).ok_or("codec_limit")?;

@@ -77,6 +77,8 @@ const artifactDirectory = 'src/services/macroPilot';
 export async function generateMacroPilotIdentity(projectRoot: string, generated: string): Promise<string> {
   const paths = [...schemaPaths, 'bun.lock', 'dev/generate-macro-pilot-validators.ts',
     'copilot-bridge/src/entry.ts', 'copilot-bridge/src/connect-codec.ts',
+    'copilot-bridge/src/connect-bootstrap.ts', 'copilot-bridge/src/connect-bootstrap-operations.ts',
+    'copilot-bridge/src/connect-codec-engine.ts',
     'copilot-bridge/src/connect-codec-operations.ts', 'copilot-bridge/src/connect-codec-values.ts', 'copilot-bridge/src/connect-codec-framing.ts',
     'src/services/macroPilot/protocol.ts', 'src/services/macroPilot/schemaValidators.ts',
     'src/services/macroPilot/schemaValidators.generated.d.mts', 'src/services/macroPilot/schemaValidators.notice.txt'];
@@ -103,14 +105,25 @@ export async function generateMacroPilotIdentity(projectRoot: string, generated:
   return JSON.stringify({ format: 'macro-pilot-a1-private-1', retained_units, inventory, resources }, null, 2) + '\n';
 }
 
-if (import.meta.main) {
-  const projectRoot = resolve(fileURLToPath(new URL('..', import.meta.url)));
+/** Shared freshness gate for A1 and every derived attestation. */
+export async function checkMacroPilotValidators(projectRoot: string): Promise<void> {
   const generated = await generateMacroPilotValidators(projectRoot);
   const identity = await generateMacroPilotIdentity(projectRoot, generated);
   for (const [name, source] of [['schemaValidators.generated.mjs', generated], ['schemaValidators.identity.json', identity]]) {
-    const path = resolve(projectRoot, artifactDirectory, name);
-    if (process.argv.includes('--check')) {
-      if (await readFile(path, 'utf8') !== source) throw new Error(`Stale Macro Pilot validator: ${name}`);
-    } else await writeFile(path, source);
+    if (await readFile(resolve(projectRoot, artifactDirectory, name), 'utf8') !== source) {
+      throw new Error(`Stale Macro Pilot validator: ${name}`);
+    }
+  }
+}
+
+if (import.meta.main) {
+  const projectRoot = resolve(fileURLToPath(new URL('..', import.meta.url)));
+  if (process.argv.includes('--check')) {
+    await checkMacroPilotValidators(projectRoot);
+  } else {
+    const generated = await generateMacroPilotValidators(projectRoot);
+    const identity = await generateMacroPilotIdentity(projectRoot, generated);
+    await writeFile(resolve(projectRoot, artifactDirectory, 'schemaValidators.generated.mjs'), generated);
+    await writeFile(resolve(projectRoot, artifactDirectory, 'schemaValidators.identity.json'), identity);
   }
 }
