@@ -1302,11 +1302,28 @@ async fn private_bootstrap_real_relay_correlates_scope_and_keeps_controller_righ
     };
     let (manager, fake, intent) = fixture("a","a",false);
     let verified = transport::bootstrap_owned(manager.clone(), intent, &runtime, &codec, &ready, address, true, &cancel).await.unwrap();
-    verified.check().unwrap();
+    verified.check().await.unwrap();
     assert_eq!(fake.interactive.load(Ordering::SeqCst),0);
     assert_eq!(fake.resumes.load(Ordering::SeqCst),0);
     manager.policy_fixture().0.change(|| ()).unwrap();
-    assert_eq!(verified.check().err(),Some("policy_revoked"));drop(verified);
+    assert_eq!(verified.check().await.err(),Some("policy_revoked"));drop(verified);
+    // A real second process rotates the same persistent policy epoch without
+    // changing the first owner's local revision. A retained bootstrap must fail.
+    let (manager, _, intent) = fixture("a","a",false);
+    let verified = transport::bootstrap_owned(manager.clone(), intent, &runtime, &codec, &ready, address, true, &cancel).await.unwrap();
+    verified.check().await.unwrap();
+    let (_, policy_directory) = manager.policy_fixture();
+    let mut writer = tokio::process::Command::new(std::env::current_exe().unwrap())
+        .args(["--exact", "commands::pilot_secrets::tests::cooperative_pilot_writer_process", "--ignored", "--nocapture"])
+        .env("MACRO_SYNTHETIC_POLICY_DIRECTORY", policy_directory)
+        .stdin(std::process::Stdio::piped()).stdout(std::process::Stdio::null())
+        .kill_on_drop(true).spawn().unwrap();
+    let mut writer_input = writer.stdin.take().unwrap();
+    writer_input.write_all(b"write\n").await.unwrap();
+    drop(writer_input);
+    assert!(tokio::time::timeout(std::time::Duration::from_secs(10), writer.wait()).await.unwrap().unwrap().success());
+    assert_eq!(verified.check().await.err(), Some("policy_revoked"));
+    drop(verified);
     let (manager, _, intent) = fixture("a","a",true);
     assert_eq!(transport::bootstrap_owned(manager,intent,&runtime,&codec,&ready,address,true,&cancel).await.err(),Some("authority_unavailable"));
     // B's token and instance key are both valid, in A's account. Selecting A's
@@ -1326,11 +1343,19 @@ async fn private_bootstrap_real_relay_correlates_scope_and_keeps_controller_righ
     }
     input.write_all(b"{\"mode\":\"normal\"}\n").await.unwrap();input.flush().await.unwrap();output.next_line().await.unwrap().unwrap();
     let (manager, _, intent)=fixture("a","a",false);
-    let verified=transport::bootstrap_owned(manager,intent,&runtime,&codec,&ready,address,true,&cancel).await.unwrap();
+    let verified=transport::bootstrap_owned(manager.clone(),intent,&runtime,&codec,&ready,address,true,&cancel).await.unwrap();
+    // Real /me serialization reads a short-lived session from synthetic SQLite.
+    input.write_all(b"{\"shortSession\":true}\n").await.unwrap();input.flush().await.unwrap();output.next_line().await.unwrap().unwrap();
+    let (short_manager, _, short_intent)=fixture("a","a",false);
+    let short=transport::bootstrap_owned(short_manager.clone(),short_intent,&runtime,&codec,&ready,address,true,&cancel).await.unwrap();
+    short.check().await.unwrap();
+    tokio::time::sleep(std::time::Duration::from_millis(3100)).await;
+    assert_eq!(short.check().await.err(),Some("authority_expired"));drop(short);
+    input.write_all(b"{\"restoreSession\":true}\n").await.unwrap();input.flush().await.unwrap();output.next_line().await.unwrap().unwrap();
     input.write_all(b"{\"revoke\":true}\n").await.unwrap();input.flush().await.unwrap();output.next_line().await.unwrap().unwrap();
     let (manager, _, intent)=fixture("a","a",false);
     assert_eq!(transport::bootstrap_owned(manager,intent,&runtime,&codec,&ready,address,true,&cancel).await.err(),Some("session_unavailable"));
-    runtime.revoke();assert_eq!(verified.check().err(),Some("transport_retired"));drop(verified);
+    runtime.revoke();assert_eq!(verified.check().await.err(),Some("transport_retired"));drop(verified);
     codec.close().await.unwrap();assert!(runtime.shutdown().await);
     assert!(budget.reserve(crate::connect_resources::TRANSIT_INSTANCE_LIMIT).is_ok());
     input.write_all(b"{\"stop\":true}\n").await.unwrap();input.flush().await.unwrap();drop(input);

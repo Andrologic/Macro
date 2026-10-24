@@ -58,13 +58,16 @@ impl EmissionLease<'_> {
     }
 }
 
-/// Revocation observation only. It grants no permission to emit or read stores.
+/// Local revocation signal plus an explicit persistent freshness check.
+/// Neither operation grants emission authority. Only consume_private does that.
+#[derive(Clone)]
 pub(crate) struct PolicyObservation {
     owner: Arc<PolicyOwner>,
     stamp: PolicyStamp,
 }
 impl PolicyObservation {
-    pub(crate) fn check(&self) -> Result<(), SecretError> {
+    /// In-process cancellation only; this does not observe another process.
+    pub(crate) fn check_local(&self) -> Result<(), SecretError> {
         if self.owner.boot != self.stamp.boot
             || self.owner.quiescent_revision()? != self.stamp.revision
         {
@@ -72,12 +75,28 @@ impl PolicyObservation {
         }
         Ok(())
     }
-    pub(crate) async fn revoked(&self) {
+    /// Read the persistent epoch under the existing gate/file owner, on its
+    /// joined blocking worker. No guards survive this point-in-time check.
+    pub(crate) async fn check_fresh(&self) -> Result<(), SecretError> {
+        self.check_local()?;
+        let observation = self.clone();
+        super::blocking::run(move || {
+            observation.owner.capture(|_, stamp| {
+                if stamp != observation.stamp {
+                    return Err(SecretError::PolicyUnavailable);
+                }
+                Ok(())
+            })
+        })
+        .await??;
+        self.check_local()
+    }
+    pub(crate) async fn revoked_locally(&self) {
         loop {
             let changed = self.owner.changed.notified();
             tokio::pin!(changed);
             changed.as_mut().enable();
-            if self.check().is_err() {
+            if self.check_local().is_err() {
                 return;
             }
             changed.await;
@@ -480,7 +499,7 @@ impl PolicyOwner {
             owner: self.clone(),
             stamp: snapshot.stamp,
         };
-        observation.check()?;
+        observation.check_local()?;
         Ok(observation)
     }
 

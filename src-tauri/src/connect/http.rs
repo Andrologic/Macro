@@ -858,7 +858,7 @@ impl Pending {
         observation: &crate::secrets::policy::PolicyObservation,
         cancel: &CancellationToken,
     ) -> Result<Response> {
-        observation.check().map_err(|_| "policy_revoked")?;
+        observation.check_local().map_err(|_| "policy_revoked")?;
         let operation = self.prepared.lane.as_mut().ok_or("http_closed")?.receive(
             &self.prepared.owner.budget,
             self.reply,
@@ -869,10 +869,10 @@ impl Pending {
             biased;
             _ = cancel.cancelled() => return Err("http_cancelled"),
             _ = self.prepared.owner.cancel.cancelled() => return Err("http_cancelled"),
-            _ = observation.revoked() => return Err("policy_revoked"),
+            _ = observation.revoked_locally() => return Err("policy_revoked"),
             result = tokio::time::timeout(Duration::from_secs(30), operation) => result.map_err(|_| "http_timeout")?.map_err(|error| if error == "http_body_limit" { "resource_limit" } else { error })?,
         };
-        observation.check().map_err(|_| "policy_revoked")?;
+        observation.check_local().map_err(|_| "policy_revoked")?;
         // This private bootstrap retires its lane after each reply. No implicit
         // retry, idle driver task or response lifetime hides a network owner.
         Ok(response)

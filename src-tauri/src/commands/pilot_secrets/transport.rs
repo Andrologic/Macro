@@ -66,14 +66,20 @@ pub(crate) struct VerifiedTransport {
     _charge: TransitCharge,
 }
 impl VerifiedTransport {
-    pub(crate) fn check(&self) -> Result<()> {
+    /// Fresh at the persistent policy read; future effects still need consume_policy.
+    pub(crate) async fn check(&self) -> Result<()> {
+        self.check_local()?;
+        self.observation.check_fresh().await.map_err(|_| "policy_revoked")?;
+        self.check_local()
+    }
+    fn check_local(&self) -> Result<()> {
         if self.cancel.is_cancelled() {
             return Err("http_cancelled");
         }
         if self.runtime.generation()? != self.generation {
             return Err("transport_retired");
         }
-        self.observation.check().map_err(|_| "policy_revoked")?;
+        self.observation.check_local().map_err(|_| "policy_revoked")?;
         if Instant::now() >= self.deadline
             || self
                 .session
@@ -292,7 +298,7 @@ pub(super) async fn bootstrap_owned<B: Vault + 'static>(
     drop(output);
     drop(response);
     drop(facts);
-    observation.check().map_err(|_| "policy_revoked")?;
+    observation.check_local().map_err(|_| "policy_revoked")?;
     let request_id = uuid::Uuid::new_v4();
     let producer = matches!(intent.scope, Scope::Producer { .. });
     let scope = match intent.scope {
@@ -383,6 +389,6 @@ pub(super) async fn bootstrap_owned<B: Vault + 'static>(
         _snapshot: snapshot,
         _charge: retained,
     };
-    verified.check()?;
+    verified.check().await?;
     Ok(verified)
 }
