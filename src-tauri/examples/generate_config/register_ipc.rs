@@ -3,6 +3,13 @@ use macro_lib::ipc_contracts;
 
 /// Native wire roots. The registry follows their Rust dependencies.
 pub fn register(registry: &mut Registry) -> Result<(), String> {
+    registry.add::<ipc_contracts::archive::ArchiveOpenInput>("archive")?;
+    registry.add::<ipc_contracts::archive::ArchiveReadHandle>("archive")?;
+    registry.add::<ipc_contracts::archive::ArchivePageInput>("archive")?;
+    registry.add::<ipc_contracts::archive::ArchivePage>("archive")?;
+    registry.add::<ipc_contracts::archive::ArchiveMaterializeInput>("archive")?;
+    registry.add::<ipc_contracts::archive::ArchiveBacking>("archive")?;
+    registry.add::<ipc_contracts::archive::ArchiveReleaseInput>("archive")?;
     registry.add::<macro_lib::pilot_file_contracts::PilotInspectAttachmentsInput>("pilot_files")?;
     registry.add::<macro_lib::pilot_file_contracts::PilotAttachmentMetadata>("pilot_files")?;
     registry.add::<macro_lib::host_telemetry::HostTelemetryDto>("host_telemetry")?;

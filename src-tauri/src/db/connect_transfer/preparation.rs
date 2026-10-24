@@ -51,6 +51,7 @@ pub(super) async fn grow(db: &mut SqliteConnection, transfer: &str, extra: i64) 
     Ok(())
 }
 async fn mutable(db: &mut SqliteConnection, transfer: &str, phase: &str) -> DbResult<()> {
+    super::deletion::require_transfer(db, transfer).await?;
     let valid:i64=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM connect_preparations p JOIN connect_transfers t USING(transfer_id) WHERE transfer_id=? AND p.phase=? AND t.restore_hold=0 AND t.phase<>'reconciliation_required' AND t.resolution IS NULL AND t.terminal_outcome IS NULL)").bind(transfer).bind(phase).fetch_one(db).await?;
     if valid != 1 {
         return Err(invalid("connect_preparation_not_mutable"));
@@ -58,6 +59,7 @@ async fn mutable(db: &mut SqliteConnection, transfer: &str, phase: &str) -> DbRe
     Ok(())
 }
 pub(super) async fn check_import(db: &mut SqliteConnection, transfer: &str) -> DbResult<()> {
+    super::deletion::require_transfer(db, transfer).await?;
     let row=sqlx::query("SELECT p.import_id,p.import_revision,p.storage_manifest,p.mapping_hash,p.local_generation,p.source_generation,p.target_generation,t.inactive_import_id,t.source_generation AS actual_source,t.target_generation AS actual_target,i.phase,i.revision,i.mapping_hash AS actual_mapping,i.begin_json FROM connect_preparations p JOIN connect_transfers t USING(transfer_id) JOIN e_inactive_imports i ON i.id=p.import_id WHERE p.transfer_id=?")
         .bind(transfer).fetch_one(&mut *db).await?;
     let begin: crate::db::inactive_storage::Begin =
@@ -115,6 +117,7 @@ async fn begin(pool: &SqlitePool, spec: &Spec) -> DbResult<Allocation> {
     let mut lease = lease(pool).await?;
     let mut tx = lease.begin_with("BEGIN IMMEDIATE").await?;
     validate_schema(&mut tx).await?;
+    super::deletion::require_transfer(&mut tx, &spec.transfer_id).await?;
     if let Some(row)=sqlx::query("SELECT canonical_import_id,target_conversation_id,fingerprint FROM connect_preparations WHERE transfer_id=?").bind(&spec.transfer_id).fetch_optional(&mut *tx).await? {
         if row.get::<Vec<u8>,_>("fingerprint")!=fp {return Err(invalid("connect_preparation_conflict"));}
         let result=Allocation{canonical_import_id:row.get("canonical_import_id"),conversation_id:row.get("target_conversation_id"),fingerprint:fp};
@@ -409,6 +412,7 @@ async fn finish(
     let mut lease = lease(pool).await?;
     let mut tx = lease.begin_with("BEGIN IMMEDIATE").await?;
     validate_schema(&mut tx).await?;
+    super::deletion::require_transfer(&mut tx, transfer).await?;
     let row=sqlx::query("SELECT fingerprint,phase,prepared_digest,message_count,citation_count,asset_count FROM connect_preparations WHERE transfer_id=?").bind(transfer).fetch_one(&mut *tx).await?;
     if row.get::<Vec<u8>, _>("fingerprint") != expected {
         return Err(invalid("connect_preparation_conflict"));
@@ -488,6 +492,7 @@ async fn pin(pool: &SqlitePool, input: &PinWrite) -> DbResult<()> {
     let mut lease = lease(pool).await?;
     let mut tx = lease.begin_with("BEGIN IMMEDIATE").await?;
     validate_schema(&mut tx).await?;
+    super::deletion::require_transfer(&mut tx, &input.transfer_id).await?;
     let row=sqlx::query("SELECT fingerprint,local_generation,configuration_digest,preparators_digest,prepared_digest,projection_hash,pin_fingerprint FROM connect_preparations WHERE transfer_id=?").bind(&input.transfer_id).fetch_one(&mut *tx).await?;
     if row.get::<Vec<u8>, _>("fingerprint") != input.preparation_fingerprint
         || row.get::<String, _>("local_generation") != input.local_generation
@@ -515,4 +520,4 @@ async fn pin(pool: &SqlitePool, input: &PinWrite) -> DbResult<()> {
 
 #[cfg(test)]
 #[path = "publication_tests.rs"]
-mod tests;
+pub(in crate::db::connect_transfer) mod tests;

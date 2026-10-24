@@ -578,11 +578,53 @@ pub async fn delete_conversation(pool: &SqlitePool, id: &str) -> DbResult<()> {
 }
 
 pub async fn delete_conversations(pool: &SqlitePool, ids: &[String]) -> DbResult<()> {
+    let mut lease = super::connect_transfer::deletion_lease(pool).await?;
+    use sqlx::Connection;
+    let mut tx = lease.begin_with("BEGIN IMMEDIATE").await?;
+    delete_conversations_in(&mut tx, ids, None, None).await?;
+    tx.commit().await?;
+    lease.committed = true;
+    Ok(())
+}
+
+pub(crate) async fn delete_conversations_admitted(owner: &crate::core::db_state::DbPool, ids: &[String]) -> DbResult<()> {
+    delete_conversations_ready(owner,ids,None).await
+}
+
+pub(crate) async fn delete_conversations_with_readers(owner: &crate::core::db_state::DbPool, ids: &[String], reader: &super::connect_transfer::reader_runtime::ArchiveReaderRuntime) -> DbResult<()> {
+    delete_conversations_ready(owner,ids,Some(reader)).await
+}
+
+async fn delete_conversations_ready(owner: &crate::core::db_state::DbPool, ids: &[String], reader: Option<&super::connect_transfer::reader_runtime::ArchiveReaderRuntime>) -> DbResult<()> {
+    let ready = owner.source_ready(None).await.map_err(|_| DbError::Validation("stale_revision".into()))?;
+    let mut lease = super::connect_transfer::deletion_lease(&ready.ready.pool).await?;
+    use sqlx::Connection;
+    let mut tx = lease.begin_with("BEGIN IMMEDIATE").await?;
+    ready.ready.check_source_schema(&mut tx).await?;
+    delete_conversations_in(&mut tx, ids, Some(&ready.ready.catalog_generation), reader).await?;
+    #[cfg(test)]
+    local_deletion_checkpoint("before_commit", ids);
+    tx.commit().await?;
+    lease.committed = true;
+    #[cfg(test)]
+    local_deletion_checkpoint("after_commit", ids);
+    Ok(())
+}
+
+#[cfg(test)]
+fn local_deletion_checkpoint(phase: &str, ids: &[String]) {
+    if std::env::var("MACRO_LOCAL_DELETION_CRASH_PHASE").ok().as_deref() == Some(phase)
+        && std::env::var("MACRO_LOCAL_DELETION_CRASH_CONVERSATION").ok()
+            .is_some_and(|conversation| ids.contains(&conversation)) {
+        std::process::exit(92);
+    }
+}
+
+async fn delete_conversations_in(db: &mut SqliteConnection, ids: &[String], generation: Option<&str>, reader: Option<&super::connect_transfer::reader_runtime::ArchiveReaderRuntime>) -> DbResult<()> {
     if ids.is_empty() {
         return Ok(());
     }
 
-    let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
     let original_placeholders = vec!["?"; ids.len()].join(", ");
     let child_query = format!(
         "SELECT child_conversation_id FROM agent_runs WHERE agent_profile = 'goal_auditor' AND child_conversation_id IS NOT NULL AND parent_conversation_id IN ({})",
@@ -593,9 +635,12 @@ pub async fn delete_conversations(pool: &SqlitePool, ids: &[String]) -> DbResult
         children = children.bind(id);
     }
     let mut owned_ids = ids.to_vec();
-    owned_ids.extend(children.fetch_all(&mut *tx).await?);
+    owned_ids.extend(children.fetch_all(&mut *db).await?);
     owned_ids.sort();
     owned_ids.dedup();
+    // Covers auditor-owned child conversations too, under the same writer.
+    // Existing application backings must retire before payload deletion.
+    let _readers=reader.map(|reader|reader.deleting(&owned_ids)).transpose()?;
     let ids = &owned_ids;
     let placeholders = vec!["?"; ids.len()].join(", ");
     let query = format!("DELETE FROM conversations WHERE id IN ({})", placeholders);
@@ -604,6 +649,7 @@ pub async fn delete_conversations(pool: &SqlitePool, ids: &[String]) -> DbResult
     // can replay them. They have no foreign key, therefore delete them in the
     // same transaction as their owning conversations.
     for id in ids {
+        super::connect_transfer::deletion::begin_in(db, id, generation).await?;
         for key in [
             format!("agentCodeCheckpoints:{}", id),
             format!("agentCodeReplayRecovery:{}", id),
@@ -611,7 +657,7 @@ pub async fn delete_conversations(pool: &SqlitePool, ids: &[String]) -> DbResult
         ] {
             sqlx::query("DELETE FROM app_settings WHERE key = ?")
                 .bind(key)
-                .execute(&mut *tx)
+                .execute(&mut *db)
                 .await?;
         }
     }
@@ -620,8 +666,10 @@ pub async fn delete_conversations(pool: &SqlitePool, ids: &[String]) -> DbResult
     for id in ids {
         statement = statement.bind(id);
     }
-    statement.execute(&mut *tx).await?;
-    tx.commit().await?;
+    statement.execute(&mut *db).await?;
+    for id in ids {
+        super::connect_transfer::deletion::finish_in(db, id).await?;
+    }
 
     Ok(())
 }

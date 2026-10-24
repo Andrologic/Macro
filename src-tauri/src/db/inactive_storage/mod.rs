@@ -74,6 +74,7 @@ impl InactiveStorage {
         }
         let row=sqlx::query("SELECT * FROM e_inactive_imports WHERE identity_key=? AND length(CAST(begin_json AS BLOB))<=4096")
             .bind(key).fetch_optional(&mut **tx).await.map_err(db)?.ok_or("not_found")?;
+        crate::db::connect_transfer::deletion::require_import(&mut **tx, row.get("id")).await.map_err(|_| "connect_content_removed")?;
         let begin_json: String = row.get("begin_json");
         let begin: Begin = parse(begin_json.as_bytes())?;
         if begin.identity != authority.identity || begin.bindings != authority.bindings {

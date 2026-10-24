@@ -1425,6 +1425,10 @@ fn crc32(b: &[u8]) -> u32 {
     !c
 }
 fn validate_png(b: &[u8]) -> Result<()> {
+    png_dimensions(b)?;
+    tauri::image::Image::from_bytes(b).map(|_| ()).map_err(|_| "validation_failed".into())
+}
+fn png_dimensions(b: &[u8]) -> Result<(u32,u32)> {
     if !b.starts_with(b"\x89PNG\r\n\x1a\n") {
         return invalid();
     }
@@ -1460,9 +1464,7 @@ fn validate_png(b: &[u8]) -> Result<()> {
                 if n != 0 || !data || p + 12 != b.len() {
                     return invalid();
                 }
-                return tauri::image::Image::from_bytes(b)
-                    .map(|_| ())
-                    .map_err(|_| "validation_failed".into());
+                return Ok((be32(&b[16..20]),be32(&b[20..24])));
             }
             b"acTL" | b"fcTL" | b"fdAT" => return invalid(),
             _ => {
@@ -1478,12 +1480,14 @@ fn validate_png(b: &[u8]) -> Result<()> {
     }
     invalid()
 }
-fn validate_jpeg(b: &[u8]) -> Result<()> {
+fn validate_jpeg(b: &[u8]) -> Result<()> { jpeg_dimensions(b).map(|_| ()) }
+fn jpeg_dimensions(b: &[u8]) -> Result<(u32,u32)> {
     if !b.starts_with(&[255, 216]) || !b.ends_with(&[255, 217]) {
         return invalid();
     }
     let mut p = 2;
     let mut frame = false;
+    let mut size = None;
     let mut scan = false;
     while p < b.len() {
         if b[p] != 255 {
@@ -1499,7 +1503,7 @@ fn validate_jpeg(b: &[u8]) -> Result<()> {
         p += 1;
         if marker == 217 {
             return if frame && scan && p == b.len() {
-                Ok(())
+                size.ok_or_else(||"validation_failed".into())
             } else {
                 invalid()
             };
@@ -1519,6 +1523,7 @@ fn validate_jpeg(b: &[u8]) -> Result<()> {
                 u16::from_be_bytes([b[p + 5], b[p + 6]]) as u32,
                 u16::from_be_bytes([b[p + 3], b[p + 4]]) as u32,
             )?;
+            size=Some((u16::from_be_bytes([b[p+5],b[p+6]]) as u32,u16::from_be_bytes([b[p+3],b[p+4]]) as u32));
             if n != 8 + 3 * b[p + 7] as usize || b[p + 2] != 8 {
                 return invalid();
             }
@@ -1624,7 +1629,8 @@ fn validate_gif(b: &[u8]) -> Result<()> {
     }
     invalid()
 }
-fn validate_webp(b: &[u8]) -> Result<()> {
+fn validate_webp(b: &[u8]) -> Result<()> { webp_dimensions(b).map(|_| ()) }
+fn webp_dimensions(b: &[u8]) -> Result<(u32,u32)> {
     if b.len() < 20
         || &b[..4] != b"RIFF"
         || &b[8..12] != b"WEBP"
@@ -1634,6 +1640,7 @@ fn validate_webp(b: &[u8]) -> Result<()> {
     }
     let mut p = 12;
     let mut image = false;
+    let mut size=(0_u32,0_u32);
     while p + 8 <= b.len() {
         let n = le32(&b[p + 4..p + 8]) as usize;
         if n > b.len() - p - 8 {
@@ -1646,6 +1653,7 @@ fn validate_webp(b: &[u8]) -> Result<()> {
                     return invalid();
                 }
                 dimensions(le16(&body[6..8]) & 16383, le16(&body[8..10]) & 16383)?;
+                size=(size.0.max(le16(&body[6..8]) & 16383),size.1.max(le16(&body[8..10]) & 16383));
                 image = true;
             }
             b"VP8L" => {
@@ -1657,6 +1665,7 @@ fn validate_webp(b: &[u8]) -> Result<()> {
                     return invalid();
                 }
                 dimensions((v & 16383) + 1, ((v >> 14) & 16383) + 1)?;
+                size=(size.0.max((v & 16383)+1),size.1.max(((v>>14)&16383)+1));
                 image = true;
             }
             b"VP8X" => {
@@ -1666,6 +1675,7 @@ fn validate_webp(b: &[u8]) -> Result<()> {
                 let w = body[4] as u32 | ((body[5] as u32) << 8) | ((body[6] as u32) << 16);
                 let h = body[7] as u32 | ((body[8] as u32) << 8) | ((body[9] as u32) << 16);
                 dimensions(w + 1, h + 1)?;
+                size=(size.0.max(w+1),size.1.max(h+1));
             }
             b"ALPH" | b"ICCP" | b"EXIF" | b"XMP " => {}
             _ => return invalid(),
@@ -1673,10 +1683,19 @@ fn validate_webp(b: &[u8]) -> Result<()> {
         p += 8 + n + (n & 1);
     }
     if image && p == b.len() {
-        Ok(())
+        Ok(size)
     } else {
         invalid()
     }
+}
+
+/// Existing file-format checks without raster allocation. Archive readers must
+/// admit the returned decoded dimensions before invoking a decoder.
+pub(crate) fn archive_image_dimensions(mime: &str, bytes: &[u8]) -> Result<(u32,u32)> {
+    match mime { "image/png"=>png_dimensions(bytes), "image/jpeg"=>jpeg_dimensions(bytes), "image/webp"=>webp_dimensions(bytes), _=>invalid() }
+}
+pub(crate) fn validate_archive_image(mime: &str, bytes: &[u8]) -> Result<()> {
+    match mime { "image/png"=>validate_png(bytes), "image/jpeg"=>validate_jpeg(bytes), "image/webp"=>validate_webp(bytes), _=>invalid() }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ts_rs::TS)]
@@ -1796,6 +1815,7 @@ fn citation_scope(s: &str) -> Result<PilotCitationScope> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use sqlx::Connection;
     use std::sync::atomic::{AtomicI64, Ordering};
     const START: i64 = 1_800_000_000_000;
     async fn fixture() -> (SqlitePool, PilotFileScope, AtomicI64) {
@@ -1837,6 +1857,17 @@ mod tests {
             .execute(&p)
             .await
             .unwrap();
+        // These tests isolate the historical file owner before 017. Its shared
+        // budget must still see the current empty retention tables. Copy their
+        // real DDL from the trusted reference, without adding a second schema
+        // definition or pretending this fixture admits Global Chat mutations.
+        let mut reference = crate::db::connect_transfer::reference(true).await.unwrap();
+        let tables: Vec<String> = sqlx::query_scalar("SELECT sql FROM sqlite_master WHERE type='table' AND (name GLOB 'connect_*' OR name='conversation_portable_archives') ORDER BY name")
+            .fetch_all(&mut reference).await.unwrap();
+        for ddl in tables {
+            sqlx::raw_sql(sqlx::AssertSqlSafe(ddl)).execute(&p).await.unwrap();
+        }
+        reference.close().await.unwrap();
         sqlx::query("INSERT INTO conversations(id,title,scope_mode,created_at,updated_at) VALUES ('conversation','Synthetic','Chat','now','now')").execute(&p).await.unwrap();
         let s = PilotFileScope {
             account_id: "account".into(),

@@ -78,6 +78,27 @@ pub(in crate::db::connect_transfer) async fn inspected(
     .unwrap();
     (owner, runtime, handle, input)
 }
+
+/// Storage-only chain fixture. Reservation fields remain private to journal;
+/// reconciliation and freezing still use the real native 017 owner.
+pub(in crate::db::connect_transfer) async fn reserve_published_as_source(
+    pool: &SqlitePool, conversation: &str,
+) -> (DbPool, String) {
+    let owner=DbPool::default(); owner.set_ready(pool.clone()).await.unwrap();
+    let runtime=ChatAdmissionRuntime::default();
+    runtime.open_browser(owner.clone(),"chain-window","chain-browser").await.unwrap();
+    let inspection=runtime.begin_reconciliation(&owner,"chain-window","chain-browser",conversation).await.unwrap();
+    runtime.complete_reconciliation(&owner,"chain-window","chain-browser",&inspection,&BrowserInspection {
+        queue:vec![],unsaved:vec![],approvals:vec![],questions:vec![],drafts:vec![],steers:vec![],
+    }).await.unwrap();
+    let mut outgoing=input(pool).await;
+    outgoing.source_conversation_id=conversation.into();
+    outgoing.source_instance_id="target-pc".into(); outgoing.target_instance_id="third-pc".into();
+    outgoing.expected_ownership_revision=sqlx::query_scalar::<_,i64>("SELECT revision+1 FROM chat_admission_owners WHERE conversation_id=?").bind(conversation).fetch_one(pool).await.unwrap();
+    outgoing.expected_content=db::conversation_content::conversation_content_version(pool,conversation).await.unwrap();
+    runtime.reserve_reconciled_transfer(&owner,"chain-window","chain-browser",&inspection,&outgoing).await.unwrap();
+    (owner,outgoing.transfer_id)
+}
 #[tokio::test]
 async fn connect_transfer_freeze_and_identity_commit_together_with_real_017_guards() {
     let (_dir, pool) = fixture().await;

@@ -24,6 +24,7 @@ pub(crate) async fn chat_admission_close_browser(
 pub(crate) fn retire_browser_from_native(app: &tauri::AppHandle, caller: &str) {
     let Some(runtime) = app.try_state::<ChatAdmissionRuntime>() else { return; };
     let page = runtime.invalidate_page(caller);
+    if let Some(reader)=app.try_state::<crate::db::connect_transfer::reader_runtime::ArchiveReaderRuntime>() {reader.retire_caller(caller);}
     let app = app.clone();
     let caller = caller.to_owned();
     tauri::async_runtime::spawn(async move {

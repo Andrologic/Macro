@@ -520,4 +520,20 @@ async fn connect_transfer_capture_lease_survives_ttl_and_restart_without_opening
         .execute(&pool)
         .await
         .is_err());
+    let owner=DbPool::default();owner.set_ready(pool.clone()).await.unwrap();
+    let capture=authorized(owner.clone(),receipt.capture_id.clone(),Mode::SealedRead,clock).await;
+    assert_eq!(capture.status().await.unwrap().phase,2);
+    assert!(!capture.readback(None,32).await.unwrap().fragments.is_empty());
+    crate::db::connect_transfer::commit_source_fixture(&pool,"00000000-0000-4000-8000-000000000002").await;
+    crate::db::repository::delete_conversations_admitted(&owner,&["s".into()]).await.unwrap();
+    assert_eq!(capture.status().await.unwrap_err(),"connect_content_removed");
+    assert_eq!(capture.readback(None,32).await.unwrap_err(),"connect_content_removed");
+    capture.authority.as_ref().unwrap().write().await.mode=Mode::Continue;
+    assert_eq!(capture.seal_raw().await.unwrap_err(),"connect_content_removed");
+    for table in ["e_source_fields","e_source_fragments","e_source_relations"] {
+        assert_eq!(sqlx::query_scalar::<_,i64>(sqlx::AssertSqlSafe(format!("SELECT COUNT(*) FROM {table}"))).fetch_one(&pool).await.unwrap(),0,"{table}");
+    }
+    assert_eq!(sqlx::query_scalar::<_,i64>("SELECT COUNT(*) FROM e_source_captures WHERE charge_bytes=216+length(CAST(binding_json AS BLOB))+length(manifest_hash)").fetch_one(&pool).await.unwrap(),1);
+    assert_eq!(sqlx::query_scalar::<_,String>("SELECT mode FROM chat_admission_owners WHERE conversation_id='s'").fetch_one(&pool).await.unwrap(),"ceded");
+    owner.set_initializing().await; owner.set_ready(pool.clone()).await.unwrap();
 }

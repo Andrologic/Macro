@@ -2,12 +2,18 @@
 //! terminal constructor exists here. The storage inputs are not authority.
 #![allow(dead_code)]
 mod journal;
+pub(in crate::db) mod deletion;
 mod preparation;
 mod publication;
 mod reader;
+mod reader_resources;
+pub(crate) mod reader_types;
+pub(crate) mod reader_runtime;
 mod schema;
 mod staging;
 mod terminal;
+#[cfg(test)]
+pub(in crate::db) use terminal::commit_source_fixture;
 
 use super::{preparation_lease::Lease, DbError, DbResult};
 use serde::Serialize;
@@ -17,6 +23,7 @@ use sqlx::{SqliteConnection, SqlitePool};
 pub(super) use journal::Reservation;
 pub(super) use journal::{reserve_source, LocalReservation};
 pub(super) use schema::validate_schema;
+pub(in crate::db) use schema::reference;
 pub(crate) use schema::{remove_publication_reference_in, remove_reference_schema_in, remove_reader_reference_in};
 const CONTROL: usize = 98_304;
 fn invalid(code: &str) -> DbError {
@@ -58,7 +65,7 @@ fn fingerprint<T: Serialize>(value: &T) -> DbResult<(Vec<u8>, i64)> {
 fn charge(payload: i64, indexes: i64, fixed: i64) -> DbResult<i64> {
     add(add(payload, indexes)?, fixed)
 }
-async fn lease(pool: &SqlitePool) -> DbResult<Lease> {
+pub(in crate::db) async fn lease(pool: &SqlitePool) -> DbResult<Lease> {
     let mut lease = Lease::new(pool.acquire().await?);
     sqlx::query("PRAGMA recursive_triggers=ON")
         .execute(&mut *lease)
@@ -68,6 +75,7 @@ async fn lease(pool: &SqlitePool) -> DbResult<Lease> {
         .await?;
     Ok(lease)
 }
+pub(in crate::db) use lease as deletion_lease;
 async fn admit(db: &mut SqliteConnection, extra: i64) -> DbResult<()> {
     let domain: i64 =
         sqlx::query_scalar("SELECT COUNT(*) FROM e_inactive_domain WHERE singleton=1")

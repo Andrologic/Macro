@@ -11,27 +11,16 @@ pub(crate) mod reconciliation;
 pub(crate) mod retirement;
 
 static EXPECTED: OnceCell<Vec<(String, Option<String>)>> = OnceCell::const_new();
+static EXPECTED_LEGACY: OnceCell<Vec<(String, Option<String>)>> = OnceCell::const_new();
 
 fn invalid(code: &str) -> DbError {
     DbError::Validation(code.into())
 }
 
-async fn expected_schema() -> DbResult<&'static Vec<(String, Option<String>)>> {
-    EXPECTED.get_or_try_init(|| async {
-        let mut db = SqliteConnection::connect("sqlite::memory:").await?;
-        // Trigger DDL is compared verbatim. These empty tables provide only the
-        // namespaces needed to install it; they never serve as admission data.
-        for table in ["conversations", "messages", "conversation_management",
-            "conversation_response_versions", "conversation_citations",
-            "conversation_toolbox_state", "conversation_compactions",
-            "conversation_compaction_events", "conversation_action_receipts",
-            "tool_invocations", "pilot_message_attachments", "pilot_file_sends", "app_settings",
-            "agent_runs", "agent_run_transitions", "conversation_goals", "conversation_goal_audits", "conversation_goal_audit_runs"] {
-            sqlx::query(sqlx::AssertSqlSafe(format!(
-                "CREATE TABLE {table}(id TEXT,conversation_id TEXT,scope_mode TEXT,project_id TEXT,group_id TEXT,task_id TEXT)"
-            ))).execute(&mut db).await?;
-        }
-        sqlx::raw_sql(MIGRATION).execute(&mut db).await?;
+async fn expected_schema(reader: bool) -> DbResult<&'static Vec<(String, Option<String>)>> {
+    let cell = if reader { &EXPECTED } else { &EXPECTED_LEGACY };
+    cell.get_or_try_init(|| async {
+        let mut db = super::connect_transfer::reference(reader).await?;
         let result = sqlx::query_as(sqlx::AssertSqlSafe(format!(
             "SELECT name,sql FROM sqlite_master WHERE {OBJECTS} ORDER BY name"
         ))).fetch_all(&mut db).await?;
@@ -50,7 +39,9 @@ pub(crate) async fn validate_schema(db: &mut SqliteConnection) -> DbResult<()> {
     if trusted != 1 {
         return Err(invalid("chat_admission_schema_configuration"));
     }
-    let expected = expected_schema().await?;
+    let reader: i64 = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM schema_migrations WHERE version=20 AND name='020_connect_archive_lifecycle')")
+        .fetch_one(&mut *db).await?;
+    let expected = expected_schema(reader != 0).await?;
     let mut query = QueryBuilder::<Sqlite>::new(format!(
         "SELECT (SELECT COUNT(*) FROM sqlite_master WHERE {OBJECTS})="
     ));

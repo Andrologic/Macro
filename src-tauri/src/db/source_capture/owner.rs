@@ -144,6 +144,8 @@ impl SourceCapture {
             .await
             .map_err(|_| "stale_revision")?;
         let r=sqlx::query("SELECT id,CASE WHEN length(CAST(binding_json AS BLOB))<=4096 THEN binding_json END AS binding_json,phase,revision,family,cursor_rowid,cursor_field,cursor_offset,rows_count,fields_count,bytes_received,charge_bytes,progressed_at,expires_at,idle_ms,last_clock,CASE WHEN typeof(manifest_hash)='blob' AND length(manifest_hash)=32 THEN manifest_hash END AS manifest_hash FROM e_source_captures WHERE capture_id=?").bind(&scope.authority.capture_id).fetch_optional(&mut *db).await.map_err(error)?.ok_or("not_found")?;
+        let removed: i64 = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM connect_local_deletions WHERE capture_id=?)").bind(r.get::<i64,_>("id")).fetch_one(&mut *db).await.map_err(error)?;
+        if removed != 0 { return Err("connect_content_removed".into()); }
         let raw: Option<String> = r.try_get("binding_json").map_err(error)?;
         let binding: Binding = parse(raw.ok_or("database_unavailable")?.as_bytes())?;
         if binding.version != 1 {

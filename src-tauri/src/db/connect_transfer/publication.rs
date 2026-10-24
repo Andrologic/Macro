@@ -12,9 +12,12 @@ pub(super) struct PublishWrite {
     pub(super) configuration_digest: Vec<u8>,
 }
 #[derive(Debug, PartialEq, Eq)]
+pub(super) enum LocalDisposition { Published, Removed }
+#[derive(Debug, PartialEq, Eq)]
 pub(super) struct LocalPublication {
     pub(super) conversation_id: String,
     pub(super) receipt: Vec<u8>,
+    pub(super) disposition: LocalDisposition,
 }
 pub(super) async fn publish(pool: &SqlitePool, input: &PublishWrite) -> DbResult<LocalPublication> {
     let mut lease = lease(pool).await?;
@@ -37,7 +40,8 @@ pub(super) async fn publish(pool: &SqlitePool, input: &PublishWrite) -> DbResult
     }
     if let Some(receipt)=sqlx::query("SELECT conversation_id,local_receipt,preparation_fingerprint,terminal_digest FROM connect_activation_receipts WHERE transfer_id=?").bind(&input.transfer_id).fetch_optional(&mut *tx).await? {
         if receipt.get::<Vec<u8>,_>("preparation_fingerprint")!=input.preparation_fingerprint || receipt.get::<Vec<u8>,_>("terminal_digest")!=row.get::<Vec<u8>,_>("terminal_digest") {return Err(invalid("connect_publication_conflict"));}
-        let result=LocalPublication{conversation_id:receipt.get("conversation_id"),receipt:receipt.get("local_receipt")};
+        let removed: i64 = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM connect_local_deletions WHERE transfer_id=?)").bind(&input.transfer_id).fetch_one(&mut *tx).await?;
+        let result=LocalPublication{conversation_id:receipt.get("conversation_id"),receipt:receipt.get("local_receipt"),disposition:if removed != 0 { LocalDisposition::Removed } else { LocalDisposition::Published }};
         tx.commit().await?;lease.committed=true;return Ok(result);
     }
     if row.get::<String, _>("phase") != "pinned"
@@ -192,6 +196,7 @@ pub(super) async fn publish(pool: &SqlitePool, input: &PublishWrite) -> DbResult
     Ok(LocalPublication {
         conversation_id: conversation,
         receipt,
+        disposition: LocalDisposition::Published,
     })
 }
 // Fixed table/column names come only from this module. Each native allocation

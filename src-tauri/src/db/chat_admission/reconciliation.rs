@@ -107,7 +107,7 @@ pub(super) async fn complete(owner: &DbPool, snapshot: &mut Snapshot, observed: 
     Ok(())
 }
 
-async fn require_quiescent(db: &mut SqliteConnection, conversation: &str, incarnation: &str) -> DbResult<()> {
+pub(in crate::db) async fn require_quiescent(db: &mut SqliteConnection, conversation: &str, incarnation: &str) -> DbResult<()> {
     // Delivery of a known result is independent of physical closure. This
     // check runs in both inspection and the actual reservation transaction.
     let unclosed: i64 = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM chat_admission_operations WHERE conversation_id=? AND incarnation=? AND kind IN ('provider','tool') AND request_id IS NOT NULL AND phase<>'no_effect' AND local_closed_at IS NULL)")

@@ -16,12 +16,196 @@ fn bytes(hex: &str) -> Vec<u8> {
         .map(|v| u8::from_str_radix(std::str::from_utf8(v).unwrap(), 16).unwrap())
         .collect()
 }
+
+#[tokio::test]
+async fn connect_local_deletion_removes_payload_once_retains_receipts_and_rejects_archive_reuse() {
+    let (_dir, pool, spec, allocation, store, key) = staged_with_history(vec![b'x'; 260_000]).await;
+    fill(&pool, &spec, &allocation).await;
+    pinned(&pool, &spec, &allocation).await;
+    let input = publish_input(&pool, &spec, &allocation).await;
+    let published = publish(&pool, &input).await.unwrap();
+    let conversation = published.conversation_id.clone();
+    let before = crate::db::inactive_budget::retained(&mut *pool.acquire().await.unwrap()).await.unwrap();
+    assert!(db::repository::delete_conversation(&pool, &conversation).await.is_err());
+    let owner = crate::core::db_state::DbPool::default();
+    owner.set_ready(pool.clone()).await.unwrap();
+    let ids = [conversation.clone()];
+    let (a,b) = tokio::join!(db::repository::delete_conversations_admitted(&owner, &ids), db::repository::delete_conversations_admitted(&owner, &ids));
+    a.unwrap(); b.unwrap();
+    let mut connection = pool.acquire().await.unwrap();
+    for table in ["conversation_citations", "conversation_portable_archives", "connect_projection_messages", "connect_projection_citations", "connect_projection_assets", "connect_projection_fields", "connect_projection_fragments", "connect_projection_display", "connect_raw_prefix", "connect_raw_chunks", "e_inactive_records", "e_inactive_fragments", "e_inactive_mapping"] {
+        let count: i64 = sqlx::query_scalar(sqlx::AssertSqlSafe(format!("SELECT COUNT(*) FROM {table}"))).fetch_one(&mut *connection).await.unwrap();
+        assert_eq!(count, 0, "{table}");
+    }
+    for table in ["conversations", "messages"] {
+        let column = if table == "conversations" { "id" } else { "conversation_id" };
+        assert_eq!(sqlx::query_scalar::<_,i64>(sqlx::AssertSqlSafe(format!("SELECT COUNT(*) FROM {table} WHERE {column}=?"))).bind(&conversation).fetch_one(&mut *connection).await.unwrap(),0);
+    }
+    let after = crate::db::inactive_budget::retained(&mut connection).await.unwrap();
+    assert!(after < before);
+    let receipt: (Vec<u8>,Vec<u8>,String) = sqlx::query_as("SELECT receipt,fingerprint,phase FROM connect_local_deletions").fetch_one(&mut *connection).await.unwrap();
+    assert_eq!(hash(&receipt.0), receipt.1); assert_eq!(receipt.2, "deleted");
+    assert!(sqlx::query("PRAGMA foreign_key_check").fetch_all(&mut *connection).await.unwrap().is_empty());
+    assert_eq!(sqlx::query_scalar::<_,i64>("SELECT COUNT(*) FROM message_search WHERE message_search MATCH 'Full'").fetch_one(&mut *connection).await.unwrap(),0);
+    drop(connection);
+    let repeated = publish(&pool, &input).await.unwrap();
+    assert_eq!(repeated.receipt,published.receipt);
+    assert_eq!(repeated.disposition,super::publication::LocalDisposition::Removed);
+    assert!(store.status(&key).await.is_err());
+    assert!(super::reader::page_in(&mut *pool.acquire().await.unwrap(),"g",&conversation,super::reader::Selector::All,None,1).await.is_err());
+    db::repository::delete_conversations_admitted(&owner, &[conversation]).await.unwrap();
+    assert_eq!(crate::db::inactive_budget::retained(&mut *pool.acquire().await.unwrap()).await.unwrap(),after);
+    assert_eq!(sqlx::query_as::<_,(Vec<u8>,Vec<u8>,String)>("SELECT receipt,fingerprint,phase FROM connect_local_deletions").fetch_one(&pool).await.unwrap(),receipt);
+    owner.set_initializing().await;
+    owner.set_ready(pool.clone()).await.unwrap();
+}
+
+#[tokio::test]
+async fn connect_local_deletion_rolls_back_all_copies_when_ordinary_delete_fails() {
+    let (_dir,pool,spec,allocation,_store,_key)=staged().await;
+    fill(&pool,&spec,&allocation).await;
+    pinned(&pool,&spec,&allocation).await;
+    let input=publish_input(&pool,&spec,&allocation).await;
+    let published=publish(&pool,&input).await.unwrap();
+    let owner=crate::core::db_state::DbPool::default();
+    let before=crate::db::inactive_budget::retained(&mut *pool.acquire().await.unwrap()).await.unwrap();
+    sqlx::raw_sql("CREATE TRIGGER test_refuse_local_delete BEFORE DELETE ON conversations BEGIN SELECT RAISE(ABORT,'injected_local_failure'); END;").execute(&pool).await.unwrap();
+    owner.set_ready(pool.clone()).await.unwrap();
+    let failure = db::repository::delete_conversations_admitted(&owner,&[published.conversation_id.clone()]).await.unwrap_err();
+    assert!(failure.to_string().contains("injected_local_failure"),"{failure}");
+    assert_eq!(sqlx::query_scalar::<_,i64>("SELECT COUNT(*) FROM connect_local_deletions").fetch_one(&pool).await.unwrap(),0);
+    assert_eq!(crate::db::inactive_budget::retained(&mut *pool.acquire().await.unwrap()).await.unwrap(),before);
+    assert_eq!(db::repository::list_messages(&pool,&published.conversation_id).await.unwrap().len(),2);
+    assert_eq!(sqlx::query_scalar::<_,i64>("SELECT COUNT(*) FROM e_inactive_records").fetch_one(&pool).await.unwrap(),3);
+    // Test-only failure injection is removed, never an application guard.
+    sqlx::raw_sql("DROP TRIGGER test_refuse_local_delete").execute(&pool).await.unwrap();
+    assert!(db::repository::delete_conversations_admitted(&owner,&[published.conversation_id.clone()]).await.unwrap_err().to_string().contains("stale_revision"));
+    owner.set_initializing().await; owner.set_ready(pool.clone()).await.unwrap();
+    db::repository::delete_conversations_admitted(&owner,&[published.conversation_id]).await.unwrap();
+}
 #[test]
 fn connect_projection_without_display_metadata_preserves_pre020_fingerprint_shape() {
     let header = Header::Message {
         role: "user".into(), created_at: "1970-01-01T00:00:00.000Z".into(), display_date: None,
     };
     assert_eq!(serde_json::to_string(&header).unwrap(), r#"{"Message":{"role":"user","created_at":"1970-01-01T00:00:00.000Z"}}"#);
+}
+
+#[tokio::test]
+async fn connect_local_deletion_rejects_ambiguous_effects_from_an_old_incarnation() {
+    let (_dir,pool,spec,allocation,_store,_key)=staged().await;
+    fill(&pool,&spec,&allocation).await; pinned(&pool,&spec,&allocation).await;
+    let input=publish_input(&pool,&spec,&allocation).await;
+    let published=publish(&pool,&input).await.unwrap();
+    let conversation=&published.conversation_id;
+    let owner=crate::core::db_state::DbPool::default(); owner.set_ready(pool.clone()).await.unwrap();
+    let before=db::inactive_budget::retained(&mut *pool.acquire().await.unwrap()).await.unwrap();
+    // An old incarnation is deliberately different from the current owner.
+    // This is operation storage only, never a provider request or capability.
+    sqlx::query("INSERT INTO chat_admission_operations(operation_id,conversation_id,incarnation,runtime_generation,kind,phase,request_id) VALUES('old-ambiguous',?,'historical-incarnation','historical-generation','provider','unknown','historical-request')")
+        .bind(conversation).execute(&pool).await.unwrap();
+    for phase in ["unknown", "completed"] {
+        sqlx::query("UPDATE chat_admission_operations SET phase=? WHERE operation_id='old-ambiguous'").bind(phase).execute(&pool).await.unwrap();
+        assert!(db::repository::delete_conversations_admitted(&owner,&[conversation.clone()]).await.is_err());
+        assert_eq!(db::inactive_budget::retained(&mut *pool.acquire().await.unwrap()).await.unwrap(),before);
+        assert_eq!(sqlx::query_scalar::<_,i64>("SELECT COUNT(*) FROM connect_local_deletions").fetch_one(&pool).await.unwrap(),0);
+        assert_eq!(db::repository::list_messages(&pool,conversation).await.unwrap().len(),2);
+    }
+    sqlx::query("UPDATE chat_admission_operations SET local_closed_at='2026-01-01' WHERE operation_id='old-ambiguous'").execute(&pool).await.unwrap();
+    db::repository::delete_conversations_admitted(&owner,&[conversation.clone()]).await.unwrap();
+}
+
+#[tokio::test]
+async fn connect_local_deletion_target_then_source_keeps_both_parentages_and_ceded_owner() {
+    let (_dir,pool,spec,allocation,_store,_key)=staged().await;
+    fill(&pool,&spec,&allocation).await; pinned(&pool,&spec,&allocation).await;
+    let input=publish_input(&pool,&spec,&allocation).await;
+    let published=publish(&pool,&input).await.unwrap();
+    let conversation=&published.conversation_id;
+    let (owner,outgoing)=journal::reserve_published_as_source(&pool,conversation).await;
+    assert!(db::repository::delete_conversations_admitted(&owner,&[conversation.clone()]).await.is_err());
+    terminal::commit_source_fixture(&pool,&outgoing).await;
+    db::repository::delete_conversations_admitted(&owner,&[conversation.clone()]).await.unwrap();
+    assert_eq!(sqlx::query_scalar::<_,i64>("SELECT COUNT(*) FROM connect_local_deletions WHERE conversation_id=? AND phase='deleted'").bind(conversation).fetch_one(&pool).await.unwrap(),2);
+    assert_eq!(sqlx::query_scalar::<_,String>("SELECT mode FROM chat_admission_owners WHERE conversation_id=?").bind(conversation).fetch_one(&pool).await.unwrap(),"ceded");
+    assert_eq!(sqlx::query_scalar::<_,i64>("SELECT COUNT(*) FROM e_inactive_records").fetch_one(&pool).await.unwrap(),0);
+    assert_eq!(sqlx::query_scalar::<_,i64>("SELECT COUNT(*) FROM connect_transfers").fetch_one(&pool).await.unwrap(),2);
+    assert!(sqlx::query("PRAGMA foreign_key_check").fetch_all(&pool).await.unwrap().is_empty());
+    assert_eq!(publish(&pool,&input).await.unwrap().disposition,super::publication::LocalDisposition::Removed);
+    db::repository::delete_conversations_admitted(&owner,&[conversation.clone()]).await.unwrap();
+}
+
+#[tokio::test]
+async fn connect_local_deletion_sqlite_full_after_payload_removal_rolls_back_every_copy() {
+    let (dir,pool,spec,allocation,_store,_key)=staged_with_history(vec![b'x';260_000]).await;
+    fill(&pool,&spec,&allocation).await; pinned(&pool,&spec,&allocation).await;
+    let input=publish_input(&pool,&spec,&allocation).await;
+    let published=publish(&pool,&input).await.unwrap();
+    // Test-only page pressure, after F/E purge, forces the real SQLite pager to
+    // fail with SQLITE_FULL inside the same ordinary deletion transaction.
+    sqlx::raw_sql("CREATE TABLE test_local_delete_pressure(bytes BLOB); CREATE TRIGGER test_local_delete_pressure AFTER DELETE ON conversations BEGIN INSERT INTO test_local_delete_pressure VALUES(zeroblob(16777216)); END;").execute(&pool).await.unwrap();
+    // max_page_count belongs to a connection. The ordinary fixture's pool has
+    // several, so reopen with one to constrain the actual deletion writer.
+    pool.close().await;
+    let pool=sqlx::sqlite::SqlitePoolOptions::new().max_connections(1)
+        .connect_with(sqlx::sqlite::SqliteConnectOptions::new().filename(dir.path().join("journal.db"))
+            .foreign_keys(true).pragma("recursive_triggers","ON").journal_mode(sqlx::sqlite::SqliteJournalMode::Wal))
+        .await.unwrap();
+    let owner=crate::core::db_state::DbPool::default(); owner.set_ready(pool.clone()).await.unwrap();
+    let before=db::inactive_budget::retained(&mut *pool.acquire().await.unwrap()).await.unwrap();
+    let pages:i64=sqlx::query_scalar("PRAGMA page_count").fetch_one(&pool).await.unwrap();
+    sqlx::query(sqlx::AssertSqlSafe(format!("PRAGMA max_page_count={pages}"))).execute(&pool).await.unwrap();
+    let error=db::repository::delete_conversations_admitted(&owner,&[published.conversation_id.clone()]).await.unwrap_err();
+    assert!(error.to_string().contains("full"),"{error}");
+    assert_eq!(db::inactive_budget::retained(&mut *pool.acquire().await.unwrap()).await.unwrap(),before);
+    assert_eq!(sqlx::query_scalar::<_,i64>("SELECT COUNT(*) FROM connect_local_deletions").fetch_one(&pool).await.unwrap(),0);
+    assert_eq!(sqlx::query_scalar::<_,i64>("SELECT COUNT(*) FROM test_local_delete_pressure").fetch_one(&pool).await.unwrap(),0);
+    assert_eq!(sqlx::query_scalar::<_,i64>("SELECT COUNT(*) FROM e_inactive_records").fetch_one(&pool).await.unwrap(),3);
+    assert_eq!(db::repository::list_messages(&pool,&published.conversation_id).await.unwrap().len(),2);
+    sqlx::raw_sql("DROP TRIGGER test_local_delete_pressure; DROP TABLE test_local_delete_pressure;").execute(&pool).await.unwrap();
+    owner.set_initializing().await; owner.set_ready(pool.clone()).await.unwrap();
+    db::repository::delete_conversations_admitted(&owner,&[published.conversation_id]).await.unwrap();
+}
+
+#[tokio::test]
+#[ignore="subprocess entrypoint, called by connect_local_deletion_process_death_keeps_atomic_disposition"]
+async fn connect_local_deletion_crash_child() {
+    let path=std::env::var("MACRO_LOCAL_DELETION_CRASH_DB").unwrap();
+    let conversation=std::env::var("MACRO_LOCAL_DELETION_CRASH_CONVERSATION").unwrap();
+    let pool=db::create_pool(std::path::Path::new(&path)).await.unwrap();
+    let owner=crate::core::db_state::DbPool::default(); owner.set_ready(pool).await.unwrap();
+    db::repository::delete_conversations_admitted(&owner,&[conversation]).await.unwrap();
+    panic!("deletion checkpoint was not reached");
+}
+
+#[tokio::test]
+async fn connect_local_deletion_process_death_keeps_atomic_disposition() {
+    for phase in ["before_commit","after_commit"] {
+        let (dir,pool,spec,allocation,_store,_key)=staged().await;
+        fill(&pool,&spec,&allocation).await; pinned(&pool,&spec,&allocation).await;
+        let input=publish_input(&pool,&spec,&allocation).await;
+        let published=publish(&pool,&input).await.unwrap();
+        pool.close().await;
+        let output=std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact","db::connect_transfer::preparation::tests::connect_local_deletion_crash_child","--ignored","--nocapture"])
+            .env("MACRO_LOCAL_DELETION_CRASH_DB",dir.path().join("journal.db"))
+            .env("MACRO_LOCAL_DELETION_CRASH_CONVERSATION",&published.conversation_id)
+            .env("MACRO_LOCAL_DELETION_CRASH_PHASE",phase).output().unwrap();
+        assert_eq!(output.status.code(),Some(92),"{}\n{}",String::from_utf8_lossy(&output.stdout),String::from_utf8_lossy(&output.stderr));
+        let pool=db::create_pool(&dir.path().join("journal.db")).await.unwrap();
+        let deleted=phase=="after_commit";
+        assert_eq!(sqlx::query_scalar::<_,i64>("SELECT COUNT(*) FROM connect_local_deletions WHERE phase='deleted'").fetch_one(&pool).await.unwrap(),i64::from(deleted));
+        assert_eq!(sqlx::query_scalar::<_,i64>("SELECT COUNT(*) FROM e_inactive_records").fetch_one(&pool).await.unwrap(),if deleted {0}else{3});
+        assert_eq!(sqlx::query_scalar::<_,i64>("SELECT COUNT(*) FROM conversations WHERE id=?").bind(&published.conversation_id).fetch_one(&pool).await.unwrap(),i64::from(!deleted));
+        assert!(sqlx::query("PRAGMA foreign_key_check").fetch_all(&pool).await.unwrap().is_empty());
+        assert_eq!(sqlx::query_scalar::<_,String>("PRAGMA integrity_check").fetch_one(&pool).await.unwrap(),"ok");
+        let owner=crate::core::db_state::DbPool::default(); owner.set_ready(pool.clone()).await.unwrap();
+        db::repository::delete_conversations_admitted(&owner,&[published.conversation_id.clone()]).await.unwrap();
+        let receipt:Vec<u8>=sqlx::query_scalar("SELECT receipt FROM connect_local_deletions").fetch_one(&pool).await.unwrap();
+        db::repository::delete_conversations_admitted(&owner,&[published.conversation_id.clone()]).await.unwrap();
+        assert_eq!(sqlx::query_scalar::<_,Vec<u8>>("SELECT receipt FROM connect_local_deletions").fetch_one(&pool).await.unwrap(),receipt);
+        assert_eq!(publish(&pool,&input).await.unwrap().disposition,super::publication::LocalDisposition::Removed);
+    }
 }
 async fn staged() -> (
     tempfile::TempDir,
@@ -37,6 +221,11 @@ async fn staged_with_history(history: Vec<u8>) -> (
     tempfile::TempDir, SqlitePool, Spec, Allocation,
     inactive_storage::InactiveStorage, String,
 ) {
+    staged_with_resources(history,b"synthetic image bytes".to_vec()).await
+}
+async fn staged_with_resources(history:Vec<u8>,image:Vec<u8>) -> (
+    tempfile::TempDir,SqlitePool,Spec,Allocation,inactive_storage::InactiveStorage,String,
+) {
     let (dir, pool) = journal::fixture().await;
     let (transfer, begin_input) = journal::target_for_publication(&pool).await;
     let (store, key, sealed) = inactive_storage::tests::seal_transfer_fixture(
@@ -51,7 +240,7 @@ async fn staged_with_history(history: Vec<u8>) -> (
                 RecordKind::Asset {
                     mime: Mime::ImagePng,
                 },
-                b"synthetic image bytes".to_vec(),
+                image,
             ),
             (
                 RecordKind::Association {
@@ -143,11 +332,17 @@ async fn put(
     id
 }
 async fn fill(pool: &SqlitePool, spec: &Spec, allocation: &Allocation) {
-    fill_with_display(pool, spec, allocation, Some(DisplayDate {
+    fill_with_image(pool,spec,allocation,b"synthetic image bytes").await;
+}
+async fn fill_with_image(pool:&SqlitePool,spec:&Spec,allocation:&Allocation,image:&[u8]) {
+    fill_projection(pool, spec, allocation, Some(DisplayDate {
         original_date: Some("2025-06-01T12:00:00Z".into()), inherited_from: None,
-    })).await;
+    }),image).await;
 }
 async fn fill_with_display(pool: &SqlitePool, spec: &Spec, allocation: &Allocation, display_date: Option<DisplayDate>) {
+    fill_projection(pool,spec,allocation,display_date,b"synthetic image bytes").await;
+}
+async fn fill_projection(pool:&SqlitePool,spec:&Spec,allocation:&Allocation,display_date:Option<DisplayDate>,image:&[u8]) {
     put(
         pool,
         &spec.transfer_id,
@@ -203,12 +398,22 @@ async fn fill_with_display(pool: &SqlitePool, spec: &Spec, allocation: &Allocati
             position: 0,
             mime_type: "image/png".into(),
         },
-        &[("data", b"synthetic image bytes")],
+        &[("data", image)],
     )
     .await;
     finish(pool, &spec.transfer_id, &allocation.fingerprint, &[9; 32])
         .await
         .unwrap();
+}
+
+pub(in crate::db::connect_transfer) async fn published_reader_fixture() -> (tempfile::TempDir,SqlitePool,String) {
+    let image=include_bytes!("../../../icons/32x32.png");
+    let (dir,pool,spec,allocation,_store,_key)=staged_with_resources("Original compacted fact café é🙂.\n".repeat(10_000).into_bytes(),image.to_vec()).await;
+    fill_with_image(&pool,&spec,&allocation,image).await;
+    pinned(&pool,&spec,&allocation).await;
+    let input=publish_input(&pool,&spec,&allocation).await;
+    let receipt=publish(&pool,&input).await.unwrap();
+    (dir,pool,receipt.conversation_id)
 }
 
 #[tokio::test]
@@ -1025,10 +1230,13 @@ async fn connect_publication_deleted_chat_does_not_reappear_or_expose_assets_fro
     pinned(&pool, &spec, &allocation).await;
     let input = publish_input(&pool, &spec, &allocation).await;
     let receipt = publish(&pool, &input).await.unwrap();
-    db::repository::delete_conversation(&pool, &allocation.conversation_id)
+    let owner = crate::core::db_state::DbPool::default(); owner.set_ready(pool.clone()).await.unwrap();
+    db::repository::delete_conversations_admitted(&owner, &[allocation.conversation_id.clone()])
         .await
         .unwrap();
-    assert_eq!(publish(&pool, &input).await.unwrap(), receipt);
+    let retry=publish(&pool, &input).await.unwrap();
+    assert_eq!(retry.receipt,receipt.receipt);
+    assert_eq!(retry.disposition,super::publication::LocalDisposition::Removed);
     assert_eq!(
         sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM connect_published_assets")
             .fetch_one(&pool)
@@ -1048,13 +1256,5 @@ async fn connect_publication_deleted_chat_does_not_reappear_or_expose_assets_fro
         .execute(&pool)
         .await
         .unwrap();
-    assert_eq!(
-        store
-            .readback(&key, None, 32)
-            .await
-            .unwrap()
-            .fragments
-            .len(),
-        3
-    );
+    assert!(store.readback(&key, None, 32).await.is_err());
 }

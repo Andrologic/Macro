@@ -513,6 +513,7 @@ pub fn run() {
         })
         .manage(AppQuitState::default())
         .manage(DbPool::default())
+        .manage(db::connect_transfer::reader_runtime::ArchiveReaderRuntime::default())
         .manage(diagnostics::DiagnosticReportStore::default())
         .manage(AiState::default())
         .manage(ai::admitted_http::AdmittedHttp::default())
@@ -835,6 +836,10 @@ pub fn run() {
             commands::db_list_messages,
             commands::pilot_files::pilot_files_inspect_attachments,
             commands::pilot_files::db_pilot_message_images,
+            commands::connect_archive::connect_archive_open,
+            commands::connect_archive::connect_archive_page,
+            commands::connect_archive::connect_archive_materialize,
+            commands::connect_archive::connect_archive_release,
             commands::pilot_files::pilot_files_authorize,
             commands::pilot_files::pilot_files_begin,
             commands::pilot_files::pilot_files_chunk,

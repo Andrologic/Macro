@@ -1,5 +1,6 @@
 pub mod ai;
 pub(crate) mod chat_admission;
+pub(crate) mod connect_archive;
 pub mod conversation_catalog;
 pub mod conversation_content;
 pub mod conversation_management;
@@ -383,11 +384,10 @@ pub async fn db_update_conversation_scope(
 #[tauri::command]
 pub async fn db_delete_conversation_by_id(
     pool: State<'_, DbPool>,
+    reader: State<'_, crate::db::connect_transfer::reader_runtime::ArchiveReaderRuntime>,
     id: String,
 ) -> CommandResult<()> {
-    let pool = get_pool(&pool).await?;
-
-    repository::delete_conversation(&pool, &id)
+    repository::delete_conversations_with_readers(&pool, &[id], &reader)
         .await
         .map_err(Into::into)
 }
@@ -395,11 +395,10 @@ pub async fn db_delete_conversation_by_id(
 #[tauri::command]
 pub async fn db_delete_conversations_by_ids(
     pool: State<'_, DbPool>,
+    reader: State<'_, crate::db::connect_transfer::reader_runtime::ArchiveReaderRuntime>,
     ids: Vec<String>,
 ) -> CommandResult<()> {
-    let pool = get_pool(&pool).await?;
-
-    repository::delete_conversations(&pool, &ids)
+    repository::delete_conversations_with_readers(&pool, &ids, &reader)
         .await
         .map_err(Into::into)
 }

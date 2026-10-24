@@ -157,3 +157,19 @@ pub(super) async fn store_target_fixture(
     store(pool, &input).await.unwrap();
     fingerprint(&input).unwrap().0
 }
+
+/// SQLite transition fixture only. This is absent from production and emits no
+/// authenticated terminal or transport capability.
+#[cfg(test)]
+pub(in crate::db) async fn commit_source_fixture(pool: &SqlitePool, transfer: &str) {
+    let row = sqlx::query("SELECT fingerprint,binding_digest,source_epoch FROM connect_transfers WHERE transfer_id=?")
+        .bind(transfer).fetch_one(pool).await.unwrap();
+    let input = TerminalWrite {
+        transfer_id: transfer.into(), reservation_fingerprint: row.get("fingerprint"),
+        binding_digest: row.get("binding_digest"), source_epoch: row.get("source_epoch"),
+        outcome: Outcome::Committed, decision_revision: "2".into(),
+        exact: b"synthetic storage terminal, not authenticated".to_vec(),
+        canonical_digest: vec![7;32], prepared_digest: None,
+    };
+    assert_eq!(apply_source(pool,&input).await.unwrap(),SourceApplication::Applied);
+}

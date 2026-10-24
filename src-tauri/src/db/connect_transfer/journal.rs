@@ -79,6 +79,7 @@ async fn existing(
     role: &str,
     digest: &[u8],
 ) -> DbResult<Option<LocalReservation>> {
+    super::deletion::require_transfer(db, &input.transfer_id).await?;
     let row = sqlx::query("SELECT local_role,fingerprint,ownership_revision FROM connect_transfers WHERE transfer_id=?")
         .bind(&input.transfer_id).fetch_optional(db).await?;
     row.map(|row| {
@@ -336,6 +337,7 @@ async fn prior_exchange(
     Ok(false)
 }
 async fn check_new_exchange(db: &mut SqliteConnection, input: &Exchange) -> DbResult<()> {
+    super::deletion::require_transfer(db, &input.transfer_id).await?;
     let role:Option<(String,String,String,i64,String,Option<String>,Option<String>)>=sqlx::query_as("SELECT local_role,source_generation,target_generation,restore_hold,phase,resolution,terminal_outcome FROM connect_transfers WHERE transfer_id=?")
         .bind(&input.transfer_id).fetch_optional(db).await?;
     let (role, source, target, hold, phase, resolution, terminal) =
