@@ -776,7 +776,7 @@ const ArchitectActionMessage: React.FC<{ action: ArchitectButtonAction }> = ({ a
   </div>
 );
 
-const ChatMessageRowBase: React.FC<ChatMessageRowProps> = ({
+export const ChatMessageRowBase: React.FC<ChatMessageRowProps> = ({
   virtualMessage,
   measureElement,
   assistantActivity,
@@ -1038,7 +1038,7 @@ const ChatMessageRowBase: React.FC<ChatMessageRowProps> = ({
             </div>
           )}
 
-          {message.role === 'user' && !message.portable_history && !isEditing && !architectActionMessage && (
+          {message.role === 'user' && !isEditing && !architectActionMessage && (
             <div className="absolute bottom-2 right-2 flex items-center gap-1">
               <button
                 onClick={() => void onCopy(message.content, message.id)}
@@ -1054,28 +1054,24 @@ const ChatMessageRowBase: React.FC<ChatMessageRowProps> = ({
                   )}
                 />
               </button>
-              <button
-                onClick={() => onEditStart(message)}
-                className="w-7 h-7 flex items-center justify-center rounded-md hover:bg-accent transition-colors"
-                title={t('common.edit')}
-              >
-                <Icon
-                  name="edit"
-                  size={12}
-                  className="text-muted-foreground hover:text-foreground transition-colors"
-                />
-              </button>
-              <button
-                onClick={() => void onRegenerate(message.id, message.content)}
-                className="w-7 h-7 flex items-center justify-center rounded-md hover:bg-accent transition-colors"
-                title={t('common.regenerate') || 'Regenerate'}
-              >
-                <Icon
-                  name="refresh-cw"
-                  size={12}
-                  className="text-muted-foreground hover:text-foreground transition-colors"
-                />
-              </button>
+              {!message.portable_history && (
+                <>
+                  <button
+                    onClick={() => onEditStart(message)}
+                    className="w-7 h-7 flex items-center justify-center rounded-md hover:bg-accent transition-colors"
+                    title={t('common.edit')}
+                  >
+                    <Icon name="edit" size={12} className="text-muted-foreground hover:text-foreground transition-colors" />
+                  </button>
+                  <button
+                    onClick={() => void onRegenerate(message.id, message.content)}
+                    className="w-7 h-7 flex items-center justify-center rounded-md hover:bg-accent transition-colors"
+                    title={t('common.regenerate') || 'Regenerate'}
+                  >
+                    <Icon name="refresh-cw" size={12} className="text-muted-foreground hover:text-foreground transition-colors" />
+                  </button>
+                </>
+              )}
             </div>
           )}
 

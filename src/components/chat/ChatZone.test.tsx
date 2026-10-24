@@ -1259,6 +1259,7 @@ describe('ChatZone', () => {
     chatState = { ...chatState, messages: [
       buildMessage({ id: 'historical-user', role: 'user', content: '<old user action> [quick_replies]', portable_history: historical }),
       buildMessage({ id: 'historical-assistant', role: 'assistant', content: '<old assistant trace> [quick_replies]', portable_history: { ...historical, ordinal: '1' }, persistence_state: 'failed', completion_reason: 'interrupted' }),
+      buildMessage({ id: 'ordinary-user', role: 'user', content: 'New instruction' }),
       buildMessage({ id: 'ordinary-assistant', role: 'assistant', content: 'Ordinary answer' }),
     ] };
     await act(async () => { requireRoot().render(<ChatZone />); });
@@ -1270,7 +1271,16 @@ describe('ChatZone', () => {
     expect(requireContainer().querySelector('[data-chat-unsaved-assistant-response]')).toBeNull();
     expect(markdownRendererContentMock.mock.calls.some(call => call[0] === 'Ordinary answer')).toBe(true);
     expect(markdownRendererContentMock.mock.calls.some(call => String(call[0]).includes('old assistant'))).toBe(false);
-    expect(requireContainer().querySelector('#chat-message-historical-user button[title="Regenerate"]')).toBeNull();
+    for (const id of ['historical-user', 'historical-assistant']) {
+      const row = requireContainer().querySelector(`#chat-message-${id}`);
+      expect(row?.querySelector('button[title="common.copy"]')).not.toBeNull();
+      expect(row?.querySelector('button[title="common.edit"]')).toBeNull();
+      expect(row?.querySelector('button[title="common.regenerate"]')).toBeNull();
+    }
+    const ordinary = requireContainer().querySelector('#chat-message-ordinary-user');
+    expect(ordinary?.querySelector('button[title="common.copy"]')).not.toBeNull();
+    expect(ordinary?.querySelector('button[title="common.edit"]')).not.toBeNull();
+    expect(ordinary?.querySelector('button[title="common.regenerate"]')).not.toBeNull();
   });
 
   it('reveals the selected queue on queue-only publication and removes it reactively', async () => {
