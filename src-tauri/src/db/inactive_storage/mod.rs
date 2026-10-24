@@ -59,12 +59,14 @@ impl InactiveStorage {
         Ok(authority)
     }
     async fn lease(&self) -> Result<Lease> {
-        Ok(Lease {
+        let mut lease=Lease {
             connection: Some(self.pool.acquire().await.map_err(db)?),
             committed: false,
             #[cfg(test)]
             cleanup_started: self.lease_cleanup_started.clone(),
-        })
+        };
+        sqlx::query("PRAGMA synchronous=FULL").execute(&mut *lease).await.map_err(db)?;
+        Ok(lease)
     }
     async fn load(&self, tx: &mut Tx<'_>, key: &str, authority: &Authority) -> Result<Journal> {
         if identity_key(&authority.identity)? != key {
@@ -77,7 +79,9 @@ impl InactiveStorage {
         if begin.identity != authority.identity || begin.bindings != authority.bindings {
             return Err("binding_conflict".into());
         }
+        let transfer_leased=crate::db::connect_transfer::import_leased(&mut **tx,row.get("id")).await.map_err(|_| "database_unavailable")?;
         Ok(Journal {
+            transfer_leased,
             id: row.get("id"),
             begin,
             phase: Phase::from_db(row.get("phase"))?,
@@ -298,6 +302,7 @@ impl InactiveStorage {
         let mut lease = self.lease().await?;
         let mut tx = lease.begin_with("BEGIN IMMEDIATE").await.map_err(db)?;
         let journal = self.load(&mut tx, key, &authority).await?;
+        if journal.transfer_leased { return Err("connect_transfer_leased".into()); }
         if journal.phase == Phase::SealedStorage {
             return Err("storage_pinned".into());
         }
@@ -510,6 +515,7 @@ struct Journal {
     idle: i64,
     last_clock: i64,
     mapping: Option<Vec<u8>>,
+    transfer_leased: bool,
 }
 impl Journal {
     fn receipt(&self, key: &str) -> Receipt {
@@ -530,8 +536,8 @@ impl Journal {
         if now < self.last_clock {
             return Err("clock_rollback".into());
         }
-        if now >= self.expires
-            || now.checked_sub(self.progress).ok_or("clock_rollback")? >= self.idle
+        if !self.transfer_leased && (now >= self.expires
+            || now.checked_sub(self.progress).ok_or("clock_rollback")? >= self.idle)
         {
             return Err("expired".into());
         }

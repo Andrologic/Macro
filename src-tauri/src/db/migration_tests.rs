@@ -43,6 +43,7 @@ async fn accepts_develop_v9_with_historical_pilot_v5_stamp() {
             (15, "015_inactive_storage".into()),
             (16, "016_source_capture".into()),
             (17, "017_chat_admission".into()),
+            (18, "018_connect_transfer".into()),
         ]
     );
 }
@@ -129,7 +130,7 @@ async fn rehearses_upgrade_on_external_database_copy() {
             .unwrap()
             .iter()
             .max(),
-        Some(&15)
+        Some(&18)
     );
 }
 

@@ -3,7 +3,7 @@ use sqlx::{Connection, QueryBuilder, Row, Sqlite, SqliteConnection};
 use tokio::sync::OnceCell;
 
 const MIGRATION: &str = include_str!("../migrations/016_source_capture.sql");
-const OBJECTS: &str = "name GLOB 'e_source_*' OR tbl_name GLOB 'e_source_*'";
+const OBJECTS: &str = "(name GLOB 'e_source_*' OR tbl_name GLOB 'e_source_*') AND name NOT GLOB 'connect_*'";
 const FAMILIES: &[&str] = &[
     "conversation_compactions",
     "conversation_citations",
