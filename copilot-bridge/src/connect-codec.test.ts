@@ -15,6 +15,21 @@ const withParent = async (run: (parent: CodecParent) => Promise<void>, profile: 
 };
 
 describe('persistent private Bun codec', () => {
+  it('keeps native slot B unavailable and transfers slot A only at the body boundary', () => {
+    const bank = new ControlBank();
+    expect(() => bank.bytes('validator-bytes', BODY_BYTES)).toThrow();
+    bank.beginBody();
+    expect(() => bank.beginBody()).toThrow();
+    const validation = bank.bytes('validator-bytes', BODY_BYTES);
+    expect(() => bank.bytes('result-bytes', BODY_BYTES)).toThrow();
+    validation();
+    const result = bank.bytes('result-bytes', BODY_BYTES);
+    expect(() => bank.bytes('validator-bytes', BODY_BYTES)).toThrow();
+    expect(bank.empty()).toBe(false);
+    result();
+    expect(bank.empty()).toBe(true);
+  });
+
   local('rejects cross-profile BEGIN before any graph or bank grant', async () => {
     for (const profile of ['persistent', 'bootstrap'] as const) {
       await withParent(async p => {

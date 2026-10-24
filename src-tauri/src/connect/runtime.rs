@@ -1,4 +1,4 @@
-use super::codec::{Codec, Input, Output, Profile};
+use super::codec::{AdmittedInput, Admission, BankOwner, Codec, Input, Output, Profile};
 use crate::{
     connect_resources::{TransitInstance, TRANSIT_OWNER},
     core::db_state::{ChatWorkLifetime, DbPool},
@@ -28,6 +28,8 @@ struct State {
     quarantine: Option<Codec>,
     #[cfg(test)]
     fail_retirement: bool,
+    #[cfg(test)]
+    scope_probe: Option<super::codec::ScopeProbe>,
     #[cfg(test)]
     profile_events: Vec<(Profile, u32, bool)>,
     http: Option<(
@@ -92,12 +94,12 @@ pub(crate) struct CodecHandle {
     #[cfg(test)]
     pid: u32,
     sender: mpsc::Sender<Request>,
-    profile: Profile,
+    bank: BankOwner,
     cancel: CancellationToken,
     join: Join,
 }
 struct Request {
-    input: Input,
+    input: AdmittedInput,
     response: oneshot::Sender<Result<Output, &'static str>>,
 }
 impl Drop for CodecHandle {
@@ -106,10 +108,17 @@ impl Drop for CodecHandle {
     }
 }
 impl CodecHandle {
+    pub(crate) fn admit(&self, op: u16) -> Result<Admission, &'static str> {
+        if self.cancel.is_cancelled() { return Err("codec_closed"); }
+        self.bank.admit(op)
+    }
     pub(crate) async fn run(&self, input: Input) -> Result<Output, &'static str> {
-        if !self.profile.accepts(input.op) {
-            return Err("codec_profile");
-        }
+        let admitted = self.admit(input.op)?.adopt(input)?;
+        self.run_admitted(admitted).await
+    }
+    pub(crate) async fn run_admitted(&self, input: AdmittedInput) -> Result<Output, &'static str> {
+        if !self.bank.owns(&input) { return Err("codec_owner"); }
+        if self.cancel.is_cancelled() { return Err("codec_closed"); }
         // Disappearance of an in-flight caller retires the process. The owner,
         // not this future, keeps the pipes, credits and join.
         let (response, receive) = oneshot::channel();
@@ -227,6 +236,9 @@ impl TransferRuntime {
         command.arg(profile.command());
         let codec = Codec::spawn(command, budget, lifetime, profile)?;
         #[cfg(test)]
+        let codec = { let mut codec = codec; codec.scope_probe = state.scope_probe.take(); codec };
+        let bank = codec.bank_owner.clone();
+        #[cfg(test)]
         let pid = codec.pid();
         #[cfg(test)]
         state.profile_events.push((profile, pid, false));
@@ -292,8 +304,8 @@ impl TransferRuntime {
         Ok(CodecHandle {
             #[cfg(test)]
             pid,
-            profile,
             sender,
+            bank,
             cancel,
             join,
         })
@@ -553,6 +565,81 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn real_scope_errors_and_caller_abandon_keep_bank_until_child_reap() {
+        for phase in [1, 2] {
+            for after in [false, true] {
+                for abandon in [false, true] {
+                    let (_dir, db, pool) = database().await;
+                    let owner = TransferRuntime::default();
+                    let budget = owner.budget().unwrap();
+                    let (reached, seen) = oneshot::channel();
+                    let (resume, wait) = oneshot::channel();
+                    owner.0.lock().unwrap().scope_probe = Some(super::super::codec::ScopeProbe { phase, after, reached, resume: wait });
+                    let entry = Path::new(env!("CARGO_MANIFEST_DIR")).join("../copilot-bridge/src/entry.ts");
+                    let codec = owner.source_codec(&bun(), &entry, &db).await.unwrap();
+                    let pid = codec.pid;
+                    let admitted = codec.admit(1).unwrap().adopt(input(&budget)).unwrap();
+                    let mut work = Box::pin(codec.run_admitted(admitted));
+                    tokio::select! {
+                        result = &mut work => panic!("finished before scope probe: {:?}", result.err()),
+                        reached = tokio::time::timeout(std::time::Duration::from_secs(5), seen) => reached.unwrap().unwrap(),
+                    }
+                    assert!(budget.reserve(TRANSIT_INSTANCE_LIMIT).is_err());
+                    assert_eq!(codec.admit(1).err().unwrap(), "codec_busy");
+                    assert!(db.set_ready(pool.clone()).await.is_err());
+                    #[cfg(unix)]
+                    assert_eq!(unsafe { libc::kill(pid as i32, 0) }, 0);
+                    if abandon {
+                        drop(work); // Direct future destruction after admission.
+                    } else {
+                        resume.send(()).unwrap();
+                        assert_eq!(work.await.err(), Some("codec_test_scope"));
+                    }
+                    codec.close().await.unwrap();
+                    #[cfg(unix)]
+                    assert_eq!(unsafe { libc::kill(pid as i32, 0) }, -1);
+                    assert!(owner.profile_events().contains(&(Profile::Persistent, pid, true)));
+                    drop(budget.reserve(TRANSIT_INSTANCE_LIMIT).unwrap());
+                    db.set_ready(pool).await.unwrap();
+                    assert!(owner.shutdown().await);
+                }
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn native_bank_runs_all_nine_operations_on_one_real_child() {
+        let (_dir, db, _) = database().await;
+        let owner = TransferRuntime::default();
+        let budget = owner.budget().unwrap();
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
+        // Synthetic fixtures belong to the test driver, not to a product input
+        // loader. This recipe checks native/Child transitions and equivalence.
+        let vectors = Command::new(bun()).current_dir(root).arg("-e").arg(
+            "import {codecVectors} from './copilot-bridge/src/connect-codec-vectors.testSupport.ts'; console.log(JSON.stringify(codecVectors(true)));"
+        ).output().await.unwrap();
+        assert!(vectors.status.success());
+        let vectors: Vec<serde_json::Value> = serde_json::from_slice(&vectors.stdout).unwrap();
+        assert_eq!(vectors.len(), 9);
+        let codec = owner.source_codec(&bun(), &root.join("copilot-bridge/src/entry.ts"), &db).await.unwrap();
+        let pid = codec.pid;
+        for vector in vectors {
+            let op = vector["op"].as_u64().unwrap() as u16;
+            let body = Bytes::serialize(&budget, &vector["body"]).unwrap();
+            let input = codec.admit(op).unwrap().input(&vector["facts"], body).unwrap();
+            let result = codec.run_admitted(input).await.unwrap();
+            assert_eq!(result.status, 0, "operation {op}");
+            assert!(!result.bytes.as_slice().is_empty());
+            assert_eq!(codec.pid, pid);
+            assert_eq!(codec.admit(op).err().unwrap(), "codec_busy");
+            drop(result);
+        }
+        codec.close().await.unwrap();
+        drop(budget.reserve(TRANSIT_INSTANCE_LIMIT).unwrap());
+        assert!(owner.shutdown().await);
+    }
+
+    #[tokio::test]
     async fn real_codec_reuses_child_and_keeps_database_and_last_result_charged() {
         let (_dir, db, pool) = database().await;
         let owner = TransferRuntime::default();
@@ -561,11 +648,20 @@ mod tests {
         let codec = owner.source_codec(&bun(), &entry, &db).await.unwrap();
         assert!(owner.source_codec(&bun(), &entry, &db).await.is_err());
         assert!(db.set_ready(pool.clone()).await.is_err());
+        // Exactly one raw graph plus BANK and startup fits. Separate native
+        // expectation/body reservations would make the real Child fail.
+        let remainder = budget.reserve(TRANSIT_INSTANCE_LIMIT - 524_288 - 28_311_552 - 2_097_152).unwrap();
         for _ in 0..2 {
             let result = codec.run(input(&budget)).await.unwrap();
             assert_eq!(result.status, 0);
             drop(result);
         }
+        drop(remainder);
+        let last = codec.run(input(&budget)).await.unwrap();
+        assert_eq!(codec.admit(1).err().unwrap(), "codec_busy");
+        drop(last);
+        let admitted = codec.admit(1).unwrap();
+        drop(admitted);
         let last = codec.run(input(&budget)).await.unwrap();
         codec.close().await.unwrap();
         assert!(

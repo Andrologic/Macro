@@ -47,7 +47,7 @@
     },
     {
       "path": "copilot-bridge/src/connect-codec-engine.ts",
-      "sha256": "72497cd166e54ed1c4fc9460cf877326e89e4d31ac7f0b10579349627bf79372"
+      "sha256": "f5d8929059772cad1bdfd48c472d0abef44a5607f58e040a009af00074c283e8"
     },
     {
       "path": "copilot-bridge/src/connect-codec-framing.ts",
@@ -59,7 +59,7 @@
     },
     {
       "path": "copilot-bridge/src/connect-codec-values.ts",
-      "sha256": "6137d47e7fdd3d13e1868fc87b566fad0ec1e93487c7caea77bd437aeeaf6b25"
+      "sha256": "9dc2e0a6e199567cb8885713e00b1ac205fe74c41b1ec60208ab46138ff26dea"
     },
     {
       "path": "copilot-bridge/src/connect-codec.ts",

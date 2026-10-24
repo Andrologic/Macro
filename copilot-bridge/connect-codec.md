@@ -168,7 +168,31 @@ has expectation + plan + result, at most three slots. After raw scope exit,
 encoding has expectation + result + JSON string, also three. A synchronous
 encoding scope returns only the encoded bytes; graph and string references
 leave that scope before output waits. The encoded result slot lasts through
-all write completions and ACKs. The bank is empty before JOB_FINISHED.
+all write completions and ACKs. The Child's claims are empty before JOB_FINISHED.
+The native result can still own BANK after that frame.
+
+The native admission reserves BANK before assigning either encoded slot. Slot A
+holds native expectations until their completed phase1 scope; BEGIN phase2 is
+sent only after that backing is destroyed. Child validator bytes and encoded
+result then use A successively. Slot B holds the native body until its completed
+phase2 scope, then the native result reservoir. The Child may encode its result
+before the parent reads SCOPE_FINISHED: A remains separate from the body in B.
+The parent destroys B's body before allocating B's result, including for an
+empty body. No third encoded slot is available to the Child.
+
+`CodecHandle::admit` returns recoverable `codec_busy` while an admitted job or
+its last Output owns BANK. The complete reservation stays with the last owner;
+there is no refund/reacquisition between backings. A result shared with Hyper
+keeps that reservation through the last backing reference. Failed work keeps
+the codec's BANK reference until joined retirement, or quarantine. Native
+bootstrap consumes finished facts before waiting for the codec; retained
+session/authority facts keep their separate 196,608-unit reservation.
+
+All eight graph slots remain available to the Child, including opcode 7's
+maximum. This change does not finance another lane's retained expectations or
+response. Selected journal reads and admission of concurrent HTTP reservoirs
+remain separate composition prerequisites. The lane/startup buffer coverage
+also remains unqualified; logical transit accounting is not a heap/RSS bound.
 
 The fd reader has a preallocated 32-byte header and 65,536-byte scratch. Its
 single outstanding `node:fs.read` specifies the caller buffer, offset and

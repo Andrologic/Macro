@@ -2,7 +2,7 @@ use crate::connect_resources::{TransitCharge, TransitInstance};
 use crate::core::db_state::ChatWorkLifetime;
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
-use std::process::Stdio;
+use std::{process::Stdio, sync::{Arc, atomic::{AtomicBool, Ordering}}};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     process::{Child, ChildStdin, ChildStdout, Command},
@@ -37,9 +37,84 @@ impl Profile {
     }
 }
 
+// One reservation outlives every native/Child borrow and the returned output.
+// The semaphore belongs to this codec instance, including its runtime generation.
+#[derive(Clone)]
+pub(crate) struct BankOwner {
+    budget: TransitInstance,
+    gate: Arc<tokio::sync::Semaphore>,
+    profile: Profile,
+}
+pub(crate) struct JobBank {
+    owner: BankOwner,
+    _charge: TransitCharge,
+    _permit: tokio::sync::OwnedSemaphorePermit,
+    slots: [AtomicBool; 2],
+}
+pub(crate) struct Admission {
+    bank: Arc<JobBank>,
+    op: u16,
+}
+pub(crate) struct AdmittedInput {
+    pub(super) input: Input,
+    pub(super) bank: Arc<JobBank>,
+}
+struct EncodedSlot {
+    bank: Arc<JobBank>,
+    index: usize,
+}
+impl Drop for EncodedSlot {
+    fn drop(&mut self) { self.bank.slots[self.index].store(false, Ordering::Release); }
+}
+// Data is declared before its charge so its backing disappears first.
+#[allow(dead_code)]
+enum BytesCharge { External(TransitCharge), Bank(EncodedSlot) }
+impl BankOwner {
+    pub(crate) fn admit(&self, op: u16) -> Result<Admission> {
+        if !self.profile.accepts(op) { return Err("codec_profile"); }
+        let permit = self.gate.clone().try_acquire_owned().map_err(|_| "codec_busy")?;
+        let charge = self.budget.reserve(BANK).map_err(|_| "transit_limit")?;
+        Ok(Admission { op, bank: Arc::new(JobBank {
+            owner: self.clone(), _charge: charge, _permit: permit,
+            slots: [AtomicBool::new(false), AtomicBool::new(false)],
+        }) })
+    }
+    pub(crate) fn owns(&self, input: &AdmittedInput) -> bool {
+        Arc::ptr_eq(&self.gate, &input.bank.owner.gate) && self.profile.accepts(input.input.op)
+    }
+}
+impl JobBank {
+    fn slot(self: &Arc<Self>, index: usize) -> Result<EncodedSlot> {
+        self.slots[index].compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .map_err(|_| "codec_busy")?;
+        Ok(EncodedSlot { bank: self.clone(), index })
+    }
+    fn adopt(self: &Arc<Self>, bytes: Bytes, index: usize) -> Result<Bytes> {
+        if bytes.data.capacity() > BODY { return Err("codec_limit"); }
+        let slot = self.slot(index)?;
+        let Bytes { data, _charge } = bytes;
+        // BANK and its exclusive slot already cover the same backing.
+        drop(_charge);
+        Ok(Bytes { data, _charge: BytesCharge::Bank(slot) })
+    }
+}
+impl Admission {
+    pub(crate) fn input(self, facts: &impl serde::Serialize, body: Bytes) -> Result<AdmittedInput> {
+        let expectations = Bytes::serialize_charged(BytesCharge::Bank(self.bank.slot(0)?), facts)?;
+        let body = self.bank.adopt(body, 1)?;
+        Ok(AdmittedInput { input: Input { op: self.op, expectations, body }, bank: self.bank })
+    }
+    pub(crate) fn adopt(self, input: Input) -> Result<AdmittedInput> {
+        if self.op != input.op { return Err("codec_input"); }
+        let expectations = self.bank.adopt(input.expectations, 0)?;
+        let body = self.bank.adopt(input.body, 1)?;
+        Ok(AdmittedInput { input: Input { op: self.op, expectations, body }, bank: self.bank })
+    }
+}
+
 pub(crate) struct Bytes {
     data: Vec<u8>,
-    _charge: TransitCharge,
+    _charge: BytesCharge,
 }
 impl Bytes {
     pub(crate) fn as_slice(&self) -> &[u8] {
@@ -52,13 +127,17 @@ impl Bytes {
         }
         Ok(Self {
             data,
-            _charge: charge,
+            _charge: BytesCharge::External(charge),
         })
     }
     pub(crate) fn serialize(
         budget: &TransitInstance,
         value: &impl serde::Serialize,
     ) -> Result<Self> {
+        let charge = budget.reserve(BODY as u64).map_err(|_| "transit_limit")?;
+        Self::serialize_charged(BytesCharge::External(charge), value)
+    }
+    fn serialize_charged(charge: BytesCharge, value: &impl serde::Serialize) -> Result<Self> {
         struct Bounded(Vec<u8>);
         impl std::io::Write for Bounded {
             fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
@@ -72,10 +151,10 @@ impl Bytes {
                 Ok(())
             }
         }
-        let charge = budget.reserve(BODY as u64).map_err(|_| "transit_limit")?;
         let mut writer = Bounded(Vec::with_capacity(BODY));
         serde_json::to_writer(&mut writer, value).map_err(|_| "codec_input")?;
-        Self::adopt(writer.0, charge, BODY)
+        if writer.0.capacity() > BODY { return Err("codec_limit"); }
+        Ok(Self { data: writer.0, _charge: charge })
     }
     pub(crate) fn copy(budget: &TransitInstance, source: &[u8]) -> Result<Self> {
         if source.len() > BODY {
@@ -86,7 +165,7 @@ impl Bytes {
             .map_err(|_| "transit_limit")?;
         Ok(Self {
             data: source.to_vec(),
-            _charge: charge,
+            _charge: BytesCharge::External(charge),
         })
     }
 }
@@ -121,8 +200,17 @@ impl Header {
             && self.sequence == sequence
     }
 }
+#[cfg(test)]
+pub(super) struct ScopeProbe {
+    pub phase: u8,
+    pub after: bool,
+    pub reached: tokio::sync::oneshot::Sender<()>,
+    pub resume: tokio::sync::oneshot::Receiver<()>,
+}
 pub(crate) struct Codec {
     child: Child,
+    #[cfg(test)]
+    pub(super) scope_probe: Option<ScopeProbe>,
     input: Option<ChildStdin>,
     output: Option<ChildStdout>,
     stderr: Option<JoinHandle<()>>,
@@ -130,7 +218,8 @@ pub(crate) struct Codec {
     budget: TransitInstance,
     raw: Option<TransitCharge>,
     raw_turn: Option<tokio::sync::OwnedSemaphorePermit>,
-    bank: Option<TransitCharge>,
+    bank: Option<Arc<JobBank>>,
+    pub(crate) bank_owner: BankOwner,
     _startup: TransitCharge,
     _a1_module: Option<TransitCharge>,
     profile: Profile,
@@ -174,10 +263,13 @@ impl Codec {
         });
         Ok(Self {
             child,
+            #[cfg(test)]
+            scope_probe: None,
             input,
             output,
             stderr: Some(stderr),
             scratch: Box::new([0; PAGE]),
+            bank_owner: BankOwner { budget: budget.clone(), gate: Arc::new(tokio::sync::Semaphore::new(1)), profile },
             budget,
             raw: None,
             raw_turn: None,
@@ -303,6 +395,16 @@ impl Codec {
         self.send(3, self.job, self.lease, 0, &bytes).await?;
         Ok(self.lease)
     }
+    #[cfg(test)]
+    async fn probe_scope(&mut self, phase: u8, after: bool) -> Result<()> {
+        if self.scope_probe.as_ref().is_some_and(|p| p.phase == phase && p.after == after) {
+            let probe = self.scope_probe.take().unwrap();
+            let _ = probe.reached.send(());
+            let _ = probe.resume.await;
+            return Err("codec_test_scope");
+        }
+        Ok(())
+    }
     async fn phase(
         &mut self,
         op: u16,
@@ -340,6 +442,8 @@ impl Codec {
             self.next(|h| h.exact(5, 0, job, raw, sequence as u32))
                 .await?;
         }
+        #[cfg(test)]
+        self.probe_scope(phase, false).await?;
         self.next(|h| h.exact(6, 4, job, raw, 0)).await?;
         if u32::from_be_bytes(self.scratch[..4].try_into().unwrap()) != u32::from(phase) {
             return Err("codec_scope");
@@ -348,32 +452,35 @@ impl Codec {
         // All parent writes completed and the trusted codec closed its raw scope.
         self.raw.take();
         self.raw_turn.take();
+        #[cfg(test)]
+        self.probe_scope(phase, true).await?;
         Ok(bank)
     }
-    pub(crate) async fn run(&mut self, input: Input) -> Result<Output> {
+    pub(crate) async fn run(&mut self, admitted: AdmittedInput) -> Result<Output> {
+        if !self.bank_owner.owns(&admitted) { return Err("codec_owner"); }
+        let AdmittedInput { input, bank } = admitted;
         if !self.profile.accepts(input.op) || input.expectations.data.is_empty() {
             return Err("codec_input");
         }
         self.job = self.job.checked_add(1).ok_or("codec_limit")?;
-        self.bank = Some(self.budget.reserve(BANK).map_err(|_| "transit_limit")?);
+        self.bank = Some(bank.clone());
+        let Input { op, expectations, body } = input;
         let control = self
-            .phase(input.op, 1, &input.expectations.data, RAW, BODY, true)
+            .phase(op, 1, &expectations.data, RAW, BODY, true)
             .await?;
+        drop(expectations); // Child cannot enter phase2 before the following BEGIN.
         // Empty-body poll delegates to the canonical v2 owner. No native grammar
         // or success is inferred from this descriptor; status 3 remains distinct.
-        let (units, limit) = match input.op {
+        let (units, limit) = match op {
             1 => (1_146_880, 4096),
             2 => (2_293_760, 8192),
-            5 if input.body.data.is_empty() => (RAW, 0),
+            5 if body.data.is_empty() => (RAW, 0),
             _ => (RAW, BODY),
         };
-        self.phase(input.op, 2, &input.body.data, units, limit, false)
+        self.phase(op, 2, &body.data, units, limit, false)
             .await?;
-        drop(input);
-        let charge = self
-            .budget
-            .reserve(BODY as u64)
-            .map_err(|_| "transit_limit")?;
+        drop(body);
+        let charge = BytesCharge::Bank(bank.slot(1)?);
         let mut result = Bytes {
             data: Vec::with_capacity(BODY),
             _charge: charge,
@@ -447,6 +554,45 @@ impl Codec {
 mod buffer_ownership_tests {
     use super::*;
     use crate::connect_resources::{TransitOwner, TRANSIT_INSTANCE_LIMIT};
+
+    #[test]
+    fn bank_slots_transfer_backings_and_keep_last_hyper_reference_charged() {
+        let budget = TransitOwner::default().instance(uuid::Uuid::new_v4()).unwrap();
+        let owner = BankOwner { budget: budget.clone(), gate: Arc::new(tokio::sync::Semaphore::new(1)), profile: Profile::Persistent };
+        let admission = owner.admit(7).unwrap();
+        let body = Bytes::copy(&budget, b"{}").unwrap();
+        let pointer = body.data.as_ptr();
+        let input = admission.input(&serde_json::json!({"chunk":"synthetic"}), body).unwrap();
+        assert_eq!(input.input.body.data.as_ptr(), pointer);
+        let other = BankOwner { budget: budget.clone(), gate: Arc::new(tokio::sync::Semaphore::new(1)), profile: Profile::Persistent };
+        assert!(!other.owns(&input));
+        assert!(owner.owns(&input));
+        assert!(owner.admit(10).is_err());
+        assert!(owner.admit(7).is_err());
+        assert!(input.bank.slot(0).is_err());
+        assert!(input.bank.slot(1).is_err());
+        let AdmittedInput { input: Input { expectations, body, .. }, bank } = input;
+        drop(expectations);
+        let child_a = bank.slot(0).unwrap();
+        drop(body);
+        let mut data = Vec::with_capacity(BODY);
+        data.extend_from_slice(b"{}");
+        let result = Bytes { data, _charge: BytesCharge::Bank(bank.slot(1).unwrap()) };
+        drop(child_a);
+        drop(bank);
+        let shared = bytes::Bytes::from_owner(result);
+        let last = shared.clone();
+        drop(shared);
+        assert_eq!(owner.admit(1).err().unwrap(), "codec_busy");
+        drop(budget.reserve(TRANSIT_INSTANCE_LIMIT - BANK).unwrap());
+        assert!(budget.reserve(TRANSIT_INSTANCE_LIMIT - BANK + 1).is_err());
+        drop(last);
+        drop(budget.reserve(TRANSIT_INSTANCE_LIMIT).unwrap());
+        drop(owner.admit(1).unwrap());
+        let bad = Bytes::adopt(Vec::with_capacity(BODY + 1), budget.reserve((BODY + 1) as u64).unwrap(), BODY + 1).unwrap();
+        assert!(owner.admit(1).unwrap().input(&serde_json::json!({}), bad).is_err());
+        drop(budget.reserve(TRANSIT_INSTANCE_LIMIT).unwrap());
+    }
 
     #[test]
     fn adopted_capacity_and_shared_backing_remain_charged_until_last_owner() {
