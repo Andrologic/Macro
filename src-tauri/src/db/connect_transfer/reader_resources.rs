@@ -17,6 +17,7 @@ pub(super) fn hex(value: &[u8]) -> String {
 }
 pub(super) fn validate(selector: &ArchiveSelector) -> DbResult<()> {
     match selector {
+        ArchiveSelector::Entries => {},
         ArchiveSelector::Records { ordinal, uuid: id } => {
             if ordinal.is_some() && id.is_some() {
                 return Err(invalid("invalid_cursor"));
@@ -277,6 +278,24 @@ pub(super) async fn resources(
         });
     }
     Ok((items, if more { next } else { None }))
+}
+
+/// Find the indexed fragment containing a slice start, without scanning earlier
+/// payloads. Full-field digest validation belongs to its immutable read session.
+pub(super) async fn covering_offset(
+    db: &mut SqliteConnection,
+    archive: &Archive,
+    field: &Field,
+    start: i64,
+) -> DbResult<i64> {
+    let offset: Option<i64> = if field.record {
+        sqlx::query_scalar("SELECT offset_bytes FROM e_inactive_fragments WHERE import_id=? AND ordinal=? AND offset_bytes<=? ORDER BY offset_bytes DESC LIMIT 1")
+            .bind(archive.import).bind(field.ordinal).bind(start).fetch_optional(db).await?
+    } else {
+        sqlx::query_scalar("SELECT offset_bytes FROM connect_projection_fragments WHERE transfer_id=? AND kind=? AND ordinal=? AND field=? AND offset_bytes<=? ORDER BY offset_bytes DESC LIMIT 1")
+            .bind(&archive.transfer).bind(field.kind).bind(field.ordinal).bind(&field.field).bind(start).fetch_optional(db).await?
+    };
+    offset.ok_or_else(|| invalid("integrity_failed"))
 }
 
 pub(super) async fn fragment(

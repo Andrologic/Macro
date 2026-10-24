@@ -572,6 +572,33 @@
   },
   "chat": {
     "historyUnknownDate": "Unknown date",
+    "archive": {
+      "title": "Transferred history",
+      "allRecords": "History",
+      "resources": "Attachments and references",
+      "body": "Text",
+      "complete": "Complete",
+      "partial": "Part of the original",
+      "endOfSelection": "End of this page",
+      "readMore": "Read more",
+      "recover": "Use in the next message",
+      "added": "Added to the composer",
+      "related": "Related attachment or reference",
+      "provenance": "Original source information retained",
+      "unavailable": "This archived item is unavailable.",
+      "assistant": "Assistant",
+      "user": "You",
+      "attachment": "Attachment",
+      "reference": "Reference",
+      "history": "Historical text",
+      "fields": {
+        "source": "Source",
+        "title": "Title",
+        "snippet": "Excerpt",
+        "content": "Text",
+        "data": "Attachment"
+      }
+    },
     "conversationSourcesUsed": "{{count}} cited conversation sources",
     "imageImportContextChanged": "Conversation changed. Images were not added; select them again.",
     "imageImportFailed": "No images added. Use valid PNG, JPEG, GIF or WebP images, up to 2 MB each, 8 MB total and 10 images.",

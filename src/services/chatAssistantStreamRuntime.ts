@@ -51,7 +51,7 @@ export interface ChatAssistantStreamPorts {
   clear: Lifecycle["clearLiveStreamContextEstimate"];
   refresh: Lifecycle["refreshConversationContextDiagnostics"];
  };
- prepare(params: PrepareAssistantStreamParams): Promise<Pick<AssistantStreamLaunch, "messagesForRequest" | "contextDiagnosticsBaselineSeed" | "executionContext" | "fileToolContext" | "allowedToolIds" | "riskLevel" | "scopedTurnConfiguration" | "skillToolIds" | "runnableSkillToolIds" | "guidedToolRetry" | "showToolTraces" | "enableWebSearch" | "enableWebFetch" | "webSearchOptions" | "mcpTools" | "mcpServers" | "internalAgentProfile" | "maxTurns" | "compactionDecision">>;
+ prepare(params: PrepareAssistantStreamParams): Promise<Pick<AssistantStreamLaunch, "messagesForRequest" | "contextDiagnosticsBaselineSeed" | "executionContext" | "fileToolContext" | "allowedToolIds" | "riskLevel" | "scopedTurnConfiguration" | "skillToolIds" | "runnableSkillToolIds" | "guidedToolRetry" | "showToolTraces" | "enableWebSearch" | "enableWebFetch" | "webSearchOptions" | "mcpTools" | "mcpServers" | "internalAgentProfile" | "maxTurns" | "compactionDecision" | "resources">>;
  compaction: {
   status(id: string): ConversationCompactionStatus | undefined;
   setStatus(id: string, status: ConversationCompactionStatus): void;
@@ -80,6 +80,8 @@ export function createAssistantStreamRuntime(ports: ChatAssistantStreamPorts) {
   // owns callbacks and writes until both physical lifecycles have returned.
   const admittedStreams = new Map<string, AdmittedStreamGroup>();
   const start = async (input: AssistantStreamLaunch): Promise<void> => {
+    let physicalOwnerInstalled = false;
+    try {
     // Capture execution authority before transport callbacks can suspend or UI selections change.
     const params: AssistantStreamLaunch = {
       ...input,
@@ -330,6 +332,7 @@ export function createAssistantStreamRuntime(ports: ChatAssistantStreamPorts) {
           runtimeAfterCompaction.abortController !== abortController ||
           abortController.signal.aborted
         ) {
+          streamLaunch.resources?.release();
           return true;
         }
 
@@ -362,6 +365,7 @@ export function createAssistantStreamRuntime(ports: ChatAssistantStreamPorts) {
         );
         await start({
           ...params,
+          resources: streamLaunch.resources,
           messagesForRequest: streamLaunch.messagesForRequest,
           contextDiagnosticsBaselineSeed:
             streamLaunch.contextDiagnosticsBaselineSeed,
@@ -682,7 +686,14 @@ export function createAssistantStreamRuntime(ports: ChatAssistantStreamPorts) {
           await shared.finishing;
         })
       : streamPromise;
-    ports.owner.track(params.conversationId, finished);
+    const ownedCompletion = finished.finally(async () => {
+      try { await drainEffects(); } finally { input.resources?.release(); }
+    });
+    physicalOwnerInstalled = true;
+    ports.owner.track(params.conversationId, ownedCompletion);
+    } finally {
+      if (!physicalOwnerInstalled) input.resources?.release();
+    }
   };
   return { start };
 }

@@ -5,6 +5,7 @@ use ts_rs::TS;
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize, TS)]
 #[serde(tag = "kind", rename_all = "camelCase", deny_unknown_fields)]
 pub enum ArchiveSelector {
+    Entries,
     Records {
         ordinal: Option<String>,
         uuid: Option<String>,
@@ -64,6 +65,14 @@ pub struct ArchiveResource {
 #[derive(Debug, Serialize, TS)]
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum ArchiveItem {
+    Entry {
+        ordinal: String,
+        #[serde(rename = "targetUuid")]
+        target_uuid: Option<String>,
+        #[serde(rename = "headerJson")]
+        header_json: String,
+        origin: Option<crate::db::models::PortableMessageOrigin>,
+    },
     Record {
         ordinal: String,
         #[serde(rename = "targetUuid")]

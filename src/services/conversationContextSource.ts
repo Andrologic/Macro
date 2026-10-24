@@ -71,13 +71,13 @@ export async function resolveConversationContextSources(params: {
 }): Promise<PersistedContextReference[] | undefined> {
   const refs = params.refs;
   if (!refs?.some((ref) => ref.kind === 'conversation')) return refs ? [...refs] : undefined;
-  const sourceRefs = refs.filter((ref) => ref.kind === 'conversation');
+  const sourceRefs = refs.filter((ref) => ref.kind === 'conversation' && !ref.archive);
   if (sourceRefs.length > MAX_SOURCES) throw new Error('Attach at most three conversation sources.');
   const target = await params.ports.getConversation(params.targetConversationId);
   if (!target) throw new Error('The destination conversation is no longer available.');
   const resolved: PersistedContextReference[] = [];
   for (const ref of refs) {
-    if (ref.kind !== 'conversation') {
+    if (ref.kind !== 'conversation' || ref.archive) {
       resolved.push(ref);
       continue;
     }

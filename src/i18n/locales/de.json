@@ -544,6 +544,33 @@
   },
   "chat": {
     "historyUnknownDate": "Datum unbekannt",
+    "archive": {
+      "title": "Übertragener Verlauf",
+      "allRecords": "Verlauf",
+      "resources": "Anhänge und Quellen",
+      "body": "Text",
+      "complete": "Vollständig",
+      "partial": "Teil des Originals",
+      "endOfSelection": "Ende dieser Seite",
+      "readMore": "Weiterlesen",
+      "recover": "In der nächsten Nachricht verwenden",
+      "added": "Zum Entwurf hinzugefügt",
+      "related": "Zugehöriger Anhang oder Verweis",
+      "provenance": "Ursprüngliche Herkunftsinformationen gespeichert",
+      "unavailable": "Dieser Archiveintrag ist nicht verfügbar.",
+      "assistant": "Assistent",
+      "user": "Du",
+      "attachment": "Anhang",
+      "reference": "Quelle",
+      "history": "Historischer Text",
+      "fields": {
+        "source": "Quelle",
+        "title": "Titel",
+        "snippet": "Auszug",
+        "content": "Text",
+        "data": "Anhang"
+      }
+    },
     "conversationSourcesUsed": "{{count}} zitierte Konversationsquellen",
     "imageImportContextChanged": "Die Unterhaltung wurde gewechselt. Bilder wurden nicht hinzugefügt; wählen Sie sie erneut aus.",
     "imageImportFailed": "Keine Bilder hinzugefügt. PNG, JPEG, GIF oder WebP verwenden: maximal 2 MB je Bild, 8 MB insgesamt und 10 Bilder.",

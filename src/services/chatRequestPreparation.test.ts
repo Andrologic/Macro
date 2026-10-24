@@ -3,6 +3,26 @@ import { describe, expect, it, spyOn } from "bun:test";
 import { chatRequestPreparationFixture as fixture } from "../test-utils/chatRequestPreparationFixture";
 
 describe("chat request preparation", () => {
+  it("releases admitted copies on stale preparation and persistence failure, and transfers them on success", async () => {
+    for (const failure of ['stale', 'persistence', 'none'] as const) {
+      const f = fixture();
+      let releases = 0;
+      const resources = { retain() { return this; }, release() { releases++; } };
+      f.prepared.resources = resources;
+      if (failure === 'stale') {
+        f.ports.context.prepareMessages = async () => { f.ports.isCurrent = () => false; return f.prepared; };
+      }
+      if (failure === 'persistence') f.ports.persistence.providerInputItems = async () => { throw new Error('write failed'); };
+      if (failure === 'none') {
+        const launch = await f.run();
+        expect(launch.resources).toBe(resources);
+        expect(launch.contextDiagnosticsBaselineSeed.resources).toBe(resources);
+        expect(releases).toBe(0);
+        launch.resources!.release();
+      } else { await expect(f.run()).rejects.toBeDefined(); }
+      expect(releases).toBe(1);
+    }
+  });
   it("stops before request preparation when tool settings failed without a usable registry", async () => {
     const f = fixture();
     f.ports.tools.loadStatus = () => ({ lastError: "offline", hasInternalTools: false });

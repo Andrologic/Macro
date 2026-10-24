@@ -43,11 +43,12 @@ export type PreparedAssistantStreamLaunch = Pick<AssistantStreamLaunch,
   "messagesForRequest" | "contextDiagnosticsBaselineSeed" | "executionContext" |
   "fileToolContext" | "internalAgentProfile" | "enableWebSearch" | "enableWebFetch" |
   "webSearchOptions" | "mcpTools" | "mcpServers" | "skillToolIds" |
-  "runnableSkillToolIds" | "guidedToolRetry" | "maxTurns" | "compactionDecision"
+  "runnableSkillToolIds" | "guidedToolRetry" | "maxTurns" | "compactionDecision" | "resources"
 >;
 
 /** Materialized context; skills and repository instructions belong to this request. */
 export interface PreparedChatRequestContext {
+  resources?: AssistantStreamLaunch["resources"];
   systemMessage: string;
   preparedMessages: StreamMessage[];
   orderedMessages: ChatMessage[];
@@ -292,7 +293,7 @@ export const prepareAssistantStreamLaunch = async (
   }
   const showToolTraces = captured?.showToolTraces ?? false;
   const skillPermissionSnapshot = ports.skills.createPermissionSnapshot(params.conversationId, params.replyToMessageId);
-  const preparedRequest = await waitForCurrent(ports.context.prepareMessages(
+  const preparedRequest = await ports.context.prepareMessages(
     params.conversationId,
     allowedToolIds,
     internalAgentProfile,
@@ -302,7 +303,9 @@ export const prepareAssistantStreamLaunch = async (
     skillPermissionSnapshot,
     executionContext,
     riskLevel,
-  ));
+  );
+  try {
+  assertCurrent();
   ports.skills.publishFeedback(params.replyToMessageId, preparedRequest.skillTurnFeedback);
   const toolDefinitions = ports.tools.definitions(allowedToolIds, mcpTools);
   await waitForCurrent(ports.provider.ensureContextMetadata(
@@ -557,12 +560,14 @@ export const prepareAssistantStreamLaunch = async (
   ));
 
   return {
+    resources: preparedRequest.resources,
     allowedToolIds,
     riskLevel,
     scopedTurnConfiguration,
     showToolTraces,
     messagesForRequest: compactedRequest.messages,
     contextDiagnosticsBaselineSeed: {
+      resources: preparedRequest.resources,
       conversationId: params.conversationId,
       modeAtSend: params.modeAtSend,
       providerId: params.providerId,
@@ -598,4 +603,8 @@ export const prepareAssistantStreamLaunch = async (
     maxTurns,
     compactionDecision: compactedRequest.decision,
   };
+  } catch (error) {
+    preparedRequest.resources?.release();
+    throw error;
+  }
 };

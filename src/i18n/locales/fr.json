@@ -572,6 +572,33 @@
   },
   "chat": {
     "historyUnknownDate": "Date inconnue",
+    "archive": {
+      "title": "Historique transféré",
+      "allRecords": "Historique",
+      "resources": "Pièces jointes et références",
+      "body": "Texte",
+      "complete": "Intégralité",
+      "partial": "Partie de l’original",
+      "endOfSelection": "Fin de cette page",
+      "readMore": "Lire la suite",
+      "recover": "Utiliser dans le prochain message",
+      "added": "Ajouté au message en cours",
+      "related": "Pièce jointe ou référence associée",
+      "provenance": "Informations d’origine conservées",
+      "unavailable": "Cet élément archivé est indisponible.",
+      "assistant": "Assistant",
+      "user": "Vous",
+      "attachment": "Pièce jointe",
+      "reference": "Référence",
+      "history": "Texte historique",
+      "fields": {
+        "source": "Source",
+        "title": "Titre",
+        "snippet": "Extrait",
+        "content": "Texte",
+        "data": "Pièce jointe"
+      }
+    },
     "conversationSourcesUsed": "{{count}} conversations sources citées",
     "imageImportContextChanged": "La conversation a changé. Les images n’ont pas été ajoutées ; sélectionnez-les à nouveau.",
     "imageImportFailed": "Aucune image ajoutée. Utilisez des images PNG, JPEG, GIF ou WebP valides : 2 Mo par image, 8 Mo au total et 10 images maximum.",

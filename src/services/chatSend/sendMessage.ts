@@ -255,6 +255,8 @@ export async function sendMessage<Task extends SendTask, Recovery, Launch>(
       await authorizePilotEffect();
       if (!isCurrent()) return sentWithoutAssistant(persistedUserMessage);
       const launch = await stream.prepare(request);
+      let transferredResources = false;
+      try {
       if (!isCurrent()) return sentWithoutAssistant(persistedUserMessage);
       timeline('compaction_done', { conversationId, providerId, providerType: providerForUse.providerType });
       let assistant: ChatMessage;
@@ -284,6 +286,7 @@ export async function sendMessage<Task extends SendTask, Recovery, Launch>(
       if (!isCurrent()) return sentWithoutAssistant(persistedUserMessage);
       await authorizePilotEffect();
       if (!isCurrent()) return sentWithoutAssistant(persistedUserMessage);
+      transferredResources = true;
       await stream.start({
         ...request, completeMetadata, sessionId: current.sessionId, assistantMessage: assistant,
         architectPlanAtSend: architectPlan, abortController,
@@ -293,6 +296,7 @@ export async function sendMessage<Task extends SendTask, Recovery, Launch>(
       handedToStream = true;
       await messages.onAssistantStarted?.(assistant);
       if (firstManualFeatureMessage) tasks.completeLaunch(conversationId, current.sessionId);
+      } finally { if (!transferredResources) stream.releasePrepared?.(launch); }
     } catch (error) {
       if (!ownsTurn()) return sentWithoutAssistant(persistedUserMessage);
       launchError = error;

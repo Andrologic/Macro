@@ -663,6 +663,7 @@ export type { HostTelemetryDto, HostTelemetryAvailability, HostTelemetryReason }
 export { hostTelemetryRead } from "./ipc/hostTelemetry";
 
 export * from "./ipc/pilotFiles";
+export * from "./ipc/connectArchive";
 
 export * from './ipc/conversationContent';
 

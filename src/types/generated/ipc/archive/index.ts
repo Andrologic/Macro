@@ -10,3 +10,4 @@ export type { ArchiveReleaseInput } from '../ArchiveReleaseInput';
 export type { ArchiveResource } from '../ArchiveResource';
 export type { ArchiveSelector } from '../ArchiveSelector';
 export type { ArchiveUse } from '../ArchiveUse';
+export type { PortableMessageOrigin } from '../PortableMessageOrigin';

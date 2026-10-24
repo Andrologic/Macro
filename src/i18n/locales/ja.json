@@ -543,6 +543,33 @@
   },
   "chat": {
     "historyUnknownDate": "日付不明",
+    "archive": {
+      "title": "転送された履歴",
+      "allRecords": "履歴",
+      "resources": "添付と参照",
+      "body": "テキスト",
+      "complete": "全文",
+      "partial": "原文の一部",
+      "endOfSelection": "このページの末尾",
+      "readMore": "続きを読む",
+      "recover": "次のメッセージで使う",
+      "added": "下書きに追加しました",
+      "related": "関連する添付または参照",
+      "provenance": "元の出典情報を保持",
+      "unavailable": "このアーカイブ項目は利用できません。",
+      "assistant": "アシスタント",
+      "user": "あなた",
+      "attachment": "添付",
+      "reference": "参照",
+      "history": "過去のテキスト",
+      "fields": {
+        "source": "出典",
+        "title": "タイトル",
+        "snippet": "抜粋",
+        "content": "テキスト",
+        "data": "添付"
+      }
+    },
     "conversationSourcesUsed": "出典付きの会話 {{count}} 件",
     "imageImportContextChanged": "会話が変更されました。画像は追加されていません。もう一度選択してください。",
     "imageImportFailed": "画像は追加されませんでした。有効なPNG、JPEG、GIF、WebPを使用してください。1画像2 MB、合計8 MB、最大10画像です。",

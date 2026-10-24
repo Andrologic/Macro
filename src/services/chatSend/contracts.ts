@@ -167,6 +167,7 @@ export interface ChatSendPorts<Task extends SendTask, Recovery, Launch> {
   };
   stream: {
     prepare(params: PrepareAssistantStreamParams): Promise<Launch>;
+    releasePrepared?(launch: Launch): void;
     start(params: StartSendStream, launch: Launch): void | Promise<void>;
   };
 }

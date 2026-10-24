@@ -11,10 +11,16 @@ import type { ScopedTurnConfiguration } from "./configurationClient";
 import type { ChatMaxTurnsPreference } from "./chatTurnLimits";
 import type { getStreamingWebSearchConfig } from "./webSearchSettings";
 import type { ArchitectPlanRecord } from './architectPlanService';
+/** Application copies of an admitted backing. This grants no execution authority. */
+export interface ChatRequestResources {
+  retain(): ChatRequestResources;
+  release(): void;
+}
 export interface RepositoryInstructionDiagnosticSource {
  projectId: string; projectName: string; sourcePath: string; relativePath: string; depth: number; sizeBytes: number;
 }
 export interface StreamContextDiagnosticsBaseline {
+  resources?: ChatRequestResources;
   sessionId: string;
   conversationId: string;
   assistantMessageId: string;
@@ -69,6 +75,7 @@ export interface FrozenToolCallContext {
 }
 
 export interface AssistantStreamLaunch {
+    resources?: ChatRequestResources;
     completeMetadata?: () => Promise<void>;
     providerAdmission: ProviderAdmission;
     pilotActionToken?: symbol;

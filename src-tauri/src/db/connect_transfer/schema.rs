@@ -128,7 +128,7 @@ pub(crate) async fn remove_reader_reference_in(db: &mut SqliteConnection) -> DbR
     for name in current {
         sqlx::query(sqlx::AssertSqlSafe(format!("DROP TRIGGER \"{}\"", name.replace('"', "\"\"")))).execute(&mut *db).await?;
     }
-    sqlx::raw_sql("DROP INDEX IF EXISTS connect_asset_reader; DROP INDEX IF EXISTS connect_citation_reader; DROP VIEW IF EXISTS connect_message_origins; DROP VIEW IF EXISTS connect_deleting_owners; DROP VIEW IF EXISTS connect_deleting_transfers; DROP VIEW IF EXISTS connect_deletion_payloads; DROP TABLE IF EXISTS connect_projection_display; DROP TABLE IF EXISTS connect_publication_times; DROP TABLE IF EXISTS connect_local_deletions;").execute(&mut *db).await?;
+    sqlx::raw_sql("DROP INDEX IF EXISTS connect_message_reader; DROP INDEX IF EXISTS connect_asset_reader; DROP INDEX IF EXISTS connect_citation_reader; DROP VIEW IF EXISTS connect_message_origins; DROP VIEW IF EXISTS connect_deleting_owners; DROP VIEW IF EXISTS connect_deleting_transfers; DROP VIEW IF EXISTS connect_deletion_payloads; DROP TABLE IF EXISTS connect_projection_display; DROP TABLE IF EXISTS connect_publication_times; DROP TABLE IF EXISTS connect_local_deletions;").execute(&mut *db).await?;
     // These statements were just created from the checked-in migrations in an
     // isolated connection, never read from the application database or input.
     for ddl in guards { sqlx::raw_sql(sqlx::AssertSqlSafe(ddl)).execute(&mut *db).await?; }

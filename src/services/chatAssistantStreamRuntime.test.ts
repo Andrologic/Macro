@@ -191,6 +191,33 @@ function setup() {
 }
 
 describe("chatAssistantStreamRuntime with real lifecycle and orchestrator", () => {
+  test('request resources survive dispatch, transport completion and pending persistence', async () => {
+    const h = setup();
+    const params = launch('owned-images');
+    let released = 0;
+    params.resources = { retain() { return this; }, release() { released++; } };
+    const stream = await h.start(params);
+    expect(released).toBe(0);
+    const persistence = deferred<void>();
+    h.complete.mockImplementationOnce(async () => { await persistence.promise; });
+    stream.options.onComplete(result('answer'));
+    stream.done.resolve();
+    await checkpoint();
+    expect(released).toBe(0);
+    persistence.resolve();
+    await h.owner.drain(params.conversationId);
+    expect(released).toBe(1);
+  });
+
+  test('a cancelled pre-dispatch launch releases its prepared resources', async () => {
+    const h = setup();
+    const params = launch('cancelled-images');
+    let released = 0;
+    params.resources = { retain() { return this; }, release() { released++; } };
+    params.abortController!.abort();
+    await expect(h.start(params)).rejects.toThrow('cancelled');
+    expect(released).toBe(1);
+  });
   test("runtime helpers load without evaluating stores or React", async () => {
     // A fresh process keeps another test's module cache from hiding this dependency.
     const moduleUrl = new URL("./chatAssistantStreamRuntime.ts", import.meta.url).href;

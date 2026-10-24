@@ -274,6 +274,19 @@ export type ContextRefKind = 'plan-node' | 'predicted-branch' | 'skill' | 'file'
 
 export interface ConversationContextSource {
   conversationId: string;
+  archive?: ArchiveContextSelection;
+}
+
+/** Persisted data selector. Native storage revalidates every subsequent read. */
+export interface ArchiveContextSelection {
+  conversationId: string;
+  selector: import('./generated/ipc').ArchiveSelector;
+  resourceUuid: string;
+  ordinal: string;
+  manifest: string;
+  sha256: string;
+  start: string;
+  end: string;
 }
 
 export interface ContextReference {
@@ -301,6 +314,7 @@ export interface PersistedContextReference {
   sourceLabel?: string;
   url?: string;
   conversationId?: string;
+  archive?: ArchiveContextSelection;
   sourceUpdatedAt?: string;
 }
 

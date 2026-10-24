@@ -24,6 +24,7 @@ const PAGE_MEMORY: u64 = 8 * 1024 * 1024;
 #[derive(Clone)]
 enum Position {
     Start,
+    Entries(i64),
     Records(reader::Cursor),
     Resources(resources::ResourceCursor),
     Field(i64),
@@ -50,6 +51,12 @@ struct Session {
     working: Arc<WorkingLease>,
     ready: DbSourceGuard,
     progress: tokio::sync::Mutex<Progress>,
+    // One selected field per session. Binding is revalidated on every read;
+    // the complete digest is proved once, subsequent slices still hash each
+    // immutable stored fragment. No history-sized verification index.
+    verified: tokio::sync::Mutex<Option<(i64, Vec<u8>)>>,
+    #[cfg(test)]
+    fragments_read: std::sync::atomic::AtomicUsize,
     closed: AtomicBool,
     _control: WorkingCharge,
     _gate: OwnedRwLockReadGuard<()>,
@@ -255,6 +262,10 @@ impl ArchiveReaderRuntime {
         )
         .await?;
         match &input.selector {
+            ArchiveSelector::Entries => {
+                reader::entries_in(&mut tx, &archive, &ready.ready.catalog_generation,
+                    &input.conversation_id, 0, 1).await?;
+            },
             ArchiveSelector::Records { ordinal, uuid: id } => {
                 let selector = record_selector(ordinal, id)?;
                 reader::page_in(
@@ -301,6 +312,9 @@ impl ArchiveReaderRuntime {
                 previous: None,
                 limit: None,
             }),
+            verified: tokio::sync::Mutex::new(None),
+            #[cfg(test)]
+            fragments_read: std::sync::atomic::AtomicUsize::new(0),
             closed: AtomicBool::new(false),
             _control: control,
             _gate: gate,
@@ -360,6 +374,19 @@ impl ArchiveReaderRuntime {
             return Err(invalid("stale_revision"));
         }
         let (items, after) = match &session.selector {
+            ArchiveSelector::Entries => {
+                let start = match before { Position::Start => 0, Position::Entries(v) => v,
+                    _ => return Err(invalid("invalid_cursor")) };
+                let entries = reader::entries_in(&mut tx, &archive, &session.ready.ready.catalog_generation,
+                    &session.conversation, start, input.limit as usize).await?;
+                let mut items = Vec::with_capacity(entries.fragments.len());
+                for f in entries.fragments {
+                    let origin = reader::presentation_in(&mut tx, &archive.transfer, f.record.ordinal).await?;
+                    items.push(ArchiveItem::Entry { ordinal: f.record.ordinal.to_string(), target_uuid: f.target_uuid,
+                        header_json: serde_json::to_string(&f.record).map_err(|_|invalid("integrity_failed"))?, origin });
+                }
+                (items, entries.next.as_ref().map(|v| Position::Entries(reader::next_entry(v))))
+            },
             ArchiveSelector::Records { ordinal, uuid: id } => {
                 let cursor = match &before {
                     Position::Start => None,
@@ -514,7 +541,13 @@ impl ArchiveReaderRuntime {
         bytes
             .try_reserve_exact(capacity)
             .map_err(|_| invalid("resource_limit"))?;
-        let mut offset = 0_i64;
+        let mut verified = session.verified.lock().await;
+        let complete_verification = verified.as_ref() != Some(&(field.bytes, field.digest.clone()));
+        let mut offset = if complete_verification || start == end {
+            0
+        } else {
+            resources::covering_offset(&mut tx, &archive, &field, start).await?
+        };
         let mut digest = Sha256::new();
         let mut fragments = 0;
         if field.record && field.bytes == 0 {
@@ -523,10 +556,13 @@ impl ArchiveReaderRuntime {
                 return Err(invalid("integrity_failed"));
             }
         }
-        while offset < field.bytes {
+        let stop = if complete_verification { field.bytes } else { end };
+        while offset < stop {
             let fragment = resources::fragment(&mut tx, &archive, &field, offset).await?;
+            #[cfg(test)]
+            session.fragments_read.fetch_add(1, Ordering::Relaxed);
             let next = add(offset, fragment.len() as i64)?;
-            digest.update(&fragment);
+            if complete_verification { digest.update(&fragment); }
             let left = start.max(offset);
             let right = end.min(next);
             if left < right {
@@ -545,7 +581,7 @@ impl ArchiveReaderRuntime {
                     .map_err(|_| invalid("resource_limit"))?;
             }
         }
-        if digest.finalize().as_slice() != field.digest || bytes.len() != capacity {
+        if (complete_verification && digest.finalize().as_slice() != field.digest) || bytes.len() != capacity {
             return Err(invalid("integrity_failed"));
         }
         let (text, image, width, height) = if input.r#use == ArchiveUse::Image {
@@ -595,6 +631,7 @@ impl ArchiveReaderRuntime {
         session.check(caller, page)?;
         tx.commit().await?;
         connection.committed = true;
+        *verified = Some((field.bytes, field.digest.clone()));
         let id = uuid::Uuid::new_v4().to_string();
         let reply = Arc::new(OwnedReply {
             data: ArchiveBacking {
@@ -649,6 +686,29 @@ mod tests {
             conversation_id: conversation.clone(),
             selector,
         };
+        let catalog = runtime.open(&owner, &manager, "window", "page", open(ArchiveSelector::Entries)).await.unwrap();
+        let expected: i64 = sqlx::query_scalar("SELECT next_record FROM e_inactive_imports LIMIT 1").fetch_one(&pool).await.unwrap();
+        let mut cursor = None;
+        let mut count = 0;
+        let mut calls = 0;
+        loop {
+            let reply = runtime.page("window", "page", ArchivePageInput {
+                read_id: catalog.read_id.clone(), cursor_id: cursor, limit: 2,
+            }).await.unwrap();
+            calls += 1;
+            for item in &reply.0.data.items {
+                let ArchiveItem::Entry { ordinal, origin, .. } = item else { panic!("catalog must not return payload fragments"); };
+                assert_eq!(ordinal, &count.to_string());
+                if let Some(origin) = origin { assert_eq!(origin.source_ordinal.as_deref(), Some(ordinal.as_str())); }
+                count += 1;
+            }
+            cursor = reply.0.data.next_cursor_id.clone();
+            runtime.release("window", "page", ArchiveReleaseInput { id: reply.0.data.page_id.clone() }).unwrap();
+            if cursor.is_none() { break; }
+        }
+        assert_eq!(count, expected);
+        assert_eq!(calls, (expected + 1) / 2, "long records and empty associations consume one catalog entry each");
+        runtime.release("window", "page", ArchiveReleaseInput { id: catalog.read_id }).unwrap();
         let read = runtime
             .open(
                 &owner,
@@ -914,7 +974,7 @@ mod tests {
                 "page",
                 ArchiveMaterializeInput {
                     read_id: body.read_id.clone(),
-                    resource_uuid: assistant,
+                    resource_uuid: assistant.clone(),
                     r#use: ArchiveUse::ContextText,
                     range: Some(ArchiveRange {
                         start: "0".into(),
@@ -926,6 +986,24 @@ mod tests {
             .unwrap();
         assert!(!text.0.data.complete);
         assert!(text.0.data.text.as_ref().unwrap().ends_with('é'));
+        let selected = runtime.read(&body.read_id, "window", "page").unwrap();
+        let checked = selected.fragments_read.load(Ordering::Relaxed);
+        assert!(checked > 8, "first slices really verify the entire long field");
+        // Later display pages read only the indexed covering fragments. The
+        // same manifest/revision/selector has already passed its full digest.
+        for start in [0, value.rfind("recoveryneedle").unwrap()] {
+            let end = start + 9;
+            let before = selected.fragments_read.load(Ordering::Relaxed);
+            let slice = runtime.materialize("window", "page", ArchiveMaterializeInput {
+                read_id: body.read_id.clone(), resource_uuid: assistant.clone(),
+                r#use: ArchiveUse::RenderText,
+                range: Some(ArchiveRange { start: start.to_string(), end: end.to_string() }),
+            }).await.unwrap();
+            assert_eq!(slice.0.data.text.as_deref(), Some(&value[start..end]));
+            assert!(selected.fragments_read.load(Ordering::Relaxed) - before <= 2);
+            runtime.release("window", "page", ArchiveReleaseInput { id: slice.0.data.backing_id.clone() }).unwrap();
+        }
+        drop(selected);
         runtime
             .release(
                 "window",

@@ -1,4 +1,8 @@
 import { observeConversationMessage } from '../../services/conversationReadObservation';
+import { ArchiveReaderDialog } from './ArchiveReaderDialog';
+import { HistoricalMessageContent } from './HistoricalMessageContent';
+import { retainArchiveImages } from '../../services/archiveImages';
+import { onArchiveReadersRetiring } from '../../services/conversationPortableArchive';
 import { acknowledgeDisplayedConversation } from '../../services/conversationManagementService';
 import { getPlanFinalizationTaskDisplayTitle } from '../../services/planFinalization';
 import { useShortcutBinding } from '../../hooks/useShortcutBinding';
@@ -51,7 +55,6 @@ import { ModelDropdown } from '../ai/ModelDropdown';
 import { ReasoningDropdown } from '../ai/ReasoningDropdown';
 import { MarkdownRenderer } from './MarkdownRenderer';
 import { messageDisplayDate } from '../../services/chatHistoryDisplay';
-import { formatDate } from '../../i18n/format';
 import { useScrollMagnet } from '../../hooks/useScrollMagnet';
 import { useSpeechDictation } from '../../hooks/useSpeechDictation';
 import { ScrollSeparator } from './ScrollSeparator';
@@ -797,10 +800,12 @@ export const ChatMessageRowBase: React.FC<ChatMessageRowProps> = ({
   skillTurnFeedback,
   standaloneLaunchProgress,
 }) => {
-  const { t, i18n } = useTranslation();
+  const { t } = useTranslation();
+  const [archiveOpen, setArchiveOpen] = useState(false);
   const message = virtualMessage.item.message;
   const historicalDate = message.portable_history ? messageDisplayDate(message) : null;
   const observedRow = useRef<HTMLDivElement | null>(null);
+  useLayoutEffect(() => retainArchiveImages(messageImages), [messageImages]);
   useEffect(() => {
     if (!observedRow.current || message.portable_history || message.role !== 'assistant' || !message.content || assistantActivity || message.persistence_state === 'failed' || message.persistence_state === 'retrying') return;
     // Capture this rendered message, before asynchronous reads can see a new turn.
@@ -903,19 +908,8 @@ export const ChatMessageRowBase: React.FC<ChatMessageRowProps> = ({
             </div>
           ) : (
             <div className="text-sm leading-relaxed text-foreground">
-              {message.portable_history && (
-                <div className="mb-1 text-[10px] text-muted-foreground">
-                  {historicalDate ? (
-                    <time dateTime={historicalDate}>
-                      {formatDate(historicalDate, { dateStyle: 'medium', timeStyle: 'short' }, i18n.language)}
-                    </time>
-                  ) : t('chat.historyUnknownDate')}
-                </div>
-              )}
               {message.portable_history ? (
-                <div data-chat-historical-message="true" className="whitespace-pre-wrap break-words">
-                  {message.content}
-                </div>
+                <HistoricalMessageContent content={message.content} date={historicalDate} />
               ) : message.role === 'assistant' ? (
                 <>
                   <MarkdownRenderer
@@ -1019,7 +1013,7 @@ export const ChatMessageRowBase: React.FC<ChatMessageRowProps> = ({
               {message.role === 'user' && !message.portable_history && !questionnaireResponseSummary && !architectActionMessage && (
                 <SkillTurnFeedbackRow feedback={skillTurnFeedback} />
               )}
-              {message.role === 'user' && messageImages.length > 0 && (
+              {(message.role === 'user' || message.portable_history) && messageImages.length > 0 && (
                 <div className="mt-2 flex flex-wrap gap-2">
                   {messageImages.map((image) => (
                     <button
@@ -1035,6 +1029,8 @@ export const ChatMessageRowBase: React.FC<ChatMessageRowProps> = ({
                   ))}
                 </div>
               )}
+              {message.portable_history && <button type="button" className="mt-2 text-xs text-muted-foreground underline" onClick={() => setArchiveOpen(true)}>{t('chat.archive.resources')}</button>}
+              {archiveOpen && <ArchiveReaderDialog key={`${message.conversation_id}:${message.id}`} conversationId={message.conversation_id} messageId={message.id} onClose={() => setArchiveOpen(false)} />}
               {hasAssistantActivity && (
                 <span
                   data-chat-assistant-activity="true"
@@ -1379,7 +1375,17 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
   const wasContextStreamingRef = useRef(false);
   const standaloneTaskBuildResetRef = useRef<string | null>(null);
 
-  const [previewImage, setPreviewImage] = useState<MessageImageAttachment | null>(null);
+  const [previewImage, setPreviewImage] = useState<{ image: MessageImageAttachment; release(): void } | null>(null);
+  const previewOwners = useRef(new Set<() => void>());
+  const [archiveReaderOpen, setArchiveReaderOpen] = useState(false);
+  useLayoutEffect(() => {
+    for (const release of previewOwners.current) {
+      if (release !== previewImage?.release) { release(); previewOwners.current.delete(release); }
+    }
+    return () => { previewImage?.release(); };
+  }, [previewImage]);
+  useEffect(() => () => { for (const release of previewOwners.current) release(); previewOwners.current.clear(); }, []);
+  useEffect(() => onArchiveReadersRetiring(() => setPreviewImage(null)), []);
   const [promptHistoryIndex, setPromptHistoryIndex] = useState<number | null>(null);
   const [draftBeforeHistory, setDraftBeforeHistory] = useState<ComposerDraftSnapshot>(
     EMPTY_COMPOSER_DRAFT_SNAPSHOT
@@ -2975,7 +2981,9 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
   ) => {
     event.preventDefault();
     event.stopPropagation();
-    setPreviewImage(image);
+    const release = retainArchiveImages([image]);
+    previewOwners.current.add(release);
+    setPreviewImage({ image, release });
   };
 
   const applySavedComposerDraft = useCallback((session: SavedComposerDraft) => {
@@ -3869,6 +3877,9 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
           </div>
 
           <div className="flex items-center gap-2">
+            {selectedConversationId && currentConversation?.scope_mode === 'Chat' && !currentConversation.project_id && !currentConversation.group_id && !currentConversation.task_id && (
+              <button type="button" className="rounded p-1.5 text-muted-foreground hover:bg-accent" title={t('chat.archive.title')} aria-label={t('chat.archive.title')} onClick={() => setArchiveReaderOpen(true)}><Icon name="archive" size={14} /></button>
+            )}
             {mode === 'Implement' && <TaskArtifactsButton />}
             {currentConversation?.project_id && (
               <GoalAuditArtifactsButton key={`${currentConversation.project_id}:${currentConversation.id}:${activeConversationGoal?.goalId ?? ''}`}
@@ -4036,7 +4047,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
                 const virtualMessage = virtualItem as RenderedMessageItem;
                 const message = virtualMessage.item.message;
                 const isEditing = composerEditSession?.messageId === message.id;
-                const messageImages = message.role === 'user' ? getMessageImages(message.id) : [];
+                const messageImages = message.role === 'user' || message.portable_history ? getMessageImages(message.id) : [];
                 const assistantActivity: AssistantMessageActivity =
                   message.id === streamingAssistantActivityMessageId ? 'streaming' : null;
                 return (
@@ -4664,11 +4675,12 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
         <Suspense fallback={null}>
           <ImagePreviewModal
             isOpen
-            image={previewImage}
+            image={previewImage.image}
             onClose={() => setPreviewImage(null)}
           />
         </Suspense>
       )}
+      {archiveReaderOpen && selectedConversationId && <ArchiveReaderDialog key={selectedConversationId} conversationId={selectedConversationId} onClose={() => setArchiveReaderOpen(false)} />}
 
       {mode === 'Architect' &&
         architectPlanNamingRecovery?.stage === 'choice' && (

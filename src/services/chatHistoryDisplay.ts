@@ -3,7 +3,10 @@ import type { ChatMessage } from '../types';
 /** The derived ordering timestamp is never an imported message's display date. */
 export function messageDisplayDate(message: ChatMessage): string | null {
   if (!message.portable_history) return message.timestamp;
-  const value = message.portable_history.displayDate;
+  return originalDisplayDate(message.portable_history.displayDate ?? null);
+}
+
+export function originalDisplayDate(value: string | null): string | null {
   if (!value || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/.test(value)
     || !Number.isFinite(Date.parse(value))) return null;
   const year = Number(value.slice(0, 4)), month = Number(value.slice(5, 7)), day = Number(value.slice(8, 10));

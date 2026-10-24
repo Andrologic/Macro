@@ -1869,6 +1869,7 @@
     },
     {
       "families": [
+        "archive",
         "db",
         "pilot_files"
       ],
