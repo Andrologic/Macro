@@ -1,7 +1,7 @@
 import { afterAll, describe, expect, it } from 'bun:test';
-import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { copyFileSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import {
   deliveryValidate as sourceDeliveryValidate,
@@ -10,7 +10,7 @@ import {
 } from './macro-pilot-validator-oracle';
 import * as shared from '../src/services/macroPilot/schemaValidators';
 import { validateA1 } from '../src/services/macroPilot/protocol';
-import { generateMacroPilotValidators } from './generate-macro-pilot-validators';
+import { checkMacroPilotValidators, generateMacroPilotValidators } from './generate-macro-pilot-validators';
 
 type Validator = (value: unknown) => boolean | Promise<unknown>;
 type GeneratedValidators = {
@@ -130,5 +130,48 @@ describe('shared A1 parity and diagnostic ownership', () => {
       expect((error as Error).message).toBe('synthetic getter');
     } finally { shared.clearErrors(); }
     expect(shared.diagnosticsEmpty()).toBe(true);
+  });
+});
+
+
+describe('A1 transitive profile identity', () => {
+  it('refuses stale bootstrap owners before Connect can write derived attestations', async () => {
+    await checkMacroPilotValidators(projectRoot);
+    const root = join(temporaryDirectory, 'profile-identity');
+    const manifest = JSON.parse(readFileSync(join(projectRoot, 'src/services/macroPilot/schemaValidators.identity.json'), 'utf8'));
+    const generated = [
+      'copilot-bridge/src/connect-transfer-identities.generated.ts',
+      'copilot-bridge/src/connect-codec.identity.json',
+      'copilot-bridge/src/connect-bootstrap.identity.json',
+    ];
+    const paths = new Set<string>([
+      ...manifest.resources.map((entry: { path: string }) => entry.path),
+      'src/services/macroPilot/schemaValidators.identity.json',
+      'dev/generate-connect-transfer-identities.mjs', ...generated,
+    ]);
+    for (const path of paths) {
+      mkdirSync(dirname(join(root, path)), { recursive: true });
+      copyFileSync(join(projectRoot, path), join(root, path));
+    }
+    symlinkSync(join(projectRoot, 'node_modules'), join(root, 'node_modules'), 'dir');
+    await checkMacroPilotValidators(root);
+    for (const path of [
+      'copilot-bridge/src/connect-bootstrap.ts',
+      'copilot-bridge/src/connect-bootstrap-operations.ts',
+      'copilot-bridge/src/connect-codec-engine.ts',
+    ]) {
+      expect(manifest.resources.some((entry: { path: string }) => entry.path === path)).toBe(true);
+      const original = readFileSync(join(root, path), 'utf8');
+      writeFileSync(join(root, path), original + '\n// Synthetic transitive source change.\n');
+      await expect(checkMacroPilotValidators(root)).rejects.toThrow('Stale Macro Pilot validator: schemaValidators.identity.json');
+      for (const suffix of [[], ['--check']]) {
+        const result = Bun.spawnSync([process.execPath, join(root, 'dev/generate-connect-transfer-identities.mjs'), ...suffix], { cwd: root });
+        expect(result.exitCode).not.toBe(0);
+        expect(result.stderr.toString()).toContain('Stale Macro Pilot validator: schemaValidators.identity.json');
+        for (const target of generated) expect(readFileSync(join(root, target))).toEqual(readFileSync(join(projectRoot, target)));
+      }
+      writeFileSync(join(root, path), original);
+    }
+    await checkMacroPilotValidators(root);
   });
 });

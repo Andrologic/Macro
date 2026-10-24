@@ -2,12 +2,12 @@
   "hello": {
     "version": "macro-connect-codec-1",
     "profile": "bootstrap",
-    "source_set_sha256": "a7efb6adb6a029598c606e596993b2bc19415b3fdc428713c0d7b35391cdffc2",
+    "source_set_sha256": "4a989a5d7aeeb17638876ec262f5cdbc8bd25d472e7be63a48ec942c4838b3f9",
     "content_sha256": "c6ae7440ed0fb4d0bdccdfb936c4bf6ac5c441c96b642c1d9ccbd270b62bdcc6",
     "decision_resource_set_sha256": "6133c2d9ee204a175ae6c176b9c266d4378879c1637936ebd81e85daf4d0b97a",
     "transit_resource_set_sha256": "1454bad31321e0d6467098f0309b5bb96050a396bb6fddecc938233cdf9c602d",
     "authority_resource_set_sha256": "3d82d4b9909789ab0f8dc5f0ba06c751da56b1c0396613a2b29e2407302ab052",
-    "a1_resource_set_sha256": "200c4eb542e251b9743dad14ef31cb725c5c4724f2db5207076f81dff3112060"
+    "a1_resource_set_sha256": "fb15d35ea887c5f12ac285bb23f054eedb07c8c1bfe7ddc2b065cd05cc4eb185"
   },
   "resources": [
     {
@@ -80,7 +80,7 @@
     },
     {
       "path": "dev/generate-connect-transfer-identities.mjs",
-      "sha256": "2e0e54412cd9e8ad00a1f4fbc66844f6f786ad6eaf4b4dd3b178392080d16a25"
+      "sha256": "0997205cb0d2374895cfa9ffe8ad1deb51da93c98ba102fba730528e8c13e07e"
     },
     {
       "path": "package.json",
