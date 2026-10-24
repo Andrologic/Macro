@@ -28,6 +28,20 @@ function metadata(value: unknown): PortableMetadata { return validatePortableMet
 const assetMime = { text_plain: 'text/plain', image_png: 'image/png', image_jpeg: 'image/jpeg', image_webp: 'image/webp' } as const;
 const keyFor = (entry: PortableMetadata) => `${entry.source.family}:${entry.source.row}`;
 
+/** Only the already validated, closed PortableMetadata graph is measured here.
+ * Objects: 256; property slots: 64; strings (including keys): 64 + 2/code unit;
+ * scalars: 16; arrays: 128 + 16/slot. The extra 512 owns the Map entry and lease.
+ * Measurement scratch remains inside withRecord's generic 256/input-byte scope. */
+function retainedMetadataUnits(value: PortableMetadata): number {
+  const graph = (entry: unknown): number => {
+    if (typeof entry === 'string') return 64 + entry.length * 2;
+    if (entry === null || typeof entry !== 'object') return 16;
+    if (Array.isArray(entry)) return 128 + entry.reduce((total, item) => total + 16 + graph(item), 0);
+    return 256 + Object.entries(entry).reduce((total, [key, nested]) => total + 64 + 64 + key.length * 2 + graph(nested), 0);
+  };
+  return 512 + graph(value);
+}
+
 /** Ephemeral admitted metadata index. Payloads remain in native E storage.
  * Projection deliberately materializes O(N) and is valid only inside its scope. */
 export class PortableHistoryArchive {
@@ -83,7 +97,7 @@ export class PortableHistoryArchive {
         await this.withRecord(header.ordinal, async bytes => {
           const parsed = metadata(parseStoredJsonStrict(decoder.decode(bytes)));
           if (parsed.policy !== policy.revision) fail('policy_changed');
-          this.keep(512 + bytes.length * 256); this.origins.set(header.ordinal, parsed);
+          this.keep(retainedMetadataUnits(parsed)); this.origins.set(header.ordinal, parsed);
         });
       }
       const roots = [...this.origins.values()].filter(origin => origin.captureManifest !== undefined);
