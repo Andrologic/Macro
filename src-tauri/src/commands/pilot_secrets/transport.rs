@@ -69,7 +69,10 @@ impl VerifiedTransport {
     /// Fresh at the persistent policy read; future effects still need consume_policy.
     pub(crate) async fn check(&self) -> Result<()> {
         self.check_local()?;
-        self.observation.check_fresh().await.map_err(|_| "policy_revoked")?;
+        self.observation
+            .check_fresh()
+            .await
+            .map_err(|_| "policy_revoked")?;
         self.check_local()
     }
     fn check_local(&self) -> Result<()> {
@@ -79,7 +82,9 @@ impl VerifiedTransport {
         if self.runtime.generation()? != self.generation {
             return Err("transport_retired");
         }
-        self.observation.check_local().map_err(|_| "policy_revoked")?;
+        self.observation
+            .check_local()
+            .map_err(|_| "policy_revoked")?;
         if Instant::now() >= self.deadline
             || self
                 .session
@@ -138,7 +143,7 @@ async fn exchange<B: Vault + 'static>(
     plain: bool,
     method: http::Method,
     path: &'static str,
-    body: &[u8],
+    body: Bytes,
     producer: bool,
     request_id: uuid::Uuid,
     limit: usize,
@@ -157,7 +162,7 @@ async fn exchange<B: Vault + 'static>(
     }
     // All TCP/TLS work finishes before reacquiring policy and store locks.
     let prepared = session.prepare(false).await?;
-    let request = Request::new(&runtime.budget()?, method, path, body)?;
+    let request = Request::from_admitted(&runtime.budget()?, method, path, body)?;
     let handle = tokio::runtime::Handle::current();
     let local_cancel = cancel.child_token();
     let guard = local_cancel.clone().drop_guard();
@@ -191,18 +196,14 @@ async fn decode(
     budget: &TransitInstance,
     op: u16,
     facts: &serde_json::Value,
-    body: &[u8],
+    body: Bytes,
     cancel: &CancellationToken,
 ) -> Result<crate::connect::codec::Output> {
-    let _serialization = budget.reserve(CLOSED).map_err(|_| "resource_limit")?;
-    let bytes = serde_json::to_vec(facts).map_err(|_| "codec_input")?;
     let input = Input {
         op,
-        expectations: Bytes::copy(budget, &bytes)?,
-        body: Bytes::copy(budget, body)?,
+        expectations: Bytes::serialize(budget, facts)?,
+        body,
     };
-    drop(bytes);
-    drop(_serialization);
     let output = tokio::select! {
         biased;
         _ = cancel.cancelled() => return Err("http_cancelled"),
@@ -278,7 +279,7 @@ pub(super) async fn bootstrap_owned<B: Vault + 'static>(
         plain,
         http::Method::GET,
         "/pilot/v1/me",
-        &[],
+        Bytes::copy(&budget, &[])?,
         false,
         request_id,
         BODY,
@@ -292,11 +293,18 @@ pub(super) async fn bootstrap_owned<B: Vault + 'static>(
         "response_request_id_header":response.request_id, "expected_origin":identity.context.relay_origin,
         "connection_origin":identity.context.relay_origin, "session_id":identity.context.owner_id,
         "account_id":intent.account_id, "device_id":intent.device_id, "now_ms":now_ms()?});
-    let output = decode(codec, &budget, 10, &facts, response.body(), cancel).await?;
+    let output = decode(
+        codec,
+        &budget,
+        10,
+        &facts,
+        response.into_codec_body()?,
+        cancel,
+    )
+    .await?;
     let session: SessionFacts =
         serde_json::from_slice(output.bytes.as_slice()).map_err(|_| "codec_result")?;
     drop(output);
-    drop(response);
     drop(facts);
     observation.check_local().map_err(|_| "policy_revoked")?;
     let request_id = uuid::Uuid::new_v4();
@@ -313,13 +321,13 @@ pub(super) async fn bootstrap_owned<B: Vault + 'static>(
         }
     };
     let request = serde_json::json!({"authority_contract":"transfer-authority-1","type":"preflight","request_id":request_id,"scope":scope});
-    let bytes = serde_json::to_vec(&request).map_err(|_| "codec_input")?;
+    let bytes = Bytes::serialize(&budget, &request)?;
     let valid = decode(
         codec,
         &budget,
         1,
         &serde_json::json!({"request_id_header":request_id}),
-        &bytes,
+        Bytes::copy(&budget, bytes.as_slice())?,
         cancel,
     )
     .await?;
@@ -336,7 +344,7 @@ pub(super) async fn bootstrap_owned<B: Vault + 'static>(
         plain,
         http::Method::POST,
         "/pilot/v2/transfer-authority/preflight",
-        &bytes,
+        bytes,
         producer,
         request_id,
         8192,
@@ -350,7 +358,15 @@ pub(super) async fn bootstrap_owned<B: Vault + 'static>(
         "response_request_id_header":response.request_id,"expected_origin":identity.context.relay_origin,
         "connection_origin":identity.context.relay_origin,"account_id":session.account_id},
         "time":{"now_ms":now_ms()?,"dispatch_age_ms":dispatch.elapsed().as_secs_f64()*1000.0}});
-    let output = decode(codec, &budget, 2, &facts, response.body(), cancel).await?;
+    let output = decode(
+        codec,
+        &budget,
+        2,
+        &facts,
+        response.into_codec_body()?,
+        cancel,
+    )
+    .await?;
     let authority: serde_json::Value =
         serde_json::from_slice(output.bytes.as_slice()).map_err(|_| "codec_result")?;
     if authority["type"] != "authority_snapshot" {

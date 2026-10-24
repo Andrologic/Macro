@@ -196,7 +196,10 @@ admits encoded inputs before serialization and output storage before body
 processing. Raw scopes never overlap. Each raw charge lasts until
 SCOPE_FINISHED and local writes/copies finish; the bank lasts until terminal
 consumption. Cleanup joins the child and closes fds before returning remaining
-charges. Its peak for the maximum cases is 31,522,816 units.
+charges. The scenario `runs all nine canonical operations and maximum metadata
+paths in the same PID with real credits` in `src/connect-codec.test.ts` emits
+`codec_maximum_vectors.parentPeak` and checks it against 32 MiB. Read the value
+from the log of the exact candidate under test; it is not an HTTP/TLS margin.
 
 The vectors use 128-character IDs, near-limit origins, 19-digit decimals,
 65,536-byte chunk data and a separate 94,208-byte escaped-data JSON case.
@@ -252,3 +255,30 @@ recipe; they do not establish exhaustive TLS allocation bounds.
 
 Public activation still requires the complete poll/v2 copy inventory, scheduling,
 SQL, builders and pin composition. The private bootstrap is not that composition.
+
+
+## Private native HTTP ownership
+
+The native HTTP wrappers delegate vectored writes to the real TCP/TLS stream.
+Hyper can retain the admitted body backing in its queue instead of flattening it
+into its header buffer. Shared backing remains charged until its last reference;
+this does not eliminate Rustls encryption buffers or establish their capacities.
+The write fence still requires the final body frame and successful outer flush.
+
+A response can transfer its complete byte reservoir and reservation to codec
+input without copying or temporarily returning credit. The retained capacity is
+checked against its original admission. Independent expectations are serialized
+into an admitted bounded writer and transferred with that reservation.
+
+The private `Completed` result owns the response and lane after full consumption.
+Explicit restoration checks the original owner, lane slot, cancellation and fresh
+policy before returning a healthy driver. A complete connection-close response
+remains valid but its lane cannot be restored. Failure or abandonment drops IO;
+there is no automatic POST retry. Runtime revoke/shutdown closes shared idle slots
+synchronously; checked-out lanes retain their cancellation and completion owners.
+The bootstrap keeps its per-response retirement path and adds no product poll.
+
+These changes do not qualify the persistent HTTP/TLS memory inequality. The
+connection and handshake reservations, RAW_TURN scope, canonical graph tariff,
+bank and 32/64 MiB quotas remain unchanged. Physical regression tests are required
+before considering this private transport stage verified.

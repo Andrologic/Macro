@@ -26,13 +26,18 @@ struct State {
     join: Option<Join>,
     cancel: Option<CancellationToken>,
     quarantine: Option<Codec>,
-    http: Option<(CancellationToken, Join)>,
+    http: Option<(
+        CancellationToken,
+        Join,
+        std::sync::Weak<super::http::IdleLanes>,
+    )>,
 }
 #[derive(Clone, Default)]
 pub(crate) struct TransferRuntime(Arc<Mutex<State>>);
 // This completion is the last field of HttpSession. Its notification therefore
 // follows destruction of the sole Hyper drivers, TLS streams and reservations.
 pub(crate) struct HttpOwnership {
+    pub idle: Arc<super::http::IdleLanes>,
     pub cancel: CancellationToken,
     pub budget: TransitInstance,
     pub database: Arc<ChatWorkLifetime>,
@@ -98,7 +103,7 @@ impl TransferRuntime {
             || state
                 .http
                 .as_ref()
-                .is_some_and(|(_, join)| join.clone().now_or_never() != Some(true))
+                .is_some_and(|(_, join, _)| join.clone().now_or_never() != Some(true))
         {
             return Err("http_owner_busy");
         }
@@ -108,8 +113,10 @@ impl TransferRuntime {
         let join = async move { receive.await.unwrap_or(false) }
             .boxed()
             .shared();
-        state.http = Some((cancel.clone(), join));
+        let idle = Arc::new(super::http::IdleLanes::default());
+        state.http = Some((cancel.clone(), join, Arc::downgrade(&idle)));
         Ok(HttpOwnership {
+            idle,
             cancel,
             budget,
             database: Arc::new(database.retain_chat_work()),
@@ -222,8 +229,11 @@ impl TransferRuntime {
                 Some(next) => state.generation = next,
                 None => state.closed = true,
             }
-            if let Some((cancel, _)) = &state.http {
+            if let Some((cancel, _, idle)) = &state.http {
                 cancel.cancel();
+                if let Some(idle) = idle.upgrade() {
+                    idle.retire();
+                }
             }
             if let Some(cancel) = &state.cancel {
                 cancel.cancel();
@@ -237,12 +247,15 @@ impl TransferRuntime {
             if let Some(cancel) = &state.cancel {
                 cancel.cancel();
             }
-            if let Some((cancel, _)) = &state.http {
+            if let Some((cancel, _, idle)) = &state.http {
                 cancel.cancel();
+                if let Some(idle) = idle.upgrade() {
+                    idle.retire();
+                }
             }
             (
                 state.join.clone(),
-                state.http.as_ref().map(|(_, join)| join.clone()),
+                state.http.as_ref().map(|(_, join, _)| join.clone()),
             )
         };
         let wait = |join: Option<Join>| async move {

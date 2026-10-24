@@ -79,6 +79,16 @@ impl<I: AsyncWrite + Unpin> AsyncWrite for TlsReadGate<I> {
     ) -> Poll<std::io::Result<usize>> {
         Pin::new(&mut self.io).poll_write(cx, bytes)
     }
+    fn is_write_vectored(&self) -> bool {
+        self.io.is_write_vectored()
+    }
+    fn poll_write_vectored(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buffers: &[std::io::IoSlice<'_>],
+    ) -> Poll<std::io::Result<usize>> {
+        Pin::new(&mut self.io).poll_write_vectored(cx, buffers)
+    }
     fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
         Pin::new(&mut self.io).poll_flush(cx)
     }
@@ -91,6 +101,8 @@ impl<I: AsyncWrite + Unpin> AsyncWrite for TlsReadGate<I> {
 // successful flush through the outer TLS stream completes that exact write.
 #[derive(Default)]
 struct WriteFence {
+    #[cfg(test)]
+    vectored_slices: std::sync::atomic::AtomicUsize,
     stage: AtomicU8, // 0 idle, 1 body pending, 2 final frame, 3 flushed, 4 receiving
     wrote: AtomicBool,
     reader: futures::task::AtomicWaker,
@@ -132,6 +144,24 @@ impl<I: AsyncWrite + Unpin> AsyncWrite for WriteIo<I> {
         bytes: &[u8],
     ) -> Poll<std::io::Result<usize>> {
         let result = Pin::new(&mut self.io).poll_write(cx, bytes);
+        if matches!(result, Poll::Ready(Ok(n)) if n > 0) {
+            self.fence.wrote.store(true, Ordering::SeqCst);
+        }
+        result
+    }
+    fn is_write_vectored(&self) -> bool {
+        self.io.is_write_vectored()
+    }
+    fn poll_write_vectored(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buffers: &[std::io::IoSlice<'_>],
+    ) -> Poll<std::io::Result<usize>> {
+        #[cfg(test)]
+        self.fence
+            .vectored_slices
+            .fetch_max(buffers.len(), Ordering::SeqCst);
+        let result = Pin::new(&mut self.io).poll_write_vectored(cx, buffers);
         if matches!(result, Poll::Ready(Ok(n)) if n > 0) {
             self.fence.wrote.store(true, Ordering::SeqCst);
         }
@@ -288,9 +318,14 @@ pub(crate) struct Response {
     _headers: TransitCharge,
     body: Vec<u8>,
     _charge: TransitCharge,
+    admitted_capacity: usize,
     _database: Arc<crate::core::db_state::ChatWorkLifetime>,
 }
 impl Response {
+    pub(crate) fn into_codec_body(self) -> Result<super::codec::Bytes> {
+        super::codec::Bytes::adopt(self.body, self._charge, self.admitted_capacity)
+    }
+
     pub(crate) fn body(&self) -> &[u8] {
         &self.body
     }
@@ -312,6 +347,20 @@ pub(crate) struct Request {
     _charge: TransitCharge,
 }
 impl Request {
+    pub(crate) fn from_admitted(
+        budget: &TransitInstance,
+        method: http::Method,
+        path: &str,
+        body: super::codec::Bytes,
+    ) -> Result<Self> {
+        let mut request = Self::new(budget, method, path, &[])?;
+        if !(request.method == http::Method::POST || body.as_slice().is_empty()) {
+            return Err("http_request_limit");
+        }
+        request.body = Bytes::from_owner(body);
+        Ok(request)
+    }
+
     pub(crate) fn new(
         budget: &TransitInstance,
         method: http::Method,
@@ -474,17 +523,24 @@ impl Lane {
         let sender = self.sender.as_mut().ok_or("http_closed")?;
         let driver = self.driver.as_mut().ok_or("http_closed")?;
         self.fence.arm();
+        let Request {
+            method,
+            path,
+            body,
+            headers,
+            _charge,
+        } = request;
         let mut message = http::Request::builder()
-            .method(request.method.clone())
-            .uri(&request.path)
+            .method(method)
+            .uri(&path)
             .header(http::header::HOST, host)
             .header(http::header::CONTENT_TYPE, "application/json")
             .body(RequestBody {
-                inner: Full::new(request.body.clone()),
+                inner: Full::new(body),
                 fence: self.fence.clone(),
             })
             .map_err(|_| "http_request")?;
-        message.headers_mut().extend(request.headers.clone());
+        message.headers_mut().extend(headers);
         let reply: Reply = Box::pin(sender.send_request(message));
         // Polling the driver may flush and then wait for headers. Return at that
         // flush, without polling the response future or waiting for the peer.
@@ -500,7 +556,7 @@ impl Lane {
             }
         })
         .await;
-        drop(request);
+        drop(_charge);
         if result.is_err() {
             self.driver.take();
         }
@@ -572,6 +628,7 @@ impl Lane {
                 },
                 _headers: headers,
                 body: Vec::with_capacity(limit),
+                admitted_capacity: limit,
                 _charge: charge,
             };
             let mut body = response.into_body();
@@ -632,10 +689,49 @@ impl Lane {
     }
 }
 
+// Only idle drivers live here. Runtime retirement synchronously destroys them;
+// checked-out drivers stay in Prepared/Completed until cancellation or drop.
+#[derive(Default)]
+pub(crate) struct IdleLanes(std::sync::Mutex<IdleState>);
+#[derive(Default)]
+struct IdleState {
+    closed: bool,
+    lanes: [Option<Lane>; 2],
+}
+impl IdleLanes {
+    fn take(&self, poll: bool) -> Result<Option<Lane>> {
+        let mut state = self.0.lock().unwrap_or_else(|p| p.into_inner());
+        if state.closed {
+            return Err("http_closed");
+        }
+        Ok(state.lanes[usize::from(!poll)].take())
+    }
+    fn restore(&self, poll: bool, lane: Lane, cancel: &CancellationToken) -> Result<()> {
+        let mut state = self.0.lock().unwrap_or_else(|p| p.into_inner());
+        if state.closed || cancel.is_cancelled() {
+            return Err("http_cancelled");
+        }
+        let slot = &mut state.lanes[usize::from(!poll)];
+        if slot.is_some() {
+            return Err("http_lane_busy");
+        }
+        *slot = Some(lane);
+        Ok(())
+    }
+    pub(crate) fn retire(&self) {
+        let mut state = self.0.lock().unwrap_or_else(|p| p.into_inner());
+        state.closed = true;
+        // Dropping the sole driver destroys socket/TLS before Lane's charge.
+        state.lanes = [None, None];
+    }
+}
+
 /// Native IO owner. Preparation and reception hold no policy/store guard.
 /// Only Prepared::emit borrows an unforgeable emission lease.
 pub(crate) struct HttpSession {
+    #[cfg(test)]
     poll: Option<Lane>,
+    #[cfg(test)]
     post: Option<Lane>,
     host: String,
     address: SocketAddr,
@@ -646,6 +742,12 @@ pub(crate) struct HttpSession {
     poll_slot: Arc<tokio::sync::Semaphore>,
     post_slot: Arc<tokio::sync::Semaphore>,
     owner: Arc<super::runtime::HttpOwnership>,
+}
+impl Drop for HttpSession {
+    fn drop(&mut self) {
+        self.owner.cancel.cancel();
+        self.owner.idle.retire();
+    }
 }
 impl HttpSession {
     #[cfg(test)]
@@ -675,7 +777,9 @@ impl HttpSession {
             .map_err(|_| "http_owner_busy")?;
         let tls = Some(TlsSettings::public_roots(&budget)?);
         Ok(Self {
+            #[cfg(test)]
             poll: None,
+            #[cfg(test)]
             post: None,
             host: host.into(),
             address,
@@ -698,13 +802,13 @@ impl HttpSession {
             .clone()
             .try_acquire_owned()
             .map_err(|_| "http_lane_busy")?;
-        let lane = if poll {
-            self.poll.take()
-        } else {
-            self.post.take()
-        };
+        if self.owner.cancel.is_cancelled() {
+            return Err("http_cancelled");
+        }
+        let lane = self.owner.idle.take(poll)?;
         let mut prepared = Prepared {
             lane,
+            poll,
             host: if self.address.port() == 443 {
                 self.host.clone()
             } else {
@@ -803,9 +907,13 @@ impl HttpSession {
         )
     }
     pub(crate) async fn close(&mut self) {
+        self.owner.cancel.cancel();
+        self.owner.idle.retire();
+        #[cfg(test)]
         if let Some(mut lane) = self.poll.take() {
             lane.close().await;
         }
+        #[cfg(test)]
         if let Some(mut lane) = self.post.take() {
             lane.close().await;
         }
@@ -815,6 +923,7 @@ impl HttpSession {
 // These owners keep IO before permits/credits/completion in destruction order.
 pub(crate) struct Prepared {
     lane: Option<Lane>,
+    poll: bool,
     host: String,
     _permit: tokio::sync::OwnedSemaphorePermit,
     _slot: Arc<tokio::sync::OwnedSemaphorePermit>,
@@ -823,6 +932,52 @@ pub(crate) struct Prepared {
 pub(crate) struct Pending {
     reply: Reply,
     prepared: Prepared,
+}
+/// A completed exchange still owns its response and connection. Dropping this
+/// object retires the IO; only explicit restoration permits another exchange.
+pub(crate) struct Completed {
+    response: Response,
+    prepared: Prepared,
+}
+impl Completed {
+    pub(crate) fn into_response(self) -> Response {
+        self.response
+    }
+    pub(crate) async fn restore(
+        mut self,
+        session: &mut HttpSession,
+        poll: bool,
+        observation: &crate::secrets::policy::PolicyObservation,
+        cancel: &CancellationToken,
+    ) -> Result<Response> {
+        if !Arc::ptr_eq(&self.prepared.owner, &session.owner) || self.prepared.poll != poll {
+            return Err("http_lane_owner");
+        }
+        if cancel.is_cancelled() || session.owner.cancel.is_cancelled() {
+            return Err("http_cancelled");
+        }
+        observation
+            .check_fresh()
+            .await
+            .map_err(|_| "policy_revoked")?;
+        if cancel.is_cancelled() || session.owner.cancel.is_cancelled() {
+            return Err("http_cancelled");
+        }
+        if self.prepared.lane.as_ref().is_some_and(|lane| {
+            lane.driver.is_some()
+                && lane
+                    .sender
+                    .as_ref()
+                    .is_some_and(|sender| !sender.is_closed())
+        }) {
+            let lane = self.prepared.lane.take().ok_or("http_closed")?;
+            session
+                .owner
+                .idle
+                .restore(poll, lane, &session.owner.cancel)?;
+        }
+        Ok(self.response)
+    }
 }
 impl Prepared {
     pub(crate) async fn emit(
@@ -853,11 +1008,22 @@ impl Prepared {
 }
 impl Pending {
     pub(crate) async fn receive(
-        mut self,
+        self,
         limit: usize,
         observation: &crate::secrets::policy::PolicyObservation,
         cancel: &CancellationToken,
     ) -> Result<Response> {
+        Ok(self
+            .receive_owned(limit, observation, cancel)
+            .await?
+            .into_response())
+    }
+    pub(crate) async fn receive_owned(
+        mut self,
+        limit: usize,
+        observation: &crate::secrets::policy::PolicyObservation,
+        cancel: &CancellationToken,
+    ) -> Result<Completed> {
         observation.check_local().map_err(|_| "policy_revoked")?;
         let operation = self.prepared.lane.as_mut().ok_or("http_closed")?.receive(
             &self.prepared.owner.budget,
@@ -873,9 +1039,10 @@ impl Pending {
             result = tokio::time::timeout(Duration::from_secs(30), operation) => result.map_err(|_| "http_timeout")?.map_err(|error| if error == "http_body_limit" { "resource_limit" } else { error })?,
         };
         observation.check_local().map_err(|_| "policy_revoked")?;
-        // This private bootstrap retires its lane after each reply. No implicit
-        // retry, idle driver task or response lifetime hides a network owner.
-        Ok(response)
+        Ok(Completed {
+            response,
+            prepared: self.prepared,
+        })
     }
 }
 
@@ -1798,6 +1965,7 @@ mod tests {
                     None
                 };
                 let prepared = session.prepare(false).await.unwrap();
+                let fence = prepared.lane.as_ref().unwrap().fence.clone();
                 let source = budget.reserve(V2_BODY as u64).unwrap();
                 let body = vec![42; V2_BODY];
                 let request = Request::new(&budget, http::Method::POST, "/blocked", &body).unwrap();
@@ -1850,6 +2018,12 @@ mod tests {
                     was_blocked,
                     "request unexpectedly flushed despite constrained receive window"
                 );
+                assert!(fence.vectored_slices.load(Ordering::SeqCst) >= 2);
+                assert!(fence.wrote.load(Ordering::SeqCst));
+                assert!(
+                    !fence.flushed(),
+                    "partial vectored write completed the fence"
+                );
                 changed.unwrap().unwrap().unwrap();
                 assert!(
                     received < V2_BODY,
@@ -1857,6 +2031,332 @@ mod tests {
                 );
                 assert!(budget.reserve(TRANSIT_INSTANCE_LIMIT).is_ok());
             }
+        }
+    }
+
+    async fn emit_private(
+        policy: Arc<PolicyOwner>,
+        prepared: Prepared,
+        request: Request,
+    ) -> Pending {
+        let handle = tokio::runtime::Handle::current();
+        crate::secrets::blocking::run(move || {
+            let snapshot = policy.capture_private(|| Ok(())).unwrap();
+            policy
+                .consume_private(
+                    &snapshot,
+                    || Ok(()),
+                    |lease, _| {
+                        Ok(handle.block_on(prepared.emit(
+                            lease,
+                            request,
+                            &CancellationToken::new(),
+                        )))
+                    },
+                )
+                .unwrap()
+                .unwrap()
+        })
+        .await
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn completed_two_lanes_reuse_real_sockets_and_retire_idle_on_runtime_revoke() {
+        let (acceptor, cert) = synthetic_tls();
+        for (tls, revoke) in [(false, false), (false, true), (true, false), (true, true)] {
+            let directory = tempfile::tempdir().unwrap();
+            let policy = Arc::new(PolicyOwner::for_test(directory.path()));
+            policy.initialize(directory.path()).unwrap();
+            let snapshot = policy.capture_private(|| Ok(())).unwrap();
+            let observation = policy.observe(&snapshot).unwrap();
+            let pool = crate::db::create_pool(&directory.path().join("reuse.db"))
+                .await
+                .unwrap();
+            let db = crate::core::db_state::DbPool::default();
+            db.set_ready(pool).await.unwrap();
+            let ready = db.wait_until_ready_context().await.unwrap();
+            let runtime = super::super::TransferRuntime::default();
+            let budget = runtime.budget().unwrap();
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let address = listener.local_addr().unwrap();
+            let accepted = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            let count = accepted.clone();
+            let acceptor = acceptor.clone();
+            let server = tokio::spawn(async move {
+                let mut joins = tokio::task::JoinSet::new();
+                for _ in 0..2 {
+                    let (socket, _) = listener.accept().await.unwrap();
+                    count.fetch_add(1, Ordering::SeqCst);
+                    let acceptor = acceptor.clone();
+                    joins.spawn(async move {
+                        let mut socket: Box<dyn Io> = if tls {
+                            Box::new(acceptor.accept(socket).await.unwrap())
+                        } else { Box::new(socket) };
+                        for _ in 0..2 {
+                            let mut head = Vec::new();
+                            while !head.ends_with(b"\r\n\r\n") {
+                                assert!(head.len() < HEAD);
+                                head.push(socket.read_u8().await.unwrap());
+                            }
+                            let mut body = [0; 2];
+                            socket.read_exact(&mut body).await.unwrap();
+                            assert_eq!(&body, b"{}");
+                            socket.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\n{}").await.unwrap();
+                            socket.flush().await.unwrap();
+                        }
+                        let mut byte = [0];
+                        let end = tokio::time::timeout(Duration::from_secs(3), socket.read(&mut byte)).await.unwrap();
+                        assert!(matches!(end, Ok(0)) || matches!(end, Err(ref error) if matches!(error.kind(), std::io::ErrorKind::UnexpectedEof | std::io::ErrorKind::ConnectionReset)));
+                    });
+                }
+                while let Some(join) = joins.join_next().await {
+                    join.unwrap();
+                }
+            });
+            let mut session =
+                HttpSession::new(runtime.http_owner(&ready).unwrap(), "localhost", address)
+                    .unwrap();
+            session.tls = if tls {
+                Some(
+                    TlsSettings::with_roots(&budget, || {
+                        let mut roots = rustls::RootCertStore::empty();
+                        roots.add(cert.clone()).unwrap();
+                        roots
+                    })
+                    .unwrap(),
+                )
+            } else {
+                None
+            };
+            let cancel = CancellationToken::new();
+            for poll in [true, false, true, false] {
+                let prepared = session.prepare(poll).await.unwrap();
+                let fence = prepared.lane.as_ref().unwrap().fence.clone();
+                let request = Request::from_admitted(
+                    &budget,
+                    http::Method::POST,
+                    "/reuse",
+                    super::super::codec::Bytes::copy(&budget, b"{}").unwrap(),
+                )
+                .unwrap();
+                let pending = emit_private(policy.clone(), prepared, request).await;
+                let completed = pending
+                    .receive_owned(98_304, &observation, &cancel)
+                    .await
+                    .unwrap();
+                assert!(
+                    fence.vectored_slices.load(Ordering::SeqCst) >= 2,
+                    "Hyper did not present headers and body as separate buffers"
+                );
+                let response = completed
+                    .restore(&mut session, poll, &observation, &cancel)
+                    .await
+                    .unwrap();
+                let pointer = response.body.as_ptr();
+                let body = response.into_codec_body().unwrap();
+                assert_eq!(body.as_slice(), b"{}");
+                assert_eq!(body.as_slice().as_ptr(), pointer);
+                drop(body);
+            }
+            assert_eq!(accepted.load(Ordering::SeqCst), 2);
+            assert!(budget
+                .reserve(TRANSIT_INSTANCE_LIMIT - if tls { CONFIG } else { 0 })
+                .is_err());
+            let shutting_down = runtime.shutdown();
+            tokio::pin!(shutting_down);
+            if revoke {
+                runtime.revoke();
+            } else {
+                assert!(futures::poll!(&mut shutting_down).is_pending());
+            }
+            server.await.unwrap();
+            // The session is still alive: idle IO must already be destroyed.
+            drop(
+                budget
+                    .reserve(TRANSIT_INSTANCE_LIMIT - if tls { CONFIG } else { 0 })
+                    .unwrap(),
+            );
+            assert!(session.prepare(false).await.is_err());
+            drop(session);
+            assert!(shutting_down.await);
+            drop(budget.reserve(TRANSIT_INSTANCE_LIMIT).unwrap());
+        }
+    }
+
+    #[tokio::test]
+    async fn prepared_pending_completed_abandonment_and_restore_guards_close_socket() {
+        for phase in 0..7 {
+            let directory = tempfile::tempdir().unwrap();
+            let policy = Arc::new(PolicyOwner::for_test(directory.path()));
+            policy.initialize(directory.path()).unwrap();
+            let snapshot = policy.capture_private(|| Ok(())).unwrap();
+            let observation = policy.observe(&snapshot).unwrap();
+            let pool = crate::db::create_pool(&directory.path().join("abandon.db"))
+                .await
+                .unwrap();
+            let db = crate::core::db_state::DbPool::default();
+            db.set_ready(pool).await.unwrap();
+            let ready = db.wait_until_ready_context().await.unwrap();
+            let runtime = super::super::TransferRuntime::default();
+            let budget = runtime.budget().unwrap();
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let address = listener.local_addr().unwrap();
+            let server = tokio::spawn(async move {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                if phase != 0 {
+                    request(&mut socket).await.unwrap();
+                    if phase != 1 {
+                        socket
+                            .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\n{}")
+                            .await
+                            .unwrap();
+                    }
+                }
+                let mut byte = [0];
+                let end = tokio::time::timeout(Duration::from_secs(3), socket.read(&mut byte))
+                    .await
+                    .unwrap();
+                assert!(
+                    matches!(end, Ok(0))
+                        || matches!(end, Err(ref error) if error.kind() == std::io::ErrorKind::ConnectionReset)
+                );
+            });
+            let mut session =
+                HttpSession::new(runtime.http_owner(&ready).unwrap(), "localhost", address)
+                    .unwrap();
+            session.tls = None;
+            let prepared = session.prepare(false).await.unwrap();
+            assert!(budget.reserve(TRANSIT_INSTANCE_LIMIT).is_err());
+            if phase == 0 {
+                drop(prepared);
+            } else {
+                let request = Request::new(&budget, http::Method::POST, "/ack", b"{}").unwrap();
+                let pending = emit_private(policy.clone(), prepared, request).await;
+                if phase == 1 {
+                    drop(pending);
+                } else {
+                    let cancel = CancellationToken::new();
+                    let completed = pending
+                        .receive_owned(98_304, &observation, &cancel)
+                        .await
+                        .unwrap();
+                    match phase {
+                        2 => drop(completed),
+                        3 => assert_eq!(
+                            completed
+                                .restore(&mut session, true, &observation, &cancel)
+                                .await
+                                .err(),
+                            Some("http_lane_owner")
+                        ),
+                        4 => {
+                            let foreign = super::super::TransferRuntime::default();
+                            let previous = std::mem::replace(
+                                &mut session.owner,
+                                Arc::new(foreign.http_owner(&ready).unwrap()),
+                            );
+                            assert_eq!(
+                                completed
+                                    .restore(&mut session, false, &observation, &cancel)
+                                    .await
+                                    .err(),
+                                Some("http_lane_owner")
+                            );
+                            session.owner = previous;
+                            assert!(foreign.shutdown().await);
+                        }
+                        5 => {
+                            cancel.cancel();
+                            assert_eq!(
+                                completed
+                                    .restore(&mut session, false, &observation, &cancel)
+                                    .await
+                                    .err(),
+                                Some("http_cancelled")
+                            );
+                        }
+                        6 => {
+                            runtime.revoke();
+                            assert_eq!(
+                                completed
+                                    .restore(&mut session, false, &observation, &cancel)
+                                    .await
+                                    .err(),
+                                Some("http_cancelled")
+                            );
+                        }
+                        _ => unreachable!(),
+                    }
+                }
+            }
+            server.await.unwrap();
+            drop(budget.reserve(TRANSIT_INSTANCE_LIMIT).unwrap());
+            drop(session);
+            assert!(runtime.shutdown().await);
+        }
+    }
+
+    #[tokio::test]
+    async fn completed_close_reply_is_valid_but_never_restored_and_truncation_refuses() {
+        for truncated in [false, true] {
+            let directory = tempfile::tempdir().unwrap();
+            let policy = Arc::new(PolicyOwner::for_test(directory.path()));
+            policy.initialize(directory.path()).unwrap();
+            let snapshot = policy.capture_private(|| Ok(())).unwrap();
+            let observation = policy.observe(&snapshot).unwrap();
+            let pool = crate::db::create_pool(&directory.path().join("close.db"))
+                .await
+                .unwrap();
+            let db = crate::core::db_state::DbPool::default();
+            db.set_ready(pool).await.unwrap();
+            let ready = db.wait_until_ready_context().await.unwrap();
+            let runtime = super::super::TransferRuntime::default();
+            let budget = runtime.budget().unwrap();
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let address = listener.local_addr().unwrap();
+            let server = tokio::spawn(async move {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                request(&mut socket).await.unwrap();
+                let wire: &[u8] = if truncated {
+                    b"HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Length: 5\r\n\r\n{}"
+                } else {
+                    b"HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Length: 2\r\n\r\n{}"
+                };
+                socket.write_all(wire).await.unwrap();
+                socket.shutdown().await.unwrap();
+                assert!(
+                    tokio::time::timeout(Duration::from_millis(100), listener.accept())
+                        .await
+                        .is_err(),
+                    "POST retried unexpectedly"
+                );
+            });
+            let mut session =
+                HttpSession::new(runtime.http_owner(&ready).unwrap(), "localhost", address)
+                    .unwrap();
+            session.tls = None;
+            let prepared = session.prepare(false).await.unwrap();
+            let request = Request::new(&budget, http::Method::POST, "/ack", b"{}").unwrap();
+            let pending = emit_private(policy, prepared, request).await;
+            let cancel = CancellationToken::new();
+            let completed = pending.receive_owned(98_304, &observation, &cancel).await;
+            if truncated {
+                assert!(completed.is_err());
+            } else {
+                let response = completed
+                    .unwrap()
+                    .restore(&mut session, false, &observation, &cancel)
+                    .await
+                    .unwrap();
+                assert_eq!(response.body(), b"{}");
+                drop(response);
+            }
+            assert!(session.owner.idle.take(false).unwrap().is_none());
+            server.await.unwrap();
+            drop(session);
+            assert!(runtime.shutdown().await);
+            drop(budget.reserve(TRANSIT_INSTANCE_LIMIT).unwrap());
         }
     }
 }
