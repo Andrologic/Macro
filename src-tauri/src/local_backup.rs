@@ -340,6 +340,9 @@ async fn check_database(path: &Path) -> Result<()> {
         return Err("Incompatible database schema".into());
     }
 
+    if versions.contains(&19) && (!versions.contains(&18) || !stamped(19, "019_connect_publication")) {
+        return Err("Incompatible database schema".into());
+    }
     let legacy_trace = stamped(6, "006_pilot_tool_trace_revisions");
     let legacy_management = stamped(7, "007_conversation_management");
     let has_trace =
@@ -352,6 +355,10 @@ async fn check_database(path: &Path) -> Result<()> {
     // Compare the archive with the schema its migration stamps describe. Do
     // not migrate the untrusted archive until its original objects pass this
     // strict comparison; startup validation migrates a temporary copy later.
+    if !versions.contains(&19) {
+        crate::db::connect_transfer::remove_publication_reference_in(&mut *reference.acquire().await.map_err(|e|e.to_string())?)
+            .await.map_err(|e|e.to_string())?;
+    }
     if !versions.contains(&18) {
         crate::db::connect_transfer::remove_reference_schema_in(&mut *reference.acquire().await.map_err(|e| e.to_string())?)
             .await.map_err(|e| e.to_string())?;
@@ -1797,7 +1804,7 @@ mod tests {
                 .fetch_one(&mut restored)
                 .await
                 .unwrap(),
-            18
+            19
         );
         restored.close().await.unwrap();
 
@@ -1808,7 +1815,7 @@ mod tests {
                 .fetch_one(&pool)
                 .await
                 .unwrap(),
-            18
+            19
         );
         assert_eq!(
             sqlx::query_scalar::<_, String>(
@@ -1841,7 +1848,7 @@ mod tests {
             .fetch_one(&mut db)
             .await
             .unwrap();
-        assert_eq!(version, 18);
+        assert_eq!(version, 19);
         sqlx::query("INSERT INTO schema_migrations VALUES (99, 'future', 'synthetic')")
             .execute(&mut db)
             .await
@@ -3333,7 +3340,7 @@ mod content_backup_tests {
                 .fetch_one(&mut db)
                 .await
                 .unwrap(),
-            18
+            19
         );
         assert_eq!(
             sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM conversation_content_versions")
@@ -3438,7 +3445,7 @@ mod content_legacy_backup_tests {
             let status: BackupStatus = serde_json::from_slice(&fs::read(data.join("local-backup/status.json")).unwrap()).unwrap();
             assert_eq!(status.code, Some(BackupStatusCode::Restored));
             let pool = crate::db::create_pool(&path).await.unwrap();
-            assert_eq!(sqlx::query_scalar::<_,i64>("SELECT MAX(version) FROM schema_migrations").fetch_one(&pool).await.unwrap(),18);
+            assert_eq!(sqlx::query_scalar::<_,i64>("SELECT MAX(version) FROM schema_migrations").fetch_one(&pool).await.unwrap(),19);
             assert_eq!(sqlx::query_scalar::<_,String>("SELECT mode FROM chat_admission_owners WHERE conversation_id='conversation'").fetch_one(&pool).await.unwrap(),"restore_hold");
             assert_eq!(sqlx::query_scalar::<_,Vec<u8>>("SELECT data FROM e_inactive_fragments WHERE import_id=1").fetch_one(&pool).await.unwrap(),vec![0,1,2,3,254,255,0]);
             assert_eq!(sqlx::query_scalar::<_,String>("SELECT begin_json FROM e_inactive_imports WHERE id=1").fetch_one(&pool).await.unwrap(),"{}");
@@ -3573,7 +3580,7 @@ mod catalog_backup_tests {
                 .fetch_one(&mut connection(&copy).await.unwrap())
                 .await
                 .unwrap(),
-            18
+            19
         );
         assert_eq!(fs::read(&original).unwrap(), before);
     }
@@ -3642,5 +3649,20 @@ mod catalog_backup_tests {
             "stale_revision"
         );
         pool.close().await;
+    }
+
+    #[tokio::test]
+    async fn connect_publication_backup_accepts_exact_pre019_and_rejects_missing019_guard() {
+        let (_temp,data,_config)=tests::profile().await;
+        let path=data.join("macro.db");
+        let mut connection=connection(&path).await.unwrap();
+        crate::db::connect_transfer::remove_publication_reference_in(&mut connection).await.unwrap();
+        sqlx::query("DELETE FROM schema_migrations WHERE version=19").execute(&mut connection).await.unwrap();
+        connection.close().await.unwrap();
+        check_database(&path).await.unwrap();
+        let pool=crate::db::create_pool(&path).await.unwrap();
+        assert_eq!(sqlx::query_scalar::<_,i64>("SELECT MAX(version) FROM schema_migrations").fetch_one(&pool).await.unwrap(),19);
+        sqlx::query("DROP TRIGGER connect_preparation_metadata").execute(&pool).await.unwrap();pool.close().await;
+        assert!(check_database(&path).await.is_err());
     }
 }

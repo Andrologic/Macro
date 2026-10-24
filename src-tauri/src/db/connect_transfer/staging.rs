@@ -29,7 +29,7 @@ async fn current(
     digest: &[u8],
     mutation: bool,
 ) -> DbResult<Prefix> {
-    let row=sqlx::query("SELECT p.fingerprint,p.next_sequence,p.next_offset,p.eof,t.binding_digest,t.target_generation,t.restore_hold,t.phase FROM connect_raw_prefix p JOIN connect_transfers t ON t.transfer_id=p.transfer_id WHERE p.transfer_id=?")
+    let row=sqlx::query("SELECT p.fingerprint,p.next_sequence,p.next_offset,p.eof,t.binding_digest,t.target_generation,t.restore_hold,t.phase,t.terminal_outcome FROM connect_raw_prefix p JOIN connect_transfers t ON t.transfer_id=p.transfer_id WHERE p.transfer_id=?")
         .bind(&session.transfer_id).fetch_optional(db).await?.ok_or_else(||invalid("connect_transfer_prefix_missing"))?;
     if row.get::<Vec<u8>, _>("fingerprint") != digest
         || row.get::<Vec<u8>, _>("binding_digest") != session.binding_digest
@@ -38,7 +38,8 @@ async fn current(
         return Err(invalid("connect_transfer_session_conflict"));
     }
     if mutation
-        && (row.get::<i64, _>("restore_hold") != 0
+        && (row.get::<Option<String>, _>("terminal_outcome").is_some()
+            || row.get::<i64, _>("restore_hold") != 0
             || row.get::<String, _>("phase") == "reconciliation_required")
     {
         return Err(invalid("connect_transfer_recovery_hold"));
@@ -73,7 +74,7 @@ pub(super) async fn open_prefix(pool: &SqlitePool, session: &Session) -> DbResul
             .fetch_one(&mut *tx)
             .await?;
     if exists == 0 {
-        let valid: i64=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM connect_transfers WHERE transfer_id=? AND local_role='target' AND binding_digest=? AND target_generation=? AND restore_hold=0 AND phase='receiving')")
+        let valid: i64=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM connect_transfers WHERE transfer_id=? AND local_role='target' AND binding_digest=? AND target_generation=? AND restore_hold=0 AND phase='receiving' AND terminal_outcome IS NULL AND resolution IS NULL)")
             .bind(&session.transfer_id).bind(&session.binding_digest).bind(&session.producer_generation).fetch_one(&mut *tx).await?;
         if valid != 1 {
             return Err(invalid("connect_transfer_recovery_hold"));

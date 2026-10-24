@@ -2,8 +2,11 @@
 //! terminal constructor exists here. The storage inputs are not authority.
 #![allow(dead_code)]
 mod journal;
+mod preparation;
+mod publication;
 mod schema;
 mod staging;
+mod terminal;
 
 use super::{preparation_lease::Lease, DbError, DbResult};
 use serde::Serialize;
@@ -12,8 +15,8 @@ use sqlx::{SqliteConnection, SqlitePool};
 
 pub(super) use journal::Reservation;
 pub(super) use journal::{reserve_source, LocalReservation};
-pub(crate) use schema::remove_reference_schema_in;
 pub(super) use schema::validate_schema;
+pub(crate) use schema::{remove_publication_reference_in, remove_reference_schema_in};
 const CONTROL: usize = 98_304;
 fn invalid(code: &str) -> DbError {
     DbError::Validation(code.into())
@@ -112,7 +115,7 @@ pub(super) async fn capture_leased(db: &mut SqliteConnection, id: i64) -> DbResu
 }
 pub(super) async fn import_leased(db: &mut SqliteConnection, id: i64) -> DbResult<bool> {
     Ok(sqlx::query_scalar::<_, i64>(
-        "SELECT EXISTS(SELECT 1 FROM connect_transfers WHERE inactive_import_id=?)",
+        "SELECT EXISTS(SELECT 1 FROM connect_transfers WHERE inactive_import_id=?1 UNION ALL SELECT 1 FROM connect_preparations WHERE import_id=?1 UNION ALL SELECT 1 FROM conversation_portable_archives WHERE import_id=?1)",
     )
     .bind(id)
     .fetch_one(db)
