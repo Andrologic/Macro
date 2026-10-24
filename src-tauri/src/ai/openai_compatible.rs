@@ -24,6 +24,16 @@ const STREAM_IDLE_TIMEOUT: Duration = Duration::from_secs(60);
 const REQUEST_RETRY_ATTEMPTS: usize = 2;
 const MAX_SSE_BUFFER_BYTES: usize = 1_048_576;
 
+/// Pure construction using the same builder as the provider transport. The
+/// caller supplies a native configuration snapshot and owns memory admission.
+/// The returned body does not grant permission to send or publish a transfer.
+pub(crate) fn build_transfer_request(
+    request: &AiChatRequest,
+    provider: &ProviderConfig,
+) -> Result<Value, String> {
+    build_chat_completions_request(request, provider)
+}
+
 #[cfg(test)]
 pub(crate) fn portable_history_proof_request(request: &AiChatRequest) -> Result<Value, String> {
     let provider = ProviderConfig {

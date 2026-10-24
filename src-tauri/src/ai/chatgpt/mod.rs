@@ -12,6 +12,14 @@ pub use auth::{cancel_auth, start_browser_auth};
 pub(crate) use models::{available_models, persist_model_enrichments, recover_auth_mutations};
 pub use models::{disconnect_auth, sync_models};
 pub(crate) use stream::stream_chat;
+/// Pure construction for private transfer preparation. The native caller owns
+/// admission for the request, builder allocations and subsequent serialization.
+/// This does not attest policy, archive provenance or permission to send.
+pub(crate) fn build_transfer_request(
+    request: &AiChatRequest,
+) -> Result<impl serde::Serialize, String> {
+    stream::build_responses_request(request)
+}
 #[cfg(test)]
 pub(crate) fn portable_history_proof_request(
     request: &AiChatRequest,
