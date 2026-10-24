@@ -6,7 +6,7 @@ use sqlx::{Connection, SqliteConnection};
 
 /// Only the live runtime constructs this snapshot; IPC receives an opaque handle.
 #[derive(Clone)]
-pub(super) struct Snapshot {
+pub(in crate::db) struct Snapshot {
     pub conversation: String,
     pub caller: String,
     pub browser: String,
@@ -15,6 +15,16 @@ pub(super) struct Snapshot {
     revision: i64,
     content: ConversationContentToken,
     reconciled: bool,
+}
+
+impl Snapshot {
+    pub(in crate::db) fn generation(&self) -> &str { &self.generation }
+}
+pub(in crate::db) struct FrozenSource {
+    pub generation: String,
+    pub incarnation: String,
+    pub revision: i64,
+    pub content: ConversationContentToken,
 }
 
 /// IDs observed by the existing storage owners and questionnaire codec. No
@@ -129,22 +139,30 @@ async fn require_quiescent(db: &mut SqliteConnection, conversation: &str, incarn
     Ok(())
 }
 
-/// Private local transaction only. Canonical transfer identity/decision binding
-/// and any public command remain a later composition requirement.
-#[allow(dead_code)]
-pub(super) async fn reserve(owner: &DbPool, snapshot: &Snapshot) -> DbResult<()> {
+/// Shared actual reservation guard. Caller owns BEGIN IMMEDIATE and must commit
+/// the F identity/expectations in that same transaction before any relay effect.
+pub(in crate::db) async fn freeze_in(db: &mut SqliteConnection, snapshot: &Snapshot) -> DbResult<FrozenSource> {
     if !snapshot.reconciled { return Err(invalid("chat_admission_browser_not_reconciled")); }
+    check(db,snapshot).await?;
+    let ready: i64 = sqlx::query_scalar("SELECT browser_reconciled=1 AND runtime_generation=? FROM chat_admission_owners WHERE conversation_id=?")
+        .bind(&snapshot.generation).bind(&snapshot.conversation).fetch_one(&mut *db).await?;
+    if ready != 1 { return Err(invalid("chat_admission_browser_not_reconciled")); }
+    require_quiescent(db,&snapshot.conversation,&snapshot.incarnation).await?;
+    let revision = snapshot.revision.checked_add(1).ok_or_else(|| invalid("chat_admission_revision_exhausted"))?;
+    sqlx::query("UPDATE chat_admission_owners SET mode='frozen',revision=? WHERE conversation_id=?")
+        .bind(revision).bind(&snapshot.conversation).execute(db).await?;
+    Ok(FrozenSource {generation:snapshot.generation.clone(),incarnation:snapshot.incarnation.clone(),revision,content:snapshot.content.clone()})
+}
+
+// The historical unbound local reservation remains only in admission tests.
+// Product composition can only reach the F journal path with private inputs.
+#[cfg(test)]
+pub(super) async fn reserve(owner: &DbPool, snapshot: &Snapshot) -> DbResult<()> {
     let guard = owner.source_ready(Some(&snapshot.generation)).await.map_err(|_| invalid("chat_admission_stale_generation"))?;
     let mut lease = durable_lease(&guard.ready.pool).await?;
     let mut tx = lease.begin_with("BEGIN IMMEDIATE").await?;
     guard.ready.check_source_schema(&mut tx).await?;
-    check(&mut tx,snapshot).await?;
-    let ready: i64 = sqlx::query_scalar("SELECT browser_reconciled=1 AND runtime_generation=? FROM chat_admission_owners WHERE conversation_id=?")
-        .bind(&snapshot.generation).bind(&snapshot.conversation).fetch_one(&mut *tx).await?;
-    if ready != 1 { return Err(invalid("chat_admission_browser_not_reconciled")); }
-    require_quiescent(&mut tx,&snapshot.conversation,&snapshot.incarnation).await?;
-    sqlx::query("UPDATE chat_admission_owners SET mode='frozen',revision=revision+1 WHERE conversation_id=?")
-        .bind(&snapshot.conversation).execute(&mut *tx).await?;
+    freeze_in(&mut tx,snapshot).await?;
     tx.commit().await?; lease.committed=true;
     Ok(())
 }

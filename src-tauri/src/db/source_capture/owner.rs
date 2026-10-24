@@ -62,6 +62,7 @@ pub(super) struct Journal {
     pub idle: i64,
     pub last: i64,
     pub manifest: Option<Vec<u8>>,
+    pub transfer_leased: bool,
 }
 impl Journal {
     pub fn receipt(&self, id: &str) -> Receipt {
@@ -125,7 +126,8 @@ impl SourceCapture {
         })
     }
     pub(super) async fn lease(&self, pool: &SqlitePool) -> Result<Lease> {
-        let lease = Lease::new(pool.acquire().await.map_err(error)?);
+        let mut lease = Lease::new(pool.acquire().await.map_err(error)?);
+        sqlx::query("PRAGMA synchronous=FULL").execute(&mut *lease).await.map_err(error)?;
         #[cfg(test)]
         let lease = {
             let mut observed = lease;
@@ -141,7 +143,7 @@ impl SourceCapture {
             .check_source_schema(db)
             .await
             .map_err(|_| "stale_revision")?;
-        let r=sqlx::query("SELECT id,CASE WHEN length(CAST(binding_json AS BLOB))<=4096 THEN binding_json END AS binding_json,phase,revision,family,cursor_rowid,cursor_field,cursor_offset,rows_count,fields_count,bytes_received,charge_bytes,progressed_at,expires_at,idle_ms,last_clock,CASE WHEN typeof(manifest_hash)='blob' AND length(manifest_hash)=32 THEN manifest_hash END AS manifest_hash FROM e_source_captures WHERE capture_id=?").bind(&scope.authority.capture_id).fetch_optional(db).await.map_err(error)?.ok_or("not_found")?;
+        let r=sqlx::query("SELECT id,CASE WHEN length(CAST(binding_json AS BLOB))<=4096 THEN binding_json END AS binding_json,phase,revision,family,cursor_rowid,cursor_field,cursor_offset,rows_count,fields_count,bytes_received,charge_bytes,progressed_at,expires_at,idle_ms,last_clock,CASE WHEN typeof(manifest_hash)='blob' AND length(manifest_hash)=32 THEN manifest_hash END AS manifest_hash FROM e_source_captures WHERE capture_id=?").bind(&scope.authority.capture_id).fetch_optional(&mut *db).await.map_err(error)?.ok_or("not_found")?;
         let raw: Option<String> = r.try_get("binding_json").map_err(error)?;
         let binding: Binding = parse(raw.ok_or("database_unavailable")?.as_bytes())?;
         if binding.version != 1 {
@@ -162,7 +164,10 @@ impl SourceCapture {
         if phase == 2 && manifest.is_none() {
             return Err("integrity_failed".into());
         }
+        let id: i64 = r.try_get("id").map_err(error)?;
+        let transfer_leased = crate::db::connect_transfer::capture_leased(db,id).await.map_err(error)?;
         Ok(Journal {
+            transfer_leased,
             id: r.try_get("id").map_err(error)?,
             binding,
             phase: r.try_get("phase").map_err(error)?,
@@ -204,7 +209,7 @@ impl SourceCapture {
         if now < j.last {
             return Err("clock_rollback".into());
         }
-        if now >= j.expires || now.saturating_sub(j.progressed) >= j.idle {
+        if !j.transfer_leased && (now >= j.expires || now.saturating_sub(j.progressed) >= j.idle) {
             return Err("capture_expired".into());
         }
         Ok(now)
@@ -306,6 +311,7 @@ impl SourceCapture {
         let mut lease = self.lease(&scope.generation.ready.pool).await?;
         let mut tx = lease.begin_with("BEGIN IMMEDIATE").await.map_err(error)?;
         let j = self.load(&mut tx, &scope).await?;
+        if j.transfer_leased { return Err("connect_transfer_leased".into()); }
         if j.phase == 2 {
             return Err("capture_pinned".into());
         }

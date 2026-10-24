@@ -400,7 +400,7 @@ impl ChatAdmissionRuntime {
         super::reconciliation::complete(owner,snapshot,observed).await
     }
 
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub(crate) async fn reserve_reconciled_source(&self, owner: &DbPool, caller: &str, runtime: &str, handle: &str) -> DbResult<()> {
         let _lifecycle = self.lifecycle.lock().await;
         self.check_browser(caller,runtime)?;
@@ -408,6 +408,19 @@ impl ChatAdmissionRuntime {
         let snapshot = inspections.get(handle).filter(|snapshot| snapshot.caller==caller && snapshot.browser==runtime)
             .ok_or_else(|| invalid("chat_admission_inspection_missing"))?;
         super::reconciliation::reserve(owner,snapshot).await
+    }
+
+    /// Private prerequisite. Reservation has no production constructor until
+    /// the authenticated canonical transport and policy owner are composed.
+    #[allow(dead_code)]
+    pub(in crate::db) async fn reserve_reconciled_transfer(&self, owner: &DbPool, caller: &str, runtime: &str, handle: &str,
+        input: &crate::db::connect_transfer::Reservation) -> DbResult<crate::db::connect_transfer::LocalReservation> {
+        let _lifecycle = self.lifecycle.lock().await;
+        self.check_browser(caller,runtime)?;
+        let inspections = self.inspections.lock().await;
+        let snapshot = inspections.get(handle).filter(|snapshot| snapshot.caller==caller && snapshot.browser==runtime)
+            .ok_or_else(|| invalid("chat_admission_inspection_missing"))?;
+        crate::db::connect_transfer::reserve_source(owner,snapshot,input).await
     }
 
     pub(crate) async fn begin_intent(&self, owner: &DbPool, caller: &str, runtime: &str,

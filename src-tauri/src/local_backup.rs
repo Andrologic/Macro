@@ -336,6 +336,10 @@ async fn check_database(path: &Path) -> Result<()> {
     if versions.contains(&17) && (!versions.contains(&16) || !stamped(17, "017_chat_admission")) {
         return Err("Incompatible database schema".into());
     }
+    if versions.contains(&18) && (!versions.contains(&17) || !stamped(18, "018_connect_transfer")) {
+        return Err("Incompatible database schema".into());
+    }
+
     let legacy_trace = stamped(6, "006_pilot_tool_trace_revisions");
     let legacy_management = stamped(7, "007_conversation_management");
     let has_trace =
@@ -348,6 +352,10 @@ async fn check_database(path: &Path) -> Result<()> {
     // Compare the archive with the schema its migration stamps describe. Do
     // not migrate the untrusted archive until its original objects pass this
     // strict comparison; startup validation migrates a temporary copy later.
+    if !versions.contains(&18) {
+        crate::db::connect_transfer::remove_reference_schema_in(&mut *reference.acquire().await.map_err(|e| e.to_string())?)
+            .await.map_err(|e| e.to_string())?;
+    }
     if !versions.contains(&17) {
         crate::db::chat_admission::remove_reference_schema(&reference)
             .await
@@ -456,7 +464,8 @@ async fn check_database(path: &Path) -> Result<()> {
         return Err("Backup database tables do not match this Macro version".into());
     }
     for table in tables {
-        if table.starts_with("chat_admission_")
+        if table.starts_with("connect_")
+            || table.starts_with("chat_admission_")
             || table.starts_with("e_inactive_")
             || table.starts_with("e_source_")
             || table == "conversation_catalog_version"
@@ -1788,7 +1797,7 @@ mod tests {
                 .fetch_one(&mut restored)
                 .await
                 .unwrap(),
-            17
+            18
         );
         restored.close().await.unwrap();
 
@@ -1799,7 +1808,7 @@ mod tests {
                 .fetch_one(&pool)
                 .await
                 .unwrap(),
-            17
+            18
         );
         assert_eq!(
             sqlx::query_scalar::<_, String>(
@@ -1832,7 +1841,7 @@ mod tests {
             .fetch_one(&mut db)
             .await
             .unwrap();
-        assert_eq!(version, 17);
+        assert_eq!(version, 18);
         sqlx::query("INSERT INTO schema_migrations VALUES (99, 'future', 'synthetic')")
             .execute(&mut db)
             .await
@@ -3241,6 +3250,38 @@ mod tests {
             );
         }
     }
+
+    #[tokio::test]
+    async fn connect_transfer_restore_preserves_raw_prefix_and_import_lease_before_ready() {
+        let (_temp,data,config)=profile().await;
+        let path=data.join("macro.db");
+        let mut db=connection(&path).await.unwrap();
+        // Incomplete opaque storage is preserved; no ready/pin or producer
+        // authority is claimed by this synthetic backup fixture.
+        sqlx::raw_sql("INSERT INTO e_inactive_domain VALUES(1,1048576,64);
+            INSERT INTO e_inactive_imports VALUES(1,printf('%064d',1),'{}',0,0,0,2,512,0,0,1,1,0,NULL);
+            INSERT INTO e_inactive_records VALUES(1,0,'{}',0,NULL,NULL,NULL,NULL,2,1,x'',x'');
+            INSERT INTO e_inactive_fragments VALUES(1,0,0,zeroblob(32),x'6162',2,2,1);
+            INSERT INTO connect_transfers(transfer_id,local_role,relay_origin,account_id,source_instance_id,source_conversation_id,source_epoch,target_instance_id,source_generation,target_generation,binding_digest,binding_json,expectation_json,reserve_request,fingerprint,inactive_import_id,phase,charge_bytes)
+              VALUES('00000000-0000-4000-8000-000000000001','target','https://relay.invalid','account','source','conversation',1,'target','sg','tg',zeroblob(32),x'7b7d',x'7b7d',x'7b7d',zeroblob(32),1,'receiving',512);
+            INSERT INTO connect_raw_prefix VALUES('00000000-0000-4000-8000-000000000001','00000000-0000-4000-8000-000000000002','tg',x'7b7d',zeroblob(32),4,1,2,0,512);
+            INSERT INTO connect_raw_chunks VALUES('00000000-0000-4000-8000-000000000001',0,0,zeroblob(32),x'6162',0,256);")
+            .execute(&mut db).await.unwrap();
+        db.close().await.unwrap();
+        let archive=capture(&data,&config,BTreeMap::new(),true).await.unwrap();
+        validate(&archive).await.unwrap();queue_restore(&data,&archive);
+        process_startup(&data,&config).await.unwrap();
+        let mut db=connection(&path).await.unwrap();
+        let held:(i64,String,i64)=sqlx::query_as("SELECT restore_hold,phase,inactive_import_id FROM connect_transfers").fetch_one(&mut db).await.unwrap();
+        assert_eq!(held,(1,"reconciliation_required".into(),1));
+        let prefix:(i64,i64,i64)=sqlx::query_as("SELECT next_sequence,next_offset,eof FROM connect_raw_prefix").fetch_one(&mut db).await.unwrap();
+        assert_eq!(prefix,(1,2,0));
+        assert_eq!(sqlx::query_scalar::<_,Vec<u8>>("SELECT data FROM connect_raw_chunks").fetch_one(&mut db).await.unwrap(),b"ab");
+        assert!(sqlx::query("DELETE FROM e_inactive_fragments").execute(&mut db).await.is_err());
+        assert_eq!(sqlx::query_scalar::<_,String>("SELECT mode FROM chat_admission_owners WHERE conversation_id='conversation'").fetch_one(&mut db).await.unwrap(),"restore_hold");
+        db.close().await.unwrap();
+    }
+
 }
 
 #[cfg(test)]
@@ -3292,7 +3333,7 @@ mod content_backup_tests {
                 .fetch_one(&mut db)
                 .await
                 .unwrap(),
-            17
+            18
         );
         assert_eq!(
             sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM conversation_content_versions")
@@ -3397,7 +3438,7 @@ mod content_legacy_backup_tests {
             let status: BackupStatus = serde_json::from_slice(&fs::read(data.join("local-backup/status.json")).unwrap()).unwrap();
             assert_eq!(status.code, Some(BackupStatusCode::Restored));
             let pool = crate::db::create_pool(&path).await.unwrap();
-            assert_eq!(sqlx::query_scalar::<_,i64>("SELECT MAX(version) FROM schema_migrations").fetch_one(&pool).await.unwrap(),17);
+            assert_eq!(sqlx::query_scalar::<_,i64>("SELECT MAX(version) FROM schema_migrations").fetch_one(&pool).await.unwrap(),18);
             assert_eq!(sqlx::query_scalar::<_,String>("SELECT mode FROM chat_admission_owners WHERE conversation_id='conversation'").fetch_one(&pool).await.unwrap(),"restore_hold");
             assert_eq!(sqlx::query_scalar::<_,Vec<u8>>("SELECT data FROM e_inactive_fragments WHERE import_id=1").fetch_one(&pool).await.unwrap(),vec![0,1,2,3,254,255,0]);
             assert_eq!(sqlx::query_scalar::<_,String>("SELECT begin_json FROM e_inactive_imports WHERE id=1").fetch_one(&pool).await.unwrap(),"{}");
@@ -3532,7 +3573,7 @@ mod catalog_backup_tests {
                 .fetch_one(&mut connection(&copy).await.unwrap())
                 .await
                 .unwrap(),
-            17
+            18
         );
         assert_eq!(fs::read(&original).unwrap(), before);
     }

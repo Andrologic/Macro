@@ -100,6 +100,11 @@ impl DbPool {
                 return Err(command_error(message));
             }
         };
+        if crate::db::connect_transfer::restart_hold(&pool).await.is_err() {
+            let message="Transfer journal validation failed";
+            self.state.send_replace(DbInitializationState::Failed(message.into()));
+            return Err(command_error(message));
+        }
         let ready = DbReady {
             pool,
             catalog_generation: uuid::Uuid::new_v4().simple().to_string(),
