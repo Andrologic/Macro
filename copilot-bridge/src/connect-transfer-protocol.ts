@@ -27,7 +27,7 @@ export type TransferRequest = Call & (
   | { op: 6; stage: 'begin' | 'end'; kind: ProjectionKind; total: D }
   | { op: 6; stage: 'item'; kind: ProjectionKind; index: D; upper_json_bytes: D; units: D }
   | { op: 6; stage: 'encoded'; kind: ProjectionKind; bytes: D; sha256: string }
-  | { op: 7; kind: 'normalized'; result: { records: D; bytes: D; manifest: string; policy: string } }
+  | { op: 7; kind: 'normalized'; result: { records: D; bytes: D; manifest: string; policy_handle: D } }
   | { op: 7; kind: 'imported'; result: ImportedResult }
   | { op: 7; kind: 'prepared_ts'; result: { draft_handle: D; archive_manifest: string; storage_revision: D; mapping_sha256: string; target_handle: D; reference: 'local' | 'synthetic' } }
   | { op: 7; kind: 'recovered'; result: { ordinal: D; bytes: D; sha256: string } }
@@ -54,7 +54,7 @@ export function validateStart(value: any): asserts value is Start {
   ensure(integer(value.child_units) > 0 && integer(value.detection_units) > 0 && integer(value.native_units) > 0);
   sum(integer(value.child_units), integer(value.detection_units), integer(value.native_units));
 }
-export function validateRequest(r: Facts): void {
+export function validateRequest(r: Facts, policyHandle: string): void {
   ensure(r && typeof r === 'object'); handle(r.call); handle(r.handle);
   switch (r.op) {
     case 1:
@@ -85,7 +85,7 @@ export function validateRequest(r: Facts): void {
     case 7:
       keys(r, ['op', 'call', 'handle', 'kind', 'result']);
       if (r.kind === 'normalized') {
-        keys(r.result, ['records', 'bytes', 'manifest', 'policy']); integer(r.result.records); integer(r.result.bytes); hash(r.result.manifest); ensure(typeof r.result.policy === 'string');
+        keys(r.result, ['records', 'bytes', 'manifest', 'policy_handle']); integer(r.result.records); integer(r.result.bytes); hash(r.result.manifest); handle(r.result.policy_handle); ensure(r.result.policy_handle === policyHandle);
       } else if (r.kind === 'imported') imported(r.result);
       else if (r.kind === 'prepared_ts') {
         keys(r.result, ['draft_handle', 'archive_manifest', 'storage_revision', 'mapping_sha256', 'target_handle', 'reference']);

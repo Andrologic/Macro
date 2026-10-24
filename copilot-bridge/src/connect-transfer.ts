@@ -33,7 +33,7 @@ async function execute(ports: TransferPorts): Promise<void> {
       await client.simple({ op: 3, handle: handles.sink, stage: 'begin', descriptor: portableDescriptor(first, IDENTITIES.content_contract_sha256) });
     });
     await client.simple({ op: 7, handle: handles.sink, kind: 'normalized', result: {
-      records: decimal(result.records), bytes: decimal(result.bytes), manifest: result.manifest, policy: result.policy } });
+      records: decimal(result.records), bytes: decimal(result.bytes), manifest: result.manifest, policy_handle: handles.policy } });
     return;
   }
   if (kind === 'import') {

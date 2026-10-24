@@ -72,7 +72,7 @@ export class TransferClient {
     ensure(!this.active); this.active = true;
     try {
       ensure(this.nextCall < 9_007_199_254_740_991n);
-      const request = { ...args, call: String(++this.nextCall) }; validateRequest(request);
+      const request = { ...args, call: String(++this.nextCall) }; validateRequest(request, this.start.handles.policy);
       await this.writer.send(Frame.BEGIN, this.job, 0n, 0, encodeControl(request));
       if (produce) await produce(request);
       const response = await this.response(request);

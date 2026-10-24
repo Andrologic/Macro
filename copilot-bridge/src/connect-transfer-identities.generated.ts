@@ -30,7 +30,7 @@ export const TRANSFER_RESOURCES = [
   },
   {
     "path": "copilot-bridge/src/connect-transfer-client.ts",
-    "sha256": "e9e30b156a68b578730f244dcda75869c668aea6504efb67af88b51362e3ebec"
+    "sha256": "e7d88874faa1e0d656d96ca80fdd98e47bf810ed4c4b6b1cf0019f3eb59b23f7"
   },
   {
     "path": "copilot-bridge/src/connect-transfer-ports.ts",
@@ -42,7 +42,7 @@ export const TRANSFER_RESOURCES = [
   },
   {
     "path": "copilot-bridge/src/connect-transfer-protocol.ts",
-    "sha256": "2519b65a3d359ca13a6fb0a5a0ed054eddcc486a1af905feeb17b55d37e81094"
+    "sha256": "12fd6df251530d6fa27dc26915de6743cf26dddadf49cf4086a89af301d7114d"
   },
   {
     "path": "copilot-bridge/src/connect-transfer-values.ts",
@@ -50,7 +50,7 @@ export const TRANSFER_RESOURCES = [
   },
   {
     "path": "copilot-bridge/src/connect-transfer.ts",
-    "sha256": "55cf166080b34fdaddfbf9c89a0b9725be4102f690b08941e42c41a0f3ef7b0c"
+    "sha256": "6df7f8c9efb76fa2d11289f4dad5336aa41851498425d3a172b43be6bb008e87"
   },
   {
     "path": "copilot-bridge/src/entry.ts",
@@ -304,5 +304,5 @@ export const TRANSFER_RESOURCES = [
 export const TRANSFER_HELLO = {
   "version": "macro-connect-transfer-1",
   "portable_contract_sha256": "c6ae7440ed0fb4d0bdccdfb936c4bf6ac5c441c96b642c1d9ccbd270b62bdcc6",
-  "preparation_set_sha256": "19fb3a23f08c9a8af26e5247b92287823e4ee8b4eee6841013efa327471b8101"
+  "preparation_set_sha256": "88f593d3c470ee1b5669ca5dedec6dccda3057b2d1eed557335878b12d3d3434"
 } as const;

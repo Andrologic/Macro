@@ -17,6 +17,7 @@ export class TransferParent {
   readonly reader: FrameReader;
   readonly writer: FrameWriter;
   frameCount = 0;
+  sentPages = 0;
   finalResult: Facts | undefined;
   readonly retained: { kind: string; value: any }[] = [];
   readonly records: { header: PortableRecord; bytes: Uint8Array }[] = [];
@@ -53,8 +54,10 @@ export class TransferParent {
     };
     const input = fifo('input'), output = fifo('output');
     const stderrPath = join(directory, 'stderr'), stderr = openSync(stderrPath, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL, 0o600);
-    const process = Bun.spawn([globalThis.process.execPath, '--preload', resolve(import.meta.dir, 'connect-transfer-import-guard.testSupport.ts'),
-      resolve(import.meta.dir, 'entry.ts'), 'connect-transfer'], { cwd: repository, stdin: input.read, stdout: output.write, stderr, env: { NODE_ENV: 'test' } });
+    const executable = globalThis.process.env.MACRO_TRANSFER_TEST_EXECUTABLE;
+    const command = executable ? [resolve(executable), 'connect-transfer'] : [globalThis.process.execPath,
+      '--preload', resolve(import.meta.dir, 'connect-transfer-import-guard.testSupport.ts'), resolve(import.meta.dir, 'entry.ts'), 'connect-transfer'];
+    const process = Bun.spawn(command, { cwd: repository, stdin: input.read, stdout: output.write, stderr, env: { NODE_ENV: 'test' } });
     for (const fd of [input.bootstrap, input.read, output.bootstrap, output.write, stderr]) closeSync(fd);
     const parent = new TransferParent(process, directory, input.write, output.read, stderrPath, budget, release);
     try {
@@ -70,7 +73,8 @@ export class TransferParent {
     }); this.frameCount++; return frame;
   }
   async send(type: number, payload: Uint8Array = new Uint8Array(), lease = 0n, sequence = 0, job = this.job) { await this.writer.send(type, job, lease, sequence, payload); }
-  async start(kind: Start['kind'], childUnits = 96 * 1024 * 1024, detectionUnits = secretQuote(0, 0) + 512 + 8 * 'policy-1'.length) {
+  async start(kind: Start['kind'], childUnits = 96 * 1024 * 1024, detectionUnits?: number, policyRevision = 'policy-1') {
+    detectionUnits ??= secretQuote(0, 0) + 512 + 8 * policyRevision.length;
     const handles = Object.fromEntries(({ normalize: ['source', 'policy', 'sink'], import: ['staging', 'policy', 'sink'],
       prepare: ['archive', 'policy', 'target', 'draft'], recover: ['archive', 'policy', 'selector', 'sink'] }[kind]).map((name, i) => [name, String(i + 10)]));
     const start: Start = { op: 0, kind, handles, child_units: decimal(childUnits), detection_units: decimal(detectionUnits), native_units: decimal(CONTROL_RESERVE + DATA_CREDIT) };
@@ -80,7 +84,7 @@ export class TransferParent {
     this.starts.push(start);
     await this.send(Frame.BEGIN, encodeControl(start));
     await this.send(Frame.GRANT, grantBytes({ units: sum(childUnits, detectionUnits), call: 0n, arena: 1n, limit: 0, kind: 3, direction: 0 }), 1n);
-    const revision = new TextEncoder().encode('policy-1');
+    const revision = new TextEncoder().encode(policyRevision);
     this.data.set(handles.policy, new Map([[0, revision]]));
     this.roots.set(handles.policy, { kind: 'detection', count: '0', bytes: '0', revision: { ordinal: 0, bytes: revision.length, sha256: await portableDigest(revision) } });
     return start;
@@ -123,7 +127,7 @@ export class TransferParent {
   private async sending(call: string, bytes: Uint8Array) {
     const lease = await this.grant(call, 2, 1);
     for (let offset = 0, sequence = 0; offset < bytes.length; sequence++) {
-      const page = bytes.subarray(offset, offset + this.pageSize); await this.send(Frame.PAGE, page, lease, sequence);
+      const page = bytes.subarray(offset, offset + this.pageSize); await this.send(Frame.PAGE, page, lease, sequence); this.sentPages++;
       const ack = await this.receive(); ensure(ack.header.type === Frame.PAGE_CONSUMED && ack.header.job === this.job && ack.header.lease === lease && ack.header.sequence === sequence && ack.header.length === 0);
       offset += page.length;
     }
@@ -133,7 +137,7 @@ export class TransferParent {
     let expectedHash = request.sha256;
     if (encoded) {
       const frame = await this.receive(); ensure(frame.header.type === Frame.BEGIN && frame.header.job === this.job && frame.header.lease === 0n && frame.header.sequence === 0);
-      const announced = decodeControl(frame.payload); validateRequest(announced);
+      const announced = decodeControl(frame.payload); validateRequest(announced, this.starts[0].handles.policy);
       ensure(announced.op === 6 && announced.stage === 'encoded' && announced.call === request.call && announced.kind === request.kind && announced.handle === request.handle);
       ensure(integer(announced.bytes) === length); expectedHash = announced.sha256;
     }
@@ -151,7 +155,7 @@ export class TransferParent {
       const frame = await this.receive(); ensure(frame.header.job === this.job && frame.header.sequence === 0);
       if (frame.header.type === Frame.JOB_FINISHED) { ensure(frame.header.lease === 1n && frame.payload.length === 4); return new DataView(frame.payload.buffer, frame.payload.byteOffset).getUint32(0); }
       ensure(frame.header.type === Frame.BEGIN && frame.header.lease === 0n);
-      const request = decodeControl(frame.payload); validateRequest(request); ensure(BigInt(request.call) === ++this.lastCall);
+      const request = decodeControl(frame.payload); validateRequest(request, this.starts[0].handles.policy); ensure(BigInt(request.call) === ++this.lastCall);
       if (this.beforeRequest && await this.beforeRequest(request, this)) continue;
       let result: Facts;
       if (request.op === 1) {

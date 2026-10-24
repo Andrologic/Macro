@@ -54,10 +54,14 @@ detection budgets remain distinct sub-reservations of the native work lease.
 The exact unions and validators are in `src/connect-transfer-protocol.ts`. Large
 target parameters use FieldSlice descriptors and read-field. The real maximal
 fixed target/root control currently measures 1749 UTF-8 bytes with MAX_SAFE
-counters and 20-digit handles. The normalized result's policy string has no
-semantic E length bound. Its possible overflow remains an explicit composition
-issue, covered by a test; the fixed-variant measurement is not a proof for every
-possible policy string.
+counters and 20-digit handles. The normalized finish result contains
+`{records, bytes, manifest, policy_handle}`. `policy_handle` must equal the
+policy handle in START; both the child and parent validate this equality.
+The original revision remains unbounded by the control size: read-field streams
+it from the policy FieldSlice, and the real E metadata retains it. The handle is
+only job correlation. The native parent retains its own policy authority and
+checks freshness at each boundary. A real child test normalizes and reads back
+an archive with a 4097-character revision and a bounded terminal control.
 
 An item is measured under its existing input owner, reserved before stringify
 and encodeInto, then sent alone over credited pages. The encoded stage belongs

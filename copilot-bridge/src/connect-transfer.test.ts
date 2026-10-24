@@ -29,9 +29,9 @@ test('embedded identity commits real E/preparation sources and independent canon
   expect(String(TRANSFER_HELLO.portable_contract_sha256)).toBe(digest(readFileSync(resolve(repository, 'contracts/macro-pilot/v2/portable-chat-history/portable-chat-history-contract.json'))));
   expect(IDENTITIES.content_contract_sha256).toBe(TRANSFER_HELLO.portable_contract_sha256); // Verified current resource identity, never taken from an incoming descriptor.
   const request = { op: 3, call: '1', handle: h, stage: 'begin', descriptor };
-  validateRequest(request);
+  validateRequest(request, h);
   for (const bad of ['0'.repeat(64), 'stale']) {
-    expect(() => validateRequest({ ...request, descriptor: { ...descriptor, content_contract_sha256: bad } })).toThrow();
+    expect(() => validateRequest({ ...request, descriptor: { ...descriptor, content_contract_sha256: bad } }, h)).toThrow();
     expect(() => validateResponse({ op: 1, call: '1', status: 0, result: { value: { kind: 'staging', bytes: '1', sha256: hash, descriptor: { ...descriptor, content_contract_sha256: bad } }, next: null } }, { op: 1, call: '1', kind: 'root' })).toThrow();
   }
 });
@@ -46,11 +46,12 @@ test('all fixed control variants, long field handles, encoded stage, START/HELLO
     { op: 5, call: d, handle: h, cursor: { ordinal: d, offset: d }, limit: '32' },
     ...PROJECTION_KINDS.flatMap(kind => [{ op: 6, call: d, handle: h, kind, stage: 'begin', total: d }, { op: 6, call: d, handle: h, kind, stage: 'end', total: d },
       { op: 6, call: d, handle: h, kind, stage: 'item', index: d, units: d, upper_json_bytes: d }, { op: 6, call: d, handle: h, kind, stage: 'encoded', bytes: d, sha256: hash }]),
+    { op: 7, call: d, handle: h, kind: 'normalized', result: { records: d, bytes: d, manifest: hash, policy_handle: h } },
     { op: 7, call: d, handle: h, kind: 'imported', result: { records: d, fragments: d, bytes: d, manifest: hash } },
     { op: 7, call: d, handle: h, kind: 'prepared_ts', result: { draft_handle: h, archive_manifest: hash, storage_revision: d, mapping_sha256: hash, target_handle: h, reference: 'synthetic' } },
     { op: 7, call: d, handle: h, kind: 'recovered', result: { ordinal: d, bytes: d, sha256: hash } },
   ];
-  const lengths = requests.map(request => { validateRequest(request); expect(() => validateRequest({ ...request, extra: true })).toThrow(); return encodeControl(request).length; });
+  const lengths = requests.map(request => { validateRequest(request, h); expect(() => validateRequest({ ...request, extra: true }, h)).toThrow(); return encodeControl(request).length; });
   const response = { op: 1, call: d, status: 0, result: { value: target, next: null } };
   validateResponse(response, { op: 1, call: d, kind: 'root' }); lengths.push(encodeControl(response).length);
   const raw = { ordinal: maximum, row: maximum, family: maximum, tag: maximum, sql_type: 3, bytes: maximum, sha256: hash };
@@ -67,9 +68,11 @@ test('all fixed control variants, long field handles, encoded stage, START/HELLO
   }
   expect(Math.max(...lengths)).toBeLessThanOrEqual(4096);
   console.log('transfer_control_fixed_max', Math.max(...lengths));
-  // A concrete exception requires a parent decision; no transcript ceiling is inferred from control size.
-  const longPolicy = { op: 7, call: '1', handle: '1', kind: 'normalized', result: { records: '1', bytes: '1', manifest: hash, policy: 'r'.repeat(4097) } };
-  validateRequest(longPolicy); expect(() => encodeControl(longPolicy)).toThrow();
+  const normalized = { op: 7, call: '1', handle: h, kind: 'normalized', result: { records: d, bytes: d, manifest: hash, policy_handle: h } };
+  validateRequest(normalized, h);
+  expect(() => validateRequest(normalized, '1')).toThrow();
+  expect(() => validateRequest({ ...normalized, result: { ...normalized.result, policy_handle: 'r'.repeat(4097) } }, h)).toThrow();
+  expect(() => validateRequest({ ...normalized, result: { records: d, bytes: d, manifest: hash, policy: 'legacy' } }, h)).toThrow();
 });
 
 test('measurement matches UTF-8/UTF-16 serialization and retains reservation across a suspended consumer', async () => {
@@ -112,6 +115,40 @@ local('real child runs two real passes for Codex and Macro AI without SDK/IPC/pr
       expect(texts).toContain('PROVIDER_ONLY_FACT'); expect(texts).toContain('HIDDEN_ONLY_FACT'); expect(texts).toContain('read_sources'); expect(texts).toContain('9007199254740993');
     } finally { await result.dispose(); }
   }
+}, 30000);
+
+local('long policy revision stays in E metadata while the terminal uses the exact job handle', async () => {
+  const budget = new PortableWorkBudget(256 * 1024 * 1024), fixtureRelease = budget.reserve(16 * 1024 * 1024);
+  const revision = 'r'.repeat(4097), parents: TransferParent[] = [];
+  let f: Awaited<ReturnType<typeof fixture>> | undefined = await fixture('codex');
+  try {
+    const source = await TransferParent.create(budget); parents.push(source);
+    const start = await source.start('normalize', undefined, undefined, revision);
+    source.source(f.rows, f.source.manifest, f.source.limits, f.data); source.pageSize = 1024;
+    let reads = 0, terminalBytes = 0, policyPages = 0;
+    let policyPageBefore: number | undefined;
+    source.beforeRequest = async request => {
+      if (policyPageBefore !== undefined) { policyPages += source.sentPages - policyPageBefore; policyPageBefore = undefined; }
+      if (request.op === 2 && request.handle === start.handles.policy) { reads++; policyPageBefore = source.sentPages; }
+      if (request.op === 7) {
+        terminalBytes = encodeControl(request).length;
+        expect(request.result.policy_handle).toBe(start.handles.policy);
+        expect(request.result.policy).toBeUndefined();
+        // This is the same contextual validator the parent runs before accepting a finish.
+        expect(() => validateRequest({ ...request, result: { ...request.result, policy_handle: start.handles.source } }, start.handles.policy)).toThrow();
+      }
+    };
+    expect(await source.run()).toBe(0); await source.finish();
+    expect(reads).toBeGreaterThan(0); expect(policyPages).toBeGreaterThan(1); expect(terminalBytes).toBeGreaterThan(0); expect(terminalBytes).toBeLessThanOrEqual(4096);
+    expect(source.records.some(record => new TextDecoder().decode(record.bytes).includes(revision))).toBe(true);
+    const original = source.records.find(record => record.header.entry.kind === 'message')!;
+    const recover = await TransferParent.create(budget); parents.push(recover);
+    const recovery = await recover.start('recover', undefined, undefined, revision); await recover.archive(source.records);
+    recover.roots.set(recovery.handles.selector, { kind: 'selector', ordinal: decimal(original.header.ordinal), uuid: null });
+    expect(await recover.run()).toBe(0); await recover.finish();
+    expect(recover.retained[0].value.sha256).toBe(original.header.sha256);
+    console.log('transfer_long_policy', JSON.stringify({ revision_chars: revision.length, policy_reads: reads, policy_pages: policyPages, terminal_bytes: terminalBytes }));
+  } finally { f = undefined; for (const parent of parents.reverse()) await parent.cleanup(); fixtureRelease(); expect(budget.used).toBe(0); }
 }, 30000);
 
 local('failed pass 1 and changed pass 2 cannot report normalized success', async () => {
