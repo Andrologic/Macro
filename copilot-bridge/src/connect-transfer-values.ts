@@ -1,5 +1,5 @@
 import { Reject } from './connect-codec-framing';
-import { PortableWorkBudget } from '../../src/services/ai/portableHistoryInspection';
+import { PortableWorkBudget, measurePortableJson } from '../../src/services/ai/portableHistoryInspection';
 
 export class TransferFailure extends Error {
   constructor(readonly status: number, readonly fatal = status === 8, readonly rejectCode: number = Reject.state) { super('connect_transfer_failed'); }
@@ -26,49 +26,15 @@ export function keys(value: unknown, expected: readonly string[]): void {
 }
 export const hash = (value: unknown): void => ensure(typeof value === 'string' && /^[a-f0-9]{64}$/.test(value));
 
-/** Counts occurrences without stringify/encoding or cloning. Callers own its input. */
+/** Shared exact measurement; preserve private error codes and result shape. */
 export function measureValue(value: unknown): { nodes: number; units: number; jsonBytes: number; jsonChars: number } {
-  let nodes = 0, units = 0;
-  const ancestors = new Set<object>();
-  const text = (s: string) => {
-    units = sum(units, mul(s.length, 2));
-    let bytes = 2, chars = 2;
-    for (let i = 0; i < s.length; i++) {
-      const c = s.charCodeAt(i);
-      if (c === 34 || c === 92 || [8, 9, 10, 12, 13].includes(c)) { bytes += 2; chars += 2; }
-      else if (c < 32) { bytes += 6; chars += 6; }
-      else if (c >= 0xd800 && c <= 0xdbff) {
-        const low = s.charCodeAt(++i); ensure(low >= 0xdc00 && low <= 0xdfff); bytes += 4; chars += 2;
-      } else { ensure(c < 0xdc00 || c > 0xdfff); bytes += c < 128 ? 1 : c < 2048 ? 2 : 3; chars++; }
-    }
-    return { bytes: safe(bytes), chars: safe(chars) };
-  };
-  const visit = (item: unknown, depth: number): { bytes: number; chars: number } => {
-    ensure(depth <= 32); nodes = sum(nodes, 1); units = sum(units, 256);
-    if (typeof item === 'string') return text(item);
-    if (item === null || typeof item === 'boolean' || typeof item === 'number') {
-      ensure(typeof item !== 'number' || Number.isFinite(item));
-      const rendered = JSON.stringify(item); return { bytes: rendered.length, chars: rendered.length };
-    }
-    ensure(item && typeof item === 'object' && !ancestors.has(item));
-    const array = Array.isArray(item), prototype = Object.getPrototypeOf(item);
-    ensure(array ? prototype === Array.prototype : prototype === Object.prototype || prototype === null);
-    ancestors.add(item);
-    const names = Reflect.ownKeys(item); let bytes = 2, chars = 2, count = 0;
-    ensure(!array || names.length === item.length + 1 && names.at(-1) === 'length');
-    for (const name of names) {
-      if (array && name === 'length') continue;
-      ensure(typeof name === 'string' && (!array || name === String(count)));
-      const descriptor = Object.getOwnPropertyDescriptor(item, name);
-      ensure(descriptor?.enumerable && Object.hasOwn(descriptor, 'value'));
-      if (!array && descriptor.value === undefined) continue;
-      if (count++) { bytes++; chars++; }
-      if (!array) { const key = text(name); bytes += key.bytes + 1; chars += key.chars + 1; }
-      const child = visit(descriptor.value, depth + 1); bytes = sum(bytes, child.bytes); chars = sum(chars, child.chars);
-    }
-    ancestors.delete(item); return { bytes, chars };
-  };
-  const size = visit(value, 0); return { nodes, units, jsonBytes: size.bytes, jsonChars: size.chars };
+  try {
+    const size = measurePortableJson(value, ensure, true);
+    return { nodes: size.nodes, units: size.units, jsonBytes: size.jsonBytes, jsonChars: size.jsonChars };
+  } catch (error) {
+    if (error instanceof Error && error.message === 'resource_limit') throw new TransferFailure(1);
+    throw error;
+  }
 }
 export const CONTROL_RESERVE = 4096 * 256 + 4096 * 8;
 export const secretQuote = (bytes: number, count: number): number => sum(65_536, mul(sum(bytes, count), 4096));

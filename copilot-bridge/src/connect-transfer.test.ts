@@ -151,6 +151,33 @@ local('long policy revision stays in E metadata while the terminal uses the exac
   } finally { f = undefined; for (const parent of parents.reverse()) await parent.cleanup(); fixtureRelease(); expect(budget.used).toBe(0); }
 }, 30000);
 
+local('A1 escaped revisions refuse before plan under 4 MiB, or retain credited output when admitted', async () => {
+  for (const provider of ['codex', 'macro-ai'] as const) for (const refused of [true, false]) {
+    const budget = new PortableWorkBudget(96 * 1024 * 1024), releaseFixture = budget.reserve(16 * 1024 * 1024);
+    let f: Awaited<ReturnType<typeof fixture>> | undefined;
+    let parent: TransferParent | undefined, resume: (() => void) | undefined;
+    try {
+      f = await fixture(provider); const revision = '\u0001'.repeat(refused ? 1024 * 1024 : 256);
+      parent = await TransferParent.create(budget);
+      const start = await parent.start('normalize', 4 * 1024 * 1024, undefined, revision);
+      parent.source(f.rows, f.source.manifest, f.source.limits, f.data);
+      let plans = 0; parent.beforeRequest = async request => { if (request.op === 3) plans++; };
+      if (refused) {
+        expect(await parent.run()).toBe(1); await parent.finish(); expect(plans).toBe(0); expect(parent.appended).toBe(0); expect(parent.finalResult).toBeUndefined();
+      } else {
+        let reached!: () => void;
+        const ready = new Promise<void>(r => { reached = r; }), gate = new Promise<void>(r => { resume = r; });
+        let paused = false;
+        parent.delayAck = async () => { if (!paused) { paused = true; const held = budget.used; reached(); await gate; expect(budget.used).toBe(held); } };
+        const serving = parent.run(); await Promise.race([ready, serving.then(() => { throw Error('no_output'); })]); expect(budget.used).toBeGreaterThan(0); resume!();
+        expect(await serving).toBe(0); await parent.finish(); expect(plans).toBe(1); expect(parent.finalResult?.policy_handle).toBe(start.handles.policy);
+        const metadata = parent.records.filter(record => record.header.entry.kind === 'historical_text' && record.header.entry.purpose === 'portable_metadata');
+        expect(metadata.length).toBeGreaterThan(0); expect(metadata.every(record => JSON.parse(new TextDecoder().decode(record.bytes)).policy === revision)).toBe(true);
+      }
+    } finally { resume?.(); f = undefined; await parent?.cleanup(); releaseFixture(); expect(budget.used).toBe(0); }
+  }
+}, 30000);
+
 local('failed pass 1 and changed pass 2 cannot report normalized success', async () => {
   const failed = await sourceCase('codex', messages => { messages[0][4] = '/Users/synthetic/private'; });
   try { expect(failed.status).not.toBe(0); expect(failed.parent.appended).toBe(0); } finally { await failed.dispose(); }
