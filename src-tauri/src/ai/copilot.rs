@@ -260,7 +260,7 @@ fn resource_candidates(app_handle: &AppHandle, relative_path: &str) -> Vec<PathB
     )
 }
 
-fn resolve_bridge_path(app_handle: &AppHandle) -> Result<PathBuf, String> {
+pub(crate) fn resolve_bridge_path(app_handle: &AppHandle) -> Result<PathBuf, String> {
     bridge_candidates(app_handle)
         .into_iter()
         .find(|candidate| candidate.exists())
