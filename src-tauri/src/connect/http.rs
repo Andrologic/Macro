@@ -12,7 +12,10 @@ use hyper_util::rt::TokioIo;
 use std::{
     net::SocketAddr,
     pin::Pin,
-    sync::Arc,
+    sync::{
+        atomic::{AtomicBool, AtomicU8, Ordering},
+        Arc,
+    },
     task::{Context, Poll},
     time::Duration,
 };
@@ -83,6 +86,110 @@ impl<I: AsyncWrite + Unpin> AsyncWrite for TlsReadGate<I> {
         Pin::new(&mut self.io).poll_shutdown(cx)
     }
 }
+
+// One request at a time per lane. The body marks its final frame; only a
+// successful flush through the outer TLS stream completes that exact write.
+#[derive(Default)]
+struct WriteFence {
+    stage: AtomicU8, // 0 idle, 1 body pending, 2 final frame, 3 flushed, 4 receiving
+    wrote: AtomicBool,
+    reader: futures::task::AtomicWaker,
+}
+impl WriteFence {
+    fn arm(&self) {
+        self.wrote.store(false, Ordering::SeqCst);
+        self.stage.store(1, Ordering::SeqCst);
+    }
+    fn end(&self) {
+        self.stage.store(2, Ordering::SeqCst);
+    }
+    fn flushed(&self) -> bool {
+        self.stage.load(Ordering::SeqCst) == 3
+    }
+}
+struct WriteIo<I> {
+    io: I,
+    fence: Arc<WriteFence>,
+}
+impl<I: AsyncRead + Unpin> AsyncRead for WriteIo<I> {
+    fn poll_read(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &mut tokio::io::ReadBuf<'_>,
+    ) -> Poll<std::io::Result<()>> {
+        // Do not admit an early response while the request still owns policy.
+        self.fence.reader.register(cx.waker());
+        if matches!(self.fence.stage.load(Ordering::SeqCst), 1 | 2 | 3) {
+            return Poll::Pending;
+        }
+        Pin::new(&mut self.io).poll_read(cx, buf)
+    }
+}
+impl<I: AsyncWrite + Unpin> AsyncWrite for WriteIo<I> {
+    fn poll_write(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        bytes: &[u8],
+    ) -> Poll<std::io::Result<usize>> {
+        let result = Pin::new(&mut self.io).poll_write(cx, bytes);
+        if matches!(result, Poll::Ready(Ok(n)) if n > 0) {
+            self.fence.wrote.store(true, Ordering::SeqCst);
+        }
+        result
+    }
+    fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        let result = Pin::new(&mut self.io).poll_flush(cx);
+        if matches!(result, Poll::Ready(Ok(())))
+            && self.fence.wrote.load(Ordering::SeqCst)
+            && self
+                .fence
+                .stage
+                .compare_exchange(2, 3, Ordering::SeqCst, Ordering::SeqCst)
+                .is_ok()
+        {
+            self.fence.reader.wake();
+        }
+        result
+    }
+    fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        Pin::new(&mut self.io).poll_shutdown(cx)
+    }
+}
+struct RequestBody {
+    inner: Full<Bytes>,
+    fence: Arc<WriteFence>,
+}
+impl hyper::body::Body for RequestBody {
+    type Data = Bytes;
+    type Error = std::convert::Infallible;
+    fn poll_frame(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+    ) -> Poll<Option<std::result::Result<hyper::body::Frame<Bytes>, Self::Error>>> {
+        let result = Pin::new(&mut self.inner).poll_frame(cx);
+        if self.inner.is_end_stream() {
+            self.fence.end();
+        }
+        result
+    }
+    fn is_end_stream(&self) -> bool {
+        let end = self.inner.is_end_stream();
+        if end && self.fence.stage.load(Ordering::SeqCst) == 1 {
+            self.fence.end();
+        }
+        end
+    }
+    fn size_hint(&self) -> hyper::body::SizeHint {
+        self.inner.size_hint()
+    }
+}
+type Reply = Pin<
+    Box<
+        dyn Future<
+                Output = std::result::Result<hyper::Response<hyper::body::Incoming>, hyper::Error>,
+            > + Send,
+    >,
+>;
 
 struct TlsSettings {
     config: Arc<rustls::ClientConfig>,
@@ -175,14 +282,16 @@ impl rustls::client::danger::ServerCertVerifier for BoundedVerifier {
 
 /// Raw response copies remain charged after a caller has consumed the frame.
 /// No parser, callback or asynchronous network effect borrows these bytes here.
-pub(super) struct Response {
+pub(crate) struct Response {
     pub status: u16,
+    pub request_id: Option<String>,
+    _headers: TransitCharge,
     body: Vec<u8>,
     _charge: TransitCharge,
     _database: Arc<crate::core::db_state::ChatWorkLifetime>,
 }
 impl Response {
-    pub(super) fn body(&self) -> &[u8] {
+    pub(crate) fn body(&self) -> &[u8] {
         &self.body
     }
 }
@@ -195,20 +304,22 @@ impl AsRef<[u8]> for ChargedBody {
         &self.data
     }
 }
-pub(super) struct Request {
+pub(crate) struct Request {
     method: http::Method,
     path: String,
     body: Bytes,
+    headers: http::HeaderMap,
     _charge: TransitCharge,
 }
 impl Request {
-    pub(super) fn new(
+    pub(crate) fn new(
         budget: &TransitInstance,
         method: http::Method,
         path: &str,
         body: &[u8],
     ) -> Result<Self> {
-        if !matches!(method, http::Method::POST)
+        if !(method == http::Method::POST
+            || method == http::Method::GET && path == "/pilot/v1/me" && body.is_empty())
             || !path.starts_with('/')
             || path.starts_with("//")
             || path.len() > 2048
@@ -222,6 +333,7 @@ impl Request {
             .map_err(|_| "transit_limit")?;
         Ok(Self {
             method,
+            headers: http::HeaderMap::new(),
             path: path.into(),
             body: Bytes::from_owner(ChargedBody {
                 data: body.to_vec(),
@@ -230,10 +342,35 @@ impl Request {
             _charge: charge,
         })
     }
+    pub(crate) fn authenticate(
+        mut self,
+        token: &str,
+        instance_key: Option<&str>,
+        request_id: uuid::Uuid,
+    ) -> Result<Self> {
+        if token.len() > 512 || instance_key.is_some_and(|key| key.len() > 512) {
+            return Err("http_request_limit");
+        }
+        let mut bearer =
+            http::HeaderValue::from_str(&format!("Bearer {token}")).map_err(|_| "http_request")?;
+        bearer.set_sensitive(true);
+        self.headers.insert(http::header::AUTHORIZATION, bearer);
+        if let Some(key) = instance_key {
+            let mut key = http::HeaderValue::from_str(key).map_err(|_| "http_request")?;
+            key.set_sensitive(true);
+            self.headers.insert("x-instance-key", key);
+        }
+        self.headers.insert(
+            "x-request-id",
+            http::HeaderValue::from_str(&request_id.to_string()).map_err(|_| "http_request")?,
+        );
+        Ok(self)
+    }
 }
 
 struct Lane {
-    sender: Option<SendRequest<Full<Bytes>>>,
+    sender: Option<SendRequest<RequestBody>>,
+    fence: Arc<WriteFence>,
     driver: Option<Driver>,
     // Socket/TLS/HTTP ownership is destroyed before their physical reservations.
     tls: Option<Arc<TlsSettings>>,
@@ -313,46 +450,81 @@ impl Lane {
             None if address.ip().is_loopback() => Box::new(stream),
             None => return Err("tls_required"),
         };
+        let fence = Arc::new(WriteFence::default());
         let (sender, driver) = Builder::new()
             .max_headers(32)
             .max_buf_size(HEAD)
-            .handshake(TokioIo::new(io))
+            .handshake(TokioIo::new(WriteIo {
+                io,
+                fence: fence.clone(),
+            }))
             .await
             .map_err(|_| "http_handshake")?;
         drop(handshake);
         drop(handshake_turn);
         Ok(Self {
             sender: Some(sender),
+            fence,
             driver: Some(Box::pin(driver)),
             tls,
             _charge: charge,
         })
     }
-    async fn exchange(
+    async fn emit(&mut self, host: &str, request: Request) -> Result<Reply> {
+        let sender = self.sender.as_mut().ok_or("http_closed")?;
+        let driver = self.driver.as_mut().ok_or("http_closed")?;
+        self.fence.arm();
+        let mut message = http::Request::builder()
+            .method(request.method.clone())
+            .uri(&request.path)
+            .header(http::header::HOST, host)
+            .header(http::header::CONTENT_TYPE, "application/json")
+            .body(RequestBody {
+                inner: Full::new(request.body.clone()),
+                fence: self.fence.clone(),
+            })
+            .map_err(|_| "http_request")?;
+        message.headers_mut().extend(request.headers.clone());
+        let reply: Reply = Box::pin(sender.send_request(message));
+        // Polling the driver may flush and then wait for headers. Return at that
+        // flush, without polling the response future or waiting for the peer.
+        let result = futures::future::poll_fn(|cx| {
+            let progress = driver.as_mut().poll(cx);
+            if let Poll::Ready(_) = progress {
+                return Poll::Ready(Err("http_connection_closed"));
+            }
+            if self.fence.flushed() {
+                Poll::Ready(Ok(()))
+            } else {
+                Poll::Pending
+            }
+        })
+        .await;
+        drop(request);
+        if result.is_err() {
+            self.driver.take();
+        }
+        result?;
+        Ok(reply)
+    }
+    async fn receive(
         &mut self,
         budget: &TransitInstance,
-        host: &str,
-        request: Request,
+        reply: Reply,
         limit: usize,
         database: &Arc<crate::core::db_state::ChatWorkLifetime>,
     ) -> Result<Response> {
         if limit > V2_BODY {
             return Err("http_body_limit");
         }
-        let sender = self.sender.as_mut().ok_or("http_closed")?;
         let driver = self.driver.as_mut().ok_or("http_closed")?;
-        let message = http::Request::builder()
-            .method(request.method.clone())
-            .uri(&request.path)
-            .header(http::header::HOST, host)
-            .header(http::header::CONTENT_TYPE, "application/json")
-            .body(Full::new(request.body.clone()))
-            .map_err(|_| "http_request")?;
+        // Reserve the raw reservoir before the driver can read even headers.
+        let charge = budget.reserve(limit as u64).map_err(|_| "transit_limit")?;
+        let headers = budget.reserve(HEAD as u64).map_err(|_| "transit_limit")?;
+        self.fence.stage.store(4, Ordering::SeqCst);
+        self.fence.reader.wake();
         let operation = async {
-            let response = sender
-                .send_request(message)
-                .await
-                .map_err(|_| "http_response")?;
+            let response = reply.await.map_err(|_| "http_response")?;
             if response.headers().len() > 32
                 || response
                     .headers()
@@ -382,10 +554,23 @@ impl Lane {
             }
             // Admission precedes allocation and the first body poll. Refusal
             // closes this lane; no unadmitted body is drained to reuse a socket.
-            let charge = budget.reserve(limit as u64).map_err(|_| "transit_limit")?;
             let mut result = Response {
                 _database: database.clone(),
                 status: response.status().as_u16(),
+                request_id: match response
+                    .headers()
+                    .get_all("x-request-id")
+                    .iter()
+                    .collect::<Vec<_>>()
+                    .as_slice()
+                {
+                    [] => None,
+                    [value] if value.as_bytes().len() <= 128 => {
+                        Some(value.to_str().map_err(|_| "http_correlation")?.into())
+                    }
+                    _ => return Err("http_correlation"),
+                },
+                _headers: headers,
                 body: Vec::with_capacity(limit),
                 _charge: charge,
             };
@@ -423,8 +608,18 @@ impl Lane {
             // A completed driver must never be polled again, even by close.
             self.driver.take();
         }
-        drop(request);
         result
+    }
+    async fn exchange(
+        &mut self,
+        budget: &TransitInstance,
+        host: &str,
+        request: Request,
+        limit: usize,
+        database: &Arc<crate::core::db_state::ChatWorkLifetime>,
+    ) -> Result<Response> {
+        let reply = self.emit(host, request).await?;
+        self.receive(budget, reply, limit, database).await
     }
     async fn close(&mut self) {
         self.sender.take();
@@ -437,25 +632,28 @@ impl Lane {
     }
 }
 
-/// Construct only inside the real synchronous policy owner's consume scope,
-/// hosted by the existing joined blocking bridge. The lease is unforgeable and
-/// borrowed until both lanes have closed. No IPC DTO can construct this owner.
-pub(super) struct HttpSession<'a> {
+/// Native IO owner. Preparation and reception hold no policy/store guard.
+/// Only Prepared::emit borrows an unforgeable emission lease.
+pub(crate) struct HttpSession {
     poll: Option<Lane>,
     post: Option<Lane>,
     host: String,
     address: SocketAddr,
     tls: Option<Arc<TlsSettings>>,
     budget: TransitInstance,
-    lease: &'a EmissionLease<'a>,
     database: Arc<crate::core::db_state::ChatWorkLifetime>,
-    _slot: tokio::sync::OwnedSemaphorePermit,
-    owner: super::runtime::HttpOwnership,
+    _slot: Arc<tokio::sync::OwnedSemaphorePermit>,
+    poll_slot: Arc<tokio::sync::Semaphore>,
+    post_slot: Arc<tokio::sync::Semaphore>,
+    owner: Arc<super::runtime::HttpOwnership>,
 }
-impl<'a> HttpSession<'a> {
-    pub(super) fn new(
+impl HttpSession {
+    #[cfg(test)]
+    pub(crate) fn use_plain_loopback(&mut self) {
+        self.tls = None;
+    }
+    pub(crate) fn new(
         owner: super::runtime::HttpOwnership,
-        lease: &'a EmissionLease<'a>,
         host: &str,
         address: SocketAddr,
     ) -> Result<Self> {
@@ -467,7 +665,6 @@ impl<'a> HttpSession<'a> {
         {
             return Err("tls_name");
         }
-        lease.check().map_err(|_| "policy_revoked")?;
         if owner.cancel.is_cancelled() {
             return Err("http_cancelled");
         }
@@ -484,12 +681,49 @@ impl<'a> HttpSession<'a> {
             address,
             tls,
             budget,
-            lease,
             database: owner.database.clone(),
-            _slot: slot,
-            owner,
+            _slot: Arc::new(slot),
+            poll_slot: Arc::new(tokio::sync::Semaphore::new(1)),
+            post_slot: Arc::new(tokio::sync::Semaphore::new(1)),
+            owner: Arc::new(owner),
         })
     }
+    pub(crate) async fn prepare(&mut self, poll: bool) -> Result<Prepared> {
+        let slot = if poll {
+            &self.poll_slot
+        } else {
+            &self.post_slot
+        };
+        let permit = slot
+            .clone()
+            .try_acquire_owned()
+            .map_err(|_| "http_lane_busy")?;
+        let lane = if poll {
+            self.poll.take()
+        } else {
+            self.post.take()
+        };
+        let mut prepared = Prepared {
+            lane,
+            host: if self.address.port() == 443 {
+                self.host.clone()
+            } else {
+                format!("{}:{}", self.host, self.address.port())
+            },
+            _permit: permit,
+            _slot: self._slot.clone(),
+            owner: self.owner.clone(),
+        };
+        if prepared.lane.is_none() {
+            let open = Lane::open(&self.budget, self.address, &self.host, self.tls.clone());
+            prepared.lane = Some(tokio::select! {
+                _ = self.owner.cancel.cancelled() => return Err("http_cancelled"),
+                result = tokio::time::timeout(Duration::from_secs(30), open) => result.map_err(|_| "http_timeout")??,
+            });
+        }
+        Ok(prepared)
+    }
+    #[cfg(test)]
     async fn exchange_lane(
         lane: &mut Option<Lane>,
         budget: &TransitInstance,
@@ -543,10 +777,14 @@ impl<'a> HttpSession<'a> {
         }
         result
     }
-    pub(super) fn lanes(&mut self) -> (HttpPort<'_, 'a>, HttpPort<'_, 'a>) {
+    #[cfg(test)]
+    pub(crate) fn lanes<'s, 'p>(
+        &'s mut self,
+        lease: &'p EmissionLease<'p>,
+    ) -> (HttpPort<'s, 'p>, HttpPort<'s, 'p>) {
         let common = (
             &self.budget,
-            self.lease,
+            lease,
             self.host.as_str(),
             self.address,
             &self.tls,
@@ -564,7 +802,7 @@ impl<'a> HttpSession<'a> {
             },
         )
     }
-    pub(super) async fn close(&mut self) {
+    pub(crate) async fn close(&mut self) {
         if let Some(mut lane) = self.poll.take() {
             lane.close().await;
         }
@@ -574,7 +812,75 @@ impl<'a> HttpSession<'a> {
     }
 }
 
-pub(super) struct HttpPort<'s, 'p> {
+// These owners keep IO before permits/credits/completion in destruction order.
+pub(crate) struct Prepared {
+    lane: Option<Lane>,
+    host: String,
+    _permit: tokio::sync::OwnedSemaphorePermit,
+    _slot: Arc<tokio::sync::OwnedSemaphorePermit>,
+    owner: Arc<super::runtime::HttpOwnership>,
+}
+pub(crate) struct Pending {
+    reply: Reply,
+    prepared: Prepared,
+}
+impl Prepared {
+    pub(crate) async fn emit(
+        mut self,
+        lease: &EmissionLease<'_>,
+        request: Request,
+        cancel: &CancellationToken,
+    ) -> Result<Pending> {
+        lease.check().map_err(|_| "policy_revoked")?;
+        let operation = self
+            .lane
+            .as_mut()
+            .ok_or("http_closed")?
+            .emit(&self.host, request);
+        let reply = tokio::select! {
+            biased;
+            _ = cancel.cancelled() => return Err("http_cancelled"),
+            _ = self.owner.cancel.cancelled() => return Err("http_cancelled"),
+            _ = lease.revoked() => return Err("policy_revoked"),
+            result = tokio::time::timeout(Duration::from_secs(30), operation) => result.map_err(|_| "http_timeout")??,
+        };
+        lease.check().map_err(|_| "policy_revoked")?;
+        Ok(Pending {
+            reply,
+            prepared: self,
+        })
+    }
+}
+impl Pending {
+    pub(crate) async fn receive(
+        mut self,
+        limit: usize,
+        observation: &crate::secrets::policy::PolicyObservation,
+        cancel: &CancellationToken,
+    ) -> Result<Response> {
+        observation.check().map_err(|_| "policy_revoked")?;
+        let operation = self.prepared.lane.as_mut().ok_or("http_closed")?.receive(
+            &self.prepared.owner.budget,
+            self.reply,
+            limit,
+            &self.prepared.owner.database,
+        );
+        let response = tokio::select! {
+            biased;
+            _ = cancel.cancelled() => return Err("http_cancelled"),
+            _ = self.prepared.owner.cancel.cancelled() => return Err("http_cancelled"),
+            _ = observation.revoked() => return Err("policy_revoked"),
+            result = tokio::time::timeout(Duration::from_secs(30), operation) => result.map_err(|_| "http_timeout")?.map_err(|error| if error == "http_body_limit" { "resource_limit" } else { error })?,
+        };
+        observation.check().map_err(|_| "policy_revoked")?;
+        // This private bootstrap retires its lane after each reply. No implicit
+        // retry, idle driver task or response lifetime hides a network owner.
+        Ok(response)
+    }
+}
+
+#[cfg(test)]
+pub(crate) struct HttpPort<'s, 'p> {
     lane: &'s mut Option<Lane>,
     common: (
         &'s TransitInstance,
@@ -586,8 +892,9 @@ pub(super) struct HttpPort<'s, 'p> {
         &'s CancellationToken,
     ),
 }
+#[cfg(test)]
 impl HttpPort<'_, '_> {
-    pub(super) async fn exchange(
+    pub(crate) async fn exchange(
         &mut self,
         request: Request,
         limit: usize,
@@ -668,11 +975,11 @@ mod tests {
         })
     }
     fn plain<'a>(
-        lease: &'a EmissionLease<'a>,
+        _lease: &'a EmissionLease<'a>,
         budget: TransitInstance,
         address: SocketAddr,
         database: &crate::core::db_state::DbReady,
-    ) -> HttpSession<'a> {
+    ) -> HttpSession {
         HttpSession {
             poll: None,
             post: None,
@@ -680,12 +987,15 @@ mod tests {
             address,
             tls: None,
             budget,
-            lease,
             database: Arc::new(database.retain_chat_work()),
-            _slot: HTTP_SESSION.clone().try_acquire_owned().unwrap(),
-            owner: super::super::TransferRuntime::default()
-                .http_owner(database)
-                .unwrap(),
+            _slot: Arc::new(HTTP_SESSION.clone().try_acquire_owned().unwrap()),
+            poll_slot: Arc::new(tokio::sync::Semaphore::new(1)),
+            post_slot: Arc::new(tokio::sync::Semaphore::new(1)),
+            owner: Arc::new(
+                super::super::TransferRuntime::default()
+                    .http_owner(database)
+                    .unwrap(),
+            ),
         }
     }
     #[tokio::test]
@@ -713,7 +1023,7 @@ mod tests {
                     let request = Request::new(&budget, http::Method::POST, "/ack", b"{}").unwrap();
                     let response = tokio::time::timeout(
                         Duration::from_secs(3),
-                        session.lanes().1.exchange(request, 98_304, &cancel),
+                        session.lanes(lease).1.exchange(request, 98_304, &cancel),
                     )
                     .await
                     .unwrap()
@@ -779,15 +1089,15 @@ mod tests {
                 tokio::runtime::Handle::current().block_on(async {
                     let runtime = super::super::TransferRuntime::default();
                     let mut session = plain(lease, budget.clone(), address, database);
-                    session.owner = runtime.http_owner(database).unwrap();
+                    session.owner = Arc::new(runtime.http_owner(database).unwrap());
                     let cancel = CancellationToken::new();
                     if reuse {
                         let request = Request::new(&budget, http::Method::POST, "/poll", b"{}").unwrap();
-                        drop(session.lanes().0.exchange(request, 98_304, &cancel).await.unwrap());
+                        drop(session.lanes(lease).0.exchange(request, 98_304, &cancel).await.unwrap());
                         assert!(session.poll.is_some());
                     }
                     {
-                        let (mut port, _) = session.lanes();
+                        let (mut port, _) = session.lanes(lease);
                         let request = Request::new(&budget, http::Method::POST, "/poll", b"{}").unwrap();
                         let exchange = port.exchange(request, 98_304, &cancel);
                         tokio::pin!(exchange);
@@ -805,10 +1115,10 @@ mod tests {
                     assert!(budget.reserve(TRANSIT_INSTANCE_LIMIT).is_ok());
                     assert!(!cancel.is_cancelled());
                     let request = Request::new(&budget, http::Method::POST, "/ack", b"{}").unwrap();
-                    drop(session.lanes().0.exchange(request, 98_304, &cancel).await.unwrap());
+                    drop(session.lanes(lease).0.exchange(request, 98_304, &cancel).await.unwrap());
                     runtime.revoke();
                     let request = Request::new(&budget, http::Method::POST, "/ack", b"{}").unwrap();
-                    assert_eq!(session.lanes().0.exchange(request, 98_304, &cancel).await.err(), Some("http_cancelled"));
+                    assert_eq!(session.lanes(lease).0.exchange(request, 98_304, &cancel).await.err(), Some("http_cancelled"));
                     drop(session);
                     assert!(tokio::time::timeout(Duration::from_secs(3), runtime.shutdown()).await.unwrap());
                     assert!(budget.reserve(TRANSIT_INSTANCE_LIMIT).is_ok());
@@ -861,7 +1171,7 @@ mod tests {
                     Request::new(&budget, http::Method::POST, "/ack", b"{}").unwrap();
                 let mut session = plain(lease, budget, address, database);
                 let cancel = CancellationToken::new();
-                let (mut poll, mut post) = session.lanes();
+                let (mut poll, mut post) = session.lanes(lease);
                 let (a, b) = tokio::join!(
                     poll.exchange(poll_request, 98_304, &cancel),
                     post.exchange(post_request, 98_304, &cancel)
@@ -907,10 +1217,14 @@ mod tests {
         let caller = scoped(move |lease, budget, database| {
             tokio::runtime::Handle::current().block_on(async {
                 let mut session = plain(lease, budget.clone(), address, database);
-                session.owner = owned.http_owner(database).unwrap();
+                session.owner = Arc::new(owned.http_owner(database).unwrap());
                 let cancel = CancellationToken::new();
                 let request = Request::new(&budget, http::Method::POST, "/poll", b"{}").unwrap();
-                let result = session.lanes().0.exchange(request, 98_304, &cancel).await;
+                let result = session
+                    .lanes(lease)
+                    .0
+                    .exchange(request, 98_304, &cancel)
+                    .await;
                 assert_eq!(result.err(), Some("http_cancelled"));
                 session.close().await;
                 drop(session);
@@ -981,7 +1295,7 @@ mod tests {
                                 Request::new(&budget, http::Method::POST, "/poll", b"{}").unwrap();
                             assert_eq!(
                                 session
-                                    .lanes()
+                                    .lanes(lease)
                                     .0
                                     .exchange(request, 98_304, &cancel)
                                     .await
@@ -1061,7 +1375,7 @@ mod tests {
                     let request =
                         Request::new(&budget, http::Method::POST, "/poll", b"{}").unwrap();
                     assert!(session
-                        .lanes()
+                        .lanes(lease)
                         .0
                         .exchange(request, limit, &cancel)
                         .await
@@ -1103,7 +1417,7 @@ mod tests {
                     .unwrap();
                 let mut session = plain(lease, budget, address, database);
                 let cancel = CancellationToken::new();
-                let (mut poll, _) = session.lanes();
+                let (mut poll, _) = session.lanes(lease);
                 assert!(matches!(
                     poll.exchange(request, 98_304, &cancel).await,
                     Err("transit_limit")
@@ -1137,7 +1451,7 @@ mod tests {
             tokio::runtime::Handle::current().block_on(async {
                 let request = Request::new(&budget, http::Method::POST, "/poll", b"{}").unwrap();
                 let mut session = plain(lease, budget, address, database);
-                let (mut poll, _) = session.lanes();
+                let (mut poll, _) = session.lanes(lease);
                 assert!(matches!(
                     poll.exchange(request, 98_304, &cancel).await,
                     Err("http_cancelled")
@@ -1154,8 +1468,10 @@ mod tests {
             other => panic!("socket still open: {other:?}"),
         }
     }
-    #[tokio::test]
-    async fn real_tls_validates_the_synthetic_certificate_and_hostname() {
+    fn synthetic_tls() -> (
+        tokio_rustls::TlsAcceptor,
+        rustls::pki_types::CertificateDer<'static>,
+    ) {
         let directory = tempfile::tempdir().unwrap();
         let key = directory.path().join("key.pem");
         let pem = directory.path().join("cert.pem");
@@ -1221,6 +1537,11 @@ mod tests {
         .with_single_cert(vec![cert.clone()], key.into())
         .unwrap();
         let acceptor = tokio_rustls::TlsAcceptor::from(Arc::new(config));
+        (acceptor, cert)
+    }
+    #[tokio::test]
+    async fn real_tls_validates_the_synthetic_certificate_and_hostname() {
+        let (acceptor, cert) = synthetic_tls();
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
         let server = tokio::spawn(async move {
@@ -1265,7 +1586,7 @@ mod tests {
                     session.tls = Some(roots);
                     session.host = host.into();
                     let cancel = CancellationToken::new();
-                    let (_, mut post) = session.lanes();
+                    let (_, mut post) = session.lanes(lease);
                     let result = post.exchange(request, 98_304, &cancel).await;
                     if host == "localhost" {
                         assert_eq!(result.unwrap().body, b"{}");
@@ -1280,5 +1601,262 @@ mod tests {
         .await
         .unwrap();
         server.await.unwrap();
+    }
+    #[tokio::test]
+    async fn completed_flush_releases_policy_before_headers_and_rejects_revoked_reply() {
+        let (acceptor, cert) = synthetic_tls();
+        for tls in [false, true] {
+            for body in [b"".as_slice(), b"{}".as_slice()] {
+                let directory = tempfile::tempdir().unwrap();
+                let policy = Arc::new(PolicyOwner::for_test(directory.path()));
+                policy.initialize(directory.path()).unwrap();
+                let snapshot = policy.capture_private(|| Ok(())).unwrap();
+                let observation = policy.observe(&snapshot).unwrap();
+                let pool = crate::db::create_pool(&directory.path().join("split.db"))
+                    .await
+                    .unwrap();
+                let db = crate::core::db_state::DbPool::default();
+                db.set_ready(pool).await.unwrap();
+                let ready = db.wait_until_ready_context().await.unwrap();
+                let runtime = super::super::TransferRuntime::default();
+                let budget = runtime.budget().unwrap();
+                let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+                let address = listener.local_addr().unwrap();
+                let (seen, received) = tokio::sync::oneshot::channel();
+                let size = body.len();
+                let acceptor = acceptor.clone();
+                let server = tokio::spawn(async move {
+                    let (stream, _) = listener.accept().await.unwrap();
+                    let mut stream: Box<dyn Io> = if tls {
+                        Box::new(acceptor.accept(stream).await.unwrap())
+                    } else {
+                        Box::new(stream)
+                    };
+                    let mut headers = Vec::new();
+                    while !headers.ends_with(b"\r\n\r\n") {
+                        assert!(headers.len() < HEAD);
+                        headers.push(stream.read_u8().await.unwrap());
+                    }
+                    let mut body = vec![0; size];
+                    stream.read_exact(&mut body).await.unwrap();
+                    seen.send(()).unwrap();
+                    // No headers for 25 seconds. The native mutation must complete
+                    // while the peer is still withholding its entire response.
+                    let mut byte = [0];
+                    match tokio::time::timeout(Duration::from_secs(25), stream.read(&mut byte))
+                        .await
+                        .unwrap()
+                    {
+                        Ok(0) => (),
+                        Err(error)
+                            if matches!(
+                                error.kind(),
+                                std::io::ErrorKind::UnexpectedEof
+                                    | std::io::ErrorKind::ConnectionReset
+                            ) =>
+                        {
+                            ()
+                        }
+                        other => panic!("owner did not close: {other:?}"),
+                    }
+                });
+                let mut session =
+                    HttpSession::new(runtime.http_owner(&ready).unwrap(), "localhost", address)
+                        .unwrap();
+                session.tls = if tls {
+                    Some(
+                        TlsSettings::with_roots(&budget, || {
+                            let mut roots = rustls::RootCertStore::empty();
+                            roots.add(cert.clone()).unwrap();
+                            roots
+                        })
+                        .unwrap(),
+                    )
+                } else {
+                    None
+                };
+                let prepared = session.prepare(false).await.unwrap();
+                let request =
+                    Request::new(&budget, http::Method::POST, "/bootstrap-test", body).unwrap();
+                let cancel = CancellationToken::new();
+                let handle = tokio::runtime::Handle::current();
+                let emitting_policy = policy.clone();
+                let pending = crate::secrets::blocking::run(move || {
+                    emitting_policy.consume_private(
+                        &snapshot,
+                        || Ok(()),
+                        |lease, _| {
+                            handle
+                                .block_on(prepared.emit(lease, request, &cancel))
+                                .map_err(|_| crate::secrets::SecretError::PolicyUnavailable)
+                        },
+                    )
+                })
+                .await
+                .unwrap()
+                .unwrap();
+                tokio::time::timeout(Duration::from_secs(2), received)
+                    .await
+                    .unwrap()
+                    .unwrap();
+                let mutation = policy.clone();
+                tokio::time::timeout(
+                    Duration::from_secs(2),
+                    crate::secrets::blocking::run(move || mutation.change(|| ())),
+                )
+                .await
+                .unwrap()
+                .unwrap()
+                .unwrap();
+                assert_eq!(
+                    pending
+                        .receive(98_304, &observation, &CancellationToken::new())
+                        .await
+                        .err(),
+                    Some("policy_revoked")
+                );
+                server.await.unwrap();
+                drop(session);
+                assert!(budget.reserve(TRANSIT_INSTANCE_LIMIT).is_ok());
+            }
+        }
+    }
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn blocked_write_keeps_scope_until_revocation_or_caller_abort_destroys_io() {
+        let (acceptor, cert) = synthetic_tls();
+        for tls in [false, true] {
+            for abort in [false, true] {
+                let directory = tempfile::tempdir().unwrap();
+                let policy = Arc::new(PolicyOwner::for_test(directory.path()));
+                policy.initialize(directory.path()).unwrap();
+                let snapshot = policy.capture_private(|| Ok(())).unwrap();
+                let pool = crate::db::create_pool(&directory.path().join("pressure.db"))
+                    .await
+                    .unwrap();
+                let db = crate::core::db_state::DbPool::default();
+                db.set_ready(pool).await.unwrap();
+                let ready = db.wait_until_ready_context().await.unwrap();
+                let runtime = super::super::TransferRuntime::default();
+                let budget = runtime.budget().unwrap();
+                let socket = TcpSocket::new_v4().unwrap();
+                socket.set_recv_buffer_size(4096).unwrap();
+                socket.bind("127.0.0.1:0".parse().unwrap()).unwrap();
+                let listener = socket.listen(1).unwrap();
+                let address = listener.local_addr().unwrap();
+                let (drain, draining) = tokio::sync::oneshot::channel();
+                let acceptor = acceptor.clone();
+                let server = tokio::spawn(async move {
+                    let (stream, _) = listener.accept().await.unwrap();
+                    let mut stream: Box<dyn Io> = if tls {
+                        Box::new(acceptor.accept(stream).await.unwrap())
+                    } else {
+                        Box::new(stream)
+                    };
+                    // An early complete response must not release the write scope.
+                    stream
+                        .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n")
+                        .await
+                        .unwrap();
+                    stream.flush().await.unwrap();
+                    let _ = draining.await;
+                    let mut bytes = [0; 8192];
+                    let mut total = 0;
+                    loop {
+                        match tokio::time::timeout(Duration::from_secs(5), stream.read(&mut bytes))
+                            .await
+                            .unwrap()
+                        {
+                            Ok(0) => break,
+                            Ok(n) => total += n,
+                            Err(error)
+                                if matches!(
+                                    error.kind(),
+                                    std::io::ErrorKind::UnexpectedEof
+                                        | std::io::ErrorKind::ConnectionReset
+                                ) =>
+                            {
+                                break
+                            }
+                            Err(error) => panic!("read failed: {error}"),
+                        }
+                    }
+                    total
+                });
+                let mut session =
+                    HttpSession::new(runtime.http_owner(&ready).unwrap(), "localhost", address)
+                        .unwrap();
+                session.tls = if tls {
+                    Some(
+                        TlsSettings::with_roots(&budget, || {
+                            let mut roots = rustls::RootCertStore::empty();
+                            roots.add(cert.clone()).unwrap();
+                            roots
+                        })
+                        .unwrap(),
+                    )
+                } else {
+                    None
+                };
+                let prepared = session.prepare(false).await.unwrap();
+                let source = budget.reserve(V2_BODY as u64).unwrap();
+                let body = vec![42; V2_BODY];
+                let request = Request::new(&budget, http::Method::POST, "/blocked", &body).unwrap();
+                drop(body);
+                drop(source);
+                let (entered, entering) = tokio::sync::oneshot::channel();
+                let emitting_policy = policy.clone();
+                let mut emitting = tokio::spawn(async move {
+                    let handle = tokio::runtime::Handle::current();
+                    let cancel = CancellationToken::new();
+                    let guard = cancel.clone().drop_guard();
+                    let result = crate::secrets::blocking::run(move || {
+                        emitting_policy.consume_private(
+                            &snapshot,
+                            || Ok(()),
+                            |lease, _| {
+                                entered.send(()).unwrap();
+                                Ok(handle.block_on(prepared.emit(lease, request, &cancel)))
+                            },
+                        )
+                    })
+                    .await;
+                    guard.disarm();
+                    result
+                });
+                tokio::time::timeout(Duration::from_secs(2), entering)
+                    .await
+                    .unwrap()
+                    .unwrap();
+                let was_blocked = tokio::time::timeout(Duration::from_millis(40), &mut emitting)
+                    .await
+                    .is_err();
+                if abort {
+                    emitting.abort();
+                }
+                let mutation = policy.clone();
+                let changed = tokio::time::timeout(
+                    Duration::from_secs(2),
+                    crate::secrets::blocking::run(move || mutation.change(|| ())),
+                )
+                .await;
+                let _ = drain.send(());
+                if was_blocked {
+                    let _ = emitting.await;
+                }
+                crate::secrets::blocking::join_test_jobs().await;
+                let received = server.await.unwrap();
+                drop(session);
+                assert!(
+                    was_blocked,
+                    "request unexpectedly flushed despite constrained receive window"
+                );
+                changed.unwrap().unwrap().unwrap();
+                assert!(
+                    received < V2_BODY,
+                    "an incomplete request was reported as fully emitted"
+                );
+                assert!(budget.reserve(TRANSIT_INSTANCE_LIMIT).is_ok());
+            }
+        }
     }
 }

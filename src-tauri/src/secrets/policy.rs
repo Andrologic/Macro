@@ -58,6 +58,33 @@ impl EmissionLease<'_> {
     }
 }
 
+/// Revocation observation only. It grants no permission to emit or read stores.
+pub(crate) struct PolicyObservation {
+    owner: Arc<PolicyOwner>,
+    stamp: PolicyStamp,
+}
+impl PolicyObservation {
+    pub(crate) fn check(&self) -> Result<(), SecretError> {
+        if self.owner.boot != self.stamp.boot
+            || self.owner.quiescent_revision()? != self.stamp.revision
+        {
+            return Err(SecretError::PolicyUnavailable);
+        }
+        Ok(())
+    }
+    pub(crate) async fn revoked(&self) {
+        loop {
+            let changed = self.owner.changed.notified();
+            tokio::pin!(changed);
+            changed.as_mut().enable();
+            if self.check().is_err() {
+                return;
+            }
+            changed.await;
+        }
+    }
+}
+
 pub(crate) struct PolicyOwner {
     gate: Mutex<()>,
     #[cfg(test)]
@@ -443,6 +470,18 @@ impl PolicyOwner {
                 peer: peer()?,
             })
         })
+    }
+
+    pub(crate) fn observe<P>(
+        self: &Arc<Self>,
+        snapshot: &PolicySnapshot<P>,
+    ) -> Result<PolicyObservation, SecretError> {
+        let observation = PolicyObservation {
+            owner: self.clone(),
+            stamp: snapshot.stamp,
+        };
+        observation.check()?;
+        Ok(observation)
     }
 
     pub(crate) fn consume_private<P: PartialEq, T>(

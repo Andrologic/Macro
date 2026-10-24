@@ -32,7 +32,7 @@ struct State {
 pub(crate) struct TransferRuntime(Arc<Mutex<State>>);
 // This completion is the last field of HttpSession. Its notification therefore
 // follows destruction of the sole Hyper drivers, TLS streams and reservations.
-pub(super) struct HttpOwnership {
+pub(crate) struct HttpOwnership {
     pub cancel: CancellationToken,
     pub budget: TransitInstance,
     pub database: Arc<ChatWorkLifetime>,
@@ -46,7 +46,7 @@ impl Drop for HttpCompletion {
         }
     }
 }
-pub(super) struct CodecHandle {
+pub(crate) struct CodecHandle {
     sender: mpsc::Sender<Request>,
     cancel: CancellationToken,
     join: Join,
@@ -61,7 +61,7 @@ impl Drop for CodecHandle {
     }
 }
 impl CodecHandle {
-    pub(super) async fn run(&self, input: Input) -> Result<Output, &'static str> {
+    pub(crate) async fn run(&self, input: Input) -> Result<Output, &'static str> {
         // Disappearance of an in-flight caller retires the process. The owner,
         // not this future, keeps the pipes, credits and join.
         let (response, receive) = oneshot::channel();
@@ -74,7 +74,7 @@ impl CodecHandle {
         guard.disarm();
         result
     }
-    pub(super) async fn close(self) -> Result<(), &'static str> {
+    pub(crate) async fn close(self) -> Result<(), &'static str> {
         self.cancel.cancel();
         if self.join.clone().await {
             Ok(())
@@ -89,7 +89,7 @@ impl TransferRuntime {
             .instance(*PC)
             .map_err(|_| "transit_unavailable")
     }
-    pub(super) fn http_owner(
+    pub(crate) fn http_owner(
         &self,
         database: &crate::core::db_state::DbReady,
     ) -> Result<HttpOwnership, &'static str> {
@@ -116,14 +116,14 @@ impl TransferRuntime {
             completion: HttpCompletion(Some(done)),
         })
     }
-    fn generation(&self) -> Result<u64, &'static str> {
+    pub(crate) fn generation(&self) -> Result<u64, &'static str> {
         let state = self.0.lock().map_err(|_| "transport_unavailable")?;
         if state.closed {
             return Err("codec_retired");
         }
         Ok(state.generation)
     }
-    pub(super) async fn start_codec(
+    pub(crate) async fn start_codec(
         &self,
         app: &tauri::AppHandle,
         db: &DbPool,
@@ -255,7 +255,7 @@ impl TransferRuntime {
         codec && http
     }
     #[cfg(test)]
-    async fn source_codec(
+    pub(crate) async fn source_codec(
         &self,
         executable: &Path,
         entry: &Path,

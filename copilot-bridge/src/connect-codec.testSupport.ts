@@ -2,6 +2,7 @@ import { constants, openSync, closeSync, readFileSync, readSync } from 'node:fs'
 import { mkdtemp, rm } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import transitManifest from '../../contracts/macro-pilot/v2/transfer-transit/transfer-transit-contract.json';
+import a1Manifest from '../../src/services/macroPilot/schemaValidators.identity.json';
 import authorityManifest from '../../contracts/macro-pilot/v2/transfer-authority/transfer-authority-contract.json';
 import { IDENTITIES } from '../../contracts/macro-pilot/v2/transfer-transit/identities.generated.mjs';
 import { join, resolve } from 'node:path';
@@ -51,8 +52,9 @@ export class CodecParent {
   }
   static async create(entry = resolve(import.meta.dir, 'entry.ts'), guard = true, native = false): Promise<CodecParent> {
     const budget = new ParentBudget();
-    const startup = budget.acquire('startup-and-pipes', 5 * 65_536);
+    const startup = budget.acquire('startup-and-pipes', 8 * 65_536);
     // Admitted before callers construct synthetic input facts/body. Held through join.
+    const module = budget.acquire('a1-module', a1Manifest.retained_units);
     const inputs = budget.acquire('parent-input-graphs-and-serialization', 6 * BODY_BYTES);
     const dir = await mkdtemp(join(tmpdir(), 'macro-codec-'));
     const pipe = (name: string) => {
@@ -74,6 +76,7 @@ export class CodecParent {
     for (const fd of [input.bootstrap, input.read, output.bootstrap, output.write, stderr]) closeSync(fd);
     const parent = new CodecParent(child, dir, input.write, output.read, stderrPath, budget, startup);
     parent.releases.set('parent-input-graphs-and-serialization', inputs);
+    parent.releases.set('a1-module', module);
     try {
       const hello = await parent.receive();
       assert(hello.header.type === Frame.HELLO && hello.header.job === 0n && hello.header.lease === 0n, 'hello');
@@ -81,7 +84,7 @@ export class CodecParent {
       const digest = (data: unknown) => createHash('sha256').update(JSON.stringify(data)).digest('hex');
       const expected = { version: 'macro-connect-codec-1', content_sha256: IDENTITIES.content_contract_sha256,
         decision_resource_set_sha256: IDENTITIES.decision_resource_set_sha256,
-        transit_resource_set_sha256: digest(transitManifest.resources), authority_resource_set_sha256: digest(authorityManifest.resources) };
+        transit_resource_set_sha256: digest(transitManifest.resources), authority_resource_set_sha256: digest(authorityManifest.resources), a1_resource_set_sha256: digest(a1Manifest.resources) };
       assert(Object.keys(identity).length === Object.keys(expected).length && Object.entries(expected).every(([key, value]) => identity[key] === value), 'hello_identities');
       return parent;
     } catch (error) { await parent.cleanup(); throw error; }

@@ -226,3 +226,47 @@ describe('closed control bank admission', () => {
     rest(); copy.release(); expect(bank.empty()).toBe(true);
   });
 });
+
+describe('private authenticated session response', () => {
+  local('validates exact /me with shared A1, independent correlations, expiry and reusable clean diagnostics', async () => {
+    await withParent(async p => {
+      const requestId = '11111111-1111-4111-8111-111111111111';
+      const facts = { method: 'GET', path: '/pilot/v1/me', request_id_header: requestId,
+        response_request_id_header: requestId, expected_origin: 'https://relay.example.invalid',
+        connection_origin: 'https://relay.example.invalid', session_id: 'session:synthetic:a',
+        account_id: 'account:synthetic', device_id: 'device:synthetic', now_ms: Date.parse('2026-10-24T12:00:00Z') };
+      const body = { transport_version: '1.0', account: { contract_version: '1.0', type: 'account',
+        account_id: facts.account_id, identity: { provider: 'github', subject: 'synthetic', login: 'synthetic' }, revision: 1 },
+        device_session: { contract_version: '1.0', type: 'device_session',
+          ref: { type: 'session', account_id: facts.account_id, session_id: facts.session_id },
+          device_id: facts.device_id, state: 'active', issued_at: '2026-10-24T00:00:00Z',
+          expires_at: '2026-10-25T00:00:00Z', revision: 1 } };
+      for (const mutate of [
+        (v: any) => { v.device_session.ref.session_id = 'session:synthetic:b'; },
+        (v: any) => { v.device_session.ref.account_id = 'account:other'; },
+        (v: any) => { v.device_session.device_id = 'device:other'; },
+        (v: any) => { v.device_session.state = 'revoked'; v.device_session.revoked_at = '2026-10-24T01:00:00Z'; },
+        (v: any) => { v.device_session.expires_at = '2026-10-24T11:59:59Z'; },
+        (v: any) => { v.unknown = true; },
+        (v: any) => { v.account.identity.avatar_url = 'https://user@example.invalid'; },
+      ]) {
+        const bad = structuredClone(body); mutate(bad);
+        const rejected = await p.run(10, facts, bad);
+        expect(rejected.status).toBe(1); expect(rejected.value).toBeUndefined(); rejected.dispose();
+        const accepted = await p.run(10, facts, body);
+        expect(accepted.status).toBe(0);
+        expect(accepted.value.session_id).toBe(facts.session_id); accepted.dispose();
+      }
+      const long = structuredClone(body);
+      long.device_session.issued_at = '2026-10-24T00:00:00.' + '0'.repeat(90_000) + 'Z';
+      const accepted = await p.run(10, facts, long);
+      expect(accepted.status).toBe(0); expect(Object.keys(accepted.value).sort()).toEqual(['account_id', 'device_id', 'expires_at_ms', 'session_id', 'session_revision']); accepted.dispose();
+      const malformed = new TextEncoder().encode(JSON.stringify(body).replace('"transport_version":"1.0"', '"transport_version":"1.0","transport_version":"1.0"'));
+      const duplicate = await p.run(10, facts, body, { rawBody: malformed });
+      expect(duplicate.status).toBe(1); duplicate.dispose();
+      const correlation = await p.run(10, { ...facts, response_request_id_header: '22222222-2222-4222-8222-222222222222' }, body, { factsRejected: true });
+      expect(correlation.status).toBe(1); correlation.dispose();
+      await p.finish(); expect(p.budget.used).toBe(0);
+    });
+  });
+});

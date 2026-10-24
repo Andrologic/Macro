@@ -7,7 +7,9 @@ import {
   deliveryValidate as sourceDeliveryValidate,
   resultValidate as sourceResultValidate,
   schemaValidate as sourceSchemaValidate,
-} from '../src/services/macroPilot/schemaValidators';
+} from './macro-pilot-validator-oracle';
+import * as shared from '../src/services/macroPilot/schemaValidators';
+import { validateA1 } from '../src/services/macroPilot/protocol';
 import { generateMacroPilotValidators } from './generate-macro-pilot-validators';
 
 type Validator = (value: unknown) => boolean | Promise<unknown>;
@@ -92,5 +94,41 @@ describe('generated Macro Pilot validators', () => {
     expect(generatedA1).toEqual(expectedA1);
     expect(generatedDeliveries).toEqual(expectedDeliveries);
     expect(generatedResults).toEqual(expectedResults);
+  });
+});
+
+
+describe('shared A1 parity and diagnostic ownership', () => {
+  it('keeps historical date, URI and unknown-key behavior without treating fixtures as exhaustive', () => {
+    const session = readFixture('valid', 'active-device-session.json') as Record<string, any>;
+    const account = readFixture('valid', 'account.json') as Record<string, any>;
+    const cases = [session, { ...session, issued_at: '2026-10-24T00:00:00.' + '0'.repeat(100_000) + 'Z' },
+      { ...session, issued_at: '2026-99-99T00:00:00Z' }, { ...session, unknown: 1 },
+      { ...account, identity: { ...account.identity, avatar_url: 'https://example.invalid/a?x=%20' } },
+      { ...account, identity: { ...account.identity, avatar_url: 'https://user@example.invalid/a' } },
+      { ...account, identity: { ...account.identity, avatar_url: 'not a uri' } },
+      { ...account, identity: { ...account.identity, unknown: true } }];
+    for (const value of cases) {
+      try { expect(Boolean(shared.schemaValidate(value))).toBe(Boolean(sourceSchemaValidate(value))); }
+      finally { shared.clearErrors(); }
+      expect(shared.diagnosticsEmpty()).toBe(true);
+    }
+    expect(validateA1(cases[1])).toBe(true);
+    // This rule belongs to protocol.ts, beyond schema generation.
+    const semantic = readFixture('invalid', 'cross-account-session-revoke.json');
+    expect(shared.schemaValidate(semantic)).toBe(true);
+    expect(validateA1(semantic)).toBe(false);
+    shared.clearErrors();
+  });
+  it('clears the actual generated diagnostic owners after refusal and exceptions', () => {
+    expect(shared.schemaValidate({ type: 'device_session' })).toBe(false);
+    expect(shared.diagnosticsEmpty()).toBe(false);
+    try {
+      shared.schemaValidate(new Proxy({}, { get() { throw new Error('synthetic getter'); } }));
+      throw new Error('validator did not read the object');
+    } catch (error) {
+      expect((error as Error).message).toBe('synthetic getter');
+    } finally { shared.clearErrors(); }
+    expect(shared.diagnosticsEmpty()).toBe(true);
   });
 });
