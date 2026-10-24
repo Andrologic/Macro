@@ -9,6 +9,7 @@ use tauri::Emitter;
 mod lifecycle;
 mod manager;
 mod native;
+pub(crate) mod transport;
 #[cfg(any(target_os = "macos", test))]
 mod session;
 #[cfg(test)]

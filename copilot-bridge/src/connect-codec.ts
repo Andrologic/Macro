@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import { writeSync } from 'node:fs';
 import transitManifest from '../../contracts/macro-pilot/v2/transfer-transit/transfer-transit-contract.json';
+import a1Manifest from '../../src/services/macroPilot/schemaValidators.identity.json';
 import authorityManifest from '../../contracts/macro-pilot/v2/transfer-authority/transfer-authority-contract.json';
 import { IDENTITIES } from '../../contracts/macro-pilot/v2/transfer-transit/identities.generated.mjs';
 import { Frame, Reject, CodecFailure, FrameReader, FrameWriter, BODY_BYTES, RAW_UNITS, BANK_UNITS,
@@ -11,7 +12,7 @@ import { prepareFacts, validateBody, bodyDescriptor, cleanDiagnostics, reserveAd
 const setDigest = (resources: unknown) => createHash('sha256').update(JSON.stringify(resources)).digest('hex');
 export const HELLO = Object.freeze({ version: 'macro-connect-codec-1', content_sha256: IDENTITIES.content_contract_sha256,
   decision_resource_set_sha256: IDENTITIES.decision_resource_set_sha256,
-  transit_resource_set_sha256: setDigest(transitManifest.resources), authority_resource_set_sha256: setDigest(authorityManifest.resources) });
+  transit_resource_set_sha256: setDigest(transitManifest.resources), authority_resource_set_sha256: setDigest(authorityManifest.resources), a1_resource_set_sha256: setDigest(a1Manifest.resources) });
 
 type Job = { id: bigint; op: Opcode; total: number; phase: 1 | 2; started: number;
   control: bigint; raw: bigint; bank: ControlBank };
@@ -23,7 +24,7 @@ const exact = (header: Header, type: number, length: number, job: bigint, lease?
 const begin = (payload: Uint8Array) => {
   const data = new DataView(payload.buffer, payload.byteOffset, payload.byteLength);
   const op = data.getUint16(0), phase = data.getUint8(2), total = data.getUint32(4);
-  requireCodec(op >= 1 && op <= 9 && (phase === 1 || phase === 2) && data.getUint8(3) === 0);
+  requireCodec(op >= 1 && op <= 10 && (phase === 1 || phase === 2) && data.getUint8(3) === 0);
   return { op: op as Opcode, phase: phase as 1 | 2, total };
 };
 

@@ -13,19 +13,22 @@ const PAGE: usize = 65_536;
 const BODY: usize = 98_304;
 const RAW: u64 = 28_311_552;
 const BANK: u64 = 2_097_152;
-pub(super) static RAW_TURN: std::sync::LazyLock<std::sync::Arc<tokio::sync::Semaphore>> =
+pub(crate) static RAW_TURN: std::sync::LazyLock<std::sync::Arc<tokio::sync::Semaphore>> =
     std::sync::LazyLock::new(|| std::sync::Arc::new(tokio::sync::Semaphore::new(1)));
 // Parent/child fixed fd buffers, pipe reservoirs, bounded stderr scratch and
 // startup identity parsing. Logical ownership, not VM/code heap or RSS.
 const STARTUP: u64 = 8 * PAGE as u64;
 type Result<T> = std::result::Result<T, &'static str>;
 
-pub(super) struct Bytes {
+pub(crate) struct Bytes {
     data: Vec<u8>,
     _charge: TransitCharge,
 }
 impl Bytes {
-    pub(super) fn copy(budget: &TransitInstance, source: &[u8]) -> Result<Self> {
+    pub(crate) fn as_slice(&self) -> &[u8] {
+        &self.data
+    }
+    pub(crate) fn copy(budget: &TransitInstance, source: &[u8]) -> Result<Self> {
         if source.len() > BODY {
             return Err("codec_limit");
         }
@@ -38,12 +41,12 @@ impl Bytes {
         })
     }
 }
-pub(super) struct Input {
+pub(crate) struct Input {
     pub op: u16,
     pub expectations: Bytes,
     pub body: Bytes,
 }
-pub(super) struct Output {
+pub(crate) struct Output {
     pub status: u32,
     pub bytes: Bytes,
 }
@@ -64,7 +67,7 @@ impl Header {
             && self.sequence == sequence
     }
 }
-pub(super) struct Codec {
+pub(crate) struct Codec {
     child: Child,
     input: Option<ChildStdin>,
     output: Option<ChildStdout>,
@@ -75,16 +78,20 @@ pub(super) struct Codec {
     raw_turn: Option<tokio::sync::OwnedSemaphorePermit>,
     bank: Option<TransitCharge>,
     _startup: TransitCharge,
+    _a1_module: TransitCharge,
     _database: ChatWorkLifetime,
     job: u64,
     lease: u64,
 }
 impl Codec {
-    pub(super) fn spawn(
+    pub(crate) fn spawn(
         mut command: Command,
         budget: TransitInstance,
         lifetime: ChatWorkLifetime,
     ) -> Result<Self> {
+        // Persistent generated A1 module reservation, held until Child retirement.
+        // This is a logical module charge, not a bound on JSC code/VM or RSS.
+        let a1_module = budget.reserve(1_835_008).map_err(|_| "transit_limit")?;
         let startup = budget.reserve(STARTUP).map_err(|_| "transit_limit")?;
         command
             .env_clear()
@@ -120,6 +127,7 @@ impl Codec {
             raw_turn: None,
             bank: None,
             _startup: startup,
+            _a1_module: a1_module,
             _database: lifetime,
             job: 0,
             lease: 0,
@@ -171,7 +179,7 @@ impl Codec {
             .map_err(|_| "codec_eof")?;
         Ok(header)
     }
-    pub(super) async fn hello(&mut self) -> Result<()> {
+    pub(crate) async fn hello(&mut self) -> Result<()> {
         #[derive(Deserialize)]
         #[serde(deny_unknown_fields)]
         struct Hello {
@@ -180,6 +188,7 @@ impl Codec {
             decision_resource_set_sha256: String,
             transit_resource_set_sha256: String,
             authority_resource_set_sha256: String,
+            a1_resource_set_sha256: String,
         }
         let h = self
             .next(|h| h.exact(1, h.length, 0, 0, 0) && h.length > 0)
@@ -194,16 +203,22 @@ impl Codec {
             "../../../contracts/macro-pilot/v2/transfer-authority/transfer-authority-contract.json"
         ))
         .map_err(|_| "codec_identity")?;
+        let a1: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../src/services/macroPilot/schemaValidators.identity.json"
+        ))
+        .map_err(|_| "codec_identity")?;
         let digest = |value: &serde_json::Value| {
             format!("{:x}", Sha256::digest(serde_json::to_vec(value).unwrap()))
         };
         // Canonical generated dependency-set identity. A mismatch refuses before BEGIN.
-        if hello.version != "macro-connect-codec-1"
+        if a1["retained_units"] != 1_835_008u64
+            || hello.version != "macro-connect-codec-1"
             || hello.content_sha256 != transit["content_contract_sha256"]
             || hello.decision_resource_set_sha256
                 != "6133c2d9ee204a175ae6c176b9c266d4378879c1637936ebd81e85daf4d0b97a"
             || hello.transit_resource_set_sha256 != digest(&transit["resources"])
             || hello.authority_resource_set_sha256 != digest(&authority["resources"])
+            || hello.a1_resource_set_sha256 != digest(&a1["resources"])
         {
             return Err("codec_identity");
         }
@@ -266,8 +281,8 @@ impl Codec {
         self.raw_turn.take();
         Ok(bank)
     }
-    pub(super) async fn run(&mut self, input: Input) -> Result<Output> {
-        if !(1..=9).contains(&input.op) || input.expectations.data.is_empty() {
+    pub(crate) async fn run(&mut self, input: Input) -> Result<Output> {
+        if !(1..=10).contains(&input.op) || input.expectations.data.is_empty() {
             return Err("codec_input");
         }
         self.job = self.job.checked_add(1).ok_or("codec_limit")?;
@@ -324,7 +339,7 @@ impl Codec {
             sequence = sequence.checked_add(1).ok_or("codec_limit")?;
         }
     }
-    pub(super) async fn retire(&mut self) -> bool {
+    pub(crate) async fn retire(&mut self) -> bool {
         // This private bundled codec does not spawn external children. Kill its
         // dedicated Unix group as containment, but only Child::wait proves reap
         // of the actually owned child; no universal descendant claim is made.

@@ -1259,3 +1259,105 @@ fn private_lease_excludes_a_cooperative_pilot_writer_in_another_process() {
         std::panic::resume_unwind(error);
     }
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires the explicitly supplied external local relay harness"]
+async fn private_bootstrap_real_relay_correlates_scope_and_keeps_controller_rights_separate() {
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+    use tokio_util::sync::CancellationToken;
+    use transport::{Intent, Scope};
+    let executable = |name: &str| std::env::split_paths(&std::env::var_os("PATH").unwrap())
+        .map(|directory| directory.join(name)).find(|path| path.is_file()).unwrap();
+    let mut child = tokio::process::Command::new(executable("node"))
+        .arg("--import").arg(std::env::var("MACRO_CONNECT_RELAY_LOADER").unwrap())
+        .arg("--conditions=react-server").arg(std::env::var("MACRO_CONNECT_RELAY_HARNESS").unwrap())
+        .stdin(std::process::Stdio::piped()).stdout(std::process::Stdio::piped())
+        .kill_on_drop(true).spawn().unwrap();
+    let mut input = child.stdin.take().unwrap();
+    let mut output = BufReader::new(child.stdout.take().unwrap()).lines();
+    let seed: serde_json::Value = serde_json::from_str(&tokio::time::timeout(std::time::Duration::from_secs(15), output.next_line()).await.unwrap().unwrap().unwrap()).unwrap();
+    let address = format!("127.0.0.1:{}", seed["port"].as_u64().unwrap()).parse().unwrap();
+    let directory = tempfile::tempdir().unwrap();
+    let db = crate::core::db_state::DbPool::default();
+    db.set_ready(crate::db::create_pool(&directory.path().join("bootstrap.db")).await.unwrap()).await.unwrap();
+    let ready = db.wait_until_ready_context().await.unwrap();
+    let runtime = crate::connect::TransferRuntime::default();
+    let budget = runtime.budget().unwrap();
+    let codec = runtime.source_codec(&executable("bun"), &std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../copilot-bridge/src/entry.ts"), &db).await.unwrap();
+    let cancel = CancellationToken::new();
+    let text = |value: &serde_json::Value, key: &str| value[key].as_str().unwrap().to_string();
+    let fixture = |owner: &str, credentials: &str, controller: bool| {
+        let fake = Arc::new(Fake::default());
+        let manager = Arc::new(Manager::new(fake.clone()));
+        let owner = &seed[owner]; let credentials = &seed[credentials];
+        let context = PilotVaultContext { configuration_id: "config:synthetic".into(), relay_origin: text(&seed, "origin"), owner_id: text(owner, "session_id") };
+        let generation = manager.activate(context.clone(), None).unwrap().generation;
+        for (kind, resource_id, secret) in [(PilotSecretKind::SessionToken, context.owner_id.clone(), text(credentials,"token")),
+            (PilotSecretKind::InstanceKey,text(credentials,"creation"),text(credentials,"key"))] {
+            manager.write(&PilotSecretScope { configuration_id:context.configuration_id.clone(), relay_origin:context.relay_origin.clone(), kind, resource_id }, &generation, &secret).unwrap();
+        }
+        let scope = if controller { Scope::Controller { source_instance_id: text(credentials,"instance"), target_instance_id: None } }
+            else { Scope::Producer { instance_id: text(credentials,"instance") } };
+        (manager, fake, Intent { context, generation, instance_creation_id:text(credentials,"creation"), account_id:Some(text(&seed,"account_id")), device_id:Some(text(credentials,"device_id")), scope })
+    };
+    let (manager, fake, intent) = fixture("a","a",false);
+    let verified = transport::bootstrap_owned(manager.clone(), intent, &runtime, &codec, &ready, address, true, &cancel).await.unwrap();
+    verified.check().await.unwrap();
+    assert_eq!(fake.interactive.load(Ordering::SeqCst),0);
+    assert_eq!(fake.resumes.load(Ordering::SeqCst),0);
+    manager.policy_fixture().0.change(|| ()).unwrap();
+    assert_eq!(verified.check().await.err(),Some("policy_revoked"));drop(verified);
+    // A real second process rotates the same persistent policy epoch without
+    // changing the first owner's local revision. A retained bootstrap must fail.
+    let (manager, _, intent) = fixture("a","a",false);
+    let verified = transport::bootstrap_owned(manager.clone(), intent, &runtime, &codec, &ready, address, true, &cancel).await.unwrap();
+    verified.check().await.unwrap();
+    let (_, policy_directory) = manager.policy_fixture();
+    let mut writer = tokio::process::Command::new(std::env::current_exe().unwrap())
+        .args(["--exact", "commands::pilot_secrets::tests::cooperative_pilot_writer_process", "--ignored", "--nocapture"])
+        .env("MACRO_SYNTHETIC_POLICY_DIRECTORY", policy_directory)
+        .stdin(std::process::Stdio::piped()).stdout(std::process::Stdio::null())
+        .kill_on_drop(true).spawn().unwrap();
+    let mut writer_input = writer.stdin.take().unwrap();
+    writer_input.write_all(b"write\n").await.unwrap();
+    drop(writer_input);
+    assert!(tokio::time::timeout(std::time::Duration::from_secs(10), writer.wait()).await.unwrap().unwrap().success());
+    assert_eq!(verified.check().await.err(), Some("policy_revoked"));
+    drop(verified);
+    let (manager, _, intent) = fixture("a","a",true);
+    assert_eq!(transport::bootstrap_owned(manager,intent,&runtime,&codec,&ready,address,true,&cancel).await.err(),Some("authority_unavailable"));
+    // B's token and instance key are both valid, in A's account. Selecting A's
+    // secret scope must still fail /me before any producer preflight is sent.
+    input.write_all(b"{}\n").await.unwrap();input.flush().await.unwrap();
+    let before: serde_json::Value=serde_json::from_str(&output.next_line().await.unwrap().unwrap()).unwrap();
+    let (manager, _, intent) = fixture("a","b",false);
+    assert_eq!(transport::bootstrap_owned(manager,intent,&runtime,&codec,&ready,address,true,&cancel).await.err(),Some("invalid_response"));
+    input.write_all(b"{}\n").await.unwrap();input.flush().await.unwrap();
+    let after: serde_json::Value=serde_json::from_str(&output.next_line().await.unwrap().unwrap()).unwrap();
+    assert_eq!(before["preflightRequests"],after["preflightRequests"]);
+    for (mode, expected) in [("correlation","http_correlation"),("large-fixed","resource_limit"),("large-chunked","resource_limit")] {
+        input.write_all(format!("{{\"mode\":\"{mode}\"}}\n").as_bytes()).await.unwrap();input.flush().await.unwrap();
+        output.next_line().await.unwrap().unwrap();
+        let (manager, _, intent)=fixture("a","a",false);
+        assert_eq!(transport::bootstrap_owned(manager,intent,&runtime,&codec,&ready,address,true,&cancel).await.err(),Some(expected));
+    }
+    input.write_all(b"{\"mode\":\"normal\"}\n").await.unwrap();input.flush().await.unwrap();output.next_line().await.unwrap().unwrap();
+    let (manager, _, intent)=fixture("a","a",false);
+    let verified=transport::bootstrap_owned(manager.clone(),intent,&runtime,&codec,&ready,address,true,&cancel).await.unwrap();
+    // Real /me serialization reads a short-lived session from synthetic SQLite.
+    input.write_all(b"{\"shortSession\":true}\n").await.unwrap();input.flush().await.unwrap();output.next_line().await.unwrap().unwrap();
+    let (short_manager, _, short_intent)=fixture("a","a",false);
+    let short=transport::bootstrap_owned(short_manager.clone(),short_intent,&runtime,&codec,&ready,address,true,&cancel).await.unwrap();
+    short.check().await.unwrap();
+    tokio::time::sleep(std::time::Duration::from_millis(3100)).await;
+    assert_eq!(short.check().await.err(),Some("authority_expired"));drop(short);
+    input.write_all(b"{\"restoreSession\":true}\n").await.unwrap();input.flush().await.unwrap();output.next_line().await.unwrap().unwrap();
+    input.write_all(b"{\"revoke\":true}\n").await.unwrap();input.flush().await.unwrap();output.next_line().await.unwrap().unwrap();
+    let (manager, _, intent)=fixture("a","a",false);
+    assert_eq!(transport::bootstrap_owned(manager,intent,&runtime,&codec,&ready,address,true,&cancel).await.err(),Some("session_unavailable"));
+    runtime.revoke();assert_eq!(verified.check().await.err(),Some("transport_retired"));drop(verified);
+    codec.close().await.unwrap();assert!(runtime.shutdown().await);
+    assert!(budget.reserve(crate::connect_resources::TRANSIT_INSTANCE_LIMIT).is_ok());
+    input.write_all(b"{\"stop\":true}\n").await.unwrap();input.flush().await.unwrap();drop(input);
+    assert!(tokio::time::timeout(std::time::Duration::from_secs(10),child.wait()).await.unwrap().unwrap().success());
+}

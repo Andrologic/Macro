@@ -21,7 +21,7 @@ describe('AI runtime mode selection', () => {
     expect(unknown).toEqual({ stdout: '', stderr: 'connect_codec_unknown_mode\n', code: 1 });
     const source = await readFile(entry, 'utf8');
     const imports = new Bun.Transpiler({ loader: 'ts' }).scanImports(source);
-    expect(imports).toHaveLength(2);
+    expect(imports.map(entry => entry.path).sort()).toEqual(['./connect-codec', './connect-transfer', './index']);
     expect(imports.every(entry => entry.kind === 'dynamic-import')).toBe(true);
   });
 
