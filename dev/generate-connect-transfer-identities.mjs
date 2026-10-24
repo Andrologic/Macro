@@ -7,7 +7,7 @@ const digest = bytes => createHash('sha256').update(bytes).digest('hex');
 const files = new Set(['copilot-bridge/src/entry.ts', 'package.json', 'bun.lock', 'copilot-bridge/tsconfig.json', 'dev/generate-connect-transfer-identities.mjs']);
 function visit(path) {
   const name = relative(root, path).replaceAll(sep, '/');
-  if (name === generated || files.has(name)) return;
+  if (name === generated || /copilot-bridge\/src\/connect-(codec|bootstrap)\.identity\.json$/.test(name) || files.has(name)) return;
   files.add(name);
   if (path.endsWith('.json')) return;
   const transpiler = new Bun.Transpiler({ loader: path.endsWith('.tsx') ? 'tsx' : path.endsWith('.ts') ? 'ts' : 'js', target: 'bun' });
@@ -36,3 +36,25 @@ if (process.argv.includes('--check')) {
   if (readFileSync(resolve(root, generated), 'utf8') !== text) throw Error('stale_transfer_identity');
 } else writeFileSync(resolve(root, generated), text);
 console.log(`transfer_identity ${resources.length} resources ${hello.preparation_set_sha256}`);
+
+// The two closed codec profiles share MCF1, but attest distinct import graphs.
+for (const profile of ['codec', 'bootstrap']) {
+  files.clear();
+  for (const path of ['copilot-bridge/src/entry.ts', 'package.json', 'bun.lock', 'copilot-bridge/tsconfig.json', 'dev/generate-connect-transfer-identities.mjs']) files.add(path);
+  visit(resolve(root, `copilot-bridge/src/connect-${profile}.ts`));
+  if (profile === 'codec' && [...files].some(path => path.startsWith('src/services/macroPilot/') || path.startsWith('contracts/macro-pilot/v1/'))) throw Error('persistent_imports_A1');
+  const resources = [...files].sort().map(path => ({ path, sha256: digest(readFileSync(resolve(root, path))) }));
+  const transit = JSON.parse(readFileSync(resolve(root, 'contracts/macro-pilot/v2/transfer-transit/transfer-transit-contract.json')));
+  const authority = JSON.parse(readFileSync(resolve(root, 'contracts/macro-pilot/v2/transfer-authority/transfer-authority-contract.json')));
+  const a1 = JSON.parse(readFileSync(resolve(root, 'src/services/macroPilot/schemaValidators.identity.json')));
+  const hello = { version: 'macro-connect-codec-1', profile: profile === 'codec' ? 'persistent' : 'bootstrap',
+    source_set_sha256: digest(JSON.stringify(resources)), content_sha256: transit.content_contract_sha256,
+    decision_resource_set_sha256: '6133c2d9ee204a175ae6c176b9c266d4378879c1637936ebd81e85daf4d0b97a',
+    transit_resource_set_sha256: digest(JSON.stringify(transit.resources)), authority_resource_set_sha256: digest(JSON.stringify(authority.resources)),
+    ...(profile === 'bootstrap' ? { a1_resource_set_sha256: digest(JSON.stringify(a1.resources)) } : {}) };
+  const target = resolve(root, `copilot-bridge/src/connect-${profile}.identity.json`);
+  const text = JSON.stringify({ hello, resources }, null, 2) + '\n';
+  if (process.argv.includes('--check')) { if (readFileSync(target, 'utf8') !== text) throw Error(`stale_${profile}_identity`); }
+  else writeFileSync(target, text);
+  console.log(`${profile}_identity ${resources.length} resources ${hello.source_set_sha256}`);
+}

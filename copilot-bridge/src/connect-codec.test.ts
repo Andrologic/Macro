@@ -9,12 +9,25 @@ import { bodyDescriptor, validatorSlots, refuseLegacyContent } from './connect-c
 
 const local = process.platform === 'win32' ? it.skip : it;
 const value = (bytes: Uint8Array) => new DataView(bytes.buffer, bytes.byteOffset).getUint32(0);
-const withParent = async (run: (parent: CodecParent) => Promise<void>) => {
-  const parent = await CodecParent.create();
+const withParent = async (run: (parent: CodecParent) => Promise<void>, profile: 'persistent' | 'bootstrap' = 'persistent') => {
+  const parent = await CodecParent.create(undefined, true, false, profile);
   try { await run(parent); } finally { await parent.cleanup(); }
 };
 
 describe('persistent private Bun codec', () => {
+  local('rejects cross-profile BEGIN before any graph or bank grant', async () => {
+    for (const profile of ['persistent', 'bootstrap'] as const) {
+      await withParent(async p => {
+        p.job = 1n;
+        await p.send(Frame.BEGIN, beginBytes(profile === 'persistent' ? 10 : 1, 1, 2));
+        const rejected = await p.receive();
+        expect(rejected.header.type).toBe(Frame.REJECT);
+        expect([...p.budget.live.keys()].some(key => key.startsWith('raw:') || key.startsWith('bank:'))).toBe(false);
+        expect(await p.process.exited).toBe(1);
+      }, profile);
+    }
+  });
+
   local('runs all nine canonical operations and maximum metadata paths in the same PID with real credits', async () => {
     await withParent(async p => {
       const pid = p.process.pid;
@@ -267,6 +280,6 @@ describe('private authenticated session response', () => {
       const correlation = await p.run(10, { ...facts, response_request_id_header: '22222222-2222-4222-8222-222222222222' }, body, { factsRejected: true });
       expect(correlation.status).toBe(1); correlation.dispose();
       await p.finish(); expect(p.budget.used).toBe(0);
-    });
+    }, 'bootstrap');
   });
 });

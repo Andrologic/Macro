@@ -1,12 +1,17 @@
 // Select the private mode before importing any Copilot SDK or credential module.
 const command = process.argv[2];
-if (command === 'connect-codec') {
+if (command === 'connect-codec' || command === 'connect-bootstrap') {
   if (process.argv.length !== 3) {
     process.stderr.write('connect_codec_arguments\n'); process.exitCode = 1;
   } else {
     try {
-      const { runCodec } = await import('./connect-codec');
-      await runCodec();
+      if (command === 'connect-bootstrap') {
+        const { runBootstrapCodec } = await import('./connect-bootstrap');
+        await runBootstrapCodec();
+      } else {
+        const { runPersistentCodec } = await import('./connect-codec');
+        await runPersistentCodec();
+      }
     } catch {
       process.stderr.write('connect_codec_startup\n'); process.exitCode = 1;
     }

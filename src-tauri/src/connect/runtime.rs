@@ -1,11 +1,11 @@
-use super::codec::{Codec, Input, Output};
+use super::codec::{Codec, Input, Output, Profile};
 use crate::{
     connect_resources::{TransitInstance, TRANSIT_OWNER},
     core::db_state::{ChatWorkLifetime, DbPool},
 };
 use futures::{future::BoxFuture, FutureExt};
 use std::{
-    path::Path,
+    path::{Path, PathBuf},
     sync::{Arc, LazyLock, Mutex},
 };
 use tokio::{
@@ -26,6 +26,10 @@ struct State {
     join: Option<Join>,
     cancel: Option<CancellationToken>,
     quarantine: Option<Codec>,
+    #[cfg(test)]
+    fail_retirement: bool,
+    #[cfg(test)]
+    profile_events: Vec<(Profile, u32, bool)>,
     http: Option<(CancellationToken, Join)>,
 }
 #[derive(Clone, Default)]
@@ -46,8 +50,31 @@ impl Drop for HttpCompletion {
         }
     }
 }
+/// Native launch context, bound to one runtime generation and database owner.
+/// It cannot be supplied by IPC or derive authority from configuration intent.
+pub(crate) struct CodecLauncher {
+    runtime: TransferRuntime,
+    executable: PathBuf,
+    entry: Option<PathBuf>,
+    database: DbPool,
+    generation: u64,
+}
+impl CodecLauncher {
+    pub(crate) fn belongs_to(&self, runtime: &TransferRuntime) -> bool {
+        Arc::ptr_eq(&self.runtime.0, &runtime.0)
+    }
+    pub(crate) async fn start(&self, profile: Profile) -> Result<CodecHandle, &'static str> {
+        let source = self.database.source_ready(None).await.map_err(|_| "database_unavailable")?;
+        let mut command = Command::new(&self.executable);
+        if let Some(entry) = &self.entry { command.arg(entry); }
+        self.runtime.start(command, source.ready.retain_chat_work(), self.generation, profile).await
+    }
+}
 pub(crate) struct CodecHandle {
+    #[cfg(test)]
+    pid: u32,
     sender: mpsc::Sender<Request>,
+    profile: Profile,
     cancel: CancellationToken,
     join: Join,
 }
@@ -62,6 +89,7 @@ impl Drop for CodecHandle {
 }
 impl CodecHandle {
     pub(crate) async fn run(&self, input: Input) -> Result<Output, &'static str> {
+        if !self.profile.accepts(input.op) { return Err("codec_profile"); }
         // Disappearance of an in-flight caller retires the process. The owner,
         // not this future, keeps the pipes, credits and join.
         let (response, receive) = oneshot::channel();
@@ -84,6 +112,8 @@ impl CodecHandle {
     }
 }
 impl TransferRuntime {
+    #[cfg(test)]
+    pub(crate) fn profile_events(&self) -> Vec<(Profile, u32, bool)> { self.0.lock().unwrap().profile_events.clone() }
     pub(crate) fn budget(&self) -> Result<TransitInstance, &'static str> {
         TRANSIT_OWNER
             .instance(*PC)
@@ -123,27 +153,18 @@ impl TransferRuntime {
         }
         Ok(state.generation)
     }
-    pub(crate) async fn start_codec(
-        &self,
-        app: &tauri::AppHandle,
-        db: &DbPool,
-    ) -> Result<CodecHandle, &'static str> {
-        let generation = self.generation()?;
-        let path = crate::ai::copilot::resolve_bridge_path(app).map_err(|_| "codec_unavailable")?;
-        let source = db
-            .source_ready(None)
-            .await
-            .map_err(|_| "database_unavailable")?;
-        let lifetime = source.ready.retain_chat_work();
-        let result = self.start(Command::new(path), lifetime, generation).await;
-        drop(source);
-        result
+    pub(crate) fn codec_launcher(&self, app: &tauri::AppHandle, db: &DbPool) -> Result<CodecLauncher, &'static str> {
+        Ok(CodecLauncher { runtime: self.clone(), executable: crate::ai::copilot::resolve_bridge_path(app).map_err(|_| "codec_unavailable")?, entry: None, database: db.clone(), generation: self.generation()? })
+    }
+    pub(crate) async fn start_codec(&self, app: &tauri::AppHandle, db: &DbPool) -> Result<CodecHandle, &'static str> {
+        self.codec_launcher(app, db)?.start(Profile::Persistent).await
     }
     async fn start(
         &self,
         mut command: Command,
         lifetime: ChatWorkLifetime,
         generation: u64,
+        profile: Profile,
     ) -> Result<CodecHandle, &'static str> {
         let budget = self.budget()?;
         // No await between checking singleton ownership and publishing its join.
@@ -162,8 +183,12 @@ impl TransferRuntime {
             return Err("codec_busy");
         }
         state.join = None;
-        command.arg("connect-codec");
-        let codec = Codec::spawn(command, budget, lifetime)?;
+        command.arg(profile.command());
+        let codec = Codec::spawn(command, budget, lifetime, profile)?;
+        #[cfg(test)]
+        let pid = codec.pid();
+        #[cfg(test)]
+        state.profile_events.push((profile, pid, false));
         let cancel = CancellationToken::new();
         let (sender, mut receiver) = mpsc::channel::<Request>(1);
         let task_cancel = cancel.clone();
@@ -180,7 +205,12 @@ impl TransferRuntime {
                 loop {
                     let request = tokio::select! {
                         _ = task_cancel.cancelled() => return Err("codec_cancelled"),
-                        next = tokio::time::timeout(std::time::Duration::from_secs(10), receiver.recv()) => next.map_err(|_| "codec_idle")?.ok_or("codec_closed")?,
+                        next = async {
+                            match profile {
+                                Profile::Persistent => Ok(receiver.recv().await),
+                                Profile::Bootstrap => tokio::time::timeout(std::time::Duration::from_secs(10), receiver.recv()).await.map_err(|_| "codec_idle"),
+                            }
+                        } => next?.ok_or("codec_closed")?,
                     };
                     let result = tokio::select! {
                         _ = task_cancel.cancelled() => Err("codec_cancelled"),
@@ -200,7 +230,13 @@ impl TransferRuntime {
             // reservations owned inside Codec remain until physical cleanup.
             drop(receiver);
             let joined = codec.retire().await;
+            // Fault injection exercises quarantine after real physical cleanup;
+            // it does not claim to induce an OS Child::wait failure.
+            #[cfg(test)]
+            let joined = joined && !owner.lock().unwrap().fail_retirement;
             let mut state = owner.lock().unwrap_or_else(|poison| poison.into_inner());
+            #[cfg(test)]
+            if joined { state.profile_events.push((profile, pid, true)); }
             if !joined {
                 state.quarantine = Some(codec);
             }
@@ -211,6 +247,9 @@ impl TransferRuntime {
         let join = async move { task.await.unwrap_or(false) }.boxed().shared();
         state.join = Some(join.clone());
         Ok(CodecHandle {
+            #[cfg(test)]
+            pid,
+            profile,
             sender,
             cancel,
             join,
@@ -255,21 +294,17 @@ impl TransferRuntime {
         codec && http
     }
     #[cfg(test)]
+    pub(crate) fn source_launcher(&self, executable: &Path, entry: &Path, db: &DbPool) -> Result<CodecLauncher, &'static str> {
+        Ok(CodecLauncher { runtime: self.clone(), executable: executable.to_owned(), entry: Some(entry.to_owned()), database: db.clone(), generation: self.generation()? })
+    }
+    #[cfg(test)]
     pub(crate) async fn source_codec(
         &self,
         executable: &Path,
         entry: &Path,
         db: &DbPool,
     ) -> Result<CodecHandle, &'static str> {
-        let generation = self.generation()?;
-        let source = db
-            .source_ready(None)
-            .await
-            .map_err(|_| "database_unavailable")?;
-        let mut command = Command::new(executable);
-        command.arg(entry);
-        self.start(command, source.ready.retain_chat_work(), generation)
-            .await
+        self.source_launcher(executable, entry, db)?.start(Profile::Persistent).await
     }
 }
 
@@ -298,6 +333,67 @@ mod tests {
             expectations: Bytes::copy(budget, br#"{"request_id_header":"00000000-0000-4000-8000-000000000001"}"#).unwrap(),
             body: Bytes::copy(budget, br#"{"authority_contract":"transfer-authority-1","type":"preflight","request_id":"00000000-0000-4000-8000-000000000001","scope":{"kind":"controller","source_instance_id":"synthetic-source","target_instance_id":"synthetic-target"}}"#).unwrap() }
     }
+    #[tokio::test]
+    async fn profiles_join_bootstrap_then_keep_persistent_child_idle_past_poll() {
+        let (_dir, db, pool) = database().await;
+        let owner = TransferRuntime::default();
+        let budget = owner.budget().unwrap();
+        let entry = Path::new(env!("CARGO_MANIFEST_DIR")).join("../copilot-bridge/src/entry.ts");
+        let launcher = owner.source_launcher(&bun(), &entry, &db).unwrap();
+        let bootstrap = launcher.start(Profile::Bootstrap).await.unwrap();
+        assert_eq!(bootstrap.run(input(&budget)).await.err(), Some("codec_profile"));
+        assert!(launcher.start(Profile::Persistent).await.is_err());
+        assert!(budget.reserve(TRANSIT_INSTANCE_LIMIT - 524_288).is_err());
+        bootstrap.close().await.unwrap();
+        drop(budget.reserve(TRANSIT_INSTANCE_LIMIT).unwrap());
+        let persistent = launcher.start(Profile::Persistent).await.unwrap();
+        let pid = persistent.pid;
+        drop(budget.reserve(TRANSIT_INSTANCE_LIMIT - 524_288).unwrap());
+        let mut wrong = input(&budget); wrong.op = 10;
+        assert_eq!(persistent.run(wrong).await.err(), Some("codec_profile"));
+        let first = persistent.run(input(&budget)).await.unwrap(); assert_eq!(first.status, 0); drop(first);
+        tokio::time::sleep(std::time::Duration::from_secs(26)).await;
+        let next = persistent.run(input(&budget)).await.unwrap(); assert_eq!(next.status, 0); drop(next);
+        assert_eq!(persistent.pid, pid);
+        persistent.close().await.unwrap();
+        drop(budget.reserve(TRANSIT_INSTANCE_LIMIT).unwrap());
+        db.set_ready(pool).await.unwrap();
+        assert!(owner.shutdown().await);
+    }
+
+    #[tokio::test]
+    async fn wrong_hello_profile_refuses_before_work_and_returns_credits_after_join() {
+        let (dir, db, _pool) = database().await;
+        let owner = TransferRuntime::default();
+        let budget = owner.budget().unwrap();
+        let wrapper = dir.path().join("wrong-profile.ts");
+        let entry = Path::new(env!("CARGO_MANIFEST_DIR")).join("../copilot-bridge/src/connect-bootstrap.ts");
+        std::fs::write(&wrapper, format!("import {{runBootstrapCodec}} from {}; await runBootstrapCodec();", serde_json::to_string(&entry).unwrap())).unwrap();
+        let codec = owner.source_codec(&bun(), &wrapper, &db).await.unwrap();
+        assert!(codec.run(input(&budget)).await.is_err());
+        codec.close().await.unwrap();
+        drop(budget.reserve(TRANSIT_INSTANCE_LIMIT).unwrap());
+        assert!(owner.shutdown().await);
+    }
+
+    #[tokio::test]
+    async fn failed_retirement_quarantines_profile_and_refuses_replacement() {
+        let (_dir, db, _pool) = database().await;
+        let owner = TransferRuntime::default();
+        let budget = owner.budget().unwrap();
+        let entry = Path::new(env!("CARGO_MANIFEST_DIR")).join("../copilot-bridge/src/entry.ts");
+        let launcher = owner.source_launcher(&bun(), &entry, &db).unwrap();
+        let bootstrap = launcher.start(Profile::Bootstrap).await.unwrap();
+        owner.0.lock().unwrap().fail_retirement = true;
+        assert_eq!(bootstrap.close().await.err(), Some("codec_unreconciled"));
+        assert!(owner.0.lock().unwrap().quarantine.is_some());
+        assert!(budget.reserve(TRANSIT_INSTANCE_LIMIT).is_err());
+        assert!(launcher.start(Profile::Persistent).await.is_err());
+        assert!(!owner.shutdown().await);
+        drop(launcher); drop(owner);
+        drop(budget.reserve(TRANSIT_INSTANCE_LIMIT).unwrap());
+    }
+
     #[tokio::test]
     async fn busy_rejection_preserves_admitted_request_and_child_reuse() {
         let (_dir, db, pool) = database().await;
