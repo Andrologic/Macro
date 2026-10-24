@@ -263,7 +263,7 @@ local('cancel at a real callback joins the child before returning reservations',
   } finally { f = undefined; await parent.cleanup(); releaseFixture(); expect(budget.used).toBe(0); }
 });
 
-local('300 messages and a 4.9 MB field normalize without transcript caps; real archive refuses an insufficient admitted lease', async () => {
+local('300 messages open in the real child; recovery encoding and projection keep independent admission', async () => {
   const budget = new PortableWorkBudget(384 * 1024 * 1024);
   const fixtureRelease = budget.reserve(40 * 1024 * 1024); // 2 UTF-16 source views + UTF-8 map + row/oracle metadata, before construction.
   let f: Awaited<ReturnType<typeof fixture>> | undefined;
@@ -280,7 +280,46 @@ local('300 messages and a 4.9 MB field normalize without transcript caps; real a
     const original = source.records.find(record => record.bytes.length > 4_900_000)!; expect(original).toBeDefined();
     const recover = await TransferParent.create(budget); parents.push(recover); const start = await recover.start('recover', 128 * 1024 * 1024); await recover.archive(source.records);
     recover.roots.set(start.handles.selector, { kind: 'selector', ordinal: decimal(original.header.ordinal), uuid: `00000000-0000-4000-8000-${String(original.header.ordinal).padStart(12, '0')}` });
+    let selectors = 0, retrievalBegins = 0, retrievalItems = 0;
+    recover.beforeRequest = async request => {
+      if (request.op === 1 && request.handle === start.handles.selector) selectors++;
+      if (request.op === 6 && request.kind === 'archive-retrieval') {
+        if (request.stage === 'begin') retrievalBegins++;
+        if (request.stage === 'item') retrievalItems++;
+      }
+    };
     expect(await recover.run()).toBe(1); await recover.finish(); expect(recover.retained).toHaveLength(0);
+    // Selector follows successful Archive.open; collection begins only after the
+    // complete large record has been read, inspected and hashed. Encoding owns
+    // another scope and still refuses this same 128 MiB recipe, before its item.
+    expect(selectors).toBe(1); expect(retrievalBegins).toBe(1); expect(retrievalItems).toBe(0);
+    await recover.cleanup();
+    const small = source.records.find(record => record.header.entry.kind === 'message' && record.bytes.length < 100 &&
+      new TextDecoder().decode(record.bytes) === 'COMPLETE_HISTORY_0')!;
+    expect(small).toBeDefined();
+    const readback = await TransferParent.create(budget); parents.push(readback);
+    const readStart = await readback.start('recover', 128 * 1024 * 1024); await readback.archive(source.records);
+    readback.roots.set(readStart.handles.selector, { kind: 'selector', ordinal: decimal(small.header.ordinal), uuid: null });
+    let resume!: () => void, reached!: () => void, paused = false;
+    const ready = new Promise<void>(r => { reached = r; }), gate = new Promise<void>(r => { resume = r; });
+    readback.delayAck = async () => { if (!paused) { paused = true; const held = budget.used; reached(); await gate; expect(budget.used).toBe(held); } };
+    const serving = readback.run(); await Promise.race([ready, serving.then(() => { throw Error('no_readback_output'); })]);
+    expect(readback.draftHeld).toBeGreaterThan(0); resume(); expect(await serving).toBe(0); await readback.finish();
+    const restored = readback.retained[0].value;
+    expect(restored.ordinal).toBe(small.header.ordinal); expect(restored.sha256).toBe(small.header.sha256);
+    expect(Buffer.compare(Buffer.from(restored.base64, 'base64'), small.bytes)).toBe(0);
+    expect(readback.draftHeld).toBeGreaterThan(0); await readback.cleanup();
+    const prepare = await TransferParent.create(budget); parents.push(prepare);
+    const prepareStart = await prepare.start('prepare', 128 * 1024 * 1024); await prepare.archive(source.records); await targetFields(prepare, 'chatgpt');
+    let targets = 0, projectionBegins = 0;
+    prepare.beforeRequest = async request => {
+      if (request.op === 1 && request.handle === prepareStart.handles.target) targets++;
+      if (request.op === 6) projectionBegins++;
+    };
+    expect(await prepare.run()).toBe(1); await prepare.finish(); expect(prepare.retained).toHaveLength(0);
+    expect(targets).toBe(1); expect(projectionBegins).toBe(0); await prepare.cleanup();
+    console.log('transfer_large_archive_composition', JSON.stringify({ selectors, retrievalBegins, retrievalItems, targets, projectionBegins,
+      small_recovered_bytes: small.bytes.length, suspended_ack: paused, child_units: 128 * 1024 * 1024 }));
     const metadataUnits = source.records.filter(record => record.header.entry.kind === 'historical_text' && record.header.entry.purpose === 'portable_metadata').reduce((sum, record) => sum + 512 + 256 * record.bytes.length, 0);
     expect(metadataUnits).toBeGreaterThan(128 * 1024 * 1024);
     console.log('transfer_large_archive_metadata_units', metadataUnits, 'admitted_child_units', 128 * 1024 * 1024);
@@ -288,7 +327,7 @@ local('300 messages and a 4.9 MB field normalize without transcript caps; real a
   } finally {
     f = undefined; for (const parent of parents.reverse()) await parent.cleanup(); fixtureRelease(); expect(budget.used).toBe(0);
   }
-}, 240000);
+}, 360000);
 
 local('secret expansion is admitted before any value read, and real bundle forms block a private fact in pass 1', async () => {
   for (const mode of ['budget', 'detector'] as const) {

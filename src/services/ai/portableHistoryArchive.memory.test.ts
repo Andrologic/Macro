@@ -78,6 +78,7 @@ test('same 300-message source opens and recovers under 128 MiB; projection keeps
     const gate = new Promise<void>(r => { resume = r; }), ready = new Promise<void>(r => { reached = r; });
     const pending = f.archive.withRecord(original.header.ordinal, async bytes => {
       expect(new TextDecoder().decode(bytes).startsWith('RECOVERABLE_LARGE_ORIGINAL ')).toBe(true);
+      expect(Buffer.compare(bytes, original.bytes)).toBe(0);
       reached(); await gate; expect(f.budget.used).toBeGreaterThan(retained);
     });
     await ready; const recoveryHeld = f.budget.used; expect(recoveryHeld).toBeGreaterThan(retained); resume(); await pending; expect(f.budget.used).toBe(retained);
