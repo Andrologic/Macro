@@ -64,11 +64,12 @@ impl CodecHandle {
     pub(super) async fn run(&self, input: Input) -> Result<Output, &'static str> {
         // Disappearance of an in-flight caller retires the process. The owner,
         // not this future, keeps the pipes, credits and join.
-        let guard = self.cancel.clone().drop_guard();
         let (response, receive) = oneshot::channel();
         self.sender
             .try_send(Request { input, response })
             .map_err(|_| "codec_busy")?;
+        // A rejected caller owns no work and must not cancel an admitted one.
+        let guard = self.cancel.clone().drop_guard();
         let result = receive.await.map_err(|_| "codec_closed")?;
         guard.disarm();
         result
@@ -297,6 +298,32 @@ mod tests {
             expectations: Bytes::copy(budget, br#"{"request_id_header":"00000000-0000-4000-8000-000000000001"}"#).unwrap(),
             body: Bytes::copy(budget, br#"{"authority_contract":"transfer-authority-1","type":"preflight","request_id":"00000000-0000-4000-8000-000000000001","scope":{"kind":"controller","source_instance_id":"synthetic-source","target_instance_id":"synthetic-target"}}"#).unwrap() }
     }
+    #[tokio::test]
+    async fn busy_rejection_preserves_admitted_request_and_child_reuse() {
+        let (_dir, db, pool) = database().await;
+        let owner = TransferRuntime::default();
+        let budget = owner.budget().unwrap();
+        let entry = Path::new(env!("CARGO_MANIFEST_DIR")).join("../copilot-bridge/src/entry.ts");
+        let codec = owner.source_codec(&bun(), &entry, &db).await.unwrap();
+        {
+            let accepted = codec.run(input(&budget));
+            tokio::pin!(accepted);
+            assert!(futures::poll!(&mut accepted).is_pending());
+            assert_eq!(codec.run(input(&budget)).await.err(), Some("codec_busy"));
+            assert!(!codec.cancel.is_cancelled());
+            let first = tokio::time::timeout(std::time::Duration::from_secs(5), accepted)
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(first.status, 0);
+        }
+        assert_eq!(codec.run(input(&budget)).await.unwrap().status, 0);
+        codec.close().await.unwrap();
+        assert!(owner.shutdown().await);
+        assert!(budget.reserve(TRANSIT_INSTANCE_LIMIT).is_ok());
+        db.set_ready(pool).await.unwrap();
+    }
+
     #[tokio::test]
     async fn revoked_generation_cannot_spawn_after_waiting_for_database() {
         let directory = tempfile::tempdir().unwrap();

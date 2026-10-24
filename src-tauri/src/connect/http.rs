@@ -406,10 +406,23 @@ impl Lane {
         tokio::pin!(operation);
         // No detached Hyper task. This select owns and polls the connection and
         // response together. All callbacks and body frames leave this scope.
+        let mut driver_finished = false;
         let result = tokio::select! {
             result = &mut operation => result,
-            _ = driver => Err("http_connection_closed"),
+            finished = driver => {
+                driver_finished = true;
+                match finished {
+                    // Hyper may have queued the entire response before its
+                    // normal Connection: close completion. Consume that queue.
+                    Ok(()) => operation.await,
+                    Err(_) => Err("http_connection_closed"),
+                }
+            },
         };
+        if driver_finished {
+            // A completed driver must never be polled again, even by close.
+            self.driver.take();
+        }
         drop(request);
         result
     }
@@ -490,16 +503,21 @@ impl<'a> HttpSession<'a> {
         app_cancel: &CancellationToken,
         database: &Arc<crate::core::db_state::ChatWorkLifetime>,
     ) -> Result<Response> {
+        // The exchange future owns the IO until successful completion. Dropping
+        // it destroys the driver synchronously, even if the session stays idle.
+        // Only a live, successfully used lane can return to the session.
+        let mut owned = lane.take();
         let operation = async {
             lease.check().map_err(|_| "policy_revoked")?;
             if app_cancel.is_cancelled() || cancel.is_cancelled() {
                 return Err("http_cancelled");
             }
-            if lane.is_none() {
-                *lane = Some(Lane::open(budget, address, host, tls).await?);
+            if owned.is_none() {
+                owned = Some(Lane::open(budget, address, host, tls).await?);
             }
             lease.check().map_err(|_| "policy_revoked")?;
-            lane.as_mut()
+            owned
+                .as_mut()
                 .unwrap()
                 .exchange(budget, host, request, limit, database)
                 .await
@@ -510,10 +528,18 @@ impl<'a> HttpSession<'a> {
             _ = lease.revoked() => Err("policy_revoked"),
             result = tokio::time::timeout(Duration::from_secs(30), operation) => result.unwrap_or(Err("http_timeout")),
         };
-        if result.is_err() {
-            if let Some(mut failed) = lane.take() {
-                failed.close().await;
-            }
+        if result.is_ok()
+            && owned.as_ref().is_some_and(|lane| {
+                lane.driver.is_some()
+                    && lane
+                        .sender
+                        .as_ref()
+                        .is_some_and(|sender| !sender.is_closed())
+            })
+        {
+            *lane = owned.take();
+        } else if let Some(mut retired) = owned.take() {
+            retired.close().await;
         }
         result
     }
@@ -662,6 +688,136 @@ mod tests {
                 .unwrap(),
         }
     }
+    #[tokio::test]
+    async fn complete_close_responses_survive_driver_completion_without_post_retry() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            for index in 0..40 {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                request(&mut stream).await.unwrap();
+                let wire: &[u8] = if index % 2 == 0 {
+                    b"HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Length: 2\r\n\r\n{}"
+                } else {
+                    b"HTTP/1.1 200 OK\r\nConnection: close\r\nTransfer-Encoding: chunked\r\n\r\n2\r\n{}\r\n0\r\n\r\n"
+                };
+                stream.write_all(wire).await.unwrap();
+                stream.shutdown().await.unwrap();
+            }
+        });
+        scoped(move |lease, budget, database| {
+            tokio::runtime::Handle::current().block_on(async {
+                let mut session = plain(lease, budget.clone(), address, database);
+                let cancel = CancellationToken::new();
+                for _ in 0..40 {
+                    let request = Request::new(&budget, http::Method::POST, "/ack", b"{}").unwrap();
+                    let response = tokio::time::timeout(
+                        Duration::from_secs(3),
+                        session.lanes().1.exchange(request, 98_304, &cancel),
+                    )
+                    .await
+                    .unwrap()
+                    .unwrap();
+                    assert_eq!(response.status, 200);
+                    assert_eq!(response.body, b"{}");
+                    assert!(session.post.is_none());
+                    assert!(budget.reserve(TRANSIT_INSTANCE_LIMIT).is_err());
+                    drop(response);
+                    assert!(budget.reserve(TRANSIT_INSTANCE_LIMIT).is_ok());
+                }
+                session.close().await;
+            })
+        })
+        .await
+        .unwrap();
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn dropping_exchange_destroys_new_and_reused_lanes_before_returning_credits() {
+        for reuse in [false, true] {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let address = listener.local_addr().unwrap();
+            let started = Arc::new(tokio::sync::Notify::new());
+            let sent = started.clone();
+            let (closed, observed) = tokio::sync::oneshot::channel();
+            let server = tokio::spawn(async move {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                if reuse {
+                    request(&mut stream).await.unwrap();
+                    stream
+                        .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\n{}")
+                        .await
+                        .unwrap();
+                }
+                request(&mut stream).await.unwrap();
+                stream
+                    .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 90000\r\n\r\n")
+                    .await
+                    .unwrap();
+                sent.notify_one();
+                let mut byte = [0];
+                let result = tokio::time::timeout(Duration::from_secs(3), stream.read(&mut byte))
+                    .await
+                    .unwrap();
+                assert!(
+                    matches!(result, Ok(0))
+                        || matches!(result, Err(ref e) if e.kind() == std::io::ErrorKind::ConnectionReset)
+                );
+                closed.send(()).unwrap();
+                // Reuse of the port must establish a fresh socket, with no replay
+                // of the abandoned POST on either connection.
+                let (mut stream, _) = listener.accept().await.unwrap();
+                assert_eq!(request(&mut stream).await, Some(false));
+                stream
+                    .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\n{}")
+                    .await
+                    .unwrap();
+                assert_eq!(stream.read(&mut byte).await.unwrap(), 0);
+            });
+            scoped(move |lease, budget, database| {
+                tokio::runtime::Handle::current().block_on(async {
+                    let runtime = super::super::TransferRuntime::default();
+                    let mut session = plain(lease, budget.clone(), address, database);
+                    session.owner = runtime.http_owner(database).unwrap();
+                    let cancel = CancellationToken::new();
+                    if reuse {
+                        let request = Request::new(&budget, http::Method::POST, "/poll", b"{}").unwrap();
+                        drop(session.lanes().0.exchange(request, 98_304, &cancel).await.unwrap());
+                        assert!(session.poll.is_some());
+                    }
+                    {
+                        let (mut port, _) = session.lanes();
+                        let request = Request::new(&budget, http::Method::POST, "/poll", b"{}").unwrap();
+                        let exchange = port.exchange(request, 98_304, &cancel);
+                        tokio::pin!(exchange);
+                        tokio::select! {
+                            biased;
+                            _ = started.notified() => (),
+                            result = &mut exchange => panic!("unexpected completion: {:?}", result.err()),
+                        }
+                        assert!(budget.reserve(TRANSIT_INSTANCE_LIMIT).is_err());
+                    }
+                    assert!(session.poll.is_none());
+                    // The owner stays alive and idle while the peer observes EOF.
+                    // No close(), next exchange, timer or cancellation drives it.
+                    tokio::time::timeout(Duration::from_secs(3), observed).await.unwrap().unwrap();
+                    assert!(budget.reserve(TRANSIT_INSTANCE_LIMIT).is_ok());
+                    assert!(!cancel.is_cancelled());
+                    let request = Request::new(&budget, http::Method::POST, "/ack", b"{}").unwrap();
+                    drop(session.lanes().0.exchange(request, 98_304, &cancel).await.unwrap());
+                    runtime.revoke();
+                    let request = Request::new(&budget, http::Method::POST, "/ack", b"{}").unwrap();
+                    assert_eq!(session.lanes().0.exchange(request, 98_304, &cancel).await.err(), Some("http_cancelled"));
+                    drop(session);
+                    assert!(tokio::time::timeout(Duration::from_secs(3), runtime.shutdown()).await.unwrap());
+                    assert!(budget.reserve(TRANSIT_INSTANCE_LIMIT).is_ok());
+                })
+            }).await.unwrap();
+            server.await.unwrap();
+        }
+    }
+
     #[tokio::test]
     async fn real_poll_and_post_progress_independently_and_reuse_two_connections() {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -867,14 +1023,28 @@ mod tests {
 
     #[tokio::test]
     async fn truncated_body_and_unbounded_headers_close_without_reuse() {
-        for wire in [
-            b"HTTP/1.1 200 OK\r\nContent-Length: 12\r\n\r\nshort".to_vec(),
-            format!(
-                "HTTP/1.1 200 OK\r\nX-Large: {}\r\nContent-Length: 0\r\n\r\n",
-                "x".repeat(9000)
-            )
-            .into_bytes(),
-            b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n4\r\n1234\r\n0\r\n\r\n".to_vec(),
+        for (wire, limit) in [
+            (
+                b"HTTP/1.1 200 OK\r\nContent-Length: 12\r\n\r\nshort".to_vec(),
+                98_304,
+            ),
+            (
+                b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nshort".to_vec(),
+                98_304,
+            ),
+            (
+                format!(
+                    "HTTP/1.1 200 OK\r\nX-Large: {}\r\nContent-Length: 0\r\n\r\n",
+                    "x".repeat(9000)
+                )
+                .into_bytes(),
+                98_304,
+            ),
+            (
+                b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n4\r\n1234\r\n0\r\n\r\n"
+                    .to_vec(),
+                2,
+            ),
         ] {
             let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
             let address = listener.local_addr().unwrap();
@@ -893,7 +1063,7 @@ mod tests {
                     assert!(session
                         .lanes()
                         .0
-                        .exchange(request, 2, &cancel)
+                        .exchange(request, limit, &cancel)
                         .await
                         .is_err());
                     assert!(session.poll.is_none());
