@@ -7,7 +7,7 @@ use crate::db::{
 };
 use tempfile::TempDir;
 
-async fn fixture() -> (TempDir, SqlitePool) {
+pub(in crate::db::connect_transfer) async fn fixture() -> (TempDir, SqlitePool) {
     let dir = TempDir::new().unwrap();
     let pool = db::create_pool(&dir.path().join("journal.db"))
         .await
@@ -16,7 +16,7 @@ async fn fixture() -> (TempDir, SqlitePool) {
         .execute(&pool).await.unwrap();
     (dir, pool)
 }
-async fn input(pool: &SqlitePool) -> Reservation {
+pub(in crate::db::connect_transfer) async fn input(pool: &SqlitePool) -> Reservation {
     Reservation {
         transfer_id: uuid::Uuid::new_v4().to_string(),
         relay_origin: "https://relay.invalid".into(),
@@ -38,7 +38,9 @@ async fn input(pool: &SqlitePool) -> Reservation {
             .unwrap(),
     }
 }
-async fn inspected(pool: &SqlitePool) -> (DbPool, ChatAdmissionRuntime, String, Reservation) {
+pub(in crate::db::connect_transfer) async fn inspected(
+    pool: &SqlitePool,
+) -> (DbPool, ChatAdmissionRuntime, String, Reservation) {
     let owner = DbPool::default();
     owner.set_ready(pool.clone()).await.unwrap();
     let runtime = ChatAdmissionRuntime::default();
@@ -607,7 +609,7 @@ async fn connect_transfer_migration_and_stamp_roll_back_together() {
     crate::db::connect_transfer::remove_reference_schema_in(&mut *pool.acquire().await.unwrap())
         .await
         .unwrap();
-    sqlx::raw_sql("DELETE FROM schema_migrations WHERE version=18; CREATE TRIGGER synthetic_reject_f_stamp BEFORE INSERT ON schema_migrations WHEN NEW.version=18 BEGIN SELECT RAISE(ABORT,'synthetic'); END;").execute(&pool).await.unwrap();
+    sqlx::raw_sql("DELETE FROM schema_migrations WHERE version>=18; CREATE TRIGGER synthetic_reject_f_stamp BEFORE INSERT ON schema_migrations WHEN NEW.version=18 BEGIN SELECT RAISE(ABORT,'synthetic'); END;").execute(&pool).await.unwrap();
     pool.close().await;
     assert!(db::create_pool(&dir.path().join("journal.db"))
         .await
@@ -809,4 +811,101 @@ async fn connect_transfer_maintenance_renews_only_recorded_slot_with_bounded_pre
             .unwrap_err();
         assert!(error.to_string().contains("recovery_hold"), "{error}");
     }
+}
+
+pub(in crate::db::connect_transfer) async fn target_for_publication(
+    pool: &SqlitePool,
+) -> (String, crate::db::inactive_storage::Begin) {
+    use crate::db::inactive_storage::{Begin, Bindings, Identity, Profile};
+    let input = input(pool).await;
+    reserve_target(pool, &input).await.unwrap();
+    let session = session(&input, 3);
+    staging::open_prefix(pool, &session).await.unwrap();
+    let digest = hash(b"raw");
+    staging::stage(pool, &session, &chunk(0, 0, b"raw", &digest, true))
+        .await
+        .unwrap();
+    let begin = Begin {
+        version: 1,
+        identity: Identity {
+            origin: input.relay_origin.clone(),
+            account_incarnation: input.account_id.clone(),
+            source_instance: input.source_instance_id.clone(),
+            source_conversation: input.source_conversation_id.clone(),
+            transfer: input.transfer_id.clone(),
+            source_epoch: input.source_epoch.to_string(),
+        },
+        bindings: Bindings {
+            target_instance: input.target_instance_id.clone(),
+            source_generation: input.source_generation.clone(),
+            target_generation: input.target_generation.clone(),
+            actor: "synthetic".into(),
+            initial_session: "synthetic".into(),
+            policy_revision: "synthetic".into(),
+        },
+        profile: Profile::SyntheticHistoryV1,
+        records: 0,
+        bytes: 0,
+        manifest_sha256: "0".repeat(64),
+    };
+    (input.transfer_id, begin)
+}
+pub(in crate::db::connect_transfer) async fn attach_for_publication(
+    pool: &SqlitePool,
+    transfer: &str,
+    key: &str,
+) {
+    let mut input = input(pool).await;
+    input.transfer_id = transfer.into();
+    attach_import(pool, &input, key).await.unwrap();
+}
+pub(in crate::db::connect_transfer) async fn source_for_terminal(pool: &SqlitePool) -> String {
+    let (owner, runtime, handle, input) = inspected(pool).await;
+    runtime
+        .reserve_reconciled_transfer(&owner, "window", "browser", &handle, &input)
+        .await
+        .unwrap();
+    input.transfer_id
+}
+
+
+
+pub(in crate::db::connect_transfer) async fn reserve_next_source_after_abort(
+    pool: &SqlitePool,
+    owner: &DbPool,
+    runtime: &ChatAdmissionRuntime,
+) {
+    let handle = runtime
+        .begin_reconciliation(owner, "window", "browser", "source")
+        .await
+        .unwrap();
+    runtime
+        .complete_reconciliation(
+            owner,
+            "window",
+            "browser",
+            &handle,
+            &BrowserInspection {
+                queue: vec![],
+                unsaved: vec![],
+                approvals: vec![],
+                questions: vec![],
+                drafts: vec![],
+                steers: vec![],
+            },
+        )
+        .await
+        .unwrap();
+    let mut next = input(pool).await;
+    next.source_epoch = 2;
+    next.expected_ownership_revision = sqlx::query_scalar(
+        "SELECT revision+1 FROM chat_admission_owners WHERE conversation_id='source'",
+    )
+    .fetch_one(pool)
+    .await
+    .unwrap();
+    runtime
+        .reserve_reconciled_transfer(owner, "window", "browser", &handle, &next)
+        .await
+        .unwrap();
 }
