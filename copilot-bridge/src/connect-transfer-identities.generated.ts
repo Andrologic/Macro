@@ -62,7 +62,7 @@ export const TRANSFER_RESOURCES = [
   },
   {
     "path": "dev/generate-connect-transfer-identities.mjs",
-    "sha256": "2e0e54412cd9e8ad00a1f4fbc66844f6f786ad6eaf4b4dd3b178392080d16a25"
+    "sha256": "0997205cb0d2374895cfa9ffe8ad1deb51da93c98ba102fba730528e8c13e07e"
   },
   {
     "path": "package.json",
@@ -304,5 +304,5 @@ export const TRANSFER_RESOURCES = [
 export const TRANSFER_HELLO = {
   "version": "macro-connect-transfer-1",
   "portable_contract_sha256": "c6ae7440ed0fb4d0bdccdfb936c4bf6ac5c441c96b642c1d9ccbd270b62bdcc6",
-  "preparation_set_sha256": "54678220ee5cdc91fb13f65021b32f2edb6636663d0207ca51cf77edd542c29a"
+  "preparation_set_sha256": "b1a02b6a0901f97c7586f40709be2eeb06aaca55a8d0b57698067c5d0503ba36"
 } as const;

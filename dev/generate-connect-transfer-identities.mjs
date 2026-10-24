@@ -1,7 +1,10 @@
 import { readFileSync, writeFileSync, existsSync, statSync } from 'node:fs';
 import { resolve, dirname, relative, sep } from 'node:path';
 import { createHash } from 'node:crypto';
+import { checkMacroPilotValidators } from './generate-macro-pilot-validators.ts';
 const root = resolve(import.meta.dir, '..');
+// Refuse stale upstream sources before checking or writing any derived identity.
+await checkMacroPilotValidators(root);
 const generated = 'copilot-bridge/src/connect-transfer-identities.generated.ts';
 const digest = bytes => createHash('sha256').update(bytes).digest('hex');
 const files = new Set(['copilot-bridge/src/entry.ts', 'package.json', 'bun.lock', 'copilot-bridge/tsconfig.json', 'dev/generate-connect-transfer-identities.mjs']);
