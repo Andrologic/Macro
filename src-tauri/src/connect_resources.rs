@@ -301,6 +301,7 @@ struct TransitInstanceState {
     process: Arc<Mutex<TransitState>>,
     charged: Mutex<u64>,
 }
+#[derive(Clone)]
 pub(crate) struct TransitInstance(Arc<TransitInstanceState>);
 pub(crate) struct TransitCharge {
     instance: Arc<TransitInstanceState>,
