@@ -13,7 +13,7 @@ const PAGE: usize = 65_536;
 const BODY: usize = 98_304;
 const RAW: u64 = 28_311_552;
 const BANK: u64 = 2_097_152;
-static RAW_TURN: std::sync::LazyLock<std::sync::Arc<tokio::sync::Semaphore>> =
+pub(super) static RAW_TURN: std::sync::LazyLock<std::sync::Arc<tokio::sync::Semaphore>> =
     std::sync::LazyLock::new(|| std::sync::Arc::new(tokio::sync::Semaphore::new(1)));
 // Parent/child fixed fd buffers, pipe reservoirs, bounded stderr scratch and
 // startup identity parsing. Logical ownership, not VM/code heap or RSS.

@@ -20,15 +20,33 @@ static PC: LazyLock<uuid::Uuid> = LazyLock::new(uuid::Uuid::new_v4);
 type Join = futures::future::Shared<BoxFuture<'static, bool>>;
 #[derive(Default)]
 struct State {
+    generation: u64,
     closed: bool,
     active: bool,
     join: Option<Join>,
     cancel: Option<CancellationToken>,
     quarantine: Option<Codec>,
+    http: Option<(CancellationToken, Join)>,
 }
 #[derive(Clone, Default)]
 pub(crate) struct TransferRuntime(Arc<Mutex<State>>);
-pub(crate) struct CodecHandle {
+// This completion is the last field of HttpSession. Its notification therefore
+// follows destruction of the sole Hyper drivers, TLS streams and reservations.
+pub(super) struct HttpOwnership {
+    pub cancel: CancellationToken,
+    pub budget: TransitInstance,
+    pub database: Arc<ChatWorkLifetime>,
+    completion: HttpCompletion,
+}
+struct HttpCompletion(Option<oneshot::Sender<bool>>);
+impl Drop for HttpCompletion {
+    fn drop(&mut self) {
+        if let Some(done) = self.0.take() {
+            let _ = done.send(true);
+        }
+    }
+}
+pub(super) struct CodecHandle {
     sender: mpsc::Sender<Request>,
     cancel: CancellationToken,
     join: Join,
@@ -43,7 +61,7 @@ impl Drop for CodecHandle {
     }
 }
 impl CodecHandle {
-    pub(crate) async fn run(&self, input: Input) -> Result<Output, &'static str> {
+    pub(super) async fn run(&self, input: Input) -> Result<Output, &'static str> {
         // Disappearance of an in-flight caller retires the process. The owner,
         // not this future, keeps the pipes, credits and join.
         let guard = self.cancel.clone().drop_guard();
@@ -55,7 +73,7 @@ impl CodecHandle {
         guard.disarm();
         result
     }
-    pub(crate) async fn close(self) -> Result<(), &'static str> {
+    pub(super) async fn close(self) -> Result<(), &'static str> {
         self.cancel.cancel();
         if self.join.clone().await {
             Ok(())
@@ -70,18 +88,53 @@ impl TransferRuntime {
             .instance(*PC)
             .map_err(|_| "transit_unavailable")
     }
-    pub(crate) async fn start_codec(
+    pub(super) fn http_owner(
+        &self,
+        database: &crate::core::db_state::DbReady,
+    ) -> Result<HttpOwnership, &'static str> {
+        let mut state = self.0.lock().map_err(|_| "transport_unavailable")?;
+        if state.closed
+            || state
+                .http
+                .as_ref()
+                .is_some_and(|(_, join)| join.clone().now_or_never() != Some(true))
+        {
+            return Err("http_owner_busy");
+        }
+        let budget = self.budget()?;
+        let cancel = CancellationToken::new();
+        let (done, receive) = oneshot::channel();
+        let join = async move { receive.await.unwrap_or(false) }
+            .boxed()
+            .shared();
+        state.http = Some((cancel.clone(), join));
+        Ok(HttpOwnership {
+            cancel,
+            budget,
+            database: Arc::new(database.retain_chat_work()),
+            completion: HttpCompletion(Some(done)),
+        })
+    }
+    fn generation(&self) -> Result<u64, &'static str> {
+        let state = self.0.lock().map_err(|_| "transport_unavailable")?;
+        if state.closed {
+            return Err("codec_retired");
+        }
+        Ok(state.generation)
+    }
+    pub(super) async fn start_codec(
         &self,
         app: &tauri::AppHandle,
         db: &DbPool,
     ) -> Result<CodecHandle, &'static str> {
+        let generation = self.generation()?;
         let path = crate::ai::copilot::resolve_bridge_path(app).map_err(|_| "codec_unavailable")?;
         let source = db
             .source_ready(None)
             .await
             .map_err(|_| "database_unavailable")?;
         let lifetime = source.ready.retain_chat_work();
-        let result = self.start(Command::new(path), lifetime).await;
+        let result = self.start(Command::new(path), lifetime, generation).await;
         drop(source);
         result
     }
@@ -89,10 +142,14 @@ impl TransferRuntime {
         &self,
         mut command: Command,
         lifetime: ChatWorkLifetime,
+        generation: u64,
     ) -> Result<CodecHandle, &'static str> {
         let budget = self.budget()?;
         // No await between checking singleton ownership and publishing its join.
         let mut state = self.0.lock().map_err(|_| "transport_unavailable")?;
+        if state.generation != generation {
+            return Err("codec_retired");
+        }
         if state.closed || state.active || state.quarantine.is_some() {
             return Err("codec_busy");
         }
@@ -122,7 +179,7 @@ impl TransferRuntime {
                 loop {
                     let request = tokio::select! {
                         _ = task_cancel.cancelled() => return Err("codec_cancelled"),
-                        next = receiver.recv() => next.ok_or("codec_closed")?,
+                        next = tokio::time::timeout(std::time::Duration::from_secs(10), receiver.recv()) => next.map_err(|_| "codec_idle")?.ok_or("codec_closed")?,
                     };
                     let result = tokio::select! {
                         _ = task_cancel.cancelled() => Err("codec_cancelled"),
@@ -159,7 +216,14 @@ impl TransferRuntime {
         })
     }
     pub(crate) fn revoke(&self) {
-        if let Ok(state) = self.0.lock() {
+        if let Ok(mut state) = self.0.lock() {
+            match state.generation.checked_add(1) {
+                Some(next) => state.generation = next,
+                None => state.closed = true,
+            }
+            if let Some((cancel, _)) = &state.http {
+                cancel.cancel();
+            }
             if let Some(cancel) = &state.cancel {
                 cancel.cancel();
             }
@@ -172,12 +236,22 @@ impl TransferRuntime {
             if let Some(cancel) = &state.cancel {
                 cancel.cancel();
             }
-            state.join.clone()
+            if let Some((cancel, _)) = &state.http {
+                cancel.cancel();
+            }
+            (
+                state.join.clone(),
+                state.http.as_ref().map(|(_, join)| join.clone()),
+            )
         };
-        match join {
-            Some(join) => join.await,
-            None => true,
-        }
+        let wait = |join: Option<Join>| async move {
+            match join {
+                Some(join) => join.await,
+                None => true,
+            }
+        };
+        let (codec, http) = tokio::join!(wait(join.0), wait(join.1));
+        codec && http
     }
     #[cfg(test)]
     async fn source_codec(
@@ -186,13 +260,15 @@ impl TransferRuntime {
         entry: &Path,
         db: &DbPool,
     ) -> Result<CodecHandle, &'static str> {
+        let generation = self.generation()?;
         let source = db
             .source_ready(None)
             .await
             .map_err(|_| "database_unavailable")?;
         let mut command = Command::new(executable);
         command.arg(entry);
-        self.start(command, source.ready.retain_chat_work()).await
+        self.start(command, source.ready.retain_chat_work(), generation)
+            .await
     }
 }
 
@@ -221,6 +297,59 @@ mod tests {
             expectations: Bytes::copy(budget, br#"{"request_id_header":"00000000-0000-4000-8000-000000000001"}"#).unwrap(),
             body: Bytes::copy(budget, br#"{"authority_contract":"transfer-authority-1","type":"preflight","request_id":"00000000-0000-4000-8000-000000000001","scope":{"kind":"controller","source_instance_id":"synthetic-source","target_instance_id":"synthetic-target"}}"#).unwrap() }
     }
+    #[tokio::test]
+    async fn revoked_generation_cannot_spawn_after_waiting_for_database() {
+        let directory = tempfile::tempdir().unwrap();
+        let pool = crate::db::create_pool(&directory.path().join("waiting.db"))
+            .await
+            .unwrap();
+        let db = DbPool::default();
+        let owner = TransferRuntime::default();
+        let executable = bun();
+        let entry = Path::new(env!("CARGO_MANIFEST_DIR")).join("../copilot-bridge/src/entry.ts");
+        let pending = owner.source_codec(&executable, &entry, &db);
+        tokio::pin!(pending);
+        assert!(futures::poll!(&mut pending).is_pending());
+        owner.revoke();
+        db.set_ready(pool.clone()).await.unwrap();
+        assert_eq!(pending.await.err(), Some("codec_retired"));
+        assert!(owner
+            .budget()
+            .unwrap()
+            .reserve(TRANSIT_INSTANCE_LIMIT)
+            .is_ok());
+        db.set_ready(pool).await.unwrap();
+        assert!(owner.shutdown().await);
+    }
+
+    #[tokio::test]
+    async fn child_eof_and_hello_deadline_keep_the_owner_until_reap() {
+        let (directory, db, pool) = database().await;
+        for (name, script) in [
+            ("eof.ts", "process.exit(0);"),
+            ("silent.ts", "setInterval(() => {}, 1000);"),
+        ] {
+            let entry = directory.path().join(name);
+            std::fs::write(&entry, script).unwrap();
+            let owner = TransferRuntime::default();
+            let budget = owner.budget().unwrap();
+            let codec = owner.source_codec(&bun(), &entry, &db).await.unwrap();
+            assert!(db.set_ready(pool.clone()).await.is_err());
+            // EOF and the production ten-second HELLO deadline both retire the
+            // real Child, rather than returning the accounting slot on a timer.
+            assert!(tokio::time::timeout(
+                std::time::Duration::from_secs(13),
+                codec.run(input(&budget))
+            )
+            .await
+            .unwrap()
+            .is_err());
+            codec.close().await.unwrap();
+            assert!(budget.reserve(TRANSIT_INSTANCE_LIMIT).is_ok());
+            db.set_ready(pool.clone()).await.unwrap();
+        }
+    }
+
     #[tokio::test]
     async fn real_codec_reuses_child_and_keeps_database_and_last_result_charged() {
         let (_dir, db, pool) = database().await;
