@@ -43,9 +43,12 @@ pub async fn mcp_discover_tools(
     server: McpServerDto,
 ) -> CommandResult<McpDiscoverToolsResponse> {
     let _authority = manager.lock_mcp_runtime_configuration().await;
-    Ok(McpDiscoverToolsResponse {
-        tools: discover_stdio_tools(&server, None).await?,
+    crate::secrets::blocking::with_guard(_authority, async {
+        Ok(McpDiscoverToolsResponse {
+            tools: discover_stdio_tools(&server, None).await?,
+        })
     })
+    .await
 }
 
 #[tauri::command]
@@ -57,7 +60,10 @@ pub async fn mcp_call_tool(
     timeout_ms: Option<u64>,
 ) -> CommandResult<McpCallToolResponse> {
     let _authority = manager.lock_mcp_runtime_configuration().await;
-    call_stdio_tool(&server, &tool_name, arguments, timeout_ms).await
+    crate::secrets::blocking::with_guard(_authority, async {
+        call_stdio_tool(&server, &tool_name, arguments, timeout_ms).await
+    })
+    .await
 }
 
 #[tauri::command]
@@ -77,16 +83,20 @@ pub async fn mcp_store_env_secret(
     }
 
     let _authority = manager.lock_secret_references().await;
-    let secret_id = build_mcp_env_secret_id(&server_id, key);
-    secrets::set_api_key(&secret_id, &value)
-        .map_err(|error| command_error(format!("Failed to store MCP env secret: {}", error)))?;
-    runtime
-        .invalidate_server(
-            &server_id,
-            format!("MCP secrets for server '{server_id}' changed."),
-        )
-        .await;
-    Ok(build_mcp_env_secret_ref(&server_id, key))
+    crate::secrets::blocking::with_guard(_authority, async {
+        let secret_id = build_mcp_env_secret_id(&server_id, key);
+        secrets::set_api_key_async(&secret_id, &value)
+            .await
+            .map_err(|error| command_error(format!("Failed to store MCP env secret: {}", error)))?;
+        runtime
+            .invalidate_server(
+                &server_id,
+                format!("MCP secrets for server '{server_id}' changed."),
+            )
+            .await;
+        Ok(build_mcp_env_secret_ref(&server_id, key))
+    })
+    .await
 }
 
 #[tauri::command]
@@ -105,16 +115,22 @@ pub async fn mcp_delete_env_secret(
     }
 
     let _authority = manager.lock_secret_references().await;
-    let secret_id = build_mcp_env_secret_id(&server_id, key);
-    secrets::delete_api_key(&secret_id)
-        .map_err(|error| command_error(format!("Failed to delete MCP env secret: {}", error)))?;
-    runtime
-        .invalidate_server(
-            &server_id,
-            format!("MCP secrets for server '{server_id}' changed."),
-        )
-        .await;
-    Ok(())
+    crate::secrets::blocking::with_guard(_authority, async {
+        let secret_id = build_mcp_env_secret_id(&server_id, key);
+        secrets::delete_api_key_async(&secret_id)
+            .await
+            .map_err(|error| {
+                command_error(format!("Failed to delete MCP env secret: {}", error))
+            })?;
+        runtime
+            .invalidate_server(
+                &server_id,
+                format!("MCP secrets for server '{server_id}' changed."),
+            )
+            .await;
+        Ok(())
+    })
+    .await
 }
 
 #[tauri::command]
@@ -132,16 +148,21 @@ pub async fn mcp_store_oauth_client_secret(
     }
 
     let _authority = manager.lock_secret_references().await;
-    secrets::set_api_key(&build_mcp_oauth_client_secret_id(&server_id), &value).map_err(
-        |error| command_error(format!("Failed to store MCP OAuth client secret: {error}")),
-    )?;
-    runtime
-        .invalidate_server(
-            &server_id,
-            format!("MCP OAuth client secret for server '{server_id}' changed."),
-        )
-        .await;
-    Ok(build_mcp_oauth_client_secret_ref(&server_id))
+    crate::secrets::blocking::with_guard(_authority, async {
+        secrets::set_api_key_async(&build_mcp_oauth_client_secret_id(&server_id), &value)
+            .await
+            .map_err(|error| {
+                command_error(format!("Failed to store MCP OAuth client secret: {error}"))
+            })?;
+        runtime
+            .invalidate_server(
+                &server_id,
+                format!("MCP OAuth client secret for server '{server_id}' changed."),
+            )
+            .await;
+        Ok(build_mcp_oauth_client_secret_ref(&server_id))
+    })
+    .await
 }
 
 #[tauri::command]
@@ -155,16 +176,21 @@ pub async fn mcp_delete_oauth_client_secret(
     }
 
     let _authority = manager.lock_secret_references().await;
-    secrets::delete_api_key(&build_mcp_oauth_client_secret_id(&server_id)).map_err(|error| {
-        command_error(format!("Failed to delete MCP OAuth client secret: {error}"))
-    })?;
-    runtime
-        .invalidate_server(
-            &server_id,
-            format!("MCP OAuth client secret for server '{server_id}' changed."),
-        )
-        .await;
-    Ok(())
+    crate::secrets::blocking::with_guard(_authority, async {
+        secrets::delete_api_key_async(&build_mcp_oauth_client_secret_id(&server_id))
+            .await
+            .map_err(|error| {
+                command_error(format!("Failed to delete MCP OAuth client secret: {error}"))
+            })?;
+        runtime
+            .invalidate_server(
+                &server_id,
+                format!("MCP OAuth client secret for server '{server_id}' changed."),
+            )
+            .await;
+        Ok(())
+    })
+    .await
 }
 
 #[tauri::command]
@@ -286,9 +312,16 @@ pub async fn mcp_runtime_call_tool(
         let owner = work.clone();
         let received = reservation
             .spawn_tool(work, move |cancel| async move {
-                runtime.call_tool_owned(
-                    &key, &tool_name, arguments, operation_id, Some(owner), Some(cancel),
-                ).await
+                runtime
+                    .call_tool_owned(
+                        &key,
+                        &tool_name,
+                        arguments,
+                        operation_id,
+                        Some(owner),
+                        Some(cancel),
+                    )
+                    .await
             })
             .map_err(|e| McpRuntimeError::new("CHAT_ADMISSION_REFUSED", e))?;
         return received

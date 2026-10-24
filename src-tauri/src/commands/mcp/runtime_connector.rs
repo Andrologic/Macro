@@ -8,7 +8,7 @@ use super::runtime::{
     McpAuthorityGuard, McpConnectedSession, McpConnectionRequest, McpConnector, McpFuture,
     McpOperationCancellation, McpRuntimeError, McpSession,
 };
-use super::stdio::resolve_stdio_transport;
+use super::stdio::resolve_stdio_transport_async;
 use super::streamable_http::{
     probe_modern_era, user_header_map, validate_endpoint, GuardedStreamableHttpClient,
     HttpEraProbeOutcome, RmcpLegacyHttpClient, RmcpModernHttpClient, ValidatedEndpoint,
@@ -105,13 +105,19 @@ impl McpConnector for ConfiguredMcpConnector {
                 McpTransport::StreamableHttp { .. } => {
                     // Fingerprints stay DNS-free: they cover the normalized
                     // URL, its origin and hashed resolved header values.
-                    let input = http_transport_fingerprint_input(&key.server_id, &definition)?;
+                    let server_id = key.server_id.clone();
+                    let secrets_definition = definition.clone();
+                    let input = secret_work(move || {
+                        http_transport_fingerprint_input(&server_id, &secrets_definition)
+                    })
+                    .await?;
                     Ok(http_config_fingerprint(&definition, &input))
                 }
                 _ => {
                     let server = definition_to_dto(&key.server_id, &definition);
-                    let (command, args, env) =
-                        resolve_stdio_transport(&server).map_err(|error| {
+                    let (command, args, env) = resolve_stdio_transport_async(&server)
+                        .await
+                        .map_err(|error| {
                             runtime_error("MCP_RUNTIME_CONFIG_INVALID", error.message)
                         })?;
                     stdio_config_fingerprint(&definition, &command, &args, &env)
@@ -184,8 +190,9 @@ impl McpConnector for ConfiguredMcpConnector {
                     }
                     _ => {
                         let server = definition_to_dto(&request.key.server_id, &definition);
-                        let (command, args, env) =
-                            resolve_stdio_transport(&server).map_err(|error| {
+                        let (command, args, env) = resolve_stdio_transport_async(&server)
+                            .await
+                            .map_err(|error| {
                                 runtime_error("MCP_RUNTIME_CONFIG_INVALID", error.message)
                             })?;
                         let actual_fingerprint =
@@ -271,6 +278,25 @@ fn resolve_remote_header_value(
     } else {
         Ok(value.to_string())
     }
+}
+
+async fn secret_work<T: Send + 'static>(
+    operation: impl FnOnce() -> Result<T, McpRuntimeError> + Send + 'static,
+) -> Result<T, McpRuntimeError> {
+    secrets::blocking::run(operation).await.map_err(|_| {
+        runtime_error(
+            "MCP_RUNTIME_SECRETS_UNAVAILABLE",
+            "The MCP secret operation owner is unavailable.",
+        )
+    })?
+}
+
+pub(crate) async fn resolve_oauth_settings_async(
+    server_id: &str,
+    definition: &McpServerDefinition,
+) -> Result<Option<ResolvedOAuthSettings>, McpRuntimeError> {
+    let (server_id, definition) = (server_id.to_owned(), definition.clone());
+    secret_work(move || resolve_oauth_settings(&server_id, &definition)).await
 }
 
 pub(crate) struct ResolvedOAuthSettings {
@@ -410,18 +436,23 @@ async fn resolve_http_transport(
     let endpoint = validate_endpoint(url)
         .await
         .map_err(|error| runtime_error("MCP_RUNTIME_CONFIG_INVALID", error.message))?;
-    let mut resolved_headers = BTreeMap::new();
-    for (name, value) in headers {
-        resolved_headers.insert(
-            name.clone(),
-            resolve_remote_header_value(&key.server_id, name, value)?,
-        );
-    }
+    let server_id = key.server_id.clone();
+    let secret_headers = headers.clone();
+    let resolved_headers = secret_work(move || {
+        secret_headers
+            .iter()
+            .map(|(name, value)| {
+                resolve_remote_header_value(&server_id, name, value)
+                    .map(|value| (name.clone(), value))
+            })
+            .collect::<Result<BTreeMap<_, _>, _>>()
+    })
+    .await?;
     let user_headers = user_header_map(&resolved_headers)
         .map_err(|error| runtime_error("MCP_RUNTIME_CONFIG_INVALID", error.message))?;
     let mut client = GuardedStreamableHttpClient::new(endpoint.clone(), user_headers, None)
         .map_err(|error| runtime_error("MCP_RUNTIME_CONNECT_FAILED", error.message))?;
-    let oauth = resolve_oauth_settings(&key.server_id, definition)?;
+    let oauth = resolve_oauth_settings_async(&key.server_id, definition).await?;
     let oauth_client_secret = oauth
         .as_ref()
         .and_then(|settings| settings.client_secret.clone());
@@ -1601,6 +1632,90 @@ mod tests {
                 .code,
             "MCP_RUNTIME_CONFIG_INVALID"
         );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn cancelled_real_mcp_fingerprint_retains_configuration_authority() {
+        use fs2::FileExt;
+        let _serial = crate::secrets::lock_test_store();
+        let directory = tempfile::tempdir().unwrap();
+        crate::secrets::init(directory.path()).unwrap();
+        let manager = config::ConfigManager::initialize(directory.path().join("config"))
+            .await
+            .unwrap();
+        let document = manager
+            .get_document(ConfigDocumentKind::Tools, config::ConfigScope::User)
+            .await
+            .unwrap();
+        let result = manager
+            .apply_patch(config::ConfigPatchRequest {
+                kind: ConfigDocumentKind::Tools,
+                scope: config::ConfigScope::User,
+                expected_etag: document.etag,
+                patch: vec![config::JsonPatchOperation {
+                    op: "add".into(),
+                    path: "/mcpServers".into(),
+                    from: None,
+                    value: Some(json!({"synthetic-guard":{"enabled":true,"transport":{
+                        "type":"stdio","command":"synthetic-never-executed","args":[],
+                        "env":{"TOKEN":"macro-secret://mcp-env/synthetic-guard/TOKEN"}
+                    }}})),
+                }],
+                source: config::ConfigChangeSource::UserInterface,
+            })
+            .await
+            .unwrap();
+        assert!(result.pending_change.is_none());
+        let id = "mcp-env:synthetic-guard:TOKEN";
+        crate::secrets::set_api_key(id, "synthetic-token").unwrap();
+        crate::secrets::init(directory.path()).unwrap(); // exercise the real disk miss
+        let file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(directory.path().join("provider-secrets.lock"))
+            .unwrap();
+        file.lock_exclusive().unwrap();
+        let runtime = super::super::runtime::McpRuntimeManager::with_connector(Arc::new(
+            ConfiguredMcpConnector::with_config_manager(manager.clone()),
+        ));
+        let caller = {
+            let runtime = runtime.clone();
+            tokio::spawn(async move {
+                runtime
+                    .connect(McpRuntimeSelector {
+                        server_id: "synthetic-guard".into(),
+                        project_ids: Vec::new(),
+                    })
+                    .await
+            })
+        };
+        tokio::time::timeout(Duration::from_secs(3), async {
+            while crate::secrets::policy::POLICY.pending_for_test() == 0 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        caller.abort();
+        assert!(caller.await.unwrap_err().is_cancelled());
+        let mut mutation = Box::pin(manager.lock_secret_references());
+        assert!(
+            tokio::time::timeout(Duration::from_millis(30), &mut mutation)
+                .await
+                .is_err()
+        );
+        FileExt::unlock(&file).unwrap();
+        let guard = tokio::time::timeout(Duration::from_secs(3), mutation)
+            .await
+            .unwrap();
+        assert_eq!(
+            crate::secrets::get_api_key(id).unwrap().as_deref(),
+            Some("synthetic-token")
+        );
+        assert!(runtime.snapshot().await.servers.is_empty());
+        drop(guard);
+        runtime.shutdown_all().await;
+        crate::secrets::blocking::join_test_jobs().await;
     }
 
     #[test]

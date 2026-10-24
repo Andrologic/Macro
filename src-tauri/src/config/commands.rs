@@ -89,12 +89,14 @@ pub async fn list_orphan_secrets(
 ) -> Result<Vec<OrphanSecretDto>, ConfigApiError> {
     let documents = manager.secret_reference_documents().await;
     let (api_keys, sessions) = referenced_secret_ids(&documents);
-    let entries = crate::secrets::list_secret_metadata().map_err(|error| ConfigApiError {
-        code: "config.secrets.read_failed".to_string(),
-        message: format!("Impossible de lire les métadonnées des secrets : {error}"),
-        document: None,
-        diagnostics: Vec::new(),
-    })?;
+    let entries = crate::secrets::list_secret_metadata_async()
+        .await
+        .map_err(|error| ConfigApiError {
+            code: "config.secrets.read_failed".to_string(),
+            message: format!("Impossible de lire les métadonnées des secrets : {error}"),
+            document: None,
+            diagnostics: Vec::new(),
+        })?;
     Ok(entries
         .into_iter()
         .filter(|entry| {
@@ -130,6 +132,23 @@ pub struct DeleteOrphanSecretRequest {
     secret_type: String,
 }
 
+#[cfg(test)]
+static ORPHAN_DELETE_PAUSE: std::sync::Mutex<
+    Option<(
+        tokio::sync::oneshot::Sender<()>,
+        tokio::sync::oneshot::Receiver<()>,
+    )>,
+> = std::sync::Mutex::new(None);
+
+#[cfg(test)]
+async fn pause_before_orphan_delete() {
+    let pause = ORPHAN_DELETE_PAUSE.lock().unwrap().take();
+    if let Some((reached, release)) = pause {
+        let _ = reached.send(());
+        let _ = release.await;
+    }
+}
+
 pub async fn delete_orphan_secret(
     manager: &ConfigManager,
     request: DeleteOrphanSecretRequest,
@@ -143,26 +162,31 @@ pub async fn delete_orphan_secret(
         });
     }
     let _reference_guard = manager.lock_secret_references().await;
-    let is_orphan = list_orphan_secrets(manager)
-        .await?
-        .into_iter()
-        .any(|entry| entry.id == request.id && entry.secret_type == request.secret_type);
-    if !is_orphan {
-        return Err(ConfigApiError {
-            code: "config.secrets.not_orphan".to_string(),
-            message: "Ce secret est encore utilisé ou n’existe plus.".to_string(),
-            document: None,
-            diagnostics: Vec::new(),
-        });
-    }
-    crate::secrets::delete_secret_metadata(&request.id, &request.secret_type).map_err(|error| {
-        ConfigApiError {
-            code: "config.secrets.delete_failed".to_string(),
-            message: format!("Impossible de supprimer le secret orphelin : {error}"),
-            document: None,
-            diagnostics: Vec::new(),
+    crate::secrets::blocking::with_guard(_reference_guard, async {
+        let is_orphan = list_orphan_secrets(manager)
+            .await?
+            .into_iter()
+            .any(|entry| entry.id == request.id && entry.secret_type == request.secret_type);
+        if !is_orphan {
+            return Err(ConfigApiError {
+                code: "config.secrets.not_orphan".to_string(),
+                message: "Ce secret est encore utilisé ou n’existe plus.".to_string(),
+                document: None,
+                diagnostics: Vec::new(),
+            });
         }
+        #[cfg(test)]
+        pause_before_orphan_delete().await;
+        crate::secrets::delete_secret_metadata_async(&request.id, &request.secret_type)
+            .await
+            .map_err(|error| ConfigApiError {
+                code: "config.secrets.delete_failed".to_string(),
+                message: format!("Impossible de supprimer le secret orphelin : {error}"),
+                document: None,
+                diagnostics: Vec::new(),
+            })
     })
+    .await
 }
 
 #[tauri::command]
@@ -377,19 +401,29 @@ pub async fn config_patch(
     request.source = ConfigChangeSource::Agent;
     if let Some(admission) = chat_admission {
         let admission_error = |message: String| ConfigApiError {
-            code: "CHAT_ADMISSION_REFUSED".into(), message, document: None, diagnostics: Vec::new(),
+            code: "CHAT_ADMISSION_REFUSED".into(),
+            message,
+            document: None,
+            diagnostics: Vec::new(),
         };
         let (reservation, work) = crate::commands::chat_admission::admit_tool(
-            &admission_runtime, &ai_state, window.label(), admission,
-        ).await.map_err(|error| admission_error(error.message))?;
+            &admission_runtime,
+            &ai_state,
+            window.label(),
+            admission,
+        )
+        .await
+        .map_err(|error| admission_error(error.message))?;
         let manager = manager.inner().clone();
-        let received = reservation.spawn_tool(work, move |_cancel| async move {
-            // The configuration owner's file transactions run to completion;
-            // dropping the browser waiter never detaches this writer.
-            let result = manager.apply_patch(request).await?;
-            emit_patch_events(&app, &result);
-            Ok::<_, ConfigApiError>(result)
-        }).map_err(admission_error)?;
+        let received = reservation
+            .spawn_tool(work, move |_cancel| async move {
+                // The configuration owner's file transactions run to completion;
+                // dropping the browser waiter never detaches this writer.
+                let result = manager.apply_patch(request).await?;
+                emit_patch_events(&app, &result);
+                Ok::<_, ConfigApiError>(result)
+            })
+            .map_err(admission_error)?;
         return received.await.map_err(admission_error)?;
     }
     let result = manager.apply_patch(request).await?;
@@ -441,6 +475,85 @@ mod tests {
         assert!(api_keys.contains("speech-provider:dictation"));
         assert!(api_keys.contains("speech:dictation"));
         assert!(api_keys.contains("web-search:brave"));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn cancelled_orphan_delete_keeps_real_reference_authority_through_the_write() {
+        use fs2::FileExt;
+        let _serial = crate::secrets::lock_test_store();
+        let directory = tempfile::tempdir().unwrap();
+        crate::secrets::init(directory.path()).unwrap();
+        let manager = ConfigManager::initialize(directory.path().join("config"))
+            .await
+            .unwrap();
+        let id = build_mcp_oauth_client_secret_id("synthetic-orphan");
+        crate::secrets::set_api_key(&id, "synthetic-preserved").unwrap();
+        let (reached, started) = tokio::sync::oneshot::channel();
+        let (release, resume) = tokio::sync::oneshot::channel();
+        *ORPHAN_DELETE_PAUSE.lock().unwrap() = Some((reached, resume));
+        let caller = {
+            let manager = manager.clone();
+            let id = id.clone();
+            tokio::spawn(async move {
+                delete_orphan_secret(
+                    &manager,
+                    DeleteOrphanSecretRequest {
+                        id,
+                        secret_type: "apiKey".into(),
+                    },
+                )
+                .await
+            })
+        };
+        tokio::time::timeout(std::time::Duration::from_secs(3), started)
+            .await
+            .unwrap()
+            .unwrap();
+        let file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(directory.path().join("provider-secrets.lock"))
+            .unwrap();
+        file.lock_exclusive().unwrap();
+        let before = std::fs::read(directory.path().join("provider-secrets.json")).unwrap();
+        release.send(()).unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(3), async {
+            while crate::secrets::policy::POLICY.pending_for_test() == 0 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        caller.abort();
+        assert!(caller.await.unwrap_err().is_cancelled());
+        let mut reader = Box::pin(manager.lock_mcp_runtime_configuration());
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(30), &mut reader)
+                .await
+                .is_err()
+        );
+        let mut writer = Box::pin(manager.lock_secret_references());
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(30), &mut writer)
+                .await
+                .is_err()
+        );
+        assert_eq!(
+            std::fs::read(directory.path().join("provider-secrets.json")).unwrap(),
+            before
+        );
+        FileExt::unlock(&file).unwrap();
+        let guard = tokio::time::timeout(std::time::Duration::from_secs(3), reader)
+            .await
+            .unwrap();
+        assert!(crate::secrets::get_api_key(&id).unwrap().is_none());
+        drop(guard);
+        drop(
+            tokio::time::timeout(std::time::Duration::from_secs(3), writer)
+                .await
+                .unwrap(),
+        );
+        crate::secrets::blocking::join_test_jobs().await;
     }
 
     #[tokio::test]

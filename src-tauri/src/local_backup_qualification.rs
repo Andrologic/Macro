@@ -47,33 +47,65 @@ fn proof(name: &str, bytes: &[u8]) {
 fn status(data: &Path) -> BackupStatus {
     serde_json::from_slice(&fs::read(data.join("local-backup/status.json")).unwrap()).unwrap()
 }
-fn assert_raw_files(actual: &Archive, expected: &Archive) {
-    assert_eq!(
-        actual.files.keys().collect::<Vec<_>>(),
-        expected.files.keys().collect::<Vec<_>>()
-    );
-    for (name, entry) in &expected.files {
-        assert_eq!(
-            STANDARD.decode(&actual.files[name].data).unwrap(),
-            STANDARD.decode(&entry.data).unwrap(),
-            "{name}"
-        );
+// Startup now joins policy initialization. Compare every credential, including raw
+// legacy session fields, separately from the fresh epoch and migration journal.
+fn assert_initialized_policy(actual: &Archive, expected: &Archive) {
+    use serde_json::{json, Value};
+    let decode = |entry: &Entry| -> Value {
+        serde_json::from_slice(&STANDARD.decode(&entry.data).unwrap()).unwrap()
+    };
+    let current = decode(&actual.files["data/provider-secrets.json"]);
+    let previous = expected.files.get("data/provider-secrets.json").map(decode)
+        .unwrap_or_else(|| json!({}));
+    assert_eq!(current.as_object().unwrap().len(), 4);
+    assert_eq!(current["version"], 2);
+    assert!(!uuid::Uuid::parse_str(current["policyEpoch"].as_str().unwrap()).unwrap().is_nil());
+    assert_ne!(current["policyEpoch"], previous["policyEpoch"]);
+    assert_eq!(current["namespaces"].as_object().unwrap().keys().map(String::as_str).collect::<Vec<_>>(),
+        ["mcp", "providers", "speech", "system", "webSearch"]);
+    let flatten = |value: &Value| {
+        let mut entries = BTreeMap::new();
+        for map in value.get("api_keys").into_iter().chain(
+            value.get("namespaces").and_then(Value::as_object).into_iter().flat_map(|maps| maps.values())) {
+            for (id, secret) in map.as_object().unwrap() {
+                assert!(secret.is_string());
+                assert!(entries.insert(id.clone(), secret.clone()).is_none());
+            }
+        }
+        entries
+    };
+    assert_eq!(flatten(&current), flatten(&previous));
+    assert_eq!(current["chatgpt_sessions"], previous.get("chatgpt_sessions").cloned().unwrap_or_else(|| json!({})));
+    assert!(!actual.files.contains_key("data/provider-secrets.migration-pending.json"));
+    if let Some(entry) = expected.files.get("data/provider-secrets.migration-pending.json") {
+        let journal = decode(entry);
+        let backup = format!("data/{}", journal["backup_file"].as_str().unwrap());
+        assert_eq!(hash(&STANDARD.decode(&expected.files[&backup].data).unwrap()), journal["source_sha256"].as_str().unwrap());
+        assert_eq!(actual.files[&backup].data, expected.files[&backup].data);
     }
 }
 
-// Restore intentionally changes only local ownership and uncertain work. All
-// other SQL values and all other managed files must still match the preservation.
-pub(super) async fn assert_held_files(actual: &Archive, expected: &Archive) {
-    use sqlx::Row;
-    assert_eq!(
-        actual.files.keys().collect::<Vec<_>>(),
-        expected.files.keys().collect::<Vec<_>>()
-    );
+fn assert_startup_files(actual: &Archive, expected: &Archive, held_database: bool) {
+    assert_initialized_policy(actual, expected);
+    let ordinary = |name: &&String| name.as_str() != "data/provider-secrets.json"
+        && name.as_str() != "data/provider-secrets.migration-pending.json";
+    assert_eq!(actual.files.keys().filter(ordinary).collect::<Vec<_>>(),
+        expected.files.keys().filter(ordinary).collect::<Vec<_>>());
     for (name, entry) in &expected.files {
-        if name != "data/macro.db" {
+        if ordinary(&name) && !(held_database && name == "data/macro.db") {
             assert_eq!(actual.files[name].data, entry.data, "{name}");
         }
     }
+}
+fn assert_raw_files(actual: &Archive, expected: &Archive) {
+    assert_startup_files(actual, expected, false);
+}
+
+// Restore changes local ownership and uncertain work; policy initialization
+// rotates authority. Every other SQL value and managed file remains identical.
+pub(super) async fn assert_held_files(actual: &Archive, expected: &Archive) {
+    use sqlx::Row;
+    assert_startup_files(actual, expected, true);
     let temp = tempfile::tempdir().unwrap();
     let mut snapshots = Vec::new();
     for (label, archive) in [("actual", actual), ("expected", expected)] {

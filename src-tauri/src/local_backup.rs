@@ -1189,12 +1189,32 @@ async fn process_startup_with_preserver(
     config: &Path,
     preserve: fn(&Archive, &Path) -> Result<()>,
 ) -> Result<()> {
+    let data = data.to_owned();
+    let config = config.to_owned();
+    let runtime = tokio::runtime::Handle::current();
+    #[cfg(not(test))]
+    let owner = crate::secrets::policy::POLICY.clone();
+    #[cfg(test)]
+    let owner = std::sync::Arc::new(crate::secrets::policy::PolicyOwner::for_test(&data));
+    crate::secrets::blocking::run(move || {
+        owner.startup(&data, |rotate| {
+            runtime.block_on(process_startup_locked(&data, &config, preserve, rotate))
+        })
+    }).await.map_err(|error| error.to_string())?
+}
+
+async fn process_startup_locked(
+    data: &Path,
+    config: &Path,
+    preserve: fn(&Archive, &Path) -> Result<()>,
+    rotate_before_journal_removal: &dyn Fn() -> std::result::Result<(), crate::secrets::SecretError>,
+) -> Result<()> {
     let dir = data.join("local-backup");
     safe_parent(&dir, dir.parent().ok_or("Missing profile root")?)?;
     fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     let journal = dir.join("restoring.json");
     if journal.exists() {
-        let marker: RestoreJournal =
+        let mut marker: RestoreJournal =
             serde_json::from_slice(&read_bounded(&journal)?).map_err(|e| e.to_string())?;
         if marker.phase == RestorePhase::Rollback {
             let original = load_archive(&preserved_path(&dir, &marker)?)?;
@@ -1210,12 +1230,16 @@ async fn process_startup_with_preserver(
                 &dir.join("status.json"),
                 &serde_json::to_vec(&status).map_err(|e| e.to_string())?,
             )?;
+            // Raw rollback is complete. A failed nonce rotation must not apply it again.
+            marker.phase = RestorePhase::InstallHold;
+            atomic(&journal, &serde_json::to_vec(&marker).map_err(|e| e.to_string())?)?;
         }
         install_restore_hold(data).await?;
         // A recovered request must not replay the failed restore on this launch.
         if dir.join("request.json").exists() {
             remove_durable(&dir.join("request.json"))?;
         }
+        rotate_before_journal_removal().map_err(|error| error.to_string())?;
         remove_durable(&journal)?;
     }
     let request_path = dir.join("request.json");
@@ -1260,7 +1284,12 @@ async fn process_startup_with_preserver(
             atomic(&journal, &serde_json::to_vec(&marker).map_err(|e| e.to_string())?)?;
             if let Err(error) = apply(&archive, data, config) {
                 apply_files(&original, data, config, true).map_err(|rollback| format!("Restore failed: {error}. Rollback failed: {rollback}. Original preserved in {}", dir.display()))?;
+                let status = BackupStatus { message: error.clone(), code: Some(BackupStatusCode::Failed), path: None, browser: None };
+                atomic(&dir.join("status.json"), &serde_json::to_vec(&status).map_err(|e| e.to_string())?)?;
+                marker.phase = RestorePhase::InstallHold;
+                atomic(&journal, &serde_json::to_vec(&marker).map_err(|e| e.to_string())?)?;
                 install_restore_hold(data).await?;
+                rotate_before_journal_removal().map_err(|error| error.to_string())?;
                 remove_durable(&journal)?;
                 return Err(error);
             }
@@ -1270,6 +1299,7 @@ async fn process_startup_with_preserver(
             atomic(&journal, &serde_json::to_vec(&marker).map_err(|e| e.to_string())?)?;
             install_restore_hold(data).await?;
             remove_durable(&request_path)?;
+            rotate_before_journal_removal().map_err(|error| error.to_string())?;
             remove_durable(&journal)?;
             Ok(status)
         } else { Err("Unknown backup operation".into()) }
@@ -1380,6 +1410,113 @@ pub fn local_backup_acknowledge(app: tauri::AppHandle) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn assert_empty_policy(data: &Path) {
+        let value: serde_json::Value = serde_json::from_slice(&fs::read(data.join(PROVIDER_SECRETS_FILE)).unwrap()).unwrap();
+        assert_eq!(value.as_object().unwrap().len(), 4);
+        assert_eq!(value["version"], 2);
+        let epoch = uuid::Uuid::parse_str(value["policyEpoch"].as_str().unwrap()).unwrap();
+        assert!(!epoch.is_nil());
+        assert_eq!(value["namespaces"].as_object().unwrap().len(), 5);
+        assert!(value["namespaces"].as_object().unwrap().values().all(|map| map.as_object().unwrap().is_empty()));
+        assert!(value["chatgpt_sessions"].as_object().unwrap().is_empty());
+    }
+
+    #[test]
+    fn policy_restore_crash_child() {
+        use std::io::{BufRead, Write};
+        let Some(data) = std::env::var_os("MACRO_POLICY_RESTORE_CRASH_DATA") else { return };
+        let config = PathBuf::from(std::env::var_os("MACRO_POLICY_RESTORE_CRASH_CONFIG").unwrap());
+        let data = PathBuf::from(data);
+        let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        runtime.block_on(async {
+            let handle = tokio::runtime::Handle::current();
+            let owner = crate::secrets::policy::PolicyOwner::for_test(&data);
+            crate::secrets::blocking::run(move || {
+                owner.startup(&data, |_| handle.block_on(process_startup_locked(&data, &config, preserve_raw, &|| {
+                    println!("synthetic-restore-lock-held");
+                    std::io::stdout().flush().unwrap();
+                    let mut command = String::new();
+                    std::io::stdin().lock().read_line(&mut command).unwrap();
+                    std::process::exit(73);
+                })))
+            }).await.unwrap().unwrap();
+        });
+        panic!("crash hook was not reached");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn interrupted_raw_restore_never_revalidates_an_old_policy_stamp() {
+        use std::io::{BufRead, Write};
+        use std::sync::{mpsc, Arc};
+        use std::time::Duration;
+        struct Child(std::process::Child);
+        impl Drop for Child {
+            fn drop(&mut self) { let _ = self.0.kill(); let _ = self.0.wait(); }
+        }
+        let (_temp, data, config) = profile().await;
+        let owner = Arc::new(crate::secrets::policy::PolicyOwner::for_test(&data));
+        owner.startup(&data, |_| Ok(())).unwrap();
+        let old_stamp = owner.qualification_stamp().unwrap();
+        let old_bytes = fs::read(data.join(PROVIDER_SECRETS_FILE)).unwrap();
+        let original = capture_raw(&data, &config, BTreeMap::new()).unwrap();
+        let directory = data.join("local-backup");
+        fs::create_dir_all(&directory).unwrap();
+        let preserved_name = format!("preserved-{}.json", uuid::Uuid::new_v4());
+        let preserved = directory.join(&preserved_name);
+        preserve_raw(&original, &preserved).unwrap();
+        let archive_bytes = fs::read(&preserved).unwrap();
+        let writer = crate::secrets::policy::PolicyOwner::for_test(&data);
+        writer.startup(&data, |_| Ok(())).unwrap();
+        assert!(owner.qualification_stamp().unwrap() != old_stamp);
+        let marker = RestoreJournal { preserved: preserved_name, phase: RestorePhase::Rollback };
+        atomic(&directory.join("restoring.json"), &serde_json::to_vec(&marker).unwrap()).unwrap();
+        let mut child = Child(std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "local_backup::tests::policy_restore_crash_child", "--nocapture"])
+            .env("MACRO_POLICY_RESTORE_CRASH_DATA", &data)
+            .env("MACRO_POLICY_RESTORE_CRASH_CONFIG", &config)
+            .stdin(std::process::Stdio::piped()).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::inherit())
+            .spawn().unwrap());
+        let stdout = child.0.stdout.take().unwrap();
+        let (held_tx, held_rx) = mpsc::channel();
+        let reader = std::thread::spawn(move || {
+            for line in std::io::BufReader::new(stdout).lines() {
+                if line.unwrap().contains("synthetic-restore-lock-held") {
+                    held_tx.send(()).unwrap(); break;
+                }
+            }
+        });
+        held_rx.recv_timeout(Duration::from_secs(10)).unwrap();
+        reader.join().unwrap();
+        let (captured_tx, captured_rx) = mpsc::channel();
+        let capture_owner = owner.clone();
+        let capture = std::thread::spawn(move || {
+            captured_tx.send(capture_owner.qualification_stamp().is_ok()).unwrap();
+        });
+        let excluded = captured_rx.recv_timeout(Duration::from_millis(50)).is_err();
+        child.0.stdin.take().unwrap().write_all(b"crash\n").unwrap();
+        let status = child.0.wait().unwrap();
+        let refused = !captured_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        capture.join().unwrap();
+        assert!(excluded);
+        assert_eq!(status.code(), Some(73));
+        assert!(refused);
+        assert_eq!(fs::read(data.join(PROVIDER_SECRETS_FILE)).unwrap(), old_bytes);
+        assert_eq!(fs::read(&preserved).unwrap(), archive_bytes);
+        let pending: RestoreJournal = serde_json::from_slice(&fs::read(directory.join("restoring.json")).unwrap()).unwrap();
+        assert!(pending.phase == RestorePhase::InstallHold);
+        assert!(owner.qualification_stamp().is_err());
+        // A closed-profile repair must survive retry: the raw archive is not applied twice.
+        let mut repaired: serde_json::Value = serde_json::from_slice(&old_bytes).unwrap();
+        repaired["namespaces"]["providers"]["synthetic"] = serde_json::json!("repair-before-retry");
+        fs::write(data.join(PROVIDER_SECRETS_FILE), serde_json::to_vec(&repaired).unwrap()).unwrap();
+        process_startup(&data, &config).await.unwrap();
+        let after: serde_json::Value = serde_json::from_slice(&fs::read(data.join(PROVIDER_SECRETS_FILE)).unwrap()).unwrap();
+        assert_eq!(after["namespaces"]["providers"]["synthetic"], "repair-before-retry");
+        assert!(owner.qualification_stamp().unwrap() != old_stamp);
+        assert_eq!(fs::read(&preserved).unwrap(), archive_bytes);
+        assert!(!directory.join("restoring.json").exists());
+    }
+
     pub(super) async fn profile() -> (tempfile::TempDir, PathBuf, PathBuf) {
         let temp = tempfile::tempdir().unwrap();
         let data = temp.path().join("data");
@@ -1988,10 +2125,9 @@ mod tests {
         assert!(!dir.join("restoring.json").exists());
         assert!(!dir.join("request.json").exists());
         let recovered = capture_raw(&data, &config, BTreeMap::new()).unwrap();
-        assert_eq!(
-            recovered.files.keys().collect::<Vec<_>>(),
-            original.files.keys().collect::<Vec<_>>()
-        );
+        // Startup creates the empty policy document; all archived files remain checked below.
+        assert_empty_policy(&data);
+        assert!(!original.files.contains_key("data/provider-secrets.json"));
         super::qualification::assert_held_files(&recovered, &original).await;
         process_startup(&data, &config).await.unwrap();
         assert_eq!(fs::read(object).unwrap(), b"original leaf");
@@ -2530,8 +2666,11 @@ mod tests {
             status.message
         );
 
+        assert_empty_policy(&data);
         for file in PROVIDER_SECRETS_RECOVERY_FILES {
-            assert!(!data.join(file).exists(), "{file} must be detached");
+            if *file != PROVIDER_SECRETS_FILE {
+                assert!(!data.join(file).exists(), "{file} must be detached");
+            }
         }
         let _secret_store_guard = crate::secrets::lock_test_store();
         crate::secrets::init(&data).expect("initialize detached secret store");

@@ -2331,7 +2331,7 @@ pub async fn list_provider_configs(pool: &SqlitePool) -> DbResult<Vec<ProviderCo
                 .unwrap_or_default()
                 .to_string(),
             api_key: None,
-            has_stored_api_key: crate::secrets::get_api_key(id)
+            has_stored_api_key: crate::secrets::get_api_key_async(id).await
                 .map_err(|error| DbError::Validation(error.to_string()))?
                 .is_some(),
             is_enabled: definition

@@ -33,9 +33,13 @@ async fn configured_speech_providers(
     let mut providers = Vec::with_capacity(definitions.len());
     for (id, definition) in definitions {
         let has_stored_api_key = if is_managed_provider(id) {
-            macro_ai::access_token().map_err(command_error)?.is_some()
+            macro_ai::access_token_async()
+                .await
+                .map_err(command_error)?
+                .is_some()
         } else {
-            secrets::get_api_key(&secret_id(id))
+            secrets::get_api_key_async(&secret_id(id))
+                .await
                 .map_err(|error| command_error(error.to_string()))?
                 .is_some()
         };
@@ -185,7 +189,8 @@ pub async fn speech_create_provider_config(
     validate_provider_fields(&name, &provider_type, &base_url, &model, is_local)?;
     let _pool = get_pool(&pool).await?;
     let lock = provider_mutation_lock("speech:create");
-    let _guard = lock.lock().await;
+    let _guard = lock.lock_owned().await;
+    crate::secrets::blocking::with_guard(_guard, async {
     let id = format!("speech-{}", uuid::Uuid::new_v4().simple());
     let document = config_manager
         .effective_user_document(ConfigDocumentKind::Providers)
@@ -209,7 +214,7 @@ pub async fn speech_create_provider_config(
     patch_speech_providers(config_manager.inner(), providers.clone()).await?;
 
     if let Some(api_key) = api_key.filter(|value| !value.trim().is_empty()) {
-        if let Err(error) = secrets::set_api_key(&secret_id(&id), api_key.trim()) {
+        if let Err(error) = secrets::set_api_key_async(&secret_id(&id), api_key.trim()).await {
             providers.remove(&id);
             if let Err(patch_error) =
                 patch_speech_providers(config_manager.inner(), providers).await
@@ -229,6 +234,7 @@ pub async fn speech_create_provider_config(
         .into_iter()
         .find(|provider| provider.id == id)
         .ok_or_else(|| command_error("Le fournisseur vocal créé est introuvable."))
+    }).await
 }
 
 #[derive(Debug, Deserialize)]
@@ -258,73 +264,80 @@ pub async fn speech_update_provider_config(
     }
     let _pool = get_pool(&pool).await?;
     let lock = provider_mutation_lock(&secret_id(&params.id));
-    let _guard = lock.lock().await;
-    let previous = configured_speech_providers(config_manager.inner())
-        .await?
-        .into_iter()
-        .find(|provider| provider.id == params.id)
-        .ok_or_else(|| command_error(format!("Speech provider {} not found.", params.id)))?;
-    let next_name = params.name.as_deref().unwrap_or(&previous.name);
-    let next_type = params
-        .provider_type
-        .as_deref()
-        .unwrap_or(&previous.provider_type);
-    let next_base_url = params.base_url.as_deref().unwrap_or(&previous.base_url);
-    let next_model = params.model.as_deref().unwrap_or(&previous.model);
-    let next_is_local = params.is_local.unwrap_or(previous.is_local);
-    validate_provider_fields(
-        next_name,
-        next_type,
-        next_base_url,
-        next_model,
-        next_is_local,
-    )?;
-    let previous_api_key = if params.api_key.is_some() {
-        secrets::get_api_key(&secret_id(&params.id)).map_err(|error| {
-            command_error(format!("Failed to access speech provider API key: {error}"))
-        })?
-    } else {
-        None
-    };
-    if let Some(api_key) = params.api_key.as_deref() {
-        if api_key.trim().is_empty() {
-            secrets::delete_api_key(&secret_id(&params.id))
+    let _guard = lock.lock_owned().await;
+    crate::secrets::blocking::with_guard(_guard, async {
+        let previous = configured_speech_providers(config_manager.inner())
+            .await?
+            .into_iter()
+            .find(|provider| provider.id == params.id)
+            .ok_or_else(|| command_error(format!("Speech provider {} not found.", params.id)))?;
+        let next_name = params.name.as_deref().unwrap_or(&previous.name);
+        let next_type = params
+            .provider_type
+            .as_deref()
+            .unwrap_or(&previous.provider_type);
+        let next_base_url = params.base_url.as_deref().unwrap_or(&previous.base_url);
+        let next_model = params.model.as_deref().unwrap_or(&previous.model);
+        let next_is_local = params.is_local.unwrap_or(previous.is_local);
+        validate_provider_fields(
+            next_name,
+            next_type,
+            next_base_url,
+            next_model,
+            next_is_local,
+        )?;
+        let previous_api_key = if params.api_key.is_some() {
+            secrets::get_api_key_async(&secret_id(&params.id))
+                .await
+                .map_err(|error| {
+                    command_error(format!("Failed to access speech provider API key: {error}"))
+                })?
         } else {
-            secrets::set_api_key(&secret_id(&params.id), api_key.trim())
+            None
+        };
+        if let Some(api_key) = params.api_key.as_deref() {
+            if api_key.trim().is_empty() {
+                secrets::delete_api_key_async(&secret_id(&params.id)).await
+            } else {
+                secrets::set_api_key_async(&secret_id(&params.id), api_key.trim()).await
+            }
+            .map_err(|error| command_error(format!("Failed to update speech secret: {error}")))?;
         }
-        .map_err(|error| command_error(format!("Failed to update speech secret: {error}")))?;
-    }
 
-    let document = config_manager
-        .effective_user_document(ConfigDocumentKind::Providers)
-        .await;
-    let mut providers = document
-        .get("speechProviders")
-        .and_then(Value::as_object)
-        .cloned()
-        .unwrap_or_default();
-    providers.insert(
-        params.id.clone(),
-        serde_json::json!({
-            "providerType": next_type.trim(),
-            "name": next_name.trim(),
-            "baseUrl": next_base_url.trim(),
-            "model": next_model.trim(),
-            "enabled": params.is_enabled.unwrap_or(previous.is_enabled),
-            "isLocal": next_is_local
-        }),
-    );
-    if let Err(error) = patch_speech_providers(config_manager.inner(), providers).await {
-        if params.api_key.is_some() {
-            let _ = match previous_api_key {
-                Some(previous) => secrets::set_api_key(&secret_id(&params.id), &previous),
-                None => secrets::delete_api_key(&secret_id(&params.id)),
-            };
+        let document = config_manager
+            .effective_user_document(ConfigDocumentKind::Providers)
+            .await;
+        let mut providers = document
+            .get("speechProviders")
+            .and_then(Value::as_object)
+            .cloned()
+            .unwrap_or_default();
+        providers.insert(
+            params.id.clone(),
+            serde_json::json!({
+                "providerType": next_type.trim(),
+                "name": next_name.trim(),
+                "baseUrl": next_base_url.trim(),
+                "model": next_model.trim(),
+                "enabled": params.is_enabled.unwrap_or(previous.is_enabled),
+                "isLocal": next_is_local
+            }),
+        );
+        if let Err(error) = patch_speech_providers(config_manager.inner(), providers).await {
+            if params.api_key.is_some() {
+                let _ = match previous_api_key {
+                    Some(previous) => {
+                        secrets::set_api_key_async(&secret_id(&params.id), &previous).await
+                    }
+                    None => secrets::delete_api_key_async(&secret_id(&params.id)).await,
+                };
+            }
+            return Err(error);
         }
-        return Err(error);
-    }
 
-    Ok(())
+        Ok(())
+    })
+    .await
 }
 
 #[cfg(test)]
@@ -393,7 +406,8 @@ pub async fn speech_delete_provider_config(
     }
     let _pool = get_pool(&pool).await?;
     let lock = provider_mutation_lock(&secret_id(&id));
-    let _guard = lock.lock().await;
+    let _guard = lock.lock_owned().await;
+    crate::secrets::blocking::with_guard(_guard, async {
     configured_speech_providers(config_manager.inner())
         .await?
         .into_iter()
@@ -408,14 +422,14 @@ pub async fn speech_delete_provider_config(
         .cloned()
         .unwrap_or_default();
     providers.remove(&id);
-    let previous_secret = secrets::get_api_key(&secret_id(&id)).map_err(|error| {
+    let previous_secret = secrets::get_api_key_async(&secret_id(&id)).await.map_err(|error| {
         command_error(format!("Failed to access speech provider API key: {error}"))
     })?;
-    secrets::delete_api_key(&secret_id(&id))
+    secrets::delete_api_key_async(&secret_id(&id)).await
         .map_err(|error| command_error(format!("Failed to delete speech secret: {error}")))?;
     if let Err(error) = patch_speech_providers(config_manager.inner(), providers).await {
         if let Some(previous_secret) = previous_secret.as_deref() {
-            if let Err(restore_error) = secrets::set_api_key(&secret_id(&id), previous_secret) {
+            if let Err(restore_error) = secrets::set_api_key_async(&secret_id(&id), previous_secret).await {
                 tracing::error!(
                     "Failed to restore speech secret for {id} after failed config update: {restore_error}"
                 );
@@ -424,6 +438,7 @@ pub async fn speech_delete_provider_config(
         return Err(error);
     }
     Ok(())
+    }).await
 }
 
 #[tauri::command]
@@ -464,9 +479,11 @@ pub async fn speech_transcribe(
                 .map_err(command_error)?,
         )
     } else {
-        secrets::get_api_key(&secret_id(&provider_id)).map_err(|error| {
-            command_error(format!("Failed to access speech provider API key: {error}"))
-        })?
+        secrets::get_api_key_async(&secret_id(&provider_id))
+            .await
+            .map_err(|error| {
+                command_error(format!("Failed to access speech provider API key: {error}"))
+            })?
     };
 
     speech::transcribe(

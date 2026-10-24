@@ -123,6 +123,7 @@ fn validate_secret(secret: &str) -> Result<(), PilotSecretError> {
 }
 
 pub(super) trait Vault: Send + Sync {
+    fn silent_capture_supported(&self) -> bool { false }
     fn prepare_resume(&self, _kind: PilotSecretKind) -> Result<(), PilotSecretError> {
         Ok(())
     }
@@ -174,22 +175,24 @@ pub fn suspend(reason: &'static str) {
 async fn blocking<T: Send + 'static>(
     operation: impl FnOnce() -> Result<T, PilotSecretError> + Send + 'static,
 ) -> Result<T, PilotSecretError> {
-    tauri::async_runtime::spawn_blocking(operation)
+    crate::secrets::blocking::run(operation)
         .await
         .map_err(|_| PilotSecretError::VaultUnavailable)?
 }
 
 #[tauri::command]
-pub fn pilot_vault_activate(
+pub async fn pilot_vault_activate(
     context: PilotVaultContext,
     generation: Option<String>,
 ) -> Result<VaultLease, PilotSecretError> {
-    manager()?.activate(context, generation.as_deref())
+    let manager = manager()?;
+    blocking(move || manager.activate(context, generation.as_deref())).await
 }
 
 #[tauri::command]
-pub fn pilot_vault_invalidate(generation: Option<String>) -> Result<VaultLease, PilotSecretError> {
-    manager()?.invalidate(generation.as_deref())
+pub async fn pilot_vault_invalidate(generation: Option<String>) -> Result<VaultLease, PilotSecretError> {
+    let manager = manager()?;
+    blocking(move || manager.invalidate(generation.as_deref())).await
 }
 
 #[tauri::command]

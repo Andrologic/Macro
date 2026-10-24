@@ -163,7 +163,8 @@ async fn stream_chat_inner(
     );
     timeline.emit("backend_task_started");
     let secret_started_at = Instant::now();
-    let api_key = secrets::get_api_key(&request.provider_id)
+    let api_key = secrets::get_api_key_async(&request.provider_id)
+        .await
         .map_err(|error| format!("Failed to read provider API key: {}", error))?
         .unwrap_or_default();
     if secret_started_at.elapsed().as_millis() > 50 {

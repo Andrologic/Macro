@@ -231,12 +231,9 @@ async fn secret_consumer_child() {
     let attached = mode == "rollback";
     if attached && root.join("expected-raw.json").exists() {
         let expected = load_archive(&root.join("expected-raw.json")).unwrap();
-        super::qualification::assert_held_files(
-            &capture_raw(&data, &config, BTreeMap::new()).unwrap(),
-            &expected,
-        )
-        .await;
-        for name in expected.files.keys() {
+        let initialized = capture_raw(&data, &config, BTreeMap::new()).unwrap();
+        super::qualification::assert_held_files(&initialized, &expected).await;
+        for name in initialized.files.keys() {
             let path = raw_destination(name, &data, &config).unwrap();
             private(&path);
         }
@@ -559,7 +556,7 @@ async fn private_recovery_read_and_publication_errors_preserve_whole_profile() {
         fs::rename(&store, &held).unwrap();
         std::os::unix::fs::symlink(&held, &store).unwrap();
         queue_restore(&data, &portable);
-        process_startup(&data, &config).await.unwrap();
+        assert!(process_startup(&data, &config).await.is_err());
         assert!(!dir.join("restoring.json").exists());
         fs::remove_file(&store).unwrap();
         fs::rename(&held, &store).unwrap();
@@ -622,7 +619,7 @@ async fn unreadable_secret_aborts_preservation_before_any_replacement() {
     let error = fs::read(&path).unwrap_err();
     assert_eq!(error.kind(), std::io::ErrorKind::PermissionDenied);
     queue_restore(&data, &portable);
-    process_startup(&data, &config).await.unwrap();
+    assert!(process_startup(&data, &config).await.is_err());
     assert!(!data.join("local-backup/restoring.json").exists());
     let status: BackupStatus =
         serde_json::from_slice(&fs::read(data.join("local-backup/status.json")).unwrap()).unwrap();

@@ -100,7 +100,10 @@ impl McpOperationCancellation {
 
     pub fn is_cancelled(&self) -> bool {
         self.cancelled.load(Ordering::Acquire)
-            || self.native.as_ref().is_some_and(|token| token.is_cancelled())
+            || self
+                .native
+                .as_ref()
+                .is_some_and(|token| token.is_cancelled())
     }
 
     pub async fn cancelled(&self) {
@@ -420,7 +423,11 @@ impl McpRuntimeManager {
         futures::future::join_all(keys.iter().map(|key| async move {
             match self.connector.acquire_authority().await {
                 Ok(_authority) => {
-                    let _ = self.ensure_current_config(key).await;
+                    let _ = crate::secrets::blocking::with_guard(
+                        _authority,
+                        self.ensure_current_config(key),
+                    )
+                    .await;
                 }
                 Err(error) => self.invalidate_if_current(key, &error).await,
             }
@@ -475,7 +482,12 @@ impl McpRuntimeManager {
         };
         let config_fingerprint = match {
             let _authority = self.connector.acquire_authority().await?;
-            self.connector.config_fingerprint(&selector).await
+            let _authority = Arc::new(_authority);
+            crate::secrets::blocking::with_guard(
+                _authority.clone(),
+                self.connector.config_fingerprint(&selector),
+            )
+            .await
         } {
             Ok(fingerprint) => fingerprint,
             Err(error) => {
@@ -591,7 +603,8 @@ impl McpRuntimeManager {
                 return Err(error);
             }
         };
-        let config_change_error = match self.connector.config_fingerprint(&selector).await {
+        let _authority = Arc::new(_authority);
+        let config_change_error = match crate::secrets::blocking::with_guard(_authority.clone(), self.connector.config_fingerprint(&selector)).await {
             Ok(current) if current == config_fingerprint => None,
             Ok(_) => Some(McpRuntimeError::new(
                 "MCP_RUNTIME_CONFIG_CHANGED",
@@ -739,7 +752,9 @@ impl McpRuntimeManager {
     ) -> Result<McpCatalogDto, McpRuntimeError> {
         validate_key(key)?;
         let _authority = self.connector.acquire_authority().await?;
-        self.ensure_current_config(key).await?;
+        let _authority = Arc::new(_authority);
+        crate::secrets::blocking::with_guard(_authority.clone(), self.ensure_current_config(key))
+            .await?;
         let logical_key = LogicalRuntimeKey::from(key);
         let (session, concurrency) = {
             let state = self.state.lock().await;
@@ -797,7 +812,7 @@ impl McpRuntimeManager {
         let result = match permit {
             Ok(_permit) => {
                 tokio::select! {
-                    result = session.list_tools(cancellation.clone()) => result,
+                    result = crate::secrets::blocking::with_guard(_authority.clone(), session.list_tools(cancellation.clone())) => result,
                     _ = cancellation.cancelled() => Err(cancelled_error()),
                 }
             }
@@ -874,7 +889,10 @@ impl McpRuntimeManager {
                 "MCP operation id cannot be empty.",
             ));
         }
-        let cancellation = Arc::new(McpOperationCancellation { native: native_cancel, ..Default::default() });
+        let cancellation = Arc::new(McpOperationCancellation {
+            native: native_cancel,
+            ..Default::default()
+        });
         {
             let mut operations = self
                 .operations
@@ -907,8 +925,9 @@ impl McpRuntimeManager {
             authority = self.connector.acquire_authority() => authority,
             _ = cancellation.cancelled() => Err(cancelled_error()),
         }?;
+        let _authority = Arc::new(_authority);
         tokio::select! {
-            result = self.ensure_current_config(key) => result,
+            result = crate::secrets::blocking::with_guard(_authority.clone(), self.ensure_current_config(key)) => result,
             _ = cancellation.cancelled() => Err(cancelled_error()),
         }?;
         if cancellation.is_cancelled() {
@@ -958,9 +977,11 @@ impl McpRuntimeManager {
         if cancellation.is_cancelled() {
             return Err(cancelled_error());
         }
-        let result = session
-            .call_tool(tool_name, arguments, cancellation.clone())
-            .await;
+        let result = crate::secrets::blocking::with_guard(
+            _authority.clone(),
+            session.call_tool(tool_name, arguments, cancellation.clone()),
+        )
+        .await;
         drop(permit);
         if let Err(error) = &result {
             if error.code != OPERATION_CANCELLED && session.is_closed() {
@@ -1042,7 +1063,13 @@ impl McpRuntimeManager {
             }
 
             let current_fingerprint = match self.connector.acquire_authority().await {
-                Ok(_authority) => self.connector.config_fingerprint(&selector).await,
+                Ok(_authority) => {
+                    crate::secrets::blocking::with_guard(
+                        _authority,
+                        self.connector.config_fingerprint(&selector),
+                    )
+                    .await
+                }
                 Err(error) => Err(error),
             };
             match current_fingerprint {
@@ -1100,15 +1127,20 @@ impl McpRuntimeManager {
                             return;
                         }
                     };
-                    let config_change_error =
-                        match self.connector.config_fingerprint(&selector).await {
-                            Ok(current) if current == config_fingerprint => None,
-                            Ok(_) => Some(McpRuntimeError::new(
-                                "MCP_RUNTIME_CONFIG_CHANGED",
-                                format!("MCP server '{}' changed during reconnect.", key.server_id),
-                            )),
-                            Err(error) => Some(error),
-                        };
+                    let _authority = Arc::new(_authority);
+                    let config_change_error = match crate::secrets::blocking::with_guard(
+                        _authority.clone(),
+                        self.connector.config_fingerprint(&selector),
+                    )
+                    .await
+                    {
+                        Ok(current) if current == config_fingerprint => None,
+                        Ok(_) => Some(McpRuntimeError::new(
+                            "MCP_RUNTIME_CONFIG_CHANGED",
+                            format!("MCP server '{}' changed during reconnect.", key.server_id),
+                        )),
+                        Err(error) => Some(error),
+                    };
                     if let Some(error) = config_change_error {
                         let _ = connection.session.close().await;
                         self.invalidate_if_current(key, &error).await;
@@ -1923,8 +1955,14 @@ mod tests {
         let (manager, _) = manager(session.clone());
         let key = connected_key(&manager).await;
         let cancel = tokio_util::sync::CancellationToken::new();
-        let call = manager.call_tool_owned(&key, "echo", serde_json::json!({}),
-            "native-pre-registration".into(), None, Some(cancel.clone()));
+        let call = manager.call_tool_owned(
+            &key,
+            "echo",
+            serde_json::json!({}),
+            "native-pre-registration".into(),
+            None,
+            Some(cancel.clone()),
+        );
         // Construct the actual executor future, cancel before its first poll.
         cancel.cancel();
         let error = call.await.unwrap_err();

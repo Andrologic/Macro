@@ -65,8 +65,9 @@ async fn sync_local_provider_secret_metadata(
     pool: &SqlitePool,
     provider_id: &str,
 ) -> Result<(), String> {
-    let Some(secret) =
-        secrets::get_chatgpt_secret(provider_id).map_err(|error| error.to_string())?
+    let Some(secret) = secrets::get_chatgpt_secret_async(provider_id)
+        .await
+        .map_err(|error| error.to_string())?
     else {
         return Ok(());
     };
@@ -94,31 +95,37 @@ pub(super) async fn ensure_fresh_secret(
     provider_id: &str,
 ) -> Result<ChatGptSecret, String> {
     let _auth_guard = lock_auth_mutation(provider_id).await?;
-    super::models::recover_pending_disconnect_locked(pool, provider_id).await?;
-    sync_local_provider_secret_metadata(pool, provider_id).await?;
+    crate::secrets::blocking::with_guard(_auth_guard, async {
+        super::models::recover_pending_disconnect_locked(pool, provider_id).await?;
+        sync_local_provider_secret_metadata(pool, provider_id).await?;
 
-    let secret = secrets::get_chatgpt_secret(provider_id)
-        .map_err(|error| error.to_string())?
-        .ok_or_else(|| "ChatGPT is not linked. Use Connect with ChatGPT first.".to_string())?;
+        let secret = secrets::get_chatgpt_secret_async(provider_id)
+            .await
+            .map_err(|error| error.to_string())?
+            .ok_or_else(|| "ChatGPT is not linked. Use Connect with ChatGPT first.".to_string())?;
 
-    let expires_at = secret
-        .access_token_expires_at
-        .as_deref()
-        .and_then(parse_rfc3339_utc)
-        .or_else(|| {
-            build_token_claims(&secret.access_token, None)
-                .ok()?
-                .expires_at
-        });
-    let needs_refresh = expires_at
-        .map(|value| value <= Utc::now() + chrono::Duration::seconds(TOKEN_REFRESH_LEEWAY_SECONDS))
-        .unwrap_or(true);
+        let expires_at = secret
+            .access_token_expires_at
+            .as_deref()
+            .and_then(parse_rfc3339_utc)
+            .or_else(|| {
+                build_token_claims(&secret.access_token, None)
+                    .ok()?
+                    .expires_at
+            });
+        let needs_refresh = expires_at
+            .map(|value| {
+                value <= Utc::now() + chrono::Duration::seconds(TOKEN_REFRESH_LEEWAY_SECONDS)
+            })
+            .unwrap_or(true);
 
-    if !needs_refresh {
-        return Ok(secret);
-    }
+        if !needs_refresh {
+            return Ok(secret);
+        }
 
-    force_refresh_secret_inner(pool, provider_id, &secret).await
+        force_refresh_secret_inner(pool, provider_id, &secret).await
+    })
+    .await
 }
 
 pub(super) async fn force_refresh_secret(
@@ -127,11 +134,15 @@ pub(super) async fn force_refresh_secret(
     _secret: &ChatGptSecret,
 ) -> Result<ChatGptSecret, String> {
     let _auth_guard = lock_auth_mutation(provider_id).await?;
-    super::models::recover_pending_disconnect_locked(pool, provider_id).await?;
-    let current = secrets::get_chatgpt_secret(provider_id)
-        .map_err(|error| error.to_string())?
-        .ok_or_else(|| "ChatGPT is not linked. Use Connect with ChatGPT first.".to_string())?;
-    force_refresh_secret_inner(pool, provider_id, &current).await
+    crate::secrets::blocking::with_guard(_auth_guard, async {
+        super::models::recover_pending_disconnect_locked(pool, provider_id).await?;
+        let current = secrets::get_chatgpt_secret_async(provider_id)
+            .await
+            .map_err(|error| error.to_string())?
+            .ok_or_else(|| "ChatGPT is not linked. Use Connect with ChatGPT first.".to_string())?;
+        force_refresh_secret_inner(pool, provider_id, &current).await
+    })
+    .await
 }
 
 async fn force_refresh_secret_inner(
@@ -153,7 +164,7 @@ async fn force_refresh_secret_inner(
             .as_ref()
             .and_then(|provider| provider.account_label.clone()),
     )?;
-    if let Err(error) = secrets::set_chatgpt_secret(provider_id, &refreshed) {
+    if let Err(error) = secrets::set_chatgpt_secret_async(provider_id, &refreshed).await {
         error!(
             provider_id = %provider_id,
             phase = "refresh_persist",
@@ -166,7 +177,7 @@ async fn force_refresh_secret_inner(
         repository::update_provider_auth_metadata(pool, provider_id, &metadata).await
     {
         let db_message = db_error_to_string(error);
-        if let Err(rollback_error) = restore_chatgpt_secret(provider_id, Some(secret)) {
+        if let Err(rollback_error) = restore_chatgpt_secret(provider_id, Some(secret)).await {
             error!(
                 provider_id = %provider_id,
                 phase = "refresh_rollback",
@@ -273,71 +284,79 @@ pub(super) async fn persist_chatgpt_session(
     let _auth_guard = lock_auth_mutation(provider_id)
         .await
         .map_err(PersistChatGptSessionError::Metadata)?;
-    super::models::recover_pending_disconnect_locked(pool, provider_id)
-        .await
-        .map_err(PersistChatGptSessionError::Metadata)?;
-    let metadata = build_provider_auth_metadata(secret, plan_type, account_label)
-        .map_err(PersistChatGptSessionError::Metadata)?;
-    debug!(
-        provider_id = %provider_id,
-        phase = "secret_persist",
-        has_account_id = secret.account_id.is_some(),
-        "persisting ChatGPT session secret"
-    );
-    let previous_secret = secrets::get_chatgpt_secret(provider_id)
-        .map_err(|error| PersistChatGptSessionError::Secret(error.to_string()))?;
-    if let Err(error) = secrets::set_chatgpt_secret(provider_id, secret) {
-        error!(
+    crate::secrets::blocking::with_guard(_auth_guard, async {
+        super::models::recover_pending_disconnect_locked(pool, provider_id)
+            .await
+            .map_err(PersistChatGptSessionError::Metadata)?;
+        let metadata = build_provider_auth_metadata(secret, plan_type, account_label)
+            .map_err(PersistChatGptSessionError::Metadata)?;
+        debug!(
             provider_id = %provider_id,
             phase = "secret_persist",
-            error = %error,
-            "failed to persist ChatGPT session secret"
+            has_account_id = secret.account_id.is_some(),
+            "persisting ChatGPT session secret"
         );
-        return Err(PersistChatGptSessionError::Secret(error.to_string()));
-    }
-    pause_after_chatgpt_secret_persist(provider_id).await;
-    if let Err(error) =
-        repository::update_provider_auth_metadata(pool, provider_id, &metadata).await
-    {
-        let db_message = db_error_to_string(error);
-        if let Err(rollback_error) = restore_chatgpt_secret(provider_id, previous_secret.as_ref()) {
+        let previous_secret = secrets::get_chatgpt_secret_async(provider_id)
+            .await
+            .map_err(|error| PersistChatGptSessionError::Secret(error.to_string()))?;
+        if let Err(error) = secrets::set_chatgpt_secret_async(provider_id, secret).await {
             error!(
                 provider_id = %provider_id,
-                phase = "metadata_rollback",
-                error = %rollback_error,
-                "failed to roll back ChatGPT session secret after metadata persistence failure"
+                phase = "secret_persist",
+                error = %error,
+                "failed to persist ChatGPT session secret"
             );
-            return Err(PersistChatGptSessionError::Metadata(format!(
-                "{} Secret rollback also failed: {}",
-                db_message, rollback_error
-            )));
+            return Err(PersistChatGptSessionError::Secret(error.to_string()));
         }
-        error!(
-            provider_id = %provider_id,
-            phase = "metadata_persist",
-            error = %db_message,
-            "failed to persist ChatGPT auth metadata"
-        );
-        return Err(PersistChatGptSessionError::Metadata(db_message));
-    }
+        pause_after_chatgpt_secret_persist(provider_id).await;
+        if let Err(error) =
+            repository::update_provider_auth_metadata(pool, provider_id, &metadata).await
+        {
+            let db_message = db_error_to_string(error);
+            if let Err(rollback_error) =
+                restore_chatgpt_secret(provider_id, previous_secret.as_ref()).await
+            {
+                error!(
+                    provider_id = %provider_id,
+                    phase = "metadata_rollback",
+                    error = %rollback_error,
+                    "failed to roll back ChatGPT session secret after metadata persistence failure"
+                );
+                return Err(PersistChatGptSessionError::Metadata(format!(
+                    "{} Secret rollback also failed: {}",
+                    db_message, rollback_error
+                )));
+            }
+            error!(
+                provider_id = %provider_id,
+                phase = "metadata_persist",
+                error = %db_message,
+                "failed to persist ChatGPT auth metadata"
+            );
+            return Err(PersistChatGptSessionError::Metadata(db_message));
+        }
 
-    repository::get_provider_config(pool, provider_id)
-        .await
-        .map_err(|error| PersistChatGptSessionError::Metadata(db_error_to_string(error)))?
-        .ok_or_else(|| {
-            PersistChatGptSessionError::Metadata(format!("Provider {provider_id} not found."))
-        })
+        repository::get_provider_config(pool, provider_id)
+            .await
+            .map_err(|error| PersistChatGptSessionError::Metadata(db_error_to_string(error)))?
+            .ok_or_else(|| {
+                PersistChatGptSessionError::Metadata(format!("Provider {provider_id} not found."))
+            })
+    })
+    .await
 }
 
-fn restore_chatgpt_secret(
+async fn restore_chatgpt_secret(
     provider_id: &str,
     previous_secret: Option<&ChatGptSecret>,
 ) -> Result<(), String> {
     match previous_secret {
-        Some(secret) => {
-            secrets::set_chatgpt_secret(provider_id, secret).map_err(|error| error.to_string())
-        }
-        None => secrets::delete_provider_secret(provider_id).map_err(|error| error.to_string()),
+        Some(secret) => secrets::set_chatgpt_secret_async(provider_id, secret)
+            .await
+            .map_err(|error| error.to_string()),
+        None => secrets::delete_provider_secret_async(provider_id)
+            .await
+            .map_err(|error| error.to_string()),
     }
 }
 
