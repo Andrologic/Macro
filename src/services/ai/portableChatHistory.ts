@@ -10,7 +10,7 @@ import { buildChatGptVisibleTurnContent } from './responsesCodec';
 import { buildToolContextBlock, formatToolTraceDetail, visitToolContextAttributes, decodeToolContextAttribute } from './toolPresentation';
 import { projectFinalProvenance } from '../macroPilot/assistantProvenanceProjection';
 import { inspectWholeText, type TextPolicy } from '../macroPilot/conversationText';
-import { inspectAttachmentContent } from '../macroPilot/attachmentFilesHost';
+import { inspectAttachmentContent } from '../macroPilot/attachmentContentInspection';
 
 export interface RawHistoryField {
   ordinal: number; row: number; family: number; tag: number;
