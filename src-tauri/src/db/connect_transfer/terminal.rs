@@ -126,6 +126,27 @@ async fn apply_source(pool: &SqlitePool, input: &TerminalWrite) -> DbResult<Sour
     Ok(result)
 }
 
+// Storage composition only. The caller retains the original native reservation
+// and has already obtained and matched the authenticated canonical terminal.
+pub(super) async fn store_committed(pool:&SqlitePool,transfer:&str,reservation_fingerprint:Vec<u8>,
+    binding_digest:Vec<u8>,source_epoch:i64,terminal:&serde_json::Value,source:bool,
+)->DbResult<Vec<u8>> {
+    use crate::commands::pilot_secrets::transport::commitment;
+    let decode=|value:String|->DbResult<Vec<u8>> {
+        if value.len()!=64{return Err(invalid("connect_terminal_invalid_input"));}
+        (0..64).step_by(2).map(|n|u8::from_str_radix(&value[n..n+2],16).map_err(|_|invalid("connect_terminal_invalid_input"))).collect()
+    };
+    let input=TerminalWrite{transfer_id:transfer.into(),reservation_fingerprint,binding_digest,source_epoch,
+        outcome:Outcome::Committed,decision_revision:terminal["decision_revision"].as_str().ok_or_else(||invalid("connect_terminal_invalid_input"))?.into(),
+        exact:serde_json::to_vec(terminal).map_err(|_|invalid("connect_terminal_invalid_input"))?,
+        canonical_digest:decode(commitment("terminal",terminal).map_err(invalid)?)?,
+        prepared_digest:Some(decode(commitment("prepared",&terminal["prepared"]).map_err(invalid)?)?)};
+    if source {
+        if apply_source(pool,&input).await?==SourceApplication::Held{return Err(invalid("connect_terminal_hold"));}
+    }else{store(pool,&input).await?;}
+    Ok(fingerprint(&input)?.0)
+}
+
 #[cfg(test)]
 #[path = "terminal_tests.rs"]
 mod tests;

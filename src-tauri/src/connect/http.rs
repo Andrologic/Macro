@@ -318,6 +318,7 @@ impl rustls::client::danger::ServerCertVerifier for BoundedVerifier {
 pub(crate) struct Response {
     pub status: u16,
     pub request_id: Option<String>,
+    pub transfer_offer: Option<String>,
     _headers: TransitCharge,
     body: Vec<u8>,
     _charge: TransitCharge,
@@ -399,6 +400,10 @@ impl Request {
             }),
             _charge: charge,
         })
+    }
+    pub(crate) fn offer_transfer(mut self) -> Self {
+        self.headers.insert("x-macro-transfer-transit",http::HeaderValue::from_static("transfer-transit-1"));
+        self
     }
     pub(crate) fn authenticate(
         mut self,
@@ -642,6 +647,12 @@ impl Lane {
                 return Err("http_correlation");
             }
         }
+        let mut offers=response.headers().get_all("x-macro-transfer-transit").iter();
+        if let Some(offer)=offers.next() {
+            if offer.as_bytes().len()>64 || offer.to_str().is_err() || offers.next().is_some() {
+                return Err("http_headers_limit");
+            }
+        }
         Ok(Head {
             response,
             headers,
@@ -666,6 +677,8 @@ impl Lane {
         let mut result = Response {
             _database: database.clone(),
             status: response.status().as_u16(),
+            transfer_offer: response.headers().get("x-macro-transfer-transit")
+                .map(|v|v.to_str().map(str::to_owned).map_err(|_|"http_headers_limit")).transpose()?,
             request_id: response
                 .headers()
                 .get("x-request-id")

@@ -1303,6 +1303,27 @@ async fn private_bootstrap_real_relay_correlates_scope_and_keeps_controller_righ
     let (manager, fake, intent) = fixture("a","a",false);
     let verified = transport::bootstrap_owned(manager.clone(), intent, &runtime, &codec, &ready, address, true, &cancel).await.unwrap();
     verified.check().await.unwrap();
+    // The first native decision uses canonical authenticated HTTP, not a SQL
+    // receipt or a test-produced terminal. A new source is explicitly absent.
+    let source_path = format!("/pilot/v2/transfers/sources/{}/synthetic-chat/decisions", text(&seed["a"], "instance"));
+    let status_request = serde_json::json!({
+        "transit_contract":"transfer-transit-1", "type":"decision.request",
+        "request_id":uuid::Uuid::new_v4(), "request":{
+            "decision_contract":"transfer-decision-1", "type":"decision_request",
+            "operation":"reconcile", "operation_id":uuid::Uuid::new_v4(),
+            "expected_revision":"0", "body":{"action":"source_status", "provenance":{
+                "source":{"relay_origin":seed["origin"], "account_id":seed["account_id"],
+                    "source_instance_id":seed["a"]["instance"], "source_conversation_id":"synthetic-chat"},
+                "lineage_id":uuid::Uuid::new_v4(), "installation_id":uuid::Uuid::new_v4(),
+                "birth_generation":uuid::Uuid::new_v4()
+            }}
+        }
+    });
+    let decision_output = verified.decision(manager.clone(), &ready, &source_path, status_request.clone(), serde_json::Value::Null).await.unwrap();
+    let status:serde_json::Value=serde_json::from_slice(decision_output.bytes.as_slice()).unwrap();
+    assert_eq!(status["result"]["kind"],"source_status");
+    assert_eq!(status["result"]["status"]["status"],"not_found");
+    drop(decision_output);
     let events = runtime.profile_events();
     use crate::connect::codec::Profile;
     assert_eq!(events.len(), 3);
@@ -1313,7 +1334,9 @@ async fn private_bootstrap_real_relay_correlates_scope_and_keeps_controller_righ
     assert_eq!(fake.interactive.load(Ordering::SeqCst),0);
     assert_eq!(fake.resumes.load(Ordering::SeqCst),0);
     manager.policy_fixture().0.change(|| ()).unwrap();
-    assert_eq!(verified.check().await.err(),Some("policy_revoked"));verified.close().await.unwrap();
+    assert_eq!(verified.check().await.err(),Some("policy_revoked"));
+    assert_eq!(verified.decision(manager.clone(), &ready, &source_path, status_request, serde_json::Value::Null).await.err(),Some("policy_revoked"));
+    verified.close().await.unwrap();
     // A real second process rotates the same persistent policy epoch without
     // changing the first owner's local revision. A retained bootstrap must fail.
     let (manager, _, intent) = fixture("a","a",false);
@@ -1368,4 +1391,386 @@ async fn private_bootstrap_real_relay_correlates_scope_and_keeps_controller_righ
     assert!(budget.reserve(crate::connect_resources::TRANSIT_INSTANCE_LIMIT).is_ok());
     input.write_all(b"{\"stop\":true}\n").await.unwrap();input.flush().await.unwrap();drop(input);
     assert!(tokio::time::timeout(std::time::Duration::from_secs(10),child.wait()).await.unwrap().unwrap().success());
+}
+
+
+async fn transfer_target_event(lines:&mut tokio::io::Lines<tokio::io::BufReader<tokio::process::ChildStdout>>)->Result<serde_json::Value,&'static str> {
+    while let Some(line)=lines.next_line().await.map_err(|_|"target_event_io")? {
+        if line.len()>4096{return Err("target_event_limit");}
+        if let Some(start)=line.find("SLICE_TARGET_EVENT:"){return serde_json::from_str(&line[start+19..]).map_err(|_|"target_event_json");}
+    }Err("target_event_eof")
+}
+
+/// One evolving local product scenario. It stays red until source, real relay,
+/// inactive target, native preparation and ACK are connected together.
+#[tokio::test(flavor="multi_thread",worker_threads=2)]
+#[ignore="requires the explicitly supplied local transfer relay"]
+async fn global_chat_macro_ai_local_transfer() {
+    use tokio::io::{AsyncBufReadExt,AsyncWriteExt,BufReader};
+    use tokio_util::sync::CancellationToken;
+    use transport::{Intent,Scope};
+    use sha2::{Digest,Sha256};
+    let executable=|name:&str|std::env::split_paths(&std::env::var_os("PATH").unwrap())
+        .map(|p|p.join(name)).find(|p|p.is_file()).unwrap();
+    let mut relay=tokio::process::Command::new(executable("node"))
+        .args(["--import",&std::env::var("MACRO_CONNECT_RELAY_LOADER").unwrap(),"--conditions=react-server",
+            &std::env::var("MACRO_CONNECT_RELAY_HARNESS").unwrap()])
+        .stdin(std::process::Stdio::piped()).stdout(std::process::Stdio::piped()).kill_on_drop(true).spawn().unwrap();
+    let mut relay_input=relay.stdin.take().unwrap();
+    let mut lines=BufReader::new(relay.stdout.take().unwrap()).lines();
+    let seed:serde_json::Value=serde_json::from_str(&lines.next_line().await.unwrap().unwrap()).unwrap();
+    let address=format!("127.0.0.1:{}",seed["port"].as_u64().unwrap()).parse().unwrap();
+    let directory=tempfile::tempdir().unwrap();
+    let source=crate::core::db_state::DbPool::default();
+    let source_pool=crate::db::create_pool(&directory.path().join("source.db")).await.unwrap();
+    source.set_ready(source_pool.clone()).await.unwrap();
+    let target=crate::core::db_state::DbPool::default();
+    let target_pool=crate::db::create_pool(&directory.path().join("target.db")).await.unwrap();
+    target.set_ready(target_pool.clone()).await.unwrap();
+    let content="A short answer available on the other computer.";
+    let provenance=tokio::process::Command::new(executable("bun")).args(["-e",r#"
+        import {assistantProvenance} from './src/services/macroPilot/assistantProvenance';
+        import {buildAssistantChatCompletionProviderItem} from './src/services/ai/chatCompletionsCodec';
+        const stored=new Map();
+        const text='A short answer available on the other computer.';
+        const items=[buildAssistantChatCompletionProviderItem({visibleContent:text,apiContent:text,reasoningContent:'',reasoningDetails:[],toolCalls:[]})];
+        await assistantProvenance({load:async k=>stored.get(k)??null,compareAndSwap:async(k,o,v)=>{stored.set(k,v);return true;}})
+          .recordFinal('assistant',text,items);
+        console.log(JSON.stringify({receipts:[...stored],items}));
+    "#]).current_dir(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap()).output().await.unwrap();
+    assert!(provenance.status.success(),"{}",String::from_utf8_lossy(&provenance.stderr));
+    let response:serde_json::Value=serde_json::from_slice(&provenance.stdout).unwrap();
+    let receipts:Vec<(String,String)>=serde_json::from_value(response["receipts"].clone()).unwrap();
+    sqlx::raw_sql("INSERT INTO e_inactive_domain VALUES(1,16777216,64); INSERT INTO conversations(id,title,scope_mode,provider_id,model_id,created_at,updated_at) VALUES('chat','Local transfer','Chat','macro-ai','synthetic-model','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z'); INSERT INTO messages(id,conversation_id,role,content,created_at,context_refs_json) VALUES('user','chat','user','Can I continue on another computer?','2026-01-01T00:00:00Z','[]');")
+        .execute(&source_pool).await.unwrap();
+    sqlx::query("INSERT INTO messages(id,conversation_id,role,content,created_at,context_refs_json,completion_reason,provider_input_items_json) VALUES('assistant','chat','assistant',?,'2026-01-01T00:00:01Z','[]','final',?)")
+        .bind(content).bind(response["items"].to_string()).execute(&source_pool).await.unwrap();
+    for(key,value)in receipts {crate::db::repository::set_app_setting(&source_pool,&key,&value).await.unwrap();}
+    let manager=Arc::new(Manager::new(Arc::new(Fake::default())));
+    let a=&seed["a"];
+    let text=|v:&serde_json::Value|v.as_str().unwrap().to_string();
+    let context=PilotVaultContext{configuration_id:"config:local-transfer".into(),relay_origin:text(&seed["origin"]),owner_id:text(&a["session_id"])};
+    let generation=manager.activate(context.clone(),None).unwrap().generation;
+    for(kind,id,value)in[(PilotSecretKind::SessionToken,context.owner_id.clone(),text(&a["token"])),
+        (PilotSecretKind::InstanceKey,text(&a["creation"]),text(&a["key"]))]{
+        manager.write(&PilotSecretScope{configuration_id:context.configuration_id.clone(),relay_origin:context.relay_origin.clone(),kind,resource_id:id},&generation,&value).unwrap();
+    }
+    let runtime=crate::connect::TransferRuntime::default();
+    let launcher=runtime.source_launcher(&executable("bun"),&std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../copilot-bridge/src/entry.ts"),&source).unwrap();
+    let ready=source.wait_until_ready_context().await.unwrap();
+    let cancel=CancellationToken::new();
+    let intent=Intent{context,generation,instance_creation_id:text(&a["creation"]),account_id:Some(text(&seed["account_id"])),device_id:Some(text(&a["device_id"])),scope:Scope::Producer{instance_id:text(&a["instance"])}};
+    let mut verified=transport::bootstrap_owned(manager.clone(),intent,&runtime,&launcher,&ready,address,true,&cancel).await.unwrap();
+    verified.controller_for(manager.clone(),&ready,seed["b"]["instance"].as_str().unwrap()).await.unwrap();
+    let authority=&verified.authority;
+    let binding=serde_json::json!({"transfer_id":uuid::Uuid::new_v4(),"provenance":{
+        "source":{"relay_origin":seed["origin"],"account_id":seed["account_id"],"source_instance_id":a["instance"],"source_conversation_id":"chat"},
+        "lineage_id":uuid::Uuid::new_v4(),"installation_id":uuid::Uuid::new_v4(),"birth_generation":authority["recovery_generation"]},
+        "epoch":"1","target_instance_id":seed["b"]["instance"],"relay_recovery_generation":authority["recovery_generation"],
+        "initiator":authority["actor"],"source_producer_generation":authority["source_producer"]["generation"],"target_producer_generation":authority["target_producer"]["generation"]});
+    let digest=|domain:&str,value:&serde_json::Value|{let mut h=Sha256::new();h.update(format!("macro-connect-{domain}-1\0"));h.update(serde_json::to_vec(value).unwrap());format!("{:x}",h.finalize())};
+    let admission=crate::db::chat_admission::runtime::ChatAdmissionRuntime::default();
+    admission.open_browser(source.clone(),"source-window","source-browser").await.unwrap();
+    let inspection=admission.begin_reconciliation(&source,"source-window","source-browser","chat").await.unwrap();
+    admission.complete_reconciliation(&source,"source-window","source-browser",&inspection,&crate::db::chat_admission::reconciliation::BrowserInspection{
+        queue:vec![],unsaved:vec![],approvals:vec![],questions:vec![],drafts:vec![],steers:vec![]}).await.unwrap();
+    let content_token=crate::db::conversation_content::conversation_content_version(&source_pool,"chat").await.unwrap();
+    let revision:i64=sqlx::query_scalar("SELECT revision+1 FROM chat_admission_owners WHERE conversation_id='chat'").fetch_one(&source_pool).await.unwrap();
+    let frozen=serde_json::json!({"format_version":"1","binding_digest":digest("transfer-binding",&binding),"ownership_revision":revision.to_string(),
+        "content_incarnation":content_token.incarnation,"content_revision":content_token.revision,
+        "sha256":format!("{:x}",Sha256::digest(serde_json::to_vec(&content_token).unwrap()))});
+    let sent=serde_json::json!({"transit_contract":"transfer-transit-1","type":"decision.request","request_id":uuid::Uuid::new_v4(),"request":{
+        "decision_contract":"transfer-decision-1","type":"decision_request","operation":"reserve","operation_id":uuid::Uuid::new_v4(),"expected_revision":"0",
+        "transfer_id":binding["transfer_id"],"body":{"binding":binding,"frozen":frozen,"expected_ledger_revision":"1"}}});
+    let verified=Arc::new(verified);
+    let (reservation,_receipt)=crate::db::connect_transfer::reserve_verified_source(&source,&admission,"source-window","source-browser",&inspection,&verified,&sent).await.unwrap();
+    let capture=crate::db::source_capture::SourceCapture::for_transfer(source.clone(),verified.clone(),reservation.transfer_id()).await.unwrap();
+    let sealed=capture.capture_transfer(&reservation).await.unwrap();
+    let config=crate::config::ConfigManager::initialize(directory.path().join("config")).await.unwrap();
+    let normalized=launcher.normalize_capture(&config,&verified,&capture).await;
+    let source_result=async {
+        let job=normalized.as_ref().map_err(|e|*e)?;
+        let manifest=reservation.source_manifest(&source,job).await.map_err(|_|"source_manifest")?;
+        let source_path=format!("/pilot/v2/transfers/sources/{}/chat",a["instance"].as_str().unwrap());
+        let wrap=|request:serde_json::Value|serde_json::json!({"transit_contract":"transfer-transit-1",
+            "type":"decision.request","request_id":uuid::Uuid::new_v4(),"request":request});
+        let birth=wrap(serde_json::json!({"decision_contract":"transfer-decision-1","type":"decision_request",
+            "operation":"lineage.create","operation_id":uuid::Uuid::new_v4(),"expected_revision":"0",
+            "body":{"provenance":binding["provenance"],"mode":"initial_existing","creation_digest":frozen["sha256"]}}));
+        let born=verified.source_decision(manager.clone(),&ready,&source,&reservation,job,&(source_path.clone()+"/decisions"),
+            birth,serde_json::Value::Null,"lineage_enrolled").await?;
+        drop(born);
+        let expected=serde_json::json!({"binding":binding,"frozen":frozen,"manifest":null,"prepared":null,"terminal":null});
+        let reserve_path=format!("{source_path}/targets/{}/reservations/{}/decisions",seed["b"]["instance"].as_str().unwrap(),reservation.transfer_id());
+        let reserved=verified.source_decision(manager.clone(),&ready,&source,&reservation,job,&reserve_path,
+            sent.clone(),expected.clone(),"source_frozen").await?;
+        let reserved_reply:serde_json::Value=serde_json::from_slice(reserved.bytes.as_slice()).map_err(|_|"reserve_reply")?;
+        if reserved_reply["result"]["status"]["phase"]!="reserved" {return Err("reserve_reply");}
+        drop(reserved);
+        let seal=wrap(serde_json::json!({"decision_contract":"transfer-decision-1","type":"decision_request",
+            "operation":"seal","operation_id":uuid::Uuid::new_v4(),"expected_revision":"1","transfer_id":reservation.transfer_id(),
+            "body":{"manifest":manifest}}));
+        let mut expected=expected;expected["manifest"]=manifest.clone();
+        let known=format!("/pilot/v2/transfers/known/{}/decisions",reservation.transfer_id());
+        let sealed_reply=verified.source_decision(manager.clone(),&ready,&source,&reservation,job,&known,
+            seal,expected,"source_sealed").await?;
+        let value:serde_json::Value=serde_json::from_slice(sealed_reply.bytes.as_slice()).map_err(|_|"seal_reply")?;
+        if value["result"]["status"]["phase"]!="sealed" {return Err("seal_reply");}
+        drop(sealed_reply);
+        let (descriptor,archive)=job.normalized_for(&sealed.manifest)?;
+        let session=serde_json::json!({"transfer_id":reservation.transfer_id(),"transit_id":uuid::Uuid::new_v4(),
+            "binding_digest":digest("transfer-binding",&binding),"frozen_digest":digest("frozen",&frozen),
+            "manifest_digest":digest("manifest",&manifest),"content_contract_sha256":descriptor["content_contract_sha256"],
+            "portable_records":descriptor["records"].as_u64().unwrap().to_string(),
+            "portable_fragments":archive.as_slice().split(|b|*b==b'\n').filter(|line|!line.is_empty()).count().saturating_sub(1).to_string(),
+            "portable_payload_bytes":descriptor["bytes"].as_u64().unwrap().to_string(),"stream_bytes":archive.as_slice().len().to_string()});
+        let opened=verified.transit(manager.clone(),&ready,&format!("/pilot/v2/transfers/known/{}/transit",reservation.transfer_id()),
+            serde_json::json!({"transit_contract":"transfer-transit-1","type":"transit.open","request_id":uuid::Uuid::new_v4(),"session":session}),&session).await?
+            .ok_or("transit_open_missing")?;
+        let opened_value:serde_json::Value=serde_json::from_slice(opened.bytes.as_slice()).map_err(|_|"transit_open_reply")?;
+        drop(opened);let opened=opened_value;
+        if opened["session"]!=session || opened["cursor"]["next_offset"]!="0"{return Err("transit_open_reply");}
+        let mut child=tokio::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact","commands::pilot_secrets::tests::global_chat_transfer_target","--ignored","--nocapture","--test-threads=1"])
+            .stdin(std::process::Stdio::piped()).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::inherit()).kill_on_drop(true).spawn().unwrap();
+        let mut input=child.stdin.take().unwrap();
+        let mut initialization=serde_json::to_vec(&serde_json::json!({"seed":seed,"session":session,"sent":sent,"manifest":manifest,
+            "database":directory.path().join("target.db")})).unwrap();initialization.push(b'\n');
+        input.write_all(&initialization).await.unwrap();
+        let mut target_events=BufReader::new(child.stdout.take().unwrap()).lines();
+        let root=format!("/pilot/v2/transfers/transits/{}",session["transit_id"].as_str().unwrap());
+        let mut offset=0usize;let mut sequence=0u64;
+        while offset<archive.as_slice().len() {
+            let delivery=verified.delivery(manager.clone(),&ready).await?;
+            let pull:serde_json::Value=serde_json::from_slice(delivery.bytes.as_slice()).map_err(|_|"transit_pull")?;drop(delivery);
+            let message=&pull["value"]["body"]["message"];
+            if pull["branch"]!="transit" || pull["value"]["body"]["kind"]!="transit.pull" || message["transfer_id"]!=session["transfer_id"]
+                || message["transit_id"]!=session["transit_id"] || message["offset"]!=offset.to_string() || message["sequence"]!=sequence.to_string()
+            {return Err("transit_pull");}
+            let end=(offset+65_536).min(archive.as_slice().len());
+            let bytes=&archive.as_slice()[offset..end];
+            let chunk=serde_json::json!({"transit_contract":"transfer-transit-1","type":"transit.chunk","request_id":uuid::Uuid::new_v4(),
+                "transfer_id":session["transfer_id"],"transit_id":session["transit_id"],"sequence":sequence.to_string(),"offset":offset.to_string(),
+                "length":bytes.len().to_string(),"sha256":format!("{:x}",Sha256::digest(bytes)),"eof":end==archive.as_slice().len(),
+                "data_utf8":std::str::from_utf8(bytes).map_err(|_|"transit_utf8")?});
+            verified.transit(manager.clone(),&ready,&(root.clone()+"/chunk"),chunk,&session).await?;
+            offset=end;sequence+=1;
+        }
+        let event=transfer_target_event(&mut target_events).await?;
+        if event["type"]!="prepared"{return Err("target_preparation_event");}
+        let progress=verified.transit(manager.clone(),&ready,&(root.clone()+"/status"),serde_json::json!({"transit_contract":"transfer-transit-1",
+            "type":"transit.status","request_id":uuid::Uuid::new_v4(),"transfer_id":session["transfer_id"],"transit_id":session["transit_id"]}),&session)
+            .await?.ok_or("transit_progress")?;
+        let progress_value:serde_json::Value=serde_json::from_slice(progress.bytes.as_slice()).map_err(|_|"transit_progress")?;drop(progress);let progress=progress_value;
+        if progress["cursor"]["next_offset"]!=archive.as_slice().len().to_string() || progress["cursor"]["eof"]!=true {return Err("transit_progress");}
+        let request=event["request"].clone();let expected=event["expected"].clone();
+        let producer=&verified.authority["target_producer"];
+        for key in ["instance_id","connection_id"]{if expected[key]!=producer[key]{return Err("target_scope_mismatch");}}
+        if expected["producer_generation"]!=producer["generation"] || expected["binding_digest"]!=manifest["binding_digest"]
+            || expected["prior_receipt_digest"]!=digest("manifest",&manifest) || request["transfer_id"]!=reservation.transfer_id()
+        {return Err("target_scope_mismatch");}
+        let challenge=serde_json::json!({"transit_contract":"transfer-transit-1","type":"decision.challenge","request_id":uuid::Uuid::new_v4(),"kind":"target_pinned","request":request});
+        let reply=verified.metadata(manager.clone(),&ready,&format!("/pilot/v2/transfers/known/{}/challenges",reservation.transfer_id()),challenge.clone(),
+            serde_json::json!({"kind":"challenge","sent":challenge,"exchange":expected})).await?;drop(reply);
+        if transfer_target_event(&mut target_events).await?["type"]!="attested"{return Err("target_proof_event");}
+        let expected=serde_json::json!({"binding":binding,"frozen":frozen,"manifest":manifest,"prepared":request["body"]["prepared"],"terminal":null});
+        let reply=verified.decision(manager.clone(),&ready,&known,wrap(request),expected.clone()).await?;
+        let value:serde_json::Value=serde_json::from_slice(reply.bytes.as_slice()).map_err(|_|"ready_reply")?;drop(reply);
+        if value["result"]["status"]["phase"]!="target_ready"{return Err("ready_reply");}
+        let ready_digest=value["result"]["receipt"]["subject_digest"].clone();
+        let commit=wrap(serde_json::json!({"decision_contract":"transfer-decision-1","type":"decision_request","operation":"commit",
+            "operation_id":uuid::Uuid::new_v4(),"expected_revision":"3","transfer_id":reservation.transfer_id(),"body":{}}));
+        let mut command=serde_json::to_vec(&commit["request"]).unwrap();command.push(b'\n');input.write_all(&command).await.unwrap();
+        let event=transfer_target_event(&mut target_events).await?;
+        let maintained=&event["expected"];
+        if event["type"]!="maintained" || maintained["subject_digest"]!=ready_digest || maintained["prior_receipt_digest"]!=ready_digest
+            || maintained["instance_id"]!=producer["instance_id"] || maintained["producer_generation"]!=producer["generation"]
+            || maintained["connection_id"]!=producer["connection_id"] || maintained["binding_digest"]!=manifest["binding_digest"]
+        {return Err("target_maintenance_scope");}
+        let challenge=serde_json::json!({"transit_contract":"transfer-transit-1","type":"decision.challenge","request_id":uuid::Uuid::new_v4(),
+            "kind":"target_maintained","request":commit["request"]});
+        let reply=verified.metadata(manager.clone(),&ready,&format!("/pilot/v2/transfers/known/{}/challenges",reservation.transfer_id()),challenge.clone(),
+            serde_json::json!({"kind":"challenge","sent":challenge,"exchange":maintained})).await?;drop(reply);
+        if transfer_target_event(&mut target_events).await?["type"]!="maintained_attested"{return Err("target_maintenance_event");}
+        let committed=verified.source_decision(manager.clone(),&ready,&source,&reservation,job,&known,commit,expected,"source_maintained").await?;
+        let value:serde_json::Value=serde_json::from_slice(committed.bytes.as_slice()).map_err(|_|"commit_reply")?;drop(committed);
+        if value["result"]["status"]["phase"]!="committed"{return Err("commit_reply");}
+        assert_eq!(verified.committed_terminal(reservation.transfer_id()).await?["outcome"],"committed");
+        input.write_all(b"{\"publish\":true}\n").await.unwrap();
+        let published=transfer_target_event(&mut target_events).await?;
+        if published["type"]!="published"{return Err("target_publication_event");}
+        assert!(reservation.apply_committed_source(&source,job).await.is_err());
+        assert_eq!(sqlx::query_scalar::<_,String>("SELECT mode FROM chat_admission_owners WHERE conversation_id='chat'").fetch_one(&source_pool).await.unwrap(),"frozen");
+        let request=published["request"].clone();let activation=&request["body"]["activation"];
+        let expected=published["expected"].clone();
+        let terminal=verified.committed_terminal(reservation.transfer_id()).await?;
+        if activation["terminal_digest"]!=digest("terminal",&terminal) || activation["target_conversation_id"]!=terminal["prepared"]["target_conversation_id"]
+            || expected["subject_digest"]!=digest("activation",activation) || expected["prior_receipt_digest"]!=digest("terminal",&terminal)
+            || expected["instance_id"]!=producer["instance_id"] || expected["producer_generation"]!=producer["generation"] || expected["connection_id"]!=producer["connection_id"]
+        {return Err("target_activation_scope");}
+        let challenge=serde_json::json!({"transit_contract":"transfer-transit-1","type":"decision.challenge","request_id":uuid::Uuid::new_v4(),"kind":"target_activated","request":request});
+        let reply=verified.metadata(manager.clone(),&ready,&format!("/pilot/v2/transfers/known/{}/challenges",reservation.transfer_id()),challenge.clone(),
+            serde_json::json!({"kind":"challenge","sent":challenge,"exchange":expected})).await?;drop(reply);
+        if transfer_target_event(&mut target_events).await?["type"]!="activation_attested"{return Err("target_activation_event");}
+        let expected=serde_json::json!({"binding":binding,"frozen":frozen,"manifest":manifest,"prepared":terminal["prepared"],"terminal":terminal});
+        let acknowledged=verified.decision(manager.clone(),&ready,&known,wrap(request),expected).await?;drop(acknowledged);
+        reservation.apply_committed_source(&source,job).await.map_err(|_|"source_application")?;
+        assert_eq!(sqlx::query_scalar::<_,String>("SELECT mode FROM chat_admission_owners WHERE conversation_id='chat'").fetch_one(&source_pool).await.unwrap(),"ceded");
+        assert_eq!(sqlx::query_scalar::<_,i64>("SELECT COUNT(*) FROM messages WHERE conversation_id='chat'").fetch_one(&source_pool).await.unwrap(),2);
+        input.write_all(b"{\"stop\":true}\n").await.unwrap();drop(input);
+        let child=child.wait_with_output().await.unwrap();
+        if !child.status.success(){eprintln!("{} {}",String::from_utf8_lossy(&child.stdout),String::from_utf8_lossy(&child.stderr));return Err("target_instance_failed");}
+        Ok::<_,&'static str>(())
+    }.await;
+    // Cleanup is explicit even while the target half of this scenario is red.
+    drop(capture);drop(reservation);
+    let verified=Arc::try_unwrap(verified).ok().unwrap();verified.close().await.unwrap();
+    assert!(runtime.shutdown().await);
+    relay_input.write_all(b"{\"stop\":true}\n").await.unwrap();drop(relay_input);
+    assert!(relay.wait().await.unwrap().success());
+    source_result.unwrap();
+    let normalized=normalized.unwrap();
+    let (descriptor,archive)=normalized.normalized_for(&sealed.manifest).unwrap();
+    assert_eq!(descriptor["kind"],"portable_archive");
+    assert!(std::str::from_utf8(archive.as_slice()).unwrap().contains("portable_archive"));
+    // Both ordinary target publication and acknowledged source cession passed.
+}
+
+#[tokio::test]
+#[ignore="target process of the local Global Chat scenario"]
+async fn global_chat_transfer_target() {
+    use tokio::io::{AsyncBufReadExt,AsyncWriteExt,BufReader};
+    use transport::{Intent,Scope};
+    let mut input=BufReader::new(tokio::io::stdin()).lines();
+    let data:serde_json::Value=serde_json::from_str(&input.next_line().await.unwrap().unwrap()).unwrap();
+    let seed=&data["seed"];let b=&seed["b"];let session=&data["session"];
+    let text=|v:&serde_json::Value|v.as_str().unwrap().to_owned();
+    let owner=crate::core::db_state::DbPool::default();
+    let pool=crate::db::create_pool(std::path::Path::new(data["database"].as_str().unwrap())).await.unwrap();
+    owner.set_ready(pool.clone()).await.unwrap();
+    sqlx::query("INSERT INTO e_inactive_domain VALUES(1,16777216,64)").execute(&pool).await.unwrap();
+    let manager=Arc::new(Manager::new(Arc::new(Fake::default())));
+    let context=PilotVaultContext{configuration_id:"config:local-target".into(),relay_origin:text(&seed["origin"]),owner_id:text(&b["session_id"])};
+    let generation=manager.activate(context.clone(),None).unwrap().generation;
+    for(kind,id,value)in[(PilotSecretKind::SessionToken,context.owner_id.clone(),text(&b["token"])),(PilotSecretKind::InstanceKey,text(&b["creation"]),text(&b["key"]))]{
+        manager.write(&PilotSecretScope{configuration_id:context.configuration_id.clone(),relay_origin:context.relay_origin.clone(),kind,resource_id:id},&generation,&value).unwrap();
+    }
+    let bun=std::env::split_paths(&std::env::var_os("PATH").unwrap()).map(|p|p.join("bun")).find(|p|p.is_file()).unwrap();
+    let runtime=crate::connect::TransferRuntime::default();
+    let launcher=runtime.source_launcher(&bun,&std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../copilot-bridge/src/entry.ts"),&owner).unwrap();
+    let ready=owner.wait_until_ready_context().await.unwrap();
+    let verified=Arc::new(transport::bootstrap_owned(manager.clone(),Intent{context,generation,instance_creation_id:text(&b["creation"]),
+        account_id:Some(text(&seed["account_id"])),device_id:Some(text(&b["device_id"])),scope:Scope::Producer{instance_id:text(&b["instance"])}},
+        &runtime,&launcher,&ready,format!("127.0.0.1:{}",seed["port"].as_u64().unwrap()).parse().unwrap(),true,&tokio_util::sync::CancellationToken::new()).await.unwrap());
+    let opened=verified.transit(manager.clone(),&ready,&format!("/pilot/v2/transfers/known/{}/transit",session["transfer_id"].as_str().unwrap()),
+        serde_json::json!({"transit_contract":"transfer-transit-1","type":"transit.open","request_id":uuid::Uuid::new_v4(),"session":session}),session).await.unwrap();drop(opened);
+    let mut reservation=crate::db::connect_transfer::reserve_verified_target(&owner,&verified,&data["sent"],&data["manifest"]).await.unwrap();
+    let root=format!("/pilot/v2/transfers/transits/{}",session["transit_id"].as_str().unwrap());
+    let mut sequence=0i64;let mut offset=0i64;
+    loop {
+        let pull=serde_json::json!({"transit_contract":"transfer-transit-1","type":"transit.pull","request_id":uuid::Uuid::new_v4(),
+            "transfer_id":session["transfer_id"],"transit_id":session["transit_id"],"sequence":sequence.to_string(),"offset":offset.to_string()});
+        verified.transit(manager.clone(),&ready,&(root.clone()+"/pull"),pull,session).await.unwrap();
+        let received=verified.delivery(manager.clone(),&ready).await.unwrap();
+        let delivery:serde_json::Value=serde_json::from_slice(received.bytes.as_slice()).unwrap();drop(received);
+        assert_eq!(delivery["branch"],"transit");assert_eq!(delivery["value"]["body"]["kind"],"transit.chunk");
+        let chunk=&delivery["value"]["body"]["message"];
+        let committed=reservation.stage_target(&owner,&data["sent"],&data["manifest"],chunk).await.unwrap();
+        let mut ack=chunk.clone();ack.as_object_mut().unwrap().remove("data_utf8");ack["type"]=serde_json::json!("transit.ack");
+        ack["request_id"]=serde_json::json!(uuid::Uuid::new_v4());ack["next_offset"]=serde_json::json!(committed.1.to_string());
+        let progress=verified.transit(manager.clone(),&ready,&(root.clone()+"/ack"),ack,session).await.unwrap();drop(progress);
+        (sequence,offset)=(committed.0,committed.1);if committed.2{break;}
+    }
+    assert_eq!(sqlx::query_scalar::<_,i64>("SELECT SUM(length(data)) FROM connect_raw_chunks").fetch_one(&pool).await.unwrap().to_string(),session["stream_bytes"]);
+    let archive=reservation.staged_target(&owner,&data["sent"],&data["manifest"]).await.unwrap();
+    let descriptor:serde_json::Value=serde_json::from_slice(archive.split(|b|*b==b'\n').next().unwrap()).unwrap();
+    let storage=crate::db::inactive_storage::InactiveStorage::for_transfer(&owner,verified.clone(),data["sent"].clone(),data["manifest"].clone()).await.unwrap();
+    let config_directory=tempfile::tempdir().unwrap();
+    let config=crate::config::ConfigManager::initialize(config_directory.path().to_path_buf()).await.unwrap();
+    let imported=launcher.import_archive(&config,&verified,&storage,&archive,&descriptor).await;
+    let attached=if let Ok(imported)=&imported {reservation.attach_imported_target(&owner,&data["sent"],&data["manifest"],imported).await}else{Ok(())};
+    let mut prepared=if let Ok(imported)=&imported {
+        crate::db::repository::upsert_provider_config_by_id(&pool,"macro-ai","Synthetic Macro AI","openai","https://provider.example.invalid/v1",true).await.unwrap();
+        let model:crate::db::models::ProviderModelInput=serde_json::from_value(serde_json::json!({"model_id":"macro-ai","name":"Synthetic Macro AI",
+            "context_window_tokens":200000,"input_limit_tokens":200000,"output_limit_tokens":16384,"context_window_source":"manual"})).unwrap();
+        crate::db::repository::upsert_provider_models(&pool,"macro-ai",&[model]).await.unwrap();
+        launcher.prepare_archive(&config,&verified,&storage,imported,"macro-ai","macro-ai").await
+    }else{Err("transfer_import_missing")};
+    let pinned=if let (Ok(imported),Ok(prepared))=(&imported,&mut prepared) {
+        reservation.pin_target(&owner,&config,imported,prepared,&data["sent"],&data["manifest"]).await
+    }else{Ok(())};
+    if pinned.is_ok() && prepared.is_ok() {
+        assert_eq!(reservation.target_prepared().await.unwrap()["target_conversation_id"],prepared.as_ref().unwrap().native_prepared().unwrap().1.conversation_id.as_ref().unwrap().as_str());
+        assert_eq!(sqlx::query_scalar::<_,String>("SELECT phase FROM connect_preparations").fetch_one(&pool).await.unwrap(),"pinned");
+        assert_eq!(sqlx::query_scalar::<_,i64>("SELECT COUNT(*) FROM conversations").fetch_one(&pool).await.unwrap(),0);
+        assert_ne!(reservation.target_prepared().await.unwrap()["lineage_id"],data["sent"]["request"]["body"]["binding"]["provenance"]["lineage_id"]);
+        let ready_intent=serde_json::json!({"decision_contract":"transfer-decision-1","type":"decision_request","operation":"ready",
+            "operation_id":uuid::Uuid::new_v4(),"expected_revision":"2","transfer_id":session["transfer_id"],"body":{"prepared":reservation.target_prepared().await.unwrap()}});
+        let expected=reservation.target_expectation(&owner,&config,prepared.as_ref().unwrap(),&ready_intent,"target_pinned").await.unwrap();
+        assert_eq!(expected["instance_id"],b["instance"]);assert_eq!(expected["kind"],"target_pinned");
+        assert!(reservation.target_expectation(&owner,&config,prepared.as_ref().unwrap(),&serde_json::json!({}),"target_pinned").await.is_err());
+        println!("SLICE_TARGET_EVENT:{}",serde_json::json!({"type":"prepared","request":ready_intent,"expected":expected}));
+        let delivery=verified.delivery(manager.clone(),&ready).await.unwrap();
+        verified.attest_target(manager.clone(),&ready,&owner,&reservation,&config,prepared.as_ref().unwrap(),delivery).await.unwrap();
+        println!("SLICE_TARGET_EVENT:{}",serde_json::json!({"type":"attested"}));
+        let commit:serde_json::Value=serde_json::from_str(&input.next_line().await.unwrap().unwrap()).unwrap();
+        let expected=reservation.target_expectation(&owner,&config,prepared.as_ref().unwrap(),&commit,"target_maintained").await.unwrap();
+        println!("SLICE_TARGET_EVENT:{}",serde_json::json!({"type":"maintained","expected":expected}));
+        let delivery=verified.delivery(manager.clone(),&ready).await.unwrap();
+        verified.attest_target(manager.clone(),&ready,&owner,&reservation,&config,prepared.as_ref().unwrap(),delivery).await.unwrap();
+        println!("SLICE_TARGET_EVENT:{}",serde_json::json!({"type":"maintained_attested"}));
+        let publish:serde_json::Value=serde_json::from_str(&input.next_line().await.unwrap().unwrap()).unwrap();assert_eq!(publish["publish"],true);
+        let binding=&data["sent"]["request"]["body"]["binding"];let frozen=&data["sent"]["request"]["body"]["frozen"];
+        let request=serde_json::json!({"transit_contract":"transfer-transit-1","type":"decision.request","request_id":uuid::Uuid::new_v4(),
+            "request":{"decision_contract":"transfer-decision-1","type":"decision_request","operation":"reconcile","operation_id":uuid::Uuid::new_v4(),
+                "expected_revision":"0","transfer_id":session["transfer_id"],"body":{"binding":binding,"frozen":frozen,"expected_ledger_revision":"1","action":"status"}}});
+        let expected=serde_json::json!({"binding":binding,"frozen":frozen,"manifest":data["manifest"],"prepared":reservation.target_prepared().await.unwrap(),"terminal":null});
+        let reply=verified.decision(manager.clone(),&ready,&format!("/pilot/v2/transfers/known/{}/decisions",session["transfer_id"].as_str().unwrap()),request,expected).await.unwrap();drop(reply);
+        let conversation=reservation.publish_target(&owner,&config,prepared.as_ref().unwrap()).await.unwrap();
+        let messages:Vec<String>=sqlx::query_scalar("SELECT content FROM messages WHERE conversation_id=? ORDER BY created_at,id").bind(&conversation).fetch_all(&pool).await.unwrap();
+        assert_eq!(messages.len(),2);assert!(messages.iter().any(|s|s.contains("Can I continue on another computer?")));
+        assert!(messages.iter().any(|s|s.contains("A short answer available on the other computer.")));
+        assert!(messages.iter().all(|s|s=="Can I continue on another computer?" || s=="A short answer available on the other computer."));
+        // Exercise the same historical-message renderer used by ChatZone with
+        // the ordinary published rows, rather than displaying archive JSON.
+        let mut renderer=tokio::process::Command::new(std::env::split_paths(&std::env::var_os("PATH").unwrap()).map(|p|p.join("bun")).find(|p|p.is_file()).unwrap())
+            .args(["-e",r#"
+                import React from 'react';import {renderToStaticMarkup} from 'react-dom/server';
+                import {createInstance} from 'i18next';import {I18nextProvider} from 'react-i18next';
+                import {HistoricalMessageContent} from './src/components/chat/HistoricalMessageContent';
+                const i18n=createInstance();await i18n.init({lng:'en',resources:{en:{translation:{}}},initImmediate:false});
+                const messages=JSON.parse(await Bun.stdin.text());
+                console.log(renderToStaticMarkup(React.createElement(I18nextProvider,{i18n},messages.map((content,i)=>React.createElement(HistoricalMessageContent,{key:i,content,date:'2026-01-01T00:00:00Z'})))));
+            "#]).current_dir(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap())
+            .stdin(std::process::Stdio::piped()).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped()).spawn().unwrap();
+        renderer.stdin.take().unwrap().write_all(&serde_json::to_vec(&messages).unwrap()).await.unwrap();
+        let rendered=renderer.wait_with_output().await.unwrap();assert!(rendered.status.success(),"{}",String::from_utf8_lossy(&rendered.stderr));
+        let html=String::from_utf8(rendered.stdout).unwrap();assert!(html.contains("data-chat-historical-message"));
+        for message in &messages{assert!(html.contains(message));}assert!(!html.contains(&conversation));assert!(!html.contains("portable_archive"));
+        let mut next=prepared.as_ref().unwrap().native_prepared().unwrap().1.clone();
+        next.messages.push(serde_json::from_value(serde_json::json!({"role":"user","content":"Continue from this history."})).unwrap());
+        let (provider,_,_,_)=crate::connect::runtime::transfer_target_snapshot(&config,&ready,"macro-ai","macro-ai").await.unwrap();
+        let next_body=crate::ai::openai_compatible::build_transfer_request(&next,&provider).unwrap();
+        assert_eq!(next_body["messages"].as_array().unwrap().last().unwrap()["content"],"Continue from this history.");
+        for message in &messages{assert!(next_body.to_string().contains(message));}
+        assert!(reservation.publish_target(&owner,&config,prepared.as_ref().unwrap()).await.is_err());
+        assert_eq!(sqlx::query_scalar::<_,i64>("SELECT COUNT(*) FROM conversations").fetch_one(&pool).await.unwrap(),1);
+        let activation=reservation.target_activation().unwrap();
+        let request=serde_json::json!({"decision_contract":"transfer-decision-1","type":"decision_request","operation":"activation.record",
+            "operation_id":uuid::Uuid::new_v4(),"expected_revision":"4","transfer_id":session["transfer_id"],"body":{"activation":activation}});
+        let expected=reservation.target_expectation(&owner,&config,prepared.as_ref().unwrap(),&request,"target_activated").await.unwrap();
+        println!("SLICE_TARGET_EVENT:{}",serde_json::json!({"type":"published","conversation":conversation,"request":request,"expected":expected}));
+        let delivery=verified.delivery(manager.clone(),&ready).await.unwrap();
+        verified.attest_target(manager.clone(),&ready,&owner,&reservation,&config,prepared.as_ref().unwrap(),delivery).await.unwrap();
+        println!("SLICE_TARGET_EVENT:{}",serde_json::json!({"type":"activation_attested"}));
+        let stop:serde_json::Value=serde_json::from_str(&input.next_line().await.unwrap().unwrap()).unwrap();assert_eq!(stop["stop"],true);
+    }
+    drop(storage);drop(reservation);
+    Arc::try_unwrap(verified).ok().unwrap().close().await.unwrap();assert!(runtime.shutdown().await);
+    assert_eq!(imported.unwrap().imported_storage().unwrap().receipt.phase,crate::db::inactive_storage::Phase::SealedStorage);
+    attached.unwrap();pinned.unwrap();
+    let prepared=prepared.unwrap();let (_,request,body,_)=prepared.native_prepared().unwrap();
+    assert_eq!(request.provider_id,"macro-ai");assert_eq!(body["chat_template_kwargs"]["enable_thinking"],true);
+    let serialized=body.to_string();assert!(serialized.contains("Can I continue on another computer?"));
+    assert!(serialized.contains("A short answer available on the other computer."));
 }

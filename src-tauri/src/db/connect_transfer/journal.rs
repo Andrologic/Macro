@@ -11,7 +11,7 @@ use sqlx::{Connection, Row};
 /// Its bytes are stored exactly; this low-level owner does not authenticate them
 /// or replace the canonical validators with a second Rust contract implementation.
 #[derive(Clone, Serialize)]
-pub(in crate::db) struct Reservation {
+pub(crate) struct Reservation {
     transfer_id: String,
     relay_origin: String,
     account_id: String,
@@ -27,8 +27,116 @@ pub(in crate::db) struct Reservation {
     reserve_request: Vec<u8>,
     expected_ownership_revision: i64,
     expected_content: ConversationContentToken,
+    // Live native scope only. None on storage fixtures; never serialized to SQL
+    // and never reconstructed when reading a durable receipt.
+    #[serde(skip)] native_authority: Option<std::sync::Arc<crate::commands::pilot_secrets::transport::VerifiedTransport>>,
+    #[serde(skip)] native_target_prepared:Option<serde_json::Value>,
+    #[serde(skip)] native_target_activation:Option<serde_json::Value>,
+    #[serde(skip)] native_lineage_id: String,
+    #[serde(skip)] native_installation_id: String,
+    #[serde(skip)] native_birth_generation: String,
+    #[serde(skip)] native_operation_id: String,
+    #[serde(skip)] native_expected_revision: String,
+    #[serde(skip)] native_ledger_revision: String,
 }
 impl Reservation {
+    pub(crate) fn transfer_id(&self)->&str { &self.transfer_id }
+    /// The original native object stays with the live job. SQL and JSON receipts
+    /// cannot reconstruct this attachment input or replace fresh producer rights.
+    pub(crate) async fn attach_captured_source(&self, owner:&DbPool,
+        transport:&crate::commands::pilot_secrets::transport::VerifiedTransport, capture:&str,
+    )->DbResult<()> {
+        transport.check_producer(&self.account_id,&self.source_instance_id,&self.source_generation).await.map_err(invalid)?;
+        let guard=owner.source_ready(None).await.map_err(|_|invalid("unavailable"))?;
+        attach_capture(&guard.ready.pool,self,capture).await
+    }
+    fn native_commitments(&self)->DbResult<(serde_json::Value,serde_json::Value)> {
+        use crate::commands::pilot_secrets::transport::commitment;
+        let live=self.native_authority.as_ref().ok_or_else(||invalid("connect_native_owner_missing"))?;
+        let facts=live.controller_snapshot().map_err(invalid)?;
+        let binding=serde_json::json!({"transfer_id":self.transfer_id,"provenance":{
+            "source":{"relay_origin":self.relay_origin,"account_id":self.account_id,"source_instance_id":self.source_instance_id,"source_conversation_id":self.source_conversation_id},
+            "lineage_id":self.native_lineage_id,"installation_id":self.native_installation_id,"birth_generation":self.native_birth_generation},
+            "epoch":self.source_epoch.to_string(),"target_instance_id":self.target_instance_id,
+            "relay_recovery_generation":facts["recovery_generation"],"initiator":facts["actor"],
+            "source_producer_generation":self.source_generation,"target_producer_generation":self.target_generation});
+        let binding_digest=commitment("transfer-binding",&binding).map_err(invalid)?;
+        if binding_digest!=self.binding_digest.iter().map(|b|format!("{b:02x}")).collect::<String>() {
+            return Err(invalid("connect_native_binding_changed"));
+        }
+        let freeze_hash=hash(&serde_json::to_vec(&self.expected_content).map_err(|_|invalid("connect_native_freeze"))?)
+            .iter().map(|b|format!("{b:02x}")).collect::<String>();
+        let frozen=serde_json::json!({"format_version":"1","binding_digest":binding_digest,
+            "ownership_revision":self.expected_ownership_revision.to_string(),"content_incarnation":self.expected_content.incarnation,
+            "content_revision":self.expected_content.revision,"sha256":freeze_hash});
+        Ok((binding,frozen))
+    }
+    pub(crate) async fn source_manifest(&self,owner:&DbPool,
+        normalized:&crate::connect::transfer_worker::TransferWorker,
+    )->DbResult<serde_json::Value>{
+        use crate::commands::pilot_secrets::transport::commitment;
+        let live=self.native_authority.as_ref().ok_or_else(||invalid("connect_native_owner_missing"))?;
+        live.check_producer(&self.account_id,&self.source_instance_id,&self.source_generation).await.map_err(invalid)?;
+        let guard=owner.source_ready(None).await.map_err(|_|invalid("unavailable"))?;
+        guard.ready.check_source_schema(&mut *guard.ready.pool.acquire().await?).await?;
+        let row=sqlx::query("SELECT t.fingerprint,t.local_generation,t.ownership_incarnation,t.ownership_revision,t.restore_hold,t.terminal_outcome,t.resolution,o.incarnation,o.revision,o.mode,c.manifest_hash,c.phase FROM connect_transfers t JOIN chat_admission_owners o ON o.conversation_id=t.source_conversation_id JOIN e_source_captures c ON c.id=t.source_capture_id WHERE t.transfer_id=? AND t.local_role='source'")
+            .bind(&self.transfer_id).fetch_one(&guard.ready.pool).await?;
+        if row.get::<Vec<u8>,_>("fingerprint")!=self.inspect()?.0 || row.get::<String,_>("local_generation")!=guard.ready.catalog_generation
+            || row.get::<String,_>("incarnation")!=row.get::<String,_>("ownership_incarnation")
+            || row.get::<i64,_>("revision")!=row.get::<i64,_>("ownership_revision") || row.get::<String,_>("mode")!="frozen"
+            || row.get::<i64,_>("restore_hold")!=0 || row.get::<Option<String>,_>("terminal_outcome").is_some()
+            || row.get::<Option<String>,_>("resolution").is_some() || row.get::<i64,_>("phase")!=2
+        {return Err(invalid("connect_source_effect_changed"));}
+        let current=crate::db::conversation_content::conversation_content_version(&guard.ready.pool,&self.source_conversation_id).await?;
+        if current!=self.expected_content{return Err(invalid("connect_source_effect_changed"));}
+        let (descriptor,_)=normalized.normalized_for(&row.get::<Vec<u8>,_>("manifest_hash")).map_err(invalid)?;
+        let (_,frozen)=self.native_commitments()?;
+        Ok(serde_json::json!({"format_version":"1","binding_digest":frozen["binding_digest"],
+            "frozen_digest":commitment("frozen",&frozen).map_err(invalid)?,
+            "content_contract_sha256":descriptor["content_contract_sha256"],"manifest_sha256":descriptor["manifest_sha256"],
+            "source_revision":self.expected_content.revision}))
+    }
+    pub(crate) async fn source_expectation(&self,owner:&DbPool,
+        normalized:&crate::connect::transfer_worker::TransferWorker,request:&serde_json::Value,kind:&str,
+    )->DbResult<serde_json::Value> {
+        use crate::commands::pilot_secrets::transport::commitment;
+        let manifest=self.source_manifest(owner,normalized).await?;
+        let (binding,frozen)=self.native_commitments()?;
+        let original=serde_json::json!({"decision_contract":"transfer-decision-1","type":"decision_request",
+            "operation":"reserve","operation_id":self.native_operation_id,"expected_revision":self.native_expected_revision,
+            "transfer_id":self.transfer_id,"body":{"binding":binding,"frozen":frozen,"expected_ledger_revision":self.native_ledger_revision}});
+        let (scope,subject,prior)=match kind {
+            "lineage_enrolled" if request["operation"]=="lineage.create" && request["body"]["mode"]=="initial_existing"
+                && request["body"]["provenance"]==binding["provenance"] && request["body"]["creation_digest"]==frozen["sha256"]=>
+                (commitment("provenance",&binding["provenance"]),commitment("birth",&request["body"]),None),
+            "source_frozen" if request==&original => (commitment("transfer-binding",&binding),commitment("frozen",&frozen),None),
+            "source_sealed" if request["operation"]=="seal" && request["transfer_id"]==self.transfer_id && request["body"]["manifest"]==manifest =>
+                (commitment("transfer-binding",&binding),commitment("manifest",&manifest),Some(commitment("frozen",&frozen))),
+            "source_maintained" if request["operation"]=="commit" && request["transfer_id"]==self.transfer_id =>
+                (commitment("transfer-binding",&binding),commitment("frozen",&frozen),Some(commitment("manifest",&manifest))),
+            _=>return Err(invalid("connect_proof_mismatch")),
+        };
+        let prior=prior.transpose().map_err(invalid)?;
+        let facts=self.native_authority.as_ref().ok_or_else(||invalid("connect_native_owner_missing"))?
+            .controller_snapshot().map_err(invalid)?;
+        Ok(serde_json::json!({"kind":kind,"binding_digest":scope.map_err(invalid)?,"subject_digest":subject.map_err(invalid)?,
+            "instance_id":self.source_instance_id,"producer_generation":self.source_generation,
+            "connection_id":facts["source_producer"]["connection_id"],
+            "request_digest":commitment("retry-body",request).map_err(invalid)?,"prior_receipt_digest":prior}))
+    }
+    pub(crate) async fn check_source_attestation(&self,owner:&DbPool,
+        transport:&crate::commands::pilot_secrets::transport::VerifiedTransport,
+        normalized:&crate::connect::transfer_worker::TransferWorker,request:&serde_json::Value,exchange:&serde_json::Value,
+    )->DbResult<()> {
+        let live=self.native_authority.as_ref().ok_or_else(||invalid("connect_native_owner_missing"))?;
+        if !std::ptr::eq(live.as_ref(),transport){return Err(invalid("connect_native_owner_changed"));}
+        let kind=exchange["kind"].as_str().ok_or_else(||invalid("connect_proof_mismatch"))?;
+        let expected=self.source_expectation(owner,normalized,request,kind).await?;
+        for (name,value) in expected.as_object().ok_or_else(||invalid("connect_proof_mismatch"))? {
+            if &exchange[name]!=value{return Err(invalid("connect_proof_mismatch"));}
+        }
+        Ok(())
+    }
     fn inspect(&self) -> DbResult<(Vec<u8>, i64)> {
         uuid(&self.transfer_id)?;
         for id in [
@@ -67,11 +175,280 @@ impl Reservation {
         fingerprint(self)
     }
 }
+/// Compose the existing canonical transport with the real browser/native freeze.
+/// A persisted reservation can never reconstruct the transport argument.
+pub(crate) async fn reserve_verified_source(
+    owner: &DbPool,
+    runtime: &crate::db::chat_admission::runtime::ChatAdmissionRuntime,
+    caller: &str,
+    browser: &str,
+    inspection: &str,
+    transport: &std::sync::Arc<crate::commands::pilot_secrets::transport::VerifiedTransport>,
+    sent: &serde_json::Value,
+) -> DbResult<(Reservation, LocalReservation)> {
+    transport.check_reserve(sent).await.map_err(invalid)?;
+    let input=reservation_intent(transport,sent)?;
+    let native_freeze_hash=hash(&serde_json::to_vec(&input.expected_content).map_err(|_|invalid("connect_native_freeze"))?)
+        .iter().map(|b|format!("{b:02x}")).collect::<String>();
+    if sent["request"]["body"]["frozen"]["sha256"]!=native_freeze_hash {return Err(invalid("connect_native_freeze"));}
+    let receipt=runtime.reserve_reconciled_transfer(owner, caller, browser, inspection, &input).await?;
+    if !receipt.native_source_frozen {return Err(invalid("connect_replay_requires_live_owner"));}
+    transport.check().await.map_err(invalid)?;
+    Ok((input,receipt))
+}
+// This constructor only copies intent. Its two callers first establish their
+// live source freeze or authenticated target session; none is a receipt reader.
+fn reservation_intent(transport:&std::sync::Arc<crate::commands::pilot_secrets::transport::VerifiedTransport>,sent:&serde_json::Value)->DbResult<Reservation> {
+    let q = &sent["request"];
+    let b = &q["body"]["binding"];
+    let f = &q["body"]["frozen"];
+    let source = &b["provenance"]["source"];
+    let text = |v: &serde_json::Value| v.as_str().map(str::to_owned)
+        .ok_or_else(|| invalid("connect_transfer_invalid_input"));
+    let digest = text(&f["binding_digest"])?;
+    let digest = (0..digest.len()).step_by(2).map(|i|
+        digest.get(i..i+2).and_then(|v|u8::from_str_radix(v,16).ok())
+            .ok_or_else(||invalid("connect_transfer_invalid_input")))
+        .collect::<DbResult<Vec<u8>>>()?;
+    Ok(Reservation {
+        transfer_id: text(&b["transfer_id"])?, relay_origin: text(&source["relay_origin"])?,
+        account_id: text(&source["account_id"])?, source_instance_id: text(&source["source_instance_id"])?,
+        source_conversation_id: text(&source["source_conversation_id"])?,
+        source_epoch: text(&b["epoch"])?.parse().map_err(|_|invalid("connect_transfer_invalid_input"))?,
+        target_instance_id: text(&b["target_instance_id"])?,
+        source_generation: text(&b["source_producer_generation"])?, target_generation: text(&b["target_producer_generation"])?,
+        binding_digest: digest, binding_json: serde_json::to_vec(b).map_err(|_|invalid("connect_transfer_invalid_input"))?,
+        expectation_json: serde_json::to_vec(&serde_json::json!({"binding":b,"frozen":f,"manifest":null,"prepared":null,"terminal":null}))
+            .map_err(|_|invalid("connect_transfer_invalid_input"))?,
+        reserve_request: serde_json::to_vec(sent).map_err(|_|invalid("connect_transfer_invalid_input"))?,
+        expected_ownership_revision: text(&f["ownership_revision"])?.parse().map_err(|_|invalid("connect_transfer_invalid_input"))?,
+        expected_content: ConversationContentToken { version:1,
+            incarnation:text(&f["content_incarnation"])?,revision:text(&f["content_revision"])? },
+        native_authority:Some(transport.clone()),native_target_prepared:None,native_target_activation:None,
+        native_lineage_id:text(&b["provenance"]["lineage_id"])?,
+        native_installation_id:text(&b["provenance"]["installation_id"])?,
+        native_birth_generation:text(&b["provenance"]["birth_generation"])?,
+        native_operation_id:text(&q["operation_id"])?,
+        native_expected_revision:text(&q["expected_revision"])?, native_ledger_revision:text(&q["body"]["expected_ledger_revision"])?,
+    })
+}
+pub(crate) async fn reserve_verified_target(owner:&DbPool,
+    transport:&std::sync::Arc<crate::commands::pilot_secrets::transport::VerifiedTransport>,
+    sent:&serde_json::Value,manifest:&serde_json::Value,
+)->DbResult<Reservation> {
+    transport.check_target_transfer(sent,manifest).await.map_err(invalid)?;
+    let input=reservation_intent(transport,sent)?;
+    let guard=owner.source_ready(None).await.map_err(|_|invalid("unavailable"))?;
+    reserve_target(&guard.ready.pool,&input).await?;
+    transport.check().await.map_err(invalid)?;
+    Ok(input)
+}
+impl Reservation {
+    async fn native_terminal(&self)->DbResult<serde_json::Value> {
+        use crate::commands::pilot_secrets::transport::commitment;
+        let live=self.native_authority.as_ref().ok_or_else(||invalid("connect_native_owner_missing"))?;
+        let terminal=live.committed_terminal(&self.transfer_id).await.map_err(invalid)?;
+        // Original native intent, never reconstructed from a SQL receipt. Fresh
+        // authority is the private authenticated terminal above.
+        let original:serde_json::Value=serde_json::from_slice(&self.reserve_request).map_err(|_|invalid("connect_native_binding_changed"))?;
+        let binding=&original["request"]["body"]["binding"];let frozen=&original["request"]["body"]["frozen"];
+        if terminal["source"]!=binding["provenance"]["source"] || terminal["epoch"]!=binding["epoch"]
+            || terminal["target_instance_id"]!=self.target_instance_id
+            || terminal["binding_digest"]!=commitment("transfer-binding",binding).map_err(invalid)?
+            || terminal["frozen_digest"]!=commitment("frozen",frozen).map_err(invalid)?
+        {return Err(invalid("connect_terminal_mismatch"));}
+        Ok(terminal)
+    }
+    pub(crate) async fn publish_target(&mut self,owner:&DbPool,config:&crate::config::ConfigManager,
+        prepared:&crate::connect::transfer_worker::TransferWorker,
+    )->DbResult<String> {
+        let live=self.native_authority.as_ref().ok_or_else(||invalid("connect_native_owner_missing"))?;
+        live.check_producer(&self.account_id,&self.target_instance_id,&self.target_generation).await.map_err(invalid)?;
+        let terminal=self.native_terminal().await?;
+        let pin=self.target_prepared().await?;
+        if terminal["prepared"]!=*pin{return Err(invalid("connect_terminal_mismatch"));}
+        let (_,request,_,configuration)=prepared.native_prepared().map_err(invalid)?;
+        let guard=owner.source_ready(None).await.map_err(|_|invalid("unavailable"))?;
+        let (_,_,_,fresh)=crate::connect::runtime::transfer_target_snapshot(config,&guard.ready,&request.provider_id,&request.model_id).await.map_err(invalid)?;
+        let row=sqlx::query("SELECT t.fingerprint,t.restore_hold,p.fingerprint AS preparation_fingerprint,p.local_generation,p.phase,p.pin_receipt,p.configuration_digest,p.target_conversation_id FROM connect_transfers t JOIN connect_preparations p USING(transfer_id) WHERE transfer_id=? AND t.local_role='target'").bind(&self.transfer_id).fetch_one(&guard.ready.pool).await?;
+        if row.get::<Vec<u8>,_>("fingerprint")!=self.inspect()?.0 || row.get::<i64,_>("restore_hold")!=0
+            || row.get::<String,_>("phase")!="pinned" || row.get::<String,_>("local_generation")!=guard.ready.catalog_generation
+            || row.get::<Vec<u8>,_>("pin_receipt")!=serde_json::to_vec(pin).map_err(|_|invalid("connect_preparation_invalid_input"))?
+            || row.get::<Vec<u8>,_>("configuration_digest")!=configuration || fresh!=configuration
+            || request.conversation_id.as_deref()!=Some(row.get::<String,_>("target_conversation_id").as_str())
+        {return Err(invalid("connect_target_effect_changed"));}
+        live.check().await.map_err(invalid)?;
+        let terminal_fingerprint=super::terminal::store_committed(&guard.ready.pool,&self.transfer_id,self.inspect()?.0,self.binding_digest.clone(),self.source_epoch,&terminal,false).await?;
+        let result=super::publication::publish(&guard.ready.pool,&super::publication::PublishWrite{
+            transfer_id:self.transfer_id.clone(),terminal_fingerprint,
+            preparation_fingerprint:row.get("preparation_fingerprint"),local_generation:guard.ready.catalog_generation.clone(),configuration_digest:fresh,
+        }).await?;
+        if result.disposition!=super::publication::LocalDisposition::Published{return Err(invalid("connect_publication_removed"));}
+        live.check().await.map_err(invalid)?;
+        use crate::commands::pilot_secrets::transport::commitment;
+        self.native_target_activation=Some(serde_json::json!({"decision_contract":"transfer-decision-1","type":"activation_receipt",
+            "receipt_id":uuid::Uuid::new_v4(),"transfer_id":self.transfer_id,"terminal_digest":commitment("terminal",&terminal).map_err(invalid)?,
+            "target_instance_id":self.target_instance_id,"target_conversation_id":result.conversation_id,
+            "prepared_digest":commitment("prepared",pin).map_err(invalid)?,"revision":"1"}));
+        Ok(result.conversation_id)
+    }
+    pub(crate) fn target_activation(&self)->DbResult<&serde_json::Value>{
+        self.native_target_activation.as_ref().ok_or_else(||invalid("connect_native_publication_missing"))
+    }
+    pub(crate) async fn apply_committed_source(&self,owner:&DbPool,
+        normalized:&crate::connect::transfer_worker::TransferWorker,
+    )->DbResult<()> {
+        use crate::commands::pilot_secrets::transport::commitment;
+        let live=self.native_authority.as_ref().ok_or_else(||invalid("connect_native_owner_missing"))?;
+        live.check_producer(&self.account_id,&self.source_instance_id,&self.source_generation).await.map_err(invalid)?;
+        let terminal=self.native_terminal().await?;
+        let activation=live.committed_activation(&self.transfer_id).await.map_err(invalid)?;
+        let manifest=self.source_manifest(owner,normalized).await?;
+        if terminal["manifest_digest"]!=commitment("manifest",&manifest).map_err(invalid)? || activation["target_instance_id"]!=self.target_instance_id {
+            return Err(invalid("connect_terminal_mismatch"));
+        }
+        let guard=owner.source_ready(None).await.map_err(|_|invalid("unavailable"))?;
+        live.check().await.map_err(invalid)?;
+        super::terminal::store_committed(&guard.ready.pool,&self.transfer_id,self.inspect()?.0,self.binding_digest.clone(),self.source_epoch,&terminal,true).await?;
+        Ok(())
+    }
+    pub(crate) async fn target_expectation(&self,owner:&DbPool,config:&crate::config::ConfigManager,
+        prepared:&crate::connect::transfer_worker::TransferWorker,request:&serde_json::Value,kind:&str,
+    )->DbResult<serde_json::Value> {
+        use crate::commands::pilot_secrets::transport::commitment;
+        let live=self.native_authority.as_ref().ok_or_else(||invalid("connect_native_owner_missing"))?;
+        live.check_producer(&self.account_id,&self.target_instance_id,&self.target_generation).await.map_err(invalid)?;
+        let pin=self.target_prepared().await?;
+        let (_,native_request,_,configuration)=prepared.native_prepared().map_err(invalid)?;
+        let guard=owner.source_ready(None).await.map_err(|_|invalid("unavailable"))?;
+        let (_,_,_,fresh)=crate::connect::runtime::transfer_target_snapshot(config,&guard.ready,&native_request.provider_id,&native_request.model_id).await.map_err(invalid)?;
+        let row=sqlx::query("SELECT t.fingerprint,t.restore_hold,t.terminal_outcome,t.resolution,p.local_generation,p.phase,p.pin_receipt,p.configuration_digest,p.prepared_digest,p.target_conversation_id FROM connect_transfers t JOIN connect_preparations p USING(transfer_id) WHERE transfer_id=? AND t.local_role='target'").bind(&self.transfer_id).fetch_one(&guard.ready.pool).await?;
+        let digest=commitment("prepared",pin).map_err(invalid)?;
+        let activated=kind=="target_activated";
+        if row.get::<Vec<u8>,_>("fingerprint")!=self.inspect()?.0 || row.get::<i64,_>("restore_hold")!=0
+            || if activated {row.get::<Option<String>,_>("terminal_outcome").as_deref()!=Some("committed") || row.get::<Option<String>,_>("resolution").as_deref()!=Some("committed")}
+               else {row.get::<Option<String>,_>("terminal_outcome").is_some() || row.get::<Option<String>,_>("resolution").is_some()}
+            || row.get::<String,_>("phase")!=if activated {"published"}else{"pinned"} || row.get::<String,_>("local_generation")!=guard.ready.catalog_generation
+            || row.get::<Vec<u8>,_>("configuration_digest")!=configuration || fresh!=configuration
+            || row.get::<Vec<u8>,_>("pin_receipt")!=serde_json::to_vec(pin).map_err(|_|invalid("connect_preparation_invalid_input"))?
+            || row.get::<Vec<u8>,_>("prepared_digest").iter().map(|b|format!("{b:02x}")).collect::<String>()!=digest
+            || native_request.conversation_id.as_deref()!=Some(row.get::<String,_>("target_conversation_id").as_str())
+        {return Err(invalid("connect_target_effect_changed"));}
+        let (subject,prior)=if activated {
+            let activation=self.target_activation()?;let terminal=self.native_terminal().await?;
+            let stored:i64=sqlx::query_scalar("SELECT COUNT(*) FROM connect_activation_receipts WHERE transfer_id=? AND conversation_id=? AND terminal_digest=?")
+                .bind(&self.transfer_id).bind(&request["body"]["activation"]["target_conversation_id"].as_str().unwrap_or_default())
+                .bind(super::preparation::native_digest_bytes(&commitment("terminal",&terminal).map_err(invalid)?)?).fetch_one(&guard.ready.pool).await?;
+            if request["operation"]!="activation.record" || request["body"]["activation"]!=*activation || terminal["prepared"]!=*pin || stored!=1 {
+                return Err(invalid("connect_proof_mismatch"));
+            }
+            (commitment("activation",activation).map_err(invalid)?,serde_json::json!(commitment("terminal",&terminal).map_err(invalid)?))
+        }else{(digest.clone(),match kind {
+            "target_pinned" if request["operation"]=="ready" && request["body"]["prepared"]==*pin=>pin["manifest_digest"].clone(),
+            "target_maintained" if request["operation"]=="commit"=>serde_json::json!(digest),
+            _=>return Err(invalid("connect_proof_mismatch")),
+        })};
+        if request["transfer_id"]!=self.transfer_id{return Err(invalid("connect_proof_mismatch"));}
+        let producer=live.producer_identity().map_err(invalid)?;
+        Ok(serde_json::json!({"kind":kind,"binding_digest":self.binding_digest.iter().map(|b|format!("{b:02x}")).collect::<String>(),
+            "subject_digest":subject,"instance_id":self.target_instance_id,"producer_generation":self.target_generation,
+            "connection_id":producer["connection_id"],"request_digest":commitment("retry-body",request).map_err(invalid)?,"prior_receipt_digest":prior}))
+    }
+    pub(crate) async fn check_target_attestation(&self,owner:&DbPool,config:&crate::config::ConfigManager,
+        emitter:&crate::commands::pilot_secrets::transport::VerifiedTransport,prepared:&crate::connect::transfer_worker::TransferWorker,
+        request:&serde_json::Value,exchange:&serde_json::Value,
+    )->DbResult<()> {
+        let live=self.native_authority.as_ref().ok_or_else(||invalid("connect_native_owner_missing"))?;
+        if !std::ptr::eq(live.as_ref(),emitter){return Err(invalid("connect_native_owner_changed"));}
+        let expected=self.target_expectation(owner,config,prepared,request,exchange["kind"].as_str().ok_or_else(||invalid("connect_proof_mismatch"))?).await?;
+        for (name,value) in expected.as_object().ok_or_else(||invalid("connect_proof_mismatch"))? {
+            if &exchange[name]!=value{return Err(invalid("connect_proof_mismatch"));}
+        }Ok(())
+    }
+    pub(crate) async fn pin_target(&mut self,owner:&DbPool,config:&crate::config::ConfigManager,
+        imported:&crate::connect::transfer_worker::TransferWorker,prepared:&mut crate::connect::transfer_worker::TransferWorker,
+        sent:&serde_json::Value,manifest:&serde_json::Value,
+    )->DbResult<()> {
+        let live=self.native_authority.as_ref().ok_or_else(||invalid("connect_native_owner_missing"))?;
+        let session=live.check_target_transfer(sent,manifest).await.map_err(invalid)?;
+        if session["transfer_id"]!=self.transfer_id || serde_json::to_vec(sent).map_err(|_|invalid("connect_transfer_invalid_input"))?!=self.reserve_request
+            || self.native_target_prepared.is_some(){return Err(invalid("connect_native_binding_changed"));}
+        let guard=owner.source_ready(None).await.map_err(|_|invalid("unavailable"))?;
+        let expected=self.inspect()?.0;
+        let value=super::preparation::pin_native(&guard.ready,config,&expected,&sent["request"]["body"]["binding"],manifest,imported,prepared).await?;
+        live.check_target_transfer(sent,manifest).await.map_err(invalid)?;
+        self.native_target_prepared=Some(value);Ok(())
+    }
+    pub(crate) async fn target_prepared(&self)->DbResult<&serde_json::Value> {
+        self.native_authority.as_ref().ok_or_else(||invalid("connect_native_owner_missing"))?.check().await.map_err(invalid)?;
+        self.native_target_prepared.as_ref().ok_or_else(||invalid("connect_target_not_pinned"))
+    }
+    pub(crate) async fn attach_imported_target(&self,owner:&DbPool,sent:&serde_json::Value,manifest:&serde_json::Value,
+        imported:&crate::connect::transfer_worker::TransferWorker,
+    )->DbResult<()> {
+        let live=self.native_authority.as_ref().ok_or_else(||invalid("connect_native_owner_missing"))?;
+        live.check_target_transfer(sent,manifest).await.map_err(invalid)?;
+        let completed=imported.imported_storage().map_err(invalid)?;
+        let guard=owner.source_ready(None).await.map_err(|_|invalid("unavailable"))?;
+        attach_import(&guard.ready.pool,self,&completed.receipt.key).await?;
+        live.check().await.map_err(invalid)
+    }
+    pub(crate) async fn staged_target(&self,owner:&DbPool,sent:&serde_json::Value,manifest:&serde_json::Value)->DbResult<Vec<u8>> {
+        let live=self.native_authority.as_ref().ok_or_else(||invalid("connect_native_owner_missing"))?;
+        let session=live.check_target_transfer(sent,manifest).await.map_err(invalid)?;
+        if session["transfer_id"]!=self.transfer_id{return Err(invalid("connect_transfer_session_conflict"));}
+        let text=|v:&serde_json::Value|v.as_str().map(str::to_owned).ok_or_else(||invalid("connect_transfer_invalid_input"));
+        let length=text(&session["stream_bytes"])?.parse::<i64>().map_err(|_|invalid("connect_transfer_invalid_input"))?;
+        if length<=0 || length>8*1024*1024{return Err(invalid("resource_limit"));}
+        let prefix=super::staging::Session{transfer_id:self.transfer_id.clone(),transit_id:text(&session["transit_id"])?,
+            producer_generation:self.target_generation.clone(),binding_digest:self.binding_digest.clone(),
+            session_json:serde_json::to_vec(&session).map_err(|_|invalid("connect_transfer_invalid_input"))?,stream_bytes:length};
+        let guard=owner.source_ready(None).await.map_err(|_|invalid("unavailable"))?;
+        let status=super::staging::open_prefix(&guard.ready.pool,&prefix).await?;
+        if !status.eof || status.next_offset!=length{return Err(invalid("connect_transfer_incomplete"));}
+        let mut archive=Vec::with_capacity(length as usize);
+        for sequence in 0..status.next_sequence {
+            let bytes=super::staging::read_chunk(&guard.ready.pool,&prefix,sequence).await?;
+            if bytes.len()>length as usize-archive.len(){return Err(invalid("resource_limit"));}
+            archive.extend(bytes);
+        }
+        live.check().await.map_err(invalid)?;Ok(archive)
+    }
+    pub(crate) async fn stage_target(&self,owner:&DbPool,sent:&serde_json::Value,manifest:&serde_json::Value,
+        chunk:&serde_json::Value,
+    )->DbResult<(i64,i64,bool)> {
+        use crate::commands::pilot_secrets::transport::commitment;
+        let live=self.native_authority.as_ref().ok_or_else(||invalid("connect_native_owner_missing"))?;
+        let session=live.check_target_transfer(sent,manifest).await.map_err(invalid)?;
+        if session["transfer_id"]!=self.transfer_id || chunk["transfer_id"]!=self.transfer_id
+            || chunk["transit_id"]!=session["transit_id"] || session["binding_digest"]!=commitment("transfer-binding",&sent["request"]["body"]["binding"]).map_err(invalid)?
+        {return Err(invalid("connect_transfer_session_conflict"));}
+        let text=|v:&serde_json::Value|v.as_str().map(str::to_owned).ok_or_else(||invalid("connect_transfer_invalid_input"));
+        let number=|v:&serde_json::Value|text(v)?.parse::<i64>().map_err(|_|invalid("connect_transfer_invalid_input"));
+        let raw=text(&chunk["data_utf8"])?;
+        let digest=hash(raw.as_bytes());
+        if text(&chunk["sha256"])?!=digest.iter().map(|b|format!("{b:02x}")).collect::<String>()
+            || number(&chunk["length"])?!=raw.len() as i64 {return Err(invalid("connect_transfer_integrity_failed"));}
+        let prefix=super::staging::Session{transfer_id:self.transfer_id.clone(),transit_id:text(&session["transit_id"])?,
+            producer_generation:self.target_generation.clone(),binding_digest:self.binding_digest.clone(),
+            session_json:serde_json::to_vec(&session).map_err(|_|invalid("connect_transfer_invalid_input"))?,stream_bytes:number(&session["stream_bytes"])?};
+        let guard=owner.source_ready(None).await.map_err(|_|invalid("unavailable"))?;
+        super::staging::open_prefix(&guard.ready.pool,&prefix).await?;
+        let committed=super::staging::stage(&guard.ready.pool,&prefix,&super::staging::Chunk{
+            sequence:number(&chunk["sequence"])?,offset:number(&chunk["offset"])?,sha256:&digest,data:raw.as_bytes(),
+            eof:chunk["eof"].as_bool().ok_or_else(||invalid("connect_transfer_invalid_input"))?,
+        }).await?;
+        live.check().await.map_err(invalid)?;
+        Ok((committed.next_sequence,committed.next_offset,committed.eof))
+    }
+}
 #[derive(Debug, PartialEq, Eq)]
-pub(in crate::db) struct LocalReservation {
+pub(crate) struct LocalReservation {
     pub transfer_id: String,
     pub fingerprint: Vec<u8>,
     pub ownership_revision: Option<i64>,
+    // In-memory result of this transaction, never loaded from a SQL receipt.
+    native_source_frozen: bool,
 }
 async fn existing(
     db: &mut SqliteConnection,
@@ -92,6 +469,7 @@ async fn existing(
             transfer_id: input.transfer_id.clone(),
             fingerprint: digest.to_vec(),
             ownership_revision: row.get("ownership_revision"),
+            native_source_frozen:false,
         })
     })
     .transpose()
@@ -139,6 +517,7 @@ async fn insert(
         transfer_id: input.transfer_id.clone(),
         fingerprint: digest.to_vec(),
         ownership_revision: frozen.map(|f| f.revision),
+        native_source_frozen:frozen.is_some(),
     })
 }
 /// Called only under the live browser lifecycle/inspection locks. Journal insert,

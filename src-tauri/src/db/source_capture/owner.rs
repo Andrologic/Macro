@@ -34,6 +34,7 @@ pub(crate) struct SourceCapture {
     pub(super) authority: Option<Arc<RwLock<Authority>>>,
     pub(super) permit: Arc<Semaphore>,
     pub(super) clock: Clock,
+    pub(super) transport: Option<Arc<crate::commands::pilot_secrets::transport::VerifiedTransport>>,
     #[cfg(test)]
     pub(super) cleanup_started: Option<std::sync::mpsc::Sender<()>>,
     #[cfg(test)]
@@ -89,11 +90,67 @@ impl SourceCapture {
             authority: None,
             permit: Arc::new(Semaphore::new(1)),
             clock: Arc::new(|| 0),
+            transport: None,
             #[cfg(test)]
             cleanup_started: None,
             #[cfg(test)]
             reads: Arc::default(),
         }
+    }
+    /// Open only a source already frozen by native browser reconciliation.
+    /// The journal selects local data; live producer authority comes from the
+    /// authenticated transport and is rechecked on every capture operation.
+    pub(crate) async fn for_transfer(
+        owner: DbPool,
+        transport: Arc<crate::commands::pilot_secrets::transport::VerifiedTransport>,
+        transfer: &str,
+    ) -> Result<Self> {
+        let guard = owner.source_ready(None).await.map_err(|_| "unavailable")?;
+        let row = sqlx::query("SELECT t.account_id,t.source_instance_id,t.source_generation,t.source_conversation_id,t.local_generation,t.source_capture_id,c.capture_id FROM connect_transfers t JOIN chat_admission_owners o ON o.conversation_id=t.source_conversation_id LEFT JOIN e_source_captures c ON c.id=t.source_capture_id WHERE t.transfer_id=? AND t.local_role='source' AND t.resolution IS NULL AND t.terminal_outcome IS NULL AND t.restore_hold=0 AND t.phase<>'reconciliation_required' AND o.mode='frozen' AND o.incarnation=t.ownership_incarnation AND o.revision=t.ownership_revision")
+            .bind(transfer).fetch_optional(&guard.ready.pool).await.map_err(error)?.ok_or("connect_transfer_source_not_frozen")?;
+        if row.get::<String, _>("local_generation") != guard.ready.catalog_generation {
+            return Err("stale_revision".into());
+        }
+        transport.check_producer(&row.get::<String, _>("account_id"),
+            &row.get::<String, _>("source_instance_id"), &row.get::<String, _>("source_generation"))
+            .await.map_err(str::to_string)?;
+        let capture_id = match (row.get::<Option<i64>, _>("source_capture_id"), row.get::<Option<String>, _>("capture_id")) {
+            (None, None) => uuid::Uuid::new_v4().to_string(),
+            (Some(_), Some(id)) => id,
+            _ => return Err("integrity_failed".into()),
+        };
+        let generation = guard.ready.catalog_generation.clone();
+        let conversation = row.get::<String, _>("source_conversation_id");
+        let actor = row.get::<String, _>("source_instance_id");
+        drop(guard);
+        Ok(Self {
+            owner, generation: Some(generation),
+            authority: Some(Arc::new(RwLock::new(Authority { enabled: true, capture_id,
+                conversation, actor, mode: Mode::Continue,
+                policy: Policy { budget: 16 * 1024 * 1024, max_receipts: 64,
+                    absolute_ms: 300_000, idle_ms: 30_000 } }))),
+            permit: Arc::new(Semaphore::new(1)),
+            clock: Arc::new(|| chrono::Utc::now().timestamp_millis()), transport: Some(transport),
+            #[cfg(test)] cleanup_started: None,
+            #[cfg(test)] reads: Arc::default(),
+        })
+    }
+    pub(crate) async fn capture_transfer(&self, reservation:&crate::db::connect_transfer::Reservation) -> Result<RawNativeCapture> {
+        let scope = self.scope(true).await?;
+        let open = Open { capture_id:scope.authority.capture_id.clone(),
+            conversation_id:scope.authority.conversation.clone() };
+        drop(scope);
+        let mut receipt = self.begin(&serde_json::to_vec(&open).map_err(error)?).await?;
+        let transport=self.transport.as_ref().ok_or("source_capture_disabled")?;
+        reservation.attach_captured_source(&self.owner,transport,&open.capture_id).await.map_err(error)?;
+        if receipt.phase==2 { return self.seal_raw().await; }
+        loop {
+            let copied = self.copy_next(&serde_json::to_vec(&Copy {
+                cursor:receipt.cursor, expected_revision:receipt.revision }).map_err(error)?).await?;
+            receipt = copied.receipt;
+            if copied.ack.is_none() { break; }
+        }
+        self.seal_raw().await
     }
     pub(super) fn present(&self) -> Result<()> {
         if self.authority.is_none() {
@@ -104,6 +161,9 @@ impl SourceCapture {
     }
     pub(super) async fn scope(&self, mutating: bool) -> Result<Scope> {
         self.present()?;
+        if let Some(transport) = &self.transport {
+            transport.check().await.map_err(str::to_string)?;
+        }
         let generation = self
             .owner
             .source_ready(self.generation.as_deref())

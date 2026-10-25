@@ -18,6 +18,9 @@ pub(in crate::db::connect_transfer) async fn fixture() -> (TempDir, SqlitePool) 
 }
 pub(in crate::db::connect_transfer) async fn input(pool: &SqlitePool) -> Reservation {
     Reservation {
+        native_authority:None,native_target_prepared:None,native_target_activation:None,native_lineage_id:String::new(),native_installation_id:String::new(),
+        native_birth_generation:String::new(),native_operation_id:String::new(),
+        native_expected_revision:String::new(),native_ledger_revision:String::new(),
         transfer_id: uuid::Uuid::new_v4().to_string(),
         relay_origin: "https://relay.invalid".into(),
         account_id: "account-1".into(),
@@ -111,13 +114,11 @@ async fn connect_transfer_freeze_and_identity_commit_together_with_real_017_guar
         receipt.ownership_revision,
         Some(input.expected_ownership_revision)
     );
-    assert_eq!(
-        runtime
-            .reserve_reconciled_transfer(&owner, "window", "browser", &handle, &input)
-            .await
-            .unwrap(),
-        receipt
-    );
+    let replay=runtime.reserve_reconciled_transfer(&owner,"window","browser",&handle,&input).await.unwrap();
+    assert_eq!((&replay.transfer_id,&replay.fingerprint,replay.ownership_revision),
+        (&receipt.transfer_id,&receipt.fingerprint,receipt.ownership_revision));
+    assert!(receipt.native_source_frozen);
+    assert!(!replay.native_source_frozen);
     input.reserve_request.push(b' ');
     assert!(runtime
         .reserve_reconciled_transfer(&owner, "window", "browser", &handle, &input)

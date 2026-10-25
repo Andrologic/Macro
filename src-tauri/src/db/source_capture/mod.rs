@@ -8,6 +8,8 @@ pub(crate) mod tests;
 mod allowlist;
 mod blob;
 mod owner;
+pub(crate) use owner::SourceCapture;
+pub(crate) use types::{Cursor, RawNativeCapture};
 mod types;
 use serde::de::DeserializeOwned;
 const CONTROL: usize = 4096;

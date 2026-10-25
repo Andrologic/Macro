@@ -2,6 +2,7 @@
 //! terminal constructor exists here. The storage inputs are not authority.
 #![allow(dead_code)]
 mod journal;
+pub(crate) use journal::{reserve_verified_source,reserve_verified_target};
 pub(in crate::db) mod deletion;
 mod preparation;
 mod publication;
@@ -20,7 +21,7 @@ use serde::Serialize;
 use sha2::{Digest, Sha256};
 use sqlx::{SqliteConnection, SqlitePool};
 
-pub(super) use journal::Reservation;
+pub(crate) use journal::Reservation;
 pub(super) use journal::{reserve_source, LocalReservation};
 pub(super) use schema::validate_schema;
 pub(in crate::db) use schema::reference;

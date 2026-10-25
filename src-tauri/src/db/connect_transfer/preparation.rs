@@ -518,6 +518,78 @@ async fn pin(pool: &SqlitePool, input: &PinWrite) -> DbResult<()> {
     Ok(())
 }
 
+/// Storage composition only: no permission is returned. The native reservation
+/// caller checks its retained authenticated scope before and after this write.
+/// Neither Spec nor Allocation changes shape or visibility.
+pub(super) async fn pin_native(ready:&crate::core::db_state::DbReady,config:&crate::config::ConfigManager,
+    expected_reservation:&[u8],binding:&serde_json::Value,manifest:&serde_json::Value,
+    imported:&crate::connect::transfer_worker::TransferWorker,prepared:&mut crate::connect::transfer_worker::TransferWorker,
+)->DbResult<serde_json::Value> {
+    use crate::commands::pilot_secrets::transport::commitment;
+    let decode_hash=|value:&serde_json::Value|->DbResult<Vec<u8>> {
+        let value=value.as_str().filter(|s|s.len()==64).ok_or_else(||invalid("connect_preparation_invalid_input"))?;
+        (0..64).step_by(2).map(|i|value.get(i..i+2).and_then(|s|u8::from_str_radix(s,16).ok()).ok_or_else(||invalid("connect_preparation_invalid_input"))).collect()
+    };
+    let text=|v:&serde_json::Value|v.as_str().map(str::to_owned).ok_or_else(||invalid("connect_preparation_invalid_input"));
+    let (draft,request,_,configuration)=prepared.native_prepared().map_err(invalid)?;
+    let sealed=imported.imported_storage().map_err(invalid)?;
+    let metadata=imported.imported_metadata().map_err(invalid)?;
+    let (provider,_,_,fresh)=crate::connect::runtime::transfer_target_snapshot(config,ready,&request.provider_id,&request.model_id).await.map_err(invalid)?;
+    if fresh!=configuration{return Err(invalid("configuration_changed"));}
+    let messages=draft.get("message").ok_or_else(||invalid("connect_preparation_missing"))?;
+    if draft.get("citation").is_none_or(|v|!v.is_empty()) || draft.get("image").is_none_or(|v|!v.is_empty()) {return Err(invalid("required_external_context"));}
+    let identity:serde_json::Value=serde_json::from_str(include_str!("../../../../copilot-bridge/src/connect-transfer.identity.json")).map_err(|_|invalid("transfer_identity"))?;
+    let preparators=decode_hash(&identity["preparation_set_sha256"])?;
+    let spec=Spec{transfer_id:text(&binding["transfer_id"])?,reservation_fingerprint:expected_reservation.to_vec(),
+        import_key:sealed.receipt.key.clone(),import_revision:sealed.receipt.revision,lineage_id:uuid::Uuid::new_v4().to_string(),
+        raw_manifest:decode_hash(&metadata["captureManifest"])?,portable_manifest:decode_hash(&manifest["manifest_sha256"])?,
+        storage_manifest:decode_hash(&serde_json::json!(sealed.manifest_sha256))?,
+        mapping_hash:decode_hash(&serde_json::json!(sealed.receipt.mapping_sha256.as_ref().ok_or_else(||invalid("connect_preparation_missing"))?))?,
+        local_generation:ready.catalog_generation.clone(),source_generation:text(&binding["source_producer_generation"])?,target_generation:text(&binding["target_producer_generation"])?,
+        configuration_digest:configuration.to_vec(),preparators_digest:preparators.clone(),preparation_revision:1,
+        provider_id:request.provider_id.clone(),model_id:request.model_id.clone(),reasoning_effort:request.reasoning_effort.clone(),
+        title:"Transferred conversation".into(),created_at:text(&messages.first().ok_or_else(||invalid("connect_preparation_missing"))?["timestamp"])?,
+        message_count:messages.len() as i64,citation_count:0,asset_count:0};
+    let allocation=begin(&ready.pool,&spec).await?;
+    for (ordinal,message) in messages.iter().enumerate() {
+        let content=text(&message["content"])?;if content.len()>65_536{return Err(invalid("resource_limit"));}
+        let source_ordinal=text(&message["portable_history"]["sourceOrdinal"])?.parse::<i64>().map_err(|_|invalid("connect_projection_invalid_input"))?;
+        let display=&message["portable_history"];
+        let inherited=display["inheritedFrom"].as_str().map(|id|messages.iter().position(|m|m["id"]==id).map(|n|n as i64).ok_or_else(||invalid("connect_projection_invalid_date"))).transpose()?;
+        let input=Entry{transfer_id:spec.transfer_id.clone(),ordinal:ordinal as i64,source_ordinal:Some(source_ordinal),
+            header:Header::Message{role:text(&message["role"])?,created_at:text(&message["timestamp"])?,
+                display_date:Some(DisplayDate{original_date:display["displayDate"].as_str().map(str::to_owned),inherited_from:inherited})},
+            fields:vec![Field{name:"content".into(),bytes:content.len() as i64,sha256:hash(content.as_bytes())}]};
+        if message["id"]!=entry(&ready.pool,&input).await? {return Err(invalid("connect_projection_conflict"));}
+        for (n,data) in content.as_bytes().chunks(4093).enumerate() {
+            append(&ready.pool,&Fragment{transfer:&spec.transfer_id,kind:"message",ordinal:ordinal as i64,field:"content",offset:(n*4093) as i64,data,sha256:&hash(data)}).await?;
+        }
+    }
+    // Rebuild with the existing SQLite writer's actual conversation id. The
+    // provider body must remain identical; this never sends a provider request.
+    prepared.retarget_native_preparation(&provider,&allocation.conversation_id,&fresh).map_err(invalid)?;
+    let (draft,request,body,configuration)=prepared.native_prepared().map_err(invalid)?;
+    let preparation_sha=hash(&serde_json::to_vec(&(request,body,configuration,&preparators,draft)).map_err(|_|invalid("connect_preparation_invalid_input"))?);
+    let value=serde_json::json!({"format_version":"1","binding_digest":manifest["binding_digest"],"manifest_digest":commitment("manifest",manifest).map_err(invalid)?,
+        "import_id":allocation.canonical_import_id,"target_conversation_id":allocation.conversation_id,"lineage_id":spec.lineage_id,
+        "mapping_sha256":sealed.receipt.mapping_sha256,"preparation_sha256":hex(&preparation_sha)});
+    let prepared_digest=decode_hash(&serde_json::json!(commitment("prepared",&value).map_err(invalid)?))?;
+    finish(&ready.pool,&spec.transfer_id,&allocation.fingerprint,&prepared_digest).await?;
+    let projection_hash=sqlx::query_scalar("SELECT projection_hash FROM connect_preparations WHERE transfer_id=?").bind(&spec.transfer_id).fetch_one(&ready.pool).await?;
+    let (_,_,_,current)=crate::connect::runtime::transfer_target_snapshot(config,ready,&request.provider_id,&request.model_id).await.map_err(invalid)?;
+    if current!=fresh{return Err(invalid("configuration_changed"));}
+    pin(&ready.pool,&PinWrite{transfer_id:spec.transfer_id,preparation_fingerprint:allocation.fingerprint,local_generation:spec.local_generation,
+        configuration_digest:fresh,preparators_digest:preparators,prepared_digest,projection_hash,
+        exact_local_receipt:serde_json::to_vec(&value).map_err(|_|invalid("connect_preparation_invalid_input"))?}).await?;
+    Ok(value)
+}
+
 #[cfg(test)]
 #[path = "publication_tests.rs"]
 pub(in crate::db::connect_transfer) mod tests;
+
+// Canonical digest already validated by the codec; conversion for SQLite only.
+pub(super) fn native_digest_bytes(value:&str)->DbResult<Vec<u8>> {
+    if value.len()!=64 || !value.is_ascii(){return Err(invalid("connect_preparation_invalid_input"));}
+    (0..64).step_by(2).map(|n|u8::from_str_radix(&value[n..n+2],16).map_err(|_|invalid("connect_preparation_invalid_input"))).collect()
+}

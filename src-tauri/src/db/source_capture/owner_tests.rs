@@ -26,6 +26,7 @@ async fn authorized(
         panic!("ready fixture required")
     };
     SourceCapture {
+        transport: None,
         owner,
         generation: Some(ready.catalog_generation),
         authority: Some(Arc::new(RwLock::new(Authority {

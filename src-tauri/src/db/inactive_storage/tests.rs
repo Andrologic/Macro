@@ -27,6 +27,7 @@ fn bindings() -> Bindings {
 fn active(pool: SqlitePool, clock: Arc<AtomicI64>) -> InactiveStorage {
     InactiveStorage {
         pool,
+        native:None,
         authority: Some(Arc::new(RwLock::new(Authority {
             enabled: true,
             identity: identity(),

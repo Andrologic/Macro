@@ -57,16 +57,340 @@ struct SessionFacts {
 pub(crate) struct VerifiedTransport {
     codec: Option<CodecHandle>,
     session: SessionFacts,
-    authority: serde_json::Value,
+    pub(super) authority: serde_json::Value,
+    producer_authority: Option<serde_json::Value>,
+    transit_session: std::sync::Mutex<Option<serde_json::Value>>,
+    terminal_receipt: std::sync::Mutex<Option<serde_json::Value>>,
+    activation_receipt: std::sync::Mutex<Option<serde_json::Value>>,
     observation: PolicyObservation,
     deadline: Instant,
     runtime: TransferRuntime,
     generation: u64,
     cancel: CancellationToken,
+    identity: TransportIdentity,
+    address: SocketAddr,
+    plain: bool,
     _snapshot: Arc<PolicySnapshot<TransportPair>>,
     _charge: TransitCharge,
 }
 impl VerifiedTransport {
+    /// Uses the same authenticated connection owner as preflight. The returned
+    /// codec output remains data; callers must still check native admission.
+    pub(super) async fn decision<B: Vault + 'static>(
+        &self,
+        manager: Arc<Manager<B>>,
+        ready: &DbReady,
+        path: &str,
+        sent: serde_json::Value,
+        expectation: serde_json::Value,
+    ) -> Result<crate::connect::codec::Output> {
+        self.metadata(manager,ready,path,sent.clone(),serde_json::json!({
+            "kind":"decision","sent":sent,"expectation":expectation})).await
+    }
+    pub(super) async fn metadata<B:Vault+'static>(&self,manager:Arc<Manager<B>>,ready:&DbReady,
+        path:&str,sent:serde_json::Value,mut reception:serde_json::Value,
+    )->Result<crate::connect::codec::Output>{
+        self.check().await?;
+        let request_id=sent["request_id"].as_str().and_then(|s|uuid::Uuid::parse_str(s).ok()).ok_or("http_correlation")?;
+        if reception["sent"]!=sent {return Err("invalid_request");}
+        let kind=reception["kind"].as_str().ok_or("invalid_request")?.to_owned();
+        let producer=kind=="received" || kind=="attestation";
+        let proof=if producer {
+            let p=&self.producer_authority.as_ref().ok_or("authority_context")?["producer"];
+            let e=reception["exchange"].clone();
+            if e["instance_id"]!=p["instance_id"] || e["producer_generation"]!=p["generation"] || e["connection_id"]!=p["connection_id"] {return Err("authority_context");}
+            if kind=="attestation" {
+                reception["producer"]=p.clone();reception["connection"]=p["connection_id"].clone();
+                serde_json::json!({"kind":"attestation","exchange":e,"producer":p,"connection":p["connection_id"]})
+            } else {serde_json::json!({"kind":"received","exchange":e})}
+        }else{serde_json::Value::Null};
+        let codec=self.codec.as_ref().ok_or("codec_closed")?;
+        let budget=self.runtime.budget()?;
+        let bytes=Bytes::serialize(&budget,&sent)?;
+        let valid=decode(codec,3,serde_json::json!({"path":path,"request_id":request_id,"proof":proof}),
+            Bytes::copy(&budget,bytes.as_slice())?,&self.cancel).await?;drop(valid);
+        self.check().await?;
+        let response=exchange(manager,self.identity.clone(),self._snapshot.clone(),&self.observation,
+            &self.runtime,ready,self.address,self.plain,http::Method::POST,path,bytes,producer,false,
+            request_id,BODY,&self.cancel).await?;
+        let output=decode(codec,4,reception,response.into_codec_body()?,&self.cancel).await?;
+        self.check().await?;
+        let reply:serde_json::Value=serde_json::from_slice(output.bytes.as_slice()).map_err(|_|"codec_result")?;
+        if reply["type"]=="error" || reply["result"]["kind"]=="error" {
+            return Err(match reply["code"].as_str().or(reply["result"]["error"]["code"].as_str()) {
+                Some("unsupported_context")=>"unsupported_context",Some("producer_changed")=>"producer_changed",
+                Some("authority_changed")=>"authority_changed",Some("resource_limit")=>"resource_limit",
+                Some("forbidden")=>"forbidden",Some("session_revoked")=>"session_revoked",
+                Some("stale_revision")=>"stale_revision",Some("conflict")=>"conflict",
+                _=>"transfer_decision_refused",
+            });
+        }
+        if kind=="decision" {
+            let terminal=if reply["result"]["status"]["terminal"]["type"]=="terminal_receipt" {&reply["result"]["status"]["terminal"]}
+                else {&reply["result"]["receipt"]};
+            if terminal["type"]=="terminal_receipt" {
+                // Only an authenticated HTTP response accepted by canonical
+                // validation can install this fact, never a caller or SQL read.
+                *self.terminal_receipt.lock().map_err(|_|"transfer_closed")?=Some(terminal.clone());
+            }
+            let activation=if reply["result"]["status"]["activation"]["type"]=="activation_receipt" {&reply["result"]["status"]["activation"]}
+                else {&reply["result"]["receipt"]};
+            if activation["type"]=="activation_receipt" {
+                *self.activation_receipt.lock().map_err(|_|"transfer_closed")?=Some(activation.clone());
+            }
+        }
+        Ok(output)
+    }
+    pub(super) async fn delivery<B:Vault+'static>(&self,manager:Arc<Manager<B>>,ready:&DbReady)
+        ->Result<crate::connect::codec::Output>{
+        self.check().await?;
+        let p=&self.producer_authority.as_ref().ok_or("authority_context")?["producer"];
+        let instance=p["instance_id"].as_str().ok_or("authority_context")?;
+        let path=format!("/pilot/v2/instances/{instance}/deliveries/poll");
+        let request_id=uuid::Uuid::new_v4();
+        let bytes=Bytes::serialize(&self.runtime.budget()?,&serde_json::json!({"transport_version":"2.0","type":"poll"}))?;
+        let response=exchange(manager,self.identity.clone(),self._snapshot.clone(),&self.observation,&self.runtime,
+            ready,self.address,self.plain,http::Method::POST,&path,bytes,true,true,request_id,BODY,&self.cancel).await?;
+        if !matches!(response.status,200|204){return Err("delivery_unavailable");}
+        let facts=serde_json::json!({"context":{"offered":"transfer-transit-1","confirmed":response.transfer_offer,
+            "poll_request_id":request_id,"response_request_id":response.request_id,"response_status":response.status,
+            "instance_id":p["instance_id"],"producer_generation":p["generation"],"connection_id":p["connection_id"]}});
+        let output=decode(self.codec.as_ref().ok_or("codec_closed")?,5,facts,response.into_codec_body()?,&self.cancel).await?;
+        self.check().await?;Ok(output)
+    }
+    /// Transit uses the existing HTTP owner and canonical codec. A successful
+    /// submit only means HTTP acceptance; durability is observed through progress
+    /// after the target's FULL-synchronous staging commit.
+    pub(super) async fn transit<B:Vault+'static>(&self,manager:Arc<Manager<B>>,ready:&DbReady,
+        path:&str,sent:serde_json::Value,session:&serde_json::Value,
+    )->Result<Option<crate::connect::codec::Output>> {
+        self.check().await?;
+        let request_id=sent["request_id"].as_str().and_then(|s|uuid::Uuid::parse_str(s).ok()).ok_or("http_correlation")?;
+        let op=match sent["type"].as_str(){
+            Some("transit.open")=>Some(9),Some("transit.status"|"transit.ack")=>Some(8),
+            Some("transit.pull"|"transit.chunk"|"transit.close")=>None,_=>return Err("invalid_request"),
+        };
+        let codec=self.codec.as_ref().ok_or("codec_closed")?;
+        let budget=self.runtime.budget()?;
+        let bytes=Bytes::serialize(&budget,&sent)?;
+        let valid=decode(codec,3,serde_json::json!({"path":path,"request_id":request_id,"proof":null}),
+            Bytes::copy(&budget,bytes.as_slice())?,&self.cancel).await?;drop(valid);
+        let response=exchange(manager,self.identity.clone(),self._snapshot.clone(),&self.observation,&self.runtime,
+            ready,self.address,self.plain,http::Method::POST,path,bytes,true,false,request_id,BODY,&self.cancel).await?;
+        if response.status!=200{return Err("transit_refused");}
+        let output=match op {
+            Some(op)=>Some(decode(codec,op,serde_json::json!({"session":session,"request_id":request_id}),response.into_codec_body()?,&self.cancel).await?),
+            None=>{drop(response);None},
+        };
+        self.check().await?;
+        if op==Some(9) {
+            // Only the authenticated, canonically validated HTTP response can
+            // install this live session. SQL and caller-supplied JSON cannot.
+            let value:serde_json::Value=serde_json::from_slice(output.as_ref().ok_or("transit_open_missing")?.bytes.as_slice()).map_err(|_|"codec_result")?;
+            *self.transit_session.lock().map_err(|_|"transit_closed")?=Some(value["session"].clone());
+        }
+        Ok(output)
+    }
+    pub(crate) async fn check_target_transfer(&self,sent:&serde_json::Value,manifest:&serde_json::Value)->Result<serde_json::Value> {
+        self.check().await?;
+        let q=&sent["request"];let binding=&q["body"]["binding"];let frozen=&q["body"]["frozen"];
+        let source=&binding["provenance"]["source"];
+        let text=|value:&serde_json::Value|value.as_str().map(str::to_owned).ok_or("invalid_request");
+        self.check_producer(&text(&source["account_id"])?,&text(&binding["target_instance_id"])?,&text(&binding["target_producer_generation"])?).await?;
+        if source["relay_origin"]!=self.identity.context.relay_origin || q["operation"]!="reserve" {return Err("authority_context");}
+        let path=format!("/pilot/v2/transfers/sources/{}/{}/targets/{}/reservations/{}/decisions",
+            text(&source["source_instance_id"])?,text(&source["source_conversation_id"])?,text(&binding["target_instance_id"])?,text(&binding["transfer_id"])?);
+        let budget=self.runtime.budget()?;
+        let checked=decode(self.codec.as_ref().ok_or("codec_closed")?,3,serde_json::json!({"path":path,"request_id":sent["request_id"],"proof":null}),Bytes::serialize(&budget,sent)?,&self.cancel).await?;
+        drop(checked);
+        let session=self.transit_session.lock().map_err(|_|"transit_closed")?.clone().ok_or("transit_not_open")?;
+        if session["transfer_id"]!=binding["transfer_id"] || session["binding_digest"]!=commitment("transfer-binding",binding)?
+            || session["frozen_digest"]!=commitment("frozen",frozen)? || session["manifest_digest"]!=commitment("manifest",manifest)?
+        {return Err("transit_binding");}
+        self.check().await?;Ok(session)
+    }
+    pub(super) async fn source_decision<B:Vault+'static>(&self,manager:Arc<Manager<B>>,ready:&DbReady,
+        owner:&crate::core::db_state::DbPool,reservation:&crate::db::connect_transfer::Reservation,
+        normalized:&crate::connect::transfer_worker::TransferWorker,path:&str,sent:serde_json::Value,
+        expectation:serde_json::Value,kind:&str,
+    )->Result<crate::connect::codec::Output> {
+        let expected=reservation.source_expectation(owner,normalized,&sent["request"],kind).await.map_err(|_|"source_proof_refused")?;
+        let challenge=serde_json::json!({"transit_contract":"transfer-transit-1","type":"decision.challenge",
+            "request_id":uuid::Uuid::new_v4(),"kind":kind,"request":sent["request"]});
+        let challenge_path=path.strip_suffix("/decisions").ok_or("transfer_route")?.to_owned()+"/challenges";
+        let issued=self.metadata(manager.clone(),ready,&challenge_path,challenge.clone(),
+            serde_json::json!({"kind":"challenge","sent":challenge,"exchange":expected})).await?;
+        drop(issued);
+        let delivery=self.delivery(manager.clone(),ready).await?;
+        self.attest_source(manager.clone(),ready,owner,reservation,normalized,delivery).await?;
+        self.decision(manager,ready,path,sent,expectation).await
+    }
+    pub(super) async fn attest_source<B:Vault+'static>(&self,manager:Arc<Manager<B>>,ready:&DbReady,
+        owner:&crate::core::db_state::DbPool,reservation:&crate::db::connect_transfer::Reservation,
+        normalized:&crate::connect::transfer_worker::TransferWorker,delivery:crate::connect::codec::Output,
+    )->Result<()> {
+        let data:serde_json::Value=serde_json::from_slice(delivery.bytes.as_slice()).map_err(|_|"invalid_delivery")?;
+        drop(delivery);
+        if data["branch"]!="transit" || data["value"]["body"]["kind"]!="proof.challenge" {return Err("invalid_delivery");}
+        let request=&data["value"]["body"]["request"];
+        let exchange=&data["value"]["body"]["exchange"];
+        reservation.check_source_attestation(owner,self,normalized,request,exchange).await.map_err(|_|"source_proof_refused")?;
+        let id=exchange["delivery_id"].clone();
+        let instance=exchange["instance_id"].as_str().ok_or("invalid_delivery")?;
+        let received=serde_json::json!({"transit_contract":"transfer-transit-1","type":"proof.received","request_id":id,"exchange":exchange});
+        self.metadata(manager.clone(),ready,&format!("/pilot/v2/transfers/instances/{instance}/received"),received.clone(),
+            serde_json::json!({"kind":"received","sent":received,"exchange":exchange})).await?;
+        reservation.check_source_attestation(owner,self,normalized,request,exchange).await.map_err(|_|"source_proof_refused")?;
+        let attestation=serde_json::json!({"decision_contract":"transfer-decision-1","type":"producer_attestation","format_version":"1",
+            "kind":exchange["kind"],"binding_digest":exchange["binding_digest"],"subject_digest":exchange["subject_digest"],
+            "producer_instance_id":exchange["instance_id"],"producer_generation":exchange["producer_generation"],
+            "delivery_id":id,"challenge_id":exchange["challenge_id"],"request_digest":exchange["request_digest"],
+            "prior_receipt_digest":exchange["prior_receipt_digest"]});
+        let sent=serde_json::json!({"transit_contract":"transfer-transit-1","type":"proof.result","request_id":id,"attestation":attestation});
+        self.metadata(manager,ready,&format!("/pilot/v2/transfers/instances/{instance}/attestations"),sent.clone(),
+            serde_json::json!({"kind":"attestation","sent":sent,"exchange":exchange})).await?;
+        Ok(())
+    }
+    pub(super) async fn attest_target<B:Vault+'static>(&self,manager:Arc<Manager<B>>,ready:&DbReady,
+        owner:&crate::core::db_state::DbPool,reservation:&crate::db::connect_transfer::Reservation,
+        config:&crate::config::ConfigManager,prepared:&crate::connect::transfer_worker::TransferWorker,delivery:crate::connect::codec::Output,
+    )->Result<()> {
+        let data:serde_json::Value=serde_json::from_slice(delivery.bytes.as_slice()).map_err(|_|"invalid_delivery")?;
+        drop(delivery);
+        if data["branch"]!="transit" || data["value"]["body"]["kind"]!="proof.challenge" {return Err("invalid_delivery");}
+        let request=&data["value"]["body"]["request"];
+        let exchange=&data["value"]["body"]["exchange"];
+        reservation.check_target_attestation(owner,config,self,prepared,request,exchange).await.map_err(|_|"target_proof_refused")?;
+        let id=exchange["delivery_id"].clone();
+        let instance=exchange["instance_id"].as_str().ok_or("invalid_delivery")?;
+        let received=serde_json::json!({"transit_contract":"transfer-transit-1","type":"proof.received","request_id":id,"exchange":exchange});
+        self.metadata(manager.clone(),ready,&format!("/pilot/v2/transfers/instances/{instance}/received"),received.clone(),
+            serde_json::json!({"kind":"received","sent":received,"exchange":exchange})).await?;
+        reservation.check_target_attestation(owner,config,self,prepared,request,exchange).await.map_err(|_|"target_proof_refused")?;
+        let attestation=serde_json::json!({"decision_contract":"transfer-decision-1","type":"producer_attestation","format_version":"1",
+            "kind":exchange["kind"],"binding_digest":exchange["binding_digest"],"subject_digest":exchange["subject_digest"],
+            "producer_instance_id":exchange["instance_id"],"producer_generation":exchange["producer_generation"],
+            "delivery_id":id,"challenge_id":exchange["challenge_id"],"request_digest":exchange["request_digest"],
+            "prior_receipt_digest":exchange["prior_receipt_digest"]});
+        let sent=serde_json::json!({"transit_contract":"transfer-transit-1","type":"proof.result","request_id":id,"attestation":attestation});
+        self.metadata(manager,ready,&format!("/pilot/v2/transfers/instances/{instance}/attestations"),sent.clone(),
+            serde_json::json!({"kind":"attestation","sent":sent,"exchange":exchange})).await?;
+        Ok(())
+    }
+    /// A desktop can initiate a transfer while remaining its source producer.
+    /// Reuse its existing codec and authenticated HTTP owner for both snapshots.
+    pub(super) async fn controller_for<B: Vault + 'static>(
+        &mut self, manager: Arc<Manager<B>>, ready:&DbReady, target:&str,
+    ) -> Result<()> {
+        self.check().await?;
+        let producer=self.producer_authority.as_ref().ok_or("authority_context")?;
+        let source=producer["scope"]["instance_id"].as_str().ok_or("authority_context")?;
+        let request_id=uuid::Uuid::new_v4();
+        let request=serde_json::json!({"authority_contract":"transfer-authority-1","type":"preflight","request_id":request_id,
+            "scope":{"kind":"controller","source_instance_id":source,"target_instance_id":target}});
+        let codec=self.codec.as_ref().ok_or("codec_closed")?;
+        let budget=self.runtime.budget()?;
+        let bytes=Bytes::serialize(&budget,&request)?;
+        let checked=decode(codec,1,serde_json::json!({"request_id_header":request_id}),Bytes::copy(&budget,bytes.as_slice())?,&self.cancel).await?;
+        drop(checked);
+        let dispatched=Instant::now();
+        let response=exchange(manager,self.identity.clone(),self._snapshot.clone(),&self.observation,&self.runtime,
+            ready,self.address,self.plain,http::Method::POST,"/pilot/v2/transfer-authority/preflight",bytes,false,false,request_id,8192,&self.cancel).await?;
+        if response.status!=200{return Err("authority_unavailable");}
+        let output=decode(codec,2,serde_json::json!({"request":request,"expected":{
+            "request_id_header":request_id,"response_request_id_header":response.request_id,
+            "expected_origin":self.identity.context.relay_origin,"connection_origin":self.identity.context.relay_origin,
+            "account_id":self.session.account_id},"time":{"now_ms":now_ms()?,"dispatch_age_ms":dispatched.elapsed().as_secs_f64()*1000.0}}),
+            response.into_codec_body()?,&self.cancel).await?;
+        let authority:serde_json::Value=serde_json::from_slice(output.bytes.as_slice()).map_err(|_|"codec_result")?;
+        if authority["type"]!="authority_snapshot" || authority["actor"]["session_id"]!=self.session.session_id
+            || authority["actor"]["device_id"]!=self.session.device_id || authority["source_producer"]!=producer["producer"]
+        {return Err("authority_context");}
+        let expiry=chrono::DateTime::parse_from_rfc3339(authority["expires_at"].as_str().ok_or("authority_expired")?)
+            .map_err(|_|"authority_expired")?.timestamp_millis();
+        let remaining=u64::try_from(expiry).ok().and_then(|v|v.checked_sub(now_ms().ok()?)).ok_or("authority_expired")?;
+        self.deadline=self.deadline.min(Instant::now()+Duration::from_millis(remaining));
+        self.authority=authority;
+        self.check().await
+    }
+    pub(crate) fn controller_snapshot(&self)->Result<&serde_json::Value>{
+        self.check_local()?;
+        if self.authority["scope"]["kind"]!="controller"{return Err("authority_context");}
+        Ok(&self.authority)
+    }
+    pub(crate) fn producer_identity(&self)->Result<&serde_json::Value>{
+        self.check_local()?;Ok(&self.producer_authority.as_ref().ok_or("authority_context")?["producer"])
+    }
+    pub(crate) async fn committed_terminal(&self,transfer:&str)->Result<serde_json::Value>{
+        self.check().await?;
+        let receipt=self.terminal_receipt.lock().map_err(|_|"transfer_closed")?.clone().ok_or("terminal_not_received")?;
+        if receipt["transfer_id"]!=transfer || receipt["outcome"]!="committed"{return Err("terminal_mismatch");}Ok(receipt)
+    }
+    pub(crate) async fn committed_activation(&self,transfer:&str)->Result<serde_json::Value>{
+        let terminal=self.committed_terminal(transfer).await?;
+        let activation=self.activation_receipt.lock().map_err(|_|"transfer_closed")?.clone().ok_or("activation_not_received")?;
+        if activation["transfer_id"]!=transfer || activation["terminal_digest"]!=commitment("terminal",&terminal)?
+            || activation["prepared_digest"]!=commitment("prepared",&terminal["prepared"])?
+            || activation["target_conversation_id"]!=terminal["prepared"]["target_conversation_id"] {return Err("activation_mismatch");}
+        Ok(activation)
+    }
+    pub(crate) fn session_binding(&self)->Result<(&str,&str)> {
+        self.check_local()?;Ok((&self.session.session_id,&self.session.device_id))
+    }
+    pub(crate) async fn detection_values(&self) -> Result<Vec<String>> {
+        self.check().await?;
+        let mut values=self._snapshot.values().to_vec();
+        let pair=self._snapshot.peer();
+        values.push(pair.session_token.clone());values.push(pair.instance_key.clone());
+        values.sort();values.dedup();
+        if values.iter().map(String::len).sum::<usize>()>8192 || values.len()>128 {
+            return Err("resource_limit");
+        }
+        Ok(values)
+    }
+    pub(crate) async fn check_reserve(&self, sent: &serde_json::Value) -> Result<()> {
+        self.check().await?;
+        let q = &sent["request"];
+        let b = &q["body"]["binding"];
+        let source = &b["provenance"]["source"];
+        // Only the authenticated controller snapshot grants rights. Request and
+        // journal JSON merely identify which source the caller wants to move.
+        if self.authority["scope"]["kind"] != "controller"
+            || q["operation"] != "reserve"
+            || source["relay_origin"] != self.identity.context.relay_origin
+            || source["account_id"] != self.session.account_id
+            || source["source_instance_id"] != self.authority["scope"]["source_instance_id"]
+            || b["target_instance_id"].is_null()
+            || b["target_instance_id"] != self.authority["scope"]["target_instance_id"]
+            || b["source_producer_generation"] != self.authority["source_producer"]["generation"]
+            || b["target_producer_generation"] != self.authority["target_producer"]["generation"]
+            || b["relay_recovery_generation"] != self.authority["recovery_generation"]
+            || b["initiator"] != self.authority["actor"]
+        { return Err("authority_context"); }
+        let text = |v: &serde_json::Value| v.as_str().ok_or("invalid_request").map(str::to_owned);
+        let path = format!("/pilot/v2/transfers/sources/{}/{}/targets/{}/reservations/{}/decisions",
+            text(&source["source_instance_id"])? , text(&source["source_conversation_id"])?,
+            text(&b["target_instance_id"])?, text(&b["transfer_id"])?);
+        let codec = self.codec.as_ref().ok_or("codec_closed")?;
+        let bytes = Bytes::serialize(&self.runtime.budget()?, sent)?;
+        let valid = decode(codec, 3, serde_json::json!({"path":path,
+            "request_id":sent["request_id"],"proof":null}), bytes, &self.cancel).await?;
+        drop(valid);
+        self.check().await
+    }
+    pub(crate) async fn check_producer(&self, account: &str, instance: &str, generation: &str) -> Result<()> {
+        self.check().await?;
+        let authority=self.producer_authority.as_ref().ok_or("authority_context")?;
+        if authority["scope"]["kind"] != "producer"
+            || authority["scope"]["instance_id"] != instance
+            || authority["producer"]["account_id"] != account
+            || authority["producer"]["instance_id"] != instance
+            || authority["producer"]["generation"] != generation
+        {
+            return Err("authority_context");
+        }
+        Ok(())
+    }
     pub(crate) async fn close(mut self) -> Result<()> {
         if let Some(codec) = self.codec.take() {
             codec.close().await?;
@@ -102,6 +426,14 @@ impl VerifiedTransport {
         }
         Ok(())
     }
+}
+/// Encoding only. Every emitted envelope still passes the canonical codec.
+pub(crate) fn commitment(domain:&str,value:&serde_json::Value)->Result<String>{
+    use sha2::{Digest,Sha256};
+    if !matches!(domain,"provenance"|"transfer-binding"|"retry-body"|"birth"|"frozen"|"manifest"|"prepared"|"terminal"|"activation") {return Err("commitment_domain");}
+    let mut digest=Sha256::new();digest.update(format!("macro-connect-{domain}-1\0"));
+    digest.update(serde_json::to_vec(value).map_err(|_|"commitment_encoding")?);
+    Ok(format!("{:x}",digest.finalize()))
 }
 fn now_ms() -> Result<u64> {
     u64::try_from(
@@ -149,9 +481,10 @@ async fn exchange<B: Vault + 'static>(
     address: SocketAddr,
     plain: bool,
     method: http::Method,
-    path: &'static str,
+    path: &str,
     body: Bytes,
     producer: bool,
+    poll: bool,
     request_id: uuid::Uuid,
     limit: usize,
     cancel: &CancellationToken,
@@ -168,8 +501,9 @@ async fn exchange<B: Vault + 'static>(
         return Err("tls_required");
     }
     // All TCP/TLS work finishes before reacquiring policy and store locks.
-    let prepared = session.prepare(false).await?;
+    let prepared = session.prepare(poll).await?;
     let request = Request::from_admitted(&runtime.budget()?, method, path, body)?;
+    let request = if poll { request.offer_transfer() } else { request };
     let handle = tokio::runtime::Handle::current();
     let local_cancel = cancel.child_token();
     let guard = local_cancel.clone().drop_guard();
@@ -317,6 +651,7 @@ async fn bootstrap_with_codec<B: Vault + 'static>(
         "/pilot/v1/me",
         Bytes::copy(&budget, &[])?,
         false,
+        false,
         request_id,
         BODY,
         cancel,
@@ -387,6 +722,7 @@ async fn bootstrap_with_codec<B: Vault + 'static>(
         "/pilot/v2/transfer-authority/preflight",
         bytes,
         producer,
+        false,
         request_id,
         8192,
         cancel,
@@ -435,6 +771,10 @@ async fn bootstrap_with_codec<B: Vault + 'static>(
     let verified = VerifiedTransport {
         codec: None,
         session,
+        producer_authority: producer.then(||authority.clone()),
+        transit_session:std::sync::Mutex::new(None),
+        terminal_receipt:std::sync::Mutex::new(None),
+        activation_receipt:std::sync::Mutex::new(None),
         authority,
         observation,
         runtime: runtime.clone(),
@@ -444,6 +784,9 @@ async fn bootstrap_with_codec<B: Vault + 'static>(
             started + Duration::from_secs(30),
             Instant::now() + Duration::from_millis(remaining),
         ),
+        identity,
+        address,
+        plain,
         _snapshot: snapshot,
         _charge: retained,
     };
