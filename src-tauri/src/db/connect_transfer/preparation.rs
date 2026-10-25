@@ -566,7 +566,7 @@ pub(super) async fn pin_native(ready:&crate::core::db_state::DbReady,config:&cra
         }
     }
     // Rebuild with the existing SQLite writer's actual conversation id. The
-    // provider body must remain identical; this never sends a provider request.
+    // history must remain identical; Codex alone updates its conversation cache key.
     prepared.retarget_native_preparation(&provider,&allocation.conversation_id,&fresh).map_err(invalid)?;
     let (draft,request,body,configuration)=prepared.native_prepared().map_err(invalid)?;
     let preparation_sha=hash(&serde_json::to_vec(&(request,body,configuration,&preparators,draft)).map_err(|_|invalid("connect_preparation_invalid_input"))?);

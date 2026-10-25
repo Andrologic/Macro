@@ -173,7 +173,7 @@ impl CodecLauncher {
         use sha2::{Digest,Sha256};
         let current=self.database.source_ready(None).await.map_err(|_|"database_unavailable")?;
         let (provider,model,agents,configuration)=transfer_target_snapshot(config,&current.ready,provider_id,model_id).await?;
-        if provider.id!="macro-ai" || provider.provider_type!="openai"{return Err("provider_unavailable");}
+        if !((provider.id=="macro-ai" && provider.provider_type=="openai") || provider.provider_type=="chatgpt"){return Err("provider_unavailable");}
         let context=model.context_window_tokens.filter(|n|*n>0).ok_or("model_context_unknown")?;
         drop(current);
         let mode=agents["prompts"]["chat"].as_str().ok_or("configuration_unavailable")?;

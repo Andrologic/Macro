@@ -473,11 +473,11 @@ impl TransferWorker {
         if self.phase!=Phase::Finished || self.owned.is_some() || self.native_request.is_some(){return Err("transfer_not_finished");}
         let draft=self.prepared_draft.as_ref().ok_or("transfer_preparation_missing")?;
         let messages=draft.get("prepared-message").ok_or("transfer_preparation_missing")?;
-        if provider.id!="macro-ai" || provider.provider_type!="openai" || !provider.is_enabled || configuration.len()!=32{return Err("provider_unavailable");}
+        if !provider.is_enabled || configuration.len()!=32{return Err("provider_unavailable");}
         let request:crate::ai::types::AiChatRequest=serde_json::from_value(json!({"request_id":uuid::Uuid::new_v4(),
             "provider_id":provider.id,"model_id":model,"conversation_id":conversation,"messages":messages}))
             .map_err(|_|"transfer_native_request")?;
-        let body=crate::ai::openai_compatible::build_transfer_request(&request,provider).map_err(|_|"transfer_native_builder")?;
+        let body=native_body(&request,provider)?;
         if serde_json::to_vec(&body).map_err(|_|"transfer_native_builder")?.len()>8*1024*1024{return Err("resource_limit");}
         self.native_request=Some((request,body,configuration));Ok(())
     }
@@ -486,8 +486,15 @@ impl TransferWorker {
         let (previous,body,scope)=self.native_request.as_ref().ok_or("transfer_native_builder_missing")?;
         if configuration!=scope || provider.id!=previous.provider_id || uuid::Uuid::parse_str(conversation).is_err(){return Err("configuration_changed");}
         let mut request=previous.clone();request.conversation_id=Some(conversation.to_owned());
-        let rebuilt=crate::ai::openai_compatible::build_transfer_request(&request,provider).map_err(|_|"transfer_native_builder")?;
-        if &rebuilt!=body{return Err("transfer_native_body_changed");}
+        let rebuilt=native_body(&request,provider)?;
+        let mut expected=body.clone();
+        if provider.provider_type=="chatgpt" {
+            // The real Codex builder binds only its cache key to the allocated
+            // conversation. History, instructions and all other fields stay exact.
+            if expected["prompt_cache_key"]!=previous.conversation_id.as_deref().unwrap_or_default(){return Err("transfer_native_body_changed");}
+            expected["prompt_cache_key"]=serde_json::json!(conversation);
+        }
+        if rebuilt!=expected{return Err("transfer_native_body_changed");}
         self.native_request=Some((request,rebuilt,scope.clone()));Ok(())
     }
     pub(crate) fn native_prepared(&self)->Result<(&std::collections::BTreeMap<String,Vec<serde_json::Value>>,&crate::ai::types::AiChatRequest,&serde_json::Value,&[u8])>{
@@ -643,5 +650,14 @@ mod tests {
         drop(charge);
         drop(budget.reserve(TRANSIT_INSTANCE_LIMIT).unwrap());
         assert_eq!(result, Ok(Ok(())));
+    }
+}
+
+fn native_body(request:&crate::ai::types::AiChatRequest,provider:&crate::db::models::ProviderConfig)->Result<serde_json::Value>{
+    if !provider.is_enabled || request.provider_id!=provider.id{return Err("provider_unavailable");}
+    match provider.provider_type.as_str() {
+        "chatgpt"=>serde_json::to_value(crate::ai::chatgpt::build_transfer_request(request).map_err(|_|"transfer_native_builder")?).map_err(|_|"transfer_native_builder"),
+        "openai" if provider.id=="macro-ai"=>crate::ai::openai_compatible::build_transfer_request(request,provider).map_err(|_|"transfer_native_builder"),
+        _=>Err("provider_unavailable"),
     }
 }

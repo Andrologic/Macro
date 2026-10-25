@@ -1405,7 +1405,13 @@ async fn transfer_target_event(lines:&mut tokio::io::Lines<tokio::io::BufReader<
 /// inactive target, native preparation and ACK are connected together.
 #[tokio::test(flavor="multi_thread",worker_threads=2)]
 #[ignore="requires the explicitly supplied local transfer relay"]
-async fn global_chat_macro_ai_local_transfer() {
+async fn global_chat_macro_ai_local_transfer() { global_chat_local_transfer("macro-ai").await; }
+
+#[tokio::test(flavor="multi_thread",worker_threads=2)]
+#[ignore="requires the explicitly supplied local transfer relay"]
+async fn global_chat_codex_local_transfer() { global_chat_local_transfer("codex").await; }
+
+async fn global_chat_local_transfer(provider:&str) {
     use tokio::io::{AsyncBufReadExt,AsyncWriteExt,BufReader};
     use tokio_util::sync::CancellationToken;
     use transport::{Intent,Scope};
@@ -1431,13 +1437,14 @@ async fn global_chat_macro_ai_local_transfer() {
     let provenance=tokio::process::Command::new(executable("bun")).args(["-e",r#"
         import {assistantProvenance} from './src/services/macroPilot/assistantProvenance';
         import {buildAssistantChatCompletionProviderItem} from './src/services/ai/chatCompletionsCodec';
+        import {buildAssistantProviderInputItemsFromTurn} from './src/services/ai/responsesCodec';
         const stored=new Map();
         const text='A short answer available on the other computer.';
-        const items=[buildAssistantChatCompletionProviderItem({visibleContent:text,apiContent:text,reasoningContent:'',reasoningDetails:[],toolCalls:[]})];
+        const items=process.env.MACRO_SYNTHETIC_PROVIDER==='codex'?buildAssistantProviderInputItemsFromTurn(text,[]):[buildAssistantChatCompletionProviderItem({visibleContent:text,apiContent:text,reasoningContent:'',reasoningDetails:[],toolCalls:[]})];
         await assistantProvenance({load:async k=>stored.get(k)??null,compareAndSwap:async(k,o,v)=>{stored.set(k,v);return true;}})
           .recordFinal('assistant',text,items);
         console.log(JSON.stringify({receipts:[...stored],items}));
-    "#]).current_dir(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap()).output().await.unwrap();
+    "#]).env("MACRO_SYNTHETIC_PROVIDER",provider).current_dir(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap()).output().await.unwrap();
     assert!(provenance.status.success(),"{}",String::from_utf8_lossy(&provenance.stderr));
     let response:serde_json::Value=serde_json::from_slice(&provenance.stdout).unwrap();
     let receipts:Vec<(String,String)>=serde_json::from_value(response["receipts"].clone()).unwrap();
@@ -1445,6 +1452,7 @@ async fn global_chat_macro_ai_local_transfer() {
         .execute(&source_pool).await.unwrap();
     sqlx::query("INSERT INTO messages(id,conversation_id,role,content,created_at,context_refs_json,completion_reason,provider_input_items_json) VALUES('assistant','chat','assistant',?,'2026-01-01T00:00:01Z','[]','final',?)")
         .bind(content).bind(response["items"].to_string()).execute(&source_pool).await.unwrap();
+    if provider=="codex"{sqlx::query("UPDATE conversations SET provider_id='chatgpt',model_id='gpt-6.1-sol' WHERE id='chat'").execute(&source_pool).await.unwrap();}
     for(key,value)in receipts {crate::db::repository::set_app_setting(&source_pool,&key,&value).await.unwrap();}
     let manager=Arc::new(Manager::new(Arc::new(Fake::default())));
     let a=&seed["a"];
@@ -1535,7 +1543,7 @@ async fn global_chat_macro_ai_local_transfer() {
             .stdin(std::process::Stdio::piped()).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::inherit()).kill_on_drop(true).spawn().unwrap();
         let mut input=child.stdin.take().unwrap();
         let mut initialization=serde_json::to_vec(&serde_json::json!({"seed":seed,"session":session,"sent":sent,"manifest":manifest,
-            "database":directory.path().join("target.db")})).unwrap();initialization.push(b'\n');
+            "database":directory.path().join("target.db"),"provider":provider})).unwrap();initialization.push(b'\n');
         input.write_all(&initialization).await.unwrap();
         let mut target_events=BufReader::new(child.stdout.take().unwrap()).lines();
         let root=format!("/pilot/v2/transfers/transits/{}",session["transit_id"].as_str().unwrap());
@@ -1645,6 +1653,8 @@ async fn global_chat_transfer_target() {
     let data:serde_json::Value=serde_json::from_str(&input.next_line().await.unwrap().unwrap()).unwrap();
     let seed=&data["seed"];let b=&seed["b"];let session=&data["session"];
     let text=|v:&serde_json::Value|v.as_str().unwrap().to_owned();
+    let codex=data["provider"]=="codex";
+    let (provider_id,provider_type,model_id)=if codex{("chatgpt","chatgpt","gpt-6.1-sol")}else{("macro-ai","openai","macro-ai")};
     let owner=crate::core::db_state::DbPool::default();
     let pool=crate::db::create_pool(std::path::Path::new(data["database"].as_str().unwrap())).await.unwrap();
     owner.set_ready(pool.clone()).await.unwrap();
@@ -1690,11 +1700,16 @@ async fn global_chat_transfer_target() {
     let imported=launcher.import_archive(&config,&verified,&storage,&archive,&descriptor).await;
     let attached=if let Ok(imported)=&imported {reservation.attach_imported_target(&owner,&data["sent"],&data["manifest"],imported).await}else{Ok(())};
     let mut prepared=if let Ok(imported)=&imported {
-        crate::db::repository::upsert_provider_config_by_id(&pool,"macro-ai","Synthetic Macro AI","openai","https://provider.example.invalid/v1",true).await.unwrap();
-        let model:crate::db::models::ProviderModelInput=serde_json::from_value(serde_json::json!({"model_id":"macro-ai","name":"Synthetic Macro AI",
+        crate::db::repository::upsert_provider_config_by_id(&pool,provider_id,"Synthetic provider",provider_type,"https://provider.example.invalid/v1",true).await.unwrap();
+        // The built-in Codex row starts disabled. Configure this synthetic
+        // target explicitly through the same repository writer as settings.
+        crate::db::repository::update_provider_config(&pool,crate::db::models::UpdateProviderConfigInput{
+            id:provider_id.into(),name:None,provider_type:None,base_url:None,api_key:None,is_local:None,is_enabled:Some(true),
+        }).await.unwrap();
+        let model:crate::db::models::ProviderModelInput=serde_json::from_value(serde_json::json!({"model_id":model_id,"name":"Synthetic model",
             "context_window_tokens":200000,"input_limit_tokens":200000,"output_limit_tokens":16384,"context_window_source":"manual"})).unwrap();
-        crate::db::repository::upsert_provider_models(&pool,"macro-ai",&[model]).await.unwrap();
-        launcher.prepare_archive(&config,&verified,&storage,imported,"macro-ai","macro-ai").await
+        crate::db::repository::upsert_provider_models(&pool,provider_id,&[model]).await.unwrap();
+        launcher.prepare_archive(&config,&verified,&storage,imported,provider_id,model_id).await
     }else{Err("transfer_import_missing")};
     let pinned=if let (Ok(imported),Ok(prepared))=(&imported,&mut prepared) {
         reservation.pin_target(&owner,&config,imported,prepared,&data["sent"],&data["manifest"]).await
@@ -1749,9 +1764,11 @@ async fn global_chat_transfer_target() {
         for message in &messages{assert!(html.contains(message));}assert!(!html.contains(&conversation));assert!(!html.contains("portable_archive"));
         let mut next=prepared.as_ref().unwrap().native_prepared().unwrap().1.clone();
         next.messages.push(serde_json::from_value(serde_json::json!({"role":"user","content":"Continue from this history."})).unwrap());
-        let (provider,_,_,_)=crate::connect::runtime::transfer_target_snapshot(&config,&ready,"macro-ai","macro-ai").await.unwrap();
-        let next_body=crate::ai::openai_compatible::build_transfer_request(&next,&provider).unwrap();
-        assert_eq!(next_body["messages"].as_array().unwrap().last().unwrap()["content"],"Continue from this history.");
+        let (provider,_,_,_)=crate::connect::runtime::transfer_target_snapshot(&config,&ready,provider_id,model_id).await.unwrap();
+        let next_body=if codex{serde_json::to_value(crate::ai::chatgpt::build_transfer_request(&next).unwrap()).unwrap()}
+            else{crate::ai::openai_compatible::build_transfer_request(&next,&provider).unwrap()};
+        assert!(next_body.to_string().contains("Continue from this history."));
+        if codex{assert_eq!(next_body["prompt_cache_key"],conversation);assert_eq!(next_body["store"],false);assert!(next_body.get("previous_response_id").is_none());}
         for message in &messages{assert!(next_body.to_string().contains(message));}
         assert!(reservation.publish_target(&owner,&config,prepared.as_ref().unwrap()).await.is_err());
         assert_eq!(sqlx::query_scalar::<_,i64>("SELECT COUNT(*) FROM conversations").fetch_one(&pool).await.unwrap(),1);
@@ -1770,7 +1787,9 @@ async fn global_chat_transfer_target() {
     assert_eq!(imported.unwrap().imported_storage().unwrap().receipt.phase,crate::db::inactive_storage::Phase::SealedStorage);
     attached.unwrap();pinned.unwrap();
     let prepared=prepared.unwrap();let (_,request,body,_)=prepared.native_prepared().unwrap();
-    assert_eq!(request.provider_id,"macro-ai");assert_eq!(body["chat_template_kwargs"]["enable_thinking"],true);
+    assert_eq!(request.provider_id,provider_id);
+    if codex{assert_eq!(body["store"],false);assert!(body.get("previous_response_id").is_none());}
+    else{assert_eq!(body["chat_template_kwargs"]["enable_thinking"],true);}
     let serialized=body.to_string();assert!(serialized.contains("Can I continue on another computer?"));
     assert!(serialized.contains("A short answer available on the other computer."));
 }
