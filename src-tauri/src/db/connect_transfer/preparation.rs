@@ -536,8 +536,21 @@ pub(super) async fn pin_native(ready:&crate::core::db_state::DbReady,config:&cra
     let metadata=imported.imported_metadata().map_err(invalid)?;
     let (provider,_,_,fresh)=crate::connect::runtime::transfer_target_snapshot(config,ready,&request.provider_id,&request.model_id).await.map_err(invalid)?;
     if fresh!=configuration{return Err(invalid("configuration_changed"));}
-    let messages=draft.get("message").ok_or_else(||invalid("connect_preparation_missing"))?;
-    if draft.get("citation").is_none_or(|v|!v.is_empty()) || draft.get("image").is_none_or(|v|!v.is_empty()) {return Err(invalid("required_external_context"));}
+    // The immutable archive retains checkpoint/tool/attachment data for the
+    // model and the existing reader. Only original message records become
+    // ordinary chat rows; supplemental context is not a new user message.
+    let mut messages=Vec::new();
+    for message in draft.get("message").ok_or_else(||invalid("connect_preparation_missing"))? {
+        let ordinal=text(&message["portable_history"]["sourceOrdinal"])?.parse::<i64>().map_err(|_|invalid("connect_projection_invalid_input"))?;
+        let kind:i64=sqlx::query_scalar("SELECT r.kind FROM e_inactive_records r JOIN e_inactive_imports i ON i.id=r.import_id WHERE i.identity_key=? AND r.ordinal=?")
+            .bind(&sealed.receipt.key).bind(ordinal).fetch_one(&ready.pool).await?;
+        if kind==0{messages.push(message);}else if !(1..=3).contains(&kind){return Err(invalid("connect_projection_invalid_input"));}
+    }
+    let citations=draft.get("citation").ok_or_else(||invalid("connect_preparation_missing"))?;
+    let images=draft.get("image").ok_or_else(||invalid("connect_preparation_missing"))?;
+    let image_count=images.iter().map(|group|group["images"].as_array().map(Vec::len).ok_or_else(||invalid("connect_projection_invalid_input"))).collect::<DbResult<Vec<_>>>()?.into_iter().sum::<usize>();
+    let text_assets=sqlx::query("SELECT r.ordinal,m.target_uuid,a.from_record,a.position FROM e_inactive_records r JOIN e_inactive_imports i ON i.id=r.import_id JOIN e_inactive_mapping m ON m.import_id=r.import_id AND m.ordinal=r.ordinal JOIN e_inactive_records a ON a.import_id=r.import_id AND a.to_record=r.ordinal AND a.kind=4 AND a.relation=0 WHERE i.identity_key=? AND r.kind=3 AND json_extract(r.header_json,'$.entry.mime')='text_plain' ORDER BY a.from_record,a.position")
+        .bind(&sealed.receipt.key).fetch_all(&ready.pool).await?;
     let identity:serde_json::Value=serde_json::from_str(include_str!("../../../../copilot-bridge/src/connect-transfer.identity.json")).map_err(|_|invalid("transfer_identity"))?;
     let preparators=decode_hash(&identity["preparation_set_sha256"])?;
     let spec=Spec{transfer_id:text(&binding["transfer_id"])?,reservation_fingerprint:expected_reservation.to_vec(),
@@ -549,7 +562,7 @@ pub(super) async fn pin_native(ready:&crate::core::db_state::DbReady,config:&cra
         configuration_digest:configuration.to_vec(),preparators_digest:preparators.clone(),preparation_revision:1,
         provider_id:request.provider_id.clone(),model_id:request.model_id.clone(),reasoning_effort:request.reasoning_effort.clone(),
         title:"Transferred conversation".into(),created_at:text(&messages.first().ok_or_else(||invalid("connect_preparation_missing"))?["timestamp"])?,
-        message_count:messages.len() as i64,citation_count:0,asset_count:0};
+        message_count:messages.len() as i64,citation_count:citations.len() as i64,asset_count:(image_count+text_assets.len()) as i64};
     let allocation=begin(&ready.pool,&spec).await?;
     for (ordinal,message) in messages.iter().enumerate() {
         let content=text(&message["content"])?;if content.len()>65_536{return Err(invalid("resource_limit"));}
@@ -564,6 +577,41 @@ pub(super) async fn pin_native(ready:&crate::core::db_state::DbReady,config:&cra
         for (n,data) in content.as_bytes().chunks(4093).enumerate() {
             append(&ready.pool,&Fragment{transfer:&spec.transfer_id,kind:"message",ordinal:ordinal as i64,field:"content",offset:(n*4093) as i64,data,sha256:&hash(data)}).await?;
         }
+    }
+    for (ordinal,citation) in citations.iter().enumerate() {
+        let owner=messages.iter().position(|message|message["id"]==citation["messageId"]).ok_or_else(||invalid("connect_projection_owner_missing"))?;
+        let source:i64=sqlx::query_scalar("SELECT m.ordinal FROM e_inactive_mapping m JOIN e_inactive_imports i ON i.id=m.import_id JOIN e_inactive_records r ON r.import_id=m.import_id AND r.ordinal=m.ordinal WHERE i.identity_key=? AND m.target_uuid=? AND r.kind=2")
+            .bind(&sealed.receipt.key).bind(text(&citation["id"])?).fetch_one(&ready.pool).await?;
+        let mut fields=Vec::new();
+        for name in ["source","title","snippet","content"] {
+            if let Some(value)=citation[name].as_str(){fields.push((name.to_owned(),value.as_bytes().to_vec()));}
+        }
+        let id=write_native_entry(&ready.pool,&spec.transfer_id,ordinal as i64,source,
+            Header::Citation{message_ordinal:owner as i64,r#type:text(&citation["type"])?,scope:text(&citation["scope"])?,kind:citation["kind"].as_str().map(str::to_owned)},fields).await?;
+        if citation["id"]!=id{return Err(invalid("connect_projection_conflict"));}
+    }
+    let mut asset_ordinal=0_i64;
+    for group in images {
+        let owner=messages.iter().position(|message|message["id"]==group["messageId"]).ok_or_else(||invalid("connect_projection_owner_missing"))?;
+        let source_owner=text(&messages[owner]["portable_history"]["sourceOrdinal"])?.parse::<i64>().map_err(|_|invalid("connect_projection_invalid_input"))?;
+        for image in group["images"].as_array().ok_or_else(||invalid("connect_projection_invalid_input"))? {
+            let (source,position):(i64,i64)=sqlx::query_as("SELECT m.ordinal,a.position FROM e_inactive_mapping m JOIN e_inactive_imports i ON i.id=m.import_id JOIN e_inactive_records a ON a.import_id=m.import_id AND a.to_record=m.ordinal AND a.kind=4 AND a.relation=0 WHERE i.identity_key=? AND m.target_uuid=? AND a.from_record=?")
+                .bind(&sealed.receipt.key).bind(text(&image["id"])?).bind(source_owner).fetch_one(&ready.pool).await?;
+            let (bytes,mime)=native_asset_bytes(&ready.pool,&sealed.receipt.key,source).await?;
+            use base64::Engine;
+            if image["mimeType"]!=mime || image["dataUrl"]!=format!("data:{mime};base64,{}",base64::engine::general_purpose::STANDARD.encode(&bytes)) {return Err(invalid("connect_projection_conflict"));}
+            let id=write_native_entry(&ready.pool,&spec.transfer_id,asset_ordinal,source,
+                Header::Asset{message_ordinal:owner as i64,position,mime_type:mime},vec![("data".into(),bytes)]).await?;
+            if image["id"]!=id{return Err(invalid("connect_projection_conflict"));}asset_ordinal+=1;
+        }
+    }
+    for row in text_assets {
+        let source_owner:i64=row.get("from_record");
+        let owner=messages.iter().position(|message|message["portable_history"]["sourceOrdinal"].as_str()==Some(source_owner.to_string().as_str())).ok_or_else(||invalid("connect_projection_owner_missing"))?;
+        let source:i64=row.get("ordinal");let (bytes,mime)=native_asset_bytes(&ready.pool,&sealed.receipt.key,source).await?;
+        let id=write_native_entry(&ready.pool,&spec.transfer_id,asset_ordinal,source,
+            Header::Asset{message_ordinal:owner as i64,position:row.get("position"),mime_type:mime},vec![("data".into(),bytes)]).await?;
+        if id!=row.get::<String,_>("target_uuid"){return Err(invalid("connect_projection_conflict"));}asset_ordinal+=1;
     }
     // Rebuild with the existing SQLite writer's actual conversation id. The
     // history must remain identical; Codex alone updates its conversation cache key.
@@ -592,4 +640,31 @@ pub(in crate::db::connect_transfer) mod tests;
 pub(super) fn native_digest_bytes(value:&str)->DbResult<Vec<u8>> {
     if value.len()!=64 || !value.is_ascii(){return Err(invalid("connect_preparation_invalid_input"));}
     (0..64).step_by(2).map(|n|u8::from_str_radix(&value[n..n+2],16).map_err(|_|invalid("connect_preparation_invalid_input"))).collect()
+}
+
+async fn write_native_entry(pool:&SqlitePool,transfer:&str,ordinal:i64,source:i64,header:Header,data:Vec<(String,Vec<u8>)>)->DbResult<String>{
+    if data.iter().any(|(_,bytes)|bytes.len()>65_536){return Err(invalid("resource_limit"));}
+    let input=Entry{transfer_id:transfer.into(),ordinal,source_ordinal:Some(source),header,
+        fields:data.iter().map(|(name,bytes)|Field{name:name.clone(),bytes:bytes.len() as i64,sha256:hash(bytes)}).collect()};
+    let id=entry(pool,&input).await?;
+    for (name,bytes) in data {for (n,part) in bytes.chunks(4093).enumerate(){
+        append(pool,&Fragment{transfer,kind:input.header.kind(),ordinal,field:&name,offset:(n*4093) as i64,data:part,sha256:&hash(part)}).await?;
+    }}Ok(id)
+}
+async fn native_asset_bytes(pool:&SqlitePool,key:&str,ordinal:i64)->DbResult<(Vec<u8>,String)>{
+    use crate::db::inactive_storage::{RecordHeader,RecordKind,Mime};
+    let header:String=sqlx::query_scalar("SELECT r.header_json FROM e_inactive_records r JOIN e_inactive_imports i ON i.id=r.import_id WHERE i.identity_key=? AND i.phase=2 AND r.ordinal=? AND r.kind=3 AND r.complete=1")
+        .bind(key).bind(ordinal).fetch_one(pool).await?;
+    let header:RecordHeader=serde_json::from_str(&header).map_err(|_|invalid("integrity_failed"))?;
+    if header.bytes>65_536{return Err(invalid("resource_limit"));}
+    let mime=match header.entry{RecordKind::Asset{mime:Mime::TextPlain}=>"text/plain",RecordKind::Asset{mime:Mime::ImagePng}=>"image/png",RecordKind::Asset{mime:Mime::ImageJpeg}=>"image/jpeg",RecordKind::Asset{mime:Mime::ImageWebp}=>"image/webp",_=>return Err(invalid("integrity_failed"))};
+    let rows=sqlx::query("SELECT f.offset_bytes,f.data,f.sha256 FROM e_inactive_fragments f JOIN e_inactive_imports i ON i.id=f.import_id WHERE i.identity_key=? AND f.ordinal=? ORDER BY f.offset_bytes")
+        .bind(key).bind(ordinal).fetch_all(pool).await?;
+    let mut bytes=Vec::with_capacity(header.bytes as usize);
+    for row in rows{let data:Vec<u8>=row.get("data");
+        if row.get::<i64,_>("offset_bytes")!=bytes.len() as i64 || data.len()>4093 || data.len()>header.bytes as usize-bytes.len() || hash(&data)!=row.get::<Vec<u8>,_>("sha256"){return Err(invalid("integrity_failed"));}
+        bytes.extend_from_slice(&data);
+    }
+    if bytes.len()!=header.bytes as usize || hex(&hash(&bytes))!=header.sha256{return Err(invalid("integrity_failed"));}
+    Ok((bytes,mime.into()))
 }

@@ -96,7 +96,8 @@ impl CodecLauncher {
         let child_units=96*1024*1024u64;
         let native_units=10*1024*1024u64;
         let working=Arc::new(crate::connect_resources::WORKING_OWNER.admit(config).await.map_err(|_|"resource_limit")?);
-        let charge=working.reserve(child_units+detection+native_units).await.map_err(|_|"resource_limit")?;
+        let charge=working.reserve(child_units+detection).await.map_err(|_|"resource_limit")?;
+        let native_charge=working.reserve(native_units).await.map_err(|_|"resource_limit")?;
         let source=self.database.source_ready(None).await.map_err(|_|"database_unavailable")?;
         let database=source.ready.retain_chat_work();drop(source);
         let start=serde_json::to_vec(&serde_json::json!({"op":0,"kind":"normalize", "handles":{"source":"10","policy":"11","sink":"12"},
@@ -111,8 +112,7 @@ impl CodecLauncher {
         if let Some(entry)=&self.entry{command.arg(entry);}
         transport.check().await?;
         let mut worker=TransferWorker::spawn(command,work,self.runtime.generation()?)?;
-        let budget=self.runtime.budget()?;
-        let result=tokio::time::timeout(Duration::from_secs(25),worker.normalize(capture,&sealed,&secrets,&budget)).await;
+        let result=tokio::time::timeout(Duration::from_secs(25),worker.normalize(capture,&sealed,&secrets,native_charge)).await;
         let retired=worker.retire_until(tokio::time::Instant::now()+Duration::from_secs(10)).await;
         if !retired{return Err("transfer_retirement");}
         result.map_err(|_|"transfer_deadline")??;

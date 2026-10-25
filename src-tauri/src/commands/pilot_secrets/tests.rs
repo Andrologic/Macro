@@ -1405,13 +1405,23 @@ async fn transfer_target_event(lines:&mut tokio::io::Lines<tokio::io::BufReader<
 /// inactive target, native preparation and ACK are connected together.
 #[tokio::test(flavor="multi_thread",worker_threads=2)]
 #[ignore="requires the explicitly supplied local transfer relay"]
-async fn global_chat_macro_ai_local_transfer() { global_chat_local_transfer("macro-ai").await; }
+async fn global_chat_macro_ai_local_transfer() { global_chat_local_transfer("macro-ai",false,false).await; }
 
 #[tokio::test(flavor="multi_thread",worker_threads=2)]
 #[ignore="requires the explicitly supplied local transfer relay"]
-async fn global_chat_codex_local_transfer() { global_chat_local_transfer("codex").await; }
+async fn global_chat_codex_local_transfer() { global_chat_local_transfer("codex",false,false).await; }
 
-async fn global_chat_local_transfer(provider:&str) {
+#[tokio::test(flavor="multi_thread",worker_threads=2)]
+#[ignore="requires the explicitly supplied local transfer relay"]
+async fn global_chat_compacted_local_transfer() { global_chat_local_transfer("codex",true,false).await; }
+
+#[tokio::test(flavor="multi_thread",worker_threads=2)]
+#[ignore="requires the explicitly supplied local transfer relay"]
+async fn global_chat_resources_local_transfer() { global_chat_local_transfer("codex",true,true).await; }
+
+async fn global_chat_local_transfer(provider:&str,compacted:bool,with_resources:bool) {
+    use base64::Engine;
+
     use tokio::io::{AsyncBufReadExt,AsyncWriteExt,BufReader};
     use tokio_util::sync::CancellationToken;
     use transport::{Intent,Scope};
@@ -1437,14 +1447,15 @@ async fn global_chat_local_transfer(provider:&str) {
     let provenance=tokio::process::Command::new(executable("bun")).args(["-e",r#"
         import {assistantProvenance} from './src/services/macroPilot/assistantProvenance';
         import {buildAssistantChatCompletionProviderItem} from './src/services/ai/chatCompletionsCodec';
-        import {buildAssistantProviderInputItemsFromTurn} from './src/services/ai/responsesCodec';
+        import {buildAssistantProviderInputItemsFromTurn,buildProviderInputItemsFromContent} from './src/services/ai/responsesCodec';
         const stored=new Map();
         const text='A short answer available on the other computer.';
         const items=process.env.MACRO_SYNTHETIC_PROVIDER==='codex'?buildAssistantProviderInputItemsFromTurn(text,[]):[buildAssistantChatCompletionProviderItem({visibleContent:text,apiContent:text,reasoningContent:'',reasoningDetails:[],toolCalls:[]})];
         await assistantProvenance({load:async k=>stored.get(k)??null,compareAndSwap:async(k,o,v)=>{stored.set(k,v);return true;}})
           .recordFinal('assistant',text,items);
-        console.log(JSON.stringify({receipts:[...stored],items}));
-    "#]).env("MACRO_SYNTHETIC_PROVIDER",provider).current_dir(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap()).output().await.unwrap();
+        const userItems=process.env.MACRO_SYNTHETIC_RESOURCES==='1'?buildProviderInputItemsFromContent('user',[{type:'text',text:'Can I continue on another computer?'},{type:'image_url',image_url:{url:'data:image/png;base64,'+process.env.MACRO_SYNTHETIC_PNG}}]):null;
+        console.log(JSON.stringify({receipts:[...stored],items,userItems}));
+    "#]).env("MACRO_SYNTHETIC_PROVIDER",provider).env("MACRO_SYNTHETIC_RESOURCES",if with_resources{"1"}else{"0"}).env("MACRO_SYNTHETIC_PNG",base64::engine::general_purpose::STANDARD.encode(include_bytes!("../../../icons/32x32.png"))).current_dir(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap()).output().await.unwrap();
     assert!(provenance.status.success(),"{}",String::from_utf8_lossy(&provenance.stderr));
     let response:serde_json::Value=serde_json::from_slice(&provenance.stdout).unwrap();
     let receipts:Vec<(String,String)>=serde_json::from_value(response["receipts"].clone()).unwrap();
@@ -1454,6 +1465,46 @@ async fn global_chat_local_transfer(provider:&str) {
         .bind(content).bind(response["items"].to_string()).execute(&source_pool).await.unwrap();
     if provider=="codex"{sqlx::query("UPDATE conversations SET provider_id='chatgpt',model_id='gpt-6.1-sol' WHERE id='chat'").execute(&source_pool).await.unwrap();}
     for(key,value)in receipts {crate::db::repository::set_app_setting(&source_pool,&key,&value).await.unwrap();}
+    if with_resources {
+        sqlx::query("UPDATE messages SET turn_id='turn',provider_input_items_json=?,context_refs_json='[{\"kind\":\"source\",\"id\":\"evidence\",\"title\":\"Evidence\"}]' WHERE id='user'")
+            .bind(response["userItems"].to_string()).execute(&source_pool).await.unwrap();
+        sqlx::raw_sql("INSERT INTO conversation_citations(id,conversation_id,message_id,type,scope,source,title,content,kind,created_at,updated_at) VALUES('evidence','chat','user','source_passage','source','synthetic','Evidence','ESSENTIAL_CITATION_FACT','used','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z'); INSERT INTO conversation_citations(id,conversation_id,message_id,type,scope,source,title,content,path,created_at,updated_at) VALUES('text-asset','chat','user','file','context','pilot_attachment','sample.txt','ASSET_TEXT_FACT','attachment://text-asset','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z');").execute(&source_pool).await.unwrap();
+        for (id,name,mime,bytes) in [("text-asset","sample.txt","text/plain",b"ASSET_TEXT_FACT".as_slice()),("image-asset","sample.png","image/png",include_bytes!("../../../icons/32x32.png").as_slice())] {
+            sqlx::query("INSERT INTO pilot_message_attachments VALUES(?,'owner','instance','ref','user',?,?,?,?,?)")
+                .bind(id).bind(name).bind(mime).bind(bytes.len() as i64).bind(format!("{:x}",Sha256::digest(bytes))).bind(bytes).execute(&source_pool).await.unwrap();
+        }
+        sqlx::raw_sql("INSERT INTO pilot_file_sends(owner_key,ref_key,send_intent_id,scope_key,digest,message_id,turn_id,state,attachment_ids_json,assistant_message_id,context_state,intent_expires_at) VALUES('owner','ref','intent','scope','digest','user','turn','confirmed','[\"text-asset\",\"image-asset\"]','assistant','ready',1);").execute(&source_pool).await.unwrap();
+    }
+    if compacted {
+        for n in 0..20 {
+            sqlx::query("INSERT INTO messages(id,conversation_id,role,content,created_at,context_refs_json) VALUES(?,'chat','user',?,?,'[]')")
+                .bind(format!("older-{n:02}")).bind(format!("RECOVERABLE_HISTORY_{n:02} {}","ordinary source fact ".repeat(200)))
+                .bind(format!("2026-01-01T00:00:{:02}Z",n+1)).execute(&source_pool).await.unwrap();
+        }
+        sqlx::query("UPDATE messages SET created_at='2026-01-01T00:01:00Z' WHERE id='assistant'").execute(&source_pool).await.unwrap();
+        let original=crate::db::repository::list_messages(&source_pool,"chat").await.unwrap();
+        let mut citations=crate::db::repository::list_conversation_citations(&source_pool,"chat").await.unwrap();
+        for citation in &mut citations{citation.content=crate::db::repository::get_conversation_citation_content(&source_pool,&citation.id).await.unwrap();}
+        let mut process=tokio::process::Command::new(executable("bun")).args(["-e",r#"
+            import {mapDbMessageToChatMessage} from './src/services/chatDbMappers';
+            import {buildCompactedMessagesForRequest} from './src/services/contextCompaction';
+            import {CHECKPOINT_COLUMNS} from './src/test-utils/portableNormalizationRecipe';
+            const payload=JSON.parse(await Bun.stdin.text());const messages=payload.messages.map(row=>mapDbMessageToChatMessage(row,new Map()));
+            const citations=payload.citations.map(c=>({id:c.id,type:c.type,scope:c.scope,source:c.source,title:c.title,content:c.content??undefined,snippet:c.snippet??undefined,messageId:c.message_id,conversationId:c.conversation_id,timestamp:c.updated_at||c.created_at,kind:c.kind??undefined,path:c.path??undefined}));
+            const result=await buildCompactedMessagesForRequest({systemMessage:'Trusted local instructions',preparedMessages:messages.map(m=>({role:m.role,content:m.content})),orderedMessages:messages,citations,toolDefinitions:[],modelContextWindowTokens:8000,mode:'manual',forceCompaction:true,generateSummary:async()=> 'SOURCE_CHECKPOINT_HISTORY: all original messages remain recoverable.'});
+            const state=result.compactionState;if(!state)throw Error('fixture_checkpoint_not_created');
+            const camel=s=>s.replace(/_([a-z])/g,(_,c)=>c.toUpperCase());
+            const record=Object.fromEntries(CHECKPOINT_COLUMNS.map(column=>{
+                const direct=state[camel(column)];const encoded=column.endsWith('_json')?state[camel(column.slice(0,-5))]:undefined;
+                return [column,direct??(encoded===undefined?null:JSON.stringify(encoded))];
+            }));console.log(JSON.stringify(record));
+        "#]).current_dir(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap())
+            .stdin(std::process::Stdio::piped()).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped()).spawn().unwrap();
+        process.stdin.take().unwrap().write_all(&serde_json::to_vec(&serde_json::json!({"messages":original,"citations":citations})).unwrap()).await.unwrap();
+        let state=process.wait_with_output().await.unwrap();assert!(state.status.success(),"{}",String::from_utf8_lossy(&state.stderr));
+        let input:crate::db::models::UpsertConversationCompactionStateInput=serde_json::from_slice(&state.stdout).unwrap();
+        crate::db::repository::upsert_conversation_compaction_state(&source_pool,input).await.unwrap();
+    }
     let manager=Arc::new(Manager::new(Arc::new(Fake::default())));
     let a=&seed["a"];
     let text=|v:&serde_json::Value|v.as_str().unwrap().to_string();
@@ -1543,7 +1594,7 @@ async fn global_chat_local_transfer(provider:&str) {
             .stdin(std::process::Stdio::piped()).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::inherit()).kill_on_drop(true).spawn().unwrap();
         let mut input=child.stdin.take().unwrap();
         let mut initialization=serde_json::to_vec(&serde_json::json!({"seed":seed,"session":session,"sent":sent,"manifest":manifest,
-            "database":directory.path().join("target.db"),"provider":provider})).unwrap();initialization.push(b'\n');
+            "database":directory.path().join("target.db"),"provider":provider,"compacted":compacted,"resources":with_resources})).unwrap();initialization.push(b'\n');
         input.write_all(&initialization).await.unwrap();
         let mut target_events=BufReader::new(child.stdout.take().unwrap()).lines();
         let root=format!("/pilot/v2/transfers/transits/{}",session["transit_id"].as_str().unwrap());
@@ -1551,6 +1602,7 @@ async fn global_chat_local_transfer(provider:&str) {
         while offset<archive.as_slice().len() {
             let delivery=verified.delivery(manager.clone(),&ready).await?;
             let pull:serde_json::Value=serde_json::from_slice(delivery.bytes.as_slice()).map_err(|_|"transit_pull")?;drop(delivery);
+            if pull["branch"]=="empty"{continue;}
             let message=&pull["value"]["body"]["message"];
             if pull["branch"]!="transit" || pull["value"]["body"]["kind"]!="transit.pull" || message["transfer_id"]!=session["transfer_id"]
                 || message["transit_id"]!=session["transit_id"] || message["offset"]!=offset.to_string() || message["sequence"]!=sequence.to_string()
@@ -1624,7 +1676,7 @@ async fn global_chat_local_transfer(provider:&str) {
         let acknowledged=verified.decision(manager.clone(),&ready,&known,wrap(request),expected).await?;drop(acknowledged);
         reservation.apply_committed_source(&source,job).await.map_err(|_|"source_application")?;
         assert_eq!(sqlx::query_scalar::<_,String>("SELECT mode FROM chat_admission_owners WHERE conversation_id='chat'").fetch_one(&source_pool).await.unwrap(),"ceded");
-        assert_eq!(sqlx::query_scalar::<_,i64>("SELECT COUNT(*) FROM messages WHERE conversation_id='chat'").fetch_one(&source_pool).await.unwrap(),2);
+        assert_eq!(sqlx::query_scalar::<_,i64>("SELECT COUNT(*) FROM messages WHERE conversation_id='chat'").fetch_one(&source_pool).await.unwrap(),if compacted{22}else{2});
         input.write_all(b"{\"stop\":true}\n").await.unwrap();drop(input);
         let child=child.wait_with_output().await.unwrap();
         if !child.status.success(){eprintln!("{} {}",String::from_utf8_lossy(&child.stdout),String::from_utf8_lossy(&child.stderr));return Err("target_instance_failed");}
@@ -1653,7 +1705,7 @@ async fn global_chat_transfer_target() {
     let data:serde_json::Value=serde_json::from_str(&input.next_line().await.unwrap().unwrap()).unwrap();
     let seed=&data["seed"];let b=&seed["b"];let session=&data["session"];
     let text=|v:&serde_json::Value|v.as_str().unwrap().to_owned();
-    let codex=data["provider"]=="codex";
+    let codex=data["provider"]=="codex";let compacted=data["compacted"]==true;let with_resources=data["resources"]==true;
     let (provider_id,provider_type,model_id)=if codex{("chatgpt","chatgpt","gpt-6.1-sol")}else{("macro-ai","openai","macro-ai")};
     let owner=crate::core::db_state::DbPool::default();
     let pool=crate::db::create_pool(std::path::Path::new(data["database"].as_str().unwrap())).await.unwrap();
@@ -1743,9 +1795,45 @@ async fn global_chat_transfer_target() {
         let reply=verified.decision(manager.clone(),&ready,&format!("/pilot/v2/transfers/known/{}/decisions",session["transfer_id"].as_str().unwrap()),request,expected).await.unwrap();drop(reply);
         let conversation=reservation.publish_target(&owner,&config,prepared.as_ref().unwrap()).await.unwrap();
         let messages:Vec<String>=sqlx::query_scalar("SELECT content FROM messages WHERE conversation_id=? ORDER BY created_at,id").bind(&conversation).fetch_all(&pool).await.unwrap();
-        assert_eq!(messages.len(),2);assert!(messages.iter().any(|s|s.contains("Can I continue on another computer?")));
+        assert!(messages.len()>=if compacted{22}else{2});assert!(messages.iter().any(|s|s.contains("Can I continue on another computer?")));
         assert!(messages.iter().any(|s|s.contains("A short answer available on the other computer.")));
-        assert!(messages.iter().all(|s|s=="Can I continue on another computer?" || s=="A short answer available on the other computer."));
+        let mut preview_resources=Vec::<serde_json::Value>::new();
+        if compacted {
+            assert_eq!(messages.len(),22);
+            for n in 0..20{assert!(messages.iter().any(|s|s.contains(&format!("RECOVERABLE_HISTORY_{n:02}"))));}
+            assert!(!messages.iter().any(|s|s.starts_with("[Historical archive")));
+            use crate::db::connect_transfer::reader_runtime::ArchiveReaderRuntime;
+            use crate::db::connect_transfer::reader_types::*;
+            let (ordinal,uuid):(i64,String)=sqlx::query_as("SELECT r.ordinal,m.target_uuid FROM conversation_portable_archives a JOIN e_inactive_records r ON r.import_id=a.import_id JOIN e_inactive_mapping m ON m.import_id=r.import_id AND m.ordinal=r.ordinal JOIN e_inactive_fragments f ON f.import_id=r.import_id AND f.ordinal=r.ordinal WHERE a.conversation_id=? AND instr(CAST(f.data AS TEXT),'SOURCE_CHECKPOINT_HISTORY')>0 LIMIT 1")
+                .bind(&conversation).fetch_one(&pool).await.unwrap();
+            let reader=ArchiveReaderRuntime::default();
+            let selected=reader.open(&owner,&config,"synthetic-reader","page",ArchiveOpenInput{conversation_id:conversation.clone(),selector:ArchiveSelector::Records{ordinal:Some(ordinal.to_string()),uuid:None}}).await.unwrap();
+            let backing=reader.materialize("synthetic-reader","page",ArchiveMaterializeInput{read_id:selected.read_id.clone(),resource_uuid:uuid,r#use:ArchiveUse::RenderText,range:None}).await.unwrap();
+            let data=serde_json::to_value(&backing).unwrap();assert!(data["text"].as_str().unwrap().contains("SOURCE_CHECKPOINT_HISTORY"));
+            preview_resources.push(serde_json::json!({"title":"Historique compacté","text":data["text"]}));
+            drop(backing);reader.release("synthetic-reader","page",ArchiveReleaseInput{id:data["backingId"].as_str().unwrap().into()}).unwrap();
+            reader.release("synthetic-reader","page",ArchiveReleaseInput{id:selected.read_id}).unwrap();reader.retire_caller("synthetic-reader");
+        }else{assert!(messages.iter().all(|s|s=="Can I continue on another computer?" || s=="A short answer available on the other computer."));}
+        if with_resources {
+            use crate::db::connect_transfer::reader_runtime::ArchiveReaderRuntime;
+            use crate::db::connect_transfer::reader_types::*;
+            let citations:Vec<String>=sqlx::query_scalar("SELECT content FROM conversation_citations WHERE conversation_id=? AND content IS NOT NULL").bind(&conversation).fetch_all(&pool).await.unwrap();
+            assert!(citations.iter().any(|text|text.contains("ESSENTIAL_CITATION_FACT")));assert!(citations.iter().any(|text|text.contains("ASSET_TEXT_FACT")));
+            for text in &citations{preview_resources.push(serde_json::json!({"title":"Référence conservée","text":text}));}
+            let assets:Vec<(String,String)>=sqlx::query_as("SELECT id,mime_type FROM connect_published_assets WHERE conversation_id=? ORDER BY position").bind(&conversation).fetch_all(&pool).await.unwrap();
+            assert_eq!(assets.len(),2);
+            let reader=ArchiveReaderRuntime::default();
+            for (id,mime) in assets {
+                let selected=reader.open(&owner,&config,"synthetic-resources","page",ArchiveOpenInput{conversation_id:conversation.clone(),selector:ArchiveSelector::Asset{asset_id:id.clone()}}).await.unwrap();
+                let backing=reader.materialize("synthetic-resources","page",ArchiveMaterializeInput{read_id:selected.read_id.clone(),resource_uuid:id,r#use:if mime=="text/plain"{ArchiveUse::RenderText}else{ArchiveUse::Image},range:None}).await.unwrap();
+                let data=serde_json::to_value(&backing).unwrap();
+                if mime=="text/plain"{assert_eq!(data["text"],"ASSET_TEXT_FACT");}
+                else{assert_eq!(data["width"],32);assert_eq!(data["height"],32);assert!(data["readyDataUrl"].as_str().unwrap().starts_with("data:image/png;base64,"));}
+                preview_resources.push(serde_json::json!({"title":if mime=="text/plain"{"sample.txt"}else{"sample.png"},"text":data["text"],"readyDataUrl":data["readyDataUrl"],"width":data["width"],"height":data["height"]}));
+                drop(backing);reader.release("synthetic-resources","page",ArchiveReleaseInput{id:data["backingId"].as_str().unwrap().into()}).unwrap();
+                reader.release("synthetic-resources","page",ArchiveReleaseInput{id:selected.read_id}).unwrap();
+            }reader.retire_caller("synthetic-resources");
+        }
         // Exercise the same historical-message renderer used by ChatZone with
         // the ordinary published rows, rather than displaying archive JSON.
         let mut renderer=tokio::process::Command::new(std::env::split_paths(&std::env::var_os("PATH").unwrap()).map(|p|p.join("bun")).find(|p|p.is_file()).unwrap())
@@ -1753,14 +1841,14 @@ async fn global_chat_transfer_target() {
                 import React from 'react';import {renderToStaticMarkup} from 'react-dom/server';
                 import {createInstance} from 'i18next';import {I18nextProvider} from 'react-i18next';
                 import {HistoricalMessageContent} from './src/components/chat/HistoricalMessageContent';
-                const i18n=createInstance();await i18n.init({lng:'en',resources:{en:{translation:{}}},initImmediate:false});
+                const i18n=createInstance();await i18n.init({lng:'en',resources:{en:{translation:{}}},initImmediate:false,showSupportNotice:false});
                 const messages=JSON.parse(await Bun.stdin.text());
                 console.log(renderToStaticMarkup(React.createElement(I18nextProvider,{i18n},messages.map((content,i)=>React.createElement(HistoricalMessageContent,{key:i,content,date:'2026-01-01T00:00:00Z'})))));
             "#]).current_dir(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap())
             .stdin(std::process::Stdio::piped()).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped()).spawn().unwrap();
         renderer.stdin.take().unwrap().write_all(&serde_json::to_vec(&messages).unwrap()).await.unwrap();
         let rendered=renderer.wait_with_output().await.unwrap();assert!(rendered.status.success(),"{}",String::from_utf8_lossy(&rendered.stderr));
-        let html=String::from_utf8(rendered.stdout).unwrap();assert!(html.contains("data-chat-historical-message"));
+        let html=String::from_utf8(rendered.stdout).unwrap();assert!(html.starts_with('<'));assert!(html.contains("data-chat-historical-message"));
         for message in &messages{assert!(html.contains(message));}assert!(!html.contains(&conversation));assert!(!html.contains("portable_archive"));
         let mut next=prepared.as_ref().unwrap().native_prepared().unwrap().1.clone();
         next.messages.push(serde_json::from_value(serde_json::json!({"role":"user","content":"Continue from this history."})).unwrap());
@@ -1769,7 +1857,14 @@ async fn global_chat_transfer_target() {
             else{crate::ai::openai_compatible::build_transfer_request(&next,&provider).unwrap()};
         assert!(next_body.to_string().contains("Continue from this history."));
         if codex{assert_eq!(next_body["prompt_cache_key"],conversation);assert_eq!(next_body["store"],false);assert!(next_body.get("previous_response_id").is_none());}
-        for message in &messages{assert!(next_body.to_string().contains(message));}
+        for message in &messages{assert!(next_body.to_string().contains(message.trim()),"missing original text: {}",message.chars().take(70).collect::<String>());}
+        if compacted{assert!(next_body.to_string().contains("SOURCE_CHECKPOINT_HISTORY"));}
+        if with_resources {
+            let serialized=next_body.to_string();assert!(serialized.contains("ESSENTIAL_CITATION_FACT"));assert!(serialized.contains("ASSET_TEXT_FACT"));assert!(serialized.contains("data:image/png;base64,"));
+        }
+        if let Some(path)=std::env::var_os("MACRO_CONNECT_SLICE_PREVIEW") {
+            tokio::fs::write(path,serde_json::to_vec(&serde_json::json!({"messagesHtml":html,"messageCount":messages.len(),"resources":preview_resources})).unwrap()).await.unwrap();
+        }
         assert!(reservation.publish_target(&owner,&config,prepared.as_ref().unwrap()).await.is_err());
         assert_eq!(sqlx::query_scalar::<_,i64>("SELECT COUNT(*) FROM conversations").fetch_one(&pool).await.unwrap(),1);
         let activation=reservation.target_activation().unwrap();

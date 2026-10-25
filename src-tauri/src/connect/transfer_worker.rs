@@ -48,7 +48,7 @@ struct Owned {
 pub(crate) struct TransferWorker {
     owned: Option<Owned>,
     phase: Phase,
-    normalized: Option<(Vec<u8>,serde_json::Value,super::codec::Bytes)>,
+    normalized: Option<(Vec<u8>,serde_json::Value,Vec<u8>,WorkingCharge)>,
     database: Option<ChatWorkLifetime>,
     imported:Option<crate::db::inactive_storage::SealedStorage>,
     imported_metadata:Option<serde_json::Value>,
@@ -131,7 +131,7 @@ impl TransferWorker {
         capture: &crate::db::source_capture::SourceCapture,
         sealed: &crate::db::source_capture::RawNativeCapture,
         secrets: &[String],
-        budget: &crate::connect_resources::TransitInstance,
+        native_charge:WorkingCharge,
     ) -> Result<()> {
         use crate::db::source_capture::Cursor;
         use serde_json::{json, Value};
@@ -156,7 +156,9 @@ impl TransferWorker {
         let mut lease = owned.work.arena;
         let mut call = 0u64;
         let mut descriptor = Value::Null;
-        let mut archive = Vec::new();
+        // This is the bounded archive result, not a 96 KiB codec control body.
+        // Its existing native working charge survives physical E retirement.
+        let mut archive = Vec::with_capacity(ARCHIVE_LIMIT);
         loop {
             // Every port reads the same live native capture/policy owner.
             capture.status().await.map_err(|_|"transfer_capture")?;
@@ -166,7 +168,7 @@ impl TransferWorker {
             if h.kind == 9 {
                 if owned.io.scratch[..4] != 0u32.to_be_bytes() { return Err("transfer_worker_refused"); }
                 if descriptor.is_null() || archive.is_empty() { return Err("transfer_archive_missing"); }
-                self.normalized=Some((sealed.manifest.clone(),descriptor,super::codec::Bytes::copy(budget,&archive)?));
+                self.normalized=Some((sealed.manifest.clone(),descriptor,archive,native_charge));
                 self.phase=Phase::Finished;
                 return Ok(());
             }
@@ -509,9 +511,9 @@ impl TransferWorker {
         if self.phase!=Phase::Finished || self.owned.is_some(){return Err("transfer_not_finished");}
         self.imported.as_ref().ok_or("transfer_import_missing")
     }
-    pub(crate) fn normalized_for(&self, capture_manifest:&[u8]) -> Result<(&serde_json::Value,&super::codec::Bytes)> {
+    pub(crate) fn normalized_for(&self, capture_manifest:&[u8]) -> Result<(&serde_json::Value,&Vec<u8>)> {
         if self.phase!=Phase::Finished || self.owned.is_some(){return Err("transfer_not_finished");}
-        let (manifest,descriptor,bytes)=self.normalized.as_ref().ok_or("transfer_not_normalized")?;
+        let (manifest,descriptor,bytes,_charge)=self.normalized.as_ref().ok_or("transfer_not_normalized")?;
         if manifest!=capture_manifest{return Err("transfer_capture_changed");}
         Ok((descriptor,bytes))
     }
