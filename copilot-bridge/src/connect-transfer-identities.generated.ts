@@ -38,11 +38,11 @@ export const TRANSFER_RESOURCES = [
   },
   {
     "path": "copilot-bridge/src/connect-transfer-preparation.ts",
-    "sha256": "fdb979186f974d2427c1343a45adc5881148ed0c183eb4cff7e003537d0bed7b"
+    "sha256": "bf386e29f7555f247b59dd12cd53402981bcf238e1a3300d106e2293ff441b9b"
   },
   {
     "path": "copilot-bridge/src/connect-transfer-protocol.ts",
-    "sha256": "12fd6df251530d6fa27dc26915de6743cf26dddadf49cf4086a89af301d7114d"
+    "sha256": "2c92703d75c789b72e6fe7a7c40892184414a208cf883fbd2ebc32fb7ff51bea"
   },
   {
     "path": "copilot-bridge/src/connect-transfer-values.ts",
@@ -62,7 +62,7 @@ export const TRANSFER_RESOURCES = [
   },
   {
     "path": "dev/generate-connect-transfer-identities.mjs",
-    "sha256": "0997205cb0d2374895cfa9ffe8ad1deb51da93c98ba102fba730528e8c13e07e"
+    "sha256": "d6f0b2363f52a144359f818d12e5dd3214d68b76f22f962aa9cb394af1c43f37"
   },
   {
     "path": "package.json",
@@ -130,7 +130,7 @@ export const TRANSFER_RESOURCES = [
   },
   {
     "path": "src/services/chatMessagePreparation.ts",
-    "sha256": "59264bf6d022fb48cb0e1aa74d4b1e0f2fde4a607b051b7c237980250aea1691"
+    "sha256": "edaa96e0fb0eebe1b3300ab5c86cb72aeb4e685c967a12f9a569723a5d7f88db"
   },
   {
     "path": "src/services/chatQuestionnaires.ts",
@@ -142,7 +142,7 @@ export const TRANSFER_RESOURCES = [
   },
   {
     "path": "src/services/chatRequestPreparation.ts",
-    "sha256": "cfa48e2eef8a9c56c6a0715ccdd83c7dd64677e8e0233fdbf58c34076c0f0922"
+    "sha256": "68c761ac248818aa74370c0c59e4ee05037c1343d43fc121104037ec9900813c"
   },
   {
     "path": "src/services/chatStreamCompactionMessages.ts",
@@ -304,5 +304,5 @@ export const TRANSFER_RESOURCES = [
 export const TRANSFER_HELLO = {
   "version": "macro-connect-transfer-1",
   "portable_contract_sha256": "c6ae7440ed0fb4d0bdccdfb936c4bf6ac5c441c96b642c1d9ccbd270b62bdcc6",
-  "preparation_set_sha256": "a9c8fd9b38073ad9ac962cfe16de9462f41791887c67c7e7b5d82d734fd16a40"
+  "preparation_set_sha256": "e43ae1668b5ffb267b3498d5767f603641a387149df5126620e75fb71ebed043"
 } as const;

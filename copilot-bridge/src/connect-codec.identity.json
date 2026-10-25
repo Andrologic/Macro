@@ -2,7 +2,7 @@
   "hello": {
     "version": "macro-connect-codec-1",
     "profile": "persistent",
-    "source_set_sha256": "129d7e489d259b694ac4fea4cf93e9bb814b11b0bc6b9c473f318cc2463e3367",
+    "source_set_sha256": "c004666559d42a37ff1f8df80e3b308a17955e341c284a7fc78dd3c0387108d2",
     "content_sha256": "c6ae7440ed0fb4d0bdccdfb936c4bf6ac5c441c96b642c1d9ccbd270b62bdcc6",
     "decision_resource_set_sha256": "6133c2d9ee204a175ae6c176b9c266d4378879c1637936ebd81e85daf4d0b97a",
     "transit_resource_set_sha256": "1454bad31321e0d6467098f0309b5bb96050a396bb6fddecc938233cdf9c602d",
@@ -75,7 +75,7 @@
     },
     {
       "path": "dev/generate-connect-transfer-identities.mjs",
-      "sha256": "0997205cb0d2374895cfa9ffe8ad1deb51da93c98ba102fba730528e8c13e07e"
+      "sha256": "d6f0b2363f52a144359f818d12e5dd3214d68b76f22f962aa9cb394af1c43f37"
     },
     {
       "path": "package.json",
