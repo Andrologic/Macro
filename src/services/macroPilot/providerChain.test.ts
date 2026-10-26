@@ -67,10 +67,21 @@ const invoke = mock(async (command: string, args?: Record<string, unknown>): Pro
       return { applied };
     }
     case 'db_delete_app_setting': settings.delete(String(args!.key)); return;
+    case 'chat_admission_write_approval_registry': {
+      // Same compare-and-swap as the native reserved writer; admission checks are native.
+      const params = args as { expectedValueJson: string | null; valueJson: string | null };
+      const key = 'toolApprovalRecovery:v1', current = settings.get(key) ?? null;
+      if (current === params.valueJson) return;
+      if (current !== params.expectedValueJson) throw new Error('Stale approval registry');
+      if (params.valueJson === null) settings.delete(key); else settings.set(key, params.valueJson);
+      return;
+    }
     case 'terminal_read':
     case 'terminal_run': return { id: 'synthetic-terminal', project_id: null, cwd: '/synthetic/target', status: 'idle', output: 'Synthetic output', project_name: null, mount_name: null, workspace_path: null, last_command: null, exit_code: 0, timed_out: false, output_truncated: false, updated_at: '2026-01-01T00:00:00Z' };
     case 'db_get_app_setting': return settings.has(String(args!.key)) ? { key: args!.key, value_json: settings.get(String(args!.key)) } : null;
     case 'db_get_conversation_compaction_state': return null;
+    case 'chat_admission_begin_intent': return { kind: 'conversation' };
+    case 'db_pilot_message_images': return [];
     case 'config_list_pending_changes': return [];
     case 'state_get_snapshot': return { schemaVersion: 1, values: {} };
     case 'state_patch': return { schemaVersion: 1, values: {} };
