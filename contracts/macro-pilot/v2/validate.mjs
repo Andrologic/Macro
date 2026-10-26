@@ -71,6 +71,12 @@ export function validateMessage(message) {
     }
     if (r.question) reject(new Set(r.question.steps.map(s => s.step_id)).size !== r.question.steps.length, 'duplicate questions');
   }
+  if (message.type === 'delivery') reject(message.request.operation === 'instance.models' && !(message.capabilities ?? []).includes('instance-models-1'), 'unattested instance models capability');
+  if (message.type === 'response' && message.operation === 'instance.models') {
+    const r = message.result, lifetime = Date.parse(r.expires_at) - Date.parse(r.observed_at);
+    reject(lifetime <= 0 || lifetime > 30000, 'instance model catalog lifetime');
+    reject(new Set(r.models.map(m => JSON.stringify([m.provider_id, m.model_id]))).size !== r.models.length, 'duplicate instance models');
+  }
   if (message.type === 'accepted') reject(message.exchange_id !== message.request_id, 'exchange identity mismatch');
   if (message.type === 'delivery') {
     reject(message.request_id !== message.request.request_id || message.account_id !== message.request.account_id, 'delivery correlation mismatch');
@@ -303,7 +309,7 @@ export function validateExchange(request, response) {
       if (['task.artifact.read', 'conversation.tool.read', 'conversations.catalog', 'conversations.search', 'conversation.window'].includes(request.operation)) reject(body.item_id !== result.item_id || body.offset_bytes !== result.offset_bytes, 'item or offset mismatch');
       if ('expected_revision' in body && request.operation !== 'conversation.send.attachments') reject(result.revision !== body.expected_revision + 1, 'mutation revision mismatch');
       if (request.operation === 'sessions.list') reject(body.include_last_seen !== true && result.items.some(item => 'last_seen_at' in item), 'unrequested activity projection');
-      if (request.operation === 'instance.telemetry') reject(result.instance_id !== body.instance_id, 'telemetry instance mismatch');
+      if (['instance.telemetry', 'instance.models'].includes(request.operation)) reject(result.instance_id !== body.instance_id, 'instance mismatch');
       if (request.operation === 'project.icon') reject(Object.keys(body.ref).some(key => body.ref[key] !== result.ref[key]), 'icon project mismatch');
       if (fileCapability(request.operation) && request.operation !== 'conversation.files.list') {
         reject(Object.keys(body.ref).some(key => result.ref[key] !== body.ref[key]) || Object.keys(body.ref).length !== Object.keys(result.ref).length, 'file reference mismatch');
