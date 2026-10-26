@@ -35,6 +35,7 @@ pub(crate) struct Intent {
     pub account_id: Option<String>,
     pub device_id: Option<String>,
     pub scope: Scope,
+    pub capabilities: Vec<String>,
 }
 pub(crate) enum Scope {
     Producer {
@@ -59,6 +60,7 @@ pub(crate) struct VerifiedTransport {
     session: SessionFacts,
     pub(super) authority: serde_json::Value,
     producer_authority: Option<serde_json::Value>,
+    capabilities:Vec<String>,
     transit_session: std::sync::Mutex<Option<serde_json::Value>>,
     target_invitation: std::sync::Mutex<Option<serde_json::Value>>,
     terminal_receipt: std::sync::Mutex<Option<serde_json::Value>>,
@@ -157,7 +159,7 @@ impl VerifiedTransport {
         let instance=p["instance_id"].as_str().ok_or("authority_context")?;
         let path=format!("/pilot/v2/instances/{instance}/deliveries/poll");
         let request_id=uuid::Uuid::new_v4();
-        let bytes=Bytes::serialize(&self.runtime.budget()?,&serde_json::json!({"transport_version":"2.0","type":"poll"}))?;
+        let bytes=Bytes::serialize(&self.runtime.budget()?,&serde_json::json!({"transport_version":"2.0","type":"poll","capabilities":self.capabilities}))?;
         let response=tokio::select! {biased;
             _=stop.cancelled()=>return Err("http_cancelled"),
             result=exchange(manager.clone(),self.identity.clone(),self._snapshot.clone(),&self.observation,&self.runtime,
@@ -765,6 +767,9 @@ async fn bootstrap_with_codec<B: Vault + 'static>(
     if cancel.is_cancelled() {
         return Err("http_cancelled");
     }
+    // Retain bounded compatibility intent. The relay validates the poll shape;
+    // authenticated preflight and producer checks still establish authority.
+    if intent.capabilities.len()>32 || intent.capabilities.iter().any(|v|v.len()>128) {return Err("resource_limit");}
     let generation = runtime.generation()?;
     if intent.context.relay_origin.len() > 2048
         || intent.context.configuration_id.len() > 128
@@ -939,6 +944,7 @@ async fn bootstrap_with_codec<B: Vault + 'static>(
         codec: None,
         session,
         producer_authority: producer.then(||authority.clone()),
+        capabilities:intent.capabilities,
         transit_session:std::sync::Mutex::new(None),
         target_invitation:std::sync::Mutex::new(None),
         terminal_receipt:std::sync::Mutex::new(None),

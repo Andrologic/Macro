@@ -1298,7 +1298,7 @@ async fn private_bootstrap_real_relay_correlates_scope_and_keeps_controller_righ
         }
         let scope = if controller { Scope::Controller { source_instance_id: text(credentials,"instance"), target_instance_id: None } }
             else { Scope::Producer { instance_id: text(credentials,"instance") } };
-        (manager, fake, Intent { context, generation, instance_creation_id:text(credentials,"creation"), account_id:Some(text(&seed,"account_id")), device_id:Some(text(credentials,"device_id")), scope })
+        (manager, fake, Intent { context, generation, instance_creation_id:text(credentials,"creation"), account_id:Some(text(&seed,"account_id")), device_id:Some(text(credentials,"device_id")), scope,capabilities:vec![] })
     };
     let (manager, fake, intent) = fixture("a","a",false);
     let verified = transport::bootstrap_owned(manager.clone(), intent, &runtime, &codec, &ready, address, true, &cancel).await.unwrap();
@@ -1547,7 +1547,7 @@ async fn global_chat_local_transfer(provider:&str,compacted:bool,with_resources:
     let launcher=runtime.source_launcher(&executable("bun"),&std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../copilot-bridge/src/entry.ts"),&source).unwrap();
     let ready=source.wait_until_ready_context().await.unwrap();
     let cancel=CancellationToken::new();
-    let intent=Intent{context,generation,instance_creation_id:text(&a["creation"]),account_id:Some(text(&seed["account_id"])),device_id:Some(text(&a["device_id"])),scope:Scope::Producer{instance_id:text(&a["instance"])}};
+    let intent=Intent{context,generation,instance_creation_id:text(&a["creation"]),account_id:Some(text(&seed["account_id"])),device_id:Some(text(&a["device_id"])),scope:Scope::Producer{instance_id:text(&a["instance"])},capabilities:serde_json::from_value(seed["capabilities"].clone()).unwrap()};
     let mut verified=transport::bootstrap_owned(manager.clone(),intent,&runtime,&launcher,&ready,address,true,&cancel).await.unwrap();
     verified.controller_for(manager.clone(),&ready,seed["b"]["instance"].as_str().unwrap()).await.unwrap();
     let admission=crate::db::chat_admission::runtime::ChatAdmissionRuntime::default();
@@ -1607,7 +1607,7 @@ async fn global_chat_transfer_target() {
     let launcher=runtime.source_launcher(&bun,&std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../copilot-bridge/src/entry.ts"),&owner).unwrap();
     let ready=owner.wait_until_ready_context().await.unwrap();
     let verified=transport::bootstrap_owned(manager.clone(),Intent{context,generation,instance_creation_id:text(&b["creation"]),
-        account_id:Some(text(&seed["account_id"])),device_id:Some(text(&b["device_id"])),scope:Scope::Producer{instance_id:text(&b["instance"])}},
+        account_id:Some(text(&seed["account_id"])),device_id:Some(text(&b["device_id"])),scope:Scope::Producer{instance_id:text(&b["instance"])},capabilities:serde_json::from_value(seed["capabilities"].clone()).unwrap()},
         &runtime,&launcher,&ready,format!("127.0.0.1:{}",seed["port"].as_u64().unwrap()).parse().unwrap(),true,&tokio_util::sync::CancellationToken::new()).await.unwrap();
     let config_directory=tempfile::tempdir().unwrap();
     let config=crate::config::ConfigManager::initialize(config_directory.path().to_path_buf()).await.unwrap();

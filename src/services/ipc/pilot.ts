@@ -99,6 +99,7 @@ export interface ConnectTransferConnection {
   accountId: string;
   deviceId: string;
   instanceId: string;
+  capabilities: string[];
 }
 export interface ConnectTransferSendInput {
   connection: ConnectTransferConnection;

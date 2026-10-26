@@ -255,12 +255,12 @@ pub(crate) fn qualification_backup_context(
 #[serde(rename_all="camelCase",deny_unknown_fields)]
 pub(crate) struct TransferConnectionInput {
     context:PilotVaultContext,generation:String,instance_creation_id:String,
-    account_id:String,device_id:String,instance_id:String,
+    account_id:String,device_id:String,instance_id:String,capabilities:Vec<String>,
 }
 impl TransferConnectionInput {
     fn intent(self)->transport::Intent {
         transport::Intent{context:self.context,generation:self.generation,instance_creation_id:self.instance_creation_id,
-            account_id:Some(self.account_id),device_id:Some(self.device_id),scope:transport::Scope::Producer{instance_id:self.instance_id}}
+            account_id:Some(self.account_id),device_id:Some(self.device_id),scope:transport::Scope::Producer{instance_id:self.instance_id},capabilities:self.capabilities}
     }
 }
 #[derive(Deserialize)]
