@@ -84,4 +84,13 @@ if(!process.argv.includes('--csp')) {
 }
 const maxChunk=clone(first);const raw='x'.repeat(65536);Object.assign(maxChunk,{data_utf8:raw,length:'65536',sha256:sha256Bytes(bytes(raw))});yes(v.validateObject(maxChunk).valid);const wrapped=clone(vectors.valid.find(m=>m.type==='producer.delivery'&&m.body.kind==='transit.chunk'));wrapped.body.message=maxChunk;yes(v.validateObject(wrapped).valid);yes(json(wrapped).length<=98304);
 yes(first.data_utf8+second.data_utf8,text);yes(active,0);yes(v.diagnosticsEmpty());
+// Coordination is closed bounded data; only later native/F proofs authorize.
+const invitation=message('transit.invitation'),proposal=message('transit.prepared');
+yes(v.validateRoute(v.parseRoute('POST',`/pilot/v2/transfers/transits/${proposal.transit_id}/prepared`),proposal).valid);
+yes(v.validateRoute(v.parseRoute('POST',`/pilot/v2/transfers/transits/${proposal.transit_id}/prepared`),invitation).valid,false);
+for(const mutate of [m=>m.binding.transfer_id='ffffffff-ffff-4fff-8fff-ffffffffffff',m=>m.session.binding_digest='f'.repeat(64),m=>m.session.manifest_digest='f'.repeat(64),m=>m.manifest.source_revision='900',m=>m.authority=true]){const m=clone(invitation);mutate(m);yes(v.validateObject(m).valid,false);}
+for(const mutate of [m=>m.prepared.authority=true,m=>m.prepared.prepared_ts={},m=>m.extra='forbidden']){const m=clone(proposal);mutate(m);yes(v.validateObject(m).valid,false);}
+const targetInvitation=clone(vectors.valid.find(m=>m.type==='producer.delivery'&&m.body.kind==='transit.invitation'));
+for(const key of ['instance_id','producer_generation']){const m=clone(targetInvitation);m[key]='wrong';yes(v.validateObject(m).valid,false);}
+const oversized=clone(invitation);oversized.binding.provenance.source.relay_origin='https://'+('x'.repeat(2000))+'.invalid';yes(v.validateObject(oversized).valid,false);
 console.log(JSON.stringify({transitAssertions:assertions,admissions,loads,callbacks,active,csp:process.argv.includes('--csp')}));

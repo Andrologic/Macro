@@ -389,6 +389,186 @@
           "data_utf8": "{\"opaque\":\"é🙂"
         }
       }
+    },
+    {
+      "transit_contract": "transfer-transit-1",
+      "type": "transit.invitation",
+      "request_id": "invitation",
+      "session": {
+        "transfer_id": "00000000-0000-0000-0000-000000000004",
+        "transit_id": "00000000-0000-0000-0000-000000000037",
+        "binding_digest": "e55b3a7a088968fceb10ccf848c4a5d304da3e16f81ee11f16931ce04247475b",
+        "frozen_digest": "94f0f343badf920801cdc19cccf626c12a5e8b91602d002a3024ffc80333e891",
+        "manifest_digest": "ec60583eaf1846715e2f609a008d25f993b2c55bc0ca1f2ca1dfe785277d24a3",
+        "content_contract_sha256": "c6ae7440ed0fb4d0bdccdfb936c4bf6ac5c441c96b642c1d9ccbd270b62bdcc6",
+        "portable_records": "1",
+        "portable_payload_bytes": "13",
+        "portable_fragments": "2",
+        "stream_bytes": "31"
+      },
+      "binding": {
+        "transfer_id": "00000000-0000-0000-0000-000000000004",
+        "provenance": {
+          "source": {
+            "relay_origin": "https://relay.example.test",
+            "account_id": "account-synthetic",
+            "source_instance_id": "source-synthetic",
+            "source_conversation_id": "chat-synthetic"
+          },
+          "lineage_id": "00000000-0000-0000-0000-000000000002",
+          "installation_id": "00000000-0000-0000-0000-000000000003",
+          "birth_generation": "00000000-0000-0000-0000-000000000001"
+        },
+        "epoch": "9007199254740993",
+        "target_instance_id": "target-synthetic",
+        "relay_recovery_generation": "00000000-0000-0000-0000-000000000001",
+        "initiator": {
+          "account_id": "account-synthetic",
+          "session_id": "initiator-session-synthetic",
+          "device_id": "initiator-device-synthetic",
+          "session_revision": "9007199254740993",
+          "account_epoch": "9007199254740993",
+          "source_access_revision": "9007199254740993",
+          "target_access_revision": "9007199254740993"
+        },
+        "source_producer_generation": "producer-source-synthetic",
+        "target_producer_generation": "producer-target-synthetic"
+      },
+      "frozen": {
+        "format_version": "1",
+        "binding_digest": "e55b3a7a088968fceb10ccf848c4a5d304da3e16f81ee11f16931ce04247475b",
+        "ownership_revision": "9007199254740993",
+        "content_incarnation": "0123456789abcdef0123456789abcdef",
+        "content_revision": "9007199254740993",
+        "sha256": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+      },
+      "manifest": {
+        "format_version": "1",
+        "binding_digest": "e55b3a7a088968fceb10ccf848c4a5d304da3e16f81ee11f16931ce04247475b",
+        "frozen_digest": "94f0f343badf920801cdc19cccf626c12a5e8b91602d002a3024ffc80333e891",
+        "content_contract_sha256": "c6ae7440ed0fb4d0bdccdfb936c4bf6ac5c441c96b642c1d9ccbd270b62bdcc6",
+        "manifest_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "source_revision": "9007199254740993"
+      }
+    },
+    {
+      "transit_contract": "transfer-transit-1",
+      "type": "transit.prepared",
+      "request_id": "prepared",
+      "transfer_id": "00000000-0000-0000-0000-000000000004",
+      "transit_id": "00000000-0000-0000-0000-000000000037",
+      "prepared": {
+        "format_version": "1",
+        "binding_digest": "e55b3a7a088968fceb10ccf848c4a5d304da3e16f81ee11f16931ce04247475b",
+        "manifest_digest": "ec60583eaf1846715e2f609a008d25f993b2c55bc0ca1f2ca1dfe785277d24a3",
+        "import_id": "11111111-1111-4111-8111-111111111111",
+        "target_conversation_id": "22222222-2222-4222-8222-222222222222",
+        "lineage_id": "33333333-3333-4333-8333-333333333333",
+        "mapping_sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "preparation_sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+      }
+    },
+    {
+      "transit_contract": "transfer-transit-1",
+      "type": "producer.delivery",
+      "request_id": "invitation",
+      "delivery_id": "44444444-4444-4444-8444-444444444444",
+      "instance_id": "target-synthetic",
+      "producer_generation": "producer-target-synthetic",
+      "connection_id": "55555555-5555-4555-8555-555555555555",
+      "body": {
+        "kind": "transit.invitation",
+        "message": {
+          "transit_contract": "transfer-transit-1",
+          "type": "transit.invitation",
+          "request_id": "invitation",
+          "session": {
+            "transfer_id": "00000000-0000-0000-0000-000000000004",
+            "transit_id": "00000000-0000-0000-0000-000000000037",
+            "binding_digest": "e55b3a7a088968fceb10ccf848c4a5d304da3e16f81ee11f16931ce04247475b",
+            "frozen_digest": "94f0f343badf920801cdc19cccf626c12a5e8b91602d002a3024ffc80333e891",
+            "manifest_digest": "ec60583eaf1846715e2f609a008d25f993b2c55bc0ca1f2ca1dfe785277d24a3",
+            "content_contract_sha256": "c6ae7440ed0fb4d0bdccdfb936c4bf6ac5c441c96b642c1d9ccbd270b62bdcc6",
+            "portable_records": "1",
+            "portable_payload_bytes": "13",
+            "portable_fragments": "2",
+            "stream_bytes": "31"
+          },
+          "binding": {
+            "transfer_id": "00000000-0000-0000-0000-000000000004",
+            "provenance": {
+              "source": {
+                "relay_origin": "https://relay.example.test",
+                "account_id": "account-synthetic",
+                "source_instance_id": "source-synthetic",
+                "source_conversation_id": "chat-synthetic"
+              },
+              "lineage_id": "00000000-0000-0000-0000-000000000002",
+              "installation_id": "00000000-0000-0000-0000-000000000003",
+              "birth_generation": "00000000-0000-0000-0000-000000000001"
+            },
+            "epoch": "9007199254740993",
+            "target_instance_id": "target-synthetic",
+            "relay_recovery_generation": "00000000-0000-0000-0000-000000000001",
+            "initiator": {
+              "account_id": "account-synthetic",
+              "session_id": "initiator-session-synthetic",
+              "device_id": "initiator-device-synthetic",
+              "session_revision": "9007199254740993",
+              "account_epoch": "9007199254740993",
+              "source_access_revision": "9007199254740993",
+              "target_access_revision": "9007199254740993"
+            },
+            "source_producer_generation": "producer-source-synthetic",
+            "target_producer_generation": "producer-target-synthetic"
+          },
+          "frozen": {
+            "format_version": "1",
+            "binding_digest": "e55b3a7a088968fceb10ccf848c4a5d304da3e16f81ee11f16931ce04247475b",
+            "ownership_revision": "9007199254740993",
+            "content_incarnation": "0123456789abcdef0123456789abcdef",
+            "content_revision": "9007199254740993",
+            "sha256": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+          },
+          "manifest": {
+            "format_version": "1",
+            "binding_digest": "e55b3a7a088968fceb10ccf848c4a5d304da3e16f81ee11f16931ce04247475b",
+            "frozen_digest": "94f0f343badf920801cdc19cccf626c12a5e8b91602d002a3024ffc80333e891",
+            "content_contract_sha256": "c6ae7440ed0fb4d0bdccdfb936c4bf6ac5c441c96b642c1d9ccbd270b62bdcc6",
+            "manifest_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "source_revision": "9007199254740993"
+          }
+        }
+      }
+    },
+    {
+      "transit_contract": "transfer-transit-1",
+      "type": "producer.delivery",
+      "request_id": "prepared",
+      "delivery_id": "44444444-4444-4444-8444-444444444444",
+      "instance_id": "source-synthetic",
+      "producer_generation": "producer-source-synthetic",
+      "connection_id": "55555555-5555-4555-8555-555555555555",
+      "body": {
+        "kind": "transit.prepared",
+        "message": {
+          "transit_contract": "transfer-transit-1",
+          "type": "transit.prepared",
+          "request_id": "prepared",
+          "transfer_id": "00000000-0000-0000-0000-000000000004",
+          "transit_id": "00000000-0000-0000-0000-000000000037",
+          "prepared": {
+            "format_version": "1",
+            "binding_digest": "e55b3a7a088968fceb10ccf848c4a5d304da3e16f81ee11f16931ce04247475b",
+            "manifest_digest": "ec60583eaf1846715e2f609a008d25f993b2c55bc0ca1f2ca1dfe785277d24a3",
+            "import_id": "11111111-1111-4111-8111-111111111111",
+            "target_conversation_id": "22222222-2222-4222-8222-222222222222",
+            "lineage_id": "33333333-3333-4333-8333-333333333333",
+            "mapping_sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+            "preparation_sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+          }
+        }
+      }
     }
   ],
   "context": {

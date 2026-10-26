@@ -78,6 +78,13 @@ function proofDelivery(m) {
 function rules(m) {
   switch(m.type) {
     case 'transit.open':case 'transit.opened':sessionRules(m.session);if(m.cursor){cursorRules(m.cursor);requireThat(exact(m.cursor.next_offset)<=exact(m.session.stream_bytes)&&m.cursor.eof===(m.cursor.next_offset===m.session.stream_bytes));}break;
+    case 'transit.invitation':
+      sessionRules(m.session);F(m.binding,'binding');F(m.frozen,'frozen');F(m.manifest,'manifest');
+      requireThat(m.session.transfer_id===m.binding.transfer_id&&m.session.binding_digest===decision.fingerprint('transfer-binding',m.binding));
+      requireThat(m.frozen.binding_digest===m.session.binding_digest&&m.session.frozen_digest===decision.fingerprint('frozen',m.frozen));
+      requireThat(m.manifest.binding_digest===m.session.binding_digest&&m.manifest.frozen_digest===m.session.frozen_digest&&m.session.manifest_digest===decision.fingerprint('manifest',m.manifest));
+      requireThat(m.manifest.content_contract_sha256===m.session.content_contract_sha256&&m.manifest.source_revision===m.frozen.content_revision);break;
+    case 'transit.prepared':F(m.prepared,'prepared');break;
     case 'transit.chunk':chunkRules(m);break;
     case 'transit.ack':for(const k of ['sequence','offset','length','next_offset'])exact(m[k]);requireThat(exact(m.length)>0n&&exact(m.length)<=BigInt(LIMITS.raw)&&m.next_offset===add(m.offset,m.length));decision.increment(m.sequence);break;
     case 'transit.pull':exact(m.sequence);exact(m.offset);break;
@@ -94,7 +101,9 @@ function rules(m) {
     }
     case 'producer.delivery':
       if(m.body.kind==='proof.challenge')proofDelivery(m);
-      else {requireThat(m.body.message.request_id===m.request_id);rules(m.body.message);}
+      else {requireThat(m.body.message.request_id===m.request_id);rules(m.body.message);
+        if(m.body.kind==='transit.invitation')requireThat(m.instance_id===m.body.message.binding.target_instance_id&&m.producer_generation===m.body.message.binding.target_producer_generation);
+      }
       break;
     case 'error':requireThat(m.retryable===['unavailable','instance_offline'].includes(m.code));break;
   }
@@ -106,6 +115,7 @@ export function validateObject(m) {
     rules(m);
     const rendered=decision.canonicalJson(m),body=encoder.encode(rendered).length;
     requireThat(body<=LIMITS.body,'resource_limit');
+    if(['transit.invitation','transit.prepared'].includes(m.type)||m.type==='producer.delivery'&&['transit.invitation','transit.prepared'].includes(m.body.kind))requireThat(body<=LIMITS.controls,'resource_limit');
     const chunk=m.type==='transit.chunk'?m:m.type==='producer.delivery'&&m.body.kind==='transit.chunk'?m.body.message:null;
     if(chunk) {const empty=structuredClone(m);if(empty.type==='transit.chunk')empty.data_utf8='';else empty.body.message.data_utf8='';requireThat(encoder.encode(decision.canonicalJson(empty)).length-2<=LIMITS.controls,'resource_limit');}
     return valid();
@@ -205,7 +215,7 @@ export function parseRoute(method,path) {
       if(parts.length===8&&parts[3]==='targets'&&parts[5]==='reservations'&&['decisions','challenges'].includes(parts[7])){id(parts[4]);uuid(parts[6]);return {kind:'reserve',action:parts[7],source_instance:parts[1],conversation:parts[2],target_instance:parts[4],transfer_id:parts[6]};}
     }
     if(parts[0]==='known'&&parts.length===3&&['decisions','challenges','transit'].includes(parts[2])){uuid(parts[1]);return {kind:parts[2]==='transit'?'transit-open':parts[2],transfer_id:parts[1]};}
-    if(parts[0]==='transits'&&parts.length===3&&['pull','chunk','ack','status','close'].includes(parts[2])){uuid(parts[1]);return {kind:'transit',transit_id:parts[1],action:parts[2]};}
+    if(parts[0]==='transits'&&parts.length===3&&['pull','chunk','ack','status','close','prepared'].includes(parts[2])){uuid(parts[1]);return {kind:'transit',transit_id:parts[1],action:parts[2]};}
     if(parts[0]==='instances'&&parts.length===3&&['received','attestations'].includes(parts[2])){id(parts[1]);return {kind:'producer',instance_id:parts[1],action:parts[2]};}
     fail();
   }catch{return null;}

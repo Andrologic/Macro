@@ -254,3 +254,27 @@ cursor tests prove no network, filesystem durability, native proof or physical
 quota release. Four Codex/Macro AI pairs and compaction context remain E's
 existing audited content support, to replay through actual transit/native
 composition later. No capability is advertised by this contract alone.
+
+
+## Data-only native coordination
+
+`transit.invitation` is emitted only by the relay on the selected target producer's
+existing poll after an authenticated `transit.open`. It carries the existing
+session, binding, frozen descriptor and sealed manifest. Their digests must agree.
+The target independently reconciles canonical F status and opens the same session
+before native target reservation. An invitation is data, never admission.
+
+`transit.prepared` is submitted on `transits/:id/prepared` by the authenticated
+selected target producer after EOF and native preparation. The relay forwards it
+to the selected source producer on its existing poll. It contains only the existing
+prepared descriptor and transfer/transit IDs. The source matches its own session
+and manifest, then still obtains the fresh target_pinned attestation and all
+unchanged F decisions. It never treats this proposal as a prepared capability.
+
+Each coordination envelope, including producer delivery, is at most 4096 encoded
+bytes. The existing ephemeral window owns these metadata; no archive content or
+provider session is added to relay persistence. Producer, actor/access, recovery,
+window lifetime and terminal guards apply before emission. Invitations retire on
+the actual target opening; preparation proposals retire when F becomes ready.
+Duplicate identical proposals are idempotent; different proposals conflict. None
+of these exchanges may replace a native pin, terminal, activation or fresh policy.
