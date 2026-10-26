@@ -5,7 +5,7 @@
     "source_set_sha256": "9b7aecacf5448bf483b776327f08cd1ef3fdff7558c216687b1bba8fdcafb42b",
     "content_sha256": "c6ae7440ed0fb4d0bdccdfb936c4bf6ac5c441c96b642c1d9ccbd270b62bdcc6",
     "decision_resource_set_sha256": "6133c2d9ee204a175ae6c176b9c266d4378879c1637936ebd81e85daf4d0b97a",
-    "transit_resource_set_sha256": "08d6dd55bd6eb1dc2c9804dcd06331aaa8d5f33960d2863ff8a1b8d598b12bd5",
+    "transit_resource_set_sha256": "6fad8a2cd33ad642bf8ce3fd201820fdac0f9537a2e81da98e673807bdb391bb",
     "authority_resource_set_sha256": "3d82d4b9909789ab0f8dc5f0ba06c751da56b1c0396613a2b29e2407302ab052",
     "a1_resource_set_sha256": "347a7ae835ff2d77c04c062187e5eb56bb211e5fc148b8156ba093b373aa220c"
   },
