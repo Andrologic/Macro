@@ -433,6 +433,10 @@ function localModulePath(from, specifier, aliases) {
   return normalizePath(normalize(relativeImport ? join(dirname(from), modulePath) : modulePath));
 }
 
+function isSharedContract(from, specifier, aliases) {
+  try { return localModulePath(from, specifier, aliases)?.startsWith('contracts/') === true; } catch { return false; }
+}
+
 // Vite's default extension order, checked differentially against the installed resolver.
 const VITE_EXTENSIONS = ['.mjs', '.js', '.mts', '.ts', '.jsx', '.tsx', '.json'];
 
@@ -489,6 +493,12 @@ function collectGraph(reader) {
     for (const importEntry of result.imports) {
       // JSON contracts are data, not executable modules in the dependency graph.
       if (extname(importEntry.source.split(/[?#]/, 1)[0]).toLowerCase() === '.json') continue;
+      // Shared wire contracts under contracts/ are leaf modules that never import
+      // src/, so they stay outside the graph like packages.
+      if (isSharedContract(from, importEntry.source, aliases)) {
+        externalImports.push({ from, specifier: importEntry.source, kinds: importEntry.kinds, line: importEntry.line });
+        continue;
+      }
       let to;
       try {
         to = resolveLocalImport(from, importEntry.source, available, aliases);

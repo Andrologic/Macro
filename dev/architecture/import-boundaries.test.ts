@@ -96,6 +96,18 @@ describe('TypeScript import boundary analysis', () => {
     ]);
   });
 
+  it('treats shared wire contracts as external and still rejects other paths outside src', () => {
+    const report = analyzeSources({
+      'src/services/wire.ts': "import { validate } from '../../contracts/macro-pilot/v2/validate.mjs'; export const ok = validate;\n",
+      'src/services/tooling.ts': "import { helper } from '../../dev/helper.mjs'; export const value = helper;\n",
+    });
+
+    expect(report.diagnostics).toEqual([
+      { file: 'src/services/tooling.ts', message: 'Import guard cannot resolve a source import outside src/: ../../dev/helper.mjs' },
+    ]);
+    expect(report.edges).toEqual([]);
+  });
+
   it('rejects non-literal dynamic imports and require calls', () => {
     const report = analyzeSources({
       'src/unsupported.ts': "const moduleName = './module'; import(moduleName); require(moduleName);\n",
