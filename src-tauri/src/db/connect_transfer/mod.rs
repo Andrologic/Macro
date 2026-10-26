@@ -82,8 +82,12 @@ async fn admit(db: &mut SqliteConnection, extra: i64) -> DbResult<()> {
         sqlx::query_scalar("SELECT COUNT(*) FROM e_inactive_domain WHERE singleton=1")
             .fetch_one(&mut *db)
             .await?;
-    if domain != 1 {
-        return Err(invalid("connect_transfer_budget_unconfigured"));
+    if domain == 0 {
+        // The reservation precedes capture/import. Provision under this same
+        // FULL transaction through the existing DB-wide budget owner.
+        super::inactive_budget::admit_e(db,0,
+            super::inactive_budget::NATIVE_BUDGET,
+            super::inactive_budget::NATIVE_MAX_RECEIPTS).await.map_err(|code|invalid(&code))?;
     }
     super::inactive_budget::admit(db, extra)
         .await

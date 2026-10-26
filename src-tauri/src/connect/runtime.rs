@@ -90,7 +90,7 @@ impl CodecLauncher {
     ) -> Result<super::transfer_worker::TransferWorker, &'static str> {
         use super::transfer_worker::{AdmittedEWork,Hello,TransferWorker};
         use std::time::Duration;
-        let sealed=capture.seal_raw().await.map_err(|_|"transfer_capture")?;
+        let sealed=capture.seal_raw().await.map_err(|error|super::transfer_worker::storage_error(error,"transfer_capture"))?;
         let secrets=transport.detection_values().await?;
         let detection=65_536u64+4096*(secrets.iter().map(String::len).sum::<usize>()+secrets.len()) as u64+4096;
         let child_units=96*1024*1024u64;
@@ -129,7 +129,7 @@ impl CodecLauncher {
     ) -> Result<super::transfer_worker::TransferWorker, &'static str> {
         use super::transfer_worker::{AdmittedEWork,Hello,TransferWorker};
         use std::time::Duration;
-        storage.check_native().await.map_err(|_|"transfer_scope")?;
+        storage.check_native().await.map_err(|error|super::transfer_worker::storage_error(error,"transfer_scope"))?;
         let secrets=transport.detection_values().await?;
         let detection=65_536u64+4096*(secrets.iter().map(String::len).sum::<usize>()+secrets.len()) as u64+4096;
         let child_units=96*1024*1024u64;
@@ -168,7 +168,7 @@ impl CodecLauncher {
     ) -> Result<super::transfer_worker::TransferWorker, &'static str> {
         use super::transfer_worker::{AdmittedEWork,Hello,TransferWorker};
         use std::time::Duration;
-        storage.check_native().await.map_err(|_|"transfer_scope")?;
+        storage.check_native().await.map_err(|error|super::transfer_worker::storage_error(error,"transfer_scope"))?;
         use serde_json::{json,Value};
         use sha2::{Digest,Sha256};
         let current=self.database.source_ready(None).await.map_err(|_|"database_unavailable")?;

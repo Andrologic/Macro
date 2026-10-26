@@ -103,6 +103,19 @@ pub(in crate::db::connect_transfer) async fn reserve_published_as_source(
     (owner,outgoing.transfer_id)
 }
 #[tokio::test]
+async fn connect_transfer_reserves_on_a_new_database_without_preseeded_budget() {
+    let dir = TempDir::new().unwrap();
+    let pool = db::create_pool(&dir.path().join("fresh.db")).await.unwrap();
+    sqlx::raw_sql("INSERT INTO conversations(id,title,scope_mode,created_at,updated_at) VALUES('source','Synthetic','Chat','t','t'); INSERT INTO messages(id,conversation_id,role,content,created_at) VALUES('message','source','user','complete history','t');")
+        .execute(&pool).await.unwrap();
+    assert_eq!(sqlx::query_scalar::<_,i64>("SELECT COUNT(*) FROM e_inactive_domain").fetch_one(&pool).await.unwrap(),0);
+    let (owner, runtime, handle, input) = inspected(&pool).await;
+    runtime.reserve_reconciled_transfer(&owner,"window","browser",&handle,&input).await.unwrap();
+    let policy:(i64,i64)=sqlx::query_as("SELECT budget_bytes,max_receipts FROM e_inactive_domain WHERE singleton=1").fetch_one(&pool).await.unwrap();
+    assert_eq!(policy,(16*1024*1024,64));
+}
+
+#[tokio::test]
 async fn connect_transfer_freeze_and_identity_commit_together_with_real_017_guards() {
     let (_dir, pool) = fixture().await;
     let (owner, runtime, handle, mut input) = inspected(&pool).await;

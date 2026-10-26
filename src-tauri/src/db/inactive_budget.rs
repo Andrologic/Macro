@@ -1,7 +1,9 @@
-//! One DB-wide logical retention domain. No budget exists before an E admission.
+//! One DB-wide logical retention domain shared by native reservation and E.
 use sqlx::{Row, SqliteConnection};
 
 pub(super) const DOMAIN_BYTES: i64 = 24;
+pub(super) const NATIVE_BUDGET: i64 = 16 * 1024 * 1024;
+pub(super) const NATIVE_MAX_RECEIPTS: i64 = 64;
 
 pub(super) async fn retained(db: &mut SqliteConnection) -> Result<i64, String> {
     // SQLite's final + can promote to REAL on overflow. Read independent sums

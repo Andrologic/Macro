@@ -127,7 +127,7 @@ impl SourceCapture {
             owner, generation: Some(generation),
             authority: Some(Arc::new(RwLock::new(Authority { enabled: true, capture_id,
                 conversation, actor, mode: Mode::Continue,
-                policy: Policy { budget: 16 * 1024 * 1024, max_receipts: 64,
+                policy: Policy { budget: crate::db::inactive_budget::NATIVE_BUDGET, max_receipts: crate::db::inactive_budget::NATIVE_MAX_RECEIPTS,
                     absolute_ms: 300_000, idle_ms: 30_000 } }))),
             permit: Arc::new(Semaphore::new(1)),
             clock: Arc::new(|| chrono::Utc::now().timestamp_millis()), transport: Some(transport),

@@ -63,7 +63,7 @@ pub(crate) struct VerifiedTransport {
     terminal_receipt: std::sync::Mutex<Option<serde_json::Value>>,
     activation_receipt: std::sync::Mutex<Option<serde_json::Value>>,
     observation: PolicyObservation,
-    deadline: Instant,
+    deadline: std::sync::Mutex<Instant>,
     runtime: TransferRuntime,
     generation: u64,
     cancel: CancellationToken,
@@ -90,7 +90,7 @@ impl VerifiedTransport {
     pub(super) async fn metadata<B:Vault+'static>(&self,manager:Arc<Manager<B>>,ready:&DbReady,
         path:&str,sent:serde_json::Value,mut reception:serde_json::Value,
     )->Result<crate::connect::codec::Output>{
-        self.check().await?;
+        self.check_for_phase(manager.clone(),ready).await?;
         let request_id=sent["request_id"].as_str().and_then(|s|uuid::Uuid::parse_str(s).ok()).ok_or("http_correlation")?;
         if reception["sent"]!=sent {return Err("invalid_request");}
         let kind=reception["kind"].as_str().ok_or("invalid_request")?.to_owned();
@@ -143,20 +143,34 @@ impl VerifiedTransport {
     }
     pub(super) async fn delivery<B:Vault+'static>(&self,manager:Arc<Manager<B>>,ready:&DbReady)
         ->Result<crate::connect::codec::Output>{
-        self.check().await?;
+        self.delivery_until(manager,ready,&self.cancel).await
+    }
+    /// Stop only the idle network wait. Callers join this future so an admitted
+    /// codec operation finishes instead of retiring the shared codec on drop.
+    pub(super) async fn delivery_until<B:Vault+'static>(&self,manager:Arc<Manager<B>>,ready:&DbReady,
+        stop:&CancellationToken,
+    )->Result<crate::connect::codec::Output>{
+        if stop.is_cancelled(){return Err("http_cancelled");}
+        self.check_for_phase(manager.clone(),ready).await?;
         let p=&self.producer_authority.as_ref().ok_or("authority_context")?["producer"];
         let instance=p["instance_id"].as_str().ok_or("authority_context")?;
         let path=format!("/pilot/v2/instances/{instance}/deliveries/poll");
         let request_id=uuid::Uuid::new_v4();
         let bytes=Bytes::serialize(&self.runtime.budget()?,&serde_json::json!({"transport_version":"2.0","type":"poll"}))?;
-        let response=exchange(manager,self.identity.clone(),self._snapshot.clone(),&self.observation,&self.runtime,
-            ready,self.address,self.plain,http::Method::POST,&path,bytes,true,true,request_id,BODY,&self.cancel).await?;
+        let response=tokio::select! {biased;
+            _=stop.cancelled()=>return Err("http_cancelled"),
+            result=exchange(manager.clone(),self.identity.clone(),self._snapshot.clone(),&self.observation,&self.runtime,
+                ready,self.address,self.plain,http::Method::POST,&path,bytes,true,true,request_id,BODY,&self.cancel)=>result?,
+        };
         if !matches!(response.status,200|204){return Err("delivery_unavailable");}
         let facts=serde_json::json!({"context":{"offered":"transfer-transit-1","confirmed":response.transfer_offer,
             "poll_request_id":request_id,"response_request_id":response.request_id,"response_status":response.status,
             "instance_id":p["instance_id"],"producer_generation":p["generation"],"connection_id":p["connection_id"]}});
         let output=decode(self.codec.as_ref().ok_or("codec_closed")?,5,facts,response.into_codec_body()?,&self.cancel).await?;
-        self.check().await?;Ok(output)
+        // Decode consumes and releases the HTTP body permit before another
+        // HTTP response can be admitted. The parsed delivery is still only
+        // data until the long poll's participants have been revalidated.
+        self.check_for_phase(manager,ready).await?;Ok(output)
     }
     /// Transit uses the existing HTTP owner and canonical codec. A successful
     /// submit only means HTTP acceptance; durability is observed through progress
@@ -164,7 +178,7 @@ impl VerifiedTransport {
     pub(super) async fn transit<B:Vault+'static>(&self,manager:Arc<Manager<B>>,ready:&DbReady,
         path:&str,sent:serde_json::Value,session:&serde_json::Value,
     )->Result<Option<crate::connect::codec::Output>> {
-        self.check().await?;
+        self.check_for_phase(manager.clone(),ready).await?;
         let request_id=sent["request_id"].as_str().and_then(|s|uuid::Uuid::parse_str(s).ok()).ok_or("http_correlation")?;
         let op=match sent["type"].as_str(){
             Some("transit.open")=>Some(9),Some("transit.status"|"transit.ack")=>Some(8),
@@ -197,7 +211,14 @@ impl VerifiedTransport {
         let source=&binding["provenance"]["source"];
         let text=|value:&serde_json::Value|value.as_str().map(str::to_owned).ok_or("invalid_request");
         self.check_producer(&text(&source["account_id"])?,&text(&binding["target_instance_id"])?,&text(&binding["target_producer_generation"])?).await?;
-        if source["relay_origin"]!=self.identity.context.relay_origin || q["operation"]!="reserve" {return Err("authority_context");}
+        if source["relay_origin"]!=self.identity.context.relay_origin || q["operation"]!="reserve"
+            || self.authority["scope"]["kind"]!="controller"
+            || self.authority["scope"]["source_instance_id"]!=source["source_instance_id"]
+            || self.authority["scope"]["target_instance_id"]!=binding["target_instance_id"]
+            || self.authority["source_producer"]["generation"]!=binding["source_producer_generation"]
+            || self.authority["target_producer"]["generation"]!=binding["target_producer_generation"]
+            || self.authority["recovery_generation"]!=binding["relay_recovery_generation"]
+        {return Err("authority_context");}
         let path=format!("/pilot/v2/transfers/sources/{}/{}/targets/{}/reservations/{}/decisions",
             text(&source["source_instance_id"])?,text(&source["source_conversation_id"])?,text(&binding["target_instance_id"])?,text(&binding["transfer_id"])?);
         let budget=self.runtime.budget()?;
@@ -214,6 +235,7 @@ impl VerifiedTransport {
         normalized:&crate::connect::transfer_worker::TransferWorker,path:&str,sent:serde_json::Value,
         expectation:serde_json::Value,kind:&str,
     )->Result<crate::connect::codec::Output> {
+        self.check_for_phase(manager.clone(),ready).await?;
         let expected=reservation.source_expectation(owner,normalized,&sent["request"],kind).await.map_err(|_|"source_proof_refused")?;
         let challenge=serde_json::json!({"transit_contract":"transfer-transit-1","type":"decision.challenge",
             "request_id":uuid::Uuid::new_v4(),"kind":kind,"request":sent["request"]});
@@ -229,6 +251,7 @@ impl VerifiedTransport {
         owner:&crate::core::db_state::DbPool,reservation:&crate::db::connect_transfer::Reservation,
         normalized:&crate::connect::transfer_worker::TransferWorker,delivery:crate::connect::codec::Output,
     )->Result<()> {
+        self.check_for_phase(manager.clone(),ready).await?;
         let data:serde_json::Value=serde_json::from_slice(delivery.bytes.as_slice()).map_err(|_|"invalid_delivery")?;
         drop(delivery);
         if data["branch"]!="transit" || data["value"]["body"]["kind"]!="proof.challenge" {return Err("invalid_delivery");}
@@ -255,6 +278,7 @@ impl VerifiedTransport {
         owner:&crate::core::db_state::DbPool,reservation:&crate::db::connect_transfer::Reservation,
         config:&crate::config::ConfigManager,prepared:&crate::connect::transfer_worker::TransferWorker,delivery:crate::connect::codec::Output,
     )->Result<()> {
+        self.check_for_phase(manager.clone(),ready).await?;
         let data:serde_json::Value=serde_json::from_slice(delivery.bytes.as_slice()).map_err(|_|"invalid_delivery")?;
         drop(delivery);
         if data["branch"]!="transit" || data["value"]["body"]["kind"]!="proof.challenge" {return Err("invalid_delivery");}
@@ -282,9 +306,18 @@ impl VerifiedTransport {
     pub(super) async fn controller_for<B: Vault + 'static>(
         &mut self, manager: Arc<Manager<B>>, ready:&DbReady, target:&str,
     ) -> Result<()> {
+        let source=self.producer_authority.as_ref().ok_or("authority_context")?["scope"]["instance_id"]
+            .as_str().ok_or("authority_context")?.to_owned();
+        self.controller_for_pair(manager,ready,&source,target).await
+    }
+    /// Both endpoints authenticate the whole pair before retaining a binding.
+    /// Target authority is separate from the source initiator stored in F.
+    pub(super) async fn controller_for_pair<B: Vault + 'static>(
+        &mut self,manager:Arc<Manager<B>>,ready:&DbReady,source:&str,target:&str,
+    )->Result<()> {
         self.check().await?;
+        if source==target {return Err("authority_context");}
         let producer=self.producer_authority.as_ref().ok_or("authority_context")?;
-        let source=producer["scope"]["instance_id"].as_str().ok_or("authority_context")?;
         let request_id=uuid::Uuid::new_v4();
         let request=serde_json::json!({"authority_contract":"transfer-authority-1","type":"preflight","request_id":request_id,
             "scope":{"kind":"controller","source_instance_id":source,"target_instance_id":target}});
@@ -304,14 +337,99 @@ impl VerifiedTransport {
             response.into_codec_body()?,&self.cancel).await?;
         let authority:serde_json::Value=serde_json::from_slice(output.bytes.as_slice()).map_err(|_|"codec_result")?;
         if authority["type"]!="authority_snapshot" || authority["actor"]["session_id"]!=self.session.session_id
-            || authority["actor"]["device_id"]!=self.session.device_id || authority["source_producer"]!=producer["producer"]
+            || authority["actor"]["device_id"]!=self.session.device_id
+            || authority["source_producer"]!=producer["producer"] && authority["target_producer"]!=producer["producer"]
         {return Err("authority_context");}
         let expiry=chrono::DateTime::parse_from_rfc3339(authority["expires_at"].as_str().ok_or("authority_expired")?)
             .map_err(|_|"authority_expired")?.timestamp_millis();
         let remaining=u64::try_from(expiry).ok().and_then(|v|v.checked_sub(now_ms().ok()?)).ok_or("authority_expired")?;
-        self.deadline=self.deadline.min(Instant::now()+Duration::from_millis(remaining));
+        let deadline=self.deadline.get_mut().map_err(|_|"authority_unavailable")?;
+        *deadline=(*deadline).min(Instant::now()+Duration::from_millis(remaining));
         self.authority=authority;
         self.check().await
+    }
+    async fn check_for_phase<B: Vault + 'static>(&self, manager:Arc<Manager<B>>, ready:&DbReady)->Result<()> {
+        match self.check().await {
+            Err("authority_expired")=>self.refresh_authority(manager,ready).await,
+            result=>result,
+        }
+    }
+    /// A new phase needs a new authenticated relay preflight. Retained snapshots
+    /// identify the same actors; their old timestamps never extend this lease.
+    pub(crate) async fn refresh_authority<B: Vault + 'static>(
+        &self, manager: Arc<Manager<B>>, ready: &DbReady,
+    ) -> Result<()> {
+        self.check_scope_local()?;
+        self.observation.check_fresh().await.map_err(|_|"policy_revoked")?;
+        // A failed renewal leaves no usable old lease, even before its former
+        // expiry. A subsequent phase must authenticate again.
+        *self.deadline.lock().map_err(|_|"authority_unavailable")?=Instant::now();
+        let mut deadline=None;
+        if let Some(producer)=&self.producer_authority {
+            let fresh=self.refresh_snapshot(manager.clone(),ready,producer,true).await?;
+            deadline=Some(fresh);
+        }
+        if self.authority["scope"]["kind"]!="producer" || deadline.is_none() {
+            let fresh=self.refresh_snapshot(manager,ready,&self.authority,false).await?;
+            deadline=Some(deadline.map_or(fresh,|old:Instant|old.min(fresh)));
+        }
+        self.observation.check_fresh().await.map_err(|_|"policy_revoked")?;
+        self.check_scope_local()?;
+        *self.deadline.lock().map_err(|_|"authority_unavailable")?=deadline.ok_or("authority_context")?;
+        self.check().await
+    }
+    async fn refresh_snapshot<B: Vault + 'static>(
+        &self, manager: Arc<Manager<B>>, ready: &DbReady,
+        previous: &serde_json::Value, producer: bool,
+    ) -> Result<Instant> {
+        let request_id=uuid::Uuid::new_v4();
+        let request=serde_json::json!({"authority_contract":"transfer-authority-1","type":"preflight",
+            "request_id":request_id,"scope":previous["scope"]});
+        let codec=self.codec.as_ref().ok_or("codec_closed")?;
+        let budget=self.runtime.budget()?;
+        let bytes=Bytes::serialize(&budget,&request)?;
+        drop(decode(codec,1,serde_json::json!({"request_id_header":request_id}),Bytes::copy(&budget,bytes.as_slice())?,&self.cancel).await?);
+        drop(bytes);
+        let mut attempt=0u32;
+        let (response,dispatch)=loop {
+            self.check_scope_local()?;
+            self.observation.check_fresh().await.map_err(|_|"policy_revoked")?;
+            let dispatch=Instant::now();
+            let response=exchange(manager.clone(),self.identity.clone(),self._snapshot.clone(),&self.observation,
+                &self.runtime,ready,self.address,self.plain,http::Method::POST,"/pilot/v2/transfer-authority/preflight",
+                Bytes::serialize(&budget,&request)?,producer,false,request_id,8192,&self.cancel).await?;
+            // Two pair preflights can overlap the relay's per-instance reader
+            // admission. Retry only this read, after fully dropping its reply;
+            // F decisions and their side effects never use this retry path.
+            if response.status==413 && attempt<3 {
+                drop(response);
+                let delay=Duration::from_millis(25*3u64.pow(attempt));attempt+=1;
+                tokio::select! {biased;_=self.cancel.cancelled()=>return Err("http_cancelled"),_=tokio::time::sleep(delay)=>{}}
+                continue;
+            }
+            break (response,dispatch);
+        };
+        if response.status!=200{return Err(if response.status==413{"resource_limit"}else{"authority_unavailable"});}
+        let output=decode(codec,2,serde_json::json!({"request":request,"expected":{
+            "request_id_header":request_id,"response_request_id_header":response.request_id,
+            "expected_origin":self.identity.context.relay_origin,"connection_origin":self.identity.context.relay_origin,
+            "account_id":self.session.account_id},"time":{"now_ms":now_ms()?,"dispatch_age_ms":dispatch.elapsed().as_secs_f64()*1000.0}}),
+            response.into_codec_body()?,&self.cancel).await?;
+        let fresh:serde_json::Value=serde_json::from_slice(output.bytes.as_slice()).map_err(|_|"codec_result")?;
+        // Compare every authenticated fact, including revisions, permissions,
+        // recovery history and both selected producer connections. Only the
+        // correlation and validity timestamps may change between preflights.
+        let facts=|value:&serde_json::Value|->Result<serde_json::Map<String,serde_json::Value>> {
+            let mut value=value.as_object().ok_or("authority_context")?.clone();
+            for field in ["request_id","issued_at","expires_at"] {value.remove(field);}
+            Ok(value)
+        };
+        if fresh["type"]!="authority_snapshot" || facts(&fresh)?!=facts(previous)? {return Err("authority_changed");}
+        let expiry=chrono::DateTime::parse_from_rfc3339(fresh["expires_at"].as_str().ok_or("authority_expired")?)
+            .map_err(|_|"authority_expired")?.timestamp_millis();
+        let remaining=u64::try_from(expiry).ok().and_then(|expiry|expiry.checked_sub(now_ms().ok()?)).ok_or("authority_expired")?;
+        self.check_scope_local()?;
+        Ok((dispatch+Duration::from_secs(30)).min(Instant::now()+Duration::from_millis(remaining)))
     }
     pub(crate) fn controller_snapshot(&self)->Result<&serde_json::Value>{
         self.check_local()?;
@@ -407,6 +525,11 @@ impl VerifiedTransport {
         self.check_local()
     }
     fn check_local(&self) -> Result<()> {
+        self.check_scope_local()?;
+        if Instant::now()>=*self.deadline.lock().map_err(|_|"authority_unavailable")? {return Err("authority_expired");}
+        Ok(())
+    }
+    fn check_scope_local(&self) -> Result<()> {
         if self.cancel.is_cancelled() {
             return Err("http_cancelled");
         }
@@ -416,9 +539,7 @@ impl VerifiedTransport {
         self.observation
             .check_local()
             .map_err(|_| "policy_revoked")?;
-        if Instant::now() >= self.deadline
-            || self
-                .session
+        if self.session
                 .expires_at_ms
                 .is_some_and(|expiry| now_ms().map_or(true, |now| now >= expiry))
         {
@@ -780,10 +901,10 @@ async fn bootstrap_with_codec<B: Vault + 'static>(
         runtime: runtime.clone(),
         generation,
         cancel: cancel.clone(),
-        deadline: std::cmp::min(
+        deadline: std::sync::Mutex::new(std::cmp::min(
             started + Duration::from_secs(30),
             Instant::now() + Duration::from_millis(remaining),
-        ),
+        )),
         identity,
         address,
         plain,

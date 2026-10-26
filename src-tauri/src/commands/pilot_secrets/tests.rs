@@ -1335,6 +1335,7 @@ async fn private_bootstrap_real_relay_correlates_scope_and_keeps_controller_righ
     assert_eq!(fake.resumes.load(Ordering::SeqCst),0);
     manager.policy_fixture().0.change(|| ()).unwrap();
     assert_eq!(verified.check().await.err(),Some("policy_revoked"));
+    assert_eq!(verified.refresh_authority(manager.clone(),&ready).await.err(),Some("policy_revoked"));
     assert_eq!(verified.decision(manager.clone(), &ready, &source_path, status_request, serde_json::Value::Null).await.err(),Some("policy_revoked"));
     verified.close().await.unwrap();
     // A real second process rotates the same persistent policy epoch without
@@ -1378,7 +1379,8 @@ async fn private_bootstrap_real_relay_correlates_scope_and_keeps_controller_righ
     let short=transport::bootstrap_owned(short_manager.clone(),short_intent,&runtime,&codec,&ready,address,true,&cancel).await.unwrap();
     short.check().await.unwrap();
     tokio::time::sleep(std::time::Duration::from_millis(3100)).await;
-    assert_eq!(short.check().await.err(),Some("authority_expired"));short.close().await.unwrap();
+    assert_eq!(short.check().await.err(),Some("authority_expired"));
+    assert_eq!(short.refresh_authority(short_manager.clone(),&ready).await.err(),Some("authority_expired"));short.close().await.unwrap();
     input.write_all(b"{\"restoreSession\":true}\n").await.unwrap();input.flush().await.unwrap();output.next_line().await.unwrap().unwrap();
     let (manager, _, intent)=fixture("b","b",false);
     let verified=transport::bootstrap_owned(manager.clone(),intent,&runtime,&codec,&ready,address,true,&cancel).await.unwrap();
@@ -1399,6 +1401,33 @@ async fn transfer_target_event(lines:&mut tokio::io::Lines<tokio::io::BufReader<
         if line.len()>4096{return Err("target_event_limit");}
         if let Some(start)=line.find("SLICE_TARGET_EVENT:"){return serde_json::from_str(&line[start+19..]).map_err(|_|"target_event_json");}
     }Err("target_event_eof")
+}
+
+// The synthetic subprocess pipe still carries test control until P5. Keep
+// the real selected producer alive during that wait without passing any facts
+// through a second transport. Only empty polls are expected in these phases.
+async fn transfer_wait_with_idle_poll<B:Vault+'static,F:std::future::Future>(
+    transport:&transport::VerifiedTransport,manager:Arc<Manager<B>>,ready:&crate::core::db_state::DbReady,
+    renew_before_poll:bool,work:F,
+)->F::Output {
+    let stop=tokio_util::sync::CancellationToken::new();
+    let polling=async {
+        loop {
+            if stop.is_cancelled(){return Ok::<_,&'static str>(());}
+            if renew_before_poll {transport.refresh_authority(manager.clone(),ready).await?;}
+            let output=match transport.delivery_until(manager.clone(),ready,&stop).await {
+                Err("http_cancelled") if stop.is_cancelled()=>return Ok(()),
+                result=>result?,
+            };
+            let value:serde_json::Value=serde_json::from_slice(output.bytes.as_slice()).map_err(|_|"invalid_delivery")?;
+            if value["branch"]!="empty"{return Err("unexpected_idle_delivery");}
+        }
+    };
+    tokio::pin!(work);tokio::pin!(polling);
+    tokio::select! {
+        result=&mut work=>{stop.cancel();polling.await.unwrap();result},
+        result=&mut polling=>panic!("idle poll ended before its phase: {result:?}"),
+    }
 }
 
 /// One evolving local product scenario. It stays red until source, real relay,
@@ -1459,7 +1488,7 @@ async fn global_chat_local_transfer(provider:&str,compacted:bool,with_resources:
     assert!(provenance.status.success(),"{}",String::from_utf8_lossy(&provenance.stderr));
     let response:serde_json::Value=serde_json::from_slice(&provenance.stdout).unwrap();
     let receipts:Vec<(String,String)>=serde_json::from_value(response["receipts"].clone()).unwrap();
-    sqlx::raw_sql("INSERT INTO e_inactive_domain VALUES(1,16777216,64); INSERT INTO conversations(id,title,scope_mode,provider_id,model_id,created_at,updated_at) VALUES('chat','Local transfer','Chat','macro-ai','synthetic-model','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z'); INSERT INTO messages(id,conversation_id,role,content,created_at,context_refs_json) VALUES('user','chat','user','Can I continue on another computer?','2026-01-01T00:00:00Z','[]');")
+    sqlx::raw_sql("INSERT INTO conversations(id,title,scope_mode,provider_id,model_id,created_at,updated_at) VALUES('chat','Local transfer','Chat','macro-ai','synthetic-model','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z'); INSERT INTO messages(id,conversation_id,role,content,created_at,context_refs_json) VALUES('user','chat','user','Can I continue on another computer?','2026-01-01T00:00:00Z','[]');")
         .execute(&source_pool).await.unwrap();
     sqlx::query("INSERT INTO messages(id,conversation_id,role,content,created_at,context_refs_json,completion_reason,provider_input_items_json) VALUES('assistant','chat','assistant',?,'2026-01-01T00:00:01Z','[]','final',?)")
         .bind(content).bind(response["items"].to_string()).execute(&source_pool).await.unwrap();
@@ -1546,6 +1575,7 @@ async fn global_chat_local_transfer(provider:&str,compacted:bool,with_resources:
     let capture=crate::db::source_capture::SourceCapture::for_transfer(source.clone(),verified.clone(),reservation.transfer_id()).await.unwrap();
     let sealed=capture.capture_transfer(&reservation).await.unwrap();
     let config=crate::config::ConfigManager::initialize(directory.path().join("config")).await.unwrap();
+    verified.refresh_authority(manager.clone(),&ready).await.unwrap();
     let normalized=launcher.normalize_capture(&config,&verified,&capture).await;
     let source_result=async {
         let job=normalized.as_ref().map_err(|e|*e)?;
@@ -1616,7 +1646,8 @@ async fn global_chat_local_transfer(provider:&str,compacted:bool,with_resources:
             verified.transit(manager.clone(),&ready,&(root.clone()+"/chunk"),chunk,&session).await?;
             offset=end;sequence+=1;
         }
-        let event=transfer_target_event(&mut target_events).await?;
+        let event=transfer_wait_with_idle_poll(&verified,manager.clone(),&ready,true,
+            transfer_target_event(&mut target_events)).await?;
         if event["type"]!="prepared"{return Err("target_preparation_event");}
         let progress=verified.transit(manager.clone(),&ready,&(root.clone()+"/status"),serde_json::json!({"transit_contract":"transfer-transit-1",
             "type":"transit.status","request_id":uuid::Uuid::new_v4(),"transfer_id":session["transfer_id"],"transit_id":session["transit_id"]}),&session)
@@ -1710,7 +1741,6 @@ async fn global_chat_transfer_target() {
     let owner=crate::core::db_state::DbPool::default();
     let pool=crate::db::create_pool(std::path::Path::new(data["database"].as_str().unwrap())).await.unwrap();
     owner.set_ready(pool.clone()).await.unwrap();
-    sqlx::query("INSERT INTO e_inactive_domain VALUES(1,16777216,64)").execute(&pool).await.unwrap();
     let manager=Arc::new(Manager::new(Arc::new(Fake::default())));
     let context=PilotVaultContext{configuration_id:"config:local-target".into(),relay_origin:text(&seed["origin"]),owner_id:text(&b["session_id"])};
     let generation=manager.activate(context.clone(),None).unwrap().generation;
@@ -1721,15 +1751,18 @@ async fn global_chat_transfer_target() {
     let runtime=crate::connect::TransferRuntime::default();
     let launcher=runtime.source_launcher(&bun,&std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../copilot-bridge/src/entry.ts"),&owner).unwrap();
     let ready=owner.wait_until_ready_context().await.unwrap();
-    let verified=Arc::new(transport::bootstrap_owned(manager.clone(),Intent{context,generation,instance_creation_id:text(&b["creation"]),
+    let mut verified=transport::bootstrap_owned(manager.clone(),Intent{context,generation,instance_creation_id:text(&b["creation"]),
         account_id:Some(text(&seed["account_id"])),device_id:Some(text(&b["device_id"])),scope:Scope::Producer{instance_id:text(&b["instance"])}},
-        &runtime,&launcher,&ready,format!("127.0.0.1:{}",seed["port"].as_u64().unwrap()).parse().unwrap(),true,&tokio_util::sync::CancellationToken::new()).await.unwrap());
+        &runtime,&launcher,&ready,format!("127.0.0.1:{}",seed["port"].as_u64().unwrap()).parse().unwrap(),true,&tokio_util::sync::CancellationToken::new()).await.unwrap();
+    verified.controller_for_pair(manager.clone(),&ready,&text(&seed["a"]["instance"]),&text(&b["instance"])).await.unwrap();
+    let verified=Arc::new(verified);
     let opened=verified.transit(manager.clone(),&ready,&format!("/pilot/v2/transfers/known/{}/transit",session["transfer_id"].as_str().unwrap()),
         serde_json::json!({"transit_contract":"transfer-transit-1","type":"transit.open","request_id":uuid::Uuid::new_v4(),"session":session}),session).await.unwrap();drop(opened);
     let mut reservation=crate::db::connect_transfer::reserve_verified_target(&owner,&verified,&data["sent"],&data["manifest"]).await.unwrap();
     let root=format!("/pilot/v2/transfers/transits/{}",session["transit_id"].as_str().unwrap());
     let mut sequence=0i64;let mut offset=0i64;
     loop {
+        verified.refresh_authority(manager.clone(),&ready).await.unwrap();
         let pull=serde_json::json!({"transit_contract":"transfer-transit-1","type":"transit.pull","request_id":uuid::Uuid::new_v4(),
             "transfer_id":session["transfer_id"],"transit_id":session["transit_id"],"sequence":sequence.to_string(),"offset":offset.to_string()});
         verified.transit(manager.clone(),&ready,&(root.clone()+"/pull"),pull,session).await.unwrap();
@@ -1747,8 +1780,19 @@ async fn global_chat_transfer_target() {
     let archive=reservation.staged_target(&owner,&data["sent"],&data["manifest"]).await.unwrap();
     let descriptor:serde_json::Value=serde_json::from_slice(archive.split(|b|*b==b'\n').next().unwrap()).unwrap();
     let storage=crate::db::inactive_storage::InactiveStorage::for_transfer(&owner,verified.clone(),data["sent"].clone(),data["manifest"].clone()).await.unwrap();
+    if let Ok(delay)=std::env::var("MACRO_CONNECT_TEST_PHASE_DELAY_MS") {
+        let delay=delay.parse::<u64>().unwrap();assert!(delay<=35_000);
+        verified.refresh_authority(manager.clone(),&ready).await.unwrap();
+        transfer_wait_with_idle_poll(&verified,manager.clone(),&ready,false,
+            tokio::time::sleep(std::time::Duration::from_millis(delay))).await;
+    }
     let config_directory=tempfile::tempdir().unwrap();
     let config=crate::config::ConfigManager::initialize(config_directory.path().to_path_buf()).await.unwrap();
+    if std::env::var("MACRO_CONNECT_TEST_PHASE_DELAY_MS").is_ok() {
+        assert_eq!(verified.check().await.err(),Some("authority_expired"));
+        assert_eq!(storage.check_native().await.err().as_deref(),Some("authority_expired"));
+    }
+    verified.refresh_authority(manager.clone(),&ready).await.unwrap();
     let imported=launcher.import_archive(&config,&verified,&storage,&archive,&descriptor).await;
     let attached=if let Ok(imported)=&imported {reservation.attach_imported_target(&owner,&data["sent"],&data["manifest"],imported).await}else{Ok(())};
     let mut prepared=if let Ok(imported)=&imported {
@@ -1761,6 +1805,7 @@ async fn global_chat_transfer_target() {
         let model:crate::db::models::ProviderModelInput=serde_json::from_value(serde_json::json!({"model_id":model_id,"name":"Synthetic model",
             "context_window_tokens":200000,"input_limit_tokens":200000,"output_limit_tokens":16384,"context_window_source":"manual"})).unwrap();
         crate::db::repository::upsert_provider_models(&pool,provider_id,&[model]).await.unwrap();
+        verified.refresh_authority(manager.clone(),&ready).await.unwrap();
         launcher.prepare_archive(&config,&verified,&storage,imported,provider_id,model_id).await
     }else{Err("transfer_import_missing")};
     let pinned=if let (Ok(imported),Ok(prepared))=(&imported,&mut prepared) {

@@ -129,7 +129,12 @@ impl Reservation {
         normalized:&crate::connect::transfer_worker::TransferWorker,request:&serde_json::Value,exchange:&serde_json::Value,
     )->DbResult<()> {
         let live=self.native_authority.as_ref().ok_or_else(||invalid("connect_native_owner_missing"))?;
-        if !std::ptr::eq(live.as_ref(),transport){return Err(invalid("connect_native_owner_changed"));}
+        // Match fresh authenticated facts against the original native reserve
+        // intent. The address of a transport object is not a transfer identity.
+        let original:serde_json::Value=serde_json::from_slice(&self.reserve_request).map_err(|_|invalid("connect_native_binding_changed"))?;
+        transport.check_reserve(&original).await.map_err(invalid)?;
+        transport.check_producer(&self.account_id,&self.source_instance_id,&self.source_generation).await.map_err(invalid)?;
+        live.check().await.map_err(invalid)?;
         let kind=exchange["kind"].as_str().ok_or_else(||invalid("connect_proof_mismatch"))?;
         let expected=self.source_expectation(owner,normalized,request,kind).await?;
         for (name,value) in expected.as_object().ok_or_else(||invalid("connect_proof_mismatch"))? {

@@ -1,12 +1,24 @@
 //! Private one-shot E framing. Database admission/dispatch is not yet connected.
 //! In particular, a worker reply never creates a database or policy capability.
 use super::codec::ChildIo;
+
 use crate::connect_resources::{WorkingCharge, WorkingLease};
 use crate::core::db_state::ChatWorkLifetime;
 use serde::Deserialize;
 use std::sync::Arc;
 use tokio::process::Command;
 use tokio::time::Instant;
+
+pub(super) fn storage_error(error: String, fallback: &'static str) -> &'static str {
+    match error.as_str() {
+        "authority_expired" => "authority_expired",
+        "policy_revoked" => "policy_revoked",
+        "transport_retired" => "transport_retired",
+        "http_cancelled" => "http_cancelled",
+        "authority_context" => "authority_context",
+        _ => fallback,
+    }
+}
 
 type Result<T> = std::result::Result<T, &'static str>;
 const CONTROL: usize = 4096;
@@ -144,7 +156,7 @@ impl TransferWorker {
         let mut relations = 0usize;
         let mut after = None;
         loop {
-            let page = capture.readback_relations(after, 32).await.map_err(|_|"transfer_capture")?;
+            let page = capture.readback_relations(after, 32).await.map_err(|error|storage_error(error,"transfer_capture"))?;
             let Some(last) = page.last() else { break };
             after = Some((last.from,last.kind,last.position)); relations += page.len();
         }
@@ -161,7 +173,7 @@ impl TransferWorker {
         let mut archive = Vec::with_capacity(ARCHIVE_LIMIT);
         loop {
             // Every port reads the same live native capture/policy owner.
-            capture.status().await.map_err(|_|"transfer_capture")?;
+            capture.status().await.map_err(|error|storage_error(error,"transfer_capture"))?;
             let h = owned.io.next(|_|CONTROL, |h|
                 h.exact(2,h.length,job,0,0) && h.length > 0
                     || h.exact(9,4,job,owned.work.arena,0)).await?;
@@ -191,7 +203,7 @@ impl TransferWorker {
                     "rows":sealed.receipt.rows.to_string(),"fields":sealed.receipt.fields.to_string(),"relations":relations.to_string()},"next":null}),
                 (Some(1),"10") if request["kind"]=="field" => {
                     let ordinal=if request["cursor"].is_null(){0}else{decimal(&request["cursor"]["ordinal"])?};
-                    let page=capture.readback(Some(Cursor{field:ordinal as i64,offset:0}),1).await.map_err(|_|"transfer_capture")?;
+                    let page=capture.readback(Some(Cursor{field:ordinal as i64,offset:0}),1).await.map_err(|error|storage_error(error,"transfer_capture"))?;
                     let value=page.fragments.first().map(|f|json!({"ordinal":f.field.ordinal,"row":f.field.row,
                         "family":f.field.family,"tag":f.field.tag,"sql_type":f.field.sql_type,"bytes":f.field.bytes,
                         "sha256":hex(f.field.sha256.as_deref().unwrap_or(&[]))}));
@@ -204,7 +216,7 @@ impl TransferWorker {
                         let a=decimal(&cursor["from"])? as i64;let b=decimal(&cursor["kind"])? as i64;let c=decimal(&cursor["position"])? as i64;
                         if c>0{Some((a,b,c-1))}else if b>0{Some((a,b-1,i64::MAX))}else if a>0{Some((a-1,i64::MAX,i64::MAX))}else{None}
                     };
-                    let page=capture.readback_relations(after,2).await.map_err(|_|"transfer_capture")?;
+                    let page=capture.readback_relations(after,2).await.map_err(|error|storage_error(error,"transfer_capture"))?;
                     json!({"value":page.first(),"next":page.get(1).map(|r|json!({"from":r.from.to_string(),"kind":r.kind.to_string(),"position":r.position.to_string()}))})
                 },
                 (Some(2),"10"|"11") => {
@@ -217,7 +229,7 @@ impl TransferWorker {
                         if offset>=raw.len(){return Err("transfer_request");}
                         (raw[offset..raw.len().min(offset+maximum)].to_vec(),raw.len())
                     }else{
-                        let page=capture.readback(Some(Cursor{field:ordinal as i64,offset:offset as i64}),1).await.map_err(|_|"transfer_capture")?;
+                        let page=capture.readback(Some(Cursor{field:ordinal as i64,offset:offset as i64}),1).await.map_err(|error|storage_error(error,"transfer_capture"))?;
                         let f=page.fragments.into_iter().next().ok_or("transfer_request")?;
                         if f.field.ordinal!=ordinal as i64 || f.offset!=offset as i64 || f.data.len()>maximum {return Err("transfer_request");}
                         (f.data,f.field.bytes as usize)
@@ -274,7 +286,7 @@ impl TransferWorker {
         let revision=metadata["policy"].as_str().filter(|s|!s.is_empty()&&s.len()<=128).ok_or("transfer_metadata")?.to_owned();
         let secret_bytes=secrets.iter().map(String::len).sum::<usize>();
         if archive.is_empty() || archive.len()>8*1024*1024{return Err("resource_limit");}
-        storage.check_native().await.map_err(|_|"transfer_scope")?;
+        storage.check_native().await.map_err(|error|storage_error(error,"transfer_scope"))?;
         self.hello().await?;
         let generation=self.owned.as_ref().ok_or("transfer_closed")?.work.generation;
         self.begin(generation).await?;
@@ -282,7 +294,7 @@ impl TransferWorker {
         let job=owned.work.job;let mut lease=owned.work.arena;let mut call=0u64;
         let mut headers=Vec::<RecordHeader>::new();let mut receipt=None;let mut imported=None;let mut planned=false;
         loop {
-            storage.check_native().await.map_err(|_|"transfer_scope")?;
+            storage.check_native().await.map_err(|error|storage_error(error,"transfer_scope"))?;
             let h=owned.io.next(|_|CONTROL,|h|h.exact(2,h.length,job,0,0)&&h.length>0 || h.exact(9,4,job,owned.work.arena,0)).await?;
             if h.kind==9 {
                 if owned.io.scratch[..4]!=0u32.to_be_bytes(){return Err(match u32::from_be_bytes(owned.io.scratch[..4].try_into().unwrap()){
@@ -326,7 +338,7 @@ impl TransferWorker {
                 },
                 (Some(3),"12") if request["stage"]=="end" && planned && receipt.is_none()=>{
                     if request["result"]["manifest"]!=descriptor["manifest_sha256"]{return Err("transfer_integrity");}
-                    receipt=Some(storage.begin_portable(descriptor,&headers).await.map_err(|_|"transfer_storage_begin")?);
+                    receipt=Some(storage.begin_portable(descriptor,&headers).await.map_err(|error|storage_error(error,"transfer_storage_begin"))?);
                     json!({"stage":"end"})
                 },
                 (Some(4),"12")=>{
@@ -337,14 +349,14 @@ impl TransferWorker {
                     let data=receive_page(&mut owned.io,job,&mut lease,call,bytes).await?;
                     let append=Append{record:header,offset:decimal(&request["offset"])?,sha256:request["sha256"].as_str().ok_or("transfer_request")?.to_owned()};
                     let control=serde_json::to_vec(&append).map_err(|_|"transfer_request")?;
-                    let ack=storage.append(&receipt.key,&control,&data).await.map_err(|_|"transfer_storage_append")?;
+                    let ack=storage.append(&receipt.key,&control,&data).await.map_err(|error|storage_error(error,"transfer_storage_append"))?;
                     json!({"kind":"storage","ordinal":ack.ordinal.to_string(),"next_offset":ack.next_offset.to_string(),
                         "received_bytes":ack.received_bytes.to_string(),"revision":ack.revision.to_string()})
                 },
                 (Some(7),"12") if request["kind"]=="imported" && imported.is_none()=>{
                     let receipt=receipt.as_ref().ok_or("transfer_storage_begin")?;
                     if request["result"]["manifest"]!=descriptor["manifest_sha256"]{return Err("transfer_integrity");}
-                    imported=Some(storage.seal_storage(&receipt.key).await.map_err(|_|"transfer_storage_seal")?);
+                    imported=Some(storage.seal_storage(&receipt.key).await.map_err(|error|storage_error(error,"transfer_storage_seal"))?);
                     json!({"kind":"imported"})
                 },
                 _=>return Err("transfer_request"),
@@ -366,7 +378,7 @@ impl TransferWorker {
         let hex=|bytes:&[u8]|bytes.iter().map(|b|format!("{b:02x}")).collect::<String>();
         let completed=imported.imported_storage()?;
         let key=&completed.receipt.key;
-        let root=storage.portable_root(key).await.map_err(|_|"transfer_storage_root")?;
+        let root=storage.portable_root(key).await.map_err(|error|storage_error(error,"transfer_storage_root"))?;
         let revision=imported.imported_metadata()?["policy"].as_str().ok_or("transfer_metadata")?.to_owned();
         let secret_bytes=secrets.iter().map(String::len).sum::<usize>();
         self.hello().await?;let generation=self.owned.as_ref().ok_or("transfer_closed")?.work.generation;
@@ -376,7 +388,7 @@ impl TransferWorker {
         let mut collections=std::collections::BTreeMap::<String,Vec<Value>>::new();
         let mut active:Option<(String,usize)>=None;let mut retained=0usize;let mut finished=false;
         loop {
-            storage.check_native().await.map_err(|_|"transfer_scope")?;
+            storage.check_native().await.map_err(|error|storage_error(error,"transfer_scope"))?;
             let h=owned.io.next(|_|CONTROL,|h|h.exact(2,h.length,job,0,0)&&h.length>0 || h.exact(9,4,job,owned.work.arena,0)).await?;
             if h.kind==9 {
                 if owned.io.scratch[..4]!=0u32.to_be_bytes(){return Err(match u32::from_be_bytes(owned.io.scratch[..4].try_into().unwrap()){
@@ -415,7 +427,7 @@ impl TransferWorker {
                     let from=if request["cursor"].is_null(){(0,0)}else{(decimal(&request["cursor"]["ordinal"])?,decimal(&request["cursor"]["offset"])?) };
                     let after=match from {(0,0)=>None,(ordinal,0)=>Some(Cursor{ordinal:ordinal-1,offset:i64::MAX as u64}),
                         (ordinal,offset)=>Some(Cursor{ordinal,offset:offset-1})};
-                    let mut page=storage.readback(key,after,2).await.map_err(|_|"transfer_storage_read")?;
+                    let mut page=storage.readback(key,after,2).await.map_err(|error|storage_error(error,"transfer_storage_read"))?;
                     if page.fragments.is_empty(){return Err("transfer_storage_read");}
                     let first=page.fragments.remove(0);
                     if (first.record.ordinal,first.offset)!=from{return Err("transfer_storage_cursor");}

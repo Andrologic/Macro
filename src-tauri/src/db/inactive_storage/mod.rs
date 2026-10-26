@@ -67,7 +67,7 @@ impl InactiveStorage {
         let guard=owner.source_ready(None).await.map_err(|_|"database_unavailable")?;
         let lifetime=guard.ready.retain_chat_work();let pool=guard.ready.pool.clone();drop(guard);
         Ok(Self{pool,authority:Some(Arc::new(RwLock::new(Authority{enabled:true,identity,bindings,
-            policy:Policy{budget:16*1024*1024,max_receipts:64,absolute_ms:300_000,idle_ms:30_000,secrets}}))),
+            policy:Policy{budget:super::inactive_budget::NATIVE_BUDGET,max_receipts:super::inactive_budget::NATIVE_MAX_RECEIPTS,absolute_ms:300_000,idle_ms:30_000,secrets}}))),
             clock:Arc::new(||chrono::Utc::now().timestamp_millis()),native:Some((transport,sent,manifest,lifetime)),
             #[cfg(test)] lease_cleanup_started:None})
     }
