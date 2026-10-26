@@ -571,6 +571,24 @@
     "maximize": "Maximize"
   },
   "chat": {
+    "transfer": {
+      "title": "Transfer conversation",
+      "computer": "Computer",
+      "chooseComputer": "Choose a computer",
+      "model": "Model",
+      "chooseModel": "Choose a model",
+      "chooseAlternative": "The source model is unavailable on this computer. Choose an alternative before transferring.",
+      "noComputers": "No other computer is currently available.",
+      "progress": "Transferring the complete history…",
+      "send": "Transfer",
+      "done": "Conversation transferred.",
+      "errors": {
+        "unavailable": "The transfer could not be confirmed. Check the conversation state before trying again.",
+        "context_changed": "The account or connection changed. Reopen this window.",
+        "noModels": "No compatible model is available on this computer.",
+        "modelChanged": "This model is no longer available. Choose another model."
+      }
+    },
     "historyUnknownDate": "Unknown date",
     "archive": {
       "title": "Transferred history",

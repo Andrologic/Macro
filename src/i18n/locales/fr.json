@@ -571,6 +571,24 @@
     "maximize": "Maximiser"
   },
   "chat": {
+    "transfer": {
+      "title": "Transférer la conversation",
+      "computer": "Ordinateur",
+      "chooseComputer": "Choisir un ordinateur",
+      "model": "Modèle",
+      "chooseModel": "Choisir un modèle",
+      "chooseAlternative": "Le modèle source n’est pas disponible sur cet ordinateur. Choisissez une alternative avant le transfert.",
+      "noComputers": "Aucun autre ordinateur n’est disponible actuellement.",
+      "progress": "Transfert de l’historique complet…",
+      "send": "Transférer",
+      "done": "Conversation transférée.",
+      "errors": {
+        "unavailable": "Le transfert n’a pas pu être confirmé. Vérifiez l’état de la conversation avant de réessayer.",
+        "context_changed": "Le compte ou la connexion a changé. Rouvrez cette fenêtre.",
+        "noModels": "Aucun modèle compatible n’est disponible sur cet ordinateur.",
+        "modelChanged": "Ce modèle n’est plus disponible. Choisissez-en un autre."
+      }
+    },
     "historyUnknownDate": "Date inconnue",
     "archive": {
       "title": "Historique transféré",

@@ -542,6 +542,24 @@
     "maximize": "最大化する"
   },
   "chat": {
+    "transfer": {
+      "title": "会話を転送",
+      "computer": "コンピューター",
+      "chooseComputer": "コンピューターを選択",
+      "model": "モデル",
+      "chooseModel": "モデルを選択",
+      "chooseAlternative": "元のモデルはこのコンピューターでは利用できません。転送前に別のモデルを選択してください。",
+      "noComputers": "現在、利用可能な他のコンピューターはありません。",
+      "progress": "履歴全体を転送しています…",
+      "send": "転送",
+      "done": "会話を転送しました。",
+      "errors": {
+        "unavailable": "転送を確認できませんでした。再試行する前に会話の状態を確認してください。",
+        "context_changed": "アカウントまたは接続が変更されました。この画面を開き直してください。",
+        "noModels": "このコンピューターには互換性のあるモデルがありません。",
+        "modelChanged": "このモデルは利用できなくなりました。別のモデルを選択してください。"
+      }
+    },
     "historyUnknownDate": "日付不明",
     "archive": {
       "title": "転送された履歴",

@@ -219,10 +219,14 @@ impl VerifiedTransport {
     }
     /// The target learns its intent only through the canonical producer poll.
     /// Reconcile F before retaining it; the invitation itself grants no rights.
-    pub(super) async fn receive_target_invitation<B:Vault+'static>(&mut self,manager:Arc<Manager<B>>,ready:&DbReady)->Result<serde_json::Value> {
-        let output=self.delivery(manager.clone(),ready).await?;
-        let received:serde_json::Value=serde_json::from_slice(output.bytes.as_slice()).map_err(|_|"invalid_delivery")?;drop(output);
+    pub(super) async fn receive_target_invitation<B:Vault+'static>(&mut self,manager:Arc<Manager<B>>,ready:&DbReady,job:&crate::connect::runtime::TransferJob)->Result<serde_json::Value> {
+        let received=loop {
+            let output=self.delivery(manager.clone(),ready).await?;
+            let received:serde_json::Value=serde_json::from_slice(output.bytes.as_slice()).map_err(|_|"invalid_delivery")?;drop(output);
+            if received["branch"]!="empty"{break received;}
+        };
         if received["branch"]!="transit" || received["value"]["body"]["kind"]!="transit.invitation" {return Err("transfer_invitation_missing");}
+        job.protect()?;
         let intent=received["value"]["body"]["message"].clone();
         let binding=&intent["binding"];let source=&binding["provenance"]["source"];
         let text=|value:&serde_json::Value|value.as_str().map(str::to_owned).ok_or("invalid_request");

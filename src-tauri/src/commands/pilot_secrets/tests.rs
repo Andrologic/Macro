@@ -1619,7 +1619,8 @@ async fn global_chat_transfer_target() {
     let model:crate::db::models::ProviderModelInput=serde_json::from_value(serde_json::json!({"model_id":model_id,"name":"Synthetic model",
         "context_window_tokens":200000,"input_limit_tokens":200000,"output_limit_tokens":16384,"context_window_source":"manual"})).unwrap();
     crate::db::repository::upsert_provider_models(&pool,provider_id,&[model]).await.unwrap();
-    let (conversation,prepared)=super::flow::receive(manager,&owner,&config,&launcher,verified,&ready).await.unwrap();
+    let job=runtime.begin_receive().unwrap();
+    let (conversation,prepared)=super::flow::receive(manager,&owner,&config,&launcher,verified,&ready,&job).await.unwrap();
         let messages:Vec<String>=sqlx::query_scalar("SELECT content FROM messages WHERE conversation_id=? ORDER BY created_at,id").bind(&conversation).fetch_all(&pool).await.unwrap();
         assert!(messages.len()>=if compacted{22}else{2});assert!(messages.iter().any(|s|s.contains("Can I continue on another computer?")));
         assert!(messages.iter().any(|s|s.contains("A short answer available on the other computer.")));

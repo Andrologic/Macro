@@ -172,7 +172,7 @@ let requestSequence = 0;
 function request(operation: ContentRequest['operation'], body: unknown, requestId = `request:${++requestSequence}`): ContentRequest {
   return { contract_version: '2.0', type: 'request', account_id: accountId, request_id: requestId, operation, body } as ContentRequest;
 }
-function harness(readAuthoritySupport?: ReadAuthoritySupport) {
+function harness(readAuthoritySupport?: ReadAuthoritySupport, transfers?: ConstructorParameters<typeof PilotRuntime>[4]) {
   const project = (value: { id: string; name: string; path: string }) => ({ ...value, mountName: value.id,
     created_at: '2026-01-01T00:00:00Z', status: 'active' as const, gitSetupState: 'ready' as const,
     metadata: { description: '', tags: [], team_members: [], api_contracts: [], dependencies: [] } });
@@ -268,7 +268,8 @@ function harness(readAuthoritySupport?: ReadAuthoritySupport) {
       throw Error(`Unexpected HTTP: ${path}`);
     },
   });
-  const runtime = new PilotRuntime(client, undefined, desktopStorePorts, readAuthoritySupport);
+  if (transfers) client.transferConnection = capabilities => ({ context: { configuration_id: 'config:test', relay_origin: 'https://pilot.example.test', owner_id: 'session:desktop' }, generation: 'synthetic', instanceCreationId: 'creation:test', accountId, deviceId: 'device:desktop', instanceId, capabilities: [...capabilities] });
+  const runtime = new PilotRuntime(client, undefined, transfers ? { ...desktopStorePorts, chat: () => ({ ...desktopStorePorts.chat(), reconcileConversationAdmission: async () => ({ runtime: 'synthetic-browser', handle: 'synthetic-inspection' }) }) } : desktopStorePorts, readAuthoritySupport, transfers);
   function enqueue(input: ContentRequest, source = 'session:mobile') {
     const delivery: ContentDelivery = { transport_version: '2.0', type: 'delivery', request_id: input.request_id, instance_id: instanceId, account_id: accountId, source_session_id: source, expires_at: deliveredRequests.get(input.request_id)?.expires_at ?? new Date(Date.now() + 60_000).toISOString(), request: input, ...(input.operation === 'conversations.search' ? { capabilities: ['conversations-1'] } : input.operation === 'conversation.files.list' ? { authority_binding: 'grant:files', capabilities: ['conversation-files-1'] } : input.operation === 'conversation.reflections.read' ? { authority_binding: 'grant:reflections',capabilities: ['conversations-1','conversation-reflections-1'] } : input.operation === 'instance.telemetry' || input.operation === 'project.icon' ? { capabilities: ['host-telemetry-1', 'project-icons-1'] } : 'consistency' in input.body ? { capabilities: ['task-details-1', 'network-reliability-1'] } : {}) };
     expect(validateContentMessage(delivery)).toBe(true);
@@ -1068,4 +1069,26 @@ for(const mode of ['malformed','header','401','403'] as const) it(`never downgra
     else await until(()=>h.client.getState().deviceSession===null);
     expect(h.requests.filter(r=>r.path.includes('/v2/') && r.path.endsWith('/poll')).every(r=>(r.body.capabilities as string[]).includes('read-authority-1'))).toBe(true);
   } finally { await h.runtime.stop(); }
+});
+
+it('hands a confirmed producer to one native receiver and interrupts only its idle wait before source send', async () => {
+  const received: unknown[] = [], sent: unknown[] = []; let rejectReceive: ((reason: Error) => void) | undefined;
+  let busy = false;
+  const h = harness(undefined, {
+    receive: async input => { received.push(input); return new Promise<string>((_resolve, reject) => { rejectReceive = reject; }); },
+    interruptIdle: async () => { if (busy) throw Error('transfer_busy'); rejectReceive?.(Error('codec_cancelled')); },
+    send: async input => { sent.push(input); return 'target-conversation'; },
+  });
+  try {
+    h.acceptIdlePoll(); await h.runtime.start(); await until(() => received.length === 1);
+    const connection = (received[0] as { connection: { capabilities: string[] } }).connection;
+    expect(connection.capabilities).toContain('instance-models-1');
+    busy = true;
+    await expect(h.runtime.sendConversation('chat:one', 'instance:target', { providerId: 'macro-ai', modelId: 'model' })).rejects.toThrow('transfer_busy');
+    expect(sent).toHaveLength(0); expect(received).toHaveLength(1);
+    busy = false;
+    expect(await h.runtime.sendConversation('chat:one', 'instance:target', { providerId: 'macro-ai', modelId: 'model' })).toBe('target-conversation');
+    expect(sent).toHaveLength(1); expect(sent[0]).toMatchObject({ runtime: 'synthetic-browser', inspectionHandle: 'synthetic-inspection', targetInstanceId: 'instance:target' });
+    await until(() => received.length === 2);
+  } finally { busy = false; await h.runtime.stop(); }
 });

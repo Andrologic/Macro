@@ -22,6 +22,7 @@ type Join = futures::future::Shared<BoxFuture<'static, bool>>;
 struct State {
     generation: u64,
     job_active: bool,
+    job_idle: bool,
     closed: bool,
     active: bool,
     join: Option<Join>,
@@ -55,9 +56,16 @@ impl Drop for State {
 pub(crate) struct TransferRuntime(Arc<Mutex<State>>);
 /// Serializes whole transfer jobs, including the gap between bootstrap profiles.
 /// A rejected second invocation must never revoke the first job's transport.
-pub(crate) struct TransferJob(Arc<Mutex<State>>);
+pub(crate) struct TransferJob(Arc<Mutex<State>>,u64);
+impl TransferJob {
+    pub(crate) fn protect(&self)->Result<(),&'static str>{
+        let mut state=self.0.lock().map_err(|_|"transport_unavailable")?;
+        if !state.job_active || state.closed || state.generation!=self.1{return Err("codec_retired");}
+        state.job_idle=false;Ok(())
+    }
+}
 impl Drop for TransferJob {
-    fn drop(&mut self) {if let Ok(mut state)=self.0.lock(){state.job_active=false;}}
+    fn drop(&mut self) {if let Ok(mut state)=self.0.lock(){state.job_active=false;state.job_idle=false;}}
 }
 // This completion is the last field of HttpSession. Its notification therefore
 // follows destruction of the sole Hyper drivers, TLS streams and reservations.
@@ -322,7 +330,17 @@ impl TransferRuntime {
         let mut state=self.0.lock().map_err(|_|"transport_unavailable")?;
         if state.closed{return Err("codec_retired");}
         if state.job_active{return Err("transfer_busy");}
-        state.job_active=true;Ok(TransferJob(self.0.clone()))
+        state.job_active=true;state.job_idle=false;Ok(TransferJob(self.0.clone(),state.generation))
+    }
+    pub(crate) fn begin_receive(&self)->Result<TransferJob,&'static str>{
+        let job=self.begin_transfer()?;
+        self.0.lock().map_err(|_|"transport_unavailable")?.job_idle=true;Ok(job)
+    }
+    pub(crate) fn interrupt_idle(&self)->Result<(),&'static str>{
+        let mut state=self.0.lock().map_err(|_|"transport_unavailable")?;
+        if state.job_active&&!state.job_idle{return Err("transfer_busy");}
+        if state.job_active {state.job_idle=false;Self::revoke_locked(&mut state);}
+        Ok(())
     }
     #[cfg(test)]
     pub(crate) fn profile_events(&self) -> Vec<(Profile, u32, bool)> {
@@ -493,23 +511,12 @@ impl TransferRuntime {
             join,
         })
     }
-    pub(crate) fn revoke(&self) {
-        if let Ok(mut state) = self.0.lock() {
-            match state.generation.checked_add(1) {
-                Some(next) => state.generation = next,
-                None => state.closed = true,
-            }
-            if let Some((cancel, _, idle)) = &state.http {
-                cancel.cancel();
-                if let Some(idle) = idle.upgrade() {
-                    idle.retire();
-                }
-            }
-            if let Some(cancel) = &state.cancel {
-                cancel.cancel();
-            }
-        }
+    fn revoke_locked(state:&mut State) {
+        match state.generation.checked_add(1) {Some(next)=>state.generation=next,None=>state.closed=true}
+        if let Some((cancel,_,idle))=&state.http {cancel.cancel();if let Some(idle)=idle.upgrade(){idle.retire();}}
+        if let Some(cancel)=&state.cancel {cancel.cancel();}
     }
+    pub(crate) fn revoke(&self) {if let Ok(mut state)=self.0.lock(){Self::revoke_locked(&mut state);}}
     pub(crate) async fn shutdown(&self) -> bool {
         let join = {
             let mut state = self.0.lock().unwrap_or_else(|p| p.into_inner());
@@ -592,6 +599,16 @@ mod tests {
         Input { op: 1,
             expectations: Bytes::copy(budget, br#"{"request_id_header":"00000000-0000-4000-8000-000000000001"}"#).unwrap(),
             body: Bytes::copy(budget, br#"{"authority_contract":"transfer-authority-1","type":"preflight","request_id":"00000000-0000-4000-8000-000000000001","scope":{"kind":"controller","source_instance_id":"synthetic-source","target_instance_id":"synthetic-target"}}"#).unwrap() }
+    }
+    #[test]
+    fn idle_receive_can_be_interrupted_but_admitted_transfer_cannot() {
+        let runtime=TransferRuntime::default();
+        let idle=runtime.begin_receive().unwrap();
+        runtime.interrupt_idle().unwrap();assert_eq!(idle.protect(),Err("codec_retired"));
+        assert_eq!(runtime.begin_transfer().err(),Some("transfer_busy"));drop(idle);
+        let receiving=runtime.begin_receive().unwrap();receiving.protect().unwrap();
+        assert_eq!(runtime.interrupt_idle(),Err("transfer_busy"));drop(receiving);
+        let source=runtime.begin_transfer().unwrap();assert_eq!(runtime.interrupt_idle(),Err("transfer_busy"));drop(source);
     }
     #[tokio::test]
     async fn profiles_join_bootstrap_then_keep_persistent_child_idle_past_poll() {

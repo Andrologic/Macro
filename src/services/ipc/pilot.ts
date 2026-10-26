@@ -121,3 +121,8 @@ export function connectTransferReceive(input: ConnectTransferReceiveInput): Prom
   requireNativePilotVault();
   return invoke('connect_transfer_receive', { input });
 }
+
+export function connectTransferInterruptIdle(): Promise<void> {
+  requireNativePilotVault();
+  return invoke('connect_transfer_interrupt_idle');
+}

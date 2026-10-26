@@ -543,6 +543,24 @@
     "maximize": "Maximieren"
   },
   "chat": {
+    "transfer": {
+      "title": "Unterhaltung übertragen",
+      "computer": "Computer",
+      "chooseComputer": "Computer auswählen",
+      "model": "Modell",
+      "chooseModel": "Modell auswählen",
+      "chooseAlternative": "Das ursprüngliche Modell ist auf diesem Computer nicht verfügbar. Wähle vor der Übertragung eine Alternative.",
+      "noComputers": "Kein anderer Computer ist derzeit verfügbar.",
+      "progress": "Der vollständige Verlauf wird übertragen…",
+      "send": "Übertragen",
+      "done": "Unterhaltung übertragen.",
+      "errors": {
+        "unavailable": "Die Übertragung konnte nicht bestätigt werden. Prüfe den Status der Unterhaltung vor einem erneuten Versuch.",
+        "context_changed": "Konto oder Verbindung geändert. Öffne dieses Fenster erneut.",
+        "noModels": "Auf diesem Computer ist kein kompatibles Modell verfügbar.",
+        "modelChanged": "Dieses Modell ist nicht mehr verfügbar. Wähle ein anderes."
+      }
+    },
     "historyUnknownDate": "Datum unbekannt",
     "archive": {
       "title": "Übertragener Verlauf",

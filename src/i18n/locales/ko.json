@@ -542,6 +542,24 @@
     "maximize": "최대화"
   },
   "chat": {
+    "transfer": {
+      "title": "대화 전송",
+      "computer": "컴퓨터",
+      "chooseComputer": "컴퓨터 선택",
+      "model": "모델",
+      "chooseModel": "모델 선택",
+      "chooseAlternative": "이 컴퓨터에서는 원래 모델을 사용할 수 없습니다. 전송하기 전에 다른 모델을 선택하세요.",
+      "noComputers": "현재 사용할 수 있는 다른 컴퓨터가 없습니다.",
+      "progress": "전체 기록을 전송하는 중…",
+      "send": "전송",
+      "done": "대화가 전송되었습니다.",
+      "errors": {
+        "unavailable": "전송을 확인할 수 없습니다. 다시 시도하기 전에 대화 상태를 확인하세요.",
+        "context_changed": "계정 또는 연결이 변경되었습니다. 이 창을 다시 여세요.",
+        "noModels": "이 컴퓨터에는 호환되는 모델이 없습니다.",
+        "modelChanged": "이 모델은 더 이상 사용할 수 없습니다. 다른 모델을 선택하세요."
+      }
+    },
     "historyUnknownDate": "날짜 알 수 없음",
     "archive": {
       "title": "전송된 기록",

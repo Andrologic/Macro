@@ -1,3 +1,4 @@
+import type { ConnectTransferConnection } from '../ipc/pilot';
 import { checkMetadataReply, validateMetadataRequest, readProducerPollReply, TRANSFER_HEADER, TRANSFER_ADMISSION, TRANSFER_BODY_BYTES, type MetadataRequest, type TransferReception, type TransferMetadataOptions } from './transferTransport';
 import { REFLECTION_OPERATION } from './conversationReflections';
 import { CONVERSATION_READ_OPERATIONS, validateContentIntegrity } from './contentProtocol';
@@ -408,6 +409,17 @@ export class MacroPilotNativeClient {
   constructor(private readonly dependencies: PilotClientDependencies = defaultDependencies) {}
 
   getState = (): PilotPublicState => this.publicState;
+
+  /** Intent only. The native command independently verifies /me and preflight. */
+  transferConnection(capabilities: readonly string[]): ConnectTransferConnection {
+    const state = this.persisted, lease = this.vaultLease;
+    if (this.publicState.status !== 'connected' || this.sessionVerification || lease?.status !== 'ready' ||
+        !state?.relayOrigin || !state.account || !state.deviceSession || !state.instance || !state.instanceCreationId) throw new PilotClientError('unavailable');
+    return { context: { configuration_id: state.configurationId, relay_origin: state.relayOrigin, owner_id: state.deviceSession.ref.session_id },
+      generation: lease.generation, instanceCreationId: state.instanceCreationId, accountId: state.account.account_id,
+      deviceId: state.deviceSession.device_id, instanceId: state.instance.ref.instance_id, capabilities: [...capabilities] };
+  }
+
 
   subscribe = (listener: () => void): (() => void) => {
     this.listeners.add(listener);

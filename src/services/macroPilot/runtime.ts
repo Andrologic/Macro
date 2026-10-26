@@ -1,3 +1,4 @@
+import { connectTransferSend, connectTransferReceive, connectTransferInterruptIdle, type ConnectTransferSendInput } from '../ipc/pilot';
 import { CapabilityCompatibilityError, type ReadAuthoritySupport } from './readAuthority';
 import { REFLECTION_CAPABILITY, REFLECTION_OPERATION } from './conversationReflections';
 import { FILE_CAPABILITIES, FILE_OPERATIONS } from './attachmentFilesHost';
@@ -53,14 +54,50 @@ export class PilotRuntime {
   private approvalEvidence: Record<string, ToolApprovalResolutionEvidence> = {};
   private approvalObservedAt: Record<string, string> = {};
   private activeLoop: Promise<void> | null = null;
+  private receiving: Promise<void> | null = null;
+  private sending = false;
+  private producerCapabilities: string[] | null = null;
+
   private readonly actions: DesktopActions;
   constructor(
-    private readonly client: Pick<MacroPilotNativeClient, 'getState' | 'subscribe' | 'initialize' | 'request'> & Partial<Pick<MacroPilotNativeClient, 'requestContent' | 'contentSecretValues'>> = macroPilotNativeClient,
+    private readonly client: Pick<MacroPilotNativeClient, 'getState' | 'subscribe' | 'initialize' | 'request'> & Partial<Pick<MacroPilotNativeClient, 'requestContent' | 'contentSecretValues' | 'transferConnection'>> = macroPilotNativeClient,
     private readonly createKernel: (dependencies: KernelDependencies) => PilotKernel = dependencies => new PilotKernel(dependencies),
     private readonly ports: DesktopStorePorts,
     private readonly readAuthoritySupport?: ReadAuthoritySupport,
+    private readonly transfers = { send: connectTransferSend, receive: connectTransferReceive, interruptIdle: connectTransferInterruptIdle },
   ) {
     this.actions = createDesktopActions(ports);
+  }
+  private receiveTransfer(signal: AbortSignal) {
+    if (this.receiving || this.sending || signal.aborted || !this.producerCapabilities || !this.client.transferConnection) return;
+    let connection;
+    try { connection = this.client.transferConnection(this.producerCapabilities); } catch { return; }
+    const interrupted = () => { void this.transfers.interruptIdle().catch(() => undefined); };
+    signal.addEventListener('abort', interrupted, { once: true });
+    const pending = this.transfers.receive({ connection }).then(async () => {
+      if (!signal.aborted) await this.ports.chat().refreshConversationMetadata();
+    }).catch(() => { if (!signal.aborted && !this.sending) this.publish('unavailable'); }).finally(() => {
+      signal.removeEventListener('abort', interrupted);
+      if (this.receiving === pending) this.receiving = null;
+    });
+    this.receiving = pending;
+  }
+  async sendConversation(conversationId: string, targetInstanceId: string, selection: { providerId: string; modelId: string }): Promise<string> {
+    const signal = this.controller?.signal, generation = this.generation;
+    if (!signal || signal.aborted || this.sending || !this.producerCapabilities || !this.client.transferConnection) throw new PilotError('unavailable');
+    this.sending = true;
+    try {
+      await this.transfers.interruptIdle();
+      await this.receiving;
+      const connection = this.client.transferConnection(this.producerCapabilities);
+      const inspection = await this.ports.chat().reconcileConversationAdmission(conversationId);
+      if (signal.aborted || this.generation !== generation || stableJson(connection) !== stableJson(this.client.transferConnection(this.producerCapabilities))) throw new PilotError('unavailable');
+      const input: ConnectTransferSendInput = { connection, targetInstanceId, conversationId, ...selection,
+        runtime: inspection.runtime, inspectionHandle: inspection.handle };
+      const targetConversationId = await this.transfers.send(input);
+      if (!signal.aborted) await this.ports.chat().refreshConversationMetadata();
+      return targetConversationId;
+    } finally { this.sending = false; this.receiveTransfer(signal); }
   }
   async start(): Promise<void> {
     if (this.stopping) await this.stopping;
@@ -85,6 +122,7 @@ export class PilotRuntime {
       ? stableJson([state.configurationId,state.relayOrigin,state.account?.account_id,instanceId,state.deviceSession.ref.session_id]) : null;
     if (next===this.identity || !this.started) return;
     this.generation++; const generation=this.generation;
+    this.producerCapabilities=null;
     this.controller?.abort(); this.kernel?.close(); this.kernel=null;
     const disposing = this.content?.dispose(); this.content=null;
     void disposing?.catch(() => undefined);
@@ -234,8 +272,11 @@ export class PilotRuntime {
     while (!signal.aborted && host.isAvailable() && !isAppShutdownGateActive()) {
       if (pending && pending.expiresAt <= Date.now()) pending = undefined;
       try {
-        const response = await this.client.requestContent!(`${base}/poll`, { transport_version: '2.0', type: 'poll', commands: ['conversation.send'], ...(extended ? { capabilities: [...TASK_COMPLETION_CAPABILITIES, ...(models ? ['instance-models-1'] : []), ...(readAuthority ? ['read-authority-1'] : []), ...(reflections && conversations ? [REFLECTION_CAPABILITY] : []), ...(files ? FILE_CAPABILITIES : []), ...(machines ? MACHINE_CAPABILITIES : []), ...(reliability ? ['network-reliability-1'] : []), ...(conversations ? ['conversations-1', ...(history ? ['conversation-history-1'] : []), ...(interactions ? ['conversation-interactions-1', ...(models ? ['conversation-models-1'] : [])] : [])] : [])] } : {}) }, signal);
+        const poll = { transport_version: '2.0' as const, type: 'poll' as const, commands: ['conversation.send' as const], ...(extended ? { capabilities: [...TASK_COMPLETION_CAPABILITIES, ...(models ? ['instance-models-1'] : []), ...(readAuthority ? ['read-authority-1'] : []), ...(reflections && conversations ? [REFLECTION_CAPABILITY] : []), ...(files ? FILE_CAPABILITIES : []), ...(machines ? MACHINE_CAPABILITIES : []), ...(reliability ? ['network-reliability-1'] : []), ...(conversations ? ['conversations-1', ...(history ? ['conversation-history-1'] : []), ...(interactions ? ['conversation-interactions-1', ...(models ? ['conversation-models-1'] : [])] : [])] : [])] } : {}) };
+        const response = await this.client.requestContent!(`${base}/poll`, poll, signal);
         if (signal.aborted) break;
+        this.producerCapabilities = [...poll.capabilities ?? []];
+        this.receiveTransfer(signal);
         advertised = true;
         host.enableReflections(extended && reflections && conversations);
         host.enableMachines(extended && machines);
@@ -434,11 +475,11 @@ export class PilotRuntime {
   getIndeterminate() { return this.kernel?.indeterminate()??[]; }
   async reconcileNotExecuted(key:string) { if(!this.kernel) throw new PilotError('unavailable');await this.kernel.reconcileNotExecuted(key); }
   private async waitForProducer(): Promise<boolean> {
-    if (!this.activeLoop) return true;
+    if (!this.activeLoop && !this.receiving) return true;
     let timer: ReturnType<typeof setTimeout> | undefined;
     try {
       return await Promise.race([
-        this.activeLoop.then(() => true, () => true),
+        Promise.allSettled([this.activeLoop, this.receiving]).then(() => true),
         new Promise<boolean>(resolve => { timer=setTimeout(() => resolve(false), 3000); }),
       ]);
     } finally { clearTimeout(timer); }

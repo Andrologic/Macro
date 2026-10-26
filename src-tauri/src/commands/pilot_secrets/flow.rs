@@ -144,9 +144,9 @@ pub(super) async fn send<B:Vault+'static>(manager:Arc<Manager<B>>,owner:&DbPool,
 }
 
 pub(super) async fn receive<B:Vault+'static>(manager:Arc<Manager<B>>,owner:&DbPool,config:&ConfigManager,launcher:&CodecLauncher,
-    mut transport:VerifiedTransport,ready:&DbReady,
+    mut transport:VerifiedTransport,ready:&DbReady,job:&crate::connect::runtime::TransferJob,
 )->Result<(String,TransferWorker)>{
-    let intent=transport.receive_target_invitation(manager.clone(),ready).await?;
+    let intent=transport.receive_target_invitation(manager.clone(),ready,job).await?;
     let session=&intent["session"];let manifest=&intent["manifest"];let binding=&intent["binding"];let frozen=&intent["frozen"];
     let provider_id=text(&intent["provider_id"])?;let model_id=text(&intent["model_id"])?;
     crate::connect::runtime::transfer_target_snapshot(config,ready,provider_id,model_id).await?;

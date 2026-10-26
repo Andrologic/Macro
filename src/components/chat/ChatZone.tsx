@@ -1,3 +1,10 @@
+import { TransferConversationDialog } from '../connect/TransferConversationDialog';
+import { macroPilotNativeClient } from '../../services/macroPilot/nativeClient';
+import { macroConnectReaderPorts } from '../../composition/macroConnectReader';
+import { macroPilotRuntime } from '../../composition/macroPilotDesktop';
+import { usePilotStore } from '../../stores/usePilotStore';
+import type { ConsumerReaderPorts } from '../../services/macroPilot/consumerReader';
+import { ArrowRightLeft } from 'lucide-react';
 import { observeConversationMessage } from '../../services/conversationReadObservation';
 import { ArchiveReaderDialog } from './ArchiveReaderDialog';
 import { HistoricalMessageContent } from './HistoricalMessageContent';
@@ -1378,6 +1385,8 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
   const [previewImage, setPreviewImage] = useState<{ image: MessageImageAttachment; release(): void } | null>(null);
   const previewOwners = useRef(new Set<() => void>());
   const [archiveReaderOpen, setArchiveReaderOpen] = useState(false);
+  const [transferPorts, setTransferPorts] = useState<ConsumerReaderPorts | null>(null);
+  const connectReady = usePilotStore(state => state.status === 'connected');
   useLayoutEffect(() => {
     for (const release of previewOwners.current) {
       if (release !== previewImage?.release) { release(); previewOwners.current.delete(release); }
@@ -3877,6 +3886,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
           </div>
 
           <div className="flex items-center gap-2">
+            {connectReady && selectedConversationId && currentConversation?.scope_mode === 'Chat' && !currentConversation.project_id && !currentConversation.group_id && !currentConversation.task_id && <button type="button" className="rounded p-1.5 text-muted-foreground hover:bg-accent" title={t('chat.transfer.title')} aria-label={t('chat.transfer.title')} onClick={() => { try { setTransferPorts(macroConnectReaderPorts(macroPilotNativeClient)); } catch { notify.error(t('chat.transfer.errors.unavailable')); } }}><ArrowRightLeft aria-hidden="true" size={14} /></button>}
             {selectedConversationId && currentConversation?.scope_mode === 'Chat' && !currentConversation.project_id && !currentConversation.group_id && !currentConversation.task_id && (
               <button type="button" className="rounded p-1.5 text-muted-foreground hover:bg-accent" title={t('chat.archive.title')} aria-label={t('chat.archive.title')} onClick={() => setArchiveReaderOpen(true)}><Icon name="archive" size={14} /></button>
             )}
@@ -4680,6 +4690,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
           />
         </Suspense>
       )}
+      {transferPorts && selectedConversationId && currentConversation && <TransferConversationDialog key={selectedConversationId} ports={transferPorts} source={{ id: selectedConversationId, title: currentConversation.title, providerId: currentConversation.provider_id ?? null, modelId: currentConversation.model_id ?? null }} send={(target, selection) => macroPilotRuntime.sendConversation(selectedConversationId, target, selection)} onClose={() => setTransferPorts(null)} onTransferred={() => { setTransferPorts(null); notify.success(t('chat.transfer.done')); }} />}
       {archiveReaderOpen && selectedConversationId && <ArchiveReaderDialog key={selectedConversationId} conversationId={selectedConversationId} onClose={() => setArchiveReaderOpen(false)} />}
 
       {mode === 'Architect' &&

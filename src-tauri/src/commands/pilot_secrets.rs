@@ -300,14 +300,19 @@ pub(crate) async fn connect_transfer_receive(
     runtime:tauri::State<'_,crate::connect::TransferRuntime>,input:TransferReceiveInput,
 )->super::CommandResult<String>{
     use super::command_error;
-    let _job=runtime.begin_transfer().map_err(command_error)?;
+    let job=runtime.begin_receive().map_err(command_error)?;
     let ready=pool.wait_until_ready_context().await?;
     let launcher=runtime.codec_launcher(&app,&pool).map_err(command_error)?;
     let result:Result<String,&'static str>=async {
         let verified=transport::bootstrap(input.connection.intent(),&runtime,&launcher,&ready,&tokio_util::sync::CancellationToken::new()).await?;
-        let (conversation,_prepared)=flow::receive(manager().map_err(|_|"vault_unavailable")?,&pool,&config,&launcher,verified,&ready).await?;
+        let (conversation,_prepared)=flow::receive(manager().map_err(|_|"vault_unavailable")?,&pool,&config,&launcher,verified,&ready,&job).await?;
         Ok(conversation)
     }.await;
     if result.is_err(){runtime.revoke();}
     result.map_err(command_error)
+}
+
+#[tauri::command]
+pub(crate) fn connect_transfer_interrupt_idle(runtime:tauri::State<'_,crate::connect::TransferRuntime>)->super::CommandResult<()> {
+    runtime.interrupt_idle().map_err(super::command_error)
 }
