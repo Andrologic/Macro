@@ -113,16 +113,16 @@ export interface ConnectTransferSendInput {
 export interface ConnectTransferReceiveInput {
   connection: ConnectTransferConnection;
 }
-export function connectTransferSend(input: ConnectTransferSendInput): Promise<string> {
+export async function connectTransferSend(input: ConnectTransferSendInput): Promise<string> {
   requireNativePilotVault();
   return invoke('connect_transfer_send', { input });
 }
-export function connectTransferReceive(input: ConnectTransferReceiveInput): Promise<string> {
+export async function connectTransferReceive(input: ConnectTransferReceiveInput): Promise<string> {
   requireNativePilotVault();
   return invoke('connect_transfer_receive', { input });
 }
 
-export function connectTransferInterruptIdle(): Promise<void> {
+export async function connectTransferInterruptIdle(): Promise<void> {
   requireNativePilotVault();
   return invoke('connect_transfer_interrupt_idle');
 }

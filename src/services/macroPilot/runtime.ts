@@ -77,7 +77,12 @@ export class PilotRuntime {
     signal.addEventListener('abort', interrupted, { once: true });
     const pending = this.transfers.receive({ connection }).then(async () => {
       if (!signal.aborted) await this.ports.chat().refreshConversationMetadata();
-    }).catch(() => { if (!signal.aborted && !this.sending) this.publish('unavailable'); }).finally(() => {
+    }).catch(error => {
+      // A failed receive ends this listener only; it never degrades phone Pilot.
+      if (signal.aborted || this.sending) return;
+      const code = object(error).message;
+      void frontendLog({ level: 'error', scope: 'frontend', message: `[Frontend:PilotTransferReceive:${typeof code === 'string' && /^[a-z_]{1,64}$/.test(code) ? code : 'unknown'}]` }).catch(() => undefined);
+    }).finally(() => {
       signal.removeEventListener('abort', interrupted);
       if (this.receiving === pending) this.receiving = null;
     });
