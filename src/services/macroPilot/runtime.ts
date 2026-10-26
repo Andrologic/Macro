@@ -234,7 +234,7 @@ export class PilotRuntime {
     while (!signal.aborted && host.isAvailable() && !isAppShutdownGateActive()) {
       if (pending && pending.expiresAt <= Date.now()) pending = undefined;
       try {
-        const response = await this.client.requestContent!(`${base}/poll`, { transport_version: '2.0', type: 'poll', commands: ['conversation.send'], ...(extended ? { capabilities: [...TASK_COMPLETION_CAPABILITIES, ...(readAuthority ? ['read-authority-1'] : []), ...(reflections && conversations ? [REFLECTION_CAPABILITY] : []), ...(files ? FILE_CAPABILITIES : []), ...(machines ? MACHINE_CAPABILITIES : []), ...(reliability ? ['network-reliability-1'] : []), ...(conversations ? ['conversations-1', ...(history ? ['conversation-history-1'] : []), ...(interactions ? ['conversation-interactions-1', ...(models ? ['conversation-models-1'] : [])] : [])] : [])] } : {}) }, signal);
+        const response = await this.client.requestContent!(`${base}/poll`, { transport_version: '2.0', type: 'poll', commands: ['conversation.send'], ...(extended ? { capabilities: [...TASK_COMPLETION_CAPABILITIES, ...(models ? ['instance-models-1'] : []), ...(readAuthority ? ['read-authority-1'] : []), ...(reflections && conversations ? [REFLECTION_CAPABILITY] : []), ...(files ? FILE_CAPABILITIES : []), ...(machines ? MACHINE_CAPABILITIES : []), ...(reliability ? ['network-reliability-1'] : []), ...(conversations ? ['conversations-1', ...(history ? ['conversation-history-1'] : []), ...(interactions ? ['conversation-interactions-1', ...(models ? ['conversation-models-1'] : [])] : [])] : [])] } : {}) }, signal);
         if (signal.aborted) break;
         advertised = true;
         host.enableReflections(extended && reflections && conversations);

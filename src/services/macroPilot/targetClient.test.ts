@@ -33,6 +33,7 @@ const json = (data: unknown, requestId: string, status = 200) => new Response(JS
 });
 function terminal(request: Record<string, unknown>, instanceId: string) {
   const operation = request.operation as ConsumerOperation;
+  if (operation === 'instance.models') return { contract_version: '2.0', type: 'response', operation, request_id: String(request.request_id), account_id: account.account_id, result: { instance_id: instanceId, observed_at: new Date(time).toISOString(), expires_at: new Date(time + 30000).toISOString(), models: [] } };
   const fixtures = { 'conversation.read': conversationFixture, 'conversations.list': conversationsFixture,
     'conversations.catalog': catalogFixture, 'conversation.window': windowFixture, 'projects.list': projectsFixture };
   const result = JSON.parse(JSON.stringify(fixtures[operation]).replaceAll('instance-demo', instanceId)) as typeof conversationFixture;
@@ -344,6 +345,7 @@ describe('D1 desktop target reads', () => {
         if (w.request.type !== 'request') return;
         const response = terminal(w.request, w.instanceId);
         const continuing = Boolean((w.request.body as { continuation?: unknown }).continuation);
+        if (!('page' in response.result)) throw Error('expected transcript');
         response.result.page.total = 2;
         if (continuing) {
           response.result.page.offset = 1; response.result.items[0].position = 1; response.result.items[0].message_id = 'message:second';
@@ -787,4 +789,24 @@ it('charges native credential waiting against the exact authority attempt rather
     h.intercept(async w=>w.request.type==='negotiate'?json({negotiation_version:'1.0',type:'negotiated',request_id:w.requestId,instance_id:'instance:a',selected_version:'2.0',capabilities:w.request.capabilities,read_authority:{authority_binding:'binding:synthetic',account_id:account.account_id,session_id:session.ref.session_id,device_id:session.device_id,instance_id:'instance:a',producer_generation:'producer:synthetic',session_revision:session.revision,access_revision:1,permissions:['supervise'],issued_at:new Date(time).toISOString(),expires_at:new Date(time+30000).toISOString()}},w.requestId):undefined);
     await expect(target.negotiate()).rejects.toMatchObject({code:'invalid_response'}); expect(target.readAuthority()).toBeUndefined();
   } finally { target.dispose(); h.dispose(); }
+});
+
+it('reads target models without creating a conversation and refuses missing negotiated capability', async () => {
+  const h = await harness(); const a = h.target();
+  try {
+    await a.negotiate();
+    const result = await a.read('instance.models', { instance_id: a.instanceId });
+    expect(result.response.result).toMatchObject({ instance_id: a.instanceId, models: [] });
+    h.intercept(async w => {
+      if (w.request.operation !== 'instance.models') return;
+      const expired = terminal(w.request, w.instanceId);
+      if (!('expires_at' in expired.result)) throw Error('expected model catalog');
+      expired.result.expires_at = new Date(time).toISOString(); expired.result.observed_at = new Date(time - 30000).toISOString();
+      return json(expired, w.requestId);
+    });
+    await expect(a.read('instance.models', { instance_id: a.instanceId })).rejects.toMatchObject({ code: 'snapshot_expired' });
+    h.intercept(async w => w.request.type === 'negotiate' ? json({ negotiation_version: '1.0', type: 'negotiated', request_id: w.requestId, instance_id: a.instanceId, selected_version: '2.0', capabilities: [] }, w.requestId) : undefined);
+    await a.negotiate();
+    await expect(a.read('instance.models', { instance_id: a.instanceId })).rejects.toMatchObject({ code: 'extension_unavailable' });
+  } finally { h.dispose(); }
 });

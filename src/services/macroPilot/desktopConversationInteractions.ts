@@ -10,6 +10,33 @@ import type { InteractionSource, InteractionState } from './conversationInteract
 const fail = (code: string): never => { throw new Error(code); };
 const generation = async (value: unknown) => Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(stableJson(value)))), byte => byte.toString(16).padStart(2, '0')).join('');
 
+/** Cached configuration only: no model refresh, credential read or provider call. */
+export function* cachedDesktopModels(ports: DesktopStorePorts, policy: Parameters<typeof controlledText>[1], transferOnly = false): Generator<ContentModelCatalog['models'][number]> {
+  const providers = ports.providers?.();
+  if (!providers) return;
+  for (const provider of providers.providerConfigs) {
+    if (transferOnly && !(provider.id === 'macro-ai' && provider.providerType === 'openai' || provider.providerType === 'chatgpt')) continue;
+    if (!provider.isEnabled || !providerHasUsableCredentials(provider) || !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(provider.id)) continue;
+    const name = controlledText(provider.name, policy);
+    if (name.content_state !== 'complete' || !('text' in name) || !name.text || Array.from(name.text).length > 160) continue;
+    for (const model of providers.modelsByProvider[provider.id] ?? []) {
+      const label = controlledText(model.name || model.id, policy);
+      const id = controlledText(model.id, policy);
+      if (model.isEnabled === false || label.content_state !== 'complete' || !('text' in label) || !label.text || Array.from(label.text).length > 160 || id.content_state !== 'complete' || !('text' in id) || !id.text || Array.from(id.text).length > 256) continue;
+      yield { provider_id: provider.id, provider_name: name.text, model_id: id.text, model_name: label.text, reasoning_efforts: providers.getAvailableReasoningEfforts(provider.id, model.id).filter((effort): effort is NonNullable<ContentModelCatalog['selection']>['reasoning_effort'] & string => ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'].includes(effort)) };
+    }
+  }
+}
+
+export function desktopTransferModels(ports: DesktopStorePorts, policy: Parameters<typeof controlledText>[1]): ContentModelCatalog['models'] {
+  const models: ContentModelCatalog['models'] = [];
+  for (const model of cachedDesktopModels(ports, policy, true)) {
+    if (models.length >= 1000) return fail('resource_limit');
+    models.push(model);
+  }
+  return models;
+}
+
 /** Uses the same native actions and reservations as desktop UI. Reads do not
  * change selection, provider settings or questionnaire drafts. */
 export function desktopConversationInteractions(instanceId: string, captures: ConversationCaptures, ports: DesktopStorePorts, signal: AbortSignal): InteractionSource {
@@ -50,18 +77,7 @@ export function desktopConversationInteractions(instanceId: string, captures: Co
       const providers = ports.providers?.();
       if (providers) {
         const models: ContentModelCatalog['models'] = [];
-        for (const provider of providers.providerConfigs) {
-          if (!providerHasUsableCredentials(provider) || !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(provider.id)) continue;
-          const name = controlledText(provider.name, policy);
-          if (name.content_state !== 'complete' || !('text' in name) || !name.text || Array.from(name.text).length > 160) continue;
-          for (const model of providers.modelsByProvider[provider.id] ?? []) {
-            const label = controlledText(model.name || model.id, policy);
-            const id = controlledText(model.id, policy);
-            if (model.isEnabled === false || label.content_state !== 'complete' || !('text' in label) || !label.text || Array.from(label.text).length > 160 || id.content_state !== 'complete' || !('text' in id) || !id.text || Array.from(id.text).length > 256) continue;
-            if (models.length >= 1000) break;
-            models.push({ provider_id: provider.id, provider_name: name.text, model_id: id.text, model_name: label.text, reasoning_efforts: providers.getAvailableReasoningEfforts(provider.id, model.id).filter((effort): effort is NonNullable<ContentModelCatalog['selection']>['reasoning_effort'] & string => ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'].includes(effort)) });
-          }
-        }
+        for (const model of cachedDesktopModels(ports, policy)) { if (models.length >= 1000) break; models.push(model); }
         const selected = models.find(model => model.provider_id === conversation.provider_id && model.model_id === conversation.model_id && (conversation.reasoning_effort == null || model.reasoning_efforts.some(effort => effort === conversation.reasoning_effort)));
         state.model_catalog = { models, selection: selected ? { provider_id: selected.provider_id, model_id: selected.model_id, reasoning_effort: selected.reasoning_efforts.find(effort => effort === conversation.reasoning_effort) ?? null } : null };
         if (!busy && !active && !chat.pendingToolApprovalByConversationId[ref.conversation_id] && models.length) state.actions.push('select_model');

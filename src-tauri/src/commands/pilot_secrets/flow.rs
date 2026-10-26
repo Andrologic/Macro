@@ -51,8 +51,10 @@ async fn after_target_proof<B:Vault+'static>(transport:&VerifiedTransport,manage
 
 pub(super) async fn send<B:Vault+'static>(manager:Arc<Manager<B>>,owner:&DbPool,admission:&ChatAdmissionRuntime,
     config:&ConfigManager,launcher:&CodecLauncher,transport:&Arc<VerifiedTransport>,ready:&DbReady,
-    caller:&str,browser:&str,inspection:&str,conversation:&str,
+    caller:&str,browser:&str,inspection:&str,conversation:&str,provider_id:&str,model_id:&str,
 )->Result<String>{
+    if provider_id.is_empty() || provider_id.len()>128 || !provider_id.bytes().enumerate().all(|(i,b)|b.is_ascii_alphanumeric() || i>0&&b"._:-".contains(&b))
+        || model_id.is_empty() || model_id.chars().count()>256 {return Err("transfer_model_intent_invalid");}
     let authority=transport.controller_snapshot()?;
     let source_instance=text(&authority["scope"]["source_instance_id"])?;
     let target=text(&authority["scope"]["target_instance_id"])?;
@@ -98,7 +100,7 @@ pub(super) async fn send<B:Vault+'static>(manager:Arc<Manager<B>>,owner:&DbPool,
         "frozen_digest":transport::commitment("frozen",&frozen)?,"manifest_digest":transport::commitment("manifest",&manifest)?,"content_contract_sha256":descriptor["content_contract_sha256"],
         "portable_records":descriptor["records"].as_u64().ok_or("transfer_archive")?.to_string(),"portable_fragments":archive.as_slice().split(|b|*b==b'\n').filter(|line|!line.is_empty()).count().saturating_sub(1).to_string(),
         "portable_payload_bytes":descriptor["bytes"].as_u64().ok_or("transfer_archive")?.to_string(),"stream_bytes":archive.as_slice().len().to_string()});
-    drop(transport.transit(manager.clone(),ready,&format!("/pilot/v2/transfers/known/{}/transit",reservation.transfer_id()),json!({"transit_contract":"transfer-transit-1","type":"transit.open","request_id":uuid::Uuid::new_v4(),"session":session}),&session).await?);
+    drop(transport.transit(manager.clone(),ready,&format!("/pilot/v2/transfers/known/{}/transit",reservation.transfer_id()),json!({"transit_contract":"transfer-transit-1","type":"transit.open","request_id":uuid::Uuid::new_v4(),"session":session,"provider_id":provider_id,"model_id":model_id}),&session).await?);
     let root=format!("/pilot/v2/transfers/transits/{}",text(&session["transit_id"])?);
     let mut offset=0;let mut sequence=0u64;
     while offset<archive.as_slice().len(){
@@ -142,10 +144,12 @@ pub(super) async fn send<B:Vault+'static>(manager:Arc<Manager<B>>,owner:&DbPool,
 }
 
 pub(super) async fn receive<B:Vault+'static>(manager:Arc<Manager<B>>,owner:&DbPool,config:&ConfigManager,launcher:&CodecLauncher,
-    mut transport:VerifiedTransport,ready:&DbReady,provider_id:&str,model_id:&str,
+    mut transport:VerifiedTransport,ready:&DbReady,
 )->Result<(String,TransferWorker)>{
     let intent=transport.receive_target_invitation(manager.clone(),ready).await?;
     let session=&intent["session"];let manifest=&intent["manifest"];let binding=&intent["binding"];let frozen=&intent["frozen"];
+    let provider_id=text(&intent["provider_id"])?;let model_id=text(&intent["model_id"])?;
+    crate::connect::runtime::transfer_target_snapshot(config,ready,provider_id,model_id).await?;
     let transport=Arc::new(transport);
     let mut reservation=crate::db::connect_transfer::reserve_verified_target(owner,&transport,&intent,manifest).await.map_err(|_|"target_reservation")?;
     let root=format!("/pilot/v2/transfers/transits/{}",text(&session["transit_id"])?);

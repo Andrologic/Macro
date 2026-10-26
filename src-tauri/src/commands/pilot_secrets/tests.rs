@@ -1565,8 +1565,9 @@ async fn global_chat_local_transfer(provider:&str,compacted:bool,with_resources:
     input.write_all(&initialization).await.unwrap();
     let mut target_events=BufReader::new(child.stdout.take().unwrap()).lines();
     let verified=Arc::new(verified);
+    let selected:(String,String)=sqlx::query_as("SELECT provider_id,model_id FROM conversations WHERE id='chat'").fetch_one(&source_pool).await.unwrap();
     let transferred=super::flow::send(manager,&source,&admission,&config,&launcher,&verified,&ready,
-        "source-window","source-browser",&inspection,"chat").await;
+        "source-window","source-browser",&inspection,"chat",&selected.0,&selected.1).await;
     if transferred.is_ok(){
         assert!(!transferred.as_ref().unwrap().is_empty());
         assert_eq!(sqlx::query_scalar::<_,String>("SELECT mode FROM chat_admission_owners WHERE conversation_id='chat'").fetch_one(&source_pool).await.unwrap(),"ceded");
@@ -1618,7 +1619,7 @@ async fn global_chat_transfer_target() {
     let model:crate::db::models::ProviderModelInput=serde_json::from_value(serde_json::json!({"model_id":model_id,"name":"Synthetic model",
         "context_window_tokens":200000,"input_limit_tokens":200000,"output_limit_tokens":16384,"context_window_source":"manual"})).unwrap();
     crate::db::repository::upsert_provider_models(&pool,provider_id,&[model]).await.unwrap();
-    let (conversation,prepared)=super::flow::receive(manager,&owner,&config,&launcher,verified,&ready,provider_id,model_id).await.unwrap();
+    let (conversation,prepared)=super::flow::receive(manager,&owner,&config,&launcher,verified,&ready).await.unwrap();
         let messages:Vec<String>=sqlx::query_scalar("SELECT content FROM messages WHERE conversation_id=? ORDER BY created_at,id").bind(&conversation).fetch_all(&pool).await.unwrap();
         assert!(messages.len()>=if compacted{22}else{2});assert!(messages.iter().any(|s|s.contains("Can I continue on another computer?")));
         assert!(messages.iter().any(|s|s.contains("A short answer available on the other computer.")));

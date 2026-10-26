@@ -231,7 +231,7 @@ impl VerifiedTransport {
         let status=self.transfer_status(manager.clone(),ready,binding,&intent["frozen"],&intent["manifest"],&serde_json::Value::Null,&serde_json::Value::Null).await?;
         if status["status"]!="in_progress" || status["phase"]!="sealed" {return Err("transfer_source_changed");}
         let session=&intent["session"];
-        let opened=self.transit(manager,ready,&format!("/pilot/v2/transfers/known/{}/transit",text(&binding["transfer_id"])?),serde_json::json!({"transit_contract":"transfer-transit-1","type":"transit.open","request_id":uuid::Uuid::new_v4(),"session":session}),session).await?;drop(opened);
+        let opened=self.transit(manager,ready,&format!("/pilot/v2/transfers/known/{}/transit",text(&binding["transfer_id"])?),serde_json::json!({"transit_contract":"transfer-transit-1","type":"transit.open","request_id":uuid::Uuid::new_v4(),"session":session,"provider_id":intent["provider_id"],"model_id":intent["model_id"]}),session).await?;drop(opened);
         *self.target_invitation.lock().map_err(|_|"transit_closed")?=Some(intent.clone());
         self.check_target_transfer(&intent,&intent["manifest"]).await?;Ok(intent)
     }

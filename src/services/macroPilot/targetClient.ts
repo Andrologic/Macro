@@ -220,6 +220,7 @@ export class PilotTargetClient {
         account_id: this.identity.accountId, operation, body }) as ConsumerReadRequest;
       if (!validateContentMessage(request)) throw new PilotClientError('invalid_configuration');
       const input = request.body as { consistency?: string; continuation?: { snapshot_id: string; cursor: string }; direction?: string };
+      if (operation === 'instance.models' && !this.selected.includes('instance-models-1')) throw new PilotClientError('extension_unavailable');
       if (['conversations.catalog', 'conversation.window'].includes(operation) && !this.selected.includes('conversations-1') ||
         input.direction === 'backward' && !this.selected.includes('conversation-history-1') ||
         input.consistency && !this.selected.includes('network-reliability-1')) throw new PilotClientError('extension_unavailable');
@@ -249,7 +250,8 @@ export class PilotTargetClient {
       }
       if (this.transport.now() >= Math.min(expiry ?? deadline, deadline)) throw new PilotClientError('snapshot_expired');
       if (response.type !== 'response' || !validateContentResponse(request, response)) return invalid();
-      const result = response.result as { page?: ContentPage };
+      const result = response.result as { page?: ContentPage; observed_at?: string; expires_at?: string };
+      if (operation === 'instance.models' && (Date.parse(result.expires_at!) <= this.transport.now() || Date.parse(result.observed_at!) > this.transport.now())) throw new PilotClientError('snapshot_expired');
       if (result.page && Date.parse(result.page.expires_at) <= this.transport.now()) throw new PilotClientError('snapshot_expired');
       if (input.continuation && !validateContentPageContinuation(options.previous!.response, response,
         { request, seenIdentities: options.seenIdentities })) return invalid();

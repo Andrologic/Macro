@@ -107,11 +107,11 @@ export interface ConnectTransferSendInput {
   conversationId: string;
   runtime: string;
   inspectionHandle: string;
+  providerId: string;
+  modelId: string;
 }
 export interface ConnectTransferReceiveInput {
   connection: ConnectTransferConnection;
-  providerId: string;
-  modelId: string;
 }
 export function connectTransferSend(input: ConnectTransferSendInput): Promise<string> {
   requireNativePilotVault();

@@ -10,7 +10,7 @@ type Facts = Record<string, any>;
 const UUID = '00000000-0000-0000-0000-000000000000';
 const id = (value: unknown, kind: 'id' | 'uuid' | 'origin' = 'id') => canonical(decision.validateObject(value, kind));
 const session = (value: any) => canonical(transit.validateSession({ transit_contract: transit.VERSION,
-  type: 'transit.open', request_id: 'codec', session: value }, value));
+  type: 'transit.opened', request_id: 'codec', session: value, cursor: { next_sequence: '0', next_offset: '0', eof: false, last: null } }, value));
 const exchange = (value: unknown) => canonical(decision.validateObject(value, 'exchange'));
 
 /** Fixed closed private expectations. No dispatched/authenticated fact comes from the body. */

@@ -267,11 +267,11 @@ impl TransferConnectionInput {
 #[serde(rename_all="camelCase",deny_unknown_fields)]
 pub(crate) struct TransferSendInput {
     connection:TransferConnectionInput,target_instance_id:String,conversation_id:String,
-    runtime:String,inspection_handle:String,
+    runtime:String,inspection_handle:String,provider_id:String,model_id:String,
 }
 #[derive(Deserialize)]
 #[serde(rename_all="camelCase",deny_unknown_fields)]
-pub(crate) struct TransferReceiveInput {connection:TransferConnectionInput,provider_id:String,model_id:String}
+pub(crate) struct TransferReceiveInput {connection:TransferConnectionInput}
 
 #[tauri::command]
 pub(crate) async fn connect_transfer_send(
@@ -288,7 +288,7 @@ pub(crate) async fn connect_transfer_send(
         verified.controller_for(manager().map_err(|_|"vault_unavailable")?,&ready,&input.target_instance_id).await?;
         let verified=Arc::new(verified);
         let result=flow::send(manager().map_err(|_|"vault_unavailable")?,&pool,&admission,&config,&launcher,&verified,&ready,
-            window.label(),&input.runtime,&input.inspection_handle,&input.conversation_id).await;
+            window.label(),&input.runtime,&input.inspection_handle,&input.conversation_id,&input.provider_id,&input.model_id).await;
         Arc::try_unwrap(verified).map_err(|_|"transport_retained")?.close().await?;result
     }.await;
     if result.is_err(){runtime.revoke();}
@@ -305,7 +305,7 @@ pub(crate) async fn connect_transfer_receive(
     let launcher=runtime.codec_launcher(&app,&pool).map_err(command_error)?;
     let result:Result<String,&'static str>=async {
         let verified=transport::bootstrap(input.connection.intent(),&runtime,&launcher,&ready,&tokio_util::sync::CancellationToken::new()).await?;
-        let (conversation,_prepared)=flow::receive(manager().map_err(|_|"vault_unavailable")?,&pool,&config,&launcher,verified,&ready,&input.provider_id,&input.model_id).await?;
+        let (conversation,_prepared)=flow::receive(manager().map_err(|_|"vault_unavailable")?,&pool,&config,&launcher,verified,&ready).await?;
         Ok(conversation)
     }.await;
     if result.is_err(){runtime.revoke();}
