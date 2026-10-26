@@ -28,11 +28,11 @@ function ArchiveContent({ conversationId, selector, uuid, date, title, image = f
   const scope = useRef<ReturnType<typeof createLifecycleScope> | null>(null);
   const held = useRef(new Set<ArchiveValue<ArchiveBacking>>());
   const pending = useRef(false);
-  const key = JSON.stringify([conversationId, selector, uuid]);
+  const key = JSON.stringify([conversationId, selector, uuid, image]);
   const [loadedKey, setLoadedKey] = useState('');
   useLayoutEffect(() => () => { if (backing) { held.current.delete(backing); backing.release(); } }, [backing]);
   useEffect(() => {
-    const owner = createLifecycleScope(); scope.current = owner;
+    const owner = createLifecycleScope(); scope.current = owner; const values = held.current;
     pending.current = true; setBusy(true); setError(''); setAdded(false); setBacking(null); setLoadedKey(key);
     void owner.track((async () => {
       const opened = await ArchiveReaderSession.open({ conversationId, selector }, owner);
@@ -50,9 +50,11 @@ function ArchiveContent({ conversationId, selector, uuid, date, title, image = f
       .finally(() => { if (owner.isActive()) { pending.current = false; setBusy(false); } });
     return () => {
       owner.stop(); reader.current = null;
-      for (const value of held.current) value.release();
-      held.current.clear();
+      for (const value of values) value.release();
+      values.clear();
     };
+    // `key` encodes every input of this read.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [key]);
   const data = loadedKey === key ? backing?.value : undefined;
   const next = (previous: boolean) => {
@@ -111,12 +113,13 @@ export function ArchiveReaderDialog({ conversationId, messageId, onClose }: {
   const reader = useRef<ArchiveReaderSession | null>(null);
   const scope = useRef<ReturnType<typeof createLifecycleScope> | null>(null);
   const held = useRef(new Set<ArchiveValue<ArchivePage>>());
-  const pending = useRef(false); const close = useRef(onClose); close.current = onClose;
+  const pending = useRef(false); const close = useRef(onClose);
+  useLayoutEffect(() => { close.current = onClose; });
   const key = JSON.stringify([conversationId, selection]); const [loadedKey, setLoadedKey] = useState('');
   useLayoutEffect(() => () => { if (page) { held.current.delete(page); page.release(); } }, [page]);
   useEffect(() => onArchiveReadersRetiring(id => { if (!id || id === conversationId) close.current(); }), [conversationId]);
   useEffect(() => {
-    const owner = createLifecycleScope(); scope.current = owner;
+    const owner = createLifecycleScope(); scope.current = owner; const values = held.current;
     pending.current = true; setLoadedKey(key); setPage(null); setResource(null); setBusy(true); setError('');
     void owner.track((async () => {
       const opened = await ArchiveReaderSession.open({ conversationId, selector: selection }, owner);
@@ -126,7 +129,9 @@ export function ArchiveReaderDialog({ conversationId, messageId, onClose }: {
       held.current.add(value); setPage(value);
     })()).catch(cause => { if (owner.isActive()) setError(toServiceError(cause).message); })
       .finally(() => { if (owner.isActive()) { pending.current = false; setBusy(false); } });
-    return () => { owner.stop(); for (const value of held.current) value.release(); held.current.clear(); };
+    return () => { owner.stop(); for (const value of values) value.release(); values.clear(); };
+    // `key` encodes every input of this read.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [key]);
   const next = () => {
     const opened = reader.current, owner = scope.current, cursor = page?.value.nextCursorId;
