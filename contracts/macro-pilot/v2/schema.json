@@ -3385,6 +3385,9 @@
               "instance-models-1"
             ]
           }
+        },
+        "transfer_only": {
+          "const": true
         }
       }
     },

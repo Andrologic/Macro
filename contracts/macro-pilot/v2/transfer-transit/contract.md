@@ -284,3 +284,13 @@ these bounded compatibility identifiers with the window, rejects changed retries
 and copies them into transit.invitation. They grant no authority. The target
 revalidates its current local provider/model configuration before staging and
 again before preparation and publication. No credential or model call travels.
+
+## Concurrent transfer-only producer poll
+
+An optional `transfer_only: true` on the existing v2 poll requires the exact
+transfer transit offer header. It uses one separate pending poll slot per
+instance and routes only transfer controls/chunks. It requires the same current
+selected producer and capability advertisement, cannot elect a producer or
+change its commands, and retains all current authorization and generation
+guards. Ordinary content polls keep their existing owner and queue. Disconnect,
+revocation, cancellation and shutdown retire the transfer poll too.

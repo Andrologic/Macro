@@ -77,6 +77,7 @@ export function validateMessage(message) {
     reject(lifetime <= 0 || lifetime > 30000, 'instance model catalog lifetime');
     reject(new Set(r.models.map(m => JSON.stringify([m.provider_id, m.model_id]))).size !== r.models.length, 'duplicate instance models');
   }
+  if (message.type === 'poll' && message.transfer_only === true) reject((message.commands ?? []).length > 0, 'transfer poll cannot change command advertisement');
   if (message.type === 'accepted') reject(message.exchange_id !== message.request_id, 'exchange identity mismatch');
   if (message.type === 'delivery') {
     reject(message.request_id !== message.request.request_id || message.account_id !== message.request.account_id, 'delivery correlation mismatch');
