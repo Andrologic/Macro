@@ -159,7 +159,7 @@ impl VerifiedTransport {
         let instance=p["instance_id"].as_str().ok_or("authority_context")?;
         let path=format!("/pilot/v2/instances/{instance}/deliveries/poll");
         let request_id=uuid::Uuid::new_v4();
-        let bytes=Bytes::serialize(&self.runtime.budget()?,&serde_json::json!({"transport_version":"2.0","type":"poll","capabilities":self.capabilities}))?;
+        let bytes=Bytes::serialize(&self.runtime.budget()?,&serde_json::json!({"transport_version":"2.0","type":"poll","transfer_only":true,"capabilities":self.capabilities}))?;
         let response=tokio::select! {biased;
             _=stop.cancelled()=>return Err("http_cancelled"),
             result=exchange(manager.clone(),self.identity.clone(),self._snapshot.clone(),&self.observation,&self.runtime,

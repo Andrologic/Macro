@@ -69,3 +69,10 @@ test('catalog never escapes a rejected current authorization', async () => {
   await expect(h.host.handle(h.delivery, async () => { throw Error('revoked'); })).rejects.toThrow('revoked');
   await h.host.dispose();
 });
+
+test('transfer-only poll is an explicit opt-in that cannot advertise commands', () => {
+  const poll = { transport_version: '2.0', type: 'poll', transfer_only: true };
+  expect(validateContentMessage(poll)).toBe(true);
+  expect(validateContentMessage({ ...poll, transfer_only: false })).toBe(false);
+  expect(validateContentMessage({ ...poll, commands: ['conversation.send'] })).toBe(false);
+});
