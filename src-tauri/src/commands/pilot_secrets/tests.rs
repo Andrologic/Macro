@@ -1623,7 +1623,7 @@ async fn global_chat_local_transfer(provider:&str,compacted:bool,with_resources:
             .args(["--exact","commands::pilot_secrets::tests::global_chat_transfer_target","--ignored","--nocapture","--test-threads=1"])
             .stdin(std::process::Stdio::piped()).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::inherit()).kill_on_drop(true).spawn().unwrap();
         let mut input=child.stdin.take().unwrap();
-        let mut initialization=serde_json::to_vec(&serde_json::json!({"seed":seed,"session":session,"sent":sent,"manifest":manifest,
+        let mut initialization=serde_json::to_vec(&serde_json::json!({"seed":seed,
             "database":directory.path().join("target.db"),"provider":provider,"compacted":compacted,"resources":with_resources})).unwrap();initialization.push(b'\n');
         input.write_all(&initialization).await.unwrap();
         let mut target_events=BufReader::new(child.stdout.take().unwrap()).lines();
@@ -1687,24 +1687,18 @@ async fn global_chat_local_transfer(provider:&str,compacted:bool,with_resources:
         let value:serde_json::Value=serde_json::from_slice(committed.bytes.as_slice()).map_err(|_|"commit_reply")?;drop(committed);
         if value["result"]["status"]["phase"]!="committed"{return Err("commit_reply");}
         assert_eq!(verified.committed_terminal(reservation.transfer_id()).await?["outcome"],"committed");
-        input.write_all(b"{\"publish\":true}\n").await.unwrap();
-        let published=transfer_target_event(&mut target_events).await?;
-        if published["type"]!="published"{return Err("target_publication_event");}
         assert!(reservation.apply_committed_source(&source,job).await.is_err());
         assert_eq!(sqlx::query_scalar::<_,String>("SELECT mode FROM chat_admission_owners WHERE conversation_id='chat'").fetch_one(&source_pool).await.unwrap(),"frozen");
-        let request=published["request"].clone();let activation=&request["body"]["activation"];
-        let expected=published["expected"].clone();
         let terminal=verified.committed_terminal(reservation.transfer_id()).await?;
-        if activation["terminal_digest"]!=digest("terminal",&terminal) || activation["target_conversation_id"]!=terminal["prepared"]["target_conversation_id"]
-            || expected["subject_digest"]!=digest("activation",activation) || expected["prior_receipt_digest"]!=digest("terminal",&terminal)
-            || expected["instance_id"]!=producer["instance_id"] || expected["producer_generation"]!=producer["generation"] || expected["connection_id"]!=producer["connection_id"]
-        {return Err("target_activation_scope");}
-        let challenge=serde_json::json!({"transit_contract":"transfer-transit-1","type":"decision.challenge","request_id":uuid::Uuid::new_v4(),"kind":"target_activated","request":request});
-        let reply=verified.metadata(manager.clone(),&ready,&format!("/pilot/v2/transfers/known/{}/challenges",reservation.transfer_id()),challenge.clone(),
-            serde_json::json!({"kind":"challenge","sent":challenge,"exchange":expected})).await?;drop(reply);
-        if transfer_target_event(&mut target_events).await?["type"]!="activation_attested"{return Err("target_activation_event");}
-        let expected=serde_json::json!({"binding":binding,"frozen":frozen,"manifest":manifest,"prepared":terminal["prepared"],"terminal":terminal});
-        let acknowledged=verified.decision(manager.clone(),&ready,&known,wrap(request),expected).await?;drop(acknowledged);
+        let mut activated=false;
+        for _ in 0..100 {
+            let status=verified.transfer_status(manager.clone(),&ready,&binding,&frozen,&manifest,&terminal["prepared"],&terminal).await?;
+            if !status["activation"].is_null(){activated=true;break;}
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+        if !activated{return Err("target_activation_timeout");}
+        let published=transfer_target_event(&mut target_events).await?;
+        if published["type"]!="published"{return Err("target_publication_event");}
         reservation.apply_committed_source(&source,job).await.map_err(|_|"source_application")?;
         assert_eq!(sqlx::query_scalar::<_,String>("SELECT mode FROM chat_admission_owners WHERE conversation_id='chat'").fetch_one(&source_pool).await.unwrap(),"ceded");
         assert_eq!(sqlx::query_scalar::<_,i64>("SELECT COUNT(*) FROM messages WHERE conversation_id='chat'").fetch_one(&source_pool).await.unwrap(),if compacted{22}else{2});
@@ -1734,7 +1728,7 @@ async fn global_chat_transfer_target() {
     use transport::{Intent,Scope};
     let mut input=BufReader::new(tokio::io::stdin()).lines();
     let data:serde_json::Value=serde_json::from_str(&input.next_line().await.unwrap().unwrap()).unwrap();
-    let seed=&data["seed"];let b=&seed["b"];let session=&data["session"];
+    let seed=&data["seed"];let b=&seed["b"];
     let text=|v:&serde_json::Value|v.as_str().unwrap().to_owned();
     let codex=data["provider"]=="codex";let compacted=data["compacted"]==true;let with_resources=data["resources"]==true;
     let (provider_id,provider_type,model_id)=if codex{("chatgpt","chatgpt","gpt-6.1-sol")}else{("macro-ai","openai","macro-ai")};
@@ -1754,11 +1748,10 @@ async fn global_chat_transfer_target() {
     let mut verified=transport::bootstrap_owned(manager.clone(),Intent{context,generation,instance_creation_id:text(&b["creation"]),
         account_id:Some(text(&seed["account_id"])),device_id:Some(text(&b["device_id"])),scope:Scope::Producer{instance_id:text(&b["instance"])}},
         &runtime,&launcher,&ready,format!("127.0.0.1:{}",seed["port"].as_u64().unwrap()).parse().unwrap(),true,&tokio_util::sync::CancellationToken::new()).await.unwrap();
-    verified.controller_for_pair(manager.clone(),&ready,&text(&seed["a"]["instance"]),&text(&b["instance"])).await.unwrap();
+    let intent=verified.receive_target_invitation(manager.clone(),&ready).await.unwrap();
+    let session=&intent["session"];let manifest=&intent["manifest"];
     let verified=Arc::new(verified);
-    let opened=verified.transit(manager.clone(),&ready,&format!("/pilot/v2/transfers/known/{}/transit",session["transfer_id"].as_str().unwrap()),
-        serde_json::json!({"transit_contract":"transfer-transit-1","type":"transit.open","request_id":uuid::Uuid::new_v4(),"session":session}),session).await.unwrap();drop(opened);
-    let mut reservation=crate::db::connect_transfer::reserve_verified_target(&owner,&verified,&data["sent"],&data["manifest"]).await.unwrap();
+    let mut reservation=crate::db::connect_transfer::reserve_verified_target(&owner,&verified,&intent,manifest).await.unwrap();
     let root=format!("/pilot/v2/transfers/transits/{}",session["transit_id"].as_str().unwrap());
     let mut sequence=0i64;let mut offset=0i64;
     loop {
@@ -1770,16 +1763,16 @@ async fn global_chat_transfer_target() {
         let delivery:serde_json::Value=serde_json::from_slice(received.bytes.as_slice()).unwrap();drop(received);
         assert_eq!(delivery["branch"],"transit");assert_eq!(delivery["value"]["body"]["kind"],"transit.chunk");
         let chunk=&delivery["value"]["body"]["message"];
-        let committed=reservation.stage_target(&owner,&data["sent"],&data["manifest"],chunk).await.unwrap();
+        let committed=reservation.stage_target(&owner,&intent,manifest,chunk).await.unwrap();
         let mut ack=chunk.clone();ack.as_object_mut().unwrap().remove("data_utf8");ack["type"]=serde_json::json!("transit.ack");
         ack["request_id"]=serde_json::json!(uuid::Uuid::new_v4());ack["next_offset"]=serde_json::json!(committed.1.to_string());
         let progress=verified.transit(manager.clone(),&ready,&(root.clone()+"/ack"),ack,session).await.unwrap();drop(progress);
         (sequence,offset)=(committed.0,committed.1);if committed.2{break;}
     }
     assert_eq!(sqlx::query_scalar::<_,i64>("SELECT SUM(length(data)) FROM connect_raw_chunks").fetch_one(&pool).await.unwrap().to_string(),session["stream_bytes"]);
-    let archive=reservation.staged_target(&owner,&data["sent"],&data["manifest"]).await.unwrap();
+    let archive=reservation.staged_target(&owner,&intent,manifest).await.unwrap();
     let descriptor:serde_json::Value=serde_json::from_slice(archive.split(|b|*b==b'\n').next().unwrap()).unwrap();
-    let storage=crate::db::inactive_storage::InactiveStorage::for_transfer(&owner,verified.clone(),data["sent"].clone(),data["manifest"].clone()).await.unwrap();
+    let storage=crate::db::inactive_storage::InactiveStorage::for_transfer(&owner,verified.clone(),intent.clone(),manifest.clone()).await.unwrap();
     if let Ok(delay)=std::env::var("MACRO_CONNECT_TEST_PHASE_DELAY_MS") {
         let delay=delay.parse::<u64>().unwrap();assert!(delay<=35_000);
         verified.refresh_authority(manager.clone(),&ready).await.unwrap();
@@ -1794,7 +1787,7 @@ async fn global_chat_transfer_target() {
     }
     verified.refresh_authority(manager.clone(),&ready).await.unwrap();
     let imported=launcher.import_archive(&config,&verified,&storage,&archive,&descriptor).await;
-    let attached=if let Ok(imported)=&imported {reservation.attach_imported_target(&owner,&data["sent"],&data["manifest"],imported).await}else{Ok(())};
+    let attached=if let Ok(imported)=&imported {reservation.attach_imported_target(&owner,&intent,manifest,imported).await}else{Ok(())};
     let mut prepared=if let Ok(imported)=&imported {
         crate::db::repository::upsert_provider_config_by_id(&pool,provider_id,"Synthetic provider",provider_type,"https://provider.example.invalid/v1",true).await.unwrap();
         // The built-in Codex row starts disabled. Configure this synthetic
@@ -1809,13 +1802,13 @@ async fn global_chat_transfer_target() {
         launcher.prepare_archive(&config,&verified,&storage,imported,provider_id,model_id).await
     }else{Err("transfer_import_missing")};
     let pinned=if let (Ok(imported),Ok(prepared))=(&imported,&mut prepared) {
-        reservation.pin_target(&owner,&config,imported,prepared,&data["sent"],&data["manifest"]).await
+        reservation.pin_target(&owner,&config,imported,prepared,&intent,manifest).await
     }else{Ok(())};
     if pinned.is_ok() && prepared.is_ok() {
         assert_eq!(reservation.target_prepared().await.unwrap()["target_conversation_id"],prepared.as_ref().unwrap().native_prepared().unwrap().1.conversation_id.as_ref().unwrap().as_str());
         assert_eq!(sqlx::query_scalar::<_,String>("SELECT phase FROM connect_preparations").fetch_one(&pool).await.unwrap(),"pinned");
         assert_eq!(sqlx::query_scalar::<_,i64>("SELECT COUNT(*) FROM conversations").fetch_one(&pool).await.unwrap(),0);
-        assert_ne!(reservation.target_prepared().await.unwrap()["lineage_id"],data["sent"]["request"]["body"]["binding"]["provenance"]["lineage_id"]);
+        assert_ne!(reservation.target_prepared().await.unwrap()["lineage_id"],intent["binding"]["provenance"]["lineage_id"]);
         let ready_intent=serde_json::json!({"decision_contract":"transfer-decision-1","type":"decision_request","operation":"ready",
             "operation_id":uuid::Uuid::new_v4(),"expected_revision":"2","transfer_id":session["transfer_id"],"body":{"prepared":reservation.target_prepared().await.unwrap()}});
         let expected=reservation.target_expectation(&owner,&config,prepared.as_ref().unwrap(),&ready_intent,"target_pinned").await.unwrap();
@@ -1831,13 +1824,15 @@ async fn global_chat_transfer_target() {
         let delivery=verified.delivery(manager.clone(),&ready).await.unwrap();
         verified.attest_target(manager.clone(),&ready,&owner,&reservation,&config,prepared.as_ref().unwrap(),delivery).await.unwrap();
         println!("SLICE_TARGET_EVENT:{}",serde_json::json!({"type":"maintained_attested"}));
-        let publish:serde_json::Value=serde_json::from_str(&input.next_line().await.unwrap().unwrap()).unwrap();assert_eq!(publish["publish"],true);
-        let binding=&data["sent"]["request"]["body"]["binding"];let frozen=&data["sent"]["request"]["body"]["frozen"];
-        let request=serde_json::json!({"transit_contract":"transfer-transit-1","type":"decision.request","request_id":uuid::Uuid::new_v4(),
-            "request":{"decision_contract":"transfer-decision-1","type":"decision_request","operation":"reconcile","operation_id":uuid::Uuid::new_v4(),
-                "expected_revision":"0","transfer_id":session["transfer_id"],"body":{"binding":binding,"frozen":frozen,"expected_ledger_revision":"1","action":"status"}}});
-        let expected=serde_json::json!({"binding":binding,"frozen":frozen,"manifest":data["manifest"],"prepared":reservation.target_prepared().await.unwrap(),"terminal":null});
-        let reply=verified.decision(manager.clone(),&ready,&format!("/pilot/v2/transfers/known/{}/decisions",session["transfer_id"].as_str().unwrap()),request,expected).await.unwrap();drop(reply);
+        let binding=&intent["binding"];let frozen=&intent["frozen"];
+        let mut committed=false;
+        for _ in 0..100 {
+            let status=verified.transfer_status(manager.clone(),&ready,binding,frozen,manifest,reservation.target_prepared().await.unwrap(),&serde_json::Value::Null).await.unwrap();
+            if status["phase"]=="committed"{committed=true;break;}
+            assert!(status["terminal"].is_null());
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+        assert!(committed,"source commit not observed");
         let conversation=reservation.publish_target(&owner,&config,prepared.as_ref().unwrap()).await.unwrap();
         let messages:Vec<String>=sqlx::query_scalar("SELECT content FROM messages WHERE conversation_id=? ORDER BY created_at,id").bind(&conversation).fetch_all(&pool).await.unwrap();
         assert!(messages.len()>=if compacted{22}else{2});assert!(messages.iter().any(|s|s.contains("Can I continue on another computer?")));
@@ -1916,10 +1911,16 @@ async fn global_chat_transfer_target() {
         let request=serde_json::json!({"decision_contract":"transfer-decision-1","type":"decision_request","operation":"activation.record",
             "operation_id":uuid::Uuid::new_v4(),"expected_revision":"4","transfer_id":session["transfer_id"],"body":{"activation":activation}});
         let expected=reservation.target_expectation(&owner,&config,prepared.as_ref().unwrap(),&request,"target_activated").await.unwrap();
-        println!("SLICE_TARGET_EVENT:{}",serde_json::json!({"type":"published","conversation":conversation,"request":request,"expected":expected}));
+        let sent=serde_json::json!({"transit_contract":"transfer-transit-1","type":"decision.request","request_id":uuid::Uuid::new_v4(),"request":request});
+        let challenge=serde_json::json!({"transit_contract":"transfer-transit-1","type":"decision.challenge","request_id":uuid::Uuid::new_v4(),"kind":"target_activated","request":sent["request"]});
+        let known=format!("/pilot/v2/transfers/known/{}",session["transfer_id"].as_str().unwrap());
+        let reply=verified.metadata(manager.clone(),&ready,&(known.clone()+"/challenges"),challenge.clone(),serde_json::json!({"kind":"challenge","sent":challenge,"exchange":expected})).await.unwrap();drop(reply);
         let delivery=verified.delivery(manager.clone(),&ready).await.unwrap();
         verified.attest_target(manager.clone(),&ready,&owner,&reservation,&config,prepared.as_ref().unwrap(),delivery).await.unwrap();
-        println!("SLICE_TARGET_EVENT:{}",serde_json::json!({"type":"activation_attested"}));
+        let terminal=verified.committed_terminal(session["transfer_id"].as_str().unwrap()).await.unwrap();
+        let expected=serde_json::json!({"binding":binding,"frozen":frozen,"manifest":manifest,"prepared":reservation.target_prepared().await.unwrap(),"terminal":terminal});
+        let reply=verified.decision(manager.clone(),&ready,&(known+"/decisions"),sent,expected).await.unwrap();drop(reply);
+        println!("SLICE_TARGET_EVENT:{}",serde_json::json!({"type":"published","conversation":conversation}));
         let stop:serde_json::Value=serde_json::from_str(&input.next_line().await.unwrap().unwrap()).unwrap();assert_eq!(stop["stop"],true);
     }
     drop(storage);drop(reservation);

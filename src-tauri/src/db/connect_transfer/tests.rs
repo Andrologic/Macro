@@ -19,8 +19,7 @@ pub(in crate::db::connect_transfer) async fn fixture() -> (TempDir, SqlitePool) 
 pub(in crate::db::connect_transfer) async fn input(pool: &SqlitePool) -> Reservation {
     Reservation {
         native_authority:None,native_target_prepared:None,native_target_activation:None,native_lineage_id:String::new(),native_installation_id:String::new(),
-        native_birth_generation:String::new(),native_operation_id:String::new(),
-        native_expected_revision:String::new(),native_ledger_revision:String::new(),
+        native_birth_generation:String::new(),
         transfer_id: uuid::Uuid::new_v4().to_string(),
         relay_origin: "https://relay.invalid".into(),
         account_id: "account-1".into(),

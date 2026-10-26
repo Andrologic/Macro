@@ -35,9 +35,6 @@ pub(crate) struct Reservation {
     #[serde(skip)] native_lineage_id: String,
     #[serde(skip)] native_installation_id: String,
     #[serde(skip)] native_birth_generation: String,
-    #[serde(skip)] native_operation_id: String,
-    #[serde(skip)] native_expected_revision: String,
-    #[serde(skip)] native_ledger_revision: String,
 }
 impl Reservation {
     pub(crate) fn transfer_id(&self)->&str { &self.transfer_id }
@@ -102,14 +99,14 @@ impl Reservation {
         use crate::commands::pilot_secrets::transport::commitment;
         let manifest=self.source_manifest(owner,normalized).await?;
         let (binding,frozen)=self.native_commitments()?;
-        let original=serde_json::json!({"decision_contract":"transfer-decision-1","type":"decision_request",
-            "operation":"reserve","operation_id":self.native_operation_id,"expected_revision":self.native_expected_revision,
-            "transfer_id":self.transfer_id,"body":{"binding":binding,"frozen":frozen,"expected_ledger_revision":self.native_ledger_revision}});
+        let original:serde_json::Value=serde_json::from_slice(&self.reserve_request).map_err(|_|invalid("connect_native_binding_changed"))?;
+        let original=&original["request"];
+        if original["body"]["binding"]!=binding || original["body"]["frozen"]!=frozen {return Err(invalid("connect_native_binding_changed"));}
         let (scope,subject,prior)=match kind {
             "lineage_enrolled" if request["operation"]=="lineage.create" && request["body"]["mode"]=="initial_existing"
                 && request["body"]["provenance"]==binding["provenance"] && request["body"]["creation_digest"]==frozen["sha256"]=>
                 (commitment("provenance",&binding["provenance"]),commitment("birth",&request["body"]),None),
-            "source_frozen" if request==&original => (commitment("transfer-binding",&binding),commitment("frozen",&frozen),None),
+            "source_frozen" if request==original => (commitment("transfer-binding",&binding),commitment("frozen",&frozen),None),
             "source_sealed" if request["operation"]=="seal" && request["transfer_id"]==self.transfer_id && request["body"]["manifest"]==manifest =>
                 (commitment("transfer-binding",&binding),commitment("manifest",&manifest),Some(commitment("frozen",&frozen))),
             "source_maintained" if request["operation"]=="commit" && request["transfer_id"]==self.transfer_id =>
@@ -192,7 +189,7 @@ pub(crate) async fn reserve_verified_source(
     sent: &serde_json::Value,
 ) -> DbResult<(Reservation, LocalReservation)> {
     transport.check_reserve(sent).await.map_err(invalid)?;
-    let input=reservation_intent(transport,sent)?;
+    let input=reservation_intent(transport,sent,&sent["request"]["body"]["binding"],&sent["request"]["body"]["frozen"])?;
     let native_freeze_hash=hash(&serde_json::to_vec(&input.expected_content).map_err(|_|invalid("connect_native_freeze"))?)
         .iter().map(|b|format!("{b:02x}")).collect::<String>();
     if sent["request"]["body"]["frozen"]["sha256"]!=native_freeze_hash {return Err(invalid("connect_native_freeze"));}
@@ -203,10 +200,9 @@ pub(crate) async fn reserve_verified_source(
 }
 // This constructor only copies intent. Its two callers first establish their
 // live source freeze or authenticated target session; none is a receipt reader.
-fn reservation_intent(transport:&std::sync::Arc<crate::commands::pilot_secrets::transport::VerifiedTransport>,sent:&serde_json::Value)->DbResult<Reservation> {
-    let q = &sent["request"];
-    let b = &q["body"]["binding"];
-    let f = &q["body"]["frozen"];
+fn reservation_intent(transport:&std::sync::Arc<crate::commands::pilot_secrets::transport::VerifiedTransport>,sent:&serde_json::Value,
+    b:&serde_json::Value,f:&serde_json::Value,
+)->DbResult<Reservation> {
     let source = &b["provenance"]["source"];
     let text = |v: &serde_json::Value| v.as_str().map(str::to_owned)
         .ok_or_else(|| invalid("connect_transfer_invalid_input"));
@@ -233,8 +229,6 @@ fn reservation_intent(transport:&std::sync::Arc<crate::commands::pilot_secrets::
         native_lineage_id:text(&b["provenance"]["lineage_id"])?,
         native_installation_id:text(&b["provenance"]["installation_id"])?,
         native_birth_generation:text(&b["provenance"]["birth_generation"])?,
-        native_operation_id:text(&q["operation_id"])?,
-        native_expected_revision:text(&q["expected_revision"])?, native_ledger_revision:text(&q["body"]["expected_ledger_revision"])?,
     })
 }
 pub(crate) async fn reserve_verified_target(owner:&DbPool,
@@ -242,7 +236,7 @@ pub(crate) async fn reserve_verified_target(owner:&DbPool,
     sent:&serde_json::Value,manifest:&serde_json::Value,
 )->DbResult<Reservation> {
     transport.check_target_transfer(sent,manifest).await.map_err(invalid)?;
-    let input=reservation_intent(transport,sent)?;
+    let input=reservation_intent(transport,sent,&sent["binding"],&sent["frozen"])?;
     let guard=owner.source_ready(None).await.map_err(|_|invalid("unavailable"))?;
     reserve_target(&guard.ready.pool,&input).await?;
     transport.check().await.map_err(invalid)?;
@@ -255,11 +249,12 @@ impl Reservation {
         let terminal=live.committed_terminal(&self.transfer_id).await.map_err(invalid)?;
         // Original native intent, never reconstructed from a SQL receipt. Fresh
         // authority is the private authenticated terminal above.
-        let original:serde_json::Value=serde_json::from_slice(&self.reserve_request).map_err(|_|invalid("connect_native_binding_changed"))?;
-        let binding=&original["request"]["body"]["binding"];let frozen=&original["request"]["body"]["frozen"];
+        let binding:serde_json::Value=serde_json::from_slice(&self.binding_json).map_err(|_|invalid("connect_native_binding_changed"))?;
+        let expectation:serde_json::Value=serde_json::from_slice(&self.expectation_json).map_err(|_|invalid("connect_native_binding_changed"))?;
+        let frozen=&expectation["frozen"];
         if terminal["source"]!=binding["provenance"]["source"] || terminal["epoch"]!=binding["epoch"]
             || terminal["target_instance_id"]!=self.target_instance_id
-            || terminal["binding_digest"]!=commitment("transfer-binding",binding).map_err(invalid)?
+            || terminal["binding_digest"]!=commitment("transfer-binding",&binding).map_err(invalid)?
             || terminal["frozen_digest"]!=commitment("frozen",frozen).map_err(invalid)?
         {return Err(invalid("connect_terminal_mismatch"));}
         Ok(terminal)
@@ -380,7 +375,7 @@ impl Reservation {
             || self.native_target_prepared.is_some(){return Err(invalid("connect_native_binding_changed"));}
         let guard=owner.source_ready(None).await.map_err(|_|invalid("unavailable"))?;
         let expected=self.inspect()?.0;
-        let value=super::preparation::pin_native(&guard.ready,config,&expected,&sent["request"]["body"]["binding"],manifest,imported,prepared).await?;
+        let value=super::preparation::pin_native(&guard.ready,config,&expected,&sent["binding"],manifest,imported,prepared).await?;
         live.check_target_transfer(sent,manifest).await.map_err(invalid)?;
         self.native_target_prepared=Some(value);Ok(())
     }
@@ -426,7 +421,7 @@ impl Reservation {
         let live=self.native_authority.as_ref().ok_or_else(||invalid("connect_native_owner_missing"))?;
         let session=live.check_target_transfer(sent,manifest).await.map_err(invalid)?;
         if session["transfer_id"]!=self.transfer_id || chunk["transfer_id"]!=self.transfer_id
-            || chunk["transit_id"]!=session["transit_id"] || session["binding_digest"]!=commitment("transfer-binding",&sent["request"]["body"]["binding"]).map_err(invalid)?
+            || chunk["transit_id"]!=session["transit_id"] || session["binding_digest"]!=commitment("transfer-binding",&sent["binding"]).map_err(invalid)?
         {return Err(invalid("connect_transfer_session_conflict"));}
         let text=|v:&serde_json::Value|v.as_str().map(str::to_owned).ok_or_else(||invalid("connect_transfer_invalid_input"));
         let number=|v:&serde_json::Value|text(v)?.parse::<i64>().map_err(|_|invalid("connect_transfer_invalid_input"));

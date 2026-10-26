@@ -60,6 +60,7 @@ pub(crate) struct VerifiedTransport {
     pub(super) authority: serde_json::Value,
     producer_authority: Option<serde_json::Value>,
     transit_session: std::sync::Mutex<Option<serde_json::Value>>,
+    target_invitation: std::sync::Mutex<Option<serde_json::Value>>,
     terminal_receipt: std::sync::Mutex<Option<serde_json::Value>>,
     activation_receipt: std::sync::Mutex<Option<serde_json::Value>>,
     observation: PolicyObservation,
@@ -205,29 +206,65 @@ impl VerifiedTransport {
         }
         Ok(output)
     }
-    pub(crate) async fn check_target_transfer(&self,sent:&serde_json::Value,manifest:&serde_json::Value)->Result<serde_json::Value> {
-        self.check().await?;
-        let q=&sent["request"];let binding=&q["body"]["binding"];let frozen=&q["body"]["frozen"];
+    /// The target learns its intent only through the canonical producer poll.
+    /// Reconcile F before retaining it; the invitation itself grants no rights.
+    pub(super) async fn receive_target_invitation<B:Vault+'static>(&mut self,manager:Arc<Manager<B>>,ready:&DbReady)->Result<serde_json::Value> {
+        let output=self.delivery(manager.clone(),ready).await?;
+        let received:serde_json::Value=serde_json::from_slice(output.bytes.as_slice()).map_err(|_|"invalid_delivery")?;drop(output);
+        if received["branch"]!="transit" || received["value"]["body"]["kind"]!="transit.invitation" {return Err("transfer_invitation_missing");}
+        let intent=received["value"]["body"]["message"].clone();
+        let binding=&intent["binding"];let source=&binding["provenance"]["source"];
+        let text=|value:&serde_json::Value|value.as_str().map(str::to_owned).ok_or("invalid_request");
+        let source_instance=text(&source["source_instance_id"])?;let target=text(&binding["target_instance_id"])?;
+        self.controller_for_pair(manager.clone(),ready,&source_instance,&target).await?;
+        let status=self.transfer_status(manager.clone(),ready,binding,&intent["frozen"],&intent["manifest"],&serde_json::Value::Null,&serde_json::Value::Null).await?;
+        if status["status"]!="in_progress" || status["phase"]!="sealed" {return Err("transfer_source_changed");}
+        let session=&intent["session"];
+        let opened=self.transit(manager,ready,&format!("/pilot/v2/transfers/known/{}/transit",text(&binding["transfer_id"])?),serde_json::json!({"transit_contract":"transfer-transit-1","type":"transit.open","request_id":uuid::Uuid::new_v4(),"session":session}),session).await?;drop(opened);
+        *self.target_invitation.lock().map_err(|_|"transit_closed")?=Some(intent.clone());
+        self.check_target_transfer(&intent,&intent["manifest"]).await?;Ok(intent)
+    }
+    pub(super) async fn transfer_status<B:Vault+'static>(&self,manager:Arc<Manager<B>>,ready:&DbReady,
+        binding:&serde_json::Value,frozen:&serde_json::Value,manifest:&serde_json::Value,
+        prepared:&serde_json::Value,terminal:&serde_json::Value,
+    )->Result<serde_json::Value>{
         let source=&binding["provenance"]["source"];
         let text=|value:&serde_json::Value|value.as_str().map(str::to_owned).ok_or("invalid_request");
+        let wrap=|request:serde_json::Value|serde_json::json!({"transit_contract":"transfer-transit-1","type":"decision.request","request_id":uuid::Uuid::new_v4(),"request":request});
+        let request=wrap(serde_json::json!({"decision_contract":"transfer-decision-1","type":"decision_request","operation":"reconcile","operation_id":uuid::Uuid::new_v4(),"expected_revision":"0","body":{"action":"source_status","provenance":binding["provenance"]}}));
+        let path=format!("/pilot/v2/transfers/sources/{}/{}",text(&source["source_instance_id"])?,text(&source["source_conversation_id"])?);
+        let output=self.decision(manager.clone(),ready,&(path+"/decisions"),request,serde_json::Value::Null).await?;
+        let reply:serde_json::Value=serde_json::from_slice(output.bytes.as_slice()).map_err(|_|"codec_result")?;drop(output);
+        let status=&reply["result"]["status"];let ledger=&status["ledger"];
+        if status["status"]!="known" || !matches!(ledger["state"].as_str(),Some("reserved"|"ceded")) || ledger["state"]=="reserved" && ledger["active_transfer_id"]!=binding["transfer_id"]
+            || ledger["high_epoch"]!=binding["epoch"] || ledger["provenance"]!=binding["provenance"]
+            || status["recovery_generation"]!=self.authority["recovery_generation"] {return Err("transfer_source_changed");}
+        // Read-only status does not use a CAS revision. Its ledger revision is
+        // nevertheless the authenticated value above, not a reserve guess.
+        let request=wrap(serde_json::json!({"decision_contract":"transfer-decision-1","type":"decision_request","operation":"reconcile","operation_id":uuid::Uuid::new_v4(),"expected_revision":"0","transfer_id":binding["transfer_id"],"body":{"action":"status","binding":binding,"frozen":frozen,"expected_ledger_revision":ledger["revision"]}}));
+        let expectation=serde_json::json!({"binding":binding,"frozen":frozen,"manifest":manifest,"prepared":prepared,"terminal":terminal});
+        let output=self.decision(manager.clone(),ready,&format!("/pilot/v2/transfers/known/{}/decisions",text(&binding["transfer_id"])?),request,expectation).await?;
+        let reply:serde_json::Value=serde_json::from_slice(output.bytes.as_slice()).map_err(|_|"codec_result")?;drop(output);
+        let status=reply["result"]["status"].clone();
+        if status["source_recovery"]!="intact" || status["recovery_generation"]!=binding["relay_recovery_generation"] {return Err("transfer_source_changed");}
+        Ok(status)
+    }
+    pub(crate) async fn check_target_transfer(&self,intent:&serde_json::Value,manifest:&serde_json::Value)->Result<serde_json::Value> {
+        self.check().await?;
+        let retained=self.target_invitation.lock().map_err(|_|"transit_closed")?.clone().ok_or("transfer_invitation_missing")?;
+        if *intent!=retained || *manifest!=retained["manifest"] {return Err("transit_binding");}
+        let binding=&intent["binding"];let frozen=&intent["frozen"];let source=&binding["provenance"]["source"];
+        let text=|value:&serde_json::Value|value.as_str().map(str::to_owned).ok_or("invalid_request");
         self.check_producer(&text(&source["account_id"])?,&text(&binding["target_instance_id"])?,&text(&binding["target_producer_generation"])?).await?;
-        if source["relay_origin"]!=self.identity.context.relay_origin || q["operation"]!="reserve"
-            || self.authority["scope"]["kind"]!="controller"
+        if source["relay_origin"]!=self.identity.context.relay_origin || self.authority["scope"]["kind"]!="controller"
             || self.authority["scope"]["source_instance_id"]!=source["source_instance_id"]
             || self.authority["scope"]["target_instance_id"]!=binding["target_instance_id"]
             || self.authority["source_producer"]["generation"]!=binding["source_producer_generation"]
             || self.authority["target_producer"]["generation"]!=binding["target_producer_generation"]
-            || self.authority["recovery_generation"]!=binding["relay_recovery_generation"]
-        {return Err("authority_context");}
-        let path=format!("/pilot/v2/transfers/sources/{}/{}/targets/{}/reservations/{}/decisions",
-            text(&source["source_instance_id"])?,text(&source["source_conversation_id"])?,text(&binding["target_instance_id"])?,text(&binding["transfer_id"])?);
-        let budget=self.runtime.budget()?;
-        let checked=decode(self.codec.as_ref().ok_or("codec_closed")?,3,serde_json::json!({"path":path,"request_id":sent["request_id"],"proof":null}),Bytes::serialize(&budget,sent)?,&self.cancel).await?;
-        drop(checked);
+            || self.authority["recovery_generation"]!=binding["relay_recovery_generation"] {return Err("authority_context");}
         let session=self.transit_session.lock().map_err(|_|"transit_closed")?.clone().ok_or("transit_not_open")?;
         if session["transfer_id"]!=binding["transfer_id"] || session["binding_digest"]!=commitment("transfer-binding",binding)?
-            || session["frozen_digest"]!=commitment("frozen",frozen)? || session["manifest_digest"]!=commitment("manifest",manifest)?
-        {return Err("transit_binding");}
+            || session["frozen_digest"]!=commitment("frozen",frozen)? || session["manifest_digest"]!=commitment("manifest",manifest)? {return Err("transit_binding");}
         self.check().await?;Ok(session)
     }
     pub(super) async fn source_decision<B:Vault+'static>(&self,manager:Arc<Manager<B>>,ready:&DbReady,
@@ -894,6 +931,7 @@ async fn bootstrap_with_codec<B: Vault + 'static>(
         session,
         producer_authority: producer.then(||authority.clone()),
         transit_session:std::sync::Mutex::new(None),
+        target_invitation:std::sync::Mutex::new(None),
         terminal_receipt:std::sync::Mutex::new(None),
         activation_receipt:std::sync::Mutex::new(None),
         authority,

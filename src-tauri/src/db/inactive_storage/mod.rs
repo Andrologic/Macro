@@ -55,7 +55,7 @@ impl InactiveStorage {
     )->Result<Self> {
         transport.check_target_transfer(&sent,&manifest).await.map_err(str::to_owned)?;
         let (session_id,device_id)=transport.session_binding().map_err(str::to_owned)?;
-        let binding=&sent["request"]["body"]["binding"];let source=&binding["provenance"]["source"];
+        let binding=&sent["binding"];let source=&binding["provenance"]["source"];
         let text=|v:&serde_json::Value|v.as_str().map(str::to_owned).ok_or("binding_conflict".to_string());
         let identity=Identity{origin:text(&source["relay_origin"])?,account_incarnation:text(&source["account_id"])?,
             source_instance:text(&source["source_instance_id"])?,source_conversation:text(&source["source_conversation_id"])?,
