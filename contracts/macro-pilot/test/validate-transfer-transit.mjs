@@ -86,6 +86,7 @@ const maxChunk=clone(first);const raw='x'.repeat(65536);Object.assign(maxChunk,{
 yes(first.data_utf8+second.data_utf8,text);yes(active,0);yes(v.diagnosticsEmpty());
 // Coordination is closed bounded data; only later native/F proofs authorize.
 const invitation=message('transit.invitation'),proposal=message('transit.prepared');
+for(const type of ['transit.open','transit.invitation'])for(const [field,value] of [['provider_id',''],['provider_id','bad provider'],['provider_id','x'.repeat(129)],['model_id',''],['model_id','x'.repeat(257)]]){const m=message(type);m[field]=value;yes(v.validateObject(m).valid,false);}
 yes(v.validateRoute(v.parseRoute('POST',`/pilot/v2/transfers/transits/${proposal.transit_id}/prepared`),proposal).valid);
 yes(v.validateRoute(v.parseRoute('POST',`/pilot/v2/transfers/transits/${proposal.transit_id}/prepared`),invitation).valid,false);
 for(const mutate of [m=>m.binding.transfer_id='ffffffff-ffff-4fff-8fff-ffffffffffff',m=>m.session.binding_digest='f'.repeat(64),m=>m.session.manifest_digest='f'.repeat(64),m=>m.manifest.source_revision='900',m=>m.authority=true]){const m=clone(invitation);mutate(m);yes(v.validateObject(m).valid,false);}

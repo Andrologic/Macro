@@ -278,3 +278,9 @@ window lifetime and terminal guards apply before emission. Invitations retire on
 the actual target opening; preparation proposals retire when F becomes ready.
 Duplicate identical proposals are idempotent; different proposals conflict. None
 of these exchanges may replace a native pin, terminal, activation or fresh policy.
+
+The source includes provider_id and model_id in transit.open. The relay retains
+these bounded compatibility identifiers with the window, rejects changed retries,
+and copies them into transit.invitation. They grant no authority. The target
+revalidates its current local provider/model configuration before staging and
+again before preparation and publication. No credential or model call travels.

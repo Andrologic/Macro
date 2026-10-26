@@ -118,7 +118,9 @@
         "transit_contract",
         "type",
         "request_id",
-        "session"
+        "session",
+        "provider_id",
+        "model_id"
       ],
       "properties": {
         "transit_contract": {
@@ -132,6 +134,17 @@
         },
         "session": {
           "$ref": "#/$defs/session"
+        },
+        "provider_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+        },
+        "model_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
         }
       }
     },
@@ -886,7 +899,9 @@
         "session",
         "binding",
         "frozen",
-        "manifest"
+        "manifest",
+        "provider_id",
+        "model_id"
       ],
       "properties": {
         "transit_contract": {
@@ -909,6 +924,17 @@
         },
         "manifest": {
           "$ref": "https://schemas.macro.andrologic.ai/macro-pilot/v2/transfer-decision.schema.json#/$defs/manifest"
+        },
+        "provider_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+        },
+        "model_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
         }
       }
     },

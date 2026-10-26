@@ -16,7 +16,9 @@
         "portable_payload_bytes": "13",
         "portable_fragments": "2",
         "stream_bytes": "31"
-      }
+      },
+      "provider_id": "macro-ai",
+      "model_id": "synthetic-model"
     },
     {
       "transit_contract": "transfer-transit-1",
@@ -61,7 +63,7 @@
       "length": "17",
       "sha256": "f08cfd3c2c8971b65065651032c45671351b3508f9c1c1c7c86137ca0fb61961",
       "eof": false,
-      "data_utf8": "{\"opaque\":\"é🙂"
+      "data_utf8": "{\"opaque\":\"\u00e9\ud83d\ude42"
     },
     {
       "transit_contract": "transfer-transit-1",
@@ -386,7 +388,7 @@
           "length": "17",
           "sha256": "f08cfd3c2c8971b65065651032c45671351b3508f9c1c1c7c86137ca0fb61961",
           "eof": false,
-          "data_utf8": "{\"opaque\":\"é🙂"
+          "data_utf8": "{\"opaque\":\"\u00e9\ud83d\ude42"
         }
       }
     },
@@ -449,7 +451,9 @@
         "content_contract_sha256": "c6ae7440ed0fb4d0bdccdfb936c4bf6ac5c441c96b642c1d9ccbd270b62bdcc6",
         "manifest_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
         "source_revision": "9007199254740993"
-      }
+      },
+      "provider_id": "macro-ai",
+      "model_id": "synthetic-model"
     },
     {
       "transit_contract": "transfer-transit-1",
@@ -537,7 +541,9 @@
             "content_contract_sha256": "c6ae7440ed0fb4d0bdccdfb936c4bf6ac5c441c96b642c1d9ccbd270b62bdcc6",
             "manifest_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
             "source_revision": "9007199254740993"
-          }
+          },
+          "provider_id": "macro-ai",
+          "model_id": "synthetic-model"
         }
       }
     },
@@ -601,7 +607,7 @@
       "length": "17",
       "sha256": "f08cfd3c2c8971b65065651032c45671351b3508f9c1c1c7c86137ca0fb61961",
       "eof": false,
-      "data_utf8": "{\"opaque\":\"é🙂"
+      "data_utf8": "{\"opaque\":\"\u00e9\ud83d\ude42"
     },
     "second": {
       "transit_contract": "transfer-transit-1",
@@ -837,6 +843,6 @@
       "prepared": null,
       "terminal": null
     },
-    "text": "{\"opaque\":\"é🙂\"}\n{\"line\":2}\n"
+    "text": "{\"opaque\":\"\u00e9\ud83d\ude42\"}\n{\"line\":2}\n"
   }
 }
