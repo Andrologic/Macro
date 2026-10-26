@@ -18,6 +18,7 @@ import { macroPilotNativeClient, type MacroPilotNativeClient } from './nativeCli
 import { ProjectionError, projectDesktopSnapshots, toolApprovalSourceKey, type LocalResolutionEvidence, type ProjectionState, type ToolApprovalResolutionEvidence } from './projection';
 import { object, PilotError, same, stableJson, type Command, type Resource } from './protocol';
 import { pilotKernelStorage } from './storage';
+import { transferOutcome, TransferOutcomeError } from './transferOutcome';
 
 interface RuntimeProjectionState {
   desktop: ProjectionState | null;
@@ -94,7 +95,13 @@ export class PilotRuntime {
       if (signal.aborted || this.generation !== generation || stableJson(connection) !== stableJson(this.client.transferConnection(this.producerCapabilities))) throw new PilotError('unavailable');
       const input: ConnectTransferSendInput = { connection, targetInstanceId, conversationId, ...selection,
         runtime: inspection.runtime, inspectionHandle: inspection.handle };
-      const targetConversationId = await this.transfers.send(input);
+      let targetConversationId: string;
+      try { targetConversationId = await this.transfers.send(input); } catch (error) {
+        const outcome = transferOutcome(error);
+        if (!outcome) throw error;
+        if (!signal.aborted) await this.ports.chat().refreshConversationMetadata();
+        throw new TransferOutcomeError(outcome);
+      }
       if (!signal.aborted) await this.ports.chat().refreshConversationMetadata();
       return targetConversationId;
     } finally { this.sending = false; this.receiveTransfer(signal); }

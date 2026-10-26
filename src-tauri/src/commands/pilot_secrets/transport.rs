@@ -491,10 +491,14 @@ impl VerifiedTransport {
     pub(crate) fn producer_identity(&self)->Result<&serde_json::Value>{
         self.check_local()?;Ok(&self.producer_authority.as_ref().ok_or("authority_context")?["producer"])
     }
-    pub(crate) async fn committed_terminal(&self,transfer:&str)->Result<serde_json::Value>{
+    pub(crate) async fn terminal(&self,transfer:&str)->Result<serde_json::Value>{
         self.check().await?;
         let receipt=self.terminal_receipt.lock().map_err(|_|"transfer_closed")?.clone().ok_or("terminal_not_received")?;
-        if receipt["transfer_id"]!=transfer || receipt["outcome"]!="committed"{return Err("terminal_mismatch");}Ok(receipt)
+        if receipt["transfer_id"]!=transfer{return Err("terminal_mismatch");}Ok(receipt)
+    }
+    pub(crate) async fn committed_terminal(&self,transfer:&str)->Result<serde_json::Value>{
+        let receipt=self.terminal(transfer).await?;
+        if receipt["outcome"]!="committed"{return Err("terminal_mismatch");}Ok(receipt)
     }
     pub(crate) async fn committed_activation(&self,transfer:&str)->Result<serde_json::Value>{
         let terminal=self.committed_terminal(transfer).await?;

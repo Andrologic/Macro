@@ -558,7 +558,9 @@
         "unavailable": "Die Übertragung konnte nicht bestätigt werden. Prüfe den Status der Unterhaltung vor einem erneuten Versuch.",
         "context_changed": "Konto oder Verbindung geändert. Öffne dieses Fenster erneut.",
         "noModels": "Auf diesem Computer ist kein kompatibles Modell verfügbar.",
-        "modelChanged": "Dieses Modell ist nicht mehr verfügbar. Wähle ein anderes."
+        "modelChanged": "Dieses Modell ist nicht mehr verfügbar. Wähle ein anderes.",
+        "aborted": "Die Übertragung wurde abgebrochen. Die Unterhaltung bleibt auf diesem Computer.",
+        "pending": "Der andere Computer hat die Unterhaltung angenommen. Sie wird hier geschlossen, sobald er sie öffnet."
       }
     },
     "historyUnknownDate": "Datum unbekannt",

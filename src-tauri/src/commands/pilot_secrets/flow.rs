@@ -92,9 +92,13 @@ pub(super) async fn send<B:Vault+'static>(manager:Arc<Manager<B>>,owner:&DbPool,
     let reserve_path=format!("{source_path}/targets/{target}/reservations/{}/decisions",reservation.transfer_id());
     let reserved=output(transport.source_decision(manager.clone(),ready,owner,&reservation,&normalized,&reserve_path,sent,expectation(&binding,&frozen,&Value::Null,&Value::Null,&Value::Null),"source_frozen").await?)?;
     let known=format!("/pilot/v2/transfers/known/{}/decisions",reservation.transfer_id());
-    let seal=wrap(request("seal",text(&reserved["result"]["status"]["revision"])?,&binding["transfer_id"],json!({"manifest":manifest})));
+    // From here the relay holds a record: any failure ends in a durable terminal.
+    let mut step=Progress{revision:text(&reserved["result"]["status"]["revision"])?.to_owned(),manifest:Value::Null,prepared:Value::Null};
+    let attempt=async {
+    let seal=wrap(request("seal",&step.revision,&binding["transfer_id"],json!({"manifest":manifest})));
     let sealed_reply=output(transport.source_decision(manager.clone(),ready,owner,&reservation,&normalized,&known,seal,expectation(&binding,&frozen,&manifest,&Value::Null,&Value::Null),"source_sealed").await?)?;
-    let sealed_revision=text(&sealed_reply["result"]["status"]["revision"])?;
+    step.manifest=manifest.clone();
+    let sealed_revision=text(&sealed_reply["result"]["status"]["revision"])?;step.revision=sealed_revision.to_owned();
     let (descriptor,archive)=normalized.normalized_for(&sealed.manifest)?;
     let session=json!({"transfer_id":reservation.transfer_id(),"transit_id":uuid::Uuid::new_v4(),"binding_digest":transport::commitment("transfer-binding",&binding)?,
         "frozen_digest":transport::commitment("frozen",&frozen)?,"manifest_digest":transport::commitment("manifest",&manifest)?,"content_contract_sha256":descriptor["content_contract_sha256"],
@@ -103,9 +107,11 @@ pub(super) async fn send<B:Vault+'static>(manager:Arc<Manager<B>>,owner:&DbPool,
     drop(transport.transit(manager.clone(),ready,&format!("/pilot/v2/transfers/known/{}/transit",reservation.transfer_id()),json!({"transit_contract":"transfer-transit-1","type":"transit.open","request_id":uuid::Uuid::new_v4(),"session":session,"provider_id":provider_id,"model_id":model_id}),&session).await?);
     let root=format!("/pilot/v2/transfers/transits/{}",text(&session["transit_id"])?);
     let mut offset=0;let mut sequence=0u64;
+    let mut quiet=tokio::time::Instant::now()+target_quiet();
     while offset<archive.as_slice().len(){
         let received=output(transport.delivery(manager.clone(),ready).await?)?;
-        if received["branch"]=="empty"{continue;}
+        if received["branch"]=="empty"{if tokio::time::Instant::now()>quiet{return Err("target_unresponsive");}continue;}
+        quiet=tokio::time::Instant::now()+target_quiet();
         let message=&received["value"]["body"]["message"];
         if received["branch"]!="transit" || received["value"]["body"]["kind"]!="transit.pull" || message["transfer_id"]!=session["transfer_id"]
             || message["transit_id"]!=session["transit_id"] || message["offset"]!=offset.to_string() || message["sequence"]!=sequence.to_string(){return Err("transit_pull");}
@@ -117,9 +123,10 @@ pub(super) async fn send<B:Vault+'static>(manager:Arc<Manager<B>>,owner:&DbPool,
             "sequence":sequence.to_string(),"offset":offset.to_string(),"length":bytes.len().to_string(),"sha256":format!("{:x}",Sha256::digest(bytes)),"eof":end==archive.as_slice().len(),"data_utf8":std::str::from_utf8(bytes).map_err(|_|"transit_utf8")?});
         transport.transit(manager.clone(),ready,&(root.clone()+"/chunk"),chunk,&session).await?;offset=end;sequence+=1;
     }
+    let quiet=tokio::time::Instant::now()+TARGET_PREPARATION;
     let proposal=loop{
         let received=output(transport.delivery(manager.clone(),ready).await?)?;
-        if received["branch"]=="empty"{continue;}
+        if received["branch"]=="empty"{if tokio::time::Instant::now()>quiet{return Err("target_unresponsive");}continue;}
         let proposal=&received["value"]["body"]["message"];
         if received["branch"]!="transit" || received["value"]["body"]["kind"]!="transit.prepared" || proposal["transfer_id"]!=session["transfer_id"] || proposal["transit_id"]!=session["transit_id"]{return Err("transit_prepared");}
         break proposal["prepared"].clone();
@@ -128,19 +135,56 @@ pub(super) async fn send<B:Vault+'static>(manager:Arc<Manager<B>>,owner:&DbPool,
     if progress["cursor"]["eof"]!=true || progress["cursor"]["next_offset"]!=archive.as_slice().len().to_string(){return Err("transit_progress");}
     let ready_request=request("ready",sealed_revision,&binding["transfer_id"],json!({"prepared":proposal}));
     challenge_target(transport,manager.clone(),ready,&binding,&manifest,&proposal,&ready_request,"target_pinned").await?;
+    step.prepared=proposal.clone();
     let ready_reply=after_target_proof(transport,manager.clone(),ready,&known,wrap(ready_request),expectation(&binding,&frozen,&manifest,&proposal,&Value::Null)).await?;
-    let commit=wrap(request("commit",text(&ready_reply["result"]["status"]["revision"])?,&binding["transfer_id"],json!({})));
+    step.revision=text(&ready_reply["result"]["status"]["revision"])?.to_owned();
+    let commit=wrap(request("commit",&step.revision,&binding["transfer_id"],json!({})));
     challenge_target(transport,manager.clone(),ready,&binding,&manifest,&proposal,&commit["request"],"target_maintained").await?;
     let committed=match transport.source_decision(manager.clone(),ready,owner,&reservation,&normalized,&known,commit.clone(),expectation(&binding,&frozen,&manifest,&proposal,&Value::Null),"source_maintained").await {
         Ok(reply)=>output(reply)?,Err("forbidden")=>after_target_proof(transport,manager.clone(),ready,&known,commit,expectation(&binding,&frozen,&manifest,&proposal,&Value::Null)).await?,Err(error)=>return Err(error),
     };
     if committed["result"]["status"]["phase"]!="committed"{return Err("commit_reply");}
+    Ok(())
+    }.await;
+    if let Err(error)=attempt {abandon(transport,manager.clone(),ready,&known,&binding,&frozen,&mut step,error).await?;}
+    let terminal=transport.terminal(reservation.transfer_id()).await?;
+    if terminal["outcome"]=="aborted" {
+        reservation.apply_aborted_source(owner).await.map_err(|_|"source_application")?;
+        return Err("transfer_aborted");
+    }
     let terminal=transport.committed_terminal(reservation.transfer_id()).await?;
+    let proposal=terminal["prepared"].clone();
+    // The source stays frozen until it can cede: a committed decision never reopens it.
     for _ in 0..100 {
         let status=transport.transfer_status(manager.clone(),ready,&binding,&frozen,&manifest,&proposal,&terminal).await?;
         if !status["activation"].is_null(){reservation.apply_committed_source(owner,&normalized).await.map_err(|_|"source_application")?;return Ok(text(&proposal["target_conversation_id"])?.to_owned());}
         tokio::time::sleep(Duration::from_millis(100)).await;
-    }Err("target_activation_timeout")
+    }Err("target_activation_pending")
+}
+
+/// Wait without traffic from the target before the source gives up.
+const TARGET_QUIET:Duration=Duration::from_secs(60);
+fn target_quiet()->Duration{
+    #[cfg(test)]
+    if let Some(ms)=std::env::var("MACRO_CONNECT_TEST_TARGET_QUIET_MS").ok().and_then(|ms|ms.parse().ok()){return Duration::from_millis(ms);}
+    TARGET_QUIET
+}
+/// Covers target import and preparation, each bounded by its worker deadline.
+const TARGET_PREPARATION:Duration=Duration::from_secs(120);
+struct Progress{revision:String,manifest:Value,prepared:Value}
+/// Records `aborted` for the attempt, unless the relay already holds a terminal.
+/// A stale revision means a step reply was lost; the next revision is tried.
+/// Without a terminal the source stays frozen and the original error is returned.
+async fn abandon<B:Vault+'static>(transport:&VerifiedTransport,manager:Arc<Manager<B>>,ready:&DbReady,known:&str,
+    binding:&Value,frozen:&Value,step:&mut Progress,error:&'static str)->Result<()>{
+    for _ in 0..3 {
+        let sent=wrap(request("abort",&step.revision,&binding["transfer_id"],json!({"reason":"user_cancelled"})));
+        match transport.decision(manager.clone(),ready,known,sent,expectation(binding,frozen,&step.manifest,&step.prepared,&Value::Null)).await {
+            Ok(_)=>return Ok(()),
+            Err("stale_revision")=>step.revision=step.revision.parse::<u64>().map_err(|_|error)?.checked_add(1).ok_or(error)?.to_string(),
+            Err(_)=>return Err(error),
+        }
+    }Err(error)
 }
 
 pub(super) async fn receive<B:Vault+'static>(manager:Arc<Manager<B>>,owner:&DbPool,config:&ConfigManager,launcher:&CodecLauncher,
@@ -194,14 +238,15 @@ pub(super) async fn receive<B:Vault+'static>(manager:Arc<Manager<B>>,owner:&DbPo
             transport.attest_target(manager.clone(),ready,owner,&reservation,config,&prepared,delivery).await?;break;
         }
     }
-    let mut committed=false;
-    for _ in 0..100{
+    // The pinned preparation is kept on timeout: only a terminal decides it.
+    let deadline=tokio::time::Instant::now()+TARGET_PREPARATION;
+    loop{
         let status=transport.transfer_status(manager.clone(),ready,binding,frozen,manifest,&proposal,&Value::Null).await?;
-        if status["phase"]=="committed"{committed=true;break;}
+        if status["phase"]=="committed"{break;}
         if !status["terminal"].is_null(){return Err("transfer_aborted");}
-        tokio::time::sleep(Duration::from_millis(100)).await;
+        if tokio::time::Instant::now()>deadline{return Err("source_commit_timeout");}
+        tokio::time::sleep(Duration::from_millis(250)).await;
     }
-    if !committed{return Err("source_commit_timeout");}
     let conversation=reservation.publish_target(owner,config,&prepared).await.map_err(|_|"target_publication")?;
     let terminal=transport.committed_terminal(text(&binding["transfer_id"])?).await?;
     let activation=reservation.target_activation().map_err(|_|"target_publication")?;

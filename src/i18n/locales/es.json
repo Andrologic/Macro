@@ -562,7 +562,9 @@
         "unavailable": "No se ha podido confirmar el traslado. Comprueba el estado de la conversación antes de volver a intentarlo.",
         "context_changed": "La cuenta o la conexión ha cambiado. Abre esta ventana de nuevo.",
         "noModels": "No hay ningún modelo compatible disponible en este ordenador.",
-        "modelChanged": "Este modelo ya no está disponible. Elige otro."
+        "modelChanged": "Este modelo ya no está disponible. Elige otro.",
+        "aborted": "La transferencia se canceló. La conversación permanece en este ordenador.",
+        "pending": "El otro ordenador aceptó la conversación. Se cerrará aquí en cuanto el otro ordenador la abra."
       }
     },
     "historyUnknownDate": "Fecha desconocida",

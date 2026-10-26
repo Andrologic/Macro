@@ -244,9 +244,13 @@ pub(crate) async fn reserve_verified_target(owner:&DbPool,
 }
 impl Reservation {
     async fn native_terminal(&self)->DbResult<serde_json::Value> {
+        self.native_terminal_with("committed").await
+    }
+    async fn native_terminal_with(&self,outcome:&str)->DbResult<serde_json::Value> {
         use crate::commands::pilot_secrets::transport::commitment;
         let live=self.native_authority.as_ref().ok_or_else(||invalid("connect_native_owner_missing"))?;
-        let terminal=live.committed_terminal(&self.transfer_id).await.map_err(invalid)?;
+        let terminal=live.terminal(&self.transfer_id).await.map_err(invalid)?;
+        if terminal["outcome"]!=outcome{return Err(invalid("connect_terminal_mismatch"));}
         // Original native intent, never reconstructed from a SQL receipt. Fresh
         // authority is the private authenticated terminal above.
         let binding:serde_json::Value=serde_json::from_slice(&self.binding_json).map_err(|_|invalid("connect_native_binding_changed"))?;
@@ -311,6 +315,14 @@ impl Reservation {
         live.check().await.map_err(invalid)?;
         super::terminal::store_committed(&guard.ready.pool,&self.transfer_id,self.inspect()?.0,self.binding_digest.clone(),self.source_epoch,&terminal,true).await?;
         Ok(())
+    }
+    /// Reopens the source once the relay has durably recorded `aborted`.
+    pub(crate) async fn apply_aborted_source(&self,owner:&DbPool)->DbResult<()> {
+        let live=self.native_authority.as_ref().ok_or_else(||invalid("connect_native_owner_missing"))?;
+        let terminal=self.native_terminal_with("aborted").await?;
+        let guard=owner.source_ready(None).await.map_err(|_|invalid("unavailable"))?;
+        live.check().await.map_err(invalid)?;
+        super::terminal::store_aborted_source(&guard.ready.pool,&self.transfer_id,self.inspect()?.0,self.binding_digest.clone(),self.source_epoch,&terminal).await
     }
     pub(crate) async fn target_expectation(&self,owner:&DbPool,config:&crate::config::ConfigManager,
         prepared:&crate::connect::transfer_worker::TransferWorker,request:&serde_json::Value,kind:&str,

@@ -1092,3 +1092,20 @@ it('hands a confirmed producer to one native receiver and interrupts only its id
     await until(() => received.length === 2);
   } finally { busy = false; await h.runtime.stop(); }
 });
+
+it('reports a relay-recorded cancellation or pending activation as a transfer outcome', async () => {
+  const outcomes = ['transfer_aborted', 'target_activation_pending', 'codec_cancelled'];
+  let rejectReceive: ((reason: Error) => void) | undefined, receives = 0;
+  const h = harness(undefined, {
+    receive: async () => { receives++; return new Promise<string>((_resolve, reject) => { rejectReceive = reject; }); },
+    interruptIdle: async () => { rejectReceive?.(Error('codec_cancelled')); },
+    send: async () => { throw { message: outcomes.shift() }; },
+  });
+  try {
+    h.acceptIdlePoll(); await h.runtime.start(); await until(() => receives === 1);
+    const send = () => h.runtime.sendConversation('chat:one', 'instance:target', { providerId: 'macro-ai', modelId: 'model' });
+    await expect(send()).rejects.toMatchObject({ outcome: 'aborted' });
+    await expect(send()).rejects.toMatchObject({ outcome: 'pending' });
+    await expect(send()).rejects.toEqual({ message: 'codec_cancelled' });
+  } finally { await h.runtime.stop(); }
+});

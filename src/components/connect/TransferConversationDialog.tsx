@@ -7,6 +7,7 @@ import type { ConsumerReaderPorts } from '../../services/macroPilot/consumerRead
 import type { ConsumerConnections, ConsumerLease } from '../../services/macroPilot/consumerConnections';
 import type { ContentInstanceModels } from '../../services/macroPilot/contentProtocol';
 import { stableJson } from '../../services/macroPilot/protocol';
+import { TransferOutcomeError } from '../../services/macroPilot/transferOutcome';
 
 type Model = ContentInstanceModels['models'][number];
 export interface TransferConversationDialogProps {
@@ -72,7 +73,7 @@ export function TransferConversationDialog({ ports, source, send, onClose, onTra
       if (!fresh.response.result.models.some(m => modelKey(m) === selection)) { setModels(fresh.response.result.models); setSelection(''); setError('modelChanged'); return; }
       await send(target, { providerId: selected.provider_id, modelId: selected.model_id });
       if (alive.current) onTransferred();
-    } catch { if (alive.current) setError('unavailable'); }
+    } catch (failure) { if (alive.current) setError(failure instanceof TransferOutcomeError ? failure.outcome : 'unavailable'); }
     finally { if (alive.current) setBusy(false); }
   };
   const close = () => { if (!busy) onClose(); };

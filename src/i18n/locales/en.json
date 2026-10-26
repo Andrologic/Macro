@@ -586,7 +586,9 @@
         "unavailable": "The transfer could not be confirmed. Check the conversation state before trying again.",
         "context_changed": "The account or connection changed. Reopen this window.",
         "noModels": "No compatible model is available on this computer.",
-        "modelChanged": "This model is no longer available. Choose another model."
+        "modelChanged": "This model is no longer available. Choose another model.",
+        "aborted": "The transfer was cancelled. The conversation stays on this computer.",
+        "pending": "The other computer accepted the conversation. It will close here once the other computer opens it."
       }
     },
     "historyUnknownDate": "Unknown date",

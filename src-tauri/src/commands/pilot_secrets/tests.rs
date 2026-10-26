@@ -1434,21 +1434,26 @@ pub(super) async fn transfer_wait_with_idle_poll<B:Vault+'static,F:std::future::
 /// inactive target, native preparation and ACK are connected together.
 #[tokio::test(flavor="multi_thread",worker_threads=2)]
 #[ignore="requires the explicitly supplied local transfer relay"]
-async fn global_chat_macro_ai_local_transfer() { global_chat_local_transfer("macro-ai",false,false).await; }
+async fn global_chat_macro_ai_local_transfer() { global_chat_local_transfer("macro-ai",false,false,false).await; }
 
 #[tokio::test(flavor="multi_thread",worker_threads=2)]
 #[ignore="requires the explicitly supplied local transfer relay"]
-async fn global_chat_codex_local_transfer() { global_chat_local_transfer("codex",false,false).await; }
+async fn global_chat_codex_local_transfer() { global_chat_local_transfer("codex",false,false,false).await; }
 
 #[tokio::test(flavor="multi_thread",worker_threads=2)]
 #[ignore="requires the explicitly supplied local transfer relay"]
-async fn global_chat_compacted_local_transfer() { global_chat_local_transfer("codex",true,false).await; }
+async fn global_chat_compacted_local_transfer() { global_chat_local_transfer("codex",true,false,false).await; }
 
 #[tokio::test(flavor="multi_thread",worker_threads=2)]
 #[ignore="requires the explicitly supplied local transfer relay"]
-async fn global_chat_resources_local_transfer() { global_chat_local_transfer("codex",true,true).await; }
+async fn global_chat_resources_local_transfer() { global_chat_local_transfer("codex",true,true,false).await; }
 
-async fn global_chat_local_transfer(provider:&str,compacted:bool,with_resources:bool) {
+/// The target lacks the selected model: the source records `aborted` and reopens.
+#[tokio::test(flavor="multi_thread",worker_threads=2)]
+#[ignore="requires the explicitly supplied local transfer relay"]
+async fn global_chat_refused_local_transfer() { global_chat_local_transfer("macro-ai",false,false,true).await; }
+
+async fn global_chat_local_transfer(provider:&str,compacted:bool,with_resources:bool,refused:bool) {
     use base64::Engine;
 
     use tokio::io::{AsyncBufReadExt,AsyncWriteExt,BufReader};
@@ -1561,14 +1566,20 @@ async fn global_chat_local_transfer(provider:&str,compacted:bool,with_resources:
         .stdin(std::process::Stdio::piped()).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::inherit()).kill_on_drop(true).spawn().unwrap();
     let mut input=child.stdin.take().unwrap();
     let mut initialization=serde_json::to_vec(&serde_json::json!({"seed":seed,
-        "database":directory.path().join("target.db"),"provider":provider,"compacted":compacted,"resources":with_resources})).unwrap();initialization.push(b'\n');
+        "database":directory.path().join("target.db"),"provider":provider,"compacted":compacted,"resources":with_resources,"refused":refused})).unwrap();initialization.push(b'\n');
     input.write_all(&initialization).await.unwrap();
     let mut target_events=BufReader::new(child.stdout.take().unwrap()).lines();
     let verified=Arc::new(verified);
     let selected:(String,String)=sqlx::query_as("SELECT provider_id,model_id FROM conversations WHERE id='chat'").fetch_one(&source_pool).await.unwrap();
     let transferred=super::flow::send(manager,&source,&admission,&config,&launcher,&verified,&ready,
         "source-window","source-browser",&inspection,"chat",&selected.0,&selected.1).await;
-    if transferred.is_ok(){
+    if refused {
+        assert_eq!(transferred,Err("transfer_aborted"));
+        assert_eq!(sqlx::query_scalar::<_,String>("SELECT mode FROM chat_admission_owners WHERE conversation_id='chat'").fetch_one(&source_pool).await.unwrap(),"open");
+        assert_eq!(sqlx::query_scalar::<_,Option<String>>("SELECT resolution FROM connect_transfers WHERE local_role='source'").fetch_one(&source_pool).await.unwrap().as_deref(),Some("aborted"));
+        assert_eq!(transfer_target_event(&mut target_events).await.unwrap(),serde_json::json!({"type":"refused"}));
+        input.write_all(b"{\"stop\":true}\n").await.unwrap();
+    }else if transferred.is_ok(){
         assert!(!transferred.as_ref().unwrap().is_empty());
         assert_eq!(sqlx::query_scalar::<_,String>("SELECT mode FROM chat_admission_owners WHERE conversation_id='chat'").fetch_one(&source_pool).await.unwrap(),"ceded");
         assert_eq!(sqlx::query_scalar::<_,i64>("SELECT COUNT(*) FROM messages WHERE conversation_id='chat'").fetch_one(&source_pool).await.unwrap(),if compacted{22}else{2});
@@ -1576,11 +1587,11 @@ async fn global_chat_local_transfer(provider:&str,compacted:bool,with_resources:
         input.write_all(b"{\"stop\":true}\n").await.unwrap();
     }
     drop(input);
-    if transferred.is_err(){child.kill().await.unwrap();}
+    if transferred.is_err()&&!refused{child.kill().await.unwrap();}
     let child=child.wait_with_output().await.unwrap();
     Arc::try_unwrap(verified).ok().unwrap().close().await.unwrap();assert!(runtime.shutdown().await);
     relay_input.write_all(b"{\"stop\":true}\n").await.unwrap();drop(relay_input);assert!(relay.wait().await.unwrap().success());
-    transferred.unwrap();assert!(child.status.success());
+    if !refused{transferred.unwrap();}assert!(child.status.success());
 }
 
 #[tokio::test]
@@ -1592,7 +1603,7 @@ async fn global_chat_transfer_target() {
     let data:serde_json::Value=serde_json::from_str(&input.next_line().await.unwrap().unwrap()).unwrap();
     let seed=&data["seed"];let b=&seed["b"];
     let text=|v:&serde_json::Value|v.as_str().unwrap().to_owned();
-    let codex=data["provider"]=="codex";let compacted=data["compacted"]==true;let with_resources=data["resources"]==true;
+    let codex=data["provider"]=="codex";let compacted=data["compacted"]==true;let with_resources=data["resources"]==true;let refused=data["refused"]==true;
     let (provider_id,provider_type,model_id)=if codex{("chatgpt","chatgpt","gpt-6.1-sol")}else{("macro-ai","openai","synthetic-model")};
     let owner=crate::core::db_state::DbPool::default();
     let pool=crate::db::create_pool(std::path::Path::new(data["database"].as_str().unwrap())).await.unwrap();
@@ -1618,8 +1629,15 @@ async fn global_chat_transfer_target() {
     }).await.unwrap();
     let model:crate::db::models::ProviderModelInput=serde_json::from_value(serde_json::json!({"model_id":model_id,"name":"Synthetic model",
         "context_window_tokens":200000,"input_limit_tokens":200000,"output_limit_tokens":16384,"context_window_source":"manual"})).unwrap();
-    crate::db::repository::upsert_provider_models(&pool,provider_id,&[model]).await.unwrap();
+    if !refused{crate::db::repository::upsert_provider_models(&pool,provider_id,&[model]).await.unwrap();}
     let job=runtime.begin_receive().unwrap();
+    if refused {
+        assert!(super::flow::receive(manager,&owner,&config,&launcher,verified,&ready,&job).await.is_err());
+        drop(job);
+        println!("SLICE_TARGET_EVENT:{}",serde_json::json!({"type":"refused"}));
+        let stop:serde_json::Value=serde_json::from_str(&input.next_line().await.unwrap().unwrap()).unwrap();assert_eq!(stop["stop"],true);
+        assert!(runtime.shutdown().await);return;
+    }
     let (conversation,prepared)=super::flow::receive(manager,&owner,&config,&launcher,verified,&ready,&job).await.unwrap();
         let messages:Vec<String>=sqlx::query_scalar("SELECT content FROM messages WHERE conversation_id=? ORDER BY created_at,id").bind(&conversation).fetch_all(&pool).await.unwrap();
         assert!(messages.len()>=if compacted{22}else{2});assert!(messages.iter().any(|s|s.contains("Can I continue on another computer?")));

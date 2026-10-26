@@ -8,6 +8,7 @@ mock.module('react-i18next', () => ({ useTranslation: () => ({ t: (key: string, 
   return typeof value === 'string' ? value : options?.defaultValue ?? key;
 } }) }));
 const { TransferConversationDialog } = await import('./TransferConversationDialog');
+const { TransferOutcomeError } = await import('../../services/macroPilot/transferOutcome');
 let root: Root, container: HTMLDivElement;
 afterEach(async () => { if (root) await act(async () => root.unmount()); container?.remove(); });
 const until = async (check: () => boolean) => { const end = Date.now() + 5000; while (!check() && Date.now() < end) await act(async () => { await new Promise(done => setTimeout(done, 5)); }); expect(check()).toBe(true); };
@@ -48,4 +49,11 @@ it('retires target choices on an account change without calling native transfer'
   const h = await mount(); await select(0, 'instance:alpha'); await until(() => document.querySelectorAll('select').length === 2);
   await act(async () => h.fixture.changeAccount()); await until(() => Boolean(document.querySelector('[role="alert"]')));
   expect(transfer().disabled).toBe(true); expect(h.send).not.toHaveBeenCalled();
+});
+it('states a cancelled transfer instead of a generic failure', async () => {
+  const h = await mount(); h.send.mockImplementation(async () => { throw new TransferOutcomeError('aborted'); });
+  await select(0, 'instance:alpha'); await until(() => document.querySelectorAll('select').length === 2);
+  await act(async () => transfer().click()); await until(() => Boolean(document.querySelector('[role="alert"]')));
+  expect(document.querySelector('[role="alert"]')?.textContent).toBe(en.chat.transfer.errors.aborted);
+  expect(h.complete).not.toHaveBeenCalled();
 });
