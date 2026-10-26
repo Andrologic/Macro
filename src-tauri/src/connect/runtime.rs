@@ -21,6 +21,7 @@ type Join = futures::future::Shared<BoxFuture<'static, bool>>;
 #[derive(Default)]
 struct State {
     generation: u64,
+    job_active: bool,
     closed: bool,
     active: bool,
     join: Option<Join>,
@@ -52,6 +53,12 @@ impl Drop for State {
 }
 #[derive(Clone, Default)]
 pub(crate) struct TransferRuntime(Arc<Mutex<State>>);
+/// Serializes whole transfer jobs, including the gap between bootstrap profiles.
+/// A rejected second invocation must never revoke the first job's transport.
+pub(crate) struct TransferJob(Arc<Mutex<State>>);
+impl Drop for TransferJob {
+    fn drop(&mut self) {if let Ok(mut state)=self.0.lock(){state.job_active=false;}}
+}
 // This completion is the last field of HttpSession. Its notification therefore
 // follows destruction of the sole Hyper drivers, TLS streams and reservations.
 pub(crate) struct HttpOwnership {
@@ -311,6 +318,12 @@ impl CodecHandle {
     }
 }
 impl TransferRuntime {
+    pub(crate) fn begin_transfer(&self)->Result<TransferJob,&'static str>{
+        let mut state=self.0.lock().map_err(|_|"transport_unavailable")?;
+        if state.closed{return Err("codec_retired");}
+        if state.job_active{return Err("transfer_busy");}
+        state.job_active=true;Ok(TransferJob(self.0.clone()))
+    }
     #[cfg(test)]
     pub(crate) fn profile_events(&self) -> Vec<(Profile, u32, bool)> {
         self.0.lock().unwrap().profile_events.clone()
@@ -584,6 +597,8 @@ mod tests {
     async fn profiles_join_bootstrap_then_keep_persistent_child_idle_past_poll() {
         let (_dir, db, pool) = database().await;
         let owner = TransferRuntime::default();
+        let job=owner.begin_transfer().unwrap();
+        assert_eq!(owner.begin_transfer().err(),Some("transfer_busy"));
         let budget = owner.budget().unwrap();
         let entry = Path::new(env!("CARGO_MANIFEST_DIR")).join("../copilot-bridge/src/entry.ts");
         let launcher = owner.source_launcher(&bun(), &entry, &db).unwrap();
@@ -613,6 +628,7 @@ mod tests {
         persistent.close().await.unwrap();
         drop(budget.reserve(TRANSIT_INSTANCE_LIMIT).unwrap());
         db.set_ready(pool).await.unwrap();
+        drop(job);drop(owner.begin_transfer().unwrap());
         assert!(owner.shutdown().await);
     }
 

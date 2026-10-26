@@ -9,7 +9,7 @@ use std::sync::Arc;
 use tokio::process::Command;
 use tokio::time::Instant;
 
-pub(super) fn storage_error(error: String, fallback: &'static str) -> &'static str {
+pub(crate) fn storage_error(error: String, fallback: &'static str) -> &'static str {
     match error.as_str() {
         "authority_expired" => "authority_expired",
         "policy_revoked" => "policy_revoked",

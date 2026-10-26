@@ -168,10 +168,19 @@ impl VerifiedTransport {
             "poll_request_id":request_id,"response_request_id":response.request_id,"response_status":response.status,
             "instance_id":p["instance_id"],"producer_generation":p["generation"],"connection_id":p["connection_id"]}});
         let output=decode(self.codec.as_ref().ok_or("codec_closed")?,5,facts,response.into_codec_body()?,&self.cancel).await?;
-        // Decode consumes and releases the HTTP body permit before another
-        // HTTP response can be admitted. The parsed delivery is still only
-        // data until the long poll's participants have been revalidated.
-        self.check_for_phase(manager,ready).await?;Ok(output)
+        // Decode releases the HTTP body permit. If the poll crossed expiry,
+        // also release its codec bank before preflight needs that same bank.
+        // The exact validated bytes keep their own bounded native reservation.
+        match self.check().await {
+            Ok(())=>Ok(output),
+            Err("authority_expired")=>{
+                let bytes=Bytes::copy(&self.runtime.budget()?,output.bytes.as_slice())?;
+                let status=output.status;drop(output);
+                self.refresh_authority(manager,ready).await?;
+                Ok(crate::connect::codec::Output{status,bytes})
+            },
+            Err(error)=>Err(error),
+        }
     }
     /// Transit uses the existing HTTP owner and canonical codec. A successful
     /// submit only means HTTP acceptance; durability is observed through progress
@@ -183,7 +192,7 @@ impl VerifiedTransport {
         let request_id=sent["request_id"].as_str().and_then(|s|uuid::Uuid::parse_str(s).ok()).ok_or("http_correlation")?;
         let op=match sent["type"].as_str(){
             Some("transit.open")=>Some(9),Some("transit.status"|"transit.ack")=>Some(8),
-            Some("transit.pull"|"transit.chunk"|"transit.close")=>None,_=>return Err("invalid_request"),
+            Some("transit.pull"|"transit.chunk"|"transit.close"|"transit.prepared")=>None,_=>return Err("invalid_request"),
         };
         let codec=self.codec.as_ref().ok_or("codec_closed")?;
         let budget=self.runtime.budget()?;

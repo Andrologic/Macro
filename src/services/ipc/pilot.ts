@@ -90,3 +90,33 @@ export async function pilotToolTracesList(conversationId: string): Promise<{ rev
 export async function pilotToolTraceRead(params: { conversationId: string; messageId: string; traceIndex: number; expectedRevision: number }): Promise<{ revision: number; detail: string }> {
   return invoke<{ revision: number; detail: string }>('pilot_tool_trace_read', params).catch(pilotToolTraceError);
 }
+
+/** Identifiers are intent, never authentication facts. Secrets stay native. */
+export interface ConnectTransferConnection {
+  context: PilotVaultContext;
+  generation: string;
+  instanceCreationId: string;
+  accountId: string;
+  deviceId: string;
+  instanceId: string;
+}
+export interface ConnectTransferSendInput {
+  connection: ConnectTransferConnection;
+  targetInstanceId: string;
+  conversationId: string;
+  runtime: string;
+  inspectionHandle: string;
+}
+export interface ConnectTransferReceiveInput {
+  connection: ConnectTransferConnection;
+  providerId: string;
+  modelId: string;
+}
+export function connectTransferSend(input: ConnectTransferSendInput): Promise<string> {
+  requireNativePilotVault();
+  return invoke('connect_transfer_send', { input });
+}
+export function connectTransferReceive(input: ConnectTransferReceiveInput): Promise<string> {
+  requireNativePilotVault();
+  return invoke('connect_transfer_receive', { input });
+}
