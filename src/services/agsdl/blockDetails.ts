@@ -6,7 +6,7 @@ const object = (value: unknown): Value => value && typeof value === "object" && 
 const list = (value: unknown): unknown[] => Array.isArray(value) ? value : [];
 
 /** Configuration facts a block preview shows, in a fixed order. Values are AgSDL names or display titles. */
-export type BlockDetailKey = "instructions" | "model" | "uses" | "receives" | "produces" | "limit"
+export type BlockDetailKey = "instructions" | "steers" | "model" | "uses" | "receives" | "produces" | "limit"
   | "after" | "arguments" | "effect" | "action" | "targets" | "context" | "timeout" | "validity" | "test" | "mode" | "accept" | "agents" | "transmits";
 export interface BlockDetail { key: BlockDetailKey; values: string[] }
 
@@ -44,7 +44,13 @@ export function blockDetails(card: ViewerCard, declarations: ViewerCard[], steps
     if (kept.length) details.push({ key, values: kept });
   };
   const step = card.details;
-  if (card.kind === "agent") {
+  const sibling = (name: unknown) => typeof name === "string"
+    ? steps.find(item => item.path === `${card.path.slice(0, card.path.lastIndexOf("/"))}/${name}`)?.title || name : undefined;
+  if (card.kind === "agent" && step.delivery === "steering") {
+    // A steering message joins work already running: its content arrives on the incoming connection,
+    // and it has no instruction, configuration, resource or result of its own.
+    add("steers", [sibling(step.steers)]);
+  } else if (card.kind === "agent") {
     const agent = object(step.agentDefinition);
     // The agent's own instruction, not the skills prepended to it.
     add("instructions", [list(agent.prompt).map(object).find(use => typeof use.value === "string")?.value as string | undefined]);
@@ -76,8 +82,7 @@ export function blockDetails(card: ViewerCard, declarations: ViewerCard[], steps
   if (card.kind === "condition") add("test", [predicateText(step.test)]);
   if (card.kind === "join") {
     // Members count only once launched by this step; name it as the graph does.
-    const after = typeof step.after === "string" ? step.after : undefined;
-    add("after", [after && (steps.find(item => item.path === `${card.path.slice(0, card.path.lastIndexOf("/"))}/${after}`)?.title || after)]);
+    add("after", [sibling(step.after)]);
     add("mode", [typeof step.mode === "string" ? step.mode : "all", typeof step.remaining === "string" ? `remaining: ${step.remaining}` : undefined]);
     add("accept", [predicateText(step.accept)]);
   }

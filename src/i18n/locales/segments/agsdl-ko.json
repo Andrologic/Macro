@@ -548,6 +548,7 @@
     }
   },
   "preview": {
+    "steers": "지시 대상",
     "model": "모델",
     "uses": "사용",
     "receives": "받는 것",

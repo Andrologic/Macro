@@ -31,6 +31,16 @@ describe("block details read from AgSDL", () => {
     ]);
   });
 
+  it("describes a steering step by the step it steers, without a configuration or result of its own", () => {
+    const write = { ...card("agent", {}), path: "/flow/steps/write", title: "Write the dossier" };
+    const steer = card("agent", { delivery: "steering", steers: "write", agentDefinition: { configuration: "project", prompt: [{ value: "Write." }] } }, {
+      inputs: [{ name: "guidance", type: "" }], outputs: [{ name: "report", type: "text/plain" }],
+    });
+    expect(blockDetails(steer, declarations, [write])).toEqual([
+      { key: "steers", values: ["Write the dossier"] },
+    ]);
+  });
+
   it("shows a configuration chosen at start as its selector and cases", () => {
     const agent = card("agent", { agentDefinition: { configuration: { select: { path: ["resources", "mode", "value"] }, cases: { a: "fast", b: "thorough" } } } });
     expect(blockDetails(agent, declarations).find(item => item.key === "model")?.values).toEqual(["resources.mode.value → Fast | Thorough"]);

@@ -548,6 +548,7 @@
     }
   },
   "preview": {
+    "steers": "指示先",
     "model": "モデル",
     "uses": "使用",
     "receives": "受け取る",
