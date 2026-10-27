@@ -1860,7 +1860,7 @@ async fn global_chat_local_transfer(
     let response: serde_json::Value = serde_json::from_slice(&provenance.stdout).unwrap();
     let receipts: Vec<(String, String)> =
         serde_json::from_value(response["receipts"].clone()).unwrap();
-    sqlx::raw_sql("INSERT INTO conversations(id,title,scope_mode,provider_id,model_id,created_at,updated_at) VALUES('chat','Local transfer','Chat','macro-ai','synthetic-model','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z'); INSERT INTO messages(id,conversation_id,role,content,created_at,context_refs_json) VALUES('user','chat','user','Can I continue on another computer?','2026-01-01T00:00:00Z','[]');")
+    sqlx::raw_sql("INSERT INTO conversations(id,title,scope_mode,provider_id,model_id,reasoning_effort,created_at,updated_at) VALUES('chat','Local transfer','Chat','macro-ai','synthetic-model','high','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z'); INSERT INTO messages(id,conversation_id,role,content,created_at,context_refs_json) VALUES('user','chat','user','Can I continue on another computer?','2026-01-01T00:00:00Z','[]');")
         .execute(&source_pool).await.unwrap();
     sqlx::query("INSERT INTO messages(id,conversation_id,role,content,created_at,context_refs_json,completion_reason,provider_input_items_json) VALUES('assistant','chat','assistant',?,'2026-01-01T00:00:01Z','[]','final',?)")
         .bind(content).bind(response["items"].to_string()).execute(&source_pool).await.unwrap();
@@ -2482,7 +2482,8 @@ async fn global_chat_transfer_target() {
     .await
     .unwrap();
     let model:crate::db::models::ProviderModelInput=serde_json::from_value(serde_json::json!({"model_id":model_id,"name":"Synthetic model",
-        "context_window_tokens":200000,"input_limit_tokens":200000,"output_limit_tokens":16384,"context_window_source":"provider_metadata"})).unwrap();
+        "context_window_tokens":200000,"input_limit_tokens":200000,"output_limit_tokens":16384,"context_window_source":"provider_metadata",
+        "reasoning_efforts":if codex{serde_json::json!(["low","medium","high"])}else{serde_json::Value::Null}})).unwrap();
     if !refused {
         crate::db::repository::upsert_provider_models(&pool, provider_id, &[model])
             .await
@@ -2626,6 +2627,19 @@ async fn global_chat_transfer_target() {
             .await
             .unwrap(),
         "Local transfer"
+    );
+    // The source's reasoning effort when the target model offers it (Codex),
+    // otherwise the model's default (Macro AI offers none).
+    assert_eq!(
+        sqlx::query_scalar::<_, Option<String>>(
+            "SELECT reasoning_effort FROM conversations WHERE id=?"
+        )
+        .bind(&conversation)
+        .fetch_one(&pool)
+        .await
+        .unwrap()
+        .as_deref(),
+        codex.then_some("high")
     );
     let messages: Vec<String> = sqlx::query_scalar(
         "SELECT content FROM messages WHERE conversation_id=? ORDER BY created_at,id",

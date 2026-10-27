@@ -275,6 +275,7 @@ impl CodecLauncher {
         imported: &super::transfer_worker::TransferWorker,
         provider_id: &str,
         model_id: &str,
+        reasoning_effort: Option<&str>,
     ) -> Result<super::transfer_worker::TransferWorker, &'static str> {
         use super::transfer_worker::{AdmittedEWork, Hello, TransferWorker};
         use std::time::Duration;
@@ -318,13 +319,21 @@ impl CodecLauncher {
             .as_str()
             .ok_or("configuration_unavailable")?;
         let conversation = uuid::Uuid::new_v4().to_string();
+        // The source's effort only when this model offers it; otherwise none,
+        // the model's default.
+        let effort = reasoning_effort.filter(|effort| {
+            model
+                .reasoning_efforts
+                .as_ref()
+                .is_some_and(|offered| offered.iter().any(|o| o == effort))
+        });
         let values = [
             ("conversationId", Some(conversation.as_str())),
             ("providerId", Some(provider_id)),
             ("modelId", Some(model_id)),
             ("baseUrl", Some(provider.base_url.as_str())),
             ("modePrompt", Some(mode)),
-            ("reasoningEffort", None),
+            ("reasoningEffort", effort),
             ("currentCheckpoint", None),
             ("contextWarning", None),
         ];
@@ -425,7 +434,13 @@ impl CodecLauncher {
         if fresh != configuration {
             return Err("configuration_changed");
         }
-        worker.complete_native_preparation(&provider, model_id, &conversation, configuration)?;
+        worker.complete_native_preparation(
+            &provider,
+            model_id,
+            effort,
+            &conversation,
+            configuration,
+        )?;
         Ok(worker)
     }
     pub(crate) async fn start(&self, profile: Profile) -> Result<CodecHandle, &'static str> {

@@ -439,7 +439,23 @@ impl VerifiedTransport {
             return Err("transfer_source_changed");
         }
         let session = &intent["session"];
-        let opened=self.transit(manager,ready,&format!("/pilot/v2/transfers/known/{}/transit",text(&binding["transfer_id"])?),serde_json::json!({"transit_contract":"transfer-transit-1","type":"transit.open","request_id":uuid::Uuid::new_v4(),"session":session,"provider_id":intent["provider_id"],"model_id":intent["model_id"]}),session).await?;
+        // The target reopens with the exact selection the relay retained.
+        let mut open = serde_json::json!({"transit_contract":"transfer-transit-1","type":"transit.open","request_id":uuid::Uuid::new_v4(),"session":session,"provider_id":intent["provider_id"],"model_id":intent["model_id"]});
+        if let Some(effort) = intent.get("reasoning_effort") {
+            open["reasoning_effort"] = effort.clone();
+        }
+        let opened = self
+            .transit(
+                manager,
+                ready,
+                &format!(
+                    "/pilot/v2/transfers/known/{}/transit",
+                    text(&binding["transfer_id"])?
+                ),
+                open,
+                session,
+            )
+            .await?;
         drop(opened);
         *self
             .target_invitation

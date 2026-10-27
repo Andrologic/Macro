@@ -279,11 +279,14 @@ the actual target opening; preparation proposals retire when F becomes ready.
 Duplicate identical proposals are idempotent; different proposals conflict. None
 of these exchanges may replace a native pin, terminal, activation or fresh policy.
 
-The source includes provider_id and model_id in transit.open. The relay retains
-these bounded compatibility identifiers with the window, rejects changed retries,
-and copies them into transit.invitation. They grant no authority. The target
-revalidates its current local provider/model configuration before staging and
-again before preparation and publication. No credential or model call travels.
+The source includes provider_id and model_id in transit.open, and optionally its
+conversation's reasoning_effort. The relay retains these bounded compatibility
+identifiers with the window, rejects changed retries, and copies them into
+transit.invitation, reasoning_effort only when present. They grant no authority.
+The target revalidates its current local provider/model configuration before
+staging and again before preparation and publication. It applies reasoning_effort
+only when the selected model offers it, otherwise the model's default. No
+credential or model call travels.
 
 ## Concurrent transfer-only producer poll
 

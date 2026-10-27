@@ -965,6 +965,7 @@ impl TransferWorker {
         &mut self,
         provider: &crate::db::models::ProviderConfig,
         model: &str,
+        reasoning_effort: Option<&str>,
         conversation: &str,
         configuration: Vec<u8>,
     ) -> Result<()> {
@@ -983,7 +984,7 @@ impl TransferWorker {
             return Err("provider_unavailable");
         }
         let request:crate::ai::types::AiChatRequest=serde_json::from_value(json!({"request_id":uuid::Uuid::new_v4(),
-            "provider_id":provider.id,"model_id":model,"conversation_id":conversation,"messages":messages}))
+            "provider_id":provider.id,"model_id":model,"reasoning_effort":reasoning_effort,"conversation_id":conversation,"messages":messages}))
             .map_err(|_|"transfer_native_request")?;
         let body = native_body(&request, provider)?;
         if serde_json::to_vec(&body)

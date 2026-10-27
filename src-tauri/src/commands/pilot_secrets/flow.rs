@@ -315,7 +315,19 @@ pub(super) async fn send<B: Vault + 'static>(
         "frozen_digest":transport::commitment("frozen",&frozen)?,"manifest_digest":transport::commitment("manifest",&manifest)?,"content_contract_sha256":descriptor["content_contract_sha256"],
         "portable_records":descriptor["records"].as_u64().ok_or("transfer_archive")?.to_string(),"portable_fragments":archive.as_slice().split(|b|*b==b'\n').filter(|line|!line.is_empty()).count().saturating_sub(1).to_string(),
         "portable_payload_bytes":descriptor["bytes"].as_u64().ok_or("transfer_archive")?.to_string(),"stream_bytes":archive.as_slice().len().to_string()});
-    drop(transport.transit(manager.clone(),ready,&format!("/pilot/v2/transfers/known/{}/transit",reservation.transfer_id()),json!({"transit_contract":"transfer-transit-1","type":"transit.open","request_id":uuid::Uuid::new_v4(),"session":session,"provider_id":provider_id,"model_id":model_id}),&session).await?);
+    // The conversation's reasoning effort travels with the selection; the
+    // target applies it only when the selected model offers it.
+    let reasoning_effort: Option<String> =
+        sqlx::query_scalar("SELECT reasoning_effort FROM conversations WHERE id=?")
+            .bind(conversation)
+            .fetch_one(&ready.pool)
+            .await
+            .map_err(|_| "transfer_source_reservation")?;
+    let mut open=json!({"transit_contract":"transfer-transit-1","type":"transit.open","request_id":uuid::Uuid::new_v4(),"session":session,"provider_id":provider_id,"model_id":model_id});
+    if let Some(effort) = reasoning_effort.filter(|effort| reasoning_effort_identifier(effort)) {
+        open["reasoning_effort"] = json!(effort);
+    }
+    drop(transport.transit(manager.clone(),ready,&format!("/pilot/v2/transfers/known/{}/transit",reservation.transfer_id()),open,&session).await?);
     let root=format!("/pilot/v2/transfers/transits/{}",text(&session["transit_id"])?);
     let mut offset=0;let mut sequence=0u64;
     let mut quiet=tokio::time::Instant::now()+target_quiet();
@@ -600,6 +612,7 @@ pub(super) async fn receive<B: Vault + 'static>(
             &imported,
             provider_id,
             model_id,
+            intent["reasoning_effort"].as_str(),
         )
         .await?;
     reservation
@@ -738,4 +751,13 @@ pub(super) async fn receive<B: Vault + 'static>(
         .close()
         .await?;
     Ok((conversation, prepared))
+}
+
+/// The transit contract's reasoning effort identifier, as the app's
+/// SAFE_REASONING_EFFORT.
+fn reasoning_effort_identifier(effort: &str) -> bool {
+    let mut chars = effort.chars();
+    effort.len() <= 64
+        && chars.next().is_some_and(|c| c.is_ascii_alphanumeric())
+        && chars.all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'))
 }

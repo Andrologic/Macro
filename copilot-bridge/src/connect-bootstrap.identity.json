@@ -2,10 +2,10 @@
   "hello": {
     "version": "macro-connect-codec-1",
     "profile": "bootstrap",
-    "source_set_sha256": "00cbfbdf7fcf6653a04987c34a3b5ceb1a9ba77e315cd391561a11a8710dedad",
+    "source_set_sha256": "aea5b0213a36cd9b4003d6161133e49d59cfe35318e24539b60c1e27aac50519",
     "content_sha256": "c6ae7440ed0fb4d0bdccdfb936c4bf6ac5c441c96b642c1d9ccbd270b62bdcc6",
     "decision_resource_set_sha256": "6133c2d9ee204a175ae6c176b9c266d4378879c1637936ebd81e85daf4d0b97a",
-    "transit_resource_set_sha256": "70a4c90b9a8846ae3a0b56b565e2e8b0365120847fc02680a2d335248bb3dc20",
+    "transit_resource_set_sha256": "af166fc797c2ea4decf4dc7137eff70363783ff9b3069277b00480e71e1e219e",
     "authority_resource_set_sha256": "3d82d4b9909789ab0f8dc5f0ba06c751da56b1c0396613a2b29e2407302ab052",
     "a1_resource_set_sha256": "b82313e0350498be4c6751f847dbb7cd781dad40c56bf2978ab909ac9112c75e"
   },
@@ -40,7 +40,7 @@
     },
     {
       "path": "contracts/macro-pilot/v2/transfer-transit/shape.generated.mjs",
-      "sha256": "ecc45ea729ad54f7c3cb3b56309e58a1168d9429f9e158fe315b135c3d0b0890"
+      "sha256": "a78e9841fdff69603d72d968d331686810626eb6515d21ef97610931f49b6375"
     },
     {
       "path": "contracts/macro-pilot/v2/transfer-transit/validate.mjs",
