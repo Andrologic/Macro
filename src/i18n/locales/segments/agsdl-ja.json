@@ -223,7 +223,13 @@
     "legend": "凡例",
     "legendFlow": "フロー",
     "legendError": "エラー時の出口",
-    "legendQueue": "共有エージェントの待ち行列"
+    "legendQueue": "共有エージェントの待ち行列",
+    "legendEntry": "フローの入口",
+    "legendSteering": "実行中の作業に届く指示",
+    "joinAll": "すべて",
+    "joinFirst": "最初",
+    "joinAllHint": "すべての結果を待つ",
+    "joinFirstHint": "最初に受け入れ可能な結果を採用"
   },
   "attachToChat": "チャットに添付",
   "chatSelection": "AgSDL の選択",

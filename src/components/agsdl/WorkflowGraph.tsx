@@ -10,7 +10,7 @@ import "./graphPresentation.css";
 import type { ViewerCard } from "../../services/agsdl/viewer";
 import { useAgsdlTranslation } from "./useAgsdlTranslation";
 import "@xyflow/react/dist/style.css";
-import { WorkflowEdge, type GraphEdge } from "./WorkflowEdge";
+import { STEERING_BOLT, WorkflowEdge, type GraphEdge } from "./WorkflowEdge";
 import { WorkflowBlockOverlay } from "./WorkflowBlockOverlay";
 import { WorkflowGraphPopup } from "./WorkflowGraphPopup";
 import { WorkflowStatusBadge } from "./WorkflowStatusBadge";
@@ -26,6 +26,8 @@ type GraphNode = Node<{
   performer?: string;
   /** Lit or faded while another block of the same agent is hovered. */
   related?: "lit" | "faded";
+  /** The step that receives the entry Message. */
+  entry: boolean;
   select: (path: string) => void;
   focus: (path: string) => void;
   inspect: (path: string) => void;
@@ -51,11 +53,18 @@ function WorkflowNode({ data }: NodeProps<GraphNode>) {
   const warning = Boolean(card.issueCount) || card.unresolved || card.branches.some(branch => branch.reference.unresolved) || card.dependencies?.some(ref => ref.unresolved);
   const heading = data.performer ?? data.title;
   const subtitle = data.performer ? data.title : data.subtitle;
-  const label = [data.kindLabel, heading !== data.kindLabel ? heading : "", subtitle, warning ? t("agsdl.viewer.unresolved") : ""].filter(Boolean).join(" · ");
+  // A join either waits for all of its members or keeps the first acceptable result.
+  const joinMode = card.kind === "join" ? card.details.mode === "first" ? "first" : "all" : undefined;
+  const label = [data.entry ? t("agsdl.viewer.legendEntry") : "", data.kindLabel, heading !== data.kindLabel ? heading : "", subtitle,
+    joinMode ? t(`agsdl.viewer.${joinMode === "first" ? "joinFirstHint" : "joinAllHint"}`) : "", warning ? t("agsdl.viewer.unresolved") : ""].filter(Boolean).join(" · ");
   const status = data.task || data.native ? <WorkflowStatusBadge task={data.task} native={data.native} /> : null;
   return (
     <>
       <Handle type="target" position={Position.Top} id="in" />
+      {data.entry && <span className="agsdl-node-entry" aria-hidden="true">
+        <svg width="12" height="30" viewBox="0 0 12 30"><circle cx="6" cy="6" r="4.5" /><path d="M6 10.5V24" /><path className="is-head" d="M2.5 23.5L6 30l3.5-6.5z" /></svg>
+        <span>{t("agsdl.viewer.entry")}</span>
+      </span>}
       <WorkflowBlockOverlay card={card} title={data.title} kindLabel={data.kindLabel} task={data.task} native={data.native}
         incoming={data.incoming} outgoing={data.outgoing} details={data.details} dismissSignal={data.dismissSignal} actions={[
           { label: data.members ? t("agsdl.graphInteraction.expand") : t("agsdl.viewer.componentDetails"), icon: data.members ? <Layers size={14} /> : <Info size={14} />, run: () => data.expand ? data.expand() : data.inspect(card.path) },
@@ -79,6 +88,9 @@ function WorkflowNode({ data }: NodeProps<GraphNode>) {
       >
         {shape === "routing" ? <>
           {status}
+          {joinMode && <span className={`agsdl-node-mode is-${joinMode}`} title={t(`agsdl.viewer.${joinMode === "first" ? "joinFirstHint" : "joinAllHint"}`)}>
+            {t(`agsdl.viewer.${joinMode === "first" ? "joinFirst" : "joinAll"}`)}
+          </span>}
           <span className="agsdl-node-title">{data.title}</span>
         </> : <>
           <span className="agsdl-node-tile">{status ?? <Icon size={shape === "execution" ? 15 : 14} aria-hidden="true" />}</span>
@@ -108,9 +120,11 @@ const nodeTypes = { workflow: WorkflowNode };
 const edgeTypes = { workflow: WorkflowEdge };
 const fitOptions = { padding: 0.16, minZoom: 0.5, maxZoom: 1 };
 
-function Canvas({ cards, edges: connections, declarations = [], selected, select, title, changedPaths = [], trackedTasks = {}, nativeActivations = {}, selectionMode = "inspect", onAttach, onOpenTask, onInspect }: {
+function Canvas({ cards, edges: connections, entry, declarations = [], selected, select, title, changedPaths = [], trackedTasks = {}, nativeActivations = {}, selectionMode = "inspect", onAttach, onOpenTask, onInspect }: {
   cards: ViewerCard[];
   edges: ViewerEdge[];
+  /** The step that receives the entry Message. */
+  entry?: string;
   /** Document declarations, read by the hover previews. */
   declarations?: ViewerCard[];
   selected: string;
@@ -191,6 +205,7 @@ function Canvas({ cards, edges: connections, declarations = [], selected, select
         // Blocks lead with who performs the step, then the action; routing steps have no performer.
         performer,
         related: hoveredAgent ? agentKey(card) === hoveredAgent ? "lit" : "faded" : undefined,
+        entry: card.path === entry || Boolean(group?.members.some(member => member.path === entry)),
         subtitle: group ? t("agsdl.designGraph.members", { count: group.members.length, defaultValue: "{{count}} components" })
           : performer ? "" : card.kind === "approval" && !card.approvalBinding && !card.approvers?.length ? t("agsdl.viewer.approverMissing") : "",
         select: path => { setHighlighted(path); if (selectionMode === "select") select(path); }, inspect: path => { setHighlighted(path); (onInspect ?? select)(path); }, expand: group ? () => expandGroup(group.id) : undefined, focus: setHovered,
@@ -234,6 +249,7 @@ function Canvas({ cards, edges: connections, declarations = [], selected, select
   const queueSizes = new Map<string, number>();
   for (const card of presentation.cards) { const key = queueKey(card); if (key) queueSizes.set(key, (queueSizes.get(key) ?? 0) + 1); }
   const queued = (path: string) => { const card = presentation.cards.find(item => item.path === path); const key = card && queueKey(card); return Boolean(key && queueSizes.get(key)! > 1); };
+  const steered = (path: string) => presentation.cards.some(card => card.path === path && card.details.delivery === "steering");
   const litPaths = new Set(hoveredAgent ? presentation.cards.filter(card => agentKey(card) === hoveredAgent).map(card => card.path) : []);
   const edges: GraphEdge[] = presentation.edges.map(edge => {
     // The theme accent carries the flow, the theme's destructive colour the failures.
@@ -242,7 +258,7 @@ function Canvas({ cards, edges: connections, declarations = [], selected, select
     // Opaque mixes keep overlapping lines at the same intensity.
     const color = `color-mix(in srgb, rgb(var(--${failure ? "destructive" : "primary"})) ${focused ? 100 : 60}%, rgb(var(--background)))`;
     return {
-      ...edge, type: "workflow", data: { route: layout.routes.get(edge.id) ?? routeViewerEdge(layout.nodes, edge), connection: edge, queued: !failure && queued(edge.target),
+      ...edge, type: "workflow", data: { route: layout.routes.get(edge.id) ?? routeViewerEdge(layout.nodes, edge), connection: edge, queued: !failure && queued(edge.target), steering: !failure && steered(edge.target),
         sourceTitle: displayTitle(presentation.cards.find(card => card.path === edge.source)!),
         targetTitle: displayTitle(presentation.cards.find(card => card.path === edge.target)!),
         sourcePerformer: (() => { const source = presentation.cards.find(card => card.path === edge.source)!; return graphBlockPerformer(source, displayTitle(source)); })(),
@@ -259,6 +275,7 @@ function Canvas({ cards, edges: connections, declarations = [], selected, select
     };
   });
   const queues = edges.some(edge => edge.data?.queued);
+  const steering = edges.some(edge => edge.data?.steering);
   const clearSelection = () => { setHighlighted(""); setHovered(""); select(""); };
   return (
     <div ref={ref} className="agsdl-canvas" onKeyDown={event => { if (event.key === "Escape") clearSelection(); }}>
@@ -287,8 +304,10 @@ function Canvas({ cards, edges: connections, declarations = [], selected, select
         <Panel position="bottom-left" className="agsdl-graph-controls">
           {legend && <div className="agsdl-graph-legend" role="note">
             {/* Each sample ends on a block border, drawn as the short bar on the right. */}
+            {nodes.some(node => node.data.entry) && <div><LegendSample><circle className="is-head" cx="7" cy="9" r="4.5" /><path d="M11.5 9H30" /><path className="is-head" d="M28 5.5l6 3.5-6 3.5z" /></LegendSample>{t("agsdl.viewer.legendEntry")}</div>}
             <div><LegendSample><path d="M2 9H30" /><path className="is-head" d="M28 5.5l6 3.5-6 3.5z" /></LegendSample>{t("agsdl.viewer.legendFlow")}</div>
             {queues && <div><LegendSample><path d="M2 9H24" /><path className="is-head" d="M22 5.5l6 3.5-6 3.5z" /><path d="M31 3v12M34 3v12" strokeLinecap="round" /></LegendSample>{t("agsdl.viewer.legendQueue")}</div>}
+            {steering && <div><LegendSample><path d="M2 9H30" /><path className="is-head" d="M28 5.5l6 3.5-6 3.5z" /><path className="is-steer" d={STEERING_BOLT(18, 0)} /></LegendSample>{t("agsdl.viewer.legendSteering")}</div>}
             <div><svg width="44" height="18" aria-hidden="true"><path d="M9 9H39" stroke="color-mix(in srgb, rgb(var(--destructive)) 60%, rgb(var(--background)))" strokeWidth="1.4" /><circle cx="9" cy="9" r="7.5" fill="rgb(var(--background))" stroke="rgb(var(--destructive) / 0.4)" /><path d="M9 5.5v4M9 12.4v.1" stroke="rgb(var(--destructive))" strokeWidth="1.6" strokeLinecap="round" /></svg>{t("agsdl.viewer.legendError")}</div>
           </div>}
           <button onClick={() => void flow.zoomOut()} aria-label={t("agsdl.viewer.zoomOut")} title={t("agsdl.viewer.zoomOut")}><Minus size={14} /></button>

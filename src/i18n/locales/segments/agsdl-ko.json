@@ -223,7 +223,13 @@
     "legend": "범례",
     "legendFlow": "흐름",
     "legendError": "오류 시 출구",
-    "legendQueue": "공유 에이전트의 대기열"
+    "legendQueue": "공유 에이전트의 대기열",
+    "legendEntry": "흐름의 진입점",
+    "legendSteering": "진행 중인 작업에 전달되는 지침",
+    "joinAll": "전체",
+    "joinFirst": "첫 결과",
+    "joinAllHint": "모든 결과를 기다림",
+    "joinFirstHint": "처음 수용 가능한 결과를 채택"
   },
   "attachToChat": "채팅에 첨부",
   "chatSelection": "AgSDL 선택",

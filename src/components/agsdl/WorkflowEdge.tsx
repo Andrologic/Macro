@@ -11,6 +11,8 @@ export type WorkflowEdgeData = {
   route?: ViewerEdgeRoute;
   /** The target's agent is shared by several steps, so the message may wait in its queue. */
   queued?: boolean;
+  /** The target is a steering step: the message joins work already running. */
+  steering?: boolean;
   connection: ViewerEdge;
   sourceTitle: string;
   targetTitle: string;
@@ -23,6 +25,8 @@ export type WorkflowEdgeData = {
 };
 export type GraphEdge = Edge<WorkflowEdgeData, 'workflow'>;
 const QUEUE_GAP = 8;
+/** A small bolt with its top-left corner at (x, y), beside the arrival of a steering message. */
+export const STEERING_BOLT = (x: number, y: number) => `M${x + 6} ${y}L${x} ${y + 9}H${x + 4.5}L${x + 2.5} ${y + 16}L${x + 10} ${y + 6}H${x + 5.5}L${x + 8} ${y}Z`;
 
 const namedRouteKey = (route: string) => ['true', 'false', 'approved', 'denied', 'onError'].includes(route) ? `agsdl.link.${route}` : 'agsdl.link.branch';
 const routeKey = (edge: ViewerEdge) => !['next', 'success', 'exchange', 'dependency', ''].includes(edge.label) ? edge.label : undefined;
@@ -112,6 +116,7 @@ export function WorkflowEdge(props: EdgeProps<GraphEdge>) {
       }}>
       <BaseEdge id={props.id} path={path} markerStart={props.markerStart} markerEnd={props.markerEnd} style={props.style} interactionWidth={18} />
       {data.queued && <path className="agsdl-edge-queue" d={`M${props.targetX - 6} ${props.targetY - 5.5}H${props.targetX + 6}M${props.targetX - 6} ${props.targetY - 2.5}H${props.targetX + 6}`} style={{ stroke, opacity: props.style?.opacity }} />}
+      {data.steering && <path className="agsdl-edge-steer" d={STEERING_BOLT(props.targetX + 6, props.targetY - 21)} style={{ opacity: props.style?.opacity }} />}
     </g>
     {/* Drawn above the blocks: the exit sits on the block's border. */}
     {failure && <EdgeLabelRenderer><svg className="agsdl-edge-exit" width="18" height="18" viewBox="-9 -9 18 18" aria-hidden="true"
