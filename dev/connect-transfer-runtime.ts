@@ -137,6 +137,12 @@ const client = new MacroPilotNativeClient({
 });
 client.transferConnection = capabilities => ({ ...setup.connection, capabilities: [...capabilities] });
 const runtime = new PilotRuntime(client, undefined, desktopStorePorts);
+// The conversation list as the chat store shows it, on each change.
+let listed = '';
+useChatStore.subscribe(state => {
+  const ids = JSON.stringify(state.conversations.map(conversation => conversation.id));
+  if (ids !== listed) { listed = ids; emit({ event: 'conversations', ids: JSON.parse(ids) }); }
+});
 await runtime.start();
 emit({ event: 'started' });
 for (;;) {

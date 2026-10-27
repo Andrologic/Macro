@@ -2553,7 +2553,15 @@ async fn global_chat_transfer_target() {
                             vec![]
                         }
                     }
-                    DesktopObserved::Call("db_conversation_metadata") if received.is_some() => {
+                    // Stop once the chat store lists the published conversation.
+                    DesktopObserved::Event(event)
+                        if event["event"] == "conversations"
+                            && received.as_ref().is_some_and(|r| {
+                                r.as_ref().is_ok_and(|id| {
+                                    event["ids"].as_array().unwrap().contains(id)
+                                })
+                            }) =>
+                    {
                         vec!["stop"]
                     }
                     _ => vec![],
