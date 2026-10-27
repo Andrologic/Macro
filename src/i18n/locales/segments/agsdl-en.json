@@ -225,7 +225,6 @@
     "legendError": "Exit on error",
     "legendQueue": "Queue of a shared agent",
     "legendEntry": "Flow entry point",
-    "legendSteering": "Guidance delivered to work in progress",
     "joinAll": "All",
     "joinFirst": "First",
     "joinAllHint": "Waits for every result",

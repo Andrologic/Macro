@@ -225,7 +225,6 @@
     "legendError": "Ausgang bei Fehler",
     "legendQueue": "Warteschlange eines geteilten Agenten",
     "legendEntry": "Einstiegspunkt des Ablaufs",
-    "legendSteering": "Anweisung an eine laufende Arbeit",
     "joinAll": "Alle",
     "joinFirst": "Erstes",
     "joinAllHint": "Wartet auf alle Ergebnisse",

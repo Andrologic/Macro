@@ -225,7 +225,6 @@
     "legendError": "Salida en caso de error",
     "legendQueue": "Cola de un agente compartido",
     "legendEntry": "Punto de entrada del flujo",
-    "legendSteering": "Indicación entregada a un trabajo en curso",
     "joinAll": "Todos",
     "joinFirst": "Primero",
     "joinAllHint": "Espera todos los resultados",

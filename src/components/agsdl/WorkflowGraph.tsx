@@ -10,7 +10,7 @@ import "./graphPresentation.css";
 import type { ViewerCard } from "../../services/agsdl/viewer";
 import { useAgsdlTranslation } from "./useAgsdlTranslation";
 import "@xyflow/react/dist/style.css";
-import { STEERING_BOLT, WorkflowEdge, type GraphEdge } from "./WorkflowEdge";
+import { WorkflowEdge, type GraphEdge } from "./WorkflowEdge";
 import { WorkflowBlockOverlay } from "./WorkflowBlockOverlay";
 import { WorkflowGraphPopup } from "./WorkflowGraphPopup";
 import { WorkflowStatusBadge } from "./WorkflowStatusBadge";
@@ -249,7 +249,6 @@ function Canvas({ cards, edges: connections, entry, declarations = [], selected,
   const queueSizes = new Map<string, number>();
   for (const card of presentation.cards) { const key = queueKey(card); if (key) queueSizes.set(key, (queueSizes.get(key) ?? 0) + 1); }
   const queued = (path: string) => { const card = presentation.cards.find(item => item.path === path); const key = card && queueKey(card); return Boolean(key && queueSizes.get(key)! > 1); };
-  const steered = (path: string) => presentation.cards.some(card => card.path === path && card.details.delivery === "steering");
   const litPaths = new Set(hoveredAgent ? presentation.cards.filter(card => agentKey(card) === hoveredAgent).map(card => card.path) : []);
   const edges: GraphEdge[] = presentation.edges.map(edge => {
     // The theme accent carries the flow, the theme's destructive colour the failures.
@@ -258,7 +257,7 @@ function Canvas({ cards, edges: connections, entry, declarations = [], selected,
     // Opaque mixes keep overlapping lines at the same intensity.
     const color = `color-mix(in srgb, rgb(var(--${failure ? "destructive" : "primary"})) ${focused ? 100 : 60}%, rgb(var(--background)))`;
     return {
-      ...edge, type: "workflow", data: { route: layout.routes.get(edge.id) ?? routeViewerEdge(layout.nodes, edge), connection: edge, queued: !failure && queued(edge.target), steering: !failure && steered(edge.target),
+      ...edge, type: "workflow", data: { route: layout.routes.get(edge.id) ?? routeViewerEdge(layout.nodes, edge), connection: edge, queued: !failure && queued(edge.target),
         sourceTitle: displayTitle(presentation.cards.find(card => card.path === edge.source)!),
         targetTitle: displayTitle(presentation.cards.find(card => card.path === edge.target)!),
         sourcePerformer: (() => { const source = presentation.cards.find(card => card.path === edge.source)!; return graphBlockPerformer(source, displayTitle(source)); })(),
@@ -275,7 +274,6 @@ function Canvas({ cards, edges: connections, entry, declarations = [], selected,
     };
   });
   const queues = edges.some(edge => edge.data?.queued);
-  const steering = edges.some(edge => edge.data?.steering);
   const clearSelection = () => { setHighlighted(""); setHovered(""); select(""); };
   return (
     <div ref={ref} className="agsdl-canvas" onKeyDown={event => { if (event.key === "Escape") clearSelection(); }}>
@@ -307,7 +305,6 @@ function Canvas({ cards, edges: connections, entry, declarations = [], selected,
             {nodes.some(node => node.data.entry) && <div><LegendSample><circle className="is-head" cx="7" cy="9" r="4.5" /><path d="M11.5 9H30" /><path className="is-head" d="M28 5.5l6 3.5-6 3.5z" /></LegendSample>{t("agsdl.viewer.legendEntry")}</div>}
             <div><LegendSample><path d="M2 9H30" /><path className="is-head" d="M28 5.5l6 3.5-6 3.5z" /></LegendSample>{t("agsdl.viewer.legendFlow")}</div>
             {queues && <div><LegendSample><path d="M2 9H24" /><path className="is-head" d="M22 5.5l6 3.5-6 3.5z" /><path d="M31 3v12M34 3v12" strokeLinecap="round" /></LegendSample>{t("agsdl.viewer.legendQueue")}</div>}
-            {steering && <div><LegendSample><path d="M2 9H30" /><path className="is-head" d="M28 5.5l6 3.5-6 3.5z" /><path className="is-steer" d={STEERING_BOLT(18, 0)} /></LegendSample>{t("agsdl.viewer.legendSteering")}</div>}
             <div><svg width="44" height="18" aria-hidden="true"><path d="M9 9H39" stroke="color-mix(in srgb, rgb(var(--destructive)) 60%, rgb(var(--background)))" strokeWidth="1.4" /><circle cx="9" cy="9" r="7.5" fill="rgb(var(--background))" stroke="rgb(var(--destructive) / 0.4)" /><path d="M9 5.5v4M9 12.4v.1" stroke="rgb(var(--destructive))" strokeWidth="1.6" strokeLinecap="round" /></svg>{t("agsdl.viewer.legendError")}</div>
           </div>}
           <button onClick={() => void flow.zoomOut()} aria-label={t("agsdl.viewer.zoomOut")} title={t("agsdl.viewer.zoomOut")}><Minus size={14} /></button>

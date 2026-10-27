@@ -225,7 +225,6 @@
     "legendError": "Sortie en cas d’erreur",
     "legendQueue": "File d’attente d’un agent partagé",
     "legendEntry": "Point d’entrée du flux",
-    "legendSteering": "Consigne glissée dans un travail en cours",
     "joinAll": "Tous",
     "joinFirst": "Premier",
     "joinAllHint": "Attend tous les résultats",

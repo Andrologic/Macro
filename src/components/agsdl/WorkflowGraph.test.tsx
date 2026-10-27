@@ -32,13 +32,11 @@ it('leads with the agent and lights the blocks of a shared agent together on hov
   expect(blocks.some(block => block.classList.contains('is-lit') || block.classList.contains('is-faded'))).toBe(false);
 });
 
-it('marks the entry step, steering arrivals and how each join collects its members', async () => {
+it('marks the entry step and how each join collects its members', async () => {
   const incident = await render('demo-incident');
   const entries = [...incident.querySelectorAll('.agsdl-node-entry')];
   expect(entries).toHaveLength(1);
   expect(entries[0].parentElement?.querySelector('.agsdl-node-title')?.textContent).toBe('Responsable d’astreinte');
-  await act(async () => incident.querySelector<HTMLButtonElement>('.agsdl-graph-controls button[aria-pressed]')!.click());
-  expect(incident.querySelector('.agsdl-graph-legend .is-steer')).not.toBeNull();
   act(() => root?.unmount()); incident.remove();
 
   const crisis = await render('demo-crisis');
