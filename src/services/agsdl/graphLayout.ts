@@ -15,8 +15,9 @@ export interface ViewerLayoutNode {
   position: { x: number; y: number };
   height: number;
 }
-/** Each step moves vertically to `y`, then horizontally to `x`; the last step ends above the target. */
-export interface ViewerRouteStep { y: number; x?: number }
+/** Each step moves vertically to `y`, then horizontally to `x`; the last step ends above the target.
+ * `level` keeps the source handle's height instead of `y`, for side exits with a clear row. */
+export interface ViewerRouteStep { y: number; x?: number; level?: boolean }
 export interface ViewerEdgeRoute { kind: "orthogonal"; steps: ViewerRouteStep[]; loop?: boolean }
 
 export const VIEWER_CARD_WIDTH = 240;
@@ -329,8 +330,11 @@ export function layoutViewer(cards: ViewerCard[], edges: ViewerEdge[], heights: 
   };
   for (const group of groups.values()) for (const edge of group.edges) {
     const source = nodes.get(edge.source)!;
+    // A failure leaving toward a rail with nothing beside it goes straight across instead of dropping below its row.
+    const level = edge.label === "onError" && group.side > 0 && !layers[source.layer].some(node => node.x > source.x);
     routes.set(edge.id, { kind: "orthogonal", ...(returns.has(edge) ? { loop: true } : {}), steps: [
-      { y: rowBottom[source.layer] + LOOP_OFFSET + slot(exits, `${source.layer}:${group.side}`, edge.source) * 4, x: group.x },
+      level ? { y: rowTop[source.layer], x: group.x, level: true }
+        : { y: rowBottom[source.layer] + LOOP_OFFSET + slot(exits, `${source.layer}:${group.side}`, edge.source) * 4, x: group.x },
       { y: rowTop[group.target.layer] - LOOP_OFFSET - slot(entries, `${group.target.layer}`, group.target.id) * 4 },
     ] });
   }
@@ -340,6 +344,15 @@ export function layoutViewer(cards: ViewerCard[], edges: ViewerEdge[], heights: 
     return { card, position: { x: node.x - VIEWER_CARD_WIDTH / 2, y: rowTop[node.layer] }, height: cardHeight(card) };
   });
   return { nodes: layout, edges, routes };
+}
+
+/** Area covered by the blocks and the side rails, so fitting the graph never cuts a rail. */
+export function viewerLayoutBounds(layout: { nodes: ViewerLayoutNode[]; routes: Map<string, ViewerEdgeRoute> }) {
+  const xs = layout.nodes.flatMap(node => [node.position.x, node.position.x + VIEWER_CARD_WIDTH]);
+  const ys = layout.nodes.flatMap(node => [node.position.y, node.position.y + node.height]);
+  for (const route of layout.routes.values()) for (const step of route.steps) if (step.x !== undefined) xs.push(step.x);
+  const x = Math.min(...xs), y = Math.min(...ys);
+  return { x, y, width: Math.max(...xs) - x, height: Math.max(...ys) - y };
 }
 
 /** Fallback for connections outside the reading layout, such as revealed exchanges. */
@@ -363,9 +376,10 @@ export function viewerEdgePath(route: ViewerEdgeRoute, handles: { sourceX: numbe
   const points = fromSide ? [{ x: sourceX, y: sourceY }, { x: sourceX + SIDE_EXIT, y: sourceY }] : [{ x: sourceX, y: sourceY }];
   let x = fromSide ? sourceX + SIDE_EXIT : sourceX;
   for (const step of route.steps) {
-    points.push({ x, y: step.y });
+    const y = step.level ? sourceY : step.y;
+    points.push({ x, y });
     x = step.x ?? targetX;
-    points.push({ x, y: step.y });
+    points.push({ x, y });
   }
   points.push({ x: targetX, y: points.at(-1)!.y }, { x: targetX, y: targetY });
   const clean = points.filter((point, index) => index === 0 || Math.abs(point.x - points[index - 1].x) > 0.01 || Math.abs(point.y - points[index - 1].y) > 0.01)

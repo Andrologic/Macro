@@ -1,9 +1,9 @@
 import { groupNativeState, type NativeCardActivation } from "../../services/agsdl/executionView";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Handle, MarkerType, Panel, Position, ReactFlow, ReactFlowProvider, useReactFlow, type Node, type NodeProps, type NodeChange } from "@xyflow/react";
+import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
+import { Background, getViewportForBounds, Handle, MarkerType, Panel, Position, ReactFlow, ReactFlowProvider, useReactFlow, type Node, type NodeProps, type NodeChange } from "@xyflow/react";
 import { Bot, Boxes, ChevronDown, ChevronRight, CircleHelp, Info, Layers, List, MessageSquare, MessageSquarePlus, LocateFixed, Minus, Plus, Terminal, UserCheck } from "lucide-react";
 import { useElementSize } from "../../hooks/useElementSize";
-import { layoutViewer, routeViewerEdge, VIEWER_CARD_WIDTH, type ViewerEdge } from "../../services/agsdl/graphLayout";
+import { layoutViewer, routeViewerEdge, VIEWER_CARD_WIDTH, viewerLayoutBounds, type ViewerEdge } from "../../services/agsdl/graphLayout";
 import { graphBlockPerformer, graphBlockShape, graphNeighborhood, presentFocusedGraph, presentGraph } from "../../services/agsdl/graphPresentation";
 import { blockDetails, type BlockDetail } from "../../services/agsdl/blockDetails";
 import "./graphPresentation.css";
@@ -118,6 +118,7 @@ function Canvas({ cards, edges: connections, declarations = [], selected, select
   const { t } = useAgsdlTranslation();
   const { ref, width, height } = useElementSize<HTMLDivElement>();
   const flow = useReactFlow<GraphNode>();
+  const backgroundId = useId();
   const [canvasAnchor, setCanvasAnchor] = useState<HTMLDivElement | null>(null);
   const [paneMenu, setPaneMenu] = useState<{ left: number; top: number }>();
   const [dismissSignal, setDismissSignal] = useState(0);
@@ -138,12 +139,17 @@ function Canvas({ cards, edges: connections, declarations = [], selected, select
   const focus = inspectedEdge || active || hovered;
   const neighborhood = graphNeighborhood(focus, presentation.edges);
   const hasFocus = Boolean(focus) && (presentation.cards.some(card => card.path === focus) || presentation.edges.some(edge => edge.id === focus));
+  // Fit the blocks and their side rails, within the same zoom limits as the initial view.
+  const fit = useCallback(() => {
+    if (!width || !height || !layout.nodes.length) return;
+    void flow.setViewport(getViewportForBounds(viewerLayoutBounds(layout), width, height, fitOptions.minZoom, fitOptions.maxZoom, fitOptions.padding));
+  }, [flow, layout, width, height]);
   const fitted = useRef(false);
   useEffect(() => {
     if (!width || !height || !layout.nodes.length || fitted.current || layout.nodes.some(node => heights[node.card.path] === undefined)) return;
-    const timer = setTimeout(() => { fitted.current = true; void flow.fitView(fitOptions); }, 80);
+    const timer = setTimeout(() => { fitted.current = true; fit(); }, 80);
     return () => clearTimeout(timer);
-  }, [width, height, layout.nodes, heights, flow]);
+  }, [width, height, layout.nodes, heights, fit]);
   const groupMenu = useRef<HTMLDetailsElement>(null);
   const expandGroup = (id: string) => {
     if (groupMenu.current) groupMenu.current.open = false;
@@ -247,6 +253,7 @@ function Canvas({ cards, edges: connections, declarations = [], selected, select
         {selectionMode === "inspect" && presentation.cards.some(card => card.path === active) && <Panel position="top-right" className="agsdl-graph-controls">
           <button onClick={() => select(active)} aria-label={t("agsdl.viewer.componentDetails")} title={t("agsdl.viewer.componentDetails")}><Info size={14} /></button>
         </Panel>}
+        <Background id={backgroundId} color="rgb(var(--muted-foreground) / 0.3)" gap={20} size={1.5} />
         <Panel position="bottom-left" className="agsdl-graph-controls">
           {legend && <div className="agsdl-graph-legend" role="note">
             <div><svg width="40" height="12" aria-hidden="true"><path d="M1 6H39" stroke="color-mix(in srgb, rgb(var(--primary)) 60%, rgb(var(--background)))" strokeWidth="1.4" /></svg>{t("agsdl.viewer.legendFlow")}</div>
@@ -254,14 +261,14 @@ function Canvas({ cards, edges: connections, declarations = [], selected, select
           </div>}
           <button onClick={() => void flow.zoomOut()} aria-label={t("agsdl.viewer.zoomOut")} title={t("agsdl.viewer.zoomOut")}><Minus size={14} /></button>
           <button onClick={() => void flow.zoomIn()} aria-label={t("agsdl.viewer.zoomIn")} title={t("agsdl.viewer.zoomIn")}><Plus size={14} /></button>
-          <button onClick={() => void flow.fitView(fitOptions)} aria-label={t("agsdl.viewer.fit")} title={t("agsdl.viewer.fit")}><LocateFixed size={14} /></button>
+          <button onClick={fit} aria-label={t("agsdl.viewer.fit")} title={t("agsdl.viewer.fit")}><LocateFixed size={14} /></button>
           <button onClick={() => setLegend(value => !value)} aria-pressed={legend} aria-label={t("agsdl.viewer.legend")} title={t("agsdl.viewer.legend")}><List size={14} /></button>
         </Panel>
       </ReactFlow>
       </div>
       {paneMenu && canvasAnchor && <WorkflowGraphPopup anchor={canvasAnchor} position={paneMenu}
         label={t("agsdl.graphInteraction.canvasMenu")} onClose={() => setPaneMenu(undefined)} actions={[
-          { label: t("agsdl.viewer.fit"), icon: <LocateFixed size={14} />, run: () => { void flow.fitView(fitOptions); } },
+          { label: t("agsdl.viewer.fit"), icon: <LocateFixed size={14} />, run: fit },
         ]} />}
     </div>
   );

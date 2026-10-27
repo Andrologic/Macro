@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { layoutViewer, routeViewerEdge, viewerEdgePath, VIEWER_CARD_WIDTH, type ViewerEdge, type ViewerLayoutNode } from "./graphLayout";
+import { layoutViewer, routeViewerEdge, viewerEdgePath, viewerLayoutBounds, VIEWER_CARD_WIDTH, type ViewerEdge, type ViewerLayoutNode } from "./graphLayout";
 import { presentGraph } from "./graphPresentation";
 import type { ViewerCard } from "./viewer";
 
@@ -84,6 +84,19 @@ describe("AgSDL handler rails", () => {
     const spine = center(at(graph, "a"));
     expect(Math.sign(rail("escalate") - spine)).toBe(-Math.sign(rail("recover") - spine));
     expect(Math.sign(center(at(graph, "escalate")) - center(at(graph, "e")))).toBe(Math.sign(rail("escalate") - spine));
+  });
+
+  it("sends a failure straight across a clear row and includes every rail in the fitted area", () => {
+    const cards = ["a", "b", "c", "d", "e", "recover"].map(id => card(id));
+    const edges = [edge("a", "b"), edge("b", "c"), edge("c", "d"), edge("d", "e"), edge("a", "recover", "onError"), edge("b", "recover", "onError"), edge("d", "recover", "onError")];
+    const graph = layoutViewer(cards, edges);
+    const rails = edges.slice(4, 6).map(item => graph.routes.get(item.id)!);
+    const railX = rails[0].steps[0].x!;
+    expect(rails.every(route => route.steps[0].x === railX)).toBe(true);
+    // Failures exit on the right; they stay level only when the rail is on that side.
+    expect(rails.every(route => Boolean(route.steps[0].level) === railX > center(at(graph, "a")))).toBe(true);
+    const bounds = viewerLayoutBounds(graph);
+    expect(bounds.x <= railX && railX <= bounds.x + bounds.width).toBe(true);
   });
 });
 
