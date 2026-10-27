@@ -2004,6 +2004,46 @@ async fn global_chat_local_transfer(
     let config = crate::config::ConfigManager::initialize(directory.path().join("config"))
         .await
         .unwrap();
+    // Oracle for P7: the requests the source itself would send next.
+    let source_model = if provider == "codex" {
+        ("chatgpt", "chatgpt", "gpt-6.1-sol")
+    } else {
+        ("macro-ai", "openai", "synthetic-model")
+    };
+    let source_within = ordinary_next_request(
+        &source,
+        &source_pool,
+        &config,
+        "chat",
+        source_model,
+        1_000_000,
+        NEXT_PROMPT,
+    )
+    .await;
+    let source_beyond = if compacted {
+        Some(
+            ordinary_next_request(
+                &source,
+                &source_pool,
+                &config,
+                "chat",
+                source_model,
+                4_000,
+                NEXT_PROMPT,
+            )
+            .await,
+        )
+    } else {
+        None
+    };
+    if let Some(beyond) = &source_beyond {
+        // The fixture checkpoint does not fit this window either: the source
+        // compacts again too, so the transfer changes nothing here.
+        assert!(next_request_messages(beyond)[0]["content"]
+            .as_str()
+            .unwrap()
+            .starts_with("Compact older conversation history"));
+    }
     let mut child = tokio::process::Command::new(std::env::current_exe().unwrap())
         .args([
             "--exact",
@@ -2096,6 +2136,19 @@ async fn global_chat_local_transfer(
             transfer_target_event(&mut target_events).await.unwrap(),
             serde_json::json!({"type":"complete"})
         );
+        // The target's next request equals the source's, except that a
+        // compacted source still sends its checkpoint, which is not transferred.
+        let target: serde_json::Value = serde_json::from_slice(
+            &tokio::fs::read(directory.path().join("next-request.json"))
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        let target_body = serde_json::to_string(&provider_body(&target["request"]))
+            .unwrap()
+            .replace(target["conversation"].as_str().unwrap(), "chat");
+        let target_body: serde_json::Value = serde_json::from_str(&target_body).unwrap();
+        assert_eq!(target_body, provider_body(&source_within));
         input.write_all(b"{\"stop\":true}\n").await.unwrap();
     }
     drop(input);
@@ -2479,46 +2532,66 @@ async fn global_chat_transfer_target() {
     }
     assert!(!html.contains(&conversation));
     assert!(!html.contains("portable_archive"));
-    let mut next = prepared.native_prepared().unwrap().1.clone();
-    next.messages.push(
-        serde_json::from_value(
-            serde_json::json!({"role":"user","content":"Continue from this history."}),
-        )
-        .unwrap(),
-    );
-    let (provider, _, _, _) =
-        crate::connect::runtime::transfer_target_snapshot(&config, &ready, provider_id, model_id)
-            .await
-            .unwrap();
-    let next_body = if codex {
-        serde_json::to_value(crate::ai::chatgpt::build_transfer_request(&next).unwrap()).unwrap()
-    } else {
-        crate::ai::openai_compatible::build_transfer_request(&next, &provider).unwrap()
-    };
-    assert!(next_body
-        .to_string()
-        .contains("Continue from this history."));
-    if codex {
-        assert_eq!(next_body["prompt_cache_key"], conversation);
-        assert_eq!(next_body["store"], false);
-        assert!(next_body.get("previous_response_id").is_none());
-    }
+    // P7: the first message after publication goes through the ordinary chat
+    // store, on the rows read back from SQLite. The compaction checkpoint is not
+    // transferred (docs/functional-spec.md): within the budget the full history
+    // is sent; beyond it, the target compacts again before the user turn.
+    let within = ordinary_next_request(
+        &owner,
+        &pool,
+        &config,
+        &conversation,
+        (provider_id, provider_type, model_id),
+        1_000_000,
+        NEXT_PROMPT,
+    )
+    .await;
+    assert_eq!(within["purpose"], "turn");
+    let sent = next_request_messages(&within);
+    assert!(sent.last().unwrap()["content"]
+        .as_str()
+        .unwrap()
+        .ends_with(NEXT_PROMPT));
+    let serialized = request_text(&serde_json::Value::Array(sent.clone()));
     for message in &messages {
         assert!(
-            next_body.to_string().contains(message.trim()),
+            serialized.contains(message.trim()),
             "missing original text: {}",
             message.chars().take(70).collect::<String>()
         );
     }
-    if compacted {
-        assert!(next_body.to_string().contains("SOURCE_CHECKPOINT_HISTORY"));
-    }
+    assert!(!serialized.contains("SOURCE_CHECKPOINT_HISTORY"));
     if with_resources {
-        let serialized = next_body.to_string();
-        assert!(serialized.contains("ESSENTIAL_CITATION_FACT"));
-        assert!(serialized.contains("ASSET_TEXT_FACT"));
         assert!(serialized.contains("data:image/png;base64,"));
     }
+    if compacted {
+        let beyond = ordinary_next_request(
+            &owner,
+            &pool,
+            &config,
+            &conversation,
+            (provider_id, provider_type, model_id),
+            4_000,
+            NEXT_PROMPT,
+        )
+        .await;
+        let compaction = next_request_messages(&beyond);
+        assert!(compaction[0]["content"]
+            .as_str()
+            .unwrap()
+            .starts_with("Compact older conversation history"));
+        assert!(compaction
+            .iter()
+            .all(|message| message["content"] != NEXT_PROMPT));
+    }
+    tokio::fs::write(
+        std::path::Path::new(data["database"].as_str().unwrap())
+            .with_file_name("next-request.json"),
+        serde_json::to_vec(&serde_json::json!({"conversation": conversation, "request": within}))
+            .unwrap(),
+    )
+    .await
+    .unwrap();
     if let Some(path) = std::env::var_os("MACRO_CONNECT_SLICE_PREVIEW") {
         tokio::fs::write(path,serde_json::to_vec(&serde_json::json!({"messagesHtml":html,"messageCount":messages.len(),"resources":preview_resources})).unwrap()).await.unwrap();
     }
@@ -2555,4 +2628,196 @@ async fn global_chat_transfer_target() {
     let serialized = body.to_string();
     assert!(serialized.contains("Can I continue on another computer?"));
     assert!(serialized.contains("A short answer available on the other computer."));
+}
+
+/// Sends the first message after publication through the ordinary chat store
+/// (`dev/connect-transfer-next-request.ts`). Reads of the conversation
+/// are answered here from its database and archive reader; the first
+/// model request is captured and returned without calling a model.
+async fn ordinary_next_request(
+    owner: &crate::core::db_state::DbPool,
+    pool: &sqlx::SqlitePool,
+    config: &crate::config::ConfigManager,
+    conversation: &str,
+    provider: (&str, &str, &str),
+    context_window_tokens: u64,
+    prompt: &str,
+) -> serde_json::Value {
+    use crate::db::connect_transfer::reader_runtime::ArchiveReaderRuntime;
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+    let bun = std::env::split_paths(&std::env::var_os("PATH").unwrap())
+        .map(|p| p.join("bun"))
+        .find(|p| p.is_file())
+        .unwrap();
+    let mut driver = tokio::process::Command::new(bun)
+        .arg("dev/connect-transfer-next-request.ts")
+        .current_dir(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .parent()
+                .unwrap(),
+        )
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .kill_on_drop(true)
+        .spawn()
+        .unwrap();
+    let mut input = driver.stdin.take().unwrap();
+    let mut output = BufReader::new(driver.stdout.take().unwrap()).lines();
+    let mut row = crate::db::repository::get_conversation(pool, conversation)
+        .await
+        .unwrap()
+        .unwrap();
+    // The app keeps this count current; source fixture rows are inserted
+    // directly, and changing the source row would invalidate its reservation.
+    row.message_count = crate::db::repository::list_messages(pool, conversation)
+        .await
+        .unwrap()
+        .len() as i32;
+    let setup = serde_json::json!({
+        "conversation": row,
+        "provider": {"id": provider.0, "type": provider.1, "modelId": provider.2,
+            "contextWindowTokens": context_window_tokens},
+        "prompt": prompt,
+    });
+    input
+        .write_all(format!("{setup}\n").as_bytes())
+        .await
+        .unwrap();
+    let reader = ArchiveReaderRuntime::default();
+    let (caller, page) = ("next-request", "page");
+    let mut outcome = serde_json::Value::Null;
+    while let Some(line) = output.next_line().await.unwrap() {
+        let Some(message) = line.strip_prefix("NEXT_REQUEST:") else {
+            continue;
+        };
+        let message: serde_json::Value = serde_json::from_str(message).unwrap();
+        if message["done"] == true {
+            assert_eq!(message["unexpected"], serde_json::json!([]));
+            break;
+        }
+        let Some(command) = message["command"].as_str() else {
+            outcome = message;
+            continue;
+        };
+        let args = &message["args"];
+        let text = |key: &str| args[key].as_str().unwrap().to_owned();
+        fn arg<T: serde::de::DeserializeOwned>(args: &serde_json::Value) -> Result<T, String> {
+            serde_json::from_value(args["input"].clone()).map_err(|e| e.to_string())
+        }
+        let reply: Result<serde_json::Value, String> = match command {
+            "db_list_messages" => {
+                crate::db::repository::list_messages(pool, &text("conversationId"))
+                    .await
+                    .map(|v| serde_json::to_value(v).unwrap())
+                    .map_err(|e| format!("{e:?}"))
+            }
+            "db_list_provider_models" => {
+                // Native list; the driver imposes the scenario's context window.
+                crate::commands::configured_provider_models(config, pool, &text("providerId"))
+                    .await
+                    .map(|v| serde_json::to_value(v).unwrap())
+                    .map_err(|e| format!("{e:?}"))
+            }
+            "db_get_app_setting" => crate::db::repository::get_app_setting(pool, &text("key"))
+                .await
+                .map(|v| serde_json::to_value(v).unwrap())
+                .map_err(|e| format!("{e:?}")),
+            "db_list_conversation_citations" => {
+                crate::db::repository::list_conversation_citations(pool, &text("conversationId"))
+                    .await
+                    .map(|v| serde_json::to_value(v).unwrap())
+                    .map_err(|e| format!("{e:?}"))
+            }
+            "db_get_conversation_compaction_state" => {
+                crate::db::repository::get_conversation_compaction_state(
+                    pool,
+                    &text("conversationId"),
+                )
+                .await
+                .map(|v| serde_json::to_value(v).unwrap())
+                .map_err(|e| format!("{e:?}"))
+            }
+            "db_pilot_message_images" => {
+                crate::db::pilot_files::message_images(pool, &text("messageId"))
+                    .await
+                    .map(|v| serde_json::to_value(v).unwrap())
+                    .map_err(|e| format!("{e:?}"))
+            }
+            "connect_archive_open" => match arg(args) {
+                Ok(input) => reader
+                    .open(owner, config, caller, page, input)
+                    .await
+                    .map(|v| serde_json::to_value(v).unwrap())
+                    .map_err(|e| format!("{e:?}")),
+                Err(e) => Err(e),
+            },
+            "connect_archive_page" => match arg(args) {
+                Ok(input) => reader
+                    .page(caller, page, input)
+                    .await
+                    .map(|v| serde_json::to_value(v).unwrap())
+                    .map_err(|e| format!("{e:?}")),
+                Err(e) => Err(e),
+            },
+            "connect_archive_materialize" => match arg(args) {
+                Ok(input) => reader
+                    .materialize(caller, page, input)
+                    .await
+                    .map(|v| serde_json::to_value(v).unwrap())
+                    .map_err(|e| format!("{e:?}")),
+                Err(e) => Err(e),
+            },
+            "connect_archive_release" => match arg(args) {
+                Ok(input) => reader
+                    .release(caller, page, input)
+                    .map(|_| serde_json::Value::Null)
+                    .map_err(|e| format!("{e:?}")),
+                Err(e) => Err(e),
+            },
+            other => Err(format!("unhandled native command {other}")),
+        };
+        let reply = match reply {
+            Ok(ok) => serde_json::json!({"id": message["id"], "ok": ok}),
+            Err(error) => serde_json::json!({"id": message["id"], "error": error}),
+        };
+        input
+            .write_all(format!("{reply}\n").as_bytes())
+            .await
+            .unwrap();
+    }
+    reader.retire_caller(caller);
+    assert!(driver.wait().await.unwrap().success());
+    outcome
+}
+
+const NEXT_PROMPT: &str = "Continue from this history.";
+
+/// Model messages of a captured request, native (`ai_stream_chat`) or HTTP.
+fn next_request_messages(captured: &serde_json::Value) -> Vec<serde_json::Value> {
+    captured["request"]["body"]["messages"]
+        .as_array()
+        .unwrap_or_else(|| panic!("no model request: {captured}"))
+        .clone()
+}
+
+/// Every string in a request, so texts are compared unescaped.
+fn request_text(value: &serde_json::Value) -> String {
+    match value {
+        serde_json::Value::String(text) => format!("{text}\n"),
+        serde_json::Value::Array(items) => items.iter().map(request_text).collect(),
+        serde_json::Value::Object(fields) => fields.values().map(request_text).collect(),
+        _ => String::new(),
+    }
+}
+
+/// What the provider would receive: the HTTP body, or the native request after
+/// the ordinary Responses builder.
+fn provider_body(captured: &serde_json::Value) -> serde_json::Value {
+    let request = &captured["request"];
+    if request["kind"] == "http" {
+        return request["body"].clone();
+    }
+    let request: crate::ai::types::AiChatRequest =
+        serde_json::from_value(request["body"].clone()).unwrap();
+    serde_json::to_value(crate::ai::chatgpt::build_transfer_request(&request).unwrap()).unwrap()
 }

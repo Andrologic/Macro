@@ -205,6 +205,20 @@ Les garde-fous v2 existants ne sont pas augmentés par défaut. L'import valide 
 fil de l'eau, refuse les traversées de chemin et remappe les identifiants sans
 transformer des traces historiques en outils actifs ou en instructions fiables.
 
+Le premier transfert ne reprend pas le checkpoint de compaction de la source.
+La cible publie les messages originaux sans état de compaction ni
+`provider_input_items` enregistrés ; les résumés restent consultables dans
+l'archive comme données historiques. Le message suivant passe par le chemin
+d'envoi ordinaire, qui reconstruit les éléments fournisseur depuis le contenu.
+Si l'historique tient dans la fenêtre du modèle cible, il part en entier ;
+sinon, la cible compacte de nouveau avant le tour utilisateur, au prix d'un
+appel modèle et d'un résumé différent de celui de la source. Le scénario natif
+synthétique vérifie que ce prochain corps est identique à celui que la source
+aurait envoyé, pour Macro AI, Codex, une conversation compactée et des
+ressources. La restauration du checkpoint sera réexaminée avec la règle de choix
+du modèle cible : un checkpoint calculé pour le modèle source n'est pas
+forcément valide pour la cible.
+
 ## Preuves nécessaires avant activation
 
 | Scénario | Résultat exigé |
