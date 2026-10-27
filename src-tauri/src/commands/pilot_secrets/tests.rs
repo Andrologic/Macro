@@ -1698,32 +1698,78 @@ pub(super) async fn transfer_wait_with_idle_poll<B: Vault + 'static, F: std::fut
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore = "requires the explicitly supplied local transfer relay"]
 async fn global_chat_macro_ai_local_transfer() {
-    global_chat_local_transfer("macro-ai", false, false, false).await;
+    global_chat_local_transfer("macro-ai", false, false, false, Route::Flow).await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore = "requires the explicitly supplied local transfer relay"]
 async fn global_chat_codex_local_transfer() {
-    global_chat_local_transfer("codex", false, false, false).await;
+    global_chat_local_transfer("codex", false, false, false, Route::Flow).await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore = "requires the explicitly supplied local transfer relay"]
 async fn global_chat_compacted_local_transfer() {
-    global_chat_local_transfer("codex", true, false, false).await;
+    global_chat_local_transfer("codex", true, false, false, Route::Flow).await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore = "requires the explicitly supplied local transfer relay"]
 async fn global_chat_resources_local_transfer() {
-    global_chat_local_transfer("codex", true, true, false).await;
+    global_chat_local_transfer("codex", true, true, false, Route::Flow).await;
+}
+
+/// Both desktops run the real Pilot runtime; the transfer goes through the
+/// Tauri command bodies, with the relay's default same-account rights.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires the explicitly supplied local transfer relay"]
+async fn global_chat_runtime_transfer() {
+    global_chat_local_transfer("codex", true, true, false, Route::Runtime).await;
+}
+
+/// Through the runtime, a refused transfer reaches the dialog as `aborted`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires the explicitly supplied local transfer relay"]
+async fn global_chat_runtime_refused_transfer() {
+    global_chat_local_transfer("macro-ai", false, false, true, Route::Runtime).await;
+}
+
+/// An interrupt between delivery and protection ends the target's receive; the
+/// relay delivers the same invitation to its next receive, and the transfer
+/// completes.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires the explicitly supplied local transfer relay"]
+async fn global_chat_interrupted_receive_transfer() {
+    global_chat_local_transfer("macro-ai", false, false, false, Route::InterruptedReceive).await;
+}
+
+/// The target session is restricted on the source instance: the transfer is
+/// abandoned and the source reopens.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires the explicitly supplied local transfer relay"]
+async fn global_chat_restricted_target_transfer() {
+    global_chat_local_transfer("macro-ai", false, false, false, Route::RestrictedTarget).await;
 }
 
 /// The target lacks the selected model: the source records `aborted` and reopens.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore = "requires the explicitly supplied local transfer relay"]
 async fn global_chat_refused_local_transfer() {
-    global_chat_local_transfer("macro-ai", false, false, true).await;
+    global_chat_local_transfer("macro-ai", false, false, true, Route::Flow).await;
+}
+
+/// How the scenario reaches the transfer.
+#[derive(Clone, Copy, PartialEq)]
+enum Route {
+    /// The scenario calls the native flow directly.
+    Flow,
+    /// Both desktops run the real Pilot runtime (`dev/connect-transfer-runtime.ts`)
+    /// and the Tauri command bodies.
+    Runtime,
+    /// The target's idle receive is interrupted between delivery and protection.
+    InterruptedReceive,
+    /// The relay keeps a restriction of the target session on the source instance.
+    RestrictedTarget,
 }
 
 async fn global_chat_local_transfer(
@@ -1731,7 +1777,10 @@ async fn global_chat_local_transfer(
     compacted: bool,
     with_resources: bool,
     refused: bool,
+    route: Route,
 ) {
+    let via_runtime = route == Route::Runtime;
+    let restricted = route == Route::RestrictedTarget;
     use base64::Engine;
 
     use sha2::{Digest, Sha256};
@@ -1751,6 +1800,10 @@ async fn global_chat_local_transfer(
             "--conditions=react-server",
             &std::env::var("MACRO_CONNECT_RELAY_HARNESS").unwrap(),
         ])
+        .env(
+            "MACRO_CONNECT_TEST_RESTRICT",
+            if restricted { "target-on-source" } else { "" },
+        )
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .kill_on_drop(true)
@@ -1943,64 +1996,76 @@ async fn global_chat_local_transfer(
         )
         .unwrap();
     let ready = source.wait_until_ready_context().await.unwrap();
-    let cancel = CancellationToken::new();
-    let intent = Intent {
-        context,
-        generation,
-        instance_creation_id: text(&a["creation"]),
-        account_id: Some(text(&seed["account_id"])),
-        device_id: Some(text(&a["device_id"])),
-        scope: Scope::Producer {
-            instance_id: text(&a["instance"]),
-        },
-        capabilities: serde_json::from_value(seed["capabilities"].clone()).unwrap(),
-    };
-    let mut verified = transport::bootstrap_owned(
-        manager.clone(),
-        intent,
-        &runtime,
-        &launcher,
-        &ready,
-        address,
-        true,
-        &cancel,
-    )
-    .await
-    .unwrap();
-    verified
-        .controller_for(
-            manager.clone(),
-            &ready,
-            seed["b"]["instance"].as_str().unwrap(),
-        )
-        .await
-        .unwrap();
+    let connection = serde_json::json!({
+        "context": {"configuration_id": context.configuration_id, "relay_origin": context.relay_origin,
+            "owner_id": context.owner_id},
+        "generation": generation, "instanceCreationId": text(&a["creation"]),
+        "accountId": text(&seed["account_id"]), "deviceId": text(&a["device_id"]),
+        "instanceId": text(&a["instance"]),
+    });
     let admission = crate::db::chat_admission::runtime::ChatAdmissionRuntime::default();
-    admission
-        .open_browser(source.clone(), "source-window", "source-browser")
-        .await
-        .unwrap();
-    let inspection = admission
-        .begin_reconciliation(&source, "source-window", "source-browser", "chat")
-        .await
-        .unwrap();
-    admission
-        .complete_reconciliation(
-            &source,
-            "source-window",
-            "source-browser",
-            &inspection,
-            &crate::db::chat_admission::reconciliation::BrowserInspection {
-                queue: vec![],
-                unsaved: vec![],
-                approvals: vec![],
-                questions: vec![],
-                drafts: vec![],
-                steers: vec![],
+    // Without the runtime, the scenario opens the transport and reconciles
+    // admission itself, as the command and the chat store otherwise do.
+    let direct = if via_runtime {
+        None
+    } else {
+        let mut verified = transport::bootstrap_owned(
+            manager.clone(),
+            Intent {
+                context,
+                generation,
+                instance_creation_id: text(&a["creation"]),
+                account_id: Some(text(&seed["account_id"])),
+                device_id: Some(text(&a["device_id"])),
+                scope: Scope::Producer {
+                    instance_id: text(&a["instance"]),
+                },
+                capabilities: serde_json::from_value(seed["capabilities"].clone()).unwrap(),
             },
+            &runtime,
+            &launcher,
+            &ready,
+            address,
+            true,
+            &CancellationToken::new(),
         )
         .await
         .unwrap();
+        verified
+            .controller_for(
+                manager.clone(),
+                &ready,
+                seed["b"]["instance"].as_str().unwrap(),
+            )
+            .await
+            .unwrap();
+        admission
+            .open_browser(source.clone(), "source-window", "source-browser")
+            .await
+            .unwrap();
+        let inspection = admission
+            .begin_reconciliation(&source, "source-window", "source-browser", "chat")
+            .await
+            .unwrap();
+        admission
+            .complete_reconciliation(
+                &source,
+                "source-window",
+                "source-browser",
+                &inspection,
+                &crate::db::chat_admission::reconciliation::BrowserInspection {
+                    queue: vec![],
+                    unsaved: vec![],
+                    approvals: vec![],
+                    questions: vec![],
+                    drafts: vec![],
+                    steers: vec![],
+                },
+            )
+            .await
+            .unwrap();
+        Some((Arc::new(verified), inspection))
+    };
     let config = crate::config::ConfigManager::initialize(directory.path().join("config"))
         .await
         .unwrap();
@@ -2044,6 +2109,10 @@ async fn global_chat_local_transfer(
             .unwrap()
             .starts_with("Compact older conversation history"));
     }
+    if route == Route::InterruptedReceive {
+        // The interrupted target listens again before preparing.
+        std::env::set_var("MACRO_CONNECT_TEST_TARGET_QUIET_MS", "30000");
+    }
     let mut child = tokio::process::Command::new(std::env::current_exe().unwrap())
         .args([
             "--exact",
@@ -2052,6 +2121,14 @@ async fn global_chat_local_transfer(
             "--nocapture",
             "--test-threads=1",
         ])
+        .env(
+            "MACRO_CONNECT_TEST_INVITATION_PAUSE_MS",
+            if route == Route::InterruptedReceive {
+                "1500"
+            } else {
+                ""
+            },
+        )
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::inherit())
@@ -2060,34 +2137,98 @@ async fn global_chat_local_transfer(
         .unwrap();
     let mut input = child.stdin.take().unwrap();
     let mut initialization=serde_json::to_vec(&serde_json::json!({"seed":seed,
-        "database":directory.path().join("target.db"),"provider":provider,"compacted":compacted,"resources":with_resources,"refused":refused})).unwrap();
+        "database":directory.path().join("target.db"),"provider":provider,"compacted":compacted,"resources":with_resources,"refused":refused,"runtime":via_runtime,
+        "interrupted":route == Route::InterruptedReceive,"restricted":restricted})).unwrap();
     initialization.push(b'\n');
     input.write_all(&initialization).await.unwrap();
     let mut target_events = BufReader::new(child.stdout.take().unwrap()).lines();
-    let verified = Arc::new(verified);
     let selected: (String, String) =
         sqlx::query_as("SELECT provider_id,model_id FROM conversations WHERE id='chat'")
             .fetch_one(&source_pool)
             .await
             .unwrap();
-    let transferred = super::flow::send(
-        manager,
-        &source,
-        &admission,
-        &config,
-        &launcher,
-        &verified,
-        &ready,
-        "source-window",
-        "source-browser",
-        &inspection,
-        "chat",
-        &selected.0,
-        &selected.1,
-    )
-    .await;
-    if refused {
-        assert_eq!(transferred, Err("transfer_aborted"));
+    let transferred: Result<String, String> = if let Some((verified, inspection)) = &direct {
+        super::flow::send(
+            manager.clone(),
+            &source,
+            &admission,
+            &config,
+            &launcher,
+            verified,
+            &ready,
+            "source-window",
+            "source-browser",
+            inspection,
+            "chat",
+            &selected.0,
+            &selected.1,
+        )
+        .await
+        .map_err(str::to_owned)
+    } else {
+        // The source listens as soon as its producer is confirmed; the send
+        // must first interrupt that idle receive.
+        let host = DesktopHost {
+            manager: manager.clone(),
+            relay: address,
+            owner: &source,
+            pool: &source_pool,
+            config: &config,
+            runtime: &runtime,
+            admission: &admission,
+            window: "source-window",
+        };
+        let (mut started, mut listening, mut asked) = (false, false, false);
+        let events = host
+            .run(
+                serde_json::json!({"role": "source", "connection": connection,
+                    "relay": {"url": format!("http://{address}"), "token": a["token"], "key": a["key"]},
+                    "send": {
+                    "conversationId": "chat", "targetInstanceId": seed["b"]["instance"],
+                    "providerId": selected.0, "modelId": selected.1}}),
+                |seen| {
+                    match seen {
+                        DesktopObserved::Call("connect_transfer_receive") => listening = true,
+                        DesktopObserved::Event(event) if event["event"] == "started" => started = true,
+                        DesktopObserved::Event(event)
+                            if event["event"] == "sent" || event["event"] == "failed" =>
+                        {
+                            return vec!["stop"]
+                        }
+                        _ => {}
+                    }
+                    if started && listening && !asked {
+                        asked = true;
+                        return vec!["send"];
+                    }
+                    vec![]
+                },
+            )
+            .await;
+        let stopped = events.iter().find(|e| e["event"] == "stopped").unwrap();
+        assert_eq!(stopped["unexpected"], serde_json::json!([]));
+        let outcome = events
+            .iter()
+            .find(|e| e["event"] == "sent" || e["event"] == "failed")
+            .unwrap();
+        match outcome["target"].as_str() {
+            Some(target) => Ok(target.to_owned()),
+            None => Err(match outcome["error"]["outcome"].as_str() {
+                Some(outcome) => format!("outcome:{outcome}"),
+                None => outcome["error"].to_string(),
+            }),
+        }
+    };
+    if refused || restricted {
+        // Through the runtime, the dialog receives the relay-recorded outcome.
+        assert_eq!(
+            transferred.as_ref().map_err(String::as_str),
+            Err(if via_runtime {
+                "outcome:aborted"
+            } else {
+                "transfer_aborted"
+            })
+        );
         assert_eq!(
             sqlx::query_scalar::<_, String>(
                 "SELECT mode FROM chat_admission_owners WHERE conversation_id='chat'"
@@ -2152,21 +2293,23 @@ async fn global_chat_local_transfer(
         input.write_all(b"{\"stop\":true}\n").await.unwrap();
     }
     drop(input);
-    if transferred.is_err() && !refused {
+    if transferred.is_err() && !refused && !restricted {
         child.kill().await.unwrap();
     }
     let child = child.wait_with_output().await.unwrap();
-    Arc::try_unwrap(verified)
-        .ok()
-        .unwrap()
-        .close()
-        .await
-        .unwrap();
+    if let Some((verified, _)) = direct {
+        Arc::try_unwrap(verified)
+            .ok()
+            .unwrap()
+            .close()
+            .await
+            .unwrap();
+    }
     assert!(runtime.shutdown().await);
     relay_input.write_all(b"{\"stop\":true}\n").await.unwrap();
     drop(relay_input);
     assert!(relay.wait().await.unwrap().success());
-    if !refused {
+    if !refused && !restricted {
         transferred.unwrap();
     }
     assert!(child.status.success());
@@ -2187,6 +2330,9 @@ async fn global_chat_transfer_target() {
     let compacted = data["compacted"] == true;
     let with_resources = data["resources"] == true;
     let refused = data["refused"] == true;
+    let via_runtime = data["runtime"] == true;
+    let interrupted = data["interrupted"] == true;
+    let restricted = data["restricted"] == true;
     let (provider_id, provider_type, model_id) = if codex {
         ("chatgpt", "chatgpt", "gpt-6.1-sol")
     } else {
@@ -2243,30 +2389,45 @@ async fn global_chat_transfer_target() {
         )
         .unwrap();
     let ready = owner.wait_until_ready_context().await.unwrap();
-    let verified = transport::bootstrap_owned(
-        manager.clone(),
-        Intent {
-            context,
-            generation,
-            instance_creation_id: text(&b["creation"]),
-            account_id: Some(text(&seed["account_id"])),
-            device_id: Some(text(&b["device_id"])),
-            scope: Scope::Producer {
-                instance_id: text(&b["instance"]),
-            },
-            capabilities: serde_json::from_value(seed["capabilities"].clone()).unwrap(),
+    let relay: std::net::SocketAddr = format!("127.0.0.1:{}", seed["port"].as_u64().unwrap())
+        .parse()
+        .unwrap();
+    let connection = serde_json::json!({
+        "context": {"configuration_id": context.configuration_id, "relay_origin": context.relay_origin,
+            "owner_id": context.owner_id},
+        "generation": generation, "instanceCreationId": text(&b["creation"]),
+        "accountId": text(&seed["account_id"]), "deviceId": text(&b["device_id"]),
+        "instanceId": text(&b["instance"]),
+    });
+    let intent = || Intent {
+        context: context.clone(),
+        generation: generation.clone(),
+        instance_creation_id: text(&b["creation"]),
+        account_id: Some(text(&seed["account_id"])),
+        device_id: Some(text(&b["device_id"])),
+        scope: Scope::Producer {
+            instance_id: text(&b["instance"]),
         },
-        &runtime,
-        &launcher,
-        &ready,
-        format!("127.0.0.1:{}", seed["port"].as_u64().unwrap())
-            .parse()
+        capabilities: serde_json::from_value(seed["capabilities"].clone()).unwrap(),
+    };
+    let verified = if via_runtime {
+        None
+    } else {
+        Some(
+            transport::bootstrap_owned(
+                manager.clone(),
+                intent(),
+                &runtime,
+                &launcher,
+                &ready,
+                relay,
+                true,
+                &tokio_util::sync::CancellationToken::new(),
+            )
+            .await
             .unwrap(),
-        true,
-        &tokio_util::sync::CancellationToken::new(),
-    )
-    .await
-    .unwrap();
+        )
+    };
     let config_directory = tempfile::tempdir().unwrap();
     let config = crate::config::ConfigManager::initialize(config_directory.path().to_path_buf())
         .await
@@ -2302,14 +2463,117 @@ async fn global_chat_transfer_target() {
             .await
             .unwrap();
     }
-    let job = runtime.begin_receive().unwrap();
-    if refused {
-        assert!(
-            super::flow::receive(manager, &owner, &config, &launcher, verified, &ready, &job)
-                .await
-                .is_err()
+    let received = if let Some(verified) = verified {
+        let job = runtime.begin_receive().unwrap();
+        let receive = super::flow::receive(
+            manager.clone(),
+            &owner,
+            &config,
+            &launcher,
+            verified,
+            &ready,
+            &job,
         );
-        drop(job);
+        let received = if interrupted {
+            // An idle interrupt lands after delivery, before protection...
+            let interrupt = async {
+                while !transport::INVITATION_RECEIVED.load(std::sync::atomic::Ordering::SeqCst) {
+                    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                }
+                runtime.interrupt_idle()
+            };
+            let (first, interrupt) = tokio::join!(receive, interrupt);
+            assert_eq!(interrupt, Ok(()));
+            assert_eq!(first.err(), Some("codec_retired"));
+            drop(job);
+            runtime.revoke();
+            // ...and the relay delivers the same invitation to the next receive.
+            let launcher = runtime
+                .source_launcher(
+                    &bun,
+                    &std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                        .join("../copilot-bridge/src/entry.ts"),
+                    &owner,
+                )
+                .unwrap();
+            let verified = transport::bootstrap_owned(
+                manager.clone(),
+                intent(),
+                &runtime,
+                &launcher,
+                &ready,
+                relay,
+                true,
+                &tokio_util::sync::CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+            let job = runtime.begin_receive().unwrap();
+            super::flow::receive(
+                manager.clone(),
+                &owner,
+                &config,
+                &launcher,
+                verified,
+                &ready,
+                &job,
+            )
+            .await
+        } else {
+            receive.await
+        };
+        received
+            .map(|(conversation, prepared)| (conversation, Some(prepared)))
+            .map_err(serde_json::Value::from)
+    } else {
+        // The runtime listens on its own once its producer is confirmed, then
+        // refreshes the conversation list when the transfer is published.
+        let admission = crate::db::chat_admission::runtime::ChatAdmissionRuntime::default();
+        let host = DesktopHost {
+            manager: manager.clone(),
+            relay,
+            owner: &owner,
+            pool: &pool,
+            config: &config,
+            runtime: &runtime,
+            admission: &admission,
+            window: "target-window",
+        };
+        let mut received = None;
+        let events = host
+            .run(
+                serde_json::json!({"role": "target", "connection": connection,
+                    "relay": {"url": format!("http://{relay}"), "token": b["token"], "key": b["key"]}}),
+                |seen| match seen {
+                    DesktopObserved::Reply("connect_transfer_receive", result) => {
+                        received = Some(result.clone());
+                        if result.is_err() {
+                            vec!["stop"]
+                        } else {
+                            vec![]
+                        }
+                    }
+                    DesktopObserved::Call("db_conversation_metadata") if received.is_some() => {
+                        vec!["stop"]
+                    }
+                    _ => vec![],
+                },
+            )
+            .await;
+        let stopped = events.iter().find(|e| e["event"] == "stopped").unwrap();
+        assert_eq!(stopped["unexpected"], serde_json::json!([]));
+        let received = received.unwrap();
+        if let Ok(conversation) = &received {
+            // The chat store lists the published conversation.
+            assert!(stopped["conversations"]
+                .as_array()
+                .unwrap()
+                .contains(conversation));
+        }
+        received.map(|conversation| (conversation.as_str().unwrap().to_owned(), None))
+    };
+    if refused || restricted {
+        assert!(received.is_err());
         println!(
             "SLICE_TARGET_EVENT:{}",
             serde_json::json!({"type":"refused"})
@@ -2320,10 +2584,7 @@ async fn global_chat_transfer_target() {
         assert!(runtime.shutdown().await);
         return;
     }
-    let (conversation, prepared) =
-        super::flow::receive(manager, &owner, &config, &launcher, verified, &ready, &job)
-            .await
-            .unwrap();
+    let (conversation, prepared) = received.unwrap();
     let messages: Vec<String> = sqlx::query_scalar(
         "SELECT content FROM messages WHERE conversation_id=? ORDER BY created_at,id",
     )
@@ -2617,6 +2878,8 @@ async fn global_chat_transfer_target() {
         serde_json::from_str(&input.next_line().await.unwrap().unwrap()).unwrap();
     assert_eq!(stop["stop"], true);
     assert!(runtime.shutdown().await);
+    // The E draft is only reachable when the scenario calls the flow itself.
+    let Some(prepared) = prepared else { return };
     let (_, request, body, _) = prepared.native_prepared().unwrap();
     assert_eq!(request.provider_id, provider_id);
     if codex {
@@ -2820,4 +3083,232 @@ fn provider_body(captured: &serde_json::Value) -> serde_json::Value {
     let request: crate::ai::types::AiChatRequest =
         serde_json::from_value(request["body"].clone()).unwrap();
     serde_json::to_value(crate::ai::chatgpt::build_transfer_request(&request).unwrap()).unwrap()
+}
+
+/// Native side of one desktop for `dev/connect-transfer-runtime.ts`: Tauri
+/// commands of the real Pilot runtime are answered by the command bodies, with
+/// the scenario's vault and loopback relay instead of the keychain and DNS.
+struct DesktopHost<'a> {
+    manager: Arc<Manager<Arc<Fake>>>,
+    relay: std::net::SocketAddr,
+    owner: &'a crate::core::db_state::DbPool,
+    pool: &'a sqlx::SqlitePool,
+    config: &'a crate::config::ConfigManager,
+    runtime: &'a crate::connect::TransferRuntime,
+    admission: &'a crate::db::chat_admission::runtime::ChatAdmissionRuntime,
+    window: &'a str,
+}
+
+enum DesktopObserved<'v> {
+    Call(&'v str),
+    Reply(&'v str, &'v Result<serde_json::Value, serde_json::Value>),
+    Event(&'v serde_json::Value),
+}
+
+impl DesktopHost<'_> {
+    /// A launcher per command, as `codec_launcher` in the app: a revoked runtime
+    /// retires the launchers of its previous generation.
+    fn launcher(&self) -> crate::connect::runtime::CodecLauncher {
+        let bun = std::env::split_paths(&std::env::var_os("PATH").unwrap())
+            .map(|p| p.join("bun"))
+            .find(|p| p.is_file())
+            .unwrap();
+        self.runtime
+            .source_launcher(
+                &bun,
+                &std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .join("../copilot-bridge/src/entry.ts"),
+                self.owner,
+            )
+            .unwrap()
+    }
+
+    async fn call(
+        &self,
+        command: &str,
+        args: serde_json::Value,
+    ) -> Result<serde_json::Value, serde_json::Value> {
+        use crate::core::command_error::CommandError;
+        fn fail(error: impl Into<CommandError>) -> serde_json::Value {
+            serde_json::to_value(error.into()).unwrap()
+        }
+        fn ok<T: serde::Serialize>(value: T) -> serde_json::Value {
+            serde_json::to_value(value).unwrap()
+        }
+        let text = |key: &str| args[key].as_str().unwrap_or_default().to_owned();
+        match command {
+            "connect_transfer_send" => {
+                let input = serde_json::from_value(args["input"].clone())
+                    .map_err(|e| fail(crate::core::command_error::command_error(e.to_string())))?;
+                super::send_transfer(
+                    self.manager.clone(),
+                    Some(self.relay),
+                    self.owner,
+                    self.config,
+                    self.runtime,
+                    &self.launcher(),
+                    self.admission,
+                    self.window,
+                    input,
+                )
+                .await
+                .map(ok)
+                .map_err(fail)
+            }
+            "connect_transfer_receive" => {
+                let input = serde_json::from_value(args["input"].clone())
+                    .map_err(|e| fail(crate::core::command_error::command_error(e.to_string())))?;
+                super::receive_transfer(
+                    self.manager.clone(),
+                    Some(self.relay),
+                    self.owner,
+                    self.config,
+                    self.runtime,
+                    &self.launcher(),
+                    input,
+                )
+                .await
+                .map(ok)
+                .map_err(fail)
+            }
+            "connect_transfer_interrupt_idle" => self
+                .runtime
+                .interrupt_idle()
+                .map(ok)
+                .map_err(|e| fail(crate::core::command_error::command_error(e))),
+            "chat_admission_open_browser" => self
+                .admission
+                .open_browser(self.owner.clone(), self.window, &text("runtime"))
+                .await
+                .map(ok)
+                .map_err(fail),
+            "chat_admission_begin_reconciliation" => self
+                .admission
+                .begin_reconciliation(
+                    self.owner,
+                    self.window,
+                    &text("runtime"),
+                    &text("conversationId"),
+                )
+                .await
+                .map(ok)
+                .map_err(fail),
+            "chat_admission_complete_reconciliation" => {
+                let observed = serde_json::from_value(args["observed"].clone())
+                    .map_err(|e| fail(crate::core::command_error::command_error(e.to_string())))?;
+                self.admission
+                    .complete_reconciliation(
+                        self.owner,
+                        self.window,
+                        &text("runtime"),
+                        &text("handle"),
+                        &observed,
+                    )
+                    .await
+                    .map(ok)
+                    .map_err(fail)
+            }
+            "db_list_conversations" => crate::db::repository::list_user_conversations(self.pool)
+                .await
+                .map(ok)
+                .map_err(fail),
+            "db_conversation_metadata" => crate::db::conversation_management::metadata(self.pool)
+                .await
+                .map(ok)
+                .map_err(|e| fail(crate::core::command_error::command_error(e))),
+            "db_list_messages" => {
+                crate::db::repository::list_messages(self.pool, &text("conversationId"))
+                    .await
+                    .map(ok)
+                    .map_err(fail)
+            }
+            "db_get_app_setting" => crate::db::repository::get_app_setting(self.pool, &text("key"))
+                .await
+                .map(ok)
+                .map_err(fail),
+            other => Err(fail(crate::core::command_error::command_error(format!(
+                "unhandled native command {other}"
+            )))),
+        }
+    }
+
+    /// Runs the desktop's Pilot runtime until it stops. `observe` sees every
+    /// native call, reply and runtime event, and returns controls to send
+    /// (`send`, `stop`). Returns the runtime events.
+    async fn run(
+        &self,
+        setup: serde_json::Value,
+        mut observe: impl FnMut(DesktopObserved<'_>) -> Vec<&'static str>,
+    ) -> Vec<serde_json::Value> {
+        use futures::StreamExt;
+        use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+        let bun = std::env::split_paths(&std::env::var_os("PATH").unwrap())
+            .map(|p| p.join("bun"))
+            .find(|p| p.is_file())
+            .unwrap();
+        let mut driver = tokio::process::Command::new(bun)
+            .arg("dev/connect-transfer-runtime.ts")
+            .current_dir(
+                std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .parent()
+                    .unwrap(),
+            )
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .kill_on_drop(true)
+            .spawn()
+            .unwrap();
+        let mut input = driver.stdin.take().unwrap();
+        let mut output = BufReader::new(driver.stdout.take().unwrap()).lines();
+        input
+            .write_all(format!("{setup}\n").as_bytes())
+            .await
+            .unwrap();
+        let mut pending = futures::stream::FuturesUnordered::new();
+        let mut events = Vec::new();
+        loop {
+            let controls = tokio::select! {
+                line = output.next_line() => {
+                    let Some(line) = line.unwrap() else { break };
+                    let Some(message) = line.strip_prefix("TRANSFER_RUNTIME:") else { continue };
+                    let message: serde_json::Value = serde_json::from_str(message).unwrap();
+                    if let Some(command) = message["command"].as_str() {
+                        let command = command.to_owned();
+                        let controls = observe(DesktopObserved::Call(&command));
+                        let (id, args) = (message["id"].clone(), message["args"].clone());
+                        pending.push(async move {
+                            let result = self.call(&command, args).await;
+                            (id, command, result)
+                        });
+                        controls
+                    } else {
+                        let controls = observe(DesktopObserved::Event(&message));
+                        events.push(message);
+                        controls
+                    }
+                }
+                Some((id, command, result)) = pending.next(), if !pending.is_empty() => {
+                    let reply = match &result {
+                        Ok(ok) => serde_json::json!({"id": id, "ok": ok}),
+                        Err(error) => {
+                            eprintln!("{} command {command} failed: {error}", self.window);
+                            serde_json::json!({"id": id, "error": error})
+                        }
+                    };
+                    // A stopped driver no longer reads replies.
+                    let _ = input.write_all(format!("{reply}\n").as_bytes()).await;
+                    observe(DesktopObserved::Reply(&command, &result))
+                }
+            };
+            for control in controls {
+                let _ = input
+                    .write_all(format!("{}\n", serde_json::json!({"control": control})).as_bytes())
+                    .await;
+            }
+        }
+        drop(pending);
+        let status = driver.wait().await.unwrap();
+        assert!(status.success(), "{status}: {events:?}");
+        events
+    }
 }

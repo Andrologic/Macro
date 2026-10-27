@@ -405,6 +405,15 @@ impl VerifiedTransport {
         {
             return Err("transfer_invitation_missing");
         }
+        #[cfg(test)]
+        if let Some(ms) = std::env::var("MACRO_CONNECT_TEST_INVITATION_PAUSE_MS")
+            .ok()
+            .and_then(|ms| ms.parse().ok())
+        {
+            // Opens the window between delivery and protection to an interrupt.
+            INVITATION_RECEIVED.store(true, std::sync::atomic::Ordering::SeqCst);
+            tokio::time::sleep(std::time::Duration::from_millis(ms)).await;
+        }
         job.protect()?;
         let intent = received["value"]["body"]["message"].clone();
         let binding = &intent["binding"];
@@ -1187,14 +1196,27 @@ fn now_ms() -> Result<u64> {
     .map_err(|_| "clock")
 }
 
-pub(crate) async fn bootstrap(
+#[cfg(test)]
+pub(crate) static INVITATION_RECEIVED: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+/// `loopback` addresses a plain local relay in native scenarios; the app always
+/// resolves the HTTPS origin.
+pub(super) async fn bootstrap<B: Vault + 'static>(
+    manager: Arc<Manager<B>>,
     intent: Intent,
     runtime: &TransferRuntime,
     launcher: &CodecLauncher,
     ready: &DbReady,
+    loopback: Option<SocketAddr>,
     cancel: &CancellationToken,
 ) -> Result<VerifiedTransport> {
-    let manager = super::manager().map_err(|_| "vault_unavailable")?;
+    if let Some(address) = loopback {
+        return bootstrap_owned(
+            manager, intent, runtime, launcher, ready, address, true, cancel,
+        )
+        .await;
+    }
     let origin = url::Url::parse(&intent.context.relay_origin).map_err(|_| "origin")?;
     if origin.scheme() != "https"
         || origin.origin().ascii_serialization() != intent.context.relay_origin

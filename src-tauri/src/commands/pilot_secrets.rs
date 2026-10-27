@@ -308,36 +308,62 @@ pub(crate) async fn connect_transfer_send(
     admission: tauri::State<'_, crate::db::chat_admission::runtime::ChatAdmissionRuntime>,
     input: TransferSendInput,
 ) -> super::CommandResult<String> {
+    let launcher = runtime
+        .codec_launcher(&app, &pool)
+        .map_err(super::command_error)?;
+    send_transfer(
+        manager().map_err(|_| super::command_error("vault_unavailable"))?,
+        None,
+        &pool,
+        &config,
+        &runtime,
+        &launcher,
+        &admission,
+        window.label(),
+        input,
+    )
+    .await
+}
+
+/// Body of `connect_transfer_send`, with the vault and relay address explicit.
+async fn send_transfer<B: Vault + 'static>(
+    manager: Arc<Manager<B>>,
+    loopback: Option<std::net::SocketAddr>,
+    pool: &crate::core::db_state::DbPool,
+    config: &crate::config::ConfigManager,
+    runtime: &crate::connect::TransferRuntime,
+    launcher: &crate::connect::runtime::CodecLauncher,
+    admission: &crate::db::chat_admission::runtime::ChatAdmissionRuntime,
+    window: &str,
+    input: TransferSendInput,
+) -> super::CommandResult<String> {
     use super::command_error;
     let _job = runtime.begin_transfer().map_err(command_error)?;
     let ready = pool.wait_until_ready_context().await?;
-    let launcher = runtime.codec_launcher(&app, &pool).map_err(command_error)?;
     let result = async {
         let mut verified = transport::bootstrap(
+            manager.clone(),
             input.connection.intent(),
-            &runtime,
-            &launcher,
+            runtime,
+            launcher,
             &ready,
+            loopback,
             &tokio_util::sync::CancellationToken::new(),
         )
         .await?;
         verified
-            .controller_for(
-                manager().map_err(|_| "vault_unavailable")?,
-                &ready,
-                &input.target_instance_id,
-            )
+            .controller_for(manager.clone(), &ready, &input.target_instance_id)
             .await?;
         let verified = Arc::new(verified);
         let result = flow::send(
-            manager().map_err(|_| "vault_unavailable")?,
-            &pool,
-            &admission,
-            &config,
-            &launcher,
+            manager,
+            pool,
+            admission,
+            config,
+            launcher,
             &verified,
             &ready,
-            window.label(),
+            window,
             &input.runtime,
             &input.inspection_handle,
             &input.conversation_id,
@@ -357,6 +383,7 @@ pub(crate) async fn connect_transfer_send(
     }
     result.map_err(command_error)
 }
+
 #[tauri::command]
 pub(crate) async fn connect_transfer_receive(
     app: tauri::AppHandle,
@@ -365,29 +392,47 @@ pub(crate) async fn connect_transfer_receive(
     runtime: tauri::State<'_, crate::connect::TransferRuntime>,
     input: TransferReceiveInput,
 ) -> super::CommandResult<String> {
+    let launcher = runtime
+        .codec_launcher(&app, &pool)
+        .map_err(super::command_error)?;
+    receive_transfer(
+        manager().map_err(|_| super::command_error("vault_unavailable"))?,
+        None,
+        &pool,
+        &config,
+        &runtime,
+        &launcher,
+        input,
+    )
+    .await
+}
+
+/// Body of `connect_transfer_receive`, with the vault and relay address explicit.
+async fn receive_transfer<B: Vault + 'static>(
+    manager: Arc<Manager<B>>,
+    loopback: Option<std::net::SocketAddr>,
+    pool: &crate::core::db_state::DbPool,
+    config: &crate::config::ConfigManager,
+    runtime: &crate::connect::TransferRuntime,
+    launcher: &crate::connect::runtime::CodecLauncher,
+    input: TransferReceiveInput,
+) -> super::CommandResult<String> {
     use super::command_error;
     let job = runtime.begin_receive().map_err(command_error)?;
     let ready = pool.wait_until_ready_context().await?;
-    let launcher = runtime.codec_launcher(&app, &pool).map_err(command_error)?;
     let result: Result<String, &'static str> = async {
         let verified = transport::bootstrap(
+            manager.clone(),
             input.connection.intent(),
-            &runtime,
-            &launcher,
+            runtime,
+            launcher,
             &ready,
+            loopback,
             &tokio_util::sync::CancellationToken::new(),
         )
         .await?;
-        let (conversation, _prepared) = flow::receive(
-            manager().map_err(|_| "vault_unavailable")?,
-            &pool,
-            &config,
-            &launcher,
-            verified,
-            &ready,
-            &job,
-        )
-        .await?;
+        let (conversation, _prepared) =
+            flow::receive(manager, pool, config, launcher, verified, &ready, &job).await?;
         Ok(conversation)
     }
     .await;
