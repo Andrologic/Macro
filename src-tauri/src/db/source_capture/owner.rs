@@ -111,10 +111,18 @@ impl SourceCapture {
         if row.get::<String, _>("local_generation") != guard.ready.catalog_generation {
             return Err("stale_revision".into());
         }
-        transport.check_producer(&row.get::<String, _>("account_id"),
-            &row.get::<String, _>("source_instance_id"), &row.get::<String, _>("source_generation"))
-            .await.map_err(str::to_string)?;
-        let capture_id = match (row.get::<Option<i64>, _>("source_capture_id"), row.get::<Option<String>, _>("capture_id")) {
+        transport
+            .check_producer(
+                &row.get::<String, _>("account_id"),
+                &row.get::<String, _>("source_instance_id"),
+                &row.get::<String, _>("source_generation"),
+            )
+            .await
+            .map_err(str::to_string)?;
+        let capture_id = match (
+            row.get::<Option<i64>, _>("source_capture_id"),
+            row.get::<Option<String>, _>("capture_id"),
+        ) {
             (None, None) => uuid::Uuid::new_v4().to_string(),
             (Some(_), Some(id)) => id,
             _ => return Err("integrity_failed".into()),
@@ -124,31 +132,65 @@ impl SourceCapture {
         let actor = row.get::<String, _>("source_instance_id");
         drop(guard);
         Ok(Self {
-            owner, generation: Some(generation),
-            authority: Some(Arc::new(RwLock::new(Authority { enabled: true, capture_id,
-                conversation, actor, mode: Mode::Continue,
-                policy: Policy { budget: crate::db::inactive_budget::NATIVE_BUDGET, max_receipts: crate::db::inactive_budget::NATIVE_MAX_RECEIPTS,
-                    absolute_ms: 300_000, idle_ms: 30_000 } }))),
+            owner,
+            generation: Some(generation),
+            authority: Some(Arc::new(RwLock::new(Authority {
+                enabled: true,
+                capture_id,
+                conversation,
+                actor,
+                mode: Mode::Continue,
+                policy: Policy {
+                    budget: crate::db::inactive_budget::NATIVE_BUDGET,
+                    max_receipts: crate::db::inactive_budget::NATIVE_MAX_RECEIPTS,
+                    absolute_ms: 300_000,
+                    idle_ms: 30_000,
+                },
+            }))),
             permit: Arc::new(Semaphore::new(1)),
-            clock: Arc::new(|| chrono::Utc::now().timestamp_millis()), transport: Some(transport),
-            #[cfg(test)] cleanup_started: None,
-            #[cfg(test)] reads: Arc::default(),
+            clock: Arc::new(|| chrono::Utc::now().timestamp_millis()),
+            transport: Some(transport),
+            #[cfg(test)]
+            cleanup_started: None,
+            #[cfg(test)]
+            reads: Arc::default(),
         })
     }
-    pub(crate) async fn capture_transfer(&self, reservation:&crate::db::connect_transfer::Reservation) -> Result<RawNativeCapture> {
+    pub(crate) async fn capture_transfer(
+        &self,
+        reservation: &crate::db::connect_transfer::Reservation,
+    ) -> Result<RawNativeCapture> {
         let scope = self.scope(true).await?;
-        let open = Open { capture_id:scope.authority.capture_id.clone(),
-            conversation_id:scope.authority.conversation.clone() };
+        let open = Open {
+            capture_id: scope.authority.capture_id.clone(),
+            conversation_id: scope.authority.conversation.clone(),
+        };
         drop(scope);
-        let mut receipt = self.begin(&serde_json::to_vec(&open).map_err(error)?).await?;
-        let transport=self.transport.as_ref().ok_or("source_capture_disabled")?;
-        reservation.attach_captured_source(&self.owner,transport,&open.capture_id).await.map_err(error)?;
-        if receipt.phase==2 { return self.seal_raw().await; }
+        let mut receipt = self
+            .begin(&serde_json::to_vec(&open).map_err(error)?)
+            .await?;
+        let transport = self.transport.as_ref().ok_or("source_capture_disabled")?;
+        reservation
+            .attach_captured_source(&self.owner, transport, &open.capture_id)
+            .await
+            .map_err(error)?;
+        if receipt.phase == 2 {
+            return self.seal_raw().await;
+        }
         loop {
-            let copied = self.copy_next(&serde_json::to_vec(&Copy {
-                cursor:receipt.cursor, expected_revision:receipt.revision }).map_err(error)?).await?;
+            let copied = self
+                .copy_next(
+                    &serde_json::to_vec(&Copy {
+                        cursor: receipt.cursor,
+                        expected_revision: receipt.revision,
+                    })
+                    .map_err(error)?,
+                )
+                .await?;
             receipt = copied.receipt;
-            if copied.ack.is_none() { break; }
+            if copied.ack.is_none() {
+                break;
+            }
         }
         self.seal_raw().await
     }
@@ -187,7 +229,10 @@ impl SourceCapture {
     }
     pub(super) async fn lease(&self, pool: &SqlitePool) -> Result<Lease> {
         let mut lease = Lease::new(pool.acquire().await.map_err(error)?);
-        sqlx::query("PRAGMA synchronous=FULL").execute(&mut *lease).await.map_err(error)?;
+        sqlx::query("PRAGMA synchronous=FULL")
+            .execute(&mut *lease)
+            .await
+            .map_err(error)?;
         #[cfg(test)]
         let lease = {
             let mut observed = lease;
@@ -204,8 +249,16 @@ impl SourceCapture {
             .await
             .map_err(|_| "stale_revision")?;
         let r=sqlx::query("SELECT id,CASE WHEN length(CAST(binding_json AS BLOB))<=4096 THEN binding_json END AS binding_json,phase,revision,family,cursor_rowid,cursor_field,cursor_offset,rows_count,fields_count,bytes_received,charge_bytes,progressed_at,expires_at,idle_ms,last_clock,CASE WHEN typeof(manifest_hash)='blob' AND length(manifest_hash)=32 THEN manifest_hash END AS manifest_hash FROM e_source_captures WHERE capture_id=?").bind(&scope.authority.capture_id).fetch_optional(&mut *db).await.map_err(error)?.ok_or("not_found")?;
-        let removed: i64 = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM connect_local_deletions WHERE capture_id=?)").bind(r.get::<i64,_>("id")).fetch_one(&mut *db).await.map_err(error)?;
-        if removed != 0 { return Err("connect_content_removed".into()); }
+        let removed: i64 = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM connect_local_deletions WHERE capture_id=?)",
+        )
+        .bind(r.get::<i64, _>("id"))
+        .fetch_one(&mut *db)
+        .await
+        .map_err(error)?;
+        if removed != 0 {
+            return Err("connect_content_removed".into());
+        }
         let raw: Option<String> = r.try_get("binding_json").map_err(error)?;
         let binding: Binding = parse(raw.ok_or("database_unavailable")?.as_bytes())?;
         if binding.version != 1 {
@@ -227,7 +280,9 @@ impl SourceCapture {
             return Err("integrity_failed".into());
         }
         let id: i64 = r.try_get("id").map_err(error)?;
-        let transfer_leased = crate::db::connect_transfer::capture_leased(db,id).await.map_err(error)?;
+        let transfer_leased = crate::db::connect_transfer::capture_leased(db, id)
+            .await
+            .map_err(error)?;
         Ok(Journal {
             transfer_leased,
             id: r.try_get("id").map_err(error)?,
@@ -373,7 +428,9 @@ impl SourceCapture {
         let mut lease = self.lease(&scope.generation.ready.pool).await?;
         let mut tx = lease.begin_with("BEGIN IMMEDIATE").await.map_err(error)?;
         let j = self.load(&mut tx, &scope).await?;
-        if j.transfer_leased { return Err("connect_transfer_leased".into()); }
+        if j.transfer_leased {
+            return Err("connect_transfer_leased".into());
+        }
         if j.phase == 2 {
             return Err("capture_pinned".into());
         }

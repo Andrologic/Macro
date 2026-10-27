@@ -402,7 +402,10 @@ impl Request {
         })
     }
     pub(crate) fn offer_transfer(mut self) -> Self {
-        self.headers.insert("x-macro-transfer-transit",http::HeaderValue::from_static("transfer-transit-1"));
+        self.headers.insert(
+            "x-macro-transfer-transit",
+            http::HeaderValue::from_static("transfer-transit-1"),
+        );
         self
     }
     pub(crate) fn authenticate(
@@ -647,9 +650,12 @@ impl Lane {
                 return Err("http_correlation");
             }
         }
-        let mut offers=response.headers().get_all("x-macro-transfer-transit").iter();
-        if let Some(offer)=offers.next() {
-            if offer.as_bytes().len()>64 || offer.to_str().is_err() || offers.next().is_some() {
+        let mut offers = response
+            .headers()
+            .get_all("x-macro-transfer-transit")
+            .iter();
+        if let Some(offer) = offers.next() {
+            if offer.as_bytes().len() > 64 || offer.to_str().is_err() || offers.next().is_some() {
                 return Err("http_headers_limit");
             }
         }
@@ -677,8 +683,15 @@ impl Lane {
         let mut result = Response {
             _database: database.clone(),
             status: response.status().as_u16(),
-            transfer_offer: response.headers().get("x-macro-transfer-transit")
-                .map(|v|v.to_str().map(str::to_owned).map_err(|_|"http_headers_limit")).transpose()?,
+            transfer_offer: response
+                .headers()
+                .get("x-macro-transfer-transit")
+                .map(|v| {
+                    v.to_str()
+                        .map(str::to_owned)
+                        .map_err(|_| "http_headers_limit")
+                })
+                .transpose()?,
             request_id: response
                 .headers()
                 .get("x-request-id")
@@ -1980,7 +1993,9 @@ mod tests {
         let (acceptor, cert) = synthetic_tls();
         for release_raw in [false, true] {
             let directory = tempfile::tempdir().unwrap();
-            let pool = crate::db::create_pool(&directory.path().join("tcp-before-raw.db")).await.unwrap();
+            let pool = crate::db::create_pool(&directory.path().join("tcp-before-raw.db"))
+                .await
+                .unwrap();
             let db = crate::core::db_state::DbPool::default();
             db.set_ready(pool).await.unwrap();
             let database = db.wait_until_ready_context().await.unwrap();
@@ -1993,7 +2008,12 @@ mod tests {
             let server = tokio::spawn(async move {
                 let (mut tcp, _) = listener.accept().await.unwrap();
                 let mut byte = [0];
-                assert!(tokio::time::timeout(Duration::from_millis(50), tcp.read(&mut byte)).await.is_err(), "TLS emitted before RAW admission");
+                assert!(
+                    tokio::time::timeout(Duration::from_millis(50), tcp.read(&mut byte))
+                        .await
+                        .is_err(),
+                    "TLS emitted before RAW admission"
+                );
                 silent.send(()).unwrap();
                 if release_raw {
                     let mut tls = acceptor.accept(tcp).await.unwrap();
@@ -2008,21 +2028,38 @@ mod tests {
                                 std::io::ErrorKind::UnexpectedEof | std::io::ErrorKind::ConnectionReset)),
                         "unexpected TLS fixture termination after Prepared drop: {end:?}"
                     );
-                } else { assert_eq!(tcp.read(&mut byte).await.unwrap(), 0); }
+                } else {
+                    assert_eq!(tcp.read(&mut byte).await.unwrap(), 0);
+                }
             });
-            let mut session = HttpSession::new(runtime.http_owner(&database).unwrap(), "localhost", address).unwrap();
-            session.tls = Some(TlsSettings::with_roots(&budget, || {
-                let mut roots = rustls::RootCertStore::empty(); roots.add(cert.clone()).unwrap(); roots
-            }).unwrap());
+            let mut session =
+                HttpSession::new(runtime.http_owner(&database).unwrap(), "localhost", address)
+                    .unwrap();
+            session.tls = Some(
+                TlsSettings::with_roots(&budget, || {
+                    let mut roots = rustls::RootCertStore::empty();
+                    roots.add(cert.clone()).unwrap();
+                    roots
+                })
+                .unwrap(),
+            );
             let cancel = session.owner.cancel.clone();
-            let turn = super::super::codec::RAW_TURN.clone().acquire_owned().await.unwrap();
+            let turn = super::super::codec::RAW_TURN
+                .clone()
+                .acquire_owned()
+                .await
+                .unwrap();
             let mut opening = Box::pin(session.prepare(false));
             tokio::select! {
                 result = &mut opening => panic!("opened before RAW: {:?}", result.err()),
                 result = tokio::time::timeout(Duration::from_secs(3), seen) => result.unwrap().unwrap(),
             }
             // TCP is accepted under CONNECTION, without HANDSHAKE reservation.
-            drop(budget.reserve(TRANSIT_INSTANCE_LIMIT - CONFIG - CONNECTION).unwrap());
+            drop(
+                budget
+                    .reserve(TRANSIT_INSTANCE_LIMIT - CONFIG - CONNECTION)
+                    .unwrap(),
+            );
             if release_raw {
                 drop(turn);
                 let prepared = opening.await.unwrap();
@@ -2032,7 +2069,10 @@ mod tests {
                 assert_eq!(opening.await.err(), Some("http_cancelled"));
                 drop(turn);
             }
-            tokio::time::timeout(Duration::from_secs(3), server).await.unwrap().unwrap();
+            tokio::time::timeout(Duration::from_secs(3), server)
+                .await
+                .unwrap()
+                .unwrap();
             drop(session);
             assert!(runtime.shutdown().await);
             drop(budget.reserve(TRANSIT_INSTANCE_LIMIT).unwrap());
@@ -2043,7 +2083,9 @@ mod tests {
     async fn partial_tls_cancellation_and_total_deadline_keep_handshake_until_io_dies() {
         for expire in [false, true] {
             let directory = tempfile::tempdir().unwrap();
-            let pool = crate::db::create_pool(&directory.path().join("partial-tls.db")).await.unwrap();
+            let pool = crate::db::create_pool(&directory.path().join("partial-tls.db"))
+                .await
+                .unwrap();
             let db = crate::core::db_state::DbPool::default();
             db.set_ready(pool).await.unwrap();
             let database = db.wait_until_ready_context().await.unwrap();
@@ -2068,35 +2110,61 @@ mod tests {
                 partial.send(()).unwrap();
                 let mut byte = [0];
                 let end = tcp.read(&mut byte).await;
-                assert!(matches!(end, Ok(0)) || matches!(end, Err(ref e) if e.kind() == std::io::ErrorKind::ConnectionReset));
+                assert!(
+                    matches!(end, Ok(0))
+                        || matches!(end, Err(ref e) if e.kind() == std::io::ErrorKind::ConnectionReset)
+                );
             });
-            let mut session = HttpSession::new(runtime.http_owner(&database).unwrap(), "localhost", address).unwrap();
+            let mut session =
+                HttpSession::new(runtime.http_owner(&database).unwrap(), "localhost", address)
+                    .unwrap();
             let cancel = session.owner.cancel.clone();
-            let turn = super::super::codec::RAW_TURN.clone().acquire_owned().await.unwrap();
+            let turn = super::super::codec::RAW_TURN
+                .clone()
+                .acquire_owned()
+                .await
+                .unwrap();
             let started = tokio::time::Instant::now();
             let mut opening = Box::pin(session.prepare(false));
             tokio::select! {
                 result = &mut opening => panic!("unexpected early open: {:?}", result.err()),
                 result = tokio::time::timeout(Duration::from_secs(3), tcp_ready) => result.unwrap().unwrap(),
             }
-            if expire { tokio::time::sleep_until(started + Duration::from_secs(26)).await; }
+            if expire {
+                tokio::time::sleep_until(started + Duration::from_secs(26)).await;
+            }
             drop(turn);
             tokio::select! {
                 result = &mut opening => panic!("TLS did not remain partial: {:?}", result.err()),
                 result = tokio::time::timeout(Duration::from_secs(3), tls_partial) => result.unwrap().unwrap(),
             }
-            assert!(super::super::codec::RAW_TURN.clone().try_acquire_owned().is_err());
-            assert!(budget.reserve(TRANSIT_INSTANCE_LIMIT - CONFIG - CONNECTION).is_err());
+            assert!(super::super::codec::RAW_TURN
+                .clone()
+                .try_acquire_owned()
+                .is_err());
+            assert!(budget
+                .reserve(TRANSIT_INSTANCE_LIMIT - CONFIG - CONNECTION)
+                .is_err());
             if expire {
-                let result = tokio::time::timeout_at(started + Duration::from_secs(34), opening).await.unwrap();
+                let result = tokio::time::timeout_at(started + Duration::from_secs(34), opening)
+                    .await
+                    .unwrap();
                 assert_eq!(result.err(), Some("http_timeout"));
                 assert!(started.elapsed() >= Duration::from_secs(29));
             } else {
                 cancel.cancel();
                 assert_eq!(opening.await.err(), Some("http_cancelled"));
             }
-            drop(super::super::codec::RAW_TURN.clone().try_acquire_owned().unwrap());
-            tokio::time::timeout(Duration::from_secs(3), server).await.unwrap().unwrap();
+            drop(
+                super::super::codec::RAW_TURN
+                    .clone()
+                    .try_acquire_owned()
+                    .unwrap(),
+            );
+            tokio::time::timeout(Duration::from_secs(3), server)
+                .await
+                .unwrap()
+                .unwrap();
             drop(session);
             assert!(runtime.shutdown().await);
             drop(budget.reserve(TRANSIT_INSTANCE_LIMIT).unwrap());

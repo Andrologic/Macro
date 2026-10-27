@@ -288,7 +288,9 @@ async fn send_chatgpt_request(
         .unwrap_or(request.request_id.as_str());
 
     let url = reqwest::Url::parse(&url).map_err(|error| error.to_string())?;
-    let attempt = work.independent_request_attempt(&provider.id, url.as_str()).await?;
+    let attempt = work
+        .independent_request_attempt(&provider.id, url.as_str())
+        .await?;
     let outgoing = client
         .post(url)
         .header(CONTENT_TYPE, "application/json")

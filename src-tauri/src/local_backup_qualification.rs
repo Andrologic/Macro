@@ -55,18 +55,37 @@ fn assert_initialized_policy(actual: &Archive, expected: &Archive) {
         serde_json::from_slice(&STANDARD.decode(&entry.data).unwrap()).unwrap()
     };
     let current = decode(&actual.files["data/provider-secrets.json"]);
-    let previous = expected.files.get("data/provider-secrets.json").map(decode)
+    let previous = expected
+        .files
+        .get("data/provider-secrets.json")
+        .map(decode)
         .unwrap_or_else(|| json!({}));
     assert_eq!(current.as_object().unwrap().len(), 4);
     assert_eq!(current["version"], 2);
-    assert!(!uuid::Uuid::parse_str(current["policyEpoch"].as_str().unwrap()).unwrap().is_nil());
+    assert!(
+        !uuid::Uuid::parse_str(current["policyEpoch"].as_str().unwrap())
+            .unwrap()
+            .is_nil()
+    );
     assert_ne!(current["policyEpoch"], previous["policyEpoch"]);
-    assert_eq!(current["namespaces"].as_object().unwrap().keys().map(String::as_str).collect::<Vec<_>>(),
-        ["mcp", "providers", "speech", "system", "webSearch"]);
+    assert_eq!(
+        current["namespaces"]
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(String::as_str)
+            .collect::<Vec<_>>(),
+        ["mcp", "providers", "speech", "system", "webSearch"]
+    );
     let flatten = |value: &Value| {
         let mut entries = BTreeMap::new();
         for map in value.get("api_keys").into_iter().chain(
-            value.get("namespaces").and_then(Value::as_object).into_iter().flat_map(|maps| maps.values())) {
+            value
+                .get("namespaces")
+                .and_then(Value::as_object)
+                .into_iter()
+                .flat_map(|maps| maps.values()),
+        ) {
             for (id, secret) in map.as_object().unwrap() {
                 assert!(secret.is_string());
                 assert!(entries.insert(id.clone(), secret.clone()).is_none());
@@ -75,22 +94,40 @@ fn assert_initialized_policy(actual: &Archive, expected: &Archive) {
         entries
     };
     assert_eq!(flatten(&current), flatten(&previous));
-    assert_eq!(current["chatgpt_sessions"], previous.get("chatgpt_sessions").cloned().unwrap_or_else(|| json!({})));
-    assert!(!actual.files.contains_key("data/provider-secrets.migration-pending.json"));
-    if let Some(entry) = expected.files.get("data/provider-secrets.migration-pending.json") {
+    assert_eq!(
+        current["chatgpt_sessions"],
+        previous
+            .get("chatgpt_sessions")
+            .cloned()
+            .unwrap_or_else(|| json!({}))
+    );
+    assert!(!actual
+        .files
+        .contains_key("data/provider-secrets.migration-pending.json"));
+    if let Some(entry) = expected
+        .files
+        .get("data/provider-secrets.migration-pending.json")
+    {
         let journal = decode(entry);
         let backup = format!("data/{}", journal["backup_file"].as_str().unwrap());
-        assert_eq!(hash(&STANDARD.decode(&expected.files[&backup].data).unwrap()), journal["source_sha256"].as_str().unwrap());
+        assert_eq!(
+            hash(&STANDARD.decode(&expected.files[&backup].data).unwrap()),
+            journal["source_sha256"].as_str().unwrap()
+        );
         assert_eq!(actual.files[&backup].data, expected.files[&backup].data);
     }
 }
 
 fn assert_startup_files(actual: &Archive, expected: &Archive, held_database: bool) {
     assert_initialized_policy(actual, expected);
-    let ordinary = |name: &&String| name.as_str() != "data/provider-secrets.json"
-        && name.as_str() != "data/provider-secrets.migration-pending.json";
-    assert_eq!(actual.files.keys().filter(ordinary).collect::<Vec<_>>(),
-        expected.files.keys().filter(ordinary).collect::<Vec<_>>());
+    let ordinary = |name: &&String| {
+        name.as_str() != "data/provider-secrets.json"
+            && name.as_str() != "data/provider-secrets.migration-pending.json"
+    };
+    assert_eq!(
+        actual.files.keys().filter(ordinary).collect::<Vec<_>>(),
+        expected.files.keys().filter(ordinary).collect::<Vec<_>>()
+    );
     for (name, entry) in &expected.files {
         if ordinary(&name) && !(held_database && name == "data/macro.db") {
             assert_eq!(actual.files[name].data, entry.data, "{name}");

@@ -340,10 +340,14 @@ async fn check_database(path: &Path) -> Result<()> {
         return Err("Incompatible database schema".into());
     }
 
-    if versions.contains(&19) && (!versions.contains(&18) || !stamped(19, "019_connect_publication")) {
+    if versions.contains(&19)
+        && (!versions.contains(&18) || !stamped(19, "019_connect_publication"))
+    {
         return Err("Incompatible database schema".into());
     }
-    if versions.contains(&20) && (!versions.contains(&19) || !stamped(20, "020_connect_archive_lifecycle")) {
+    if versions.contains(&20)
+        && (!versions.contains(&19) || !stamped(20, "020_connect_archive_lifecycle"))
+    {
         return Err("Incompatible database schema".into());
     }
     let legacy_trace = stamped(6, "006_pilot_tool_trace_revisions");
@@ -359,16 +363,25 @@ async fn check_database(path: &Path) -> Result<()> {
     // not migrate the untrusted archive until its original objects pass this
     // strict comparison; startup validation migrates a temporary copy later.
     if !versions.contains(&20) {
-        crate::db::connect_transfer::remove_reader_reference_in(&mut *reference.acquire().await.map_err(|e|e.to_string())?)
-            .await.map_err(|e|e.to_string())?;
+        crate::db::connect_transfer::remove_reader_reference_in(
+            &mut *reference.acquire().await.map_err(|e| e.to_string())?,
+        )
+        .await
+        .map_err(|e| e.to_string())?;
     }
     if !versions.contains(&19) {
-        crate::db::connect_transfer::remove_publication_reference_in(&mut *reference.acquire().await.map_err(|e|e.to_string())?)
-            .await.map_err(|e|e.to_string())?;
+        crate::db::connect_transfer::remove_publication_reference_in(
+            &mut *reference.acquire().await.map_err(|e| e.to_string())?,
+        )
+        .await
+        .map_err(|e| e.to_string())?;
     }
     if !versions.contains(&18) {
-        crate::db::connect_transfer::remove_reference_schema_in(&mut *reference.acquire().await.map_err(|e| e.to_string())?)
-            .await.map_err(|e| e.to_string())?;
+        crate::db::connect_transfer::remove_reference_schema_in(
+            &mut *reference.acquire().await.map_err(|e| e.to_string())?,
+        )
+        .await
+        .map_err(|e| e.to_string())?;
     }
     if !versions.contains(&17) {
         crate::db::chat_admission::remove_reference_schema(&reference)
@@ -1223,14 +1236,17 @@ async fn process_startup_with_preserver(
         owner.startup(&data, |rotate| {
             runtime.block_on(process_startup_locked(&data, &config, preserve, rotate))
         })
-    }).await.map_err(|error| error.to_string())?
+    })
+    .await
+    .map_err(|error| error.to_string())?
 }
 
 async fn process_startup_locked(
     data: &Path,
     config: &Path,
     preserve: fn(&Archive, &Path) -> Result<()>,
-    rotate_before_journal_removal: &dyn Fn() -> std::result::Result<(), crate::secrets::SecretError>,
+    rotate_before_journal_removal: &dyn Fn()
+        -> std::result::Result<(), crate::secrets::SecretError>,
 ) -> Result<()> {
     let dir = data.join("local-backup");
     safe_parent(&dir, dir.parent().ok_or("Missing profile root")?)?;
@@ -1255,7 +1271,10 @@ async fn process_startup_locked(
             )?;
             // Raw rollback is complete. A failed nonce rotation must not apply it again.
             marker.phase = RestorePhase::InstallHold;
-            atomic(&journal, &serde_json::to_vec(&marker).map_err(|e| e.to_string())?)?;
+            atomic(
+                &journal,
+                &serde_json::to_vec(&marker).map_err(|e| e.to_string())?,
+            )?;
         }
         install_restore_hold(data).await?;
         // A recovered request must not replay the failed restore on this launch.
@@ -1434,35 +1453,55 @@ pub fn local_backup_acknowledge(app: tauri::AppHandle) -> Result<()> {
 mod tests {
     use super::*;
     fn assert_empty_policy(data: &Path) {
-        let value: serde_json::Value = serde_json::from_slice(&fs::read(data.join(PROVIDER_SECRETS_FILE)).unwrap()).unwrap();
+        let value: serde_json::Value =
+            serde_json::from_slice(&fs::read(data.join(PROVIDER_SECRETS_FILE)).unwrap()).unwrap();
         assert_eq!(value.as_object().unwrap().len(), 4);
         assert_eq!(value["version"], 2);
         let epoch = uuid::Uuid::parse_str(value["policyEpoch"].as_str().unwrap()).unwrap();
         assert!(!epoch.is_nil());
         assert_eq!(value["namespaces"].as_object().unwrap().len(), 5);
-        assert!(value["namespaces"].as_object().unwrap().values().all(|map| map.as_object().unwrap().is_empty()));
+        assert!(value["namespaces"]
+            .as_object()
+            .unwrap()
+            .values()
+            .all(|map| map.as_object().unwrap().is_empty()));
         assert!(value["chatgpt_sessions"].as_object().unwrap().is_empty());
     }
 
     #[test]
     fn policy_restore_crash_child() {
         use std::io::{BufRead, Write};
-        let Some(data) = std::env::var_os("MACRO_POLICY_RESTORE_CRASH_DATA") else { return };
+        let Some(data) = std::env::var_os("MACRO_POLICY_RESTORE_CRASH_DATA") else {
+            return;
+        };
         let config = PathBuf::from(std::env::var_os("MACRO_POLICY_RESTORE_CRASH_CONFIG").unwrap());
         let data = PathBuf::from(data);
-        let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
         runtime.block_on(async {
             let handle = tokio::runtime::Handle::current();
             let owner = crate::secrets::policy::PolicyOwner::for_test(&data);
             crate::secrets::blocking::run(move || {
-                owner.startup(&data, |_| handle.block_on(process_startup_locked(&data, &config, preserve_raw, &|| {
-                    println!("synthetic-restore-lock-held");
-                    std::io::stdout().flush().unwrap();
-                    let mut command = String::new();
-                    std::io::stdin().lock().read_line(&mut command).unwrap();
-                    std::process::exit(73);
-                })))
-            }).await.unwrap().unwrap();
+                owner.startup(&data, |_| {
+                    handle.block_on(process_startup_locked(
+                        &data,
+                        &config,
+                        preserve_raw,
+                        &|| {
+                            println!("synthetic-restore-lock-held");
+                            std::io::stdout().flush().unwrap();
+                            let mut command = String::new();
+                            std::io::stdin().lock().read_line(&mut command).unwrap();
+                            std::process::exit(73);
+                        },
+                    ))
+                })
+            })
+            .await
+            .unwrap()
+            .unwrap();
         });
         panic!("crash hook was not reached");
     }
@@ -1474,7 +1513,10 @@ mod tests {
         use std::time::Duration;
         struct Child(std::process::Child);
         impl Drop for Child {
-            fn drop(&mut self) { let _ = self.0.kill(); let _ = self.0.wait(); }
+            fn drop(&mut self) {
+                let _ = self.0.kill();
+                let _ = self.0.wait();
+            }
         }
         let (_temp, data, config) = profile().await;
         let owner = Arc::new(crate::secrets::policy::PolicyOwner::for_test(&data));
@@ -1491,20 +1533,37 @@ mod tests {
         let writer = crate::secrets::policy::PolicyOwner::for_test(&data);
         writer.startup(&data, |_| Ok(())).unwrap();
         assert!(owner.qualification_stamp().unwrap() != old_stamp);
-        let marker = RestoreJournal { preserved: preserved_name, phase: RestorePhase::Rollback };
-        atomic(&directory.join("restoring.json"), &serde_json::to_vec(&marker).unwrap()).unwrap();
-        let mut child = Child(std::process::Command::new(std::env::current_exe().unwrap())
-            .args(["--exact", "local_backup::tests::policy_restore_crash_child", "--nocapture"])
-            .env("MACRO_POLICY_RESTORE_CRASH_DATA", &data)
-            .env("MACRO_POLICY_RESTORE_CRASH_CONFIG", &config)
-            .stdin(std::process::Stdio::piped()).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::inherit())
-            .spawn().unwrap());
+        let marker = RestoreJournal {
+            preserved: preserved_name,
+            phase: RestorePhase::Rollback,
+        };
+        atomic(
+            &directory.join("restoring.json"),
+            &serde_json::to_vec(&marker).unwrap(),
+        )
+        .unwrap();
+        let mut child = Child(
+            std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "local_backup::tests::policy_restore_crash_child",
+                    "--nocapture",
+                ])
+                .env("MACRO_POLICY_RESTORE_CRASH_DATA", &data)
+                .env("MACRO_POLICY_RESTORE_CRASH_CONFIG", &config)
+                .stdin(std::process::Stdio::piped())
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::inherit())
+                .spawn()
+                .unwrap(),
+        );
         let stdout = child.0.stdout.take().unwrap();
         let (held_tx, held_rx) = mpsc::channel();
         let reader = std::thread::spawn(move || {
             for line in std::io::BufReader::new(stdout).lines() {
                 if line.unwrap().contains("synthetic-restore-lock-held") {
-                    held_tx.send(()).unwrap(); break;
+                    held_tx.send(()).unwrap();
+                    break;
                 }
             }
         });
@@ -1513,7 +1572,9 @@ mod tests {
         let (captured_tx, captured_rx) = mpsc::channel();
         let capture_owner = owner.clone();
         let capture = std::thread::spawn(move || {
-            captured_tx.send(capture_owner.qualification_stamp().is_ok()).unwrap();
+            captured_tx
+                .send(capture_owner.qualification_stamp().is_ok())
+                .unwrap();
         });
         let excluded = captured_rx.recv_timeout(Duration::from_millis(50)).is_err();
         child.0.stdin.take().unwrap().write_all(b"crash\n").unwrap();
@@ -1523,18 +1584,30 @@ mod tests {
         assert!(excluded);
         assert_eq!(status.code(), Some(73));
         assert!(refused);
-        assert_eq!(fs::read(data.join(PROVIDER_SECRETS_FILE)).unwrap(), old_bytes);
+        assert_eq!(
+            fs::read(data.join(PROVIDER_SECRETS_FILE)).unwrap(),
+            old_bytes
+        );
         assert_eq!(fs::read(&preserved).unwrap(), archive_bytes);
-        let pending: RestoreJournal = serde_json::from_slice(&fs::read(directory.join("restoring.json")).unwrap()).unwrap();
+        let pending: RestoreJournal =
+            serde_json::from_slice(&fs::read(directory.join("restoring.json")).unwrap()).unwrap();
         assert!(pending.phase == RestorePhase::InstallHold);
         assert!(owner.qualification_stamp().is_err());
         // A closed-profile repair must survive retry: the raw archive is not applied twice.
         let mut repaired: serde_json::Value = serde_json::from_slice(&old_bytes).unwrap();
         repaired["namespaces"]["providers"]["synthetic"] = serde_json::json!("repair-before-retry");
-        fs::write(data.join(PROVIDER_SECRETS_FILE), serde_json::to_vec(&repaired).unwrap()).unwrap();
+        fs::write(
+            data.join(PROVIDER_SECRETS_FILE),
+            serde_json::to_vec(&repaired).unwrap(),
+        )
+        .unwrap();
         process_startup(&data, &config).await.unwrap();
-        let after: serde_json::Value = serde_json::from_slice(&fs::read(data.join(PROVIDER_SECRETS_FILE)).unwrap()).unwrap();
-        assert_eq!(after["namespaces"]["providers"]["synthetic"], "repair-before-retry");
+        let after: serde_json::Value =
+            serde_json::from_slice(&fs::read(data.join(PROVIDER_SECRETS_FILE)).unwrap()).unwrap();
+        assert_eq!(
+            after["namespaces"]["providers"]["synthetic"],
+            "repair-before-retry"
+        );
         assert!(owner.qualification_stamp().unwrap() != old_stamp);
         assert_eq!(fs::read(&preserved).unwrap(), archive_bytes);
         assert!(!directory.join("restoring.json").exists());
@@ -3267,9 +3340,9 @@ mod tests {
 
     #[tokio::test]
     async fn connect_transfer_restore_preserves_raw_prefix_and_import_lease_before_ready() {
-        let (_temp,data,config)=profile().await;
-        let path=data.join("macro.db");
-        let mut db=connection(&path).await.unwrap();
+        let (_temp, data, config) = profile().await;
+        let path = data.join("macro.db");
+        let mut db = connection(&path).await.unwrap();
         // Incomplete opaque storage is preserved; no ready/pin or producer
         // authority is claimed by this synthetic backup fixture.
         sqlx::raw_sql("INSERT INTO e_inactive_domain VALUES(1,1048576,64);
@@ -3282,20 +3355,47 @@ mod tests {
             INSERT INTO connect_raw_chunks VALUES('00000000-0000-4000-8000-000000000001',0,0,zeroblob(32),x'6162',0,256);")
             .execute(&mut db).await.unwrap();
         db.close().await.unwrap();
-        let archive=capture(&data,&config,BTreeMap::new(),true).await.unwrap();
-        validate(&archive).await.unwrap();queue_restore(&data,&archive);
-        process_startup(&data,&config).await.unwrap();
-        let mut db=connection(&path).await.unwrap();
-        let held:(i64,String,i64)=sqlx::query_as("SELECT restore_hold,phase,inactive_import_id FROM connect_transfers").fetch_one(&mut db).await.unwrap();
-        assert_eq!(held,(1,"reconciliation_required".into(),1));
-        let prefix:(i64,i64,i64)=sqlx::query_as("SELECT next_sequence,next_offset,eof FROM connect_raw_prefix").fetch_one(&mut db).await.unwrap();
-        assert_eq!(prefix,(1,2,0));
-        assert_eq!(sqlx::query_scalar::<_,Vec<u8>>("SELECT data FROM connect_raw_chunks").fetch_one(&mut db).await.unwrap(),b"ab");
-        assert!(sqlx::query("DELETE FROM e_inactive_fragments").execute(&mut db).await.is_err());
-        assert_eq!(sqlx::query_scalar::<_,String>("SELECT mode FROM chat_admission_owners WHERE conversation_id='conversation'").fetch_one(&mut db).await.unwrap(),"restore_hold");
+        let archive = capture(&data, &config, BTreeMap::new(), true)
+            .await
+            .unwrap();
+        validate(&archive).await.unwrap();
+        queue_restore(&data, &archive);
+        process_startup(&data, &config).await.unwrap();
+        let mut db = connection(&path).await.unwrap();
+        let held: (i64, String, i64) =
+            sqlx::query_as("SELECT restore_hold,phase,inactive_import_id FROM connect_transfers")
+                .fetch_one(&mut db)
+                .await
+                .unwrap();
+        assert_eq!(held, (1, "reconciliation_required".into(), 1));
+        let prefix: (i64, i64, i64) =
+            sqlx::query_as("SELECT next_sequence,next_offset,eof FROM connect_raw_prefix")
+                .fetch_one(&mut db)
+                .await
+                .unwrap();
+        assert_eq!(prefix, (1, 2, 0));
+        assert_eq!(
+            sqlx::query_scalar::<_, Vec<u8>>("SELECT data FROM connect_raw_chunks")
+                .fetch_one(&mut db)
+                .await
+                .unwrap(),
+            b"ab"
+        );
+        assert!(sqlx::query("DELETE FROM e_inactive_fragments")
+            .execute(&mut db)
+            .await
+            .is_err());
+        assert_eq!(
+            sqlx::query_scalar::<_, String>(
+                "SELECT mode FROM chat_admission_owners WHERE conversation_id='conversation'"
+            )
+            .fetch_one(&mut db)
+            .await
+            .unwrap(),
+            "restore_hold"
+        );
         db.close().await.unwrap();
     }
-
 }
 
 #[cfg(test)]
@@ -3389,11 +3489,23 @@ mod content_legacy_backup_tests {
     use super::*;
     #[tokio::test]
     async fn restore_reconciles_linked_running_goal_before_hold_and_keeps_foreign_goal_writable() {
-        let (_temp,data,config)=tests::profile().await;
-        let path=data.join("macro.db");
-        let mut db=connection(&path).await.unwrap();
-        assert_eq!(sqlx::query_scalar::<_,i64>("PRAGMA recursive_triggers").fetch_one(&mut db).await.unwrap(),1);
-        assert_eq!(sqlx::query_scalar::<_,i64>("PRAGMA trusted_schema").fetch_one(&mut db).await.unwrap(),1);
+        let (_temp, data, config) = tests::profile().await;
+        let path = data.join("macro.db");
+        let mut db = connection(&path).await.unwrap();
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>("PRAGMA recursive_triggers")
+                .fetch_one(&mut db)
+                .await
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>("PRAGMA trusted_schema")
+                .fetch_one(&mut db)
+                .await
+                .unwrap(),
+            1
+        );
         sqlx::raw_sql("INSERT INTO conversations(id,title,scope_mode,project_id,created_at,updated_at) VALUES('foreign','Foreign','Chat','project','t','t');
             INSERT INTO agent_runs(id,parent_conversation_id,agent_profile,depth,status,prompt,attempt_count,created_at,updated_at,started_at) VALUES('run','conversation','synthetic',1,'running','Synthetic',1,'t','t','t');
             INSERT INTO conversation_goals(goal_id,conversation_id,revision,objective,success_criteria_json,status,created_at,updated_at) VALUES('goal','conversation',1,'Synthetic','[]','auditing','t','t'),('foreign-goal','foreign',1,'Other','[]','active_ready','t','t');
@@ -3401,24 +3513,75 @@ mod content_legacy_backup_tests {
             INSERT INTO conversation_goal_audit_runs(audit_id,run_id,attempt,linked_at) VALUES('audit','run',1,'t');")
             .execute(&mut db).await.unwrap();
         db.close().await.unwrap();
-        let archive=capture(&data,&config,BTreeMap::new(),true).await.unwrap();
-        tests::queue_restore(&data,&archive);
-        process_startup(&data,&config).await.unwrap();
-        let status:BackupStatus=serde_json::from_slice(&fs::read(data.join("local-backup/status.json")).unwrap()).unwrap();
-        assert_eq!(status.code,Some(BackupStatusCode::Restored));
-        let pool=crate::db::create_pool(&path).await.unwrap();
-        assert_eq!(sqlx::query_scalar::<_,String>("SELECT status FROM agent_runs WHERE id='run'").fetch_one(&pool).await.unwrap(),"interrupted");
-        assert_eq!(sqlx::query_scalar::<_,String>("SELECT status FROM conversation_goals WHERE goal_id='goal'").fetch_one(&pool).await.unwrap(),"paused");
-        assert_eq!(sqlx::query_scalar::<_,String>("SELECT mode FROM chat_admission_owners WHERE conversation_id='conversation'").fetch_one(&pool).await.unwrap(),"restore_hold");
+        let archive = capture(&data, &config, BTreeMap::new(), true)
+            .await
+            .unwrap();
+        tests::queue_restore(&data, &archive);
+        process_startup(&data, &config).await.unwrap();
+        let status: BackupStatus =
+            serde_json::from_slice(&fs::read(data.join("local-backup/status.json")).unwrap())
+                .unwrap();
+        assert_eq!(status.code, Some(BackupStatusCode::Restored));
+        let pool = crate::db::create_pool(&path).await.unwrap();
+        assert_eq!(
+            sqlx::query_scalar::<_, String>("SELECT status FROM agent_runs WHERE id='run'")
+                .fetch_one(&pool)
+                .await
+                .unwrap(),
+            "interrupted"
+        );
+        assert_eq!(
+            sqlx::query_scalar::<_, String>(
+                "SELECT status FROM conversation_goals WHERE goal_id='goal'"
+            )
+            .fetch_one(&pool)
+            .await
+            .unwrap(),
+            "paused"
+        );
+        assert_eq!(
+            sqlx::query_scalar::<_, String>(
+                "SELECT mode FROM chat_admission_owners WHERE conversation_id='conversation'"
+            )
+            .fetch_one(&pool)
+            .await
+            .unwrap(),
+            "restore_hold"
+        );
         // These are the same official init_db reconcilers, now idempotent after
         // restore installed its hold. No ordinary writer is opened afterward.
-        assert_eq!(crate::db::agent_runs::reconcile_active_agent_runs_after_restart(&pool).await.unwrap(),0);
-        assert_eq!(crate::db::conversation_goals::reconcile_audits_after_restart(&pool).await.unwrap(),0);
-        crate::db::tool_invocations::reconcile_pending_after_restart(&pool).await.unwrap();
-        crate::db::chat_admission::reconcile_after_restart(&pool).await.unwrap();
-        let owner=crate::core::db_state::DbPool::default();owner.set_ready(pool.clone()).await.unwrap();
-        sqlx::query("UPDATE conversation_goals SET objective='Still writable' WHERE goal_id='foreign-goal'").execute(&pool).await.unwrap();
-        assert!(sqlx::query("UPDATE conversation_goals SET objective='forbidden' WHERE goal_id='goal'").execute(&pool).await.is_err());
+        assert_eq!(
+            crate::db::agent_runs::reconcile_active_agent_runs_after_restart(&pool)
+                .await
+                .unwrap(),
+            0
+        );
+        assert_eq!(
+            crate::db::conversation_goals::reconcile_audits_after_restart(&pool)
+                .await
+                .unwrap(),
+            0
+        );
+        crate::db::tool_invocations::reconcile_pending_after_restart(&pool)
+            .await
+            .unwrap();
+        crate::db::chat_admission::reconcile_after_restart(&pool)
+            .await
+            .unwrap();
+        let owner = crate::core::db_state::DbPool::default();
+        owner.set_ready(pool.clone()).await.unwrap();
+        sqlx::query(
+            "UPDATE conversation_goals SET objective='Still writable' WHERE goal_id='foreign-goal'",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        assert!(sqlx::query(
+            "UPDATE conversation_goals SET objective='forbidden' WHERE goal_id='goal'"
+        )
+        .execute(&pool)
+        .await
+        .is_err());
         owner.set_initializing().await;
         pool.close().await;
     }
@@ -3429,9 +3592,17 @@ mod content_legacy_backup_tests {
             let (_temp, data, config) = tests::profile().await;
             let path = data.join("macro.db");
             let mut db = connection(&path).await.unwrap();
-            crate::db::chat_admission::remove_reference_schema_in(&mut db).await.unwrap();
-            remove_reference_e_schema(&mut db, &(1..=version).collect::<Vec<_>>()).await.unwrap();
-            sqlx::query("DELETE FROM schema_migrations WHERE version>?").bind(version).execute(&mut db).await.unwrap();
+            crate::db::chat_admission::remove_reference_schema_in(&mut db)
+                .await
+                .unwrap();
+            remove_reference_e_schema(&mut db, &(1..=version).collect::<Vec<_>>())
+                .await
+                .unwrap();
+            sqlx::query("DELETE FROM schema_migrations WHERE version>?")
+                .bind(version)
+                .execute(&mut db)
+                .await
+                .unwrap();
             // These are opaque stored bytes, not a portable-semantic fixture or
             // an authority to open E. Backup must preserve even an incomplete import.
             sqlx::raw_sql("INSERT INTO e_inactive_domain VALUES(1,1048576,8);
@@ -3440,30 +3611,98 @@ mod content_legacy_backup_tests {
                 INSERT INTO e_inactive_fragments VALUES(1,0,0,zeroblob(32),x'00010203feff00',7,7,1);")
                 .execute(&mut db).await.unwrap();
             let source_version: Option<(String, i64)> = if version == 16 {
-                Some(sqlx::query_as("SELECT incarnation,revision FROM e_source_version WHERE singleton=1").fetch_one(&mut db).await.unwrap())
-            } else { None };
+                Some(
+                    sqlx::query_as(
+                        "SELECT incarnation,revision FROM e_source_version WHERE singleton=1",
+                    )
+                    .fetch_one(&mut db)
+                    .await
+                    .unwrap(),
+                )
+            } else {
+                None
+            };
             db.close().await.unwrap();
             let before = fs::read(&path).unwrap();
             check_database(&path).await.unwrap();
             assert_eq!(fs::read(&path).unwrap(), before);
-            let archive = capture(&data, &config, BTreeMap::new(), true).await.unwrap();
+            let archive = capture(&data, &config, BTreeMap::new(), true)
+                .await
+                .unwrap();
             tests::queue_restore(&data, &archive);
             process_startup(&data, &config).await.unwrap();
-            let status: BackupStatus = serde_json::from_slice(&fs::read(data.join("local-backup/status.json")).unwrap()).unwrap();
+            let status: BackupStatus =
+                serde_json::from_slice(&fs::read(data.join("local-backup/status.json")).unwrap())
+                    .unwrap();
             assert_eq!(status.code, Some(BackupStatusCode::Restored));
             let pool = crate::db::create_pool(&path).await.unwrap();
-            assert_eq!(sqlx::query_scalar::<_,i64>("SELECT MAX(version) FROM schema_migrations").fetch_one(&pool).await.unwrap(),20);
-            assert_eq!(sqlx::query_scalar::<_,String>("SELECT mode FROM chat_admission_owners WHERE conversation_id='conversation'").fetch_one(&pool).await.unwrap(),"restore_hold");
-            assert_eq!(sqlx::query_scalar::<_,Vec<u8>>("SELECT data FROM e_inactive_fragments WHERE import_id=1").fetch_one(&pool).await.unwrap(),vec![0,1,2,3,254,255,0]);
-            assert_eq!(sqlx::query_scalar::<_,String>("SELECT begin_json FROM e_inactive_imports WHERE id=1").fetch_one(&pool).await.unwrap(),"{}");
-            assert_eq!(crate::db::repository::list_messages(&pool,"conversation").await.unwrap()[0].content,"Representative transcript");
+            assert_eq!(
+                sqlx::query_scalar::<_, i64>("SELECT MAX(version) FROM schema_migrations")
+                    .fetch_one(&pool)
+                    .await
+                    .unwrap(),
+                20
+            );
+            assert_eq!(
+                sqlx::query_scalar::<_, String>(
+                    "SELECT mode FROM chat_admission_owners WHERE conversation_id='conversation'"
+                )
+                .fetch_one(&pool)
+                .await
+                .unwrap(),
+                "restore_hold"
+            );
+            assert_eq!(
+                sqlx::query_scalar::<_, Vec<u8>>(
+                    "SELECT data FROM e_inactive_fragments WHERE import_id=1"
+                )
+                .fetch_one(&pool)
+                .await
+                .unwrap(),
+                vec![0, 1, 2, 3, 254, 255, 0]
+            );
+            assert_eq!(
+                sqlx::query_scalar::<_, String>(
+                    "SELECT begin_json FROM e_inactive_imports WHERE id=1"
+                )
+                .fetch_one(&pool)
+                .await
+                .unwrap(),
+                "{}"
+            );
+            assert_eq!(
+                crate::db::repository::list_messages(&pool, "conversation")
+                    .await
+                    .unwrap()[0]
+                    .content,
+                "Representative transcript"
+            );
             if let Some(expected) = source_version {
-                assert_eq!(sqlx::query_as::<_,(String,i64)>("SELECT incarnation,revision FROM e_source_version WHERE singleton=1").fetch_one(&pool).await.unwrap(),expected);
+                assert_eq!(
+                    sqlx::query_as::<_, (String, i64)>(
+                        "SELECT incarnation,revision FROM e_source_version WHERE singleton=1"
+                    )
+                    .fetch_one(&pool)
+                    .await
+                    .unwrap(),
+                    expected
+                );
             }
             let owner = crate::core::db_state::DbPool::default();
             owner.set_ready(pool.clone()).await.unwrap();
-            assert!(sqlx::query("UPDATE messages SET content='forbidden' WHERE id='message'").execute(&pool).await.is_err());
-            assert_eq!(crate::db::inactive_storage::InactiveStorage::closed(pool.clone()).begin(b"{}").await.unwrap_err(),"inactive_storage_disabled");
+            assert!(
+                sqlx::query("UPDATE messages SET content='forbidden' WHERE id='message'")
+                    .execute(&pool)
+                    .await
+                    .is_err()
+            );
+            assert_eq!(
+                crate::db::inactive_storage::InactiveStorage::closed(pool.clone())
+                    .begin(b"{}")
+                    .await
+                    .unwrap_err(),
+                "inactive_storage_disabled"
+            );
             owner.set_initializing().await;
             pool.close().await;
         }
@@ -3660,16 +3899,31 @@ mod catalog_backup_tests {
 
     #[tokio::test]
     async fn connect_publication_backup_accepts_exact_pre019_and_rejects_missing019_guard() {
-        let (_temp,data,_config)=tests::profile().await;
-        let path=data.join("macro.db");
-        let mut connection=connection(&path).await.unwrap();
-        crate::db::connect_transfer::remove_publication_reference_in(&mut connection).await.unwrap();
-        sqlx::query("DELETE FROM schema_migrations WHERE version>=19").execute(&mut connection).await.unwrap();
+        let (_temp, data, _config) = tests::profile().await;
+        let path = data.join("macro.db");
+        let mut connection = connection(&path).await.unwrap();
+        crate::db::connect_transfer::remove_publication_reference_in(&mut connection)
+            .await
+            .unwrap();
+        sqlx::query("DELETE FROM schema_migrations WHERE version>=19")
+            .execute(&mut connection)
+            .await
+            .unwrap();
         connection.close().await.unwrap();
         check_database(&path).await.unwrap();
-        let pool=crate::db::create_pool(&path).await.unwrap();
-        assert_eq!(sqlx::query_scalar::<_,i64>("SELECT MAX(version) FROM schema_migrations").fetch_one(&pool).await.unwrap(),20);
-        sqlx::query("DROP TRIGGER connect_preparation_metadata").execute(&pool).await.unwrap();pool.close().await;
+        let pool = crate::db::create_pool(&path).await.unwrap();
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>("SELECT MAX(version) FROM schema_migrations")
+                .fetch_one(&pool)
+                .await
+                .unwrap(),
+            20
+        );
+        sqlx::query("DROP TRIGGER connect_preparation_metadata")
+            .execute(&pool)
+            .await
+            .unwrap();
+        pool.close().await;
         assert!(check_database(&path).await.is_err());
     }
 }

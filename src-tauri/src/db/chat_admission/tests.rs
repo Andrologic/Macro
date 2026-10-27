@@ -695,7 +695,10 @@ async fn concurrent_final_response_retries_share_the_exact_local_receipt() {
     let owner = crate::core::db_state::DbPool::default();
     owner.set_ready(pool.clone()).await.unwrap();
     let runtime = runtime::ChatAdmissionRuntime::default();
-    runtime.open_browser(owner.clone(), "window", "browser").await.unwrap();
+    runtime
+        .open_browser(owner.clone(), "window", "browser")
+        .await
+        .unwrap();
     let context = runtime
         .begin_root(
             owner.clone(),
@@ -755,19 +758,44 @@ async fn concurrent_final_response_retries_share_the_exact_local_receipt() {
             .unwrap(),
         "saved"
     );
-    let fingerprint = runtime::completion_fingerprint("response", &response_write("saved")).unwrap();
-    assert!(runtime::replay_completion(&owner, "window", &context, "source", &fingerprint).await.unwrap());
-    runtime.acknowledge_completion(&owner, "window", &context, "source").await.unwrap();
-    runtime.acknowledge_completion(&owner, "window", &context, "source").await.unwrap();
+    let fingerprint =
+        runtime::completion_fingerprint("response", &response_write("saved")).unwrap();
+    assert!(
+        runtime::replay_completion(&owner, "window", &context, "source", &fingerprint)
+            .await
+            .unwrap()
+    );
+    runtime
+        .acknowledge_completion(&owner, "window", &context, "source")
+        .await
+        .unwrap();
+    runtime
+        .acknowledge_completion(&owner, "window", &context, "source")
+        .await
+        .unwrap();
     assert!(runtime.parent("window", &context, "source").await.is_err());
     drop(runtime);
     // A lost IPC ACK can be replayed after destruction of all live handles.
-    assert!(runtime::replay_completion(&owner, "window", &context, "source", &fingerprint).await.unwrap());
-    assert!(!runtime::replay_completion(&owner, "other-window", &context, "source", &fingerprint).await.unwrap());
-    assert!(runtime::replay_completion(&owner, "window", &context, "source", "response:different").await.is_err());
+    assert!(
+        runtime::replay_completion(&owner, "window", &context, "source", &fingerprint)
+            .await
+            .unwrap()
+    );
+    assert!(
+        !runtime::replay_completion(&owner, "other-window", &context, "source", &fingerprint)
+            .await
+            .unwrap()
+    );
+    assert!(
+        runtime::replay_completion(&owner, "window", &context, "source", "response:different")
+            .await
+            .is_err()
+    );
     let replacement = runtime::ChatAdmissionRuntime::default();
-    assert!(replacement.parent("window", &context, "source").await.is_err());
-
+    assert!(replacement
+        .parent("window", &context, "source")
+        .await
+        .is_err());
 }
 
 #[tokio::test]
@@ -963,44 +991,89 @@ async fn browser_retirement_joins_owned_work_and_preserves_uncertainty() {
     let owner = crate::core::db_state::DbPool::default();
     owner.set_ready(pool.clone()).await.unwrap();
     let runtime = Arc::new(runtime::ChatAdmissionRuntime::default());
-    let context = runtime.begin(owner.clone(), "window", "browser", "source", "turn").await.unwrap();
-    assert!(runtime.open_browser(owner.clone(), "second", "other").await.is_err());
+    let context = runtime
+        .begin(owner.clone(), "window", "browser", "source", "turn")
+        .await
+        .unwrap();
+    assert!(runtime
+        .open_browser(owner.clone(), "second", "other")
+        .await
+        .is_err());
     let parent = runtime.parent("window", &context, "source").await.unwrap();
-    let work = Arc::new(parent.child(WorkKind::Tool, Some("browser-child")).await.unwrap());
+    let work = Arc::new(
+        parent
+            .child(WorkKind::Tool, Some("browser-child"))
+            .await
+            .unwrap(),
+    );
     let ai = crate::ai::AiState::default();
     let http = Arc::new(crate::ai::admitted_http::AdmittedHttp::default());
     let (started, ready) = tokio::sync::oneshot::channel();
     let (cancelled, observed) = tokio::sync::oneshot::channel();
     let (release, cleanup) = tokio::sync::oneshot::channel();
-    let result = ai.reserve_stream("browser-child".into()).unwrap().spawn_tool(work, move |cancel| async move {
-        started.send(()).unwrap();
-        cancel.cancelled().await;
-        cancelled.send(()).unwrap();
-        cleanup.await.unwrap();
-        Ok::<_, String>(())
-    }).unwrap();
+    let result = ai
+        .reserve_stream("browser-child".into())
+        .unwrap()
+        .spawn_tool(work, move |cancel| async move {
+            started.send(()).unwrap();
+            cancel.cancelled().await;
+            cancelled.send(()).unwrap();
+            cleanup.await.unwrap();
+            Ok::<_, String>(())
+        })
+        .unwrap();
     ready.await.unwrap();
     let closing_runtime = runtime.clone();
     let closing_owner = owner.clone();
     let closing_ai = ai.clone();
     let closing_http = http.clone();
     let mut closing = tokio::spawn(async move {
-        closing_runtime.close_browser(&closing_owner, &closing_ai, &closing_http, "window", "browser").await
+        closing_runtime
+            .close_browser(
+                &closing_owner,
+                &closing_ai,
+                &closing_http,
+                "window",
+                "browser",
+            )
+            .await
     });
     observed.await.unwrap();
     assert!(runtime.parent("window", &context, "source").await.is_err());
-    assert!(tokio::time::timeout(std::time::Duration::from_millis(30), &mut closing).await.is_err());
-    let phase: String = sqlx::query_scalar("SELECT phase FROM chat_admission_browsers WHERE runtime='browser'").fetch_one(&pool).await.unwrap();
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_millis(30), &mut closing)
+            .await
+            .is_err()
+    );
+    let phase: String =
+        sqlx::query_scalar("SELECT phase FROM chat_admission_browsers WHERE runtime='browser'")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
     assert_eq!(phase, "retiring");
     release.send(()).unwrap();
     closing.await.unwrap().unwrap();
     assert!(result.await.is_err());
     assert!(ai.join_stream_task("browser-child").await.is_none());
-    let phases: Vec<String> = sqlx::query_scalar("SELECT phase FROM chat_admission_operations WHERE request_id='browser-child'").fetch_all(&pool).await.unwrap();
+    let phases: Vec<String> = sqlx::query_scalar(
+        "SELECT phase FROM chat_admission_operations WHERE request_id='browser-child'",
+    )
+    .fetch_all(&pool)
+    .await
+    .unwrap();
     assert_eq!(phases, ["unknown"]);
-    runtime.close_browser(&owner, &ai, &http, "window", "browser").await.unwrap();
-    assert!(runtime.open_browser(owner.clone(), "window", "browser").await.is_err());
-    runtime.open_browser(owner.clone(), "window", "fresh-browser").await.unwrap();
+    runtime
+        .close_browser(&owner, &ai, &http, "window", "browser")
+        .await
+        .unwrap();
+    assert!(runtime
+        .open_browser(owner.clone(), "window", "browser")
+        .await
+        .is_err());
+    runtime
+        .open_browser(owner.clone(), "window", "fresh-browser")
+        .await
+        .unwrap();
     // A new browser does not reconcile an uncertain provider/tool context.
     assert!(runtime.parent("window", &context, "source").await.is_err());
 }
@@ -1013,69 +1086,156 @@ async fn browser_close_before_registration_tombstones_delayed_open() {
     let runtime = runtime::ChatAdmissionRuntime::default();
     let ai = crate::ai::AiState::default();
     let http = crate::ai::admitted_http::AdmittedHttp::default();
-    runtime.close_browser(&owner, &ai, &http, "window", "delayed").await.unwrap();
-    runtime.close_browser(&owner, &ai, &http, "window", "delayed").await.unwrap();
-    assert!(runtime.open_browser(owner.clone(), "window", "delayed").await.is_err());
-    assert!(runtime.close_browser(&owner, &ai, &http, "other", "delayed").await.is_err());
-    runtime.open_browser(owner, "window", "fresh").await.unwrap();
+    runtime
+        .close_browser(&owner, &ai, &http, "window", "delayed")
+        .await
+        .unwrap();
+    runtime
+        .close_browser(&owner, &ai, &http, "window", "delayed")
+        .await
+        .unwrap();
+    assert!(runtime
+        .open_browser(owner.clone(), "window", "delayed")
+        .await
+        .is_err());
+    assert!(runtime
+        .close_browser(&owner, &ai, &http, "other", "delayed")
+        .await
+        .is_err());
+    runtime
+        .open_browser(owner, "window", "fresh")
+        .await
+        .unwrap();
 }
 
 #[tokio::test]
 async fn browser_retirement_removes_http_receiver_after_real_transport_join() {
-    use crate::ai::{admitted_http::{AdmittedHttp, HttpPart}, provider_work::{ProviderAdmission, ProviderWork, tests::HttpServer}, AiState};
+    use crate::ai::{
+        admitted_http::{AdmittedHttp, HttpPart},
+        provider_work::{tests::HttpServer, ProviderAdmission, ProviderWork},
+        AiState,
+    };
     let (_dir, pool) = fixture().await;
     let owner = crate::core::db_state::DbPool::default();
     owner.set_ready(pool.clone()).await.unwrap();
     let runtime = runtime::ChatAdmissionRuntime::default();
-    let context = runtime.begin(owner.clone(), "window", "browser", "source", "turn").await.unwrap();
-    let work = std::sync::Arc::new(ProviderWork::admit(&pool, &runtime, "window", ProviderAdmission::GlobalChat { context }, Some("source"), "browser-http").await.unwrap());
-    let server = HttpServer::start(vec![Some("HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}")]).await;
+    let context = runtime
+        .begin(owner.clone(), "window", "browser", "source", "turn")
+        .await
+        .unwrap();
+    let work = std::sync::Arc::new(
+        ProviderWork::admit(
+            &pool,
+            &runtime,
+            "window",
+            ProviderAdmission::GlobalChat { context },
+            Some("source"),
+            "browser-http",
+        )
+        .await
+        .unwrap(),
+    );
+    let server = HttpServer::start(vec![Some(
+        "HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}",
+    )])
+    .await;
     let ai = AiState::default();
     let http = AdmittedHttp::default();
     let client = reqwest::Client::new();
     let request = client.post(&server.url).body("synthetic").build().unwrap();
-    http.start("window", "browser-http".into(), ai.reserve_stream("browser-http".into()).unwrap(), work, "synthetic-provider".into(), client, request).await.unwrap();
-    assert!(matches!(http.read("window", "browser-http").await.unwrap(), HttpPart::Headers { .. }));
-    assert!(matches!(http.read("window", "browser-http").await.unwrap(), HttpPart::Bytes { .. }));
-    assert!(matches!(http.read("window", "browser-http").await.unwrap(), HttpPart::End));
+    http.start(
+        "window",
+        "browser-http".into(),
+        ai.reserve_stream("browser-http".into()).unwrap(),
+        work,
+        "synthetic-provider".into(),
+        client,
+        request,
+    )
+    .await
+    .unwrap();
+    assert!(matches!(
+        http.read("window", "browser-http").await.unwrap(),
+        HttpPart::Headers { .. }
+    ));
+    assert!(matches!(
+        http.read("window", "browser-http").await.unwrap(),
+        HttpPart::Bytes { .. }
+    ));
+    assert!(matches!(
+        http.read("window", "browser-http").await.unwrap(),
+        HttpPart::End
+    ));
     // The browser disappears before the codec ACK. EOF alone cannot complete it.
-    runtime.close_browser(&owner, &ai, &http, "window", "browser").await.unwrap();
+    runtime
+        .close_browser(&owner, &ai, &http, "window", "browser")
+        .await
+        .unwrap();
     assert!(http.read("window", "browser-http").await.is_err());
     assert!(ai.join_stream_task("browser-http").await.is_none());
-    let phases: Vec<String> = sqlx::query_scalar("SELECT phase FROM chat_admission_operations WHERE kind='provider'").fetch_all(&pool).await.unwrap();
+    let phases: Vec<String> =
+        sqlx::query_scalar("SELECT phase FROM chat_admission_operations WHERE kind='provider'")
+            .fetch_all(&pool)
+            .await
+            .unwrap();
     assert_eq!(phases, ["unknown", "unknown"]);
     assert_eq!(server.stop().await, 1);
 }
 
 #[tokio::test]
 async fn cancellation_while_writer_is_locked_never_polls_the_tool_executor() {
-    use std::sync::{Arc, atomic::{AtomicBool, Ordering}};
+    use std::sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    };
     let (_dir, pool) = fixture().await;
     let owner = crate::core::db_state::DbPool::default();
     owner.set_ready(pool.clone()).await.unwrap();
-    let parent = OperationPermit::begin_turn(owner, "source", "turn").await.unwrap();
-    let tool = Arc::new(parent.child(WorkKind::Tool, Some("pre-poll")).await.unwrap());
+    let parent = OperationPermit::begin_turn(owner, "source", "turn")
+        .await
+        .unwrap();
+    let tool = Arc::new(
+        parent
+            .child(WorkKind::Tool, Some("pre-poll"))
+            .await
+            .unwrap(),
+    );
     let mut writer = pool.acquire().await.unwrap();
-    sqlx::query("BEGIN IMMEDIATE").execute(&mut *writer).await.unwrap();
+    sqlx::query("BEGIN IMMEDIATE")
+        .execute(&mut *writer)
+        .await
+        .unwrap();
     let ai = crate::ai::AiState::default();
     let polled = Arc::new(AtomicBool::new(false));
     let execution = polled.clone();
-    let result = ai.reserve_stream("pre-poll".into()).unwrap().spawn_tool(tool, move |_| async move {
-        execution.store(true, Ordering::SeqCst);
-        Ok::<_, String>(())
-    }).unwrap();
+    let result = ai
+        .reserve_stream("pre-poll".into())
+        .unwrap()
+        .spawn_tool(tool, move |_| async move {
+            execution.store(true, Ordering::SeqCst);
+            Ok::<_, String>(())
+        })
+        .unwrap();
     // Cancellation owns the pre-registered task even while SQLite holds it.
     let cancelling = ai.clone();
     let mut joined = tokio::spawn(async move { cancelling.cancel_stream_task("pre-poll").await });
-    assert!(tokio::time::timeout(std::time::Duration::from_millis(30), &mut joined).await.is_err());
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_millis(30), &mut joined)
+            .await
+            .is_err()
+    );
     sqlx::query("COMMIT").execute(&mut *writer).await.unwrap();
     joined.await.unwrap().unwrap();
     assert!(result.await.is_err());
     assert!(!polled.load(Ordering::SeqCst));
-    let phase: String = sqlx::query_scalar("SELECT phase FROM chat_admission_operations WHERE request_id='pre-poll'").fetch_one(&pool).await.unwrap();
+    let phase: String = sqlx::query_scalar(
+        "SELECT phase FROM chat_admission_operations WHERE request_id='pre-poll'",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
     assert_eq!(phase, "no_effect");
 }
-
 
 #[tokio::test]
 async fn native_page_change_retires_an_open_still_waiting_for_sqlite() {
@@ -1086,37 +1246,75 @@ async fn native_page_change_retires_an_open_still_waiting_for_sqlite() {
     let ai = crate::ai::AiState::default();
     let http = crate::ai::admitted_http::AdmittedHttp::default();
     let mut writer = pool.acquire().await.unwrap();
-    sqlx::query("BEGIN IMMEDIATE").execute(&mut *writer).await.unwrap();
+    sqlx::query("BEGIN IMMEDIATE")
+        .execute(&mut *writer)
+        .await
+        .unwrap();
     let opening = runtime.open_browser(owner.clone(), "window", "old-browser");
     tokio::pin!(opening);
     assert!(futures::poll!(opening.as_mut()).is_pending());
     let page = runtime.invalidate_page("window");
     sqlx::query("COMMIT").execute(&mut *writer).await.unwrap();
     assert!(opening.await.is_err());
-    runtime.close_previous_page(&owner, &ai, &http, "window", &page).await.unwrap();
-    runtime.open_browser(owner.clone(), "window", "new-browser").await.unwrap();
+    runtime
+        .close_previous_page(&owner, &ai, &http, "window", &page)
+        .await
+        .unwrap();
+    runtime
+        .open_browser(owner.clone(), "window", "new-browser")
+        .await
+        .unwrap();
     // A delayed callback for an older page must not close this replacement.
-    runtime.close_previous_page(&owner, &ai, &http, "window", "older-page").await.unwrap();
-    runtime.begin_root(owner, "window", "new-browser", "source", "turn", "attempt", RootWorkKind::Turn).await.unwrap();
+    runtime
+        .close_previous_page(&owner, &ai, &http, "window", "older-page")
+        .await
+        .unwrap();
+    runtime
+        .begin_root(
+            owner,
+            "window",
+            "new-browser",
+            "source",
+            "turn",
+            "attempt",
+            RootWorkKind::Turn,
+        )
+        .await
+        .unwrap();
 }
-
 
 #[tokio::test]
 async fn tool_constructor_panic_is_durable_unknown_and_releases_registration() {
     let (_dir, pool) = fixture().await;
     let owner = crate::core::db_state::DbPool::default();
     owner.set_ready(pool.clone()).await.unwrap();
-    let parent = OperationPermit::begin_turn(owner, "source", "turn").await.unwrap();
-    let tool = std::sync::Arc::new(parent.child(WorkKind::Tool, Some("constructor-panic")).await.unwrap());
+    let parent = OperationPermit::begin_turn(owner, "source", "turn")
+        .await
+        .unwrap();
+    let tool = std::sync::Arc::new(
+        parent
+            .child(WorkKind::Tool, Some("constructor-panic"))
+            .await
+            .unwrap(),
+    );
     let ai = crate::ai::AiState::default();
-    let result = ai.reserve_stream("constructor-panic".into()).unwrap().spawn_tool(tool, |_| {
-        panic!("synthetic constructor panic");
-        #[allow(unreachable_code)]
-        std::future::ready(Ok::<(), String>(()))
-    }).unwrap();
+    let result = ai
+        .reserve_stream("constructor-panic".into())
+        .unwrap()
+        .spawn_tool(tool, |_| {
+            panic!("synthetic constructor panic");
+            #[allow(unreachable_code)]
+            std::future::ready(Ok::<(), String>(()))
+        })
+        .unwrap();
     assert!(result.await.is_err());
     assert!(ai.join_stream_task("constructor-panic").await.is_none());
-    let phase: String = sqlx::query_scalar("SELECT phase FROM chat_admission_operations WHERE request_id='constructor-panic'").fetch_one(&pool).await.unwrap();
+    let phase: String = sqlx::query_scalar(
+        "SELECT phase FROM chat_admission_operations WHERE request_id='constructor-panic'",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
     assert_eq!(phase, "unknown");
 }
 
@@ -1127,24 +1325,99 @@ async fn intent_receipts_survive_lost_ack_and_refuse_stale_browser_revisions() {
     let owner = crate::core::db_state::DbPool::default();
     owner.set_ready(pool.clone()).await.unwrap();
     let runtime = runtime::ChatAdmissionRuntime::default();
-    runtime.open_browser(owner.clone(), "window", "old").await.unwrap();
-    let identity = IntentIdentity { conversation_id: "source".into(), kind: IntentKind::Queue, id: "queued".into() };
-    let first = runtime.begin_intent(&owner, "window", "old", identity.clone(), IntentMutation::Retain).await.unwrap();
-    let repeated = runtime.begin_intent(&owner, "window", "old", identity.clone(), IntentMutation::Retain).await.unwrap();
+    runtime
+        .open_browser(owner.clone(), "window", "old")
+        .await
+        .unwrap();
+    let identity = IntentIdentity {
+        conversation_id: "source".into(),
+        kind: IntentKind::Queue,
+        id: "queued".into(),
+    };
+    let first = runtime
+        .begin_intent(
+            &owner,
+            "window",
+            "old",
+            identity.clone(),
+            IntentMutation::Retain,
+        )
+        .await
+        .unwrap();
+    let repeated = runtime
+        .begin_intent(
+            &owner,
+            "window",
+            "old",
+            identity.clone(),
+            IntentMutation::Retain,
+        )
+        .await
+        .unwrap();
     assert_eq!(first.operation_id, repeated.operation_id);
     assert_eq!(first.revision + 1, repeated.revision);
-    runtime.close_browser(&owner, &crate::ai::AiState::default(), &crate::ai::admitted_http::AdmittedHttp::default(), "window", "old").await.unwrap();
-    runtime.open_browser(owner.clone(), "window", "new").await.unwrap();
-    let retained = runtime.begin_intent(&owner, "window", "new", identity.clone(), IntentMutation::Retain).await.unwrap();
+    runtime
+        .close_browser(
+            &owner,
+            &crate::ai::AiState::default(),
+            &crate::ai::admitted_http::AdmittedHttp::default(),
+            "window",
+            "old",
+        )
+        .await
+        .unwrap();
+    runtime
+        .open_browser(owner.clone(), "window", "new")
+        .await
+        .unwrap();
+    let retained = runtime
+        .begin_intent(
+            &owner,
+            "window",
+            "new",
+            identity.clone(),
+            IntentMutation::Retain,
+        )
+        .await
+        .unwrap();
     assert_eq!(retained.operation_id, first.operation_id);
     assert_eq!(retained.revision, repeated.revision + 1);
-    assert!(runtime.finish_intent(&owner, "window", &first).await.is_err());
-    runtime.finish_intent(&owner, "window", &retained).await.unwrap();
-    runtime.finish_intent(&owner, "window", &retained).await.unwrap();
-    let replay = runtime.begin_intent(&owner, "window", "new", identity.clone(), IntentMutation::Remove).await.unwrap();
-    runtime.finish_intent(&owner, "window", &replay).await.unwrap();
-    assert!(runtime.begin_intent(&owner, "window", "new", identity, IntentMutation::Retain).await.is_err());
-    let count: i64 = sqlx::query_scalar("SELECT count(*) FROM chat_admission_operations WHERE kind='queue' AND phase='completed'").fetch_one(&pool).await.unwrap();
+    assert!(runtime
+        .finish_intent(&owner, "window", &first)
+        .await
+        .is_err());
+    runtime
+        .finish_intent(&owner, "window", &retained)
+        .await
+        .unwrap();
+    runtime
+        .finish_intent(&owner, "window", &retained)
+        .await
+        .unwrap();
+    let replay = runtime
+        .begin_intent(
+            &owner,
+            "window",
+            "new",
+            identity.clone(),
+            IntentMutation::Remove,
+        )
+        .await
+        .unwrap();
+    runtime
+        .finish_intent(&owner, "window", &replay)
+        .await
+        .unwrap();
+    assert!(runtime
+        .begin_intent(&owner, "window", "new", identity, IntentMutation::Retain)
+        .await
+        .is_err());
+    let count: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM chat_admission_operations WHERE kind='queue' AND phase='completed'",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
     assert_eq!(count, 1);
 }
 
@@ -1155,20 +1428,73 @@ async fn queued_intent_is_claimed_atomically_and_cannot_relaunch_after_retiremen
     let owner = crate::core::db_state::DbPool::default();
     owner.set_ready(pool.clone()).await.unwrap();
     let runtime = runtime::ChatAdmissionRuntime::default();
-    runtime.open_browser(owner.clone(), "window", "old").await.unwrap();
-    let identity = IntentIdentity { conversation_id: "source".into(), kind: IntentKind::Queue, id: "queued".into() };
-    let before = runtime.begin_intent(&owner, "window", "old", identity.clone(), IntentMutation::Retain).await.unwrap();
-    let parent = runtime.begin(owner.clone(), "window", "old", "source", "queued").await.unwrap();
-    let claimed: (String, String) = sqlx::query_as("SELECT parent_id,phase FROM chat_admission_operations WHERE operation_id=?").bind(&before.operation_id).fetch_one(&pool).await.unwrap();
+    runtime
+        .open_browser(owner.clone(), "window", "old")
+        .await
+        .unwrap();
+    let identity = IntentIdentity {
+        conversation_id: "source".into(),
+        kind: IntentKind::Queue,
+        id: "queued".into(),
+    };
+    let before = runtime
+        .begin_intent(
+            &owner,
+            "window",
+            "old",
+            identity.clone(),
+            IntentMutation::Retain,
+        )
+        .await
+        .unwrap();
+    let parent = runtime
+        .begin(owner.clone(), "window", "old", "source", "queued")
+        .await
+        .unwrap();
+    let claimed: (String, String) = sqlx::query_as(
+        "SELECT parent_id,phase FROM chat_admission_operations WHERE operation_id=?",
+    )
+    .bind(&before.operation_id)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
     assert_eq!(claimed, (parent.handle, "result_pending".into()));
-    assert!(runtime.finish_intent(&owner, "window", &before).await.is_err());
-    runtime.close_browser(&owner, &crate::ai::AiState::default(), &crate::ai::admitted_http::AdmittedHttp::default(), "window", "old").await.unwrap();
-    runtime.open_browser(owner.clone(), "window", "new").await.unwrap();
-    let removal = runtime.begin_intent(&owner, "window", "new", identity, IntentMutation::Remove).await.unwrap();
-    assert!(runtime.begin(owner.clone(), "window", "new", "source", "queued").await.is_err());
-    let count: i64 = sqlx::query_scalar("SELECT count(*) FROM chat_admission_operations WHERE kind='turn'").fetch_one(&pool).await.unwrap();
+    assert!(runtime
+        .finish_intent(&owner, "window", &before)
+        .await
+        .is_err());
+    runtime
+        .close_browser(
+            &owner,
+            &crate::ai::AiState::default(),
+            &crate::ai::admitted_http::AdmittedHttp::default(),
+            "window",
+            "old",
+        )
+        .await
+        .unwrap();
+    runtime
+        .open_browser(owner.clone(), "window", "new")
+        .await
+        .unwrap();
+    let removal = runtime
+        .begin_intent(&owner, "window", "new", identity, IntentMutation::Remove)
+        .await
+        .unwrap();
+    assert!(runtime
+        .begin(owner.clone(), "window", "new", "source", "queued")
+        .await
+        .is_err());
+    let count: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM chat_admission_operations WHERE kind='turn'")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
     assert_eq!(count, 1, "the refused claim must roll back the new parent");
-    runtime.finish_intent(&owner, "window", &removal).await.unwrap();
+    runtime
+        .finish_intent(&owner, "window", &removal)
+        .await
+        .unwrap();
 }
 
 #[tokio::test]
@@ -1176,30 +1502,129 @@ async fn approval_registry_cas_preserves_other_chats_and_reserves_generic_writer
     use super::intents::{self, IntentIdentity, IntentKind, IntentMutation};
     let (_dir, pool) = fixture().await;
     sqlx::query("INSERT INTO conversations(id,title,scope_mode,created_at,updated_at) VALUES('other','Other','Chat','t','t')").execute(&pool).await.unwrap();
-    sqlx::query("UPDATE chat_admission_owners SET mode='frozen' WHERE conversation_id='other'").execute(&pool).await.unwrap();
+    sqlx::query("UPDATE chat_admission_owners SET mode='frozen' WHERE conversation_id='other'")
+        .execute(&pool)
+        .await
+        .unwrap();
     let before = r#"{"version":1,"requests":{"other":{"opaque":"preserved"}}}"#;
-    sqlx::query("INSERT INTO app_settings(key,value_json,updated_at) VALUES(?,?,'t')").bind(intents::APPROVAL_REGISTRY_KEY).bind(before).execute(&pool).await.unwrap();
+    sqlx::query("INSERT INTO app_settings(key,value_json,updated_at) VALUES(?,?,'t')")
+        .bind(intents::APPROVAL_REGISTRY_KEY)
+        .bind(before)
+        .execute(&pool)
+        .await
+        .unwrap();
     let owner = crate::core::db_state::DbPool::default();
     owner.set_ready(pool.clone()).await.unwrap();
     let runtime = runtime::ChatAdmissionRuntime::default();
-    runtime.open_browser(owner.clone(), "window", "browser").await.unwrap();
-    let receipt = runtime.begin_intent(&owner, "window", "browser", IntentIdentity {
-        conversation_id: "source".into(), kind: IntentKind::Approval, id: "approval-call".into(),
-    }, IntentMutation::Retain).await.unwrap();
-    let after = r#"{"version":1,"requests":{"other":{"opaque":"preserved"},"source":{"opaque":"new"}}}"#;
-    intents::write_approval_registry(&owner, "window", "source", Some(&receipt), Some(before), Some(after)).await.unwrap();
-    intents::write_approval_registry(&owner, "window", "source", Some(&receipt), Some(before), Some(after)).await.unwrap();
-    let foreign = r#"{"version":1,"requests":{"other":{"opaque":"changed"},"source":{"opaque":"new"}}}"#;
-    assert!(intents::write_approval_registry(&owner, "window", "source", Some(&receipt), Some(after), Some(foreign)).await.is_err());
-    assert!(intents::write_approval_registry(&owner, "window", "source", None, Some(after), Some(before)).await.is_err());
-    assert!(intents::write_approval_registry(&owner, "window", "source", Some(&receipt), None, Some(before)).await.is_err());
-    assert!(repository::set_app_setting(&pool, intents::APPROVAL_REGISTRY_KEY, "{}").await.is_err());
-    assert!(repository::delete_app_setting(&pool, intents::APPROVAL_REGISTRY_KEY).await.is_err());
-    assert!(repository::compare_and_swap_app_setting(&pool, intents::APPROVAL_REGISTRY_KEY, Some(after), "{}").await.is_err());
-    let stored = repository::get_app_setting(&pool, intents::APPROVAL_REGISTRY_KEY).await.unwrap().unwrap();
+    runtime
+        .open_browser(owner.clone(), "window", "browser")
+        .await
+        .unwrap();
+    let receipt = runtime
+        .begin_intent(
+            &owner,
+            "window",
+            "browser",
+            IntentIdentity {
+                conversation_id: "source".into(),
+                kind: IntentKind::Approval,
+                id: "approval-call".into(),
+            },
+            IntentMutation::Retain,
+        )
+        .await
+        .unwrap();
+    let after =
+        r#"{"version":1,"requests":{"other":{"opaque":"preserved"},"source":{"opaque":"new"}}}"#;
+    intents::write_approval_registry(
+        &owner,
+        "window",
+        "source",
+        Some(&receipt),
+        Some(before),
+        Some(after),
+    )
+    .await
+    .unwrap();
+    intents::write_approval_registry(
+        &owner,
+        "window",
+        "source",
+        Some(&receipt),
+        Some(before),
+        Some(after),
+    )
+    .await
+    .unwrap();
+    let foreign =
+        r#"{"version":1,"requests":{"other":{"opaque":"changed"},"source":{"opaque":"new"}}}"#;
+    assert!(intents::write_approval_registry(
+        &owner,
+        "window",
+        "source",
+        Some(&receipt),
+        Some(after),
+        Some(foreign)
+    )
+    .await
+    .is_err());
+    assert!(intents::write_approval_registry(
+        &owner,
+        "window",
+        "source",
+        None,
+        Some(after),
+        Some(before)
+    )
+    .await
+    .is_err());
+    assert!(intents::write_approval_registry(
+        &owner,
+        "window",
+        "source",
+        Some(&receipt),
+        None,
+        Some(before)
+    )
+    .await
+    .is_err());
+    assert!(
+        repository::set_app_setting(&pool, intents::APPROVAL_REGISTRY_KEY, "{}")
+            .await
+            .is_err()
+    );
+    assert!(
+        repository::delete_app_setting(&pool, intents::APPROVAL_REGISTRY_KEY)
+            .await
+            .is_err()
+    );
+    assert!(repository::compare_and_swap_app_setting(
+        &pool,
+        intents::APPROVAL_REGISTRY_KEY,
+        Some(after),
+        "{}"
+    )
+    .await
+    .is_err());
+    let stored = repository::get_app_setting(&pool, intents::APPROVAL_REGISTRY_KEY)
+        .await
+        .unwrap()
+        .unwrap();
     assert_eq!(stored.value_json, after);
-    intents::write_approval_registry(&owner, "window", "source", Some(&receipt), Some(after), Some(before)).await.unwrap();
-    runtime.finish_intent(&owner, "window", &receipt).await.unwrap();
+    intents::write_approval_registry(
+        &owner,
+        "window",
+        "source",
+        Some(&receipt),
+        Some(after),
+        Some(before),
+    )
+    .await
+    .unwrap();
+    runtime
+        .finish_intent(&owner, "window", &receipt)
+        .await
+        .unwrap();
 }
 
 #[tokio::test]
@@ -1209,24 +1634,64 @@ async fn deleted_chat_allows_only_orphan_copy_cleanup_without_clearing_unknown_e
     let owner = crate::core::db_state::DbPool::default();
     owner.set_ready(pool.clone()).await.unwrap();
     let runtime = runtime::ChatAdmissionRuntime::default();
-    runtime.open_browser(owner.clone(), "window", "browser").await.unwrap();
-    let receipt = runtime.begin_intent(&owner, "window", "browser", IntentIdentity {
-        conversation_id: "source".into(), kind: IntentKind::Queue, id: "waiting".into(),
-    }, IntentMutation::Retain).await.unwrap();
-    let parent = OperationPermit::begin_turn(owner.clone(), "source", "active-turn").await.unwrap();
+    runtime
+        .open_browser(owner.clone(), "window", "browser")
+        .await
+        .unwrap();
+    let receipt = runtime
+        .begin_intent(
+            &owner,
+            "window",
+            "browser",
+            IntentIdentity {
+                conversation_id: "source".into(),
+                kind: IntentKind::Queue,
+                id: "waiting".into(),
+            },
+            IntentMutation::Retain,
+        )
+        .await
+        .unwrap();
+    let parent = OperationPermit::begin_turn(owner.clone(), "source", "active-turn")
+        .await
+        .unwrap();
     let provider = parent.provider_invocation("request").await.unwrap();
     provider.dispatched().await.unwrap();
     provider.unknown().await.unwrap();
-    repository::delete_conversation(&pool, "source").await.unwrap();
+    repository::delete_conversation(&pool, "source")
+        .await
+        .unwrap();
     let mut connection = pool.acquire().await.unwrap();
-    assert_eq!(intents::classify_copy(&mut connection, "source", IntentMutation::Remove).await.unwrap(), IntentScope::Removed);
-    assert!(intents::classify_copy(&mut connection, "source", IntentMutation::Retain).await.is_err());
+    assert_eq!(
+        intents::classify_copy(&mut connection, "source", IntentMutation::Remove)
+            .await
+            .unwrap(),
+        IntentScope::Removed
+    );
+    assert!(
+        intents::classify_copy(&mut connection, "source", IntentMutation::Retain)
+            .await
+            .is_err()
+    );
     drop(connection);
-    assert!(OperationPermit::begin_turn(owner, "source", "forbidden").await.is_err());
+    assert!(OperationPermit::begin_turn(owner, "source", "forbidden")
+        .await
+        .is_err());
     let phases: Vec<(String, String)> = sqlx::query_as("SELECT kind,phase FROM chat_admission_operations WHERE conversation_id='source' ORDER BY kind").fetch_all(&pool).await.unwrap();
     assert!(phases.contains(&("provider".into(), "unknown".into())));
-    assert!(phases.iter().any(|(kind,phase)| kind=="queue" && phase!="completed"));
-    assert_eq!(sqlx::query_scalar::<_,i64>("SELECT count(*) FROM chat_admission_operations WHERE operation_id=?").bind(receipt.operation_id).fetch_one(&pool).await.unwrap(), 1);
+    assert!(phases
+        .iter()
+        .any(|(kind, phase)| kind == "queue" && phase != "completed"));
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>(
+            "SELECT count(*) FROM chat_admission_operations WHERE operation_id=?"
+        )
+        .bind(receipt.operation_id)
+        .fetch_one(&pool)
+        .await
+        .unwrap(),
+        1
+    );
 }
 
 #[tokio::test]
@@ -1234,19 +1699,65 @@ async fn approval_opaque_root_is_preserved_verbatim_without_granting_reconciliat
     use super::intents::{self, IntentIdentity, IntentKind, IntentMutation};
     let (_dir, pool) = fixture().await;
     let opaque = "{unreadable";
-    sqlx::query("INSERT INTO app_settings(key,value_json,updated_at) VALUES(?,?,'t')").bind(intents::APPROVAL_REGISTRY_KEY).bind(opaque).execute(&pool).await.unwrap();
+    sqlx::query("INSERT INTO app_settings(key,value_json,updated_at) VALUES(?,?,'t')")
+        .bind(intents::APPROVAL_REGISTRY_KEY)
+        .bind(opaque)
+        .execute(&pool)
+        .await
+        .unwrap();
     let owner = crate::core::db_state::DbPool::default();
     owner.set_ready(pool.clone()).await.unwrap();
     let runtime = runtime::ChatAdmissionRuntime::default();
-    runtime.open_browser(owner.clone(), "window", "browser").await.unwrap();
-    let receipt = runtime.begin_intent(&owner, "window", "browser", IntentIdentity {
-        conversation_id: "source".into(), kind: IntentKind::Approval, id: "new".into(),
-    }, IntentMutation::Retain).await.unwrap();
+    runtime
+        .open_browser(owner.clone(), "window", "browser")
+        .await
+        .unwrap();
+    let receipt = runtime
+        .begin_intent(
+            &owner,
+            "window",
+            "browser",
+            IntentIdentity {
+                conversation_id: "source".into(),
+                kind: IntentKind::Approval,
+                id: "new".into(),
+            },
+            IntentMutation::Retain,
+        )
+        .await
+        .unwrap();
     let preserved = serde_json::json!({"version":1,"preservedData":[{"valueJson":opaque}],"requests":{"source":{"opaque":"current"}}}).to_string();
-    let lost = serde_json::json!({"version":1,"requests":{"source":{"opaque":"current"}}}).to_string();
-    assert!(intents::write_approval_registry(&owner, "window", "source", Some(&receipt), Some(opaque), Some(&lost)).await.is_err());
-    intents::write_approval_registry(&owner, "window", "source", Some(&receipt), Some(opaque), Some(&preserved)).await.unwrap();
-    assert_eq!(sqlx::query_scalar::<_,i64>("SELECT browser_reconciled FROM chat_admission_owners WHERE conversation_id='source'").fetch_one(&pool).await.unwrap(),0);
+    let lost =
+        serde_json::json!({"version":1,"requests":{"source":{"opaque":"current"}}}).to_string();
+    assert!(intents::write_approval_registry(
+        &owner,
+        "window",
+        "source",
+        Some(&receipt),
+        Some(opaque),
+        Some(&lost)
+    )
+    .await
+    .is_err());
+    intents::write_approval_registry(
+        &owner,
+        "window",
+        "source",
+        Some(&receipt),
+        Some(opaque),
+        Some(&preserved),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>(
+            "SELECT browser_reconciled FROM chat_admission_owners WHERE conversation_id='source'"
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap(),
+        0
+    );
 }
 
 #[tokio::test]
@@ -1256,25 +1767,61 @@ async fn steer_handoff_requires_completed_provider_and_same_persisted_turn() {
     let owner = crate::core::db_state::DbPool::default();
     owner.set_ready(pool.clone()).await.unwrap();
     let runtime = runtime::ChatAdmissionRuntime::default();
-    let context = runtime.begin(owner.clone(), "window", "browser", "source", "turn").await.unwrap();
+    let context = runtime
+        .begin(owner.clone(), "window", "browser", "source", "turn")
+        .await
+        .unwrap();
     let parent = runtime.parent("window", &context, "source").await.unwrap();
-    let receipt = runtime.begin_intent(&owner, "window", "browser", IntentIdentity {
-        conversation_id: "source".into(), kind: IntentKind::Steer, id: "steer-message".into(),
-    }, IntentMutation::Retain).await.unwrap();
+    let receipt = runtime
+        .begin_intent(
+            &owner,
+            "window",
+            "browser",
+            IntentIdentity {
+                conversation_id: "source".into(),
+                kind: IntentKind::Steer,
+                id: "steer-message".into(),
+            },
+            IntentMutation::Retain,
+        )
+        .await
+        .unwrap();
     sqlx::query("INSERT INTO messages(id,conversation_id,role,content,created_at,turn_id) VALUES('steer-message','source','user','Direction','t','turn')").execute(&pool).await.unwrap();
-    assert!(runtime.finish_intent(&owner, "window", &receipt).await.is_err());
+    assert!(runtime
+        .finish_intent(&owner, "window", &receipt)
+        .await
+        .is_err());
     let provider = parent.provider_invocation("request").await.unwrap();
-    assert!(intents::complete_steer_handoff(&parent, "window", "request", &[receipt.clone()]).await.is_err());
+    assert!(
+        intents::complete_steer_handoff(&parent, "window", "request", &[receipt.clone()])
+            .await
+            .is_err()
+    );
     provider.dispatched().await.unwrap();
     provider.result_pending().await.unwrap();
     provider.completed().await.unwrap();
-    intents::complete_steer_handoff(&parent, "window", "request", &[receipt.clone()]).await.unwrap();
-    intents::complete_steer_handoff(&parent, "window", "request", &[receipt.clone()]).await.unwrap();
-    assert!(intents::complete_steer_handoff(&parent, "other-window", "request", &[receipt.clone()]).await.is_err());
+    intents::complete_steer_handoff(&parent, "window", "request", &[receipt.clone()])
+        .await
+        .unwrap();
+    intents::complete_steer_handoff(&parent, "window", "request", &[receipt.clone()])
+        .await
+        .unwrap();
+    assert!(intents::complete_steer_handoff(
+        &parent,
+        "other-window",
+        "request",
+        &[receipt.clone()]
+    )
+    .await
+    .is_err());
     let unknown = parent.provider_invocation("unknown-request").await.unwrap();
     unknown.dispatched().await.unwrap();
     unknown.unknown().await.unwrap();
-    assert!(intents::complete_steer_handoff(&parent, "window", "unknown-request", &[receipt]).await.is_err());
+    assert!(
+        intents::complete_steer_handoff(&parent, "window", "unknown-request", &[receipt])
+            .await
+            .is_err()
+    );
 }
 
 #[tokio::test]
@@ -1284,20 +1831,57 @@ async fn questionnaire_handoff_requires_the_persisted_answer_and_admitted_parent
     let owner = crate::core::db_state::DbPool::default();
     owner.set_ready(pool.clone()).await.unwrap();
     let runtime = runtime::ChatAdmissionRuntime::default();
-    runtime.open_browser(owner.clone(), "window", "browser").await.unwrap();
-    let question = runtime.begin_intent(&owner, "window", "browser", IntentIdentity {
-        conversation_id: "source".into(), kind: IntentKind::Question, id: "message".into(),
-    }, IntentMutation::Retain).await.unwrap();
-    assert!(runtime.finish_intent(&owner, "window", &question).await.is_err());
-    let context = runtime.begin(owner.clone(), "window", "browser", "source", "reply-turn").await.unwrap();
+    runtime
+        .open_browser(owner.clone(), "window", "browser")
+        .await
+        .unwrap();
+    let question = runtime
+        .begin_intent(
+            &owner,
+            "window",
+            "browser",
+            IntentIdentity {
+                conversation_id: "source".into(),
+                kind: IntentKind::Question,
+                id: "message".into(),
+            },
+            IntentMutation::Retain,
+        )
+        .await
+        .unwrap();
+    assert!(runtime
+        .finish_intent(&owner, "window", &question)
+        .await
+        .is_err());
+    let context = runtime
+        .begin(owner.clone(), "window", "browser", "source", "reply-turn")
+        .await
+        .unwrap();
     let parent = runtime.parent("window", &context, "source").await.unwrap();
-    assert!(intents::complete_question_handoff(&parent, "window", &question, "reply").await.is_err());
+    assert!(
+        intents::complete_question_handoff(&parent, "window", &question, "reply")
+            .await
+            .is_err()
+    );
     sqlx::query("INSERT INTO messages(id,conversation_id,role,content,created_at,turn_id) VALUES('reply','source','user','Human answer','t','reply-turn')").execute(&pool).await.unwrap();
-    intents::complete_question_handoff(&parent, "window", &question, "reply").await.unwrap();
-    intents::complete_question_handoff(&parent, "window", &question, "reply").await.unwrap();
-    assert!(intents::complete_question_handoff(&parent, "other-window", &question, "reply").await.is_err());
-    let state: (String, String, String) = sqlx::query_as("SELECT phase,parent_id,message_id FROM chat_admission_operations WHERE operation_id=?")
-        .bind(&question.operation_id).fetch_one(&pool).await.unwrap();
+    intents::complete_question_handoff(&parent, "window", &question, "reply")
+        .await
+        .unwrap();
+    intents::complete_question_handoff(&parent, "window", &question, "reply")
+        .await
+        .unwrap();
+    assert!(
+        intents::complete_question_handoff(&parent, "other-window", &question, "reply")
+            .await
+            .is_err()
+    );
+    let state: (String, String, String) = sqlx::query_as(
+        "SELECT phase,parent_id,message_id FROM chat_admission_operations WHERE operation_id=?",
+    )
+    .bind(&question.operation_id)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
     assert_eq!(state, ("completed".into(), context.handle, "reply".into()));
     let provider = parent.provider_invocation("not-dispatched").await.unwrap();
     assert!(parent.no_effect().await.is_err());
@@ -1315,41 +1899,143 @@ async fn response_recovery_reservation_survives_browser_loss_and_never_closes_un
         let owner = crate::core::db_state::DbPool::default();
         owner.set_ready(pool.clone()).await.unwrap();
         let runtime = runtime::ChatAdmissionRuntime::default();
-        let context = runtime.begin(owner.clone(), "window", "old", "source", "turn").await.unwrap();
+        let context = runtime
+            .begin(owner.clone(), "window", "old", "source", "turn")
+            .await
+            .unwrap();
         let parent = runtime.parent("window", &context, "source").await.unwrap();
-        let receipt = intents::reserve_response(&parent, "window", "message").await.unwrap();
-        assert_eq!(intents::reserve_response(&parent, "window", "message").await.unwrap().operation_id, receipt.operation_id);
-        assert!(intents::reserve_response(&parent, "window", "missing").await.is_err());
+        let receipt = intents::reserve_response(&parent, "window", "message")
+            .await
+            .unwrap();
+        assert_eq!(
+            intents::reserve_response(&parent, "window", "message")
+                .await
+                .unwrap()
+                .operation_id,
+            receipt.operation_id
+        );
+        assert!(intents::reserve_response(&parent, "window", "missing")
+            .await
+            .is_err());
         let child = parent.provider_invocation("request").await.unwrap();
         child.dispatched().await.unwrap();
-        if uncertain { child.unknown().await.unwrap(); }
-        else { child.result_pending().await.unwrap(); child.completed().await.unwrap(); }
-        runtime.close_browser(&owner, &crate::ai::AiState::default(), &crate::ai::admitted_http::AdmittedHttp::default(), "window", "old").await.unwrap();
-        runtime.open_browser(owner.clone(), "window", "new").await.unwrap();
+        if uncertain {
+            child.unknown().await.unwrap();
+        } else {
+            child.result_pending().await.unwrap();
+            child.completed().await.unwrap();
+        }
+        runtime
+            .close_browser(
+                &owner,
+                &crate::ai::AiState::default(),
+                &crate::ai::admitted_http::AdmittedHttp::default(),
+                "window",
+                "old",
+            )
+            .await
+            .unwrap();
+        runtime
+            .open_browser(owner.clone(), "window", "new")
+            .await
+            .unwrap();
         // An empty browser observation cannot erase an unknown provider, nor
         // certify a completed provider whose response copy was never persisted.
-        let inspection = runtime.begin_reconciliation(&owner,"window","new","source").await.unwrap();
-        let error = runtime.complete_reconciliation(&owner,"window","new",&inspection,&no_browser_intentions()).await.unwrap_err().to_string();
-        assert!(error.contains(if uncertain {"work_unreconciled"} else {"response_recovery_missing"}), "{error}");
-        assert!(runtime.reserve_reconciled_source(&owner,"window","new",&inspection).await.is_err());
-        assert_eq!(sqlx::query_scalar::<_,String>("SELECT phase FROM chat_admission_operations WHERE operation_id=?").bind(&receipt.operation_id).fetch_one(&pool).await.unwrap(), "prepared");
-        let identity = intents::response_recovery_identity(&owner, "source", "message").await.unwrap();
+        let inspection = runtime
+            .begin_reconciliation(&owner, "window", "new", "source")
+            .await
+            .unwrap();
+        let error = runtime
+            .complete_reconciliation(
+                &owner,
+                "window",
+                "new",
+                &inspection,
+                &no_browser_intentions(),
+            )
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains(if uncertain {
+                "work_unreconciled"
+            } else {
+                "response_recovery_missing"
+            }),
+            "{error}"
+        );
+        assert!(runtime
+            .reserve_reconciled_source(&owner, "window", "new", &inspection)
+            .await
+            .is_err());
+        assert_eq!(
+            sqlx::query_scalar::<_, String>(
+                "SELECT phase FROM chat_admission_operations WHERE operation_id=?"
+            )
+            .bind(&receipt.operation_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap(),
+            "prepared"
+        );
+        let identity = intents::response_recovery_identity(&owner, "source", "message")
+            .await
+            .unwrap();
         assert_eq!(identity.id, context.handle);
-        let recovered = runtime.begin_intent(&owner, "window", "new", identity, IntentMutation::Retain).await.unwrap();
-        assert!(intents::recover_response(&owner, "wrong-window", &recovered, response_write("saved")).await.is_err());
-        let result = intents::recover_response(&owner, "window", &recovered, response_write("saved")).await;
+        let recovered = runtime
+            .begin_intent(&owner, "window", "new", identity, IntentMutation::Retain)
+            .await
+            .unwrap();
+        assert!(intents::recover_response(
+            &owner,
+            "wrong-window",
+            &recovered,
+            response_write("saved")
+        )
+        .await
+        .is_err());
+        let result =
+            intents::recover_response(&owner, "window", &recovered, response_write("saved")).await;
         assert_eq!(result.is_err(), uncertain, "{result:?}");
         if uncertain {
-            assert_eq!(sqlx::query_scalar::<_,String>("SELECT phase FROM chat_admission_operations WHERE request_id='request'").fetch_one(&pool).await.unwrap(), "unknown");
-            assert_eq!(sqlx::query_scalar::<_,String>("SELECT content FROM messages WHERE id='message'").fetch_one(&pool).await.unwrap(), "history");
+            assert_eq!(
+                sqlx::query_scalar::<_, String>(
+                    "SELECT phase FROM chat_admission_operations WHERE request_id='request'"
+                )
+                .fetch_one(&pool)
+                .await
+                .unwrap(),
+                "unknown"
+            );
+            assert_eq!(
+                sqlx::query_scalar::<_, String>("SELECT content FROM messages WHERE id='message'")
+                    .fetch_one(&pool)
+                    .await
+                    .unwrap(),
+                "history"
+            );
         } else {
             // Lost recovery ACK replays the same native writer receipt. The
             // remaining browser copy still blocks another turn until removal.
-            intents::recover_response(&owner, "window", &recovered, response_write("saved")).await.unwrap();
-            assert!(runtime.begin(owner.clone(), "window", "new", "source", "next").await.is_err());
-            runtime.finish_intent(&owner, "window", &recovered).await.unwrap();
-            runtime.finish_intent(&owner, "window", &recovered).await.unwrap();
-            runtime.begin(owner.clone(), "window", "new", "source", "next").await.unwrap();
+            intents::recover_response(&owner, "window", &recovered, response_write("saved"))
+                .await
+                .unwrap();
+            assert!(runtime
+                .begin(owner.clone(), "window", "new", "source", "next")
+                .await
+                .is_err());
+            runtime
+                .finish_intent(&owner, "window", &recovered)
+                .await
+                .unwrap();
+            runtime
+                .finish_intent(&owner, "window", &recovered)
+                .await
+                .unwrap();
+            runtime
+                .begin(owner.clone(), "window", "new", "source", "next")
+                .await
+                .unwrap();
         }
     }
 }
@@ -1361,22 +2047,57 @@ async fn preparation_receipt_waits_for_metadata_and_replays_after_handle_ack() {
         let owner = crate::core::db_state::DbPool::default();
         owner.set_ready(pool.clone()).await.unwrap();
         let runtime = runtime::ChatAdmissionRuntime::default();
-        let context = runtime.begin(owner.clone(), "window", "browser", "source", "turn").await.unwrap();
+        let context = runtime
+            .begin(owner.clone(), "window", "browser", "source", "turn")
+            .await
+            .unwrap();
         let parent = runtime.parent("window", &context, "source").await.unwrap();
-        let metadata = parent.provider_invocation("metadata-request").await.unwrap();
-        assert!(runtime.close_preparation("window", &context, "source").await.is_err());
+        let metadata = parent
+            .provider_invocation("metadata-request")
+            .await
+            .unwrap();
+        assert!(runtime
+            .close_preparation("window", &context, "source")
+            .await
+            .is_err());
         metadata.dispatched().await.unwrap();
-        if uncertain { metadata.unknown().await.unwrap(); }
-        else { metadata.result_pending().await.unwrap(); metadata.completed().await.unwrap(); }
-        let result = runtime.close_preparation("window", &context, "source").await;
+        if uncertain {
+            metadata.unknown().await.unwrap();
+        } else {
+            metadata.result_pending().await.unwrap();
+            metadata.completed().await.unwrap();
+        }
+        let result = runtime
+            .close_preparation("window", &context, "source")
+            .await;
         assert_eq!(result.is_err(), uncertain);
         if !uncertain {
             let fingerprint = runtime::completion_fingerprint("preparation", &()).unwrap();
-            assert!(runtime::replay_completion(&owner, "window", &context, "source", &fingerprint).await.unwrap());
-            runtime.acknowledge_completion(&owner, "window", &context, "source").await.unwrap();
+            assert!(
+                runtime::replay_completion(&owner, "window", &context, "source", &fingerprint)
+                    .await
+                    .unwrap()
+            );
+            runtime
+                .acknowledge_completion(&owner, "window", &context, "source")
+                .await
+                .unwrap();
             assert!(runtime.parent("window", &context, "source").await.is_err());
-            assert!(runtime::replay_completion(&owner, "window", &context, "source", &fingerprint).await.unwrap());
-            assert_eq!(sqlx::query_scalar::<_,String>("SELECT phase FROM chat_admission_operations WHERE operation_id=?").bind(&context.handle).fetch_one(&pool).await.unwrap(), "completed");
+            assert!(
+                runtime::replay_completion(&owner, "window", &context, "source", &fingerprint)
+                    .await
+                    .unwrap()
+            );
+            assert_eq!(
+                sqlx::query_scalar::<_, String>(
+                    "SELECT phase FROM chat_admission_operations WHERE operation_id=?"
+                )
+                .bind(&context.handle)
+                .fetch_one(&pool)
+                .await
+                .unwrap(),
+                "completed"
+            );
         }
     }
 }
@@ -1388,132 +2109,438 @@ async fn recovery_draft_can_reopen_but_old_receipts_cannot_close_new_writes() {
     let owner = crate::core::db_state::DbPool::default();
     owner.set_ready(pool.clone()).await.unwrap();
     let runtime = runtime::ChatAdmissionRuntime::default();
-    runtime.open_browser(owner.clone(), "window", "browser").await.unwrap();
-    let identity = IntentIdentity { conversation_id: "source".into(), kind: IntentKind::Recovery, id: "questionnaire-draft".into() };
-    let first = runtime.begin_intent(&owner,"window","browser",identity.clone(),IntentMutation::Retain).await.unwrap();
-    let revision: i64 = sqlx::query_scalar("SELECT revision FROM chat_admission_owners WHERE conversation_id='source'").fetch_one(&pool).await.unwrap();
-    let changed = runtime.begin_intent(&owner,"window","browser",identity.clone(),IntentMutation::Retain).await.unwrap();
-    assert!(runtime.finish_intent(&owner,"window",&first).await.is_err());
-    assert!(sqlx::query_scalar::<_,i64>("SELECT revision FROM chat_admission_owners WHERE conversation_id='source'").fetch_one(&pool).await.unwrap()>revision);
-    runtime.finish_intent(&owner,"window",&changed).await.unwrap();
-    let reopened = runtime.begin_intent(&owner,"window","browser",identity.clone(),IntentMutation::Retain).await.unwrap();
-    assert_eq!(reopened.operation_id,first.operation_id);
-    assert!(runtime.finish_intent(&owner,"window",&changed).await.is_err());
-    runtime.finish_intent(&owner,"window",&reopened).await.unwrap();
+    runtime
+        .open_browser(owner.clone(), "window", "browser")
+        .await
+        .unwrap();
+    let identity = IntentIdentity {
+        conversation_id: "source".into(),
+        kind: IntentKind::Recovery,
+        id: "questionnaire-draft".into(),
+    };
+    let first = runtime
+        .begin_intent(
+            &owner,
+            "window",
+            "browser",
+            identity.clone(),
+            IntentMutation::Retain,
+        )
+        .await
+        .unwrap();
+    let revision: i64 = sqlx::query_scalar(
+        "SELECT revision FROM chat_admission_owners WHERE conversation_id='source'",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    let changed = runtime
+        .begin_intent(
+            &owner,
+            "window",
+            "browser",
+            identity.clone(),
+            IntentMutation::Retain,
+        )
+        .await
+        .unwrap();
+    assert!(runtime
+        .finish_intent(&owner, "window", &first)
+        .await
+        .is_err());
+    assert!(
+        sqlx::query_scalar::<_, i64>(
+            "SELECT revision FROM chat_admission_owners WHERE conversation_id='source'"
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap()
+            > revision
+    );
+    runtime
+        .finish_intent(&owner, "window", &changed)
+        .await
+        .unwrap();
+    let reopened = runtime
+        .begin_intent(
+            &owner,
+            "window",
+            "browser",
+            identity.clone(),
+            IntentMutation::Retain,
+        )
+        .await
+        .unwrap();
+    assert_eq!(reopened.operation_id, first.operation_id);
+    assert!(runtime
+        .finish_intent(&owner, "window", &changed)
+        .await
+        .is_err());
+    runtime
+        .finish_intent(&owner, "window", &reopened)
+        .await
+        .unwrap();
     hold_restored_profile(&pool).await.unwrap();
-    assert!(runtime.begin_intent(&owner,"window","browser",identity,IntentMutation::Retain).await.is_err());
+    assert!(runtime
+        .begin_intent(
+            &owner,
+            "window",
+            "browser",
+            identity,
+            IntentMutation::Retain
+        )
+        .await
+        .is_err());
 }
 
 fn no_browser_intentions() -> super::reconciliation::BrowserInspection {
-    super::reconciliation::BrowserInspection { queue:vec![],unsaved:vec![],approvals:vec![],questions:vec![],drafts:vec![],steers:vec![] }
+    super::reconciliation::BrowserInspection {
+        queue: vec![],
+        unsaved: vec![],
+        approvals: vec![],
+        questions: vec![],
+        drafts: vec![],
+        steers: vec![],
+    }
 }
 
 #[tokio::test]
 async fn real_reservation_competes_with_admission_and_ordinary_writer() {
-    for competing_writer in [false,true] {
-        let (_dir,pool)=fixture().await;
-        let owner=crate::core::db_state::DbPool::default(); owner.set_ready(pool.clone()).await.unwrap();
-        let runtime=runtime::ChatAdmissionRuntime::default(); runtime.open_browser(owner.clone(),"window","browser").await.unwrap();
-        let handle=runtime.begin_reconciliation(&owner,"window","browser","source").await.unwrap();
-        assert!(runtime.reserve_reconciled_source(&owner,"window","browser",&handle).await.is_err());
-        runtime.complete_reconciliation(&owner,"window","browser",&handle,&no_browser_intentions()).await.unwrap();
+    for competing_writer in [false, true] {
+        let (_dir, pool) = fixture().await;
+        let owner = crate::core::db_state::DbPool::default();
+        owner.set_ready(pool.clone()).await.unwrap();
+        let runtime = runtime::ChatAdmissionRuntime::default();
+        runtime
+            .open_browser(owner.clone(), "window", "browser")
+            .await
+            .unwrap();
+        let handle = runtime
+            .begin_reconciliation(&owner, "window", "browser", "source")
+            .await
+            .unwrap();
+        assert!(runtime
+            .reserve_reconciled_source(&owner, "window", "browser", &handle)
+            .await
+            .is_err());
+        runtime
+            .complete_reconciliation(
+                &owner,
+                "window",
+                "browser",
+                &handle,
+                &no_browser_intentions(),
+            )
+            .await
+            .unwrap();
         // A lost inspection ACK is replayable, with no effect dispatch capability.
-        runtime.complete_reconciliation(&owner,"window","browser",&handle,&no_browser_intentions()).await.unwrap();
+        runtime
+            .complete_reconciliation(
+                &owner,
+                "window",
+                "browser",
+                &handle,
+                &no_browser_intentions(),
+            )
+            .await
+            .unwrap();
         if competing_writer {
-            let (reserved,written)=tokio::join!(runtime.reserve_reconciled_source(&owner,"window","browser",&handle),repository::rename_conversation(&pool,"source","changed"));
-            assert_ne!(reserved.is_ok(),written.is_ok());
+            let (reserved, written) = tokio::join!(
+                runtime.reserve_reconciled_source(&owner, "window", "browser", &handle),
+                repository::rename_conversation(&pool, "source", "changed")
+            );
+            assert_ne!(reserved.is_ok(), written.is_ok());
         } else {
-            let (reserved,admitted)=tokio::join!(runtime.reserve_reconciled_source(&owner,"window","browser",&handle),OperationPermit::begin_turn(owner.clone(),"source","competing"));
-            assert_ne!(reserved.is_ok(),admitted.is_ok());
+            let (reserved, admitted) = tokio::join!(
+                runtime.reserve_reconciled_source(&owner, "window", "browser", &handle),
+                OperationPermit::begin_turn(owner.clone(), "source", "competing")
+            );
+            assert_ne!(reserved.is_ok(), admitted.is_ok());
         }
     }
 }
 
 #[tokio::test]
 async fn inspection_revision_and_pending_browser_copies_refuse_reservation() {
-    use super::intents::{IntentIdentity,IntentKind,IntentMutation};
-    let (_dir,pool)=fixture().await;
-    let owner=crate::core::db_state::DbPool::default();owner.set_ready(pool.clone()).await.unwrap();
-    let runtime=runtime::ChatAdmissionRuntime::default();runtime.open_browser(owner.clone(),"window","browser").await.unwrap();
-    let handle=runtime.begin_reconciliation(&owner,"window","browser","source").await.unwrap();
-    let mut observed=no_browser_intentions();observed.drafts.push("message".into());
-    assert!(runtime.complete_reconciliation(&owner,"window","browser",&handle,&observed).await.is_err());
-    let copy=runtime.begin_intent(&owner,"window","browser",IntentIdentity{conversation_id:"source".into(),kind:IntentKind::Recovery,id:"questionnaire-draft".into()},IntentMutation::Retain).await.unwrap();
-    assert!(runtime.complete_reconciliation(&owner,"window","browser",&handle,&no_browser_intentions()).await.is_err());
-    runtime.finish_intent(&owner,"window",&copy).await.unwrap();
-    let current=runtime.begin_reconciliation(&owner,"window","browser","source").await.unwrap();
-    assert!(runtime.complete_reconciliation(&owner,"other","browser",&current,&no_browser_intentions()).await.is_err());
-    runtime.complete_reconciliation(&owner,"window","browser",&current,&no_browser_intentions()).await.unwrap();
-    runtime.reserve_reconciled_source(&owner,"window","browser",&current).await.unwrap();
-    assert!(repository::rename_conversation(&pool,"source","forbidden").await.is_err());
-    assert!(runtime.begin(owner,"window","browser","source","late").await.is_err());
+    use super::intents::{IntentIdentity, IntentKind, IntentMutation};
+    let (_dir, pool) = fixture().await;
+    let owner = crate::core::db_state::DbPool::default();
+    owner.set_ready(pool.clone()).await.unwrap();
+    let runtime = runtime::ChatAdmissionRuntime::default();
+    runtime
+        .open_browser(owner.clone(), "window", "browser")
+        .await
+        .unwrap();
+    let handle = runtime
+        .begin_reconciliation(&owner, "window", "browser", "source")
+        .await
+        .unwrap();
+    let mut observed = no_browser_intentions();
+    observed.drafts.push("message".into());
+    assert!(runtime
+        .complete_reconciliation(&owner, "window", "browser", &handle, &observed)
+        .await
+        .is_err());
+    let copy = runtime
+        .begin_intent(
+            &owner,
+            "window",
+            "browser",
+            IntentIdentity {
+                conversation_id: "source".into(),
+                kind: IntentKind::Recovery,
+                id: "questionnaire-draft".into(),
+            },
+            IntentMutation::Retain,
+        )
+        .await
+        .unwrap();
+    assert!(runtime
+        .complete_reconciliation(
+            &owner,
+            "window",
+            "browser",
+            &handle,
+            &no_browser_intentions()
+        )
+        .await
+        .is_err());
+    runtime
+        .finish_intent(&owner, "window", &copy)
+        .await
+        .unwrap();
+    let current = runtime
+        .begin_reconciliation(&owner, "window", "browser", "source")
+        .await
+        .unwrap();
+    assert!(runtime
+        .complete_reconciliation(
+            &owner,
+            "other",
+            "browser",
+            &current,
+            &no_browser_intentions()
+        )
+        .await
+        .is_err());
+    runtime
+        .complete_reconciliation(
+            &owner,
+            "window",
+            "browser",
+            &current,
+            &no_browser_intentions(),
+        )
+        .await
+        .unwrap();
+    runtime
+        .reserve_reconciled_source(&owner, "window", "browser", &current)
+        .await
+        .unwrap();
+    assert!(
+        repository::rename_conversation(&pool, "source", "forbidden")
+            .await
+            .is_err()
+    );
+    assert!(runtime
+        .begin(owner, "window", "browser", "source", "late")
+        .await
+        .is_err());
 }
 
 #[tokio::test]
 async fn question_ack_loss_and_orphan_before_dispatch_reconcile_without_another_send() {
-    use super::intents::{self,IntentIdentity,IntentKind,IntentMutation};
-    for orphan_response in [false,true] {
-        let (_dir,pool)=fixture().await;
-        let owner=crate::core::db_state::DbPool::default();owner.set_ready(pool.clone()).await.unwrap();
-        let runtime=runtime::ChatAdmissionRuntime::default();runtime.open_browser(owner.clone(),"window","old").await.unwrap();
-        let context=runtime.begin(owner.clone(),"window","old","source","reply").await.unwrap();
-        let parent=runtime.parent("window",&context,"source").await.unwrap();
+    use super::intents::{self, IntentIdentity, IntentKind, IntentMutation};
+    for orphan_response in [false, true] {
+        let (_dir, pool) = fixture().await;
+        let owner = crate::core::db_state::DbPool::default();
+        owner.set_ready(pool.clone()).await.unwrap();
+        let runtime = runtime::ChatAdmissionRuntime::default();
+        runtime
+            .open_browser(owner.clone(), "window", "old")
+            .await
+            .unwrap();
+        let context = runtime
+            .begin(owner.clone(), "window", "old", "source", "reply")
+            .await
+            .unwrap();
+        let parent = runtime.parent("window", &context, "source").await.unwrap();
         if orphan_response {
             sqlx::query("INSERT INTO messages(id,conversation_id,role,content,created_at,turn_id) VALUES('orphan','source','assistant','','t','reply')").execute(&pool).await.unwrap();
-            intents::reserve_response(&parent,"window","orphan").await.unwrap();
+            intents::reserve_response(&parent, "window", "orphan")
+                .await
+                .unwrap();
         } else {
-            let question=runtime.begin_intent(&owner,"window","old",IntentIdentity{conversation_id:"source".into(),kind:IntentKind::Question,id:"message".into()},IntentMutation::Retain).await.unwrap();
+            let question = runtime
+                .begin_intent(
+                    &owner,
+                    "window",
+                    "old",
+                    IntentIdentity {
+                        conversation_id: "source".into(),
+                        kind: IntentKind::Question,
+                        id: "message".into(),
+                    },
+                    IntentMutation::Retain,
+                )
+                .await
+                .unwrap();
             sqlx::query("INSERT INTO messages(id,conversation_id,role,content,created_at,turn_id) VALUES('answer','source','user','Human answer','t','reply')").execute(&pool).await.unwrap();
-            intents::complete_question_handoff(&parent,"window",&question,"answer").await.unwrap();
+            intents::complete_question_handoff(&parent, "window", &question, "answer")
+                .await
+                .unwrap();
             // COMMIT succeeded but the browser receives no ACK and closes preparation.
-            runtime.close_preparation("window",&context,"source").await.unwrap();
+            runtime
+                .close_preparation("window", &context, "source")
+                .await
+                .unwrap();
         }
         drop(parent);
-        runtime.close_browser(&owner,&crate::ai::AiState::default(),&crate::ai::admitted_http::AdmittedHttp::default(),"window","old").await.unwrap();
-        runtime.open_browser(owner.clone(),"window","new").await.unwrap();
-        let handle=runtime.begin_reconciliation(&owner,"window","new","source").await.unwrap();
-        runtime.complete_reconciliation(&owner,"window","new",&handle,&no_browser_intentions()).await.unwrap();
-        runtime.reserve_reconciled_source(&owner,"window","new",&handle).await.unwrap();
-        assert_eq!(sqlx::query_scalar::<_,i64>("SELECT count(*) FROM chat_admission_operations WHERE kind='provider'").fetch_one(&pool).await.unwrap(),0);
-        assert_eq!(sqlx::query_scalar::<_,i64>("SELECT count(*) FROM messages WHERE id='answer'").fetch_one(&pool).await.unwrap(),if orphan_response {0}else{1});
+        runtime
+            .close_browser(
+                &owner,
+                &crate::ai::AiState::default(),
+                &crate::ai::admitted_http::AdmittedHttp::default(),
+                "window",
+                "old",
+            )
+            .await
+            .unwrap();
+        runtime
+            .open_browser(owner.clone(), "window", "new")
+            .await
+            .unwrap();
+        let handle = runtime
+            .begin_reconciliation(&owner, "window", "new", "source")
+            .await
+            .unwrap();
+        runtime
+            .complete_reconciliation(&owner, "window", "new", &handle, &no_browser_intentions())
+            .await
+            .unwrap();
+        runtime
+            .reserve_reconciled_source(&owner, "window", "new", &handle)
+            .await
+            .unwrap();
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>(
+                "SELECT count(*) FROM chat_admission_operations WHERE kind='provider'"
+            )
+            .fetch_one(&pool)
+            .await
+            .unwrap(),
+            0
+        );
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>("SELECT count(*) FROM messages WHERE id='answer'")
+                .fetch_one(&pool)
+                .await
+                .unwrap(),
+            if orphan_response { 0 } else { 1 }
+        );
     }
 }
 
 #[tokio::test]
 async fn reservation_attests_pool_connections_and_only_blocks_correlated_goal_writers() {
-    let (_dir,pool)=fixture().await;
-    let mut connections=Vec::new();
-    for _ in 0..5 { connections.push(pool.acquire().await.unwrap()); }
+    let (_dir, pool) = fixture().await;
+    let mut connections = Vec::new();
+    for _ in 0..5 {
+        connections.push(pool.acquire().await.unwrap());
+    }
     for connection in &mut connections {
-        assert_eq!(sqlx::query_scalar::<_,i64>("PRAGMA recursive_triggers").fetch_one(&mut **connection).await.unwrap(),1);
-        assert_eq!(sqlx::query_scalar::<_,i64>("PRAGMA trusted_schema").fetch_one(&mut **connection).await.unwrap(),1);
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>("PRAGMA recursive_triggers")
+                .fetch_one(&mut **connection)
+                .await
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>("PRAGMA trusted_schema")
+                .fetch_one(&mut **connection)
+                .await
+                .unwrap(),
+            1
+        );
     }
     drop(connections);
     sqlx::raw_sql("INSERT INTO conversations(id,title,scope_mode,created_at,updated_at) VALUES('other','Other','Chat','t','t');
         INSERT INTO conversation_goals(rowid,goal_id,conversation_id,revision,objective,success_criteria_json,status,created_at,updated_at) VALUES(-1,'goal','source',1,'Goal','[]','active_ready','t','t');").execute(&pool).await.unwrap();
-    let owner=crate::core::db_state::DbPool::default();owner.set_ready(pool.clone()).await.unwrap();
-    let runtime=runtime::ChatAdmissionRuntime::default();runtime.open_browser(owner.clone(),"window","browser").await.unwrap();
-    let handle=runtime.begin_reconciliation(&owner,"window","browser","source").await.unwrap();
-    assert!(runtime.complete_reconciliation(&owner,"window","browser",&handle,&no_browser_intentions()).await.is_err());
-    sqlx::query("UPDATE conversation_goals SET status='achieved' WHERE goal_id='goal'").execute(&pool).await.unwrap();
-    runtime.complete_reconciliation(&owner,"window","browser",&handle,&no_browser_intentions()).await.unwrap();
-    runtime.reserve_reconciled_source(&owner,"window","browser",&handle).await.unwrap();
+    let owner = crate::core::db_state::DbPool::default();
+    owner.set_ready(pool.clone()).await.unwrap();
+    let runtime = runtime::ChatAdmissionRuntime::default();
+    runtime
+        .open_browser(owner.clone(), "window", "browser")
+        .await
+        .unwrap();
+    let handle = runtime
+        .begin_reconciliation(&owner, "window", "browser", "source")
+        .await
+        .unwrap();
+    assert!(runtime
+        .complete_reconciliation(
+            &owner,
+            "window",
+            "browser",
+            &handle,
+            &no_browser_intentions()
+        )
+        .await
+        .is_err());
+    sqlx::query("UPDATE conversation_goals SET status='achieved' WHERE goal_id='goal'")
+        .execute(&pool)
+        .await
+        .unwrap();
+    runtime
+        .complete_reconciliation(
+            &owner,
+            "window",
+            "browser",
+            &handle,
+            &no_browser_intentions(),
+        )
+        .await
+        .unwrap();
+    runtime
+        .reserve_reconciled_source(&owner, "window", "browser", &handle)
+        .await
+        .unwrap();
     sqlx::query("INSERT INTO conversation_goals(goal_id,conversation_id,revision,objective,success_criteria_json,status,created_at,updated_at) VALUES('other-goal','other',1,'Other','[]','active_ready','t','t')").execute(&pool).await.unwrap();
-    sqlx::query("UPDATE conversation_goals SET objective='Still writable' WHERE goal_id='other-goal'").execute(&pool).await.unwrap();
+    sqlx::query(
+        "UPDATE conversation_goals SET objective='Still writable' WHERE goal_id='other-goal'",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
     assert!(sqlx::query("INSERT OR REPLACE INTO conversation_goals(rowid,goal_id,conversation_id,revision,objective,success_criteria_json,status,created_at,updated_at) VALUES(-1,'replacement','other',1,'Replacement','[]','achieved','t','t')").execute(&pool).await.is_err());
-    assert!(sqlx::query("UPDATE conversation_goals SET objective='forbidden' WHERE goal_id='goal'").execute(&pool).await.is_err());
-    let mut connection=pool.acquire().await.unwrap();
-    sqlx::query("PRAGMA recursive_triggers=OFF").execute(&mut *connection).await.unwrap();
+    assert!(sqlx::query(
+        "UPDATE conversation_goals SET objective='forbidden' WHERE goal_id='goal'"
+    )
+    .execute(&pool)
+    .await
+    .is_err());
+    let mut connection = pool.acquire().await.unwrap();
+    sqlx::query("PRAGMA recursive_triggers=OFF")
+        .execute(&mut *connection)
+        .await
+        .unwrap();
     // No global Goal guard was added: an unrelated mutation stays permitted.
     // This does not claim REPLACE-victim protection on an external OFF connection.
-    sqlx::query("UPDATE conversation_goals SET objective='Unrelated' WHERE goal_id='other-goal'").execute(&mut *connection).await.unwrap();
-    sqlx::query("PRAGMA recursive_triggers=ON").execute(&mut *connection).await.unwrap();
+    sqlx::query("UPDATE conversation_goals SET objective='Unrelated' WHERE goal_id='other-goal'")
+        .execute(&mut *connection)
+        .await
+        .unwrap();
+    sqlx::query("PRAGMA recursive_triggers=ON")
+        .execute(&mut *connection)
+        .await
+        .unwrap();
 }
 
 #[tokio::test]
 async fn reservation_resolves_cross_audit_run_links_and_guards_their_writers() {
-    for through_link in [false,true] {
-        let (_dir,pool)=fixture().await;
+    for through_link in [false, true] {
+        let (_dir, pool) = fixture().await;
         sqlx::raw_sql("INSERT INTO conversations(id,title,scope_mode,created_at,updated_at) VALUES('other','Other','Chat','t','t');
             INSERT INTO agent_runs(id,parent_conversation_id,agent_profile,depth,status,prompt,attempt_count,created_at,updated_at,started_at,finished_at) VALUES
               ('source-run','source','synthetic',1,'completed','Synthetic',1,'t','t','t','t'),
@@ -1525,139 +2552,431 @@ async fn reservation_resolves_cross_audit_run_links_and_guards_their_writers() {
             .bind(if through_link {"other-run"}else{"source-run"}).execute(&pool).await.unwrap();
         sqlx::query("INSERT INTO conversation_goal_audit_runs(audit_id,run_id,attempt,linked_at) VALUES('audit',?,1,'t')")
             .bind(if through_link {"source-run"}else{"other-run"}).execute(&pool).await.unwrap();
-        assert!(sqlx::query("PRAGMA foreign_key_check").fetch_all(&pool).await.unwrap().is_empty());
-        let owner=crate::core::db_state::DbPool::default();owner.set_ready(pool.clone()).await.unwrap();
-        let runtime=runtime::ChatAdmissionRuntime::default();runtime.open_browser(owner.clone(),"window","browser").await.unwrap();
-        let handle=runtime.begin_reconciliation(&owner,"window","browser","source").await.unwrap();
-        assert!(runtime.complete_reconciliation(&owner,"window","browser",&handle,&no_browser_intentions()).await.unwrap_err().to_string().contains("related_work_pending"));
-        sqlx::query("UPDATE conversation_goal_audits SET status='applied' WHERE audit_id='audit'").execute(&pool).await.unwrap();
-        runtime.complete_reconciliation(&owner,"window","browser",&handle,&no_browser_intentions()).await.unwrap();
+        assert!(sqlx::query("PRAGMA foreign_key_check")
+            .fetch_all(&pool)
+            .await
+            .unwrap()
+            .is_empty());
+        let owner = crate::core::db_state::DbPool::default();
+        owner.set_ready(pool.clone()).await.unwrap();
+        let runtime = runtime::ChatAdmissionRuntime::default();
+        runtime
+            .open_browser(owner.clone(), "window", "browser")
+            .await
+            .unwrap();
+        let handle = runtime
+            .begin_reconciliation(&owner, "window", "browser", "source")
+            .await
+            .unwrap();
+        assert!(runtime
+            .complete_reconciliation(
+                &owner,
+                "window",
+                "browser",
+                &handle,
+                &no_browser_intentions()
+            )
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("related_work_pending"));
+        sqlx::query("UPDATE conversation_goal_audits SET status='applied' WHERE audit_id='audit'")
+            .execute(&pool)
+            .await
+            .unwrap();
+        runtime
+            .complete_reconciliation(
+                &owner,
+                "window",
+                "browser",
+                &handle,
+                &no_browser_intentions(),
+            )
+            .await
+            .unwrap();
         // The final reservation re-reads relations in its own transaction.
-        sqlx::query("UPDATE conversation_goal_audits SET status='queued' WHERE audit_id='audit'").execute(&pool).await.unwrap();
-        assert!(runtime.reserve_reconciled_source(&owner,"window","browser",&handle).await.unwrap_err().to_string().contains("related_work_pending"));
-        sqlx::query("UPDATE conversation_goal_audits SET status='applied' WHERE audit_id='audit'").execute(&pool).await.unwrap();
-        runtime.reserve_reconciled_source(&owner,"window","browser",&handle).await.unwrap();
-        assert!(sqlx::query("UPDATE agent_runs SET prompt='forbidden' WHERE id='other-run'").execute(&pool).await.is_err());
-        assert!(sqlx::query("DELETE FROM conversation_goal_audit_runs WHERE audit_id='audit'").execute(&pool).await.is_err());
-        assert!(sqlx::query("UPDATE conversation_goal_audits SET status='queued' WHERE audit_id='audit'").execute(&pool).await.is_err());
-        sqlx::query("UPDATE agent_runs SET prompt='Still independent' WHERE id='unrelated'").execute(&pool).await.unwrap();
+        sqlx::query("UPDATE conversation_goal_audits SET status='queued' WHERE audit_id='audit'")
+            .execute(&pool)
+            .await
+            .unwrap();
+        assert!(runtime
+            .reserve_reconciled_source(&owner, "window", "browser", &handle)
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("related_work_pending"));
+        sqlx::query("UPDATE conversation_goal_audits SET status='applied' WHERE audit_id='audit'")
+            .execute(&pool)
+            .await
+            .unwrap();
+        runtime
+            .reserve_reconciled_source(&owner, "window", "browser", &handle)
+            .await
+            .unwrap();
+        assert!(
+            sqlx::query("UPDATE agent_runs SET prompt='forbidden' WHERE id='other-run'")
+                .execute(&pool)
+                .await
+                .is_err()
+        );
+        assert!(
+            sqlx::query("DELETE FROM conversation_goal_audit_runs WHERE audit_id='audit'")
+                .execute(&pool)
+                .await
+                .is_err()
+        );
+        assert!(sqlx::query(
+            "UPDATE conversation_goal_audits SET status='queued' WHERE audit_id='audit'"
+        )
+        .execute(&pool)
+        .await
+        .is_err());
+        sqlx::query("UPDATE agent_runs SET prompt='Still independent' WHERE id='unrelated'")
+            .execute(&pool)
+            .await
+            .unwrap();
     }
 }
 
 #[tokio::test]
 async fn independent_turn_waits_for_real_descendant_cleanup_and_preserves_unknown_tool() {
+    use crate::db::tool_invocations::{
+        RecordToolInvocationInput, ToolEffectClass, ToolInvocationIdentity,
+    };
     use std::sync::Arc;
     use tokio::io::AsyncBufReadExt;
-    use crate::db::tool_invocations::{RecordToolInvocationInput,ToolInvocationIdentity,ToolEffectClass};
-    let (_dir,pool)=fixture().await;
-    let owner=crate::core::db_state::DbPool::default();owner.set_ready(pool.clone()).await.unwrap();
-    let runtime=Arc::new(runtime::ChatAdmissionRuntime::default());
-    let context=runtime.begin(owner.clone(),"window","browser","source","turn").await.unwrap();
-    let parent=runtime.parent("window",&context,"source").await.unwrap();
-    let provider=parent.provider_attempt_with_boundary("lost-provider","provider","context",ProviderBoundary::IndependentRequest).await.unwrap();
-    provider.dispatched().await.unwrap();provider.settle_provider_return(&Err("lost ACK".into())).await.unwrap();drop(provider);
-    let identity=ToolInvocationIdentity{conversation_id:"source".into(),turn_id:"turn".into(),message_id:"message".into(),call_id:"tool".into()};
-    parent.record_tool(RecordToolInvocationInput{identity:identity.clone(),tool_name:"terminal_run".into(),effect_class:ToolEffectClass::ExternalEffect,arguments:serde_json::json!({}),remote_execution_id:None}).await.unwrap();
-    let ai=crate::ai::AiState::default();let http=Arc::new(crate::ai::admitted_http::AdmittedHttp::default());
-    let reservation=ai.reserve_stream("descendant".into()).unwrap();
-    let marker=parent.tool_permit(&identity).await.unwrap();
-    let physical=Arc::new(marker.child(WorkKind::Tool,Some("descendant")).await.unwrap());drop(marker);
-    let (started,ready)=tokio::sync::oneshot::channel();
-    let (cancelled,observed)=tokio::sync::oneshot::channel();
-    let (release,cleanup)=tokio::sync::oneshot::channel();
-    let result=reservation.spawn_tool(physical,move |cancel|async move {
-        let mut child=tokio::process::Command::new("/bin/sh").args(["-c","printf 'synthetic-ready\n' >&2; exec sleep 30"])
-            .stderr(std::process::Stdio::piped()).kill_on_drop(true).spawn().unwrap();
-        let mut stderr=tokio::io::BufReader::new(child.stderr.take().unwrap()).lines();
-        assert_eq!(stderr.next_line().await.unwrap().as_deref(),Some("synthetic-ready"));started.send(()).unwrap();
-        cancel.cancelled().await;child.start_kill().unwrap();child.wait().await.unwrap();
-        assert!(stderr.next_line().await.unwrap().is_none());cancelled.send(()).unwrap();
-        cleanup.await.unwrap();Ok::<_,String>(())
-    }).unwrap();
+    let (_dir, pool) = fixture().await;
+    let owner = crate::core::db_state::DbPool::default();
+    owner.set_ready(pool.clone()).await.unwrap();
+    let runtime = Arc::new(runtime::ChatAdmissionRuntime::default());
+    let context = runtime
+        .begin(owner.clone(), "window", "browser", "source", "turn")
+        .await
+        .unwrap();
+    let parent = runtime.parent("window", &context, "source").await.unwrap();
+    let provider = parent
+        .provider_attempt_with_boundary(
+            "lost-provider",
+            "provider",
+            "context",
+            ProviderBoundary::IndependentRequest,
+        )
+        .await
+        .unwrap();
+    provider.dispatched().await.unwrap();
+    provider
+        .settle_provider_return(&Err("lost ACK".into()))
+        .await
+        .unwrap();
+    drop(provider);
+    let identity = ToolInvocationIdentity {
+        conversation_id: "source".into(),
+        turn_id: "turn".into(),
+        message_id: "message".into(),
+        call_id: "tool".into(),
+    };
+    parent
+        .record_tool(RecordToolInvocationInput {
+            identity: identity.clone(),
+            tool_name: "terminal_run".into(),
+            effect_class: ToolEffectClass::ExternalEffect,
+            arguments: serde_json::json!({}),
+            remote_execution_id: None,
+        })
+        .await
+        .unwrap();
+    let ai = crate::ai::AiState::default();
+    let http = Arc::new(crate::ai::admitted_http::AdmittedHttp::default());
+    let reservation = ai.reserve_stream("descendant".into()).unwrap();
+    let marker = parent.tool_permit(&identity).await.unwrap();
+    let physical = Arc::new(
+        marker
+            .child(WorkKind::Tool, Some("descendant"))
+            .await
+            .unwrap(),
+    );
+    drop(marker);
+    let (started, ready) = tokio::sync::oneshot::channel();
+    let (cancelled, observed) = tokio::sync::oneshot::channel();
+    let (release, cleanup) = tokio::sync::oneshot::channel();
+    let result = reservation
+        .spawn_tool(physical, move |cancel| async move {
+            let mut child = tokio::process::Command::new("/bin/sh")
+                .args(["-c", "printf 'synthetic-ready\n' >&2; exec sleep 30"])
+                .stderr(std::process::Stdio::piped())
+                .kill_on_drop(true)
+                .spawn()
+                .unwrap();
+            let mut stderr = tokio::io::BufReader::new(child.stderr.take().unwrap()).lines();
+            assert_eq!(
+                stderr.next_line().await.unwrap().as_deref(),
+                Some("synthetic-ready")
+            );
+            started.send(()).unwrap();
+            cancel.cancelled().await;
+            child.start_kill().unwrap();
+            child.wait().await.unwrap();
+            assert!(stderr.next_line().await.unwrap().is_none());
+            cancelled.send(()).unwrap();
+            cleanup.await.unwrap();
+            Ok::<_, String>(())
+        })
+        .unwrap();
     ready.await.unwrap();
-    let r=runtime.clone();let o=owner.clone();let a=ai.clone();let h=http.clone();
-    let mut closing=tokio::spawn(async move {r.retire_previous_unknown_turns(&o,&a,&h,"window","browser","source","new-user-turn").await});
+    let r = runtime.clone();
+    let o = owner.clone();
+    let a = ai.clone();
+    let h = http.clone();
+    let mut closing = tokio::spawn(async move {
+        r.retire_previous_unknown_turns(&o, &a, &h, "window", "browser", "source", "new-user-turn")
+            .await
+    });
     observed.await.unwrap();
-    assert!(tokio::time::timeout(std::time::Duration::from_millis(30),&mut closing).await.is_err());
-    assert!(owner.set_ready(pool.clone()).await.unwrap_err().message.contains("generation_busy"));
-    assert_eq!(sqlx::query_scalar::<_,i64>("SELECT local_closed_at IS NULL FROM chat_admission_operations WHERE operation_id=?").bind(&context.handle).fetch_one(&pool).await.unwrap(),1);
-    assert!(OperationPermit::begin_turn(owner.clone(),"source","new-user-turn").await.is_err());
-    release.send(()).unwrap();closing.await.unwrap().unwrap();assert!(result.await.is_err());
-    assert!(runtime.parent("window",&context,"source").await.is_err());
-    assert!(runtime.begin(owner.clone(),"window","browser","source","turn").await.is_err());
-    let next=runtime.begin(owner.clone(),"window","browser","source","new-user-turn").await.unwrap();
-    let next_parent=runtime.parent("window",&next,"source").await.unwrap();
-    assert!(next_parent.provider_attempt("opaque","provider","context").await.is_err());
-    let independent=next_parent.provider_attempt_with_boundary("independent","provider","context",ProviderBoundary::IndependentRequest).await.unwrap();
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_millis(30), &mut closing)
+            .await
+            .is_err()
+    );
+    assert!(owner
+        .set_ready(pool.clone())
+        .await
+        .unwrap_err()
+        .message
+        .contains("generation_busy"));
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>(
+            "SELECT local_closed_at IS NULL FROM chat_admission_operations WHERE operation_id=?"
+        )
+        .bind(&context.handle)
+        .fetch_one(&pool)
+        .await
+        .unwrap(),
+        1
+    );
+    assert!(
+        OperationPermit::begin_turn(owner.clone(), "source", "new-user-turn")
+            .await
+            .is_err()
+    );
+    release.send(()).unwrap();
+    closing.await.unwrap().unwrap();
+    assert!(result.await.is_err());
+    assert!(runtime.parent("window", &context, "source").await.is_err());
+    assert!(runtime
+        .begin(owner.clone(), "window", "browser", "source", "turn")
+        .await
+        .is_err());
+    let next = runtime
+        .begin(
+            owner.clone(),
+            "window",
+            "browser",
+            "source",
+            "new-user-turn",
+        )
+        .await
+        .unwrap();
+    let next_parent = runtime.parent("window", &next, "source").await.unwrap();
+    assert!(next_parent
+        .provider_attempt("opaque", "provider", "context")
+        .await
+        .is_err());
+    let independent = next_parent
+        .provider_attempt_with_boundary(
+            "independent",
+            "provider",
+            "context",
+            ProviderBoundary::IndependentRequest,
+        )
+        .await
+        .unwrap();
     independent.no_effect().await.unwrap();
     // The old unknown tool does not prevent this distinct turn's real writer.
     sqlx::query("INSERT INTO messages(id,conversation_id,role,content,turn_id,created_at) VALUES('next-message','source','assistant','','new-user-turn','t')").execute(&pool).await.unwrap();
-    let mut write=response_write("New response");write.id="next-message";write.turn_id=Some("new-user-turn".into());
+    let mut write = response_write("New response");
+    write.id = "next-message";
+    write.turn_id = Some("new-user-turn".into());
     next_parent.finish_response(write).await.unwrap();
-    assert_eq!(sqlx::query_scalar::<_,String>("SELECT status FROM tool_invocations WHERE call_id='tool'").fetch_one(&pool).await.unwrap(),"unknown");
-    let inspection=runtime.begin_reconciliation(&owner,"window","browser","source").await.unwrap();
-    assert!(runtime.complete_reconciliation(&owner,"window","browser",&inspection,&no_browser_intentions()).await.is_err());
-    assert!(runtime.reserve_reconciled_source(&owner,"window","browser",&inspection).await.is_err());
-    drop(parent);drop(next_parent);drop(independent);
+    assert_eq!(
+        sqlx::query_scalar::<_, String>("SELECT status FROM tool_invocations WHERE call_id='tool'")
+            .fetch_one(&pool)
+            .await
+            .unwrap(),
+        "unknown"
+    );
+    let inspection = runtime
+        .begin_reconciliation(&owner, "window", "browser", "source")
+        .await
+        .unwrap();
+    assert!(runtime
+        .complete_reconciliation(
+            &owner,
+            "window",
+            "browser",
+            &inspection,
+            &no_browser_intentions()
+        )
+        .await
+        .is_err());
+    assert!(runtime
+        .reserve_reconciled_source(&owner, "window", "browser", &inspection)
+        .await
+        .is_err());
+    drop(parent);
+    drop(next_parent);
+    drop(independent);
 }
 
 #[tokio::test]
 async fn official_startup_closes_only_local_lifetime_and_keeps_same_turn_blocked() {
-    let (_dir,pool)=fixture().await;
-    let owner=crate::core::db_state::DbPool::default();owner.set_ready(pool.clone()).await.unwrap();
-    let parent=OperationPermit::begin_turn(owner.clone(),"source","old-turn").await.unwrap();
-    let attempt=parent.provider_attempt_with_boundary("attempt","provider","context",ProviderBoundary::IndependentRequest).await.unwrap();
-    attempt.dispatched().await.unwrap();attempt.unknown().await.unwrap();drop(attempt);drop(parent);
+    let (_dir, pool) = fixture().await;
+    let owner = crate::core::db_state::DbPool::default();
+    owner.set_ready(pool.clone()).await.unwrap();
+    let parent = OperationPermit::begin_turn(owner.clone(), "source", "old-turn")
+        .await
+        .unwrap();
+    let attempt = parent
+        .provider_attempt_with_boundary(
+            "attempt",
+            "provider",
+            "context",
+            ProviderBoundary::IndependentRequest,
+        )
+        .await
+        .unwrap();
+    attempt.dispatched().await.unwrap();
+    attempt.unknown().await.unwrap();
+    drop(attempt);
+    drop(parent);
     owner.set_initializing().await;
     reconcile_after_restart(&pool).await.unwrap();
     owner.set_ready(pool.clone()).await.unwrap();
-    assert!(OperationPermit::begin_turn(owner.clone(),"source","old-turn").await.is_err());
-    let next=OperationPermit::begin_turn(owner,"source","new-turn").await.unwrap();
-    assert!(next.provider_attempt("opaque","provider","context").await.is_err());
-    next.provider_attempt_with_boundary("fresh","provider","context",ProviderBoundary::IndependentRequest).await.unwrap();
-    assert_eq!(sqlx::query_scalar::<_,String>("SELECT phase FROM chat_admission_operations WHERE request_id='attempt'").fetch_one(&pool).await.unwrap(),"unknown");
+    assert!(
+        OperationPermit::begin_turn(owner.clone(), "source", "old-turn")
+            .await
+            .is_err()
+    );
+    let next = OperationPermit::begin_turn(owner, "source", "new-turn")
+        .await
+        .unwrap();
+    assert!(next
+        .provider_attempt("opaque", "provider", "context")
+        .await
+        .is_err());
+    next.provider_attempt_with_boundary(
+        "fresh",
+        "provider",
+        "context",
+        ProviderBoundary::IndependentRequest,
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        sqlx::query_scalar::<_, String>(
+            "SELECT phase FROM chat_admission_operations WHERE request_id='attempt'"
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap(),
+        "unknown"
+    );
 }
 
 #[tokio::test]
 async fn missing_physical_receipt_keeps_only_the_affected_chat_unreconciled() {
     use std::sync::Arc;
-    for panic in [false,true] {
-        let (_dir,pool)=fixture().await;
-        let owner=crate::core::db_state::DbPool::default();owner.set_ready(pool.clone()).await.unwrap();
-        let runtime=runtime::ChatAdmissionRuntime::default();
-        let context=runtime.begin(owner.clone(),"window","browser","source","old").await.unwrap();
-        let parent=runtime.parent("window",&context,"source").await.unwrap();
-        let ai=crate::ai::AiState::default();
-        let reservation=ai.reserve_stream("cleanup-failure".into()).unwrap();
-        let work=Arc::new(parent.child(WorkKind::Tool,Some("cleanup-failure")).await.unwrap());
-        let executed=work.clone();
-        let received=reservation.spawn_tool_outcome(work,move |_|async move {
-            if panic { panic!("synthetic cleanup panic"); }
-            executed.unknown().await.unwrap();
-            Err::<crate::ai::stream_tasks::ToolOutcome<()>,_>("synthetic cleanup failure".to_string())
-        }).unwrap();
+    for panic in [false, true] {
+        let (_dir, pool) = fixture().await;
+        let owner = crate::core::db_state::DbPool::default();
+        owner.set_ready(pool.clone()).await.unwrap();
+        let runtime = runtime::ChatAdmissionRuntime::default();
+        let context = runtime
+            .begin(owner.clone(), "window", "browser", "source", "old")
+            .await
+            .unwrap();
+        let parent = runtime.parent("window", &context, "source").await.unwrap();
+        let ai = crate::ai::AiState::default();
+        let reservation = ai.reserve_stream("cleanup-failure".into()).unwrap();
+        let work = Arc::new(
+            parent
+                .child(WorkKind::Tool, Some("cleanup-failure"))
+                .await
+                .unwrap(),
+        );
+        let executed = work.clone();
+        let received = reservation
+            .spawn_tool_outcome(work, move |_| async move {
+                if panic {
+                    panic!("synthetic cleanup panic");
+                }
+                executed.unknown().await.unwrap();
+                Err::<crate::ai::stream_tasks::ToolOutcome<()>, _>(
+                    "synthetic cleanup failure".to_string(),
+                )
+            })
+            .unwrap();
         assert!(received.await.is_err());
-        let http=crate::ai::admitted_http::AdmittedHttp::default();
-        assert!(runtime.retire_previous_unknown_turns(&owner,&ai,&http,"window","browser","source","next").await.unwrap_err().to_string().contains("local_lifetime_unreconciled"));
-        assert!(runtime.begin(owner.clone(),"window","browser","source","next").await.is_err());
-        drop(parent);drop(runtime);
-        owner.set_initializing().await;reconcile_after_restart(&pool).await.unwrap();owner.set_ready(pool.clone()).await.unwrap();
-        assert!(OperationPermit::begin_turn(owner.clone(),"source","after-restart").await.is_err());
+        let http = crate::ai::admitted_http::AdmittedHttp::default();
+        assert!(runtime
+            .retire_previous_unknown_turns(
+                &owner, &ai, &http, "window", "browser", "source", "next"
+            )
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("local_lifetime_unreconciled"));
+        assert!(runtime
+            .begin(owner.clone(), "window", "browser", "source", "next")
+            .await
+            .is_err());
+        drop(parent);
+        drop(runtime);
+        owner.set_initializing().await;
+        reconcile_after_restart(&pool).await.unwrap();
+        owner.set_ready(pool.clone()).await.unwrap();
+        assert!(
+            OperationPermit::begin_turn(owner.clone(), "source", "after-restart")
+                .await
+                .is_err()
+        );
         sqlx::query("INSERT INTO conversations(id,title,scope_mode,created_at,updated_at) VALUES('unrelated','Other','Chat','t','t')").execute(&pool).await.unwrap();
-        OperationPermit::begin_turn(owner,"unrelated","independent").await.unwrap();
+        OperationPermit::begin_turn(owner, "unrelated", "independent")
+            .await
+            .unwrap();
     }
 }
 
 #[tokio::test]
 async fn opaque_provider_without_local_receipt_is_not_closed_by_restart() {
-    let (_dir,pool)=fixture().await;
-    let owner=crate::core::db_state::DbPool::default();owner.set_ready(pool.clone()).await.unwrap();
-    let parent=OperationPermit::begin_turn(owner.clone(),"source","old").await.unwrap();
-    let attempt=parent.provider_attempt("opaque","provider","bridge-session").await.unwrap();
-    attempt.dispatched().await.unwrap();attempt.unknown().await.unwrap();drop(attempt);drop(parent);
-    owner.set_initializing().await;reconcile_after_restart(&pool).await.unwrap();owner.set_ready(pool.clone()).await.unwrap();
-    assert!(OperationPermit::begin_turn(owner,"source","new").await.is_err());
-    assert_eq!(sqlx::query_scalar::<_,i64>("SELECT COUNT(*) FROM chat_admission_operations WHERE local_closed_at IS NOT NULL").fetch_one(&pool).await.unwrap(),0);
+    let (_dir, pool) = fixture().await;
+    let owner = crate::core::db_state::DbPool::default();
+    owner.set_ready(pool.clone()).await.unwrap();
+    let parent = OperationPermit::begin_turn(owner.clone(), "source", "old")
+        .await
+        .unwrap();
+    let attempt = parent
+        .provider_attempt("opaque", "provider", "bridge-session")
+        .await
+        .unwrap();
+    attempt.dispatched().await.unwrap();
+    attempt.unknown().await.unwrap();
+    drop(attempt);
+    drop(parent);
+    owner.set_initializing().await;
+    reconcile_after_restart(&pool).await.unwrap();
+    owner.set_ready(pool.clone()).await.unwrap();
+    assert!(OperationPermit::begin_turn(owner, "source", "new")
+        .await
+        .is_err());
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>(
+            "SELECT COUNT(*) FROM chat_admission_operations WHERE local_closed_at IS NOT NULL"
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap(),
+        0
+    );
 }
 
 #[tokio::test]
@@ -1668,30 +2987,136 @@ async fn composer_draft_invalidates_inspection_and_competes_with_reservation() {
         let owner = crate::core::db_state::DbPool::default();
         owner.set_ready(pool.clone()).await.unwrap();
         let runtime = runtime::ChatAdmissionRuntime::default();
-        runtime.open_browser(owner.clone(), "window", "browser").await.unwrap();
-        let handle = runtime.begin_reconciliation(&owner, "window", "browser", "source").await.unwrap();
-        runtime.complete_reconciliation(&owner, "window", "browser", &handle, &no_browser_intentions()).await.unwrap();
-        let identity = IntentIdentity { conversation_id: "source".into(), kind: IntentKind::Recovery, id: "composer-draft".into() };
+        runtime
+            .open_browser(owner.clone(), "window", "browser")
+            .await
+            .unwrap();
+        let handle = runtime
+            .begin_reconciliation(&owner, "window", "browser", "source")
+            .await
+            .unwrap();
+        runtime
+            .complete_reconciliation(
+                &owner,
+                "window",
+                "browser",
+                &handle,
+                &no_browser_intentions(),
+            )
+            .await
+            .unwrap();
+        let identity = IntentIdentity {
+            conversation_id: "source".into(),
+            kind: IntentKind::Recovery,
+            id: "composer-draft".into(),
+        };
         if draft_first {
             // This durable ACK must precede the browser's first localStorage write.
-            let copy = runtime.begin_intent(&owner, "window", "browser", identity.clone(), IntentMutation::Retain).await.unwrap();
-            assert!(runtime.reserve_reconciled_source(&owner, "window", "browser", &handle).await.is_err());
-            assert!(runtime.complete_reconciliation(&owner, "window", "browser", &handle, &no_browser_intentions()).await.is_err());
-            let editing = runtime.begin_reconciliation(&owner, "window", "browser", "source").await.unwrap();
-            let mut observed = no_browser_intentions(); observed.drafts.push("composer-draft".into());
-            assert!(runtime.complete_reconciliation(&owner, "window", "browser", &editing, &observed).await.is_err());
-            let replacement = runtime.begin_intent(&owner, "window", "browser", identity.clone(), IntentMutation::Retain).await.unwrap();
-            assert!(runtime.finish_intent(&owner, "window", &copy).await.is_err());
-            assert!(runtime.complete_reconciliation(&owner, "window", "browser", &editing, &no_browser_intentions()).await.is_err());
-            runtime.finish_intent(&owner, "window", &replacement).await.unwrap();
-            let empty = runtime.begin_reconciliation(&owner, "window", "browser", "source").await.unwrap();
-            runtime.complete_reconciliation(&owner, "window", "browser", &empty, &no_browser_intentions()).await.unwrap();
-            runtime.reserve_reconciled_source(&owner, "window", "browser", &empty).await.unwrap();
+            let copy = runtime
+                .begin_intent(
+                    &owner,
+                    "window",
+                    "browser",
+                    identity.clone(),
+                    IntentMutation::Retain,
+                )
+                .await
+                .unwrap();
+            assert!(runtime
+                .reserve_reconciled_source(&owner, "window", "browser", &handle)
+                .await
+                .is_err());
+            assert!(runtime
+                .complete_reconciliation(
+                    &owner,
+                    "window",
+                    "browser",
+                    &handle,
+                    &no_browser_intentions()
+                )
+                .await
+                .is_err());
+            let editing = runtime
+                .begin_reconciliation(&owner, "window", "browser", "source")
+                .await
+                .unwrap();
+            let mut observed = no_browser_intentions();
+            observed.drafts.push("composer-draft".into());
+            assert!(runtime
+                .complete_reconciliation(&owner, "window", "browser", &editing, &observed)
+                .await
+                .is_err());
+            let replacement = runtime
+                .begin_intent(
+                    &owner,
+                    "window",
+                    "browser",
+                    identity.clone(),
+                    IntentMutation::Retain,
+                )
+                .await
+                .unwrap();
+            assert!(runtime
+                .finish_intent(&owner, "window", &copy)
+                .await
+                .is_err());
+            assert!(runtime
+                .complete_reconciliation(
+                    &owner,
+                    "window",
+                    "browser",
+                    &editing,
+                    &no_browser_intentions()
+                )
+                .await
+                .is_err());
+            runtime
+                .finish_intent(&owner, "window", &replacement)
+                .await
+                .unwrap();
+            let empty = runtime
+                .begin_reconciliation(&owner, "window", "browser", "source")
+                .await
+                .unwrap();
+            runtime
+                .complete_reconciliation(
+                    &owner,
+                    "window",
+                    "browser",
+                    &empty,
+                    &no_browser_intentions(),
+                )
+                .await
+                .unwrap();
+            runtime
+                .reserve_reconciled_source(&owner, "window", "browser", &empty)
+                .await
+                .unwrap();
         } else {
-            runtime.reserve_reconciled_source(&owner, "window", "browser", &handle).await.unwrap();
+            runtime
+                .reserve_reconciled_source(&owner, "window", "browser", &handle)
+                .await
+                .unwrap();
         }
-        assert!(runtime.begin_intent(&owner, "window", "browser", identity, IntentMutation::Retain).await.is_err());
-        assert_eq!(sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM chat_admission_operations WHERE kind IN ('provider','tool')").fetch_one(&pool).await.unwrap(), 0);
+        assert!(runtime
+            .begin_intent(
+                &owner,
+                "window",
+                "browser",
+                identity,
+                IntentMutation::Retain
+            )
+            .await
+            .is_err());
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>(
+                "SELECT COUNT(*) FROM chat_admission_operations WHERE kind IN ('provider','tool')"
+            )
+            .fetch_one(&pool)
+            .await
+            .unwrap(),
+            0
+        );
     }
 }
 
@@ -1699,47 +3124,165 @@ async fn composer_draft_invalidates_inspection_and_competes_with_reservation() {
 async fn composer_draft_lost_ack_restart_and_reedit_preserve_receipt_identity() {
     use super::intents::{IntentIdentity, IntentKind, IntentMutation};
     let (_dir, pool) = fixture().await;
-    let owner = crate::core::db_state::DbPool::default(); owner.set_ready(pool.clone()).await.unwrap();
+    let owner = crate::core::db_state::DbPool::default();
+    owner.set_ready(pool.clone()).await.unwrap();
     let runtime = runtime::ChatAdmissionRuntime::default();
-    runtime.open_browser(owner.clone(), "window", "old").await.unwrap();
-    let identity = IntentIdentity { conversation_id: "source".into(), kind: IntentKind::Recovery, id: "composer-draft".into() };
-    let saved = runtime.begin_intent(&owner, "window", "old", identity.clone(), IntentMutation::Retain).await.unwrap();
-    let removed = runtime.begin_intent(&owner, "window", "old", identity.clone(), IntentMutation::Remove).await.unwrap();
-    runtime.finish_intent(&owner, "window", &removed).await.unwrap();
+    runtime
+        .open_browser(owner.clone(), "window", "old")
+        .await
+        .unwrap();
+    let identity = IntentIdentity {
+        conversation_id: "source".into(),
+        kind: IntentKind::Recovery,
+        id: "composer-draft".into(),
+    };
+    let saved = runtime
+        .begin_intent(
+            &owner,
+            "window",
+            "old",
+            identity.clone(),
+            IntentMutation::Retain,
+        )
+        .await
+        .unwrap();
+    let removed = runtime
+        .begin_intent(
+            &owner,
+            "window",
+            "old",
+            identity.clone(),
+            IntentMutation::Remove,
+        )
+        .await
+        .unwrap();
+    runtime
+        .finish_intent(&owner, "window", &removed)
+        .await
+        .unwrap();
     // Simulate a committed removal whose ACK is lost, then a genuine new edit.
-    runtime.finish_intent(&owner, "window", &removed).await.unwrap();
-    let edited = runtime.begin_intent(&owner, "window", "old", identity.clone(), IntentMutation::Retain).await.unwrap();
+    runtime
+        .finish_intent(&owner, "window", &removed)
+        .await
+        .unwrap();
+    let edited = runtime
+        .begin_intent(
+            &owner,
+            "window",
+            "old",
+            identity.clone(),
+            IntentMutation::Retain,
+        )
+        .await
+        .unwrap();
     assert_eq!(saved.operation_id, edited.operation_id);
-    assert!(runtime.finish_intent(&owner, "window", &removed).await.is_err());
-    runtime.close_browser(&owner, &crate::ai::AiState::default(), &crate::ai::admitted_http::AdmittedHttp::default(), "window", "old").await.unwrap();
-    runtime.open_browser(owner.clone(), "window", "new").await.unwrap();
-    let current = runtime.begin_intent(&owner, "window", "new", identity, IntentMutation::Retain).await.unwrap();
+    assert!(runtime
+        .finish_intent(&owner, "window", &removed)
+        .await
+        .is_err());
+    runtime
+        .close_browser(
+            &owner,
+            &crate::ai::AiState::default(),
+            &crate::ai::admitted_http::AdmittedHttp::default(),
+            "window",
+            "old",
+        )
+        .await
+        .unwrap();
+    runtime
+        .open_browser(owner.clone(), "window", "new")
+        .await
+        .unwrap();
+    let current = runtime
+        .begin_intent(&owner, "window", "new", identity, IntentMutation::Retain)
+        .await
+        .unwrap();
     assert_eq!(current.operation_id, saved.operation_id);
-    assert!(runtime.finish_intent(&owner, "window", &edited).await.is_err());
-    let handle = runtime.begin_reconciliation(&owner, "window", "new", "source").await.unwrap();
-    let mut observed = no_browser_intentions(); observed.drafts.push("composer-draft".into());
-    assert!(runtime.complete_reconciliation(&owner, "window", "new", &handle, &observed).await.is_err());
-    runtime.finish_intent(&owner, "window", &current).await.unwrap();
-    let handle = runtime.begin_reconciliation(&owner, "window", "new", "source").await.unwrap();
-    runtime.complete_reconciliation(&owner, "window", "new", &handle, &no_browser_intentions()).await.unwrap();
-    runtime.reserve_reconciled_source(&owner, "window", "new", &handle).await.unwrap();
-    assert_eq!(sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM chat_admission_operations WHERE kind IN ('provider','tool')").fetch_one(&pool).await.unwrap(), 0);
+    assert!(runtime
+        .finish_intent(&owner, "window", &edited)
+        .await
+        .is_err());
+    let handle = runtime
+        .begin_reconciliation(&owner, "window", "new", "source")
+        .await
+        .unwrap();
+    let mut observed = no_browser_intentions();
+    observed.drafts.push("composer-draft".into());
+    assert!(runtime
+        .complete_reconciliation(&owner, "window", "new", &handle, &observed)
+        .await
+        .is_err());
+    runtime
+        .finish_intent(&owner, "window", &current)
+        .await
+        .unwrap();
+    let handle = runtime
+        .begin_reconciliation(&owner, "window", "new", "source")
+        .await
+        .unwrap();
+    runtime
+        .complete_reconciliation(&owner, "window", "new", &handle, &no_browser_intentions())
+        .await
+        .unwrap();
+    runtime
+        .reserve_reconciled_source(&owner, "window", "new", &handle)
+        .await
+        .unwrap();
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>(
+            "SELECT COUNT(*) FROM chat_admission_operations WHERE kind IN ('provider','tool')"
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap(),
+        0
+    );
 }
 
 #[tokio::test]
 async fn reservation_rechecks_physical_receipts_even_for_delivered_results() {
     // Fault injection after a valid inspection demonstrates the reservation's
     // own guard, rather than relying only on revision invalidation.
-    for kind in ["tool","provider"] {
-        let (_dir,pool)=fixture().await;
-        let owner=crate::core::db_state::DbPool::default();owner.set_ready(pool.clone()).await.unwrap();
-        let runtime=runtime::ChatAdmissionRuntime::default();runtime.open_browser(owner.clone(),"window","browser").await.unwrap();
-        let handle=runtime.begin_reconciliation(&owner,"window","browser","source").await.unwrap();
-        runtime.complete_reconciliation(&owner,"window","browser",&handle,&no_browser_intentions()).await.unwrap();
+    for kind in ["tool", "provider"] {
+        let (_dir, pool) = fixture().await;
+        let owner = crate::core::db_state::DbPool::default();
+        owner.set_ready(pool.clone()).await.unwrap();
+        let runtime = runtime::ChatAdmissionRuntime::default();
+        runtime
+            .open_browser(owner.clone(), "window", "browser")
+            .await
+            .unwrap();
+        let handle = runtime
+            .begin_reconciliation(&owner, "window", "browser", "source")
+            .await
+            .unwrap();
+        runtime
+            .complete_reconciliation(
+                &owner,
+                "window",
+                "browser",
+                &handle,
+                &no_browser_intentions(),
+            )
+            .await
+            .unwrap();
         sqlx::query("INSERT INTO chat_admission_operations(operation_id,conversation_id,incarnation,runtime_generation,kind,phase,request_id) SELECT 'late','source',incarnation,runtime_generation,?,'completed','physical' FROM chat_admission_owners WHERE conversation_id='source'")
             .bind(kind).execute(&pool).await.unwrap();
-        let error=runtime.reserve_reconciled_source(&owner,"window","browser",&handle).await.unwrap_err().to_string();
-        assert!(error.contains("local_lifetime_unreconciled"),"{error}");
-        assert_eq!(sqlx::query_scalar::<_,String>("SELECT mode FROM chat_admission_owners WHERE conversation_id='source'").fetch_one(&pool).await.unwrap(),"open");
+        let error = runtime
+            .reserve_reconciled_source(&owner, "window", "browser", &handle)
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("local_lifetime_unreconciled"), "{error}");
+        assert_eq!(
+            sqlx::query_scalar::<_, String>(
+                "SELECT mode FROM chat_admission_owners WHERE conversation_id='source'"
+            )
+            .fetch_one(&pool)
+            .await
+            .unwrap(),
+            "open"
+        );
     }
 }

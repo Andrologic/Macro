@@ -12,8 +12,8 @@ pub(crate) async fn fixture(
     ChatAdmissionRuntime,
     Arc<ProviderWork>,
 ) {
-    let (dir,pool,_owner,runtime,work)=fixture_with_owner(request).await;
-    (dir,pool,runtime,work)
+    let (dir, pool, _owner, runtime, work) = fixture_with_owner(request).await;
+    (dir, pool, runtime, work)
 }
 
 pub(crate) async fn fixture_with_owner(

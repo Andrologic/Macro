@@ -34,7 +34,12 @@ pub(crate) struct InactiveStorage {
     clock: Clock,
     // The tuple retains the authenticated native scope and DbReady lifetime.
     // The two JSON values are expectations only, rechecked against that scope.
-    native: Option<(Arc<crate::commands::pilot_secrets::transport::VerifiedTransport>,serde_json::Value,serde_json::Value,crate::core::db_state::ChatWorkLifetime)>,
+    native: Option<(
+        Arc<crate::commands::pilot_secrets::transport::VerifiedTransport>,
+        serde_json::Value,
+        serde_json::Value,
+        crate::core::db_state::ChatWorkLifetime,
+    )>,
     #[cfg(test)]
     lease_cleanup_started: Option<std::sync::mpsc::Sender<()>>,
 }
@@ -44,60 +49,134 @@ impl InactiveStorage {
             pool,
             authority: None,
             clock: Arc::new(|| 0),
-            native:None,
+            native: None,
             #[cfg(test)]
             lease_cleanup_started: None,
         }
     }
-    pub(crate) async fn for_transfer(owner:&crate::core::db_state::DbPool,
-        transport:Arc<crate::commands::pilot_secrets::transport::VerifiedTransport>,
-        sent:serde_json::Value,manifest:serde_json::Value,
-    )->Result<Self> {
-        transport.check_target_transfer(&sent,&manifest).await.map_err(str::to_owned)?;
-        let (session_id,device_id)=transport.session_binding().map_err(str::to_owned)?;
-        let binding=&sent["binding"];let source=&binding["provenance"]["source"];
-        let text=|v:&serde_json::Value|v.as_str().map(str::to_owned).ok_or("binding_conflict".to_string());
-        let identity=Identity{origin:text(&source["relay_origin"])?,account_incarnation:text(&source["account_id"])?,
-            source_instance:text(&source["source_instance_id"])?,source_conversation:text(&source["source_conversation_id"])?,
-            transfer:text(&binding["transfer_id"])?,source_epoch:text(&binding["epoch"])?};
-        let bindings=Bindings{target_instance:text(&binding["target_instance_id"])?,source_generation:text(&binding["source_producer_generation"])?,
-            target_generation:text(&binding["target_producer_generation"])?,actor:device_id.to_owned(),initial_session:session_id.to_owned(),
-            policy_revision:uuid::Uuid::new_v4().to_string()};
-        let secrets=transport.detection_values().await.map_err(str::to_owned)?.into_iter().map(String::into_bytes).collect();
-        let guard=owner.source_ready(None).await.map_err(|_|"database_unavailable")?;
-        let lifetime=guard.ready.retain_chat_work();let pool=guard.ready.pool.clone();drop(guard);
-        Ok(Self{pool,authority:Some(Arc::new(RwLock::new(Authority{enabled:true,identity,bindings,
-            policy:Policy{budget:super::inactive_budget::NATIVE_BUDGET,max_receipts:super::inactive_budget::NATIVE_MAX_RECEIPTS,absolute_ms:300_000,idle_ms:30_000,secrets}}))),
-            clock:Arc::new(||chrono::Utc::now().timestamp_millis()),native:Some((transport,sent,manifest,lifetime)),
-            #[cfg(test)] lease_cleanup_started:None})
+    pub(crate) async fn for_transfer(
+        owner: &crate::core::db_state::DbPool,
+        transport: Arc<crate::commands::pilot_secrets::transport::VerifiedTransport>,
+        sent: serde_json::Value,
+        manifest: serde_json::Value,
+    ) -> Result<Self> {
+        transport
+            .check_target_transfer(&sent, &manifest)
+            .await
+            .map_err(str::to_owned)?;
+        let (session_id, device_id) = transport.session_binding().map_err(str::to_owned)?;
+        let binding = &sent["binding"];
+        let source = &binding["provenance"]["source"];
+        let text = |v: &serde_json::Value| {
+            v.as_str()
+                .map(str::to_owned)
+                .ok_or("binding_conflict".to_string())
+        };
+        let identity = Identity {
+            origin: text(&source["relay_origin"])?,
+            account_incarnation: text(&source["account_id"])?,
+            source_instance: text(&source["source_instance_id"])?,
+            source_conversation: text(&source["source_conversation_id"])?,
+            transfer: text(&binding["transfer_id"])?,
+            source_epoch: text(&binding["epoch"])?,
+        };
+        let bindings = Bindings {
+            target_instance: text(&binding["target_instance_id"])?,
+            source_generation: text(&binding["source_producer_generation"])?,
+            target_generation: text(&binding["target_producer_generation"])?,
+            actor: device_id.to_owned(),
+            initial_session: session_id.to_owned(),
+            policy_revision: uuid::Uuid::new_v4().to_string(),
+        };
+        let secrets = transport
+            .detection_values()
+            .await
+            .map_err(str::to_owned)?
+            .into_iter()
+            .map(String::into_bytes)
+            .collect();
+        let guard = owner
+            .source_ready(None)
+            .await
+            .map_err(|_| "database_unavailable")?;
+        let lifetime = guard.ready.retain_chat_work();
+        let pool = guard.ready.pool.clone();
+        drop(guard);
+        Ok(Self {
+            pool,
+            authority: Some(Arc::new(RwLock::new(Authority {
+                enabled: true,
+                identity,
+                bindings,
+                policy: Policy {
+                    budget: super::inactive_budget::NATIVE_BUDGET,
+                    max_receipts: super::inactive_budget::NATIVE_MAX_RECEIPTS,
+                    absolute_ms: 300_000,
+                    idle_ms: 30_000,
+                    secrets,
+                },
+            }))),
+            clock: Arc::new(|| chrono::Utc::now().timestamp_millis()),
+            native: Some((transport, sent, manifest, lifetime)),
+            #[cfg(test)]
+            lease_cleanup_started: None,
+        })
     }
-    pub(crate) async fn begin_portable(&self,descriptor:&serde_json::Value,headers:&[RecordHeader])->Result<Receipt> {
-        let authority=self.authorize().await?;
-        if let Some((_,_,manifest,_))=&self.native {
-            if descriptor["manifest_sha256"]!=manifest["manifest_sha256"] || descriptor["content_contract_sha256"]!=manifest["content_contract_sha256"] {
+    pub(crate) async fn begin_portable(
+        &self,
+        descriptor: &serde_json::Value,
+        headers: &[RecordHeader],
+    ) -> Result<Receipt> {
+        let authority = self.authorize().await?;
+        if let Some((_, _, manifest, _)) = &self.native {
+            if descriptor["manifest_sha256"] != manifest["manifest_sha256"]
+                || descriptor["content_contract_sha256"] != manifest["content_contract_sha256"]
+            {
                 return Err("binding_conflict".into());
             }
         }
-        let mut begin=Begin{version:1,identity:authority.identity.clone(),bindings:authority.bindings.clone(),profile:Profile::PortableChatHistoryV1,
-            records:descriptor["records"].as_u64().ok_or("invalid_frame")?,bytes:descriptor["bytes"].as_u64().ok_or("invalid_frame")?,manifest_sha256:String::new()};
-        if headers.len() as u64!=begin.records || begin.bytes>8*1024*1024{return Err("resource_limit".into());}
-        let mut manifest=Manifest::new(&begin)?;
-        for header in headers {manifest.record(header)?;}
-        begin.manifest_sha256=manifest.finish();drop(authority);
+        let mut begin = Begin {
+            version: 1,
+            identity: authority.identity.clone(),
+            bindings: authority.bindings.clone(),
+            profile: Profile::PortableChatHistoryV1,
+            records: descriptor["records"].as_u64().ok_or("invalid_frame")?,
+            bytes: descriptor["bytes"].as_u64().ok_or("invalid_frame")?,
+            manifest_sha256: String::new(),
+        };
+        if headers.len() as u64 != begin.records || begin.bytes > 8 * 1024 * 1024 {
+            return Err("resource_limit".into());
+        }
+        let mut manifest = Manifest::new(&begin)?;
+        for header in headers {
+            manifest.record(header)?;
+        }
+        begin.manifest_sha256 = manifest.finish();
+        drop(authority);
         self.begin(json(&begin)?.as_bytes()).await
     }
-    pub(crate) async fn portable_root(&self,key:&str)->Result<serde_json::Value> {
-        let receipt=self.status(key).await?;
-        if receipt.phase!=Phase::SealedStorage{return Err("not_sealed".into());}
-        let (_,_,manifest,_)=self.native.as_ref().ok_or("inactive_storage_disabled")?;
-        Ok(serde_json::json!({"kind":"archive","profile":"portable_chat_history_v1",
+    pub(crate) async fn portable_root(&self, key: &str) -> Result<serde_json::Value> {
+        let receipt = self.status(key).await?;
+        if receipt.phase != Phase::SealedStorage {
+            return Err("not_sealed".into());
+        }
+        let (_, _, manifest, _) = self.native.as_ref().ok_or("inactive_storage_disabled")?;
+        Ok(
+            serde_json::json!({"kind":"archive","profile":"portable_chat_history_v1",
             "binding":{"version":1,"importKey":key,"manifest":manifest["manifest_sha256"]},"records":receipt.records.to_string(),
-            "storage_revision":receipt.revision.to_string(),"mapping_sha256":receipt.mapping_sha256.ok_or("integrity_failed")?}))
+            "storage_revision":receipt.revision.to_string(),"mapping_sha256":receipt.mapping_sha256.ok_or("integrity_failed")?}),
+        )
     }
-    pub(crate) async fn check_native(&self)->Result<()> { drop(self.authorize().await?);Ok(()) }
+    pub(crate) async fn check_native(&self) -> Result<()> {
+        drop(self.authorize().await?);
+        Ok(())
+    }
     async fn authorize(&self) -> Result<OwnedRwLockReadGuard<Authority>> {
-        if let Some((transport,sent,manifest,_))=&self.native {
-            transport.check_target_transfer(sent,manifest).await.map_err(str::to_owned)?;
+        if let Some((transport, sent, manifest, _)) = &self.native {
+            transport
+                .check_target_transfer(sent, manifest)
+                .await
+                .map_err(str::to_owned)?;
         }
         let authority = self
             .authority
@@ -112,13 +191,16 @@ impl InactiveStorage {
         Ok(authority)
     }
     async fn lease(&self) -> Result<Lease> {
-        let mut lease=Lease {
+        let mut lease = Lease {
             connection: Some(self.pool.acquire().await.map_err(db)?),
             committed: false,
             #[cfg(test)]
             cleanup_started: self.lease_cleanup_started.clone(),
         };
-        sqlx::query("PRAGMA synchronous=FULL").execute(&mut *lease).await.map_err(db)?;
+        sqlx::query("PRAGMA synchronous=FULL")
+            .execute(&mut *lease)
+            .await
+            .map_err(db)?;
         Ok(lease)
     }
     async fn load(&self, tx: &mut Tx<'_>, key: &str, authority: &Authority) -> Result<Journal> {
@@ -127,13 +209,17 @@ impl InactiveStorage {
         }
         let row=sqlx::query("SELECT * FROM e_inactive_imports WHERE identity_key=? AND length(CAST(begin_json AS BLOB))<=4096")
             .bind(key).fetch_optional(&mut **tx).await.map_err(db)?.ok_or("not_found")?;
-        crate::db::connect_transfer::deletion::require_import(&mut **tx, row.get("id")).await.map_err(|_| "connect_content_removed")?;
+        crate::db::connect_transfer::deletion::require_import(&mut **tx, row.get("id"))
+            .await
+            .map_err(|_| "connect_content_removed")?;
         let begin_json: String = row.get("begin_json");
         let begin: Begin = parse(begin_json.as_bytes())?;
         if begin.identity != authority.identity || begin.bindings != authority.bindings {
             return Err("binding_conflict".into());
         }
-        let transfer_leased=crate::db::connect_transfer::import_leased(&mut **tx,row.get("id")).await.map_err(|_| "database_unavailable")?;
+        let transfer_leased = crate::db::connect_transfer::import_leased(&mut **tx, row.get("id"))
+            .await
+            .map_err(|_| "database_unavailable")?;
         Ok(Journal {
             transfer_leased,
             id: row.get("id"),
@@ -356,7 +442,9 @@ impl InactiveStorage {
         let mut lease = self.lease().await?;
         let mut tx = lease.begin_with("BEGIN IMMEDIATE").await.map_err(db)?;
         let journal = self.load(&mut tx, key, &authority).await?;
-        if journal.transfer_leased { return Err("connect_transfer_leased".into()); }
+        if journal.transfer_leased {
+            return Err("connect_transfer_leased".into());
+        }
         if journal.phase == Phase::SealedStorage {
             return Err("storage_pinned".into());
         }
@@ -590,8 +678,9 @@ impl Journal {
         if now < self.last_clock {
             return Err("clock_rollback".into());
         }
-        if !self.transfer_leased && (now >= self.expires
-            || now.checked_sub(self.progress).ok_or("clock_rollback")? >= self.idle)
+        if !self.transfer_leased
+            && (now >= self.expires
+                || now.checked_sub(self.progress).ok_or("clock_rollback")? >= self.idle)
         {
             return Err("expired".into());
         }

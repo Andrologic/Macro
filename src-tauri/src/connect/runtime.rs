@@ -1,4 +1,4 @@
-use super::codec::{AdmittedInput, Admission, BankOwner, Codec, Input, Output, Profile};
+use super::codec::{Admission, AdmittedInput, BankOwner, Codec, Input, Output, Profile};
 use crate::{
     connect_resources::{TransitInstance, TRANSIT_OWNER},
     core::db_state::{ChatWorkLifetime, DbPool},
@@ -56,16 +56,24 @@ impl Drop for State {
 pub(crate) struct TransferRuntime(Arc<Mutex<State>>);
 /// Serializes whole transfer jobs, including the gap between bootstrap profiles.
 /// A rejected second invocation must never revoke the first job's transport.
-pub(crate) struct TransferJob(Arc<Mutex<State>>,u64);
+pub(crate) struct TransferJob(Arc<Mutex<State>>, u64);
 impl TransferJob {
-    pub(crate) fn protect(&self)->Result<(),&'static str>{
-        let mut state=self.0.lock().map_err(|_|"transport_unavailable")?;
-        if !state.job_active || state.closed || state.generation!=self.1{return Err("codec_retired");}
-        state.job_idle=false;Ok(())
+    pub(crate) fn protect(&self) -> Result<(), &'static str> {
+        let mut state = self.0.lock().map_err(|_| "transport_unavailable")?;
+        if !state.job_active || state.closed || state.generation != self.1 {
+            return Err("codec_retired");
+        }
+        state.job_idle = false;
+        Ok(())
     }
 }
 impl Drop for TransferJob {
-    fn drop(&mut self) {if let Ok(mut state)=self.0.lock(){state.job_active=false;state.job_idle=false;}}
+    fn drop(&mut self) {
+        if let Ok(mut state) = self.0.lock() {
+            state.job_active = false;
+            state.job_idle = false;
+        }
+    }
 }
 // This completion is the last field of HttpSession. Its notification therefore
 // follows destruction of the sole Hyper drivers, TLS streams and reservations.
@@ -103,34 +111,79 @@ impl CodecLauncher {
         transport: &crate::commands::pilot_secrets::transport::VerifiedTransport,
         capture: &crate::db::source_capture::SourceCapture,
     ) -> Result<super::transfer_worker::TransferWorker, &'static str> {
-        use super::transfer_worker::{AdmittedEWork,Hello,TransferWorker};
+        use super::transfer_worker::{AdmittedEWork, Hello, TransferWorker};
         use std::time::Duration;
-        let sealed=capture.seal_raw().await.map_err(|error|super::transfer_worker::storage_error(error,"transfer_capture"))?;
-        let secrets=transport.detection_values().await?;
-        let detection=65_536u64+4096*(secrets.iter().map(String::len).sum::<usize>()+secrets.len()) as u64+4096;
-        let child_units=96*1024*1024u64;
-        let native_units=10*1024*1024u64;
-        let working=Arc::new(crate::connect_resources::WORKING_OWNER.admit(config).await.map_err(|_|"resource_limit")?);
-        let charge=working.reserve(child_units+detection).await.map_err(|_|"resource_limit")?;
-        let native_charge=working.reserve(native_units).await.map_err(|_|"resource_limit")?;
-        let source=self.database.source_ready(None).await.map_err(|_|"database_unavailable")?;
-        let database=source.ready.retain_chat_work();drop(source);
+        let sealed = capture
+            .seal_raw()
+            .await
+            .map_err(|error| super::transfer_worker::storage_error(error, "transfer_capture"))?;
+        let secrets = transport.detection_values().await?;
+        let detection = 65_536u64
+            + 4096 * (secrets.iter().map(String::len).sum::<usize>() + secrets.len()) as u64
+            + 4096;
+        let child_units = 96 * 1024 * 1024u64;
+        let native_units = 10 * 1024 * 1024u64;
+        let working = Arc::new(
+            crate::connect_resources::WORKING_OWNER
+                .admit(config)
+                .await
+                .map_err(|_| "resource_limit")?,
+        );
+        let charge = working
+            .reserve(child_units + detection)
+            .await
+            .map_err(|_| "resource_limit")?;
+        let native_charge = working
+            .reserve(native_units)
+            .await
+            .map_err(|_| "resource_limit")?;
+        let source = self
+            .database
+            .source_ready(None)
+            .await
+            .map_err(|_| "database_unavailable")?;
+        let database = source.ready.retain_chat_work();
+        drop(source);
         let start=serde_json::to_vec(&serde_json::json!({"op":0,"kind":"normalize", "handles":{"source":"10","policy":"11","sink":"12"},
             "child_units":child_units.to_string(),"detection_units":detection.to_string(),"native_units":native_units.to_string()})).map_err(|_|"transfer_start")?;
-        let mut work=AdmittedEWork {generation:self.generation,job:1,arena:1,child_units,detection_units:detection,
-            start:[0;4096],start_len:start.len(),
-            expected:serde_json::from_str::<Hello>(include_str!("../../../copilot-bridge/src/connect-transfer.identity.json")).map_err(|_|"transfer_identity")?,
-            _database:database,_working:working,_charges:vec![charge]};
-        if start.len()>work.start.len(){return Err("resource_limit");}
+        let mut work = AdmittedEWork {
+            generation: self.generation,
+            job: 1,
+            arena: 1,
+            child_units,
+            detection_units: detection,
+            start: [0; 4096],
+            start_len: start.len(),
+            expected: serde_json::from_str::<Hello>(include_str!(
+                "../../../copilot-bridge/src/connect-transfer.identity.json"
+            ))
+            .map_err(|_| "transfer_identity")?,
+            _database: database,
+            _working: working,
+            _charges: vec![charge],
+        };
+        if start.len() > work.start.len() {
+            return Err("resource_limit");
+        }
         work.start[..start.len()].copy_from_slice(&start);
-        let mut command=Command::new(&self.executable);
-        if let Some(entry)=&self.entry{command.arg(entry);}
+        let mut command = Command::new(&self.executable);
+        if let Some(entry) = &self.entry {
+            command.arg(entry);
+        }
         transport.check().await?;
-        let mut worker=TransferWorker::spawn(command,work,self.runtime.generation()?)?;
-        let result=tokio::time::timeout(Duration::from_secs(25),worker.normalize(capture,&sealed,&secrets,native_charge)).await;
-        let retired=worker.retire_until(tokio::time::Instant::now()+Duration::from_secs(10)).await;
-        if !retired{return Err("transfer_retirement");}
-        result.map_err(|_|"transfer_deadline")??;
+        let mut worker = TransferWorker::spawn(command, work, self.runtime.generation()?)?;
+        let result = tokio::time::timeout(
+            Duration::from_secs(25),
+            worker.normalize(capture, &sealed, &secrets, native_charge),
+        )
+        .await;
+        let retired = worker
+            .retire_until(tokio::time::Instant::now() + Duration::from_secs(10))
+            .await;
+        if !retired {
+            return Err("transfer_retirement");
+        }
+        result.map_err(|_| "transfer_deadline")??;
         transport.check().await?;
         Ok(worker)
     }
@@ -138,37 +191,79 @@ impl CodecLauncher {
         &self,
         config: &crate::config::ConfigManager,
         transport: &crate::commands::pilot_secrets::transport::VerifiedTransport,
-        storage:&crate::db::inactive_storage::InactiveStorage,
-        archive:&[u8],
-        descriptor:&serde_json::Value,
+        storage: &crate::db::inactive_storage::InactiveStorage,
+        archive: &[u8],
+        descriptor: &serde_json::Value,
     ) -> Result<super::transfer_worker::TransferWorker, &'static str> {
-        use super::transfer_worker::{AdmittedEWork,Hello,TransferWorker};
+        use super::transfer_worker::{AdmittedEWork, Hello, TransferWorker};
         use std::time::Duration;
-        storage.check_native().await.map_err(|error|super::transfer_worker::storage_error(error,"transfer_scope"))?;
-        let secrets=transport.detection_values().await?;
-        let detection=65_536u64+4096*(secrets.iter().map(String::len).sum::<usize>()+secrets.len()) as u64+4096;
-        let child_units=96*1024*1024u64;
-        let native_units=10*1024*1024u64;
-        let working=Arc::new(crate::connect_resources::WORKING_OWNER.admit(config).await.map_err(|_|"resource_limit")?);
-        let charge=working.reserve(child_units+detection+native_units).await.map_err(|_|"resource_limit")?;
-        let source=self.database.source_ready(None).await.map_err(|_|"database_unavailable")?;
-        let database=source.ready.retain_chat_work();drop(source);
+        storage
+            .check_native()
+            .await
+            .map_err(|error| super::transfer_worker::storage_error(error, "transfer_scope"))?;
+        let secrets = transport.detection_values().await?;
+        let detection = 65_536u64
+            + 4096 * (secrets.iter().map(String::len).sum::<usize>() + secrets.len()) as u64
+            + 4096;
+        let child_units = 96 * 1024 * 1024u64;
+        let native_units = 10 * 1024 * 1024u64;
+        let working = Arc::new(
+            crate::connect_resources::WORKING_OWNER
+                .admit(config)
+                .await
+                .map_err(|_| "resource_limit")?,
+        );
+        let charge = working
+            .reserve(child_units + detection + native_units)
+            .await
+            .map_err(|_| "resource_limit")?;
+        let source = self
+            .database
+            .source_ready(None)
+            .await
+            .map_err(|_| "database_unavailable")?;
+        let database = source.ready.retain_chat_work();
+        drop(source);
         let start=serde_json::to_vec(&serde_json::json!({"op":0,"kind":"import", "handles":{"staging":"10","policy":"11","sink":"12"},
             "child_units":child_units.to_string(),"detection_units":detection.to_string(),"native_units":native_units.to_string()})).map_err(|_|"transfer_start")?;
-        let mut work=AdmittedEWork {generation:self.generation,job:1,arena:1,child_units,detection_units:detection,
-            start:[0;4096],start_len:start.len(),
-            expected:serde_json::from_str::<Hello>(include_str!("../../../copilot-bridge/src/connect-transfer.identity.json")).map_err(|_|"transfer_identity")?,
-            _database:database,_working:working,_charges:vec![charge]};
-        if start.len()>work.start.len(){return Err("resource_limit");}
+        let mut work = AdmittedEWork {
+            generation: self.generation,
+            job: 1,
+            arena: 1,
+            child_units,
+            detection_units: detection,
+            start: [0; 4096],
+            start_len: start.len(),
+            expected: serde_json::from_str::<Hello>(include_str!(
+                "../../../copilot-bridge/src/connect-transfer.identity.json"
+            ))
+            .map_err(|_| "transfer_identity")?,
+            _database: database,
+            _working: working,
+            _charges: vec![charge],
+        };
+        if start.len() > work.start.len() {
+            return Err("resource_limit");
+        }
         work.start[..start.len()].copy_from_slice(&start);
-        let mut command=Command::new(&self.executable);
-        if let Some(entry)=&self.entry{command.arg(entry);}
+        let mut command = Command::new(&self.executable);
+        if let Some(entry) = &self.entry {
+            command.arg(entry);
+        }
         transport.check().await?;
-        let mut worker=TransferWorker::spawn(command,work,self.runtime.generation()?)?;
-        let result=tokio::time::timeout(Duration::from_secs(25),worker.import_archive(storage,archive,descriptor,&secrets)).await;
-        let retired=worker.retire_until(tokio::time::Instant::now()+Duration::from_secs(10)).await;
-        if !retired{return Err("transfer_retirement");}
-        result.map_err(|_|"transfer_deadline")??;
+        let mut worker = TransferWorker::spawn(command, work, self.runtime.generation()?)?;
+        let result = tokio::time::timeout(
+            Duration::from_secs(25),
+            worker.import_archive(storage, archive, descriptor, &secrets),
+        )
+        .await;
+        let retired = worker
+            .retire_until(tokio::time::Instant::now() + Duration::from_secs(10))
+            .await;
+        if !retired {
+            return Err("transfer_retirement");
+        }
+        result.map_err(|_| "transfer_deadline")??;
         transport.check().await?;
         Ok(worker)
     }
@@ -176,69 +271,148 @@ impl CodecLauncher {
         &self,
         config: &crate::config::ConfigManager,
         transport: &crate::commands::pilot_secrets::transport::VerifiedTransport,
-        storage:&crate::db::inactive_storage::InactiveStorage,
-        imported:&super::transfer_worker::TransferWorker,
-        provider_id:&str,
-        model_id:&str,
+        storage: &crate::db::inactive_storage::InactiveStorage,
+        imported: &super::transfer_worker::TransferWorker,
+        provider_id: &str,
+        model_id: &str,
     ) -> Result<super::transfer_worker::TransferWorker, &'static str> {
-        use super::transfer_worker::{AdmittedEWork,Hello,TransferWorker};
+        use super::transfer_worker::{AdmittedEWork, Hello, TransferWorker};
         use std::time::Duration;
-        storage.check_native().await.map_err(|error|super::transfer_worker::storage_error(error,"transfer_scope"))?;
-        use serde_json::{json,Value};
-        use sha2::{Digest,Sha256};
-        let current=self.database.source_ready(None).await.map_err(|_|"database_unavailable")?;
-        let (provider,model,agents,configuration)=transfer_target_snapshot(config,&current.ready,provider_id,model_id).await?;
-        if !((provider.id=="macro-ai" && provider.provider_type=="openai") || provider.provider_type=="chatgpt"){return Err("provider_unavailable");}
-        let context=model.context_window_tokens.filter(|n|*n>0).ok_or("model_context_unknown")?;
-        drop(current);
-        let mode=agents["prompts"]["chat"].as_str().ok_or("configuration_unavailable")?;
-        let conversation=uuid::Uuid::new_v4().to_string();
-        let values=[("conversationId",Some(conversation.as_str())),("providerId",Some(provider_id)),("modelId",Some(model_id)),
-            ("baseUrl",Some(provider.base_url.as_str())),("modePrompt",Some(mode)),("reasoningEffort",None),("currentCheckpoint",None),("contextWarning",None)];
-        let mut fields=serde_json::Map::new();let mut target_fields=Vec::new();
-        for (name,value) in values {
-            let field=match value {None=>Value::Null,Some(value)=>{
-                if value.len()>65_536{return Err("resource_limit");}
-                let ordinal=target_fields.len();target_fields.push(value.as_bytes().to_vec());
-                json!({"ordinal":ordinal,"bytes":value.len(),"sha256":format!("{:x}",Sha256::digest(value.as_bytes()))})}};
-            fields.insert(name.to_owned(),field);
+        storage
+            .check_native()
+            .await
+            .map_err(|error| super::transfer_worker::storage_error(error, "transfer_scope"))?;
+        use serde_json::{json, Value};
+        use sha2::{Digest, Sha256};
+        let current = self
+            .database
+            .source_ready(None)
+            .await
+            .map_err(|_| "database_unavailable")?;
+        let (provider, model, agents, configuration) =
+            transfer_target_snapshot(config, &current.ready, provider_id, model_id).await?;
+        if !((provider.id == "macro-ai" && provider.provider_type == "openai")
+            || provider.provider_type == "chatgpt")
+        {
+            return Err("provider_unavailable");
         }
-        let target=json!({"kind":"target","provider_type":provider.provider_type,"fields":fields,
+        let context = model
+            .context_window_tokens
+            .filter(|n| *n > 0)
+            .ok_or("model_context_unknown")?;
+        drop(current);
+        let mode = agents["prompts"]["chat"]
+            .as_str()
+            .ok_or("configuration_unavailable")?;
+        let conversation = uuid::Uuid::new_v4().to_string();
+        let values = [
+            ("conversationId", Some(conversation.as_str())),
+            ("providerId", Some(provider_id)),
+            ("modelId", Some(model_id)),
+            ("baseUrl", Some(provider.base_url.as_str())),
+            ("modePrompt", Some(mode)),
+            ("reasoningEffort", None),
+            ("currentCheckpoint", None),
+            ("contextWarning", None),
+        ];
+        let mut fields = serde_json::Map::new();
+        let mut target_fields = Vec::new();
+        for (name, value) in values {
+            let field = match value {
+                None => Value::Null,
+                Some(value) => {
+                    if value.len() > 65_536 {
+                        return Err("resource_limit");
+                    }
+                    let ordinal = target_fields.len();
+                    target_fields.push(value.as_bytes().to_vec());
+                    json!({"ordinal":ordinal,"bytes":value.len(),"sha256":format!("{:x}",Sha256::digest(value.as_bytes()))})
+                }
+            };
+            fields.insert(name.to_owned(), field);
+        }
+        let target = json!({"kind":"target","provider_type":provider.provider_type,"fields":fields,
             "max_turns":agents["maxTurns"].as_u64().ok_or("configuration_unavailable")?.to_string(),"risk":"balanced",
             "footprint":{"modelContextWindowTokens":context,"inputLimitTokens":model.input_limit_tokens,"outputLimitTokens":model.output_limit_tokens,
                 "contextLimitSource":"provider_metadata","contextLimitConfidence":"verified","isContextLimitAuthoritative":true},
             "budget_policy":{"auto":agents["compaction"]["automatic"],"prune":agents["compaction"]["prune"],
                 "reservedTokens":agents["compaction"]["reservedTokens"],"preserveRecentTokens":null,"hardStopRatio":1}});
 
-        let secrets=transport.detection_values().await?;
-        let detection=65_536u64+4096*(secrets.iter().map(String::len).sum::<usize>()+secrets.len()) as u64+4096;
-        let child_units=96*1024*1024u64;
-        let native_units=10*1024*1024u64;
-        let working=Arc::new(crate::connect_resources::WORKING_OWNER.admit(config).await.map_err(|_|"resource_limit")?);
-        let charge=working.reserve(child_units+detection+native_units).await.map_err(|_|"resource_limit")?;
-        let source=self.database.source_ready(None).await.map_err(|_|"database_unavailable")?;
-        let database=source.ready.retain_chat_work();drop(source);
+        let secrets = transport.detection_values().await?;
+        let detection = 65_536u64
+            + 4096 * (secrets.iter().map(String::len).sum::<usize>() + secrets.len()) as u64
+            + 4096;
+        let child_units = 96 * 1024 * 1024u64;
+        let native_units = 10 * 1024 * 1024u64;
+        let working = Arc::new(
+            crate::connect_resources::WORKING_OWNER
+                .admit(config)
+                .await
+                .map_err(|_| "resource_limit")?,
+        );
+        let charge = working
+            .reserve(child_units + detection + native_units)
+            .await
+            .map_err(|_| "resource_limit")?;
+        let source = self
+            .database
+            .source_ready(None)
+            .await
+            .map_err(|_| "database_unavailable")?;
+        let database = source.ready.retain_chat_work();
+        drop(source);
         let start=serde_json::to_vec(&serde_json::json!({"op":0,"kind":"prepare", "handles":{"archive":"10","policy":"11","draft":"12","target":"13"},
             "child_units":child_units.to_string(),"detection_units":detection.to_string(),"native_units":native_units.to_string()})).map_err(|_|"transfer_start")?;
-        let mut work=AdmittedEWork {generation:self.generation,job:1,arena:1,child_units,detection_units:detection,
-            start:[0;4096],start_len:start.len(),
-            expected:serde_json::from_str::<Hello>(include_str!("../../../copilot-bridge/src/connect-transfer.identity.json")).map_err(|_|"transfer_identity")?,
-            _database:database,_working:working,_charges:vec![charge]};
-        if start.len()>work.start.len(){return Err("resource_limit");}
+        let mut work = AdmittedEWork {
+            generation: self.generation,
+            job: 1,
+            arena: 1,
+            child_units,
+            detection_units: detection,
+            start: [0; 4096],
+            start_len: start.len(),
+            expected: serde_json::from_str::<Hello>(include_str!(
+                "../../../copilot-bridge/src/connect-transfer.identity.json"
+            ))
+            .map_err(|_| "transfer_identity")?,
+            _database: database,
+            _working: working,
+            _charges: vec![charge],
+        };
+        if start.len() > work.start.len() {
+            return Err("resource_limit");
+        }
         work.start[..start.len()].copy_from_slice(&start);
-        let mut command=Command::new(&self.executable);
-        if let Some(entry)=&self.entry{command.arg(entry);}
+        let mut command = Command::new(&self.executable);
+        if let Some(entry) = &self.entry {
+            command.arg(entry);
+        }
         transport.check().await?;
-        let mut worker=TransferWorker::spawn(command,work,self.runtime.generation()?)?;
-        let result=tokio::time::timeout(Duration::from_secs(25),worker.prepare_archive(storage,imported,&secrets,&target,&target_fields)).await;
-        let retired=worker.retire_until(tokio::time::Instant::now()+Duration::from_secs(10)).await;
-        if !retired{return Err("transfer_retirement");}
-        result.map_err(|_|"transfer_deadline")??;
+        let mut worker = TransferWorker::spawn(command, work, self.runtime.generation()?)?;
+        let result = tokio::time::timeout(
+            Duration::from_secs(25),
+            worker.prepare_archive(storage, imported, &secrets, &target, &target_fields),
+        )
+        .await;
+        let retired = worker
+            .retire_until(tokio::time::Instant::now() + Duration::from_secs(10))
+            .await;
+        if !retired {
+            return Err("transfer_retirement");
+        }
+        result.map_err(|_| "transfer_deadline")??;
         transport.check().await?;
-        let current=self.database.source_ready(None).await.map_err(|_|"database_unavailable")?;
-        let (_,_,_,fresh)=transfer_target_snapshot(config,&current.ready,provider_id,model_id).await?;
-        if fresh!=configuration{return Err("configuration_changed");}
-        worker.complete_native_preparation(&provider,model_id,&conversation,configuration)?;
+        let current = self
+            .database
+            .source_ready(None)
+            .await
+            .map_err(|_| "database_unavailable")?;
+        let (_, _, _, fresh) =
+            transfer_target_snapshot(config, &current.ready, provider_id, model_id).await?;
+        if fresh != configuration {
+            return Err("configuration_changed");
+        }
+        worker.complete_native_preparation(&provider, model_id, &conversation, configuration)?;
         Ok(worker)
     }
     pub(crate) async fn start(&self, profile: Profile) -> Result<CodecHandle, &'static str> {
@@ -262,18 +436,48 @@ impl CodecLauncher {
     }
 }
 /// Fresh native target data. It is never a transport permission or SQL receipt.
-pub(crate) async fn transfer_target_snapshot(config:&crate::config::ConfigManager,ready:&crate::core::db_state::DbReady,
-    provider_id:&str,model_id:&str,
-)->Result<(crate::db::models::ProviderConfig,crate::db::models::AiModel,serde_json::Value,Vec<u8>),&'static str> {
-    use sha2::{Digest,Sha256};
-    let mut provider=crate::db::repository::get_provider_config(&ready.pool,provider_id).await.map_err(|_|"provider_unavailable")?.ok_or("provider_unavailable")?;
-    if !provider.is_enabled{return Err("provider_unavailable");}provider.api_key=None;
-    let model=crate::db::repository::list_models_by_provider(&ready.pool,provider_id).await.map_err(|_|"model_unavailable")?
-        .into_iter().find(|model|model.model_id==model_id&&model.is_enabled).ok_or("model_unavailable")?;
-    let snapshot=config.get_snapshot(&[]).await.map_err(|_|"configuration_unavailable")?;
-    let agents=snapshot.effective.get("agents").ok_or("configuration_unavailable")?.clone();
-    let bytes=serde_json::to_vec(&(&provider,&model,&agents)).map_err(|_|"configuration_unavailable")?;
-    let digest=Sha256::digest(&bytes).to_vec();Ok((provider,model,agents,digest))
+pub(crate) async fn transfer_target_snapshot(
+    config: &crate::config::ConfigManager,
+    ready: &crate::core::db_state::DbReady,
+    provider_id: &str,
+    model_id: &str,
+) -> Result<
+    (
+        crate::db::models::ProviderConfig,
+        crate::db::models::AiModel,
+        serde_json::Value,
+        Vec<u8>,
+    ),
+    &'static str,
+> {
+    use sha2::{Digest, Sha256};
+    let mut provider = crate::db::repository::get_provider_config(&ready.pool, provider_id)
+        .await
+        .map_err(|_| "provider_unavailable")?
+        .ok_or("provider_unavailable")?;
+    if !provider.is_enabled {
+        return Err("provider_unavailable");
+    }
+    provider.api_key = None;
+    let model = crate::db::repository::list_models_by_provider(&ready.pool, provider_id)
+        .await
+        .map_err(|_| "model_unavailable")?
+        .into_iter()
+        .find(|model| model.model_id == model_id && model.is_enabled)
+        .ok_or("model_unavailable")?;
+    let snapshot = config
+        .get_snapshot(&[])
+        .await
+        .map_err(|_| "configuration_unavailable")?;
+    let agents = snapshot
+        .effective
+        .get("agents")
+        .ok_or("configuration_unavailable")?
+        .clone();
+    let bytes = serde_json::to_vec(&(&provider, &model, &agents))
+        .map_err(|_| "configuration_unavailable")?;
+    let digest = Sha256::digest(&bytes).to_vec();
+    Ok((provider, model, agents, digest))
 }
 pub(crate) struct CodecHandle {
     #[cfg(test)]
@@ -294,7 +498,9 @@ impl Drop for CodecHandle {
 }
 impl CodecHandle {
     pub(crate) fn admit(&self, op: u16) -> Result<Admission, &'static str> {
-        if self.cancel.is_cancelled() { return Err("codec_closed"); }
+        if self.cancel.is_cancelled() {
+            return Err("codec_closed");
+        }
         self.bank.admit(op)
     }
     pub(crate) async fn run(&self, input: Input) -> Result<Output, &'static str> {
@@ -302,8 +508,12 @@ impl CodecHandle {
         self.run_admitted(admitted).await
     }
     pub(crate) async fn run_admitted(&self, input: AdmittedInput) -> Result<Output, &'static str> {
-        if !self.bank.owns(&input) { return Err("codec_owner"); }
-        if self.cancel.is_cancelled() { return Err("codec_closed"); }
+        if !self.bank.owns(&input) {
+            return Err("codec_owner");
+        }
+        if self.cancel.is_cancelled() {
+            return Err("codec_closed");
+        }
         // Disappearance of an in-flight caller retires the process. The owner,
         // not this future, keeps the pipes, credits and join.
         let (response, receive) = oneshot::channel();
@@ -326,20 +536,32 @@ impl CodecHandle {
     }
 }
 impl TransferRuntime {
-    pub(crate) fn begin_transfer(&self)->Result<TransferJob,&'static str>{
-        let mut state=self.0.lock().map_err(|_|"transport_unavailable")?;
-        if state.closed{return Err("codec_retired");}
-        if state.job_active{return Err("transfer_busy");}
-        state.job_active=true;state.job_idle=false;Ok(TransferJob(self.0.clone(),state.generation))
+    pub(crate) fn begin_transfer(&self) -> Result<TransferJob, &'static str> {
+        let mut state = self.0.lock().map_err(|_| "transport_unavailable")?;
+        if state.closed {
+            return Err("codec_retired");
+        }
+        if state.job_active {
+            return Err("transfer_busy");
+        }
+        state.job_active = true;
+        state.job_idle = false;
+        Ok(TransferJob(self.0.clone(), state.generation))
     }
-    pub(crate) fn begin_receive(&self)->Result<TransferJob,&'static str>{
-        let job=self.begin_transfer()?;
-        self.0.lock().map_err(|_|"transport_unavailable")?.job_idle=true;Ok(job)
+    pub(crate) fn begin_receive(&self) -> Result<TransferJob, &'static str> {
+        let job = self.begin_transfer()?;
+        self.0.lock().map_err(|_| "transport_unavailable")?.job_idle = true;
+        Ok(job)
     }
-    pub(crate) fn interrupt_idle(&self)->Result<(),&'static str>{
-        let mut state=self.0.lock().map_err(|_|"transport_unavailable")?;
-        if state.job_active&&!state.job_idle{return Err("transfer_busy");}
-        if state.job_active {state.job_idle=false;Self::revoke_locked(&mut state);}
+    pub(crate) fn interrupt_idle(&self) -> Result<(), &'static str> {
+        let mut state = self.0.lock().map_err(|_| "transport_unavailable")?;
+        if state.job_active && !state.job_idle {
+            return Err("transfer_busy");
+        }
+        if state.job_active {
+            state.job_idle = false;
+            Self::revoke_locked(&mut state);
+        }
         Ok(())
     }
     #[cfg(test)]
@@ -437,7 +659,11 @@ impl TransferRuntime {
         command.arg(profile.command());
         let codec = Codec::spawn(command, budget, lifetime, profile)?;
         #[cfg(test)]
-        let codec = { let mut codec = codec; codec.scope_probe = state.scope_probe.take(); codec };
+        let codec = {
+            let mut codec = codec;
+            codec.scope_probe = state.scope_probe.take();
+            codec
+        };
         let bank = codec.bank_owner.clone();
         #[cfg(test)]
         let pid = codec.pid();
@@ -511,12 +737,26 @@ impl TransferRuntime {
             join,
         })
     }
-    fn revoke_locked(state:&mut State) {
-        match state.generation.checked_add(1) {Some(next)=>state.generation=next,None=>state.closed=true}
-        if let Some((cancel,_,idle))=&state.http {cancel.cancel();if let Some(idle)=idle.upgrade(){idle.retire();}}
-        if let Some(cancel)=&state.cancel {cancel.cancel();}
+    fn revoke_locked(state: &mut State) {
+        match state.generation.checked_add(1) {
+            Some(next) => state.generation = next,
+            None => state.closed = true,
+        }
+        if let Some((cancel, _, idle)) = &state.http {
+            cancel.cancel();
+            if let Some(idle) = idle.upgrade() {
+                idle.retire();
+            }
+        }
+        if let Some(cancel) = &state.cancel {
+            cancel.cancel();
+        }
     }
-    pub(crate) fn revoke(&self) {if let Ok(mut state)=self.0.lock(){Self::revoke_locked(&mut state);}}
+    pub(crate) fn revoke(&self) {
+        if let Ok(mut state) = self.0.lock() {
+            Self::revoke_locked(&mut state);
+        }
+    }
     pub(crate) async fn shutdown(&self) -> bool {
         let join = {
             let mut state = self.0.lock().unwrap_or_else(|p| p.into_inner());
@@ -583,9 +823,9 @@ pub(super) fn test_bun() -> std::path::PathBuf {
 #[cfg(test)]
 mod tests {
     use super::super::codec::Bytes;
+    use super::test_bun as bun;
     use super::*;
     use crate::connect_resources::TRANSIT_INSTANCE_LIMIT;
-    use super::test_bun as bun;
     async fn database() -> (tempfile::TempDir, DbPool, sqlx::SqlitePool) {
         let directory = tempfile::tempdir().unwrap();
         let pool = crate::db::create_pool(&directory.path().join("synthetic.db"))
@@ -602,20 +842,26 @@ mod tests {
     }
     #[test]
     fn idle_receive_can_be_interrupted_but_admitted_transfer_cannot() {
-        let runtime=TransferRuntime::default();
-        let idle=runtime.begin_receive().unwrap();
-        runtime.interrupt_idle().unwrap();assert_eq!(idle.protect(),Err("codec_retired"));
-        assert_eq!(runtime.begin_transfer().err(),Some("transfer_busy"));drop(idle);
-        let receiving=runtime.begin_receive().unwrap();receiving.protect().unwrap();
-        assert_eq!(runtime.interrupt_idle(),Err("transfer_busy"));drop(receiving);
-        let source=runtime.begin_transfer().unwrap();assert_eq!(runtime.interrupt_idle(),Err("transfer_busy"));drop(source);
+        let runtime = TransferRuntime::default();
+        let idle = runtime.begin_receive().unwrap();
+        runtime.interrupt_idle().unwrap();
+        assert_eq!(idle.protect(), Err("codec_retired"));
+        assert_eq!(runtime.begin_transfer().err(), Some("transfer_busy"));
+        drop(idle);
+        let receiving = runtime.begin_receive().unwrap();
+        receiving.protect().unwrap();
+        assert_eq!(runtime.interrupt_idle(), Err("transfer_busy"));
+        drop(receiving);
+        let source = runtime.begin_transfer().unwrap();
+        assert_eq!(runtime.interrupt_idle(), Err("transfer_busy"));
+        drop(source);
     }
     #[tokio::test]
     async fn profiles_join_bootstrap_then_keep_persistent_child_idle_past_poll() {
         let (_dir, db, pool) = database().await;
         let owner = TransferRuntime::default();
-        let job=owner.begin_transfer().unwrap();
-        assert_eq!(owner.begin_transfer().err(),Some("transfer_busy"));
+        let job = owner.begin_transfer().unwrap();
+        assert_eq!(owner.begin_transfer().err(), Some("transfer_busy"));
         let budget = owner.budget().unwrap();
         let entry = Path::new(env!("CARGO_MANIFEST_DIR")).join("../copilot-bridge/src/entry.ts");
         let launcher = owner.source_launcher(&bun(), &entry, &db).unwrap();
@@ -645,7 +891,8 @@ mod tests {
         persistent.close().await.unwrap();
         drop(budget.reserve(TRANSIT_INSTANCE_LIMIT).unwrap());
         db.set_ready(pool).await.unwrap();
-        drop(job);drop(owner.begin_transfer().unwrap());
+        drop(job);
+        drop(owner.begin_transfer().unwrap());
         assert!(owner.shutdown().await);
     }
 
@@ -780,8 +1027,14 @@ mod tests {
                     let budget = owner.budget().unwrap();
                     let (reached, seen) = oneshot::channel();
                     let (resume, wait) = oneshot::channel();
-                    owner.0.lock().unwrap().scope_probe = Some(super::super::codec::ScopeProbe { phase, after, reached, resume: wait });
-                    let entry = Path::new(env!("CARGO_MANIFEST_DIR")).join("../copilot-bridge/src/entry.ts");
+                    owner.0.lock().unwrap().scope_probe = Some(super::super::codec::ScopeProbe {
+                        phase,
+                        after,
+                        reached,
+                        resume: wait,
+                    });
+                    let entry = Path::new(env!("CARGO_MANIFEST_DIR"))
+                        .join("../copilot-bridge/src/entry.ts");
                     let codec = owner.source_codec(&bun(), &entry, &db).await.unwrap();
                     let pid = codec.pid;
                     let admitted = codec.admit(1).unwrap().adopt(input(&budget)).unwrap();
@@ -804,7 +1057,9 @@ mod tests {
                     codec.close().await.unwrap();
                     #[cfg(unix)]
                     assert_eq!(unsafe { libc::kill(pid as i32, 0) }, -1);
-                    assert!(owner.profile_events().contains(&(Profile::Persistent, pid, true)));
+                    assert!(owner
+                        .profile_events()
+                        .contains(&(Profile::Persistent, pid, true)));
                     drop(budget.reserve(TRANSIT_INSTANCE_LIMIT).unwrap());
                     db.set_ready(pool).await.unwrap();
                     assert!(owner.shutdown().await);
@@ -827,12 +1082,19 @@ mod tests {
         assert!(vectors.status.success());
         let vectors: Vec<serde_json::Value> = serde_json::from_slice(&vectors.stdout).unwrap();
         assert_eq!(vectors.len(), 9);
-        let codec = owner.source_codec(&bun(), &root.join("copilot-bridge/src/entry.ts"), &db).await.unwrap();
+        let codec = owner
+            .source_codec(&bun(), &root.join("copilot-bridge/src/entry.ts"), &db)
+            .await
+            .unwrap();
         let pid = codec.pid;
         for vector in vectors {
             let op = vector["op"].as_u64().unwrap() as u16;
             let body = Bytes::serialize(&budget, &vector["body"]).unwrap();
-            let input = codec.admit(op).unwrap().input(&vector["facts"], body).unwrap();
+            let input = codec
+                .admit(op)
+                .unwrap()
+                .input(&vector["facts"], body)
+                .unwrap();
             let result = codec.run_admitted(input).await.unwrap();
             assert_eq!(result.status, 0, "operation {op}");
             assert!(!result.bytes.as_slice().is_empty());
@@ -856,7 +1118,9 @@ mod tests {
         assert!(db.set_ready(pool.clone()).await.is_err());
         // Exactly one raw graph plus BANK and startup fits. Separate native
         // expectation/body reservations would make the real Child fail.
-        let remainder = budget.reserve(TRANSIT_INSTANCE_LIMIT - 524_288 - 28_311_552 - 2_097_152).unwrap();
+        let remainder = budget
+            .reserve(TRANSIT_INSTANCE_LIMIT - 524_288 - 28_311_552 - 2_097_152)
+            .unwrap();
         for _ in 0..2 {
             let result = codec.run(input(&budget)).await.unwrap();
             assert_eq!(result.status, 0);

@@ -77,7 +77,9 @@ impl<A: Interaction> Drop for InteractionGuard<'_, A> {
 mod macos;
 
 impl Vault for SystemVault {
-    fn silent_capture_supported(&self) -> bool { cfg!(target_os = "macos") }
+    fn silent_capture_supported(&self) -> bool {
+        cfg!(target_os = "macos")
+    }
     fn prepare_resume(&self, kind: PilotSecretKind) -> Result<(), PilotSecretError> {
         #[cfg(target_os = "macos")]
         {

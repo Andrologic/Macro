@@ -60,7 +60,10 @@ impl WebOperationCancellation {
 
     fn is_cancelled(&self) -> bool {
         self.cancelled.load(Ordering::Acquire)
-            || self.native.as_ref().is_some_and(|token| token.is_cancelled())
+            || self
+                .native
+                .as_ref()
+                .is_some_and(|token| token.is_cancelled())
     }
 
     async fn cancelled(&self) {
@@ -126,7 +129,10 @@ fn register_web_operation_cancellation(
 fn register_web_operation_cancellation_owned(
     execution_id: Option<&str>,
     native: Option<tokio_util::sync::CancellationToken>,
-) -> CommandResult<(Option<Arc<WebOperationCancellation>>, Option<WebOperationCancellationGuard>)> {
+) -> CommandResult<(
+    Option<Arc<WebOperationCancellation>>,
+    Option<WebOperationCancellationGuard>,
+)> {
     let Some(execution_id) = execution_id else {
         return Ok((None, None));
     };
@@ -514,7 +520,8 @@ pub async fn web_search_get_secret_status(
     provider: String,
 ) -> CommandResult<WebSearchSecretStatus> {
     let provider = normalize_provider(&provider)?;
-    let has_secret = secrets::get_api_key_async(&secret_id(provider)).await
+    let has_secret = secrets::get_api_key_async(&secret_id(provider))
+        .await
         .map_err(|error| command_error(format!("Impossible de vérifier le secret : {error}")))?
         .is_some_and(|value| !value.trim().is_empty());
     Ok(WebSearchSecretStatus {
@@ -530,7 +537,9 @@ pub async fn web_search_set_secret(
 ) -> CommandResult<WebSearchSecretStatus> {
     let provider = normalize_provider(&input.provider)?;
     match input.value.as_deref().map(str::trim) {
-        Some(value) if !value.is_empty() => secrets::set_api_key_async(&secret_id(provider), value).await,
+        Some(value) if !value.is_empty() => {
+            secrets::set_api_key_async(&secret_id(provider), value).await
+        }
         _ => secrets::delete_api_key_async(&secret_id(provider)).await,
     }
     .map_err(|error| command_error(format!("Impossible de mettre à jour le secret : {error}")))?;
@@ -552,12 +561,25 @@ pub async fn web_search_execute(
     if let Some(admission) = chat_admission {
         let execution_id = Some(execution_id.unwrap_or_else(|| admission.request_id.clone()));
         let (reservation, work) = super::chat_admission::admit_tool(
-            &admission_runtime, &ai_state, window.label(), admission,
-        ).await?;
+            &admission_runtime,
+            &ai_state,
+            window.label(),
+            admission,
+        )
+        .await?;
         let manager = manager.inner().clone();
-        let received = reservation.spawn_tool(work, move |cancel| async move {
-            web_search_execute_owned(&manager, query, include_raw_content, execution_id, Some(cancel)).await
-        }).map_err(command_error)?;
+        let received = reservation
+            .spawn_tool(work, move |cancel| async move {
+                web_search_execute_owned(
+                    &manager,
+                    query,
+                    include_raw_content,
+                    execution_id,
+                    Some(cancel),
+                )
+                .await
+            })
+            .map_err(command_error)?;
         return received.await.map_err(command_error)?;
     }
     web_search_execute_owned(&manager, query, include_raw_content, execution_id, None).await
@@ -607,7 +629,8 @@ async fn web_search_execute_owned(
         .and_then(|value| u32::try_from(value).ok())
         .unwrap_or(DEFAULT_MAX_RESULTS)
         .clamp(1, MAX_RESULTS);
-    let api_key = secrets::get_api_key_async(&secret_id(provider)).await
+    let api_key = secrets::get_api_key_async(&secret_id(provider))
+        .await
         .map_err(|error| command_error(format!("Impossible de lire le secret : {error}")))?
         .filter(|value| !value.trim().is_empty())
         .ok_or_else(|| command_error("Aucune clé API de recherche web n’est configurée."))?;
@@ -642,11 +665,17 @@ pub async fn web_fetch_execute(
     if let Some(admission) = chat_admission {
         let execution_id = Some(execution_id.unwrap_or_else(|| admission.request_id.clone()));
         let (reservation, work) = super::chat_admission::admit_tool(
-            &admission_runtime, &ai_state, window.label(), admission,
-        ).await?;
-        let received = reservation.spawn_tool(work, move |cancel| async move {
-            web_fetch_execute_owned(url, resource_kind, execution_id, Some(cancel)).await
-        }).map_err(command_error)?;
+            &admission_runtime,
+            &ai_state,
+            window.label(),
+            admission,
+        )
+        .await?;
+        let received = reservation
+            .spawn_tool(work, move |cancel| async move {
+                web_fetch_execute_owned(url, resource_kind, execution_id, Some(cancel)).await
+            })
+            .map_err(command_error)?;
         return received.await.map_err(command_error)?;
     }
     web_fetch_execute_owned(url, resource_kind, execution_id, None).await
@@ -1041,8 +1070,12 @@ mod tests {
     #[tokio::test]
     async fn native_cancellation_before_web_fetch_registration_prevents_transport() {
         let cancel = tokio_util::sync::CancellationToken::new();
-        let execution = web_fetch_execute_owned("not-a-url".into(), "page".into(),
-            Some("native-cancel-before-web".into()), Some(cancel.clone()));
+        let execution = web_fetch_execute_owned(
+            "not-a-url".into(),
+            "page".into(),
+            Some("native-cancel-before-web".into()),
+            Some(cancel.clone()),
+        );
         cancel.cancel();
         let error = execution.await.unwrap_err();
         assert!(error.message.contains("annulée"));

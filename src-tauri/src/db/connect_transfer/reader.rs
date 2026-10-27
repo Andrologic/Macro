@@ -176,27 +176,47 @@ pub(super) async fn page_in(
 /// The product catalog advances by entry, independently of payload length.
 /// It reuses the same record/mapping/relation checks as raw fragment readback.
 pub(super) async fn entries_in(
-    db: &mut SqliteConnection, archive: &Archive, generation: &str,
-    conversation: &str, after: i64, limit: usize,
+    db: &mut SqliteConnection,
+    archive: &Archive,
+    generation: &str,
+    conversation: &str,
+    after: i64,
+    limit: usize,
 ) -> DbResult<PageData> {
     if after < 0 || after >= archive.records || limit == 0 || limit > PAGE_ITEMS {
         return Err(invalid("invalid_cursor"));
     }
-    let cursor = Cursor { generation: generation.into(), conversation: conversation.into(),
-        binding: archive.binding.clone(), end: archive.records, ordinal: after, offset: 0 };
+    let cursor = Cursor {
+        generation: generation.into(),
+        conversation: conversation.into(),
+        binding: archive.binding.clone(),
+        end: archive.records,
+        ordinal: after,
+        offset: 0,
+    };
     read_records(db, &archive.begin, archive.import, cursor, limit, true).await
 }
 
-pub(super) fn next_entry(cursor: &Cursor) -> i64 { cursor.ordinal }
+pub(super) fn next_entry(cursor: &Cursor) -> i64 {
+    cursor.ordinal
+}
 
-pub(super) async fn presentation_in(db: &mut SqliteConnection, transfer: &str, source: u64)
-    -> DbResult<Option<crate::db::models::PortableMessageOrigin>> {
+pub(super) async fn presentation_in(
+    db: &mut SqliteConnection,
+    transfer: &str,
+    source: u64,
+) -> DbResult<Option<crate::db::models::PortableMessageOrigin>> {
     let row = sqlx::query("SELECT o.portable_import_key,o.portable_manifest,o.portable_ordinal,o.portable_source_ordinal,CASE WHEN length(CAST(o.portable_display_date AS BLOB))<=64 THEN o.portable_display_date END AS portable_display_date,o.portable_inherited_from FROM connect_projection_messages p JOIN connect_message_origins o ON o.message_id=p.id WHERE p.transfer_id=? AND p.source_ordinal=? ORDER BY p.ordinal LIMIT 1")
         .bind(transfer).bind(i64::try_from(source).map_err(|_|invalid("integrity_failed"))?).fetch_optional(db).await?;
-    Ok(row.map(|row| crate::db::models::PortableMessageOrigin { version: 1,
-        import_key: row.get("portable_import_key"), manifest: row.get("portable_manifest"),
-        ordinal: row.get("portable_ordinal"), source_ordinal: row.get("portable_source_ordinal"),
-        display_date: row.get("portable_display_date"), inherited_from: row.get("portable_inherited_from") }))
+    Ok(row.map(|row| crate::db::models::PortableMessageOrigin {
+        version: 1,
+        import_key: row.get("portable_import_key"),
+        manifest: row.get("portable_manifest"),
+        ordinal: row.get("portable_ordinal"),
+        source_ordinal: row.get("portable_source_ordinal"),
+        display_date: row.get("portable_display_date"),
+        inherited_from: row.get("portable_inherited_from"),
+    }))
 }
 
 /// Shared immutable identity validation for record, projection and resource reads.

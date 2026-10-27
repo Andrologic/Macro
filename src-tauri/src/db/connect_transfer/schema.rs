@@ -8,20 +8,47 @@ static EXPECTED: OnceCell<Vec<(String, Option<String>)>> = OnceCell::const_new()
 // DDL-only reference. These namespaces never supply ownership or content data.
 pub(in crate::db) async fn reference(reader: bool) -> DbResult<SqliteConnection> {
     let mut db = SqliteConnection::connect("sqlite::memory:").await?;
-    for table in ["conversations", "messages", "conversation_management",
-        "conversation_response_versions", "conversation_citations", "conversation_toolbox_state",
-        "conversation_compactions", "conversation_compaction_events", "conversation_action_receipts",
-        "tool_invocations", "pilot_message_attachments", "pilot_file_sends", "app_settings",
-        "agent_runs", "agent_run_transitions", "conversation_goals", "conversation_goal_audits", "conversation_goal_audit_runs"] {
+    for table in [
+        "conversations",
+        "messages",
+        "conversation_management",
+        "conversation_response_versions",
+        "conversation_citations",
+        "conversation_toolbox_state",
+        "conversation_compactions",
+        "conversation_compaction_events",
+        "conversation_action_receipts",
+        "tool_invocations",
+        "pilot_message_attachments",
+        "pilot_file_sends",
+        "app_settings",
+        "agent_runs",
+        "agent_run_transitions",
+        "conversation_goals",
+        "conversation_goal_audits",
+        "conversation_goal_audit_runs",
+    ] {
         sqlx::query(sqlx::AssertSqlSafe(format!("CREATE TABLE {table}(id TEXT,conversation_id TEXT,scope_mode TEXT,project_id TEXT,group_id TEXT,task_id TEXT)")))
             .execute(&mut db).await?;
     }
-    sqlx::raw_sql(include_str!("../migrations/015_inactive_storage.sql")).execute(&mut db).await?;
-    sqlx::raw_sql(include_str!("../migrations/016_source_capture.sql")).execute(&mut db).await?;
-    sqlx::raw_sql(include_str!("../migrations/017_chat_admission.sql")).execute(&mut db).await?;
+    sqlx::raw_sql(include_str!("../migrations/015_inactive_storage.sql"))
+        .execute(&mut db)
+        .await?;
+    sqlx::raw_sql(include_str!("../migrations/016_source_capture.sql"))
+        .execute(&mut db)
+        .await?;
+    sqlx::raw_sql(include_str!("../migrations/017_chat_admission.sql"))
+        .execute(&mut db)
+        .await?;
     sqlx::raw_sql(MIGRATION).execute(&mut db).await?;
     sqlx::raw_sql(PUBLICATION).execute(&mut db).await?;
-    if reader { sqlx::raw_sql(include_str!("../migrations/020_connect_archive_lifecycle.sql")).execute(&mut db).await?; }
+    if reader {
+        sqlx::raw_sql(include_str!(
+            "../migrations/020_connect_archive_lifecycle.sql"
+        ))
+        .execute(&mut db)
+        .await?;
+    }
     Ok(db)
 }
 async fn expected() -> DbResult<&'static Vec<(String, Option<String>)>> {
@@ -70,7 +97,9 @@ pub(in crate::db) async fn validate_schema(db: &mut SqliteConnection) -> DbResul
     }
     let incomplete: i64 = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM connect_local_deletions WHERE phase<>'deleted') OR EXISTS(SELECT 1 FROM connect_deletion_payloads)")
         .fetch_one(db).await?;
-    if incomplete != 0 { return Err(invalid("connect_deletion_inconsistent")); }
+    if incomplete != 0 {
+        return Err(invalid("connect_deletion_inconsistent"));
+    }
     Ok(())
 }
 /// Fresh backup reference or synthetic legacy fixture only, never an archive.
@@ -101,13 +130,37 @@ pub(crate) async fn remove_publication_reference_in(db: &mut SqliteConnection) -
 /// For an empty F reference only. Ordinary conversations are not modified.
 /// Legacy fixtures may contain ordinary data but no F rows may be discarded.
 pub(crate) async fn remove_reader_reference_in(db: &mut SqliteConnection) -> DbResult<()> {
-    for table in ["connect_transfers", "connect_exchanges", "connect_raw_prefix", "connect_raw_chunks", "connect_preparations", "connect_projection_messages", "connect_projection_citations", "connect_projection_assets", "connect_projection_fields", "connect_projection_fragments", "conversation_portable_archives", "connect_activation_receipts", "connect_local_deletions", "connect_projection_display", "connect_publication_times"] {
-        let exists: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?")
-            .bind(table).fetch_one(&mut *db).await?;
+    for table in [
+        "connect_transfers",
+        "connect_exchanges",
+        "connect_raw_prefix",
+        "connect_raw_chunks",
+        "connect_preparations",
+        "connect_projection_messages",
+        "connect_projection_citations",
+        "connect_projection_assets",
+        "connect_projection_fields",
+        "connect_projection_fragments",
+        "conversation_portable_archives",
+        "connect_activation_receipts",
+        "connect_local_deletions",
+        "connect_projection_display",
+        "connect_publication_times",
+    ] {
+        let exists: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?")
+                .bind(table)
+                .fetch_one(&mut *db)
+                .await?;
         if exists != 0 {
-            let populated: i64 = sqlx::query_scalar(sqlx::AssertSqlSafe(format!("SELECT EXISTS(SELECT 1 FROM {table})")))
-                .fetch_one(&mut *db).await?;
-            if populated != 0 { return Err(invalid("backup_reference_not_empty")); }
+            let populated: i64 = sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
+                "SELECT EXISTS(SELECT 1 FROM {table})"
+            )))
+            .fetch_one(&mut *db)
+            .await?;
+            if populated != 0 {
+                return Err(invalid("backup_reference_not_empty"));
+            }
         }
     }
     // Backup comparison removes 020, then 019, then 018 as separate phases.
@@ -116,7 +169,9 @@ pub(crate) async fn remove_reader_reference_in(db: &mut SqliteConnection) -> DbR
     // retained tables above before treating this as an empty reference.
     let reader_objects: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name IN ('connect_local_deletions','connect_projection_display','connect_publication_times')")
         .fetch_one(&mut *db).await?;
-    if reader_objects == 0 { return Ok(()); }
+    if reader_objects == 0 {
+        return Ok(());
+    }
     // Restore declared pre-020 guards only on this verified empty F reference.
     // Application deletion never calls DDL or temporarily opens an owner.
     let mut legacy = reference(false).await?;
@@ -126,11 +181,20 @@ pub(crate) async fn remove_reader_reference_in(db: &mut SqliteConnection) -> DbR
     let current: Vec<String> = sqlx::query_scalar("SELECT name FROM sqlite_master WHERE type='trigger' AND (name GLOB 'connect_*' OR (name GLOB 'chat_admission_*' AND name GLOB '*_delete')) ORDER BY name")
         .fetch_all(&mut *db).await?;
     for name in current {
-        sqlx::query(sqlx::AssertSqlSafe(format!("DROP TRIGGER \"{}\"", name.replace('"', "\"\"")))).execute(&mut *db).await?;
+        sqlx::query(sqlx::AssertSqlSafe(format!(
+            "DROP TRIGGER \"{}\"",
+            name.replace('"', "\"\"")
+        )))
+        .execute(&mut *db)
+        .await?;
     }
     sqlx::raw_sql("DROP INDEX IF EXISTS connect_message_reader; DROP INDEX IF EXISTS connect_asset_reader; DROP INDEX IF EXISTS connect_citation_reader; DROP VIEW IF EXISTS connect_message_origins; DROP VIEW IF EXISTS connect_deleting_owners; DROP VIEW IF EXISTS connect_deleting_transfers; DROP VIEW IF EXISTS connect_deletion_payloads; DROP TABLE IF EXISTS connect_projection_display; DROP TABLE IF EXISTS connect_publication_times; DROP TABLE IF EXISTS connect_local_deletions;").execute(&mut *db).await?;
     // These statements were just created from the checked-in migrations in an
     // isolated connection, never read from the application database or input.
-    for ddl in guards { sqlx::raw_sql(sqlx::AssertSqlSafe(ddl)).execute(&mut *db).await?; }
+    for ddl in guards {
+        sqlx::raw_sql(sqlx::AssertSqlSafe(ddl))
+            .execute(&mut *db)
+            .await?;
+    }
     Ok(())
 }

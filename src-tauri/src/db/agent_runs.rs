@@ -674,7 +674,9 @@ pub async fn reconcile_active_agent_runs_after_restart(pool: &SqlitePool) -> DbR
     reconcile_active_agent_runs_after_restart_in(&mut *pool.acquire().await?).await
 }
 
-pub(crate) async fn reconcile_active_agent_runs_after_restart_in(connection: &mut sqlx::SqliteConnection) -> DbResult<u64> {
+pub(crate) async fn reconcile_active_agent_runs_after_restart_in(
+    connection: &mut sqlx::SqliteConnection,
+) -> DbResult<u64> {
     let now = chrono::Utc::now().to_rfc3339();
     let result = sqlx::query(
         r#"

@@ -1764,7 +1764,9 @@ async fn finish_skill_output_tasks(
             abort_stdout.abort();
             abort_stderr.abort();
             let _ = drain.await;
-            let marker = SCRIPT_OUTPUT_TRUNCATION_MARKER.trim_start_matches('\n').to_string();
+            let marker = SCRIPT_OUTPUT_TRUNCATION_MARKER
+                .trim_start_matches('\n')
+                .to_string();
             Ok(((marker.clone(), true), (marker, true)))
         }
     }
@@ -2434,16 +2436,35 @@ pub async fn skills_run_script(
 ) -> CommandResult<SkillScriptRunResponse> {
     if let Some(admission) = chat_admission {
         let (reservation, work) = super::chat_admission::admit_tool(
-            &admission_runtime, &ai_state, window.label(), admission,
-        ).await?;
+            &admission_runtime,
+            &ai_state,
+            window.label(),
+            admission,
+        )
+        .await?;
         let manager = manager.inner().clone();
         let owner = work.clone();
-        let received = reservation.spawn_tool(work, move |cancel| async move {
-            let result = run_configured_skill_script(&manager, skill_id, script_path, args,
-                timeout_ms, allow_workspace, workspace_path, project_roots, workspace_root, Some(cancel)).await;
-            if result.is_err() { let _ = owner.unknown().await; }
-            result
-        }).map_err(command_error)?;
+        let received = reservation
+            .spawn_tool(work, move |cancel| async move {
+                let result = run_configured_skill_script(
+                    &manager,
+                    skill_id,
+                    script_path,
+                    args,
+                    timeout_ms,
+                    allow_workspace,
+                    workspace_path,
+                    project_roots,
+                    workspace_root,
+                    Some(cancel),
+                )
+                .await;
+                if result.is_err() {
+                    let _ = owner.unknown().await;
+                }
+                result
+            })
+            .map_err(command_error)?;
         return received.await.map_err(command_error)?;
     }
     run_configured_skill_script(
@@ -2538,7 +2559,9 @@ async fn run_skill_script_with_manifest(
     native_cancel: Option<tokio_util::sync::CancellationToken>,
 ) -> CommandResult<SkillScriptRunResponse> {
     let native_cancel = native_cancel.unwrap_or_default();
-    if native_cancel.is_cancelled() { return Err(command_error("Skill script cancelled before launch.")); }
+    if native_cancel.is_cancelled() {
+        return Err(command_error("Skill script cancelled before launch."));
+    }
     let script = resolve_resource_path(&skill, &script_path, &["scripts"])?;
     let timeout_ms = timeout_ms
         .unwrap_or(DEFAULT_SCRIPT_TIMEOUT_MS)
@@ -2602,7 +2625,9 @@ async fn run_skill_script_with_manifest(
         }
     }
 
-    if native_cancel.is_cancelled() { return Err(command_error("Skill script cancelled before launch.")); }
+    if native_cancel.is_cancelled() {
+        return Err(command_error("Skill script cancelled before launch."));
+    }
     let mut process = ContainedBackgroundProcess::spawn(command)
         .map_err(|error| command_error(format!("Failed to run skill script: {}", error)))?;
     let stdout_pipe = process
@@ -2622,15 +2647,24 @@ async fn run_skill_script_with_manifest(
     let timed_out = matches!(wait_result, Some(Err(_)));
     // Always close descendants and join both readers, including wait/kill errors.
     let terminated = process.terminate_with_grace(Duration::ZERO).await;
-    let output = finish_skill_output_tasks(stdout_task, stderr_task, SCRIPT_OUTPUT_DRAIN_TIMEOUT).await;
+    let output =
+        finish_skill_output_tasks(stdout_task, stderr_task, SCRIPT_OUTPUT_DRAIN_TIMEOUT).await;
     let status = match wait_result {
         Some(Ok(Ok(status))) => Some(status),
-        Some(Ok(Err(error))) => return Err(command_error(format!("Failed to wait for skill script: {error}"))),
+        Some(Ok(Err(error))) => {
+            return Err(command_error(format!(
+                "Failed to wait for skill script: {error}"
+            )))
+        }
         _ => None,
     };
-    terminated.map_err(|error| command_error(format!("Failed to stop skill script descendants: {error}")))?;
+    terminated.map_err(|error| {
+        command_error(format!("Failed to stop skill script descendants: {error}"))
+    })?;
     let ((stdout, stdout_truncated), (stderr, stderr_truncated)) = output?;
-    if cancelled { return Err(command_error("Skill script cancelled.")); }
+    if cancelled {
+        return Err(command_error("Skill script cancelled."));
+    }
 
     let response = if timed_out {
         let (stderr, timeout_message_truncated) = append_skill_timeout_message(stderr, timeout_ms);
@@ -2800,8 +2834,11 @@ mod tests {
         let root = temp.path().join("synthetic-skill");
         write_skill(&root, "synthetic-owner");
         fs::create_dir_all(root.join("scripts")).unwrap();
-        fs::write(root.join("scripts/owned.sh"),
-            "printf '%s' \"$$\" > \"$1\"\nprintf synthetic-ready >&2\nexec sleep 30\n").unwrap();
+        fs::write(
+            root.join("scripts/owned.sh"),
+            "printf '%s' \"$$\" > \"$1\"\nprintf synthetic-ready >&2\nexec sleep 30\n",
+        )
+        .unwrap();
         let manifest = build_manifest_uncached(&root, local_install_source(&root)).unwrap();
         let pid_file = temp.path().join("child.pid");
         let cancel = tokio_util::sync::CancellationToken::new();
@@ -2809,30 +2846,58 @@ mod tests {
         let id = manifest.id.clone();
         let arg = pid_file.to_string_lossy().into_owned();
         let run = tokio::spawn(async move {
-            run_skill_script_with_manifest(manifest, id, "scripts/owned.sh".into(),
-                vec![arg], Some(30_000), false, None, Vec::new(), Some(child_cancel)).await
+            run_skill_script_with_manifest(
+                manifest,
+                id,
+                "scripts/owned.sh".into(),
+                vec![arg],
+                Some(30_000),
+                false,
+                None,
+                Vec::new(),
+                Some(child_cancel),
+            )
+            .await
         });
         let pid: i32 = timeout(Duration::from_secs(5), async {
             loop {
                 if let Ok(value) = tokio::fs::read_to_string(&pid_file).await {
-                    if let Ok(pid) = value.parse() { break pid; }
+                    if let Ok(pid) = value.parse() {
+                        break pid;
+                    }
                 }
                 tokio::task::yield_now().await;
             }
-        }).await.unwrap();
+        })
+        .await
+        .unwrap();
         cancel.cancel();
-        let error = timeout(Duration::from_secs(5), run).await.unwrap().unwrap().unwrap_err();
+        let error = timeout(Duration::from_secs(5), run)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap_err();
         assert!(error.message.contains("cancelled"));
         assert_eq!(unsafe { libc::kill(pid, 0) }, -1);
-        assert_eq!(std::io::Error::last_os_error().raw_os_error(), Some(libc::ESRCH));
+        assert_eq!(
+            std::io::Error::last_os_error().raw_os_error(),
+            Some(libc::ESRCH)
+        );
     }
 
     #[tokio::test]
     async fn failed_skill_reader_does_not_detach_its_sibling() {
         let (release, pending) = tokio::sync::oneshot::channel();
         let stdout = tokio::spawn(async { Err(std::io::Error::other("synthetic reader failure")) });
-        let stderr = tokio::spawn(async move { let _ = pending.await; Ok((String::new(), false)) });
-        let finished = tokio::spawn(finish_skill_output_tasks(stdout, stderr, Duration::from_secs(5)));
+        let stderr = tokio::spawn(async move {
+            let _ = pending.await;
+            Ok((String::new(), false))
+        });
+        let finished = tokio::spawn(finish_skill_output_tasks(
+            stdout,
+            stderr,
+            Duration::from_secs(5),
+        ));
         tokio::task::yield_now().await;
         assert!(!finished.is_finished());
         release.send(()).unwrap();

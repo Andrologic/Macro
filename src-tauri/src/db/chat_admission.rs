@@ -5,10 +5,10 @@ use tokio::sync::OnceCell;
 
 const MIGRATION: &str = include_str!("migrations/017_chat_admission.sql");
 const OBJECTS: &str = "(name GLOB 'chat_admission_*' OR tbl_name GLOB 'chat_admission_*') AND name NOT GLOB 'connect_*'";
-pub(crate) mod runtime;
 pub(crate) mod intents;
 pub(crate) mod reconciliation;
 pub(crate) mod retirement;
+pub(crate) mod runtime;
 
 static EXPECTED: OnceCell<Vec<(String, Option<String>)>> = OnceCell::const_new();
 static EXPECTED_LEGACY: OnceCell<Vec<(String, Option<String>)>> = OnceCell::const_new();
@@ -23,10 +23,13 @@ async fn expected_schema(reader: bool) -> DbResult<&'static Vec<(String, Option<
         let mut db = super::connect_transfer::reference(reader).await?;
         let result = sqlx::query_as(sqlx::AssertSqlSafe(format!(
             "SELECT name,sql FROM sqlite_master WHERE {OBJECTS} ORDER BY name"
-        ))).fetch_all(&mut db).await?;
+        )))
+        .fetch_all(&mut db)
+        .await?;
         db.close().await?;
         Ok(result)
-    }).await
+    })
+    .await
 }
 
 pub(crate) async fn validate_schema(db: &mut SqliteConnection) -> DbResult<()> {
@@ -83,10 +86,15 @@ pub(crate) async fn remove_reference_schema(pool: &SqlitePool) -> DbResult<()> {
 }
 
 pub(crate) async fn remove_reference_schema_in(db: &mut SqliteConnection) -> DbResult<()> {
-    let has_f:i64=sqlx::query_scalar("SELECT COUNT(*) FROM sqlite_master WHERE name='connect_transfers'").fetch_one(&mut *db).await?;
-    if has_f!=0 {
+    let has_f: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM sqlite_master WHERE name='connect_transfers'")
+            .fetch_one(&mut *db)
+            .await?;
+    if has_f != 0 {
         super::connect_transfer::remove_reference_schema_in(db).await?;
-        sqlx::query("DELETE FROM schema_migrations WHERE version>=18").execute(&mut *db).await?;
+        sqlx::query("DELETE FROM schema_migrations WHERE version>=18")
+            .execute(&mut *db)
+            .await?;
     }
 
     let names: Vec<String> = sqlx::query_scalar(
@@ -142,7 +150,7 @@ pub(crate) async fn reconcile_after_restart(pool: &SqlitePool) -> DbResult<()> {
     let mut lease = durable_lease(pool).await?;
     let mut tx = lease.begin_with("BEGIN IMMEDIATE").await?;
     validate_schema(&mut tx).await?;
-    super::connect_transfer::hold_in(&mut tx,false).await?;
+    super::connect_transfer::hold_in(&mut tx, false).await?;
     sqlx::query("UPDATE chat_admission_operations SET phase='unknown',revision=revision+1 WHERE phase IN ('prepared','dispatched')")
         .execute(&mut *tx).await?;
     // The old process cannot retain HTTP callbacks after exclusive startup.
@@ -150,9 +158,12 @@ pub(crate) async fn reconcile_after_restart(pool: &SqlitePool) -> DbResult<()> {
     sqlx::query("UPDATE chat_admission_operations SET local_closed_at=COALESCE(local_closed_at,?) WHERE local_transport='http'")
         .bind(chrono::Utc::now().to_rfc3339()).execute(&mut *tx).await?;
     let roots:Vec<String>=sqlx::query_scalar("SELECT operation_id FROM chat_admission_operations WHERE parent_id IS NULL AND local_closed_at IS NULL AND phase='unknown'").fetch_all(&mut *tx).await?;
-    for root in roots { retirement::close_proven_root(&mut tx,&root).await?; }
+    for root in roots {
+        retirement::close_proven_root(&mut tx, &root).await?;
+    }
     sqlx::query("UPDATE chat_admission_browsers SET phase='retired' WHERE phase<>'retired'")
-        .execute(&mut *tx).await?;
+        .execute(&mut *tx)
+        .await?;
     sqlx::query("UPDATE chat_admission_owners SET browser_reconciled=0,runtime_generation=NULL")
         .execute(&mut *tx)
         .await?;
@@ -167,7 +178,7 @@ pub(crate) async fn hold_restored_profile(pool: &SqlitePool) -> DbResult<()> {
     let mut tx = lease.begin_with("BEGIN IMMEDIATE").await?;
     super::run_migrations_on_connection(&mut tx).await?;
     validate_schema(&mut tx).await?;
-    super::connect_transfer::hold_in(&mut tx,true).await?;
+    super::connect_transfer::hold_in(&mut tx, true).await?;
     // The restore owner has established process quiescence. Reuse official
     // startup reconciliation before installing holds, inside this transaction.
     super::agent_runs::reconcile_active_agent_runs_after_restart_in(&mut tx).await?;
@@ -176,7 +187,8 @@ pub(crate) async fn hold_restored_profile(pool: &SqlitePool) -> DbResult<()> {
     // A protected owner with pending tools is inconsistent and stays closed.
     super::tool_invocations::reconcile_pending_after_restart_in(&mut tx).await?;
     sqlx::query("UPDATE chat_admission_browsers SET phase='retired' WHERE phase<>'retired'")
-        .execute(&mut *tx).await?;
+        .execute(&mut *tx)
+        .await?;
     sqlx::query("UPDATE chat_admission_owners SET mode='restore_hold',revision=revision+1,browser_reconciled=0,runtime_generation=NULL WHERE mode IN ('open','frozen')")
         .execute(&mut *tx).await?;
     sqlx::query("UPDATE chat_admission_operations SET phase='unknown',revision=revision+1 WHERE phase IN ('prepared','dispatched')")
@@ -190,7 +202,10 @@ pub(crate) async fn hold_restored_profile(pool: &SqlitePool) -> DbResult<()> {
 // receipt or restored browser data. The frontend registry will own these values.
 #[allow(dead_code)]
 #[derive(Clone, Copy)]
-pub(crate) enum ProviderBoundary { ExistingContext, IndependentRequest }
+pub(crate) enum ProviderBoundary {
+    ExistingContext,
+    IndependentRequest,
+}
 
 pub(crate) struct OperationPermit {
     owner: crate::core::db_state::DbPool,
@@ -294,7 +309,9 @@ impl OperationPermit {
         if let Some((caller, runtime, _)) = browser {
             let current: i64 = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM chat_admission_browsers WHERE runtime=? AND caller=? AND runtime_generation=? AND phase='active')")
                 .bind(runtime).bind(caller).bind(&generation).fetch_one(&mut *tx).await?;
-            if current == 0 { return Err(invalid("chat_admission_browser_closed")); }
+            if current == 0 {
+                return Err(invalid("chat_admission_browser_closed"));
+            }
         }
         let incarnation: Option<String> = sqlx::query_scalar("SELECT o.incarnation FROM chat_admission_owners o JOIN conversations c ON c.id=o.conversation_id WHERE c.id=? AND c.scope_mode='Chat' AND c.project_id IS NULL AND c.group_id IS NULL AND c.task_id IS NULL AND o.mode='open'")
             .bind(conversation).fetch_optional(&mut *tx).await?;
@@ -304,13 +321,17 @@ impl OperationPermit {
         // user turn can proceed after the physical owner closed the old tree.
         let uncertain: i64 = sqlx::query_scalar("WITH RECURSIVE ancestors(id,parent_id,local_closed_at,turn_id) AS (SELECT operation_id,parent_id,local_closed_at,turn_id FROM chat_admission_operations WHERE conversation_id=? AND incarnation=? AND kind IN ('provider','tool') AND phase='unknown' UNION SELECT p.operation_id,p.parent_id,p.local_closed_at,p.turn_id FROM chat_admission_operations p JOIN ancestors a ON a.parent_id=p.operation_id) SELECT EXISTS(SELECT 1 FROM ancestors WHERE parent_id IS NULL AND (local_closed_at IS NULL OR turn_id=?))")
             .bind(conversation).bind(&incarnation).bind(turn).fetch_one(&mut *tx).await?;
-        if uncertain != 0 { return Err(invalid("chat_admission_effect_unreconciled")); }
+        if uncertain != 0 {
+            return Err(invalid("chat_admission_effect_unreconciled"));
+        }
         // A response reservation retains the old copy; it does not own a new
         // explicit turn once that uncertain root's physical lifetime is closed.
         // Other completed/no-effect parents still require their ordinary copy ACK.
         let recovery: i64 = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM chat_admission_operations copy WHERE copy.conversation_id=? AND copy.incarnation=? AND copy.kind='unsaved' AND copy.phase NOT IN ('completed','no_effect') AND NOT EXISTS(SELECT 1 FROM chat_admission_operations root WHERE root.operation_id=copy.parent_id AND root.parent_id IS NULL AND root.kind='turn' AND root.phase IN ('unknown','no_effect') AND EXISTS(WITH RECURSIVE family(id,kind,phase) AS (SELECT operation_id,kind,phase FROM chat_admission_operations WHERE parent_id=root.operation_id UNION ALL SELECT p.operation_id,p.kind,p.phase FROM chat_admission_operations p JOIN family f ON p.parent_id=f.id) SELECT 1 FROM family WHERE kind IN ('provider','tool') AND phase='unknown') AND root.local_closed_at IS NOT NULL AND root.turn_id<>? AND ?='turn'))")
             .bind(conversation).bind(&incarnation).bind(turn).bind(purpose.as_str()).fetch_one(&mut *tx).await?;
-        if recovery != 0 { return Err(invalid("chat_admission_response_recovery_pending")); }
+        if recovery != 0 {
+            return Err(invalid("chat_admission_response_recovery_pending"));
+        }
         let active: i64 = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM chat_admission_operations WHERE conversation_id=? AND kind IN ('turn','compaction') AND parent_id IS NULL AND phase IN ('prepared','dispatched','result_pending'))")
             .bind(conversation).fetch_one(&mut *tx).await?;
         if active != 0 {
@@ -326,7 +347,11 @@ impl OperationPermit {
                 let queued: Option<(String, String, Option<String>, String, String)> = sqlx::query_as("SELECT operation_id,phase,parent_id,browser_caller,browser_runtime FROM chat_admission_operations WHERE conversation_id=? AND incarnation=? AND kind='queue' AND browser_attempt=?")
                     .bind(conversation).bind(&incarnation).bind(turn).fetch_optional(&mut *tx).await?;
                 if let Some((id, phase, parent, window, queue_runtime)) = queued {
-                    if parent.is_some() || !matches!(phase.as_str(), "prepared" | "unknown") || window != caller || queue_runtime != runtime {
+                    if parent.is_some()
+                        || !matches!(phase.as_str(), "prepared" | "unknown")
+                        || window != caller
+                        || queue_runtime != runtime
+                    {
                         return Err(invalid("chat_admission_queue_already_claimed"));
                     }
                     sqlx::query("UPDATE chat_admission_operations SET parent_id=?,phase='result_pending',revision=revision+1 WHERE operation_id=?")
@@ -527,15 +552,32 @@ impl OperationPermit {
         if provider.is_empty() || context.is_empty() {
             return Err(invalid("chat_admission_provider_context_missing"));
         }
-        self.admit_child(WorkKind::Provider, Some(request), Some((provider, context, ProviderBoundary::ExistingContext)))
-            .await
+        self.admit_child(
+            WorkKind::Provider,
+            Some(request),
+            Some((provider, context, ProviderBoundary::ExistingContext)),
+        )
+        .await
     }
 
     /// Only a native owner constructing a complete independent request may use
     /// this boundary. JavaScript and opaque HTTP submissions cannot select it.
-    pub(crate) async fn provider_attempt_with_boundary(&self, request: &str, provider: &str, context: &str, boundary: ProviderBoundary) -> DbResult<Self> {
-        if provider.is_empty() || context.is_empty() { return Err(invalid("chat_admission_provider_context_missing")); }
-        self.admit_child(WorkKind::Provider,Some(request),Some((provider,context,boundary))).await
+    pub(crate) async fn provider_attempt_with_boundary(
+        &self,
+        request: &str,
+        provider: &str,
+        context: &str,
+        boundary: ProviderBoundary,
+    ) -> DbResult<Self> {
+        if provider.is_empty() || context.is_empty() {
+            return Err(invalid("chat_admission_provider_context_missing"));
+        }
+        self.admit_child(
+            WorkKind::Provider,
+            Some(request),
+            Some((provider, context, boundary)),
+        )
+        .await
     }
 
     async fn admit_child(
@@ -575,7 +617,13 @@ impl OperationPermit {
                 ProviderBoundary::IndependentRequest => "WITH RECURSIVE ancestors(id,parent_id,local_closed_at,turn_id) AS (SELECT operation_id,parent_id,local_closed_at,turn_id FROM chat_admission_operations WHERE conversation_id=?1 AND incarnation=?2 AND (provider_id=?3 OR provider_context=?4) AND phase NOT IN ('completed','no_effect') UNION SELECT p.operation_id,p.parent_id,p.local_closed_at,p.turn_id FROM chat_admission_operations p JOIN ancestors a ON a.parent_id=p.operation_id) SELECT EXISTS(SELECT 1 FROM ancestors WHERE parent_id IS NULL AND (local_closed_at IS NULL OR turn_id=(SELECT turn_id FROM chat_admission_operations WHERE operation_id=?5)))",
             };
             let unresolved: i64 = sqlx::query_scalar(query)
-                .bind(&self.conversation).bind(&self.incarnation).bind(provider).bind(context).bind(&self.operation).fetch_one(&mut *tx).await?;
+                .bind(&self.conversation)
+                .bind(&self.incarnation)
+                .bind(provider)
+                .bind(context)
+                .bind(&self.operation)
+                .fetch_one(&mut *tx)
+                .await?;
             if unresolved != 0 {
                 return Err(invalid("chat_admission_provider_unreconciled"));
             }
@@ -584,7 +632,9 @@ impl OperationPermit {
         sqlx::query("INSERT INTO chat_admission_operations(operation_id,conversation_id,incarnation,parent_id,runtime_generation,kind,phase,turn_id,message_id,request_id,provider_id,provider_context) SELECT ?,conversation_id,incarnation,operation_id,runtime_generation,?,'prepared',turn_id,message_id,?,?,? FROM chat_admission_operations WHERE operation_id=?")
             .bind(&operation).bind(kind.as_str()).bind(request).bind(context.map(|v| v.0)).bind(context.map(|v| v.1)).bind(&self.operation)
             .execute(&mut *tx).await?;
-        if context.is_some_and(|(_,_,boundary)| matches!(boundary, ProviderBoundary::IndependentRequest)) {
+        if context.is_some_and(|(_, _, boundary)| {
+            matches!(boundary, ProviderBoundary::IndependentRequest)
+        }) {
             sqlx::query("UPDATE chat_admission_operations SET local_transport='http' WHERE operation_id=? OR (operation_id=? AND kind='provider')")
                 .bind(&operation).bind(&self.operation).execute(&mut *tx).await?;
         }
@@ -672,7 +722,14 @@ impl OperationPermit {
         if !matches!(phase.as_str(), "prepared" | "dispatched" | "result_pending") {
             return Err(invalid("chat_admission_parent_closed"));
         }
-        persist_response_in(&mut tx, &self.operation, &self.conversation, &receipt, input).await?;
+        persist_response_in(
+            &mut tx,
+            &self.operation,
+            &self.conversation,
+            &receipt,
+            input,
+        )
+        .await?;
         tx.commit().await?;
         lease.committed = true;
         Ok(())
@@ -705,7 +762,7 @@ impl OperationPermit {
         if pending != 0 {
             return Err(invalid("chat_admission_children_pending"));
         }
-        if unresolved_turn_tools(&mut tx,&self.conversation,&self.operation).await? {
+        if unresolved_turn_tools(&mut tx, &self.conversation, &self.operation).await? {
             return Err(invalid("chat_admission_tool_journal_unreconciled"));
         }
         if let Some(input) = input {
@@ -769,7 +826,10 @@ impl OperationPermit {
     /// Preparation can own a completed metadata request before an assistant
     /// exists. Preserve that outcome instead of calling it no_effect.
     pub(crate) async fn finish_preparation(&self) -> DbResult<()> {
-        let guard = self.owner.source_ready(Some(&self.generation)).await
+        let guard = self
+            .owner
+            .source_ready(Some(&self.generation))
+            .await
             .map_err(|_| invalid("chat_admission_stale_generation"))?;
         let mut lease = durable_lease(&guard.ready.pool).await?;
         let mut tx = lease.begin_with("BEGIN IMMEDIATE").await?;
@@ -777,10 +837,14 @@ impl OperationPermit {
         let phase = self.check(&mut tx).await?;
         let unlaunched: i64 = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM chat_admission_operations WHERE operation_id=? AND parent_id IS NULL AND message_id IS NULL)")
             .bind(&self.operation).fetch_one(&mut *tx).await?;
-        if phase != "prepared" || unlaunched == 0 { return Err(invalid("chat_admission_preparation_already_launched")); }
+        if phase != "prepared" || unlaunched == 0 {
+            return Err(invalid("chat_admission_preparation_already_launched"));
+        }
         let pending: i64 = sqlx::query_scalar("WITH RECURSIVE children(id,phase) AS (SELECT operation_id,phase FROM chat_admission_operations WHERE parent_id=? UNION SELECT p.operation_id,p.phase FROM chat_admission_operations p JOIN children c ON p.parent_id=c.id) SELECT EXISTS(SELECT 1 FROM children WHERE phase NOT IN ('completed','no_effect'))")
             .bind(&self.operation).fetch_one(&mut *tx).await?;
-        if pending != 0 { return Err(invalid("chat_admission_children_pending")); }
+        if pending != 0 {
+            return Err(invalid("chat_admission_children_pending"));
+        }
         let effect: i64 = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM chat_admission_operations WHERE parent_id=? AND kind IN ('provider','tool') AND phase='completed')")
             .bind(&self.operation).fetch_one(&mut *tx).await?;
         let receipt = runtime::completion_fingerprint("preparation", &())?;
@@ -794,14 +858,20 @@ impl OperationPermit {
     /// The executable owner returned a successful result after its physical
     /// cleanup. This receipt never changes the external-effect phase.
     pub(crate) async fn local_execution_closed(&self) -> DbResult<()> {
-        let guard=self.owner.source_ready(Some(&self.generation)).await.map_err(|_| invalid("chat_admission_stale_generation"))?;
-        let mut lease=durable_lease(&guard.ready.pool).await?;
-        let mut tx=lease.begin_with("BEGIN IMMEDIATE").await?;
+        let guard = self
+            .owner
+            .source_ready(Some(&self.generation))
+            .await
+            .map_err(|_| invalid("chat_admission_stale_generation"))?;
+        let mut lease = durable_lease(&guard.ready.pool).await?;
+        let mut tx = lease.begin_with("BEGIN IMMEDIATE").await?;
         guard.ready.check_source_schema(&mut tx).await?;
         self.check(&mut tx).await?;
         sqlx::query("UPDATE chat_admission_operations SET local_closed_at=COALESCE(local_closed_at,?) WHERE operation_id=? AND kind='tool' AND request_id IS NOT NULL")
             .bind(chrono::Utc::now().to_rfc3339()).bind(&self.operation).execute(&mut *tx).await?;
-        tx.commit().await?;lease.committed=true;Ok(())
+        tx.commit().await?;
+        lease.committed = true;
+        Ok(())
     }
 
     pub(crate) async fn no_effect(&self) -> DbResult<()> {
@@ -866,7 +936,11 @@ impl OperationPermit {
     }
 }
 
-async fn unresolved_turn_tools(db: &mut SqliteConnection, conversation: &str, operation: &str) -> DbResult<bool> {
+async fn unresolved_turn_tools(
+    db: &mut SqliteConnection,
+    conversation: &str,
+    operation: &str,
+) -> DbResult<bool> {
     Ok(sqlx::query_scalar::<_,i64>("SELECT EXISTS(SELECT 1 FROM tool_invocations WHERE conversation_id=? AND turn_id=(SELECT turn_id FROM chat_admission_operations WHERE operation_id=?) AND status IN ('pending','unknown'))")
         .bind(conversation).bind(operation).fetch_one(db).await? != 0)
 }
@@ -874,28 +948,35 @@ async fn unresolved_turn_tools(db: &mut SqliteConnection, conversation: &str, op
 // Both live completion and recovery of a retired browser use the same writer.
 // The unsaved marker remains pending until its browser copy is actually removed.
 pub(crate) async fn persist_response_in(
-    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>, operation: &str, conversation: &str,
-    receipt: &str, input: super::repository::UpdateMessageContentInput<'_>,
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    operation: &str,
+    conversation: &str,
+    receipt: &str,
+    input: super::repository::UpdateMessageContentInput<'_>,
 ) -> DbResult<()> {
-        let matches: i64 = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM chat_admission_operations p JOIN messages m ON m.id=? WHERE p.operation_id=? AND p.parent_id IS NULL AND p.kind='turn' AND m.conversation_id=p.conversation_id AND m.role='assistant' AND m.turn_id=p.turn_id AND (? IS NULL OR ?=p.turn_id))")
+    let matches: i64 = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM chat_admission_operations p JOIN messages m ON m.id=? WHERE p.operation_id=? AND p.parent_id IS NULL AND p.kind='turn' AND m.conversation_id=p.conversation_id AND m.role='assistant' AND m.turn_id=p.turn_id AND (? IS NULL OR ?=p.turn_id))")
             .bind(input.id).bind(operation).bind(&input.turn_id).bind(&input.turn_id)
             .fetch_one(&mut **tx).await?;
-        if matches == 0 {
-            return Err(invalid("chat_admission_response_identity_mismatch"));
-        }
-        let pending: i64 = sqlx::query_scalar("WITH RECURSIVE children(id,phase,kind,message_id) AS (SELECT operation_id,phase,kind,message_id FROM chat_admission_operations WHERE parent_id=? UNION SELECT p.operation_id,p.phase,p.kind,p.message_id FROM chat_admission_operations p JOIN children c ON p.parent_id=c.id) SELECT EXISTS(SELECT 1 FROM children WHERE phase NOT IN ('completed','no_effect') AND NOT (kind='unsaved' AND message_id=?))")
+    if matches == 0 {
+        return Err(invalid("chat_admission_response_identity_mismatch"));
+    }
+    let pending: i64 = sqlx::query_scalar("WITH RECURSIVE children(id,phase,kind,message_id) AS (SELECT operation_id,phase,kind,message_id FROM chat_admission_operations WHERE parent_id=? UNION SELECT p.operation_id,p.phase,p.kind,p.message_id FROM chat_admission_operations p JOIN children c ON p.parent_id=c.id) SELECT EXISTS(SELECT 1 FROM children WHERE phase NOT IN ('completed','no_effect') AND NOT (kind='unsaved' AND message_id=?))")
             .bind(operation).bind(input.id).fetch_one(&mut **tx).await?;
-        if pending != 0 {
-            let uncertain: i64 = sqlx::query_scalar("WITH RECURSIVE children(id,phase) AS (SELECT operation_id,phase FROM chat_admission_operations WHERE parent_id=? UNION SELECT p.operation_id,p.phase FROM chat_admission_operations p JOIN children c ON p.parent_id=c.id) SELECT EXISTS(SELECT 1 FROM children WHERE phase='unknown')")
+    if pending != 0 {
+        let uncertain: i64 = sqlx::query_scalar("WITH RECURSIVE children(id,phase) AS (SELECT operation_id,phase FROM chat_admission_operations WHERE parent_id=? UNION SELECT p.operation_id,p.phase FROM chat_admission_operations p JOIN children c ON p.parent_id=c.id) SELECT EXISTS(SELECT 1 FROM children WHERE phase='unknown')")
                 .bind(operation).fetch_one(&mut **tx).await?;
-            return Err(invalid(if uncertain != 0 { "chat_admission_response_outcome_unknown" } else { "chat_admission_children_pending" }));
-        }
-        if unresolved_turn_tools(&mut **tx,conversation,operation).await? {
-            return Err(invalid("chat_admission_tool_journal_unreconciled"));
-        }
-        let message = input.id.to_owned();
-        super::repository::update_message_content_with_connection(&mut **tx, input).await?;
-        sqlx::query("UPDATE chat_admission_operations SET phase='completed',message_id=?,completion_receipt=?,revision=revision+1 WHERE operation_id=?")
+        return Err(invalid(if uncertain != 0 {
+            "chat_admission_response_outcome_unknown"
+        } else {
+            "chat_admission_children_pending"
+        }));
+    }
+    if unresolved_turn_tools(&mut **tx, conversation, operation).await? {
+        return Err(invalid("chat_admission_tool_journal_unreconciled"));
+    }
+    let message = input.id.to_owned();
+    super::repository::update_message_content_with_connection(&mut **tx, input).await?;
+    sqlx::query("UPDATE chat_admission_operations SET phase='completed',message_id=?,completion_receipt=?,revision=revision+1 WHERE operation_id=?")
             .bind(message).bind(receipt).bind(operation).execute(&mut **tx).await?;
     Ok(())
 }

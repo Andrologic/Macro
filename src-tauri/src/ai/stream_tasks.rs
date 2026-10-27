@@ -107,16 +107,22 @@ impl StreamReservation {
             // Admission itself awaits SQLite. Cancellation during that wait
             // must not start an executor which has never been polled.
             if cancel.is_cancelled() {
-                work.cancelled_before_execution().await.map_err(|e| e.to_string())?;
+                work.cancelled_before_execution()
+                    .await
+                    .map_err(|e| e.to_string())?;
                 let _ = result.send(Err("Native tool cancelled before execution.".into()));
                 return Ok(());
             }
-            let outcome = AssertUnwindSafe(async move { run(cancel).await }).catch_unwind().await;
+            let outcome = AssertUnwindSafe(async move { run(cancel).await })
+                .catch_unwind()
+                .await;
             let delivery = match outcome {
                 Ok(value) => {
                     let value = match value {
                         Ok(ToolOutcome::PhysicallyClosed(value)) => {
-                            work.local_execution_closed().await.map_err(|e| e.to_string())?;
+                            work.local_execution_closed()
+                                .await
+                                .map_err(|e| e.to_string())?;
                             Ok(value)
                         }
                         Ok(ToolOutcome::Observed(value)) => Ok(value),

@@ -104,8 +104,8 @@ pub mod pilot_file_contracts {
         PilotPreparedSend, PilotSendMarkInput, PilotSendReadInput, PilotSendReceipt,
     };
 }
-mod connect_resources;
 mod connect;
+mod connect_resources;
 mod dev_overrides;
 mod diagnostics;
 pub mod host_telemetry;
@@ -508,7 +508,10 @@ pub fn run() {
     let app = builder
         .on_page_load(|webview, payload| {
             if matches!(payload.event(), tauri::webview::PageLoadEvent::Started) {
-                commands::chat_admission::retire_browser_from_native(webview.app_handle(), webview.window().label());
+                commands::chat_admission::retire_browser_from_native(
+                    webview.app_handle(),
+                    webview.window().label(),
+                );
             }
         })
         .manage(AppQuitState::default())
@@ -1174,7 +1177,9 @@ pub fn run() {
             app_quit_state.mark_quitting("exit-requested");
             commands::git::cancel_all_git_reviews();
             shutdown_mcp_runtime(app_handle);
-            if !tauri::async_runtime::block_on(app_handle.state::<connect::TransferRuntime>().shutdown()) {
+            if !tauri::async_runtime::block_on(
+                app_handle.state::<connect::TransferRuntime>().shutdown(),
+            ) {
                 tracing::warn!("Connect transport cleanup remains unreconciled");
             }
             if tauri::async_runtime::block_on(secrets::blocking::shutdown()).is_err() {
@@ -1188,7 +1193,9 @@ pub fn run() {
             app_quit_state.mark_quitting("exit");
             commands::git::cancel_all_git_reviews();
             shutdown_mcp_runtime(app_handle);
-            if !tauri::async_runtime::block_on(app_handle.state::<connect::TransferRuntime>().shutdown()) {
+            if !tauri::async_runtime::block_on(
+                app_handle.state::<connect::TransferRuntime>().shutdown(),
+            ) {
                 tracing::warn!("Connect transport cleanup remains unreconciled");
             }
             if tauri::async_runtime::block_on(secrets::blocking::shutdown()).is_err() {

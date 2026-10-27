@@ -1266,46 +1266,137 @@ async fn private_bootstrap_real_relay_correlates_scope_and_keeps_controller_righ
     use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
     use tokio_util::sync::CancellationToken;
     use transport::{Intent, Scope};
-    let executable = |name: &str| std::env::split_paths(&std::env::var_os("PATH").unwrap())
-        .map(|directory| directory.join(name)).find(|path| path.is_file()).unwrap();
+    let executable = |name: &str| {
+        std::env::split_paths(&std::env::var_os("PATH").unwrap())
+            .map(|directory| directory.join(name))
+            .find(|path| path.is_file())
+            .unwrap()
+    };
     let mut child = tokio::process::Command::new(executable("node"))
-        .arg("--import").arg(std::env::var("MACRO_CONNECT_RELAY_LOADER").unwrap())
-        .arg("--conditions=react-server").arg(std::env::var("MACRO_CONNECT_RELAY_HARNESS").unwrap())
-        .stdin(std::process::Stdio::piped()).stdout(std::process::Stdio::piped())
-        .kill_on_drop(true).spawn().unwrap();
+        .arg("--import")
+        .arg(std::env::var("MACRO_CONNECT_RELAY_LOADER").unwrap())
+        .arg("--conditions=react-server")
+        .arg(std::env::var("MACRO_CONNECT_RELAY_HARNESS").unwrap())
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .kill_on_drop(true)
+        .spawn()
+        .unwrap();
     let mut input = child.stdin.take().unwrap();
     let mut output = BufReader::new(child.stdout.take().unwrap()).lines();
-    let seed: serde_json::Value = serde_json::from_str(&tokio::time::timeout(std::time::Duration::from_secs(15), output.next_line()).await.unwrap().unwrap().unwrap()).unwrap();
-    let address = format!("127.0.0.1:{}", seed["port"].as_u64().unwrap()).parse().unwrap();
+    let seed: serde_json::Value = serde_json::from_str(
+        &tokio::time::timeout(std::time::Duration::from_secs(15), output.next_line())
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap(),
+    )
+    .unwrap();
+    let address = format!("127.0.0.1:{}", seed["port"].as_u64().unwrap())
+        .parse()
+        .unwrap();
     let directory = tempfile::tempdir().unwrap();
     let db = crate::core::db_state::DbPool::default();
-    db.set_ready(crate::db::create_pool(&directory.path().join("bootstrap.db")).await.unwrap()).await.unwrap();
+    db.set_ready(
+        crate::db::create_pool(&directory.path().join("bootstrap.db"))
+            .await
+            .unwrap(),
+    )
+    .await
+    .unwrap();
     let ready = db.wait_until_ready_context().await.unwrap();
     let runtime = crate::connect::TransferRuntime::default();
     let budget = runtime.budget().unwrap();
-    let codec = runtime.source_launcher(&executable("bun"), &std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../copilot-bridge/src/entry.ts"), &db).unwrap();
+    let codec = runtime
+        .source_launcher(
+            &executable("bun"),
+            &std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../copilot-bridge/src/entry.ts"),
+            &db,
+        )
+        .unwrap();
     let cancel = CancellationToken::new();
     let text = |value: &serde_json::Value, key: &str| value[key].as_str().unwrap().to_string();
     let fixture = |owner: &str, credentials: &str, controller: bool| {
         let fake = Arc::new(Fake::default());
         let manager = Arc::new(Manager::new(fake.clone()));
-        let owner = &seed[owner]; let credentials = &seed[credentials];
-        let context = PilotVaultContext { configuration_id: "config:synthetic".into(), relay_origin: text(&seed, "origin"), owner_id: text(owner, "session_id") };
+        let owner = &seed[owner];
+        let credentials = &seed[credentials];
+        let context = PilotVaultContext {
+            configuration_id: "config:synthetic".into(),
+            relay_origin: text(&seed, "origin"),
+            owner_id: text(owner, "session_id"),
+        };
         let generation = manager.activate(context.clone(), None).unwrap().generation;
-        for (kind, resource_id, secret) in [(PilotSecretKind::SessionToken, context.owner_id.clone(), text(credentials,"token")),
-            (PilotSecretKind::InstanceKey,text(credentials,"creation"),text(credentials,"key"))] {
-            manager.write(&PilotSecretScope { configuration_id:context.configuration_id.clone(), relay_origin:context.relay_origin.clone(), kind, resource_id }, &generation, &secret).unwrap();
+        for (kind, resource_id, secret) in [
+            (
+                PilotSecretKind::SessionToken,
+                context.owner_id.clone(),
+                text(credentials, "token"),
+            ),
+            (
+                PilotSecretKind::InstanceKey,
+                text(credentials, "creation"),
+                text(credentials, "key"),
+            ),
+        ] {
+            manager
+                .write(
+                    &PilotSecretScope {
+                        configuration_id: context.configuration_id.clone(),
+                        relay_origin: context.relay_origin.clone(),
+                        kind,
+                        resource_id,
+                    },
+                    &generation,
+                    &secret,
+                )
+                .unwrap();
         }
-        let scope = if controller { Scope::Controller { source_instance_id: text(credentials,"instance"), target_instance_id: None } }
-            else { Scope::Producer { instance_id: text(credentials,"instance") } };
-        (manager, fake, Intent { context, generation, instance_creation_id:text(credentials,"creation"), account_id:Some(text(&seed,"account_id")), device_id:Some(text(credentials,"device_id")), scope,capabilities:vec![] })
+        let scope = if controller {
+            Scope::Controller {
+                source_instance_id: text(credentials, "instance"),
+                target_instance_id: None,
+            }
+        } else {
+            Scope::Producer {
+                instance_id: text(credentials, "instance"),
+            }
+        };
+        (
+            manager,
+            fake,
+            Intent {
+                context,
+                generation,
+                instance_creation_id: text(credentials, "creation"),
+                account_id: Some(text(&seed, "account_id")),
+                device_id: Some(text(credentials, "device_id")),
+                scope,
+                capabilities: vec![],
+            },
+        )
     };
-    let (manager, fake, intent) = fixture("a","a",false);
-    let verified = transport::bootstrap_owned(manager.clone(), intent, &runtime, &codec, &ready, address, true, &cancel).await.unwrap();
+    let (manager, fake, intent) = fixture("a", "a", false);
+    let verified = transport::bootstrap_owned(
+        manager.clone(),
+        intent,
+        &runtime,
+        &codec,
+        &ready,
+        address,
+        true,
+        &cancel,
+    )
+    .await
+    .unwrap();
     verified.check().await.unwrap();
     // The first native decision uses canonical authenticated HTTP, not a SQL
     // receipt or a test-produced terminal. A new source is explicitly absent.
-    let source_path = format!("/pilot/v2/transfers/sources/{}/synthetic-chat/decisions", text(&seed["a"], "instance"));
+    let source_path = format!(
+        "/pilot/v2/transfers/sources/{}/synthetic-chat/decisions",
+        text(&seed["a"], "instance")
+    );
     let status_request = serde_json::json!({
         "transit_contract":"transfer-transit-1", "type":"decision.request",
         "request_id":uuid::Uuid::new_v4(), "request":{
@@ -1319,10 +1410,20 @@ async fn private_bootstrap_real_relay_correlates_scope_and_keeps_controller_righ
             }}
         }
     });
-    let decision_output = verified.decision(manager.clone(), &ready, &source_path, status_request.clone(), serde_json::Value::Null).await.unwrap();
-    let status:serde_json::Value=serde_json::from_slice(decision_output.bytes.as_slice()).unwrap();
-    assert_eq!(status["result"]["kind"],"source_status");
-    assert_eq!(status["result"]["status"]["status"],"not_found");
+    let decision_output = verified
+        .decision(
+            manager.clone(),
+            &ready,
+            &source_path,
+            status_request.clone(),
+            serde_json::Value::Null,
+        )
+        .await
+        .unwrap();
+    let status: serde_json::Value =
+        serde_json::from_slice(decision_output.bytes.as_slice()).unwrap();
+    assert_eq!(status["result"]["kind"], "source_status");
+    assert_eq!(status["result"]["status"]["status"], "not_found");
     drop(decision_output);
     let events = runtime.profile_events();
     use crate::connect::codec::Profile;
@@ -1331,99 +1432,261 @@ async fn private_bootstrap_real_relay_correlates_scope_and_keeps_controller_righ
     assert_eq!(events[1], (Profile::Bootstrap, events[0].1, true));
     assert_eq!((events[2].0, events[2].2), (Profile::Persistent, false));
 
-    assert_eq!(fake.interactive.load(Ordering::SeqCst),0);
-    assert_eq!(fake.resumes.load(Ordering::SeqCst),0);
+    assert_eq!(fake.interactive.load(Ordering::SeqCst), 0);
+    assert_eq!(fake.resumes.load(Ordering::SeqCst), 0);
     manager.policy_fixture().0.change(|| ()).unwrap();
-    assert_eq!(verified.check().await.err(),Some("policy_revoked"));
-    assert_eq!(verified.refresh_authority(manager.clone(),&ready).await.err(),Some("policy_revoked"));
-    assert_eq!(verified.decision(manager.clone(), &ready, &source_path, status_request, serde_json::Value::Null).await.err(),Some("policy_revoked"));
+    assert_eq!(verified.check().await.err(), Some("policy_revoked"));
+    assert_eq!(
+        verified
+            .refresh_authority(manager.clone(), &ready)
+            .await
+            .err(),
+        Some("policy_revoked")
+    );
+    assert_eq!(
+        verified
+            .decision(
+                manager.clone(),
+                &ready,
+                &source_path,
+                status_request,
+                serde_json::Value::Null
+            )
+            .await
+            .err(),
+        Some("policy_revoked")
+    );
     verified.close().await.unwrap();
     // A real second process rotates the same persistent policy epoch without
     // changing the first owner's local revision. A retained bootstrap must fail.
-    let (manager, _, intent) = fixture("a","a",false);
-    let verified = transport::bootstrap_owned(manager.clone(), intent, &runtime, &codec, &ready, address, true, &cancel).await.unwrap();
+    let (manager, _, intent) = fixture("a", "a", false);
+    let verified = transport::bootstrap_owned(
+        manager.clone(),
+        intent,
+        &runtime,
+        &codec,
+        &ready,
+        address,
+        true,
+        &cancel,
+    )
+    .await
+    .unwrap();
     verified.check().await.unwrap();
     let (_, policy_directory) = manager.policy_fixture();
     let mut writer = tokio::process::Command::new(std::env::current_exe().unwrap())
-        .args(["--exact", "commands::pilot_secrets::tests::cooperative_pilot_writer_process", "--ignored", "--nocapture"])
+        .args([
+            "--exact",
+            "commands::pilot_secrets::tests::cooperative_pilot_writer_process",
+            "--ignored",
+            "--nocapture",
+        ])
         .env("MACRO_SYNTHETIC_POLICY_DIRECTORY", policy_directory)
-        .stdin(std::process::Stdio::piped()).stdout(std::process::Stdio::null())
-        .kill_on_drop(true).spawn().unwrap();
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::null())
+        .kill_on_drop(true)
+        .spawn()
+        .unwrap();
     let mut writer_input = writer.stdin.take().unwrap();
     writer_input.write_all(b"write\n").await.unwrap();
     drop(writer_input);
-    assert!(tokio::time::timeout(std::time::Duration::from_secs(10), writer.wait()).await.unwrap().unwrap().success());
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_secs(10), writer.wait())
+            .await
+            .unwrap()
+            .unwrap()
+            .success()
+    );
     assert_eq!(verified.check().await.err(), Some("policy_revoked"));
     verified.close().await.unwrap();
-    let (manager, _, intent) = fixture("a","a",true);
-    assert_eq!(transport::bootstrap_owned(manager,intent,&runtime,&codec,&ready,address,true,&cancel).await.err(),Some("authority_unavailable"));
+    let (manager, _, intent) = fixture("a", "a", true);
+    assert_eq!(
+        transport::bootstrap_owned(
+            manager, intent, &runtime, &codec, &ready, address, true, &cancel
+        )
+        .await
+        .err(),
+        Some("authority_unavailable")
+    );
     // B's token and instance key are both valid, in A's account. Selecting A's
     // secret scope must still fail /me before any producer preflight is sent.
-    input.write_all(b"{}\n").await.unwrap();input.flush().await.unwrap();
-    let before: serde_json::Value=serde_json::from_str(&output.next_line().await.unwrap().unwrap()).unwrap();
-    let (manager, _, intent) = fixture("a","b",false);
-    assert_eq!(transport::bootstrap_owned(manager,intent,&runtime,&codec,&ready,address,true,&cancel).await.err(),Some("invalid_response"));
-    input.write_all(b"{}\n").await.unwrap();input.flush().await.unwrap();
-    let after: serde_json::Value=serde_json::from_str(&output.next_line().await.unwrap().unwrap()).unwrap();
-    assert_eq!(before["preflightRequests"],after["preflightRequests"]);
-    for (mode, expected) in [("correlation","http_correlation"),("large-fixed","resource_limit"),("large-chunked","resource_limit")] {
-        input.write_all(format!("{{\"mode\":\"{mode}\"}}\n").as_bytes()).await.unwrap();input.flush().await.unwrap();
+    input.write_all(b"{}\n").await.unwrap();
+    input.flush().await.unwrap();
+    let before: serde_json::Value =
+        serde_json::from_str(&output.next_line().await.unwrap().unwrap()).unwrap();
+    let (manager, _, intent) = fixture("a", "b", false);
+    assert_eq!(
+        transport::bootstrap_owned(
+            manager, intent, &runtime, &codec, &ready, address, true, &cancel
+        )
+        .await
+        .err(),
+        Some("invalid_response")
+    );
+    input.write_all(b"{}\n").await.unwrap();
+    input.flush().await.unwrap();
+    let after: serde_json::Value =
+        serde_json::from_str(&output.next_line().await.unwrap().unwrap()).unwrap();
+    assert_eq!(before["preflightRequests"], after["preflightRequests"]);
+    for (mode, expected) in [
+        ("correlation", "http_correlation"),
+        ("large-fixed", "resource_limit"),
+        ("large-chunked", "resource_limit"),
+    ] {
+        input
+            .write_all(format!("{{\"mode\":\"{mode}\"}}\n").as_bytes())
+            .await
+            .unwrap();
+        input.flush().await.unwrap();
         output.next_line().await.unwrap().unwrap();
-        let (manager, _, intent)=fixture("a","a",false);
-        assert_eq!(transport::bootstrap_owned(manager,intent,&runtime,&codec,&ready,address,true,&cancel).await.err(),Some(expected));
+        let (manager, _, intent) = fixture("a", "a", false);
+        assert_eq!(
+            transport::bootstrap_owned(
+                manager, intent, &runtime, &codec, &ready, address, true, &cancel
+            )
+            .await
+            .err(),
+            Some(expected)
+        );
     }
-    input.write_all(b"{\"mode\":\"normal\"}\n").await.unwrap();input.flush().await.unwrap();output.next_line().await.unwrap().unwrap();
+    input.write_all(b"{\"mode\":\"normal\"}\n").await.unwrap();
+    input.flush().await.unwrap();
+    output.next_line().await.unwrap().unwrap();
     // Real /me serialization reads a short-lived session from synthetic SQLite.
-    input.write_all(b"{\"shortSession\":true}\n").await.unwrap();input.flush().await.unwrap();output.next_line().await.unwrap().unwrap();
-    let (short_manager, _, short_intent)=fixture("a","a",false);
-    let short=transport::bootstrap_owned(short_manager.clone(),short_intent,&runtime,&codec,&ready,address,true,&cancel).await.unwrap();
+    input.write_all(b"{\"shortSession\":true}\n").await.unwrap();
+    input.flush().await.unwrap();
+    output.next_line().await.unwrap().unwrap();
+    let (short_manager, _, short_intent) = fixture("a", "a", false);
+    let short = transport::bootstrap_owned(
+        short_manager.clone(),
+        short_intent,
+        &runtime,
+        &codec,
+        &ready,
+        address,
+        true,
+        &cancel,
+    )
+    .await
+    .unwrap();
     short.check().await.unwrap();
     tokio::time::sleep(std::time::Duration::from_millis(3100)).await;
-    assert_eq!(short.check().await.err(),Some("authority_expired"));
-    assert_eq!(short.refresh_authority(short_manager.clone(),&ready).await.err(),Some("authority_expired"));short.close().await.unwrap();
-    input.write_all(b"{\"restoreSession\":true}\n").await.unwrap();input.flush().await.unwrap();output.next_line().await.unwrap().unwrap();
-    let (manager, _, intent)=fixture("b","b",false);
-    let verified=transport::bootstrap_owned(manager.clone(),intent,&runtime,&codec,&ready,address,true,&cancel).await.unwrap();
-    input.write_all(b"{\"revoke\":true}\n").await.unwrap();input.flush().await.unwrap();output.next_line().await.unwrap().unwrap();
-    runtime.revoke();assert_eq!(verified.check().await.err(),Some("transport_retired"));verified.close().await.unwrap();
-    let codec = runtime.source_launcher(&executable("bun"), &std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../copilot-bridge/src/entry.ts"), &db).unwrap();
-    let (manager, _, intent)=fixture("a","a",false);
-    assert_eq!(transport::bootstrap_owned(manager,intent,&runtime,&codec,&ready,address,true,&cancel).await.err(),Some("session_unavailable"));
+    assert_eq!(short.check().await.err(), Some("authority_expired"));
+    assert_eq!(
+        short
+            .refresh_authority(short_manager.clone(), &ready)
+            .await
+            .err(),
+        Some("authority_expired")
+    );
+    short.close().await.unwrap();
+    input
+        .write_all(b"{\"restoreSession\":true}\n")
+        .await
+        .unwrap();
+    input.flush().await.unwrap();
+    output.next_line().await.unwrap().unwrap();
+    let (manager, _, intent) = fixture("b", "b", false);
+    let verified = transport::bootstrap_owned(
+        manager.clone(),
+        intent,
+        &runtime,
+        &codec,
+        &ready,
+        address,
+        true,
+        &cancel,
+    )
+    .await
+    .unwrap();
+    input.write_all(b"{\"revoke\":true}\n").await.unwrap();
+    input.flush().await.unwrap();
+    output.next_line().await.unwrap().unwrap();
+    runtime.revoke();
+    assert_eq!(verified.check().await.err(), Some("transport_retired"));
+    verified.close().await.unwrap();
+    let codec = runtime
+        .source_launcher(
+            &executable("bun"),
+            &std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../copilot-bridge/src/entry.ts"),
+            &db,
+        )
+        .unwrap();
+    let (manager, _, intent) = fixture("a", "a", false);
+    assert_eq!(
+        transport::bootstrap_owned(
+            manager, intent, &runtime, &codec, &ready, address, true, &cancel
+        )
+        .await
+        .err(),
+        Some("session_unavailable")
+    );
     assert!(runtime.shutdown().await);
-    assert!(budget.reserve(crate::connect_resources::TRANSIT_INSTANCE_LIMIT).is_ok());
-    input.write_all(b"{\"stop\":true}\n").await.unwrap();input.flush().await.unwrap();drop(input);
-    assert!(tokio::time::timeout(std::time::Duration::from_secs(10),child.wait()).await.unwrap().unwrap().success());
+    assert!(budget
+        .reserve(crate::connect_resources::TRANSIT_INSTANCE_LIMIT)
+        .is_ok());
+    input.write_all(b"{\"stop\":true}\n").await.unwrap();
+    input.flush().await.unwrap();
+    drop(input);
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_secs(10), child.wait())
+            .await
+            .unwrap()
+            .unwrap()
+            .success()
+    );
 }
 
-
-async fn transfer_target_event(lines:&mut tokio::io::Lines<tokio::io::BufReader<tokio::process::ChildStdout>>)->Result<serde_json::Value,&'static str> {
-    while let Some(line)=lines.next_line().await.map_err(|_|"target_event_io")? {
-        if line.len()>4096{return Err("target_event_limit");}
-        if let Some(start)=line.find("SLICE_TARGET_EVENT:"){return serde_json::from_str(&line[start+19..]).map_err(|_|"target_event_json");}
-    }Err("target_event_eof")
+async fn transfer_target_event(
+    lines: &mut tokio::io::Lines<tokio::io::BufReader<tokio::process::ChildStdout>>,
+) -> Result<serde_json::Value, &'static str> {
+    while let Some(line) = lines.next_line().await.map_err(|_| "target_event_io")? {
+        if line.len() > 4096 {
+            return Err("target_event_limit");
+        }
+        if let Some(start) = line.find("SLICE_TARGET_EVENT:") {
+            return serde_json::from_str(&line[start + 19..]).map_err(|_| "target_event_json");
+        }
+    }
+    Err("target_event_eof")
 }
 
 // The synthetic subprocess pipe still carries test control until P5. Keep
 // the real selected producer alive during that wait without passing any facts
 // through a second transport. Only empty polls are expected in these phases.
-pub(super) async fn transfer_wait_with_idle_poll<B:Vault+'static,F:std::future::Future>(
-    transport:&transport::VerifiedTransport,manager:Arc<Manager<B>>,ready:&crate::core::db_state::DbReady,
-    renew_before_poll:bool,work:F,
-)->F::Output {
-    let stop=tokio_util::sync::CancellationToken::new();
-    let polling=async {
+pub(super) async fn transfer_wait_with_idle_poll<B: Vault + 'static, F: std::future::Future>(
+    transport: &transport::VerifiedTransport,
+    manager: Arc<Manager<B>>,
+    ready: &crate::core::db_state::DbReady,
+    renew_before_poll: bool,
+    work: F,
+) -> F::Output {
+    let stop = tokio_util::sync::CancellationToken::new();
+    let polling = async {
         loop {
-            if stop.is_cancelled(){return Ok::<_,&'static str>(());}
-            if renew_before_poll {transport.refresh_authority(manager.clone(),ready).await?;}
-            let output=match transport.delivery_until(manager.clone(),ready,&stop).await {
-                Err("http_cancelled") if stop.is_cancelled()=>return Ok(()),
-                result=>result?,
+            if stop.is_cancelled() {
+                return Ok::<_, &'static str>(());
+            }
+            if renew_before_poll {
+                transport.refresh_authority(manager.clone(), ready).await?;
+            }
+            let output = match transport
+                .delivery_until(manager.clone(), ready, &stop)
+                .await
+            {
+                Err("http_cancelled") if stop.is_cancelled() => return Ok(()),
+                result => result?,
             };
-            let value:serde_json::Value=serde_json::from_slice(output.bytes.as_slice()).map_err(|_|"invalid_delivery")?;
-            if value["branch"]!="empty"{return Err("unexpected_idle_delivery");}
+            let value: serde_json::Value =
+                serde_json::from_slice(output.bytes.as_slice()).map_err(|_| "invalid_delivery")?;
+            if value["branch"] != "empty" {
+                return Err("unexpected_idle_delivery");
+            }
         }
     };
-    tokio::pin!(work);tokio::pin!(polling);
+    tokio::pin!(work);
+    tokio::pin!(polling);
     tokio::select! {
         result=&mut work=>{stop.cancel();polling.await.unwrap();result},
         result=&mut polling=>panic!("idle poll ended before its phase: {result:?}"),
@@ -1432,52 +1695,86 @@ pub(super) async fn transfer_wait_with_idle_poll<B:Vault+'static,F:std::future::
 
 /// One evolving local product scenario. It stays red until source, real relay,
 /// inactive target, native preparation and ACK are connected together.
-#[tokio::test(flavor="multi_thread",worker_threads=2)]
-#[ignore="requires the explicitly supplied local transfer relay"]
-async fn global_chat_macro_ai_local_transfer() { global_chat_local_transfer("macro-ai",false,false,false).await; }
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires the explicitly supplied local transfer relay"]
+async fn global_chat_macro_ai_local_transfer() {
+    global_chat_local_transfer("macro-ai", false, false, false).await;
+}
 
-#[tokio::test(flavor="multi_thread",worker_threads=2)]
-#[ignore="requires the explicitly supplied local transfer relay"]
-async fn global_chat_codex_local_transfer() { global_chat_local_transfer("codex",false,false,false).await; }
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires the explicitly supplied local transfer relay"]
+async fn global_chat_codex_local_transfer() {
+    global_chat_local_transfer("codex", false, false, false).await;
+}
 
-#[tokio::test(flavor="multi_thread",worker_threads=2)]
-#[ignore="requires the explicitly supplied local transfer relay"]
-async fn global_chat_compacted_local_transfer() { global_chat_local_transfer("codex",true,false,false).await; }
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires the explicitly supplied local transfer relay"]
+async fn global_chat_compacted_local_transfer() {
+    global_chat_local_transfer("codex", true, false, false).await;
+}
 
-#[tokio::test(flavor="multi_thread",worker_threads=2)]
-#[ignore="requires the explicitly supplied local transfer relay"]
-async fn global_chat_resources_local_transfer() { global_chat_local_transfer("codex",true,true,false).await; }
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires the explicitly supplied local transfer relay"]
+async fn global_chat_resources_local_transfer() {
+    global_chat_local_transfer("codex", true, true, false).await;
+}
 
 /// The target lacks the selected model: the source records `aborted` and reopens.
-#[tokio::test(flavor="multi_thread",worker_threads=2)]
-#[ignore="requires the explicitly supplied local transfer relay"]
-async fn global_chat_refused_local_transfer() { global_chat_local_transfer("macro-ai",false,false,true).await; }
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires the explicitly supplied local transfer relay"]
+async fn global_chat_refused_local_transfer() {
+    global_chat_local_transfer("macro-ai", false, false, true).await;
+}
 
-async fn global_chat_local_transfer(provider:&str,compacted:bool,with_resources:bool,refused:bool) {
+async fn global_chat_local_transfer(
+    provider: &str,
+    compacted: bool,
+    with_resources: bool,
+    refused: bool,
+) {
     use base64::Engine;
 
-    use tokio::io::{AsyncBufReadExt,AsyncWriteExt,BufReader};
+    use sha2::{Digest, Sha256};
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
     use tokio_util::sync::CancellationToken;
-    use transport::{Intent,Scope};
-    use sha2::{Digest,Sha256};
-    let executable=|name:&str|std::env::split_paths(&std::env::var_os("PATH").unwrap())
-        .map(|p|p.join(name)).find(|p|p.is_file()).unwrap();
-    let mut relay=tokio::process::Command::new(executable("node"))
-        .args(["--import",&std::env::var("MACRO_CONNECT_RELAY_LOADER").unwrap(),"--conditions=react-server",
-            &std::env::var("MACRO_CONNECT_RELAY_HARNESS").unwrap()])
-        .stdin(std::process::Stdio::piped()).stdout(std::process::Stdio::piped()).kill_on_drop(true).spawn().unwrap();
-    let mut relay_input=relay.stdin.take().unwrap();
-    let mut lines=BufReader::new(relay.stdout.take().unwrap()).lines();
-    let seed:serde_json::Value=serde_json::from_str(&lines.next_line().await.unwrap().unwrap()).unwrap();
-    let address=format!("127.0.0.1:{}",seed["port"].as_u64().unwrap()).parse().unwrap();
-    let directory=tempfile::tempdir().unwrap();
-    let source=crate::core::db_state::DbPool::default();
-    let source_pool=crate::db::create_pool(&directory.path().join("source.db")).await.unwrap();
+    use transport::{Intent, Scope};
+    let executable = |name: &str| {
+        std::env::split_paths(&std::env::var_os("PATH").unwrap())
+            .map(|p| p.join(name))
+            .find(|p| p.is_file())
+            .unwrap()
+    };
+    let mut relay = tokio::process::Command::new(executable("node"))
+        .args([
+            "--import",
+            &std::env::var("MACRO_CONNECT_RELAY_LOADER").unwrap(),
+            "--conditions=react-server",
+            &std::env::var("MACRO_CONNECT_RELAY_HARNESS").unwrap(),
+        ])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .kill_on_drop(true)
+        .spawn()
+        .unwrap();
+    let mut relay_input = relay.stdin.take().unwrap();
+    let mut lines = BufReader::new(relay.stdout.take().unwrap()).lines();
+    let seed: serde_json::Value =
+        serde_json::from_str(&lines.next_line().await.unwrap().unwrap()).unwrap();
+    let address = format!("127.0.0.1:{}", seed["port"].as_u64().unwrap())
+        .parse()
+        .unwrap();
+    let directory = tempfile::tempdir().unwrap();
+    let source = crate::core::db_state::DbPool::default();
+    let source_pool = crate::db::create_pool(&directory.path().join("source.db"))
+        .await
+        .unwrap();
     source.set_ready(source_pool.clone()).await.unwrap();
-    let target=crate::core::db_state::DbPool::default();
-    let target_pool=crate::db::create_pool(&directory.path().join("target.db")).await.unwrap();
+    let target = crate::core::db_state::DbPool::default();
+    let target_pool = crate::db::create_pool(&directory.path().join("target.db"))
+        .await
+        .unwrap();
     target.set_ready(target_pool.clone()).await.unwrap();
-    let content="A short answer available on the other computer.";
+    let content = "A short answer available on the other computer.";
     let provenance=tokio::process::Command::new(executable("bun")).args(["-e",r#"
         import {assistantProvenance} from './src/services/macroPilot/assistantProvenance';
         import {buildAssistantChatCompletionProviderItem} from './src/services/ai/chatCompletionsCodec';
@@ -1490,20 +1787,49 @@ async fn global_chat_local_transfer(provider:&str,compacted:bool,with_resources:
         const userItems=process.env.MACRO_SYNTHETIC_RESOURCES==='1'?buildProviderInputItemsFromContent('user',[{type:'text',text:'Can I continue on another computer?'},{type:'image_url',image_url:{url:'data:image/png;base64,'+process.env.MACRO_SYNTHETIC_PNG}}]):null;
         console.log(JSON.stringify({receipts:[...stored],items,userItems}));
     "#]).env("MACRO_SYNTHETIC_PROVIDER",provider).env("MACRO_SYNTHETIC_RESOURCES",if with_resources{"1"}else{"0"}).env("MACRO_SYNTHETIC_PNG",base64::engine::general_purpose::STANDARD.encode(include_bytes!("../../../icons/32x32.png"))).current_dir(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap()).output().await.unwrap();
-    assert!(provenance.status.success(),"{}",String::from_utf8_lossy(&provenance.stderr));
-    let response:serde_json::Value=serde_json::from_slice(&provenance.stdout).unwrap();
-    let receipts:Vec<(String,String)>=serde_json::from_value(response["receipts"].clone()).unwrap();
+    assert!(
+        provenance.status.success(),
+        "{}",
+        String::from_utf8_lossy(&provenance.stderr)
+    );
+    let response: serde_json::Value = serde_json::from_slice(&provenance.stdout).unwrap();
+    let receipts: Vec<(String, String)> =
+        serde_json::from_value(response["receipts"].clone()).unwrap();
     sqlx::raw_sql("INSERT INTO conversations(id,title,scope_mode,provider_id,model_id,created_at,updated_at) VALUES('chat','Local transfer','Chat','macro-ai','synthetic-model','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z'); INSERT INTO messages(id,conversation_id,role,content,created_at,context_refs_json) VALUES('user','chat','user','Can I continue on another computer?','2026-01-01T00:00:00Z','[]');")
         .execute(&source_pool).await.unwrap();
     sqlx::query("INSERT INTO messages(id,conversation_id,role,content,created_at,context_refs_json,completion_reason,provider_input_items_json) VALUES('assistant','chat','assistant',?,'2026-01-01T00:00:01Z','[]','final',?)")
         .bind(content).bind(response["items"].to_string()).execute(&source_pool).await.unwrap();
-    if provider=="codex"{sqlx::query("UPDATE conversations SET provider_id='chatgpt',model_id='gpt-6.1-sol' WHERE id='chat'").execute(&source_pool).await.unwrap();}
-    for(key,value)in receipts {crate::db::repository::set_app_setting(&source_pool,&key,&value).await.unwrap();}
+    if provider == "codex" {
+        sqlx::query(
+            "UPDATE conversations SET provider_id='chatgpt',model_id='gpt-6.1-sol' WHERE id='chat'",
+        )
+        .execute(&source_pool)
+        .await
+        .unwrap();
+    }
+    for (key, value) in receipts {
+        crate::db::repository::set_app_setting(&source_pool, &key, &value)
+            .await
+            .unwrap();
+    }
     if with_resources {
         sqlx::query("UPDATE messages SET turn_id='turn',provider_input_items_json=?,context_refs_json='[{\"kind\":\"source\",\"id\":\"evidence\",\"title\":\"Evidence\"}]' WHERE id='user'")
             .bind(response["userItems"].to_string()).execute(&source_pool).await.unwrap();
         sqlx::raw_sql("INSERT INTO conversation_citations(id,conversation_id,message_id,type,scope,source,title,content,kind,created_at,updated_at) VALUES('evidence','chat','user','source_passage','source','synthetic','Evidence','ESSENTIAL_CITATION_FACT','used','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z'); INSERT INTO conversation_citations(id,conversation_id,message_id,type,scope,source,title,content,path,created_at,updated_at) VALUES('text-asset','chat','user','file','context','pilot_attachment','sample.txt','ASSET_TEXT_FACT','attachment://text-asset','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z');").execute(&source_pool).await.unwrap();
-        for (id,name,mime,bytes) in [("text-asset","sample.txt","text/plain",b"ASSET_TEXT_FACT".as_slice()),("image-asset","sample.png","image/png",include_bytes!("../../../icons/32x32.png").as_slice())] {
+        for (id, name, mime, bytes) in [
+            (
+                "text-asset",
+                "sample.txt",
+                "text/plain",
+                b"ASSET_TEXT_FACT".as_slice(),
+            ),
+            (
+                "image-asset",
+                "sample.png",
+                "image/png",
+                include_bytes!("../../../icons/32x32.png").as_slice(),
+            ),
+        ] {
             sqlx::query("INSERT INTO pilot_message_attachments VALUES(?,'owner','instance','ref','user',?,?,?,?,?)")
                 .bind(id).bind(name).bind(mime).bind(bytes.len() as i64).bind(format!("{:x}",Sha256::digest(bytes))).bind(bytes).execute(&source_pool).await.unwrap();
         }
@@ -1515,10 +1841,25 @@ async fn global_chat_local_transfer(provider:&str,compacted:bool,with_resources:
                 .bind(format!("older-{n:02}")).bind(format!("RECOVERABLE_HISTORY_{n:02} {}","ordinary source fact ".repeat(200)))
                 .bind(format!("2026-01-01T00:00:{:02}Z",n+1)).execute(&source_pool).await.unwrap();
         }
-        sqlx::query("UPDATE messages SET created_at='2026-01-01T00:01:00Z' WHERE id='assistant'").execute(&source_pool).await.unwrap();
-        let original=crate::db::repository::list_messages(&source_pool,"chat").await.unwrap();
-        let mut citations=crate::db::repository::list_conversation_citations(&source_pool,"chat").await.unwrap();
-        for citation in &mut citations{citation.content=crate::db::repository::get_conversation_citation_content(&source_pool,&citation.id).await.unwrap();}
+        sqlx::query("UPDATE messages SET created_at='2026-01-01T00:01:00Z' WHERE id='assistant'")
+            .execute(&source_pool)
+            .await
+            .unwrap();
+        let original = crate::db::repository::list_messages(&source_pool, "chat")
+            .await
+            .unwrap();
+        let mut citations =
+            crate::db::repository::list_conversation_citations(&source_pool, "chat")
+                .await
+                .unwrap();
+        for citation in &mut citations {
+            citation.content = crate::db::repository::get_conversation_citation_content(
+                &source_pool,
+                &citation.id,
+            )
+            .await
+            .unwrap();
+        }
         let mut process=tokio::process::Command::new(executable("bun")).args(["-e",r#"
             import {mapDbMessageToChatMessage} from './src/services/chatDbMappers';
             import {buildCompactedMessagesForRequest} from './src/services/contextCompaction';
@@ -1534,154 +1875,580 @@ async fn global_chat_local_transfer(provider:&str,compacted:bool,with_resources:
             }));console.log(JSON.stringify(record));
         "#]).current_dir(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap())
             .stdin(std::process::Stdio::piped()).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped()).spawn().unwrap();
-        process.stdin.take().unwrap().write_all(&serde_json::to_vec(&serde_json::json!({"messages":original,"citations":citations})).unwrap()).await.unwrap();
-        let state=process.wait_with_output().await.unwrap();assert!(state.status.success(),"{}",String::from_utf8_lossy(&state.stderr));
-        let input:crate::db::models::UpsertConversationCompactionStateInput=serde_json::from_slice(&state.stdout).unwrap();
-        crate::db::repository::upsert_conversation_compaction_state(&source_pool,input).await.unwrap();
+        process
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(
+                &serde_json::to_vec(
+                    &serde_json::json!({"messages":original,"citations":citations}),
+                )
+                .unwrap(),
+            )
+            .await
+            .unwrap();
+        let state = process.wait_with_output().await.unwrap();
+        assert!(
+            state.status.success(),
+            "{}",
+            String::from_utf8_lossy(&state.stderr)
+        );
+        let input: crate::db::models::UpsertConversationCompactionStateInput =
+            serde_json::from_slice(&state.stdout).unwrap();
+        crate::db::repository::upsert_conversation_compaction_state(&source_pool, input)
+            .await
+            .unwrap();
     }
-    let manager=Arc::new(Manager::new(Arc::new(Fake::default())));
-    let a=&seed["a"];
-    let text=|v:&serde_json::Value|v.as_str().unwrap().to_string();
-    let context=PilotVaultContext{configuration_id:"config:local-transfer".into(),relay_origin:text(&seed["origin"]),owner_id:text(&a["session_id"])};
-    let generation=manager.activate(context.clone(),None).unwrap().generation;
-    for(kind,id,value)in[(PilotSecretKind::SessionToken,context.owner_id.clone(),text(&a["token"])),
-        (PilotSecretKind::InstanceKey,text(&a["creation"]),text(&a["key"]))]{
-        manager.write(&PilotSecretScope{configuration_id:context.configuration_id.clone(),relay_origin:context.relay_origin.clone(),kind,resource_id:id},&generation,&value).unwrap();
+    let manager = Arc::new(Manager::new(Arc::new(Fake::default())));
+    let a = &seed["a"];
+    let text = |v: &serde_json::Value| v.as_str().unwrap().to_string();
+    let context = PilotVaultContext {
+        configuration_id: "config:local-transfer".into(),
+        relay_origin: text(&seed["origin"]),
+        owner_id: text(&a["session_id"]),
+    };
+    let generation = manager.activate(context.clone(), None).unwrap().generation;
+    for (kind, id, value) in [
+        (
+            PilotSecretKind::SessionToken,
+            context.owner_id.clone(),
+            text(&a["token"]),
+        ),
+        (
+            PilotSecretKind::InstanceKey,
+            text(&a["creation"]),
+            text(&a["key"]),
+        ),
+    ] {
+        manager
+            .write(
+                &PilotSecretScope {
+                    configuration_id: context.configuration_id.clone(),
+                    relay_origin: context.relay_origin.clone(),
+                    kind,
+                    resource_id: id,
+                },
+                &generation,
+                &value,
+            )
+            .unwrap();
     }
-    let runtime=crate::connect::TransferRuntime::default();
-    let launcher=runtime.source_launcher(&executable("bun"),&std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../copilot-bridge/src/entry.ts"),&source).unwrap();
-    let ready=source.wait_until_ready_context().await.unwrap();
-    let cancel=CancellationToken::new();
-    let intent=Intent{context,generation,instance_creation_id:text(&a["creation"]),account_id:Some(text(&seed["account_id"])),device_id:Some(text(&a["device_id"])),scope:Scope::Producer{instance_id:text(&a["instance"])},capabilities:serde_json::from_value(seed["capabilities"].clone()).unwrap()};
-    let mut verified=transport::bootstrap_owned(manager.clone(),intent,&runtime,&launcher,&ready,address,true,&cancel).await.unwrap();
-    verified.controller_for(manager.clone(),&ready,seed["b"]["instance"].as_str().unwrap()).await.unwrap();
-    let admission=crate::db::chat_admission::runtime::ChatAdmissionRuntime::default();
-    admission.open_browser(source.clone(),"source-window","source-browser").await.unwrap();
-    let inspection=admission.begin_reconciliation(&source,"source-window","source-browser","chat").await.unwrap();
-    admission.complete_reconciliation(&source,"source-window","source-browser",&inspection,&crate::db::chat_admission::reconciliation::BrowserInspection{
-        queue:vec![],unsaved:vec![],approvals:vec![],questions:vec![],drafts:vec![],steers:vec![]}).await.unwrap();
-    let config=crate::config::ConfigManager::initialize(directory.path().join("config")).await.unwrap();
-    let mut child=tokio::process::Command::new(std::env::current_exe().unwrap())
-        .args(["--exact","commands::pilot_secrets::tests::global_chat_transfer_target","--ignored","--nocapture","--test-threads=1"])
-        .stdin(std::process::Stdio::piped()).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::inherit()).kill_on_drop(true).spawn().unwrap();
-    let mut input=child.stdin.take().unwrap();
+    let runtime = crate::connect::TransferRuntime::default();
+    let launcher = runtime
+        .source_launcher(
+            &executable("bun"),
+            &std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../copilot-bridge/src/entry.ts"),
+            &source,
+        )
+        .unwrap();
+    let ready = source.wait_until_ready_context().await.unwrap();
+    let cancel = CancellationToken::new();
+    let intent = Intent {
+        context,
+        generation,
+        instance_creation_id: text(&a["creation"]),
+        account_id: Some(text(&seed["account_id"])),
+        device_id: Some(text(&a["device_id"])),
+        scope: Scope::Producer {
+            instance_id: text(&a["instance"]),
+        },
+        capabilities: serde_json::from_value(seed["capabilities"].clone()).unwrap(),
+    };
+    let mut verified = transport::bootstrap_owned(
+        manager.clone(),
+        intent,
+        &runtime,
+        &launcher,
+        &ready,
+        address,
+        true,
+        &cancel,
+    )
+    .await
+    .unwrap();
+    verified
+        .controller_for(
+            manager.clone(),
+            &ready,
+            seed["b"]["instance"].as_str().unwrap(),
+        )
+        .await
+        .unwrap();
+    let admission = crate::db::chat_admission::runtime::ChatAdmissionRuntime::default();
+    admission
+        .open_browser(source.clone(), "source-window", "source-browser")
+        .await
+        .unwrap();
+    let inspection = admission
+        .begin_reconciliation(&source, "source-window", "source-browser", "chat")
+        .await
+        .unwrap();
+    admission
+        .complete_reconciliation(
+            &source,
+            "source-window",
+            "source-browser",
+            &inspection,
+            &crate::db::chat_admission::reconciliation::BrowserInspection {
+                queue: vec![],
+                unsaved: vec![],
+                approvals: vec![],
+                questions: vec![],
+                drafts: vec![],
+                steers: vec![],
+            },
+        )
+        .await
+        .unwrap();
+    let config = crate::config::ConfigManager::initialize(directory.path().join("config"))
+        .await
+        .unwrap();
+    let mut child = tokio::process::Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            "commands::pilot_secrets::tests::global_chat_transfer_target",
+            "--ignored",
+            "--nocapture",
+            "--test-threads=1",
+        ])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::inherit())
+        .kill_on_drop(true)
+        .spawn()
+        .unwrap();
+    let mut input = child.stdin.take().unwrap();
     let mut initialization=serde_json::to_vec(&serde_json::json!({"seed":seed,
-        "database":directory.path().join("target.db"),"provider":provider,"compacted":compacted,"resources":with_resources,"refused":refused})).unwrap();initialization.push(b'\n');
+        "database":directory.path().join("target.db"),"provider":provider,"compacted":compacted,"resources":with_resources,"refused":refused})).unwrap();
+    initialization.push(b'\n');
     input.write_all(&initialization).await.unwrap();
-    let mut target_events=BufReader::new(child.stdout.take().unwrap()).lines();
-    let verified=Arc::new(verified);
-    let selected:(String,String)=sqlx::query_as("SELECT provider_id,model_id FROM conversations WHERE id='chat'").fetch_one(&source_pool).await.unwrap();
-    let transferred=super::flow::send(manager,&source,&admission,&config,&launcher,&verified,&ready,
-        "source-window","source-browser",&inspection,"chat",&selected.0,&selected.1).await;
+    let mut target_events = BufReader::new(child.stdout.take().unwrap()).lines();
+    let verified = Arc::new(verified);
+    let selected: (String, String) =
+        sqlx::query_as("SELECT provider_id,model_id FROM conversations WHERE id='chat'")
+            .fetch_one(&source_pool)
+            .await
+            .unwrap();
+    let transferred = super::flow::send(
+        manager,
+        &source,
+        &admission,
+        &config,
+        &launcher,
+        &verified,
+        &ready,
+        "source-window",
+        "source-browser",
+        &inspection,
+        "chat",
+        &selected.0,
+        &selected.1,
+    )
+    .await;
     if refused {
-        assert_eq!(transferred,Err("transfer_aborted"));
-        assert_eq!(sqlx::query_scalar::<_,String>("SELECT mode FROM chat_admission_owners WHERE conversation_id='chat'").fetch_one(&source_pool).await.unwrap(),"open");
-        assert_eq!(sqlx::query_scalar::<_,Option<String>>("SELECT resolution FROM connect_transfers WHERE local_role='source'").fetch_one(&source_pool).await.unwrap().as_deref(),Some("aborted"));
-        assert_eq!(transfer_target_event(&mut target_events).await.unwrap(),serde_json::json!({"type":"refused"}));
+        assert_eq!(transferred, Err("transfer_aborted"));
+        assert_eq!(
+            sqlx::query_scalar::<_, String>(
+                "SELECT mode FROM chat_admission_owners WHERE conversation_id='chat'"
+            )
+            .fetch_one(&source_pool)
+            .await
+            .unwrap(),
+            "open"
+        );
+        assert_eq!(
+            sqlx::query_scalar::<_, Option<String>>(
+                "SELECT resolution FROM connect_transfers WHERE local_role='source'"
+            )
+            .fetch_one(&source_pool)
+            .await
+            .unwrap()
+            .as_deref(),
+            Some("aborted")
+        );
+        assert_eq!(
+            transfer_target_event(&mut target_events).await.unwrap(),
+            serde_json::json!({"type":"refused"})
+        );
         input.write_all(b"{\"stop\":true}\n").await.unwrap();
-    }else if transferred.is_ok(){
+    } else if transferred.is_ok() {
         assert!(!transferred.as_ref().unwrap().is_empty());
-        assert_eq!(sqlx::query_scalar::<_,String>("SELECT mode FROM chat_admission_owners WHERE conversation_id='chat'").fetch_one(&source_pool).await.unwrap(),"ceded");
-        assert_eq!(sqlx::query_scalar::<_,i64>("SELECT COUNT(*) FROM messages WHERE conversation_id='chat'").fetch_one(&source_pool).await.unwrap(),if compacted{22}else{2});
-        assert_eq!(transfer_target_event(&mut target_events).await.unwrap(),serde_json::json!({"type":"complete"}));
+        assert_eq!(
+            sqlx::query_scalar::<_, String>(
+                "SELECT mode FROM chat_admission_owners WHERE conversation_id='chat'"
+            )
+            .fetch_one(&source_pool)
+            .await
+            .unwrap(),
+            "ceded"
+        );
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>(
+                "SELECT COUNT(*) FROM messages WHERE conversation_id='chat'"
+            )
+            .fetch_one(&source_pool)
+            .await
+            .unwrap(),
+            if compacted { 22 } else { 2 }
+        );
+        assert_eq!(
+            transfer_target_event(&mut target_events).await.unwrap(),
+            serde_json::json!({"type":"complete"})
+        );
         input.write_all(b"{\"stop\":true}\n").await.unwrap();
     }
     drop(input);
-    if transferred.is_err()&&!refused{child.kill().await.unwrap();}
-    let child=child.wait_with_output().await.unwrap();
-    Arc::try_unwrap(verified).ok().unwrap().close().await.unwrap();assert!(runtime.shutdown().await);
-    relay_input.write_all(b"{\"stop\":true}\n").await.unwrap();drop(relay_input);assert!(relay.wait().await.unwrap().success());
-    if !refused{transferred.unwrap();}assert!(child.status.success());
+    if transferred.is_err() && !refused {
+        child.kill().await.unwrap();
+    }
+    let child = child.wait_with_output().await.unwrap();
+    Arc::try_unwrap(verified)
+        .ok()
+        .unwrap()
+        .close()
+        .await
+        .unwrap();
+    assert!(runtime.shutdown().await);
+    relay_input.write_all(b"{\"stop\":true}\n").await.unwrap();
+    drop(relay_input);
+    assert!(relay.wait().await.unwrap().success());
+    if !refused {
+        transferred.unwrap();
+    }
+    assert!(child.status.success());
 }
 
 #[tokio::test]
-#[ignore="target process of the local Global Chat scenario"]
+#[ignore = "target process of the local Global Chat scenario"]
 async fn global_chat_transfer_target() {
-    use tokio::io::{AsyncBufReadExt,AsyncWriteExt,BufReader};
-    use transport::{Intent,Scope};
-    let mut input=BufReader::new(tokio::io::stdin()).lines();
-    let data:serde_json::Value=serde_json::from_str(&input.next_line().await.unwrap().unwrap()).unwrap();
-    let seed=&data["seed"];let b=&seed["b"];
-    let text=|v:&serde_json::Value|v.as_str().unwrap().to_owned();
-    let codex=data["provider"]=="codex";let compacted=data["compacted"]==true;let with_resources=data["resources"]==true;let refused=data["refused"]==true;
-    let (provider_id,provider_type,model_id)=if codex{("chatgpt","chatgpt","gpt-6.1-sol")}else{("macro-ai","openai","synthetic-model")};
-    let owner=crate::core::db_state::DbPool::default();
-    let pool=crate::db::create_pool(std::path::Path::new(data["database"].as_str().unwrap())).await.unwrap();
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+    use transport::{Intent, Scope};
+    let mut input = BufReader::new(tokio::io::stdin()).lines();
+    let data: serde_json::Value =
+        serde_json::from_str(&input.next_line().await.unwrap().unwrap()).unwrap();
+    let seed = &data["seed"];
+    let b = &seed["b"];
+    let text = |v: &serde_json::Value| v.as_str().unwrap().to_owned();
+    let codex = data["provider"] == "codex";
+    let compacted = data["compacted"] == true;
+    let with_resources = data["resources"] == true;
+    let refused = data["refused"] == true;
+    let (provider_id, provider_type, model_id) = if codex {
+        ("chatgpt", "chatgpt", "gpt-6.1-sol")
+    } else {
+        ("macro-ai", "openai", "synthetic-model")
+    };
+    let owner = crate::core::db_state::DbPool::default();
+    let pool = crate::db::create_pool(std::path::Path::new(data["database"].as_str().unwrap()))
+        .await
+        .unwrap();
     owner.set_ready(pool.clone()).await.unwrap();
-    let manager=Arc::new(Manager::new(Arc::new(Fake::default())));
-    let context=PilotVaultContext{configuration_id:"config:local-target".into(),relay_origin:text(&seed["origin"]),owner_id:text(&b["session_id"])};
-    let generation=manager.activate(context.clone(),None).unwrap().generation;
-    for(kind,id,value)in[(PilotSecretKind::SessionToken,context.owner_id.clone(),text(&b["token"])),(PilotSecretKind::InstanceKey,text(&b["creation"]),text(&b["key"]))]{
-        manager.write(&PilotSecretScope{configuration_id:context.configuration_id.clone(),relay_origin:context.relay_origin.clone(),kind,resource_id:id},&generation,&value).unwrap();
+    let manager = Arc::new(Manager::new(Arc::new(Fake::default())));
+    let context = PilotVaultContext {
+        configuration_id: "config:local-target".into(),
+        relay_origin: text(&seed["origin"]),
+        owner_id: text(&b["session_id"]),
+    };
+    let generation = manager.activate(context.clone(), None).unwrap().generation;
+    for (kind, id, value) in [
+        (
+            PilotSecretKind::SessionToken,
+            context.owner_id.clone(),
+            text(&b["token"]),
+        ),
+        (
+            PilotSecretKind::InstanceKey,
+            text(&b["creation"]),
+            text(&b["key"]),
+        ),
+    ] {
+        manager
+            .write(
+                &PilotSecretScope {
+                    configuration_id: context.configuration_id.clone(),
+                    relay_origin: context.relay_origin.clone(),
+                    kind,
+                    resource_id: id,
+                },
+                &generation,
+                &value,
+            )
+            .unwrap();
     }
-    let bun=std::env::split_paths(&std::env::var_os("PATH").unwrap()).map(|p|p.join("bun")).find(|p|p.is_file()).unwrap();
-    let runtime=crate::connect::TransferRuntime::default();
-    let launcher=runtime.source_launcher(&bun,&std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../copilot-bridge/src/entry.ts"),&owner).unwrap();
-    let ready=owner.wait_until_ready_context().await.unwrap();
-    let verified=transport::bootstrap_owned(manager.clone(),Intent{context,generation,instance_creation_id:text(&b["creation"]),
-        account_id:Some(text(&seed["account_id"])),device_id:Some(text(&b["device_id"])),scope:Scope::Producer{instance_id:text(&b["instance"])},capabilities:serde_json::from_value(seed["capabilities"].clone()).unwrap()},
-        &runtime,&launcher,&ready,format!("127.0.0.1:{}",seed["port"].as_u64().unwrap()).parse().unwrap(),true,&tokio_util::sync::CancellationToken::new()).await.unwrap();
-    let config_directory=tempfile::tempdir().unwrap();
-    let config=crate::config::ConfigManager::initialize(config_directory.path().to_path_buf()).await.unwrap();
-    crate::db::repository::upsert_provider_config_by_id(&pool,provider_id,"Synthetic provider",provider_type,"https://provider.example.invalid/v1",true).await.unwrap();
-    crate::db::repository::update_provider_config(&pool,crate::db::models::UpdateProviderConfigInput{
-        id:provider_id.into(),name:None,provider_type:None,base_url:None,api_key:None,is_local:None,is_enabled:Some(true),
-    }).await.unwrap();
+    let bun = std::env::split_paths(&std::env::var_os("PATH").unwrap())
+        .map(|p| p.join("bun"))
+        .find(|p| p.is_file())
+        .unwrap();
+    let runtime = crate::connect::TransferRuntime::default();
+    let launcher = runtime
+        .source_launcher(
+            &bun,
+            &std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../copilot-bridge/src/entry.ts"),
+            &owner,
+        )
+        .unwrap();
+    let ready = owner.wait_until_ready_context().await.unwrap();
+    let verified = transport::bootstrap_owned(
+        manager.clone(),
+        Intent {
+            context,
+            generation,
+            instance_creation_id: text(&b["creation"]),
+            account_id: Some(text(&seed["account_id"])),
+            device_id: Some(text(&b["device_id"])),
+            scope: Scope::Producer {
+                instance_id: text(&b["instance"]),
+            },
+            capabilities: serde_json::from_value(seed["capabilities"].clone()).unwrap(),
+        },
+        &runtime,
+        &launcher,
+        &ready,
+        format!("127.0.0.1:{}", seed["port"].as_u64().unwrap())
+            .parse()
+            .unwrap(),
+        true,
+        &tokio_util::sync::CancellationToken::new(),
+    )
+    .await
+    .unwrap();
+    let config_directory = tempfile::tempdir().unwrap();
+    let config = crate::config::ConfigManager::initialize(config_directory.path().to_path_buf())
+        .await
+        .unwrap();
+    crate::db::repository::upsert_provider_config_by_id(
+        &pool,
+        provider_id,
+        "Synthetic provider",
+        provider_type,
+        "https://provider.example.invalid/v1",
+        true,
+    )
+    .await
+    .unwrap();
+    crate::db::repository::update_provider_config(
+        &pool,
+        crate::db::models::UpdateProviderConfigInput {
+            id: provider_id.into(),
+            name: None,
+            provider_type: None,
+            base_url: None,
+            api_key: None,
+            is_local: None,
+            is_enabled: Some(true),
+        },
+    )
+    .await
+    .unwrap();
     let model:crate::db::models::ProviderModelInput=serde_json::from_value(serde_json::json!({"model_id":model_id,"name":"Synthetic model",
         "context_window_tokens":200000,"input_limit_tokens":200000,"output_limit_tokens":16384,"context_window_source":"manual"})).unwrap();
-    if !refused{crate::db::repository::upsert_provider_models(&pool,provider_id,&[model]).await.unwrap();}
-    let job=runtime.begin_receive().unwrap();
-    if refused {
-        assert!(super::flow::receive(manager,&owner,&config,&launcher,verified,&ready,&job).await.is_err());
-        drop(job);
-        println!("SLICE_TARGET_EVENT:{}",serde_json::json!({"type":"refused"}));
-        let stop:serde_json::Value=serde_json::from_str(&input.next_line().await.unwrap().unwrap()).unwrap();assert_eq!(stop["stop"],true);
-        assert!(runtime.shutdown().await);return;
+    if !refused {
+        crate::db::repository::upsert_provider_models(&pool, provider_id, &[model])
+            .await
+            .unwrap();
     }
-    let (conversation,prepared)=super::flow::receive(manager,&owner,&config,&launcher,verified,&ready,&job).await.unwrap();
-        let messages:Vec<String>=sqlx::query_scalar("SELECT content FROM messages WHERE conversation_id=? ORDER BY created_at,id").bind(&conversation).fetch_all(&pool).await.unwrap();
-        assert!(messages.len()>=if compacted{22}else{2});assert!(messages.iter().any(|s|s.contains("Can I continue on another computer?")));
-        assert!(messages.iter().any(|s|s.contains("A short answer available on the other computer.")));
-        let mut preview_resources=Vec::<serde_json::Value>::new();
-        if compacted {
-            assert_eq!(messages.len(),22);
-            for n in 0..20{assert!(messages.iter().any(|s|s.contains(&format!("RECOVERABLE_HISTORY_{n:02}"))));}
-            assert!(!messages.iter().any(|s|s.starts_with("[Historical archive")));
-            use crate::db::connect_transfer::reader_runtime::ArchiveReaderRuntime;
-            use crate::db::connect_transfer::reader_types::*;
-            let (ordinal,uuid):(i64,String)=sqlx::query_as("SELECT r.ordinal,m.target_uuid FROM conversation_portable_archives a JOIN e_inactive_records r ON r.import_id=a.import_id JOIN e_inactive_mapping m ON m.import_id=r.import_id AND m.ordinal=r.ordinal JOIN e_inactive_fragments f ON f.import_id=r.import_id AND f.ordinal=r.ordinal WHERE a.conversation_id=? AND instr(CAST(f.data AS TEXT),'SOURCE_CHECKPOINT_HISTORY')>0 LIMIT 1")
-                .bind(&conversation).fetch_one(&pool).await.unwrap();
-            let reader=ArchiveReaderRuntime::default();
-            let selected=reader.open(&owner,&config,"synthetic-reader","page",ArchiveOpenInput{conversation_id:conversation.clone(),selector:ArchiveSelector::Records{ordinal:Some(ordinal.to_string()),uuid:None}}).await.unwrap();
-            let backing=reader.materialize("synthetic-reader","page",ArchiveMaterializeInput{read_id:selected.read_id.clone(),resource_uuid:uuid,r#use:ArchiveUse::RenderText,range:None}).await.unwrap();
-            let data=serde_json::to_value(&backing).unwrap();assert!(data["text"].as_str().unwrap().contains("SOURCE_CHECKPOINT_HISTORY"));
-            preview_resources.push(serde_json::json!({"title":"Historique compacté","text":data["text"]}));
-            drop(backing);reader.release("synthetic-reader","page",ArchiveReleaseInput{id:data["backingId"].as_str().unwrap().into()}).unwrap();
-            reader.release("synthetic-reader","page",ArchiveReleaseInput{id:selected.read_id}).unwrap();reader.retire_caller("synthetic-reader");
-        }else{assert!(messages.iter().all(|s|s=="Can I continue on another computer?" || s=="A short answer available on the other computer."));}
-        if with_resources {
-            use crate::db::connect_transfer::reader_runtime::ArchiveReaderRuntime;
-            use crate::db::connect_transfer::reader_types::*;
-            let citations:Vec<String>=sqlx::query_scalar("SELECT content FROM conversation_citations WHERE conversation_id=? AND content IS NOT NULL").bind(&conversation).fetch_all(&pool).await.unwrap();
-            assert!(citations.iter().any(|text|text.contains("ESSENTIAL_CITATION_FACT")));assert!(citations.iter().any(|text|text.contains("ASSET_TEXT_FACT")));
-            for text in &citations{preview_resources.push(serde_json::json!({"title":"Référence conservée","text":text}));}
-            let assets:Vec<(String,String)>=sqlx::query_as("SELECT id,mime_type FROM connect_published_assets WHERE conversation_id=? ORDER BY position").bind(&conversation).fetch_all(&pool).await.unwrap();
-            assert_eq!(assets.len(),2);
-            let reader=ArchiveReaderRuntime::default();
-            for (id,mime) in assets {
-                let selected=reader.open(&owner,&config,"synthetic-resources","page",ArchiveOpenInput{conversation_id:conversation.clone(),selector:ArchiveSelector::Asset{asset_id:id.clone()}}).await.unwrap();
-                let backing=reader.materialize("synthetic-resources","page",ArchiveMaterializeInput{read_id:selected.read_id.clone(),resource_uuid:id,r#use:if mime=="text/plain"{ArchiveUse::RenderText}else{ArchiveUse::Image},range:None}).await.unwrap();
-                let data=serde_json::to_value(&backing).unwrap();
-                if mime=="text/plain"{assert_eq!(data["text"],"ASSET_TEXT_FACT");}
-                else{assert_eq!(data["width"],32);assert_eq!(data["height"],32);assert!(data["readyDataUrl"].as_str().unwrap().starts_with("data:image/png;base64,"));}
-                preview_resources.push(serde_json::json!({"title":if mime=="text/plain"{"sample.txt"}else{"sample.png"},"text":data["text"],"readyDataUrl":data["readyDataUrl"],"width":data["width"],"height":data["height"]}));
-                drop(backing);reader.release("synthetic-resources","page",ArchiveReleaseInput{id:data["backingId"].as_str().unwrap().into()}).unwrap();
-                reader.release("synthetic-resources","page",ArchiveReleaseInput{id:selected.read_id}).unwrap();
-            }reader.retire_caller("synthetic-resources");
+    let job = runtime.begin_receive().unwrap();
+    if refused {
+        assert!(
+            super::flow::receive(manager, &owner, &config, &launcher, verified, &ready, &job)
+                .await
+                .is_err()
+        );
+        drop(job);
+        println!(
+            "SLICE_TARGET_EVENT:{}",
+            serde_json::json!({"type":"refused"})
+        );
+        let stop: serde_json::Value =
+            serde_json::from_str(&input.next_line().await.unwrap().unwrap()).unwrap();
+        assert_eq!(stop["stop"], true);
+        assert!(runtime.shutdown().await);
+        return;
+    }
+    let (conversation, prepared) =
+        super::flow::receive(manager, &owner, &config, &launcher, verified, &ready, &job)
+            .await
+            .unwrap();
+    let messages: Vec<String> = sqlx::query_scalar(
+        "SELECT content FROM messages WHERE conversation_id=? ORDER BY created_at,id",
+    )
+    .bind(&conversation)
+    .fetch_all(&pool)
+    .await
+    .unwrap();
+    assert!(messages.len() >= if compacted { 22 } else { 2 });
+    assert!(messages
+        .iter()
+        .any(|s| s.contains("Can I continue on another computer?")));
+    assert!(messages
+        .iter()
+        .any(|s| s.contains("A short answer available on the other computer.")));
+    let mut preview_resources = Vec::<serde_json::Value>::new();
+    if compacted {
+        assert_eq!(messages.len(), 22);
+        for n in 0..20 {
+            assert!(messages
+                .iter()
+                .any(|s| s.contains(&format!("RECOVERABLE_HISTORY_{n:02}"))));
         }
-        // Exercise the same historical-message renderer used by ChatZone with
-        // the ordinary published rows, rather than displaying archive JSON.
-        let mut renderer=tokio::process::Command::new(std::env::split_paths(&std::env::var_os("PATH").unwrap()).map(|p|p.join("bun")).find(|p|p.is_file()).unwrap())
+        assert!(!messages
+            .iter()
+            .any(|s| s.starts_with("[Historical archive")));
+        use crate::db::connect_transfer::reader_runtime::ArchiveReaderRuntime;
+        use crate::db::connect_transfer::reader_types::*;
+        let (ordinal,uuid):(i64,String)=sqlx::query_as("SELECT r.ordinal,m.target_uuid FROM conversation_portable_archives a JOIN e_inactive_records r ON r.import_id=a.import_id JOIN e_inactive_mapping m ON m.import_id=r.import_id AND m.ordinal=r.ordinal JOIN e_inactive_fragments f ON f.import_id=r.import_id AND f.ordinal=r.ordinal WHERE a.conversation_id=? AND instr(CAST(f.data AS TEXT),'SOURCE_CHECKPOINT_HISTORY')>0 LIMIT 1")
+                .bind(&conversation).fetch_one(&pool).await.unwrap();
+        let reader = ArchiveReaderRuntime::default();
+        let selected = reader
+            .open(
+                &owner,
+                &config,
+                "synthetic-reader",
+                "page",
+                ArchiveOpenInput {
+                    conversation_id: conversation.clone(),
+                    selector: ArchiveSelector::Records {
+                        ordinal: Some(ordinal.to_string()),
+                        uuid: None,
+                    },
+                },
+            )
+            .await
+            .unwrap();
+        let backing = reader
+            .materialize(
+                "synthetic-reader",
+                "page",
+                ArchiveMaterializeInput {
+                    read_id: selected.read_id.clone(),
+                    resource_uuid: uuid,
+                    r#use: ArchiveUse::RenderText,
+                    range: None,
+                },
+            )
+            .await
+            .unwrap();
+        let data = serde_json::to_value(&backing).unwrap();
+        assert!(data["text"]
+            .as_str()
+            .unwrap()
+            .contains("SOURCE_CHECKPOINT_HISTORY"));
+        preview_resources
+            .push(serde_json::json!({"title":"Historique compacté","text":data["text"]}));
+        drop(backing);
+        reader
+            .release(
+                "synthetic-reader",
+                "page",
+                ArchiveReleaseInput {
+                    id: data["backingId"].as_str().unwrap().into(),
+                },
+            )
+            .unwrap();
+        reader
+            .release(
+                "synthetic-reader",
+                "page",
+                ArchiveReleaseInput {
+                    id: selected.read_id,
+                },
+            )
+            .unwrap();
+        reader.retire_caller("synthetic-reader");
+    } else {
+        assert!(messages
+            .iter()
+            .all(|s| s == "Can I continue on another computer?"
+                || s == "A short answer available on the other computer."));
+    }
+    if with_resources {
+        use crate::db::connect_transfer::reader_runtime::ArchiveReaderRuntime;
+        use crate::db::connect_transfer::reader_types::*;
+        let citations:Vec<String>=sqlx::query_scalar("SELECT content FROM conversation_citations WHERE conversation_id=? AND content IS NOT NULL").bind(&conversation).fetch_all(&pool).await.unwrap();
+        assert!(citations
+            .iter()
+            .any(|text| text.contains("ESSENTIAL_CITATION_FACT")));
+        assert!(citations
+            .iter()
+            .any(|text| text.contains("ASSET_TEXT_FACT")));
+        for text in &citations {
+            preview_resources.push(serde_json::json!({"title":"Référence conservée","text":text}));
+        }
+        let assets:Vec<(String,String)>=sqlx::query_as("SELECT id,mime_type FROM connect_published_assets WHERE conversation_id=? ORDER BY position").bind(&conversation).fetch_all(&pool).await.unwrap();
+        assert_eq!(assets.len(), 2);
+        let reader = ArchiveReaderRuntime::default();
+        for (id, mime) in assets {
+            let selected = reader
+                .open(
+                    &owner,
+                    &config,
+                    "synthetic-resources",
+                    "page",
+                    ArchiveOpenInput {
+                        conversation_id: conversation.clone(),
+                        selector: ArchiveSelector::Asset {
+                            asset_id: id.clone(),
+                        },
+                    },
+                )
+                .await
+                .unwrap();
+            let backing = reader
+                .materialize(
+                    "synthetic-resources",
+                    "page",
+                    ArchiveMaterializeInput {
+                        read_id: selected.read_id.clone(),
+                        resource_uuid: id,
+                        r#use: if mime == "text/plain" {
+                            ArchiveUse::RenderText
+                        } else {
+                            ArchiveUse::Image
+                        },
+                        range: None,
+                    },
+                )
+                .await
+                .unwrap();
+            let data = serde_json::to_value(&backing).unwrap();
+            if mime == "text/plain" {
+                assert_eq!(data["text"], "ASSET_TEXT_FACT");
+            } else {
+                assert_eq!(data["width"], 32);
+                assert_eq!(data["height"], 32);
+                assert!(data["readyDataUrl"]
+                    .as_str()
+                    .unwrap()
+                    .starts_with("data:image/png;base64,"));
+            }
+            preview_resources.push(serde_json::json!({"title":if mime=="text/plain"{"sample.txt"}else{"sample.png"},"text":data["text"],"readyDataUrl":data["readyDataUrl"],"width":data["width"],"height":data["height"]}));
+            drop(backing);
+            reader
+                .release(
+                    "synthetic-resources",
+                    "page",
+                    ArchiveReleaseInput {
+                        id: data["backingId"].as_str().unwrap().into(),
+                    },
+                )
+                .unwrap();
+            reader
+                .release(
+                    "synthetic-resources",
+                    "page",
+                    ArchiveReleaseInput {
+                        id: selected.read_id,
+                    },
+                )
+                .unwrap();
+        }
+        reader.retire_caller("synthetic-resources");
+    }
+    // Exercise the same historical-message renderer used by ChatZone with
+    // the ordinary published rows, rather than displaying archive JSON.
+    let mut renderer=tokio::process::Command::new(std::env::split_paths(&std::env::var_os("PATH").unwrap()).map(|p|p.join("bun")).find(|p|p.is_file()).unwrap())
             .args(["-e",r#"
                 import React from 'react';import {renderToStaticMarkup} from 'react-dom/server';
                 import {createInstance} from 'i18next';import {I18nextProvider} from 'react-i18next';
@@ -1691,34 +2458,101 @@ async fn global_chat_transfer_target() {
                 console.log(renderToStaticMarkup(React.createElement(I18nextProvider,{i18n},messages.map((content,i)=>React.createElement(HistoricalMessageContent,{key:i,content,date:'2026-01-01T00:00:00Z'})))));
             "#]).current_dir(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap())
             .stdin(std::process::Stdio::piped()).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped()).spawn().unwrap();
-        renderer.stdin.take().unwrap().write_all(&serde_json::to_vec(&messages).unwrap()).await.unwrap();
-        let rendered=renderer.wait_with_output().await.unwrap();assert!(rendered.status.success(),"{}",String::from_utf8_lossy(&rendered.stderr));
-        let html=String::from_utf8(rendered.stdout).unwrap();assert!(html.starts_with('<'));assert!(html.contains("data-chat-historical-message"));
-        for message in &messages{assert!(html.contains(message));}assert!(!html.contains(&conversation));assert!(!html.contains("portable_archive"));
-        let mut next=prepared.native_prepared().unwrap().1.clone();
-        next.messages.push(serde_json::from_value(serde_json::json!({"role":"user","content":"Continue from this history."})).unwrap());
-        let (provider,_,_,_)=crate::connect::runtime::transfer_target_snapshot(&config,&ready,provider_id,model_id).await.unwrap();
-        let next_body=if codex{serde_json::to_value(crate::ai::chatgpt::build_transfer_request(&next).unwrap()).unwrap()}
-            else{crate::ai::openai_compatible::build_transfer_request(&next,&provider).unwrap()};
-        assert!(next_body.to_string().contains("Continue from this history."));
-        if codex{assert_eq!(next_body["prompt_cache_key"],conversation);assert_eq!(next_body["store"],false);assert!(next_body.get("previous_response_id").is_none());}
-        for message in &messages{assert!(next_body.to_string().contains(message.trim()),"missing original text: {}",message.chars().take(70).collect::<String>());}
-        if compacted{assert!(next_body.to_string().contains("SOURCE_CHECKPOINT_HISTORY"));}
-        if with_resources {
-            let serialized=next_body.to_string();assert!(serialized.contains("ESSENTIAL_CITATION_FACT"));assert!(serialized.contains("ASSET_TEXT_FACT"));assert!(serialized.contains("data:image/png;base64,"));
-        }
-        if let Some(path)=std::env::var_os("MACRO_CONNECT_SLICE_PREVIEW") {
-            tokio::fs::write(path,serde_json::to_vec(&serde_json::json!({"messagesHtml":html,"messageCount":messages.len(),"resources":preview_resources})).unwrap()).await.unwrap();
-        }
-    assert_eq!(sqlx::query_scalar::<_,i64>("SELECT COUNT(*) FROM conversations").fetch_one(&pool).await.unwrap(),1);
-    assert_eq!(sqlx::query_scalar::<_,i64>("SELECT phase FROM e_inactive_imports").fetch_one(&pool).await.unwrap(),2);
-    println!("SLICE_TARGET_EVENT:{}",serde_json::json!({"type":"complete"}));
-    let stop:serde_json::Value=serde_json::from_str(&input.next_line().await.unwrap().unwrap()).unwrap();assert_eq!(stop["stop"],true);
+    renderer
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(&serde_json::to_vec(&messages).unwrap())
+        .await
+        .unwrap();
+    let rendered = renderer.wait_with_output().await.unwrap();
+    assert!(
+        rendered.status.success(),
+        "{}",
+        String::from_utf8_lossy(&rendered.stderr)
+    );
+    let html = String::from_utf8(rendered.stdout).unwrap();
+    assert!(html.starts_with('<'));
+    assert!(html.contains("data-chat-historical-message"));
+    for message in &messages {
+        assert!(html.contains(message));
+    }
+    assert!(!html.contains(&conversation));
+    assert!(!html.contains("portable_archive"));
+    let mut next = prepared.native_prepared().unwrap().1.clone();
+    next.messages.push(
+        serde_json::from_value(
+            serde_json::json!({"role":"user","content":"Continue from this history."}),
+        )
+        .unwrap(),
+    );
+    let (provider, _, _, _) =
+        crate::connect::runtime::transfer_target_snapshot(&config, &ready, provider_id, model_id)
+            .await
+            .unwrap();
+    let next_body = if codex {
+        serde_json::to_value(crate::ai::chatgpt::build_transfer_request(&next).unwrap()).unwrap()
+    } else {
+        crate::ai::openai_compatible::build_transfer_request(&next, &provider).unwrap()
+    };
+    assert!(next_body
+        .to_string()
+        .contains("Continue from this history."));
+    if codex {
+        assert_eq!(next_body["prompt_cache_key"], conversation);
+        assert_eq!(next_body["store"], false);
+        assert!(next_body.get("previous_response_id").is_none());
+    }
+    for message in &messages {
+        assert!(
+            next_body.to_string().contains(message.trim()),
+            "missing original text: {}",
+            message.chars().take(70).collect::<String>()
+        );
+    }
+    if compacted {
+        assert!(next_body.to_string().contains("SOURCE_CHECKPOINT_HISTORY"));
+    }
+    if with_resources {
+        let serialized = next_body.to_string();
+        assert!(serialized.contains("ESSENTIAL_CITATION_FACT"));
+        assert!(serialized.contains("ASSET_TEXT_FACT"));
+        assert!(serialized.contains("data:image/png;base64,"));
+    }
+    if let Some(path) = std::env::var_os("MACRO_CONNECT_SLICE_PREVIEW") {
+        tokio::fs::write(path,serde_json::to_vec(&serde_json::json!({"messagesHtml":html,"messageCount":messages.len(),"resources":preview_resources})).unwrap()).await.unwrap();
+    }
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM conversations")
+            .fetch_one(&pool)
+            .await
+            .unwrap(),
+        1
+    );
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT phase FROM e_inactive_imports")
+            .fetch_one(&pool)
+            .await
+            .unwrap(),
+        2
+    );
+    println!(
+        "SLICE_TARGET_EVENT:{}",
+        serde_json::json!({"type":"complete"})
+    );
+    let stop: serde_json::Value =
+        serde_json::from_str(&input.next_line().await.unwrap().unwrap()).unwrap();
+    assert_eq!(stop["stop"], true);
     assert!(runtime.shutdown().await);
-    let (_,request,body,_)=prepared.native_prepared().unwrap();
-    assert_eq!(request.provider_id,provider_id);
-    if codex{assert_eq!(body["store"],false);assert!(body.get("previous_response_id").is_none());}
-    else{assert_eq!(body["chat_template_kwargs"]["enable_thinking"],true);}
-    let serialized=body.to_string();assert!(serialized.contains("Can I continue on another computer?"));
+    let (_, request, body, _) = prepared.native_prepared().unwrap();
+    assert_eq!(request.provider_id, provider_id);
+    if codex {
+        assert_eq!(body["store"], false);
+        assert!(body.get("previous_response_id").is_none());
+    } else {
+        assert_eq!(body["chat_template_kwargs"]["enable_thinking"], true);
+    }
+    let serialized = body.to_string();
+    assert!(serialized.contains("Can I continue on another computer?"));
     assert!(serialized.contains("A short answer available on the other computer."));
 }

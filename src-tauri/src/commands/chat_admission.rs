@@ -5,33 +5,56 @@ use tauri::{Manager, State, WebviewWindow};
 
 #[tauri::command]
 pub(crate) async fn chat_admission_open_browser(
-    pool: State<'_, DbPool>, admission_runtime: State<'_, ChatAdmissionRuntime>,
-    window: WebviewWindow, runtime: String,
+    pool: State<'_, DbPool>,
+    admission_runtime: State<'_, ChatAdmissionRuntime>,
+    window: WebviewWindow,
+    runtime: String,
 ) -> CommandResult<()> {
-    admission_runtime.open_browser(pool.inner().clone(), window.label(), &runtime).await.map_err(Into::into)
+    admission_runtime
+        .open_browser(pool.inner().clone(), window.label(), &runtime)
+        .await
+        .map_err(Into::into)
 }
 
 #[tauri::command]
 pub(crate) async fn chat_admission_close_browser(
-    pool: State<'_, DbPool>, admission_runtime: State<'_, ChatAdmissionRuntime>,
-    ai_state: State<'_, crate::ai::AiState>, http: State<'_, crate::ai::admitted_http::AdmittedHttp>,
-    window: WebviewWindow, runtime: String,
+    pool: State<'_, DbPool>,
+    admission_runtime: State<'_, ChatAdmissionRuntime>,
+    ai_state: State<'_, crate::ai::AiState>,
+    http: State<'_, crate::ai::admitted_http::AdmittedHttp>,
+    window: WebviewWindow,
+    runtime: String,
 ) -> CommandResult<()> {
-    admission_runtime.close_browser(&pool, &ai_state, &http, window.label(), &runtime).await.map_err(Into::into)
+    admission_runtime
+        .close_browser(&pool, &ai_state, &http, window.label(), &runtime)
+        .await
+        .map_err(Into::into)
 }
 
 /// Native lifecycle owns this task even when no JavaScript waiter survives.
 pub(crate) fn retire_browser_from_native(app: &tauri::AppHandle, caller: &str) {
-    let Some(runtime) = app.try_state::<ChatAdmissionRuntime>() else { return; };
+    let Some(runtime) = app.try_state::<ChatAdmissionRuntime>() else {
+        return;
+    };
     let page = runtime.invalidate_page(caller);
-    if let Some(reader)=app.try_state::<crate::db::connect_transfer::reader_runtime::ArchiveReaderRuntime>() {reader.retire_caller(caller);}
+    if let Some(reader) =
+        app.try_state::<crate::db::connect_transfer::reader_runtime::ArchiveReaderRuntime>()
+    {
+        reader.retire_caller(caller);
+    }
     let app = app.clone();
     let caller = caller.to_owned();
     tauri::async_runtime::spawn(async move {
-        let result = app.state::<ChatAdmissionRuntime>().close_previous_page(
-            &app.state::<DbPool>(), &app.state::<crate::ai::AiState>(),
-            &app.state::<crate::ai::admitted_http::AdmittedHttp>(), &caller, &page,
-        ).await;
+        let result = app
+            .state::<ChatAdmissionRuntime>()
+            .close_previous_page(
+                &app.state::<DbPool>(),
+                &app.state::<crate::ai::AiState>(),
+                &app.state::<crate::ai::admitted_http::AdmittedHttp>(),
+                &caller,
+                &page,
+            )
+            .await;
         if let Err(error) = result {
             tracing::error!(%error, "Chat browser retirement remains blocked");
         }
@@ -60,8 +83,20 @@ pub(crate) async fn chat_admission_begin(
         Some(1) => {}
         _ => return Err(command_error("chat_admission_conversation_missing")),
     }
-    admission_runtime.open_browser_on_page(pool.inner().clone(), window.label(), &runtime, &page).await?;
-    admission_runtime.retire_previous_unknown_turns(&pool,&ai_state,&http,window.label(),&runtime,&conversation_id,&turn_id).await?;
+    admission_runtime
+        .open_browser_on_page(pool.inner().clone(), window.label(), &runtime, &page)
+        .await?;
+    admission_runtime
+        .retire_previous_unknown_turns(
+            &pool,
+            &ai_state,
+            &http,
+            window.label(),
+            &runtime,
+            &conversation_id,
+            &turn_id,
+        )
+        .await?;
     admission_runtime
         .begin_root(
             pool.inner().clone(),
@@ -79,15 +114,38 @@ pub(crate) async fn chat_admission_begin(
 
 #[tauri::command]
 pub(crate) async fn chat_admission_close_preparation(
-    pool: State<'_, DbPool>, admission_runtime: State<'_, ChatAdmissionRuntime>, window: WebviewWindow,
-    context: ChatAdmissionContext, conversation_id: String,
+    pool: State<'_, DbPool>,
+    admission_runtime: State<'_, ChatAdmissionRuntime>,
+    window: WebviewWindow,
+    context: ChatAdmissionContext,
+    conversation_id: String,
 ) -> CommandResult<()> {
-    let fingerprint = crate::db::chat_admission::runtime::completion_fingerprint("preparation", &())?;
-    if crate::db::chat_admission::runtime::replay_completion(&pool, window.label(), &context, &conversation_id, &fingerprint).await? {
+    let fingerprint =
+        crate::db::chat_admission::runtime::completion_fingerprint("preparation", &())?;
+    if crate::db::chat_admission::runtime::replay_completion(
+        &pool,
+        window.label(),
+        &context,
+        &conversation_id,
+        &fingerprint,
+    )
+    .await?
+    {
         return Ok(());
     }
-    let result = admission_runtime.close_preparation(window.label(), &context, &conversation_id).await;
-    if result.is_err() && crate::db::chat_admission::runtime::replay_completion(&pool, window.label(), &context, &conversation_id, &fingerprint).await? {
+    let result = admission_runtime
+        .close_preparation(window.label(), &context, &conversation_id)
+        .await;
+    if result.is_err()
+        && crate::db::chat_admission::runtime::replay_completion(
+            &pool,
+            window.label(),
+            &context,
+            &conversation_id,
+            &fingerprint,
+        )
+        .await?
+    {
         return Ok(());
     }
     result.map_err(Into::into)
@@ -255,12 +313,32 @@ pub(crate) async fn chat_admission_finish_response(
     mut params: super::DbUpdateMessageParams,
 ) -> CommandResult<()> {
     let input = params.take_input();
-    let fingerprint = crate::db::chat_admission::runtime::completion_fingerprint("response", &input)?;
-    if crate::db::chat_admission::runtime::replay_completion(&pool, window.label(), &context, &conversation_id, &fingerprint).await? {
+    let fingerprint =
+        crate::db::chat_admission::runtime::completion_fingerprint("response", &input)?;
+    if crate::db::chat_admission::runtime::replay_completion(
+        &pool,
+        window.label(),
+        &context,
+        &conversation_id,
+        &fingerprint,
+    )
+    .await?
+    {
         return Ok(());
     }
-    let result = admission_runtime.finish_response(window.label(), &context, &conversation_id, input).await;
-    if result.is_err() && crate::db::chat_admission::runtime::replay_completion(&pool, window.label(), &context, &conversation_id, &fingerprint).await? {
+    let result = admission_runtime
+        .finish_response(window.label(), &context, &conversation_id, input)
+        .await;
+    if result.is_err()
+        && crate::db::chat_admission::runtime::replay_completion(
+            &pool,
+            window.label(),
+            &context,
+            &conversation_id,
+            &fingerprint,
+        )
+        .await?
+    {
         return Ok(());
     }
     result.map_err(Into::into)
@@ -275,12 +353,32 @@ pub(crate) async fn chat_admission_finish_compaction(
     conversation_id: String,
     input: Option<crate::db::models::UpsertConversationCompactionStateInput>,
 ) -> CommandResult<()> {
-    let fingerprint = crate::db::chat_admission::runtime::completion_fingerprint("compaction", &input)?;
-    if crate::db::chat_admission::runtime::replay_completion(&pool, window.label(), &context, &conversation_id, &fingerprint).await? {
+    let fingerprint =
+        crate::db::chat_admission::runtime::completion_fingerprint("compaction", &input)?;
+    if crate::db::chat_admission::runtime::replay_completion(
+        &pool,
+        window.label(),
+        &context,
+        &conversation_id,
+        &fingerprint,
+    )
+    .await?
+    {
         return Ok(());
     }
-    let result = admission_runtime.finish_compaction(window.label(), &context, &conversation_id, input).await;
-    if result.is_err() && crate::db::chat_admission::runtime::replay_completion(&pool, window.label(), &context, &conversation_id, &fingerprint).await? {
+    let result = admission_runtime
+        .finish_compaction(window.label(), &context, &conversation_id, input)
+        .await;
+    if result.is_err()
+        && crate::db::chat_admission::runtime::replay_completion(
+            &pool,
+            window.label(),
+            &context,
+            &conversation_id,
+            &fingerprint,
+        )
+        .await?
+    {
         return Ok(());
     }
     result.map_err(Into::into)
@@ -294,7 +392,10 @@ pub(crate) async fn chat_admission_acknowledge_completion(
     context: ChatAdmissionContext,
     conversation_id: String,
 ) -> CommandResult<()> {
-    admission_runtime.acknowledge_completion(&pool, window.label(), &context, &conversation_id).await.map_err(Into::into)
+    admission_runtime
+        .acknowledge_completion(&pool, window.label(), &context, &conversation_id)
+        .await
+        .map_err(Into::into)
 }
 
 /// Reserve before asynchronous validation, then retain the actual executor task.
@@ -327,121 +428,229 @@ pub(crate) async fn admit_tool(
     Ok((reservation, std::sync::Arc::new(work)))
 }
 
-
 #[derive(serde::Serialize)]
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub(crate) enum IntentAdmission {
-    GlobalChat { receipt: crate::db::chat_admission::intents::IntentReceipt },
+    GlobalChat {
+        receipt: crate::db::chat_admission::intents::IntentReceipt,
+    },
     Conversation,
 }
 
 #[tauri::command]
 pub(crate) async fn chat_admission_begin_intent(
-    pool: State<'_, DbPool>, admission_runtime: State<'_, ChatAdmissionRuntime>,
-    window: WebviewWindow, runtime: String,
-    identity: crate::db::chat_admission::intents::IntentIdentity, mutation: crate::db::chat_admission::intents::IntentMutation,
+    pool: State<'_, DbPool>,
+    admission_runtime: State<'_, ChatAdmissionRuntime>,
+    window: WebviewWindow,
+    runtime: String,
+    identity: crate::db::chat_admission::intents::IntentIdentity,
+    mutation: crate::db::chat_admission::intents::IntentMutation,
 ) -> CommandResult<IntentAdmission> {
     let page = admission_runtime.current_page(window.label());
     let database = get_pool(&pool).await?;
-    let mut connection = database.acquire().await.map_err(|error| command_error(error.to_string()))?;
-    let scope = crate::db::chat_admission::intents::classify_copy(&mut connection, &identity.conversation_id, mutation).await?;
+    let mut connection = database
+        .acquire()
+        .await
+        .map_err(|error| command_error(error.to_string()))?;
+    let scope = crate::db::chat_admission::intents::classify_copy(
+        &mut connection,
+        &identity.conversation_id,
+        mutation,
+    )
+    .await?;
     drop(connection);
     match scope {
-        crate::db::chat_admission::intents::IntentScope::GlobalChat => {},
+        crate::db::chat_admission::intents::IntentScope::GlobalChat => {}
         // Only removal is classified Removed. This cleans up an orphaned copy
         // without touching old markers/effects or reviving a tombstoned ID.
         _ => return Ok(IntentAdmission::Conversation),
     }
-    admission_runtime.open_browser_on_page(pool.inner().clone(), window.label(), &runtime, &page).await?;
-    let receipt = admission_runtime.begin_intent(&pool, window.label(), &runtime, identity, mutation).await?;
+    admission_runtime
+        .open_browser_on_page(pool.inner().clone(), window.label(), &runtime, &page)
+        .await?;
+    let receipt = admission_runtime
+        .begin_intent(&pool, window.label(), &runtime, identity, mutation)
+        .await?;
     Ok(IntentAdmission::GlobalChat { receipt })
 }
 
 #[tauri::command]
 pub(crate) async fn chat_admission_finish_intent(
-    pool: State<'_, DbPool>, admission_runtime: State<'_, ChatAdmissionRuntime>,
-    window: WebviewWindow, receipt: crate::db::chat_admission::intents::IntentReceipt,
+    pool: State<'_, DbPool>,
+    admission_runtime: State<'_, ChatAdmissionRuntime>,
+    window: WebviewWindow,
+    receipt: crate::db::chat_admission::intents::IntentReceipt,
 ) -> CommandResult<()> {
-    admission_runtime.finish_intent(&pool, window.label(), &receipt).await.map_err(Into::into)
+    admission_runtime
+        .finish_intent(&pool, window.label(), &receipt)
+        .await
+        .map_err(Into::into)
 }
 
 #[tauri::command]
 pub(crate) async fn chat_admission_write_approval_registry(
-    pool: State<'_, DbPool>, window: WebviewWindow, conversation_id: String,
+    pool: State<'_, DbPool>,
+    window: WebviewWindow,
+    conversation_id: String,
     receipt: Option<crate::db::chat_admission::intents::IntentReceipt>,
-    expected_value_json: Option<String>, value_json: Option<String>,
+    expected_value_json: Option<String>,
+    value_json: Option<String>,
 ) -> CommandResult<()> {
-    crate::db::chat_admission::intents::write_approval_registry(&pool, window.label(), &conversation_id,
-        receipt.as_ref(), expected_value_json.as_deref(), value_json.as_deref()).await.map_err(Into::into)
+    crate::db::chat_admission::intents::write_approval_registry(
+        &pool,
+        window.label(),
+        &conversation_id,
+        receipt.as_ref(),
+        expected_value_json.as_deref(),
+        value_json.as_deref(),
+    )
+    .await
+    .map_err(Into::into)
 }
 
 #[tauri::command]
 pub(crate) async fn chat_admission_complete_steer_handoff(
-    admission_runtime: State<'_, ChatAdmissionRuntime>, window: WebviewWindow,
-    context: ChatAdmissionContext, conversation_id: String, request_id: String,
+    admission_runtime: State<'_, ChatAdmissionRuntime>,
+    window: WebviewWindow,
+    context: ChatAdmissionContext,
+    conversation_id: String,
+    request_id: String,
     receipts: Vec<crate::db::chat_admission::intents::IntentReceipt>,
 ) -> CommandResult<()> {
-    let parent = admission_runtime.parent(window.label(), &context, &conversation_id).await?;
-    crate::db::chat_admission::intents::complete_steer_handoff(&parent, window.label(), &request_id, &receipts).await.map_err(Into::into)
+    let parent = admission_runtime
+        .parent(window.label(), &context, &conversation_id)
+        .await?;
+    crate::db::chat_admission::intents::complete_steer_handoff(
+        &parent,
+        window.label(),
+        &request_id,
+        &receipts,
+    )
+    .await
+    .map_err(Into::into)
 }
 
 #[tauri::command]
 pub(crate) async fn chat_admission_complete_question_handoff(
-    admission_runtime: State<'_, ChatAdmissionRuntime>, window: WebviewWindow,
-    context: ChatAdmissionContext, conversation_id: String, response_message_id: String,
+    admission_runtime: State<'_, ChatAdmissionRuntime>,
+    window: WebviewWindow,
+    context: ChatAdmissionContext,
+    conversation_id: String,
+    response_message_id: String,
     receipt: crate::db::chat_admission::intents::IntentReceipt,
 ) -> CommandResult<()> {
-    let parent = admission_runtime.parent(window.label(), &context, &conversation_id).await?;
-    crate::db::chat_admission::intents::complete_question_handoff(&parent, window.label(), &receipt, &response_message_id).await.map_err(Into::into)
+    let parent = admission_runtime
+        .parent(window.label(), &context, &conversation_id)
+        .await?;
+    crate::db::chat_admission::intents::complete_question_handoff(
+        &parent,
+        window.label(),
+        &receipt,
+        &response_message_id,
+    )
+    .await
+    .map_err(Into::into)
 }
 
 #[tauri::command]
 pub(crate) async fn chat_admission_reserve_response(
-    admission_runtime: State<'_, ChatAdmissionRuntime>, window: WebviewWindow,
-    context: ChatAdmissionContext, conversation_id: String, message_id: String,
+    admission_runtime: State<'_, ChatAdmissionRuntime>,
+    window: WebviewWindow,
+    context: ChatAdmissionContext,
+    conversation_id: String,
+    message_id: String,
 ) -> CommandResult<crate::db::chat_admission::intents::IntentReceipt> {
-    let parent = admission_runtime.parent(window.label(), &context, &conversation_id).await?;
-    crate::db::chat_admission::intents::reserve_response(&parent, window.label(), &message_id).await.map_err(Into::into)
+    let parent = admission_runtime
+        .parent(window.label(), &context, &conversation_id)
+        .await?;
+    crate::db::chat_admission::intents::reserve_response(&parent, window.label(), &message_id)
+        .await
+        .map_err(Into::into)
 }
 
 #[tauri::command]
 pub(crate) async fn chat_admission_prepare_response_recovery(
-    pool: State<'_, DbPool>, admission_runtime: State<'_, ChatAdmissionRuntime>,
-    window: WebviewWindow, runtime: String, conversation_id: String, message_id: String,
+    pool: State<'_, DbPool>,
+    admission_runtime: State<'_, ChatAdmissionRuntime>,
+    window: WebviewWindow,
+    runtime: String,
+    conversation_id: String,
+    message_id: String,
     mutation: crate::db::chat_admission::intents::IntentMutation,
 ) -> CommandResult<IntentAdmission> {
     let page = admission_runtime.current_page(window.label());
     let database = get_pool(&pool).await?;
-    let mut connection = database.acquire().await.map_err(|error| command_error(error.to_string()))?;
-    let scope = crate::db::chat_admission::intents::classify_copy(&mut connection, &conversation_id, mutation).await?;
+    let mut connection = database
+        .acquire()
+        .await
+        .map_err(|error| command_error(error.to_string()))?;
+    let scope = crate::db::chat_admission::intents::classify_copy(
+        &mut connection,
+        &conversation_id,
+        mutation,
+    )
+    .await?;
     drop(connection);
-    if scope != crate::db::chat_admission::intents::IntentScope::GlobalChat { return Ok(IntentAdmission::Conversation); }
-    admission_runtime.open_browser_on_page(pool.inner().clone(), window.label(), &runtime, &page).await?;
-    let identity = crate::db::chat_admission::intents::response_recovery_identity(&pool, &conversation_id, &message_id).await?;
-    let receipt = admission_runtime.begin_intent(&pool, window.label(), &runtime, identity, mutation).await?;
+    if scope != crate::db::chat_admission::intents::IntentScope::GlobalChat {
+        return Ok(IntentAdmission::Conversation);
+    }
+    admission_runtime
+        .open_browser_on_page(pool.inner().clone(), window.label(), &runtime, &page)
+        .await?;
+    let identity = crate::db::chat_admission::intents::response_recovery_identity(
+        &pool,
+        &conversation_id,
+        &message_id,
+    )
+    .await?;
+    let receipt = admission_runtime
+        .begin_intent(&pool, window.label(), &runtime, identity, mutation)
+        .await?;
     Ok(IntentAdmission::GlobalChat { receipt })
 }
 
 #[tauri::command]
 pub(crate) async fn chat_admission_recover_response(
-    pool: State<'_, DbPool>, window: WebviewWindow,
-    receipt: crate::db::chat_admission::intents::IntentReceipt, mut params: super::DbUpdateMessageParams,
+    pool: State<'_, DbPool>,
+    window: WebviewWindow,
+    receipt: crate::db::chat_admission::intents::IntentReceipt,
+    mut params: super::DbUpdateMessageParams,
 ) -> CommandResult<()> {
-    crate::db::chat_admission::intents::recover_response(&pool, window.label(), &receipt, params.take_input()).await.map_err(Into::into)
+    crate::db::chat_admission::intents::recover_response(
+        &pool,
+        window.label(),
+        &receipt,
+        params.take_input(),
+    )
+    .await
+    .map_err(Into::into)
 }
 
 #[tauri::command]
 pub(crate) async fn chat_admission_begin_reconciliation(
-    pool: State<'_, DbPool>, admission_runtime: State<'_, ChatAdmissionRuntime>, window: WebviewWindow,
-    runtime: String, conversation_id: String,
+    pool: State<'_, DbPool>,
+    admission_runtime: State<'_, ChatAdmissionRuntime>,
+    window: WebviewWindow,
+    runtime: String,
+    conversation_id: String,
 ) -> CommandResult<String> {
-    admission_runtime.begin_reconciliation(&pool,window.label(),&runtime,&conversation_id).await.map_err(Into::into)
+    admission_runtime
+        .begin_reconciliation(&pool, window.label(), &runtime, &conversation_id)
+        .await
+        .map_err(Into::into)
 }
 
 #[tauri::command]
 pub(crate) async fn chat_admission_complete_reconciliation(
-    pool: State<'_, DbPool>, admission_runtime: State<'_, ChatAdmissionRuntime>, window: WebviewWindow,
-    runtime: String, handle: String, observed: crate::db::chat_admission::reconciliation::BrowserInspection,
+    pool: State<'_, DbPool>,
+    admission_runtime: State<'_, ChatAdmissionRuntime>,
+    window: WebviewWindow,
+    runtime: String,
+    handle: String,
+    observed: crate::db::chat_admission::reconciliation::BrowserInspection,
 ) -> CommandResult<()> {
-    admission_runtime.complete_reconciliation(&pool,window.label(),&runtime,&handle,&observed).await.map_err(Into::into)
+    admission_runtime
+        .complete_reconciliation(&pool, window.label(), &runtime, &handle, &observed)
+        .await
+        .map_err(Into::into)
 }

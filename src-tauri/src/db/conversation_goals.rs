@@ -637,7 +637,9 @@ pub async fn reconcile_audits_after_restart(pool: &SqlitePool) -> DbResult<u64> 
     Ok(count)
 }
 
-pub(crate) async fn reconcile_audits_after_restart_in(connection: &mut sqlx::SqliteConnection) -> DbResult<u64> {
+pub(crate) async fn reconcile_audits_after_restart_in(
+    connection: &mut sqlx::SqliteConnection,
+) -> DbResult<u64> {
     let now = chrono::Utc::now().to_rfc3339();
     sqlx::query("UPDATE conversation_goals SET status = 'paused', last_error = NULL, updated_at = ? WHERE status = 'auditing' AND is_current = 1 AND EXISTS (SELECT 1 FROM conversation_goal_audits AS audit WHERE audit.conversation_id = conversation_goals.conversation_id AND audit.goal_id = conversation_goals.goal_id AND audit.goal_revision = conversation_goals.revision AND audit.status IN ('queued', 'running'))")
         .bind(&now).execute(&mut *connection).await?;

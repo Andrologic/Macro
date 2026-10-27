@@ -587,16 +587,30 @@ pub async fn delete_conversations(pool: &SqlitePool, ids: &[String]) -> DbResult
     Ok(())
 }
 
-pub(crate) async fn delete_conversations_admitted(owner: &crate::core::db_state::DbPool, ids: &[String]) -> DbResult<()> {
-    delete_conversations_ready(owner,ids,None).await
+pub(crate) async fn delete_conversations_admitted(
+    owner: &crate::core::db_state::DbPool,
+    ids: &[String],
+) -> DbResult<()> {
+    delete_conversations_ready(owner, ids, None).await
 }
 
-pub(crate) async fn delete_conversations_with_readers(owner: &crate::core::db_state::DbPool, ids: &[String], reader: &super::connect_transfer::reader_runtime::ArchiveReaderRuntime) -> DbResult<()> {
-    delete_conversations_ready(owner,ids,Some(reader)).await
+pub(crate) async fn delete_conversations_with_readers(
+    owner: &crate::core::db_state::DbPool,
+    ids: &[String],
+    reader: &super::connect_transfer::reader_runtime::ArchiveReaderRuntime,
+) -> DbResult<()> {
+    delete_conversations_ready(owner, ids, Some(reader)).await
 }
 
-async fn delete_conversations_ready(owner: &crate::core::db_state::DbPool, ids: &[String], reader: Option<&super::connect_transfer::reader_runtime::ArchiveReaderRuntime>) -> DbResult<()> {
-    let ready = owner.source_ready(None).await.map_err(|_| DbError::Validation("stale_revision".into()))?;
+async fn delete_conversations_ready(
+    owner: &crate::core::db_state::DbPool,
+    ids: &[String],
+    reader: Option<&super::connect_transfer::reader_runtime::ArchiveReaderRuntime>,
+) -> DbResult<()> {
+    let ready = owner
+        .source_ready(None)
+        .await
+        .map_err(|_| DbError::Validation("stale_revision".into()))?;
     let mut lease = super::connect_transfer::deletion_lease(&ready.ready.pool).await?;
     use sqlx::Connection;
     let mut tx = lease.begin_with("BEGIN IMMEDIATE").await?;
@@ -613,14 +627,24 @@ async fn delete_conversations_ready(owner: &crate::core::db_state::DbPool, ids: 
 
 #[cfg(test)]
 fn local_deletion_checkpoint(phase: &str, ids: &[String]) {
-    if std::env::var("MACRO_LOCAL_DELETION_CRASH_PHASE").ok().as_deref() == Some(phase)
-        && std::env::var("MACRO_LOCAL_DELETION_CRASH_CONVERSATION").ok()
-            .is_some_and(|conversation| ids.contains(&conversation)) {
+    if std::env::var("MACRO_LOCAL_DELETION_CRASH_PHASE")
+        .ok()
+        .as_deref()
+        == Some(phase)
+        && std::env::var("MACRO_LOCAL_DELETION_CRASH_CONVERSATION")
+            .ok()
+            .is_some_and(|conversation| ids.contains(&conversation))
+    {
         std::process::exit(92);
     }
 }
 
-async fn delete_conversations_in(db: &mut SqliteConnection, ids: &[String], generation: Option<&str>, reader: Option<&super::connect_transfer::reader_runtime::ArchiveReaderRuntime>) -> DbResult<()> {
+async fn delete_conversations_in(
+    db: &mut SqliteConnection,
+    ids: &[String],
+    generation: Option<&str>,
+    reader: Option<&super::connect_transfer::reader_runtime::ArchiveReaderRuntime>,
+) -> DbResult<()> {
     if ids.is_empty() {
         return Ok(());
     }
@@ -640,7 +664,9 @@ async fn delete_conversations_in(db: &mut SqliteConnection, ids: &[String], gene
     owned_ids.dedup();
     // Covers auditor-owned child conversations too, under the same writer.
     // Existing application backings must retire before payload deletion.
-    let _readers=reader.map(|reader|reader.deleting(&owned_ids)).transpose()?;
+    let _readers = reader
+        .map(|reader| reader.deleting(&owned_ids))
+        .transpose()?;
     let ids = &owned_ids;
     let placeholders = vec!["?"; ids.len()].join(", ");
     let query = format!("DELETE FROM conversations WHERE id IN ({})", placeholders);
@@ -676,7 +702,9 @@ async fn delete_conversations_in(db: &mut SqliteConnection, ids: &[String], gene
 
 pub async fn delete_app_setting(pool: &SqlitePool, key: &str) -> DbResult<bool> {
     if key == super::chat_admission::intents::APPROVAL_REGISTRY_KEY {
-        return Err(super::DbError::Validation("chat_admission_reserved_setting".into()));
+        return Err(super::DbError::Validation(
+            "chat_admission_reserved_setting".into(),
+        ));
     }
 
     let result = sqlx::query("DELETE FROM app_settings WHERE key = ?")
@@ -2454,7 +2482,8 @@ pub async fn list_provider_configs(pool: &SqlitePool) -> DbResult<Vec<ProviderCo
                 .unwrap_or_default()
                 .to_string(),
             api_key: None,
-            has_stored_api_key: crate::secrets::get_api_key_async(id).await
+            has_stored_api_key: crate::secrets::get_api_key_async(id)
+                .await
                 .map_err(|error| DbError::Validation(error.to_string()))?
                 .is_some(),
             is_enabled: definition
@@ -3193,7 +3222,9 @@ pub async fn set_app_setting(
     value_json: &str,
 ) -> DbResult<AppSettingRecord> {
     if key == super::chat_admission::intents::APPROVAL_REGISTRY_KEY {
-        return Err(super::DbError::Validation("chat_admission_reserved_setting".into()));
+        return Err(super::DbError::Validation(
+            "chat_admission_reserved_setting".into(),
+        ));
     }
 
     let now = chrono::Utc::now().to_rfc3339();
@@ -3227,7 +3258,9 @@ pub async fn compare_and_swap_app_setting(
     value_json: &str,
 ) -> DbResult<CompareAndSwapAppSettingResult> {
     if key == super::chat_admission::intents::APPROVAL_REGISTRY_KEY {
-        return Err(super::DbError::Validation("chat_admission_reserved_setting".into()));
+        return Err(super::DbError::Validation(
+            "chat_admission_reserved_setting".into(),
+        ));
     }
 
     let now = chrono::Utc::now().to_rfc3339();

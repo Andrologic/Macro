@@ -12,7 +12,10 @@ pub(super) struct PublishWrite {
     pub(super) configuration_digest: Vec<u8>,
 }
 #[derive(Debug, PartialEq, Eq)]
-pub(super) enum LocalDisposition { Published, Removed }
+pub(super) enum LocalDisposition {
+    Published,
+    Removed,
+}
 #[derive(Debug, PartialEq, Eq)]
 pub(super) struct LocalPublication {
     pub(super) conversation_id: String,
@@ -76,7 +79,10 @@ pub(super) async fn publish(pool: &SqlitePool, input: &PublishWrite) -> DbResult
     super::preparation::grow(&mut tx, &input.transfer_id, add(extra, 512)?).await?;
     let published_at = chrono::Utc::now().to_rfc3339();
     sqlx::query("INSERT INTO connect_publication_times VALUES(?,?)")
-        .bind(&input.transfer_id).bind(&published_at).execute(&mut *tx).await?;
+        .bind(&input.transfer_id)
+        .bind(&published_at)
+        .execute(&mut *tx)
+        .await?;
     sqlx::query("INSERT INTO conversations(id,title,scope_mode,project_id,group_id,task_id,provider_id,model_id,reasoning_effort,created_at,updated_at,message_count,is_pinned) VALUES(?,?,'Chat',NULL,NULL,NULL,?,?,?,?,?,?,0)")
         .bind(&conversation).bind(row.get::<String,_>("title")).bind(row.get::<String,_>("provider_id")).bind(row.get::<String,_>("model_id")).bind(row.get::<Option<String>,_>("reasoning_effort")).bind(row.get::<String,_>("created_at")).bind(row.get::<String,_>("created_at")).bind(row.get::<i64,_>("message_count")).execute(&mut *tx).await?;
     let mut cursor = -1_i64;

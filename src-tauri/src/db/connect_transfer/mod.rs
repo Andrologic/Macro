@@ -2,14 +2,14 @@
 //! terminal constructor exists here. The storage inputs are not authority.
 #![allow(dead_code)]
 mod journal;
-pub(crate) use journal::{reserve_verified_source,reserve_verified_target};
+pub(crate) use journal::{reserve_verified_source, reserve_verified_target};
 pub(in crate::db) mod deletion;
 mod preparation;
 mod publication;
 mod reader;
 mod reader_resources;
-pub(crate) mod reader_types;
 pub(crate) mod reader_runtime;
+pub(crate) mod reader_types;
 mod schema;
 mod staging;
 mod terminal;
@@ -23,9 +23,11 @@ use sqlx::{SqliteConnection, SqlitePool};
 
 pub(crate) use journal::Reservation;
 pub(super) use journal::{reserve_source, LocalReservation};
-pub(super) use schema::validate_schema;
 pub(in crate::db) use schema::reference;
-pub(crate) use schema::{remove_publication_reference_in, remove_reference_schema_in, remove_reader_reference_in};
+pub(super) use schema::validate_schema;
+pub(crate) use schema::{
+    remove_publication_reference_in, remove_reader_reference_in, remove_reference_schema_in,
+};
 const CONTROL: usize = 98_304;
 fn invalid(code: &str) -> DbError {
     DbError::Validation(code.into())
@@ -85,9 +87,14 @@ async fn admit(db: &mut SqliteConnection, extra: i64) -> DbResult<()> {
     if domain == 0 {
         // The reservation precedes capture/import. Provision under this same
         // FULL transaction through the existing DB-wide budget owner.
-        super::inactive_budget::admit_e(db,0,
+        super::inactive_budget::admit_e(
+            db,
+            0,
             super::inactive_budget::NATIVE_BUDGET,
-            super::inactive_budget::NATIVE_MAX_RECEIPTS).await.map_err(|code|invalid(&code))?;
+            super::inactive_budget::NATIVE_MAX_RECEIPTS,
+        )
+        .await
+        .map_err(|code| invalid(&code))?;
     }
     super::inactive_budget::admit(db, extra)
         .await

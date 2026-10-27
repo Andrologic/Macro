@@ -51,7 +51,9 @@ pub(crate) async fn resolve_stdio_transport_async(
 async fn secrets_blocking<T: Send + 'static>(
     operation: impl FnOnce() -> CommandResult<T> + Send + 'static,
 ) -> CommandResult<T> {
-    crate::secrets::blocking::run(operation).await.map_err(|error| command_error(error.to_string()))?
+    crate::secrets::blocking::run(operation)
+        .await
+        .map_err(|error| command_error(error.to_string()))?
 }
 
 pub(crate) fn resolve_stdio_transport(

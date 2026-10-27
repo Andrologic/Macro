@@ -17,7 +17,7 @@ pub(super) fn hex(value: &[u8]) -> String {
 }
 pub(super) fn validate(selector: &ArchiveSelector) -> DbResult<()> {
     match selector {
-        ArchiveSelector::Entries => {},
+        ArchiveSelector::Entries => {}
         ArchiveSelector::Records { ordinal, uuid: id } => {
             if ordinal.is_some() && id.is_some() {
                 return Err(invalid("invalid_cursor"));

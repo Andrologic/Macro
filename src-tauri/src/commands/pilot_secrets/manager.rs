@@ -338,8 +338,13 @@ impl<B: Vault> Manager<B> {
         result.map_err(|_| native_error.unwrap_or_else(|| self.policy_error(&identity.generation)))
     }
 
-    pub(super) fn observe_transport(&self, snapshot: &crate::secrets::policy::PolicySnapshot<TransportPair>) -> Result<crate::secrets::policy::PolicyObservation, PilotSecretError> {
-        self.policy.observe(snapshot).map_err(|_| self.policy_error(&snapshot.peer().identity.generation))
+    pub(super) fn observe_transport(
+        &self,
+        snapshot: &crate::secrets::policy::PolicySnapshot<TransportPair>,
+    ) -> Result<crate::secrets::policy::PolicyObservation, PilotSecretError> {
+        self.policy
+            .observe(snapshot)
+            .map_err(|_| self.policy_error(&snapshot.peer().identity.generation))
     }
 
     pub(super) fn consume_policy<T>(

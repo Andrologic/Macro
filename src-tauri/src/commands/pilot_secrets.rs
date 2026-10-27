@@ -5,16 +5,16 @@ use sha2::{Digest, Sha256};
 use std::sync::{Arc, OnceLock};
 use tauri::Emitter;
 
+mod flow;
 #[cfg(target_os = "macos")]
 mod lifecycle;
 mod manager;
-mod flow;
 mod native;
-pub(crate) mod transport;
 #[cfg(any(target_os = "macos", test))]
 mod session;
 #[cfg(test)]
 mod tests;
+pub(crate) mod transport;
 
 use manager::Manager;
 use native::SystemVault;
@@ -125,7 +125,9 @@ fn validate_secret(secret: &str) -> Result<(), PilotSecretError> {
 }
 
 pub(super) trait Vault: Send + Sync {
-    fn silent_capture_supported(&self) -> bool { false }
+    fn silent_capture_supported(&self) -> bool {
+        false
+    }
     fn prepare_resume(&self, _kind: PilotSecretKind) -> Result<(), PilotSecretError> {
         Ok(())
     }
@@ -192,7 +194,9 @@ pub async fn pilot_vault_activate(
 }
 
 #[tauri::command]
-pub async fn pilot_vault_invalidate(generation: Option<String>) -> Result<VaultLease, PilotSecretError> {
+pub async fn pilot_vault_invalidate(
+    generation: Option<String>,
+) -> Result<VaultLease, PilotSecretError> {
     let manager = manager()?;
     blocking(move || manager.invalidate(generation.as_deref())).await
 }
@@ -252,67 +256,150 @@ pub(crate) fn qualification_backup_context(
 /// Connection identifiers are intent only. Native /me and pair preflight still
 /// establish account, producer identity and current rights from the relay.
 #[derive(Deserialize)]
-#[serde(rename_all="camelCase",deny_unknown_fields)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct TransferConnectionInput {
-    context:PilotVaultContext,generation:String,instance_creation_id:String,
-    account_id:String,device_id:String,instance_id:String,capabilities:Vec<String>,
+    context: PilotVaultContext,
+    generation: String,
+    instance_creation_id: String,
+    account_id: String,
+    device_id: String,
+    instance_id: String,
+    capabilities: Vec<String>,
 }
 impl TransferConnectionInput {
-    fn intent(self)->transport::Intent {
-        transport::Intent{context:self.context,generation:self.generation,instance_creation_id:self.instance_creation_id,
-            account_id:Some(self.account_id),device_id:Some(self.device_id),scope:transport::Scope::Producer{instance_id:self.instance_id},capabilities:self.capabilities}
+    fn intent(self) -> transport::Intent {
+        transport::Intent {
+            context: self.context,
+            generation: self.generation,
+            instance_creation_id: self.instance_creation_id,
+            account_id: Some(self.account_id),
+            device_id: Some(self.device_id),
+            scope: transport::Scope::Producer {
+                instance_id: self.instance_id,
+            },
+            capabilities: self.capabilities,
+        }
     }
 }
 #[derive(Deserialize)]
-#[serde(rename_all="camelCase",deny_unknown_fields)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct TransferSendInput {
-    connection:TransferConnectionInput,target_instance_id:String,conversation_id:String,
-    runtime:String,inspection_handle:String,provider_id:String,model_id:String,
+    connection: TransferConnectionInput,
+    target_instance_id: String,
+    conversation_id: String,
+    runtime: String,
+    inspection_handle: String,
+    provider_id: String,
+    model_id: String,
 }
 #[derive(Deserialize)]
-#[serde(rename_all="camelCase",deny_unknown_fields)]
-pub(crate) struct TransferReceiveInput {connection:TransferConnectionInput}
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct TransferReceiveInput {
+    connection: TransferConnectionInput,
+}
 
 #[tauri::command]
 pub(crate) async fn connect_transfer_send(
-    app:tauri::AppHandle,window:tauri::WebviewWindow,pool:tauri::State<'_,crate::core::db_state::DbPool>,
-    config:tauri::State<'_,crate::config::ConfigManager>,runtime:tauri::State<'_,crate::connect::TransferRuntime>,
-    admission:tauri::State<'_,crate::db::chat_admission::runtime::ChatAdmissionRuntime>,input:TransferSendInput,
-)->super::CommandResult<String>{
+    app: tauri::AppHandle,
+    window: tauri::WebviewWindow,
+    pool: tauri::State<'_, crate::core::db_state::DbPool>,
+    config: tauri::State<'_, crate::config::ConfigManager>,
+    runtime: tauri::State<'_, crate::connect::TransferRuntime>,
+    admission: tauri::State<'_, crate::db::chat_admission::runtime::ChatAdmissionRuntime>,
+    input: TransferSendInput,
+) -> super::CommandResult<String> {
     use super::command_error;
-    let _job=runtime.begin_transfer().map_err(command_error)?;
-    let ready=pool.wait_until_ready_context().await?;
-    let launcher=runtime.codec_launcher(&app,&pool).map_err(command_error)?;
-    let result=async {
-        let mut verified=transport::bootstrap(input.connection.intent(),&runtime,&launcher,&ready,&tokio_util::sync::CancellationToken::new()).await?;
-        verified.controller_for(manager().map_err(|_|"vault_unavailable")?,&ready,&input.target_instance_id).await?;
-        let verified=Arc::new(verified);
-        let result=flow::send(manager().map_err(|_|"vault_unavailable")?,&pool,&admission,&config,&launcher,&verified,&ready,
-            window.label(),&input.runtime,&input.inspection_handle,&input.conversation_id,&input.provider_id,&input.model_id).await;
-        Arc::try_unwrap(verified).map_err(|_|"transport_retained")?.close().await?;result
-    }.await;
-    if result.is_err(){runtime.revoke();}
+    let _job = runtime.begin_transfer().map_err(command_error)?;
+    let ready = pool.wait_until_ready_context().await?;
+    let launcher = runtime.codec_launcher(&app, &pool).map_err(command_error)?;
+    let result = async {
+        let mut verified = transport::bootstrap(
+            input.connection.intent(),
+            &runtime,
+            &launcher,
+            &ready,
+            &tokio_util::sync::CancellationToken::new(),
+        )
+        .await?;
+        verified
+            .controller_for(
+                manager().map_err(|_| "vault_unavailable")?,
+                &ready,
+                &input.target_instance_id,
+            )
+            .await?;
+        let verified = Arc::new(verified);
+        let result = flow::send(
+            manager().map_err(|_| "vault_unavailable")?,
+            &pool,
+            &admission,
+            &config,
+            &launcher,
+            &verified,
+            &ready,
+            window.label(),
+            &input.runtime,
+            &input.inspection_handle,
+            &input.conversation_id,
+            &input.provider_id,
+            &input.model_id,
+        )
+        .await;
+        Arc::try_unwrap(verified)
+            .map_err(|_| "transport_retained")?
+            .close()
+            .await?;
+        result
+    }
+    .await;
+    if result.is_err() {
+        runtime.revoke();
+    }
     result.map_err(command_error)
 }
 #[tauri::command]
 pub(crate) async fn connect_transfer_receive(
-    app:tauri::AppHandle,pool:tauri::State<'_,crate::core::db_state::DbPool>,config:tauri::State<'_,crate::config::ConfigManager>,
-    runtime:tauri::State<'_,crate::connect::TransferRuntime>,input:TransferReceiveInput,
-)->super::CommandResult<String>{
+    app: tauri::AppHandle,
+    pool: tauri::State<'_, crate::core::db_state::DbPool>,
+    config: tauri::State<'_, crate::config::ConfigManager>,
+    runtime: tauri::State<'_, crate::connect::TransferRuntime>,
+    input: TransferReceiveInput,
+) -> super::CommandResult<String> {
     use super::command_error;
-    let job=runtime.begin_receive().map_err(command_error)?;
-    let ready=pool.wait_until_ready_context().await?;
-    let launcher=runtime.codec_launcher(&app,&pool).map_err(command_error)?;
-    let result:Result<String,&'static str>=async {
-        let verified=transport::bootstrap(input.connection.intent(),&runtime,&launcher,&ready,&tokio_util::sync::CancellationToken::new()).await?;
-        let (conversation,_prepared)=flow::receive(manager().map_err(|_|"vault_unavailable")?,&pool,&config,&launcher,verified,&ready,&job).await?;
+    let job = runtime.begin_receive().map_err(command_error)?;
+    let ready = pool.wait_until_ready_context().await?;
+    let launcher = runtime.codec_launcher(&app, &pool).map_err(command_error)?;
+    let result: Result<String, &'static str> = async {
+        let verified = transport::bootstrap(
+            input.connection.intent(),
+            &runtime,
+            &launcher,
+            &ready,
+            &tokio_util::sync::CancellationToken::new(),
+        )
+        .await?;
+        let (conversation, _prepared) = flow::receive(
+            manager().map_err(|_| "vault_unavailable")?,
+            &pool,
+            &config,
+            &launcher,
+            verified,
+            &ready,
+            &job,
+        )
+        .await?;
         Ok(conversation)
-    }.await;
-    if result.is_err(){runtime.revoke();}
+    }
+    .await;
+    if result.is_err() {
+        runtime.revoke();
+    }
     result.map_err(command_error)
 }
 
 #[tauri::command]
-pub(crate) fn connect_transfer_interrupt_idle(runtime:tauri::State<'_,crate::connect::TransferRuntime>)->super::CommandResult<()> {
+pub(crate) fn connect_transfer_interrupt_idle(
+    runtime: tauri::State<'_, crate::connect::TransferRuntime>,
+) -> super::CommandResult<()> {
     runtime.interrupt_idle().map_err(super::command_error)
 }
