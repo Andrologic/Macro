@@ -777,6 +777,8 @@ pub(super) async fn receive<B: Vault + 'static>(
         .pin_target(owner, config, &imported, &mut prepared, &intent, manifest)
         .await
         .map_err(|_| "target_pin")?;
+    let selection = crate::db::connect_transfer::TargetSelection::prepared(&prepared)
+        .map_err(|_| "target_pin")?;
     let proposal = reservation
         .target_prepared()
         .await
@@ -821,10 +823,17 @@ pub(super) async fn receive<B: Vault + 'static>(
                     owner,
                     &reservation,
                     config,
-                    &prepared,
+                    &selection,
                     delivery,
                 )
                 .await?;
+            #[cfg(test)]
+            if expected == "target_pinned"
+                && std::env::var("MACRO_CONNECT_TEST_INTERRUPT").as_deref()
+                    == Ok("target_after_ready")
+            {
+                return Err("test_interrupted");
+            }
             break;
         }
     }
@@ -860,8 +869,120 @@ pub(super) async fn receive<B: Vault + 'static>(
         }
         tokio::time::sleep(Duration::from_millis(250)).await;
     }
+    #[cfg(test)]
+    if std::env::var("MACRO_CONNECT_TEST_INTERRUPT").as_deref() == Ok("target_after_commit") {
+        return Err("test_interrupted");
+    }
+    let conversation = activate_target(
+        manager,
+        owner,
+        config,
+        &transport,
+        ready,
+        &mut reservation,
+        &selection,
+        &intent,
+    )
+    .await?;
+    drop(reservation);
+    drop(storage);
+    drop(imported);
+    Arc::try_unwrap(transport)
+        .map_err(|_| "transport_retained")?
+        .close()
+        .await?;
+    Ok((conversation, prepared))
+}
+
+/// Settles a target attempt an interrupted process left unresolved. Once the
+/// relay recorded `aborted`, releases its staged content; once it recorded
+/// `committed`, publishes the pinned preparation and records its activation.
+/// Any other state stays pending: the relay aborts an uncommitted transfer
+/// when its target producer changes, so the next reconciliation settles it.
+pub(super) async fn reconcile_target<B: Vault + 'static>(
+    manager: Arc<Manager<B>>,
+    owner: &DbPool,
+    config: &ConfigManager,
+    transport: &Arc<VerifiedTransport>,
+    ready: &DbReady,
+    transfer: &str,
+) -> Result<Option<String>> {
+    let Some((mut reservation, intent, selection)) =
+        crate::db::connect_transfer::unresolved_target(owner, transfer, transport)
+            .await
+            .map_err(|_| "transfer_reconciliation_required")?
+    else {
+        return Ok(None);
+    };
+    let pin = match selection {
+        Some(_) => reservation
+            .target_prepared()
+            .await
+            .map_err(|_| "target_pin")?
+            .clone(),
+        None => Value::Null,
+    };
+    let status = transport
+        .transfer_status(
+            manager.clone(),
+            ready,
+            &intent["binding"],
+            &intent["frozen"],
+            &intent["manifest"],
+            &pin,
+            &Value::Null,
+        )
+        .await?;
+    match status["terminal"]["outcome"].as_str() {
+        Some("aborted") => {
+            reservation
+                .apply_aborted_target(owner)
+                .await
+                .map_err(|_| "target_release")?;
+            Ok(None)
+        }
+        Some("committed") => {
+            let selection = selection.ok_or("target_pin")?;
+            activate_target(
+                manager,
+                owner,
+                config,
+                transport,
+                ready,
+                &mut reservation,
+                &selection,
+                &intent,
+            )
+            .await
+            .map(Some)
+        }
+        _ => Err("transfer_reconciliation_pending"),
+    }
+}
+
+/// Publishes a committed target and records its activation under the target's
+/// current producer. Publication is idempotent; the relay keeps one activation.
+#[allow(clippy::too_many_arguments)]
+async fn activate_target<B: Vault + 'static>(
+    manager: Arc<Manager<B>>,
+    owner: &DbPool,
+    config: &ConfigManager,
+    transport: &Arc<VerifiedTransport>,
+    ready: &DbReady,
+    reservation: &mut crate::db::connect_transfer::Reservation,
+    selection: &crate::db::connect_transfer::TargetSelection,
+    intent: &Value,
+) -> Result<String> {
+    let binding = &intent["binding"];
+    let frozen = &intent["frozen"];
+    let manifest = &intent["manifest"];
+    let proposal = reservation
+        .target_prepared()
+        .await
+        .map_err(|_| "target_pin")?
+        .clone();
     let conversation = reservation
-        .publish_target(owner, config, &prepared)
+        .publish_target(owner, config, selection)
         .await
         .map_err(|_| "target_publication")?;
     let terminal = transport
@@ -882,7 +1003,7 @@ pub(super) async fn receive<B: Vault + 'static>(
         .target_expectation(
             owner,
             config,
-            &prepared,
+            selection,
             &sent["request"],
             "target_activated",
         )
@@ -910,9 +1031,9 @@ pub(super) async fn receive<B: Vault + 'static>(
             manager.clone(),
             ready,
             owner,
-            &reservation,
+            &*reservation,
             config,
-            &prepared,
+            selection,
             delivery,
         )
         .await?;
@@ -927,14 +1048,7 @@ pub(super) async fn receive<B: Vault + 'static>(
             )
             .await?,
     );
-    drop(reservation);
-    drop(storage);
-    drop(imported);
-    Arc::try_unwrap(transport)
-        .map_err(|_| "transport_retained")?
-        .close()
-        .await?;
-    Ok((conversation, prepared))
+    Ok(conversation)
 }
 
 /// The transit contract's reasoning effort identifier, as the app's

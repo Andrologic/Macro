@@ -1802,6 +1802,36 @@ async fn global_chat_abandoned_after_preparation_transfer() {
     .await;
 }
 
+/// The target stops after `ready`: the source abandons, and the target's
+/// reconciliation releases the attempt.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires the explicitly supplied local transfer relay"]
+async fn global_chat_target_stopped_before_commit_transfer() {
+    global_chat_local_transfer(
+        "macro-ai",
+        false,
+        false,
+        false,
+        Route::TargetStoppedBeforeCommit,
+    )
+    .await;
+}
+
+/// The target stops after `committed`: its reconciliation publishes the
+/// conversation and records the activation the source waits for.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires the explicitly supplied local transfer relay"]
+async fn global_chat_target_stopped_after_commit_transfer() {
+    global_chat_local_transfer(
+        "codex",
+        false,
+        false,
+        false,
+        Route::TargetStoppedAfterCommit,
+    )
+    .await;
+}
+
 /// The target lacks the selected model: the source records `aborted` and reopens.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore = "requires the explicitly supplied local transfer relay"]
@@ -1830,6 +1860,12 @@ enum Route {
     InterruptedSource,
     /// The source abandons once the target has prepared.
     AbandonedAfterPreparation,
+    /// The target process stops after `ready`; the source abandons and the
+    /// target's next reconciliation releases its staged content.
+    TargetStoppedBeforeCommit,
+    /// The target process stops after `committed`; its next reconciliation
+    /// publishes the pinned preparation and records the activation.
+    TargetStoppedAfterCommit,
 }
 
 async fn global_chat_local_transfer(
@@ -1842,6 +1878,8 @@ async fn global_chat_local_transfer(
     let via_runtime = route == Route::Runtime;
     let restricted = route == Route::RestrictedTarget;
     let abandoned = route == Route::AbandonedAfterPreparation;
+    // The source sees an abandoned attempt and the target releases it.
+    let released = abandoned || route == Route::TargetStoppedBeforeCommit;
     let lost = matches!(
         route,
         Route::LostReserveReply | Route::LostReserveRequest | Route::InterruptedSource
@@ -2205,7 +2243,12 @@ async fn global_chat_local_transfer(
     let mut input = child.stdin.take().unwrap();
     let mut initialization=serde_json::to_vec(&serde_json::json!({"seed":seed,
         "database":directory.path().join("target.db"),"provider":provider,"compacted":compacted,"resources":with_resources,"refused":refused,"runtime":via_runtime,
-        "interrupted":route == Route::InterruptedReceive,"restricted":restricted,"idle":lost,"abandoned":abandoned})).unwrap();
+        "interrupted":route == Route::InterruptedReceive,"restricted":restricted,"idle":lost,"abandoned":released,
+        "stop":match route {
+            Route::TargetStoppedBeforeCommit => "target_after_ready",
+            Route::TargetStoppedAfterCommit => "target_after_commit",
+            _ => "",
+        }})).unwrap();
     initialization.push(b'\n');
     input.write_all(&initialization).await.unwrap();
     let mut target_events = BufReader::new(child.stdout.take().unwrap()).lines();
@@ -2336,6 +2379,7 @@ async fn global_chat_local_transfer(
             manager.clone(),
             Some(address),
             &source,
+            &config,
             &runtime,
             &runtime
                 .source_launcher(
@@ -2356,7 +2400,7 @@ async fn global_chat_local_transfer(
         .unwrap();
         assert_eq!(reopened, vec!["chat".to_owned()]);
     }
-    if refused || restricted || lost || abandoned {
+    if refused || restricted || lost || released {
         if lost {
             // The reserve's own failure is returned once the source reopened.
             assert!(transferred.is_err());
@@ -2446,7 +2490,7 @@ async fn global_chat_local_transfer(
         input.write_all(b"{\"stop\":true}\n").await.unwrap();
     }
     drop(input);
-    if transferred.is_err() && !refused && !restricted && !lost && !abandoned {
+    if transferred.is_err() && !refused && !restricted && !lost && !released {
         child.kill().await.unwrap();
     }
     let child = child.wait_with_output().await.unwrap();
@@ -2462,7 +2506,7 @@ async fn global_chat_local_transfer(
     relay_input.write_all(b"{\"stop\":true}\n").await.unwrap();
     drop(relay_input);
     assert!(relay.wait().await.unwrap().success());
-    if !refused && !restricted && !lost && !abandoned {
+    if !refused && !restricted && !lost && !released {
         transferred.unwrap();
     }
     assert!(child.status.success());
@@ -2630,6 +2674,10 @@ async fn global_chat_transfer_target() {
         assert!(runtime.shutdown().await);
         return;
     }
+    let stop = data["stop"].as_str().unwrap_or_default();
+    if !stop.is_empty() {
+        std::env::set_var("MACRO_CONNECT_TEST_INTERRUPT", stop);
+    }
     let received = if let Some(verified) = verified {
         let job = runtime.begin_receive().unwrap();
         let receive = super::flow::receive(
@@ -2686,12 +2734,63 @@ async fn global_chat_transfer_target() {
                 &job,
             )
             .await
-        } else {
-            receive.await
-        };
-        received
             .map(|(conversation, prepared)| (conversation, Some(prepared)))
-            .map_err(serde_json::Value::from)
+        } else if !stop.is_empty() {
+            assert_eq!(receive.await.err(), Some("test_interrupted"));
+            std::env::remove_var("MACRO_CONNECT_TEST_INTERRUPT");
+            drop(job);
+            runtime.revoke();
+            // As after a restart: a new transport reconciles the unresolved
+            // attempt once the relay has decided it.
+            let launcher = runtime
+                .source_launcher(
+                    &bun,
+                    &std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                        .join("../copilot-bridge/src/entry.ts"),
+                    &owner,
+                )
+                .unwrap();
+            let input = serde_json::json!({"connection": {
+                    "capabilities": seed["capabilities"], "context": connection["context"],
+                    "generation": connection["generation"],
+                    "instanceCreationId": connection["instanceCreationId"],
+                    "accountId": connection["accountId"], "deviceId": connection["deviceId"],
+                    "instanceId": connection["instanceId"]}});
+            let mut published = Vec::new();
+            for _ in 0..60 {
+                published = super::reconcile_transfers(
+                    manager.clone(),
+                    Some(relay),
+                    &owner,
+                    &config,
+                    &runtime,
+                    &launcher,
+                    serde_json::from_value(input.clone()).unwrap(),
+                )
+                .await
+                .unwrap();
+                let pending: i64 = sqlx::query_scalar(
+                    "SELECT COUNT(*) FROM connect_transfers WHERE local_role='target' AND resolution IS NULL",
+                )
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+                if pending == 0 {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+            }
+            match published.as_slice() {
+                [conversation] => Ok((conversation.clone(), None)),
+                [] => Err("transfer_aborted"),
+                _ => panic!("several publications"),
+            }
+        } else {
+            receive
+                .await
+                .map(|(conversation, prepared)| (conversation, Some(prepared)))
+        };
+        received.map_err(serde_json::Value::from)
     } else {
         // The runtime listens on its own once its producer is confirmed, then
         // refreshes the conversation list when the transfer is published.
@@ -3414,6 +3513,7 @@ impl DesktopHost<'_> {
                     self.manager.clone(),
                     Some(self.relay),
                     self.owner,
+                    self.config,
                     self.runtime,
                     &self.launcher(),
                     input,

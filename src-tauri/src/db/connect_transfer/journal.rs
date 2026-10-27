@@ -413,6 +413,88 @@ pub(crate) async fn unresolved_sources(
     Ok(sqlx::query_as("SELECT source_conversation_id,target_instance_id FROM connect_transfers WHERE local_role='source' AND source_instance_id=? AND resolution IS NULL ORDER BY source_conversation_id")
         .bind(source_instance).fetch_all(&guard.ready.pool).await?)
 }
+/// Transfers this target instance has neither published nor released.
+pub(crate) async fn unresolved_targets(
+    owner: &DbPool,
+    target_instance: &str,
+) -> DbResult<Vec<(String, String)>> {
+    let guard = owner
+        .source_ready(None)
+        .await
+        .map_err(|_| invalid("unavailable"))?;
+    Ok(sqlx::query_as("SELECT transfer_id,source_instance_id FROM connect_transfers WHERE local_role='target' AND target_instance_id=? AND resolution IS NULL ORDER BY transfer_id")
+        .bind(target_instance).fetch_all(&guard.ready.pool).await?)
+}
+/// The target attempt left unresolved by an interrupted process. Its intent is
+/// the stored invitation, whose fingerprint must match the row. A stored pin
+/// and selection are only expectations: `transport` must still receive the
+/// relay terminal, whose prepared digest has to match that pin. Returns the
+/// reservation, the invitation and, once pinned, the target selection.
+pub(crate) async fn unresolved_target(
+    owner: &DbPool,
+    transfer: &str,
+    transport: &std::sync::Arc<crate::commands::pilot_secrets::transport::VerifiedTransport>,
+) -> DbResult<Option<(Reservation, serde_json::Value, Option<TargetSelection>)>> {
+    let guard = owner
+        .source_ready(None)
+        .await
+        .map_err(|_| invalid("unavailable"))?;
+    let row=sqlx::query("SELECT t.fingerprint,t.reserve_request,p.phase,p.pin_receipt,p.provider_id,p.model_id,p.target_conversation_id,p.configuration_digest FROM connect_transfers t LEFT JOIN connect_preparations p USING(transfer_id) WHERE t.transfer_id=? AND t.local_role='target' AND t.resolution IS NULL")
+        .bind(transfer).fetch_optional(&guard.ready.pool).await?;
+    let Some(row) = row else { return Ok(None) };
+    let sent: serde_json::Value = serde_json::from_slice(&row.get::<Vec<u8>, _>("reserve_request"))
+        .map_err(|_| invalid("connect_transfer_conflict"))?;
+    let mut input = reservation_intent(transport, &sent, &sent["binding"], &sent["frozen"])?;
+    if input.inspect()?.0 != row.get::<Vec<u8>, _>("fingerprint") {
+        return Err(invalid("connect_transfer_conflict"));
+    }
+    let selection = if row.get::<Option<String>, _>("phase").as_deref() == Some("pinned") {
+        input.native_target_prepared = Some(
+            serde_json::from_slice(&row.get::<Vec<u8>, _>("pin_receipt"))
+                .map_err(|_| invalid("connect_transfer_conflict"))?,
+        );
+        Some(TargetSelection {
+            provider_id: row.get("provider_id"),
+            model_id: row.get("model_id"),
+            conversation_id: row.get("target_conversation_id"),
+            configuration: row.get("configuration_digest"),
+        })
+    } else {
+        None
+    };
+    Ok(Some((input, sent, selection)))
+}
+/// The provider, model, conversation and configuration a target prepared.
+pub(crate) struct TargetSelection {
+    provider_id: String,
+    model_id: String,
+    conversation_id: String,
+    configuration: Vec<u8>,
+}
+impl TargetSelection {
+    pub(crate) fn prepared(
+        prepared: &crate::connect::transfer_worker::TransferWorker,
+    ) -> DbResult<Self> {
+        let (_, request, _, configuration) = prepared.native_prepared().map_err(invalid)?;
+        Ok(Self {
+            provider_id: request.provider_id.clone(),
+            model_id: request.model_id.clone(),
+            conversation_id: request
+                .conversation_id
+                .clone()
+                .ok_or_else(|| invalid("connect_target_effect_changed"))?,
+            configuration: configuration.to_vec(),
+        })
+    }
+}
+fn current_generation(
+    live: &crate::commands::pilot_secrets::transport::VerifiedTransport,
+) -> DbResult<String> {
+    live.producer_identity().map_err(invalid)?["generation"]
+        .as_str()
+        .map(str::to_owned)
+        .ok_or_else(|| invalid("authority_context"))
+}
 // This constructor only copies intent. Its two callers first establish their
 // live source freeze or authenticated target session; none is a receipt reader.
 fn reservation_intent(
@@ -512,16 +594,18 @@ impl Reservation {
         &mut self,
         owner: &DbPool,
         config: &crate::config::ConfigManager,
-        prepared: &crate::connect::transfer_worker::TransferWorker,
+        selection: &TargetSelection,
     ) -> DbResult<String> {
         let live = self
             .native_authority
             .as_ref()
             .ok_or_else(|| invalid("connect_native_owner_missing"))?;
+        // Publication follows an authenticated committed terminal: the target's
+        // current producer applies it, even after a restart changed generation.
         live.check_producer(
             &self.account_id,
             &self.target_instance_id,
-            &self.target_generation,
+            &current_generation(live)?,
         )
         .await
         .map_err(invalid)?;
@@ -530,7 +614,7 @@ impl Reservation {
         if terminal["prepared"] != *pin {
             return Err(invalid("connect_terminal_mismatch"));
         }
-        let (_, request, _, configuration) = prepared.native_prepared().map_err(invalid)?;
+        let configuration = &selection.configuration;
         let guard = owner
             .source_ready(None)
             .await
@@ -538,8 +622,8 @@ impl Reservation {
         let (_, _, _, fresh) = crate::connect::runtime::transfer_target_snapshot(
             config,
             &guard.ready,
-            &request.provider_id,
-            &request.model_id,
+            &selection.provider_id,
+            &selection.model_id,
         )
         .await
         .map_err(invalid)?;
@@ -551,10 +635,9 @@ impl Reservation {
             || row.get::<Vec<u8>, _>("pin_receipt")
                 != serde_json::to_vec(pin)
                     .map_err(|_| invalid("connect_preparation_invalid_input"))?
-            || row.get::<Vec<u8>, _>("configuration_digest") != configuration
-            || fresh != configuration
-            || request.conversation_id.as_deref()
-                != Some(row.get::<String, _>("target_conversation_id").as_str())
+            || row.get::<Vec<u8>, _>("configuration_digest") != *configuration
+            || fresh != *configuration
+            || selection.conversation_id != row.get::<String, _>("target_conversation_id")
         {
             return Err(invalid("connect_target_effect_changed"));
         }
@@ -692,7 +775,7 @@ impl Reservation {
         &self,
         owner: &DbPool,
         config: &crate::config::ConfigManager,
-        prepared: &crate::connect::transfer_worker::TransferWorker,
+        selection: &TargetSelection,
         request: &serde_json::Value,
         kind: &str,
     ) -> DbResult<serde_json::Value> {
@@ -701,15 +784,19 @@ impl Reservation {
             .native_authority
             .as_ref()
             .ok_or_else(|| invalid("connect_native_owner_missing"))?;
-        live.check_producer(
-            &self.account_id,
-            &self.target_instance_id,
-            &self.target_generation,
-        )
-        .await
-        .map_err(invalid)?;
+        // Activation needs the target's current producer, not the one bound
+        // before commit (transfer-decision-1, activation.record).
+        let activated = kind == "target_activated";
+        let generation = if activated {
+            current_generation(live)?
+        } else {
+            self.target_generation.clone()
+        };
+        live.check_producer(&self.account_id, &self.target_instance_id, &generation)
+            .await
+            .map_err(invalid)?;
         let pin = self.target_prepared().await?;
-        let (_, native_request, _, configuration) = prepared.native_prepared().map_err(invalid)?;
+        let configuration = &selection.configuration;
         let guard = owner
             .source_ready(None)
             .await
@@ -717,14 +804,13 @@ impl Reservation {
         let (_, _, _, fresh) = crate::connect::runtime::transfer_target_snapshot(
             config,
             &guard.ready,
-            &native_request.provider_id,
-            &native_request.model_id,
+            &selection.provider_id,
+            &selection.model_id,
         )
         .await
         .map_err(invalid)?;
         let row=sqlx::query("SELECT t.fingerprint,t.restore_hold,t.terminal_outcome,t.resolution,p.local_generation,p.phase,p.pin_receipt,p.configuration_digest,p.prepared_digest,p.target_conversation_id FROM connect_transfers t JOIN connect_preparations p USING(transfer_id) WHERE transfer_id=? AND t.local_role='target'").bind(&self.transfer_id).fetch_one(&guard.ready.pool).await?;
         let digest = commitment("prepared", pin).map_err(invalid)?;
-        let activated = kind == "target_activated";
         if row.get::<Vec<u8>, _>("fingerprint") != self.inspect()?.0
             || row.get::<i64, _>("restore_hold") != 0
             || if activated {
@@ -736,8 +822,8 @@ impl Reservation {
             }
             || row.get::<String, _>("phase") != if activated { "published" } else { "pinned" }
             || row.get::<String, _>("local_generation") != guard.ready.catalog_generation
-            || row.get::<Vec<u8>, _>("configuration_digest") != configuration
-            || fresh != configuration
+            || row.get::<Vec<u8>, _>("configuration_digest") != *configuration
+            || fresh != *configuration
             || row.get::<Vec<u8>, _>("pin_receipt")
                 != serde_json::to_vec(pin)
                     .map_err(|_| invalid("connect_preparation_invalid_input"))?
@@ -747,8 +833,7 @@ impl Reservation {
                 .map(|b| format!("{b:02x}"))
                 .collect::<String>()
                 != digest
-            || native_request.conversation_id.as_deref()
-                != Some(row.get::<String, _>("target_conversation_id").as_str())
+            || selection.conversation_id != row.get::<String, _>("target_conversation_id")
         {
             return Err(invalid("connect_target_effect_changed"));
         }
@@ -792,7 +877,7 @@ impl Reservation {
         let producer = live.producer_identity().map_err(invalid)?;
         Ok(
             serde_json::json!({"kind":kind,"binding_digest":self.binding_digest.iter().map(|b|format!("{b:02x}")).collect::<String>(),
-            "subject_digest":subject,"instance_id":self.target_instance_id,"producer_generation":self.target_generation,
+            "subject_digest":subject,"instance_id":self.target_instance_id,"producer_generation":generation,
             "connection_id":producer["connection_id"],"request_digest":commitment("retry-body",request).map_err(invalid)?,"prior_receipt_digest":prior}),
         )
     }
@@ -801,7 +886,7 @@ impl Reservation {
         owner: &DbPool,
         config: &crate::config::ConfigManager,
         emitter: &crate::commands::pilot_secrets::transport::VerifiedTransport,
-        prepared: &crate::connect::transfer_worker::TransferWorker,
+        selection: &TargetSelection,
         request: &serde_json::Value,
         exchange: &serde_json::Value,
     ) -> DbResult<()> {
@@ -816,7 +901,7 @@ impl Reservation {
             .target_expectation(
                 owner,
                 config,
-                prepared,
+                selection,
                 request,
                 exchange["kind"]
                     .as_str()

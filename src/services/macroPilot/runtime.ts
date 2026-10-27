@@ -80,8 +80,8 @@ export class PilotRuntime {
     const interrupted = () => { void this.transfers.interruptIdle().catch(() => undefined); };
     signal.addEventListener('abort', interrupted, { once: true });
     const listen = async () => {
-      // Once per runtime, before listening: settle source attempts that an
-      // interrupted process or a lost reply left frozen.
+      // Once per runtime, before listening: settle the source and target
+      // attempts that an interrupted process or a lost reply left unresolved.
       if (!this.reconciled && this.transfers.reconcile) {
         const reopened = await this.transfers.reconcile({ connection }).catch(() => null);
         if (reopened) {

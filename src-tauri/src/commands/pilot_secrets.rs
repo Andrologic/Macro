@@ -446,6 +446,7 @@ async fn receive_transfer<B: Vault + 'static>(
 pub(crate) async fn connect_transfer_reconcile(
     app: tauri::AppHandle,
     pool: tauri::State<'_, crate::core::db_state::DbPool>,
+    config: tauri::State<'_, crate::config::ConfigManager>,
     runtime: tauri::State<'_, crate::connect::TransferRuntime>,
     input: TransferReceiveInput,
 ) -> super::CommandResult<Vec<String>> {
@@ -456,6 +457,7 @@ pub(crate) async fn connect_transfer_reconcile(
         manager().map_err(|_| super::command_error("vault_unavailable"))?,
         None,
         &pool,
+        &config,
         &runtime,
         &launcher,
         input,
@@ -463,14 +465,16 @@ pub(crate) async fn connect_transfer_reconcile(
     .await
 }
 
-/// Body of `connect_transfer_reconcile`: settles every source attempt this
-/// instance left unresolved, after an interrupted process or a lost reply.
-/// Returns the conversations reopened; an attempt that cannot be settled yet
-/// stays frozen until the next reconciliation.
+/// Body of `connect_transfer_reconcile`: settles every source and target
+/// attempt this instance left unresolved, after an interrupted process or a
+/// lost reply. Returns the source conversations reopened and the target
+/// conversations published; an attempt that cannot be settled yet stays
+/// frozen or staged until the next reconciliation.
 async fn reconcile_transfers<B: Vault + 'static>(
     manager: Arc<Manager<B>>,
     loopback: Option<std::net::SocketAddr>,
     pool: &crate::core::db_state::DbPool,
+    config: &crate::config::ConfigManager,
     runtime: &crate::connect::TransferRuntime,
     launcher: &crate::connect::runtime::CodecLauncher,
     input: TransferReceiveInput,
@@ -510,6 +514,45 @@ async fn reconcile_transfers<B: Vault + 'static>(
         }
         .await;
         if let Ok(Some(_)) = settled {
+            reopened.push(conversation);
+        }
+    }
+    let attempts =
+        crate::db::connect_transfer::unresolved_targets(pool, &input.connection.instance_id)
+            .await
+            .map_err(|_| command_error("database_unavailable"))?;
+    for (transfer, source) in attempts {
+        let settled: Result<Option<String>, &'static str> = async {
+            let mut verified = transport::bootstrap(
+                manager.clone(),
+                input.connection.clone().intent(),
+                runtime,
+                launcher,
+                &ready,
+                loopback,
+                &tokio_util::sync::CancellationToken::new(),
+            )
+            .await?;
+            verified
+                .controller_for_pair(
+                    manager.clone(),
+                    &ready,
+                    &source,
+                    &input.connection.instance_id,
+                )
+                .await?;
+            let verified = Arc::new(verified);
+            let outcome =
+                flow::reconcile_target(manager.clone(), pool, config, &verified, &ready, &transfer)
+                    .await;
+            Arc::try_unwrap(verified)
+                .map_err(|_| "transport_retained")?
+                .close()
+                .await?;
+            outcome
+        }
+        .await;
+        if let Ok(Some(conversation)) = settled {
             reopened.push(conversation);
         }
     }

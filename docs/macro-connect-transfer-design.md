@@ -181,6 +181,18 @@ pas reprendre la propriété de l'ancienne source. Elle n'est jamais automatique
 Le lot doit tester ce chemin et la conservation des secrets détachés ; il ne
 prétend pas empêcher un clonage volontaire exécuté hors protocole.
 
+Au démarrage, la cible réconcilie aussi ses tentatives non résolues, à partir
+de l'invitation enregistrée et de sa préparation épinglée. Elle lit le statut
+du relais sous l'autorité du couple, donc pendant que la source est en ligne.
+Un abandon libère l'import et la projection. Une validation publie la
+préparation déjà épinglée, sans appel fournisseur, puis enregistre l'activation
+sous la génération courante du producteur cible, qui change à chaque
+redémarrage. Une tentative encore en cours reste en attente : le relais
+l'abandonne quand le producteur cible change, et la réconciliation suivante la
+libère. Une cible arrêtée après sa publication locale mais avant
+l'enregistrement de l'activation n'est pas encore reprise : la base locale ne
+garde pas de marque de cette étape.
+
 Une cible qui a perdu ses données après confirmation reste en erreur de
 récupération. Elle ne provoque pas un dégel implicite de la source. Une remise
 en état ou une nouvelle cession explicite doit résoudre cette situation.

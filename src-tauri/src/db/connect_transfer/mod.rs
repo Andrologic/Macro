@@ -4,6 +4,7 @@
 mod journal;
 pub(crate) use journal::{
     reserve_verified_source, reserve_verified_target, unresolved_source, unresolved_sources,
+    unresolved_target, unresolved_targets, TargetSelection,
 };
 pub(in crate::db) mod deletion;
 mod preparation;

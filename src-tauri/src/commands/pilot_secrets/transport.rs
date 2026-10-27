@@ -705,7 +705,7 @@ impl VerifiedTransport {
         owner: &crate::core::db_state::DbPool,
         reservation: &crate::db::connect_transfer::Reservation,
         config: &crate::config::ConfigManager,
-        prepared: &crate::connect::transfer_worker::TransferWorker,
+        selection: &crate::db::connect_transfer::TargetSelection,
         delivery: crate::connect::codec::Output,
     ) -> Result<()> {
         self.check_for_phase(manager.clone(), ready).await?;
@@ -718,7 +718,7 @@ impl VerifiedTransport {
         let request = &data["value"]["body"]["request"];
         let exchange = &data["value"]["body"]["exchange"];
         reservation
-            .check_target_attestation(owner, config, self, prepared, request, exchange)
+            .check_target_attestation(owner, config, self, selection, request, exchange)
             .await
             .map_err(|_| "target_proof_refused")?;
         let id = exchange["delivery_id"].clone();
@@ -733,7 +733,7 @@ impl VerifiedTransport {
         )
         .await?;
         reservation
-            .check_target_attestation(owner, config, self, prepared, request, exchange)
+            .check_target_attestation(owner, config, self, selection, request, exchange)
             .await
             .map_err(|_| "target_proof_refused")?;
         let attestation = serde_json::json!({"decision_contract":"transfer-decision-1","type":"producer_attestation","format_version":"1",
