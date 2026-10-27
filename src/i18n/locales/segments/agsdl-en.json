@@ -222,7 +222,8 @@
     "backToComponent": "Back to previous details",
     "legend": "Legend",
     "legendFlow": "Flow",
-    "legendError": "Exit on error"
+    "legendError": "Exit on error",
+    "legendSteering": "Message sent while working"
   },
   "attachToChat": "Attach to chat",
   "chatSelection": "AgSDL selection",
@@ -551,6 +552,7 @@
     "receives": "Receives",
     "produces": "Produces",
     "limit": "Visits",
+    "after": "Launched by",
     "arguments": "Arguments",
     "effect": "Effect",
     "action": "Action",
@@ -586,7 +588,8 @@
       "approved": "Approval is given",
       "denied": "Approval is refused",
       "exchange": "On a data exchange",
-      "dependency": "After the previous block"
+      "dependency": "After the previous block",
+      "steering": "While the target block works"
     }
   }
 }

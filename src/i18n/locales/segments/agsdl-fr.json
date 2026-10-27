@@ -222,7 +222,8 @@
     "backToComponent": "Revenir à la fiche précédente",
     "legend": "Légende",
     "legendFlow": "Enchaînement",
-    "legendError": "Sortie en cas d’erreur"
+    "legendError": "Sortie en cas d’erreur",
+    "legendSteering": "Consigne transmise en cours de travail"
   },
   "attachToChat": "Joindre au chat",
   "chatSelection": "Sélection AgSDL",
@@ -551,6 +552,7 @@
     "receives": "Reçoit",
     "produces": "Produit",
     "limit": "Passages",
+    "after": "Lancés par",
     "arguments": "Arguments",
     "effect": "Effet",
     "action": "Action",
@@ -586,7 +588,8 @@
       "approved": "L’accord est donné",
       "denied": "L’accord est refusé",
       "exchange": "Lors d’un échange de données",
-      "dependency": "Après le bloc précédent"
+      "dependency": "Après le bloc précédent",
+      "steering": "Pendant que le bloc ciblé travaille"
     }
   }
 }

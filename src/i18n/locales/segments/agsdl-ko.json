@@ -222,7 +222,8 @@
     "backToComponent": "이전 상세 정보로 돌아가기",
     "legend": "범례",
     "legendFlow": "흐름",
-    "legendError": "오류 시 출구"
+    "legendError": "오류 시 출구",
+    "legendSteering": "작업 중 전달되는 지시"
   },
   "attachToChat": "채팅에 첨부",
   "chatSelection": "AgSDL 선택",
@@ -551,6 +552,7 @@
     "receives": "받는 것",
     "produces": "생성",
     "limit": "실행 횟수",
+    "after": "시작한 단계",
     "arguments": "인수",
     "effect": "영향",
     "action": "작업",
@@ -586,7 +588,8 @@
       "approved": "승인됨",
       "denied": "승인 거부됨",
       "exchange": "데이터 교환 시",
-      "dependency": "이전 블록 이후"
+      "dependency": "이전 블록 이후",
+      "steering": "대상 블록이 작업하는 동안"
     }
   }
 }

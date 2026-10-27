@@ -91,6 +91,11 @@ function WorkflowNode({ data }: NodeProps<GraphNode>) {
       </button>
       </WorkflowBlockOverlay>
       <Handle type="source" position={Position.Bottom} id="out" />
+      {/* Steering messages travel side to side, into a block that is already working. */}
+      <Handle type="source" position={Position.Left} id="steer-left-out" />
+      <Handle type="source" position={Position.Right} id="steer-right-out" />
+      <Handle type="target" position={Position.Left} id="steer-left-in" />
+      <Handle type="target" position={Position.Right} id="steer-right-in" />
     </>
   );
 }
@@ -229,6 +234,25 @@ function Canvas({ cards, edges: connections, declarations = [], selected, select
       style: { stroke: color, strokeWidth: focused ? 2 : 1.3, strokeDasharray: edge.exchangeOnly ? "3 4" : edge.dependency ? "7 4" : undefined },
     };
   });
+  // A steering step delivers its message to a block while that block works; it is not a continuation.
+  const center = (path: string) => { const node = layout.nodes.find(item => item.card.path === path); return node ? node.position.x + VIEWER_CARD_WIDTH / 2 : 0; };
+  const parent = (path: string) => path.slice(0, path.lastIndexOf("/"));
+  for (const source of presentation.cards) {
+    const steers = source.details.steers;
+    const target = typeof steers === "string" ? presentation.cards.find(card => card.id === steers && parent(card.path) === parent(source.path)) : undefined;
+    if (!target) continue;
+    const connection: ViewerEdge = { id: `${source.path}/steers`, source: source.path, target: target.path, label: "steers", dependency: false };
+    const leftward = center(target.path) < center(source.path);
+    const color = `color-mix(in srgb, rgb(var(--primary)) ${focus === source.path || focus === target.path ? 100 : 60}%, rgb(var(--background)))`;
+    edges.push({ id: connection.id, source: source.path, target: target.path, type: "workflow",
+      sourceHandle: leftward ? "steer-left-out" : "steer-right-out", targetHandle: leftward ? "steer-right-in" : "steer-left-in",
+      data: { route: { kind: "orthogonal", steps: [], across: true }, connection, sourceTitle: displayTitle(source), targetTitle: displayTitle(target),
+        sourcePerformer: graphBlockPerformer(source, displayTitle(source)), dismissSignal, focusEdge,
+        inspectSource: () => (onInspect ?? select)(source.path), inspectTarget: () => (onInspect ?? select)(target.path) },
+      ariaRole: "group" as const, ariaLabel: `${displayTitle(source)} → ${displayTitle(target)}`,
+      markerEnd: { type: MarkerType.ArrowClosed, width: 14, height: 14, color }, style: { stroke: color, strokeWidth: 1.3 } });
+  }
+  const steering = edges.some(edge => edge.data?.connection.label === "steers");
   const clearSelection = () => { setHighlighted(""); setHovered(""); select(""); };
   return (
     <div ref={ref} className="agsdl-canvas" onKeyDown={event => { if (event.key === "Escape") clearSelection(); }}>
@@ -258,6 +282,7 @@ function Canvas({ cards, edges: connections, declarations = [], selected, select
           {legend && <div className="agsdl-graph-legend" role="note">
             <div><svg width="40" height="12" aria-hidden="true"><path d="M1 6H39" stroke="color-mix(in srgb, rgb(var(--primary)) 60%, rgb(var(--background)))" strokeWidth="1.4" /></svg>{t("agsdl.viewer.legendFlow")}</div>
             <div><svg width="40" height="18" aria-hidden="true"><path d="M9 9H39" stroke="color-mix(in srgb, rgb(var(--destructive)) 60%, rgb(var(--background)))" strokeWidth="1.4" /><circle cx="9" cy="9" r="7.5" fill="rgb(var(--background))" stroke="rgb(var(--destructive) / 0.4)" /><path d="M9 5.5v4M9 12.4v.1" stroke="rgb(var(--destructive))" strokeWidth="1.6" strokeLinecap="round" /></svg>{t("agsdl.viewer.legendError")}</div>
+            {steering && <div><svg width="40" height="18" aria-hidden="true"><path d="M1 9H31" stroke="color-mix(in srgb, rgb(var(--primary)) 60%, rgb(var(--background)))" strokeWidth="1.4" /><path d="M29 5.5l5 3.5-5 3.5z" fill="color-mix(in srgb, rgb(var(--primary)) 60%, rgb(var(--background)))" /><path d="M37 2v14" stroke="rgb(var(--border))" strokeWidth="2" strokeLinecap="round" /></svg>{t("agsdl.viewer.legendSteering")}</div>}
           </div>}
           <button onClick={() => void flow.zoomOut()} aria-label={t("agsdl.viewer.zoomOut")} title={t("agsdl.viewer.zoomOut")}><Minus size={14} /></button>
           <button onClick={() => void flow.zoomIn()} aria-label={t("agsdl.viewer.zoomIn")} title={t("agsdl.viewer.zoomIn")}><Plus size={14} /></button>

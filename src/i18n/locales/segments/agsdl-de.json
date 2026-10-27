@@ -222,7 +222,8 @@
     "backToComponent": "Zurück zu den vorherigen Details",
     "legend": "Legende",
     "legendFlow": "Ablauf",
-    "legendError": "Ausgang bei Fehler"
+    "legendError": "Ausgang bei Fehler",
+    "legendSteering": "Hinweis während der Arbeit"
   },
   "attachToChat": "Zum Chat hinzufügen",
   "chatSelection": "AgSDL-Auswahl",
@@ -551,6 +552,7 @@
     "receives": "Erhält",
     "produces": "Liefert",
     "limit": "Durchläufe",
+    "after": "Gestartet von",
     "arguments": "Argumente",
     "effect": "Wirkung",
     "action": "Aktion",
@@ -586,7 +588,8 @@
       "approved": "Die Freigabe wird erteilt",
       "denied": "Die Freigabe wird abgelehnt",
       "exchange": "Bei einem Datenaustausch",
-      "dependency": "Nach dem vorherigen Block"
+      "dependency": "Nach dem vorherigen Block",
+      "steering": "Während der Zielblock arbeitet"
     }
   }
 }

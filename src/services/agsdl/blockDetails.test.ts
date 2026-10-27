@@ -62,6 +62,8 @@ describe("block details read from AgSDL", () => {
     expect(blockDetails(card("join", { mode: "first", remaining: "finish", accept: { equals: [{ path: ["choice"] }, { value: "ok" }] } }), declarations)).toEqual([
       { key: "mode", values: ["first", "remaining: finish"] }, { key: "accept", values: ['choice = "ok"'] },
     ]);
+    const launch = { ...card("prepare", {}), path: "/flow/steps/launch", title: "Open the investigations" };
+    expect(blockDetails(card("join", { after: "launch" }), declarations, [launch])[0]).toEqual({ key: "after", values: ["Open the investigations"] });
     expect(durationText(45000)).toBe("45 s");
     // An approval shows what it authorizes: the scope of the step it calls.
     const release = card("agent", { scope: { action: "release", resources: ["repository:portal/main"] } }, { id: "release" });
@@ -76,5 +78,6 @@ describe("block details read from AgSDL", () => {
     expect(edgeDetails({ ...base, label: "onError" }).route).toBe("error");
     expect(edgeDetails({ ...base, label: "approved" }).route).toBe("approved");
     expect(edgeDetails({ ...base, label: "next" }).route).toBe("next");
+    expect(edgeDetails({ ...base, label: "steers" }).route).toBe("steering");
   });
 });

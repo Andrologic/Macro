@@ -7,7 +7,7 @@ const list = (value: unknown): unknown[] => Array.isArray(value) ? value : [];
 
 /** Configuration facts a block preview shows, in a fixed order. Values are AgSDL names or display titles. */
 export type BlockDetailKey = "instructions" | "model" | "uses" | "receives" | "produces" | "limit"
-  | "arguments" | "effect" | "action" | "targets" | "context" | "timeout" | "validity" | "test" | "mode" | "accept" | "agents" | "transmits";
+  | "after" | "arguments" | "effect" | "action" | "targets" | "context" | "timeout" | "validity" | "test" | "mode" | "accept" | "agents" | "transmits";
 export interface BlockDetail { key: BlockDetailKey; values: string[] }
 
 /** Operands read as their path (`data.exitCode`) or their literal value (`0`, `"portal"`). */
@@ -75,6 +75,9 @@ export function blockDetails(card: ViewerCard, declarations: ViewerCard[], steps
   }
   if (card.kind === "condition") add("test", [predicateText(step.test)]);
   if (card.kind === "join") {
+    // Members count only once launched by this step; name it as the graph does.
+    const after = typeof step.after === "string" ? step.after : undefined;
+    add("after", [after && (steps.find(item => item.path === `${card.path.slice(0, card.path.lastIndexOf("/"))}/${after}`)?.title || after)]);
     add("mode", [typeof step.mode === "string" ? step.mode : "all", typeof step.remaining === "string" ? `remaining: ${step.remaining}` : undefined]);
     add("accept", [predicateText(step.accept)]);
   }
@@ -96,9 +99,9 @@ export function blockDetails(card: ViewerCard, declarations: ViewerCard[], steps
 }
 
 /** A connection is described by the rule that takes it and what it delivers, never by its ends. */
-export interface EdgeDetails { route: "next" | "choice" | "true" | "false" | "approved" | "denied" | "error" | "exchange" | "dependency"; choice?: string; transmits: string[] }
+export interface EdgeDetails { route: "next" | "steering" | "choice" | "true" | "false" | "approved" | "denied" | "error" | "exchange" | "dependency"; choice?: string; transmits: string[] }
 export function edgeDetails(edge: ViewerEdge): EdgeDetails {
-  const route = edge.exchangeOnly ? "exchange" : edge.dependency ? "dependency"
+  const route = edge.exchangeOnly ? "exchange" : edge.dependency ? "dependency" : edge.label === "steers" ? "steering"
     : edge.label === "onError" ? "error" : ["next", "success", ""].includes(edge.label) ? "next"
       : ["true", "false", "approved", "denied"].includes(edge.label) ? edge.label as EdgeDetails["route"] : "choice";
   return { route, ...(route === "choice" ? { choice: edge.label } : {}), transmits: list(edge.transfers).map(String) };

@@ -222,7 +222,8 @@
     "backToComponent": "Volver a los detalles anteriores",
     "legend": "Leyenda",
     "legendFlow": "Secuencia",
-    "legendError": "Salida en caso de error"
+    "legendError": "Salida en caso de error",
+    "legendSteering": "Indicación durante el trabajo"
   },
   "attachToChat": "Adjuntar al chat",
   "chatSelection": "Selección AgSDL",
@@ -551,6 +552,7 @@
     "receives": "Recibe",
     "produces": "Produce",
     "limit": "Pasadas",
+    "after": "Lanzados por",
     "arguments": "Argumentos",
     "effect": "Efecto",
     "action": "Acción",
@@ -586,7 +588,8 @@
       "approved": "Se concede la aprobación",
       "denied": "Se rechaza la aprobación",
       "exchange": "En un intercambio de datos",
-      "dependency": "Después del bloque anterior"
+      "dependency": "Después del bloque anterior",
+      "steering": "Mientras el bloque destino trabaja"
     }
   }
 }

@@ -222,7 +222,8 @@
     "backToComponent": "前の詳細に戻る",
     "legend": "凡例",
     "legendFlow": "フロー",
-    "legendError": "エラー時の出口"
+    "legendError": "エラー時の出口",
+    "legendSteering": "処理中に送る指示"
   },
   "attachToChat": "チャットに添付",
   "chatSelection": "AgSDL の選択",
@@ -551,6 +552,7 @@
     "receives": "受け取る",
     "produces": "出力",
     "limit": "実行回数",
+    "after": "起動元",
     "arguments": "引数",
     "effect": "影響",
     "action": "操作",
@@ -586,7 +588,8 @@
       "approved": "承認された",
       "denied": "承認が拒否された",
       "exchange": "データ交換時",
-      "dependency": "前のブロックの後"
+      "dependency": "前のブロックの後",
+      "steering": "対象ブロックの処理中"
     }
   }
 }
