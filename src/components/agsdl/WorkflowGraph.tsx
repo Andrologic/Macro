@@ -22,6 +22,12 @@ type GraphNode = Node<{
   kindLabel: string;
   active: boolean;
   subtitle: string;
+  /** Who performs the step, shown as the block's heading above the action. */
+  performer?: string;
+  /** Number of blocks of this agent in the graph, when it performs several. */
+  shared?: number;
+  /** Lit or faded while another block of the same agent is hovered. */
+  related?: "lit" | "faded";
   select: (path: string) => void;
   focus: (path: string) => void;
   inspect: (path: string) => void;
@@ -45,7 +51,9 @@ function WorkflowNode({ data }: NodeProps<GraphNode>) {
   const shape = data.members ? "card" : graphBlockShape(card);
   const Icon = data.members ? Layers : card.kind === "System" ? Boxes : card.kind === "approval" ? UserCheck : card.kind === "call" ? Terminal : card.kind === "compose" ? Layers : Bot;
   const warning = Boolean(card.issueCount) || card.unresolved || card.branches.some(branch => branch.reference.unresolved) || card.dependencies?.some(ref => ref.unresolved);
-  const label = [data.kindLabel, data.title !== data.kindLabel ? data.title : "", data.subtitle, warning ? t("agsdl.viewer.unresolved") : ""].filter(Boolean).join(" · ");
+  const heading = data.performer ?? data.title;
+  const subtitle = data.performer ? data.title : data.subtitle;
+  const label = [data.kindLabel, heading !== data.kindLabel ? heading : "", subtitle, warning ? t("agsdl.viewer.unresolved") : ""].filter(Boolean).join(" · ");
   const status = data.task || data.native ? <WorkflowStatusBadge task={data.task} native={data.native} /> : null;
   return (
     <>
@@ -58,7 +66,7 @@ function WorkflowNode({ data }: NodeProps<GraphNode>) {
         ]}>
       <button
         type="button"
-        className={`agsdl-graph-node is-${shape} nodrag nopan${data.active ? " is-selected" : ""}`}
+        className={`agsdl-graph-node is-${shape} nodrag nopan${data.active ? " is-selected" : ""}${data.related ? ` is-${data.related}` : ""}`}
         onClick={event => {
           event.stopPropagation();
           if (data.expand) data.expand();
@@ -77,9 +85,10 @@ function WorkflowNode({ data }: NodeProps<GraphNode>) {
         </> : <>
           <span className="agsdl-node-tile">{status ?? <Icon size={shape === "execution" ? 15 : 14} aria-hidden="true" />}</span>
           <span className="agsdl-node-text">
-            <span className="agsdl-node-title">{data.title}</span>
-            {data.subtitle && <span className="agsdl-node-subtitle">{data.subtitle}</span>}
+            <span className="agsdl-node-title">{heading}</span>
+            {subtitle && <span className="agsdl-node-subtitle">{subtitle}</span>}
           </span>
+          {data.shared && <span className="agsdl-node-shared">{t("agsdl.viewer.sharedAgent", { count: data.shared })}</span>}
           {shape === "subprocess" && <ChevronRight size={15} className="agsdl-node-chevron" aria-hidden="true" />}
           {data.members && <ChevronDown size={14} className="agsdl-node-chevron" aria-hidden="true" />}
         </>}
@@ -91,11 +100,6 @@ function WorkflowNode({ data }: NodeProps<GraphNode>) {
       </button>
       </WorkflowBlockOverlay>
       <Handle type="source" position={Position.Bottom} id="out" />
-      {/* Steering messages travel side to side, into a block that is already working. */}
-      <Handle type="source" position={Position.Left} id="steer-left-out" />
-      <Handle type="source" position={Position.Right} id="steer-right-out" />
-      <Handle type="target" position={Position.Left} id="steer-left-in" />
-      <Handle type="target" position={Position.Right} id="steer-right-in" />
     </>
   );
 }
@@ -169,17 +173,29 @@ function Canvas({ cards, edges: connections, declarations = [], selected, select
     const next = new Set(previous); if (next.has(id)) next.delete(id); else next.add(id); return next;
   });
   const displayTitle = (card: ViewerCard) => card.kind === "displayGroup" ? card.title : title(card);
+  // Steps naming one agent in one graph address the same agent instance, steering included.
+  const agentKey = (card: ViewerCard) => card.kind === "agent" && typeof card.details.agent === "string"
+    ? `${card.path.slice(0, card.path.lastIndexOf("/"))}\u0000${card.details.agent}` : undefined;
+  const agentSizes = new Map<string, number>();
+  for (const card of presentation.cards) { const key = agentKey(card); if (key) agentSizes.set(key, (agentSizes.get(key) ?? 0) + 1); }
+  const sharedSize = (card: ViewerCard) => { const key = agentKey(card); const size = key ? agentSizes.get(key)! : 0; return size > 1 ? size : undefined; };
+  // Hovering a shared agent lights all of its blocks and fades the rest of the graph.
+  const hoveredCard = presentation.cards.find(card => card.path === hovered);
+  const hoveredAgent = hoveredCard && sharedSize(hoveredCard) ? agentKey(hoveredCard) : undefined;
   const nodes: GraphNode[] = layout.nodes.map(({ card, position }) => {
     const group = presentation.groups.find(group => group.id === card.path);
+    const performer = group ? undefined : graphBlockPerformer(card, displayTitle(card));
     return {
       id: card.path, type: "workflow", position,
       // Preserve measured dimensions on focus updates without fixing CSS height.
       measured: heights[card.path] === undefined ? undefined : { width: VIEWER_CARD_WIDTH, height: heights[card.path] },
       style: { width: VIEWER_CARD_WIDTH },
       data: { card, title: displayTitle(card), kindLabel: group ? t("agsdl.designGraph.group", { defaultValue: "Group" }) : t(`agsdl.kind.${card.kind === "agent" ? "Agent" : card.kind}`, { defaultValue: card.kind }), active: active === card.path,
-        // The second line names who performs the step; routing steps have none.
+        // Blocks lead with who performs the step, then the action; routing steps have no performer.
+        performer, shared: group ? undefined : sharedSize(card),
+        related: hoveredAgent ? agentKey(card) === hoveredAgent ? "lit" : "faded" : undefined,
         subtitle: group ? t("agsdl.designGraph.members", { count: group.members.length, defaultValue: "{{count}} components" })
-          : graphBlockPerformer(card, displayTitle(card)) ?? (card.kind === "approval" && !card.approvalBinding && !card.approvers?.length ? t("agsdl.viewer.approverMissing") : ""),
+          : performer ? "" : card.kind === "approval" && !card.approvalBinding && !card.approvers?.length ? t("agsdl.viewer.approverMissing") : "",
         select: path => { setHighlighted(path); if (selectionMode === "select") select(path); }, inspect: path => { setHighlighted(path); (onInspect ?? select)(path); }, expand: group ? () => expandGroup(group.id) : undefined, focus: setHovered,
         incoming: [...new Set(presentation.edges.filter(edge => edge.target === card.path).map(edge => displayTitle(presentation.cards.find(item => item.path === edge.source)!)))],
         outgoing: [...new Set(presentation.edges.filter(edge => edge.source === card.path).map(edge => displayTitle(presentation.cards.find(item => item.path === edge.target)!)))],
@@ -217,11 +233,11 @@ function Canvas({ cards, edges: connections, declarations = [], selected, select
     select(selected === edge.originals[0].id ? "" : edge.originals[0].id);
   };
   // Ordinary steps sharing one agent in one graph queue their messages; steering never queues.
-  const queueKey = (card: ViewerCard) => card.kind === "agent" && typeof card.details.agent === "string" && card.details.delivery !== "steering"
-    ? `${card.path.slice(0, card.path.lastIndexOf("/"))}\u0000${card.details.agent}` : undefined;
+  const queueKey = (card: ViewerCard) => card.details.delivery === "steering" ? undefined : agentKey(card);
   const queueSizes = new Map<string, number>();
   for (const card of presentation.cards) { const key = queueKey(card); if (key) queueSizes.set(key, (queueSizes.get(key) ?? 0) + 1); }
   const queued = (path: string) => { const card = presentation.cards.find(item => item.path === path); const key = card && queueKey(card); return Boolean(key && queueSizes.get(key)! > 1); };
+  const litPaths = new Set(hoveredAgent ? presentation.cards.filter(card => agentKey(card) === hoveredAgent).map(card => card.path) : []);
   const edges: GraphEdge[] = presentation.edges.map(edge => {
     // The theme accent carries the flow, the theme's destructive colour the failures.
     const failure = edge.label === "onError";
@@ -241,27 +257,10 @@ function Canvas({ cards, edges: connections, declarations = [], selected, select
       ariaRole: "group" as const,
       ariaLabel: `${displayTitle(presentation.cards.find(card => card.path === edge.source)!)} → ${displayTitle(presentation.cards.find(card => card.path === edge.target)!)}`,
       markerEnd: { type: MarkerType.ArrowClosed, width: 14, height: 14, color },
-      style: { stroke: color, strokeWidth: focused ? 2 : 1.3, strokeDasharray: edge.exchangeOnly ? "3 4" : edge.dependency ? "7 4" : undefined },
+      style: { stroke: color, strokeWidth: focused ? 2 : 1.3, strokeDasharray: edge.exchangeOnly ? "3 4" : edge.dependency ? "7 4" : undefined,
+        opacity: hoveredAgent && !litPaths.has(edge.source) && !litPaths.has(edge.target) ? 0.3 : undefined },
     };
   });
-  // A steering step delivers its message to a block while that block works; it is not a continuation.
-  const center = (path: string) => { const node = layout.nodes.find(item => item.card.path === path); return node ? node.position.x + VIEWER_CARD_WIDTH / 2 : 0; };
-  const parent = (path: string) => path.slice(0, path.lastIndexOf("/"));
-  for (const source of presentation.cards) {
-    const steers = source.details.steers;
-    const target = typeof steers === "string" ? presentation.cards.find(card => card.id === steers && parent(card.path) === parent(source.path)) : undefined;
-    if (!target) continue;
-    const connection: ViewerEdge = { id: `${source.path}/steers`, source: source.path, target: target.path, label: "steers", dependency: false };
-    const leftward = center(target.path) < center(source.path);
-    const color = `color-mix(in srgb, rgb(var(--primary)) ${focus === source.path || focus === target.path ? 100 : 60}%, rgb(var(--background)))`;
-    edges.push({ id: connection.id, source: source.path, target: target.path, type: "workflow",
-      sourceHandle: leftward ? "steer-left-out" : "steer-right-out", targetHandle: leftward ? "steer-right-in" : "steer-left-in",
-      data: { route: { kind: "orthogonal", steps: [], across: true }, connection, sourceTitle: displayTitle(source), targetTitle: displayTitle(target),
-        sourcePerformer: graphBlockPerformer(source, displayTitle(source)), dismissSignal, focusEdge,
-        inspectSource: () => (onInspect ?? select)(source.path), inspectTarget: () => (onInspect ?? select)(target.path) },
-      ariaRole: "group" as const, ariaLabel: `${displayTitle(source)} → ${displayTitle(target)}`, style: { stroke: color, strokeWidth: 1.3 } });
-  }
-  const steering = edges.some(edge => edge.data?.connection.label === "steers");
   const queues = edges.some(edge => edge.data?.queued);
   const clearSelection = () => { setHighlighted(""); setHovered(""); select(""); };
   return (
@@ -293,7 +292,6 @@ function Canvas({ cards, edges: connections, declarations = [], selected, select
             {/* Each sample ends on a block border, drawn as the short bar on the right. */}
             <div><LegendSample><path d="M2 9H30" /><path className="is-head" d="M28 5.5l6 3.5-6 3.5z" /></LegendSample>{t("agsdl.viewer.legendFlow")}</div>
             {queues && <div><LegendSample><path d="M2 9H24" /><path className="is-head" d="M22 5.5l6 3.5-6 3.5z" /><path d="M31 3v12M34 3v12" strokeLinecap="round" /></LegendSample>{t("agsdl.viewer.legendQueue")}</div>}
-            {steering && <div><LegendSample><circle className="is-head" cx="4" cy="9" r="2.5" /><path d="M6 9H33" /><circle className="is-landing" cx="37" cy="9" r="3.5" /></LegendSample>{t("agsdl.viewer.legendSteering")}</div>}
             <div><svg width="44" height="18" aria-hidden="true"><path d="M9 9H39" stroke="color-mix(in srgb, rgb(var(--destructive)) 60%, rgb(var(--background)))" strokeWidth="1.4" /><circle cx="9" cy="9" r="7.5" fill="rgb(var(--background))" stroke="rgb(var(--destructive) / 0.4)" /><path d="M9 5.5v4M9 12.4v.1" stroke="rgb(var(--destructive))" strokeWidth="1.6" strokeLinecap="round" /></svg>{t("agsdl.viewer.legendError")}</div>
           </div>}
           <button onClick={() => void flow.zoomOut()} aria-label={t("agsdl.viewer.zoomOut")} title={t("agsdl.viewer.zoomOut")}><Minus size={14} /></button>

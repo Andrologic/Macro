@@ -88,6 +88,5 @@ describe("block details read from AgSDL", () => {
     expect(edgeDetails({ ...base, label: "onError" }).route).toBe("error");
     expect(edgeDetails({ ...base, label: "approved" }).route).toBe("approved");
     expect(edgeDetails({ ...base, label: "next" }).route).toBe("next");
-    expect(edgeDetails({ ...base, label: "steers" }).route).toBe("steering");
   });
 });

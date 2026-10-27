@@ -224,7 +224,8 @@
     "legendFlow": "Flow",
     "legendError": "Exit on error",
     "legendQueue": "Queue of a shared agent",
-    "legendSteering": "Message sent while working"
+    "sharedAgent_one": "{{count}} step",
+    "sharedAgent_other": "{{count}} steps"
   },
   "attachToChat": "Attach to chat",
   "chatSelection": "AgSDL selection",
@@ -590,8 +591,7 @@
       "approved": "Approval is given",
       "denied": "Approval is refused",
       "exchange": "On a data exchange",
-      "dependency": "After the previous block",
-      "steering": "While the target block works"
+      "dependency": "After the previous block"
     }
   }
 }

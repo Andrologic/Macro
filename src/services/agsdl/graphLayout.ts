@@ -18,8 +18,7 @@ export interface ViewerLayoutNode {
 /** Each step moves vertically to `y`, then horizontally to `x`; the last step ends above the target.
  * `level` keeps the source handle's height instead of `y`, for side exits with a clear row. */
 export interface ViewerRouteStep { y: number; x?: number; level?: boolean }
-/** `across` joins two blocks side to side, for messages delivered to a block while it works. */
-export interface ViewerEdgeRoute { kind: "orthogonal"; steps: ViewerRouteStep[]; loop?: boolean; across?: boolean }
+export interface ViewerEdgeRoute { kind: "orthogonal"; steps: ViewerRouteStep[]; loop?: boolean }
 
 export const VIEWER_CARD_WIDTH = 240;
 const ROW_GAP = 60;
@@ -373,10 +372,6 @@ export function routeViewerEdge(nodes: ViewerLayoutNode[], edge: ViewerEdge): Vi
 /** Orthogonal path with rounded corners, ending at the actual React Flow handles. */
 export function viewerEdgePath(route: ViewerEdgeRoute, handles: { sourceX: number; sourceY: number; targetX: number; targetY: number }, fromSide = false): string {
   const { sourceX, sourceY, targetX, targetY } = handles;
-  if (route.across) {
-    const middle = (sourceX + targetX) / 2;
-    return roundedPath([{ x: sourceX, y: sourceY }, { x: middle, y: sourceY }, { x: middle, y: targetY }, { x: targetX, y: targetY }]);
-  }
   // A side exit (failures) first steps away from the block before following its route.
   const points = fromSide ? [{ x: sourceX, y: sourceY }, { x: sourceX + SIDE_EXIT, y: sourceY }] : [{ x: sourceX, y: sourceY }];
   let x = fromSide ? sourceX + SIDE_EXIT : sourceX;

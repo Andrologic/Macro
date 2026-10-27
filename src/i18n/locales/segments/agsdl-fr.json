@@ -224,7 +224,8 @@
     "legendFlow": "Enchaînement",
     "legendError": "Sortie en cas d’erreur",
     "legendQueue": "File d’attente d’un agent partagé",
-    "legendSteering": "Consigne transmise en cours de travail"
+    "sharedAgent_one": "{{count}} étape",
+    "sharedAgent_other": "{{count}} étapes"
   },
   "attachToChat": "Joindre au chat",
   "chatSelection": "Sélection AgSDL",
@@ -590,8 +591,7 @@
       "approved": "L’accord est donné",
       "denied": "L’accord est refusé",
       "exchange": "Lors d’un échange de données",
-      "dependency": "Après le bloc précédent",
-      "steering": "Pendant que le bloc ciblé travaille"
+      "dependency": "Après le bloc précédent"
     }
   }
 }

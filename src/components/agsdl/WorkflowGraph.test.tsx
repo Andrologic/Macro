@@ -1,0 +1,32 @@
+import { afterEach, expect, it } from 'bun:test';
+import { act } from 'react';
+import { createRoot, type Root } from 'react-dom/client';
+import { WorkflowGraph } from './WorkflowGraph';
+import { projectViewer } from '../../services/agsdl/viewer';
+import { projectSystemOverview } from '../../services/agsdl/systemOverview';
+import { demoPlans } from '../../demo/fixtures';
+
+let root: Root | undefined;
+let host: HTMLDivElement | undefined;
+afterEach(() => { act(() => root?.unmount()); host?.remove(); });
+
+it('leads with the agent, marks a shared agent and lights its blocks together on hover', async () => {
+  const plan = demoPlans.find(item => item.id === 'demo-incident')!;
+  const projected = projectViewer(plan.agsdl.source, plan.agsdl);
+  const graph = projectSystemOverview(projected.graphs[0], projected.declarations.filter(item => ['Agent', 'System'].includes(item.kind)));
+  host = document.createElement('div'); document.body.append(host); root = createRoot(host);
+  await act(async () => root!.render(<WorkflowGraph cards={graph.cards} edges={graph.edges} declarations={projected.declarations}
+    selected="" select={() => {}} title={card => card.title} />));
+  const blocks = [...host.querySelectorAll<HTMLButtonElement>('.agsdl-graph-node')];
+  const text = (block: HTMLElement) => [block.querySelector('.agsdl-node-title')?.textContent, block.querySelector('.agsdl-node-subtitle')?.textContent];
+  const analyst = blocks.filter(block => text(block)[0] === 'Analyste des traces');
+  expect(analyst.map(block => text(block)[1]).sort()).toEqual(['Examiner les traces', 'Recentrer l’analyse']);
+  expect(analyst.map(block => block.querySelector('.agsdl-node-shared')?.textContent)).toEqual(['2 steps', '2 steps']);
+  expect(blocks.filter(block => block.querySelector('.agsdl-node-shared'))).toHaveLength(2);
+
+  await act(async () => analyst[1].dispatchEvent(new MouseEvent('mouseover', { bubbles: true })));
+  expect(analyst.every(block => block.classList.contains('is-lit'))).toBe(true);
+  expect(blocks.filter(block => !analyst.includes(block)).every(block => block.classList.contains('is-faded'))).toBe(true);
+  await act(async () => analyst[1].dispatchEvent(new MouseEvent('mouseout', { bubbles: true })));
+  expect(blocks.some(block => block.classList.contains('is-lit') || block.classList.contains('is-faded'))).toBe(false);
+});

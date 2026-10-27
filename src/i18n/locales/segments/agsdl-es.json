@@ -224,7 +224,8 @@
     "legendFlow": "Secuencia",
     "legendError": "Salida en caso de error",
     "legendQueue": "Cola de un agente compartido",
-    "legendSteering": "Indicación durante el trabajo"
+    "sharedAgent_one": "{{count}} paso",
+    "sharedAgent_other": "{{count}} pasos"
   },
   "attachToChat": "Adjuntar al chat",
   "chatSelection": "Selección AgSDL",
@@ -590,8 +591,7 @@
       "approved": "Se concede la aprobación",
       "denied": "Se rechaza la aprobación",
       "exchange": "En un intercambio de datos",
-      "dependency": "Después del bloque anterior",
-      "steering": "Mientras el bloque destino trabaja"
+      "dependency": "Después del bloque anterior"
     }
   }
 }

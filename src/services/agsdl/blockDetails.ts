@@ -104,9 +104,9 @@ export function blockDetails(card: ViewerCard, declarations: ViewerCard[], steps
 }
 
 /** A connection is described by the rule that takes it and what it delivers, never by its ends. */
-export interface EdgeDetails { route: "next" | "steering" | "choice" | "true" | "false" | "approved" | "denied" | "error" | "exchange" | "dependency"; choice?: string; transmits: string[] }
+export interface EdgeDetails { route: "next" | "choice" | "true" | "false" | "approved" | "denied" | "error" | "exchange" | "dependency"; choice?: string; transmits: string[] }
 export function edgeDetails(edge: ViewerEdge): EdgeDetails {
-  const route = edge.exchangeOnly ? "exchange" : edge.dependency ? "dependency" : edge.label === "steers" ? "steering"
+  const route = edge.exchangeOnly ? "exchange" : edge.dependency ? "dependency"
     : edge.label === "onError" ? "error" : ["next", "success", ""].includes(edge.label) ? "next"
       : ["true", "false", "approved", "denied"].includes(edge.label) ? edge.label as EdgeDetails["route"] : "choice";
   return { route, ...(route === "choice" ? { choice: edge.label } : {}), transmits: list(edge.transfers).map(String) };

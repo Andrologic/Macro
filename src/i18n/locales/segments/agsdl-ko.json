@@ -224,7 +224,8 @@
     "legendFlow": "흐름",
     "legendError": "오류 시 출구",
     "legendQueue": "공유 에이전트의 대기열",
-    "legendSteering": "작업 중 전달되는 지시"
+    "sharedAgent_one": "{{count}}단계",
+    "sharedAgent_other": "{{count}}단계"
   },
   "attachToChat": "채팅에 첨부",
   "chatSelection": "AgSDL 선택",
@@ -590,8 +591,7 @@
       "approved": "승인됨",
       "denied": "승인 거부됨",
       "exchange": "데이터 교환 시",
-      "dependency": "이전 블록 이후",
-      "steering": "대상 블록이 작업하는 동안"
+      "dependency": "이전 블록 이후"
     }
   }
 }

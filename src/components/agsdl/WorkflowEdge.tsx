@@ -68,7 +68,6 @@ export function WorkflowEdge(props: EdgeProps<GraphEdge>) {
   const data = props.data!;
   const route = data.route;
   const failure = data.connection.label === 'onError';
-  const steering = data.connection.label === 'steers';
   // A queued arrival stops short of the block, leaving room for its queue notch.
   const handles = data.queued ? { ...props, targetY: props.targetY - QUEUE_GAP } : props;
   const path = route ? viewerEdgePath(route, handles, failure) : getSmoothStepPath(handles)[0];
@@ -114,17 +113,6 @@ export function WorkflowEdge(props: EdgeProps<GraphEdge>) {
       <BaseEdge id={props.id} path={path} markerStart={props.markerStart} markerEnd={props.markerEnd} style={props.style} interactionWidth={18} />
       {data.queued && <path className="agsdl-edge-queue" d={`M${props.targetX - 6} ${props.targetY - 5.5}H${props.targetX + 6}M${props.targetX - 6} ${props.targetY - 2.5}H${props.targetX + 6}`} style={{ stroke, opacity: props.style?.opacity }} />}
     </g>
-    {/* A steering message lands on the side of the block that is working. */}
-    {steering && <EdgeLabelRenderer>
-      <svg className="agsdl-edge-landing is-origin" width="10" height="10" viewBox="-5 -5 10 10" aria-hidden="true"
-        style={{ transform: `translate(-50%, -50%) translate(${props.sourceX}px, ${props.sourceY}px)`, opacity: props.style?.opacity, fill: stroke }}>
-        <circle r="2.5" />
-      </svg>
-      <svg className="agsdl-edge-landing" width="10" height="10" viewBox="-5 -5 10 10" aria-hidden="true"
-        style={{ transform: `translate(-50%, -50%) translate(${props.targetX}px, ${props.targetY}px)`, opacity: props.style?.opacity, stroke }}>
-        <circle r="3.5" />
-      </svg>
-    </EdgeLabelRenderer>}
     {/* Drawn above the blocks: the exit sits on the block's border. */}
     {failure && <EdgeLabelRenderer><svg className="agsdl-edge-exit" width="18" height="18" viewBox="-9 -9 18 18" aria-hidden="true"
       style={{ transform: `translate(-50%, -50%) translate(${props.sourceX}px, ${props.sourceY}px)`, opacity: props.style?.opacity }}>

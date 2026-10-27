@@ -224,7 +224,8 @@
     "legendFlow": "フロー",
     "legendError": "エラー時の出口",
     "legendQueue": "共有エージェントの待ち行列",
-    "legendSteering": "処理中に送る指示"
+    "sharedAgent_one": "{{count}} ステップ",
+    "sharedAgent_other": "{{count}} ステップ"
   },
   "attachToChat": "チャットに添付",
   "chatSelection": "AgSDL の選択",
@@ -590,8 +591,7 @@
       "approved": "承認された",
       "denied": "承認が拒否された",
       "exchange": "データ交換時",
-      "dependency": "前のブロックの後",
-      "steering": "対象ブロックの処理中"
+      "dependency": "前のブロックの後"
     }
   }
 }

@@ -224,7 +224,8 @@
     "legendFlow": "Ablauf",
     "legendError": "Ausgang bei Fehler",
     "legendQueue": "Warteschlange eines geteilten Agenten",
-    "legendSteering": "Hinweis während der Arbeit"
+    "sharedAgent_one": "{{count}} Schritt",
+    "sharedAgent_other": "{{count}} Schritte"
   },
   "attachToChat": "Zum Chat hinzufügen",
   "chatSelection": "AgSDL-Auswahl",
@@ -590,8 +591,7 @@
       "approved": "Die Freigabe wird erteilt",
       "denied": "Die Freigabe wird abgelehnt",
       "exchange": "Bei einem Datenaustausch",
-      "dependency": "Nach dem vorherigen Block",
-      "steering": "Während der Zielblock arbeitet"
+      "dependency": "Nach dem vorherigen Block"
     }
   }
 }

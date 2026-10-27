@@ -58,13 +58,14 @@
 .agsdl-preview-list dd.is-literal { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px; }
 .agsdl-block-anchor:has(> .is-routing) { width: fit-content; max-width: 100%; margin: 0 auto; }
 
-/* Queue notches, steering dots and legend samples share the flow colour. */
+/* A shared agent: its badge sits on the block's top border; hovering lights its other blocks. */
+.agsdl-node-shared { position: absolute; top: -8px; right: 10px; padding: 0 6px; border: 1px solid rgb(var(--primary) / 0.45); border-radius: 999px; background: rgb(var(--background)); color: color-mix(in srgb, rgb(var(--primary)) 70%, rgb(var(--foreground))); font-size: 10px; font-weight: 500; line-height: 15px; white-space: nowrap; }
+.agsdl-graph-node.is-lit { border-color: rgb(var(--primary)); box-shadow: 0 0 0 3px rgb(var(--primary) / 0.18); }
+.agsdl-graph-node.is-faded { opacity: 0.35; }
+
+/* Queue notches and legend samples share the flow colour. */
 .agsdl-edge-queue { fill: none; stroke-width: 1.5; stroke-linecap: round; }
-.agsdl-edge-landing { position: absolute; overflow: visible; pointer-events: none; z-index: 5; }
-.agsdl-edge-landing circle { fill: rgb(var(--background)); stroke-width: 1.5; }
-.agsdl-edge-landing.is-origin circle { fill: inherit; stroke: none; }
 .agsdl-legend-sample { flex-shrink: 0; --legend-flow: color-mix(in srgb, rgb(var(--primary)) 60%, rgb(var(--background))); }
 .agsdl-legend-sample path { fill: none; stroke: var(--legend-flow); stroke-width: 1.4; }
 .agsdl-legend-sample .is-head { fill: var(--legend-flow); stroke: none; }
-.agsdl-legend-sample .is-landing { fill: rgb(var(--background)); stroke: var(--legend-flow); stroke-width: 1.4; }
 .agsdl-legend-sample .is-border { stroke: rgb(var(--border)); stroke-width: 2; stroke-linecap: round; }
