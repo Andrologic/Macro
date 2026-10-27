@@ -644,7 +644,9 @@ pub(super) async fn pin_native(
             provider_id: request.provider_id.clone(),
             model_id: request.model_id.clone(),
             reasoning_effort: request.reasoning_effort.clone(),
-            title: "Transferred conversation".into(),
+            title: source_title(&ready.pool, &sealed.receipt.key)
+                .await?
+                .unwrap_or_else(|| "Transferred conversation".into()),
             created_at: text(
                 &messages
                     .first()
@@ -965,6 +967,19 @@ async fn native_asset_bytes(
         } => "image/webp",
         _ => return Err(invalid("integrity_failed")),
     };
+    Ok((
+        record_bytes(pool, key, ordinal, &header).await?,
+        mime.into(),
+    ))
+}
+/// A complete record's payload, each fragment and the whole checked against
+/// their stored and declared hashes.
+async fn record_bytes(
+    pool: &SqlitePool,
+    key: &str,
+    ordinal: i64,
+    header: &crate::db::inactive_storage::RecordHeader,
+) -> DbResult<Vec<u8>> {
     let rows=sqlx::query("SELECT f.offset_bytes,f.data,f.sha256 FROM e_inactive_fragments f JOIN e_inactive_imports i ON i.id=f.import_id WHERE i.identity_key=? AND f.ordinal=? ORDER BY f.offset_bytes")
         .bind(key).bind(ordinal).fetch_all(pool).await?;
     let mut bytes = Vec::with_capacity(header.bytes as usize);
@@ -982,5 +997,43 @@ async fn native_asset_bytes(
     if bytes.len() != header.bytes as usize || hex(&hash(&bytes)) != header.sha256 {
         return Err(invalid("integrity_failed"));
     }
-    Ok((bytes, mime.into()))
+    Ok(bytes)
+}
+/// The source conversation's title. Normalization retains `conversations.title`
+/// (family 0, tag 1) as original text whose origin is its metadata record.
+async fn source_title(pool: &SqlitePool, key: &str) -> DbResult<Option<String>> {
+    use crate::db::inactive_storage::RecordHeader;
+    let header = |raw: &str| -> DbResult<RecordHeader> {
+        let header: RecordHeader =
+            serde_json::from_str(raw).map_err(|_| invalid("integrity_failed"))?;
+        if header.bytes > 65_536 {
+            return Err(invalid("resource_limit"));
+        }
+        Ok(header)
+    };
+    let metadata=sqlx::query("SELECT r.ordinal,r.header_json FROM e_inactive_records r JOIN e_inactive_imports i ON i.id=r.import_id WHERE i.identity_key=? AND i.phase=2 AND r.complete=1 AND json_extract(r.header_json,'$.entry.purpose')='portable_metadata' ORDER BY r.ordinal")
+        .bind(key).fetch_all(pool).await?;
+    for row in metadata {
+        let ordinal: i64 = row.get("ordinal");
+        let described = header(row.get("header_json"))?;
+        let value: serde_json::Value =
+            serde_json::from_slice(&record_bytes(pool, key, ordinal, &described).await?)
+                .map_err(|_| invalid("integrity_failed"))?;
+        if value["source"]["family"] != 0 || value["source"]["tag"] != 1 {
+            continue;
+        }
+        if value["classification"] != "retained_original" {
+            return Ok(None);
+        }
+        let text=sqlx::query("SELECT r.ordinal,r.header_json FROM e_inactive_records r JOIN e_inactive_imports i ON i.id=r.import_id WHERE i.identity_key=? AND i.phase=2 AND r.complete=1 AND json_extract(r.header_json,'$.entry.purpose')='original_text' AND json_extract(r.header_json,'$.origin')=?")
+            .bind(key).bind(ordinal).fetch_optional(pool).await?;
+        let Some(text) = text else {
+            return Ok(None);
+        };
+        let retained = header(text.get("header_json"))?;
+        let bytes = record_bytes(pool, key, text.get("ordinal"), &retained).await?;
+        let title = String::from_utf8(bytes).map_err(|_| invalid("integrity_failed"))?;
+        return Ok((!title.trim().is_empty()).then_some(title));
+    }
+    Ok(None)
 }

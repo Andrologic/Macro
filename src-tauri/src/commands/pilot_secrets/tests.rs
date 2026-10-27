@@ -2618,6 +2618,15 @@ async fn global_chat_transfer_target() {
         return;
     }
     let (conversation, prepared) = received.unwrap();
+    // The target publishes the source's title, retained by normalization.
+    assert_eq!(
+        sqlx::query_scalar::<_, String>("SELECT title FROM conversations WHERE id=?")
+            .bind(&conversation)
+            .fetch_one(&pool)
+            .await
+            .unwrap(),
+        "Local transfer"
+    );
     let messages: Vec<String> = sqlx::query_scalar(
         "SELECT content FROM messages WHERE conversation_id=? ORDER BY created_at,id",
     )

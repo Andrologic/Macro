@@ -205,6 +205,9 @@ Les garde-fous v2 existants ne sont pas augmentés par défaut. L'import valide 
 fil de l'eau, refuse les traversées de chemin et remappe les identifiants sans
 transformer des traces historiques en outils actifs ou en instructions fiables.
 
+La cible publie le titre de la source : la normalisation le conserve comme
+texte d'origine dans l'archive, jamais dans les métadonnées du relais.
+
 Le premier transfert ne reprend pas le checkpoint de compaction de la source.
 La cible publie les messages originaux sans état de compaction ni
 `provider_input_items` enregistrés ; les résumés restent consultables dans
