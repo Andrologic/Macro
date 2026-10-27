@@ -643,6 +643,29 @@ impl Reservation {
         .await?;
         Ok(())
     }
+    /// Once the relay has durably recorded `aborted`, resolves this target
+    /// attempt and releases its staged import and projection.
+    pub(crate) async fn apply_aborted_target(&self, owner: &DbPool) -> DbResult<()> {
+        let live = self
+            .native_authority
+            .as_ref()
+            .ok_or_else(|| invalid("connect_native_owner_missing"))?;
+        let terminal = self.native_terminal_with("aborted").await?;
+        let guard = owner
+            .source_ready(None)
+            .await
+            .map_err(|_| invalid("unavailable"))?;
+        live.check().await.map_err(invalid)?;
+        super::terminal::store_aborted_target(
+            &guard.ready.pool,
+            &self.transfer_id,
+            self.inspect()?.0,
+            self.binding_digest.clone(),
+            self.source_epoch,
+            &terminal,
+        )
+        .await
+    }
     /// Reopens the source once the relay has durably recorded `aborted`.
     pub(crate) async fn apply_aborted_source(&self, owner: &DbPool) -> DbResult<()> {
         let live = self

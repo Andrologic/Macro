@@ -1787,6 +1787,21 @@ async fn global_chat_interrupted_source_transfer() {
     global_chat_local_transfer("macro-ai", false, false, false, Route::InterruptedSource).await;
 }
 
+/// The source abandons after the target prepared: the target resolves the
+/// attempt and releases its staged import and projection.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires the explicitly supplied local transfer relay"]
+async fn global_chat_abandoned_after_preparation_transfer() {
+    global_chat_local_transfer(
+        "macro-ai",
+        false,
+        false,
+        false,
+        Route::AbandonedAfterPreparation,
+    )
+    .await;
+}
+
 /// The target lacks the selected model: the source records `aborted` and reopens.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore = "requires the explicitly supplied local transfer relay"]
@@ -1813,6 +1828,8 @@ enum Route {
     /// The source process stops right after the reserve, then reconciles with a
     /// fresh transport as after a restart.
     InterruptedSource,
+    /// The source abandons once the target has prepared.
+    AbandonedAfterPreparation,
 }
 
 async fn global_chat_local_transfer(
@@ -1824,6 +1841,7 @@ async fn global_chat_local_transfer(
 ) {
     let via_runtime = route == Route::Runtime;
     let restricted = route == Route::RestrictedTarget;
+    let abandoned = route == Route::AbandonedAfterPreparation;
     let lost = matches!(
         route,
         Route::LostReserveReply | Route::LostReserveRequest | Route::InterruptedSource
@@ -2187,7 +2205,7 @@ async fn global_chat_local_transfer(
     let mut input = child.stdin.take().unwrap();
     let mut initialization=serde_json::to_vec(&serde_json::json!({"seed":seed,
         "database":directory.path().join("target.db"),"provider":provider,"compacted":compacted,"resources":with_resources,"refused":refused,"runtime":via_runtime,
-        "interrupted":route == Route::InterruptedReceive,"restricted":restricted,"idle":lost})).unwrap();
+        "interrupted":route == Route::InterruptedReceive,"restricted":restricted,"idle":lost,"abandoned":abandoned})).unwrap();
     initialization.push(b'\n');
     input.write_all(&initialization).await.unwrap();
     let mut target_events = BufReader::new(child.stdout.take().unwrap()).lines();
@@ -2210,6 +2228,9 @@ async fn global_chat_local_transfer(
     }
     if route == Route::InterruptedSource {
         std::env::set_var("MACRO_CONNECT_TEST_INTERRUPT", "after_reserve");
+    }
+    if abandoned {
+        std::env::set_var("MACRO_CONNECT_TEST_INTERRUPT", "after_prepared");
     }
     let transferred: Result<String, String> = if let Some((verified, inspection)) = &direct {
         super::flow::send(
@@ -2283,6 +2304,9 @@ async fn global_chat_local_transfer(
             }),
         }
     };
+    if abandoned {
+        std::env::remove_var("MACRO_CONNECT_TEST_INTERRUPT");
+    }
     if route == Route::InterruptedSource {
         std::env::remove_var("MACRO_CONNECT_TEST_INTERRUPT");
         assert_eq!(
@@ -2332,7 +2356,7 @@ async fn global_chat_local_transfer(
         .unwrap();
         assert_eq!(reopened, vec!["chat".to_owned()]);
     }
-    if refused || restricted || lost {
+    if refused || restricted || lost || abandoned {
         if lost {
             // The reserve's own failure is returned once the source reopened.
             assert!(transferred.is_err());
@@ -2422,7 +2446,7 @@ async fn global_chat_local_transfer(
         input.write_all(b"{\"stop\":true}\n").await.unwrap();
     }
     drop(input);
-    if transferred.is_err() && !refused && !restricted && !lost {
+    if transferred.is_err() && !refused && !restricted && !lost && !abandoned {
         child.kill().await.unwrap();
     }
     let child = child.wait_with_output().await.unwrap();
@@ -2438,7 +2462,7 @@ async fn global_chat_local_transfer(
     relay_input.write_all(b"{\"stop\":true}\n").await.unwrap();
     drop(relay_input);
     assert!(relay.wait().await.unwrap().success());
-    if !refused && !restricted && !lost {
+    if !refused && !restricted && !lost && !abandoned {
         transferred.unwrap();
     }
     assert!(child.status.success());
@@ -2723,7 +2747,46 @@ async fn global_chat_transfer_target() {
         }
         received.map(|conversation| (conversation.as_str().unwrap().to_owned(), None))
     };
-    if refused || restricted {
+    if data["abandoned"] == true {
+        // The target resolved the abandoned attempt and released its content,
+        // keeping the transfer, preparation and import rows as tombstones.
+        assert_eq!(
+            received.as_ref().err(),
+            Some(&serde_json::Value::from("transfer_aborted"))
+        );
+        let count = |sql: &'static str| {
+            let pool = pool.clone();
+            async move {
+                sqlx::query_scalar::<_, i64>(sql)
+                    .fetch_one(&pool)
+                    .await
+                    .unwrap()
+            }
+        };
+        assert_eq!(count("SELECT COUNT(*) FROM connect_transfers WHERE local_role='target' AND resolution='aborted'").await, 1);
+        assert_eq!(count("SELECT COUNT(*) FROM connect_preparations").await, 1);
+        for table in [
+            "connect_projection_messages",
+            "connect_projection_fields",
+            "connect_projection_fragments",
+            "e_inactive_records",
+            "e_inactive_fragments",
+            "e_inactive_mapping",
+            "conversations",
+        ] {
+            assert_eq!(
+                sqlx::query_scalar::<_, i64>(sqlx::AssertSqlSafe(format!(
+                    "SELECT COUNT(*) FROM {table}"
+                )))
+                .fetch_one(&pool)
+                .await
+                .unwrap(),
+                0,
+                "{table}"
+            );
+        }
+    }
+    if refused || restricted || data["abandoned"] == true {
         assert!(received.is_err());
         println!(
             "SLICE_TARGET_EVENT:{}",

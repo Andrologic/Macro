@@ -6,7 +6,11 @@ const PUBLICATION: &str = include_str!("../migrations/019_connect_publication.sq
 const OBJECTS: &str = "name GLOB 'connect_*' OR tbl_name GLOB 'connect_*' OR name='conversation_portable_archives' OR tbl_name='conversation_portable_archives'";
 static EXPECTED: OnceCell<Vec<(String, Option<String>)>> = OnceCell::const_new();
 // DDL-only reference. These namespaces never supply ownership or content data.
+/// `reader` adds the archive lifecycle (020) and target abort release (021).
 pub(in crate::db) async fn reference(reader: bool) -> DbResult<SqliteConnection> {
+    reference_through(if reader { 21 } else { 19 }).await
+}
+async fn reference_through(version: u32) -> DbResult<SqliteConnection> {
     let mut db = SqliteConnection::connect("sqlite::memory:").await?;
     for table in [
         "conversations",
@@ -42,12 +46,17 @@ pub(in crate::db) async fn reference(reader: bool) -> DbResult<SqliteConnection>
         .await?;
     sqlx::raw_sql(MIGRATION).execute(&mut db).await?;
     sqlx::raw_sql(PUBLICATION).execute(&mut db).await?;
-    if reader {
+    if version >= 20 {
         sqlx::raw_sql(include_str!(
             "../migrations/020_connect_archive_lifecycle.sql"
         ))
         .execute(&mut db)
         .await?;
+    }
+    if version >= 21 {
+        sqlx::raw_sql(include_str!("../migrations/021_connect_target_abort.sql"))
+            .execute(&mut db)
+            .await?;
     }
     Ok(db)
 }
@@ -79,7 +88,7 @@ pub(in crate::db) async fn validate_schema(db: &mut SqliteConnection) -> DbResul
             .push_bind(ddl)
             .push(")");
     }
-    query.push(" AND EXISTS(SELECT 1 FROM schema_migrations WHERE version=18 AND name='018_connect_transfer') AND EXISTS(SELECT 1 FROM schema_migrations WHERE version=19 AND name='019_connect_publication') AND EXISTS(SELECT 1 FROM schema_migrations WHERE version=20 AND name='020_connect_archive_lifecycle')");
+    query.push(" AND EXISTS(SELECT 1 FROM schema_migrations WHERE version=18 AND name='018_connect_transfer') AND EXISTS(SELECT 1 FROM schema_migrations WHERE version=19 AND name='019_connect_publication') AND EXISTS(SELECT 1 FROM schema_migrations WHERE version=20 AND name='020_connect_archive_lifecycle') AND EXISTS(SELECT 1 FROM schema_migrations WHERE version=21 AND name='021_connect_target_abort')");
     if query
         .build_query_scalar::<i64>()
         .fetch_one(&mut *db)
@@ -127,9 +136,49 @@ pub(crate) async fn remove_publication_reference_in(db: &mut SqliteConnection) -
     Ok(())
 }
 
-/// For an empty F reference only. Ordinary conversations are not modified.
-/// Legacy fixtures may contain ordinary data but no F rows may be discarded.
-pub(crate) async fn remove_reader_reference_in(db: &mut SqliteConnection) -> DbResult<()> {
+/// For an empty F reference only: back to the 020 guards, without the target
+/// abort release (021).
+pub(crate) async fn remove_target_abort_reference_in(db: &mut SqliteConnection) -> DbResult<()> {
+    require_empty_reference(db).await?;
+    let present: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM sqlite_master WHERE type='view' AND name='connect_aborted_targets'",
+    )
+    .fetch_one(&mut *db)
+    .await?;
+    if present == 0 {
+        return Ok(());
+    }
+    restore_guards(db, 20).await?;
+    sqlx::raw_sql("DROP VIEW connect_aborted_targets;")
+        .execute(&mut *db)
+        .await?;
+    Ok(())
+}
+/// Replaces the connect guards with those of the checked-in migrations up to
+/// `version`, created in an isolated connection, never read from input.
+async fn restore_guards(db: &mut SqliteConnection, version: u32) -> DbResult<()> {
+    let mut legacy = reference_through(version).await?;
+    let guards: Vec<String> = sqlx::query_scalar("SELECT sql FROM sqlite_master WHERE type='trigger' AND (name GLOB 'connect_*' OR (name GLOB 'chat_admission_*' AND name GLOB '*_delete')) ORDER BY name")
+        .fetch_all(&mut legacy).await?;
+    legacy.close().await?;
+    let current: Vec<String> = sqlx::query_scalar("SELECT name FROM sqlite_master WHERE type='trigger' AND (name GLOB 'connect_*' OR (name GLOB 'chat_admission_*' AND name GLOB '*_delete')) ORDER BY name")
+        .fetch_all(&mut *db).await?;
+    for name in current {
+        sqlx::query(sqlx::AssertSqlSafe(format!(
+            "DROP TRIGGER \"{}\"",
+            name.replace('"', "\"\"")
+        )))
+        .execute(&mut *db)
+        .await?;
+    }
+    for ddl in guards {
+        sqlx::raw_sql(sqlx::AssertSqlSafe(ddl))
+            .execute(&mut *db)
+            .await?;
+    }
+    Ok(())
+}
+async fn require_empty_reference(db: &mut SqliteConnection) -> DbResult<()> {
     for table in [
         "connect_transfers",
         "connect_exchanges",
@@ -163,7 +212,13 @@ pub(crate) async fn remove_reader_reference_in(db: &mut SqliteConnection) -> DbR
             }
         }
     }
-    // Backup comparison removes 020, then 019, then 018 as separate phases.
+    Ok(())
+}
+/// For an empty F reference only. Ordinary conversations are not modified.
+/// Legacy fixtures may contain ordinary data but no F rows may be discarded.
+pub(crate) async fn remove_reader_reference_in(db: &mut SqliteConnection) -> DbResult<()> {
+    require_empty_reference(db).await?;
+    // Backup comparison removes 021, 020, then 019, then 018 as separate phases.
     // Re-entering from a pre-020 reference must not recreate 019 triggers on
     // tables already removed by the next downgrade phase. Still check all
     // retained tables above before treating this as an empty reference.
@@ -188,7 +243,7 @@ pub(crate) async fn remove_reader_reference_in(db: &mut SqliteConnection) -> DbR
         .execute(&mut *db)
         .await?;
     }
-    sqlx::raw_sql("DROP INDEX IF EXISTS connect_message_reader; DROP INDEX IF EXISTS connect_asset_reader; DROP INDEX IF EXISTS connect_citation_reader; DROP VIEW IF EXISTS connect_message_origins; DROP VIEW IF EXISTS connect_deleting_owners; DROP VIEW IF EXISTS connect_deleting_transfers; DROP VIEW IF EXISTS connect_deletion_payloads; DROP TABLE IF EXISTS connect_projection_display; DROP TABLE IF EXISTS connect_publication_times; DROP TABLE IF EXISTS connect_local_deletions;").execute(&mut *db).await?;
+    sqlx::raw_sql("DROP VIEW IF EXISTS connect_aborted_targets; DROP INDEX IF EXISTS connect_message_reader; DROP INDEX IF EXISTS connect_asset_reader; DROP INDEX IF EXISTS connect_citation_reader; DROP VIEW IF EXISTS connect_message_origins; DROP VIEW IF EXISTS connect_deleting_owners; DROP VIEW IF EXISTS connect_deleting_transfers; DROP VIEW IF EXISTS connect_deletion_payloads; DROP TABLE IF EXISTS connect_projection_display; DROP TABLE IF EXISTS connect_publication_times; DROP TABLE IF EXISTS connect_local_deletions;").execute(&mut *db).await?;
     // These statements were just created from the checked-in migrations in an
     // isolated connection, never read from the application database or input.
     for ddl in guards {

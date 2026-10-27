@@ -111,84 +111,113 @@ pub(in crate::db) async fn begin_in(
             .await?;
         let Some(transfer) = next else { break };
         after = transfer.clone();
-        for table in [
-            "connect_projection_display",
-            "connect_projection_fragments",
-            "connect_projection_fields",
-            "connect_projection_assets",
-            "connect_projection_citations",
-            "connect_projection_messages",
-            "connect_raw_chunks",
-            "connect_raw_prefix",
-        ] {
-            sqlx::query(sqlx::AssertSqlSafe(format!(
-                "DELETE FROM {table} WHERE transfer_id=?"
-            )))
-            .bind(&transfer)
-            .execute(&mut *db)
-            .await?;
-        }
         let ids: (Option<i64>, Option<i64>) = sqlx::query_as(
             "SELECT import_id,capture_id FROM connect_local_deletions WHERE transfer_id=?",
         )
         .bind(&transfer)
         .fetch_one(&mut *db)
         .await?;
-        if let Some(import) = ids.0 {
-            for table in [
-                "e_inactive_fragments",
-                "e_inactive_mapping",
-                "e_inactive_records",
-            ] {
-                sqlx::query(sqlx::AssertSqlSafe(format!(
-                    "DELETE FROM {table} WHERE import_id=?"
-                )))
-                .bind(import)
-                .execute(&mut *db)
-                .await?;
-            }
-            // Same retained-parent accounting as E, now with no child content.
-            let (old, bytes, digest): (i64,i64,i64) = sqlx::query_as("SELECT charge_bytes,length(CAST(begin_json AS BLOB)),COALESCE(length(mapping_hash),0) FROM e_inactive_imports WHERE id=?").bind(import).fetch_one(&mut *db).await?;
-            let compact = add(add(152, bytes)?, digest)?;
-            if compact > old {
-                return Err(invalid("connect_deletion_charge_inconsistent"));
-            }
-            sqlx::query("UPDATE e_inactive_imports SET charge_bytes=? WHERE id=?")
-                .bind(compact)
-                .bind(import)
-                .execute(&mut *db)
-                .await?;
+        dispose_content(db, &transfer, ids.0, ids.1).await?;
+    }
+    Ok(())
+}
+
+/// Removes a transfer's projection and staged content, keeping compacted
+/// parents and tombstones. The caller's context must permit each delete.
+async fn dispose_content(
+    db: &mut SqliteConnection,
+    transfer: &str,
+    import: Option<i64>,
+    capture: Option<i64>,
+) -> DbResult<()> {
+    for table in [
+        "connect_projection_display",
+        "connect_projection_fragments",
+        "connect_projection_fields",
+        "connect_projection_assets",
+        "connect_projection_citations",
+        "connect_projection_messages",
+        "connect_raw_chunks",
+        "connect_raw_prefix",
+    ] {
+        sqlx::query(sqlx::AssertSqlSafe(format!(
+            "DELETE FROM {table} WHERE transfer_id=?"
+        )))
+        .bind(transfer)
+        .execute(&mut *db)
+        .await?;
+    }
+    if let Some(import) = import {
+        for table in [
+            "e_inactive_fragments",
+            "e_inactive_mapping",
+            "e_inactive_records",
+        ] {
+            sqlx::query(sqlx::AssertSqlSafe(format!(
+                "DELETE FROM {table} WHERE import_id=?"
+            )))
+            .bind(import)
+            .execute(&mut *db)
+            .await?;
         }
-        if let Some(capture) = ids.1 {
-            for table in [
-                "e_source_fragments",
-                "e_source_relations",
-                "e_source_fields",
-            ] {
-                sqlx::query(sqlx::AssertSqlSafe(format!(
-                    "DELETE FROM {table} WHERE capture_id=?"
-                )))
-                .bind(capture)
-                .execute(&mut *db)
-                .await?;
-            }
-            let (old, bytes, digest): (i64,i64,i64) = sqlx::query_as("SELECT charge_bytes,length(CAST(binding_json AS BLOB)),COALESCE(length(manifest_hash),0) FROM e_source_captures WHERE id=?").bind(capture).fetch_one(&mut *db).await?;
-            let compact = add(add(216, bytes)?, digest)?;
-            if compact > old {
-                return Err(invalid("connect_deletion_charge_inconsistent"));
-            }
-            sqlx::query("UPDATE e_source_captures SET charge_bytes=? WHERE id=?")
-                .bind(compact)
-                .bind(capture)
-                .execute(&mut *db)
-                .await?;
+        // Same retained-parent accounting as E, now with no child content.
+        let (old, bytes, digest): (i64,i64,i64) = sqlx::query_as("SELECT charge_bytes,length(CAST(begin_json AS BLOB)),COALESCE(length(mapping_hash),0) FROM e_inactive_imports WHERE id=?").bind(import).fetch_one(&mut *db).await?;
+        let compact = add(add(152, bytes)?, digest)?;
+        if compact > old {
+            return Err(invalid("connect_deletion_charge_inconsistent"));
         }
-        sqlx::query("UPDATE connect_preparations SET title='' WHERE transfer_id=?")
-            .bind(&transfer)
+        sqlx::query("UPDATE e_inactive_imports SET charge_bytes=? WHERE id=?")
+            .bind(compact)
+            .bind(import)
             .execute(&mut *db)
             .await?;
     }
+    if let Some(capture) = capture {
+        for table in [
+            "e_source_fragments",
+            "e_source_relations",
+            "e_source_fields",
+        ] {
+            sqlx::query(sqlx::AssertSqlSafe(format!(
+                "DELETE FROM {table} WHERE capture_id=?"
+            )))
+            .bind(capture)
+            .execute(&mut *db)
+            .await?;
+        }
+        let (old, bytes, digest): (i64,i64,i64) = sqlx::query_as("SELECT charge_bytes,length(CAST(binding_json AS BLOB)),COALESCE(length(manifest_hash),0) FROM e_source_captures WHERE id=?").bind(capture).fetch_one(&mut *db).await?;
+        let compact = add(add(216, bytes)?, digest)?;
+        if compact > old {
+            return Err(invalid("connect_deletion_charge_inconsistent"));
+        }
+        sqlx::query("UPDATE e_source_captures SET charge_bytes=? WHERE id=?")
+            .bind(compact)
+            .bind(capture)
+            .execute(&mut *db)
+            .await?;
+    }
+    sqlx::query("UPDATE connect_preparations SET title='' WHERE transfer_id=?")
+        .bind(transfer)
+        .execute(&mut *db)
+        .await?;
     Ok(())
+}
+
+/// Releases the import content and projection of a target the relay recorded
+/// as aborted (`connect_aborted_targets`), keeping its rows as tombstones.
+pub(super) async fn release_aborted_target(
+    db: &mut SqliteConnection,
+    transfer: &str,
+) -> DbResult<()> {
+    let import: Option<Option<i64>> =
+        sqlx::query_scalar("SELECT import_id FROM connect_aborted_targets WHERE transfer_id=?")
+            .bind(transfer)
+            .fetch_optional(&mut *db)
+            .await?;
+    let Some(import) = import else {
+        return Err(invalid("connect_target_not_aborted"));
+    };
+    dispose_content(db, transfer, import, None).await
 }
 
 pub(in crate::db) async fn finish_in(

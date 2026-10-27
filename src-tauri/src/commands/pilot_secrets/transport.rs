@@ -501,8 +501,13 @@ impl VerifiedTransport {
         drop(output);
         let status = &reply["result"]["status"];
         let ledger = &status["ledger"];
+        // An aborted attempt leaves the ledger available at its own epoch;
+        // its terminal then comes from the status read below.
         if status["status"] != "known"
-            || !matches!(ledger["state"].as_str(), Some("reserved" | "ceded"))
+            || !matches!(
+                ledger["state"].as_str(),
+                Some("reserved" | "ceded" | "available")
+            )
             || ledger["state"] == "reserved"
                 && ledger["active_transfer_id"] != binding["transfer_id"]
             || ledger["high_epoch"] != binding["epoch"]

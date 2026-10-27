@@ -380,6 +380,11 @@ pub(super) async fn send<B: Vault + 'static>(
     };
     let progress=output(transport.transit(manager.clone(),ready,&(root+"/status"),json!({"transit_contract":"transfer-transit-1","type":"transit.status","request_id":uuid::Uuid::new_v4(),"transfer_id":session["transfer_id"],"transit_id":session["transit_id"]}),&session).await?.ok_or("transit_progress")?)?;
     if progress["cursor"]["eof"]!=true || progress["cursor"]["next_offset"]!=archive.as_slice().len().to_string(){return Err("transit_progress");}
+    #[cfg(test)]
+    if std::env::var("MACRO_CONNECT_TEST_INTERRUPT").as_deref() == Ok("after_prepared") {
+        // The source gives up once the target has prepared: it abandons.
+        return Err("test_abandoned");
+    }
     let ready_request=request("ready",sealed_revision,&binding["transfer_id"],json!({"prepared":proposal}));
     challenge_target(transport,manager.clone(),ready,&binding,&manifest,&proposal,&ready_request,"target_pinned").await?;
     step.prepared=proposal.clone();
@@ -785,6 +790,25 @@ pub(super) async fn receive<B: Vault + 'static>(
                 .map_err(|_| "invalid_delivery")?;
             if received["branch"] == "empty" {
                 drop(delivery);
+                // The source may abandon instead of asking for this proof.
+                let status = transport
+                    .transfer_status(
+                        manager.clone(),
+                        ready,
+                        binding,
+                        frozen,
+                        manifest,
+                        &proposal,
+                        &Value::Null,
+                    )
+                    .await?;
+                if status["terminal"]["outcome"] == "aborted" {
+                    reservation
+                        .apply_aborted_target(owner)
+                        .await
+                        .map_err(|_| "target_release")?;
+                    return Err("transfer_aborted");
+                }
                 continue;
             }
             if received["value"]["body"]["exchange"]["kind"] != expected {
@@ -822,6 +846,13 @@ pub(super) async fn receive<B: Vault + 'static>(
             break;
         }
         if !status["terminal"].is_null() {
+            // Resolve the aborted attempt and release its staged content.
+            if status["terminal"]["outcome"] == "aborted" {
+                reservation
+                    .apply_aborted_target(owner)
+                    .await
+                    .map_err(|_| "target_release")?;
+            }
             return Err("transfer_aborted");
         }
         if tokio::time::Instant::now() > deadline {

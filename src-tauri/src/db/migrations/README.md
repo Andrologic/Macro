@@ -108,3 +108,11 @@ provider settings. Normal startup retains its provider seeding and reconciles
 unfinished local operations as unknown. These tables expose no transfer command
 and do not activate an inactive import. Provider and browser admission still
 require their runtime integration.
+
+Version 21 lets a transfer target release what it staged once the relay has
+recorded the transfer as aborted. The `connect_aborted_targets` view names such
+targets: resolved and terminal `aborted`, outside a restore hold, with nothing
+published. The guards of version 20 are recreated with this one exception, so
+the target can delete its projection and import content and compact the
+import's charge. The transfer, preparation and import rows remain as
+tombstones. Backup comparison removes version 21 before version 20.

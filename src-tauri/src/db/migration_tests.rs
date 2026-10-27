@@ -45,6 +45,8 @@ async fn accepts_develop_v9_with_historical_pilot_v5_stamp() {
             (17, "017_chat_admission".into()),
             (18, "018_connect_transfer".into()),
             (19, "019_connect_publication".into()),
+            (20, "020_connect_archive_lifecycle".into()),
+            (21, "021_connect_target_abort".into()),
         ]
     );
 }

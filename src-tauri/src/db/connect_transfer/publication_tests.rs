@@ -1201,7 +1201,7 @@ async fn pre020_copy(source: &std::path::Path, destination: &std::path::Path) {
     super::super::remove_reader_reference_in(&mut connection)
         .await
         .unwrap();
-    sqlx::query("DELETE FROM schema_migrations WHERE version=20")
+    sqlx::query("DELETE FROM schema_migrations WHERE version>=20")
         .execute(&mut *connection)
         .await
         .unwrap();
@@ -1317,7 +1317,7 @@ async fn connect_projection_019_partial_and_pinned_retries_survive_real_020_migr
                 .fetch_one(&migrated)
                 .await
                 .unwrap(),
-            20
+            21
         );
     }
 }

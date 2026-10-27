@@ -29,6 +29,7 @@ pub(in crate::db) use schema::reference;
 pub(super) use schema::validate_schema;
 pub(crate) use schema::{
     remove_publication_reference_in, remove_reader_reference_in, remove_reference_schema_in,
+    remove_target_abort_reference_in,
 };
 const CONTROL: usize = 98_304;
 fn invalid(code: &str) -> DbError {
