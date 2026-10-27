@@ -1,4 +1,4 @@
-import { connectTransferSend, connectTransferReceive, connectTransferInterruptIdle, type ConnectTransferSendInput } from '../ipc/pilot';
+import { connectTransferSend, connectTransferReceive, connectTransferInterruptIdle, connectTransferReconcile, type ConnectTransferReceiveInput, type ConnectTransferSendInput } from '../ipc/pilot';
 import { CapabilityCompatibilityError, type ReadAuthoritySupport } from './readAuthority';
 import { REFLECTION_CAPABILITY, REFLECTION_OPERATION } from './conversationReflections';
 import { FILE_CAPABILITIES, FILE_OPERATIONS } from './attachmentFilesHost';
@@ -57,6 +57,7 @@ export class PilotRuntime {
   private activeLoop: Promise<void> | null = null;
   private receiving: Promise<void> | null = null;
   private sending = false;
+  private reconciled = false;
   private producerCapabilities: string[] | null = null;
 
   private readonly actions: DesktopActions;
@@ -65,7 +66,10 @@ export class PilotRuntime {
     private readonly createKernel: (dependencies: KernelDependencies) => PilotKernel = dependencies => new PilotKernel(dependencies),
     private readonly ports: DesktopStorePorts,
     private readonly readAuthoritySupport?: ReadAuthoritySupport,
-    private readonly transfers = { send: connectTransferSend, receive: connectTransferReceive, interruptIdle: connectTransferInterruptIdle },
+    private readonly transfers: {
+      send: typeof connectTransferSend; receive: typeof connectTransferReceive; interruptIdle: typeof connectTransferInterruptIdle;
+      reconcile?: (input: ConnectTransferReceiveInput) => Promise<string[]>;
+    } = { send: connectTransferSend, receive: connectTransferReceive, interruptIdle: connectTransferInterruptIdle, reconcile: connectTransferReconcile },
   ) {
     this.actions = createDesktopActions(ports);
   }
@@ -75,7 +79,19 @@ export class PilotRuntime {
     try { connection = this.client.transferConnection(this.producerCapabilities); } catch { return; }
     const interrupted = () => { void this.transfers.interruptIdle().catch(() => undefined); };
     signal.addEventListener('abort', interrupted, { once: true });
-    const pending = this.transfers.receive({ connection }).then(async () => {
+    const listen = async () => {
+      // Once per runtime, before listening: settle source attempts that an
+      // interrupted process or a lost reply left frozen.
+      if (!this.reconciled && this.transfers.reconcile) {
+        const reopened = await this.transfers.reconcile({ connection }).catch(() => null);
+        if (reopened) {
+          this.reconciled = true;
+          if (reopened.length && !signal.aborted) await this.ports.chat().refreshConversationMetadata();
+        }
+      }
+      return this.transfers.receive({ connection });
+    };
+    const pending = listen().then(async () => {
       if (!signal.aborted) await this.ports.chat().refreshConversationMetadata();
     }).catch(error => {
       // A failed receive ends this listener only; it never degrades phone Pilot.

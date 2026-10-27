@@ -255,7 +255,7 @@ pub(crate) fn qualification_backup_context(
 
 /// Connection identifiers are intent only. Native /me and pair preflight still
 /// establish account, producer identity and current rights from the relay.
-#[derive(Deserialize)]
+#[derive(Clone, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct TransferConnectionInput {
     context: PilotVaultContext,
@@ -440,6 +440,80 @@ async fn receive_transfer<B: Vault + 'static>(
         runtime.revoke();
     }
     result.map_err(command_error)
+}
+
+#[tauri::command]
+pub(crate) async fn connect_transfer_reconcile(
+    app: tauri::AppHandle,
+    pool: tauri::State<'_, crate::core::db_state::DbPool>,
+    runtime: tauri::State<'_, crate::connect::TransferRuntime>,
+    input: TransferReceiveInput,
+) -> super::CommandResult<Vec<String>> {
+    let launcher = runtime
+        .codec_launcher(&app, &pool)
+        .map_err(super::command_error)?;
+    reconcile_transfers(
+        manager().map_err(|_| super::command_error("vault_unavailable"))?,
+        None,
+        &pool,
+        &runtime,
+        &launcher,
+        input,
+    )
+    .await
+}
+
+/// Body of `connect_transfer_reconcile`: settles every source attempt this
+/// instance left unresolved, after an interrupted process or a lost reply.
+/// Returns the conversations reopened; an attempt that cannot be settled yet
+/// stays frozen until the next reconciliation.
+async fn reconcile_transfers<B: Vault + 'static>(
+    manager: Arc<Manager<B>>,
+    loopback: Option<std::net::SocketAddr>,
+    pool: &crate::core::db_state::DbPool,
+    runtime: &crate::connect::TransferRuntime,
+    launcher: &crate::connect::runtime::CodecLauncher,
+    input: TransferReceiveInput,
+) -> super::CommandResult<Vec<String>> {
+    use super::command_error;
+    let _job = runtime.begin_transfer().map_err(command_error)?;
+    let ready = pool.wait_until_ready_context().await?;
+    let attempts =
+        crate::db::connect_transfer::unresolved_sources(pool, &input.connection.instance_id)
+            .await
+            .map_err(|_| command_error("database_unavailable"))?;
+    let mut reopened = Vec::new();
+    for (conversation, target) in attempts {
+        let settled: Result<Option<&'static str>, &'static str> = async {
+            let mut verified = transport::bootstrap(
+                manager.clone(),
+                input.connection.clone().intent(),
+                runtime,
+                launcher,
+                &ready,
+                loopback,
+                &tokio_util::sync::CancellationToken::new(),
+            )
+            .await?;
+            verified
+                .controller_for(manager.clone(), &ready, &target)
+                .await?;
+            let verified = Arc::new(verified);
+            let outcome =
+                flow::reconcile_source(manager.clone(), pool, &verified, &ready, &conversation)
+                    .await;
+            Arc::try_unwrap(verified)
+                .map_err(|_| "transport_retained")?
+                .close()
+                .await?;
+            outcome
+        }
+        .await;
+        if let Ok(Some(_)) = settled {
+            reopened.push(conversation);
+        }
+    }
+    Ok(reopened)
 }
 
 #[tauri::command]

@@ -162,15 +162,24 @@ impl Reservation {
             "source_revision":self.expected_content.revision}),
         )
     }
+    /// `normalized` is required only for proofs about the sealed manifest.
     pub(crate) async fn source_expectation(
         &self,
         owner: &DbPool,
-        normalized: &crate::connect::transfer_worker::TransferWorker,
+        normalized: Option<&crate::connect::transfer_worker::TransferWorker>,
         request: &serde_json::Value,
         kind: &str,
     ) -> DbResult<serde_json::Value> {
         use crate::commands::pilot_secrets::transport::commitment;
-        let manifest = self.source_manifest(owner, normalized).await?;
+        let manifest = match (kind, normalized) {
+            ("source_sealed" | "source_maintained", Some(normalized)) => {
+                self.source_manifest(owner, normalized).await?
+            }
+            ("source_sealed" | "source_maintained", None) => {
+                return Err(invalid("connect_proof_mismatch"))
+            }
+            _ => serde_json::Value::Null,
+        };
         let (binding, frozen) = self.native_commitments()?;
         let original: serde_json::Value = serde_json::from_slice(&self.reserve_request)
             .map_err(|_| invalid("connect_native_binding_changed"))?;
@@ -191,11 +200,22 @@ impl Reservation {
                     None,
                 )
             }
-            "source_frozen" if request == original => (
-                commitment("transfer-binding", &binding),
-                commitment("frozen", &frozen),
-                None,
-            ),
+            // The reserve, or the abort_missing closing that same frozen
+            // binding when the relay never received it.
+            "source_frozen"
+                if request == original
+                    || request["operation"] == "reconcile"
+                        && request["body"]["action"] == "abort_missing"
+                        && request["transfer_id"] == self.transfer_id
+                        && request["body"]["binding"] == binding
+                        && request["body"]["frozen"] == frozen =>
+            {
+                (
+                    commitment("transfer-binding", &binding),
+                    commitment("frozen", &frozen),
+                    None,
+                )
+            }
             "source_sealed"
                 if request["operation"] == "seal"
                     && request["transfer_id"] == self.transfer_id
@@ -237,7 +257,7 @@ impl Reservation {
         &self,
         owner: &DbPool,
         transport: &crate::commands::pilot_secrets::transport::VerifiedTransport,
-        normalized: &crate::connect::transfer_worker::TransferWorker,
+        normalized: Option<&crate::connect::transfer_worker::TransferWorker>,
         request: &serde_json::Value,
         exchange: &serde_json::Value,
     ) -> DbResult<()> {
@@ -349,6 +369,49 @@ pub(crate) async fn reserve_verified_source(
     }
     transport.check().await.map_err(invalid)?;
     Ok((input, receipt))
+}
+/// The conversation's unresolved source attempt, for reconciliation after a lost
+/// reply or an interrupted process. Its intent is the stored reserve request,
+/// whose fingerprint must match the row; the source is already frozen. This
+/// grants nothing: only a relay terminal later received by `transport` can
+/// resolve it. Returns the reservation and that request.
+pub(crate) async fn unresolved_source(
+    owner: &DbPool,
+    conversation: &str,
+    transport: &std::sync::Arc<crate::commands::pilot_secrets::transport::VerifiedTransport>,
+) -> DbResult<Option<(Reservation, serde_json::Value)>> {
+    let guard = owner
+        .source_ready(None)
+        .await
+        .map_err(|_| invalid("unavailable"))?;
+    let row=sqlx::query("SELECT fingerprint,reserve_request FROM connect_transfers WHERE local_role='source' AND source_conversation_id=? AND resolution IS NULL")
+        .bind(conversation).fetch_optional(&guard.ready.pool).await?;
+    let Some(row) = row else { return Ok(None) };
+    let sent: serde_json::Value = serde_json::from_slice(&row.get::<Vec<u8>, _>("reserve_request"))
+        .map_err(|_| invalid("connect_transfer_conflict"))?;
+    let input = reservation_intent(
+        transport,
+        &sent,
+        &sent["request"]["body"]["binding"],
+        &sent["request"]["body"]["frozen"],
+    )?;
+    if input.inspect()?.0 != row.get::<Vec<u8>, _>("fingerprint") {
+        return Err(invalid("connect_transfer_conflict"));
+    }
+    Ok(Some((input, sent)))
+}
+/// Conversations with an unresolved source attempt on this source instance,
+/// with each attempt's target instance.
+pub(crate) async fn unresolved_sources(
+    owner: &DbPool,
+    source_instance: &str,
+) -> DbResult<Vec<(String, String)>> {
+    let guard = owner
+        .source_ready(None)
+        .await
+        .map_err(|_| invalid("unavailable"))?;
+    Ok(sqlx::query_as("SELECT source_conversation_id,target_instance_id FROM connect_transfers WHERE local_role='source' AND source_instance_id=? AND resolution IS NULL ORDER BY source_conversation_id")
+        .bind(source_instance).fetch_all(&guard.ready.pool).await?)
 }
 // This constructor only copies intent. Its two callers first establish their
 // live source freeze or authenticated target session; none is a receipt reader.

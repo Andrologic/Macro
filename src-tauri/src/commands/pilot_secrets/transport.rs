@@ -600,7 +600,7 @@ impl VerifiedTransport {
         ready: &DbReady,
         owner: &crate::core::db_state::DbPool,
         reservation: &crate::db::connect_transfer::Reservation,
-        normalized: &crate::connect::transfer_worker::TransferWorker,
+        normalized: Option<&crate::connect::transfer_worker::TransferWorker>,
         path: &str,
         sent: serde_json::Value,
         expectation: serde_json::Value,
@@ -646,7 +646,7 @@ impl VerifiedTransport {
         ready: &DbReady,
         owner: &crate::core::db_state::DbPool,
         reservation: &crate::db::connect_transfer::Reservation,
-        normalized: &crate::connect::transfer_worker::TransferWorker,
+        normalized: Option<&crate::connect::transfer_worker::TransferWorker>,
         delivery: crate::connect::codec::Output,
     ) -> Result<()> {
         self.check_for_phase(manager.clone(), ready).await?;

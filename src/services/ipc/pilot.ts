@@ -122,6 +122,13 @@ export async function connectTransferReceive(input: ConnectTransferReceiveInput)
   return invoke('connect_transfer_receive', { input });
 }
 
+/** Settles source attempts left frozen by an interrupted process or a lost
+ * reply; resolves with the conversations reopened. */
+export async function connectTransferReconcile(input: ConnectTransferReceiveInput): Promise<string[]> {
+  requireNativePilotVault();
+  return invoke('connect_transfer_reconcile', { input });
+}
+
 export async function connectTransferInterruptIdle(): Promise<void> {
   requireNativePilotVault();
   return invoke('connect_transfer_interrupt_idle');

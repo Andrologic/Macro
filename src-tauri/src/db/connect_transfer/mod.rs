@@ -2,7 +2,9 @@
 //! terminal constructor exists here. The storage inputs are not authority.
 #![allow(dead_code)]
 mod journal;
-pub(crate) use journal::{reserve_verified_source, reserve_verified_target};
+pub(crate) use journal::{
+    reserve_verified_source, reserve_verified_target, unresolved_source, unresolved_sources,
+};
 pub(in crate::db) mod deletion;
 mod preparation;
 mod publication;

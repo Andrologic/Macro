@@ -1093,6 +1093,28 @@ it('hands a confirmed producer to one native receiver and interrupts only its id
   } finally { busy = false; await h.runtime.stop(); }
 });
 
+it('settles interrupted transfers once, before listening, and refreshes reopened conversations', async () => {
+  const order: string[] = []; let rejectReceive: ((reason: Error) => void) | undefined;
+  const refresh = mock(async () => {});
+  const chat = desktopStorePorts.chat;
+  desktopStorePorts.chat = () => ({ ...chat(), refreshConversationMetadata: refresh });
+  const h = harness(undefined, {
+    reconcile: async () => { order.push('reconcile'); return ['chat:one']; },
+    receive: async () => { order.push('receive'); return new Promise<string>((_resolve, reject) => { rejectReceive = reject; }); },
+    interruptIdle: async () => { rejectReceive?.(Error('codec_cancelled')); },
+    send: async () => 'target-conversation',
+  });
+  try {
+    h.acceptIdlePoll(); await h.runtime.start(); await until(() => order.length === 2);
+    expect(order).toEqual(['reconcile', 'receive']);
+    expect(refresh).toHaveBeenCalledTimes(1);
+    await h.runtime.sendConversation('chat:one', 'instance:target', { providerId: 'macro-ai', modelId: 'model' });
+    await until(() => order.length === 3);
+    // A later listener does not settle again.
+    expect(order).toEqual(['reconcile', 'receive', 'receive']);
+  } finally { desktopStorePorts.chat = chat; await h.runtime.stop(); }
+});
+
 it('reports a relay-recorded cancellation or pending activation as a transfer outcome', async () => {
   const outcomes = ['transfer_aborted', 'target_activation_pending', 'codec_cancelled'];
   let rejectReceive: ((reason: Error) => void) | undefined, receives = 0;

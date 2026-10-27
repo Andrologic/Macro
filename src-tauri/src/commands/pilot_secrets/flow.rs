@@ -157,6 +157,9 @@ pub(super) async fn send<B: Vault + 'static>(
     let authority = transport.controller_snapshot()?;
     let source_instance = text(&authority["scope"]["source_instance_id"])?;
     let target = text(&authority["scope"]["target_instance_id"])?;
+    // An earlier attempt left frozen by a lost reply or an interruption is
+    // settled before a new one.
+    reconcile_source(manager.clone(), owner, transport, ready, conversation).await?;
     let pool = &ready.pool;
     let old:Option<Vec<u8>>=sqlx::query_scalar("SELECT binding_json FROM connect_transfers WHERE local_role='source' AND source_conversation_id=? ORDER BY source_epoch DESC LIMIT 1")
         .bind(conversation).fetch_optional(pool).await.map_err(|_|"database_unavailable")?;
@@ -234,67 +237,88 @@ pub(super) async fn send<B: Vault + 'static>(
     )
     .await
     .map_err(|_| "transfer_source_reservation")?;
-    let capture = crate::db::source_capture::SourceCapture::for_transfer(
-        owner.clone(),
-        transport.clone(),
-        reservation.transfer_id(),
-    )
-    .await
-    .map_err(|e| crate::connect::transfer_worker::storage_error(e, "source_capture"))?;
-    let sealed = capture
-        .capture_transfer(&reservation)
+    // Until the relay answers the reserve, a failure (capture, normalization,
+    // lineage, lost reply) would leave the source frozen without a record:
+    // reconcile it before returning, so it reopens or keeps a terminal.
+    let reserving = async {
+        let capture = crate::db::source_capture::SourceCapture::for_transfer(
+            owner.clone(),
+            transport.clone(),
+            reservation.transfer_id(),
+        )
         .await
         .map_err(|e| crate::connect::transfer_worker::storage_error(e, "source_capture"))?;
-    transport.refresh_authority(manager.clone(), ready).await?;
-    let normalized = launcher
-        .normalize_capture(config, transport, &capture)
-        .await?;
-    let manifest = reservation
-        .source_manifest(owner, &normalized)
-        .await
-        .map_err(|_| "source_manifest")?;
-    if !existing {
-        let birth = wrap(request(
-            "lineage.create",
-            "0",
-            &Value::Null,
-            json!({"provenance":binding["provenance"],"mode":"initial_existing","creation_digest":frozen["sha256"]}),
-        ));
-        drop(
+        let sealed = capture
+            .capture_transfer(&reservation)
+            .await
+            .map_err(|e| crate::connect::transfer_worker::storage_error(e, "source_capture"))?;
+        transport.refresh_authority(manager.clone(), ready).await?;
+        let normalized = launcher
+            .normalize_capture(config, transport, &capture)
+            .await?;
+        let manifest = reservation
+            .source_manifest(owner, &normalized)
+            .await
+            .map_err(|_| "source_manifest")?;
+        if !existing {
+            let birth = wrap(request(
+                "lineage.create",
+                "0",
+                &Value::Null,
+                json!({"provenance":binding["provenance"],"mode":"initial_existing","creation_digest":frozen["sha256"]}),
+            ));
+            drop(
+                transport
+                    .source_decision(
+                        manager.clone(),
+                        ready,
+                        owner,
+                        &reservation,
+                        Some(&normalized),
+                        &(source_path.clone() + "/decisions"),
+                        birth,
+                        Value::Null,
+                        "lineage_enrolled",
+                    )
+                    .await?,
+            );
+        }
+        let reserve_path = format!(
+            "{source_path}/targets/{target}/reservations/{}/decisions",
+            reservation.transfer_id()
+        );
+        let reserved = output(
             transport
                 .source_decision(
                     manager.clone(),
                     ready,
                     owner,
                     &reservation,
-                    &normalized,
-                    &(source_path.clone() + "/decisions"),
-                    birth,
-                    Value::Null,
-                    "lineage_enrolled",
+                    Some(&normalized),
+                    &reserve_path,
+                    sent,
+                    expectation(&binding, &frozen, &Value::Null, &Value::Null, &Value::Null),
+                    "source_frozen",
                 )
                 .await?,
-        );
+        )?;
+        Ok((capture, sealed, normalized, manifest, reserved))
     }
-    let reserve_path = format!(
-        "{source_path}/targets/{target}/reservations/{}/decisions",
-        reservation.transfer_id()
-    );
-    let reserved = output(
-        transport
-            .source_decision(
-                manager.clone(),
-                ready,
-                owner,
-                &reservation,
-                &normalized,
-                &reserve_path,
-                sent,
-                expectation(&binding, &frozen, &Value::Null, &Value::Null, &Value::Null),
-                "source_frozen",
-            )
-            .await?,
-    )?;
+    .await;
+    // The capture stays held through the transfer, as before.
+    let (_capture, sealed, normalized, manifest, reserved) = match reserving {
+        Ok(reserved) => reserved,
+        Err(error) => {
+            drop(reservation);
+            let _ = reconcile_source(manager.clone(), owner, transport, ready, conversation).await;
+            return Err(error);
+        }
+    };
+    #[cfg(test)]
+    if std::env::var("MACRO_CONNECT_TEST_INTERRUPT").as_deref() == Ok("after_reserve") {
+        // The process stops here: no abandon, no reconciliation.
+        return Err("test_interrupted");
+    }
     let known = format!(
         "/pilot/v2/transfers/known/{}/decisions",
         reservation.transfer_id()
@@ -307,7 +331,7 @@ pub(super) async fn send<B: Vault + 'static>(
     };
     let attempt=async {
     let seal=wrap(request("seal",&step.revision,&binding["transfer_id"],json!({"manifest":manifest})));
-    let sealed_reply=output(transport.source_decision(manager.clone(),ready,owner,&reservation,&normalized,&known,seal,expectation(&binding,&frozen,&manifest,&Value::Null,&Value::Null),"source_sealed").await?)?;
+    let sealed_reply=output(transport.source_decision(manager.clone(),ready,owner,&reservation,Some(&normalized),&known,seal,expectation(&binding,&frozen,&manifest,&Value::Null,&Value::Null),"source_sealed").await?)?;
     step.manifest=manifest.clone();
     let sealed_revision=text(&sealed_reply["result"]["status"]["revision"])?;step.revision=sealed_revision.to_owned();
     let (descriptor,archive)=normalized.normalized_for(&sealed.manifest)?;
@@ -363,7 +387,7 @@ pub(super) async fn send<B: Vault + 'static>(
     step.revision=text(&ready_reply["result"]["status"]["revision"])?.to_owned();
     let commit=wrap(request("commit",&step.revision,&binding["transfer_id"],json!({})));
     challenge_target(transport,manager.clone(),ready,&binding,&manifest,&proposal,&commit["request"],"target_maintained").await?;
-    let committed=match transport.source_decision(manager.clone(),ready,owner,&reservation,&normalized,&known,commit.clone(),expectation(&binding,&frozen,&manifest,&proposal,&Value::Null),"source_maintained").await {
+    let committed=match transport.source_decision(manager.clone(),ready,owner,&reservation,Some(&normalized),&known,commit.clone(),expectation(&binding,&frozen,&manifest,&proposal,&Value::Null),"source_maintained").await {
         Ok(reply)=>output(reply)?,Err("forbidden")=>after_target_proof(transport,manager.clone(),ready,&known,commit,expectation(&binding,&frozen,&manifest,&proposal,&Value::Null)).await?,Err(error)=>return Err(error),
     };
     if committed["result"]["status"]["phase"]!="committed"{return Err("commit_reply");}
@@ -437,6 +461,135 @@ struct Progress {
     revision: String,
     manifest: Value,
     prepared: Value,
+}
+/// Settles the conversation's unresolved source attempt, left frozen by a lost
+/// reply or an interrupted process, from the relay's current status: a terminal
+/// is recorded, an attempt in progress is abandoned, and an absent reservation
+/// is closed by `abort_missing` before any thaw, so a late reserve can only
+/// meet that abort. Returns the recorded outcome, or None without an
+/// unresolved attempt. A recovery hold, an unknown lineage or a committed
+/// terminal (its source manifest needs the original capture) stays frozen.
+pub(super) async fn reconcile_source<B: Vault + 'static>(
+    manager: Arc<Manager<B>>,
+    owner: &DbPool,
+    transport: &Arc<VerifiedTransport>,
+    ready: &DbReady,
+    conversation: &str,
+) -> Result<Option<&'static str>> {
+    let required = "transfer_reconciliation_required";
+    let Some((reservation, sent)) =
+        crate::db::connect_transfer::unresolved_source(owner, conversation, transport)
+            .await
+            .map_err(|_| required)?
+    else {
+        return Ok(None);
+    };
+    let (binding, frozen) = (
+        &sent["request"]["body"]["binding"],
+        &sent["request"]["body"]["frozen"],
+    );
+    let source = &binding["provenance"]["source"];
+    let source_path = format!(
+        "/pilot/v2/transfers/sources/{}/{}",
+        text(&source["source_instance_id"])?,
+        text(&source["source_conversation_id"])?
+    );
+    let reservation_path = format!(
+        "{source_path}/targets/{}/reservations/{}/decisions",
+        text(&binding["target_instance_id"])?,
+        reservation.transfer_id()
+    );
+    let ledger = output(
+        transport
+            .decision(
+                manager.clone(),
+                ready,
+                &(source_path + "/decisions"),
+                wrap(request(
+                    "reconcile",
+                    "0",
+                    &Value::Null,
+                    json!({"action":"source_status","provenance":binding["provenance"]}),
+                )),
+                Value::Null,
+            )
+            .await?,
+    )?;
+    if ledger["result"]["status"]["status"] != "known" {
+        return Err(required);
+    }
+    let ledger_revision = ledger["result"]["status"]["ledger"]["revision"].clone();
+    let reconcile = |action: &str| {
+        wrap(request(
+            "reconcile",
+            "0",
+            &binding["transfer_id"],
+            json!({"binding":binding,"frozen":frozen,"expected_ledger_revision":ledger_revision,"action":action}),
+        ))
+    };
+    let none = || expectation(binding, frozen, &Value::Null, &Value::Null, &Value::Null);
+    let status = output(
+        transport
+            .decision(
+                manager.clone(),
+                ready,
+                &reservation_path,
+                reconcile("status"),
+                none(),
+            )
+            .await?,
+    )?;
+    let status = &status["result"]["status"];
+    match status["status"].as_str() {
+        Some("terminal") => {}
+        Some("in_progress") => {
+            let mut step = Progress {
+                revision: text(&status["revision"])?.to_owned(),
+                manifest: Value::Null,
+                prepared: Value::Null,
+            };
+            let known = format!(
+                "/pilot/v2/transfers/known/{}/decisions",
+                reservation.transfer_id()
+            );
+            abandon(
+                transport,
+                manager.clone(),
+                ready,
+                &known,
+                binding,
+                frozen,
+                &mut step,
+                required,
+            )
+            .await?;
+        }
+        // Proven by the source producer, as the reserve it closes.
+        Some("not_found") => drop(
+            transport
+                .source_decision(
+                    manager.clone(),
+                    ready,
+                    owner,
+                    &reservation,
+                    None,
+                    &reservation_path,
+                    reconcile("abort_missing"),
+                    none(),
+                    "source_frozen",
+                )
+                .await?,
+        ),
+        _ => return Err(required),
+    }
+    if transport.terminal(reservation.transfer_id()).await?["outcome"] != "aborted" {
+        return Err(required);
+    }
+    reservation
+        .apply_aborted_source(owner)
+        .await
+        .map_err(|_| required)?;
+    Ok(Some("aborted"))
 }
 /// Records `aborted` for the attempt, unless the relay already holds a terminal.
 /// A stale revision means a step reply was lost; the next revision is tried.

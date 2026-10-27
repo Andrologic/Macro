@@ -842,6 +842,7 @@ pub fn run() {
             commands::pilot_secrets::connect_transfer_send,
             commands::pilot_secrets::connect_transfer_receive,
             commands::pilot_secrets::connect_transfer_interrupt_idle,
+            commands::pilot_secrets::connect_transfer_reconcile,
             commands::connect_archive::connect_archive_open,
             commands::connect_archive::connect_archive_page,
             commands::connect_archive::connect_archive_materialize,

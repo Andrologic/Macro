@@ -1763,6 +1763,30 @@ async fn global_chat_restricted_target_transfer() {
     global_chat_local_transfer("macro-ai", false, false, false, Route::RestrictedTarget).await;
 }
 
+/// The reserve's reply is lost: the source reconciles, aborts the reservation
+/// and reopens.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires the explicitly supplied local transfer relay"]
+async fn global_chat_lost_reserve_reply_transfer() {
+    global_chat_local_transfer("macro-ai", false, false, false, Route::LostReserveReply).await;
+}
+
+/// The reserve never reaches the relay: the source closes it with
+/// `abort_missing` before reopening, so a late reserve can only meet an abort.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires the explicitly supplied local transfer relay"]
+async fn global_chat_lost_reserve_request_transfer() {
+    global_chat_local_transfer("macro-ai", false, false, false, Route::LostReserveRequest).await;
+}
+
+/// The source stops right after the reserve; a later reconciliation with a
+/// fresh transport aborts the attempt and reopens the source.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires the explicitly supplied local transfer relay"]
+async fn global_chat_interrupted_source_transfer() {
+    global_chat_local_transfer("macro-ai", false, false, false, Route::InterruptedSource).await;
+}
+
 /// The target lacks the selected model: the source records `aborted` and reopens.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore = "requires the explicitly supplied local transfer relay"]
@@ -1782,6 +1806,13 @@ enum Route {
     InterruptedReceive,
     /// The relay keeps a restriction of the target session on the source instance.
     RestrictedTarget,
+    /// The reserve reaches the relay but its reply is lost.
+    LostReserveReply,
+    /// The reserve request never reaches the relay.
+    LostReserveRequest,
+    /// The source process stops right after the reserve, then reconciles with a
+    /// fresh transport as after a restart.
+    InterruptedSource,
 }
 
 async fn global_chat_local_transfer(
@@ -1793,6 +1824,10 @@ async fn global_chat_local_transfer(
 ) {
     let via_runtime = route == Route::Runtime;
     let restricted = route == Route::RestrictedTarget;
+    let lost = matches!(
+        route,
+        Route::LostReserveReply | Route::LostReserveRequest | Route::InterruptedSource
+    );
     use base64::Engine;
 
     use sha2::{Digest, Sha256};
@@ -2020,7 +2055,7 @@ async fn global_chat_local_transfer(
     let admission = crate::db::chat_admission::runtime::ChatAdmissionRuntime::default();
     // Without the runtime, the scenario opens the transport and reconciles
     // admission itself, as the command and the chat store otherwise do.
-    let direct = if via_runtime {
+    let mut direct = if via_runtime {
         None
     } else {
         let mut verified = transport::bootstrap_owned(
@@ -2152,7 +2187,7 @@ async fn global_chat_local_transfer(
     let mut input = child.stdin.take().unwrap();
     let mut initialization=serde_json::to_vec(&serde_json::json!({"seed":seed,
         "database":directory.path().join("target.db"),"provider":provider,"compacted":compacted,"resources":with_resources,"refused":refused,"runtime":via_runtime,
-        "interrupted":route == Route::InterruptedReceive,"restricted":restricted})).unwrap();
+        "interrupted":route == Route::InterruptedReceive,"restricted":restricted,"idle":lost})).unwrap();
     initialization.push(b'\n');
     input.write_all(&initialization).await.unwrap();
     let mut target_events = BufReader::new(child.stdout.take().unwrap()).lines();
@@ -2161,6 +2196,21 @@ async fn global_chat_local_transfer(
             .fetch_one(&source_pool)
             .await
             .unwrap();
+    if matches!(route, Route::LostReserveReply | Route::LostReserveRequest) {
+        let mode = if route == Route::LostReserveReply {
+            "lose-reserve-reply"
+        } else {
+            "lose-reserve-request"
+        };
+        relay_input
+            .write_all(format!("{}\n", serde_json::json!({"mode": mode})).as_bytes())
+            .await
+            .unwrap();
+        lines.next_line().await.unwrap().unwrap();
+    }
+    if route == Route::InterruptedSource {
+        std::env::set_var("MACRO_CONNECT_TEST_INTERRUPT", "after_reserve");
+    }
     let transferred: Result<String, String> = if let Some((verified, inspection)) = &direct {
         super::flow::send(
             manager.clone(),
@@ -2233,16 +2283,70 @@ async fn global_chat_local_transfer(
             }),
         }
     };
-    if refused || restricted {
-        // Through the runtime, the dialog receives the relay-recorded outcome.
+    if route == Route::InterruptedSource {
+        std::env::remove_var("MACRO_CONNECT_TEST_INTERRUPT");
         assert_eq!(
             transferred.as_ref().map_err(String::as_str),
-            Err(if via_runtime {
-                "outcome:aborted"
-            } else {
-                "transfer_aborted"
-            })
+            Err("test_interrupted")
         );
+        assert_eq!(
+            sqlx::query_scalar::<_, String>(
+                "SELECT mode FROM chat_admission_owners WHERE conversation_id='chat'"
+            )
+            .fetch_one(&source_pool)
+            .await
+            .unwrap(),
+            "frozen"
+        );
+        // As after a restart: the interrupted transport is gone, and a new
+        // one reconciles the frozen attempt.
+        if let Some((verified, _)) = direct.take() {
+            Arc::try_unwrap(verified)
+                .ok()
+                .unwrap()
+                .close()
+                .await
+                .unwrap();
+        }
+        let reopened = super::reconcile_transfers(
+            manager.clone(),
+            Some(address),
+            &source,
+            &runtime,
+            &runtime
+                .source_launcher(
+                    &executable("bun"),
+                    &std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                        .join("../copilot-bridge/src/entry.ts"),
+                    &source,
+                )
+                .unwrap(),
+            serde_json::from_value(serde_json::json!({"connection": {
+                "capabilities": seed["capabilities"], "context": connection["context"],
+                "generation": connection["generation"], "instanceCreationId": connection["instanceCreationId"],
+                "accountId": connection["accountId"], "deviceId": connection["deviceId"],
+                "instanceId": connection["instanceId"]}}))
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(reopened, vec!["chat".to_owned()]);
+    }
+    if refused || restricted || lost {
+        if lost {
+            // The reserve's own failure is returned once the source reopened.
+            assert!(transferred.is_err());
+        } else {
+            // Through the runtime, the dialog receives the relay-recorded outcome.
+            assert_eq!(
+                transferred.as_ref().map_err(String::as_str),
+                Err(if via_runtime {
+                    "outcome:aborted"
+                } else {
+                    "transfer_aborted"
+                })
+            );
+        }
         assert_eq!(
             sqlx::query_scalar::<_, String>(
                 "SELECT mode FROM chat_admission_owners WHERE conversation_id='chat'"
@@ -2318,7 +2422,7 @@ async fn global_chat_local_transfer(
         input.write_all(b"{\"stop\":true}\n").await.unwrap();
     }
     drop(input);
-    if transferred.is_err() && !refused && !restricted {
+    if transferred.is_err() && !refused && !restricted && !lost {
         child.kill().await.unwrap();
     }
     let child = child.wait_with_output().await.unwrap();
@@ -2334,7 +2438,7 @@ async fn global_chat_local_transfer(
     relay_input.write_all(b"{\"stop\":true}\n").await.unwrap();
     drop(relay_input);
     assert!(relay.wait().await.unwrap().success());
-    if !refused && !restricted {
+    if !refused && !restricted && !lost {
         transferred.unwrap();
     }
     assert!(child.status.success());
@@ -2488,6 +2592,19 @@ async fn global_chat_transfer_target() {
         crate::db::repository::upsert_provider_models(&pool, provider_id, &[model])
             .await
             .unwrap();
+    }
+    if data["idle"] == true {
+        // No invitation is sent: the source's reserve was lost.
+        drop(verified);
+        println!(
+            "SLICE_TARGET_EVENT:{}",
+            serde_json::json!({"type":"refused"})
+        );
+        let stop: serde_json::Value =
+            serde_json::from_str(&input.next_line().await.unwrap().unwrap()).unwrap();
+        assert_eq!(stop["stop"], true);
+        assert!(runtime.shutdown().await);
+        return;
     }
     let received = if let Some(verified) = verified {
         let job = runtime.begin_receive().unwrap();
@@ -3219,6 +3336,21 @@ impl DesktopHost<'_> {
                     Some(self.relay),
                     self.owner,
                     self.config,
+                    self.runtime,
+                    &self.launcher(),
+                    input,
+                )
+                .await
+                .map(ok)
+                .map_err(fail)
+            }
+            "connect_transfer_reconcile" => {
+                let input = serde_json::from_value(args["input"].clone())
+                    .map_err(|e| fail(crate::core::command_error::command_error(e.to_string())))?;
+                super::reconcile_transfers(
+                    self.manager.clone(),
+                    Some(self.relay),
+                    self.owner,
                     self.runtime,
                     &self.launcher(),
                     input,

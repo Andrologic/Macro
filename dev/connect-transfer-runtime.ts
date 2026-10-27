@@ -19,7 +19,7 @@ interface Setup {
 type Line = { id?: number; ok?: unknown; error?: unknown; control?: 'send' | 'stop' };
 
 const NATIVE = new Set([
-  'connect_transfer_send', 'connect_transfer_receive', 'connect_transfer_interrupt_idle',
+  'connect_transfer_send', 'connect_transfer_receive', 'connect_transfer_interrupt_idle', 'connect_transfer_reconcile',
   'chat_admission_open_browser', 'chat_admission_begin_reconciliation', 'chat_admission_complete_reconciliation',
   'db_list_conversations', 'db_conversation_metadata', 'db_list_messages',
 ]);
