@@ -1719,6 +1719,18 @@ async fn global_chat_resources_local_transfer() {
     global_chat_local_transfer("codex", true, true, false, Route::Flow).await;
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires the explicitly supplied local transfer relay"]
+async fn global_chat_macro_ai_compacted_local_transfer() {
+    global_chat_local_transfer("macro-ai", true, false, false, Route::Flow).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires the explicitly supplied local transfer relay"]
+async fn global_chat_macro_ai_resources_local_transfer() {
+    global_chat_local_transfer("macro-ai", true, true, false, Route::Flow).await;
+}
+
 /// Both desktops run the real Pilot runtime; the transfer goes through the
 /// Tauri command bodies, with the relay's default same-account rights.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -1867,7 +1879,9 @@ async fn global_chat_local_transfer(
     }
     if with_resources {
         sqlx::query("UPDATE messages SET turn_id='turn',provider_input_items_json=?,context_refs_json='[{\"kind\":\"source\",\"id\":\"evidence\",\"title\":\"Evidence\"}]' WHERE id='user'")
-            .bind(response["userItems"].to_string()).execute(&source_pool).await.unwrap();
+            // Chat Completions keeps no user provider items: its images come
+            // from the message's attachments.
+            .bind((provider == "codex").then(|| response["userItems"].to_string())).execute(&source_pool).await.unwrap();
         sqlx::raw_sql("INSERT INTO conversation_citations(id,conversation_id,message_id,type,scope,source,title,content,kind,created_at,updated_at) VALUES('evidence','chat','user','source_passage','source','synthetic','Evidence','ESSENTIAL_CITATION_FACT','used','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z'); INSERT INTO conversation_citations(id,conversation_id,message_id,type,scope,source,title,content,path,created_at,updated_at) VALUES('text-asset','chat','user','file','context','pilot_attachment','sample.txt','ASSET_TEXT_FACT','attachment://text-asset','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z');").execute(&source_pool).await.unwrap();
         for (id, name, mime, bytes) in [
             (
@@ -2289,7 +2303,18 @@ async fn global_chat_local_transfer(
             .unwrap()
             .replace(target["conversation"].as_str().unwrap(), "chat");
         let target_body: serde_json::Value = serde_json::from_str(&target_body).unwrap();
-        assert_eq!(target_body, provider_body(&source_within));
+        let source_body = provider_body(&source_within);
+        if provider == "codex" {
+            assert_same_body(&target_body, &source_body);
+        } else {
+            // Two intended differences in Chat Completions: the source resends
+            // only the current message's images and trims its own rows, while a
+            // transferred history keeps its recognized media and its original
+            // text (docs/macro-connect-transfer-design.md).
+            let (target_body, images) = as_source_history(&target_body);
+            assert_eq!(images, usize::from(with_resources));
+            assert_same_body(&target_body, &source_body);
+        }
         input.write_all(b"{\"stop\":true}\n").await.unwrap();
     }
     drop(input);
@@ -2457,7 +2482,7 @@ async fn global_chat_transfer_target() {
     .await
     .unwrap();
     let model:crate::db::models::ProviderModelInput=serde_json::from_value(serde_json::json!({"model_id":model_id,"name":"Synthetic model",
-        "context_window_tokens":200000,"input_limit_tokens":200000,"output_limit_tokens":16384,"context_window_source":"manual"})).unwrap();
+        "context_window_tokens":200000,"input_limit_tokens":200000,"output_limit_tokens":16384,"context_window_source":"provider_metadata"})).unwrap();
     if !refused {
         crate::db::repository::upsert_provider_models(&pool, provider_id, &[model])
             .await
@@ -3319,4 +3344,80 @@ impl DesktopHost<'_> {
         assert!(status.success(), "{status}: {events:?}");
         events
     }
+}
+
+/// Equal provider bodies, reporting the first differing message on failure.
+fn assert_same_body(target: &serde_json::Value, source: &serde_json::Value) {
+    if target == source {
+        return;
+    }
+    let field = if target.get("input").is_some() {
+        "input"
+    } else {
+        "messages"
+    };
+    let (t, s) = (
+        target[field].as_array().cloned().unwrap_or_default(),
+        source[field].as_array().cloned().unwrap_or_default(),
+    );
+    let index = (0..t.len().max(s.len())).find(|&i| t.get(i) != s.get(i));
+    // Around the first differing character of the two serialized messages.
+    let at = index.map(|i| {
+        let (a, b) = (
+            t.get(i).map(|v| v.to_string()).unwrap_or_default(),
+            s.get(i).map(|v| v.to_string()).unwrap_or_default(),
+        );
+        a.chars()
+            .zip(b.chars())
+            .position(|(x, y)| x != y)
+            .unwrap_or(a.len().min(b.len()))
+    });
+    let shown = |v: Option<&serde_json::Value>| {
+        v.map(|v| {
+            let text = v.to_string();
+            let start = at.unwrap_or(0).saturating_sub(200);
+            text.chars().skip(start).take(600).collect::<String>()
+        })
+    };
+    panic!(
+        "bodies differ ({field}: {} vs {} items) at {index:?}\ntarget: {:?}\nsource: {:?}\nother fields equal: {}",
+        t.len(),
+        s.len(),
+        index.and_then(|i| shown(t.get(i))),
+        index.and_then(|i| shown(s.get(i))),
+        {
+            let (mut a, mut b) = (target.clone(), source.clone());
+            a.as_object_mut().map(|o| o.remove(field));
+            b.as_object_mut().map(|o| o.remove(field));
+            a == b
+        }
+    );
+}
+
+/// A transferred Chat Completions body as the source presents its own rows:
+/// history text trimmed, image parts removed (with their number).
+fn as_source_history(body: &serde_json::Value) -> (serde_json::Value, usize) {
+    let mut body = body.clone();
+    let mut removed = 0;
+    let messages = body["messages"].as_array_mut().unwrap();
+    let last = messages.len().saturating_sub(1);
+    for message in &mut messages[..last] {
+        if let Some(text) = message["content"].as_str() {
+            message["content"] = serde_json::Value::from(text.trim());
+            continue;
+        }
+        let Some(parts) = message["content"].as_array() else {
+            continue;
+        };
+        let text: Vec<&str> = parts
+            .iter()
+            .filter(|part| part["type"] == "text")
+            .filter_map(|part| part["text"].as_str())
+            .collect();
+        removed += parts.len() - text.len();
+        if text.len() == 1 {
+            message["content"] = serde_json::Value::from(text[0].trim());
+        }
+    }
+    (body, removed)
 }

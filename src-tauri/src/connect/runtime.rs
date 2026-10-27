@@ -300,6 +300,19 @@ impl CodecLauncher {
             .context_window_tokens
             .filter(|n| *n > 0)
             .ok_or("model_context_unknown")?;
+        // As resolveModelContextLimits: an explicit window defaults to provider
+        // metadata; an unknown source is never presented as verified.
+        let limit_source = model
+            .context_window_source
+            .as_deref()
+            .unwrap_or("provider_metadata");
+        let confidence = match limit_source {
+            "user_override" => "configured",
+            "provider_metadata" | "model_metadata" => "verified",
+            "models_dev" => "catalog",
+            "provider_overflow_error" => "learned",
+            _ => return Err("model_context_unknown"),
+        };
         drop(current);
         let mode = agents["prompts"]["chat"]
             .as_str()
@@ -334,7 +347,7 @@ impl CodecLauncher {
         let target = json!({"kind":"target","provider_type":provider.provider_type,"fields":fields,
             "max_turns":agents["maxTurns"].as_u64().ok_or("configuration_unavailable")?.to_string(),"risk":"balanced",
             "footprint":{"modelContextWindowTokens":context,"inputLimitTokens":model.input_limit_tokens,"outputLimitTokens":model.output_limit_tokens,
-                "contextLimitSource":"provider_metadata","contextLimitConfidence":"verified","isContextLimitAuthoritative":true},
+                "contextLimitSource":limit_source,"contextLimitConfidence":confidence,"isContextLimitAuthoritative":true},
             "budget_policy":{"auto":agents["compaction"]["automatic"],"prune":agents["compaction"]["prune"],
                 "reservedTokens":agents["compaction"]["reservedTokens"],"preserveRecentTokens":null,"hardStopRatio":1}});
 
