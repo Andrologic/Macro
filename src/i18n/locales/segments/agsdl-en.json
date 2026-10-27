@@ -223,6 +223,7 @@
     "legend": "Legend",
     "legendFlow": "Flow",
     "legendError": "Exit on error",
+    "legendQueue": "Queue of a shared agent",
     "legendSteering": "Message sent while working"
   },
   "attachToChat": "Attach to chat",

@@ -223,6 +223,7 @@
     "legend": "Légende",
     "legendFlow": "Enchaînement",
     "legendError": "Sortie en cas d’erreur",
+    "legendQueue": "File d’attente d’un agent partagé",
     "legendSteering": "Consigne transmise en cours de travail"
   },
   "attachToChat": "Joindre au chat",

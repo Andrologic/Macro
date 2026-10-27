@@ -223,6 +223,7 @@
     "legend": "Legende",
     "legendFlow": "Ablauf",
     "legendError": "Ausgang bei Fehler",
+    "legendQueue": "Warteschlange eines geteilten Agenten",
     "legendSteering": "Hinweis während der Arbeit"
   },
   "attachToChat": "Zum Chat hinzufügen",

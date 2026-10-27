@@ -223,6 +223,7 @@
     "legend": "Leyenda",
     "legendFlow": "Secuencia",
     "legendError": "Salida en caso de error",
+    "legendQueue": "Cola de un agente compartido",
     "legendSteering": "Indicación durante el trabajo"
   },
   "attachToChat": "Adjuntar al chat",

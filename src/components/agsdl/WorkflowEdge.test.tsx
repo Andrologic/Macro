@@ -112,3 +112,11 @@ it('dismisses pinned previews on graph movement and only closes its popup on Esc
   expect(document.querySelector('[role="tooltip"]')).toBeNull();
   expect(edge.isConnected).toBe(true);
 });
+
+it('stops a queued arrival short of the block and marks the queue notch on its border', async () => {
+  const hit = await mount(data({ queued: true, route: { kind: 'orthogonal', steps: [] } }));
+  expect(hit.querySelector('.agsdl-edge-queue')).not.toBeNull();
+  expect(hit.querySelector('path.react-flow__edge-path')?.getAttribute('d')).toEndWith('L0 92');
+  await mount(data({ route: { kind: 'orthogonal', steps: [] } }));
+  expect(document.querySelector('.agsdl-edge-queue')).toBeNull();
+});

@@ -223,6 +223,7 @@
     "legend": "범례",
     "legendFlow": "흐름",
     "legendError": "오류 시 출구",
+    "legendQueue": "공유 에이전트의 대기열",
     "legendSteering": "작업 중 전달되는 지시"
   },
   "attachToChat": "채팅에 첨부",

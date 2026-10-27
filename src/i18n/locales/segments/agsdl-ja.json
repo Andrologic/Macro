@@ -223,6 +223,7 @@
     "legend": "凡例",
     "legendFlow": "フロー",
     "legendError": "エラー時の出口",
+    "legendQueue": "共有エージェントの待ち行列",
     "legendSteering": "処理中に送る指示"
   },
   "attachToChat": "チャットに添付",
