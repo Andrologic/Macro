@@ -244,24 +244,6 @@
           }
         }
       }
-    },
-    "revise": {
-      "configuration": "code",
-      "prompt": [
-        {
-          "value": "Décrire les corrections demandées par le responsable de livraison."
-        }
-      ],
-      "interface": {
-        "results": {
-          "report": {
-            "mediaTypes": [
-              "text/plain"
-            ],
-            "required": true
-          }
-        }
-      }
     }
   },
   "flow": {
@@ -345,7 +327,7 @@
             "deliver"
           ],
           "denied": [
-            "revise"
+            "corrections"
           ]
         }
       },
@@ -362,9 +344,22 @@
           }
         }
       },
+      "corrections": {
+        "type": "prepare",
+        "message": {
+          "prompt": [
+            {
+              "value": "Décrire les corrections demandées par le responsable de livraison."
+            }
+          ]
+        },
+        "next": [
+          "revise"
+        ]
+      },
       "revise": {
         "type": "agent",
-        "agent": "revise",
+        "agent": "synthesize",
         "next": []
       }
     }

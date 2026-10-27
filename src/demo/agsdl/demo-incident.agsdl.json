@@ -179,6 +179,7 @@
         "agent": "triage",
         "next": {
           "investigate": [
+            "investigate",
             "collect"
           ],
           "escalate": [
@@ -197,7 +198,7 @@
         "type": "call",
         "binding": "telemetry",
         "next": [
-          "investigate"
+          "metrics"
         ],
         "arguments": {
           "interval": {
@@ -207,6 +208,35 @@
             "value": "catalog-api"
           }
         }
+      },
+      "metrics": {
+        "type": "prepare",
+        "message": {
+          "prompt": [
+            {
+              "value": "Intégrer les métriques des 15 dernières minutes à l’hypothèse en cours."
+            }
+          ],
+          "resources": {
+            "metrics": {
+              "select": {
+                "path": [
+                  "data"
+                ]
+              },
+              "mediaType": "application/json"
+            }
+          }
+        },
+        "next": [
+          "refocus"
+        ]
+      },
+      "refocus": {
+        "type": "agent",
+        "agent": "investigate",
+        "delivery": "steering",
+        "steers": "investigate"
       },
       "investigate": {
         "type": "agent",

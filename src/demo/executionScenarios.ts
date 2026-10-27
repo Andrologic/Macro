@@ -59,10 +59,10 @@ export const demoExecutionScenes: Scene[] = [
   ], completedSteps: ['prepare', 'correctable', 'feedback', 'validate', 'valid'] },
   { id: 'incident', planId: 'demo-incident', tasks: [
     step('demo-incident-triage', 'triage', 'Completed', 'La latence concerne l’import du catalogue.', 'La période 10:00–10:15 est retenue. Le p95 est passé de 220 à 840 ms.'),
-    step('demo-latency', 'investigate', 'InProgress', 'Comparer le cache aux accès base de données.', 'Les traces sont examinées. L’expiration simultanée du cache reste une hypothèse à vérifier.', ['demo-incident-triage']),
+    step('demo-latency', 'investigate', 'InProgress', 'Comparer le cache aux accès base de données.', 'Les métriques reçues en cours d’analyse placent le pic à 10:07. L’expiration simultanée du cache reste une hypothèse à vérifier.', ['demo-incident-triage']),
     step('demo-incident-verify', 'verify', 'Blocked', 'Vérifier l’hypothèse contre les traces.', 'Aucune cause n’est considérée comme confirmée avant ce contrôle.', ['demo-latency']),
     step('demo-postmortem', 'conclude', 'Blocked', 'Documenter la cause et les mesures préventives.', 'Le compte rendu attend la confirmation de l’hypothèse.', ['demo-incident-verify']),
-  ], completedSteps: ['collect'] },
+  ], completedSteps: ['collect', 'metrics', 'refocus'] },
   { id: 'refund', planId: 'demo-refund', tasks: [
     step('demo-refund-understand', 'understand', 'Completed', 'La demande porte sur la commande 1042.', 'Le client demande le remboursement d’un article livré, pour un montant de 89 €.'),
     step('demo-refund-eligibility', 'eligibility', 'Completed', 'La commande respecte les critères de remboursement.', 'Le délai est respecté et le motif correspond à la politique commerciale.', ['demo-refund-understand']),

@@ -40,9 +40,6 @@
       "/agents/synthesize": {
         "title": "Rapporteur"
       },
-      "/agents/revise": {
-        "title": "Développeur"
-      },
       "/flow/steps/scope": {
         "title": "Définir le périmètre"
       },
@@ -71,7 +68,7 @@
         "title": "Livrer le dossier"
       },
       "/flow/steps/revise": {
-        "title": "Préparer les corrections"
+        "title": "Réviser la synthèse"
       },
       "/bindings/deliveryApproval": {
         "title": "Responsable de livraison"
@@ -120,6 +117,9 @@
       },
       "/bindings/accessibilityChecker": {
         "title": "Contrôle d’accessibilité"
+      },
+      "/flow/steps/corrections": {
+        "title": "Transmettre les corrections"
       }
     }
   }

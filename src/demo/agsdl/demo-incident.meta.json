@@ -78,6 +78,12 @@
       },
       "/content/severity": {
         "title": "Gravité de l’incident"
+      },
+      "/flow/steps/metrics": {
+        "title": "Préparer les métriques"
+      },
+      "/flow/steps/refocus": {
+        "title": "Recentrer l’analyse"
       }
     }
   }

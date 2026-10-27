@@ -137,6 +137,12 @@ describe('populated demo scenarios', () => {
     expect(incident.agents.investigate.configuration).toEqual({ select: { path: ['resources', 'severity', 'value'] }, cases: { standard: 'analyse', critique: 'analyseApprofondie' } });
     expect(Object.keys(incident.flow.steps.triage.next)).toEqual(incident.flow.steps.triage.decision.choices);
     expect(incident.flow.steps.investigate.maxVisits).toBe(3);
+    // Metrics collected alongside the investigation reach it as a steering message.
+    expect(incident.flow.steps.triage.next.investigate).toEqual(['investigate', 'collect']);
+    expect(incident.flow.steps.refocus).toMatchObject({ delivery: 'steering', agent: 'investigate', steers: 'investigate' });
+    const quality = JSON.parse(demoPlans.find(plan => plan.id === 'demo-quality')!.agsdl.source);
+    // The rapporteur revises its own synthesis, so both steps queue on one agent.
+    expect(quality.flow.steps.revise.agent).toBe(quality.flow.steps.synthesize.agent);
     const resident = demoPlans.find(plan => plan.id === 'demo-resident')!;
     expect(JSON.parse(resident.agsdl.source).flow).toBeUndefined();
     expect(projectViewer(resident.agsdl.source, resident.agsdl).graphs).toEqual([]);

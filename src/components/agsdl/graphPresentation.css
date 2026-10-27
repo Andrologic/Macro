@@ -52,7 +52,7 @@
 .agsdl-preview-lead { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; line-height: 1.45; color: rgb(var(--foreground) / 0.9); }
 .agsdl-preview-lead + .agsdl-preview-list { margin-top: 10px; padding-top: 10px; border-top: 1px solid rgb(var(--border)); }
 .agsdl-preview-list { display: grid; gap: 6px; font-size: 12px; line-height: 1.45; }
-.agsdl-preview-list > div { display: grid; grid-template-columns: 72px 1fr; gap: 10px; }
+.agsdl-preview-list > div { display: grid; grid-template-columns: 84px 1fr; gap: 10px; }
 .agsdl-preview-list dt { color: rgb(var(--muted-foreground)); }
 .agsdl-preview-list dd { min-width: 0; overflow-wrap: anywhere; }
 .agsdl-preview-list dd.is-literal { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px; }
