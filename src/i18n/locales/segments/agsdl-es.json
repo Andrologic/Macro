@@ -223,9 +223,7 @@
     "legend": "Leyenda",
     "legendFlow": "Secuencia",
     "legendError": "Salida en caso de error",
-    "legendQueue": "Cola de un agente compartido",
-    "sharedAgent_one": "{{count}} paso",
-    "sharedAgent_other": "{{count}} pasos"
+    "legendQueue": "Cola de un agente compartido"
   },
   "attachToChat": "Adjuntar al chat",
   "chatSelection": "Selección AgSDL",

@@ -223,9 +223,7 @@
     "legend": "Legend",
     "legendFlow": "Flow",
     "legendError": "Exit on error",
-    "legendQueue": "Queue of a shared agent",
-    "sharedAgent_one": "{{count}} step",
-    "sharedAgent_other": "{{count}} steps"
+    "legendQueue": "Queue of a shared agent"
   },
   "attachToChat": "Attach to chat",
   "chatSelection": "AgSDL selection",

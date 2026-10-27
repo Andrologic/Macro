@@ -10,7 +10,7 @@ let root: Root | undefined;
 let host: HTMLDivElement | undefined;
 afterEach(() => { act(() => root?.unmount()); host?.remove(); });
 
-it('leads with the agent, marks a shared agent and lights its blocks together on hover', async () => {
+it('leads with the agent and lights the blocks of a shared agent together on hover', async () => {
   const plan = demoPlans.find(item => item.id === 'demo-incident')!;
   const projected = projectViewer(plan.agsdl.source, plan.agsdl);
   const graph = projectSystemOverview(projected.graphs[0], projected.declarations.filter(item => ['Agent', 'System'].includes(item.kind)));
@@ -21,8 +21,6 @@ it('leads with the agent, marks a shared agent and lights its blocks together on
   const text = (block: HTMLElement) => [block.querySelector('.agsdl-node-title')?.textContent, block.querySelector('.agsdl-node-subtitle')?.textContent];
   const analyst = blocks.filter(block => text(block)[0] === 'Analyste des traces');
   expect(analyst.map(block => text(block)[1]).sort()).toEqual(['Examiner les traces', 'Recentrer l’analyse']);
-  expect(analyst.map(block => block.querySelector('.agsdl-node-shared')?.textContent)).toEqual(['2 steps', '2 steps']);
-  expect(blocks.filter(block => block.querySelector('.agsdl-node-shared'))).toHaveLength(2);
 
   await act(async () => analyst[1].dispatchEvent(new MouseEvent('mouseover', { bubbles: true })));
   expect(analyst.every(block => block.classList.contains('is-lit'))).toBe(true);

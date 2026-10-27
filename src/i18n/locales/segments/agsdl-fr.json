@@ -223,9 +223,7 @@
     "legend": "Légende",
     "legendFlow": "Enchaînement",
     "legendError": "Sortie en cas d’erreur",
-    "legendQueue": "File d’attente d’un agent partagé",
-    "sharedAgent_one": "{{count}} étape",
-    "sharedAgent_other": "{{count}} étapes"
+    "legendQueue": "File d’attente d’un agent partagé"
   },
   "attachToChat": "Joindre au chat",
   "chatSelection": "Sélection AgSDL",

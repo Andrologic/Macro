@@ -24,8 +24,6 @@ type GraphNode = Node<{
   subtitle: string;
   /** Who performs the step, shown as the block's heading above the action. */
   performer?: string;
-  /** Number of blocks of this agent in the graph, when it performs several. */
-  shared?: number;
   /** Lit or faded while another block of the same agent is hovered. */
   related?: "lit" | "faded";
   select: (path: string) => void;
@@ -88,7 +86,6 @@ function WorkflowNode({ data }: NodeProps<GraphNode>) {
             <span className="agsdl-node-title">{heading}</span>
             {subtitle && <span className="agsdl-node-subtitle">{subtitle}</span>}
           </span>
-          {data.shared && <span className="agsdl-node-shared">{t("agsdl.viewer.sharedAgent", { count: data.shared })}</span>}
           {shape === "subprocess" && <ChevronRight size={15} className="agsdl-node-chevron" aria-hidden="true" />}
           {data.members && <ChevronDown size={14} className="agsdl-node-chevron" aria-hidden="true" />}
         </>}
@@ -192,7 +189,7 @@ function Canvas({ cards, edges: connections, declarations = [], selected, select
       style: { width: VIEWER_CARD_WIDTH },
       data: { card, title: displayTitle(card), kindLabel: group ? t("agsdl.designGraph.group", { defaultValue: "Group" }) : t(`agsdl.kind.${card.kind === "agent" ? "Agent" : card.kind}`, { defaultValue: card.kind }), active: active === card.path,
         // Blocks lead with who performs the step, then the action; routing steps have no performer.
-        performer, shared: group ? undefined : sharedSize(card),
+        performer,
         related: hoveredAgent ? agentKey(card) === hoveredAgent ? "lit" : "faded" : undefined,
         subtitle: group ? t("agsdl.designGraph.members", { count: group.members.length, defaultValue: "{{count}} components" })
           : performer ? "" : card.kind === "approval" && !card.approvalBinding && !card.approvers?.length ? t("agsdl.viewer.approverMissing") : "",

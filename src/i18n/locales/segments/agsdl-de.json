@@ -223,9 +223,7 @@
     "legend": "Legende",
     "legendFlow": "Ablauf",
     "legendError": "Ausgang bei Fehler",
-    "legendQueue": "Warteschlange eines geteilten Agenten",
-    "sharedAgent_one": "{{count}} Schritt",
-    "sharedAgent_other": "{{count}} Schritte"
+    "legendQueue": "Warteschlange eines geteilten Agenten"
   },
   "attachToChat": "Zum Chat hinzufügen",
   "chatSelection": "AgSDL-Auswahl",

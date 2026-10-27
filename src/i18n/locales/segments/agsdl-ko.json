@@ -223,9 +223,7 @@
     "legend": "범례",
     "legendFlow": "흐름",
     "legendError": "오류 시 출구",
-    "legendQueue": "공유 에이전트의 대기열",
-    "sharedAgent_one": "{{count}}단계",
-    "sharedAgent_other": "{{count}}단계"
+    "legendQueue": "공유 에이전트의 대기열"
   },
   "attachToChat": "채팅에 첨부",
   "chatSelection": "AgSDL 선택",
