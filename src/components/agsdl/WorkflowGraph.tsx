@@ -1,9 +1,9 @@
 import { groupNativeState, type NativeCardActivation } from "../../services/agsdl/executionView";
 import { useCallback, useEffect, useId, useMemo, useRef, useState, type ReactNode } from "react";
 import { Background, getViewportForBounds, Handle, MarkerType, Panel, Position, ReactFlow, ReactFlowProvider, useReactFlow, type Node, type NodeProps, type NodeChange } from "@xyflow/react";
-import { Bot, Boxes, ChevronDown, ChevronRight, CircleHelp, Info, Layers, List, MessageSquare, MessageSquarePlus, LocateFixed, Minus, Plus, Terminal, UserCheck } from "lucide-react";
+import { Bot, Boxes, ChevronDown, ChevronRight, ChevronUp, CircleHelp, Info, Layers, List, MessageSquare, MessageSquarePlus, LocateFixed, Minus, Plus, Terminal, UserCheck } from "lucide-react";
 import { useElementSize } from "../../hooks/useElementSize";
-import { layoutViewer, routeViewerEdge, VIEWER_CARD_WIDTH, viewerLayoutBounds, type ViewerEdge } from "../../services/agsdl/graphLayout";
+import { layoutViewer, routeViewerEdge, VIEWER_CARD_WIDTH, VIEWER_FRAME, viewerLayoutBounds, type ViewerEdge } from "../../services/agsdl/graphLayout";
 import { graphBlockPerformer, graphBlockShape, graphNeighborhood, presentFocusedGraph, presentGraph } from "../../services/agsdl/graphPresentation";
 import { blockDetails, type BlockDetail } from "../../services/agsdl/blockDetails";
 import "./graphPresentation.css";
@@ -126,13 +126,14 @@ function CompositionFrame() {
 /** The frame's heading sits above the connections and folds the composition back. */
 function CompositionFrameHeading({ data }: NodeProps<FrameNode>) {
   const { t } = useAgsdlTranslation();
-  return <button type="button" className="agsdl-composition-heading nodrag nopan" onClick={event => { event.stopPropagation(); data.fold(); }}
-    aria-label={`${t("agsdl.graphInteraction.fold")} · ${data.title}`} title={t("agsdl.graphInteraction.fold")}>
-    <Layers size={12} aria-hidden="true" />
-    {data.performer && <strong>{data.performer}</strong>}
-    <span>{data.title}</span>
-    <ChevronDown size={12} aria-hidden="true" />
-  </button>;
+  return <div className="agsdl-composition-heading-anchor">
+    <button type="button" className="agsdl-composition-heading nodrag nopan" onClick={event => { event.stopPropagation(); data.fold(); }}
+      aria-label={`${t("agsdl.graphInteraction.fold")} · ${data.title}`} title={t("agsdl.graphInteraction.fold")}>
+      <Layers size={12} aria-hidden="true" />
+      <span>{data.performer && <strong>{data.performer}</strong>}{data.performer && " · "}{data.title}</span>
+      <ChevronUp size={12} aria-hidden="true" />
+    </button>
+  </div>;
 }
 /** A legend sample: a connection arriving on a block border, in the flow colour. */
 function LegendSample({ children }: { children: ReactNode }) {
@@ -188,7 +189,8 @@ function Canvas({ cards: declaredCards, edges: declaredEdges, entry: declaredEnt
   const presentation = useMemo(() => presentFocusedGraph(cards, connections, collapsed, active), [cards, connections, collapsed, active]);
   // Revealing exchanges must not move the process cards.
   const overview = useMemo(() => presentGraph(cards, connections, collapsed, "overview"), [cards, connections, collapsed]);
-  const layout = useMemo(() => layoutViewer(overview.cards, overview.edges, heights), [overview.cards, overview.edges, heights]);
+  const framed = useMemo(() => expansion.frames.map(frame => frame.members), [expansion.frames]);
+  const layout = useMemo(() => layoutViewer(overview.cards, overview.edges, heights, framed), [overview.cards, overview.edges, heights, framed]);
   const focus = inspectedEdge || active || hovered;
   const neighborhood = graphNeighborhood(focus, presentation.edges);
   const hasFocus = Boolean(focus) && (presentation.cards.some(card => card.path === focus) || presentation.edges.some(edge => edge.id === focus));
@@ -253,20 +255,22 @@ function Canvas({ cards: declaredCards, edges: declaredEdges, entry: declaredEnt
       },
     };
   });
-  // Frames sit behind the steps they surround, from the laid-out positions.
-  const FRAME_PADDING = 14, FRAME_HEADING = 26;
+  // Frames sit behind the steps they surround, in the space the layout kept for them.
   const frames: FrameNode[] = expansion.frames.flatMap(frame => {
     const members = layout.nodes.filter(node => frame.members.includes(node.card.path));
-    if (!members.length) return [];
-    const left = Math.min(...members.map(node => node.position.x)) - FRAME_PADDING;
-    const top = Math.min(...members.map(node => node.position.y)) - FRAME_PADDING - FRAME_HEADING;
-    const right = Math.max(...members.map(node => node.position.x + VIEWER_CARD_WIDTH)) + FRAME_PADDING;
-    const bottom = Math.max(...members.map(node => node.position.y + node.height)) + FRAME_PADDING;
+    const start = members.find(node => node.card.path === frame.entry);
+    if (!members.length || !start) return [];
+    const left = Math.min(...members.map(node => node.position.x)) - VIEWER_FRAME.padding;
+    const top = Math.min(...members.map(node => node.position.y)) - VIEWER_FRAME.top;
+    const right = Math.max(...members.map(node => node.position.x + VIEWER_CARD_WIDTH)) + VIEWER_FRAME.padding;
+    const bottom = Math.max(...members.map(node => node.position.y + node.height)) + VIEWER_FRAME.padding;
     const step = declaredCards.find(card => card.path === frame.path)!;
     const data = { performer: graphBlockPerformer(step, displayTitle(step)), title: displayTitle(step), fold: () => toggleComposition(frame.path) };
+    // The heading sits on the incoming connection, where it enters the frame; a long one overhangs the border in the free band above the row.
+    const center = start.position.x + VIEWER_CARD_WIDTH / 2, half = Math.min(center - left, right - center);
     return [
       { id: `frame:${frame.path}`, type: "frame", position: { x: left, y: top }, zIndex: -1, selectable: false, focusable: false, style: { width: right - left, height: bottom - top }, data },
-      { id: `frame-heading:${frame.path}`, type: "frameHeading", position: { x: left + 8, y: top + 5 }, selectable: false, focusable: false, data },
+      { id: `frame-heading:${frame.path}`, type: "frameHeading", position: { x: center - half, y: top }, selectable: false, focusable: false, style: { width: half * 2 }, data },
     ];
   });
   const measureNodes = (changes: NodeChange<GraphNode>[]) => {

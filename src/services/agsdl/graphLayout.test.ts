@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { layoutViewer, routeViewerEdge, viewerEdgePath, viewerLayoutBounds, VIEWER_CARD_WIDTH, type ViewerEdge, type ViewerLayoutNode } from "./graphLayout";
+import { layoutViewer, routeViewerEdge, viewerEdgePath, viewerLayoutBounds, VIEWER_CARD_WIDTH, VIEWER_FRAME, type ViewerEdge, type ViewerLayoutNode } from "./graphLayout";
 import { presentGraph } from "./graphPresentation";
 import type { ViewerCard } from "./viewer";
 
@@ -71,6 +71,22 @@ describe("AgSDL reading layout", () => {
     const railX = distant[0].steps[0].x!;
     expect(Math.sign(center(handler) - center(done))).toBe(Math.sign(railX - center(done)));
     expect(new Set(["start", "check", "approve", "act"].map(id => center(at(graph, id)))).size).toBe(1);
+  });
+
+  it("keeps room around framed steps and drops a neighbour's rail below the frame", () => {
+    const cards = ["start", "inner", "check", "beside", "after", "handler"].map(id => card(id));
+    const framed = ["inner", "check"].map(id => `/flow/steps/${id}`);
+    const edges = [edge("start", "inner"), edge("start", "beside", "other"), edge("inner", "check"), edge("check", "after"), edge("after", "handler"), edge("beside", "handler", "onError")];
+    const plain = layoutViewer(cards, edges), graph = layoutViewer(cards, edges, {}, [framed]);
+    // The frame's heading band and bottom padding push the following rows down.
+    expect(at(graph, "inner").position.y - at(plain, "inner").position.y).toBe(VIEWER_FRAME.top + VIEWER_FRAME.heading);
+    expect(at(graph, "after").position.y - at(plain, "after").position.y).toBe(VIEWER_FRAME.top + VIEWER_FRAME.heading + VIEWER_FRAME.padding);
+    // The block beside the frame stays clear of its border.
+    const gap = Math.abs(center(at(graph, "beside")) - center(at(graph, "inner"))) - VIEWER_CARD_WIDTH;
+    expect(gap).toBeGreaterThanOrEqual(40 + VIEWER_FRAME.padding);
+    const frameBottom = at(graph, "check").position.y + at(graph, "check").height + VIEWER_FRAME.padding;
+    const rail = graph.routes.get(edges[5].id)!;
+    expect(rail.steps[0].y).toBeGreaterThan(frameBottom);
   });
 });
 

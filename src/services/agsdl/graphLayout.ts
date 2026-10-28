@@ -31,6 +31,8 @@ const LOOP_OFFSET = 8;
 const SIDE_EXIT = 18;
 const RAIL_SPAN = 2;
 const TRACK_LIMIT = ROW_GAP / 2 - 10;
+/** Space an unfolded composition keeps around its steps; its heading sits on the top border. */
+export const VIEWER_FRAME = { padding: 14, top: 30, heading: 18 };
 
 const minimumHeight = (card: ViewerCard) => ["prepare", "condition", "join"].includes(card.kind) ? 28 : 50;
 // Main continuations keep their source's column; alternatives and failures move aside.
@@ -72,7 +74,7 @@ function crossings(upper: LayerNode[], lower: LayerNode[], links: LayerLink[]) {
  * stretch the process into one column. A connection skipping one row gets an
  * inner lane; longer ones and returns follow side rails shared per target.
  */
-export function layoutViewer(cards: ViewerCard[], edges: ViewerEdge[], heights: Readonly<Record<string, number>> = {}) {
+export function layoutViewer(cards: ViewerCard[], edges: ViewerEdge[], heights: Readonly<Record<string, number>> = {}, frames: string[][] = []) {
   const byPath = new Map(cards.map(card => [card.path, card]));
   const cardIndex = new Map(cards.map((card, index) => [card.path, index]));
   const flow = edges.filter(edge => !edge.exchangeOnly && byPath.has(edge.source) && byPath.has(edge.target));
@@ -138,6 +140,8 @@ export function layoutViewer(cards: ViewerCard[], edges: ViewerEdge[], heights: 
     if (existing) existing.weight = Math.max(existing.weight, weight);
     else links.set(key, { from, to, weight });
   };
+  // Steps framed together keep other blocks and connections outside their frame.
+  const frameOf = new Map(frames.flatMap((members, index) => members.map(path => [path, index] as const)));
   const chains = new Map<ViewerEdge, string[]>();
   // Connections skipping several rows follow a side rail, like returns, instead of crossing the process.
   const rails: ViewerEdge[] = [...returns];
@@ -147,6 +151,7 @@ export function layoutViewer(cards: ViewerCard[], edges: ViewerEdge[], heights: 
     for (let layer = rank.get(edge.source)! + 1; layer < rank.get(edge.target)!; layer++) {
       const id = `lane\u0000${edge.target}\u0000${layer}`;
       if (!nodes.has(id)) nodes.set(id, { id, layer, order: 0, x: 0 });
+      if (frameOf.has(edge.target) && frameOf.get(edge.source) === frameOf.get(edge.target)) frameOf.set(id, frameOf.get(edge.target)!);
       chain.push(id);
     }
     chain.push(edge.target);
@@ -194,7 +199,9 @@ export function layoutViewer(cards: ViewerCard[], edges: ViewerEdge[], heights: 
 
   // Coordinates: children align with their parents, then parents settle over their children.
   const width = (node: LayerNode) => node.card ? VIEWER_CARD_WIDTH : 0;
-  const separation = (left: LayerNode, right: LayerNode) => (width(left) + width(right)) / 2 + (left.card && right.card ? CARD_GAP : LANE_GAP);
+  const framing = (left: LayerNode, right: LayerNode) => frameOf.get(left.id) === frameOf.get(right.id) ? 0
+    : VIEWER_FRAME.padding * (Number(frameOf.has(left.id)) + Number(frameOf.has(right.id)));
+  const separation = (left: LayerNode, right: LayerNode) => (width(left) + width(right)) / 2 + (left.card && right.card ? CARD_GAP : LANE_GAP) + framing(left, right);
   const align =(layer: LayerNode[], related: (node: LayerNode) => Array<{ x: number; weight: number }>) => {
     const desired: number[] = [], weights: number[] = [];
     for (const node of layer) {
@@ -258,17 +265,25 @@ export function layoutViewer(cards: ViewerCard[], edges: ViewerEdge[], heights: 
   const left = Math.min(...[...nodes.values()].map(node => node.x - width(node) / 2));
   for (const node of nodes.values()) node.x -= left;
 
-  // Rows follow measured card heights, including wrapped titles.
+  // Rows follow measured card heights, including wrapped titles, and open around frames.
   const cardHeight = (card: ViewerCard) => Math.max(minimumHeight(card), heights[card.path] ?? 0);
+  const before = new Array<number>(layerCount).fill(0), after = new Array<number>(layerCount).fill(0);
+  for (const members of frames) {
+    const ranks = members.flatMap(path => rank.has(path) ? [rank.get(path)!] : []);
+    if (!ranks.length) continue;
+    before[Math.min(...ranks)] = VIEWER_FRAME.top + VIEWER_FRAME.heading;
+    after[Math.max(...ranks)] = VIEWER_FRAME.padding;
+  }
   const rowTop: number[] = [], rowBottom: number[] = [];
   let y = 0;
-  for (const layer of layers) {
+  layers.forEach((layer, index) => {
+    y += before[index];
     rowTop.push(y);
     const height = Math.max(0, ...layer.flatMap(node => node.card ? [cardHeight(node.card)] : []));
     rowBottom.push(y + height);
-    y += height + ROW_GAP;
-  }
-  const channel = (layer: number) => rowBottom[layer] + ROW_GAP / 2;
+    y += height + after[index] + ROW_GAP;
+  });
+  const channel = (layer: number) => rowBottom[layer] + after[layer] + ROW_GAP / 2;
 
   // Horizontal runs sharing a corridor get separate tracks unless they share an end.
   const routes = new Map<string, ViewerEdgeRoute>();
@@ -328,13 +343,28 @@ export function layoutViewer(cards: ViewerCard[], edges: ViewerEdge[], heights: 
     if (!counter.has(id)) counter.set(id, [...counter.keys()].filter(item => item.startsWith(`${key}\u0000`)).length);
     return counter.get(id)! % 3;
   };
+  // A frame's rows, and where its border runs horizontally.
+  const spans = frames.flatMap((_, index) => {
+    const inside = [...nodes.values()].filter(node => node.card && frameOf.get(node.id) === index);
+    return inside.length ? [{ index, first: Math.min(...inside.map(node => node.layer)), last: Math.max(...inside.map(node => node.layer)),
+      x1: Math.min(...inside.map(node => node.x)) - VIEWER_CARD_WIDTH / 2 - VIEWER_FRAME.padding, x2: Math.max(...inside.map(node => node.x)) + VIEWER_CARD_WIDTH / 2 + VIEWER_FRAME.padding }] : [];
+  });
+  // A rail leaving beside a frame drops below it when its own column is clear, instead of crossing it.
+  const exitRow = (source: LayerNode, x: number) => {
+    const crossed = spans.filter(span => frameOf.get(source.id) !== span.index && span.first <= source.layer && source.layer < span.last
+      && Math.min(source.x, x) < span.x1 && span.x2 < Math.max(source.x, x));
+    const last = Math.max(source.layer, ...crossed.map(span => span.last));
+    const blocked = layers.slice(source.layer + 1, last + 1).flat().some(node => node.card && Math.abs(node.x - source.x) < VIEWER_CARD_WIDTH);
+    return blocked ? source.layer : last;
+  };
   for (const group of groups.values()) for (const edge of group.edges) {
     const source = nodes.get(edge.source)!;
+    const row = exitRow(source, group.x);
     // A failure leaving toward a rail with nothing beside it goes straight across instead of dropping below its row.
     const level = edge.label === "onError" && group.side > 0 && !layers[source.layer].some(node => node.x > source.x);
     routes.set(edge.id, { kind: "orthogonal", ...(returns.has(edge) ? { loop: true } : {}), steps: [
       level ? { y: rowTop[source.layer], x: group.x, level: true }
-        : { y: rowBottom[source.layer] + LOOP_OFFSET + slot(exits, `${source.layer}:${group.side}`, edge.source) * 4, x: group.x },
+        : { y: rowBottom[row] + after[row] + LOOP_OFFSET + slot(exits, `${row}:${group.side}`, edge.source) * 4, x: group.x },
       { y: rowTop[group.target.layer] - LOOP_OFFSET - slot(entries, `${group.target.layer}`, group.target.id) * 4 },
     ] });
   }
