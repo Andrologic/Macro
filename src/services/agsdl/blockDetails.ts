@@ -50,8 +50,9 @@ export function blockDetails(card: ViewerCard, declarations: ViewerCard[], steps
     // A steering message joins work already running: its content arrives on the incoming connection,
     // and it has no instruction, configuration, resource or result of its own.
     add("steers", [sibling(step.steers)]);
-  } else if (card.kind === "agent") {
-    const agent = object(step.agentDefinition);
+  } else if (card.kind === "agent" || card.kind === "Agent") {
+    // A step carries its agent's definition; an agent declared outside any flow is that definition.
+    const agent = card.kind === "Agent" ? step : object(step.agentDefinition);
     // The agent's own instruction, not the skills prepended to it.
     add("instructions", [list(agent.prompt).map(object).find(use => typeof use.value === "string")?.value as string | undefined]);
     const configuration = agent.configuration;
@@ -66,7 +67,7 @@ export function blockDetails(card: ViewerCard, declarations: ViewerCard[], steps
       const cases = Object.values(object(select.cases)).map(name => title(`/configurations/${String(name)}`, String(name)));
       add("model", [`${operandText(select.select)} → ${cases.join(" | ")}`]);
     }
-    add("uses", [...(card.tools ?? []).map(tool => tool.label), ...(card.capabilities?.skills ?? [])]);
+    add("uses", [...(card.tools ?? []).map(tool => tool.target ? title(tool.target, tool.label) : tool.label), ...(card.capabilities?.skills ?? [])]);
     add("receives", card.inputs.map(input => input.name));
     add("produces", card.outputs.map(output => `${output.name} (${output.type || "?"})`));
   }

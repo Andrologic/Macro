@@ -81,3 +81,5 @@
 .agsdl-node-mode { flex: none; margin-right: 6px; padding: 0 6px; border-radius: 999px; font-size: 10.5px; line-height: 16px; font-weight: 500;
   color: rgb(var(--muted-foreground)); background: rgb(var(--muted)); }
 .agsdl-node-mode.is-first { color: rgb(var(--primary)); background: rgb(var(--primary) / 0.14); }
+/* A long block heading wraps to a second line before it is cut. */
+.agsdl-graph-node:not(.is-routing) .agsdl-node-title { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; white-space: normal; }

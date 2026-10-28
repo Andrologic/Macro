@@ -31,6 +31,18 @@ describe("block details read from AgSDL", () => {
     ]);
   });
 
+  it("reads an agent declared outside any flow from its own definition", () => {
+    const resident = { ...card("Agent", { configuration: "project", prompt: [{ value: "Answer the customer." }] }, {
+      tools: [{ label: "tests", source: "unknown", target: "/bindings/tests" }], outputs: [{ name: "report", type: "text/plain" }],
+    }), path: "/agents/resident" };
+    expect(blockDetails(resident, declarations)).toEqual([
+      { key: "instructions", values: ["Answer the customer."] },
+      { key: "model", values: ["Engine title"] },
+      { key: "uses", values: ["Tests"] },
+      { key: "produces", values: ["report (text/plain)"] },
+    ]);
+  });
+
   it("describes a steering step by the step it steers, without a configuration or result of its own", () => {
     const write = { ...card("agent", {}), path: "/flow/steps/write", title: "Write the dossier" };
     const steer = card("agent", { delivery: "steering", steers: "write", agentDefinition: { configuration: "project", prompt: [{ value: "Write." }] } }, {
