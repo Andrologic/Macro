@@ -240,6 +240,17 @@ avec une tentative `aborted`. Si la création de la filiation elle-même
 n'atteint jamais le relais, la source reste gelée : ce cas n'est pas encore
 traité.
 
+Un message en retard ne fait rien progresser. Un ancien ACK est refusé
+(`conflict`). Un ancien bloc et un commit répétés avec leur identifiant de
+requête reçoivent exactement la réponse d'origine. Une réservation ou un
+`ready` arrivés après le commit reçoivent leur propre reçu d'étape et le reçu
+terminal `committed`, sans changement de révision. La cible refuse aussi un
+bloc antérieur au dernier bloc reçu. Une décision liée à une génération de
+producteur remplacée est refusée par le relais (`producer_changed`), qui
+abandonne alors un transfert non confirmé. Le scénario natif ne remplace pas
+de producteur en cours de transfert : seuls les tests du relais couvrent ce
+dernier cas.
+
 Une cible qui a perdu ses données après confirmation reste en erreur de
 récupération. Elle ne provoque pas un dégel implicite de la source. Une remise
 en état ou une nouvelle cession explicite doit résoudre cette situation.

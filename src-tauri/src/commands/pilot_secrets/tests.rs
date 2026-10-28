@@ -1880,6 +1880,15 @@ async fn global_chat_second_send_transfer() {
     global_chat_local_transfer("macro-ai", false, false, false, Route::SecondSend).await;
 }
 
+/// Delayed duplicates of an old ACK, an old chunk, the reserve and `ready`
+/// reach the relay after newer messages, and the commit is retried exactly:
+/// each is refused or answered as before, and the transfer completes once.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires the explicitly supplied local transfer relay"]
+async fn global_chat_stale_replays_transfer() {
+    global_chat_local_transfer("macro-ai", true, false, false, Route::StaleReplays).await;
+}
+
 /// The target process stops with half of the archive staged: the source
 /// abandons, and the target's next reconciliation releases the staged chunks.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -1963,6 +1972,8 @@ enum Route {
     TargetImportFull,
     /// A required attachment of the source conversation is missing.
     MissingAsset,
+    /// The relay receives delayed duplicates of older messages.
+    StaleReplays,
 }
 
 async fn global_chat_local_transfer(
@@ -2389,11 +2400,14 @@ async fn global_chat_local_transfer(
             .fetch_one(&source_pool)
             .await
             .unwrap();
-    if matches!(route, Route::LostReserveReply | Route::LostReserveRequest) {
-        let mode = if route == Route::LostReserveReply {
-            "lose-reserve-reply"
-        } else {
-            "lose-reserve-request"
+    if matches!(
+        route,
+        Route::LostReserveReply | Route::LostReserveRequest | Route::StaleReplays
+    ) {
+        let mode = match route {
+            Route::LostReserveReply => "lose-reserve-reply",
+            Route::LostReserveRequest => "lose-reserve-request",
+            _ => "replay",
         };
         relay_input
             .write_all(format!("{}\n", serde_json::json!({"mode": mode})).as_bytes())
@@ -2704,6 +2718,36 @@ async fn global_chat_local_transfer(
             transfer_target_event(&mut target_events).await.unwrap(),
             serde_json::json!({"type":"complete"})
         );
+        if route == Route::StaleReplays {
+            relay_input.write_all(b"{}\n").await.unwrap();
+            let report: serde_json::Value =
+                serde_json::from_str(&lines.next_line().await.unwrap().unwrap()).unwrap();
+            let replays = report["replays"].as_array().unwrap();
+            let replay = |kind: &str| replays.iter().find(|r| r["kind"] == kind).unwrap();
+            assert_eq!(replays.len(), 5, "{replays:?}");
+            // The old ACK is refused; the old chunk and the commit, retried
+            // with their request IDs, receive exactly the reply they had.
+            assert_eq!(
+                (&replay("ack")["status"], &replay("ack")["code"]),
+                (&serde_json::json!(409), &serde_json::json!("conflict"))
+            );
+            for kind in ["chunk", "commit"] {
+                assert_eq!(replay(kind)["status"], 200, "{kind}");
+                assert_eq!(replay(kind)["same"], true, "{kind}");
+            }
+            // The reserve and `ready`, arriving after the commit, receive
+            // their own step receipt and the committed terminal: nothing moves.
+            for kind in ["reserve", "ready"] {
+                assert_eq!(replay(kind)["status"], 200, "{kind}");
+                assert_eq!(replay(kind)["receipt_same"], true, "{kind}");
+                assert_eq!(replay(kind)["phase"], "committed", "{kind}");
+                assert_eq!(
+                    replay(kind)["revision"],
+                    replay("commit")["revision"],
+                    "{kind}"
+                );
+            }
+        }
         // The target's next request equals the source's, except that a
         // compacted source still sends its checkpoint, which is not transferred.
         let target: serde_json::Value = serde_json::from_slice(
