@@ -12,7 +12,7 @@ const render = async (id: string) => {
   const projected = projectViewer(plan.agsdl.source, plan.agsdl);
   const graph = projectSystemOverview(projected.graphs[0], projected.declarations.filter(item => ['Agent', 'System'].includes(item.kind)));
   host = document.createElement('div'); document.body.append(host); root = createRoot(host);
-  await act(async () => root!.render(<WorkflowGraph cards={graph.cards} edges={graph.edges} entry={graph.entry} declarations={projected.declarations}
+  await act(async () => root!.render(<WorkflowGraph cards={graph.cards} edges={graph.edges} entry={graph.entry} compositions={projected.graphs} declarations={projected.declarations}
     selected="" select={() => {}} title={card => card.title} />));
   return host;
 };
@@ -41,4 +41,16 @@ it('marks the entry step and how each join collects its members', async () => {
 
   const crisis = await render('demo-crisis');
   expect([...crisis.querySelectorAll('.agsdl-node-mode')].map(chip => chip.className)).toEqual(['agsdl-node-mode is-first', 'agsdl-node-mode is-all']);
+});
+
+it('unfolds a composition step in place and folds it back from the frame heading', async () => {
+  const crisis = await render('demo-crisis');
+  const titles = () => [...crisis.querySelectorAll('.agsdl-graph-node .agsdl-node-title')].map(node => node.textContent);
+  const intervention = [...crisis.querySelectorAll<HTMLButtonElement>('.agsdl-graph-node')].find(block => block.querySelector('.agsdl-node-subtitle')?.textContent === 'Préparer une intervention')!;
+  await act(async () => intervention.click());
+  expect(titles()).toContain('Concepteur de l’intervention');
+  expect(crisis.querySelectorAll('.agsdl-composition-frame')).toHaveLength(1);
+  await act(async () => crisis.querySelector<HTMLButtonElement>('.agsdl-composition-heading')!.click());
+  expect(titles()).not.toContain('Concepteur de l’intervention');
+  expect(crisis.querySelector('.agsdl-composition-frame')).toBeNull();
 });

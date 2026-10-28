@@ -525,7 +525,9 @@
     "to": "Next",
     "expand": "Expand group",
     "openTask": "Open task",
-    "canvasMenu": "Graph actions"
+    "canvasMenu": "Graph actions",
+    "unfold": "Expand the composition",
+    "fold": "Collapse the composition"
   },
   "link": {
     "true": "If yes",

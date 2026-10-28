@@ -525,7 +525,9 @@
     "to": "Weiter",
     "expand": "Gruppe aufklappen",
     "openTask": "Aufgabe öffnen",
-    "canvasMenu": "Graphaktionen"
+    "canvasMenu": "Graphaktionen",
+    "unfold": "Komposition aufklappen",
+    "fold": "Komposition zuklappen"
   },
   "link": {
     "true": "Wenn ja",

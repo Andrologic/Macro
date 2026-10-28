@@ -525,7 +525,9 @@
     "to": "다음 단계",
     "expand": "그룹 펼치기",
     "openTask": "작업 열기",
-    "canvasMenu": "그래프 작업"
+    "canvasMenu": "그래프 작업",
+    "unfold": "구성 펼치기",
+    "fold": "구성 접기"
   },
   "link": {
     "true": "조건 충족 시",

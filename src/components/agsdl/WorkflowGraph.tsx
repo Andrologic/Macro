@@ -15,6 +15,8 @@ import { WorkflowBlockOverlay } from "./WorkflowBlockOverlay";
 import { WorkflowGraphPopup } from "./WorkflowGraphPopup";
 import { WorkflowStatusBadge } from "./WorkflowStatusBadge";
 import { groupTaskState, type TrackedTask } from "../../services/agsdl/taskTracking";
+import { expandCompositions, originalStepPath } from "../../services/agsdl/compositionExpansion";
+import type { ViewerGraph } from "../../services/agsdl/viewer";
 
 type GraphNode = Node<{
   card: ViewerCard;
@@ -33,6 +35,8 @@ type GraphNode = Node<{
   inspect: (path: string) => void;
   members?: string[];
   expand?: () => void;
+  /** A composition step opens in place, showing its steps. */
+  unfold?: () => void;
   changed: boolean;
   pending: boolean;
   task?: TrackedTask;
@@ -68,6 +72,7 @@ function WorkflowNode({ data }: NodeProps<GraphNode>) {
       <WorkflowBlockOverlay card={card} title={data.title} kindLabel={data.kindLabel} task={data.task} native={data.native}
         incoming={data.incoming} outgoing={data.outgoing} details={data.details} dismissSignal={data.dismissSignal} actions={[
           { label: data.members ? t("agsdl.graphInteraction.expand") : t("agsdl.viewer.componentDetails"), icon: data.members ? <Layers size={14} /> : <Info size={14} />, run: () => data.expand ? data.expand() : data.inspect(card.path) },
+          ...(data.unfold ? [{ label: t("agsdl.graphInteraction.unfold"), icon: <ChevronDown size={14} />, run: data.unfold }] : []),
           ...(data.attach ? [{ label: t("agsdl.attachToChat"), icon: <MessageSquarePlus size={14} />, run: data.attach }] : []),
           ...(data.openTask ? [{ label: t("agsdl.graphInteraction.openTask"), icon: <MessageSquare size={14} />, run: data.openTask }] : []),
         ]}>
@@ -77,6 +82,7 @@ function WorkflowNode({ data }: NodeProps<GraphNode>) {
         onClick={event => {
           event.stopPropagation();
           if (data.expand) data.expand();
+          else if (data.unfold) data.unfold();
           else data.select(data.active ? "" : card.path);
         }}
         onDoubleClick={event => { event.stopPropagation(); if (!data.members) data.inspect(card.path); }}
@@ -112,19 +118,37 @@ function WorkflowNode({ data }: NodeProps<GraphNode>) {
     </>
   );
 }
+type FrameNode = Node<{ performer?: string; title: string; fold: () => void }, "frame" | "frameHeading">;
+/** The border around the steps of an unfolded composition, drawn behind the connections. */
+function CompositionFrame() {
+  return <div className="agsdl-composition-frame" />;
+}
+/** The frame's heading sits above the connections and folds the composition back. */
+function CompositionFrameHeading({ data }: NodeProps<FrameNode>) {
+  const { t } = useAgsdlTranslation();
+  return <button type="button" className="agsdl-composition-heading nodrag nopan" onClick={event => { event.stopPropagation(); data.fold(); }}
+    aria-label={`${t("agsdl.graphInteraction.fold")} · ${data.title}`} title={t("agsdl.graphInteraction.fold")}>
+    <Layers size={12} aria-hidden="true" />
+    {data.performer && <strong>{data.performer}</strong>}
+    <span>{data.title}</span>
+    <ChevronDown size={12} aria-hidden="true" />
+  </button>;
+}
 /** A legend sample: a connection arriving on a block border, in the flow colour. */
 function LegendSample({ children }: { children: ReactNode }) {
   return <svg className="agsdl-legend-sample" width="44" height="18" viewBox="0 0 44 18" aria-hidden="true">{children}<path className="is-border" d="M40 2v14" /></svg>;
 }
-const nodeTypes = { workflow: WorkflowNode };
+const nodeTypes = { workflow: WorkflowNode, frame: CompositionFrame, frameHeading: CompositionFrameHeading };
 const edgeTypes = { workflow: WorkflowEdge };
 const fitOptions = { padding: 0.16, minZoom: 0.5, maxZoom: 1 };
 
-function Canvas({ cards, edges: connections, entry, declarations = [], selected, select, title, changedPaths = [], trackedTasks = {}, nativeActivations = {}, selectionMode = "inspect", onAttach, onOpenTask, onInspect }: {
+function Canvas({ cards: declaredCards, edges: declaredEdges, entry: declaredEntry, compositions = [], declarations = [], selected, select, title, changedPaths = [], trackedTasks = {}, nativeActivations = {}, selectionMode = "inspect", onAttach, onOpenTask, onInspect }: {
   cards: ViewerCard[];
   edges: ViewerEdge[];
   /** The step that receives the entry Message. */
   entry?: string;
+  /** Composition graphs, unfolded in place from their composition steps. */
+  compositions?: ViewerGraph[];
   /** Document declarations, read by the hover previews. */
   declarations?: ViewerCard[];
   selected: string;
@@ -155,6 +179,11 @@ function Canvas({ cards, edges: connections, entry, declarations = [], selected,
   const [collapsed, setCollapsed] = useState<Set<string>>(() => new Set());
   const [hovered, setHovered] = useState("");
   const [heights, setHeights] = useState<Record<string, number>>({});
+  const [unfolded, setUnfolded] = useState<Set<string>>(() => new Set());
+  const toggleComposition = (path: string) => { setHovered(""); setUnfolded(previous => { const next = new Set(previous); if (next.has(path)) next.delete(path); else next.add(path); return next; }); };
+  const expansion = useMemo(() => expandCompositions(declaredCards, declaredEdges, compositions, unfolded, declarations), [declaredCards, declaredEdges, compositions, unfolded, declarations]);
+  const { cards, edges: connections } = expansion;
+  const entry = expansion.frames.find(frame => frame.path === declaredEntry)?.entry ?? declaredEntry;
   const active = selected || (cards.some(card => card.path === highlighted) ? highlighted : "");
   const presentation = useMemo(() => presentFocusedGraph(cards, connections, collapsed, active), [cards, connections, collapsed, active]);
   // Revealing exchanges must not move the process cards.
@@ -208,7 +237,8 @@ function Canvas({ cards, edges: connections, entry, declarations = [], selected,
         entry: card.path === entry || Boolean(group?.members.some(member => member.path === entry)),
         subtitle: group ? t("agsdl.designGraph.members", { count: group.members.length, defaultValue: "{{count}} components" })
           : performer ? "" : card.kind === "approval" && !card.approvalBinding && !card.approvers?.length ? t("agsdl.viewer.approverMissing") : "",
-        select: path => { setHighlighted(path); if (selectionMode === "select") select(path); }, inspect: path => { setHighlighted(path); (onInspect ?? select)(path); }, expand: group ? () => expandGroup(group.id) : undefined, focus: setHovered,
+        select: path => { setHighlighted(path); if (selectionMode === "select") select(originalStepPath(path)); }, inspect: path => { setHighlighted(path); (onInspect ?? select)(originalStepPath(path)); }, expand: group ? () => expandGroup(group.id) : undefined, focus: setHovered,
+        unfold: card.kind === "compose" && compositions.some(graph => graph.path === card.composition?.target) ? () => toggleComposition(card.path) : undefined,
         incoming: [...new Set(presentation.edges.filter(edge => edge.target === card.path).map(edge => displayTitle(presentation.cards.find(item => item.path === edge.source)!)))],
         outgoing: [...new Set(presentation.edges.filter(edge => edge.source === card.path).map(edge => displayTitle(presentation.cards.find(item => item.path === edge.target)!)))],
         details: group ? [] : blockDetails(card, declarations, presentation.cards),
@@ -222,6 +252,22 @@ function Canvas({ cards, edges: connections, entry, declarations = [], selected,
         task: group ? groupTaskState(group.members.flatMap(member => trackedTasks[member.path] ? [trackedTasks[member.path]] : []), group.members.length) : trackedTasks[card.path],
       },
     };
+  });
+  // Frames sit behind the steps they surround, from the laid-out positions.
+  const FRAME_PADDING = 14, FRAME_HEADING = 26;
+  const frames: FrameNode[] = expansion.frames.flatMap(frame => {
+    const members = layout.nodes.filter(node => frame.members.includes(node.card.path));
+    if (!members.length) return [];
+    const left = Math.min(...members.map(node => node.position.x)) - FRAME_PADDING;
+    const top = Math.min(...members.map(node => node.position.y)) - FRAME_PADDING - FRAME_HEADING;
+    const right = Math.max(...members.map(node => node.position.x + VIEWER_CARD_WIDTH)) + FRAME_PADDING;
+    const bottom = Math.max(...members.map(node => node.position.y + node.height)) + FRAME_PADDING;
+    const step = declaredCards.find(card => card.path === frame.path)!;
+    const data = { performer: graphBlockPerformer(step, displayTitle(step)), title: displayTitle(step), fold: () => toggleComposition(frame.path) };
+    return [
+      { id: `frame:${frame.path}`, type: "frame", position: { x: left, y: top }, zIndex: -1, selectable: false, focusable: false, style: { width: right - left, height: bottom - top }, data },
+      { id: `frame-heading:${frame.path}`, type: "frameHeading", position: { x: left + 8, y: top + 5 }, selectable: false, focusable: false, data },
+    ];
   });
   const measureNodes = (changes: NodeChange<GraphNode>[]) => {
     setHeights(previous => {
@@ -263,8 +309,8 @@ function Canvas({ cards, edges: connections, entry, declarations = [], selected,
         sourcePerformer: (() => { const source = presentation.cards.find(card => card.path === edge.source)!; return graphBlockPerformer(source, displayTitle(source)); })(),
         dismissSignal, focusEdge,
         inspect: selectionMode === "inspect" ? () => activateEdge(edge.id) : undefined,
-        inspectSource: () => presentation.groups.some(group => group.id === edge.source) ? expandGroup(edge.source) : (onInspect ?? select)(edge.source),
-        inspectTarget: () => presentation.groups.some(group => group.id === edge.target) ? expandGroup(edge.target) : (onInspect ?? select)(edge.target),
+        inspectSource: () => presentation.groups.some(group => group.id === edge.source) ? expandGroup(edge.source) : (onInspect ?? select)(originalStepPath(edge.source)),
+        inspectTarget: () => presentation.groups.some(group => group.id === edge.target) ? expandGroup(edge.target) : (onInspect ?? select)(originalStepPath(edge.target)),
       }, sourceHandle: failure ? "error" : "out", targetHandle: "in", label: undefined,
       ariaRole: "group" as const,
       ariaLabel: `${displayTitle(presentation.cards.find(card => card.path === edge.source)!)} → ${displayTitle(presentation.cards.find(card => card.path === edge.target)!)}`,
@@ -279,7 +325,7 @@ function Canvas({ cards, edges: connections, entry, declarations = [], selected,
     <div ref={ref} className="agsdl-canvas" onKeyDown={event => { if (event.key === "Escape") clearSelection(); }}>
       <div ref={setCanvasAnchor} className="agsdl-canvas-content">
       <ReactFlow<GraphNode, GraphEdge>
-        nodes={nodes} edges={edges} nodeTypes={nodeTypes} edgeTypes={edgeTypes} onNodesChange={measureNodes}
+        nodes={[...frames, ...nodes] as GraphNode[]} edges={edges} nodeTypes={nodeTypes} edgeTypes={edgeTypes} onNodesChange={measureNodes}
         nodesDraggable={false} nodesConnectable={false} nodesFocusable={false}
         edgesFocusable={false} edgesReconnectable={false} elementsSelectable={false}
         deleteKeyCode={null} selectionKeyCode={null} multiSelectionKeyCode={null}

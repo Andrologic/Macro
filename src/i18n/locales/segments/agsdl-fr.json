@@ -525,7 +525,9 @@
     "to": "Suite",
     "expand": "Déplier le groupe",
     "openTask": "Ouvrir la tâche",
-    "canvasMenu": "Actions du graphe"
+    "canvasMenu": "Actions du graphe",
+    "unfold": "Déplier la composition",
+    "fold": "Replier la composition"
   },
   "link": {
     "true": "Si oui",

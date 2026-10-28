@@ -321,7 +321,7 @@ export const AgsdlEditor: React.FC<{
         : document && <>
           {cards.length > 0 ? <WorkflowGraph
             key={`${key}:${graph?.path ?? "declarations"}`}
-            cards={cards} edges={system.edges} entry={system.entry} declarations={document.declarations} selected={selected}
+            cards={cards} edges={system.edges} entry={system.entry} compositions={document.graphs} declarations={document.declarations} selected={selected}
             select={select} title={nodeTitle} source={source}
             onAttach={!attaching ? path => {
               const card = cards.find(item => item.path === path);

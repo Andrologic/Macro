@@ -83,3 +83,8 @@
 .agsdl-node-mode.is-first { color: rgb(var(--primary)); background: rgb(var(--primary) / 0.14); }
 /* A long block heading wraps to a second line before it is cut. */
 .agsdl-graph-node:not(.is-routing) .agsdl-node-title { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; white-space: normal; }
+/* An unfolded composition: a quiet border around its steps, headed by what it runs. */
+.agsdl-composition-frame { width: 100%; height: 100%; border: 1px dashed rgb(var(--muted-foreground) / 0.45); border-radius: 14px; background: rgb(var(--muted) / 0.18); }
+.agsdl-composition-heading { display: flex; align-items: center; gap: 6px; padding: 2px 7px; border: 1px solid rgb(var(--border)); border-radius: 6px; background: rgb(var(--background)); font-size: 11.5px; color: rgb(var(--muted-foreground)); white-space: nowrap; }
+.agsdl-composition-heading:hover, .agsdl-composition-heading:focus-visible { background: rgb(var(--accent)); color: rgb(var(--foreground)); outline: none; }
+.agsdl-composition-heading strong { font-weight: 600; color: rgb(var(--foreground)); }

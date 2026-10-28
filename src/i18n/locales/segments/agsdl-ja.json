@@ -525,7 +525,9 @@
     "to": "次の処理",
     "expand": "グループを展開",
     "openTask": "タスクを開く",
-    "canvasMenu": "グラフの操作"
+    "canvasMenu": "グラフの操作",
+    "unfold": "構成を展開",
+    "fold": "構成を折りたたむ"
   },
   "link": {
     "true": "条件を満たす場合",
