@@ -1881,8 +1881,9 @@ async fn global_chat_second_send_transfer() {
 }
 
 /// The source profile is restored from a backup taken before its cession,
-/// then reconnects: the restored chat stays held, neither reconciliation nor
-/// a new send reactivates it, and no new transfer starts.
+/// without lineage, then reconnects: the restored chat stays held but
+/// readable, neither reconciliation nor a new send reactivates it, with the
+/// relay reachable or not, and no new transfer starts.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore = "requires the explicitly supplied local transfer relay"]
 async fn global_chat_restored_before_cession_transfer() {
@@ -2854,6 +2855,16 @@ async fn global_chat_local_transfer(
                 .unwrap(),
             0
         );
+        // Its history stays readable through the ordinary product reads.
+        assert!(crate::db::repository::get_conversation(&pool, "chat")
+            .await
+            .unwrap()
+            .is_some());
+        assert!(crate::db::repository::list_messages(&pool, "chat")
+            .await
+            .unwrap()
+            .iter()
+            .any(|m| m.content.contains("Can I continue on another computer?")));
         assert!(sqlx::query("INSERT INTO messages(id,conversation_id,role,content,created_at) VALUES('after-restore','chat','user','resumed','2026-01-02T00:00:00Z')")
             .execute(&pool)
             .await
@@ -2861,6 +2872,7 @@ async fn global_chat_local_transfer(
         // Reconnected, neither the startup reconciliation nor a new send
         // reactivates the chat or starts a transfer.
         let runtime = crate::connect::TransferRuntime::default();
+        let admission = crate::db::chat_admission::runtime::ChatAdmissionRuntime::default();
         let launcher = runtime
             .source_launcher(
                 &executable("bun"),
@@ -2875,6 +2887,42 @@ async fn global_chat_local_transfer(
             "instanceCreationId": connection["instanceCreationId"],
             "accountId": connection["accountId"], "deviceId": connection["deviceId"],
             "instanceId": connection["instanceId"]});
+        // An unreachable relay changes nothing: with no lineage, nothing is
+        // left to settle, and a send fails before any reservation (below).
+        let unreachable = std::net::TcpListener::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap();
+        let send = |relay| {
+            super::send_transfer(
+                manager.clone(),
+                Some(relay),
+                &restored,
+                &config,
+                &runtime,
+                &launcher,
+                &admission,
+                "source-window",
+                serde_json::from_value(serde_json::json!({
+                    "connection": connection_input,
+                    "targetInstanceId": seed["b"]["instance"], "conversationId": "chat",
+                    "runtime": "source-browser", "inspectionHandle": "restored-inspection",
+                    "providerId": selected.0, "modelId": selected.1}))
+                .unwrap(),
+            )
+        };
+        assert!(super::reconcile_transfers(
+            manager.clone(),
+            Some(unreachable),
+            &restored,
+            &config,
+            &runtime,
+            &launcher,
+            serde_json::from_value(serde_json::json!({"connection": connection_input})).unwrap(),
+        )
+        .await
+        .unwrap()
+        .is_empty());
         let reopened = super::reconcile_transfers(
             manager.clone(),
             Some(address),
@@ -2887,26 +2935,11 @@ async fn global_chat_local_transfer(
         .await
         .unwrap();
         assert!(reopened.is_empty());
-        let resent = super::send_transfer(
-            manager.clone(),
-            Some(address),
-            &restored,
-            &config,
-            &runtime,
-            &launcher,
-            &crate::db::chat_admission::runtime::ChatAdmissionRuntime::default(),
-            "source-window",
-            serde_json::from_value(serde_json::json!({
-                "connection": connection_input,
-                "targetInstanceId": seed["b"]["instance"], "conversationId": "chat",
-                "runtime": "source-browser", "inspectionHandle": "restored-inspection",
-                "providerId": selected.0, "modelId": selected.1}))
-            .unwrap(),
-        )
-        .await;
+        let resent = send(address).await;
         // The restored chat lost its lineage and draws a new one: the relay,
         // which knows this source under its original lineage, refuses it.
         assert_eq!(resent.err().map(|e| e.message), Some("conflict".into()));
+        assert!(send(unreachable).await.is_err());
         assert_eq!(mode().await, "restore_hold");
         assert_eq!(
             sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM connect_transfers")

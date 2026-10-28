@@ -175,13 +175,17 @@ en lecture seule ; un `not_found` sous une nouvelle instance n'est pas une preuv
 Le scénario natif restaure, par l'export et la restauration officiels, une
 source sauvegardée avant sa cession, puis la reconnecte. La conversation est en
 `restore_hold` avant toute admission, et une écriture de message est refusée.
-La réconciliation au démarrage ne rouvre rien. Un nouvel envoi est refusé par
+Son historique reste lisible par les lectures ordinaires du produit. La
+réconciliation au démarrage ne rouvre rien ; sans filiation, elle n'a même
+rien à régler et ne contacte pas le relais. Un envoi vers un relais
+injoignable échoue sans réservation. Un nouvel envoi est refusé par
 le relais (`conflict`) : la source restaurée a perdu sa filiation, en tire une
 nouvelle, et le relais connaît déjà cette source sous sa filiation d'origine.
 Aucun transfert n'est créé. Aucun chemin ne lève encore cette barrière : la
 réconciliation sous une nouvelle association reste à concevoir. Une
 conversation jamais transférée restera aussi en lecture seule ; l'utilisateur
-la reprend par une copie explicite. Le scénario se reconnecte avec l'instance
+la reprend par une copie explicite. Cette copie n'existe pas encore, ni dans le
+backend ni dans l'interface, qui n'affiche pas non plus l'état `restore_hold`. Le scénario se reconnecte avec l'instance
 d'origine, car le relais de test ne crée pas de nouvelle association.
 
 Si une archive ancienne ne permet pas de reconstruire une filiation vérifiable,
