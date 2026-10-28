@@ -1880,6 +1880,22 @@ async fn global_chat_second_send_transfer() {
     global_chat_local_transfer("macro-ai", false, false, false, Route::SecondSend).await;
 }
 
+/// The source profile is restored from a backup taken before its cession,
+/// then reconnects: the restored chat stays held, neither reconciliation nor
+/// a new send reactivates it, and no new transfer starts.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires the explicitly supplied local transfer relay"]
+async fn global_chat_restored_before_cession_transfer() {
+    global_chat_local_transfer(
+        "macro-ai",
+        false,
+        false,
+        false,
+        Route::RestoredBeforeCession,
+    )
+    .await;
+}
+
 /// Delayed duplicates of an old ACK, an old chunk, the reserve and `ready`
 /// reach the relay after newer messages, and the commit is retried exactly:
 /// each is refused or answered as before, and the transfer completes once.
@@ -1974,6 +1990,8 @@ enum Route {
     MissingAsset,
     /// The relay receives delayed duplicates of older messages.
     StaleReplays,
+    /// The source restores a backup taken before the cession.
+    RestoredBeforeCession,
 }
 
 async fn global_chat_local_transfer(
@@ -2053,8 +2071,11 @@ async fn global_chat_local_transfer(
         .parse()
         .unwrap();
     let directory = tempfile::tempdir().unwrap();
+    // The source database sits in a profile, as the local backup expects.
+    let profile = directory.path().join("data");
+    std::fs::create_dir_all(&profile).unwrap();
     let source = crate::core::db_state::DbPool::default();
-    let source_pool = crate::db::create_pool(&directory.path().join("source.db"))
+    let source_pool = crate::db::create_pool(&profile.join("macro.db"))
         .await
         .unwrap();
     source.set_ready(source_pool.clone()).await.unwrap();
@@ -2414,6 +2435,19 @@ async fn global_chat_local_transfer(
             .await
             .unwrap();
         lines.next_line().await.unwrap().unwrap();
+    }
+    // The official startup export, taken while the chat is still open.
+    let backup = |operation: &str| {
+        let request = serde_json::json!({"operation": operation,
+            "path": directory.path().join("backup.json"), "browser": {}});
+        let dir = profile.join("local-backup");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("request.json"), request.to_string()).unwrap();
+        let (data, config) = (profile.clone(), directory.path().join("config"));
+        async move { crate::local_backup::process_startup(&data, &config).await }
+    };
+    if route == Route::RestoredBeforeCession {
+        backup("export").await.unwrap();
     }
     if let Some(interruption) = interruption {
         std::env::set_var("MACRO_CONNECT_TEST_INTERRUPT", interruption);
@@ -2788,6 +2822,102 @@ async fn global_chat_local_transfer(
             .unwrap();
     }
     assert!(runtime.shutdown().await);
+    if route == Route::RestoredBeforeCession {
+        // With every source runtime stopped, the user restores the backup.
+        source_pool.close().await;
+        std::fs::copy(
+            directory.path().join("backup.json"),
+            profile.join("local-backup/incoming.json"),
+        )
+        .unwrap();
+        backup("restore").await.unwrap();
+        let pool = crate::db::create_pool(&profile.join("macro.db"))
+            .await
+            .unwrap();
+        let restored = crate::core::db_state::DbPool::default();
+        restored.set_ready(pool.clone()).await.unwrap();
+        let mode = || async {
+            sqlx::query_scalar::<_, String>(
+                "SELECT mode FROM chat_admission_owners WHERE conversation_id='chat'",
+            )
+            .fetch_one(&pool)
+            .await
+            .unwrap()
+        };
+        // The barrier holds the chat before any admission; the backup
+        // predates the transfer, so it holds no record of it.
+        assert_eq!(mode().await, "restore_hold");
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM connect_transfers")
+                .fetch_one(&pool)
+                .await
+                .unwrap(),
+            0
+        );
+        assert!(sqlx::query("INSERT INTO messages(id,conversation_id,role,content,created_at) VALUES('after-restore','chat','user','resumed','2026-01-02T00:00:00Z')")
+            .execute(&pool)
+            .await
+            .is_err());
+        // Reconnected, neither the startup reconciliation nor a new send
+        // reactivates the chat or starts a transfer.
+        let runtime = crate::connect::TransferRuntime::default();
+        let launcher = runtime
+            .source_launcher(
+                &executable("bun"),
+                &std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .join("../copilot-bridge/src/entry.ts"),
+                &restored,
+            )
+            .unwrap();
+        let connection_input = serde_json::json!({
+            "capabilities": seed["capabilities"], "context": connection["context"],
+            "generation": connection["generation"],
+            "instanceCreationId": connection["instanceCreationId"],
+            "accountId": connection["accountId"], "deviceId": connection["deviceId"],
+            "instanceId": connection["instanceId"]});
+        let reopened = super::reconcile_transfers(
+            manager.clone(),
+            Some(address),
+            &restored,
+            &config,
+            &runtime,
+            &launcher,
+            serde_json::from_value(serde_json::json!({"connection": connection_input})).unwrap(),
+        )
+        .await
+        .unwrap();
+        assert!(reopened.is_empty());
+        let resent = super::send_transfer(
+            manager.clone(),
+            Some(address),
+            &restored,
+            &config,
+            &runtime,
+            &launcher,
+            &crate::db::chat_admission::runtime::ChatAdmissionRuntime::default(),
+            "source-window",
+            serde_json::from_value(serde_json::json!({
+                "connection": connection_input,
+                "targetInstanceId": seed["b"]["instance"], "conversationId": "chat",
+                "runtime": "source-browser", "inspectionHandle": "restored-inspection",
+                "providerId": selected.0, "modelId": selected.1}))
+            .unwrap(),
+        )
+        .await;
+        // The restored chat lost its lineage and draws a new one: the relay,
+        // which knows this source under its original lineage, refuses it.
+        assert_eq!(resent.err().map(|e| e.message), Some("conflict".into()));
+        assert_eq!(mode().await, "restore_hold");
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM connect_transfers")
+                .fetch_one(&pool)
+                .await
+                .unwrap(),
+            0
+        );
+        assert!(runtime.shutdown().await);
+        pool.close().await;
+    }
     relay_input.write_all(b"{\"stop\":true}\n").await.unwrap();
     drop(relay_input);
     assert!(relay.wait().await.unwrap().success());
