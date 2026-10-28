@@ -52,16 +52,19 @@
       "/flow/steps/design": {
         "title": "Cadrer l’évolution"
       },
-      "/flow/steps/develop": {
+      "/compositions/testedChange/steps/develop": {
         "title": "Développer le correctif"
       },
-      "/flow/steps/tests": {
+      "/flow/steps/change": {
+        "title": "Livrer un correctif testé"
+      },
+      "/compositions/testedChange/steps/tests": {
         "title": "Exécuter les tests"
       },
-      "/flow/steps/passed": {
+      "/compositions/testedChange/steps/passed": {
         "title": "Tests réussis ?"
       },
-      "/flow/steps/failures": {
+      "/compositions/testedChange/steps/failures": {
         "title": "Transmettre les échecs"
       },
       "/flow/steps/review": {
@@ -117,6 +120,9 @@
       },
       "/bindings/atlasRepository": {
         "title": "Dépôt du portail client"
+      },
+      "/compositions/testedChange": {
+        "title": "Développement vérifié"
       }
     }
   }

@@ -157,7 +157,7 @@ describe('populated demo scenarios', () => {
   });
   test('catalogue normalization rejects malformed lines and prepares a correction for the same participant', () => {
     const document = record(decode(demoPlans.find(plan => plan.id === 'demo-ingestion')!.agsdl.source));
-    const agent = record(record(document.agents).normalize), steps = record(record(document.flow).steps), step = record(steps.normalize);
+    const agent = record(record(document.agents).normalize), steps = record(record(record(document.compositions).checkedNormalization).steps), step = record(steps.normalize);
     const result = (line: unknown) => decode(JSON.stringify({ results: { report: { value: { lines: [line] }, mediaType: 'application/json' } } }));
     for (const bad of [{ sku: 'A1', price: '49', currency: 'EUR' }, { sku: 'A1', price: 49, currency: 'GBP' }, { sku: 'A1', price: 49 }, { sku: 'A1', price: 49, currency: 'EUR', extra: true }]) {
       expect(() => validateCompletion(record(agent.interface), step, result(bad))).toThrow();

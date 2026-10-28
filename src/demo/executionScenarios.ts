@@ -4,6 +4,7 @@ import type { TaskExecutionGraph } from '../services/taskExecutionGraph';
 import type { DemoWorkflowStep } from './blueprintLaunch';
 import { projectViewer } from '../services/agsdl/viewer';
 import { object, text } from '../services/agsdl/document';
+import { expandedStepPath } from '../services/agsdl/compositionExpansion';
 
 interface Plan { id: string; projectId: string; title: string; agsdl: AgsdlEditorDocument }
 interface SceneTask {
@@ -18,7 +19,10 @@ interface SceneTask {
   finishAfter?: string[];
 }
 interface Scene { label?: string; failedSteps?: string[]; id: string; planId: string; projectId?: string; archived?: boolean; tasks: SceneTask[]; completedSteps?: string[] }
-const step = (id: string, path: string, status: TaskStatus, description: string, reply: string, after: string[] = [], extra: Pick<SceneTask, 'interaction' | 'reviewAfter' | 'finishAfter'> = {}): SceneTask => ({ id, path: path.startsWith('/') ? path : `/flow/steps/${path}`, status, description, reply, after, ...extra });
+/** A step inside a composition use, as the graph shows it once that use is unfolded. */
+const inside = (use: string, composition: string, name: string) => expandedStepPath(`/flow/steps/${use}`, `/compositions/${composition}/steps/${name}`);
+const stepPath = (name: string) => name.startsWith('/') ? name : `/flow/steps/${name}`;
+const step = (id: string, path: string, status: TaskStatus, description: string, reply: string, after: string[] = [], extra: Pick<SceneTask, 'interaction' | 'reviewAfter' | 'finishAfter'> = {}): SceneTask => ({ id, path: stepPath(path), status, description, reply, after, ...extra });
 
 /** Chosen, authored demo routes. These scenes are examples, not an AgSDL interpreter. */
 export const demoExecutionScenes: Scene[] = [
@@ -53,10 +57,10 @@ export const demoExecutionScenes: Scene[] = [
   ], completedSteps: ['fork'] },
   { id: 'ingestion', planId: 'demo-ingestion', tasks: [
     step('demo-catalog-inspect', 'inspect', 'Completed', 'Le fichier contient 240 références fournisseur.', 'Les colonnes et l’encodage sont reconnus. Douze lignes demandent une correction.'),
-    step('demo-catalog-normalize', 'normalize', 'Completed', 'Les prix et les devises sont normalisés.', 'Une première sortie a été rejetée : price était une chaîne. Les erreurs ont été renvoyées au même agent, qui a corrigé le format.', ['demo-catalog-inspect']),
+    step('demo-catalog-normalize', 'normalization', 'Completed', 'Les prix et les devises sont normalisés.', 'Une première sortie a été rejetée : price était une chaîne. Les erreurs ont été renvoyées au même agent, qui a corrigé le format.', ['demo-catalog-inspect']),
     step('demo-catalog', 'repair', 'Failed', 'Fournir les références SKU manquantes.', 'La correction ne peut pas inventer les SKU de douze lignes. Joignez un fichier corrigé pour reprendre ; rien n’a été enregistré dans le catalogue.', ['demo-catalog-normalize']),
     step('demo-catalog-report', 'report', 'Blocked', 'Présenter le bilan après la correction.', 'Le bilan attend la résolution des lignes invalides.', ['demo-catalog']),
-  ], completedSteps: ['prepare', 'correctable', 'feedback', 'validate', 'valid'] },
+  ], completedSteps: ['prepare', ...['correctable', 'feedback', 'validate', 'valid'].map(name => inside('normalization', 'checkedNormalization', name))] },
   { id: 'incident', planId: 'demo-incident', tasks: [
     step('demo-incident-triage', 'triage', 'Completed', 'La latence concerne l’import du catalogue.', 'La période 10:00–10:15 est retenue. Le p95 est passé de 220 à 840 ms.'),
     step('demo-latency', 'investigate', 'InProgress', 'Comparer le cache aux accès base de données.', 'Les métriques reçues en cours d’analyse placent le pic à 10:07. L’expiration simultanée du cache reste une hypothèse à vérifier.', ['demo-incident-triage']),
@@ -102,11 +106,11 @@ export const demoExecutionScenes: Scene[] = [
   ], completedSteps: ['launch', 'first'] },
   { id: 'fix', planId: 'demo-fix', tasks: [
     step('demo-fix-triage', 'triage', 'Completed', 'Le ticket est un correctif.', 'Le formulaire de contact perd la pièce jointe après une erreur de validation. Le ticket est qualifié comme correctif.'),
-    step('demo-fix-develop', 'develop', 'Completed', 'Les tests du formulaire passent à la deuxième tentative.', 'Première exécution : deux tests en échec sur la conservation du fichier. Le développeur a repris le correctif avec ces échecs ; la suite du portail passe désormais.', ['demo-fix-triage']),
+    step('demo-fix-develop', 'change', 'Completed', 'Les tests du formulaire passent à la deuxième tentative.', 'Première exécution : deux tests en échec sur la conservation du fichier. Le développeur a repris le correctif avec ces échecs ; la suite du portail passe désormais.', ['demo-fix-triage']),
     step('demo-fix-review', 'review', 'InReview', 'Relire le correctif et ses tests.', 'Le changement conserve la pièce jointe dans l’état du formulaire. Choisissez accepter ou reprendre ; une reprise renverra vos remarques au même développeur.', ['demo-fix-develop'], { reviewAfter: true }),
     step('demo-fix-approval', 'releaseApproval', 'Blocked', 'Autoriser la publication du correctif.', 'L’accord sera demandé après une relecture acceptée. Rien n’a été publié.', ['demo-fix-review'], { interaction: 'approval' }),
     step('demo-fix-release', 'release', 'Blocked', 'Publier le correctif autorisé.', 'La publication attend l’accord du responsable.', ['demo-fix-approval']),
-  ], completedSteps: ['tests', 'passed', 'failures'] },
+  ], completedSteps: ['tests', 'passed', 'failures'].map(name => inside('change', 'testedChange', name)) },
   { id: 'shared-assistant', planId: 'macro-assistant', projectId: 'demo-meridian', tasks: [
     step('demo-shared-assistant', 'agent1', 'AwaitingResponse', 'Donner une consigne à l’assistant.', 'Que souhaitez-vous réaliser ? Vous pouvez joindre vos documents dans cette tâche.', [], { interaction: 'question' }),
   ] },
@@ -128,9 +132,9 @@ demoExecutionScenes.push(
   { id: 'fix-tests-down', label: 'Correctif piloté par les tests · Suite indisponible', planId: 'demo-fix', tasks: [
     step('demo-fix-down-triage', 'triage', 'Completed', 'Le ticket est un correctif.', 'L’export CSV des factures ignore le filtre de période. Le ticket est qualifié comme correctif.'),
     step('demo-fix-down-design', 'design', 'Completed', 'Le correctif est cadré.', 'Le filtre de période doit être transmis à la requête d’export.', ['demo-fix-down-triage']),
-    step('demo-fix-down-develop', 'develop', 'Completed', 'Le correctif de l’export est prêt.', 'La requête d’export reçoit désormais la période sélectionnée.', ['demo-fix-down-design']),
+    step('demo-fix-down-develop', 'change', 'Completed', 'Le correctif de l’export est prêt.', 'La requête d’export reçoit désormais la période sélectionnée.', ['demo-fix-down-design']),
     step('demo-fix-recovery', 'recovery', 'AwaitingResponse', 'Choisir la suite après l’échec du lancement des tests.', 'La suite de tests n’a pas pu démarrer : le service a refusé la connexion. Aucun test n’a été exécuté. Souhaitez-vous relancer plus tard ou faire relire le correctif sans résultat de tests ?', ['demo-fix-down-develop'], { interaction: 'question' }),
-  ], failedSteps: ['tests'] },
+  ], failedSteps: [inside('change', 'testedChange', 'tests')] },
 );
 
 export const demoDesignNotes: Record<string, string> = {
@@ -196,7 +200,7 @@ export function buildDemoExecutions(plans: Plan[], date: string) {
       replies.set(entry.id, entry.reply);
     }
     executions.push({ title: scene.label ?? (scene.archived ? `${plan.title} · Édition précédente` : plan.title), source: plan.agsdl.source, display: structuredClone(plan.agsdl.display), migration: structuredClone(plan.agsdl.migration), taskPaths, selectedPath: '', simulated: true,
-      activity: Object.fromEntries([...(scene.completedSteps ?? []).map(name => [`/flow/steps/${name}`, { state: 'completed' as const, activations: [] }]), ...(scene.failedSteps ?? []).map(name => [`/flow/steps/${name}`, { state: 'failed' as const, activations: [] }])]) });
+      activity: Object.fromEntries([...(scene.completedSteps ?? []).map(name => [stepPath(name), { state: 'completed' as const, activations: [] }]), ...(scene.failedSteps ?? []).map(name => [stepPath(name), { state: 'failed' as const, activations: [] }])]) });
   }
   return { tasks, executions, replies };
 }

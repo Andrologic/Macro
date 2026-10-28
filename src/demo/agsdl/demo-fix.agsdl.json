@@ -294,7 +294,7 @@
         },
         "next": {
           "correctif": [
-            "develop"
+            "change"
           ],
           "evolution": [
             "design"
@@ -311,78 +311,22 @@
         "type": "agent",
         "agent": "designer",
         "next": [
-          "develop"
+          "change"
         ]
       },
-      "develop": {
-        "type": "agent",
-        "agent": "developer",
-        "next": [
-          "tests"
-        ],
-        "maxVisits": 4
-      },
-      "tests": {
-        "type": "call",
-        "binding": "testSuite",
-        "arguments": {
-          "suite": {
-            "value": "portal"
-          }
-        },
-        "next": [
-          "passed"
-        ],
-        "onError": [
-          "recovery"
-        ]
-      },
-      "passed": {
-        "type": "condition",
-        "test": {
-          "equals": [
-            {
-              "path": [
-                "data",
-                "exitCode"
-              ]
-            },
-            {
-              "value": 0
-            }
-          ]
+      "change": {
+        "type": "compose",
+        "composition": "testedChange",
+        "agents": {
+          "developer": "developer"
         },
         "next": {
-          "true": [
+          "green": [
             "review"
-          ],
-          "false": [
-            "failures"
           ]
-        }
-      },
-      "failures": {
-        "type": "prepare",
-        "message": {
-          "prompt": [
-            {
-              "value": "Corriger les tests en échec sans modifier leurs attentes."
-            }
-          ],
-          "resources": {
-            "failures": {
-              "select": {
-                "path": [
-                  "data",
-                  "report"
-                ]
-              },
-              "mediaType": "application/json"
-            }
-          }
         },
-        "next": [
-          "develop"
+        "onError": [
+          "recovery"
         ]
       },
       "review": {
@@ -425,7 +369,7 @@
           }
         },
         "next": [
-          "develop"
+          "change"
         ]
       },
       "releaseApproval": {
@@ -479,6 +423,96 @@
         "type": "agent",
         "agent": "recovery",
         "next": []
+      }
+    }
+  },
+  "compositions": {
+    "testedChange": {
+      "agentParameters": [
+        "developer"
+      ],
+      "entry": "develop",
+      "outputs": [
+        "green"
+      ],
+      "steps": {
+        "develop": {
+          "type": "agent",
+          "agent": {
+            "parameter": "developer"
+          },
+          "next": [
+            "tests"
+          ],
+          "maxVisits": 4
+        },
+        "tests": {
+          "type": "call",
+          "binding": "testSuite",
+          "arguments": {
+            "suite": {
+              "value": "portal"
+            }
+          },
+          "next": [
+            "passed"
+          ],
+          "onError": [
+            {
+              "error": true
+            }
+          ]
+        },
+        "passed": {
+          "type": "condition",
+          "test": {
+            "equals": [
+              {
+                "path": [
+                  "data",
+                  "exitCode"
+                ]
+              },
+              {
+                "value": 0
+              }
+            ]
+          },
+          "next": {
+            "true": [
+              {
+                "output": "green"
+              }
+            ],
+            "false": [
+              "failures"
+            ]
+          }
+        },
+        "failures": {
+          "type": "prepare",
+          "message": {
+            "prompt": [
+              {
+                "value": "Corriger les tests en échec sans modifier leurs attentes."
+              }
+            ],
+            "resources": {
+              "failures": {
+                "select": {
+                  "path": [
+                    "data",
+                    "report"
+                  ]
+                },
+                "mediaType": "application/json"
+              }
+            }
+          },
+          "next": [
+            "develop"
+          ]
+        }
       }
     }
   }

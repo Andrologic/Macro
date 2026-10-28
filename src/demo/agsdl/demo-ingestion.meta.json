@@ -40,13 +40,16 @@
       "/flow/steps/prepare": {
         "title": "Préparer les lignes"
       },
-      "/flow/steps/normalize": {
+      "/compositions/checkedNormalization/steps/normalize": {
         "title": "Normaliser les données"
       },
-      "/flow/steps/validate": {
+      "/flow/steps/normalization": {
+        "title": "Normaliser le catalogue"
+      },
+      "/compositions/checkedNormalization/steps/validate": {
         "title": "Contrôler le schéma"
       },
-      "/flow/steps/valid": {
+      "/compositions/checkedNormalization/steps/valid": {
         "title": "Catalogue conforme ?"
       },
       "/flow/steps/repair": {
@@ -82,14 +85,17 @@
       "/bindings/warehouse": {
         "title": "Entrepôt de données Helio"
       },
-      "/flow/steps/correctable": {
+      "/compositions/checkedNormalization/steps/correctable": {
         "title": "Format à corriger ?"
       },
-      "/flow/steps/feedback": {
+      "/compositions/checkedNormalization/steps/feedback": {
         "title": "Renvoyer les erreurs de format"
       },
       "/content/supplierFile": {
         "title": "Fichier fournisseur"
+      },
+      "/compositions/checkedNormalization": {
+        "title": "Normalisation contrôlée"
       }
     }
   }

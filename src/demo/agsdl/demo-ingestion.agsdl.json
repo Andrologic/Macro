@@ -211,52 +211,26 @@
           }
         },
         "next": [
-          "normalize"
+          "normalization"
         ]
       },
-      "normalize": {
-        "type": "agent",
-        "agent": "normalize",
-        "next": [
-          "validate"
-        ],
-        "maxVisits": 3,
-        "onError": [
-          "correctable"
-        ]
-      },
-      "validate": {
-        "type": "call",
-        "binding": "catalogValidation",
-        "next": [
-          "valid"
-        ],
+      "normalization": {
+        "type": "compose",
+        "composition": "checkedNormalization",
+        "agents": {
+          "normalizer": "normalize"
+        },
+        "next": {
+          "valid": [
+            "store"
+          ],
+          "invalid": [
+            "repair"
+          ]
+        },
         "onError": [
           "repair"
         ]
-      },
-      "valid": {
-        "type": "condition",
-        "test": {
-          "equals": [
-            {
-              "path": [
-                "text"
-              ]
-            },
-            {
-              "value": "Valide"
-            }
-          ]
-        },
-        "next": {
-          "true": [
-            "store"
-          ],
-          "false": [
-            "repair"
-          ]
-        }
       },
       "repair": {
         "type": "agent",
@@ -303,53 +277,121 @@
         "type": "agent",
         "agent": "report",
         "next": []
-      },
-      "correctable": {
-        "type": "condition",
-        "test": {
-          "equals": [
+      }
+    }
+  },
+  "compositions": {
+    "checkedNormalization": {
+      "agentParameters": [
+        "normalizer"
+      ],
+      "entry": "normalize",
+      "outputs": [
+        "valid",
+        "invalid"
+      ],
+      "steps": {
+        "normalize": {
+          "type": "agent",
+          "agent": {
+            "parameter": "normalizer"
+          },
+          "next": [
+            "validate"
+          ],
+          "maxVisits": 3,
+          "onError": [
+            "correctable"
+          ]
+        },
+        "validate": {
+          "type": "call",
+          "binding": "catalogValidation",
+          "next": [
+            "valid"
+          ],
+          "onError": [
             {
-              "path": [
-                "error",
-                "code"
-              ]
-            },
-            {
-              "value": "OUTPUT_CONSTRAINT"
+              "error": true
             }
           ]
         },
-        "next": {
-          "true": [
-            "feedback"
-          ],
-          "false": [
-            "repair"
-          ]
-        }
-      },
-      "feedback": {
-        "type": "prepare",
-        "message": {
-          "prompt": [
-            {
-              "value": "Corriger le résultat selon les erreurs de validation jointes."
-            }
-          ],
-          "resources": {
-            "outputErrors": {
-              "select": {
+        "valid": {
+          "type": "condition",
+          "test": {
+            "equals": [
+              {
                 "path": [
-                  "error"
+                  "text"
                 ]
               },
-              "mediaType": "application/json"
-            }
+              {
+                "value": "Valide"
+              }
+            ]
+          },
+          "next": {
+            "true": [
+              {
+                "output": "valid"
+              }
+            ],
+            "false": [
+              {
+                "output": "invalid"
+              }
+            ]
           }
         },
-        "next": [
-          "normalize"
-        ]
+        "correctable": {
+          "type": "condition",
+          "test": {
+            "equals": [
+              {
+                "path": [
+                  "error",
+                  "code"
+                ]
+              },
+              {
+                "value": "OUTPUT_CONSTRAINT"
+              }
+            ]
+          },
+          "next": {
+            "true": [
+              "feedback"
+            ],
+            "false": [
+              {
+                "output": "invalid"
+              }
+            ]
+          }
+        },
+        "feedback": {
+          "type": "prepare",
+          "message": {
+            "prompt": [
+              {
+                "value": "Corriger le résultat selon les erreurs de validation jointes."
+              }
+            ],
+            "resources": {
+              "outputErrors": {
+                "select": {
+                  "path": [
+                    "error"
+                  ]
+                },
+                "mediaType": "application/json"
+              }
+            }
+          },
+          "next": [
+            "normalize"
+          ]
+        }
       }
     }
   }
