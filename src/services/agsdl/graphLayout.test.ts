@@ -88,6 +88,13 @@ describe("AgSDL reading layout", () => {
     const rail = graph.routes.get(edges[5].id)!;
     expect(rail.steps[0].y).toBeGreaterThan(frameBottom);
   });
+
+  it("starts a block reached from inside a frame below the whole frame", () => {
+    const cards = ["start", "inner", "check", "fix", "review"].map(id => card(id));
+    const edges = [edge("start", "inner"), edge("inner", "check"), edge("inner", "review", "green"), edge("check", "fix"), edge("fix", "inner")];
+    const graph = layoutViewer(cards, edges, {}, [["inner", "check", "fix"].map(id => `/flow/steps/${id}`)]);
+    expect(at(graph, "review").position.y).toBeGreaterThan(at(graph, "fix").position.y);
+  });
 });
 
 describe("AgSDL handler rails", () => {

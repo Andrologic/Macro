@@ -260,9 +260,12 @@ function Canvas({ cards: declaredCards, edges: declaredEdges, entry: declaredEnt
     const members = layout.nodes.filter(node => frame.members.includes(node.card.path));
     const start = members.find(node => node.card.path === frame.entry);
     if (!members.length || !start) return [];
-    const left = Math.min(...members.map(node => node.position.x)) - VIEWER_FRAME.padding;
+    // A loop inside the composition runs on a rail that the frame encloses too.
+    const rails = layout.edges.filter(edge => frame.members.includes(edge.source) && frame.members.includes(edge.target))
+      .flatMap(edge => layout.routes.get(edge.id)?.steps.flatMap(step => step.x === undefined ? [] : [step.x]) ?? []);
+    const left = Math.min(...members.map(node => node.position.x), ...rails) - VIEWER_FRAME.padding;
     const top = Math.min(...members.map(node => node.position.y)) - VIEWER_FRAME.top;
-    const right = Math.max(...members.map(node => node.position.x + VIEWER_CARD_WIDTH)) + VIEWER_FRAME.padding;
+    const right = Math.max(...members.map(node => node.position.x + VIEWER_CARD_WIDTH), ...rails) + VIEWER_FRAME.padding;
     const bottom = Math.max(...members.map(node => node.position.y + node.height)) + VIEWER_FRAME.padding;
     const step = declaredCards.find(card => card.path === frame.path)!;
     const data = { performer: graphBlockPerformer(step, displayTitle(step)), title: displayTitle(step), fold: () => toggleComposition(frame.path) };

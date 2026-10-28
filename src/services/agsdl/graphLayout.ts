@@ -102,19 +102,34 @@ export function layoutViewer(cards: ViewerCard[], edges: ViewerEdge[], heights: 
   };
   for (const card of [...cards.filter(card => incoming.get(card.path) === 0), ...cards]) if (!state.has(card.path)) visit(card.path);
 
-  // Longest path over the acyclic reading graph.
+  // Steps framed together keep other blocks and connections outside their frame.
+  const frameOf = new Map(frames.flatMap((members, index) => members.map(path => [path, index] as const)));
+  // Longest path over the acyclic reading graph. A block reached from a frame starts below the whole frame.
   const forward = flow.filter(edge => !returns.has(edge));
   const rank = new Map(cards.map(card => [card.path, 0]));
-  const pending = new Map(cards.map(card => [card.path, 0]));
-  for (const edge of forward) pending.set(edge.target, pending.get(edge.target)! + 1);
-  const queue = cards.filter(card => pending.get(card.path) === 0).map(card => card.path);
-  for (let index = 0; index < queue.length; index++) {
-    for (const edge of outgoing.get(queue[index])!) {
-      if (returns.has(edge)) continue;
-      rank.set(edge.target, Math.max(rank.get(edge.target)!, rank.get(queue[index])! + 1));
-      pending.set(edge.target, pending.get(edge.target)! - 1);
-      if (pending.get(edge.target) === 0) queue.push(edge.target);
+  const lastRow = new Map<number, number>();
+  for (let pass = 0; pass < 4; pass++) {
+    for (const card of cards) rank.set(card.path, 0);
+    const pending = new Map(cards.map(card => [card.path, 0]));
+    for (const edge of forward) pending.set(edge.target, pending.get(edge.target)! + 1);
+    const queue = cards.filter(card => pending.get(card.path) === 0).map(card => card.path);
+    for (let index = 0; index < queue.length; index++) {
+      const frame = frameOf.get(queue[index]);
+      for (const edge of outgoing.get(queue[index])!) {
+        if (returns.has(edge)) continue;
+        const below = frame !== undefined && frameOf.get(edge.target) !== frame ? lastRow.get(frame) ?? 0 : rank.get(queue[index])!;
+        rank.set(edge.target, Math.max(rank.get(edge.target)!, below + 1));
+        pending.set(edge.target, pending.get(edge.target)! - 1);
+        if (pending.get(edge.target) === 0) queue.push(edge.target);
+      }
     }
+    let settled = true;
+    frames.forEach((members, index) => {
+      const last = Math.max(0, ...members.flatMap(path => rank.has(path) ? [rank.get(path)!] : []));
+      if (last !== (lastRow.get(index) ?? 0)) settled = false;
+      lastRow.set(index, last);
+    });
+    if (settled) break;
   }
 
   // A single main continuation is weighted so the main path stays straight.
@@ -140,8 +155,6 @@ export function layoutViewer(cards: ViewerCard[], edges: ViewerEdge[], heights: 
     if (existing) existing.weight = Math.max(existing.weight, weight);
     else links.set(key, { from, to, weight });
   };
-  // Steps framed together keep other blocks and connections outside their frame.
-  const frameOf = new Map(frames.flatMap((members, index) => members.map(path => [path, index] as const)));
   const chains = new Map<ViewerEdge, string[]>();
   // Connections skipping several rows follow a side rail, like returns, instead of crossing the process.
   const rails: ViewerEdge[] = [...returns];
@@ -357,6 +370,8 @@ export function layoutViewer(cards: ViewerCard[], edges: ViewerEdge[], heights: 
     const blocked = layers.slice(source.layer + 1, last + 1).flat().some(node => node.card && Math.abs(node.x - source.x) < VIEWER_CARD_WIDTH);
     return blocked ? source.layer : last;
   };
+  // A loop inside a frame turns back within the frame's bottom padding.
+  const enclosed = (edge: ViewerEdge) => frameOf.has(edge.source) && frameOf.get(edge.source) === frameOf.get(edge.target);
   for (const group of groups.values()) for (const edge of group.edges) {
     const source = nodes.get(edge.source)!;
     const row = exitRow(source, group.x);
@@ -364,7 +379,7 @@ export function layoutViewer(cards: ViewerCard[], edges: ViewerEdge[], heights: 
     const level = edge.label === "onError" && group.side > 0 && !layers[source.layer].some(node => node.x > source.x);
     routes.set(edge.id, { kind: "orthogonal", ...(returns.has(edge) ? { loop: true } : {}), steps: [
       level ? { y: rowTop[source.layer], x: group.x, level: true }
-        : { y: rowBottom[row] + after[row] + LOOP_OFFSET + slot(exits, `${row}:${group.side}`, edge.source) * 4, x: group.x },
+        : { y: rowBottom[row] + (enclosed(edge) ? 0 : after[row]) + LOOP_OFFSET + slot(exits, `${row}:${group.side}`, edge.source) * 4, x: group.x },
       { y: rowTop[group.target.layer] - LOOP_OFFSET - slot(entries, `${group.target.layer}`, group.target.id) * 4 },
     ] });
   }
