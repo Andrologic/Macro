@@ -200,6 +200,19 @@ localement, ou en cours de suppression, n'est pas reprise. Les cibles publiées
 avant la migration 022 n'ont pas de marque : chacune est vérifiée une fois
 auprès du relais, au premier démarrage où sa source est en ligne.
 
+Une confirmation et une annulation concurrentes visent la même révision du
+relais : une seule devient le terminal. Si l'annulation gagne, la confirmation
+échoue, la source enregistre le terminal `aborted` puis rouvre la conversation,
+et la cible libère sa tentative. Si la confirmation gagne, l'annulation reçoit
+le terminal `committed` et le transfert se termine normalement.
+
+La révocation des sessions du compte abandonne au relais les transferts non
+terminaux. Révoquée avant la confirmation, la source ne peut ni confirmer ni
+lire ce terminal : elle reste gelée, sans cession ni dégel implicite, et sa
+réconciliation ne change rien. La cible ne publie rien. La reprise après une
+nouvelle association, qui doit lire le terminal `aborted` et rouvrir la source,
+n'est pas encore testée : le relais de test ne simule pas une réassociation.
+
 Une cible qui a perdu ses données après confirmation reste en erreur de
 récupération. Elle ne provoque pas un dégel implicite de la source. Une remise
 en état ou une nouvelle cession explicite doit résoudre cette situation.

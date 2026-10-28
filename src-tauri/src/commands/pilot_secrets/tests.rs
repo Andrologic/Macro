@@ -1847,6 +1847,31 @@ async fn global_chat_target_stopped_after_publication_transfer() {
     .await;
 }
 
+/// An abort wins the race against the commit: the commit loses, the source
+/// applies the aborted terminal and reopens, the target releases.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires the explicitly supplied local transfer relay"]
+async fn global_chat_abort_before_commit_transfer() {
+    global_chat_local_transfer("macro-ai", false, false, false, Route::AbortBeforeCommit).await;
+}
+
+/// An abort on the commit's revision loses: the relay returns the committed
+/// terminal and the transfer completes.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires the explicitly supplied local transfer relay"]
+async fn global_chat_abort_after_commit_transfer() {
+    global_chat_local_transfer("macro-ai", false, false, false, Route::AbortAfterCommit).await;
+}
+
+/// The source session is revoked once the target is ready: the commit fails,
+/// nothing is ceded, and a fresh transport's reconciliation reopens the source
+/// without ever committing the attempt.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires the explicitly supplied local transfer relay"]
+async fn global_chat_revoked_before_commit_transfer() {
+    global_chat_local_transfer("macro-ai", false, false, false, Route::RevokedBeforeCommit).await;
+}
+
 /// The target lacks the selected model: the source records `aborted` and reopens.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore = "requires the explicitly supplied local transfer relay"]
@@ -1884,6 +1909,12 @@ enum Route {
     /// The target process stops after publishing, before recording the
     /// activation; its next reconciliation records it.
     TargetStoppedAfterPublication,
+    /// The source records `aborted` just before its commit, which then loses.
+    AbortBeforeCommit,
+    /// The source sends an abort on the commit's revision after committing.
+    AbortAfterCommit,
+    /// The relay revokes the source session after `ready`, before the commit.
+    RevokedBeforeCommit,
 }
 
 async fn global_chat_local_transfer(
@@ -1897,7 +1928,23 @@ async fn global_chat_local_transfer(
     let restricted = route == Route::RestrictedTarget;
     let abandoned = route == Route::AbandonedAfterPreparation;
     // The source sees an abandoned attempt and the target releases it.
-    let released = abandoned || route == Route::TargetStoppedBeforeCommit;
+    let released = abandoned
+        || matches!(
+            route,
+            Route::TargetStoppedBeforeCommit | Route::AbortBeforeCommit
+        );
+    // Revoking the account's sessions aborts the transfer at the relay, but
+    // neither desktop can read that terminal before a new association.
+    let revoked = route == Route::RevokedBeforeCommit;
+    // The source flow's injection point for this route.
+    let interruption = match route {
+        Route::InterruptedSource => Some("after_reserve"),
+        Route::AbandonedAfterPreparation => Some("after_prepared"),
+        Route::AbortBeforeCommit => Some("abort_before_commit"),
+        Route::AbortAfterCommit => Some("abort_after_commit"),
+        Route::RevokedBeforeCommit => Some("hold_before_commit"),
+        _ => None,
+    };
     let lost = matches!(
         route,
         Route::LostReserveReply | Route::LostReserveRequest | Route::InterruptedSource
@@ -2261,7 +2308,7 @@ async fn global_chat_local_transfer(
     let mut input = child.stdin.take().unwrap();
     let mut initialization=serde_json::to_vec(&serde_json::json!({"seed":seed,
         "database":directory.path().join("target.db"),"provider":provider,"compacted":compacted,"resources":with_resources,"refused":refused,"runtime":via_runtime,
-        "interrupted":route == Route::InterruptedReceive,"restricted":restricted,"idle":lost,"abandoned":released,
+        "interrupted":route == Route::InterruptedReceive,"restricted":restricted,"idle":lost,"abandoned":released,"revoked":revoked,
         "stop":match route {
             Route::TargetStoppedBeforeCommit => "target_after_ready",
             Route::TargetStoppedAfterCommit => "target_after_commit",
@@ -2288,14 +2335,11 @@ async fn global_chat_local_transfer(
             .unwrap();
         lines.next_line().await.unwrap().unwrap();
     }
-    if route == Route::InterruptedSource {
-        std::env::set_var("MACRO_CONNECT_TEST_INTERRUPT", "after_reserve");
-    }
-    if abandoned {
-        std::env::set_var("MACRO_CONNECT_TEST_INTERRUPT", "after_prepared");
+    if let Some(interruption) = interruption {
+        std::env::set_var("MACRO_CONNECT_TEST_INTERRUPT", interruption);
     }
     let transferred: Result<String, String> = if let Some((verified, inspection)) = &direct {
-        super::flow::send(
+        let send = super::flow::send(
             manager.clone(),
             &source,
             &admission,
@@ -2309,9 +2353,21 @@ async fn global_chat_local_transfer(
             "chat",
             &selected.0,
             &selected.1,
-        )
-        .await
-        .map_err(str::to_owned)
+        );
+        // Once the target is ready, the relay revokes the source sessions.
+        let revoke = async {
+            if route != Route::RevokedBeforeCommit {
+                return;
+            }
+            while !super::flow::BEFORE_COMMIT.load(std::sync::atomic::Ordering::SeqCst) {
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+            relay_input.write_all(b"{\"revoke\":true}\n").await.unwrap();
+            lines.next_line().await.unwrap().unwrap();
+            super::flow::COMMIT_RELEASED.store(true, std::sync::atomic::Ordering::SeqCst);
+        };
+        let (sent, ()) = tokio::join!(send, revoke);
+        sent.map_err(str::to_owned)
     } else {
         // The source listens as soon as its producer is confirmed; the send
         // must first interrupt that idle receive.
@@ -2366,11 +2422,10 @@ async fn global_chat_local_transfer(
             }),
         }
     };
-    if abandoned {
+    if interruption.is_some() {
         std::env::remove_var("MACRO_CONNECT_TEST_INTERRUPT");
     }
     if route == Route::InterruptedSource {
-        std::env::remove_var("MACRO_CONNECT_TEST_INTERRUPT");
         assert_eq!(
             transferred.as_ref().map_err(String::as_str),
             Err("test_interrupted")
@@ -2419,7 +2474,49 @@ async fn global_chat_local_transfer(
         .unwrap();
         assert_eq!(reopened, vec!["chat".to_owned()]);
     }
-    if refused || restricted || lost || released {
+    if revoked {
+        // The revoked session neither commits nor aborts: nothing is ceded and
+        // the source stays frozen, even after a reconciliation with a fresh
+        // transport, which cannot authenticate the aborted terminal.
+        assert!(transferred.is_err());
+        let state = || async {
+            sqlx::query_as::<_, (String, Option<String>)>("SELECT o.mode,t.resolution FROM chat_admission_owners o JOIN connect_transfers t ON t.source_conversation_id=o.conversation_id WHERE o.conversation_id='chat' AND t.local_role='source'")
+                .fetch_one(&source_pool)
+                .await
+                .unwrap()
+        };
+        assert_eq!(state().await, ("frozen".to_owned(), None));
+        let reopened = super::reconcile_transfers(
+            manager.clone(),
+            Some(address),
+            &source,
+            &config,
+            &runtime,
+            &runtime
+                .source_launcher(
+                    &executable("bun"),
+                    &std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                        .join("../copilot-bridge/src/entry.ts"),
+                    &source,
+                )
+                .unwrap(),
+            serde_json::from_value(serde_json::json!({"connection": {
+                "capabilities": seed["capabilities"], "context": connection["context"],
+                "generation": connection["generation"], "instanceCreationId": connection["instanceCreationId"],
+                "accountId": connection["accountId"], "deviceId": connection["deviceId"],
+                "instanceId": connection["instanceId"]}}))
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+        assert!(reopened.is_empty());
+        assert_eq!(state().await, ("frozen".to_owned(), None));
+        assert_eq!(
+            transfer_target_event(&mut target_events).await.unwrap(),
+            serde_json::json!({"type":"refused"})
+        );
+        input.write_all(b"{\"stop\":true}\n").await.unwrap();
+    } else if refused || restricted || lost || released {
         if lost {
             // The reserve's own failure is returned once the source reopened.
             assert!(transferred.is_err());
@@ -2509,7 +2606,7 @@ async fn global_chat_local_transfer(
         input.write_all(b"{\"stop\":true}\n").await.unwrap();
     }
     drop(input);
-    if transferred.is_err() && !refused && !restricted && !lost && !released {
+    if transferred.is_err() && !refused && !restricted && !lost && !released && !revoked {
         child.kill().await.unwrap();
     }
     let child = child.wait_with_output().await.unwrap();
@@ -2525,7 +2622,7 @@ async fn global_chat_local_transfer(
     relay_input.write_all(b"{\"stop\":true}\n").await.unwrap();
     drop(relay_input);
     assert!(relay.wait().await.unwrap().success());
-    if !refused && !restricted && !lost && !released {
+    if !refused && !restricted && !lost && !released && !revoked {
         transferred.unwrap();
     }
     assert!(child.status.success());
@@ -2914,7 +3011,26 @@ async fn global_chat_transfer_target() {
             );
         }
     }
-    if refused || restricted || data["abandoned"] == true {
+    if data["revoked"] == true {
+        // The revoked target never publishes: its attempt stays unresolved
+        // until a new association reads the relay's aborted terminal.
+        assert!(received.is_err());
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM connect_transfers WHERE local_role='target' AND resolution IS NULL")
+                .fetch_one(&pool)
+                .await
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM connect_activation_receipts")
+                .fetch_one(&pool)
+                .await
+                .unwrap(),
+            0
+        );
+    }
+    if refused || restricted || data["abandoned"] == true || data["revoked"] == true {
         assert!(received.is_err());
         println!(
             "SLICE_TARGET_EVENT:{}",

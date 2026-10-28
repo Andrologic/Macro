@@ -390,12 +390,32 @@ pub(super) async fn send<B: Vault + 'static>(
     step.prepared=proposal.clone();
     let ready_reply=after_target_proof(transport,manager.clone(),ready,&known,wrap(ready_request),expectation(&binding,&frozen,&manifest,&proposal,&Value::Null)).await?;
     step.revision=text(&ready_reply["result"]["status"]["revision"])?.to_owned();
+    #[cfg(test)]
+    if std::env::var("MACRO_CONNECT_TEST_INTERRUPT").as_deref() == Ok("hold_before_commit") {
+        // The scenario acts on the relay, here revoking the source session.
+        BEFORE_COMMIT.store(true, std::sync::atomic::Ordering::SeqCst);
+        while !COMMIT_RELEASED.load(std::sync::atomic::Ordering::SeqCst) {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    }
+    #[cfg(test)]
+    if std::env::var("MACRO_CONNECT_TEST_INTERRUPT").as_deref() == Ok("abort_before_commit") {
+        // An abort wins the race: the commit below must lose to it.
+        abandon(transport,manager.clone(),ready,&known,&binding,&frozen,&mut step,"test_abort").await?;
+        if transport.terminal(reservation.transfer_id()).await?["outcome"]!="aborted"{return Err("test_abort");}
+    }
     let commit=wrap(request("commit",&step.revision,&binding["transfer_id"],json!({})));
     challenge_target(transport,manager.clone(),ready,&binding,&manifest,&proposal,&commit["request"],"target_maintained").await?;
     let committed=match transport.source_decision(manager.clone(),ready,owner,&reservation,Some(&normalized),&known,commit.clone(),expectation(&binding,&frozen,&manifest,&proposal,&Value::Null),"source_maintained").await {
         Ok(reply)=>output(reply)?,Err("forbidden")=>after_target_proof(transport,manager.clone(),ready,&known,commit,expectation(&binding,&frozen,&manifest,&proposal,&Value::Null)).await?,Err(error)=>return Err(error),
     };
     if committed["result"]["status"]["phase"]!="committed"{return Err("commit_reply");}
+    #[cfg(test)]
+    if std::env::var("MACRO_CONNECT_TEST_INTERRUPT").as_deref() == Ok("abort_after_commit") {
+        // An abort on the same revision loses: the relay returns the committed winner.
+        abandon(transport,manager.clone(),ready,&known,&binding,&frozen,&mut step,"test_abort").await?;
+        if transport.terminal(reservation.transfer_id()).await?["outcome"]!="committed"{return Err("test_abort");}
+    }
     Ok(())
     }.await;
     if let Err(error) = attempt {
@@ -447,6 +467,15 @@ pub(super) async fn send<B: Vault + 'static>(
     }
     Err("target_activation_pending")
 }
+
+/// Set by the source once ready, before its commit, when held by a scenario.
+#[cfg(test)]
+pub(super) static BEFORE_COMMIT: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+/// Set by the scenario to let a held source commit.
+#[cfg(test)]
+pub(super) static COMMIT_RELEASED: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
 
 /// Wait without traffic from the target before the source gives up.
 const TARGET_QUIET: Duration = Duration::from_secs(60);
