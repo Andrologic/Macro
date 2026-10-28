@@ -13,12 +13,14 @@ it("unfolds a composition step into its steps, run by the bound agent and leavin
   const { cards, edges, frames } = expandCompositions(flow.cards, flow.edges, projected.graphs, new Set([step]), projected.declarations);
 
   expect(cards.some(card => card.path === step)).toBe(false);
-  expect(frames).toEqual([{ path: step, title: "Préparer une intervention", entry: copy("review"), members: [copy("review"), copy("check")] }]);
+  expect(frames).toEqual([{ path: step, title: "Préparer une intervention", entry: copy("review"), members: [copy("review"), copy("handoff"), copy("counterCheck"), copy("check")] }]);
   expect(cards.find(card => card.path === copy("review"))?.participant?.label).toBe("Concepteur de l’intervention");
+  // A step that names its agent directly keeps it.
+  expect(cards.find(card => card.path === copy("counterCheck"))?.participant?.label).toBe("Contre-expert");
   const routes = edges.filter(edge => edge.source.startsWith(step) || edge.target.startsWith(step)).map(edge => [edge.source, edge.target, edge.label]);
   expect(routes).toEqual(expect.arrayContaining([
     ["/flow/steps/decide", copy("review"), "intervenir"],
-    [copy("review"), copy("check"), "next"],
+    [copy("counterCheck"), copy("check"), "next"],
     [copy("check"), "/flow/steps/operationsApproval", "true"],
     [copy("check"), "/flow/steps/escalation", "false"],
     [copy("review"), "/flow/steps/recovery", "onError"],

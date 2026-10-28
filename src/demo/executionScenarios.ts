@@ -96,7 +96,7 @@ export const demoExecutionScenes: Scene[] = [
     step('demo-crisis-traces', 'traces', 'Completed', 'Les traces étayent la piste du cache.', 'Cette piste a été retenue ; les autres recherches sont terminées.'),
     step('demo-crisis-customer', 'customer', 'Completed', 'L’impact métier est documenté.', 'Dix-sept commandes ont rencontré un échec pendant la période observée.'),
     step('demo-crisis-decision', 'decide', 'Completed', 'Une intervention ciblée est retenue.', 'Le responsable choisit de préparer une intervention plutôt que de poursuivre la surveillance.', ['demo-crisis-metrics', 'demo-crisis-traces', 'demo-crisis-customer']),
-    step('demo-crisis-plan', 'intervention', 'Completed', 'Le spécialiste a évalué l’intervention.', 'Le plan d’intervention et les critères de retour arrière sont prêts.', ['demo-crisis-decision']),
+    step('demo-crisis-plan', 'intervention', 'Completed', 'Le contre-expert a validé le plan d’intervention.', 'Le plan et ses critères de retour arrière ont été vérifiés par un second agent.', ['demo-crisis-decision']),
     step('demo-crisis-operations', 'operationsApproval', 'Completed', 'L’équipe opérations a donné son accord.', 'L’accord couvre cette intervention précise sur le service catalogue.', ['demo-crisis-plan'], { interaction: 'approval' }),
     step('demo-crisis-security', 'securityApproval', 'AwaitingResponse', 'Donner l’accord sécurité avant l’intervention.', 'L’accord opérations est acquis. Le déploiement reste interdit tant que l’accord sécurité manque.', ['demo-crisis-operations'], { interaction: 'approval' }),
     step('demo-crisis-technical', 'technical', 'Blocked', 'Contrôler les indicateurs après l’intervention.', 'Le contrôle attend l’intervention autorisée.', ['demo-crisis-security']),

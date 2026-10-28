@@ -49,6 +49,9 @@
       "/agents/reviewer": {
         "title": "Auditeur des preuves"
       },
+      "/agents/verifier": {
+        "title": "Contre-expert"
+      },
       "/agents/report": {
         "title": "Rédacteur"
       },
@@ -134,10 +137,16 @@
         "title": "Examiner l’échec technique"
       },
       "/compositions/assessment": {
-        "title": "Expertise paramétrée"
+        "title": "Expertise contre-vérifiée"
       },
       "/compositions/assessment/steps/review": {
         "title": "Mobiliser le spécialiste"
+      },
+      "/compositions/assessment/steps/handoff": {
+        "title": "Transmettre le rapport"
+      },
+      "/compositions/assessment/steps/counterCheck": {
+        "title": "Contre-expertiser"
       },
       "/compositions/assessment/steps/check": {
         "title": "Preuves suffisantes ?"

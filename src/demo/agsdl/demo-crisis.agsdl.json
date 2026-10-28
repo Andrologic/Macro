@@ -493,6 +493,50 @@
         "risk"
       ]
     },
+    "verifier": {
+      "configuration": "approfondi",
+      "prompt": [
+        {
+          "value": "Contre-expertiser le rapport transmis sans l’avoir rédigé. Vérifier que chaque preuve soutient l’hypothèse. Produire report JSON : approved vaut true seulement si les preuves suffisent ; reprendre l’hypothèse retenue et les preuves vérifiées."
+        }
+      ],
+      "interface": {
+        "results": {
+          "report": {
+            "mediaTypes": [
+              "application/json"
+            ],
+            "required": true,
+            "valueSchema": {
+              "type": "object",
+              "properties": {
+                "approved": {
+                  "type": "boolean"
+                },
+                "hypothesis": {
+                  "type": "string"
+                },
+                "evidence": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                }
+              },
+              "required": [
+                "approved",
+                "hypothesis",
+                "evidence"
+              ],
+              "additionalProperties": false
+            }
+          }
+        }
+      },
+      "skills": [
+        "risk"
+      ]
+    },
     "report": {
       "configuration": "redaction",
       "prompt": [
@@ -891,7 +935,7 @@
             "parameter": "specialist"
           },
           "next": [
-            "check"
+            "handoff"
           ],
           "onError": [
             {
@@ -899,6 +943,41 @@
             }
           ],
           "maxVisits": 2
+        },
+        "handoff": {
+          "type": "prepare",
+          "message": {
+            "prompt": [
+              {
+                "value": "Contre-expertiser ce rapport avant toute suite."
+              }
+            ],
+            "resources": {
+              "report": {
+                "source": {
+                  "path": [
+                    "results",
+                    "report"
+                  ]
+                }
+              }
+            }
+          },
+          "next": [
+            "counterCheck"
+          ]
+        },
+        "counterCheck": {
+          "type": "agent",
+          "agent": "verifier",
+          "next": [
+            "check"
+          ],
+          "onError": [
+            {
+              "error": true
+            }
+          ]
         },
         "check": {
           "type": "condition",
