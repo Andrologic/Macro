@@ -213,6 +213,14 @@ réconciliation ne change rien. La cible ne publie rien. La reprise après une
 nouvelle association, qui doit lire le terminal `aborted` et rouvrir la source,
 n'est pas encore testée : le relais de test ne simule pas une réassociation.
 
+Un second envoi de la même conversation pendant un transfert en cours est
+refusé par la commande (`transfer_busy`) : le runtime n'admet qu'un transfert à
+la fois, et l'application ne tourne qu'en une instance. Ce verrou est
+nécessaire, car un envoi commence par régler toute tentative source encore
+gelée et abandonnerait sinon la tentative en cours. Au relais, une seconde
+réservation du même registre source est refusée (`conflict`) ; la cible ne
+reçoit donc qu'une invitation et ne crée qu'un import.
+
 Une cible qui a perdu ses données après confirmation reste en erreur de
 récupération. Elle ne provoque pas un dégel implicite de la source. Une remise
 en état ou une nouvelle cession explicite doit résoudre cette situation.

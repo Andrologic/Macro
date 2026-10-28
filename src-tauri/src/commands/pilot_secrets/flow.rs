@@ -158,7 +158,8 @@ pub(super) async fn send<B: Vault + 'static>(
     let source_instance = text(&authority["scope"]["source_instance_id"])?;
     let target = text(&authority["scope"]["target_instance_id"])?;
     // An earlier attempt left frozen by a lost reply or an interruption is
-    // settled before a new one.
+    // settled before a new one. This would abandon a live attempt: callers
+    // hold the runtime's transfer job, which admits one transfer at a time.
     reconcile_source(manager.clone(), owner, transport, ready, conversation).await?;
     let pool = &ready.pool;
     let old:Option<Vec<u8>>=sqlx::query_scalar("SELECT binding_json FROM connect_transfers WHERE local_role='source' AND source_conversation_id=? ORDER BY source_epoch DESC LIMIT 1")

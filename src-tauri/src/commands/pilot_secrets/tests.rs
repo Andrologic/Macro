@@ -1872,6 +1872,14 @@ async fn global_chat_revoked_before_commit_transfer() {
     global_chat_local_transfer("macro-ai", false, false, false, Route::RevokedBeforeCommit).await;
 }
 
+/// A second client sends the same conversation while the first transfer waits
+/// to commit: it is refused without a second record, and the first completes.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires the explicitly supplied local transfer relay"]
+async fn global_chat_second_send_transfer() {
+    global_chat_local_transfer("macro-ai", false, false, false, Route::SecondSend).await;
+}
+
 /// The target lacks the selected model: the source records `aborted` and reopens.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore = "requires the explicitly supplied local transfer relay"]
@@ -1915,6 +1923,8 @@ enum Route {
     AbortAfterCommit,
     /// The relay revokes the source session after `ready`, before the commit.
     RevokedBeforeCommit,
+    /// A second send of the same conversation arrives before the commit.
+    SecondSend,
 }
 
 async fn global_chat_local_transfer(
@@ -1942,7 +1952,7 @@ async fn global_chat_local_transfer(
         Route::AbandonedAfterPreparation => Some("after_prepared"),
         Route::AbortBeforeCommit => Some("abort_before_commit"),
         Route::AbortAfterCommit => Some("abort_after_commit"),
-        Route::RevokedBeforeCommit => Some("hold_before_commit"),
+        Route::RevokedBeforeCommit | Route::SecondSend => Some("hold_before_commit"),
         _ => None,
     };
     let lost = matches!(
@@ -2339,6 +2349,8 @@ async fn global_chat_local_transfer(
         std::env::set_var("MACRO_CONNECT_TEST_INTERRUPT", interruption);
     }
     let transferred: Result<String, String> = if let Some((verified, inspection)) = &direct {
+        // As the send command does, the attempt holds the transfer job.
+        let job = runtime.begin_transfer().unwrap();
         let send = super::flow::send(
             manager.clone(),
             &source,
@@ -2354,19 +2366,61 @@ async fn global_chat_local_transfer(
             &selected.0,
             &selected.1,
         );
-        // Once the target is ready, the relay revokes the source sessions.
+        // Once the target is ready, the relay revokes the source sessions, or
+        // a second client sends the same conversation.
         let revoke = async {
-            if route != Route::RevokedBeforeCommit {
+            if !matches!(route, Route::RevokedBeforeCommit | Route::SecondSend) {
                 return;
             }
             while !super::flow::BEFORE_COMMIT.load(std::sync::atomic::Ordering::SeqCst) {
                 tokio::time::sleep(std::time::Duration::from_millis(10)).await;
             }
-            relay_input.write_all(b"{\"revoke\":true}\n").await.unwrap();
-            lines.next_line().await.unwrap().unwrap();
+            if route == Route::RevokedBeforeCommit {
+                relay_input.write_all(b"{\"revoke\":true}\n").await.unwrap();
+                lines.next_line().await.unwrap().unwrap();
+            } else {
+                // A second client goes through the command, as the phone or
+                // the desktop would; the first attempt holds the transfer job.
+                let second = super::send_transfer(
+                    manager.clone(),
+                    Some(address),
+                    &source,
+                    &config,
+                    &runtime,
+                    &launcher,
+                    &admission,
+                    "source-window",
+                    serde_json::from_value(serde_json::json!({
+                        "connection": {
+                            "capabilities": seed["capabilities"], "context": connection["context"],
+                            "generation": connection["generation"],
+                            "instanceCreationId": connection["instanceCreationId"],
+                            "accountId": connection["accountId"], "deviceId": connection["deviceId"],
+                            "instanceId": connection["instanceId"]},
+                        "targetInstanceId": seed["b"]["instance"], "conversationId": "chat",
+                        "runtime": "source-browser", "inspectionHandle": inspection,
+                        "providerId": selected.0, "modelId": selected.1}))
+                    .unwrap(),
+                )
+                .await;
+                assert_eq!(
+                    second.err().map(|e| e.message),
+                    Some("transfer_busy".into())
+                );
+                assert_eq!(
+                    sqlx::query_scalar::<_, i64>(
+                        "SELECT COUNT(*) FROM connect_transfers WHERE local_role='source'"
+                    )
+                    .fetch_one(&source_pool)
+                    .await
+                    .unwrap(),
+                    1
+                );
+            }
             super::flow::COMMIT_RELEASED.store(true, std::sync::atomic::Ordering::SeqCst);
         };
         let (sent, ()) = tokio::join!(send, revoke);
+        drop(job);
         sent.map_err(str::to_owned)
     } else {
         // The source listens as soon as its producer is confirmed; the send
@@ -2915,6 +2969,14 @@ async fn global_chat_transfer_target() {
                     .await
                     .unwrap();
             assert_eq!(recorded, 1);
+            // A single transfer reached this target, hence a single import.
+            let transfers: i64 = sqlx::query_scalar(
+                "SELECT COUNT(*) FROM connect_transfers WHERE local_role='target'",
+            )
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+            assert_eq!(transfers, 1);
         }
         received.map_err(serde_json::Value::from)
     } else {
