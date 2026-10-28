@@ -116,3 +116,9 @@ published. The guards of version 20 are recreated with this one exception, so
 the target can delete its projection and import content and compact the
 import's charge. The transfer, preparation and import rows remain as
 tombstones. Backup comparison removes version 21 before version 20.
+
+Version 22 adds `connect_recorded_activations`. A published transfer target
+writes its row once the relay has acknowledged its activation receipt. A
+published target without that row resumes `activation.record` at startup. The
+rows are immutable and reference the local activation receipt. Backup
+comparison removes version 22 before version 21.

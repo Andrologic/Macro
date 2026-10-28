@@ -517,11 +517,20 @@ async fn reconcile_transfers<B: Vault + 'static>(
             reopened.push(conversation);
         }
     }
-    let attempts =
+    let unresolved =
         crate::db::connect_transfer::unresolved_targets(pool, &input.connection.instance_id)
             .await
             .map_err(|_| command_error("database_unavailable"))?;
-    for (transfer, source) in attempts {
+    // Published targets whose activation the relay has not acknowledged.
+    let unactivated =
+        crate::db::connect_transfer::unactivated_targets(pool, &input.connection.instance_id)
+            .await
+            .map_err(|_| command_error("database_unavailable"))?;
+    let attempts = unresolved
+        .into_iter()
+        .map(|attempt| (attempt, false))
+        .chain(unactivated.into_iter().map(|attempt| (attempt, true)));
+    for ((transfer, source), published) in attempts {
         let settled: Result<Option<String>, &'static str> = async {
             let mut verified = transport::bootstrap(
                 manager.clone(),
@@ -542,9 +551,13 @@ async fn reconcile_transfers<B: Vault + 'static>(
                 )
                 .await?;
             let verified = Arc::new(verified);
-            let outcome =
+            let outcome = if published {
+                flow::resume_activation(manager.clone(), pool, config, &verified, &ready, &transfer)
+                    .await
+            } else {
                 flow::reconcile_target(manager.clone(), pool, config, &verified, &ready, &transfer)
-                    .await;
+                    .await
+            };
             Arc::try_unwrap(verified)
                 .map_err(|_| "transport_retained")?
                 .close()

@@ -3,8 +3,8 @@
 #![allow(dead_code)]
 mod journal;
 pub(crate) use journal::{
-    reserve_verified_source, reserve_verified_target, unresolved_source, unresolved_sources,
-    unresolved_target, unresolved_targets, TargetSelection,
+    reserve_verified_source, reserve_verified_target, unactivated_target, unactivated_targets,
+    unresolved_source, unresolved_sources, unresolved_target, unresolved_targets, TargetSelection,
 };
 pub(in crate::db) mod deletion;
 mod preparation;
@@ -30,7 +30,7 @@ pub(in crate::db) use schema::reference;
 pub(super) use schema::validate_schema;
 pub(crate) use schema::{
     remove_publication_reference_in, remove_reader_reference_in, remove_reference_schema_in,
-    remove_target_abort_reference_in,
+    remove_target_abort_reference_in, remove_target_activation_reference_in,
 };
 const CONTROL: usize = 98_304;
 fn invalid(code: &str) -> DbError {

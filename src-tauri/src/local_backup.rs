@@ -355,6 +355,11 @@ async fn check_database(path: &Path) -> Result<()> {
     {
         return Err("Incompatible database schema".into());
     }
+    if versions.contains(&22)
+        && (!versions.contains(&21) || !stamped(22, "022_connect_target_activation"))
+    {
+        return Err("Incompatible database schema".into());
+    }
     let legacy_trace = stamped(6, "006_pilot_tool_trace_revisions");
     let legacy_management = stamped(7, "007_conversation_management");
     let has_trace =
@@ -367,6 +372,13 @@ async fn check_database(path: &Path) -> Result<()> {
     // Compare the archive with the schema its migration stamps describe. Do
     // not migrate the untrusted archive until its original objects pass this
     // strict comparison; startup validation migrates a temporary copy later.
+    if !versions.contains(&22) {
+        crate::db::connect_transfer::remove_target_activation_reference_in(
+            &mut *reference.acquire().await.map_err(|e| e.to_string())?,
+        )
+        .await
+        .map_err(|e| e.to_string())?;
+    }
     if !versions.contains(&21) {
         crate::db::connect_transfer::remove_target_abort_reference_in(
             &mut *reference.acquire().await.map_err(|e| e.to_string())?,
@@ -1896,7 +1908,7 @@ mod tests {
                 .fetch_one(&mut restored)
                 .await
                 .unwrap(),
-            21
+            22
         );
         restored.close().await.unwrap();
 
@@ -1907,7 +1919,7 @@ mod tests {
                 .fetch_one(&pool)
                 .await
                 .unwrap(),
-            21
+            22
         );
         assert_eq!(
             sqlx::query_scalar::<_, String>(
@@ -1940,7 +1952,7 @@ mod tests {
             .fetch_one(&mut db)
             .await
             .unwrap();
-        assert_eq!(version, 21);
+        assert_eq!(version, 22);
         sqlx::query("INSERT INTO schema_migrations VALUES (99, 'future', 'synthetic')")
             .execute(&mut db)
             .await
@@ -3459,7 +3471,7 @@ mod content_backup_tests {
                 .fetch_one(&mut db)
                 .await
                 .unwrap(),
-            21
+            22
         );
         assert_eq!(
             sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM conversation_content_versions")
@@ -3653,7 +3665,7 @@ mod content_legacy_backup_tests {
                     .fetch_one(&pool)
                     .await
                     .unwrap(),
-                21
+                22
             );
             assert_eq!(
                 sqlx::query_scalar::<_, String>(
@@ -3838,7 +3850,7 @@ mod catalog_backup_tests {
                 .fetch_one(&mut connection(&copy).await.unwrap())
                 .await
                 .unwrap(),
-            21
+            22
         );
         assert_eq!(fs::read(&original).unwrap(), before);
     }
@@ -3929,7 +3941,7 @@ mod catalog_backup_tests {
                 .fetch_one(&pool)
                 .await
                 .unwrap(),
-            21
+            22
         );
         sqlx::query("DROP TRIGGER connect_preparation_metadata")
             .execute(&pool)

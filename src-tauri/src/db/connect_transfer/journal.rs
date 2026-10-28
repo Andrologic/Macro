@@ -425,6 +425,19 @@ pub(crate) async fn unresolved_targets(
     Ok(sqlx::query_as("SELECT transfer_id,source_instance_id FROM connect_transfers WHERE local_role='target' AND target_instance_id=? AND resolution IS NULL ORDER BY transfer_id")
         .bind(target_instance).fetch_all(&guard.ready.pool).await?)
 }
+/// Transfers this target instance published without recording the activation
+/// at the relay. A conversation being deleted locally is left out.
+pub(crate) async fn unactivated_targets(
+    owner: &DbPool,
+    target_instance: &str,
+) -> DbResult<Vec<(String, String)>> {
+    let guard = owner
+        .source_ready(None)
+        .await
+        .map_err(|_| invalid("unavailable"))?;
+    Ok(sqlx::query_as("SELECT t.transfer_id,t.source_instance_id FROM connect_transfers t JOIN connect_activation_receipts r USING(transfer_id) WHERE t.local_role='target' AND t.target_instance_id=? AND t.resolution='committed' AND t.restore_hold=0 AND NOT EXISTS(SELECT 1 FROM connect_recorded_activations a WHERE a.transfer_id=t.transfer_id) AND NOT EXISTS(SELECT 1 FROM connect_local_deletions d WHERE d.transfer_id=t.transfer_id) ORDER BY t.transfer_id")
+        .bind(target_instance).fetch_all(&guard.ready.pool).await?)
+}
 /// The target attempt left unresolved by an interrupted process. Its intent is
 /// the stored invitation, whose fingerprint must match the row. A stored pin
 /// and selection are only expectations: `transport` must still receive the
@@ -435,11 +448,34 @@ pub(crate) async fn unresolved_target(
     transfer: &str,
     transport: &std::sync::Arc<crate::commands::pilot_secrets::transport::VerifiedTransport>,
 ) -> DbResult<Option<(Reservation, serde_json::Value, Option<TargetSelection>)>> {
+    stored_target(owner, transfer, transport, false).await
+}
+/// The published target whose activation is not recorded, with the same
+/// checks as `unresolved_target`.
+pub(crate) async fn unactivated_target(
+    owner: &DbPool,
+    transfer: &str,
+    transport: &std::sync::Arc<crate::commands::pilot_secrets::transport::VerifiedTransport>,
+) -> DbResult<Option<(Reservation, serde_json::Value, TargetSelection)>> {
+    Ok(stored_target(owner, transfer, transport, true)
+        .await?
+        .and_then(|(reservation, sent, selection)| Some((reservation, sent, selection?))))
+}
+async fn stored_target(
+    owner: &DbPool,
+    transfer: &str,
+    transport: &std::sync::Arc<crate::commands::pilot_secrets::transport::VerifiedTransport>,
+    published: bool,
+) -> DbResult<Option<(Reservation, serde_json::Value, Option<TargetSelection>)>> {
     let guard = owner
         .source_ready(None)
         .await
         .map_err(|_| invalid("unavailable"))?;
-    let row=sqlx::query("SELECT t.fingerprint,t.reserve_request,p.phase,p.pin_receipt,p.provider_id,p.model_id,p.target_conversation_id,p.configuration_digest FROM connect_transfers t LEFT JOIN connect_preparations p USING(transfer_id) WHERE t.transfer_id=? AND t.local_role='target' AND t.resolution IS NULL")
+    let row=sqlx::query(if published {
+        "SELECT t.fingerprint,t.reserve_request,p.phase,p.pin_receipt,p.provider_id,p.model_id,p.target_conversation_id,p.configuration_digest FROM connect_transfers t JOIN connect_preparations p USING(transfer_id) WHERE t.transfer_id=? AND t.local_role='target' AND t.resolution='committed' AND p.phase='published' AND NOT EXISTS(SELECT 1 FROM connect_recorded_activations a WHERE a.transfer_id=t.transfer_id)"
+    } else {
+        "SELECT t.fingerprint,t.reserve_request,p.phase,p.pin_receipt,p.provider_id,p.model_id,p.target_conversation_id,p.configuration_digest FROM connect_transfers t LEFT JOIN connect_preparations p USING(transfer_id) WHERE t.transfer_id=? AND t.local_role='target' AND t.resolution IS NULL"
+    })
         .bind(transfer).fetch_optional(&guard.ready.pool).await?;
     let Some(row) = row else { return Ok(None) };
     let sent: serde_json::Value = serde_json::from_slice(&row.get::<Vec<u8>, _>("reserve_request"))
@@ -448,7 +484,9 @@ pub(crate) async fn unresolved_target(
     if input.inspect()?.0 != row.get::<Vec<u8>, _>("fingerprint") {
         return Err(invalid("connect_transfer_conflict"));
     }
-    let selection = if row.get::<Option<String>, _>("phase").as_deref() == Some("pinned") {
+    let selection = if row.get::<Option<String>, _>("phase").as_deref()
+        == Some(if published { "published" } else { "pinned" })
+    {
         input.native_target_prepared = Some(
             serde_json::from_slice(&row.get::<Vec<u8>, _>("pin_receipt"))
                 .map_err(|_| invalid("connect_transfer_conflict"))?,
@@ -680,6 +718,80 @@ impl Reservation {
         self.native_target_activation
             .as_ref()
             .ok_or_else(|| invalid("connect_native_publication_missing"))
+    }
+    /// Rebuilds the activation of a target published before an interruption,
+    /// from the authenticated committed terminal and the local activation
+    /// receipt. Publishes nothing. Returns the published conversation.
+    pub(crate) async fn resume_target_activation(
+        &mut self,
+        owner: &DbPool,
+        selection: &TargetSelection,
+    ) -> DbResult<String> {
+        use crate::commands::pilot_secrets::transport::commitment;
+        let live = self
+            .native_authority
+            .as_ref()
+            .ok_or_else(|| invalid("connect_native_owner_missing"))?;
+        live.check_producer(
+            &self.account_id,
+            &self.target_instance_id,
+            &current_generation(live)?,
+        )
+        .await
+        .map_err(invalid)?;
+        let terminal = self.native_terminal().await?;
+        let pin = self.target_prepared().await?;
+        if terminal["prepared"] != *pin {
+            return Err(invalid("connect_terminal_mismatch"));
+        }
+        let guard = owner
+            .source_ready(None)
+            .await
+            .map_err(|_| invalid("unavailable"))?;
+        let conversation:Option<String>=sqlx::query_scalar("SELECT r.conversation_id FROM connect_transfers t JOIN connect_preparations p USING(transfer_id) JOIN connect_activation_receipts r USING(transfer_id) WHERE t.transfer_id=? AND t.local_role='target' AND t.fingerprint=? AND t.restore_hold=0 AND t.terminal_outcome='committed' AND t.resolution='committed' AND p.phase='published' AND p.target_conversation_id=r.conversation_id AND r.terminal_digest=?")
+            .bind(&self.transfer_id).bind(self.inspect()?.0)
+            .bind(super::preparation::native_digest_bytes(&commitment("terminal",&terminal).map_err(invalid)?)?)
+            .fetch_optional(&guard.ready.pool).await?;
+        let conversation = conversation
+            .filter(|c| *c == selection.conversation_id)
+            .ok_or_else(|| invalid("connect_target_effect_changed"))?;
+        self.native_target_activation = Some(
+            serde_json::json!({"decision_contract":"transfer-decision-1","type":"activation_receipt",
+            "receipt_id":uuid::Uuid::new_v4(),"transfer_id":self.transfer_id,"terminal_digest":commitment("terminal",&terminal).map_err(invalid)?,
+            "target_instance_id":self.target_instance_id,"target_conversation_id":conversation,
+            "prepared_digest":commitment("prepared",pin).map_err(invalid)?,"revision":"1"}),
+        );
+        Ok(conversation)
+    }
+    /// Records that the relay holds this published target's activation.
+    /// `activation` is the relay's authenticated activation receipt.
+    pub(crate) async fn record_target_activation(
+        &self,
+        owner: &DbPool,
+        activation: &serde_json::Value,
+    ) -> DbResult<()> {
+        let guard = owner
+            .source_ready(None)
+            .await
+            .map_err(|_| invalid("unavailable"))?;
+        let conversation: Option<String> = sqlx::query_scalar(
+            "SELECT conversation_id FROM connect_activation_receipts WHERE transfer_id=?",
+        )
+        .bind(&self.transfer_id)
+        .fetch_optional(&guard.ready.pool)
+        .await?;
+        if activation["transfer_id"] != self.transfer_id
+            || activation["target_instance_id"] != self.target_instance_id
+            || conversation.is_none()
+            || activation["target_conversation_id"].as_str() != conversation.as_deref()
+        {
+            return Err(invalid("connect_proof_mismatch"));
+        }
+        sqlx::query("INSERT OR IGNORE INTO connect_recorded_activations VALUES(?)")
+            .bind(&self.transfer_id)
+            .execute(&guard.ready.pool)
+            .await?;
+        Ok(())
     }
     pub(crate) async fn apply_committed_source(
         &self,

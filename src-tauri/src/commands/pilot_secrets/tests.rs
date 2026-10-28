@@ -1832,6 +1832,21 @@ async fn global_chat_target_stopped_after_commit_transfer() {
     .await;
 }
 
+/// The target stops after publishing, before `activation.record`: its
+/// reconciliation records the activation without publishing again.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires the explicitly supplied local transfer relay"]
+async fn global_chat_target_stopped_after_publication_transfer() {
+    global_chat_local_transfer(
+        "macro-ai",
+        false,
+        false,
+        false,
+        Route::TargetStoppedAfterPublication,
+    )
+    .await;
+}
+
 /// The target lacks the selected model: the source records `aborted` and reopens.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore = "requires the explicitly supplied local transfer relay"]
@@ -1866,6 +1881,9 @@ enum Route {
     /// The target process stops after `committed`; its next reconciliation
     /// publishes the pinned preparation and records the activation.
     TargetStoppedAfterCommit,
+    /// The target process stops after publishing, before recording the
+    /// activation; its next reconciliation records it.
+    TargetStoppedAfterPublication,
 }
 
 async fn global_chat_local_transfer(
@@ -2247,6 +2265,7 @@ async fn global_chat_local_transfer(
         "stop":match route {
             Route::TargetStoppedBeforeCommit => "target_after_ready",
             Route::TargetStoppedAfterCommit => "target_after_commit",
+            Route::TargetStoppedAfterPublication => "target_after_publication",
             _ => "",
         }})).unwrap();
     initialization.push(b'\n');
@@ -2769,8 +2788,9 @@ async fn global_chat_transfer_target() {
                 )
                 .await
                 .unwrap();
+                // Neither unresolved nor published without a recorded activation.
                 let pending: i64 = sqlx::query_scalar(
-                    "SELECT COUNT(*) FROM connect_transfers WHERE local_role='target' AND resolution IS NULL",
+                    "SELECT COUNT(*) FROM connect_transfers t WHERE local_role='target' AND (resolution IS NULL OR (resolution='committed' AND NOT EXISTS(SELECT 1 FROM connect_recorded_activations a WHERE a.transfer_id=t.transfer_id)))",
                 )
                 .fetch_one(&pool)
                 .await
@@ -2790,6 +2810,15 @@ async fn global_chat_transfer_target() {
                 .await
                 .map(|(conversation, prepared)| (conversation, Some(prepared)))
         };
+        if received.is_ok() {
+            // The published target holds the relay's activation.
+            let recorded: i64 =
+                sqlx::query_scalar("SELECT COUNT(*) FROM connect_recorded_activations")
+                    .fetch_one(&pool)
+                    .await
+                    .unwrap();
+            assert_eq!(recorded, 1);
+        }
         received.map_err(serde_json::Value::from)
     } else {
         // The runtime listens on its own once its producer is confirmed, then

@@ -960,6 +960,70 @@ pub(super) async fn reconcile_target<B: Vault + 'static>(
     }
 }
 
+/// Records the activation of a target published before an interruption. If
+/// the relay already holds it, only marks it recorded; otherwise sends
+/// `activation.record` again. Returns the published conversation.
+pub(super) async fn resume_activation<B: Vault + 'static>(
+    manager: Arc<Manager<B>>,
+    owner: &DbPool,
+    config: &ConfigManager,
+    transport: &Arc<VerifiedTransport>,
+    ready: &DbReady,
+    transfer: &str,
+) -> Result<Option<String>> {
+    let Some((mut reservation, intent, selection)) =
+        crate::db::connect_transfer::unactivated_target(owner, transfer, transport)
+            .await
+            .map_err(|_| "transfer_reconciliation_required")?
+    else {
+        return Ok(None);
+    };
+    let pin = reservation
+        .target_prepared()
+        .await
+        .map_err(|_| "target_pin")?
+        .clone();
+    let status = transport
+        .transfer_status(
+            manager.clone(),
+            ready,
+            &intent["binding"],
+            &intent["frozen"],
+            &intent["manifest"],
+            &pin,
+            &Value::Null,
+        )
+        .await?;
+    if status["terminal"]["outcome"] != "committed" {
+        return Err("terminal_mismatch");
+    }
+    let conversation = reservation
+        .resume_target_activation(owner, &selection)
+        .await
+        .map_err(|_| "target_publication")?;
+    match transport.committed_activation(transfer).await {
+        Ok(recorded) => reservation
+            .record_target_activation(owner, &recorded)
+            .await
+            .map_err(|_| "target_activation")?,
+        Err("activation_not_received") => {
+            record_activation(
+                manager,
+                owner,
+                config,
+                transport,
+                ready,
+                &reservation,
+                &selection,
+                &intent,
+            )
+            .await?
+        }
+        Err(error) => return Err(error),
+    }
+    Ok(Some(conversation))
+}
+
 /// Publishes a committed target and records its activation under the target's
 /// current producer. Publication is idempotent; the relay keeps one activation.
 #[allow(clippy::too_many_arguments)]
@@ -973,6 +1037,40 @@ async fn activate_target<B: Vault + 'static>(
     selection: &crate::db::connect_transfer::TargetSelection,
     intent: &Value,
 ) -> Result<String> {
+    let conversation = reservation
+        .publish_target(owner, config, selection)
+        .await
+        .map_err(|_| "target_publication")?;
+    #[cfg(test)]
+    if std::env::var("MACRO_CONNECT_TEST_INTERRUPT").as_deref() == Ok("target_after_publication") {
+        return Err("test_interrupted");
+    }
+    record_activation(
+        manager,
+        owner,
+        config,
+        transport,
+        ready,
+        reservation,
+        selection,
+        intent,
+    )
+    .await?;
+    Ok(conversation)
+}
+
+/// Sends `activation.record` for a published target, then marks it recorded.
+#[allow(clippy::too_many_arguments)]
+async fn record_activation<B: Vault + 'static>(
+    manager: Arc<Manager<B>>,
+    owner: &DbPool,
+    config: &ConfigManager,
+    transport: &Arc<VerifiedTransport>,
+    ready: &DbReady,
+    reservation: &crate::db::connect_transfer::Reservation,
+    selection: &crate::db::connect_transfer::TargetSelection,
+    intent: &Value,
+) -> Result<()> {
     let binding = &intent["binding"];
     let frozen = &intent["frozen"];
     let manifest = &intent["manifest"];
@@ -981,10 +1079,6 @@ async fn activate_target<B: Vault + 'static>(
         .await
         .map_err(|_| "target_pin")?
         .clone();
-    let conversation = reservation
-        .publish_target(owner, config, selection)
-        .await
-        .map_err(|_| "target_publication")?;
     let terminal = transport
         .committed_terminal(text(&binding["transfer_id"])?)
         .await?;
@@ -1048,7 +1142,16 @@ async fn activate_target<B: Vault + 'static>(
             )
             .await?,
     );
-    Ok(conversation)
+    let recorded = transport
+        .committed_activation(text(&binding["transfer_id"])?)
+        .await?;
+    if recorded != *activation {
+        return Err("activation_mismatch");
+    }
+    reservation
+        .record_target_activation(owner, &recorded)
+        .await
+        .map_err(|_| "target_activation")
 }
 
 /// The transit contract's reasoning effort identifier, as the app's

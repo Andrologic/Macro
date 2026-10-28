@@ -189,9 +189,16 @@ préparation déjà épinglée, sans appel fournisseur, puis enregistre l'activa
 sous la génération courante du producteur cible, qui change à chaque
 redémarrage. Une tentative encore en cours reste en attente : le relais
 l'abandonne quand le producteur cible change, et la réconciliation suivante la
-libère. Une cible arrêtée après sa publication locale mais avant
-l'enregistrement de l'activation n'est pas encore reprise : la base locale ne
-garde pas de marque de cette étape.
+libère.
+
+La cible marque une activation comme enregistrée une fois que le relais a
+renvoyé son reçu d'activation (migration 022). Au démarrage, une cible publiée
+sans cette marque relit le statut du relais. Si le relais détient déjà
+l'activation, la cible pose seulement la marque. Sinon, elle renvoie
+`activation.record` sans republier la conversation. Une conversation supprimée
+localement, ou en cours de suppression, n'est pas reprise. Les cibles publiées
+avant la migration 022 n'ont pas de marque : chacune est vérifiée une fois
+auprès du relais, au premier démarrage où sa source est en ligne.
 
 Une cible qui a perdu ses données après confirmation reste en erreur de
 récupération. Elle ne provoque pas un dégel implicite de la source. Une remise
