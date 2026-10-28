@@ -217,7 +217,49 @@ pub(super) async fn release_aborted_target(
     let Some(import) = import else {
         return Err(invalid("connect_target_not_aborted"));
     };
-    dispose_content(db, transfer, import, None).await
+    dispose_content(db, transfer, import, None).await?;
+    if import.is_none() {
+        release_unattached_import(db, transfer).await?;
+    }
+    Ok(())
+}
+
+/// Empties the import an interrupted target began before attaching it, found
+/// by the identity its storage derives from the reservation, as
+/// `abort_receiving` would. No attached transfer protects it, so no trigger
+/// refuses the delete.
+async fn release_unattached_import(db: &mut SqliteConnection, transfer: &str) -> DbResult<()> {
+    let row = sqlx::query("SELECT relay_origin,account_id,source_instance_id,source_conversation_id,source_epoch FROM connect_transfers WHERE transfer_id=?")
+        .bind(transfer)
+        .fetch_one(&mut *db)
+        .await?;
+    let key = crate::db::inactive_storage::identity_key(&crate::db::inactive_storage::Identity {
+        origin: row.get("relay_origin"),
+        account_incarnation: row.get("account_id"),
+        source_instance: row.get("source_instance_id"),
+        source_conversation: row.get("source_conversation_id"),
+        transfer: transfer.into(),
+        source_epoch: row.get::<i64, _>("source_epoch").to_string(),
+    })
+    .map_err(|_| invalid("connect_transfer_invalid_input"))?;
+    let Some(import) =
+        sqlx::query_scalar::<_, i64>("SELECT id FROM e_inactive_imports WHERE identity_key=?")
+            .bind(key)
+            .fetch_optional(&mut *db)
+            .await?
+    else {
+        return Ok(());
+    };
+    // Fragments and mappings cascade from their records.
+    sqlx::query("DELETE FROM e_inactive_records WHERE import_id=?")
+        .bind(import)
+        .execute(&mut *db)
+        .await?;
+    sqlx::query("UPDATE e_inactive_imports SET phase=3,revision=revision+1,next_record=0,received_bytes=0,charge_bytes=152+length(CAST(begin_json AS BLOB)),mapping_hash=NULL WHERE id=?")
+        .bind(import)
+        .execute(&mut *db)
+        .await?;
+    Ok(())
 }
 
 pub(in crate::db) async fn finish_in(

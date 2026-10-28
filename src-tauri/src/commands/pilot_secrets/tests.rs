@@ -1880,6 +1880,38 @@ async fn global_chat_second_send_transfer() {
     global_chat_local_transfer("macro-ai", false, false, false, Route::SecondSend).await;
 }
 
+/// The target process stops with half of the archive staged: the source
+/// abandons, and the target's next reconciliation releases the staged chunks.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires the explicitly supplied local transfer relay"]
+async fn global_chat_target_stopped_during_staging_transfer() {
+    global_chat_local_transfer(
+        "macro-ai",
+        true,
+        false,
+        false,
+        Route::TargetStoppedDuringStaging,
+    )
+    .await;
+}
+
+/// The target's disk fills after its first imported record: nothing is
+/// prepared, the source abandons, and the target's next reconciliation
+/// releases the partial import.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires the explicitly supplied local transfer relay"]
+async fn global_chat_target_import_full_transfer() {
+    global_chat_local_transfer("macro-ai", false, false, false, Route::TargetImportFull).await;
+}
+
+/// A required attachment is missing from the source: the send is refused
+/// without a transfer reaching the target, and the source stays open.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires the explicitly supplied local transfer relay"]
+async fn global_chat_missing_asset_transfer() {
+    global_chat_local_transfer("macro-ai", false, true, false, Route::MissingAsset).await;
+}
+
 /// The target lacks the selected model: the source records `aborted` and reopens.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore = "requires the explicitly supplied local transfer relay"]
@@ -1925,6 +1957,12 @@ enum Route {
     RevokedBeforeCommit,
     /// A second send of the same conversation arrives before the commit.
     SecondSend,
+    /// The target process stops after staging part of the archive.
+    TargetStoppedDuringStaging,
+    /// The target's storage is full once its first record is imported.
+    TargetImportFull,
+    /// A required attachment of the source conversation is missing.
+    MissingAsset,
 }
 
 async fn global_chat_local_transfer(
@@ -1941,8 +1979,17 @@ async fn global_chat_local_transfer(
     let released = abandoned
         || matches!(
             route,
-            Route::TargetStoppedBeforeCommit | Route::AbortBeforeCommit
+            Route::TargetStoppedBeforeCommit
+                | Route::AbortBeforeCommit
+                | Route::TargetStoppedDuringStaging
+                | Route::TargetImportFull
         );
+    // The target fails before preparing: the source gives up waiting.
+    let unprepared = matches!(
+        route,
+        Route::TargetStoppedDuringStaging | Route::TargetImportFull
+    );
+    let missing_asset = route == Route::MissingAsset;
     // Revoking the account's sessions aborts the transfer at the relay, but
     // neither desktop can read that terminal before a new association.
     let revoked = route == Route::RevokedBeforeCommit;
@@ -1958,7 +2005,7 @@ async fn global_chat_local_transfer(
     let lost = matches!(
         route,
         Route::LostReserveReply | Route::LostReserveRequest | Route::InterruptedSource
-    );
+    ) || missing_asset;
     use base64::Engine;
 
     use sha2::{Digest, Sha256};
@@ -2067,6 +2114,13 @@ async fn global_chat_local_transfer(
                 .bind(id).bind(name).bind(mime).bind(bytes.len() as i64).bind(format!("{:x}",Sha256::digest(bytes))).bind(bytes).execute(&source_pool).await.unwrap();
         }
         sqlx::raw_sql("INSERT INTO pilot_file_sends(owner_key,ref_key,send_intent_id,scope_key,digest,message_id,turn_id,state,attachment_ids_json,assistant_message_id,context_state,intent_expires_at) VALUES('owner','ref','intent','scope','digest','user','turn','confirmed','[\"text-asset\",\"image-asset\"]','assistant','ready',1);").execute(&source_pool).await.unwrap();
+        if missing_asset {
+            // The message still lists the image its turn was sent with.
+            sqlx::query("DELETE FROM pilot_message_attachments WHERE id='image-asset'")
+                .execute(&source_pool)
+                .await
+                .unwrap();
+        }
     }
     if compacted {
         for n in 0..20 {
@@ -2323,8 +2377,10 @@ async fn global_chat_local_transfer(
             Route::TargetStoppedBeforeCommit => "target_after_ready",
             Route::TargetStoppedAfterCommit => "target_after_commit",
             Route::TargetStoppedAfterPublication => "target_after_publication",
+            Route::TargetStoppedDuringStaging => "target_during_staging",
+            Route::TargetImportFull => "target_import_full",
             _ => "",
-        }})).unwrap();
+        },"prepared":!unprepared})).unwrap();
     initialization.push(b'\n');
     input.write_all(&initialization).await.unwrap();
     let mut target_events = BufReader::new(child.stdout.take().unwrap()).lines();
@@ -2347,6 +2403,10 @@ async fn global_chat_local_transfer(
     }
     if let Some(interruption) = interruption {
         std::env::set_var("MACRO_CONNECT_TEST_INTERRUPT", interruption);
+    }
+    if unprepared {
+        std::env::set_var("MACRO_CONNECT_TEST_TARGET_QUIET_MS", "10000");
+        std::env::set_var("MACRO_CONNECT_TEST_TARGET_PREPARATION_MS", "10000");
     }
     let transferred: Result<String, String> = if let Some((verified, inspection)) = &direct {
         // As the send command does, the attempt holds the transfer job.
@@ -2479,6 +2539,10 @@ async fn global_chat_local_transfer(
     if interruption.is_some() {
         std::env::remove_var("MACRO_CONNECT_TEST_INTERRUPT");
     }
+    if unprepared {
+        std::env::remove_var("MACRO_CONNECT_TEST_TARGET_QUIET_MS");
+        std::env::remove_var("MACRO_CONNECT_TEST_TARGET_PREPARATION_MS");
+    }
     if route == Route::InterruptedSource {
         assert_eq!(
             transferred.as_ref().map_err(String::as_str),
@@ -2571,7 +2635,14 @@ async fn global_chat_local_transfer(
         );
         input.write_all(b"{\"stop\":true}\n").await.unwrap();
     } else if refused || restricted || lost || released {
-        if lost {
+        if missing_asset {
+            // The capture refuses the conversation rather than send it
+            // without its image.
+            assert_eq!(
+                transferred.as_ref().map_err(String::as_str),
+                Err("source_capture")
+            );
+        } else if lost {
             // The reserve's own failure is returned once the source reopened.
             assert!(transferred.is_err());
         } else {
@@ -2906,7 +2977,14 @@ async fn global_chat_transfer_target() {
             .await
             .map(|(conversation, prepared)| (conversation, Some(prepared)))
         } else if !stop.is_empty() {
-            assert_eq!(receive.await.err(), Some("test_interrupted"));
+            assert_eq!(
+                receive.await.err(),
+                Some(if stop == "target_import_full" {
+                    "transfer_storage_append"
+                } else {
+                    "test_interrupted"
+                })
+            );
             std::env::remove_var("MACRO_CONNECT_TEST_INTERRUPT");
             drop(job);
             runtime.revoke();
@@ -3051,8 +3129,12 @@ async fn global_chat_transfer_target() {
             }
         };
         assert_eq!(count("SELECT COUNT(*) FROM connect_transfers WHERE local_role='target' AND resolution='aborted'").await, 1);
-        assert_eq!(count("SELECT COUNT(*) FROM connect_preparations").await, 1);
+        assert_eq!(
+            count("SELECT COUNT(*) FROM connect_preparations").await,
+            i64::from(data["prepared"] == true)
+        );
         for table in [
+            "connect_raw_chunks",
             "connect_projection_messages",
             "connect_projection_fields",
             "connect_projection_fragments",

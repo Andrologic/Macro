@@ -238,10 +238,36 @@ pub(super) async fn send<B: Vault + 'static>(
     )
     .await
     .map_err(|_| "transfer_source_reservation")?;
-    // Until the relay answers the reserve, a failure (capture, normalization,
-    // lineage, lost reply) would leave the source frozen without a record:
+    // Until the relay answers the reserve, a failure (lineage, capture,
+    // normalization, lost reply) would leave the source frozen without a record:
     // reconcile it before returning, so it reopens or keeps a terminal.
     let reserving = async {
+        // The lineage comes first: without it, the relay could not close this
+        // reservation with abort_missing, and a refused capture would leave
+        // the source frozen.
+        if !existing {
+            let birth = wrap(request(
+                "lineage.create",
+                "0",
+                &Value::Null,
+                json!({"provenance":binding["provenance"],"mode":"initial_existing","creation_digest":frozen["sha256"]}),
+            ));
+            drop(
+                transport
+                    .source_decision(
+                        manager.clone(),
+                        ready,
+                        owner,
+                        &reservation,
+                        None,
+                        &(source_path.clone() + "/decisions"),
+                        birth,
+                        Value::Null,
+                        "lineage_enrolled",
+                    )
+                    .await?,
+            );
+        }
         let capture = crate::db::source_capture::SourceCapture::for_transfer(
             owner.clone(),
             transport.clone(),
@@ -261,29 +287,6 @@ pub(super) async fn send<B: Vault + 'static>(
             .source_manifest(owner, &normalized)
             .await
             .map_err(|_| "source_manifest")?;
-        if !existing {
-            let birth = wrap(request(
-                "lineage.create",
-                "0",
-                &Value::Null,
-                json!({"provenance":binding["provenance"],"mode":"initial_existing","creation_digest":frozen["sha256"]}),
-            ));
-            drop(
-                transport
-                    .source_decision(
-                        manager.clone(),
-                        ready,
-                        owner,
-                        &reservation,
-                        Some(&normalized),
-                        &(source_path.clone() + "/decisions"),
-                        birth,
-                        Value::Null,
-                        "lineage_enrolled",
-                    )
-                    .await?,
-            );
-        }
         let reserve_path = format!(
             "{source_path}/targets/{target}/reservations/{}/decisions",
             reservation.transfer_id()
@@ -371,7 +374,7 @@ pub(super) async fn send<B: Vault + 'static>(
             "sequence":sequence.to_string(),"offset":offset.to_string(),"length":bytes.len().to_string(),"sha256":format!("{:x}",Sha256::digest(bytes)),"eof":end==archive.as_slice().len(),"data_utf8":std::str::from_utf8(bytes).map_err(|_|"transit_utf8")?});
         transport.transit(manager.clone(),ready,&(root.clone()+"/chunk"),chunk,&session).await?;offset=end;sequence+=1;
     }
-    let quiet=tokio::time::Instant::now()+TARGET_PREPARATION;
+    let quiet=tokio::time::Instant::now()+target_preparation();
     let proposal=loop{
         let received=output(transport.delivery(manager.clone(),ready).await?)?;
         if received["branch"]=="empty"{if tokio::time::Instant::now()>quiet{return Err("target_unresponsive");}continue;}
@@ -492,6 +495,16 @@ fn target_quiet() -> Duration {
 }
 /// Covers target import and preparation, each bounded by its worker deadline.
 const TARGET_PREPARATION: Duration = Duration::from_secs(120);
+fn target_preparation() -> Duration {
+    #[cfg(test)]
+    if let Some(ms) = std::env::var("MACRO_CONNECT_TEST_TARGET_PREPARATION_MS")
+        .ok()
+        .and_then(|ms| ms.parse().ok())
+    {
+        return Duration::from_millis(ms);
+    }
+    TARGET_PREPARATION
+}
 struct Progress {
     revision: String,
     manifest: Value,
@@ -741,6 +754,10 @@ pub(super) async fn receive<B: Vault + 'static>(
         (sequence, offset) = (staged.0, staged.1);
         if staged.2 {
             break;
+        }
+        #[cfg(test)]
+        if std::env::var("MACRO_CONNECT_TEST_INTERRUPT").as_deref() == Ok("target_during_staging") {
+            return Err("test_interrupted");
         }
     }
     let archive = reservation

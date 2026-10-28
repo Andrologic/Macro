@@ -333,6 +333,14 @@ impl InactiveStorage {
         {
             return Err("invalid_offset".into());
         }
+        // The disk fills once the first record is stored: SQLITE_FULL rolls
+        // the append back with this error (see sqlite_full_rolls_back_*).
+        #[cfg(test)]
+        if input.record.ordinal >= 1
+            && std::env::var("MACRO_CONNECT_TEST_INTERRUPT").as_deref() == Ok("target_import_full")
+        {
+            return Err("database_unavailable".into());
+        }
         let (offset, old_utf8, old_scan) = match &record {
             Some(row) => (
                 row.get::<i64, _>("received_bytes"),

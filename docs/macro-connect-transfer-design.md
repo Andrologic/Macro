@@ -221,6 +221,25 @@ gelée et abandonnerait sinon la tentative en cours. Au relais, une seconde
 réservation du même registre source est refusée (`conflict`) ; la cible ne
 reçoit donc qu'une invitation et ne crée qu'un import.
 
+Une cible qui échoue avant sa préparation ne publie rien et reste inactive, que
+son processus s'arrête en plein staging ou que son disque se remplisse pendant
+l'import. La cible ne peut pas annuler elle-même : la source abandonne quand
+elle ne reçoit plus rien, ou quand la préparation n'arrive pas dans le délai
+prévu. La réconciliation suivante de la cible libère alors les blocs reçus et
+l'import partiel. Cet import n'est pas encore rattaché au transfert ; la
+libération le retrouve par l'identité que le stockage dérive de la
+réservation. L'archive reçue n'est importée qu'après vérification de son
+empreinte, de son nombre d'enregistrements et de son manifeste : une archive
+tronquée est refusée avant toute écriture.
+
+Une ressource requise absente de la source fait échouer la capture : rien n'est
+envoyé sans elle. Pour un premier transfert, la filiation est créée au relais
+avant la capture. Sans cela, le relais ne pourrait pas clore la réservation
+par `abort_missing`, et la source resterait gelée. Elle rouvre au contraire
+avec une tentative `aborted`. Si la création de la filiation elle-même
+n'atteint jamais le relais, la source reste gelée : ce cas n'est pas encore
+traité.
+
 Une cible qui a perdu ses données après confirmation reste en erreur de
 récupération. Elle ne provoque pas un dégel implicite de la source. Une remise
 en état ou une nouvelle cession explicite doit résoudre cette situation.

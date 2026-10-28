@@ -654,6 +654,87 @@ async fn connect_transfer_target_import_attachment_uses_full_source_and_generati
     assert!(attach_import(&pool, &input, &key).await.is_err());
 }
 
+/// A target whose import failed or stopped before attachment holds a partial
+/// import that only its identity names: applying the relay's abort empties it.
+#[tokio::test]
+async fn connect_transfer_aborted_target_releases_an_unattached_partial_import() {
+    use crate::db::inactive_storage::{identity_key, Begin, Bindings, Identity, Profile};
+    let (_dir, pool) = fixture().await;
+    let input = input(&pool).await;
+    reserve_target(&pool, &input).await.unwrap();
+    let begin = Begin {
+        version: 1,
+        identity: Identity {
+            origin: input.relay_origin.clone(),
+            account_incarnation: input.account_id.clone(),
+            source_instance: input.source_instance_id.clone(),
+            source_conversation: input.source_conversation_id.clone(),
+            transfer: input.transfer_id.clone(),
+            source_epoch: input.source_epoch.to_string(),
+        },
+        bindings: Bindings {
+            target_instance: input.target_instance_id.clone(),
+            source_generation: input.source_generation.clone(),
+            target_generation: input.target_generation.clone(),
+            actor: "synthetic".into(),
+            initial_session: "synthetic".into(),
+            policy_revision: "synthetic".into(),
+        },
+        profile: Profile::PortableChatHistoryV1,
+        records: 2,
+        bytes: 2,
+        manifest_sha256: "0".repeat(64),
+    };
+    let begin_json = serde_json::to_string(&begin).unwrap();
+    sqlx::query("INSERT INTO e_inactive_imports(identity_key,begin_json,phase,revision,next_record,received_bytes,charge_bytes,created_at,progressed_at,expires_at,idle_ms,last_clock) VALUES(?,?,0,1,1,1,4096,0,0,1,1,0)")
+        .bind(identity_key(&begin.identity).unwrap()).bind(&begin_json).execute(&pool).await.unwrap();
+    sqlx::raw_sql("INSERT INTO e_inactive_records(import_id,ordinal,header_json,kind,received_bytes,complete,utf8_tail,scan_tail) VALUES(1,0,'{}',0,1,1,x'',x''); INSERT INTO e_inactive_fragments VALUES(1,0,0,zeroblob(32),x'78',1,1,1); INSERT INTO e_inactive_mapping VALUES(1,0,'00000000-0000-4000-8000-000000000000');")
+        .execute(&pool).await.unwrap();
+    let row = sqlx::query(
+        "SELECT fingerprint,binding_digest,source_epoch FROM connect_transfers WHERE transfer_id=?",
+    )
+    .bind(&input.transfer_id)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    crate::db::connect_transfer::terminal::store_aborted_target(
+        &pool,
+        &input.transfer_id,
+        row.get("fingerprint"),
+        row.get("binding_digest"),
+        row.get("source_epoch"),
+        &serde_json::json!({"outcome": "aborted", "decision_revision": "3", "prepared": null}),
+    )
+    .await
+    .unwrap();
+    for table in [
+        "e_inactive_records",
+        "e_inactive_fragments",
+        "e_inactive_mapping",
+    ] {
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>(sqlx::AssertSqlSafe(format!(
+                "SELECT COUNT(*) FROM {table}"
+            )))
+            .fetch_one(&pool)
+            .await
+            .unwrap(),
+            0,
+            "{table}"
+        );
+    }
+    // The import stays as an aborted tombstone charged for its journal only.
+    assert_eq!(
+        sqlx::query_as::<_, (i64, i64, i64)>(
+            "SELECT phase,next_record,charge_bytes FROM e_inactive_imports"
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap(),
+        (3, 0, 152 + begin_json.len() as i64)
+    );
+}
+
 #[tokio::test]
 async fn connect_transfer_sqlite_full_returns_no_prefix_and_rolls_back_storage_charge() {
     let (dir, pool) = fixture().await;
