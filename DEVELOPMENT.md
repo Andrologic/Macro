@@ -109,6 +109,27 @@ Before creating fixtures, inspect the native process's open SQLite files and cal
 `workspace_get_bootstrap`; continue only when both point to the intended isolated
 profile and synthetic workspace.
 
+A QA identifier isolates the database and app data, not the workspace. In debug
+builds the default workspace is the launch directory: from a Macro checkout or
+worktree, the host reads the shared `@macro` metadata and the real project
+registry. Point `MACRO_CONFIG_DIR` at a temporary directory whose `runtime.json`
+sets an empty workspace; the file must be valid, or the host silently keeps the
+default:
+
+```json
+{
+  "$schema": "./schemas/v1/runtime.schema.json",
+  "schemaVersion": 1,
+  "defaultWorkspace": "/absolute/path/to/empty/workspace"
+}
+```
+
+Check that the host log reports `Resolved workspace path: ... (Configured)` before
+opening the UI. Use a UI port that no earlier run used: browser storage is kept
+per origin. The bridge accepts one page load per host run; restart the host
+rather than reloading, and close tabs left by an earlier run, which keep
+reconnecting with a stale token.
+
 ## Local Provider Configuration
 
 For Tauri development, you can preload provider definitions and avoid re-entering

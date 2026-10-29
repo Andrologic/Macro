@@ -1,5 +1,7 @@
 import { prepareChatMessages, isStandaloneImplementTask, sanitizeAssistantContentForModel, isFileContextRef, getFileRefPath, getImageContextMetadata, type ChatMessagePreparationPorts } from "../services/chatMessagePreparation";
 import { activateArchiveReaders, retireArchiveReaders } from '../services/conversationPortableArchive';
+import { copyRestoredImages } from '../services/restoredConversationCopy';
+import { isBrowserRuntimeBridgeEnabled } from '../services/tauriRuntimeBridge';
 import { loadArchiveMessageImages, releaseArchiveImages, archiveImageConversation, prepareArchiveImages, ownArchiveRequestResources } from '../services/archiveImages';
 import { prepareArchiveContext } from '../services/archiveContext';
 import { buildMessageUpdateParams } from '../services/ipc/conversations';
@@ -957,6 +959,8 @@ interface ChatStore {
     options?: { selectConversation?: boolean },
   ) => Promise<Conversation>;
   ensurePilotTaskConversation: (taskId: string, pilotActionToken: symbol) => Promise<Conversation>;
+  /** Copies a restored, read-only conversation into a new Chat and opens it. */
+  copyRestoredConversation: (conversationId: string) => Promise<Conversation>;
   beginArchitectPlanSwitch: (params?: { requestId?: number }) => void;
   invalidateConversationResolution: () => void;
   captureArchitectPlanRecovery: (planId: string, targetBranch: string) => (isCurrentActivation: () => boolean) => Promise<void>;
@@ -12335,6 +12339,44 @@ export const useChatStore = create<ChatStore>((set, get) => {
         groupId,
         selectConversation: options?.selectConversation,
       });
+    },
+
+    copyRestoredConversation: async (conversationId) => {
+      const source = get().conversations.find(conversation => conversation.id === conversationId);
+      if (!source) throw new Error('Conversation not found');
+      const conversationById = new Map(get().conversations.map(conversation => [conversation.id, conversation]));
+      const messages = (await tauriIpc.listMessages(conversationId))
+        .map(message => mapDbMessageToChatMessage(message, conversationById));
+      const copy = await tauriIpc.chatAdmissionCopyRestored(conversationId,
+        i18n.t('chat.restoredCopy.title', '{{title}} (copy)', { title: source.title }));
+      try {
+        const images = await copyRestoredImages(messages, copy.messages, {
+          cached: id => get().messageImagesByMessageId[id],
+          pilot: async id => {
+            // The browser runtime reads no native Pilot images, here as in hydration.
+            if (isBrowserRuntimeBridgeEnabled()) return [];
+            const message = messages.find(item => item.id === id)!;
+            return (await tauriIpc.dbPilotMessageImages(id)).map(image => ({ id: image.attachmentId,
+              mimeType: image.mimeType, dataUrl: image.readyDataURL, createdAt: message.timestamp }));
+          },
+          archive: message => loadArchiveMessageImages(message),
+          release: releaseArchiveImages,
+        });
+        if (Object.keys(images).length) {
+          const next = { ...get().messageImagesByMessageId, ...images };
+          if (!persistMessageImageCache(next)) throw new Error('restored_copy_images_not_saved');
+          set({ messageImagesByMessageId: next });
+        }
+      } catch (error) {
+        // Never leave a copy without the images its history showed.
+        await tauriIpc.deleteConversation(copy.conversation.id).catch(() => undefined);
+        throw error;
+      }
+      const conversation = mapDbConversationToConversation(copy.conversation);
+      set(state => ({ conversations: [conversation, ...state.conversations] }));
+      conversationResolutionGeneration += 1;
+      await get().selectConversation(conversation.id);
+      return conversation;
     },
 
     ensurePilotTaskConversation: async (taskId, pilotActionToken) => {

@@ -894,6 +894,19 @@
     "multiSelect": "Multi-select",
     "archivedView": "Archived view",
     "archivedConversationReadOnly": "Diese Unterhaltung ist archiviert. Stelle sie wieder her, bevor du eine weitere Nachricht sendest.",
+    "restoredCopy": {
+      "title": "{{title}} (Kopie)",
+      "notice": "Diese Unterhaltung stammt aus einer wiederhergestellten Sicherung und bleibt schreibgeschützt. Setze sie in einer Kopie mit neuen Kennungen fort.",
+      "action": "In eine neue Unterhaltung kopieren",
+      "successTitle": "Kopie erstellt",
+      "successDescription": "Die neue Unterhaltung setzt diesen Verlauf fort. Das Original bleibt schreibgeschützt.",
+      "errorTitle": "Kopieren fehlgeschlagen"
+    },
+    "admission": {
+      "readOnlyPlaceholder": "Diese Unterhaltung ist schreibgeschützt.",
+      "frozen": "Diese Unterhaltung wird auf einen anderen Computer übertragen und bleibt bis zum Ende der Übertragung schreibgeschützt.",
+      "ceded": "Diese Unterhaltung wurde auf einen anderen Computer übertragen. Sie wird dort fortgesetzt; dieses Exemplar ist schreibgeschützt."
+    },
     "archivedConversationPlaceholder": "Stelle diese Unterhaltung wieder her, um fortzufahren.",
     "noArchivedResults": "Keine archivierte Konversation entspricht dieser Suche.",
     "noArchivedConversations": "No archived conversations yet",

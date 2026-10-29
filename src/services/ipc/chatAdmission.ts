@@ -142,3 +142,17 @@ export function chatAdmissionBeginReconciliation(runtime: string, conversationId
 export function chatAdmissionCompleteReconciliation(runtime: string, handle: string, observed: ChatBrowserInspection): Promise<void> {
   return invoke('chat_admission_complete_reconciliation', { runtime, handle, observed });
 }
+
+/** The conversation's admission mode, or null when it is unknown. */
+export type ChatAdmissionMode = 'open' | 'frozen' | 'ceded' | 'restore_hold' | 'removed';
+
+export function chatAdmissionMode(conversationId: string): Promise<ChatAdmissionMode | null> {
+  return invoke('chat_admission_mode', { conversationId });
+}
+
+/** Explicit user action: copies a restored conversation into a new Chat. */
+export function chatAdmissionCopyRestored(conversationId: string, title: string): Promise<
+  Omit<import('../../types/generated/ipc').RestoredCopy, 'conversation'> &
+  { conversation: import('./conversations.types').DbConversation }> {
+  return invoke('chat_admission_copy_restored', { conversationId, title });
+}

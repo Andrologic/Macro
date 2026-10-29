@@ -128,6 +128,7 @@ import { toServiceError, type ServiceError } from '../../services/contracts/erro
 import { parseConversationGoalCommand } from '../../services/conversationGoalCommand';
 import { conversationGoalProductFlow } from '../../composition/goalProductComposition';
 import { isTauriAvailable } from '../../services/ipc/runtime';
+import { chatAdmissionMode, type ChatAdmissionMode } from '../../services/ipc/chatAdmission';
 import { GoalAuditArtifactsButton } from './GoalAuditArtifactsButton';
 import { StandaloneTaskLaunchProgressCard } from './StandaloneTaskLaunchProgressCard';
 import { isManualDraftPendingInitialization } from '../../services/manualDraftInitialization';
@@ -2183,6 +2184,46 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
   );
   const isConversationArchivePending =
     mode === 'Chat' && Boolean(selectedConversationId) && !isConversationArchiveHydrated;
+  // The native admission barrier: restored, in transfer, or transferred away.
+  const selectedConversationUpdatedAt = useChatStore((state) =>
+    state.conversations.find((conversation) => conversation.id === state.selectedConversationId)?.updated_at);
+  const copyRestoredConversation = useChatStore((state) => state.copyRestoredConversation);
+  const [admission, setAdmission] = useState<{ id: string; mode: ChatAdmissionMode | null } | null>(null);
+  const [isCopyingRestored, setIsCopyingRestored] = useState(false);
+  useEffect(() => {
+    if (mode !== 'Chat' || !selectedConversationId || !isTauriAvailable()) return;
+    let active = true;
+    void chatAdmissionMode(selectedConversationId).then(
+      (value) => { if (active) setAdmission({ id: selectedConversationId, mode: value }); },
+      () => { if (active) setAdmission({ id: selectedConversationId, mode: null }); },
+    );
+    return () => { active = false; };
+  }, [mode, selectedConversationId, selectedConversationUpdatedAt]);
+  const selectedAdmissionMode =
+    mode === 'Chat' && admission?.id === selectedConversationId ? admission.mode : null;
+  const isSelectedConversationHeld =
+    selectedAdmissionMode === 'restore_hold' ||
+    selectedAdmissionMode === 'frozen' ||
+    selectedAdmissionMode === 'ceded';
+  const handleCopyRestoredConversation = useCallback(async () => {
+    if (!selectedConversationId || isCopyingRestored) return;
+    setIsCopyingRestored(true);
+    try {
+      await copyRestoredConversation(selectedConversationId);
+      notify.success(t('chat.restoredCopy.successTitle', 'Copy created'), {
+        description: t(
+          'chat.restoredCopy.successDescription',
+          'The new conversation continues from this history. The original stays read-only.',
+        ),
+      });
+    } catch (error) {
+      notify.error(t('chat.restoredCopy.errorTitle', 'Copy failed'), {
+        description: toServiceError(error).message,
+      });
+    } finally {
+      setIsCopyingRestored(false);
+    }
+  }, [copyRestoredConversation, isCopyingRestored, selectedConversationId, t]);
   const isComposerDisabled =
     isConversationPending ||
     isModeProjectWorkspaceMissing ||
@@ -2192,6 +2233,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     isSelectedTaskDependencyBlocked ||
     isConversationArchivePending ||
     isSelectedConversationArchived ||
+    isSelectedConversationHeld ||
     isPersistingAssistantResponse ||
     hasUnsavedAssistantResponse ||
     Boolean(activeQuestionnaire) ||
@@ -4135,7 +4177,8 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
           composerError ||
           toolApprovalRecoveryError ||
           showSkillNativeToolWarning ||
-          isSelectedConversationArchived) && (
+          isSelectedConversationArchived ||
+          isSelectedConversationHeld) && (
           <ChatFloatingNoticeStack>
             {composerError && (
               <ActionableErrorCallout
@@ -4195,6 +4238,46 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
                 {t(
                   'chat.archivedConversationReadOnly',
                   'This conversation is archived. Restore it before sending another message.'
+                )}
+              </ChatFloatingNotice>
+            )}
+
+            {selectedAdmissionMode === 'restore_hold' && (
+              <ChatFloatingNotice icon="archive" tone="neutral" testId="restored-conversation-notice">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <span>
+                    {t(
+                      'chat.restoredCopy.notice',
+                      'This conversation comes from a restored backup and stays read-only. Continue in a copy with new identifiers.'
+                    )}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => void handleCopyRestoredConversation()}
+                    disabled={isCopyingRestored}
+                    className="inline-flex shrink-0 items-center gap-1 rounded-md border border-border px-2 py-0.5 text-xs text-foreground transition-colors hover:bg-muted disabled:opacity-60"
+                  >
+                    {isCopyingRestored && <SpinnerIcon size={12} />}
+                    {t('chat.restoredCopy.action', 'Copy to a new conversation')}
+                  </button>
+                </div>
+              </ChatFloatingNotice>
+            )}
+
+            {selectedAdmissionMode === 'frozen' && (
+              <ChatFloatingNotice icon="lock" tone="neutral">
+                {t(
+                  'chat.admission.frozen',
+                  'This conversation is being transferred to another computer and is read-only until the transfer ends.'
+                )}
+              </ChatFloatingNotice>
+            )}
+
+            {selectedAdmissionMode === 'ceded' && (
+              <ChatFloatingNotice icon="lock" tone="neutral">
+                {t(
+                  'chat.admission.ceded',
+                  'This conversation was transferred to another computer. It continues there; this copy is read-only.'
                 )}
               </ChatFloatingNotice>
             )}
@@ -4541,6 +4624,8 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
                                 'chat.archivedConversationPlaceholder',
                                 'Restore this conversation to continue.'
                               )
+                          : isSelectedConversationHeld
+                            ? t('chat.admission.readOnlyPlaceholder', 'This conversation is read-only.')
                           : isSelectedTaskDependencyBlocked
                             ? t(
                                 'implement.taskBlockedComposerPlaceholder',

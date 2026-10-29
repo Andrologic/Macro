@@ -184,9 +184,18 @@ nouvelle, et le relais connaît déjà cette source sous sa filiation d'origine.
 Aucun transfert n'est créé. Aucun chemin ne lève encore cette barrière : la
 réconciliation sous une nouvelle association reste à concevoir. Une
 conversation jamais transférée restera aussi en lecture seule ; l'utilisateur
-la reprend par une copie explicite. Cette copie n'existe pas encore, ni dans le
-backend ni dans l'interface, qui n'affiche pas non plus l'état `restore_hold`. Le scénario se reconnecte avec l'instance
+la reprend par une copie explicite. Le scénario se reconnecte avec l'instance
 d'origine, car le relais de test ne crée pas de nouvelle association.
+
+L'interface affiche l'état d'une conversation `restore_hold`, `frozen` ou
+`ceded` et désactive sa saisie. Pour `restore_hold`, elle propose « Copier dans
+une nouvelle conversation ». La copie crée une conversation `Chat` ouverte, avec
+de nouveaux identifiants : les messages dans l'ordre de l'historique, les
+citations et les images, sans tour, élément fournisseur, trace d'outil,
+objectif, run, file ni envoi Pilot. L'originale reste en `restore_hold`. Comme
+rien ne quitte la machine, la copie est locale et directe ; elle ne passe pas par
+la normalisation portable du transfert. Une image qui ne peut pas être recopiée
+fait échouer la copie, qui est alors supprimée.
 
 Si une archive ancienne ne permet pas de reconstruire une filiation vérifiable,
 la reprise de l'ancienne conversation est refusée. L'utilisateur peut créer

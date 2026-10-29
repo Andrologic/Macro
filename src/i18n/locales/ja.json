@@ -893,6 +893,19 @@
     "multiSelect": "Multi-select",
     "archivedView": "Archived view",
     "archivedConversationReadOnly": "この会話はアーカイブされています。別のメッセージを送信する前に復元してください。",
+    "restoredCopy": {
+      "title": "{{title}}（コピー）",
+      "notice": "この会話は復元したバックアップのもので、読み取り専用のままです。新しい ID を持つコピーで続けてください。",
+      "action": "新しい会話にコピー",
+      "successTitle": "コピーを作成しました",
+      "successDescription": "新しい会話はこの履歴から続きます。元の会話は読み取り専用のままです。",
+      "errorTitle": "コピーできませんでした"
+    },
+    "admission": {
+      "readOnlyPlaceholder": "この会話は読み取り専用です。",
+      "frozen": "この会話は別のコンピューターに転送中のため、転送が終わるまで読み取り専用です。",
+      "ceded": "この会話は別のコンピューターに転送されました。続きはそちらで行います。この会話は読み取り専用です。"
+    },
     "archivedConversationPlaceholder": "続行するには、この会話を復元してください。",
     "noArchivedResults": "この検索に一致するアーカイブ済みの会話はありません。",
     "noArchivedConversations": "No archived conversations yet",

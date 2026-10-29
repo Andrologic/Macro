@@ -922,6 +922,19 @@
     "multiSelect": "Multi-select",
     "archivedView": "Archived view",
     "archivedConversationReadOnly": "This conversation is archived. Restore it before sending another message.",
+    "restoredCopy": {
+      "title": "{{title}} (copy)",
+      "notice": "This conversation comes from a restored backup and stays read-only. Continue in a copy with new identifiers.",
+      "action": "Copy to a new conversation",
+      "successTitle": "Copy created",
+      "successDescription": "The new conversation continues from this history. The original stays read-only.",
+      "errorTitle": "Copy failed"
+    },
+    "admission": {
+      "readOnlyPlaceholder": "This conversation is read-only.",
+      "frozen": "This conversation is being transferred to another computer and is read-only until the transfer ends.",
+      "ceded": "This conversation was transferred to another computer. It continues there; this copy is read-only."
+    },
     "archivedConversationPlaceholder": "Restore this conversation to continue.",
     "noArchivedResults": "No archived conversations match this search",
     "noArchivedConversations": "No archived conversations yet",

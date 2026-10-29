@@ -898,6 +898,19 @@
     "multiSelect": "Multi-select",
     "archivedView": "Archived view",
     "archivedConversationReadOnly": "Esta conversación está archivada. Restáurala antes de enviar otro mensaje.",
+    "restoredCopy": {
+      "title": "{{title}} (copia)",
+      "notice": "Esta conversación procede de una copia de seguridad restaurada y sigue siendo de solo lectura. Continúa en una copia con identificadores nuevos.",
+      "action": "Copiar en una conversación nueva",
+      "successTitle": "Copia creada",
+      "successDescription": "La nueva conversación continúa este historial. La original sigue siendo de solo lectura.",
+      "errorTitle": "No se pudo copiar"
+    },
+    "admission": {
+      "readOnlyPlaceholder": "Esta conversación es de solo lectura.",
+      "frozen": "Esta conversación se está transfiriendo a otro ordenador y es de solo lectura hasta que termine la transferencia.",
+      "ceded": "Esta conversación se transfirió a otro ordenador. Continúa allí; esta copia es de solo lectura."
+    },
     "archivedConversationPlaceholder": "Restaura esta conversación para continuar.",
     "noArchivedResults": "Ninguna conversación archivada coincide con esta búsqueda.",
     "noArchivedConversations": "No archived conversations yet",

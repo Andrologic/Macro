@@ -922,6 +922,19 @@
     "multiSelect": "Sélection multiple",
     "archivedView": "Vue archives",
     "archivedConversationReadOnly": "Cette conversation est archivée. Restaurez-la avant d’envoyer un nouveau message.",
+    "restoredCopy": {
+      "title": "{{title}} (copie)",
+      "notice": "Cette conversation provient d’une sauvegarde restaurée et reste en lecture seule. Poursuivez dans une copie avec de nouveaux identifiants.",
+      "action": "Copier dans une nouvelle conversation",
+      "successTitle": "Copie créée",
+      "successDescription": "La nouvelle conversation reprend cet historique. L’originale reste en lecture seule.",
+      "errorTitle": "Copie impossible"
+    },
+    "admission": {
+      "readOnlyPlaceholder": "Cette conversation est en lecture seule.",
+      "frozen": "Cette conversation est en cours de transfert vers un autre ordinateur et reste en lecture seule jusqu’à la fin du transfert.",
+      "ceded": "Cette conversation a été transférée vers un autre ordinateur. Elle s’y poursuit ; cet exemplaire est en lecture seule."
+    },
     "archivedConversationPlaceholder": "Restaurez cette conversation pour continuer.",
     "noArchivedResults": "Aucune conversation archivée ne correspond à cette recherche",
     "noArchivedConversations": "Aucune conversation archivée pour le moment",
