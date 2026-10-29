@@ -166,7 +166,7 @@ impl CodecLauncher {
             return Err("resource_limit");
         }
         work.start[..start.len()].copy_from_slice(&start);
-        let mut command = Command::new(&self.executable);
+        let mut command = crate::core::process::background_tokio_command(&self.executable);
         if let Some(entry) = &self.entry {
             command.arg(entry);
         }
@@ -246,7 +246,7 @@ impl CodecLauncher {
             return Err("resource_limit");
         }
         work.start[..start.len()].copy_from_slice(&start);
-        let mut command = Command::new(&self.executable);
+        let mut command = crate::core::process::background_tokio_command(&self.executable);
         if let Some(entry) = &self.entry {
             command.arg(entry);
         }
@@ -405,7 +405,7 @@ impl CodecLauncher {
             return Err("resource_limit");
         }
         work.start[..start.len()].copy_from_slice(&start);
-        let mut command = Command::new(&self.executable);
+        let mut command = crate::core::process::background_tokio_command(&self.executable);
         if let Some(entry) = &self.entry {
             command.arg(entry);
         }
@@ -449,7 +449,7 @@ impl CodecLauncher {
             .source_ready(None)
             .await
             .map_err(|_| "database_unavailable")?;
-        let mut command = Command::new(&self.executable);
+        let mut command = crate::core::process::background_tokio_command(&self.executable);
         if let Some(entry) = &self.entry {
             command.arg(entry);
         }
