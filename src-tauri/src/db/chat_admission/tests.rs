@@ -3286,3 +3286,84 @@ async fn reservation_rechecks_physical_receipts_even_for_delivered_results() {
         );
     }
 }
+
+/// The explicit copy of a held conversation is a new open Chat with its
+/// history in order, new IDs, followed citations and no inherited turn state;
+/// the source stays held, and an open conversation cannot be copied this way.
+#[tokio::test]
+async fn restored_copy_is_a_new_open_chat_and_leaves_the_source_held() {
+    let (_dir, pool) = fixture().await;
+    sqlx::raw_sql("UPDATE conversations SET provider_id='openai',model_id='synthetic',reasoning_effort='high' WHERE id='source'; INSERT INTO messages(id,conversation_id,role,content,created_at,turn_id,provider_input_items_json,tool_traces_json,context_refs_json) VALUES('question','source','user','ask','t','turn','[{\"x\":1}]','[{\"tool\":1}]','[{\"kind\":\"source\",\"id\":\"evidence\",\"title\":\"Evidence\"},{\"kind\":\"file\",\"id\":\"elsewhere\",\"title\":\"Kept\"}]'); INSERT INTO conversation_citations(id,conversation_id,message_id,type,scope,source,title,content,created_at,updated_at) VALUES('evidence','source','question','source_passage','source','synthetic','Evidence','FACT','t','t');")
+        .execute(&pool)
+        .await
+        .unwrap();
+    assert!(restored_copy::copy_restored(&pool, "source", "Copy")
+        .await
+        .is_err());
+    hold_restored_profile(&pool).await.unwrap();
+    assert!(restored_copy::copy_restored(&pool, "source", "  ")
+        .await
+        .is_err());
+    let copy = restored_copy::copy_restored(&pool, "source", "Copy")
+        .await
+        .unwrap();
+    let id = &copy.conversation.id;
+    assert_ne!(id, "source");
+    assert_eq!(copy.conversation.title, "Copy");
+    assert_eq!(copy.conversation.scope_mode, "Chat");
+    assert_eq!(copy.conversation.model_id.as_deref(), Some("synthetic"));
+    assert_eq!(copy.conversation.message_count, 2);
+    // Both source messages share created_at: the copy keeps their order.
+    assert_eq!(
+        copy.messages
+            .iter()
+            .map(|(old, _)| old.as_str())
+            .collect::<Vec<_>>(),
+        ["message", "question"]
+    );
+    let copied = repository::list_messages(&pool, id).await.unwrap();
+    assert_eq!(
+        copied.iter().map(|m| m.id.as_str()).collect::<Vec<_>>(),
+        copy.messages
+            .iter()
+            .map(|(_, new)| new.as_str())
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(
+        copied
+            .iter()
+            .map(|m| m.content.as_str())
+            .collect::<Vec<_>>(),
+        ["history", "ask"]
+    );
+    assert!(copied.iter().all(|m| m.turn_id.is_none()
+        && m.provider_input_items_json.is_none()
+        && m.tool_traces_json.is_none()));
+    let citation: (String, String, String) = sqlx::query_as(
+        "SELECT id,message_id,content FROM conversation_citations WHERE conversation_id=?",
+    )
+    .bind(id)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_ne!(citation.0, "evidence");
+    assert_eq!(citation.1, copy.messages[1].1);
+    assert_eq!(citation.2, "FACT");
+    let refs: serde_json::Value =
+        serde_json::from_str(copied[1].context_refs_json.as_deref().unwrap()).unwrap();
+    assert_eq!(refs[0]["id"], citation.0.as_str());
+    assert_eq!(refs[1]["id"], "elsewhere");
+    let mode = |id: String| {
+        let pool = pool.clone();
+        async move { restored_copy::admission_mode(&pool, &id).await.unwrap() }
+    };
+    assert_eq!(mode(id.clone()).await.as_deref(), Some("open"));
+    assert_eq!(mode("source".into()).await.as_deref(), Some("restore_hold"));
+    assert_eq!(mode("absent".into()).await, None);
+    // The copy is an ordinary conversation: it accepts a new message.
+    sqlx::query("INSERT INTO messages(id,conversation_id,role,content,created_at) VALUES('next',?,'user','continue','u')")
+        .bind(id)
+        .execute(&pool)
+        .await
+        .unwrap();
+}

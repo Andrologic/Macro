@@ -2129,6 +2129,14 @@
       "families": [
         "db"
       ],
+      "name": "RestoredCopy",
+      "origin": "macro_lib::db::chat_admission::restored_copy::RestoredCopy",
+      "path": "RestoredCopy.ts"
+    },
+    {
+      "families": [
+        "db"
+      ],
       "name": "ResumeConversationGoalAuditInput",
       "origin": "macro_lib::db::conversation_goals::ResumeConversationGoalAuditInput",
       "path": "ResumeConversationGoalAuditInput.ts"

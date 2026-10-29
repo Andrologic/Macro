@@ -79,6 +79,7 @@ export type { RecordGoalAuditTransitionInput } from '../RecordGoalAuditTransitio
 export type { RecordToolInvocationInput } from '../RecordToolInvocationInput';
 export type { RecordToolInvocationResult } from '../RecordToolInvocationResult';
 export type { ReserveGoalAuditChildSelection } from '../ReserveGoalAuditChildSelection';
+export type { RestoredCopy } from '../RestoredCopy';
 export type { ResumeConversationGoalAuditInput } from '../ResumeConversationGoalAuditInput';
 export type { SessionContextStateRecord } from '../SessionContextStateRecord';
 export type { SpeechProviderConfig } from '../SpeechProviderConfig';

@@ -418,7 +418,7 @@ fn truncate_last_message(content: &str) -> String {
     truncated
 }
 
-async fn refresh_conversation_metadata_with_connection(
+pub(super) async fn refresh_conversation_metadata_with_connection(
     connection: &mut SqliteConnection,
     conversation_id: String,
     updated_at_override: Option<String>,

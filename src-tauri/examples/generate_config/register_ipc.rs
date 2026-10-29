@@ -55,6 +55,7 @@ pub fn register(registry: &mut Registry) -> Result<(), String> {
     registry.add::<ipc_contracts::db::CancelAgentRunInput>("db")?;
     registry.add::<ipc_contracts::db::TimeOutAgentRunInput>("db")?;
     registry.add::<ipc_contracts::db::Conversation>("db")?;
+    registry.add::<ipc_contracts::db::RestoredCopy>("db")?;
     registry.add::<ipc_contracts::db::ConversationCatalogToken>("db")?;
     registry.add::<ipc_contracts::db::ConversationCatalogVersionInput>("db")?;
     registry.add::<ipc_contracts::db::ConversationCatalogPageInput>("db")?;

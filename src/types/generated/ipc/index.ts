@@ -262,6 +262,7 @@ export type { RepositoryInstructionLoadResult } from './RepositoryInstructionLoa
 export type { RepositoryInstructionProjectInput } from './RepositoryInstructionProjectInput';
 export type { RepositoryInstructionSource } from './RepositoryInstructionSource';
 export type { ReserveGoalAuditChildSelection } from './ReserveGoalAuditChildSelection';
+export type { RestoredCopy } from './RestoredCopy';
 export type { ResumeConversationGoalAuditInput } from './ResumeConversationGoalAuditInput';
 export type { SessionContextStateRecord } from './SessionContextStateRecord';
 export type { SkillDetailResponse } from './SkillDetailResponse';

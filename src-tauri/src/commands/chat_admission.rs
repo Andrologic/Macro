@@ -654,3 +654,32 @@ pub(crate) async fn chat_admission_complete_reconciliation(
         .await
         .map_err(Into::into)
 }
+
+#[tauri::command]
+pub(crate) async fn chat_admission_mode(
+    pool: State<'_, DbPool>,
+    conversation_id: String,
+) -> CommandResult<Option<String>> {
+    crate::db::chat_admission::restored_copy::admission_mode(
+        &get_pool(&pool).await?,
+        &conversation_id,
+    )
+    .await
+    .map_err(Into::into)
+}
+
+/// Explicit user action: a held conversation's history becomes a new Chat.
+#[tauri::command]
+pub(crate) async fn chat_admission_copy_restored(
+    pool: State<'_, DbPool>,
+    conversation_id: String,
+    title: String,
+) -> CommandResult<crate::db::chat_admission::restored_copy::RestoredCopy> {
+    crate::db::chat_admission::restored_copy::copy_restored(
+        &get_pool(&pool).await?,
+        &conversation_id,
+        &title,
+    )
+    .await
+    .map_err(Into::into)
+}

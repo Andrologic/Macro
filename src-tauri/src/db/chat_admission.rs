@@ -7,6 +7,7 @@ const MIGRATION: &str = include_str!("migrations/017_chat_admission.sql");
 const OBJECTS: &str = "(name GLOB 'chat_admission_*' OR tbl_name GLOB 'chat_admission_*') AND name NOT GLOB 'connect_*'";
 pub(crate) mod intents;
 pub(crate) mod reconciliation;
+pub(crate) mod restored_copy;
 pub(crate) mod retirement;
 pub(crate) mod runtime;
 
