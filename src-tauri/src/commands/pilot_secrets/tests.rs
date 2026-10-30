@@ -2380,22 +2380,59 @@ async fn global_chat_local_transfer(
         // The interrupted target listens again before preparing.
         std::env::set_var("MACRO_CONNECT_TEST_TARGET_QUIET_MS", "30000");
     }
-    let mut child = tokio::process::Command::new(std::env::current_exe().unwrap())
-        .args([
-            "--exact",
-            "commands::pilot_secrets::tests::global_chat_transfer_target",
-            "--ignored",
-            "--nocapture",
-            "--test-threads=1",
-        ])
-        .env(
-            "MACRO_CONNECT_TEST_INVITATION_PAUSE_MS",
-            if route == Route::InterruptedReceive {
-                "1500"
-            } else {
-                ""
-            },
-        )
+    // A second computer: MACRO_CONNECT_REMOTE_TARGET=<ssh host>:<test binary>
+    // runs the target there, reaching this relay through a reverse tunnel.
+    let remote = std::env::var("MACRO_CONNECT_REMOTE_TARGET")
+        .ok()
+        .map(|value| {
+            let (host, binary) = value.split_once(':').expect("host:binary");
+            let directory = format!("/tmp/macro-connect-remote-{}", uuid::Uuid::new_v4());
+            (host.to_owned(), binary.to_owned(), directory)
+        });
+    let target_args = [
+        "--exact",
+        "commands::pilot_secrets::tests::global_chat_transfer_target",
+        "--ignored",
+        "--nocapture",
+        "--test-threads=1",
+    ];
+    let pause = if route == Route::InterruptedReceive {
+        "1500"
+    } else {
+        ""
+    };
+    let mut command = match &remote {
+        Some((host, binary, remote_directory)) => {
+            let port = seed["port"].as_u64().unwrap();
+            let mut command = tokio::process::Command::new("ssh");
+            command.args([
+                "-o",
+                "BatchMode=yes",
+                "-o",
+                "ExitOnForwardFailure=yes",
+                "-R",
+                &format!("{port}:127.0.0.1:{port}"),
+                host,
+                &format!(
+                    "mkdir -p {remote_directory} && MACRO_CONNECT_TEST_INVITATION_PAUSE_MS={pause} exec {binary} {}",
+                    target_args.join(" ")
+                ),
+            ]);
+            command
+        }
+        None => {
+            let mut command = tokio::process::Command::new(std::env::current_exe().unwrap());
+            command
+                .args(target_args)
+                .env("MACRO_CONNECT_TEST_INVITATION_PAUSE_MS", pause);
+            command
+        }
+    };
+    let target_database = match &remote {
+        Some((_, _, remote_directory)) => format!("{remote_directory}/target.db"),
+        None => directory.path().join("target.db").display().to_string(),
+    };
+    let mut child = command
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::inherit())
@@ -2404,7 +2441,7 @@ async fn global_chat_local_transfer(
         .unwrap();
     let mut input = child.stdin.take().unwrap();
     let mut initialization=serde_json::to_vec(&serde_json::json!({"seed":seed,
-        "database":directory.path().join("target.db"),"provider":provider,"compacted":compacted,"resources":with_resources,"refused":refused,"runtime":via_runtime,
+        "database":target_database,"provider":provider,"compacted":compacted,"resources":with_resources,"refused":refused,"runtime":via_runtime,
         "interrupted":route == Route::InterruptedReceive,"restricted":restricted,"idle":lost,"abandoned":released,"revoked":revoked,
         "stop":match route {
             Route::TargetStoppedBeforeCommit => "target_after_ready",
@@ -2785,12 +2822,25 @@ async fn global_chat_local_transfer(
         }
         // The target's next request equals the source's, except that a
         // compacted source still sends its checkpoint, which is not transferred.
-        let target: serde_json::Value = serde_json::from_slice(
-            &tokio::fs::read(directory.path().join("next-request.json"))
+        let next_request = match &remote {
+            Some((host, _, remote_directory)) => {
+                tokio::process::Command::new("ssh")
+                    .args([
+                        "-o",
+                        "BatchMode=yes",
+                        host,
+                        &format!("cat {remote_directory}/next-request.json"),
+                    ])
+                    .output()
+                    .await
+                    .unwrap()
+                    .stdout
+            }
+            None => tokio::fs::read(directory.path().join("next-request.json"))
                 .await
                 .unwrap(),
-        )
-        .unwrap();
+        };
+        let target: serde_json::Value = serde_json::from_slice(&next_request).unwrap();
         let target_body = serde_json::to_string(&provider_body(&target["request"]))
             .unwrap()
             .replace(target["conversation"].as_str().unwrap(), "chat");
@@ -2956,6 +3006,17 @@ async fn global_chat_local_transfer(
     assert!(relay.wait().await.unwrap().success());
     if !refused && !restricted && !lost && !released && !revoked {
         transferred.unwrap();
+    }
+    if let Some((host, _, remote_directory)) = &remote {
+        let _ = tokio::process::Command::new("ssh")
+            .args([
+                "-o",
+                "BatchMode=yes",
+                host,
+                &format!("rm -rf {remote_directory}"),
+            ])
+            .status()
+            .await;
     }
     assert!(child.status.success());
 }
