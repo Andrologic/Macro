@@ -7,6 +7,8 @@ import { appendProjection, assertProjection, type NativeCardActivation } from '.
 import { sameSource } from './agsdl/runtimeSelection';
 import { resolveTaskReference } from './durableIdentity';
 import * as ipc from './tauriIpc';
+import { isWorkflowAgentTask, workflowAgentTaskId, workflowTaskAgentPaths } from './workflowAgentTasks';
+import { sourceDigest } from './agsdlExecution/compiler';
 
 export interface TaskExecutionGraph {
   title: string;
@@ -22,11 +24,13 @@ export interface TaskExecutionGraph {
   approvals?: PublicApproval[];
 }
 
-async function projectionFor(snapshot: PublicSnapshot): Promise<PublicProjection> {
+async function projectionFor(snapshot: PublicSnapshot, signal?: AbortSignal): Promise<PublicProjection> {
   let projection = await ipc.readExecutionProjection(snapshot.systemStartId);
+  signal?.throwIfAborted();
   assertProjection(projection, snapshot);
   while (projection.nextPage) {
     projection = appendProjection(projection, await ipc.readExecutionProjection(snapshot.systemStartId, projection.nextPage), snapshot);
+    signal?.throwIfAborted();
   }
   return projection;
 }
@@ -36,6 +40,33 @@ export async function loadTaskExecutionGraph(task: CatalogedImplementTask, tasks
   signal?.throwIfAborted();
   if (import.meta.env.DEV && import.meta.env.VITE_MACRO_DEMO === '1') {
     return (await import('../demo/taskExecutionGraph')).readDemoTaskExecutionGraph(task.id);
+  }
+  if (isWorkflowAgentTask(task)) {
+    const ref = task.workflow_execution!;
+    const snapshot = await ipc.readExecutionSnapshot(ref.systemStartId);
+    signal?.throwIfAborted();
+    if (snapshot.systemStartId !== ref.systemStartId || !sameSource(snapshot.source, ref.source) ||
+      task.id !== workflowAgentTaskId(ref.systemStartId, ref.agentInstanceId) ||
+      task.project_id !== ref.source.owner.projectId || task.plan_id !== ref.source.owner.planId ||
+      task.plan_storage_branch !== ref.source.owner.branch || await sourceDigest(snapshot.authoredSource) !== snapshot.source.sourceSha256) throw new Error('Workflow Task identity differs');
+    const projection = await projectionFor(snapshot, signal);
+    const agent = projection.agents.find(agent => agent.agentInstanceId === ref.agentInstanceId && agent.agentName === ref.agentName);
+    if (!agent) throw new Error('Workflow Agent is absent');
+    const taskPaths: Record<string, string> = {};
+    for (const [path, instance] of Object.entries(workflowTaskAgentPaths(snapshot, projection))) {
+      const linked = tasks.find(candidate => candidate.id === workflowAgentTaskId(snapshot.systemStartId, instance) &&
+        candidate.workflow_execution?.systemStartId === snapshot.systemStartId &&
+        sameSource(candidate.workflow_execution.source, snapshot.source));
+      if (linked) taskPaths[path] = linked.id;
+    }
+    const selectedPath = Object.keys(taskPaths).find(path => path.startsWith('/flow/') && taskPaths[path] === task.id) ??
+      Object.keys(taskPaths).find(path => taskPaths[path] === task.id);
+    if (!selectedPath) throw new Error('Workflow Agent path is absent');
+    const approvals = await ipc.readExecutionApprovals({ systemStartId: snapshot.systemStartId, source: snapshot.source });
+    signal?.throwIfAborted();
+    if (approvals.incomplete) throw new Error('Incomplete workflow approvals');
+    return { title: task.plan_title || task.title, source: snapshot.authoredSource, snapshot, projection, taskPaths, selectedPath,
+      approvals: approvals.approvals };
   }
   const branch = task.plan_storage_branch || task.plan_target_branch;
   if (!task.plan_id || !task.project_id || !branch) return null;

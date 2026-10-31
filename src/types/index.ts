@@ -233,7 +233,7 @@ export interface TaskExecutionTarget {
   predictedBranchId?: string | null;
 }
 
-export type ImplementTaskSource = 'architect' | 'plan_finalization' | 'standalone';
+export type ImplementTaskSource = 'architect' | 'plan_finalization' | 'standalone' | 'agsdl';
 
 export interface PredictedCommit {
   id: string;
@@ -720,6 +720,8 @@ export interface FileChange {
 }
 
 export interface Task {
+  /** Read-only projection of a native Agent. Native journal owns its state. */
+  workflow_execution?: import('./workflowAgentTask').WorkflowAgentTaskReference;
   id: string;
   plan_id: string;
   project_id: string;

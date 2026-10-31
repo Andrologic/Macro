@@ -3049,6 +3049,38 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     mock.restore();
   });
 
+  it('keeps native workflow Tasks out of legacy conversation creation and provider dispatch', async () => {
+    appState.mode = 'Implement';
+    appState.selectedTaskId = 'task:agsdl:v1:run:agent';
+    taskStoreState.tasks = [{ id: appState.selectedTaskId, project_id: 'project-1', project_ids: ['project-1'],
+      status: 'InProgress', task_source: 'agsdl', plan_id: 'workflow', draft: false, conversation_id: null }];
+    const { useChatStore } = await loadChatStore();
+    useChatStore.setState(createIdleChatStoreState({ conversations: [] }));
+    expect(await useChatStore.getState().ensureConversationForCurrentMode()).toBeNull();
+    expect(createConversationMock).not.toHaveBeenCalled();
+    await expect(useChatStore.getState().sendMessage({ conversationId: 'stale-conversation',
+      taskId: 'task:agsdl:v1:run:agent', content: 'Do not dispatch through the legacy engine.' })).rejects.toMatchObject({ code: 'NATIVE_WORKFLOW_OWNED' });
+    expect(createMessageMock).not.toHaveBeenCalled();
+    expect(streamChatMock).not.toHaveBeenCalled();
+  });
+
+  it('continues a captured Chat Goal while a native workflow Task is selected', async () => {
+    tauriAvailable = true;
+    appState.mode = 'Implement';
+    appState.selectedTaskId = 'task:agsdl:v1:run:agent';
+    taskStoreState.tasks = [{ id: appState.selectedTaskId, task_source: 'agsdl', status: 'InProgress' }];
+    const { useChatStore } = await loadChatStore();
+    useChatStore.setState(createIdleChatStoreState({
+      conversations: [{ ...createConversation('captured-chat'), scope_mode: 'Chat', task_id: null,
+        provider_id: 'provider-1', model_id: 'model-1' }],
+      selectedConversationId: 'other-conversation',
+    }));
+    await useChatStore.getState().sendGoalContinuation('captured-chat', 'Continue the captured objective.');
+    expect(streamChatMock).toHaveBeenCalledTimes(1);
+    expect(getLatestStreamOptions()).toMatchObject({ providerId: 'provider-1', modelId: 'model-1' });
+    expect(bindArchitectPlanConversationMock).not.toHaveBeenCalled();
+  });
+
   it('retains automatic naming after a failed rename while metadata is pending', async () => {
     appState.mode = 'Chat';
     tauriAvailable = true;

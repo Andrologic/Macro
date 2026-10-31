@@ -13,6 +13,7 @@ interface QueueTask {
   draft?: boolean;
   archived_at?: string | null;
   merge_workflow_summary?: MergeWorkflowSummary | null;
+  workflow_execution?: { interactionRequired: boolean; stale?: boolean };
 }
 interface VisibilityOptions {
   showBlockedTasks: boolean;
@@ -28,6 +29,11 @@ export function visibleTaskQueueTasks<T extends QueueTask>(tasks: readonly T[], 
   const uniqueTasks = [...new Map(tasks.map(task => [task.id, task])).values()];
   return uniqueTasks.filter(task => {
     if (task.archived_at) return options.showArchived;
+    if (task.workflow_execution) {
+      if (task.workflow_execution.stale || task.workflow_execution.interactionRequired) return true;
+      if (task.is_blocked || task.status === 'Blocked') return options.showBlockedTasks;
+      return options.showWithoutInteraction;
+    }
     if (task.draft || task.needs_revalidation || task.status === 'Failed' || options.attentionByTaskId.has(task.id)) return true;
     const merge = resolveTaskMergeWorkflowPresentationState(options.mergeWorkflowRuntimeByTaskId[task.id], task.merge_workflow_summary, task.status);
     if (merge && ['blocked', 'failed', 'partial'].includes(merge.phase)) return true;

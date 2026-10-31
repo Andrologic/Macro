@@ -3,6 +3,7 @@ import type { CatalogedImplementTask } from './implementTaskCatalog';
 import { isPlanFinalizationTask } from './implementTaskCatalog';
 import { resolveTaskReference } from './durableIdentity';
 import { toServiceError } from './contracts/errors';
+import { assertLegacyTaskOwnership } from './workflowTaskOwnership';
 
 export interface PreparedTaskWorkspace extends TaskExecutionTarget {
   projectName: string;
@@ -82,6 +83,7 @@ export const createTaskStartupWorkflow = (ports: TaskStartupPorts) => {
       if (!ports.executionAvailable()) return fail(taskId, new Error(ports.unavailableMessage()));
       const task = resolveTaskReference(ports.tasks(), taskId);
       if (!task) return fail(taskId, new Error(ports.message('implement.errors.unknownTask', 'Unknown task: {{taskId}}', { taskId })));
+      try { assertLegacyTaskOwnership(task); } catch (error) { return fail(taskId, error); }
       if (task.archived_at || task.draft) return { status: 'ignored', taskId };
       if (task.status === 'Completed') return fail(taskId, new Error(ports.message('implement.errors.taskAlreadyCompleted', 'Task is already completed.')));
       if (task.plan_id && ports.planMutationActive(task.plan_id)) {

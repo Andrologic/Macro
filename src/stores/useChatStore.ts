@@ -1,4 +1,5 @@
 import { assertRuntimeSelectionDestination } from "../services/agsdl/runtimeSelection";
+import { assertLegacyTaskOwnership } from '../services/workflowTaskOwnership';
 import { hasMultipleAgsdlContexts, persistableContextRefs, rebindAgsdlContextRefs, submissionHiddenContext } from "../services/chat/composerSubmission";
 import { agsdlContextForModel } from "../services/agsdl/chatContextPayload";
 import { getConflictAssistantContext, clearConflictAssistantContext, isConflictAssistantContextAllowed, revalidateConflictAssistantContext, scopeConflictAssistantExecutionContext } from '../services/conflictAssistantContext';
@@ -1791,6 +1792,8 @@ export const useChatStore = create<ChatStore>((set, get) => {
   };
   const assertImplementConversationContext = (conversationId: string) => {
     const conversation = get().conversations.find(conversation => conversation.id === conversationId);
+    const taskId = conversation?.task_id;
+    assertLegacyTaskOwnership(taskId ? useTaskStore.getState().getTaskById(taskId) : undefined, taskId ?? undefined);
     if (conversation?.scope_mode === 'Implement' && !conversation.task_id && !getConflictAssistantContext(conversationId)) {
       throw buildSendError('Open the conflict assistant from a verified Git context before sending.');
     }
@@ -11504,6 +11507,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
             selectedProjectId,
           })
         : null;
+    if (mode === 'Implement' && selectedTaskId?.startsWith('task:agsdl:v1:')) return modeFallback(null);
 
     if (
       mode === "Architect" &&
@@ -14032,6 +14036,10 @@ export const useChatStore = create<ChatStore>((set, get) => {
     },
 
     sendMessage: async (payload, queuedSubmission, continuation) => {
+      const captured = queuedSubmission ?? continuation;
+      const taskId = payload.taskId ?? get().conversations.find(conversation => conversation.id === payload.conversationId)?.task_id ??
+        (captured?.intent.mode === 'Implement' ? captured.intent.conversationTaskId || captured.intent.selectedTaskId : null);
+      assertLegacyTaskOwnership(taskId ? useTaskStore.getState().getTaskById(taskId) : undefined, taskId ?? undefined);
       if (isAppShutdownGateActive()) {
         throw new Error(i18n.t('shutdown.closing', 'Macro is closing.'));
       }

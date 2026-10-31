@@ -1,4 +1,4 @@
-import type { IconName } from '../components/ui/Icon';
+import type { IconName } from '../types/icon';
 import type { ArchitectPlanKind } from './architectPlanKinds';
 
 export const planKindIconName: Record<ArchitectPlanKind, IconName> = {

@@ -12,6 +12,7 @@ import {
   resolveMergeWorkflowPhaseFromRepositories,
 } from './mergeWorkflow';
 import { buildMergeWorkflowRuntimeFromPersistedSession, overlayPersistedMergeWorkflowSession } from './mergeWorkflowPersistence';
+import { assertLegacyTaskOwnership } from './workflowTaskOwnership';
 import {
   buildTaskCompletionMergeWorkflowRuntime, integratedWorkflowRepository, cleanupTaskExecutionTargets,
   evolveMergeWorkflowRuntimeRepository, markMergeWorkflowRepositoryMerged, runRepositoryMergeStrategy,
@@ -41,6 +42,7 @@ export function createTaskMergeWorkflow(ports: TaskMergeWorkflowPorts, review: P
         throw error;
       }
       const hasPendingCompletion = Boolean(ports.readRuntime(task.id) || task.merge_workflow);
+      assertLegacyTaskOwnership(task);
       if (task.status === 'Completed' && !hasPendingCompletion) {
         ports.reportError(null);
         return;

@@ -14,7 +14,7 @@ function valid(value: unknown): value is DesignMetadata {
   if (!value.rules.every(item => isRecord(item) && strings(item, ['id', 'title', 'instructions']) && item.id !== '')) return false;
   if (!value.requirements.every(item => isRecord(item) && strings(item, ['id', 'label', 'description', 'value']) && item.id !== '' && (item.targetPath === undefined || typeof item.targetPath === 'string'))) return false;
   if (new Set(value.rules.map(item => item.id)).size !== value.rules.length || new Set(value.requirements.map(item => item.id)).size !== value.requirements.length) return false;
-  return value.origin === undefined || (isRecord(value.origin) && strings(value.origin, ['planId', 'name']) && Number.isSafeInteger(value.origin.revision) && Number(value.origin.revision) >= 0);
+  return value.origin === undefined || (isRecord(value.origin) && strings(value.origin, ['planId', 'name']) && Number.isSafeInteger(value.origin.revision) && Number(value.origin.revision) >= 0 && (value.origin.branchName === undefined || typeof value.origin.branchName === 'string'));
 }
 function annotations(source: string): Record<string, unknown> {
   const root = readDocument(source).root;
