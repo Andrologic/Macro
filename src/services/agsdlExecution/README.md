@@ -219,11 +219,20 @@ politique propre et n'héritent pas des réglages d'un agent.
 `agsdl_write_denied` contrôle chaque cible de `write`, `edit`, `delete` et
 `apply_patch` avant admission, puis au démarrage de l'exécuteur détenu. Les
 chemins réels résolvent les liens existants et les ancêtres des nouveaux fichiers.
-Le contrôle conserve aussi les chemins lexicaux normalisés pour refuser une
-écriture qui traverse un sous-arbre protégé par un lien. `*` ne traverse pas `/`,
+Le contrôle vérifie aussi la cible du validateur d'écriture commun après sa
+normalisation lexicale, puis sa résolution physique. Cette cible peut différer
+de celle du chemin brut lorsque des liens précèdent `..`. Les chemins lexicaux
+restent contrôlés pour protéger les sous-arbres traversés par un lien. `*` ne traverse pas `/`,
 `**` le traverse et `**/` accepte zéro niveau. Les refus reviennent par le chemin
 `PERMISSION` existant. Une règle `deny` entraîne un refus conservateur des
-mutations de répertoires.
+mutations de répertoires. Les alias virtuels `.macro`, y compris leurs formes
+avec antislashs ou espaces reconnus par le remappeur, sont refusés pour toute
+écriture AgSDL : ils peuvent désigner un autre workspace de métadonnées.
+
+Les préfixes littéraux des motifs Windows reconnaissent les deux séparateurs
+natifs et les chemins étendus. La comparaison décompose Unicode et ignore la
+casse sur macOS et Windows. Ces choix conservateurs peuvent refuser davantage
+sur des systèmes de fichiers sensibles à la casse ou aux formes Unicode.
 
 Les patches du workspace courant prennent en charge `*** Move to:`. La cible
 est créée et la source supprimée par la transaction commune ; une cible existante

@@ -2087,3 +2087,151 @@ async fn agsdl_frozen_write_policy_guards_actual_executor_without_partial_writes
         assert!(!root.join("secret/.env").exists());
     }
 }
+
+#[cfg(unix)]
+#[tokio::test]
+async fn agsdl_policy_checks_the_actual_target_after_symlink_parent_normalization() {
+    let workspace = TempDir::new().unwrap();
+    let root = workspace.path().canonicalize().unwrap();
+    for path in ["secret", "other/nested"] {
+        fs::create_dir_all(root.join(path)).unwrap();
+    }
+    std::os::unix::fs::symlink("secret", root.join("alias")).unwrap();
+    std::os::unix::fs::symlink("../other/nested", root.join("secret/link")).unwrap();
+    for path in ["secret/file.txt", "other/file.txt"] {
+        fs::write(root.join(path), "original\n").unwrap();
+    }
+    let raw = "alias/link/../file.txt";
+    // Demonstrate the validator/executor discrepancy that the policy must cover.
+    assert_eq!(
+        root.join(raw).canonicalize().unwrap(),
+        root.join("other/file.txt")
+    );
+    let validated = crate::fs::validate_path_for_write(std::path::Path::new(raw), &root).unwrap();
+    assert_eq!(
+        validated.canonicalize().unwrap(),
+        root.join("secret/file.txt")
+    );
+    let invoke = |tool: &str, args: serde_json::Value, permissions: serde_json::Value| {
+        let roots = Arc::new(std::collections::BTreeMap::from([(
+            root.clone(),
+            crate::fs::operations::workspace_root_identity(&root).unwrap(),
+        )]));
+        execute_workspace_tool_owned(
+            root.clone(),
+            root.clone(),
+            GitState::new(),
+            "Implement".into(),
+            tool.into(),
+            args,
+            uuid::Uuid::new_v4().to_string(),
+            permissions,
+            roots,
+        )
+    };
+    invoke(
+        "write",
+        json!({"path":raw,"content":"positive control\n"}),
+        json!({}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        fs::read_to_string(root.join("secret/file.txt")).unwrap(),
+        "positive control\n"
+    );
+    fs::write(root.join("secret/file.txt"), "original\n").unwrap();
+    let rules = json!({"writeRules":[{"action":"write","effect":"deny","match":"secret/**"}]});
+    for (tool, args) in [
+        ("write", json!({"path":raw,"content":"changed"})),
+        (
+            "edit",
+            json!({"path":raw,"old_text":"original","new_text":"changed"}),
+        ),
+        ("delete", json!({"path":raw})),
+        (
+            "apply_patch",
+            json!({"patch_text":format!("*** Begin Patch\n*** Add File: allowed.txt\n+created\n*** Update File: {raw}\n@@\n-original\n+changed\n*** End Patch")}),
+        ),
+        (
+            "apply_patch",
+            json!({"patch_text":format!("*** Begin Patch\n*** Update File: {raw}\n*** Move to: moved.txt\n@@\n-original\n+changed\n*** End Patch")}),
+        ),
+        (
+            "apply_patch",
+            json!({"patch_text":format!("*** Begin Patch\n*** Update File: other/file.txt\n*** Move to: {raw}\n@@\n-original\n+changed\n*** End Patch")}),
+        ),
+    ] {
+        assert!(invoke(tool, args, rules.clone())
+            .await
+            .unwrap_err()
+            .message
+            .contains("PERMISSION"));
+        for path in ["secret/file.txt", "other/file.txt"] {
+            assert_eq!(fs::read_to_string(root.join(path)).unwrap(), "original\n");
+        }
+        assert!(!root.join("allowed.txt").exists());
+        assert!(!root.join("moved.txt").exists());
+    }
+}
+
+#[tokio::test]
+async fn agsdl_policy_refuses_metadata_aliases_before_remapping_or_mutation() {
+    let workspace = TempDir::new().unwrap();
+    let root = workspace.path().canonicalize().unwrap();
+    fs::create_dir_all(root.join(".macro/protected")).unwrap();
+    fs::write(root.join(".macro/protected/x.txt"), "original\n").unwrap();
+    let invoke = |tool: &str, args: serde_json::Value, permissions: serde_json::Value| {
+        let roots = Arc::new(std::collections::BTreeMap::from([(
+            root.clone(),
+            crate::fs::operations::workspace_root_identity(&root).unwrap(),
+        )]));
+        execute_workspace_tool_owned(
+            root.clone(),
+            root.clone(),
+            GitState::new(),
+            "Implement".into(),
+            tool.into(),
+            args,
+            uuid::Uuid::new_v4().to_string(),
+            permissions,
+            roots,
+        )
+    };
+    for raw in [
+        ".macro/protected/x.txt",
+        r".macro\protected\x.txt",
+        " .macro/protected/x.txt ",
+        "./.macro/protected/x.txt",
+    ] {
+        for rules in [
+            json!({}),
+            json!({"writeRules":[{"action":"write","effect":"allow"}]}),
+            json!({"writeRules":[{"action":"write","effect":"deny","match":".macro/protected/**"}]}),
+        ] {
+            for (tool, args) in [
+                ("write", json!({"path":raw,"content":"changed"})),
+                (
+                    "edit",
+                    json!({"path":raw,"old_text":"original","new_text":"changed"}),
+                ),
+                ("delete", json!({"path":raw})),
+                (
+                    "apply_patch",
+                    json!({"patch_text":format!("*** Begin Patch\n*** Add File: allowed.txt\n+created\n*** Delete File: {raw}\n*** End Patch")}),
+                ),
+            ] {
+                assert!(invoke(tool, args, rules.clone())
+                    .await
+                    .unwrap_err()
+                    .message
+                    .contains("PERMISSION"));
+                assert_eq!(
+                    fs::read_to_string(root.join(".macro/protected/x.txt")).unwrap(),
+                    "original\n"
+                );
+                assert!(!root.join("allowed.txt").exists());
+            }
+        }
+    }
+}

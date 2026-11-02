@@ -496,6 +496,11 @@ fn permission_path(root: &std::path::Path, raw: &str) -> Option<std::path::PathB
             }
             other => {
                 resolved.push(other.as_os_str());
+                // A Windows drive/UNC prefix alone is not an absolute filesystem
+                // target yet. Resolve it once its root component has been added.
+                if !resolved.is_absolute() {
+                    continue;
+                }
                 match std::fs::canonicalize(&resolved) {
                     Ok(path) => resolved = path,
                     Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
@@ -513,12 +518,28 @@ fn permission_path(root: &std::path::Path, raw: &str) -> Option<std::path::PathB
     Some(resolved)
 }
 
+#[cfg(any(windows, test))]
+fn permission_windows_path(value: &str) -> String {
+    let value = value.replace('\\', "/");
+    if let Some(rest) = value.strip_prefix("//?/UNC/") {
+        format!("//{rest}")
+    } else {
+        value.strip_prefix("//?/").unwrap_or(&value).to_string()
+    }
+}
+
 fn permission_match_path(path: &std::path::Path) -> String {
+    use unicode_normalization::UnicodeNormalization;
+    let text = path.to_string_lossy();
     #[cfg(windows)]
-    return path.to_string_lossy().replace('\\', "/");
-    // On Unix an antislash is a literal filename character, not a separator.
-    #[cfg(not(windows))]
-    path.to_string_lossy().into_owned()
+    let text = permission_windows_path(&text);
+    // macOS and Windows commonly address files without regard to case. Matching
+    // conservatively on case-sensitive volumes grants less, never more.
+    #[cfg(any(windows, target_os = "macos"))]
+    let text = text.to_uppercase();
+    // NFD also preserves glob boundaries such as e* + combining accent.
+    // An antislash remains a literal filename character on Unix.
+    text.nfd().collect()
 }
 
 fn permission_glob(pattern: &[u8], path: &[u8]) -> bool {
@@ -592,10 +613,33 @@ pub(crate) fn agsdl_write_denied(
         return true;
     };
     for raw in paths {
+        // These aliases select a separate metadata workspace in the executor.
+        // The captured workspace grants no authority over that separate root.
+        if is_macro_scoped_path(raw) {
+            return true;
+        }
         let Some(path) = permission_path(&root, raw) else {
             return true;
         };
-        if !path.starts_with(&root) {
+        if !crate::fs::path_is_same_or_descendant(&path, &root) {
+            return true;
+        }
+        // Existing targets are lexically normalized by the real write validator
+        // before capability lookup. Canonicalize that returned path as well: with
+        // symlinks followed by .., it can name a third target distinct from both
+        // OS resolution of the raw path and lexical resolution of that raw path.
+        let Ok(execution_path) =
+            crate::fs::validate_path_for_write(std::path::Path::new(raw), &root)
+        else {
+            return true;
+        };
+        let Some(executed) = execution_path
+            .to_str()
+            .and_then(|raw| permission_path(&root, raw))
+        else {
+            return true;
+        };
+        if !crate::fs::path_is_same_or_descendant(&executed, &root) {
             return true;
         }
         let mut lexical = std::path::PathBuf::new();
@@ -631,13 +675,19 @@ pub(crate) fn agsdl_write_denied(
             // with normalized targets. Wildcards themselves are never filesystem names.
             // A directory mutation can affect denied descendants. Conservatively
             // reject it rather than trusting a non-atomic recursive enumeration.
-            if path.is_dir() {
+            if path.is_dir() || executed.is_dir() {
                 return true;
             }
+            #[cfg(windows)]
+            let native_pattern = pattern.replace('\\', "/");
+            #[cfg(windows)]
+            let pattern = native_pattern.as_str();
             if !pattern.contains('*') {
-                if permission_path(&root, pattern)
-                    .is_none_or(|candidate| candidate == path || candidate == lexical)
-                {
+                if permission_path(&root, pattern).is_none_or(|candidate| {
+                    [&path, &lexical, &executed].iter().any(|target| {
+                        permission_match_path(&candidate) == permission_match_path(target)
+                    })
+                }) {
                     return true;
                 }
                 continue;
@@ -650,7 +700,7 @@ pub(crate) fn agsdl_write_denied(
                 return true;
             };
             let absolute_pattern = permission_match_path(&base.join(suffix));
-            if [&path, &lexical].iter().any(|candidate| {
+            if [&path, &lexical, &executed].iter().any(|candidate| {
                 permission_glob(
                     absolute_pattern.as_bytes(),
                     permission_match_path(candidate).as_bytes(),
@@ -667,6 +717,67 @@ pub(crate) fn agsdl_write_denied(
 mod agsdl_write_tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn windows_namespace_paths_match_the_same_absolute_patterns() {
+        for (pattern, target) in [
+            (r"C:\repo\.env*", r"\\?\C:\repo\.env.local"),
+            (
+                r"\\server\share\repo\.env*",
+                r"\\?\UNC\server\share\repo\.env.local",
+            ),
+        ] {
+            assert!(permission_glob(
+                permission_windows_path(pattern).as_bytes(),
+                permission_windows_path(target).as_bytes()
+            ));
+        }
+    }
+
+    #[test]
+    fn equivalent_unicode_spellings_cannot_widen_write_access() {
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::write(temp.path().join("é.txt"), "protected").unwrap();
+        for pattern in ["e\u{301}*", "é*", "e*\u{301}.txt", "e\u{301}.txt"] {
+            let rules = json!({"writeRules":[{"action":"write","effect":"deny","match":pattern}]});
+            assert!(
+                agsdl_write_denied(
+                    temp.path(),
+                    "write",
+                    &json!({"path":"é.txt","content":"changed"}),
+                    &rules
+                ),
+                "{pattern}"
+            );
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_absolute_rules_resolve_the_literal_prefix() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().canonicalize().unwrap();
+        std::fs::write(root.join(".env.local"), "protected").unwrap();
+        let plain_root = permission_windows_path(root.to_str().unwrap()).replace('/', "\\");
+        for pattern in [
+            format!("{plain_root}\\.env*"),
+            format!("{plain_root}\\.env.local"),
+        ] {
+            assert!(agsdl_write_denied(
+                &root,
+                "write",
+                &json!({"path":".env.local","content":"changed"}),
+                &json!({"writeRules":[{"action":"write","effect":"deny","match":pattern}]})
+            ));
+        }
+        // Positive control detects an accidental deny-all during drive/UNC resolution.
+        assert!(!agsdl_write_denied(
+            &root,
+            "write",
+            &json!({"path":"allowed.txt","content":"changed"}),
+            &json!({"writeRules":[{"action":"write","effect":"deny","match":".env*"}]})
+        ));
+    }
 
     #[test]
     fn frozen_write_rules_cover_all_targets() {
