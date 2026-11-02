@@ -69,6 +69,41 @@ pub(crate) struct CompilationCapture {
     pub call_scope_json: String,
 }
 
+// Keep requested write ceilings in the durable native envelope without changing
+// the document reader or granting additional permissions.
+fn captured_write_rules(agent: &Value) -> Value {
+    Value::Array(
+        agent
+            .pointer("/permissions/rules")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter(|rule| rule["action"] == "write")
+            .cloned()
+            .collect(),
+    )
+}
+
+#[cfg(test)]
+mod write_capture_tests {
+    use super::*;
+    #[test]
+    fn captures_write_rules_without_interpreting_or_widening_them() {
+        let rules = json!([{"action":"write","match":".env*","effect":"deny"}, {"action":"write","effect":"deny"}]);
+        assert_eq!(
+            captured_write_rules(&json!({"permissions":{"rules":rules}})),
+            rules
+        );
+        assert_eq!(captured_write_rules(&json!({})), json!([]));
+        assert_eq!(
+            captured_write_rules(
+                &json!({"permissions":{"rules":[{"action":"read","effect":"deny"}]}})
+            ),
+            json!([])
+        );
+    }
+}
+
 pub(crate) fn project_scope(workspace: &Path, source: &LockedExecutionSource) -> Result<Value> {
     let project = &source.project;
     if crate::project_path::parse_wsl_unc_path(&project.path).is_some() {
@@ -301,7 +336,7 @@ async fn observation(
             configurations.push(json!({
                 "agentName": name, "verifiedRequirementsJson": [],
                 "effectiveSettingsJson": serde_json::to_string(&settings)?,
-                "permissionsJson": serde_json::to_string(&crate::agsdl_host_tools::permissions(mode, project.user_read_only || project.is_read_only, tools)?)?,
+                "permissionsJson": serde_json::to_string(&{ let mut captured = crate::agsdl_host_tools::permissions(mode, project.user_read_only || project.is_read_only, tools)?; captured["writeRules"] = captured_write_rules(agent); captured })?,
                 "scopeJson": serde_json::to_string(&scope)?
             }));
         }

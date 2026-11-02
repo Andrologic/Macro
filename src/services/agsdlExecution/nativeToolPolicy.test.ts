@@ -61,3 +61,10 @@ it.each([
   expect(native.input.argumentsJson).toBe(json(authored));
   expect(JSON.stringify(args)).toBe(authored);
 });
+
+it.each(['balanced', 'strict', 'yolo'] as const)('keeps native frozen path denials under %s', riskLevel => {
+  const { input, registry } = fixture('write', '{"path":".env","content":"synthetic"}');
+  const result = assessNativeToolPolicy({ ...input, riskLevel, writeDenied: true }, registry);
+  expect(result.decision).toBe('deny');
+  expect(result.code).toBe('PERMISSION');
+});

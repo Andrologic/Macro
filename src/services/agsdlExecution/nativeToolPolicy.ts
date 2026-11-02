@@ -11,6 +11,8 @@ import { validateRegisteredArguments, type CapturedRegistry } from './registry';
  * invocation. It is carried by an authenticated, single-use compiler ticket. */
 export interface NativeToolPolicyInput {
   readonly invocationIdentity: string;
+  /** Native evaluates frozen write rules against canonical filesystem paths. */
+  readonly writeDenied?: boolean;
   readonly toolId: string;
   readonly bindingJson: ExactJsonText;
   readonly argumentsJson: ExactJsonText;
@@ -53,7 +55,7 @@ export function assessNativeToolPolicy(input: NativeToolPolicyInput, registry: C
     const captured = evaluateToolSecurity(input.toolId, args, {
       mode: input.mode, riskLevel: input.capturedRiskLevel, workspacePath: input.root, defaultWorkspacePath: input.root, grants: [],
     });
-    const decision = [evaluation.decision, captured.decision].includes('deny') ? 'deny'
+    const decision = input.writeDenied || [evaluation.decision, captured.decision].includes('deny') ? 'deny'
       : input.toolId.startsWith('terminal_') || [evaluation.decision, captured.decision].includes('ask') ? 'ask' : 'allow';
     return { input, decision,
       summary: evaluation.normalizedCall.summary, detail: evaluation.normalizedCall.detail ?? null,
