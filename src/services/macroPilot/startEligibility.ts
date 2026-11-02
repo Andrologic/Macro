@@ -5,7 +5,7 @@ type StartTask = Pick<Task, 'status' | 'task_source' | 'draft' | 'is_blocked'>;
 type StartRejectionCode = 'invalid_reference' | 'unavailable';
 
 export const pilotStartRejection = (task: StartTask | undefined): StartRejectionCode | null => {
-  if (!task || task.task_source === 'plan_finalization' || task.draft) return 'invalid_reference';
+  if (!task || task.task_source === 'agsdl' || task.task_source === 'plan_finalization' || task.draft) return 'invalid_reference';
   if (task.is_blocked || (task.status !== 'Pending' && task.status !== 'Failed')) return 'unavailable';
   return null;
 };
