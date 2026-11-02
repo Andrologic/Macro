@@ -30,10 +30,27 @@ const TECHNICAL_LITERAL_ALLOWLIST = new Set([
   // These exact English provider errors do not contain French accent omissions.
   'Goal auditor provider selection conflicts with its authorization.',
   'Invalid goal auditor provider selection.',
+  'Runtime selection owner differs from the conversation',
+  'Runtime selection owner or draft changed before acceptance',
+  'Only one AgSDL selection may be sent.',
+  'Invalid runtime selection',
+  'Runtime selection destination differs',
+  '${selectionBlocks().source}' + String.raw`(?:\\r?\\n(?:Use agsdl_get|This AgSDL selection)[^\\r\\n]*)?`,
 ]);
+// These English protocol instructions contain words shared with French.
+const ENGLISH_PROTOCOL_PREFIXES = [
+  'A source has exactly value or uri,',
+  'A Join requires an existing direct fork',
+  'An Approval requires an existing protected Call',
+  'This AgSDL selection is an immutable historical runtime capture.',
+];
 
 // A kind comparison uses a tagged union identifier rather than user-facing copy.
 const isKindComparison = (prefix: string): boolean => /\.kind\s*(?:===|!==)\s*$/.test(prefix);
+
+const isPropertyName = (prefix: string, suffix: string): boolean =>
+  (/[\w$.)\]]\s*\[\s*$/.test(prefix) && /^\s*\]/.test(suffix)) ||
+  (/(?:^|[,{;])\s*$/.test(prefix) && /^\s*\??\s*:/.test(suffix));
 
 const isTechnicalCssLiteral = (literal: string): boolean => {
   if (!literal.trim()) {
@@ -87,6 +104,15 @@ describe('french hardcoded copy', () => {
     expect(isKindComparison('notify.info(')).toBe(false);
   });
 
+  it('ignores property keys and indices while checking displayed copy', () => {
+    expect(isPropertyName('type Model = { ', '?: string }')).toBe(true);
+    expect(isPropertyName('ContentModelCatalog[', ']')).toBe(true);
+    expect(isPropertyName('notify.info(', ')')).toBe(false);
+    expect(isPropertyName('const label = ', ';')).toBe(false);
+    expect(isPropertyName('const labels = [', ']')).toBe(false);
+    expect(isPropertyName('condition ? ', ' : other')).toBe(false);
+  });
+
   it('does not contain common French accent omissions in user-facing strings', () => {
     const files = collectSourceFiles(SRC_ROOT);
     const findings: string[] = [];
@@ -112,7 +138,7 @@ describe('french hardcoded copy', () => {
 
         for (const match of line.matchAll(STRING_LITERAL_PATTERN)) {
           const literal = match[2];
-          if (isKindComparison(line.slice(0, match.index))) {
+          if (isKindComparison(line.slice(0, match.index)) || isPropertyName(line.slice(0, match.index), line.slice(match.index! + match[0].length))) {
             continue;
           }
           if (!literal || !/[A-Za-z]/.test(literal)) {
@@ -121,7 +147,7 @@ describe('french hardcoded copy', () => {
           if (isTechnicalCssLiteral(literal)) {
             continue;
           }
-          if (TECHNICAL_LITERAL_ALLOWLIST.has(literal)) {
+          if (TECHNICAL_LITERAL_ALLOWLIST.has(literal) || ENGLISH_PROTOCOL_PREFIXES.some(prefix => literal.startsWith(prefix))) {
             continue;
           }
 

@@ -1,11 +1,11 @@
-use super::{get_pool, CommandError, CommandResult, DbPool};
+use super::{command_error, get_pool, CommandError, CommandResult, DbPool};
 use crate::ai::AiState;
 use crate::ai::{chatgpt, copilot, macro_ai, openai_compatible, types::AiChatRequest};
 use crate::db::repository;
 use tauri::{AppHandle, State};
 
 fn validate_request_id(request_id: &str) -> Result<(), CommandError> {
-    copilot::validate_request_id(request_id).map_err(|message| CommandError { message })
+    copilot::validate_request_id(request_id).map_err(command_error)
 }
 
 async fn get_provider_type(
@@ -14,13 +14,9 @@ async fn get_provider_type(
 ) -> Result<String, CommandError> {
     repository::get_provider_config(pool, provider_id)
         .await
-        .map_err(|error| CommandError {
-            message: error.to_string(),
-        })?
+        .map_err(CommandError::from)?
         .map(|provider| provider.provider_type)
-        .ok_or_else(|| CommandError {
-            message: format!("Provider {} not found", provider_id),
-        })
+        .ok_or_else(|| command_error(format!("Provider {} not found", provider_id)))
 }
 
 #[tauri::command]
@@ -28,9 +24,7 @@ pub async fn ai_provision_macro_ai(
     pool: State<'_, DbPool>,
 ) -> CommandResult<macro_ai::MacroAiProvisioningStatus> {
     let pool = get_pool(&pool).await?;
-    macro_ai::provision(&pool)
-        .await
-        .map_err(|message| CommandError { message })
+    macro_ai::provision(&pool).await.map_err(command_error)
 }
 
 #[tauri::command]
@@ -52,7 +46,7 @@ pub async fn ai_start_chatgpt_auth(
         provider_id,
     )
     .await
-    .map_err(|message| CommandError { message })
+    .map_err(command_error)
 }
 
 #[tauri::command]
@@ -67,14 +61,15 @@ pub async fn ai_get_copilot_status(
     match get_provider_type(&pool, &provider_id).await?.as_str() {
         "copilot" => {}
         provider_type => {
-            return Err(CommandError {
-                message: format!("Copilot status is not supported for {}.", provider_type),
-            })
+            return Err(command_error(format!(
+                "Copilot status is not supported for {}.",
+                provider_type
+            )))
         }
     }
     copilot::get_status(&app_handle, &pool, ai_state.inner(), &provider_id)
         .await
-        .map_err(|message| CommandError { message })
+        .map_err(command_error)
 }
 
 #[tauri::command]
@@ -91,12 +86,10 @@ pub async fn ai_download_copilot_runtime(
     match get_provider_type(&pool, &provider_id).await?.as_str() {
         "copilot" => {}
         provider_type => {
-            return Err(CommandError {
-                message: format!(
-                    "Copilot runtime download is not supported for {}.",
-                    provider_type
-                ),
-            })
+            return Err(command_error(format!(
+                "Copilot runtime download is not supported for {}.",
+                provider_type
+            )))
         }
     }
     copilot::start_runtime_download(
@@ -107,7 +100,7 @@ pub async fn ai_download_copilot_runtime(
         provider_id,
     )
     .await
-    .map_err(|message| CommandError { message })
+    .map_err(command_error)
 }
 
 #[tauri::command]
@@ -119,7 +112,7 @@ pub async fn ai_cancel_copilot_runtime_download(
     validate_request_id(&request_id)?;
     copilot::cancel_runtime_download(&app_handle, ai_state.inner(), &request_id)
         .await
-        .map_err(|message| CommandError { message })
+        .map_err(command_error)
 }
 
 #[tauri::command]
@@ -136,9 +129,10 @@ pub async fn ai_start_copilot_auth(
     match get_provider_type(&pool, &provider_id).await?.as_str() {
         "copilot" => {}
         provider_type => {
-            return Err(CommandError {
-                message: format!("Copilot auth is not supported for {}.", provider_type),
-            })
+            return Err(command_error(format!(
+                "Copilot auth is not supported for {}.",
+                provider_type
+            )))
         }
     }
     copilot::start_auth(
@@ -149,7 +143,7 @@ pub async fn ai_start_copilot_auth(
         provider_id,
     )
     .await
-    .map_err(|message| CommandError { message })
+    .map_err(command_error)
 }
 
 #[tauri::command]
@@ -161,7 +155,7 @@ pub async fn ai_cancel_copilot_auth(
     validate_request_id(&request_id)?;
     copilot::cancel_auth(&app_handle, ai_state.inner(), &request_id)
         .await
-        .map_err(|message| CommandError { message })
+        .map_err(command_error)
 }
 
 #[tauri::command]
@@ -173,7 +167,7 @@ pub async fn ai_cancel_chatgpt_auth(
     validate_request_id(&request_id)?;
     chatgpt::cancel_auth(app_handle, ai_state.inner(), &request_id)
         .await
-        .map_err(|message| CommandError { message })
+        .map_err(command_error)
 }
 
 #[tauri::command]
@@ -186,16 +180,12 @@ pub async fn ai_disconnect_provider_auth(
     match get_provider_type(&pool, &provider_id).await?.as_str() {
         "chatgpt" => chatgpt::disconnect_auth(&pool, &provider_id)
             .await
-            .map_err(|message| CommandError { message }),
-        "copilot" => Err(CommandError {
-            message: "GitHub Copilot account switching is not available in Macro yet. Use Copilot CLI to switch accounts.".to_string(),
-        }),
-        provider_type => Err(CommandError {
-            message: format!(
+            .map_err(command_error),
+        "copilot" => Err(command_error("GitHub Copilot account switching is not available in Macro yet. Use Copilot CLI to switch accounts.".to_string())),
+        provider_type => Err(command_error(format!(
                 "Provider auth disconnect is not supported for {}.",
                 provider_type
-            ),
-        }),
+            ))),
     }
 }
 
@@ -210,13 +200,14 @@ pub async fn ai_sync_provider_models(
     match get_provider_type(&pool, &provider_id).await?.as_str() {
         "chatgpt" => chatgpt::sync_models(&pool, &provider_id)
             .await
-            .map_err(|message| CommandError { message }),
+            .map_err(command_error),
         "copilot" => copilot::sync_models(&app_handle, &pool, ai_state.inner(), &provider_id)
             .await
-            .map_err(|message| CommandError { message }),
-        provider_type => Err(CommandError {
-            message: format!("Model sync is not supported for {}.", provider_type),
-        }),
+            .map_err(command_error),
+        provider_type => Err(command_error(format!(
+            "Model sync is not supported for {}.",
+            provider_type
+        ))),
     }
 }
 
@@ -233,7 +224,7 @@ pub(crate) async fn ai_stream_chat(
     validate_request_id(&request.request_id)?;
     let reservation = ai_state
         .reserve_stream(request.request_id.clone())
-        .map_err(|message| CommandError { message })?;
+        .map_err(command_error)?;
     let pool = get_pool(&pool).await?;
     let work = std::sync::Arc::new(
         crate::ai::provider_work::ProviderWork::admit(
@@ -245,21 +236,21 @@ pub(crate) async fn ai_stream_chat(
             &request.request_id,
         )
         .await
-        .map_err(|message| CommandError { message })?,
+        .map_err(command_error)?,
     );
     let provider_type = match get_provider_type(&pool, &request.provider_id).await {
         Ok(provider_type) => provider_type,
         Err(error) => {
             work.settle(&Err(error.message.clone()))
                 .await
-                .map_err(|message| CommandError { message })?;
+                .map_err(command_error)?;
             return Err(error);
         }
     };
     match provider_type.as_str() {
         "chatgpt" => chatgpt::stream_chat(app_handle, pool, request, reservation, work)
             .await
-            .map_err(|message| CommandError { message }),
+            .map_err(command_error),
         "copilot" => copilot::stream_chat(
             app_handle,
             pool,
@@ -269,18 +260,18 @@ pub(crate) async fn ai_stream_chat(
             work,
         )
         .await
-        .map_err(|message| CommandError { message }),
+        .map_err(command_error),
         "openai" | "openrouter" | "ollama" | "lmstudio" => {
             openai_compatible::stream_chat(app_handle, pool, request, reservation, work)
                 .await
-                .map_err(|message| CommandError { message })
+                .map_err(command_error)
         }
         provider_type => {
             let message = format!("Native streaming is not supported for {}.", provider_type);
             work.settle(&Err(message.clone()))
                 .await
-                .map_err(|message| CommandError { message })?;
-            Err(CommandError { message })
+                .map_err(command_error)?;
+            Err(command_error(message))
         }
     }
 }
@@ -293,7 +284,7 @@ pub async fn ai_cancel_stream(
     validate_request_id(&request_id)?;
     copilot::cancel_stream(ai_state.inner(), &request_id)
         .await
-        .map_err(|message| CommandError { message })
+        .map_err(command_error)
 }
 
 #[tauri::command]
@@ -304,7 +295,7 @@ pub async fn ai_submit_tool_result(
     validate_request_id(&request.request_id)?;
     copilot::submit_tool_result(ai_state.inner(), request)
         .await
-        .map_err(|message| CommandError { message })
+        .map_err(command_error)
 }
 
 #[cfg(test)]

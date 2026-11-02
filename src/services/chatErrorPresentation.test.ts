@@ -2,6 +2,7 @@ import { describe, expect, it } from "bun:test";
 import {
   buildProviderErrorTranscriptMarkdown,
   resolveChatErrorPresentation,
+  parseProviderErrorBlock,
 } from "./chatErrorPresentation";
 
 describe("chatErrorPresentation", () => {
@@ -39,12 +40,17 @@ describe("chatErrorPresentation", () => {
 
     expect(presentation.origin).toBe("provider");
     expect(presentation.displayTarget).toBe("transcript");
-    expect(markdown).toContain("### Erreur du provider");
-    expect(markdown).toContain("Provider: `openai-main`");
-    expect(markdown).toContain("Modèle: `gpt-test`");
-    expect(markdown).toContain("Statut HTTP: `429`");
-    expect(markdown).toContain("Code: `rate_limit_exceeded`");
-    expect(markdown).toContain("You exceeded your current quota.");
+    const encoded = markdown.split('\n')[1];
+    expect(parseProviderErrorBlock(encoded)).toEqual(presentation);
+    expect(markdown).toContain('macro-provider-error');
+    expect(markdown).toContain('rate_limit_exceeded');
+
+  });
+
+  it('rejects malformed error blocks without concealing their contents', () => {
+    expect(parseProviderErrorBlock('not json')).toBeNull();
+    expect(parseProviderErrorBlock('{"origin":"provider"}')).toBeNull();
+    expect(parseProviderErrorBlock(JSON.stringify({ origin: 'provider', displayTarget: 'transcript', title: 'Error', message: 'Error', retryable: 'yes' }))).toBeNull();
   });
 
   it("gives an actionable hint for invalid tool protocol provider errors", () => {

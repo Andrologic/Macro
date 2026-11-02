@@ -39,6 +39,16 @@ test('card catalog includes descriptions and badges without per-task artifact or
   expect(cards[0]).toMatchObject({ description: { text: 'Card description' }, draft: true, plan_title: { text: 'Demo plan' }, finalization: false });
   expect(artifactCalls).toBe(0); expect(configCalls).toBe(0);
 });
+test('AgSDL workflow tasks remain outside the legacy Pilot task contract', async () => {
+  const saved = task.task_source;
+  task.task_source = 'agsdl';
+  try {
+    expect(await source.cards(policy)).toEqual([]);
+    await expect(source.load('task', taskRef, policy)).rejects.toThrow('not_found');
+    expect(artifactCalls).toBe(0);
+    expect(configCalls).toBe(0);
+  } finally { task.task_source = saved; }
+});
 test('artifact details use the desktop visibility service and reject another workspace', async () => {
   const loaded = await source.load('artifacts', taskRef, policy);
   expect(artifactCalls).toBe(1);

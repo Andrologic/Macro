@@ -1,0 +1,63 @@
+{
+  "title": "Assistant",
+  "description": "Concevoir un assistant pour le studio.",
+  "projectId": "demo-atlas",
+  "planKind": "feature",
+  "icon": "message-square",
+  "design": {
+    "version": 1,
+    "kind": "blueprint",
+    "purpose": "",
+    "context": "Projet fictif : les services, données et résultats sont simulés.",
+    "rules": [],
+    "requirements": [
+      {
+        "id": "model",
+        "label": "Modèle des agents",
+        "description": "Choix pour cette utilisation simulée",
+        "value": "Macro AI · Démo"
+      }
+    ]
+  },
+  "display": {
+    "title": "Assistant",
+    "cards": {
+      "/agents/specify": {
+        "title": "Analyste de la demande"
+      },
+      "/flow/steps/specify": {
+        "title": "Comprendre la demande"
+      },
+      "/agents/implement": {
+        "title": "Rédacteur"
+      },
+      "/flow/steps/implement": {
+        "title": "Préparer la réponse"
+      },
+      "/flow/steps/prepare-implement": {
+        "title": "Transmettre le rapport"
+      },
+      "/agents/verify": {
+        "title": "Relecteur"
+      },
+      "/flow/steps/verify": {
+        "title": "Vérifier le résultat"
+      },
+      "/flow/steps/prepare-verify": {
+        "title": "Transmettre le rapport"
+      },
+      "/flow": {
+        "title": "Assistant"
+      },
+      "/bindings/engine": {
+        "title": "Macro"
+      },
+      "/configurations/conseil": {
+        "title": "Relation client"
+      },
+      "/content/responseCharter": {
+        "title": "Charte de réponse"
+      }
+    }
+  }
+}

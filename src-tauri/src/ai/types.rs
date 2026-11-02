@@ -94,6 +94,10 @@ pub struct AiStreamToolTraceEvent {
 pub struct AiStreamDoneEvent {
     pub request_id: String,
     pub output_text: String,
+    /// Provider-visible text without reasoning, when the transport separates it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub visible_text: Option<String>,
     pub tool_calls: Vec<AiToolCall>,
     #[serde(skip_serializing_if = "Option::is_none")]
     #[ts(optional)]

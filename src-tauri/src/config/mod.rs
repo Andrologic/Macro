@@ -4,7 +4,7 @@ mod registry;
 mod watcher;
 
 pub use commands::*;
-pub(crate) use manager::atomic_write_json;
+pub(crate) use manager::{atomic_write_json, ExecutionToolsLease};
 pub use manager::{ConfigApiError, ConfigManager};
 pub(crate) use registry::default_document;
 pub(crate) use registry::validate_document;

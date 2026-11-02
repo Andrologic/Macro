@@ -122,8 +122,8 @@ export const buildCatalogModelContextLimitOverlay = (params: {
   if (!limit) return {};
   return {
     contextWindowTokens: limit.contextTokens,
-    inputLimitTokens: limit.inputTokens,
-    outputLimitTokens: limit.outputTokens,
+    ...(limit.inputTokens ? { inputLimitTokens: limit.inputTokens } : {}),
+    ...(limit.outputTokens ? { outputLimitTokens: limit.outputTokens } : {}),
     contextWindowSource: 'models_dev',
     contextLimitsUpdatedAt: limit.updatedAt,
   };
@@ -140,42 +140,46 @@ export const enrichModelWithCatalogContextLimits = (
     refreshCatalogSource?: boolean;
   } = {}
 ): AIModel => {
-  if (
-    shouldKeepExistingContextWindow(model) &&
-    !(options.refreshCatalogSource && model.contextWindowSource === 'models_dev')
-  ) {
-    return model;
+  const overlay = buildCatalogModelContextLimitOverlay({ ...params, modelId: model.id });
+  if (!overlay.contextWindowTokens) return model;
+  const keepWindow = shouldKeepExistingContextWindow(model) &&
+    !(options.refreshCatalogSource && model.contextWindowSource === 'models_dev');
+  return {
+    ...model,
+    ...(!keepWindow ? {
+      contextWindowTokens: overlay.contextWindowTokens,
+      contextWindowSource: overlay.contextWindowSource,
+      contextLimitsUpdatedAt: overlay.contextLimitsUpdatedAt,
+    } : {}),
+    ...(model.inputLimitTokens === undefined && overlay.inputLimitTokens !== undefined
+      ? { inputLimitTokens: overlay.inputLimitTokens } : {}),
+    ...(model.outputLimitTokens === undefined && overlay.outputLimitTokens !== undefined
+      ? { outputLimitTokens: overlay.outputLimitTokens } : {}),
+  };
+};
+
+export const mergeProviderModelContextLimits = (model: AIModel, providerModel: ProviderModel): AIModel => {
+  const overlay = buildProviderModelContextLimitOverlay(providerModel);
+  if (model.contextWindowSource === 'user_override') {
+    const {
+      contextWindowTokens: _contextWindowTokens,
+      contextWindowSource: _contextWindowSource,
+      contextLimitsUpdatedAt: _contextLimitsUpdatedAt,
+      ...nonWindowOverlay
+    } = overlay;
+    return { ...model, ...nonWindowOverlay };
   }
-  const overlay = buildCatalogModelContextLimitOverlay({
-    ...params,
-    modelId: model.id,
-  });
-  return Object.keys(overlay).length > 0 ? { ...model, ...overlay } : model;
+  return { ...model, ...overlay,
+    ...(overlay.contextWindowTokens ? { contextLimitsUpdatedAt: new Date().toISOString() } : {}) };
 };
 
 export const mergeProviderModelContextLimitOverlays = (
   models: AIModel[],
   providerModels: ProviderModel[]
 ): AIModel[] => {
-  const overlaysById = new Map(
-    providerModels.map((model) => [
-      model.id,
-      buildProviderModelContextLimitOverlay(model),
-    ])
-  );
-
+  const byId = new Map(providerModels.map((model) => [model.id, model]));
   return models.map((model) => {
-    const overlay = overlaysById.get(model.id);
-    if (!overlay) return model;
-    if (model.contextWindowSource === 'user_override') {
-      const {
-        contextWindowTokens: _contextWindowTokens,
-        contextWindowSource: _contextWindowSource,
-        contextLimitsUpdatedAt: _contextLimitsUpdatedAt,
-        ...nonWindowOverlay
-      } = overlay;
-      return { ...model, ...nonWindowOverlay };
-    }
-    return { ...model, ...overlay };
+    const providerModel = byId.get(model.id);
+    return providerModel ? mergeProviderModelContextLimits(model, providerModel) : model;
   });
 };

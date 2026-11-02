@@ -9,13 +9,17 @@ async fn accepts_develop_v9_with_historical_pilot_v5_stamp() {
     let mut old = fixture(&path, true).await;
     old.close().await.unwrap();
     let pool = create_pool(&path).await.unwrap();
-    inactive_storage::tests::remove_reference_schema_in(&mut *pool.acquire().await.unwrap()).await;
-    conversation_catalog::remove_reference_schema(&pool)
-        .await
-        .unwrap();
-    conversation_content::remove_reference_schema(&pool)
-        .await
-        .unwrap();
+    {
+        let mut c = pool.acquire().await.unwrap();
+        drop_agsdl(&mut c).await;
+        drop_develop_after9(&mut c).await;
+    }
+    sqlx::raw_sql(include_str!(
+        "migrations/006_pilot_tool_trace_revisions.sql"
+    ))
+    .execute(&pool)
+    .await
+    .unwrap();
     sqlx::raw_sql("DELETE FROM schema_migrations WHERE version >= 10; UPDATE schema_migrations SET name = '005_pilot_tool_trace_revisions' WHERE version = 5;")
         .execute(&pool).await.unwrap();
     pool.close().await;
@@ -45,6 +49,13 @@ async fn accepts_develop_v9_with_historical_pilot_v5_stamp() {
             (17, "017_chat_admission".into()),
             (18, "018_connect_transfer".into()),
             (19, "019_connect_publication".into()),
+            (20, "020_tool_results".into()),
+            (21, "021_agsdl_execution".into()),
+            (22, "022_execution_host".into()),
+            (23, "023_execution_ui_intents".into()),
+            (24, "024_execution_process_receipts".into()),
+            (25, "025_visible_message_search".into()),
+            (26, "026_execution_native_operations".into()),
         ]
     );
 }
@@ -131,7 +142,7 @@ async fn rehearses_upgrade_on_external_database_copy() {
             .unwrap()
             .iter()
             .max(),
-        Some(&19)
+        Some(&26)
     );
 }
 
@@ -181,7 +192,121 @@ async fn fixture(path: &Path, stamped: bool) -> SqliteConnection {
     connection
 }
 
+pub(crate) async fn drop_develop_after9(c: &mut SqliteConnection) {
+    let agsdl: Vec<(i64, String, String)> =
+        sqlx::query_as("SELECT version,name,applied_at FROM schema_migrations WHERE version>=20")
+            .fetch_all(&mut *c)
+            .await
+            .unwrap();
+    chat_admission::remove_reference_schema_in(c).await.unwrap();
+    crate::local_backup::remove_reference_e_schema(c, &[])
+        .await
+        .unwrap();
+    conversation_catalog::remove_reference_schema_in(c)
+        .await
+        .unwrap();
+    let names: Vec<String> = sqlx::query_scalar(
+        "SELECT name FROM sqlite_master WHERE type='trigger' AND name GLOB 'content_versions_*'",
+    )
+    .fetch_all(&mut *c)
+    .await
+    .unwrap();
+    for name in names {
+        sqlx::query(sqlx::AssertSqlSafe(format!("DROP TRIGGER {name}")))
+            .execute(&mut *c)
+            .await
+            .unwrap();
+    }
+    sqlx::query("DROP TABLE conversation_content_versions")
+        .execute(&mut *c)
+        .await
+        .unwrap();
+    for statement in [
+        "DROP TABLE pilot_file_chunks",
+        "DROP TABLE pilot_file_sends",
+        "DROP TABLE pilot_message_attachments",
+        "DROP TABLE pilot_file_transfers",
+        "DROP TABLE pilot_file_sources",
+        "DROP TABLE pilot_file_binding_history",
+        "DROP TABLE pilot_file_authorities",
+    ] {
+        sqlx::query(statement).execute(&mut *c).await.unwrap();
+    }
+    for statement in [
+        "DROP TRIGGER conversation_management_insert",
+        "DROP TRIGGER conversation_management_update",
+        "DROP TRIGGER conversation_response_insert",
+        "DROP TRIGGER conversation_response_update",
+        "DROP TABLE conversation_response_versions",
+        "DROP TABLE conversation_action_receipts",
+        "DROP TABLE conversation_management",
+        "DROP TRIGGER messages_tool_trace_revision_insert",
+        "DROP TRIGGER messages_tool_trace_revision_delete",
+        "DROP TRIGGER messages_tool_trace_revision_update_same_conversation",
+        "DROP TRIGGER messages_tool_trace_revision_update_conversation",
+        "DROP TABLE conversation_tool_trace_revisions",
+        "DELETE FROM schema_migrations WHERE version >= 10",
+    ] {
+        sqlx::query(statement).execute(&mut *c).await.unwrap();
+    }
+    sqlx::query("DELETE FROM schema_migrations WHERE version BETWEEN 10 AND 19")
+        .execute(&mut *c)
+        .await
+        .unwrap();
+    for (v, n, d) in agsdl {
+        sqlx::query("INSERT OR IGNORE INTO schema_migrations VALUES (?,?,?)")
+            .bind(v)
+            .bind(n)
+            .bind(d)
+            .execute(&mut *c)
+            .await
+            .unwrap();
+    }
+}
+
+pub(crate) async fn drop_agsdl(c: &mut SqliteConnection) {
+    migration_history::remove_reference_schema(c, &[])
+        .await
+        .unwrap();
+    sqlx::query("DELETE FROM schema_migrations WHERE version>=20")
+        .execute(c)
+        .await
+        .unwrap();
+}
+
+async fn drop_visible_search(connection: &mut SqliteConnection) {
+    sqlx::raw_sql(
+        "DROP TRIGGER messages_search_insert;
+         DROP TRIGGER messages_search_delete;
+         DROP TRIGGER messages_search_update;
+         DROP TRIGGER messages_search_update_insert;
+         DROP TABLE message_search;
+         DROP VIEW message_search_content;
+         DROP TABLE engine_native_operations;
+         DELETE FROM schema_migrations WHERE version IN (25,26);",
+    )
+    .execute(&mut *connection)
+    .await
+    .unwrap();
+    sqlx::raw_sql(MIGRATION_004_SQL)
+        .execute(&mut *connection)
+        .await
+        .unwrap();
+}
+
+/// Tables added after v11 are removed first so older migrations can replay.
+const POST_V9_ENGINE_TABLES: [&str; 7] = [
+    "DROP TABLE engine_effect_processes",
+    "DROP TABLE engine_ui_intents",
+    "DROP TABLE engine_prepared_terminals",
+    "DROP TABLE engine_approvals",
+    "DROP TABLE engine_host_captures",
+    "DROP TABLE engine_response_closures",
+    "DROP TABLE engine_responses",
+];
+
 async fn drop_v9(connection: &mut SqliteConnection) {
+    drop_agsdl(connection).await;
     inactive_storage::tests::remove_reference_schema_in(connection).await;
     conversation_catalog::remove_reference_schema_in(connection)
         .await
@@ -737,4 +862,481 @@ async fn published_baseline_preserves_provider_and_model_data_through_v5() {
     );
     assert!(sqlx::query("INSERT INTO ai_models (id, provider_id, model_id, name, first_seen_at, last_seen_at) VALUES ('orphan', 'absent', 'x', 'x', 'x', 'x')")
         .execute(&pool).await.is_err());
+}
+
+#[tokio::test]
+async fn upgrades_pre_join_search_without_rewriting_messages_and_only_rebuilds_once() {
+    let temp = TempDir::new().unwrap();
+    let path = temp.path().join("v9.db");
+    let old = fixture(&path, true).await;
+    old.close().await.unwrap();
+    let current = create_pool(&path).await.unwrap();
+    let mut connection = current.acquire().await.unwrap();
+    drop_visible_search(&mut connection).await;
+    let content = "<think>historicalneedle</think> Visible café answer";
+    sqlx::query("UPDATE messages SET role = 'assistant', content = ? WHERE id = 'message'")
+        .bind(content)
+        .execute(&mut *connection)
+        .await
+        .unwrap();
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>(
+            "SELECT count(*) FROM message_search WHERE message_search MATCH 'historicalneedle'"
+        )
+        .fetch_one(&mut *connection)
+        .await
+        .unwrap(),
+        1
+    );
+    drop(connection);
+    current.close().await;
+
+    let upgraded = create_pool(&path).await.unwrap();
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>(
+            "SELECT count(*) FROM message_search WHERE message_search MATCH 'historicalneedle'"
+        )
+        .fetch_one(&upgraded)
+        .await
+        .unwrap(),
+        0
+    );
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>(
+            "SELECT count(*) FROM message_search WHERE message_search MATCH 'cafe'"
+        )
+        .fetch_one(&upgraded)
+        .await
+        .unwrap(),
+        1
+    );
+    assert_eq!(
+        sqlx::query_scalar::<_, String>("SELECT content FROM messages WHERE id = 'message'")
+            .fetch_one(&upgraded)
+            .await
+            .unwrap(),
+        content
+    );
+    // A subsequent open must not silently rebuild the index again.
+    sqlx::query("DELETE FROM message_search")
+        .execute(&upgraded)
+        .await
+        .unwrap();
+    upgraded.close().await;
+    let reopened = create_pool(&path).await.unwrap();
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>(
+            "SELECT count(*) FROM message_search WHERE message_search MATCH 'cafe'"
+        )
+        .fetch_one(&reopened)
+        .await
+        .unwrap(),
+        0
+    );
+}
+
+#[tokio::test]
+async fn visible_search_migration_failure_restores_previous_index_atomically() {
+    let temp = TempDir::new().unwrap();
+    let path = temp.path().join("rollback.db");
+    let old = fixture(&path, true).await;
+    old.close().await.unwrap();
+    let current = create_pool(&path).await.unwrap();
+    let mut connection = current.acquire().await.unwrap();
+    drop_visible_search(&mut connection).await;
+    sqlx::query("CREATE TABLE message_search_content (sentinel TEXT)")
+        .execute(&mut *connection)
+        .await
+        .unwrap();
+    drop(connection);
+    current.close().await;
+    assert!(create_pool(&path).await.is_err());
+    let mut connection =
+        SqliteConnection::connect_with(&SqliteConnectOptions::new().filename(&path))
+            .await
+            .unwrap();
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT max(version) FROM schema_migrations")
+            .fetch_one(&mut connection)
+            .await
+            .unwrap(),
+        24
+    );
+    assert_eq!(
+        sqlx::query_scalar::<_, String>(
+            "SELECT content FROM message_search WHERE message_search MATCH 'Original'"
+        )
+        .fetch_one(&mut connection)
+        .await
+        .unwrap(),
+        "Original message"
+    );
+    assert_eq!(sqlx::query_scalar::<_, i64>("SELECT count(*) FROM sqlite_master WHERE type = 'trigger' AND name IN ('messages_search_insert','messages_search_delete','messages_search_update')")
+        .fetch_one(&mut connection).await.unwrap(), 3);
+}
+
+#[tokio::test]
+async fn durable_engine_migrations_keep_missing_legacy_results_and_roll_back_failed_stamp() {
+    let temp = TempDir::new().unwrap();
+    let path = temp.path().join("legacy-v9.db");
+    let pool = create_pool(&path).await.unwrap();
+    sqlx::query("INSERT INTO conversations (id,title,created_at,updated_at) VALUES ('legacy','Synthetic','date','date')").execute(&pool).await.unwrap();
+    let mut c = pool.acquire().await.unwrap();
+    drop_develop_after9(&mut c).await;
+    drop_visible_search(&mut c).await;
+    for statement in POST_V9_ENGINE_TABLES.iter().copied().chain([
+        "DROP TABLE engine_events",
+        "DROP TABLE engine_effects",
+        "DROP TABLE engine_deliveries",
+        "DROP TABLE engine_systems",
+        "DROP TRIGGER tool_result_requires_completion_insert",
+        "DROP TRIGGER tool_result_requires_completion_update",
+        "ALTER TABLE tool_invocations DROP COLUMN result_json",
+        "DELETE FROM schema_migrations WHERE version >= 10",
+    ]) {
+        sqlx::query(statement).execute(&mut *c).await.unwrap();
+    }
+    sqlx::query("INSERT INTO tool_invocations (conversation_id,turn_id,message_id,call_id,tool_name,effect_class,arguments_sha256,status,receipt_id,created_at,updated_at) VALUES ('legacy','turn','message','call','write','workspace_mutation',?,'completed','receipt','date','date')").bind("a".repeat(64)).execute(&mut *c).await.unwrap();
+    sqlx::raw_sql("CREATE TRIGGER fail_engine_stamp BEFORE INSERT ON schema_migrations WHEN NEW.version = 21 BEGIN SELECT RAISE(ABORT,'synthetic'); END;").execute(&mut *c).await.unwrap();
+    drop(c);
+    pool.close().await;
+    assert!(create_pool(&path).await.is_err());
+    let mut c = SqliteConnection::connect_with(&SqliteConnectOptions::new().filename(&path))
+        .await
+        .unwrap();
+    assert!(!table_columns(&mut c, "tool_invocations".into())
+        .await
+        .unwrap()
+        .contains("result_json"));
+    assert!(!table_exists(&mut c, "engine_systems".into()).await.unwrap());
+    sqlx::query("DROP TRIGGER fail_engine_stamp")
+        .execute(&mut c)
+        .await
+        .unwrap();
+    c.close().await.unwrap();
+    let upgraded = create_pool(&path).await.unwrap();
+    let result: Option<String> =
+        sqlx::query_scalar("SELECT result_json FROM tool_invocations WHERE call_id='call'")
+            .fetch_one(&upgraded)
+            .await
+            .unwrap();
+    assert!(result.is_none());
+    let status: String =
+        sqlx::query_scalar("SELECT status FROM tool_invocations WHERE call_id='call'")
+            .fetch_one(&upgraded)
+            .await
+            .unwrap();
+    assert_eq!(status, "completed");
+}
+
+/// Reproduce either published branch without changing its migration identities.
+pub(crate) async fn published_branch_database(
+    path: &Path,
+    visible_search: bool,
+) -> SqliteConnection {
+    create_pool(path).await.unwrap().close().await;
+    let mut connection = SqliteConnection::connect_with(
+        &SqliteConnectOptions::new()
+            .filename(path)
+            .foreign_keys(true),
+    )
+    .await
+    .unwrap();
+    drop_develop_after9(&mut connection).await;
+    sqlx::query("DROP TABLE migration_identity_history")
+        .execute(&mut connection)
+        .await
+        .unwrap();
+    if visible_search {
+        drop_agsdl(&mut connection).await;
+        apply_migration(
+            &mut connection,
+            10,
+            "010_visible_message_search".into(),
+            MIGRATION_010_SQL.into(),
+        )
+        .await
+        .unwrap();
+    } else {
+        for (v, n) in [
+            (20, "010_tool_results"),
+            (21, "011_agsdl_execution"),
+            (22, "012_execution_host"),
+            (23, "013_execution_ui_intents"),
+            (24, "014_execution_process_receipts"),
+            (25, "015_parallel_v10_reconciliation"),
+            (26, "016_execution_native_operations"),
+        ] {
+            let target = if v == 25 {
+                15
+            } else if v == 26 {
+                16
+            } else {
+                v - 10
+            };
+            sqlx::query("UPDATE schema_migrations SET version=?,name=? WHERE version=?")
+                .bind(target)
+                .bind(n)
+                .bind(v)
+                .execute(&mut connection)
+                .await
+                .unwrap();
+        }
+    }
+    connection
+}
+
+#[tokio::test]
+async fn joins_both_published_v10_histories_without_replacing_stamps_or_data() {
+    for visible_search in [false, true] {
+        let temp = TempDir::new().unwrap();
+        let path = temp.path().join("published.db");
+        let mut old = published_branch_database(&path, visible_search).await;
+        sqlx::raw_sql("INSERT INTO conversations (id,title,created_at,updated_at) VALUES ('history','Synthetic','date','date');
+            INSERT INTO messages (id,conversation_id,role,content,created_at) VALUES ('historical-message','history','assistant','<think>secretneedle</think> Visible café answer','date');")
+            .execute(&mut old).await.unwrap();
+        let stamps: Vec<(i64, String, String)> = sqlx::query_as(
+            "SELECT version, name, applied_at FROM schema_migrations ORDER BY version",
+        )
+        .fetch_all(&mut old)
+        .await
+        .unwrap();
+        if !visible_search {
+            sqlx::raw_sql("INSERT INTO engine_systems VALUES ('system','request','{}','{\"keep\":true}','{}','{}');
+                INSERT INTO tool_invocations (conversation_id,turn_id,message_id,call_id,tool_name,effect_class,arguments_sha256,status,receipt_id,created_at,updated_at,result_json) VALUES ('history','turn','historical-message','call','read','read_only','aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa','completed','receipt','date','date','{\"keep\":true}');")
+                .execute(&mut old).await.unwrap();
+        }
+        old.close().await.unwrap();
+        let upgraded = create_pool(&path).await.unwrap();
+        for stamp in &stamps {
+            let canonical = migration_history::NAMES
+                .get((stamp.0 - 1) as usize)
+                .is_some_and(|n| *n == stamp.1);
+            let table = if canonical {
+                "schema_migrations"
+            } else {
+                "migration_identity_history"
+            };
+            let query =
+                format!("SELECT version,name,applied_at FROM {table} WHERE version=? AND name=?");
+            assert_eq!(
+                sqlx::query_as::<_, (i64, String, String)>(sqlx::AssertSqlSafe(query))
+                    .bind(stamp.0)
+                    .bind(&stamp.1)
+                    .fetch_one(&upgraded)
+                    .await
+                    .unwrap(),
+                *stamp
+            );
+        }
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>("SELECT max(version) FROM schema_migrations")
+                .fetch_one(&upgraded)
+                .await
+                .unwrap(),
+            26
+        );
+        assert_eq!(
+            sqlx::query_scalar::<_, String>(
+                "SELECT content FROM messages WHERE id='historical-message'"
+            )
+            .fetch_one(&upgraded)
+            .await
+            .unwrap(),
+            "<think>secretneedle</think> Visible café answer"
+        );
+        for (term, count) in [("secretneedle", 0), ("cafe", 1)] {
+            assert_eq!(
+                sqlx::query_scalar::<_, i64>(
+                    "SELECT count(*) FROM message_search WHERE message_search MATCH ?"
+                )
+                .bind(term)
+                .fetch_one(&upgraded)
+                .await
+                .unwrap(),
+                count
+            );
+        }
+        if !visible_search {
+            assert_eq!(
+                sqlx::query_scalar::<_, String>(
+                    "SELECT snapshot_json FROM engine_systems WHERE system_id='system'"
+                )
+                .fetch_one(&upgraded)
+                .await
+                .unwrap(),
+                "{\"keep\":true}"
+            );
+            assert_eq!(
+                sqlx::query_scalar::<_, String>(
+                    "SELECT result_json FROM tool_invocations WHERE call_id='call'"
+                )
+                .fetch_one(&upgraded)
+                .await
+                .unwrap(),
+                "{\"keep\":true}"
+            );
+        }
+        assert!(sqlx::query("INSERT INTO tool_invocations (conversation_id,turn_id,message_id,call_id,tool_name,effect_class,arguments_sha256,status,created_at,updated_at,result_json) VALUES ('history','turn','historical-message','invalid','read','read_only','aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa','pending','date','date','{}')").execute(&upgraded).await.is_err());
+        // Both variants converge to the same schema and reopen without DDL or stamps.
+        let mut c = upgraded.acquire().await.unwrap();
+        let before = schema(&mut c).await;
+        let all_stamps: Vec<(i64, String, String)> = sqlx::query_as(
+            "SELECT version,name,applied_at FROM schema_migrations ORDER BY version",
+        )
+        .fetch_all(&mut *c)
+        .await
+        .unwrap();
+        drop(c);
+        upgraded.close().await;
+        let reopened = create_pool(&path).await.unwrap();
+        let mut c = reopened.acquire().await.unwrap();
+        assert_eq!(schema(&mut c).await, before);
+        assert_eq!(
+            sqlx::query_as::<_, (i64, String, String)>(
+                "SELECT version,name,applied_at FROM schema_migrations ORDER BY version"
+            )
+            .fetch_all(&mut *c)
+            .await
+            .unwrap(),
+            all_stamps
+        );
+    }
+}
+
+#[tokio::test]
+async fn joined_migration_rolls_back_both_branch_variants_and_rejects_unknown_v10_names() {
+    for visible_search in [false, true] {
+        let temp = TempDir::new().unwrap();
+        let path = temp.path().join("rollback-join.db");
+        let mut old = published_branch_database(&path, visible_search).await;
+        sqlx::raw_sql("CREATE TRIGGER reject_join BEFORE INSERT ON schema_migrations WHEN new.version=19 BEGIN SELECT RAISE(ABORT,'synthetic'); END;")
+            .execute(&mut old).await.unwrap();
+        let before = schema(&mut old).await;
+        let stamps: Vec<(i64, String, String)> = sqlx::query_as(
+            "SELECT version,name,applied_at FROM schema_migrations ORDER BY version",
+        )
+        .fetch_all(&mut old)
+        .await
+        .unwrap();
+        assert!(create_pool(&path).await.is_err());
+        assert_eq!(schema(&mut old).await, before);
+        assert_eq!(
+            sqlx::query_as::<_, (i64, String, String)>(
+                "SELECT version,name,applied_at FROM schema_migrations ORDER BY version"
+            )
+            .fetch_all(&mut old)
+            .await
+            .unwrap(),
+            stamps
+        );
+        sqlx::raw_sql("DROP TRIGGER reject_join; UPDATE schema_migrations SET name='unknown_010' WHERE version=10;")
+            .execute(&mut old).await.unwrap();
+        let before = schema(&mut old).await;
+        assert!(matches!(
+            create_pool(&path).await,
+            Err(DbError::Migration(_))
+        ));
+        assert_eq!(schema(&mut old).await, before);
+        sqlx::query("UPDATE schema_migrations SET name=? WHERE version=10")
+            .bind(if visible_search {
+                "010_visible_message_search"
+            } else {
+                "010_tool_results"
+            })
+            .execute(&mut old)
+            .await
+            .unwrap();
+        old.close().await.unwrap();
+        create_pool(&path).await.unwrap().close().await;
+    }
+}
+
+#[tokio::test]
+async fn identity_ledger_refuses_conflicts_and_hostile_schema_before_displacing_stamps() {
+    for visible_search in [false, true] {
+        for variant in ["timestamp", "check", "uppercase-trigger"] {
+            let temp = TempDir::new().unwrap();
+            let path = temp.path().join("ledger.db");
+            let mut old = published_branch_database(&path, visible_search).await;
+            let ddl = if variant == "check" {
+                "CREATE TABLE migration_identity_history (version INTEGER NOT NULL CHECK(version<0), name TEXT NOT NULL, applied_at TEXT NOT NULL, PRIMARY KEY(version,name))"
+            } else {
+                "CREATE TABLE migration_identity_history (version INTEGER NOT NULL, name TEXT NOT NULL, applied_at TEXT NOT NULL, PRIMARY KEY(version,name))"
+            };
+            sqlx::query(ddl).execute(&mut old).await.unwrap();
+            if variant == "timestamp" {
+                sqlx::query("INSERT INTO migration_identity_history SELECT version,name,'conflicting-date' FROM schema_migrations WHERE version=10")
+                    .execute(&mut old).await.unwrap();
+            }
+            if variant == "uppercase-trigger" {
+                sqlx::query("CREATE TRIGGER erase_previous AFTER INSERT ON \"MIGRATION_IDENTITY_HISTORY\" BEGIN DELETE FROM migration_identity_history WHERE version <> NEW.version; END")
+                    .execute(&mut old).await.unwrap();
+            }
+            let before = schema(&mut old).await;
+            let stamps: Vec<(i64, String, String)> = sqlx::query_as(
+                "SELECT version,name,applied_at FROM schema_migrations ORDER BY version",
+            )
+            .fetch_all(&mut old)
+            .await
+            .unwrap();
+            let ledger: Vec<(i64, String, String)> = sqlx::query_as(
+                "SELECT version,name,applied_at FROM migration_identity_history ORDER BY version",
+            )
+            .fetch_all(&mut old)
+            .await
+            .unwrap();
+            assert!(create_pool(&path).await.is_err());
+            assert_eq!(schema(&mut old).await, before);
+            assert_eq!(
+                sqlx::query_as::<_, (i64, String, String)>(
+                    "SELECT version,name,applied_at FROM schema_migrations ORDER BY version"
+                )
+                .fetch_all(&mut old)
+                .await
+                .unwrap(),
+                stamps
+            );
+            assert_eq!(sqlx::query_as::<_, (i64, String, String)>("SELECT version,name,applied_at FROM migration_identity_history ORDER BY version").fetch_all(&mut old).await.unwrap(), ledger);
+            old.close().await.unwrap();
+        }
+    }
+}
+
+/// Include develop and both visible-v10 engine states, not just the latest AgSDL.
+pub(crate) async fn historical_database(path: &Path, variant: usize) -> SqliteConnection {
+    if variant == 0 {
+        create_pool(path).await.unwrap().close().await;
+        let mut c = SqliteConnection::connect_with(&SqliteConnectOptions::new().filename(path))
+            .await
+            .unwrap();
+        drop_agsdl(&mut c).await;
+        sqlx::query("DROP TABLE migration_identity_history")
+            .execute(&mut c)
+            .await
+            .unwrap();
+        return c;
+    }
+    let mut c = published_branch_database(path, variant == 1).await;
+    if variant == 3 || variant == 4 {
+        sqlx::query(
+            "UPDATE schema_migrations SET name='010_visible_message_search' WHERE version=10",
+        )
+        .execute(&mut c)
+        .await
+        .unwrap();
+    }
+    if variant == 5 {
+        migration_history::remove_reference_schema(&mut c, &[20, 21, 22, 23, 24])
+            .await
+            .unwrap();
+        sqlx::query("DELETE FROM schema_migrations WHERE version>=15")
+            .execute(&mut c)
+            .await
+            .unwrap();
+    }
+    if variant == 3 {
+        sqlx::raw_sql("DROP TABLE engine_native_operations; DROP TRIGGER tool_result_requires_completion_insert; DROP TRIGGER tool_result_requires_completion_update; ALTER TABLE tool_invocations DROP COLUMN result_json; DELETE FROM schema_migrations WHERE version>=15;").execute(&mut c).await.unwrap();
+    }
+    c
 }

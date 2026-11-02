@@ -212,7 +212,11 @@ const getMockCitationState = () => ({
   removeCitation: removeCitationMock,
 });
 const toggleChatToolMock = mock((_toolId: string) => undefined);
-const createConversationMock = mock(async () => ({ id: 'chat-conv' }));
+const createConversationMock = mock(async () => {
+  selectedConversationIdMock = 'chat-conv';
+  emitCitationChange();
+  return { id: 'chat-conv' };
+});
 const addComposerContextRefMock = mock((ref: {
   id: string;
   kind: string;
@@ -431,7 +435,6 @@ const loadContextToolbox = async () => {
   mock.module('../../services/webSearch', () => ({
     extractDomain: (url: string) => new URL(url).hostname,
     fetchWebPage: fetchWebPageMock,
-    getFaviconUrl: (url: string) => `${url}/favicon.ico`,
   }));
 
   mock.module('../../services/webSearchSettings', () => ({
@@ -672,6 +675,97 @@ describe('ContextToolbox', () => {
     await clickIconButton(container!, 'trash');
     expect(removeCitationMock).toHaveBeenCalledWith('source-interesting');
     expect(removeComposerContextRefMock).toHaveBeenCalledWith('source-interesting', 'source');
+  });
+
+  it('clears the previous conversation context when the selection is cleared', async () => {
+    const { ContextToolbox } = await loadContextToolbox();
+    await act(async () => {
+      root?.render(<ContextToolbox />);
+    });
+    expect(container?.textContent).toContain('notes.md');
+
+    await act(async () => {
+      selectedConversationIdMock = null;
+      root?.render(<ContextToolbox />);
+    });
+    expect(container?.textContent).not.toContain('notes.md');
+  });
+
+  it('keeps a delayed paste in its original conversation after navigation', async () => {
+    let resolveClipboard!: (text: string) => void;
+    clipboardReadTextMock = mock(() => new Promise<string>((resolve) => {
+      resolveClipboard = resolve;
+    }));
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { readText: clipboardReadTextMock },
+    });
+    const { ContextToolbox } = await loadContextToolbox();
+    await act(async () => {
+      root?.render(<ContextToolbox />);
+    });
+    await act(async () => {
+      findButtonByText(container!, 'Paste').click();
+    });
+    await act(async () => {
+      selectedConversationIdMock = null;
+      root?.render(<ContextToolbox />);
+    });
+    await act(async () => {
+      resolveClipboard('Original conversation only');
+      await Promise.resolve();
+    });
+    expect(addCitationMock).toHaveBeenCalledWith(expect.objectContaining({
+      conversationId: 'chat-conv', content: 'Original conversation only',
+    }));
+    expect(container?.textContent).not.toContain('Clipboard text');
+    expect(container?.textContent).not.toContain('notes.md');
+  });
+
+  it('keeps a delayed URL preview in its original conversation after navigation', async () => {
+    let resolvePreview!: (preview: Awaited<ReturnType<typeof fetchWebPageMock>>) => void;
+    fetchWebPageMock.mockImplementationOnce(() => new Promise((resolve) => {
+      resolvePreview = resolve;
+    }));
+    const { ContextToolbox } = await loadContextToolbox();
+    await act(async () => { root?.render(<ContextToolbox />); });
+    await changeInputByPlaceholder('https://example.com/article', 'example.com/delayed');
+    await act(async () => { findButtonByExactText(container!, 'Add').click(); });
+    await act(async () => {
+      selectedConversationIdMock = null;
+      root?.render(<ContextToolbox />);
+    });
+    await act(async () => {
+      resolvePreview({ url: 'https://example.com/delayed', title: 'Delayed preview',
+        snippet: 'Original URL only', content: 'Original URL only', favicon: '' });
+      await Promise.resolve();
+    });
+    expect(addCitationMock).toHaveBeenCalledWith(expect.objectContaining({
+      conversationId: 'chat-conv', content: 'Original URL only',
+    }));
+    expect(container?.textContent).not.toContain('Delayed preview');
+  });
+
+  it('keeps a delayed file import in its original conversation after navigation', async () => {
+    let resolveFile!: (bytes: ArrayBuffer) => void;
+    const file = new File(['Original file only'], 'delayed.md', { type: 'text/markdown' });
+    file.arrayBuffer = () => new Promise((resolve) => { resolveFile = resolve; });
+    const { ContextToolbox } = await loadContextToolbox();
+    await act(async () => { root?.render(<ContextToolbox />); });
+    await uploadFile(container!, file);
+    await act(async () => {
+      selectedConversationIdMock = null;
+      root?.render(<ContextToolbox />);
+    });
+    await act(async () => {
+      resolveFile(new TextEncoder().encode('Original file only').buffer);
+      await Promise.resolve();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    expect(addCitationMock).toHaveBeenCalledWith(expect.objectContaining({
+      conversationId: 'chat-conv', content: 'Original file only',
+    }));
+    expect(container?.textContent).not.toContain('delayed.md');
   });
 
   it('names all six tool switches and preserves their activation state', async () => {
@@ -982,6 +1076,36 @@ describe('ContextToolbox', () => {
     await clickActionForText(container!, 'Clipboard text', 'x');
     expect(removeCitationMock).toHaveBeenCalledWith('citation-new-4');
     expect(container?.textContent).toContain('No pasted text added');
+  });
+
+  it('renders only inline favicons without contacting a third-party image host', async () => {
+    contextCitations = [
+      {
+        id: 'web-no-icon', type: 'web', scope: 'context', source: 'https://first.example',
+        title: 'No icon', url: 'https://first.example/article',
+        messageId: 'manual-no-icon', conversationId: 'chat-conv', timestamp: '2026-03-19T00:00:00.000Z',
+      },
+      {
+        id: 'web-remote-icon', type: 'web', scope: 'context', source: 'https://second.example',
+        title: 'Remote icon', url: 'https://second.example/article',
+        favicon: 'https://images.example/favicon.ico',
+        messageId: 'manual-remote-icon', conversationId: 'chat-conv', timestamp: '2026-03-19T00:00:00.000Z',
+      },
+      {
+        id: 'web-inline-icon', type: 'web', scope: 'context', source: 'https://third.example',
+        title: 'Inline icon', url: 'https://third.example/article',
+        favicon: 'data:image/png;base64,AQIDBA==',
+        messageId: 'manual-inline-icon', conversationId: 'chat-conv', timestamp: '2026-03-19T00:00:00.000Z',
+      },
+    ];
+    const { ContextToolbox } = await loadContextToolbox();
+
+    await act(async () => { root?.render(<ContextToolbox />); });
+
+    expect(findCardForText(container!, 'No icon').querySelector('[data-icon="globe"]')).toBeTruthy();
+    expect(findCardForText(container!, 'Remote icon').querySelector('[data-icon="globe"]')).toBeTruthy();
+    expect(findImageBySrc(container!, 'data:image/png;base64,AQIDBA==')).toBeTruthy();
+    expect(container?.querySelector('img[src^="https://"]')).toBeNull();
   });
 
   it('shows a visible URL fallback when preview fetching fails', async () => {

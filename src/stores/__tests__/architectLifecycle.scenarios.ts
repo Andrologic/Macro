@@ -1,7 +1,7 @@
-import { describe, expect, it, mock } from 'bun:test';
+import { describe, expect, it, mock, spyOn } from 'bun:test';
 import type { AppMode, ChatMessage, Conversation } from '../../types';
 import type { ArchitectPlanRecord } from '../../services/architectPlanService';
-import { buildArchitectPlanConversationTranscriptParams } from '../../services/architectPlanReadService';
+import { createExample } from '../../services/agsdl/examples';
 import { createDeferred } from '../../test-utils/deferred';
 import type { UseChatStoreScenarioContext } from '../useChatStore.test';
 
@@ -9,6 +9,7 @@ export const registerArchitectLifecycleScenarios = (
   context: UseChatStoreScenarioContext,
 ) => {
   const {
+    registerUseChatStoreMocks,
     appSettingValues,
     appState,
     architectPlanConversationSyncRecords,
@@ -40,7 +41,6 @@ export const registerArchitectLifecycleScenarios = (
     importMessagesMock,
     loadChatStore,
     providerState,
-    registerUseChatStoreMocks,
     savePreferenceForTest,
     sendArchitectMessageAndGetToolHandler,
     sendChatNonStreamingMock,
@@ -55,9 +55,9 @@ export const registerArchitectLifecycleScenarios = (
   } = context;
 
   describe('useChatStore Architect lifecycle', () => {
-    it('keeps the same conversation and provider while its own strategy turn is ahead of the exact replica', async () => {
+    it('keeps the same conversation and provider while its own AgSDL turn is ahead of the exact replica', async () => {
       context.projectGroups[0].projects.push({ ...context.projectGroups[0].projects[0], id: 'project-2', name: 'API', path: '/repos/api', mountName: 'api' });
-      const plan = createPlan({ conversationId: 'plan-conv', projectIds: ['project-1', 'project-2'] });
+      const plan = createPlan({ conversationId: 'plan-conv', projectIds: ['project-1', 'project-2'], agsdl: { source: createExample('feature'), annexes: {}, revision: 1 } });
       architectPlans.set(plan.id, plan);
       appState.activeArchitectPlanId = plan.id;
       appState.activePlanContext = { id: plan.id, targetBranch: 'develop' };
@@ -76,14 +76,16 @@ export const registerArchitectLifecycleScenarios = (
         replicaScopeKey: 'group:group-1', replicaProjectId: 'project-1',
       });
       getArchitectPlanActivationPayloadMock.mockImplementationOnce(ownHead);
-      getArchitectPlanActivationPayloadMock.mockImplementationOnce(ownHead);
       const provider = [providerState.selectedProviderId, providerState.selectedModelId];
       providerState.commitRestoredSelection.mockClear();
       updateArchitectPlanMock.mockClear();
       dbUpsertArchitectPlanConversationSyncMock.mockClear();
 
-      const result = await onToolCall('strategy_generate', { nodes: [{ title: 'Implement once' }] }, 'own-strategy-once');
-      expect(JSON.stringify(result)).toContain('Strategy updated');
+      const readResult = await onToolCall('agsdl_get', { plan_id: plan.id, target_branch: 'develop' }, 'own-agsdl-read');
+      expect(typeof readResult === 'string' ? null : readResult).toBeNull();
+      const read = JSON.parse(String(readResult));
+      const result = await onToolCall('agsdl_update', { plan_id: plan.id, target_branch: 'develop', expected_revision: read.revision, source: createExample('hotfix') }, 'own-agsdl-once');
+      expect(JSON.parse(String(result)).persisted_revision).toBe(2);
       expect(JSON.stringify(result)).not.toContain('follow_up_failures');
       expect(updateArchitectPlanMock).toHaveBeenCalledTimes(1);
       context.tauriAvailable = true;
@@ -111,6 +113,8 @@ export const registerArchitectLifecycleScenarios = (
       });
       context.getLatestStreamOptions<{ onComplete: (result: { visibleContent: string; toolTraces: [] }) => void }>()
         .onComplete({ visibleContent: 'Strategy saved.', toolTraces: [] });
+      // Chat waits for physical request completion before persisting the final answer.
+      streamFinished.resolve();
       await syncEntered.promise;
       getArchitectPlanActivationPayloadMock.mockImplementationOnce(ownHead);
       expect(await useChatStore.getState().ensureConversationForCurrentMode()).toBe('plan-conv');
@@ -157,7 +161,10 @@ export const registerArchitectLifecycleScenarios = (
         const user = useChatStore.getState().getConversationMessages('plan-conv').find((message: ChatMessage) => message.role === 'user')!;
         if (revoke === 'branch') appState.activePlanContext = { id: plan.id, targetBranch: 'release' };
         if (revoke === 'conversation') await useChatStore.getState().selectConversation('other');
-        if (revoke === 'stop') useChatStore.getState().stopConversationStream('plan-conv');
+        if (revoke === 'stop') {
+          context.getLatestStreamOptions<{ onToken: (chunk: string) => void }>().onToken('Unsynchronized partial answer');
+          useChatStore.getState().stopConversationStream('plan-conv');
+        }
         const selected = useChatStore.getState().selectedConversationId;
         await expect(useChatStore.getState().ensureArchitectConversationForPlan({
           plan, targetBranch: 'develop', chatMessagesLoaded: true,
@@ -168,7 +175,7 @@ export const registerArchitectLifecycleScenarios = (
       });
     }
 
-    it('keeps strategy mutations isolated when the strategy guard loads before the plan service mocks', async () => {
+    it('keeps AgSDL mutations isolated when the legacy strategy guard loads before the plan service mocks', async () => {
       mock.restore();
       await import('../../services/architectStrategyMutationGuard');
       await registerUseChatStoreMocks();
@@ -179,6 +186,7 @@ export const registerArchitectLifecycleScenarios = (
         title: 'Plan Early Guard',
         conversationId: 'plan-conv',
         status: 'draft',
+        agsdl: { source: createExample('feature'), annexes: {}, revision: 1 },
       });
       architectPlans.set(plan.id, plan);
       appState.activeArchitectPlanId = plan.id;
@@ -195,9 +203,11 @@ export const registerArchitectLifecycleScenarios = (
       });
       updateArchitectPlanMock.mockClear();
 
-      await onToolCall('strategy_generate', {
-        nodes: [{ title: 'Implement checkout' }],
+      const read = JSON.parse(String(await onToolCall('agsdl_get', { plan_id: plan.id, target_branch: 'develop' })));
+      const result = await onToolCall('agsdl_update', {
+        plan_id: plan.id, target_branch: 'develop', expected_revision: read.revision, source: createExample('hotfix'),
       });
+      expect(JSON.parse(String(result)).persisted_revision).toBe(2);
 
       expect(updateArchitectPlanMock).toHaveBeenCalledTimes(1);
       expect(
@@ -211,6 +221,7 @@ export const registerArchitectLifecycleScenarios = (
     });
 
     it('reconciles the exact activation transcript through the public plan action', async () => {
+      const { buildArchitectPlanConversationTranscriptParams } = await import('../../services/architectPlanReadService');
       context.tauriAvailable = true;
       const plan = createPlan();
       architectPlans.set(plan.id, plan);
@@ -965,6 +976,163 @@ export const registerArchitectLifecycleScenarios = (
       });
     });
 
+    it('keeps the restored chips of a plan without conversation when its selection is resolved again', async () => {
+      context.tauriAvailable = true;
+      const plan = createScenarioPlan('blank', {
+        id: 'plan-pending-chips', slug: 'plan-pending-chips', title: 'plan-pending-chips', conversationId: undefined,
+      });
+      architectPlans.set(plan.id, plan);
+      appState.activeArchitectPlanId = plan.id;
+      appState.activePlanContext = { id: plan.id, targetBranch: 'develop' };
+      const { useChatStore } = await loadChatStore();
+      useChatStore.setState(createIdleChatStoreState());
+      const pendingId = (await useChatStore.getState().ensureConversationForCurrentMode())!;
+      const selection = { id: 'selection-1', conversationId: pendingId, planId: plan.id, branchName: 'develop', document: 'agsdl' as const, version: 'v1', persistedRevision: 1, path: '/definitions/0', title: 'Implementation' };
+      // No database row exists for a pending conversation, so it never has toolbox state.
+      const toolboxRead = context.getConversationToolboxStateMock as unknown as { mockImplementation: (fn: (conversationId: string) => Promise<unknown>) => void; mockClear: () => void };
+      toolboxRead.mockImplementation(async () => null);
+      toolboxRead.mockClear();
+      try {
+        // The composer restores the chip from the plan draft after a reload.
+        useChatStore.getState().replaceComposerContextRefs([{ id: selection.id, kind: 'agsdl', title: selection.title, data: selection }], pendingId);
+        await useChatStore.getState().reapplySelectionForCurrentContext();
+        await flushAsyncWork();
+        expect(useChatStore.getState().selectedConversationId).toBe(pendingId);
+        expect(useChatStore.getState().composerContextRefs).toEqual([expect.objectContaining({ id: selection.id, kind: 'agsdl' })]);
+        expect(context.getConversationToolboxStateMock).not.toHaveBeenCalledWith(pendingId);
+      } finally {
+        toolboxRead.mockImplementation(async (conversationId: string) => context.toolboxStateByConversationId.get(conversationId) ?? null);
+      }
+    });
+
+    it('keeps a blank plan draft across a reload until the plan is archived or deleted', async () => {
+      const plan = createScenarioPlan('blank', {
+        id: 'plan-released-draft', slug: 'plan-released-draft', title: 'plan-released-draft', conversationId: undefined,
+      });
+      architectPlans.set(plan.id, plan);
+      appState.activeArchitectPlanId = plan.id;
+      appState.activePlanContext = { id: plan.id, targetBranch: 'develop' };
+      let { useChatStore } = await loadChatStore();
+      useChatStore.setState(createIdleChatStoreState());
+      const pendingId = (await useChatStore.getState().ensureConversationForCurrentMode())!;
+      const draftKey = `conversation:${pendingId}`;
+      useChatStore.getState().saveComposerDraftForContext(draftKey, { text: 'Avant la première conversation', images: [], contextRefs: [] });
+
+      ({ useChatStore } = await loadChatStore());
+      await useChatStore.getState().initializeCritical();
+      expect(useChatStore.getState().getComposerDraftForContext(draftKey)?.text).toBe('Avant la première conversation');
+      expect(await useChatStore.getState().ensureConversationForCurrentMode()).toBe(pendingId);
+
+      useChatStore.getState().discardArchitectPlanPendingDraft({ targetBranch: 'develop', planId: plan.id });
+      expect(useChatStore.getState().getComposerDraftForContext(draftKey)).toBeNull();
+      expect(useChatStore.getState().conversations.some((conversation: Conversation) => conversation.id === pendingId)).toBe(false);
+      // The composer may still save what it showed while leaving the released plan.
+      useChatStore.getState().saveComposerDraftForContext(draftKey, { text: 'Avant la première conversation', images: [], contextRefs: [] });
+      expect(useChatStore.getState().getComposerDraftForContext(draftKey)).toBeNull();
+
+      ({ useChatStore } = await loadChatStore());
+      await useChatStore.getState().initializeCritical();
+      expect(useChatStore.getState().getComposerDraftForContext(draftKey)).toBeNull();
+    });
+
+    it('releases a plan draft whose created conversation could not be bound, and lets a restored plan draft again', async () => {
+      const plan = createScenarioPlan('blank', {
+        id: 'plan-unbound-release', slug: 'plan-unbound-release', title: 'plan-unbound-release', conversationId: undefined,
+      });
+      architectPlans.set(plan.id, plan);
+      appState.activeArchitectPlanId = plan.id;
+      appState.activePlanContext = { id: plan.id, targetBranch: 'develop' };
+      const { useChatStore } = await loadChatStore();
+      useChatStore.setState(createIdleChatStoreState());
+      const pendingId = (await useChatStore.getState().ensureConversationForCurrentMode())!;
+      const draftKey = `conversation:${pendingId}`;
+      const draft = { text: 'Brouillon non lié', images: [], contextRefs: [] };
+      useChatStore.getState().saveComposerDraftForContext(draftKey, draft);
+      const provider = providerState.selectedProviderId;
+      providerState.selectedProviderId = null;
+      (bindArchitectPlanConversationMock as unknown as { mockImplementationOnce: (fn: () => Promise<never>) => void })
+        .mockImplementationOnce(async () => { throw new Error('binding unavailable'); });
+      await useChatStore.getState().sendMessage({ conversationId: pendingId, content: draft.text }).catch(() => undefined);
+      await flushAsyncWork();
+      providerState.selectedProviderId = provider;
+      const createdId = useChatStore.getState().selectedConversationId!;
+      expect(architectPlans.get(plan.id)?.conversationId).toBeUndefined();
+      expect(useChatStore.getState().resolveComposerDraftConversationId(createdId)).toBe(pendingId);
+
+      useChatStore.getState().discardArchitectPlanPendingDraft({ targetBranch: 'develop', planId: plan.id });
+      useChatStore.getState().saveComposerDraftForContext(draftKey, draft);
+      expect(useChatStore.getState().getComposerDraftForContext(draftKey)).toBeNull();
+      expect(useChatStore.getState().resolveComposerDraftConversationId(createdId)).toBe(createdId);
+
+      // A restored plan opens a new pending conversation that can hold a new draft.
+      useChatStore.setState(createIdleChatStoreState());
+      expect(await useChatStore.getState().ensureConversationForCurrentMode()).toBe(pendingId);
+      useChatStore.getState().saveComposerDraftForContext(draftKey, { text: 'Nouveau brouillon', images: [], contextRefs: [] });
+      expect(useChatStore.getState().getComposerDraftForContext(draftKey)?.text).toBe('Nouveau brouillon');
+    });
+
+    it('resumes the conversation created by a refused first send after a reload instead of creating another', async () => {
+      const plan = createScenarioPlan('blank', {
+        id: 'plan-refused-first', slug: 'plan-refused-first', title: 'plan-refused-first', conversationId: undefined,
+      });
+      architectPlans.set(plan.id, plan);
+      appState.activeArchitectPlanId = plan.id;
+      appState.activePlanContext = { id: plan.id, targetBranch: 'develop' };
+      let { useChatStore } = await loadChatStore();
+      useChatStore.setState(createIdleChatStoreState());
+      const pendingId = (await useChatStore.getState().ensureConversationForCurrentMode())!;
+      useChatStore.getState().saveComposerDraftForContext(`conversation:${pendingId}`, { text: 'Brouillon refusé', images: [], contextRefs: [] });
+      const provider = providerState.selectedProviderId;
+      providerState.selectedProviderId = null;
+      await useChatStore.getState().sendMessage({ conversationId: pendingId, content: 'Brouillon refusé' }).catch(() => undefined);
+      await flushAsyncWork();
+      providerState.selectedProviderId = provider;
+      const createdId = useChatStore.getState().selectedConversationId!;
+      expect(createdId).not.toBe(pendingId);
+      expect(useChatStore.getState().getConversationMessages(createdId)).toHaveLength(0);
+      // The plan references the created conversation, so a reload reopens it with its draft.
+      expect(architectPlans.get(plan.id)?.conversationId).toBe(createdId);
+      expect(useChatStore.getState().getComposerDraftForContext(`conversation:${createdId}`)?.text).toBe('Brouillon refusé');
+
+      ({ useChatStore } = await loadChatStore());
+      useChatStore.setState(createIdleChatStoreState({ conversations: [{ ...createConversation(createdId), scope_mode: 'Architect', project_id: 'project-1' }] }));
+      expect(await useChatStore.getState().ensureConversationForCurrentMode()).toBe(createdId);
+      await useChatStore.getState().sendMessage({ conversationId: createdId, content: 'Brouillon refusé' });
+      await flushAsyncWork();
+      expect(useChatStore.getState().conversations.map((conversation: Conversation) => conversation.id)).toEqual([createdId]);
+      expect(architectPlans.get(plan.id)?.conversationId).toBe(createdId);
+      expect(useChatStore.getState().getConversationMessages(createdId).some((message: ChatMessage) => message.role === 'user')).toBe(true);
+    });
+
+    it('moves the first Architect draft to the conversation the plan references after the first send', async () => {
+      const plan = createScenarioPlan('blank', {
+        id: 'plan-first-draft', slug: 'plan-first-draft', title: 'plan-first-draft', conversationId: undefined,
+      });
+      architectPlans.set(plan.id, plan);
+      appState.activeArchitectPlanId = plan.id;
+      appState.activePlanContext = { id: plan.id, targetBranch: 'develop' };
+      const { useChatStore } = await loadChatStore();
+      useChatStore.setState(createIdleChatStoreState());
+      const pendingId = (await useChatStore.getState().ensureConversationForCurrentMode())!;
+      const selection = { id: 'selection-1', conversationId: pendingId, planId: plan.id, branchName: 'develop', document: 'agsdl' as const, version: 'v1', persistedRevision: 1, path: '', title: 'Release' };
+      useChatStore.getState().saveComposerDraftForContext(`conversation:${pendingId}`, {
+        text: 'Suite du brouillon', images: [], contextRefs: [{ id: selection.id, kind: 'agsdl', title: selection.title, data: selection }],
+      });
+
+      await useChatStore.getState().sendMessage({ conversationId: pendingId, content: 'Premier message.' });
+      await new Promise((resolve) => setTimeout(resolve, 0));
+
+      const boundId = architectPlans.get(plan.id)?.conversationId as string;
+      expect(boundId).toBeTruthy();
+      expect(useChatStore.getState().resolveComposerDraftConversationId(pendingId)).toBe(boundId);
+      expect(useChatStore.getState().resolveComposerDraftConversationId(boundId)).toBe(boundId);
+      expect(useChatStore.getState().getComposerDraftForContext(`conversation:${pendingId}`)).toBeNull();
+      expect(useChatStore.getState().getComposerDraftForContext(`conversation:${boundId}`)).toEqual({
+        text: 'Suite du brouillon', images: [],
+        contextRefs: [expect.objectContaining({ data: { ...selection, conversationId: boundId } })],
+      });
+    });
+
     it('keeps the materialized Architect session as the owner of empty-placeholder cleanup', async () => {
       context.tauriAvailable = true;
       appState.mode = 'Architect';
@@ -1147,6 +1315,7 @@ export const registerArchitectLifecycleScenarios = (
       const pendingConversationId =
         await useChatStore.getState().ensureConversationForCurrentMode();
       expect(pendingConversationId).toMatch(/^pending-architect-/);
+      expect(useChatStore.getState().getPendingArchitectConversationTarget(pendingConversationId!)).toEqual({ planId: blankPlan.id, branchName: 'develop' });
       expect(
         useChatStore
           .getState()
@@ -1162,6 +1331,7 @@ export const registerArchitectLifecycleScenarios = (
         await useChatStore.getState().ensureConversationForCurrentMode();
 
       expect(selectedConversationId).toBe('started-plan-conv');
+      expect(useChatStore.getState().getPendingArchitectConversationTarget(pendingConversationId!)).toBeNull();
       expect(
         useChatStore
           .getState()
@@ -2019,10 +2189,12 @@ export const registerArchitectLifecycleScenarios = (
       );
     });
 
-    it('opens architect plan naming recovery after three failed AI naming attempts', async () => {
+    it('keeps the default plan name and offers optional naming after three failed AI attempts', async () => {
       setSendChatNonStreamingImplementation(async () => {
         throw new Error('model unavailable');
       });
+      const { notify } = await import('../../components/ui/toastService');
+      const notice = spyOn(notify, 'actionRequired').mockReturnValue('plan-naming');
 
       const plan = createPlan({
         id: '1710000000002',
@@ -2074,6 +2246,25 @@ export const registerArchitectLifecycleScenarios = (
         isSubmitting: false,
         error: null,
       });
+      expect(notice).toHaveBeenCalledTimes(1);
+      const [, options] = notice.mock.calls[0];
+      expect(options).toMatchObject({ notificationKey: `architect-plan-naming:${plan.id}` });
+      expect(options.actions).toHaveLength(2);
+      expect(options.description).toBe('The plan keeps its default name.');
+
+      // A notice left from this plan must not act on another plan's recovery.
+      const otherRecovery = { ...useChatStore.getState().architectPlanNamingRecovery!, planId: 'other-plan' };
+      useChatStore.setState({ architectPlanNamingRecovery: otherRecovery });
+      sendChatNonStreamingMock.mockClear();
+      await options.actions[0].onClick();
+      await options.actions[1].onClick();
+      expect(sendChatNonStreamingMock).not.toHaveBeenCalled();
+      expect(useChatStore.getState().architectPlanNamingRecovery).toEqual(otherRecovery);
+
+      useChatStore.setState({ architectPlanNamingRecovery: { ...otherRecovery, planId: plan.id } });
+      await options.actions[1].onClick();
+      expect(useChatStore.getState().architectPlanNamingRecovery?.stage).toBe('manual');
+      notice.mockRestore();
     });
 
     it('retries architect plan naming from recovery until it succeeds', async () => {

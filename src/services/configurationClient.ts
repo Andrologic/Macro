@@ -298,6 +298,7 @@ export const configurationAcceptPendingChange = (id: string): Promise<ConfigDocu
   isNativeConfigClientAvailable()
     ? tauriIpc.configAcceptPendingChange(id)
     : remoteRequest<ConfigDocument>('/config/pending/accept', {
+        authKind: 'approval',
         method: 'POST',
         body: JSON.stringify({ id }),
       });
@@ -308,6 +309,7 @@ export const configurationRejectPendingChange = (input: {
 }): Promise<ConfigDocument> => isNativeConfigClientAvailable()
   ? tauriIpc.configRejectPendingChange(input)
   : remoteRequest<ConfigDocument>('/config/pending/reject', {
+      authKind: 'approval',
       method: 'POST',
       body: JSON.stringify(input),
     });

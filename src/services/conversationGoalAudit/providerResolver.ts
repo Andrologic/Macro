@@ -24,20 +24,16 @@ export interface GoalAuditProviderResolutionPort {
 
 const abortError = () => new DOMException("Aborted", "AbortError");
 
-const awaitKey = (
+const awaitKey = async (
   port: GoalAuditProviderResolutionPort,
   providerId: string,
   signal: AbortSignal,
-): Promise<string | undefined> =>
-  new Promise((resolve, reject) => {
-    if (signal.aborted) return reject(abortError());
-    const onAbort = () => reject(abortError());
-    signal.addEventListener("abort", onAbort, { once: true });
-    port.resolveApiKey(providerId).then(
-      (key) => resolve(key),
-      (error) => reject(error),
-    ).finally(() => signal.removeEventListener("abort", onAbort));
-  });
+): Promise<string | undefined> => {
+  if (signal.aborted) throw abortError();
+  const value = await port.resolveApiKey(providerId);
+  if (signal.aborted) throw abortError();
+  return value;
+};
 
 /** Bind an explicit selection at audit start; UI selection changes cannot redirect the child. */
 export function createGoalAuditProviderResolver(

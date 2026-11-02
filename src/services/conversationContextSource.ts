@@ -68,6 +68,7 @@ export async function resolveConversationContextSources(params: {
   request: string;
   refs: readonly PersistedContextReference[] | undefined;
   ports: ConversationContextSourcePorts;
+  preservePassages?: boolean;
 }): Promise<PersistedContextReference[] | undefined> {
   const refs = params.refs;
   if (!refs?.some((ref) => ref.kind === 'conversation')) return refs ? [...refs] : undefined;
@@ -94,6 +95,13 @@ export async function resolveConversationContextSources(params: {
     }
     if (params.ports.isSourceActive(sourceId)) {
       throw new Error('The conversation source changed while selecting passages. Try sending again.');
+    }
+    if (params.preservePassages) {
+      if (typeof ref.snippet !== "string" || !ref.snippet.trim()) {
+        throw new Error("The captured conversation passage is unavailable. Remove this recovery entry and send a new message.");
+      }
+      resolved.push({ ...ref });
+      continue;
     }
     const passage = selectConversationPassages(snapshot.messages, params.request);
     if (!passage) throw new Error('The selected conversation has no completed text to cite.');

@@ -84,6 +84,8 @@ export interface LoadMacroProjectMetadataForSelectionParams {
   selectedProjectId?: string | null;
   rememberedPlanId?: string | null;
   currentActivePlanId?: string | null;
+  /** Keep the live selection only for an in-place refresh; project changes should restore context. */
+  preferCurrentActivePlan?: boolean;
   currentTargetBranch?: string | null;
   candidateBranches?: Array<string | null | undefined>;
   includeArchivedInVisible?: boolean;
@@ -194,16 +196,21 @@ const selectCatalogPlan = (params: {
   visiblePlans: ArchitectPlanSummary[];
   rememberedPlanId?: string | null;
   currentActivePlanId?: string | null;
+  preferCurrentActivePlan?: boolean;
   currentTargetBranch?: string | null;
 }): {
   plan: ArchitectPlanSummary | null;
   branchName: string | null;
   reason: ArchitectPlanCatalogSelectionReason;
 } => {
-  const currentPlan = params.currentTargetBranch
+  // A refresh keeps the live selection, identified by both plan and branch.
+  // A project-context restoration still gives its remembered selection priority.
+  const selectedCurrentPlan = params.currentTargetBranch
     ? params.branches.find((branch) => branch.branchName === params.currentTargetBranch)
       ?.plans.find((plan) => plan.id === params.currentActivePlanId && params.visiblePlans.includes(plan)) ?? null
     : findVisiblePlanById(params.visiblePlans, params.currentActivePlanId);
+  const currentPlan = (params.preferCurrentActivePlan ?? Boolean(params.currentTargetBranch))
+    ? selectedCurrentPlan : null;
   if (currentPlan) {
     return {
       plan: currentPlan,
@@ -212,15 +219,23 @@ const selectCatalogPlan = (params: {
     };
   }
 
-  const rememberedPlan = findVisiblePlanById(
-    params.visiblePlans,
-    params.rememberedPlanId,
-  );
+  const rememberedPlan = params.rememberedPlanId === params.currentActivePlanId && selectedCurrentPlan
+    ? selectedCurrentPlan
+    : findVisiblePlanById(params.visiblePlans, params.rememberedPlanId);
   if (rememberedPlan) {
     return {
       plan: rememberedPlan,
       branchName: findBranchForPlan(params.branches, rememberedPlan),
       reason: 'remembered_plan',
+    };
+  }
+
+  const fallbackCurrentPlan = selectedCurrentPlan;
+  if (fallbackCurrentPlan) {
+    return {
+      plan: fallbackCurrentPlan,
+      branchName: findBranchForPlan(params.branches, fallbackCurrentPlan),
+      reason: 'current_plan',
     };
   }
 
@@ -342,6 +357,7 @@ export const loadMacroProjectMetadataForSelection = async (
     visiblePlans,
     rememberedPlanId: params.rememberedPlanId,
     currentActivePlanId: params.currentActivePlanId,
+    preferCurrentActivePlan: params.preferCurrentActivePlan,
     currentTargetBranch: params.currentTargetBranch ? deps.resolveTargetBranch(params.currentTargetBranch) : null,
   });
 

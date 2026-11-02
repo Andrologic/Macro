@@ -6,6 +6,7 @@ import type { ChatToolAdmission } from './ipc/chatAdmission';
  */
 
 import { tauriFetch } from './tauriHttp';
+import { StreamStopUnconfirmedError, withStreamCleanup } from './ai/streamCancellation';
 import { WebSearchResult } from '../stores/useCitationsStore';
 import {
   cancelWebSearchExecution,
@@ -161,7 +162,7 @@ export async function webSearch(
     try {
       return await searchWithTavily(query, tavilyApiKey, resultCount, includeRawContent, signal);
     } catch (error) {
-      if (signal?.aborted) throw error;
+      if (signal?.aborted || error instanceof StreamStopUnconfirmedError) throw error;
       console.warn('Tavily search failed, trying Brave:', error);
       if (braveApiKey) {
         return searchWithBrave(query, braveApiKey, resultCount, signal);
@@ -310,10 +311,10 @@ const readBoundedResponseBytes = async (
   maxBytes: number,
   provider: string,
 ): Promise<Uint8Array> => {
-  try {
+  return withStreamCleanup(async () => {
     const contentLength = Number(response.headers.get('content-length'));
     if (Number.isFinite(contentLength) && contentLength > maxBytes) {
-      await response.body?.cancel().catch(() => undefined);
+      await response.body?.cancel();
       throw new Error(`${provider} response exceeds the ${maxBytes}-byte limit.`);
     }
     const reader = response.body?.getReader();
@@ -338,10 +339,10 @@ const readBoundedResponseBytes = async (
       offset += chunk.byteLength;
     }
     return bytes;
-  } finally {
+  }, () => {
     responseCleanup.get(response)?.();
     responseCleanup.delete(response);
-  }
+  });
 };
 
 const readBoundedResponseText = async (
@@ -393,18 +394,6 @@ export function extractDomain(url: string): string {
     return urlObj.hostname.replace('www.', '');
   } catch {
     return url;
-  }
-}
-
-/**
- * Get favicon URL for a website
- */
-export function getFaviconUrl(url: string): string {
-  try {
-    const urlObj = new URL(url);
-    return `https://www.google.com/s2/favicons?domain=${urlObj.hostname}&sz=16`;
-  } catch {
-    return '';
   }
 }
 
@@ -624,5 +613,4 @@ export default {
   fetchWebPage,
   formatSearchResultsAsContext,
   extractDomain,
-  getFaviconUrl,
 };

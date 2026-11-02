@@ -36,6 +36,19 @@ describe('sendMessage use case without UI stores', () => {
     expect(f.createMessage.mock.calls.filter(call => call[1] === 'user')).toHaveLength(1);
   });
 
+  it('waits for durable acknowledgement before preparing the assistant', async () => {
+    const f = fixture();
+    const entered = deferred();
+    const release = deferred();
+    f.ports.messages.onUserPersisted = async () => { entered.resolve(); await release.promise; };
+    const sending = f.run();
+    await entered.promise;
+    expect(f.ports.stream.prepare).not.toHaveBeenCalled();
+    release.resolve();
+    await sending;
+    expect(f.ports.stream.prepare).toHaveBeenCalledTimes(1);
+  });
+
   it('retains a saved message when preparation fails and resumes it without another user write', async () => {
     const f = fixture();
     const prepare = f.ports.stream.prepare;
@@ -373,7 +386,7 @@ describe('sendMessage use case without UI stores', () => {
 
 });
 
-it('a stale assistant write failure must not revert the successor task', async () => {
+it('Stop waits for an outstanding assistant write before admitting a successor', async () => {
   const f = fixture('Implement');
   const owner = createChatTurnRuntime({ state: {
     read: id => f.runtimes.get(id) ?? EMPTY_CONVERSATION_RUNTIME,
@@ -397,12 +410,14 @@ it('a stale assistant write failure must not revert the successor task', async (
   await new Promise<void>(resolve => setImmediate(resolve));
   expect(f.task.draft).toBe(false);
   expect(assistantWrites).toBe(1);
-  owner.stop('conversation-1');
+  const stopped = owner.stop('conversation-1');
+  expect(() => owner.assertCanSend('conversation-1', { available: true, hasUnsavedResponse: false })).toThrow('already running');
+  oldWrite.reject(new Error('late disk failure'));
+  await oldSend;
+  await stopped;
   const successor = await f.run();
   expect(successor.status).toBe('sent');
   expect(owner.read('conversation-1')).toMatchObject({ phase: 'streaming', sessionId: 'session-2' });
-  oldWrite.reject(new Error('late disk failure'));
-  await oldSend;
   expect(f.ports.tasks.rollbackDraft).not.toHaveBeenCalled();
   expect(f.task.draft).toBe(false);
 });
@@ -466,6 +481,29 @@ it('stop after saving image and text acknowledges that message without a second 
   expect(f.ports.stream.start).not.toHaveBeenCalled();
 });
 
+
+for (const mismatched of [false, true]) it(`reconciles a lost user DB acknowledgement with the exact durable UUID, mismatched=${mismatched}`, async () => {
+  const f = fixture();
+  f.createMessage.mockImplementationOnce(async () => { throw new Error('acknowledgement lost'); });
+  f.ports.messages.readUser = async () => ({ id: mismatched ? 'foreign-id' : 'durable-user', conversation_id: f.input.conversationId,
+    turn_id: 'turn-1', task_id: '', role: 'user', content: f.input.content, timestamp: '2026-01-01' });
+  const sending = sendMessage({ ...f.input, userMessageId: 'durable-user' }, f.snapshot, f.ports);
+  if (mismatched) {
+    await expect(sending).rejects.toThrow('Failed to save the message'); expect(f.ports.stream.start).not.toHaveBeenCalled();
+  } else {
+    expect((await sending).userMessageId).toBe('durable-user'); expect(f.ports.stream.start).toHaveBeenCalledTimes(1);
+  }
+  expect(f.createMessage.mock.calls.filter(call => call[1] === 'user')).toHaveLength(1);
+});
+
+it('does not discard the DB tail of an interrupted preparation containing durable directions', async () => {
+  const f = fixture();
+  const create = f.createMessage.getMockImplementation()!;
+  f.ports.messages.canDeleteAfter = () => false;
+  f.createMessage.mockImplementation(async (...args) => { const row = await create(...args); if (args[1] === 'assistant') f.stop(); return row; });
+  expect((await f.run()).assistantMessageId).toBeNull(); expect(f.deleteAfter).not.toHaveBeenCalled();
+  expect(f.ports.stream.start).not.toHaveBeenCalled();
+});
 
 describe('Pilot attachment durable launch guards', () => {
   it('awaits a preparation marker before any provider preparation', async () => {

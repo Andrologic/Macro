@@ -2,6 +2,7 @@ import { afterEach, beforeEach, expect, mock, test } from 'bun:test';
 import { useAppStore } from '../../stores/useAppStore';
 import { installTauriRuntimeMock, removeTauriRuntimeMock } from '../../test-utils/tauriRuntime';
 import { getPlanArtifactContentPath, getPlanArtifactIndexPath, taskArtifactContentHash } from '../architectPlanArtifactService';
+import { installArchitectPlanPorts } from '../architectPlanReadContext';
 import { toTaskRuntimeId } from '../durableIdentity';
 import type { ArchitectPlanRecord } from '../architectPlanService';
 import { desktopAttachmentFiles, type DesktopAttachmentNativePorts } from './desktopAttachmentFiles';
@@ -22,6 +23,7 @@ const original = 'audit-2b7a8c568e923c6dc256';
 const changed = 'audit-ee22858f3f5118aaaf53';
 const files = new Map<string, string>();
 const reads: string[] = [];
+let releasePlanPorts: () => void;
 const guard = async () => new Date(Date.now() + 5000).toISOString();
 const delivery = (operation: string, body: unknown) => ({ account_id: 'account-demo', instance_id: ref.instance_id, source_session_id: 'mobile-demo', authority_binding: 'binding-demo', capabilities: [...FILE_CAPABILITIES], request: { operation, body } }) as ContentDelivery;
 
@@ -38,6 +40,7 @@ function harness() {
 }
 
 beforeEach(() => {
+  releasePlanPorts = installArchitectPlanPorts({ getAppState: () => useAppStore.getState() });
   files.clear(); reads.length = 0;
   useAppStore.setState({ standaloneProjects: [{ id: 'project-demo', name: 'Project', mountName: 'project-demo', path: '/synthetic/project-demo', created_at: '', status: 'active', gitSetupState: 'ready', metadata: { description: '', tags: [], team_members: [], api_contracts: [], dependencies: [] } }], projectGroups: [], selectedProjectId: null, selectedGroupId: null });
   const plan: ArchitectPlanRecord = { id: planId, slug: 'plan-demo', title: 'Plan', description: '', status: 'draft', targetBranch: branchName, projectIds: ['project-demo'], createdAt: '2026-01-01', updatedAt: '2026-01-01', nodes: [{ id: 'child', title: 'Child', type: 'task', status: 'pending', dependencies: [], projectIds: ['project-demo'] }], predictedBranches: [] };
@@ -61,7 +64,7 @@ beforeEach(() => {
     throw new Error(`Unexpected command: ${command}`);
   }));
 });
-afterEach(() => { removeTauriRuntimeMock(); useAppStore.setState({ standaloneProjects: [], projectGroups: [] }); });
+afterEach(() => { releasePlanPorts(); removeTauriRuntimeMock(); useAppStore.setState({ standaloneProjects: [], projectGroups: [] }); });
 
 test('exports actual artifact bytes through bounded plan reader, adapter and host', async () => {
   const h = harness();

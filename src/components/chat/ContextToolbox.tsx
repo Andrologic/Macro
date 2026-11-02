@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useChatStore } from '../../stores/useChatStore';
 import { isConversationRuntimeActive } from '../../domains/chat/runtimeState';
@@ -6,7 +6,7 @@ import { useCitationsStore } from '../../stores/useCitationsStore';
 import type { Citation } from '../../stores/useCitationsStore';
 import { useProviderStore } from '../../stores/useProviderStore';
 import { useToolsStore } from '../../stores/useToolsStore';
-import { extractDomain, fetchWebPage, getFaviconUrl } from '../../services/webSearch';
+import { extractDomain, fetchWebPage } from '../../services/webSearch';
 import { toServiceError } from '../../services/contracts/errors';
 import { getWebSearchSettings } from '../../services/webSearchSettings';
 import { compareLocalized, formatRelativeTimeShort } from '../../i18n/format';
@@ -61,6 +61,9 @@ const formatByteSize = (value?: number): string | null => {
   return `${amount >= 10 ? amount.toFixed(0) : amount.toFixed(1)} ${units[unitIndex]}`;
 };
 
+const isInlineFavicon = (value?: string): value is string =>
+  Boolean(value && /^data:image\/(?:png|jpe?g|gif|webp|avif|bmp|x-icon|vnd\.microsoft\.icon);base64,/i.test(value));
+
 export const ContextToolbox: React.FC<ContextToolboxProps> = ({ className }) => {
   const { t, i18n } = useTranslation();
   const {
@@ -90,9 +93,6 @@ export const ContextToolbox: React.FC<ContextToolboxProps> = ({ className }) => 
   const [sourceSort, setSourceSort] = useState<SourceSort>('recent');
   const [expandedSourceIds, setExpandedSourceIds] = useState<Set<string>>(() => new Set());
   const [failedFaviconUrls, setFailedFaviconUrls] = useState<Set<string>>(() => new Set());
-  const [contextConversationId, setContextConversationId] = useState<string | null>(
-    selectedConversationId
-  );
   const [lastAddedContextCitationId, setLastAddedContextCitationId] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const urlInputRef = useRef<HTMLInputElement>(null);
@@ -102,7 +102,7 @@ export const ContextToolbox: React.FC<ContextToolboxProps> = ({ className }) => 
     webSearchSettings.provider === 'tavily'
       ? webSearchSettings.hasTavilySecret
       : webSearchSettings.hasBraveSecret;
-  const effectiveConversationId = selectedConversationId ?? contextConversationId;
+  const effectiveConversationId = selectedConversationId;
   const targetConversation = conversations.find((conversation) => conversation.id === effectiveConversationId);
   const selectedConversationSources = composerContextRefs.filter((ref) => ref.kind === 'conversation');
   const availableConversationSources = useMemo(() => {
@@ -170,19 +170,11 @@ export const ContextToolbox: React.FC<ContextToolboxProps> = ({ className }) => 
     { id: 'sources', label: t('chat.contextToolbox.tabs.sources', 'Sources'), icon: 'file-text', count: sourcePassageCount },
   ];
 
-  useEffect(() => {
-    if (selectedConversationId) {
-      setContextConversationId(selectedConversationId);
-    }
-  }, [selectedConversationId]);
-
   const ensureConversation = useCallback(async () => {
     if (selectedConversationId) {
-      setContextConversationId(selectedConversationId);
       return selectedConversationId;
     }
     const conversation = await createConversation(t('chat.newChat', 'New Chat'), null, null);
-    setContextConversationId(conversation.id);
     return conversation.id;
   }, [createConversation, selectedConversationId, t]);
 
@@ -193,7 +185,6 @@ export const ContextToolbox: React.FC<ContextToolboxProps> = ({ className }) => 
     conversationIdOverride?: string,
   ) => {
     const conversationId = conversationIdOverride ?? await ensureConversation();
-    setContextConversationId(conversationId);
     const citationId = addCitation({
       ...citationData,
       scope: 'context',
@@ -220,7 +211,6 @@ export const ContextToolbox: React.FC<ContextToolboxProps> = ({ className }) => 
       });
       const conversationId = await ensureConversation();
       const ids = await persistConversationAttachments(prepared, conversationId, addCitationAndPersist);
-      setContextConversationId(conversationId);
       setLastAddedContextCitationId(ids.at(-1) ?? null);
     } catch (error) {
       console.error('Failed to attach files:', error);
@@ -624,7 +614,7 @@ export const ContextToolbox: React.FC<ContextToolboxProps> = ({ className }) => 
                   <span className="rounded-full bg-muted px-1.5 py-0.5 text-[10px] leading-none text-muted-foreground">{webCitations.length}</span>
                 </div>
               </div>
-              <div data-tour-id="chat-context-add-url" className="rounded-lg border border-border bg-accent/20 p-2.5 space-y-2">
+              <div data-tour-id="chat-context-add-url" className="space-y-2">
                 <div className="flex items-center gap-2">
                   <Input
                     ref={urlInputRef}
@@ -651,7 +641,7 @@ export const ContextToolbox: React.FC<ContextToolboxProps> = ({ className }) => 
                       citation.url ? extractDomain(citation.url) : citation.source,
                       formatRelativeTimeShort(citation.timestamp, Date.now(), locale),
                     ].filter(Boolean);
-                    const faviconSrc = citation.favicon || (citation.url ? getFaviconUrl(citation.url) : '');
+                    const faviconSrc = isInlineFavicon(citation.favicon) ? citation.favicon : '';
                     const showFavicon = faviconSrc && !failedFaviconUrls.has(faviconSrc);
                     return (
                       <div

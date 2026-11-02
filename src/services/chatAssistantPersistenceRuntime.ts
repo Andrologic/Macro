@@ -13,6 +13,7 @@ export interface AssistantPersistenceRecoveryPorts {
     save(message: ChatMessage): Promise<void>;
     clearError(conversationId: string, messageId: string): void;
     resumeQueue(conversationId: string): void;
+    onSaved?(message: ChatMessage): void | Promise<void>;
   };
 }
 
@@ -39,5 +40,7 @@ export async function retryAssistantPersistence(messageId: string, ports: Assist
   if (!stillOwnsRetry()) return;
   ports.messages.patch(messageId, { persistence_state: undefined, persistence_error: undefined });
   ports.recovery.clearError(assistantMessage.conversation_id, messageId);
+  try { await ports.recovery.onSaved?.(assistantMessage); }
+  catch (error) { console.warn("Direction recovery remains pending after assistant persistence retry.", error); }
   queueMicrotask(() => ports.recovery.resumeQueue(assistantMessage.conversation_id));
 }

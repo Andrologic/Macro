@@ -42,7 +42,7 @@ import { normalizeArtifactManifestSummary } from './architectPlanReplicaStorage'
 import { buildValidProjectRegistrySnapshot } from './validProjectRegistry';
 import type { ArtifactFileMutation } from './architectPlanArtifactPersistence';
 import * as tauriIpc from './tauriIpc';
-import { useAppStore } from '../stores/useAppStore';
+import { getAllProjects } from './globalProjects';
 import { toServiceError } from './contracts/errors';
 import {
   collectKnownProjectIds,
@@ -70,8 +70,8 @@ const serializeArtifactMutation = enqueueArchitectPlanMutation;
 
 const withArtifactRecovery = async <T>(operation: (workspaceKey: string) => Promise<T>): Promise<T> => {
   if (!tauriIpc.isTauriAvailable()) return operation('');
-  const deps = resolveArchitectPlanServiceDependencies({ getAppState: () => useAppStore.getState() });
-  const registry = buildValidProjectRegistrySnapshot(useAppStore.getState());
+  const deps = resolveArchitectPlanServiceDependencies();
+  const registry = buildValidProjectRegistrySnapshot(await deps.getAppState());
   const workspaceKey = await resolveReplicaWorkspaceKey(deps, registry);
   return withReplicaTransactionLock(workspaceKey, async () => {
     await recoverArchitectPlanReplicaMutationsUnlocked(deps, registry, workspaceKey);
@@ -338,7 +338,7 @@ const resolveWorkspacePaths = async (params: {
   allowFallbackPaths?: boolean;
   existingMetadataOnly?: boolean;
 }): Promise<ArtifactWorkspaceTarget[]> => {
-  const appState = useAppStore.getState();
+  const appState = await resolveArchitectPlanServiceDependencies().getAppState();
   const knownProjectIds = collectKnownProjectIds({
     standaloneProjects: appState.standaloneProjects,
     projectGroups: appState.projectGroups,
@@ -356,10 +356,9 @@ const resolveWorkspacePaths = async (params: {
     scopedProjectIds,
     knownProjectIds,
   });
+  const projects = getAllProjects(appState.projectGroups, appState.standaloneProjects);
   const registeredTargets = projectIds.flatMap((projectId): ArtifactWorkspaceTarget[] => {
-    const projectPath = typeof appState.getProjectById === 'function'
-      ? appState.getProjectById(projectId)?.path ?? null
-      : null;
+    const projectPath = projects.find((project) => project.id === projectId)?.path;
     if (!projectPath || filterNonWslProjectPaths([projectPath]).length === 0) {
       return [];
     }
@@ -684,7 +683,7 @@ export const resolveTaskArtifactTarget = async (
   if (!plan || plan.status === 'deleted') {
     throw toServiceError(`Cannot load plan metadata for task ${task.id}.`);
   }
-  const appState = useAppStore.getState();
+  const appState = await resolveArchitectPlanServiceDependencies().getAppState();
   const retargetedPlan = retargetPlanForExecution(plan, {
     scopedProjectIds: unique([
       ...(task.project_ids || []),
@@ -846,11 +845,11 @@ export const readPilotTaskArtifactPlanSnapshot = async (
   let succeeded = false;
   try {
     if (!tauriIpc.isTauriAvailable()) throw new Error('Pilot artifact export requires the desktop runtime.');
-    const registry = buildValidProjectRegistrySnapshot(useAppStore.getState());
+    const deps = resolveArchitectPlanServiceDependencies();
+    const registry = buildValidProjectRegistrySnapshot(await deps.getAppState());
     if (registry.validProjectIds.length === 0 || registry.validProjectIds.length > PILOT_TASK_ARTIFACT_EXPORT_LIMITS.replicas) {
       throw new Error('Pilot artifact plan requires a bounded registered workspace.');
     }
-    const deps = resolveArchitectPlanServiceDependencies({ getAppState: () => useAppStore.getState() });
     const workspaceKey = await resolveReplicaWorkspaceKey(deps, registry);
     const result = await withReplicaTransactionLock(workspaceKey, async () => {
       const readMetadata = async (scope: ArchitectMetadataScope, path: string): Promise<unknown | null> => {
@@ -1134,8 +1133,8 @@ const exportPilotTaskArtifacts = async (
     if (registeredTargets.length === 0 || registeredTargets.length > PILOT_TASK_ARTIFACT_EXPORT_LIMITS.replicas) {
       throw new Error('Pilot artifact export requires a bounded registered workspace.');
     }
-    const deps = resolveArchitectPlanServiceDependencies({ getAppState: () => useAppStore.getState() });
-    const registry = buildValidProjectRegistrySnapshot(useAppStore.getState());
+    const deps = resolveArchitectPlanServiceDependencies();
+    const registry = buildValidProjectRegistrySnapshot(await deps.getAppState());
     const workspaceKey = await resolveReplicaWorkspaceKey(deps, registry);
     const result = await withReplicaTransactionLock(workspaceKey, async () => {
       // Use the workflow lock without replaying or modifying its recovery journal.

@@ -224,7 +224,6 @@ export type {
 } from "./ipc/workspaceTools.types";
 
 export type {
-  MCPDiscoverToolsResponseDto,
   MCPCallToolResponseDto,
 } from "./ipc/mcp.types";
 
@@ -506,8 +505,6 @@ export {
 } from "./ipc/workspaceTools";
 
 export {
-  mcpDiscoverTools,
-  mcpCallTool,
   mcpStoreEnvSecret,
   mcpDeleteEnvSecret,
   mcpStoreOAuthClientSecret,
@@ -607,7 +604,6 @@ export {
 } from "./ipc/state";
 
 export {
-  updaterTarget,
   appUpdateStatus,
   appUpdateCheckAndStage,
   appUpdateExitAfterCleanShutdown,
@@ -652,6 +648,13 @@ export type {
   MCPRuntimeSnapshotDto,
   MCPRuntimeStatus,
 } from "./contracts/serviceProvider";
+
+export { readExecutionApprovals, decideExecutionApproval, resolveExecutionCardTask, deliverExecution, preflightExecution, executionHostFailed, executionHostNextCompile, executionHostCompleteCompile, listExecutionRuns, findExecutionStart, readExecutionDiagnostic, executionModelChoices, executionHostReady, startExecution, stopExecution, readExecutionSnapshot, readExecutionProjection, readExecutionEvents } from './ipc/agsdlExecution';
+export { httpReleaseWebviewResource } from "./ipc/httpResources";
+
+export { executionHostOwners, executionHostInspect, executionHostBegin, executionHostPrepareTerminal, executionHostCommitTerminal, executionHostAppendResponse, executionHostReadResponses, executionHostCloseResponses, executionHostRegisterProvider, executionHostDispatchProvider, executionHostEndProvider } from './ipc/agsdlExecution';
+
+export { stageExecutionIntent, readExecutionIntents, readExecutionIntent, submitExecutionIntent, closeExecutionIntent, ensureExecutionStop } from './ipc/agsdlExecution';
 
 export * from "./ipc/pilot";
 

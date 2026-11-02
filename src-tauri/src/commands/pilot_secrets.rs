@@ -9,11 +9,11 @@ use tauri::Emitter;
 mod lifecycle;
 mod manager;
 mod native;
-pub(crate) mod transport;
 #[cfg(any(target_os = "macos", test))]
 mod session;
 #[cfg(test)]
 mod tests;
+pub(crate) mod transport;
 
 use manager::Manager;
 use native::SystemVault;
@@ -124,7 +124,9 @@ fn validate_secret(secret: &str) -> Result<(), PilotSecretError> {
 }
 
 pub(super) trait Vault: Send + Sync {
-    fn silent_capture_supported(&self) -> bool { false }
+    fn silent_capture_supported(&self) -> bool {
+        false
+    }
     fn prepare_resume(&self, _kind: PilotSecretKind) -> Result<(), PilotSecretError> {
         Ok(())
     }
@@ -191,7 +193,9 @@ pub async fn pilot_vault_activate(
 }
 
 #[tauri::command]
-pub async fn pilot_vault_invalidate(generation: Option<String>) -> Result<VaultLease, PilotSecretError> {
+pub async fn pilot_vault_invalidate(
+    generation: Option<String>,
+) -> Result<VaultLease, PilotSecretError> {
     let manager = manager()?;
     blocking(move || manager.invalidate(generation.as_deref())).await
 }

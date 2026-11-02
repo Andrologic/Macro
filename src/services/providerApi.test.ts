@@ -17,8 +17,8 @@ let pageLifecycleController = new AbortController();
 let pageShuttingDown = false;
 
 const loadProviderApi = async () => {
-  mock.module('@tauri-apps/plugin-http', () => ({
-    fetch: tauriFetchMock,
+  mock.module('./tauriHttp', () => ({
+    tauriFetch: tauriFetchMock,
   }));
 
   mock.module('../utils/pageLifecycle', () => ({
@@ -36,6 +36,16 @@ describe('providerApi fetchModelsFromProvider', () => {
     tauriFetchMock.mockClear();
     pageLifecycleController = new AbortController();
     pageShuttingDown = false;
+  });
+
+  it('rejects remote HTTP before the native provider request', async () => {
+    const { fetchModelsFromProvider } = await loadProviderApi();
+    const result = await fetchModelsFromProvider({
+      baseUrl: 'http://provider.example.test/v1',
+      providerId: 'custom',
+    });
+    expect(result.success).toBe(false);
+    expect(tauriFetchMock).not.toHaveBeenCalled();
   });
 
   for (const count of [0, 1, 2]) {
@@ -208,7 +218,7 @@ describe('providerApi fetchModelsFromProvider', () => {
         tauriFetchMock.mockImplementation(async (_input, init) => {
           requestSignal = init?.signal;
           // A native body adapter may remain pending even after its fetch signal aborts.
-          const response = new Response(null, { status });
+          const response = new Response(new ReadableStream({ start() {} }), { status });
           response.json = () => new Promise(() => undefined);
           response.text = () => new Promise(() => undefined);
           return response;

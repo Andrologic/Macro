@@ -1338,6 +1338,7 @@ export const getArchitectPlan = async (
 };
 
 export type CreateArchitectPlanInput = {
+  agsdl?: Omit<import('../types/agsdl').AgsdlEditorDocument, 'revision'>;
   branchName: string;
   title?: string;
   label?: string;

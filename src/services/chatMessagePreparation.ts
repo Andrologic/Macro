@@ -1,3 +1,4 @@
+import { agsdlContextForModel } from './agsdl/chatContextPayload';
 import type { AgentType, AppMode, ChatMessage, ContextReference, PersistedContextReference, SkillManifest, SkillPermissionSnapshot, SkillTurnFeedback, SkillTurnFeedbackItem, ToolRiskLevel } from "../types";
 import type { Citation } from "../types/citation";
 import type { useAppStore } from "../stores/useAppStore";
@@ -153,18 +154,18 @@ const replaceProviderMessageInputItem = (
   const replacement = buildProviderInputItemsFromContent(role, content)[0];
   const clonedItems = cloneProviderInputItems(items) ?? [];
   let replaced = false;
-  const nextItems = clonedItems.map((item) => {
+  const nextItems = clonedItems.flatMap((item) => {
     if (
-      !replaced &&
       item &&
       typeof item === "object" &&
       (item as { type?: unknown }).type === "message" &&
       (item as { role?: unknown }).role === role
     ) {
+      if (replaced) return [];
       replaced = true;
-      return replacement;
+      return [replacement];
     }
-    return item;
+    return [item];
   });
   if (!replaced) {
     nextItems.push(replacement);
@@ -380,7 +381,12 @@ export const prepareChatMessages = async (
       }
     }
 
-    const hasDynamicRepositoryInstructions =
+    const agsdlContext = message.role === "user" ? agsdlContextForModel(message.hidden_context, message.context_refs, message.conversation_id) : undefined;
+    if (agsdlContext) {
+      messageContent = `${messageContent}\n\n${agsdlContext}`;
+      persistableMessageContent = `${persistableMessageContent}\n\n${agsdlContext}`;
+    }
+    const hasDynamicRepositoryInstructions = Boolean(agsdlContext) ||
       index === lastUserIndex && Boolean(repositoryInstructionContext.contextBlock);
 
     if (

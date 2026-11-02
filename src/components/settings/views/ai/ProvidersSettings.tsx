@@ -16,6 +16,7 @@ import type { ProviderConfig } from '../../../../types';
 import { isMacroAiProvider } from '../../../../config/macroAi';
 import { AndrologicProviderIcon } from '../../../ai/AndrologicProviderIcon';
 import { providerHasUsableCredentials } from '../../../../services/providerCredentials';
+import { isSecureProviderEndpoint } from '../../../../services/providerEndpoint';
 import { SettingsSectionHeader } from '../../SettingsSectionHeader';
 import {
   SettingsCollectionHeader,
@@ -521,8 +522,9 @@ export const ProvidersSettings: React.FC = () => {
         try {
           const parsedBaseUrl = new URL(rawBaseUrl);
           const isSupportedProtocol = parsedBaseUrl.protocol === 'http:' || parsedBaseUrl.protocol === 'https:';
-          const isUnsafeRemoteProtocol = !editingProvider.isLocal && parsedBaseUrl.protocol !== 'https:';
-          if (!isSupportedProtocol || isUnsafeRemoteProtocol || parsedBaseUrl.username || parsedBaseUrl.password || parsedBaseUrl.search || parsedBaseUrl.hash) {
+          const isUnsafeEndpoint = !isSecureProviderEndpoint(rawBaseUrl)
+            || (!editingProvider.isLocal && parsedBaseUrl.protocol !== 'https:');
+          if (!isSupportedProtocol || isUnsafeEndpoint || parsedBaseUrl.username || parsedBaseUrl.password || parsedBaseUrl.search || parsedBaseUrl.hash) {
             nextErrors.baseUrl = t(
               'providers.validation.baseUrlInvalid',
               editingProvider.isLocal

@@ -30,6 +30,7 @@ The repo uses:
 | Script | Description |
 | --- | --- |
 | `bun run dev` | Start the Vite frontend dev server only. |
+| `bun run dev:demo` | Explore the real UI with isolated synthetic data. See [Demo mode](docs/demo-mode.md). |
 | `bun run tauri:dev` | Run Macro as a desktop app in development mode. |
 | `bun run tauri:dev:browser` | Run the Tauri backend and expose its UI to a local browser for debugging. |
 | `bun run build` | Build the frontend for production. |
@@ -59,10 +60,9 @@ Create a local `.env` file only when you need to override defaults.
 VITE_BACKEND_TRANSPORT=desktop
 
 # Remote backend, used when VITE_BACKEND_TRANSPORT=remote
-VITE_REMOTE_API_BASE_URL=http://localhost:8787
+VITE_REMOTE_API_BASE_URL=http://localhost:43117
 VITE_REMOTE_API_PREFIX=/api/v1
 VITE_REMOTE_WORKSPACE_ID=
-VITE_REMOTE_AUTH_TOKEN=
 VITE_REMOTE_TIMEOUT_MS=15000
 ```
 
@@ -71,6 +71,10 @@ Transport notes:
 - `desktop` is the default and requires the Tauri IPC runtime.
 - `remote` switches the frontend service layer to the remote provider.
 - Remote mode is intentionally minimal in the 0.1 line.
+- The remote bearer is entered at runtime on the first request and held only in
+  memory for that session. Do not put it in a `VITE_` variable: Vite exposes
+  those variables to the frontend. Remove any old `VITE_REMOTE_AUTH_TOKEN`
+  value from local `.env` files and rotate that token before reuse.
 
 ## Browser UI with the Tauri runtime
 
@@ -85,6 +89,14 @@ Then open `http://127.0.0.1:1422/`. Vite still provides hot module replacement,
 while Tauri runs as a hidden host and executes IPC commands for the browser.
 Backend events used by configuration, terminals, authentication, downloads, and
 streaming chat are relayed to the browser as well.
+
+The bridge has a single browser owner. Connecting another tab or a Playwright
+browser replaces the previous connection with WebSocket close code `4009`.
+Do not open an automation browser on a runtime currently being tested by a person.
+Finish and close automation before handing over the demo. A replaced tab does
+not reconnect automatically, which prevents competing tabs from repeatedly
+stealing the session. Reload that tab explicitly to reclaim it; the startup
+error screen's Retry button also reloads the page in browser runtime mode.
 
 This bridge is intentionally unavailable in production builds: enabling its
 Cargo feature in a release build is a compile-time error. The dedicated launcher
@@ -255,3 +267,11 @@ explicitly authorized emergency.
 - `src-tauri/` - Rust/Tauri backend.
 - `public/` - static assets and themes.
 - `docs/` - product, architecture, and roadmap references.
+
+The QA browser bridge defaults to port 1430. Set
+`MACRO_TAURI_BROWSER_BRIDGE_PORT` to an unused loopback port when another QA
+session owns that port. The launcher passes the same validated port to the native
+bridge and browser client. Values must be canonical decimal integers from 1 to
+65535. The UI port remains controlled by the QA config's `build.devUrl`.
+Use a separate `com.macro.desktop.qa.*` identifier and data directory; leave
+other sessions running.

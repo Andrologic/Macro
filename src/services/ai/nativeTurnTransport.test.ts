@@ -1,3 +1,5 @@
+import { parseProviderErrorBlock } from '../chatErrorPresentation';
+import { StreamStopUnconfirmedError } from "./streamCancellation";
 import { beforeEach, expect, mock, test } from 'bun:test';
 import { resolveChatErrorPresentation, buildProviderErrorTranscriptMarkdown } from '../chatErrorPresentation';
 import type { ToolTrace } from '../../types';
@@ -11,11 +13,15 @@ type Handler = (event: { payload: Record<string, unknown> }) => void;
 
 let handlers = new Map<string, Handler>();
 let requestId = '';
+let nativeRequests: Parameters<typeof ipc.aiStreamChat>[0][] = [];
 let streamStarted!: () => void;
 let started: Promise<void>;
 let submissions: Submission[] = [];
 let cancelCount = 0;
 let doneAfter = 0;
+let cancelGate: (() => Promise<void>) | undefined;
+let streamGate: (() => Promise<void>) | undefined;
+let listenerGate: Promise<void> | undefined;
 let submissionGate: ((submission: Submission) => Promise<void>) | undefined;
 const emit = (event: string, payload: Record<string, unknown>) => handlers.get(event)?.({ payload });
 let nativePhase: import('../ipc/chatAdmission').ChatWorkPhase = 'completed';
@@ -25,16 +31,19 @@ const handoff = mock(async (_context: unknown, _conversation: string, _request: 
 
 mock.module('../tauriRuntimeBridge', () => ({ ...bridge, listen: async (event: string, handler: Handler) => {
   handlers.set(event, handler);
+  await listenerGate;
   return () => handlers.delete(event);
 } }));
 mock.module('../tauriIpc', () => ({ ...ipc,
   isTauriAvailable: () => true,
   chatAdmissionJoinProvider: async () => ({ phase: nativePhase, taskError: null }),
   chatAdmissionCompleteSteerHandoff: handoff,
-  aiCancelStream: async () => { cancelCount += 1; },
+  aiCancelStream: async () => { cancelCount += 1; await cancelGate?.(); },
   aiStreamChat: async (request: Parameters<typeof ipc.aiStreamChat>[0]) => {
     requestId = request.requestId;
+    nativeRequests.push(request);
     streamStarted();
+    await streamGate?.();
   },
   aiSubmitToolResult: async (submission: Submission) => {
     submissions.push(submission);
@@ -52,11 +61,15 @@ type NativeParams = Parameters<typeof streamNativeTurnViaTauri>[0];
 beforeEach(() => {
   handlers = new Map();
   requestId = '';
+  nativeRequests = [];
   started = new Promise(resolve => { streamStarted = resolve; });
   submissions = [];
   cancelCount = 0;
   doneAfter = 0;
   submissionGate = undefined;
+  cancelGate = undefined;
+  streamGate = undefined;
+  listenerGate = undefined;
   nativePhase = 'completed';
   handoffGate = undefined;
   handoff.mockClear();
@@ -212,8 +225,12 @@ test('native cancellation drops running and queued tool results', async () => {
   for (let index = 0; index < 4; index += 1) request(`call-${index}`, 'read', { path: `file-${index}` });
   expect(launched).toEqual(['call-0', 'call-1', 'call-2']);
   controller.abort();
-  await expect(run).rejects.toMatchObject({ name: 'AbortError' });
+  let ended = false;
+  void run.then(() => { ended = true; }, () => { ended = true; });
+  await new Promise(resolve => setTimeout(resolve, 0));
+  expect(ended).toBe(false);
   gates.forEach(gate => gate.resolve('late'));
+  await expect(run).rejects.toMatchObject({ name: 'AbortError' });
   await new Promise(resolve => setTimeout(resolve, 0));
   expect(cancelCount).toBe(1);
   expect(launched).toEqual(['call-0', 'call-1', 'call-2']);
@@ -281,7 +298,7 @@ test('failed native submission offers one error fallback and stays unknown witho
   expect(traces.at(-1)).toMatchObject({ tool_call_id: 'read-call', status: 'running', recovery_state: 'unknown' });
   expect(live).not.toHaveBeenCalled();
   expect(completed).not.toHaveBeenCalled();
-  expect(cancelCount).toBe(0);
+  expect(cancelCount).toBe(1);
 });
 
 for (const acceptedIndex of [0, 1]) {
@@ -361,7 +378,7 @@ test('failed submission during cancellation publishes no success', async () => {
   expect(completed).not.toHaveBeenCalled();
 });
 
-test('cancellation settles promptly while native submission remains pending', async () => {
+test('cancellation retains ownership while native submission remains pending', async () => {
   const controller = new AbortController();
   const gate = deferred<void>();
   submissionGate = () => gate.promise;
@@ -371,9 +388,13 @@ test('cancellation settles promptly while native submission remains pending', as
   request('read-call', 'read', { path: 'file' });
   await waitFor(() => submissions.length === 1);
   controller.abort();
-  await expect(run).rejects.toMatchObject({ name: 'AbortError' });
+  let ended = false;
+  void run.then(() => { ended = true; }, () => { ended = true; });
+  await new Promise(resolve => setTimeout(resolve, 0));
+  expect(ended).toBe(false);
   expect(live).not.toHaveBeenCalled();
   gate.resolve();
+  await expect(run).rejects.toMatchObject({ name: 'AbortError' });
   await new Promise(resolve => setTimeout(resolve, 0));
   expect(live).not.toHaveBeenCalled();
 });
@@ -426,7 +447,7 @@ for (const [status, kind, retryable] of [
     expect(error).toMatchObject({ status, kind, retryable });
     const presentation = resolveChatErrorPresentation(error);
     expect(presentation).toMatchObject({ origin: 'provider', displayTarget: 'transcript', status, kind, retryable });
-    expect(buildProviderErrorTranscriptMarkdown(presentation)).toContain(`Statut HTTP: \`${status}\``);
+    expect(parseProviderErrorBlock(buildProviderErrorTranscriptMarkdown(presentation).split('\n')[1])).toMatchObject({ status, kind, retryable });
     if (status === 503) expect(presentation.suggestedAction).toContain('Relance dans quelques instants');
     expect(handlers.size).toBe(0);
   });
@@ -455,6 +476,389 @@ for (const providerType of ['copilot', 'chatgpt']) {
   });
 }
 
+
+test('Stop during listener admission prevents provider start after late registration', async () => {
+  const gate = deferred<void>();
+  listenerGate = gate.promise;
+  const controller = new AbortController();
+  const run = turn({ signal: controller.signal });
+  controller.abort();
+  await expect(run).rejects.toMatchObject({ name: 'AbortError' });
+  gate.resolve();
+  await new Promise<void>(resolve => setImmediate(resolve));
+  expect(requestId).toBe('');
+  expect(handlers.size).toBe(0);
+});
+
+test('Stop waits for both its native receipt and the in-flight admission IPC', async () => {
+  const admission = deferred<void>();
+  const cancellation = deferred<void>();
+  streamGate = () => admission.promise;
+  cancelGate = () => cancellation.promise;
+  const controller = new AbortController();
+  const run = turn({ signal: controller.signal });
+  let ended = false;
+  void run.then(() => { ended = true; }, () => { ended = true; });
+  await started;
+  controller.abort();
+  await new Promise<void>(resolve => setImmediate(resolve));
+  expect(ended).toBe(false);
+  cancellation.resolve();
+  await new Promise<void>(resolve => setImmediate(resolve));
+  expect(ended).toBe(false);
+  admission.resolve();
+  await expect(run).rejects.toMatchObject({ name: 'AbortError' });
+  expect(cancelCount).toBe(1);
+});
+
+test('failed native cancellation is uncertainty, not AbortError or released resources', async () => {
+  const { cancelStream, activeStreamResourcesBySessionId } = await import('./streamResources');
+  cancelGate = async () => { throw new Error('No native stop receipt'); };
+  const controller = new AbortController();
+  const run = turn({ sessionId: 'unconfirmed', signal: controller.signal });
+  void run.catch(() => undefined);
+  await started;
+  controller.abort();
+  const stop = cancelStream('unconfirmed');
+  await expect(stop).rejects.toMatchObject({ name: 'StreamStopUnconfirmedError' });
+  await expect(run).rejects.toMatchObject({ name: 'StreamStopUnconfirmedError' });
+  expect(activeStreamResourcesBySessionId.get('unconfirmed')?.tauriRequestId).toBe(requestId);
+  activeStreamResourcesBySessionId.delete('unconfirmed');
+});
+
+
+for (const errorKind of ['permission', 'validation', 'execution', 'uncertain'] as const) {
+  test(`native publication preserves a typed tool ${errorKind} result`, async () => {
+    doneAfter = 1;
+    const traces: ToolTrace[] = [];
+    const run = turn({ allowedToolIds: ['terminal_run'], onToolTrace: trace => traces.push(trace),
+      onToolCall: async () => ({ kind: 'result', result: 'structured terminal outcome', isError: true, errorKind }) });
+    await started;
+    request('terminal-call', 'terminal_run', { session_id: 'session', command: 'command' });
+    await run;
+    expect(submissions[0]).toMatchObject({ result: 'structured terminal outcome', isError: true, errorKind });
+    expect(traces.at(-1)?.recovery_state).toBe(errorKind === 'uncertain' ? 'unknown' : 'completed');
+  });
+}
+
+test('a tool handler without a result cannot publish fictitious native success', async () => {
+  doneAfter = 1;
+  const run = turn({ onToolCall: async () => undefined });
+  await started;
+  request('missing-result', 'read', { path: 'file' });
+  await run;
+  expect(submissions[0]).toMatchObject({ isError: true, errorKind: 'uncertain' });
+});
+
+
+test('a tool stop uncertainty survives draining and does not publish a fictitious result', async () => {
+  const proof = deferred<void>();
+  const failure = new StreamStopUnconfirmedError('Tool executor still owns work', proof.promise);
+  const run = turn({ sessionId: 'uncertain-tool', onToolCall: async () => { throw failure; } });
+  void run.catch(() => undefined);
+  await started;
+  request('uncertain-read', 'read', { path: 'file' });
+  await expect(run).rejects.toBeInstanceOf(StreamStopUnconfirmedError);
+  expect(submissions).toHaveLength(0);
+  const { cancelStream, activeStreamResourcesBySessionId } = await import('./streamResources');
+  let stopped = false;
+  const stop = cancelStream('uncertain-tool').then(() => { stopped = true; });
+  await new Promise<void>(resolve => setImmediate(resolve));
+  expect(stopped).toBe(false);
+  proof.resolve();
+  await stop;
+  expect(activeStreamResourcesBySessionId.has('uncertain-tool')).toBe(false);
+});
+
+
+for (const event of ['ai:error', 'ai:done']) {
+  test(`${event} retains native ownership and concurrent Stop until the supervisor receipt`, async () => {
+    const { cancelStream, activeStreamResourcesBySessionId } = await import('./streamResources');
+    const receipt = deferred<void>();
+    cancelGate = () => receipt.promise;
+    const run = turn({ sessionId: 'event-receipt' });
+    void run.catch(() => undefined);
+    let ended = false;
+    void run.then(() => { ended = true; }, () => { ended = true; });
+    await started;
+    emit(event, { request_id: requestId, message: 'Malformed runtime event', output_text: 'Done', tool_calls: [] });
+    await new Promise<void>(resolve => setImmediate(resolve));
+    expect(ended).toBe(false);
+    expect(activeStreamResourcesBySessionId.get('event-receipt')?.tauriRequestId).toBe(requestId);
+    let stopped = false;
+    const stop = cancelStream('event-receipt').then(() => { stopped = true; });
+    await new Promise<void>(resolve => setImmediate(resolve));
+    expect(stopped).toBe(false);
+    expect(cancelCount).toBe(1);
+    receipt.resolve();
+    if (event === 'ai:error') await expect(run).rejects.toThrow('Malformed runtime event');
+    else await expect(run).resolves.toMatchObject({ content: 'Done' });
+    await stop;
+    expect(activeStreamResourcesBySessionId.has('event-receipt')).toBe(false);
+  });
+
+  test(`${event} with failed cleanup retains a typed owner rather than a provider outcome`, async () => {
+    const { cancelStream, activeStreamResourcesBySessionId } = await import('./streamResources');
+    cancelGate = async () => { throw new Error('Tree reap was not confirmed'); };
+    const run = turn({ sessionId: 'failed-event-receipt' });
+    void run.catch(() => undefined);
+    await started;
+    emit(event, { request_id: requestId, message: 'Malformed runtime event', output_text: 'Done', tool_calls: [] });
+    const failure = await run.then(() => { throw new Error('Expected missing supervisor receipt'); }, error => error as StreamStopUnconfirmedError);
+    expect(failure).toBeInstanceOf(StreamStopUnconfirmedError);
+    expect(failure.message).toContain('Tree reap was not confirmed');
+    expect(failure.stopped).toBe(false);
+    expect(activeStreamResourcesBySessionId.get('failed-event-receipt')?.tauriRequestId).toBe(requestId);
+    cancelGate = async () => undefined;
+    await cancelStream('failed-event-receipt');
+    await failure.whenStopped;
+    expect(activeStreamResourcesBySessionId.has('failed-event-receipt')).toBe(false);
+  });
+}
+
+for (const phase of ['flush', 'projection'] as const) {
+  test(`real native terminal ownership survives generation-attempt ${phase} failure`, async () => {
+    const { streamChat } = await import('../streamingChat');
+    const { runAssistantStream } = await import('../chatStreamOrchestrator');
+    const { createChatTurnRuntime } = await import('../chatTurnRuntime');
+    const { executeChatAgentTerminal } = await import('../chatAgentTerminal');
+    const { EMPTY_CONVERSATION_RUNTIME } = await import('../../domains/chat/runtimeState');
+    const { cancelStream } = await import('./streamResources');
+    const controller = new AbortController();
+    const proof = deferred<void>();
+    const terminalReceipt = new StreamStopUnconfirmedError('Terminal run receipt pending', proof.promise);
+    const diagnostic = new Error('Generation attempt projection failed');
+    let state: import('../../types').ConversationRuntimeState = { ...EMPTY_CONVERSATION_RUNTIME, phase: 'streaming', sessionId: `attempt-${phase}`, turnId: 'turn', assistantMessageId: 'assistant', abortController: controller };
+    const settled = mock(() => {});
+    const owner = createChatTurnRuntime({ state: { read: () => state, project: (_id, next) => { state = next ?? EMPTY_CONVERSATION_RUNTIME; }, isDeleted: () => false }, cancelTransport: cancelStream, settled });
+    const session = { id: 'terminal', project_id: null, status: 'idle' } as import('../tauriIpc').TerminalSessionDto;
+    const terminal = { cachedSession: () => session, readSession: async () => session, createSession: async () => session,
+      runCommand: async () => { throw terminalReceipt; }, killSession: async () => session };
+    const running = runAssistantStream({ providerAdmission: { kind: 'utility' }, sessionId: `attempt-${phase}`, providerId: 'copilot', providerType: 'copilot', modelId: 'fixture', baseUrl: 'https://example.invalid', messages: [], allowedToolIds: ['terminal_run'], signal: controller.signal,
+      onToolCall: (_name, args) => executeChatAgentTerminal(terminal, 'terminal_run', args, controller.signal),
+      onGenerationAttemptsUpdate: phase === 'projection' ? async () => { await Promise.resolve(); throw diagnostic; } : undefined,
+      lifecycle: { appendTokenChunk: () => { if (phase === 'flush') throw diagnostic; }, onComplete: () => {}, onError: () => { state = { ...state, phase: 'error', abortController: null }; } }, streamChatImpl: streamChat,
+    });
+    void running.catch(() => {});
+    owner.track('conversation', running);
+    await started;
+    emit('ai:stream', { request_id: requestId, delta: 'partial' });
+    request('terminal-call', 'terminal_run', { session_id: 'terminal', command: 'synthetic' });
+    const failure = await running.catch(error => error);
+    expect(failure).toBeInstanceOf(StreamStopUnconfirmedError);
+    expect(failure.secondaryErrors).toContain(diagnostic);
+    expect(terminalReceipt.stopped).toBe(false);
+    expect(() => owner.assertCanSend('conversation', { available: true, hasUnsavedResponse: false })).toThrow('already running');
+    expect(settled).not.toHaveBeenCalled();
+    proof.resolve();
+    await failure.whenStopped;
+    await owner.stop('conversation');
+    owner.assertCanSend('conversation', { available: true, hasUnsavedResponse: false });
+    await cancelStream(`attempt-${phase}`);
+  });
+}
+
+test('native diagnostic exceptions cannot replace an outstanding tool receipt or skip native cleanup', async () => {
+  const proof = deferred<void>();
+  const toolOwner = new StreamStopUnconfirmedError('Read receipt pending', proof.promise);
+  const diagnostic = new Error('Native delta observer failed');
+  const loggerFailure = new Error('Native logger failed');
+  const { devLogger } = await import('../../utils/devLogger');
+  const originalWarn = devLogger.warn;
+  const tool = deferred<string>();
+  const running = turn({ sessionId: 'diagnostic-owner', onDelta: () => { throw diagnostic; }, onToolCall: () => tool.promise });
+  void running.catch(() => {});
+  await started;
+  request('read-call', 'read', { path: 'fixture' });
+  devLogger.warn = () => { throw loggerFailure; };
+  try { emit('ai:stream', { request_id: requestId, delta: 'partial' }); }
+  finally { devLogger.warn = originalWarn; }
+  tool.reject(toolOwner);
+  const failure = await running.catch(error => error);
+  expect(cancelCount).toBe(1);
+  expect(failure).toBeInstanceOf(StreamStopUnconfirmedError);
+  expect(failure.secondaryErrors).toContain(diagnostic);
+  expect(failure.secondaryErrors).toContain(loggerFailure);
+  expect(failure.stopped).toBe(false);
+  proof.resolve();
+  await failure.whenStopped;
+  const { cancelStream } = await import('./streamResources');
+  await cancelStream('diagnostic-owner');
+});
+
+test('resident attempt registration precedes physical dispatch and its receipt precedes visible publication', async () => {
+  const registration = deferred<'registered'>();
+  const stopped = deferred<void>();
+  const events: string[] = [];
+  cancelGate = () => stopped.promise;
+  const pending = turn({ providerType: 'openai', providerId: 'fixture', nativeExecution: {
+    beforeRequest: async id => { events.push(`register:${id}`); return registration.promise; },
+    requestEnded: async id => { expect(id).toBe(requestId); events.push('ended'); },
+    visibleMessage: async (id, text) => { expect(id).toBe(requestId); expect(text).toBe('Original'); events.push('visible'); },
+  } });
+  await waitFor(() => events.length === 1);
+  expect(requestId).toBe('');
+  registration.resolve('registered');
+  await started;
+  expect(events[0]).toBe(`register:${requestId}`);
+  emit('ai:done', { request_id: requestId, output_text: 'Original', tool_calls: [] });
+  await waitFor(() => cancelCount > 0);
+  expect(events).toHaveLength(1);
+  stopped.resolve();
+  await pending;
+  expect(events.slice(1)).toEqual(['ended', 'visible']);
+});
+
+test('a recovered duplicate provider effect never authorizes a new native dispatch', async () => {
+  const ended = mock(async () => {});
+  await expect(turn({ nativeExecution: {
+    beforeRequest: async () => 'duplicate', requestEnded: ended, visibleMessage: async () => {},
+  } })).rejects.toThrow('cannot be redispatched');
+  expect(requestId).toBe('');
+  expect(ended).not.toHaveBeenCalled();
+});
+
+test('resident dispatch receives the exact request envelope acknowledged at registration', async () => {
+  let captured: import('../ipc/ai').AiStreamChatInput | undefined;
+  const dispatch = mock(async (envelope: import('../ipc/ai').AiStreamChatInput) => {
+    if (!captured) throw new Error('Registration envelope missing');
+    expect(envelope).toBe(captured);
+    expect(envelope.messages[0].content).toBe('9007199254740993');
+    expect(envelope).toHaveProperty('providerAdmission', { kind: 'utility' });
+    await ipc.aiStreamChat(envelope as Parameters<typeof ipc.aiStreamChat>[0]);
+  });
+  const pending = turn({ providerType: 'openai', providerId: 'fixture', messages: [{ role: 'user', content: '9007199254740993' }], nativeExecution: {
+    beforeRequest: async (id, envelope) => {
+      expect(envelope?.requestId).toBe(id);
+      captured = envelope;
+      return 'registered';
+    },
+    dispatch, requestEnded: async () => {}, visibleMessage: async () => {},
+  } });
+  await started;
+  emit('ai:done', { request_id: requestId, output_text: 'Done', tool_calls: [] });
+  await pending;
+  expect(dispatch).toHaveBeenCalledTimes(1);
+});
+
+test('resident shared loop retains an ended tool and completes its second native turn without continuation annotations', async () => {
+  const { ResidentAgent, nativeResidentAgentPorts } = await import('../agsdlExecution/residentAgent');
+  const { createResidentToolDispatch } = await import('../agsdlExecution/nativeToolDispatch');
+  const { compileFixture, contextFixture, documentFixture, json } = await import('../agsdlExecution/conformanceFixtures');
+  const { decode, encode, record } = await import('../agsdlExecution/exact');
+  const compiled = await compileFixture(documentFixture());
+  const base = compiled.plan!.agents[0];
+  const expanded = record(decode(base.configurationJson));
+  const configuration = { ...base, settingsJson: json('{"maxTurns":3}'),
+    permissionsJson: json('{"mode":"Implement","allowedToolIds":["read"]}'),
+    configurationJson: encode({ ...expanded, configuration: { ...record(expanded.configuration), tools: { qa_read: 'read' } },
+      bindings: { ...record(expanded.bindings), read: { contract: { identity: 'macro/tool/read', version: '1' }, implementation: { identity: 'macro/desktop', version: '1' }, effects: 'none' } } }) };
+  const context = contextFixture();
+  const residentRequest = { context: { ...context, work: { ...context.work, step: null }, permissionsJson: configuration.permissionsJson, scopeJson: configuration.scopeJson },
+    configuration, memory: null, providerType: 'openai' as const, toolAliases: [{ name: 'qa_read', toolId: 'read' }],
+    responses: { agentName: configuration.agentName, interfaceJson: json('{}'), stepJson: null, publicationContractJson: null } };
+  const rawArguments = '{ "path" : "qa-9007199254740993.txt" }';
+  const toolResult = 'FILE: qa-9007199254740993.txt\nSOURCE: WORKSPACE_FILE\nExact retained result';
+  const requests: import('../ipc/ai').AiStreamChatInput[] = [];
+  const emissions: import('../../types/generated/ipc').Emission[] = [];
+  const order: string[] = [];
+  const dispatchTool = createResidentToolDispatch(residentRequest, {
+    identity: () => 'native-tool-invocation', wait: async () => { throw new Error('Unexpected polling'); },
+    invoke: async invocation => {
+      expect(invocation.argumentsJson).toBe(rawArguments);
+      expect(invocation.providerAttemptId).toBe(requests[0].requestId);
+      expect(order).toEqual(['register:1', 'dispatch:1', 'ended:1', 'message']);
+      order.push('tool-ended');
+      return { kind: 'ended', resultJson: JSON.stringify(toolResult), failed: false };
+    },
+  });
+  const agent = await ResidentAgent.prepare(residentRequest, dispatchTool, {
+    ...nativeResidentAgentPorts, // stream is the real streamChat, adapter, loop and transport.
+    register: async (_context, request) => {
+      for (const message of request.messages) {
+        if ('provider_input_items' in message || 'provider_turn_state' in message) throw new Error('UNSUPPORTED: native inline guard');
+      }
+      expect(requests.some(previous => previous.requestId === request.requestId)).toBe(false);
+      requests.push(request); order.push(`register:${requests.length}`); return true;
+    },
+    dispatch: async (_context, envelope) => {
+      expect(envelope).toBe(requests.at(-1)!);
+      const turnNumber = requests.length;
+      order.push(`dispatch:${turnNumber}`);
+      expect(envelope).toHaveProperty('providerAdmission', { kind: 'utility' });
+      await ipc.aiStreamChat(envelope as Parameters<typeof ipc.aiStreamChat>[0]);
+      queueMicrotask(() => emit('ai:done', { request_id: envelope.requestId,
+        output_text: turnNumber === 1 ? '' : 'Final native answer',
+        provider_turn_state: { response_id: `annotation-${turnNumber}`, output_items: [] },
+        tool_calls: turnNumber === 1 ? [{ id: 'call-read', type: 'function', function: { name: 'qa_read', arguments: rawArguments } }] : [] }));
+    },
+    end: async (_context, id) => {
+      const number = requests.findIndex(request => request.requestId === id) + 1;
+      expect(cancelCount).toBe(number); order.push(`ended:${number}`);
+    },
+    append: async emission => { emissions.push(emission); order.push('message'); return true; },
+    journal: {
+      read: async () => ({ events: emissions as unknown as import('../agsdlExecution/retainedResponses').RetainedEmission[], digest: 'native-retained-digest' }),
+      close: async closure => { order.push('close'); return closure; },
+    },
+  });
+  await agent.acceptInput(() => json('{"prompt":[{"value":"Read then answer"}]}'));
+  const completion = await agent.executeReady();
+  expect(requests).toHaveLength(2);
+  const followUp = requests[1].messages;
+  expect(followUp.find(message => message.role === 'assistant')?.tool_calls?.[0].function.arguments).toBe(rawArguments);
+  expect(followUp.find(message => message.role === 'tool')).toEqual({ role: 'tool', content: toolResult, tool_call_id: 'call-read' });
+  expect(completion.failed).toBe(false);
+  expect(completion.closure.validation).toEqual({ kind: 'success', text: 'Final native answer', resultsJson: json('{}'), choice: null });
+  expect(completion.memory.stateJson).toContain('Final native answer');
+  const memory = JSON.parse(completion.memory.stateJson).messages;
+  expect(memory.find((message: { role: string }) => message.role === 'tool').content).toBe(toolResult);
+  expect(memory.find((message: { role: string }) => message.role === 'assistant').tool_calls[0].function.arguments).toBe(rawArguments);
+  expect(order).toEqual(['register:1', 'dispatch:1', 'ended:1', 'message', 'tool-ended', 'register:2', 'dispatch:2', 'ended:2', 'message', 'close']);
+});
+
+test('ordinary native Chat keeps assistant and tool continuation annotations on the next turn', async () => {
+  const { createNativeAdapter } = await import('./nativeAdapter');
+  const { runToolCallingLoop } = await import('./toolCallingLoop');
+  const { createStreamAccumulator } = await import('./streamAccumulator');
+  const options: import('./contracts').StreamingChatOptions = {
+    providerAdmission: { kind: 'conversation' }, providerId: 'fixture', providerType: 'chatgpt', modelId: 'fixture', baseUrl: '', mode: 'Chat', messages: [{ role: 'user', content: 'Read' }],
+    allowedToolIds: ['read'], onToken() {}, onComplete() {}, onError(error) { throw error; },
+    onToolCall: async () => 'Read result',
+  };
+  const accumulator = createStreamAccumulator(options);
+  streamGate = async () => {
+    const number = nativeRequests.length;
+    queueMicrotask(() => emit('ai:done', { request_id: requestId, output_text: number === 1 ? '' : 'Done',
+      tool_calls: number === 1 ? [{ id: 'ordinary-read', type: 'function', function: { name: 'read', arguments: '{"path":"qa.txt"}' } }] : [],
+      provider_turn_state: { response_id: `response-${number}`, output_items: [] } }));
+  };
+  const adapter = createNativeAdapter(options, accumulator, { disableReasoning() {}, disableEffort() {} });
+  await runToolCallingLoop(options, adapter, accumulator);
+  expect(nativeRequests).toHaveLength(2);
+  const assistant = nativeRequests[1].messages.find(message => message.role === 'assistant')!;
+  const tool = nativeRequests[1].messages.find(message => message.role === 'tool')!;
+  expect(assistant.provider_input_items?.length).toBeGreaterThan(0);
+  expect(assistant.provider_turn_state?.response_id).toBe('response-1');
+  expect(tool.provider_input_items).toEqual([{ type: 'function_call_output', call_id: 'ordinary-read', output: 'Read result' }]);
+});
+
+test('resident visible message keeps exact provider content without structured reasoning', async () => {
+  const visible: string[] = [];
+  const exact = '  OK FLOW MACRO\n\n';
+  const pending = turn({ providerType: 'openai', providerId: 'macro-ai', nativeExecution: {
+    beforeRequest: async () => 'registered', requestEnded: async () => {},
+    visibleMessage: async (_id, text) => { visible.push(text); },
+  } });
+  await started;
+  for (const delta of ['<think>', 'Plan ok.\n', '</think>', '  OK FLOW', ' MACRO\n\n']) emit('ai:stream', { request_id: requestId, delta });
+  emit('ai:done', { request_id: requestId, output_text: `<think>Plan ok.\n</think>${exact}`, visible_text: exact,
+    reasoning_summary: 'Plan ok.\n', tool_calls: [] });
+  const result = await pending;
+  // Chat presentation is unchanged; the AgSDL collector receives only visible bytes.
+  expect(result.content).toBe(`<think>Plan ok.\n</think>${exact}`);
+  expect(visible).toEqual([exact]);
+});
 
 test('Codex retains its result until the confirmed steer handoff has been recorded', async () => {
   const gate = deferred<void>();

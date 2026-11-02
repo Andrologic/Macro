@@ -8,6 +8,7 @@ import { createInterface } from 'node:readline';
 import { Buffer } from 'node:buffer';
 import type { ContentCapture, ContentDelivery, ContentDeliveryResult, ContentEvent, ContentRequest } from './contentProtocol';
 import type { DbConversation, DbMessage } from '../tauriIpc';
+import type { DesktopStorePorts } from './desktopStorePorts';
 
 const settings = new Map<string, string>();
 const nativeCalls: string[] = [];
@@ -154,7 +155,10 @@ mock.module('@tauri-apps/api/core', () => ({ ...core, invoke: async (command: st
   throw new Error(`Unexpected test IPC: ${command}`);
 } }));
 afterAll(() => mock.restore());
-mock.module('./desktopTaskCatalog', () => ({ desktopPilotTasks: () => taskRecords }));
+const { desktopPilotTasks } = await import('./desktopTaskCatalog');
+mock.module('./desktopTaskCatalog', () => ({ desktopPilotTasks: (ports: DesktopStorePorts) => desktopPilotTasks({
+  ...ports, tasks: () => ({ ...ports.tasks(), tasks: taskRecords as never }),
+}) }));
 const { PilotRuntime } = await import('./runtime');
 const { desktopStorePorts } = await import('../../composition/macroPilotDesktop');
 const { MacroPilotNativeClient } = await import('./nativeClient');
@@ -295,7 +299,7 @@ function harness(readAuthoritySupport?: ReadAuthoritySupport) {
 beforeEach(() => {
   settings.clear(); nativeCalls.length = 0; nativeSnapshots.clear(); supported = true; fresh = true; bridge = undefined; beforeFresh = undefined; policyWait = undefined;
   nativeFailure = undefined; captureWait = undefined; messageWait = undefined; messagesUnavailable = false; branchRecords = []; extraProjects = [];
-  taskRecords = [{ id: 'task:one', project_id: 'project:one', status: 'Todo', execution_targets: [] }];
+  taskRecords = [{ id: 'task:one', project_id: 'project:one', status: 'Pending', task_source: 'standalone', title: 'Test task', execution_targets: [] }];
   nativeRevision = 'a'.repeat(64); secretValues = ['configured-password']; repoPath = '/private/test-repository';
   conversations = [structuredClone(conversation)];
   messages = [{ id: 'message:user', conversation_id: conversation.id, role: 'user', content: 'Hello from persistence', created_at: conversation.created_at, token_count: null, tool_traces_json: null, hidden_context: '/private/hidden', provider_input_items_json: null, provider_turn_state_json: null }];
@@ -489,7 +493,7 @@ it('serves a review while background content-version observations are blocked an
 it('resolves canonical commit reviews and rechecks tracked branches at the native decision boundary', async () => {
   const commitRef = { ...ref, review_id: 'review:commits:one', run_id: 'run:one:valid' };
   const base = 'a'.repeat(40); const head = 'b'.repeat(40);
-  taskRecords = [{ id: 'task:one', project_id: 'project:one', status: 'InReview', execution_targets: [{ projectId: 'project:one', executionMode: 'worktree', repoPath, targetBranchName: 'develop', branchName: 'feature/test' }] }];
+  taskRecords = [{ ...taskRecords[0], status: 'InReview', execution_targets: [{ projectId: 'project:one', executionMode: 'git', repoPath, targetBranchName: 'develop', branchName: 'feature/test' }] }];
   branchRecords = [{ name: 'develop', commit: base }, { name: 'feature/test', commit: head }];
   settings.set('macroPilot:supervision:v1:["config:test","instance:test"]', JSON.stringify({ version: 2, projection: null, snapshots: [], streams: {}, journal: {}, runs: [], reviews: [{
     contract_version: '1.0', type: 'review', ref: { ...commitRef, type: 'review' }, related_run: { type: 'run', instance_id: instanceId, workspace_id: ref.workspace_id, task_id: ref.task_id, run_id: 'run:one:valid' },
@@ -533,7 +537,7 @@ it('keeps deliveries moving while an event acknowledgement is blocked on HTTP', 
   } finally { release(); await h.runtime.stop(); }
 });
 it('keeps first reads and pages valid while twelve unchanged review references are discovered', async () => {
-  taskRecords = Array.from({ length: 4 }, (_, i) => ({ id: i === 0 ? 'task:one' : `task:discovery:${i}`, project_id: 'project:one', status: 'Todo', execution_targets: [] }));
+  taskRecords = Array.from({ length: 4 }, (_, i) => ({ ...taskRecords[0], id: i === 0 ? 'task:one' : `task:discovery:${i}` }));
   extraProjects = Array.from({ length: 103 }, (_, i) => ({ id: `project:extra:${i}`, name: `Project ${i}`, path: repoPath }));
   messages = Array.from({ length: 105 }, (_, i) => ({ ...messages[0], id: `message:discovery:${i}` }));
   const h = harness();

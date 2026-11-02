@@ -190,6 +190,44 @@ function setup() {
   };
 }
 
+test("diagnostics capture nested history and request data once per generation", async () => {
+  const h = setup();
+  const params = launch("a");
+  const history: ChatMessage = {
+    ...params.assistantMessage, id: "history", content: "original",
+    provider_input_items: [{ output: { text: "original input" } }],
+    provider_turn_state: { provider: "chatgpt", response_id: "response", output_items: [{ text: "original state" }] },
+  };
+  h.messages.set(history.id, history);
+  params.contextDiagnosticsBaselineSeed.messagesForRequest = [{
+    role: "user", content: "request", provider_input_items: [{ output: { text: "original request" } }],
+  }];
+  const schema = { type: "object" as const, properties: { path: { type: "string" as const, description: "original schema" } } };
+  params.contextDiagnosticsBaselineSeed.toolDefinitions = [{ id: "read", description: "Read", parameters: schema }];
+  params.contextDiagnosticsBaselineSeed.citations = [{ id: "citation", type: "file", scope: "context", source: "file.ts", title: "original citation", messageId: "history", conversationId: "a", timestamp: history.timestamp }];
+  const stream = await h.start(params);
+  const baseline = h.record.mock.calls[0][0].baseline!;
+  expect(baseline.orderedMessages[0]).not.toBe(history);
+  schema.properties.path.description = "changed";
+  params.contextDiagnosticsBaselineSeed.citations[0].title = "changed";
+  expect(baseline.toolDefinitions[0].parameters).toEqual({ type: "object", properties: { path: { type: "string", description: "original schema" } } });
+  expect(baseline.citations[0].title).toBe("original citation");
+  history.content = "changed";
+  (history.provider_input_items![0] as { output: { text: string } }).output.text = "changed";
+  (history.provider_turn_state!.output_items[0] as { text: string }).text = "changed";
+  (params.contextDiagnosticsBaselineSeed.messagesForRequest[0].provider_input_items![0] as { output: { text: string } }).output.text = "changed";
+  expect(baseline.orderedMessages[0]).toMatchObject({
+    content: "original", provider_input_items: [{ output: { text: "original input" } }],
+    provider_turn_state: { output_items: [{ text: "original state" }] },
+  });
+  expect(baseline.messagesForRequest[0].provider_input_items).toEqual([{ output: { text: "original request" } }]);
+  stream.options.onLiveContextUpdate?.({ version: 1, visibleContent: "delta", visibleContentLength: 5, toolTraces: [] });
+  expect(h.record.mock.calls.at(-1)![0].baseline).toBeUndefined();
+  stream.options.onComplete(result("done"));
+  stream.done.resolve();
+  await h.owner.drain("a");
+});
+
 describe("chatAssistantStreamRuntime with real lifecycle and orchestrator", () => {
   test("runtime helpers load without evaluating stores or React", async () => {
     // A fresh process keeps another test's module cache from hiding this dependency.
@@ -272,7 +310,7 @@ describe("chatAssistantStreamRuntime with real lifecycle and orchestrator", () =
     oldStream.options.onLiveContextUpdate?.({ version: 1, visibleContent: "stale", visibleContentLength: 5, toolTraces: [] });
     expect(await oldStream.options.onToolCall?.("read", { path: "file.txt" }, "stale")).toMatchObject({ errorKind: "aborted" });
     pendingTool.resolve("Stale tool contents");
-    expect(await oldTool).toMatchObject({ errorKind: "aborted" });
+    expect(await oldTool).toMatchObject({ errorKind: "uncertain" });
     oldStream.options.onComplete(result("stale completion"));
     oldStream.options.onError(new Error("stale failure"));
     oldStream.done.resolve();
@@ -327,7 +365,7 @@ describe("chatAssistantStreamRuntime with real lifecycle and orchestrator", () =
       });
       expect(h.messages.get(params.assistantMessage.id)?.content).toBe("Partial answer");
       tool.resolve("Late tool result");
-      expect(await toolResult).toMatchObject({ kind: "result", isError: true, errorKind: "aborted" });
+      expect(await toolResult).toMatchObject({ kind: "result", isError: true, errorKind: "uncertain" });
       expect(h.preserve).not.toHaveBeenCalled();
       stream.options.onComplete(result("Late full answer"));
       if (transportExit === "resolve") stream.done.resolve();
@@ -350,7 +388,7 @@ describe("chatAssistantStreamRuntime with real lifecycle and orchestrator", () =
         tool_traces: [{ ...trace, recovery_state: "unknown" }],
       });
       expect(h.settled.mock.calls).toEqual([["a"]]);
-      expect(h.sync).not.toHaveBeenCalled();
+      expect(h.sync.mock.calls).toEqual([[params.modeAtSend, params.conversationId, params.architectPlanAtSend]]);
       expect(h.deleteMessagesAfter).not.toHaveBeenCalled();
     });
   }

@@ -127,6 +127,7 @@ export const sanitizeMermaidSvg = (rawSvg: string): string => {
 export const MermaidRenderer: React.FC<MermaidRendererProps> = ({ code, blockKey }) => {
   const { t } = useTranslation();
   const { isDark } = useTheme();
+  const cleanCode = code.replace(/^```(?:mermaid|mmd)?\n?/, '').replace(/```$/, '').trim();
 
   const [svg, setSvg] = useState<string>('');
   const [error, setError] = useState<string | null>(null);
@@ -135,9 +136,14 @@ export const MermaidRenderer: React.FC<MermaidRendererProps> = ({ code, blockKey
   const [copied, setCopied] = useState(false);
   const [isExpanded, setIsExpanded] = useState(false);
   const [isVisible, setIsVisible] = useState(false);
+  const [renderApproval, setRenderApproval] = useState({ code: cleanCode, approved: false });
+
+  if (renderApproval.code !== cleanCode) {
+    setRenderApproval({ code: cleanCode, approved: false });
+  }
 
   const containerRef = useRef<HTMLDivElement>(null);
-  const cleanCode = code.replace(/^```(?:mermaid|mmd)?\n?/, '').replace(/```$/, '').trim();
+  const hasRenderApproval = renderApproval.code === cleanCode && renderApproval.approved;
   const cacheKey = `${isDark ? 'dark' : 'light'}:${cleanCode}`;
   const diagramIdRef = useRef(`mermaid-${blockKey}-${renderCount++}`);
   const copyResetTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -173,7 +179,7 @@ export const MermaidRenderer: React.FC<MermaidRendererProps> = ({ code, blockKey
     let isMounted = true;
     const diagramId = diagramIdRef.current;
 
-    if (!isVisible && !isExpanded) {
+    if (!hasRenderApproval || (!isVisible && !isExpanded)) {
       return;
     }
 
@@ -234,7 +240,7 @@ export const MermaidRenderer: React.FC<MermaidRendererProps> = ({ code, blockKey
       clearTimeout(timeoutId);
       cleanupRenderArtifacts(diagramId);
     };
-  }, [cacheKey, cleanCode, isDark, isExpanded, isVisible]);
+  }, [cacheKey, cleanCode, hasRenderApproval, isDark, isExpanded, isVisible]);
 
   const handleCopy = async () => {
     try {
@@ -259,6 +265,26 @@ export const MermaidRenderer: React.FC<MermaidRendererProps> = ({ code, blockKey
         <pre className="p-4 text-xs font-mono whitespace-pre-wrap text-foreground/90 overflow-auto">
           {code}
         </pre>
+      );
+    }
+
+    if (!hasRenderApproval) {
+      return (
+        <div className="flex flex-col items-center justify-center gap-3 px-4 py-8 text-center">
+          <p className="text-xs text-muted-foreground">
+            {t('chat.mermaidExternalResourceWarning', 'Rendering this diagram may contact external sites.')}
+          </p>
+          <button
+            type="button"
+            onClick={() => {
+              setRenderApproval({ code: cleanCode, approved: true });
+              setIsVisible(true);
+            }}
+            className="rounded-md border border-border px-3 py-1.5 text-xs text-primary hover:bg-accent/50"
+          >
+            {t('chat.renderMermaidDiagram', 'Render diagram')}
+          </button>
+        </div>
       );
     }
 
@@ -337,12 +363,12 @@ export const MermaidRenderer: React.FC<MermaidRendererProps> = ({ code, blockKey
               <pre className="text-sm font-mono whitespace-pre-wrap text-foreground/90">
                 {code}
               </pre>
-            ) : (
+            ) : hasRenderApproval ? (
               <div
                 className="flex items-center justify-center h-full"
                 dangerouslySetInnerHTML={{ __html: svg }}
               />
-            )}
+            ) : renderContent()}
           </div>
         </div>
       </Dialog>
@@ -379,14 +405,16 @@ export const MermaidRenderer: React.FC<MermaidRendererProps> = ({ code, blockKey
           >
             <Icon name="code" size={12} />
           </button>
-          <button
-            type="button"
-            onClick={() => setIsExpanded(true)}
-            className="w-7 h-7 flex items-center justify-center rounded-md hover:bg-accent transition-colors text-muted-foreground"
-            title={t('chat.expand')}
-          >
-            <Icon name="maximize" size={12} />
-          </button>
+          {hasRenderApproval && (
+            <button
+              type="button"
+              onClick={() => setIsExpanded(true)}
+              className="w-7 h-7 flex items-center justify-center rounded-md hover:bg-accent transition-colors text-muted-foreground"
+              title={t('chat.expand')}
+            >
+              <Icon name="maximize" size={12} />
+            </button>
+          )}
         </div>
       </div>
 

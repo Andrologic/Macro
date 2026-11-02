@@ -1,6 +1,9 @@
 //! Development-only benchmark compiling the actual private database modules.
 //! No Tauri app, global config manager, secrets initialization or provider calls.
 #![allow(dead_code, unused_imports)]
+// The library runs the shared DB unit tests. This executable is checked through
+// its --self-test mode, without compiling those tests a second time here.
+#![cfg(not(test))]
 #[path = "../src/db/mod.rs"]
 mod db;
 // The source owner uses the actual pool-generation gate. Keep the companion's
@@ -15,6 +18,9 @@ mod ai {
 #[path = "../src/secrets/mod.rs"]
 mod secrets;
 pub use macro_lib::config;
+mod agsdl_host_capture {
+    pub use macro_lib::ipc_contracts::execution::ExecutionExternalDelivery;
+}
 
 #[path = "performance-sqlite/contracts.rs"]
 mod contracts;
@@ -162,7 +168,11 @@ async fn measure_case(
         sqlx::query_scalar("SELECT version FROM schema_migrations ORDER BY version")
             .fetch_all(pool)
             .await?;
-    if migrations != [1, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]
+    if migrations
+        != [
+            1, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25,
+            26,
+        ]
         || journal != "wal"
         || synchronous != 1
         || foreign_keys != 1
@@ -207,6 +217,8 @@ async fn measure_case(
         None
     };
     let mut reads = Vec::new();
+    let mut serialization = Vec::new();
+    let mut payload_bytes = 0;
     if !diagnostics_mode {
         for i in 0..WARMUP + SAMPLES {
             let start = Instant::now();
@@ -215,9 +227,20 @@ async fn measure_case(
             if messages.len() != size {
                 return Err("Read fixture changed".into());
             }
-            std::hint::black_box(&messages);
+            let start = Instant::now();
+            let serialized = serde_json::to_vec(&messages)?;
+            let serialization_ms = start.elapsed().as_secs_f64() * 1000.0;
+            payload_bytes = serialized.len();
+            let decoded: Vec<db::models::Message> = serde_json::from_slice(&serialized)?;
+            if decoded.len() != size
+                || decoded.first().map(|m| &m.content) != messages.first().map(|m| &m.content)
+            {
+                return Err("Serialized fixture mismatch".into());
+            }
+            std::hint::black_box(&serialized);
             if i >= WARMUP {
                 reads.push(elapsed);
+                serialization.push(serialization_ms);
             }
         }
     }
@@ -248,7 +271,12 @@ async fn measure_case(
             }
         }
     }
-    let final_count = size + WARMUP + SAMPLES;
+    let final_count = size
+        + if diagnostics_mode {
+            0
+        } else {
+            WARMUP + SAMPLES
+        };
     verify(pool, &conversation.id, final_count).await?;
     pool.close().await;
     let start = Instant::now();
@@ -276,6 +304,8 @@ async fn measure_case(
         json!({"initial_messages":size, "message_bytes":CONTENT.len(), "read_messages":size,
         "write_start_messages":size+WARMUP, "final_messages":final_count,
         "read":if diagnostics_mode { Value::Null } else { summary(reads) },
+        "serialize_messages_json":if diagnostics_mode { Value::Null } else { summary(serialization) },
+        "serialized_messages_json_bytes":payload_bytes,
         "create_message_commit":if diagnostics_mode { Value::Null } else { summary(writes) },
         "diagnostics":diagnostics,
         "fresh_pool_and_migrations_ms":migration_ms, "reopen_pool_and_migrations_ms":reopen_ms,

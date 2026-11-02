@@ -6,7 +6,7 @@ import type { CatalogedImplementTask } from './implementTaskCatalog';
 import { useAppStore } from '../stores/useAppStore';
 import { installTauriRuntimeMock, removeTauriRuntimeMock } from '../test-utils/tauriRuntime';
 import { withReplicaTransactionLock, resolveReplicaWorkspaceKey } from './architectPlanMutationPersistence';
-import { resolveArchitectPlanServiceDependencies } from './architectPlanReadContext';
+import { installArchitectPlanPorts, resolveArchitectPlanServiceDependencies } from './architectPlanReadContext';
 import { buildValidProjectRegistrySnapshot } from './validProjectRegistry';
 import {
   createPilotTaskArtifactExportBudget, getPlanArtifactContentPath, getPlanArtifactIndexPath,
@@ -29,6 +29,7 @@ const oversizedStats = new Map<string, number>();
 let hook: ((path: string, workspacePath: string) => void) | undefined;
 const digest = (text: string) => bytesToHex(sha256(new TextEncoder().encode(text)));
 const projectMetadata = { description: '', tags: [], team_members: [], api_contracts: [], dependencies: [] };
+let releasePlanPorts: () => void;
 
 const register = (count: number, direct = false) => {
   plan.projectIds = Array.from({ length: count }, (_, i) => `project-${i}`);
@@ -51,6 +52,7 @@ const captureParams = (entry: Awaited<ReturnType<typeof listPilotTaskArtifactExp
 });
 
 beforeEach(() => {
+  releasePlanPorts = installArchitectPlanPorts({ getAppState: () => useAppStore.getState() });
   files.clear(); oversizedStats.clear(); reads.length = 0; commands.length = 0; hook = undefined;
   plan.status = 'draft'; plan.replicas = []; register(1);
   installTauriRuntimeMock(mock(async (command, payload) => {
@@ -76,6 +78,7 @@ beforeEach(() => {
   }));
 });
 afterEach(() => {
+  releasePlanPorts();
   removeTauriRuntimeMock();
   useAppStore.setState({ standaloneProjects: [], projectGroups: [], selectedProjectId: null, selectedGroupId: null });
 });

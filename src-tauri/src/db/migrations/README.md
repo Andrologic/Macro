@@ -41,9 +41,37 @@ completed run output and goal revision in one transaction. A new claim requires
 goals are terminal, though they can be replaced by a new goal. The migration
 does not decide when the UI should start an audit.
 
+## Published branch reconciliation
+
+Develop retains its published migration identities 1 through 19. AgSDL's
+independently published versions 10 through 16 overlap those numbers. The
+runner recognizes each exact version/name pair before changing the database.
+Unknown identities and inconsistent dependencies fail without mutation.
+
+The unified AgSDL identities are 20 tool results, 21 execution, 22 host,
+23 UI intents, 24 process receipts, 25 visible message search, and 26 native
+operations. SQL filenames retain their historical numbers. The old visible
+search version 10 maps to 25. The old reconciliation version 15 proves both
+20 and 25 are installed, regardless of which version-10 branch preceded it.
+
+Within the existing migration transaction, `migration_identity_history` saves
+every displaced original version, name and applied_at. The runner validates
+the ledger's exact schema and verifies each saved timestamp
+before removing its original record. A schema or timestamp conflict rolls back.
+The active migration records then identify the canonical schema. Renumbered records retain their
+original timestamp; missing migrations receive a stamp only after their SQL
+succeeds. Application rows are preserved. Failure rolls back the ledger,
+records, schema and data together. Reopening does not rebuild search again.
+
+Backup validation resolves the same identities without writing to the archive.
+It prunes a disposable current reference to the schema declared by the archive,
+including AgSDL tables, triggers, search projection and optional historical
+absence of the identity ledger. It compares schema objects and constraints
+before the existing restore workflow migrates a temporary copy.
+
 The supported inputs are:
 
-- An empty database, initialized with version 1 and upgraded through version 11.
+- An empty database, initialized with version 1 and upgraded through version 26.
 - An unversioned database with historical runtime tables, adopted through the
   legacy path. Missing tables and known additive columns are supplied by the
   frozen compatibility helpers. Existing extra columns, tables, indexes and
@@ -64,8 +92,8 @@ All pending work, including legacy adoption, checks and version stamps, runs
 under the existing `BEGIN IMMEDIATE` transaction. SQL failure or foreign-key
 violations roll back the entire attempt. Closing the connection before commit
 also rolls back; the next opening retries from the previous committed version.
-No table rebuild, row deletion or personal database conversion is performed by
-the development tests.
+The development tests use synthetic databases and preserve their transcript
+tables and message rows.
 
 Unknown versions and histories missing a required predecessor fail before
 schema reconciliation. Missing core columns, required indexes or FTS triggers

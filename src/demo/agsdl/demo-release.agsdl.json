@@ -1,0 +1,209 @@
+{
+  "contract": "agsdl-0.2.0",
+  "id": "example-release",
+  "content": {
+    "releaseProcedure": {
+      "uri": "repo://luma-mobile/docs/RELEASE.md",
+      "mediaType": "text/markdown"
+    }
+  },
+  "bindings": {
+    "engine": {
+      "contract": {
+        "identity": "macro/agent-engine",
+        "version": "1"
+      },
+      "implementation": {
+        "identity": "macro/desktop",
+        "version": "1"
+      }
+    },
+    "storeConsoles": {
+      "contract": {
+        "identity": "macro/store-console",
+        "version": "1"
+      },
+      "implementation": {
+        "identity": "fastlane/cli",
+        "version": "1"
+      },
+      "effects": "external"
+    },
+    "lumaRepository": {
+      "contract": {
+        "identity": "macro/git-repository",
+        "version": "1"
+      },
+      "implementation": {
+        "identity": "github/rest",
+        "version": "1"
+      },
+      "effects": "external"
+    }
+  },
+  "configurations": {
+    "standard": {
+      "engine": "engine",
+      "model": {
+        "identity": "claude-sonnet-5-5",
+        "version": "1"
+      },
+      "tools": {
+        "repository": "lumaRepository"
+      }
+    },
+    "mobile": {
+      "engine": "engine",
+      "model": {
+        "identity": "claude-sonnet-5-5",
+        "version": "1"
+      },
+      "tools": {
+        "repository": "lumaRepository",
+        "stores": "storeConsoles"
+      }
+    }
+  },
+  "agents": {
+    "checklist": {
+      "configuration": "standard",
+      "prompt": [
+        {
+          "value": "Vérifier les prérequis. Consignez le résultat et les points qui demandent une décision."
+        }
+      ],
+      "interface": {
+        "inputMediaTypes": [
+          "text/plain",
+          "application/json"
+        ],
+        "outputMediaTypes": [
+          "text/plain"
+        ],
+        "results": {
+          "report": {
+            "mediaTypes": [
+              "text/plain"
+            ],
+            "required": true
+          }
+        }
+      },
+      "resources": {
+        "procedure": {
+          "ref": "releaseProcedure"
+        }
+      }
+    },
+    "review": {
+      "configuration": "standard",
+      "prompt": [
+        {
+          "value": "Relire les changements. Consignez le résultat et les points qui demandent une décision."
+        }
+      ],
+      "interface": {
+        "inputMediaTypes": [
+          "text/plain",
+          "application/json"
+        ],
+        "outputMediaTypes": [
+          "text/plain"
+        ],
+        "results": {
+          "report": {
+            "mediaTypes": [
+              "text/plain"
+            ],
+            "required": true
+          }
+        }
+      }
+    },
+    "installers": {
+      "configuration": "mobile",
+      "prompt": [
+        {
+          "value": "Vérifier les installateurs. Consignez le résultat et les points qui demandent une décision."
+        }
+      ],
+      "interface": {
+        "inputMediaTypes": [
+          "text/plain",
+          "application/json"
+        ],
+        "outputMediaTypes": [
+          "text/plain"
+        ],
+        "results": {
+          "report": {
+            "mediaTypes": [
+              "text/plain"
+            ],
+            "required": true
+          }
+        }
+      }
+    }
+  },
+  "flow": {
+    "entry": "checklist",
+    "steps": {
+      "checklist": {
+        "type": "agent",
+        "agent": "checklist",
+        "next": [
+          "prepare-review"
+        ]
+      },
+      "prepare-review": {
+        "type": "prepare",
+        "message": {
+          "resources": {
+            "report": {
+              "source": {
+                "path": [
+                  "results",
+                  "report"
+                ]
+              }
+            }
+          }
+        },
+        "next": [
+          "review"
+        ]
+      },
+      "review": {
+        "type": "agent",
+        "agent": "review",
+        "next": [
+          "prepare-installers"
+        ]
+      },
+      "prepare-installers": {
+        "type": "prepare",
+        "message": {
+          "resources": {
+            "report": {
+              "source": {
+                "path": [
+                  "results",
+                  "report"
+                ]
+              }
+            }
+          }
+        },
+        "next": [
+          "installers"
+        ]
+      },
+      "installers": {
+        "type": "agent",
+        "agent": "installers",
+        "next": []
+      }
+    }
+  }
+}

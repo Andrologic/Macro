@@ -1,3 +1,5 @@
+#[cfg(any(test, all(debug_assertions, feature = "browser-runtime-debug")))]
+mod browser_runtime_port;
 // AppKit's standard Quit item and Dock Quit call terminate:, bypassing
 // Tauri CloseRequested. Cancel that termination and request the same guarded
 // window close as the title bar. Approved exits use AppHandle::exit directly.
@@ -89,6 +91,16 @@ mod native_quit_consent {
     }
 }
 
+mod agsdl_host;
+mod agsdl_host_capture;
+mod agsdl_host_catalogue;
+mod agsdl_host_claude;
+mod agsdl_host_codex;
+mod agsdl_host_compiler;
+mod agsdl_host_provider;
+mod agsdl_host_tasks;
+mod agsdl_host_tools;
+mod agsdl_intent_coordinator;
 mod app_quit_state;
 mod app_updates;
 pub mod commands;
@@ -104,8 +116,8 @@ pub mod pilot_file_contracts {
         PilotPreparedSend, PilotSendMarkInput, PilotSendReadInput, PilotSendReceipt,
     };
 }
-mod connect_resources;
 mod connect;
+mod connect_resources;
 mod dev_overrides;
 mod diagnostics;
 pub mod host_telemetry;
@@ -140,7 +152,10 @@ use core::{
 use fs::watcher::init_watcher;
 use git::GitState;
 use serde::Serialize;
-use std::sync::Arc;
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc,
+};
 #[cfg(target_os = "macos")]
 use tauri::utils::config::Color;
 #[cfg(all(feature = "browser-runtime-debug", not(debug_assertions)))]
@@ -207,12 +222,31 @@ fn install_browser_runtime_event_relays(app: &tauri::AppHandle) {
 
 fn shutdown_mcp_runtime(app_handle: &tauri::AppHandle) {
     let runtime = app_handle.state::<commands::mcp::McpRuntimeManager>();
-    let result = tauri::async_runtime::block_on(tokio::time::timeout(
-        std::time::Duration::from_secs(12),
-        runtime.shutdown_all(),
-    ));
+    let result = block_on_mcp_shutdown(runtime.shutdown_all());
     if result.is_err() {
         tracing::warn!("MCP runtime shutdown exceeded its 12-second budget");
+    }
+}
+
+// Construct the timer while polling inside Tauri's runtime, not on the native
+// event-loop thread that invokes the exit callback.
+fn block_on_mcp_shutdown(
+    shutdown: impl std::future::Future<Output = ()>,
+) -> Result<(), tokio::time::error::Elapsed> {
+    tauri::async_runtime::block_on(async {
+        tokio::time::timeout(std::time::Duration::from_secs(12), shutdown).await
+    })
+}
+
+#[cfg(test)]
+mod mcp_shutdown_tests {
+    #[test]
+    fn shutdown_can_start_from_a_thread_without_a_tokio_runtime() {
+        assert!(tokio::runtime::Handle::try_current().is_err());
+        let result = super::block_on_mcp_shutdown(async {
+            tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+        });
+        assert!(result.is_ok());
     }
 }
 
@@ -372,12 +406,6 @@ async fn frontend_log(level: String, scope: String, message: String) -> Result<(
 }
 
 #[tauri::command]
-fn updater_target() -> Result<String, String> {
-    tauri_plugin_updater::target()
-        .ok_or_else(|| "Automatic updates are not supported on this platform.".to_string())
-}
-
-#[tauri::command]
 async fn window_close(window: tauri::WebviewWindow) -> Result<(), String> {
     window.close().map_err(|error| error.to_string())
 }
@@ -486,6 +514,8 @@ pub fn run() {
 
     tracing::info!("Starting Macro application");
 
+    let pending_downgrade_activation = Arc::new(AtomicBool::new(false));
+    let setup_pending_downgrade_activation = pending_downgrade_activation.clone();
     let builder = tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
             if let Some(window) = app.get_webview_window("main") {
@@ -508,13 +538,18 @@ pub fn run() {
     let app = builder
         .on_page_load(|webview, payload| {
             if matches!(payload.event(), tauri::webview::PageLoadEvent::Started) {
-                commands::chat_admission::retire_browser_from_native(webview.app_handle(), webview.window().label());
+                commands::chat_admission::retire_browser_from_native(
+                    webview.app_handle(),
+                    webview.window().label(),
+                );
             }
         })
         .manage(AppQuitState::default())
         .manage(DbPool::default())
         .manage(diagnostics::DiagnosticReportStore::default())
         .manage(AiState::default())
+        .manage(agsdl_host::HostState::default())
+        .manage(agsdl_intent_coordinator::IntentCoordinator::default())
         .manage(ai::admitted_http::AdmittedHttp::default())
         .manage(connect::TransferRuntime::default())
         .manage(db::chat_admission::runtime::ChatAdmissionRuntime::default())
@@ -524,11 +559,29 @@ pub fn run() {
         .manage(commands::terminal::TerminalSessionStore::default())
         .setup(move |app| {
             commands::pilot_secrets::setup(app.handle());
-            if let Err(error) = app_updates::activate_staged_update(app.handle(), false) {
-                tracing::error!(%error, "Failed to activate staged application update");
+            agsdl_host::install(app.handle())?;
+            match app_updates::staged_update_requires_native_confirmation(app.handle()) {
+                Ok(true) => {
+                    // Wait for RunEvent::Ready, after setup has finished its migrations.
+                    setup_pending_downgrade_activation.store(true, Ordering::Release);
+                }
+                Ok(false) => {
+                    if let Err(error) = app_updates::activate_staged_update(app.handle(), false) {
+                        tracing::error!(%error, "Failed to activate staged application update");
+                    }
+                }
+                Err(error) => {
+                    tracing::error!(%error, "Failed to inspect staged application update");
+                }
             }
             #[cfg(all(debug_assertions, feature = "browser-runtime-debug"))]
             if std::env::var("MACRO_TAURI_BROWSER_BRIDGE").as_deref() == Ok("1") {
+                let bridge_port = browser_runtime_port::parse(
+                    std::env::var("MACRO_TAURI_BROWSER_BRIDGE_PORT")
+                        .ok()
+                        .as_deref(),
+                )
+                .expect("Invalid QA browser bridge port");
                 let bridge_token = std::env::var("MACRO_TAURI_BROWSER_BRIDGE_TOKEN").expect(
                     "MACRO_TAURI_BROWSER_BRIDGE_TOKEN doit être défini par le lanceur debug",
                 );
@@ -764,7 +817,6 @@ pub fn run() {
             state_manager::state_set_value,
             state_manager::state_delete_value,
             state_manager::state_clear,
-            updater_target,
             app_updates::app_update_status,
             app_updates::app_update_check_and_stage,
             app_updates::app_update_exit_after_clean_shutdown,
@@ -815,6 +867,52 @@ pub fn run() {
             commands::db_update_conversation_ai_selection,
             commands::db_delete_conversation_by_id,
             commands::db_delete_conversations_by_ids,
+            agsdl_host_codex::execution_codex_status,
+            agsdl_host_codex::execution_host_run_codex,
+            agsdl_host_claude::execution_host_run_claude,
+            agsdl_host_claude::execution_claude_status,
+            agsdl_host_claude::execution_claude_set_api_key,
+            agsdl_host_provider::execution_host_register_provider,
+            agsdl_host_provider::execution_host_dispatch_provider,
+            agsdl_host_provider::execution_host_end_provider,
+            agsdl_host::execution_host_ready,
+            agsdl_host::execution_qa_available,
+            agsdl_host::execution_qa_run,
+            agsdl_host::execution_host_qa_take,
+            agsdl_host::execution_qa_replace_host,
+            agsdl_host::execution_host_owners,
+            agsdl_host::execution_host_prepare_terminal,
+            agsdl_host::execution_host_commit_terminal,
+            agsdl_host::execution_host_append_response,
+            agsdl_host::execution_host_read_responses,
+            agsdl_host::execution_host_close_responses,
+            agsdl_host::execution_host_inspect,
+            agsdl_host::execution_host_begin,
+            agsdl_host::execution_host_mark_uncertain,
+            agsdl_host::execution_host_failed,
+            agsdl_host::execution_host_next_compile,
+            agsdl_host::execution_host_complete_compile,
+            commands::agsdl_execution::execution_model_choices,
+            commands::agsdl_execution::execution_preflight,
+            commands::agsdl_execution::execution_list_runs,
+            commands::agsdl_execution::execution_find_start,
+            commands::agsdl_execution::execution_read_diagnostic,
+            commands::agsdl_execution::execution_pending_approvals,
+            commands::agsdl_execution::execution_decide_approval,
+            crate::agsdl_host_tools::execution_host_invoke_tool,
+            commands::agsdl_execution::execution_start,
+            commands::agsdl_execution::execution_stage_intent,
+            commands::agsdl_execution::execution_read_intents,
+            commands::agsdl_execution::execution_read_intent,
+            commands::agsdl_execution::execution_submit_intent,
+            commands::agsdl_execution::execution_close_intent,
+            commands::agsdl_execution::execution_deliver,
+            commands::agsdl_execution::execution_resolve_card_task,
+            commands::agsdl_execution::execution_stop,
+            commands::agsdl_execution::execution_ensure_stop,
+            commands::agsdl_execution::execution_read_snapshot,
+            commands::agsdl_execution::execution_read_projection,
+            commands::agsdl_execution::execution_read_events,
             commands::tool_invocations::db_record_tool_invocation,
             commands::tool_invocations::db_complete_tool_invocation,
             commands::tool_invocations::db_mark_tool_invocation_unknown,
@@ -918,6 +1016,7 @@ pub fn run() {
             commands::chat_admission::chat_admission_http_finish,
             commands::ai::ai_stream_chat,
             commands::ai::ai_cancel_stream,
+            commands::http_resources::http_release_webview_resource,
             commands::ai::ai_submit_tool_result,
             // Git metadata commands
             commands::db_upsert_git_repository,
@@ -985,8 +1084,6 @@ pub fn run() {
             commands::tool_validate_execution,
             commands::tool_execute_workspace,
             commands::tool_cancel_workspace,
-            commands::mcp::mcp_discover_tools,
-            commands::mcp::mcp_call_tool,
             commands::mcp::mcp_store_env_secret,
             commands::mcp::mcp_delete_env_secret,
             commands::mcp::mcp_store_oauth_client_secret,
@@ -1142,7 +1239,18 @@ pub fn run() {
         .build(tauri::generate_context!())
         .expect("error while building tauri application");
 
-    app.run(|app_handle, event| match event {
+    app.run(move |app_handle, event| match event {
+        tauri::RunEvent::Ready => {
+            if pending_downgrade_activation.swap(false, Ordering::AcqRel) {
+                // The native dialog's blocking API must run off Tauri's main thread.
+                let update_app = app_handle.clone();
+                std::thread::spawn(move || {
+                    if let Err(error) = app_updates::activate_staged_update(&update_app, false) {
+                        tracing::error!(%error, "Failed to activate staged application update");
+                    }
+                });
+            }
+        }
         tauri::RunEvent::WindowEvent {
             event: tauri::WindowEvent::Destroyed,
             label,
@@ -1166,7 +1274,9 @@ pub fn run() {
             app_quit_state.mark_quitting("exit-requested");
             commands::git::cancel_all_git_reviews();
             shutdown_mcp_runtime(app_handle);
-            if !tauri::async_runtime::block_on(app_handle.state::<connect::TransferRuntime>().shutdown()) {
+            if !tauri::async_runtime::block_on(
+                app_handle.state::<connect::TransferRuntime>().shutdown(),
+            ) {
                 tracing::warn!("Connect transport cleanup remains unreconciled");
             }
             if tauri::async_runtime::block_on(secrets::blocking::shutdown()).is_err() {
@@ -1180,7 +1290,9 @@ pub fn run() {
             app_quit_state.mark_quitting("exit");
             commands::git::cancel_all_git_reviews();
             shutdown_mcp_runtime(app_handle);
-            if !tauri::async_runtime::block_on(app_handle.state::<connect::TransferRuntime>().shutdown()) {
+            if !tauri::async_runtime::block_on(
+                app_handle.state::<connect::TransferRuntime>().shutdown(),
+            ) {
                 tracing::warn!("Connect transport cleanup remains unreconciled");
             }
             if tauri::async_runtime::block_on(secrets::blocking::shutdown()).is_err() {
@@ -1260,6 +1372,9 @@ mod frontend_log_tests {
         assert!(!source.contains(removed_command));
     }
 }
+
+#[cfg(all(test, target_os = "linux"))]
+mod process_recovery_transport;
 
 // Reuse the canonical generator in the existing test target when disk space
 // cannot accommodate the additional static library and desktop bundle link.

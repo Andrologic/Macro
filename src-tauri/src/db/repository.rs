@@ -29,6 +29,75 @@ fn message_search_expression(query: &str) -> Option<String> {
     (!terms.is_empty()).then(|| terms.join(" AND "))
 }
 
+fn message_search_snippet(content: &str, role: &str, query: &str) -> String {
+    use unicode_normalization::{char::is_combining_mark, UnicodeNormalization};
+    static THINKING: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    let cleaned = if role == "assistant" {
+        THINKING.get_or_init(|| regex::Regex::new(
+            r"(?is)<\s*(?:think|thinking)\s*>.*?(?:<\s*/\s*(?:think|thinking)\s*>|$)|<\s*/\s*(?:think|thinking)\s*>"
+        ).expect("valid thinking block pattern")).replace_all(content, " ")
+    } else {
+        std::borrow::Cow::Borrowed(content)
+    };
+    let fold = |text: &str| {
+        text.nfkd()
+            .filter(|c| !is_combining_mark(*c))
+            .collect::<String>()
+            .to_lowercase()
+    };
+    let terms: Vec<String> = query
+        .split_whitespace()
+        .map(|term| fold(term.trim_matches(|c: char| !c.is_alphanumeric())))
+        .filter(|term| !term.is_empty())
+        .take(8)
+        .collect();
+    let text = cleaned.split_whitespace().collect::<Vec<_>>().join(" ");
+    let characters: Vec<char> = text.chars().collect();
+    // Relate normalized UTF-8 match offsets to the original Unicode characters.
+    let mut normalized = String::new();
+    let mut original_positions = Vec::new();
+    for (index, character) in characters.iter().enumerate() {
+        let folded = fold(&character.to_string());
+        original_positions.extend(std::iter::repeat_n(index, folded.len()));
+        normalized.push_str(&folded);
+    }
+    let (matched_start, matched_end) = terms
+        .iter()
+        .filter_map(|term| {
+            normalized
+                .find(term)
+                .map(|start| (start, start + term.len()))
+        })
+        .min_by_key(|(start, _)| *start)
+        .map(|(start, end)| (original_positions[start], original_positions[end - 1] + 1))
+        .unwrap_or((0, 0));
+    let context_start = matched_start.saturating_sub(80);
+    let start = if context_start == 0 {
+        0
+    } else {
+        (context_start..matched_start)
+            .find(|index| characters[*index].is_whitespace())
+            .map(|index| index + 1)
+            .unwrap_or(context_start)
+    };
+    let mut end = (start + 320).min(characters.len());
+    if end < characters.len() && end > matched_end {
+        if let Some(boundary) = (matched_end..end)
+            .rev()
+            .find(|index| characters[*index].is_whitespace())
+        {
+            end = boundary;
+        }
+    }
+    let excerpt: String = characters[start..end].iter().collect();
+    format!(
+        "{}{}{}",
+        if start > 0 { "… " } else { "" },
+        excerpt.trim(),
+        if end < characters.len() { " …" } else { "" }
+    )
+}
+
 pub async fn search_messages(
     pool: &SqlitePool,
     query: &str,
@@ -60,7 +129,7 @@ pub async fn search_messages(
             conversations.title AS conversation_title,
             conversations.description AS conversation_description,
             messages.role,
-            snippet(message_search, 0, '', '', ' … ', 24) AS snippet,
+            message_search.content AS search_content,
             messages.created_at
         FROM message_search
         JOIN messages ON messages.rowid = message_search.rowid
@@ -88,7 +157,7 @@ pub async fn search_messages(
             conversation_title: row.get("conversation_title"),
             conversation_description: row.get("conversation_description"),
             role: row.get("role"),
-            snippet: row.get("snippet"),
+            snippet: message_search_snippet(row.get("search_content"), row.get("role"), query),
             created_at: row.get("created_at"),
         })
         .collect();
@@ -161,6 +230,7 @@ pub struct PrepareConversationReplayInput<'a> {
     pub replay_id: &'a str,
     pub content: &'a str,
     pub hidden_context: Option<String>,
+    pub context_refs_json: Option<String>,
     pub provider_input_items_json: Option<String>,
     pub code_checkpoints_json: Option<String>,
     pub delete_context_compaction_state: bool,
@@ -620,7 +690,9 @@ pub async fn delete_conversations(pool: &SqlitePool, ids: &[String]) -> DbResult
 
 pub async fn delete_app_setting(pool: &SqlitePool, key: &str) -> DbResult<bool> {
     if key == super::chat_admission::intents::APPROVAL_REGISTRY_KEY {
-        return Err(super::DbError::Validation("chat_admission_reserved_setting".into()));
+        return Err(super::DbError::Validation(
+            "chat_admission_reserved_setting".into(),
+        ));
     }
 
     let result = sqlx::query("DELETE FROM app_settings WHERE key = ?")
@@ -849,7 +921,14 @@ pub async fn get_message(pool: &SqlitePool, id: &str) -> DbResult<Option<Message
 
 pub async fn list_messages(pool: &SqlitePool, conversation_id: &str) -> DbResult<Vec<Message>> {
     let mut connection = pool.acquire().await?;
-    list_messages_with_connection(&mut connection, conversation_id).await
+    let mut messages = list_messages_with_connection(&mut connection, conversation_id).await?;
+    super::tool_invocations::project_completed_traces(
+        &mut connection,
+        conversation_id,
+        &mut messages,
+    )
+    .await?;
+    Ok(messages)
 }
 
 async fn list_messages_with_connection(
@@ -1643,8 +1722,8 @@ pub async fn prepare_conversation_replay(
     let now = chrono::Utc::now().to_rfc3339();
     sqlx::query("INSERT INTO app_settings (key, value_json, updated_at) VALUES (?, ?, ?) ON CONFLICT(key) DO UPDATE SET value_json = excluded.value_json, updated_at = excluded.updated_at")
       .bind(replay_recovery_key(input.conversation_id)).bind(snapshot_json).bind(&now).execute(&mut *transaction).await?;
-    sqlx::query("UPDATE messages SET content = ?, turn_id = ?, hidden_context = ?, provider_input_items_json = ? WHERE id = ? AND conversation_id = ?")
-      .bind(input.content).bind(input.turn_id).bind(&input.hidden_context).bind(&input.provider_input_items_json).bind(input.message_id).bind(input.conversation_id).execute(&mut *transaction).await?;
+    sqlx::query("UPDATE messages SET content = ?, turn_id = ?, hidden_context = ?, context_refs_json = COALESCE(?, context_refs_json), provider_input_items_json = ? WHERE id = ? AND conversation_id = ?")
+      .bind(input.content).bind(input.turn_id).bind(&input.hidden_context).bind(&input.context_refs_json).bind(&input.provider_input_items_json).bind(input.message_id).bind(input.conversation_id).execute(&mut *transaction).await?;
     sqlx::query("DELETE FROM conversation_citations WHERE conversation_id = ? AND message_id IN (SELECT id FROM messages WHERE conversation_id = ? AND (created_at > ? OR (created_at = ? AND id > ?)))")
       .bind(input.conversation_id).bind(input.conversation_id).bind(&snapshot.original_message.created_at).bind(&snapshot.original_message.created_at).bind(input.message_id).execute(&mut *transaction).await?;
     sqlx::query("DELETE FROM messages WHERE conversation_id = ? AND (created_at > ? OR (created_at = ? AND id > ?))")
@@ -2331,7 +2410,8 @@ pub async fn list_provider_configs(pool: &SqlitePool) -> DbResult<Vec<ProviderCo
                 .unwrap_or_default()
                 .to_string(),
             api_key: None,
-            has_stored_api_key: crate::secrets::get_api_key_async(id).await
+            has_stored_api_key: crate::secrets::get_api_key_async(id)
+                .await
                 .map_err(|error| DbError::Validation(error.to_string()))?
                 .is_some(),
             is_enabled: definition
@@ -2532,6 +2612,14 @@ pub async fn list_models_by_provider(
     pool: &SqlitePool,
     provider_id: &str,
 ) -> DbResult<Vec<AiModel>> {
+    let mut connection = pool.acquire().await?;
+    list_models_by_provider_on_connection(&mut connection, provider_id).await
+}
+
+pub(crate) async fn list_models_by_provider_on_connection(
+    connection: &mut sqlx::SqliteConnection,
+    provider_id: &str,
+) -> DbResult<Vec<AiModel>> {
     let rows = sqlx::query(
         r#"
         SELECT id, provider_id, model_id, name, description, owned_by,
@@ -2545,7 +2633,7 @@ pub async fn list_models_by_provider(
         "#,
     )
     .bind(provider_id)
-    .fetch_all(pool)
+    .fetch_all(connection)
     .await?;
 
     let models = rows
@@ -3070,7 +3158,9 @@ pub async fn set_app_setting(
     value_json: &str,
 ) -> DbResult<AppSettingRecord> {
     if key == super::chat_admission::intents::APPROVAL_REGISTRY_KEY {
-        return Err(super::DbError::Validation("chat_admission_reserved_setting".into()));
+        return Err(super::DbError::Validation(
+            "chat_admission_reserved_setting".into(),
+        ));
     }
 
     let now = chrono::Utc::now().to_rfc3339();
@@ -3104,7 +3194,9 @@ pub async fn compare_and_swap_app_setting(
     value_json: &str,
 ) -> DbResult<CompareAndSwapAppSettingResult> {
     if key == super::chat_admission::intents::APPROVAL_REGISTRY_KEY {
-        return Err(super::DbError::Validation("chat_admission_reserved_setting".into()));
+        return Err(super::DbError::Validation(
+            "chat_admission_reserved_setting".into(),
+        ));
     }
 
     let now = chrono::Utc::now().to_rfc3339();
@@ -4092,6 +4184,209 @@ mod tests {
         .expect("seed search message");
     }
 
+    #[test]
+    fn search_snippets_hide_assistant_reasoning_before_excerpting() {
+        let reasoning = "Internal analysis ".repeat(100);
+        let content = format!("<think>{reasoning}</think>Le budget est de 42 euros.");
+        assert_eq!(
+            message_search_snippet(&content, "assistant", "budget"),
+            "Le budget est de 42 euros."
+        );
+        assert_eq!(
+            message_search_snippet(
+                "Visible <THINKING>unfinished secret",
+                "assistant",
+                "Visible"
+            ),
+            "Visible"
+        );
+        assert_eq!(
+            message_search_snippet("Explain <think> tags", "user", "think"),
+            "Explain <think> tags"
+        );
+        let long = format!(
+            "{}Une réponse accentuée : café et budget final.",
+            "Un ancien passage. ".repeat(100)
+        );
+        let snippet = message_search_snippet(&long, "assistant", "cafe");
+        assert!(snippet.contains("café"));
+        assert!(snippet.starts_with("… "));
+        assert!(snippet.chars().count() <= 324);
+        let long_context = format!(
+            "{}needle is the matching term.",
+            format!("{} ", "x".repeat(50)).repeat(8)
+        );
+        let snippet = message_search_snippet(&long_context, "assistant", "needle");
+        assert!(
+            snippet.contains("needle"),
+            "the excerpt must retain the match: {snippet}"
+        );
+    }
+
+    #[tokio::test]
+    async fn message_search_returns_clean_excerpts_without_changing_messages() {
+        let (_temp_dir, pool) = test_pool().await;
+        seed_search_conversation(&pool, "clean", "Clean excerpts").await;
+        let content = "<think>Private budget analysis</think>Le budget est de 42 euros.";
+        seed_search_message(&pool, "answer", "clean", content).await;
+        sqlx::query("UPDATE messages SET role = 'assistant' WHERE id = 'answer'")
+            .execute(&pool)
+            .await
+            .expect("set assistant role");
+        let page = search_messages(&pool, "budget", &["clean".to_string()], 25, 0)
+            .await
+            .expect("search answer");
+        assert_eq!(page.results[0].snippet, "Le budget est de 42 euros.");
+        let original: String =
+            sqlx::query_scalar("SELECT content FROM messages WHERE id = 'answer'")
+                .fetch_one(&pool)
+                .await
+                .expect("read original");
+        assert_eq!(original, content);
+    }
+
+    #[tokio::test]
+    async fn message_search_excludes_reasoning_and_tracks_role_and_content_changes() {
+        let (_temp_dir, pool) = test_pool().await;
+        seed_search_conversation(&pool, "visible", "Visible search").await;
+        let original = "Before<THINKING>secretneedle</THINKING> café after";
+        seed_search_message(&pool, "assistant", "visible", original).await;
+        sqlx::query("UPDATE messages SET role = 'assistant' WHERE id = 'assistant'")
+            .execute(&pool)
+            .await
+            .unwrap();
+        let scope = vec!["visible".to_string()];
+        assert!(search_messages(&pool, "secretneedle", &scope, 25, 0)
+            .await
+            .unwrap()
+            .results
+            .is_empty());
+        assert_eq!(
+            search_messages(&pool, "cafe", &scope, 25, 0)
+                .await
+                .unwrap()
+                .results
+                .len(),
+            1
+        );
+        // User-authored examples of these tags remain searchable.
+        seed_search_message(&pool, "user", "visible", "<think>userneedle</think>").await;
+        assert_eq!(
+            search_messages(&pool, "userneedle", &scope, 25, 0)
+                .await
+                .unwrap()
+                .results
+                .len(),
+            1
+        );
+        sqlx::query("UPDATE messages SET content = '< think >privatechange< / think >New answer <think>unfinishedneedle' WHERE id = 'assistant'")
+            .execute(&pool).await.unwrap();
+        for query in ["cafe", "secretneedle", "privatechange", "unfinishedneedle"] {
+            assert!(
+                search_messages(&pool, query, &scope, 25, 0)
+                    .await
+                    .unwrap()
+                    .results
+                    .is_empty(),
+                "unexpected match: {query}"
+            );
+        }
+        assert_eq!(
+            search_messages(&pool, "answer", &scope, 25, 0)
+                .await
+                .unwrap()
+                .results
+                .len(),
+            1
+        );
+        sqlx::query("UPDATE messages SET role = 'user' WHERE id = 'assistant'")
+            .execute(&pool)
+            .await
+            .unwrap();
+        assert_eq!(
+            search_messages(&pool, "privatechange", &scope, 25, 0)
+                .await
+                .unwrap()
+                .results
+                .len(),
+            1
+        );
+        sqlx::query("UPDATE messages SET role = 'assistant' WHERE id = 'assistant'")
+            .execute(&pool)
+            .await
+            .unwrap();
+        rebuild_message_search_index(&pool).await.unwrap();
+        assert!(search_messages(&pool, "privatechange", &scope, 25, 0)
+            .await
+            .unwrap()
+            .results
+            .is_empty());
+        sqlx::query("DELETE FROM messages WHERE id = 'assistant'")
+            .execute(&pool)
+            .await
+            .unwrap();
+        assert!(search_messages(&pool, "answer", &scope, 25, 0)
+            .await
+            .unwrap()
+            .results
+            .is_empty());
+        sqlx::query(
+            "INSERT INTO message_search(message_search, rank) VALUES ('integrity-check', 1)",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn message_search_projection_matches_thinking_tag_variants() {
+        let (_temp_dir, pool) = test_pool().await;
+        seed_search_conversation(&pool, "variants", "Tag variants").await;
+        for (index, content) in [
+            "Before<think>hiddenneedle</think>after",
+            "Before< THINKING >hiddenneedle< / THINKING >after",
+            "Before<\u{a0}think\u{a0}>hiddenneedle</think>after",
+            "Before<think>hiddenneedle",
+            "Before<think>one</think><thinking>hiddenneedle</thinking>after",
+            "Before <b>visible</b> and 2 < 3",
+            "Before 2 < 3 <think>hiddenneedle</think>after",
+            "Before<<think>hiddenneedle</think>after",
+            "Before<think invalid <think>hiddenneedle</think>after",
+            "",
+        ]
+        .iter()
+        .enumerate()
+        {
+            let id = format!("variant-{index}");
+            seed_search_message(&pool, &id, "variants", content).await;
+            sqlx::query("UPDATE messages SET role = 'assistant' WHERE id = ?")
+                .bind(&id)
+                .execute(&pool)
+                .await
+                .unwrap();
+            let projected: String = sqlx::query_scalar("SELECT content FROM message_search_content WHERE rowid = (SELECT rowid FROM messages WHERE id = ?)")
+                .bind(&id).fetch_one(&pool).await.unwrap();
+            let normalized = projected.split_whitespace().collect::<Vec<_>>().join(" ");
+            assert_eq!(
+                normalized,
+                message_search_snippet(content, "assistant", "Before")
+            );
+            let stored: String = sqlx::query_scalar("SELECT content FROM messages WHERE id = ?")
+                .bind(&id)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+            assert_eq!(stored, *content);
+        }
+        assert!(
+            search_messages(&pool, "hiddenneedle", &["variants".to_string()], 25, 0)
+                .await
+                .unwrap()
+                .results
+                .is_empty()
+        );
+    }
+
     #[tokio::test]
     async fn message_writes_wait_for_concurrent_writer_without_losing_content() {
         let (_temp_dir, pool) = test_pool().await;
@@ -4989,6 +5284,7 @@ mod tests {
                 content: "Edited",
                 hidden_context: Some("hidden".to_string()),
                 provider_input_items_json: Some("[]".to_string()),
+                context_refs_json: Some("[]".to_string()),
                 code_checkpoints_json: Some("[\"after\"]".to_string()),
                 delete_context_compaction_state: true,
             },
@@ -5001,6 +5297,15 @@ mod tests {
                 .expect("trimmed")
                 .len(),
             1
+        );
+
+        assert_eq!(
+            list_messages(&pool, &conversation.id)
+                .await
+                .expect("edited references")[0]
+                .context_refs_json
+                .as_deref(),
+            Some("[]")
         );
 
         assert!(
@@ -5016,6 +5321,7 @@ mod tests {
         let messages = list_messages(&pool, &conversation.id)
             .await
             .expect("restored messages");
+        assert_eq!(messages[0].context_refs_json, None);
         assert_eq!(
             messages
                 .iter()
@@ -5075,6 +5381,7 @@ mod tests {
             content: "Edited",
             hidden_context: None,
             provider_input_items_json: None,
+            context_refs_json: None,
             code_checkpoints_json: None,
             delete_context_compaction_state: false,
         };
@@ -5223,6 +5530,7 @@ mod tests {
                 content: "Edited",
                 hidden_context: None,
                 provider_input_items_json: None,
+                context_refs_json: None,
                 code_checkpoints_json: None,
                 delete_context_compaction_state: false,
             },

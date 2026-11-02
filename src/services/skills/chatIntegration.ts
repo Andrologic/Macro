@@ -128,7 +128,7 @@ export const handleSkillToolCall = async (
     }, permissionSnapshot, chatAdmission);
     if (typeof result === 'string') return skillToolError(result);
     const formatted = formatScriptResult(result);
-    return result.timedOut
+    return result.timedOut || result.exitCode !== 0
       ? {
           kind: 'result',
           result: formatted,

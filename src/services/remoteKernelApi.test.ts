@@ -1,4 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
+import { setRemoteAuthToken } from './providers/remoteAuthToken';
+import { toServiceError } from './contracts/errors';
 import {
   __remoteKernelApiTestables,
   canUseRemoteKernel,
@@ -44,6 +46,7 @@ const jsonResponse = (payload: unknown, status = 200): Response => {
 
 describe('remoteKernelApi', () => {
   beforeEach(() => {
+    setRemoteAuthToken('test-token');
     fetchCalls = [];
     __remoteKernelApiTestables.resetDurableMutationIntents();
     ENV_KEYS.forEach((key) => {
@@ -58,6 +61,7 @@ describe('remoteKernelApi', () => {
   });
 
   afterEach(() => {
+    setRemoteAuthToken(null);
     ENV_KEYS.forEach((key) => {
       setEnv(key, originalEnv[key]);
     });
@@ -74,7 +78,7 @@ describe('remoteKernelApi', () => {
     setEnv('VITE_BACKEND_TRANSPORT', 'remote');
     setEnv('VITE_REMOTE_API_BASE_URL', 'http://127.0.0.1:8787');
     setEnv('VITE_REMOTE_API_PREFIX', '/custom');
-    setEnv('VITE_REMOTE_AUTH_TOKEN', 'token');
+    setRemoteAuthToken('token');
 
     globalThis.fetch = mock(async (url: string | URL | Request, init?: RequestInit) => {
       fetchCalls.push({ url: String(url), init });
@@ -337,6 +341,54 @@ describe('remoteKernelApi', () => {
     expect(executeAttempts).toBe(1);
     expect(fetchCalls.filter((call) => call.url.includes('/tools/executions/'))).toHaveLength(1);
   });
+
+  for (const code of ['REVISION_CONFLICT', 'Database', undefined]) {
+    it(`preserves a recovered durable failure code ${code ?? 'with the historical fallback'}`, async () => {
+      setEnv('VITE_BACKEND_TRANSPORT', 'remote');
+      setEnv('VITE_REMOTE_API_BASE_URL', 'http://127.0.0.1:8787');
+      const body = {
+        ...(code ? { code } : {}),
+        message: 'The original operation could not be completed',
+        details: { operation: 'write' },
+      };
+      globalThis.fetch = mock(async (url: string | URL | Request, init?: RequestInit) => {
+        fetchCalls.push({ url: String(url), init });
+        if (String(url).includes('/mode-policy')) {
+          return jsonResponse({
+            allowed_tool_ids: ['write'],
+            enforce_macro_only_writes: false,
+            capabilities: ['content_revisions_v1', 'idempotent_tool_execution_v1'],
+          });
+        }
+        if (String(url).includes('/tools/executions/')) {
+          return jsonResponse({ state: 'completed', status_code: 400, body });
+        }
+        throw new TypeError('response lost after execution');
+      }) as unknown as typeof fetch;
+
+      const normalized = await executeRemoteWorkspaceTool({
+        mode: 'Implement',
+        toolId: 'write',
+        args: { path: 'src/durable.ts', content: 'next' },
+        focusedProjectId: 'project-1',
+      }).then(
+        () => { throw new Error('The durable failure must reject'); },
+        toServiceError,
+      );
+      expect(normalized).toEqual({
+        code: code ?? 'REMOTE_EXECUTION_COMPLETED_ERROR',
+        message: body.message,
+        details: { status: 400, body },
+      });
+      const executeCalls = fetchCalls.filter((call) => call.url.includes('/tools/execute'));
+      const statusCalls = fetchCalls.filter((call) => call.url.includes('/tools/executions/'));
+      expect(executeCalls).toHaveLength(2);
+      expect(statusCalls).toHaveLength(2);
+      expect(executeCalls[0].init?.body).toBe(executeCalls[1].init?.body);
+      const executionId = JSON.parse(String(executeCalls[0].init?.body)).execution_id;
+      expect(statusCalls.every((call) => call.url.endsWith(`/tools/executions/${executionId}`))).toBe(true);
+    });
+  }
 
   it('preserves an indeterminate durable result and reuses its execution identity', async () => {
     setEnv('VITE_BACKEND_TRANSPORT', 'remote');
@@ -926,7 +978,7 @@ describe('remoteKernelApi', () => {
   it('sends an independent authenticated cancel request carrying the execution_id on abort', async () => {
     setEnv('VITE_BACKEND_TRANSPORT', 'remote');
     setEnv('VITE_REMOTE_API_BASE_URL', 'http://127.0.0.1:8787');
-    setEnv('VITE_REMOTE_AUTH_TOKEN', 'token');
+    setRemoteAuthToken('token');
 
     let resolveExecuteStarted: (() => void) | undefined;
     const executeStarted = new Promise<void>((resolve) => {
@@ -984,7 +1036,7 @@ describe('remoteKernelApi', () => {
   it('does not send a cancellation request when the execution completes normally', async () => {
     setEnv('VITE_BACKEND_TRANSPORT', 'remote');
     setEnv('VITE_REMOTE_API_BASE_URL', 'http://127.0.0.1:8787');
-    setEnv('VITE_REMOTE_AUTH_TOKEN', 'token');
+    setRemoteAuthToken('token');
 
     globalThis.fetch = mock(async (url: string | URL | Request, init?: RequestInit) => {
       fetchCalls.push({ url: String(url), init });

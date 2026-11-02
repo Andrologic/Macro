@@ -44,6 +44,8 @@ export interface ChatSendInput {
   };
   /** Resume preparation for this durable user message, without appending it again. */
   persistedUserMessage?: ChatMessage;
+  /** Predetermined identity for a durable direction whose DB acknowledgement may be lost. */
+  userMessageId?: string;
 }
 
 export interface ArchitectPlanAtSend { planId: string; targetBranch: string }
@@ -83,7 +85,7 @@ export interface SendLease {
 }
 
 export type ChatSendOwner = Pick<ChatTurnRuntime,
-  'read' | 'set' | 'update' | 'latestSession' | 'rememberSession' | 'transfer' | 'forgetSession'>;
+  'read' | 'set' | 'update' | 'latestSession' | 'rememberSession' | 'transfer' | 'forgetSession' | 'track'>;
 
 export interface SendTask {
   task_source?: string;
@@ -113,8 +115,10 @@ export interface ChatSendPorts<Task extends SendTask, Recovery, Launch> {
   };
   messages: {
     persistence: ChatPersistenceAdapters;
-    onUserPersisted?(message: ChatMessage): void;
+    onUserPersisted?(message: ChatMessage): void | Promise<void>;
     beforeAssistantStart?(assistant: ChatMessage): void | Promise<void>;
+    canDeleteAfter?(conversationId: string): boolean;
+    readUser?(conversationId: string, messageId: string): Promise<ChatMessage | undefined>;
     onAssistantStarted?(assistant: ChatMessage): void | Promise<void>;
     /** Must fail before writing text or acknowledging the composer. */
     saveImages?(messageId: string, images: SendImage[]): void;
@@ -129,6 +133,7 @@ export interface ChatSendPorts<Task extends SendTask, Recovery, Launch> {
     isDeleted(conversationId: string): boolean;
     createSessionId(): string;
     createTurnId(): string;
+    onTurnCaptured?(conversationId: string, lease: SendLease): void;
     hasPendingArchitectConversation(conversationId: string): boolean;
     materializeArchitectConversation(conversationId: string): Promise<string>;
     bindArchitectConversation(params: { architectPlan: ArchitectPlanAtSend; conversationId: string }): Promise<boolean>;

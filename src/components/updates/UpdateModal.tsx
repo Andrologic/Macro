@@ -119,10 +119,16 @@ export const UpdateModal: React.FC = () => {
         notify.error(t('updates.prepareFailed', 'Macro could not prepare the restart'));
         return;
       }
+      notify.error(t('updates.installFailed', 'The update could not be installed'), {
+        description: useAppUpdateStore.getState().error ?? undefined,
+      });
+      return;
     }
-    notify.error(t('updates.installFailed', 'The update could not be installed'), {
-      description: useAppUpdateStore.getState().error ?? undefined,
-    });
+    if (useAppUpdateStore.getState().phase !== 'ready') {
+      notify.error(t('updates.installFailed', 'The update could not be installed'), {
+        description: useAppUpdateStore.getState().error ?? undefined,
+      });
+    }
   };
 
   const requestInstall = () => {
@@ -225,10 +231,7 @@ export const UpdateModal: React.FC = () => {
           )}
         </div>
 
-        <footer className="flex items-center justify-between gap-3 border-t border-border bg-background/30 px-5 py-4 sm:px-6">
-          <p className="text-xs text-muted-foreground">
-            {t('updates.installsNextLaunch', 'It will be installed the next time Macro opens.')}
-          </p>
+        <footer className="flex items-center justify-end gap-3 border-t border-border bg-background/30 px-5 py-4 sm:px-6">
           <div className="flex shrink-0 gap-2">
             <Button ref={closeActionRef} type="button" size="sm" variant="ghost" disabled={isInstalling} onClick={close}>
               {t('common.close', 'Close')}

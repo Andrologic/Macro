@@ -170,7 +170,8 @@ jobs:
     needs: classify
     if: needs.classify.outputs.reusable_validation != 'true' && needs.classify.outputs.windows == 'true' && (github.event_name != 'pull_request' || github.event.pull_request.draft == false)
     runs-on: windows-latest
-    timeout-minutes: 20
+    # Allow cold native builds plus compilation and execution of recovery smoke tests.
+    timeout-minutes: 40
     steps:
       - name: Check out repository
         uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0

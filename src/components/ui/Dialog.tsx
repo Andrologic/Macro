@@ -27,6 +27,9 @@ interface OpenDialogEntry {
 }
 
 type EscapeHandler = () => boolean | void;
+type FocusTarget = HTMLElement | SVGElement;
+const isFocusTarget = (element: Element | null): element is FocusTarget =>
+  element instanceof HTMLElement || element instanceof SVGElement;
 
 interface DialogContextValue {
   zIndex: number;
@@ -65,18 +68,18 @@ const readDialogZIndex = (className: string): number => {
   return zIndex;
 };
 
-const getFocusableElements = (container: HTMLElement): HTMLElement[] =>
-  Array.from(container.querySelectorAll<HTMLElement>(FOCUSABLE_SELECTOR)).filter(
-    (element) => !element.hasAttribute('hidden')
+const getFocusableElements = (container: HTMLElement): FocusTarget[] =>
+  Array.from(container.querySelectorAll(FOCUSABLE_SELECTOR)).filter(
+    (element): element is FocusTarget => isFocusTarget(element) && !element.hasAttribute('hidden')
   );
 
-const getDialogFocusableElements = (entry: OpenDialogEntry, panel: HTMLElement): HTMLElement[] => [
+const getDialogFocusableElements = (entry: OpenDialogEntry, panel: HTMLElement): FocusTarget[] => [
   ...getFocusableElements(panel),
   ...Array.from(entry.portals).flatMap(getFocusableElements),
 ];
 
 const restoreFocusAfterDialogClose = (
-  previousFocus: HTMLElement | null,
+  previousFocus: FocusTarget | null,
 ): void => {
   const topmostDialog = getTopmostDialog();
   if (!topmostDialog) {
@@ -164,7 +167,7 @@ export const Dialog: React.FC<DialogProps> = ({
     : Math.max(requestedZIndex, parentDialogZIndex + 1);
   const rootRef = useRef<HTMLDivElement>(null);
   const panelRef = useRef<HTMLDivElement>(null);
-  const previousFocusRef = useRef<HTMLElement | null>(null);
+  const previousFocusRef = useRef<FocusTarget | null>(null);
   const onCloseRef = useRef(onClose);
   const returnFocusRefRef = useRef(returnFocusRef);
   const escapeHandlersRef = useRef<Set<EscapeHandler>>(new Set());
@@ -202,9 +205,8 @@ export const Dialog: React.FC<DialogProps> = ({
     const panel = panelRef.current;
     if (!root || !panel) return;
 
-    previousFocusRef.current = document.activeElement instanceof HTMLElement
-      ? document.activeElement
-      : null;
+    const activeElement = document.activeElement;
+    previousFocusRef.current = isFocusTarget(activeElement) ? activeElement : null;
     openDialogs.set(root, {
       order: dialogOrder,
       zIndex: effectiveZIndex,

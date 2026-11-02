@@ -60,13 +60,33 @@ describe('toolApprovalPresentation', () => {
         t
       ).category
     ).toBe('system');
+
+    expect(
+      getToolApprovalPresentation(
+        {
+          toolId: 'git_add',
+          riskLevel: 'balanced',
+        },
+        t
+      ).category
+    ).toBe('system');
+
+    expect(
+      getToolApprovalPresentation(
+        {
+          toolId: 'git_commit',
+          riskLevel: 'balanced',
+        },
+        t
+      ).category
+    ).toBe('system');
   });
 
   it('falls back to modify for normal change approvals', () => {
     expect(
       getToolApprovalPresentation(
         {
-          toolId: 'git_commit',
+          toolId: 'write',
           riskLevel: 'strict',
         },
         t

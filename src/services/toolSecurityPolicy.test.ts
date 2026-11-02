@@ -1,10 +1,19 @@
 import { describe, expect, it } from "bun:test";
 import {
+  buildToolRiskLevelSystemInstruction,
   evaluateToolSecurity,
   filterDeniedToolIdsForRiskLevel,
 } from "./toolSecurityPolicy";
 
 describe("toolSecurityPolicy", () => {
+  it("classifies AgSDL reads and document edits through the shared policy", () => {
+    expect(evaluateToolSecurity('agsdl_get', {}, { mode: 'Architect', riskLevel: 'balanced' }).normalizedCall.actionGroup).toBe('observe');
+    const edit = evaluateToolSecurity('agsdl_update', {}, { mode: 'Architect', riskLevel: 'balanced' });
+    expect(edit.normalizedCall.actionGroup).toBe('change');
+    expect(edit.decision).toBe('allow');
+    expect(evaluateToolSecurity('agsdl_update', {}, { mode: 'Architect', riskLevel: 'strict' }).decision).toBe('ask');
+  });
+
   it.each([
     ['C:/Repo', 'c:/repo/src/a.ts'],
     ['\\\\Server\\Share\\Repo', '//server/share/repo/src/a.ts'],
@@ -107,6 +116,13 @@ describe("toolSecurityPolicy", () => {
 
     expect(result.decision).toBe("deny");
     expect(result.denialReason).toContain("outside the current workspace");
+  });
+
+  it("denies an apply_patch rename whose destination leaves the workspace", () => {
+    const result = evaluateToolSecurity("apply_patch", {
+      patch_text: "*** Begin Patch\n*** Update File: allowed.txt\n*** Move to: ../outside.txt\n@@\n-old\n+new\n*** End Patch",
+    }, { mode: "Implement", riskLevel: "balanced", workspacePath: "/repo" });
+    expect(result.decision).toBe("deny");
   });
 
   it("uses a tool-level remember key for web search grants", () => {
@@ -250,7 +266,7 @@ describe("toolSecurityPolicy", () => {
     expect(planResult.decision).toBe("allow");
   });
 
-  it("asks before modifying or replacing Architect records in balanced mode", () => {
+  it("denies the retired strategy generator in Architect mode", () => {
     const strategyResult = evaluateToolSecurity(
       "strategy_generate",
       { nodes: [{ title: "New plan", type: "task" }] },
@@ -261,7 +277,7 @@ describe("toolSecurityPolicy", () => {
       },
     );
 
-    expect(strategyResult.decision).toBe("ask");
+    expect(strategyResult.decision).toBe("deny");
   });
 
   it("ignores remembered grants for terminal commands", () => {
@@ -310,6 +326,51 @@ describe("toolSecurityPolicy", () => {
         expect(result.normalizedCall.canApproveForConversation).toBe(false);
       }
     }
+  });
+
+  it("requires a fresh approval before Git staging or committing can run local commands", () => {
+    for (const riskLevel of ["strict", "balanced", "yolo"] as const) {
+      for (const [toolId, args] of [
+        ["git_add", { repo_path: "/repo", paths: ["src/a.ts"] }],
+        ["git_commit", { repo_path: "/repo", message: "fix: example", stage_all: true }],
+      ] as const) {
+        const result = evaluateToolSecurity(toolId, args, {
+          mode: "Implement",
+          riskLevel,
+          workspacePath: "/repo",
+          grants: [{
+            toolId,
+            rememberKey: "path:/repo",
+            createdAt: "2026-08-24T00:00:00.000Z",
+          }],
+        });
+
+        expect(result.decision).toBe("ask");
+        expect(result.normalizedCall.actionGroup).toBe("escape");
+        expect(result.normalizedCall.summary).toContain("may run");
+        expect(result.normalizedCall.canApproveForConversation).toBe(false);
+      }
+      expect(evaluateToolSecurity(
+        "git_add",
+        { repo_path: "/repo", paths: ["src/a.ts"] },
+        { mode: "Implement", riskLevel, workspacePath: "/repo" },
+      ).normalizedCall.detail).toBe("/repo: src/a.ts");
+      expect(evaluateToolSecurity(
+        "git_commit",
+        { repo_path: "/repo", message: "fix: example" },
+        { mode: "Implement", riskLevel, workspacePath: "/repo" },
+      ).normalizedCall.detail).toBe("/repo: stage all changes and commit; fix: example");
+      expect(filterDeniedToolIdsForRiskLevel(["git_add", "git_commit"], "strict", "Implement")).toEqual(["git_add", "git_commit"]);
+      expect(buildToolRiskLevelSystemInstruction(riskLevel, "Implement")).toContain(
+        "every git_add and git_commit call requires explicit user approval",
+      );
+    }
+
+    expect(evaluateToolSecurity(
+      "git_add",
+      { repo_path: "/other", paths: ["file.txt"] },
+      { mode: "Implement", riskLevel: "balanced", workspacePath: "/repo" },
+    ).decision).toBe("deny");
   });
 
   it("allows every agent mode to create a terminal outside its workspace", () => {

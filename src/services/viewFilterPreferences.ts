@@ -1,13 +1,6 @@
+import { TASK_QUEUE_LANES } from './taskQueueLanes';
 export const ALL_PROJECTS_FILTER = '__all_projects__';
-export const TASK_QUEUE_STATUS_FILTERS = [
-  'all',
-  'attention',
-  'ready',
-  'in_progress',
-  'waiting',
-  'blocked',
-  'failed',
-] as const;
+export const TASK_QUEUE_STATUS_FILTERS = ['all', ...TASK_QUEUE_LANES] as const;
 
 export type TaskQueueStatusFilter = (typeof TASK_QUEUE_STATUS_FILTERS)[number];
 
@@ -16,6 +9,8 @@ export interface ImplementViewFilters {
   projectId: string;
   status: TaskQueueStatusFilter;
   showArchived: boolean;
+  showBlockedTasks: boolean;
+  showWithoutInteraction: boolean;
 }
 
 export interface ArchivedViewFilter {
@@ -28,6 +23,8 @@ export const DEFAULT_IMPLEMENT_VIEW_FILTERS: ImplementViewFilters = {
   projectId: ALL_PROJECTS_FILTER,
   status: 'all',
   showArchived: false,
+  showBlockedTasks: false,
+  showWithoutInteraction: false,
 };
 
 export const DEFAULT_ARCHITECT_VIEW_FILTERS: ArchivedViewFilter = {
@@ -58,8 +55,10 @@ export const normalizeImplementViewFilters = (value: unknown): ImplementViewFilt
       typeof value.projectId === 'string' && value.projectId.trim().length > 0
         ? value.projectId
         : ALL_PROJECTS_FILTER,
-    status: isTaskQueueStatusFilter(value.status) ? value.status : 'all',
+    status: isTaskQueueStatusFilter(value.status) ? value.status : ['attention', 'blocked', 'failed', 'other'].includes(String(value.status)) ? 'waiting' : 'all',
     showArchived: typeof value.showArchived === 'boolean' ? value.showArchived : false,
+    showBlockedTasks: typeof value.showBlockedTasks === 'boolean' ? value.showBlockedTasks : value.showAllTasks === true,
+    showWithoutInteraction: typeof value.showWithoutInteraction === 'boolean' ? value.showWithoutInteraction : DEFAULT_IMPLEMENT_VIEW_FILTERS.showWithoutInteraction,
   };
 };
 

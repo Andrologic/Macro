@@ -36,6 +36,8 @@ export async function sendMessage<Task extends SendTask, Recovery, Launch>(
   let completeMetadata: (() => Promise<void>) | undefined;
   let assistantMessageId: string | null = null;
   let launchError: unknown = null;
+  let releaseAdmission: (() => void) | undefined;
+  let admission: Promise<void> | undefined;
   const startedAt = Date.now();
   const timeline = (phase: string, context: Record<string, unknown> = {}) =>
     projection.timeline(phase, { requestId: lease?.sessionId ?? null, elapsedMs: Date.now() - startedAt, ...context });
@@ -67,7 +69,7 @@ export async function sendMessage<Task extends SendTask, Recovery, Launch>(
         input.persistedUserMessage.turn_id !== current.turnId || input.persistedUserMessage.role !== 'user')) {
       throw new Error('The saved message does not belong to this submission.');
     }
-    const messageId = input.persistedUserMessage?.id ?? (images?.length ? crypto.randomUUID() : undefined);
+    const messageId = input.persistedUserMessage?.id ?? input.userMessageId ?? (images?.length ? crypto.randomUUID() : undefined);
     if (messageId && images?.length) {
       if (!messages.saveImages) throw new Error('Image persistence is unavailable.');
       await authorizePilotEffect();
@@ -83,9 +85,14 @@ export async function sendMessage<Task extends SendTask, Recovery, Launch>(
         content, hiddenContext, providerInputItems, contextRefs,
       });
     } catch (error) {
-      throw new Error(`Failed to save the message before sending: ${toServiceError(error).message}`);
+      const saved = messageId ? await messages.readUser?.(conversationId, messageId) : undefined;
+      if (!saved || saved.id !== messageId || saved.role !== 'user' || saved.conversation_id !== conversationId || saved.turn_id !== current.turnId) {
+        throw new Error(`Failed to save the message before sending: ${toServiceError(error).message}`);
+      }
+      message = saved;
     }
-    messages.onUserPersisted?.(message);
+    if (messageId && message.id !== messageId) throw new Error('The saved message has a different identity.');
+    await messages.onUserPersisted?.(message);
     return message;
   };
 
@@ -96,6 +103,9 @@ export async function sendMessage<Task extends SendTask, Recovery, Launch>(
     owner.rememberSession(conversationId, current.sessionId);
     timeline('send_requested', { conversationId });
     setPreparing(conversationId, current);
+    preparation.onTurnCaptured?.(conversationId, current);
+    admission = new Promise<void>(resolve => { releaseAdmission = resolve; });
+    owner.track(conversationId, admission);
     if (mode === 'Chat') {
       providerAdmission = await ports.admission.begin(conversationId, current.turnId, current.sessionId);
       if (!isCurrent()) return cancelled();
@@ -126,6 +136,7 @@ export async function sendMessage<Task extends SendTask, Recovery, Launch>(
       }
       owner.set(previousConversationId, null);
       setPreparing(conversationId, current);
+      if (admission) owner.track(conversationId, admission);
     }
     const scopedConfiguration = await configuration.load({
       projectIds: executionContext.projectIds, focusProjectId: executionContext.focusedProjectId, mode,
@@ -268,7 +279,7 @@ export async function sendMessage<Task extends SendTask, Recovery, Launch>(
         throw new Error(`Failed to create the assistant message before streaming: ${toServiceError(error).message}`);
       }
       if (!isCurrent()) {
-        if (owner.latestSession(conversationId) === current.sessionId) {
+        if (owner.latestSession(conversationId) === current.sessionId && messages.canDeleteAfter?.(conversationId) !== false) {
           await deleteMessagesAfter(messages.persistence, conversationId, persistedUserMessage.id).catch(() => undefined);
         }
         return sentWithoutAssistant(persistedUserMessage);
@@ -322,9 +333,13 @@ export async function sendMessage<Task extends SendTask, Recovery, Launch>(
     } else projection.sendError(normalized.message);
     throw normalized;
   } finally {
-    if (!handedToStream && providerAdmission.kind === 'globalChat') {
-      if (completeMetadata) await Promise.allSettled([Promise.resolve().then(completeMetadata)]);
-      await ports.admission.closePreparation(providerAdmission.context, conversationId);
+    try {
+      if (!handedToStream && providerAdmission.kind === 'globalChat') {
+        if (completeMetadata) await Promise.allSettled([Promise.resolve().then(completeMetadata)]);
+        await ports.admission.closePreparation(providerAdmission.context, conversationId);
+      }
+    } finally {
+      releaseAdmission?.();
     }
   }
 }

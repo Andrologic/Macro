@@ -1,6 +1,6 @@
 import { persistConversationArchives } from '../../services/conversationManagementService';
-import React, { useCallback, useEffect, useMemo, useRef, useState, useLayoutEffect } from 'react';
-import { createPortal } from 'react-dom';
+import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { splitSearchHighlights } from './searchHighlights';
 import { useTranslation } from 'react-i18next';
 import { useShallow } from 'zustand/react/shallow';
 import { useChatStore } from '../../stores/useChatStore';
@@ -8,6 +8,7 @@ import { useCitationsStore } from '../../stores/useCitationsStore';
 import { useConversationArchiveStore } from '../../stores/useConversationArchiveStore';
 import { useViewFilterStore } from '../../stores/useViewFilterStore';
 import { PREF_KEYS, savePreference } from '../../services/preferences';
+import { SidebarMenu, sidebarMenuPosition, isSidebarTextInput, type SidebarMenuPosition } from '../ui/SidebarMenu';
 import { Icon } from '../ui/Icon';
 import { SearchBar } from '../ui/SearchBar';
 import { ConfirmPromptModal } from '../ui/ConfirmPromptModal';
@@ -41,6 +42,12 @@ import {
   searchMessages, isTauriAvailable,
   type MessageSearchResult,
 } from '../../services/tauriIpc';
+
+const SearchHighlight = ({ text, query }: { text: string; query: string }) => (
+  <>{splitSearchHighlights(text, query).map((part, index) => part.matched
+    ? <mark key={index} className="rounded-sm bg-primary/15 text-foreground font-medium">{part.text}</mark>
+    : <React.Fragment key={index}>{part.text}</React.Fragment>)}</>
+);
 
 interface ConversationArchiveProps {
   className?: string;
@@ -125,6 +132,7 @@ export const ConversationItem: React.FC<ConversationItemProps> = ({
 }) => {
   const { t } = useTranslation();
   const [showMenu, setShowMenu] = useState(false);
+  const [menuPointerPosition, setMenuPointerPosition] = useState<SidebarMenuPosition | null>(null);
   const menuTriggerRef = useRef<HTMLButtonElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
   const [menuPosition, setMenuPosition] = useState({ top: 0, left: 0 });
@@ -215,6 +223,7 @@ export const ConversationItem: React.FC<ConversationItemProps> = ({
   );
   const isHighlighted = isMultiSelectMode ? isChecked : isCurrentConversation;
 
+
   useEffect(() => {
     if (isMultiSelectMode) {
       setShowMenu(false);
@@ -292,6 +301,12 @@ export const ConversationItem: React.FC<ConversationItemProps> = ({
         role="button"
         tabIndex={0}
         onClick={onActivate}
+        onContextMenu={event => {
+          if (isMultiSelectMode) return;
+          event.preventDefault(); event.stopPropagation();
+          if (isDeleting) return;
+          setMenuPointerPosition(sidebarMenuPosition(event)); setShowMenu(true);
+        }}
         onKeyDown={(event) => {
           if (event.target !== event.currentTarget) return;
           if (event.key === 'Enter' || event.key === ' ') {
@@ -349,15 +364,16 @@ export const ConversationItem: React.FC<ConversationItemProps> = ({
 
           {!isMultiSelectMode && (
             <button
+              ref={menuTriggerRef}
               type="button"
               onClick={(event) => {
                 if (isDeleting) return;
                 event.stopPropagation();
+                setMenuPointerPosition(null);
                 setShowMenu((current) => !current);
               }}
-              ref={menuTriggerRef}
               disabled={isDeleting}
-              aria-expanded={showMenu}
+              aria-expanded={showMenu} aria-haspopup="menu"
               className="p-1 rounded hover:bg-accent opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 transition-opacity"
               aria-label={t('chat.conversationActions', 'Conversation actions')}
             >
@@ -366,17 +382,12 @@ export const ConversationItem: React.FC<ConversationItemProps> = ({
           )}
         </div>
       </div>
-      {showMenu && !isMultiSelectMode && createPortal(
-        <>
-          <div className="fixed inset-0 z-[79]" onClick={() => setShowMenu(false)} />
-          <div
-            ref={menuRef}
-            data-conversation-actions-menu
-            style={{ ...menuPosition, maxHeight: 'calc(100vh - 16px)', maxWidth: 'calc(100vw - 16px)' }}
-            className="fixed z-[80] w-40 overflow-y-auto bg-card border border-border rounded-lg shadow-lg py-1"
-            onClick={(event) => event.stopPropagation()}
-          >
+      {showMenu && !isMultiSelectMode && (
+          <SidebarMenu menuRef={menuRef} position={menuPointerPosition ?? menuPosition} triggerRef={menuTriggerRef}
+            onClose={() => setShowMenu(false)} aria-label={t('chat.conversationActions', 'Conversation actions')}
+            data-conversation-actions-menu className="w-52">
             <button
+              role="menuitem"
               type="button"
               onClick={() => {
                 if (isDeleting) return;
@@ -384,12 +395,13 @@ export const ConversationItem: React.FC<ConversationItemProps> = ({
                 setShowMenu(false);
               }}
               disabled={isDeleting}
-              className="w-full px-3 py-1.5 text-left text-sm text-foreground hover:bg-accent flex items-center gap-2"
+              className="w-full rounded px-2 py-1.5 text-left text-xs text-foreground hover:bg-accent flex items-center gap-2"
             >
               <Icon name="pin" size={12} />
               {isPinned ? t('chat.unpinConversation', 'Unpin') : t('chat.pinConversation', 'Pin')}
             </button>
             <button
+              role="menuitem"
               type="button"
               onClick={() => {
                 if (isDeleting) return;
@@ -397,30 +409,33 @@ export const ConversationItem: React.FC<ConversationItemProps> = ({
                 setIsRenameOpen(true);
               }}
               disabled={isDeleting}
-              className="w-full px-3 py-1.5 text-left text-sm text-foreground hover:bg-accent flex items-center gap-2"
+              className="w-full rounded px-2 py-1.5 text-left text-xs text-foreground hover:bg-accent flex items-center gap-2"
             >
               <Icon name="edit" size={12} />
               {t('common.rename', 'Rename')}
             </button>
             <button
+              role="menuitem"
               type="button"
               onClick={() => void handleExport('json')}
               disabled={isDeleting}
-              className="w-full px-3 py-1.5 text-left text-sm text-foreground hover:bg-accent flex items-center gap-2"
+              className="w-full rounded px-2 py-1.5 text-left text-xs text-foreground hover:bg-accent flex items-center gap-2"
             >
               <Icon name="download" size={12} />
               {t('chat.exportJson', 'Export JSON')}
             </button>
             <button
+              role="menuitem"
               type="button"
               onClick={() => void handleExport('markdown')}
               disabled={isDeleting}
-              className="w-full px-3 py-1.5 text-left text-sm text-foreground hover:bg-accent flex items-center gap-2"
+              className="w-full rounded px-2 py-1.5 text-left text-xs text-foreground hover:bg-accent flex items-center gap-2"
             >
               <Icon name="file-text" size={12} />
               {t('chat.exportMarkdown', 'Export Markdown')}
             </button>
             <button
+              role="menuitem"
               type="button"
               onClick={() => {
                 if (isDeleting) return;
@@ -428,12 +443,13 @@ export const ConversationItem: React.FC<ConversationItemProps> = ({
                 void onArchiveToggle();
               }}
               disabled={isDeleting}
-              className="w-full px-3 py-1.5 text-left text-sm text-foreground hover:bg-accent flex items-center gap-2"
+              className="w-full rounded px-2 py-1.5 text-left text-xs text-foreground hover:bg-accent flex items-center gap-2"
             >
               <Icon name={archiveActionIcon} size={12} />
               {archiveActionLabel}
             </button>
             <button
+              role="menuitem"
               type="button"
               onClick={() => {
                 if (isDeleting) return;
@@ -442,14 +458,12 @@ export const ConversationItem: React.FC<ConversationItemProps> = ({
                 setIsDeleteOpen(true);
               }}
               disabled={isDeleting}
-              className="w-full px-3 py-1.5 text-left text-sm text-red-500 hover:bg-red-500/10 flex items-center gap-2"
+              className="w-full rounded px-2 py-1.5 text-left text-xs text-red-500 hover:bg-red-500/10 flex items-center gap-2"
             >
               <Icon name="trash" size={12} />
               {t('common.delete', 'Delete')}
             </button>
-          </div>
-        </>,
-        document.body,
+          </SidebarMenu>
       )}
 
       <ConfirmPromptModal
@@ -486,6 +500,7 @@ export const ConversationItem: React.FC<ConversationItemProps> = ({
 };
 
 export const ConversationArchive: React.FC<ConversationArchiveProps> = ({ className }) => {
+  const [panelMenuPosition, setPanelMenuPosition] = useState<SidebarMenuPosition | null>(null);
   const { t } = useTranslation();
   const {
     conversations,
@@ -512,6 +527,7 @@ export const ConversationArchive: React.FC<ConversationArchiveProps> = ({ classN
   })));
 
   const [searchQuery, setSearchQuery] = useState('');
+  const [focusedSearchMessageId, setFocusedSearchMessageId] = useState<string | null>(null);
   const [isSearchOpen, setIsSearchOpen] = useState(false);
   const [messageSearchResults, setMessageSearchResults] = useState<MessageSearchResult[]>([]);
   const [messageSearchNextOffset, setMessageSearchNextOffset] = useState<number | null>(null);
@@ -648,6 +664,7 @@ export const ConversationArchive: React.FC<ConversationArchiveProps> = ({ classN
   useEffect(() => {
     messageSearchRequestRef.current += 1;
     setMessageSearchResults([]);
+    setFocusedSearchMessageId(null);
     setMessageSearchNextOffset(null);
     setMessageSearchError(null);
     setIsMessageSearchLoading(false);
@@ -672,8 +689,22 @@ export const ConversationArchive: React.FC<ConversationArchiveProps> = ({ classN
     [archivedIds, chatConversationIdSet, messageSearchResults, showArchived],
   );
 
+  const messageSearchGroups = useMemo(() => {
+    const groups = new Map<string, { id: string; title: string; results: MessageSearchResult[] }>();
+    for (const result of visibleMessageSearchResults) {
+      let group = groups.get(result.conversationId);
+      if (!group) {
+        group = { id: result.conversationId, title: result.conversationTitle, results: [] };
+        groups.set(group.id, group);
+      }
+      if (!group.results.some((item) => item.messageId === result.messageId)) group.results.push(result);
+    }
+    return groups;
+  }, [visibleMessageSearchResults]);
+
   const activateMessageSearchResult = useCallback(async (result: MessageSearchResult) => {
     if (!(await selectConversation(result.conversationId))) return;
+    setFocusedSearchMessageId(result.messageId);
     window.requestAnimationFrame(() => {
       window.requestAnimationFrame(() => {
         window.dispatchEvent(new CustomEvent('macro:focus-message', {
@@ -701,7 +732,7 @@ export const ConversationArchive: React.FC<ConversationArchiveProps> = ({ classN
   );
 
   useEffect(() => {
-    if (!areViewFiltersHydrated || !isArchiveHydrated || archiveSelectionPendingRef.current > 0) return;
+    if (!areViewFiltersHydrated || !isArchiveHydrated || isArchiveViewSwitching || archiveSelectionPendingRef.current > 0) return;
     const selectionMatchesView = selectedConversationId
       ? archivedIds.has(selectedConversationId) === showArchived
       : archiveSourceConversations.length === 0;
@@ -726,6 +757,7 @@ export const ConversationArchive: React.FC<ConversationArchiveProps> = ({ classN
     chatConversations,
     clearSelectedConversation,
     isArchiveHydrated,
+    isArchiveViewSwitching,
     selectConversation,
     selectedConversationId,
     showArchived,
@@ -743,6 +775,16 @@ export const ConversationArchive: React.FC<ConversationArchiveProps> = ({ classN
     () => filterConversationsByQuery(archiveSourceConversations, searchQuery),
     [archiveSourceConversations, searchQuery]
   );
+  const searchGroups = useMemo(() => {
+    const groups = new Map(messageSearchGroups);
+    for (const conversation of filteredConversations) {
+      if (!groups.has(conversation.id)) groups.set(conversation.id, {
+        id: conversation.id, title: conversation.title, results: [],
+      });
+    }
+    return Array.from(groups.values());
+  }, [filteredConversations, messageSearchGroups]);
+
   const { pinnedConversations, regularConversations } = useMemo(
     () => partitionPinnedConversations(filteredConversations, pinnedIds),
     [filteredConversations, pinnedIds]
@@ -1130,7 +1172,16 @@ export const ConversationArchive: React.FC<ConversationArchiveProps> = ({ classN
       <aside
         className={cn('h-full w-full bg-card border-r border-border flex flex-col', className)}
         data-tour-id="chat-conversations-panel"
+        onContextMenu={event => {
+          if (isSidebarTextInput(event.target)) return;
+          event.preventDefault(); event.stopPropagation(); setPanelMenuPosition(sidebarMenuPosition(event));
+        }}
       >
+        {panelMenuPosition && <SidebarMenu position={panelMenuPosition} onClose={() => setPanelMenuPosition(null)} aria-label={t('chat.conversations', 'Conversations')} className="w-52">
+          <button role="menuitem" type="button" disabled={isBulkDeleting} onClick={() => { setPanelMenuPosition(null); handleNewChat(); }} className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left hover:bg-accent disabled:opacity-50"><Icon name="plus" size={12} />{t('chat.newChat', 'New Chat')}</button>
+          <button role="menuitem" type="button" disabled={isArchiveViewSwitching || isBulkDeleting} onClick={() => { setPanelMenuPosition(null); void handleToggleArchivedView(); }} className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left hover:bg-accent disabled:opacity-50"><Icon name={showArchived ? 'message-circle' : 'archive'} size={12} />{showArchived ? t('chat.conversations', 'Conversations') : t('chat.archives', 'Archives')}</button>
+          <button role="menuitem" type="button" disabled={filteredConversations.length === 0 || isBulkDeleting} onClick={() => { setPanelMenuPosition(null); setSelectedIds(new Set()); setIsMultiSelectMode(!isMultiSelectMode); }} className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left hover:bg-accent disabled:opacity-50"><Icon name={isMultiSelectMode ? 'x' : 'list-todo'} size={12} />{isMultiSelectMode ? t('common.cancel', 'Cancel') : t('chat.multiSelect', 'Multi-select')}</button>
+        </SidebarMenu>}
         <div className="h-12 border-b border-border flex items-center justify-between gap-2 px-4">
           {isSearchOpen ? (
             <SearchBar
@@ -1259,23 +1310,62 @@ export const ConversationArchive: React.FC<ConversationArchiveProps> = ({ classN
           </div>
         )}
 
-        {searchQuery.trim().length >= 2 && (
-          <div className="max-h-64 shrink-0 overflow-y-auto border-b border-border px-2 py-2" data-tour-id="chat-message-search-results">
-            <div className="mb-1 flex items-center gap-2 px-2 text-xs font-medium uppercase tracking-wider text-muted-foreground">
-              <Icon name="message-square" size={12} />
-              {t('chat.messageResults', 'Message results')}
+        {!isMultiSelectMode && searchQuery.trim().length >= 2 && (
+          <div className="min-h-0 flex-1 overflow-y-auto px-2 py-2" data-tour-id="chat-message-search-results">
+            <div className="mb-2 flex items-center justify-between gap-2 px-3 text-[11px] font-medium uppercase tracking-wider text-muted-foreground">
+              <span>{t('chat.searchResults', 'Search results')}</span>
+              <span className="tabular-nums">{searchGroups.length}</span>
             </div>
-            {visibleMessageSearchResults.map((result) => (
-              <button
-                key={`${result.conversationId}:${result.messageId}`}
-                type="button"
-                onClick={() => void activateMessageSearchResult(result)}
-                className="w-full rounded-md px-2 py-2 text-left hover:bg-accent"
-                data-message-search-result={result.messageId}
-              >
-                <div className="truncate text-xs font-medium text-foreground">{result.conversationTitle}</div>
-                <div className="mt-0.5 line-clamp-2 text-xs text-muted-foreground">{result.snippet}</div>
-              </button>
+            {searchGroups.map((group) => (
+              <section key={group.id} className="mb-4 last:mb-0" data-search-conversation={group.id}>
+                <button
+                  type="button"
+                  onClick={() => void selectConversation(group.id)}
+                  aria-current={selectedConversationId === group.id ? 'true' : undefined}
+                  className={cn(
+                    'group flex w-full items-start gap-3 rounded-lg border px-3 py-2.5 text-left transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/40 focus-visible:ring-inset',
+                    selectedConversationId === group.id ? 'border-primary/30 bg-primary/10' : 'border-transparent hover:bg-accent',
+                  )}
+                >
+                  <span className={cn('flex h-8 w-8 shrink-0 items-center justify-center rounded-lg', selectedConversationId === group.id ? 'bg-primary/20 text-primary' : 'bg-muted text-muted-foreground')}>
+                    <Icon name="message-circle" size={14} />
+                  </span>
+                  <span className="min-w-0 flex-1 self-center">
+                    <span className="line-clamp-2 break-words text-sm font-medium leading-5 text-foreground" title={group.title}>
+                      <SearchHighlight text={group.title} query={searchQuery} />
+                    </span>
+                  </span>
+                  {group.results.length > 0 && <span className="mt-1 shrink-0 text-[11px] tabular-nums text-muted-foreground" aria-label={t('chat.matchingMessages', '{{count}} matching messages', { count: group.results.length })}>{group.results.length}</span>}
+                </button>
+                {group.results.length > 0 && (
+                  <div className="ml-7 mt-1 space-y-0.5 border-l border-border pl-2">
+                    {group.results.map((result) => {
+                      const isFocused = focusedSearchMessageId === result.messageId && selectedConversationId === group.id;
+                      return (
+                        <button
+                          key={result.messageId}
+                          type="button"
+                          onClick={() => void activateMessageSearchResult(result)}
+                          aria-current={isFocused ? 'true' : undefined}
+                          className={cn(
+                            'block w-full rounded-md border px-2.5 py-2 text-left transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/40 focus-visible:ring-inset',
+                            isFocused ? 'border-primary/25 bg-primary/10' : 'border-transparent hover:bg-accent',
+                          )}
+                          data-message-search-result={result.messageId}
+                        >
+                          <span className="mb-1 flex items-baseline justify-between gap-2 text-[11px] leading-4 text-muted-foreground">
+                            <span className="font-medium">{result.role === 'user' ? t('chat.searchYou', 'You') : 'Macro'}</span>
+                            <span className="shrink-0 text-[10px] tabular-nums text-muted-foreground/70">{formatDate(result.createdAt, { day: 'numeric', month: 'short' })}</span>
+                          </span>
+                          <span className="line-clamp-3 break-words text-xs leading-5 text-foreground/80">
+                            <SearchHighlight text={result.snippet} query={searchQuery} />
+                          </span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                )}
+              </section>
             ))}
             {isMessageSearchLoading && visibleMessageSearchResults.length === 0 && (
               <div className="px-2 py-3 text-xs text-muted-foreground">{t('common.loading', 'Loading...')}</div>
@@ -1283,7 +1373,7 @@ export const ConversationArchive: React.FC<ConversationArchiveProps> = ({ classN
             {messageSearchError && (
               <div className="px-2 py-2 text-xs text-destructive">{t('chat.messageSearchFailed', 'Message search failed.')}</div>
             )}
-            {!isMessageSearchLoading && !messageSearchError && visibleMessageSearchResults.length === 0 && (
+            {!isMessageSearchLoading && !messageSearchError && searchGroups.length === 0 && (
               <div className="px-2 py-2 text-xs text-muted-foreground">{t('chat.noMessageResults', 'No matching messages')}</div>
             )}
             {messageSearchNextOffset !== null && (
@@ -1304,7 +1394,7 @@ export const ConversationArchive: React.FC<ConversationArchiveProps> = ({ classN
           </div>
         )}
 
-        <div ref={archiveListRef} className="flex-1 overflow-y-auto">
+        <div ref={archiveListRef} className={cn("flex-1 overflow-y-auto", !isMultiSelectMode && searchQuery.trim().length >= 2 && "hidden")}>
           {archiveRows.length > 0 ? (
             <div className="p-2">
               <div className="relative" style={{ height: archiveListTotalSize }}>

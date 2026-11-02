@@ -78,22 +78,50 @@ impl ProviderWork {
         }
     }
 
-    pub(crate) async fn attempt(&self, provider: &str, transport: &str) -> Result<ProviderAttempt,String> {
-        self.attempt_at_boundary(provider,transport,ProviderBoundary::ExistingContext).await
+    pub(crate) async fn attempt(
+        &self,
+        provider: &str,
+        transport: &str,
+    ) -> Result<ProviderAttempt, String> {
+        self.attempt_at_boundary(provider, transport, ProviderBoundary::ExistingContext)
+            .await
     }
 
     /// Only native HTTP codecs constructing complete requests call this.
     /// No browser DTO or opaque bridge session selects it.
-    pub(crate) async fn independent_request_attempt(&self, provider: &str, transport: &str) -> Result<ProviderAttempt,String> {
-        self.attempt_at_boundary(provider,transport,ProviderBoundary::IndependentRequest).await
+    pub(crate) async fn independent_request_attempt(
+        &self,
+        provider: &str,
+        transport: &str,
+    ) -> Result<ProviderAttempt, String> {
+        self.attempt_at_boundary(provider, transport, ProviderBoundary::IndependentRequest)
+            .await
     }
 
-    async fn attempt_at_boundary(&self, provider: &str, transport: &str, boundary: ProviderBoundary) -> Result<ProviderAttempt,String> {
+    async fn attempt_at_boundary(
+        &self,
+        provider: &str,
+        transport: &str,
+        boundary: ProviderBoundary,
+    ) -> Result<ProviderAttempt, String> {
         match self {
-            Self::GlobalChat { invocation, attempts } => {
-                let context=format!("{:x}",Sha256::digest(transport.as_bytes()));
-                invocation.dispatched().await.map_err(|e|e.to_string())?;
-                let permit=Arc::new(invocation.provider_attempt_with_boundary(&uuid::Uuid::new_v4().to_string(),provider,&context,boundary).await.map_err(|e|e.to_string())?);
+            Self::GlobalChat {
+                invocation,
+                attempts,
+            } => {
+                let context = format!("{:x}", Sha256::digest(transport.as_bytes()));
+                invocation.dispatched().await.map_err(|e| e.to_string())?;
+                let permit = Arc::new(
+                    invocation
+                        .provider_attempt_with_boundary(
+                            &uuid::Uuid::new_v4().to_string(),
+                            provider,
+                            &context,
+                            boundary,
+                        )
+                        .await
+                        .map_err(|e| e.to_string())?,
+                );
                 attempts.lock().await.push(permit.clone());
                 Ok(ProviderAttempt::GlobalChat(permit))
             }

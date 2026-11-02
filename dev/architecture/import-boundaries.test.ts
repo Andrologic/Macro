@@ -18,6 +18,18 @@ function edge(report: ReturnType<typeof analyzeSources>, from: string, to: strin
 }
 
 describe('TypeScript import boundary analysis', () => {
+  it('follows local MJS modules used by vendored browser code', () => {
+    const report = analyzeSources({
+      'src/services/entry.ts': 'import { read } from "../vendor/reader.mjs"; export const value = read();',
+      'src/vendor/reader.mjs': 'import { answer } from "./core.mjs"; export const read = () => answer;',
+      'src/vendor/core.mjs': 'export const answer = 42;',
+    });
+    expect(report.diagnostics).toEqual([]);
+    expect(report.unresolved).toEqual([]);
+    edge(report, 'src/services/entry.ts', 'src/vendor/reader.mjs');
+    edge(report, 'src/vendor/reader.mjs', 'src/vendor/core.mjs');
+  });
+
   it('uses TSX-aware transpilation and preserves type/runtime import kinds', () => {
     const sources = {
       'src/fixture.tsx': readFileSync(join(fixtureRoot, 'tsx-import-fixture.tsx'), 'utf8'),
@@ -218,6 +230,11 @@ describe('TypeScript import boundary analysis', () => {
 
     expect(report.explicitForbiddenEdges.map(({ id }) => id)).toEqual(EXPLICITLY_FORBIDDEN_EDGES.map(({ id }) => id));
     expect(report.explicitForbiddenEdges).toContainEqual(expect.objectContaining({
+      id: 'plan-artifacts-to-app-store',
+      from: 'src/services/architectPlanArtifactService.ts',
+      to: 'src/stores/useAppStore.ts',
+    }));
+    expect(report.explicitForbiddenEdges).toContainEqual(expect.objectContaining({
       id: 'streaming-execution-to-architect-chat',
       from: 'src/services/streamingChatExecution.ts',
       to: 'src/services/architectChat.ts',
@@ -377,12 +394,49 @@ describe('installed Vite resolution contract', () => {
     }
   });
 
+  it('keeps Node-only test recipes outside the production graph and rejects production imports of them', () => {
+    const sources = {
+      'src/test-utils/recipe.ts': 'import { validate } from "../../contracts/validate.mjs"; export { validate };',
+      'src/services/entry.ts': 'export const value = 1;',
+    };
+    expect(analyzeSources(sources).diagnostics).toEqual([]);
+    const report = analyzeSources({ ...sources, 'src/services/entry.ts': 'import { validate } from "../test-utils/recipe"; export { validate };' });
+    expect(report.diagnostics).toEqual([expect.objectContaining({ message: expect.stringContaining('cannot import test utilities') })]);
+  });
+
+  it('rejects production imports of excluded scenario and test modules', () => {
+    for (const suffix of ['scenarios.ts', 'scenarios.tsx', 'test.ts', 'test.tsx']) {
+      const report = analyzeSources({
+        'src/services/chatTurnRuntime.ts': `import "./bridge.${suffix}";`,
+        [`src/services/bridge.${suffix}`]: 'import { create } from "zustand"; export { create };',
+      });
+      expect(report.diagnostics).toEqual([expect.objectContaining({ message: expect.stringContaining('cannot import test modules') })]);
+      expect(compareReports(analyzeSources({}), report).passed).toBe(false);
+    }
+  });
+
   it('treats JSON contract imports outside src as data', () => {
     const report = analyzeSources({
       'src/services/entry.ts': 'import schema from "../../../contracts/macro-pilot/v1/schema.json"; export const id = schema.$id;',
     });
     expect(report.diagnostics).toEqual([]);
     expect(report.unresolved).toEqual([]);
+  });
+
+  it('follows executable Pilot contracts and resolves type-only contract declarations', () => {
+    const report = analyzeSources({
+      'src/services/entry.ts': 'import { validate } from "../../contracts/macro-pilot/v2/validate.mjs"; import type { Receipt } from "../../contracts/macro-pilot/v2/receipt.js"; export { validate }; export type { Receipt };',
+      'contracts/macro-pilot/v2/receipt.d.ts': 'export interface Receipt { id: string }',
+      'contracts/macro-pilot/v2/validate.mjs': 'export { validate } from "./impl.mjs";',
+      'contracts/macro-pilot/v2/impl.mjs': 'import "../../../src/services/entry"; export const validate = () => true;',
+      'src/stores/__tests__/queue.scenarios.ts': 'import "../../../test-utils/recipe";',
+      'src/components/chat/__tests__/queue.scenarios.tsx': 'import "../ChatZone.test";',
+    });
+    expect(report.diagnostics).toEqual([]);
+    expect(report.unresolved).toEqual([]);
+    edge(report, 'src/services/entry.ts', 'contracts/macro-pilot/v2/validate.mjs');
+    edge(report, 'contracts/macro-pilot/v2/validate.mjs', 'contracts/macro-pilot/v2/impl.mjs');
+    expect(report.sccs).toContainEqual(['contracts/macro-pilot/v2/impl.mjs', 'contracts/macro-pilot/v2/validate.mjs', 'src/services/entry.ts']);
   });
 
   it('blocks unsupported targets that would otherwise shadow an analyzed source file', async () => {

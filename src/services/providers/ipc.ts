@@ -589,15 +589,6 @@ export const updateMCPServerSettings = async (settings: MCPServerSettingsDto): P
   await patchUserConfigTopLevel('tools', 'mcpServers', toPersistedMCPServers(securedServers));
 };
 
-export const mcpDiscoverTools: ServiceProvider['mcpDiscoverTools'] = async (server) => {
-  const response = await tauriIpc.mcpDiscoverTools({ server });
-  return { tools: response.tools };
-};
-
-export const mcpCallTool: ServiceProvider['mcpCallTool'] = async (data) => {
-  return tauriIpc.mcpCallTool(data);
-};
-
 export const mcpRuntimeGetSnapshot: ServiceProvider['mcpRuntimeGetSnapshot'] = async () =>
   tauriIpc.mcpRuntimeGetSnapshot();
 
@@ -692,8 +683,6 @@ export const provider: ServiceProvider = {
   updateToolSettings,
   getMCPServerSettings,
   updateMCPServerSettings,
-  mcpDiscoverTools,
-  mcpCallTool,
   mcpRuntimeGetSnapshot,
   mcpRuntimeConnect,
   mcpStoreOAuthClientSecret,

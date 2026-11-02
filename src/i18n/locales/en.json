@@ -1,4 +1,8 @@
 {
+  "remoteAuth": {
+    "agentPrompt": "Macro headless bearer token",
+    "approvalPrompt": "Macro headless approval bearer token"
+  },
   "mcpForm": {
     "title": "MCP form request",
     "server": "Server",
@@ -41,8 +45,17 @@
     "no": "No"
   },
   "speech": {
-    "button": { "start": "Start dictation", "stop": "Stop dictation", "transcribing": "Audio sent · Transcribing", "enhancing": "Transcript received · Smart cleanup" },
-    "recording": { "active": "Recording", "stopAndInsert": "Stop and insert transcription", "stopAndSend": "Stop, transcribe and send" },
+    "button": {
+      "start": "Start dictation",
+      "stop": "Stop dictation",
+      "transcribing": "Audio sent · Transcribing",
+      "enhancing": "Transcript received · Smart cleanup"
+    },
+    "recording": {
+      "active": "Recording",
+      "stopAndInsert": "Stop and insert transcription",
+      "stopAndSend": "Stop, transcribe and send"
+    },
     "errors": {
       "title": "Dictation unavailable",
       "provider-missing": "Configure and select a speech provider first.",
@@ -121,7 +134,10 @@
       "skipped": "Automatic @macro recovery skipped",
       "blockedConflictDescription": "Macro found unresolved conflicts in the metadata worktree and did not apply recovery automatically.",
       "blockedDirtyDescription": "Macro found local changes in the metadata worktree and did not apply recovery automatically."
-    }
+    },
+    "browserRuntimeSessionReplacedTitle": "This browser session is no longer connected to Macro.",
+    "browserRuntimeSessionReplacedDescription": "Another browser tab took control of the desktop runtime. Reload this tab to continue.",
+    "browserRuntimeSessionReplacedReload": "Reload tab"
   },
   "shutdown": {
     "activeWorkSingle": "A task is still running. Closing Macro will interrupt it.",
@@ -175,7 +191,10 @@
     "installNow": "Install now"
   },
   "markdown": {
-    "video": "Video"
+    "video": "Video",
+    "loadRemoteImage": "Load image from {{host}}",
+    "loadRemoteVideo": "Load video from {{host}}",
+    "unknownSource": "an unknown source"
   },
   "common": {
     "save": "Save",
@@ -249,7 +268,8 @@
     "toggleLeftPanel": "Toggle left panel",
     "toggleRightPanel": "Toggle right panel",
     "settings": "Settings",
-    "account": "Account"
+    "account": "Account",
+    "operate": "Operate"
   },
   "onboarding": {
     "open": "Open onboarding",
@@ -560,6 +580,7 @@
       "allRepositories": "All repositories",
       "gitScope": "Git scope",
       "selectRepository": "Select repository",
+      "noRepository": "No Git repository selected",
       "selectFolder": "Select a Git folder",
       "folderNotGit": "This folder is not a Git repository.",
       "folderSelectionFailed": "Could not select this folder."
@@ -571,6 +592,10 @@
     "maximize": "Maximize"
   },
   "chat": {
+    "modelInfoContext": "{{tokens}} context",
+    "modelInfoContextFull": "{{tokens}} token context",
+    "modelInfoImages": "Images",
+    "modelInfoTools": "Tools",
     "conversationSourcesUsed": "{{count}} cited conversation sources",
     "imageImportContextChanged": "Conversation changed. Images were not added; select them again.",
     "imageImportFailed": "No images added. Use valid PNG, JPEG, GIF or WebP images, up to 2 MB each, 8 MB total and 10 images.",
@@ -627,6 +652,8 @@
     "activeTurnSendFailed": "Message not sent",
     "saveRegenerate": "Save & Regenerate",
     "mermaidDiagram": "Mermaid diagram",
+    "renderMermaidDiagram": "Render diagram",
+    "mermaidExternalResourceWarning": "Rendering this diagram may contact external sites.",
     "copyCode": "Copy code",
     "copied": "Copied",
     "showCode": "Show code",
@@ -646,6 +673,13 @@
     "selectProvider": "Select a provider",
     "selectModel": "Select a model",
     "providerSelector": "Choose AI provider",
+    "modelSearchLabel": "Search models",
+    "modelSearchPlaceholder": "Search models…",
+    "modelSearchClear": "Clear model search",
+    "modelSearchEmpty": "No matching models.",
+    "modelColumn": "Model",
+    "providerColumn": "Provider",
+    "modelNavigationHint": "↑↓ navigate · Enter choose · Esc close",
     "modelSelector": "Choose AI model",
     "reasoningSelector": "Choose reasoning level",
     "noProvidersConfigured": "No providers configured",
@@ -676,6 +710,9 @@
     "deleteConversationConfirm": "Are you sure you want to delete this conversation?",
     "deleteConversationError": "Unable to delete this conversation.",
     "searchConversations": "Search conversations...",
+    "searchResults": "Search results",
+    "searchYou": "You",
+    "matchingMessages": "{{count}} matching messages",
     "messageResults": "Message results",
     "messageSearchFailed": "Message search failed.",
     "noMessageResults": "No matching messages",
@@ -712,7 +749,11 @@
     "generationAttempts_one": "{{count}} generation attempt",
     "generationAttempts_other": "{{count}} generation attempts",
     "generationAttemptNumber": "Attempt {{number}}",
-    "generationAttemptStatus": { "completed": "completed", "partial": "partial", "abandoned": "abandoned" },
+    "generationAttemptStatus": {
+      "completed": "completed",
+      "partial": "partial",
+      "abandoned": "abandoned"
+    },
     "generationAttemptCostUnknown": "cost unknown",
     "generationAttemptCost": "${{amount}}",
     "generationAttemptRawText": "Attempt text",
@@ -1011,7 +1052,13 @@
           "belowThresholdDetail": "Context is below the useful compaction threshold"
         }
       }
-    }
+    },
+    "queueWriteInProgress": "This direction is still being saved. Wait for its save to finish before retrying.",
+    "queueDirectionDeleted": "This direction was invalidated by deletion or replay. Remove this recovery entry before continuing manually.",
+    "directionContextUnavailable": "The active turn context is unavailable. Wait for it to finish before sending.",
+    "providerErrorTitle": "The model could not complete this request.",
+    "providerErrorRetry": "Try again in a moment.",
+    "providerErrorSettings": "Check the model settings before trying again."
   },
   "skills": {
     "importDialogTitle": "Select a skill folder",
@@ -1942,7 +1989,76 @@
       "hotfixEmptyHint": "Describe the production bug. Macro will infer the projects, propose a hotfix slug and patch versions, then ask you to confirm.",
       "bugfixEmptyHint": "Describe the bug. Macro will infer the projects and propose a bugfix slug before asking you to confirm."
     },
+    "planIcon": {
+      "title": "Choose an icon",
+      "reset": "Default icon",
+      "options": {
+        "sparkles": "Sparkles",
+        "workflow": "Workflow",
+        "network": "Network",
+        "layers": "Layers",
+        "pencil-ruler": "Design",
+        "code": "Code",
+        "terminal": "Terminal",
+        "flag": "Flag",
+        "target": "Target",
+        "zap": "Lightning",
+        "shield": "Shield",
+        "tool": "Tools",
+        "cpu": "Processor",
+        "database": "Database",
+        "globe": "Globe",
+        "cloud": "Cloud",
+        "message-square": "Conversation",
+        "book-open": "Book",
+        "folder": "Folder",
+        "folder-open": "Open folder",
+        "file": "File",
+        "file-code": "Code file",
+        "file-text": "Document",
+        "git-branch": "Branch",
+        "git-commit": "Commit",
+        "git-merge": "Merge",
+        "git-compare": "Compare",
+        "history": "History",
+        "list-todo": "Checklist",
+        "check-square": "Checked box",
+        "clipboard": "Clipboard",
+        "clock": "Clock",
+        "milestone": "Milestone",
+        "compass": "Compass",
+        "map": "Map",
+        "folder-tree": "Folder tree",
+        "server": "Server",
+        "hard-drive": "Storage",
+        "user": "User",
+        "lock": "Lock",
+        "eye": "Eye",
+        "palette": "Palette",
+        "image": "Image",
+        "camera": "Camera",
+        "mic": "Microphone",
+        "bell": "Bell",
+        "settings": "Settings",
+        "layout-grid": "Grid"
+      }
+    },
     "projectNavigator": {
+      "newBlueprint": "New blueprint",
+      "blueprintCreatedAtRoot": "Blueprint created at the project root. Its folder placement could not be saved.",
+      "newSubfolder": "New subfolder",
+      "newFolder": "New folder",
+      "renameFolder": "Rename folder",
+      "folderActions": "Actions for {{name}}",
+      "removeFolder": "Remove folder",
+      "removeFolderHelp": "Contents remain in the parent folder.",
+      "emptyFolder": "Drop a blueprint here",
+      "moveToFolder": "Move to…",
+      "projectRoot": "Project root",
+      "folderNameError": "Choose a different folder name.",
+      "folderSaveError": "Could not save folder organization.",
+      "macroBlueprints": "Macro library",
+      "newMacroBlueprint": "New Macro blueprint",
       "title": "Projects",
       "searchPlans": "Search plans...",
       "noSearchResults": "No plan matches this search.",
@@ -2081,15 +2197,13 @@
       "targetBranch": "Target: {{branchName}}"
     },
     "planNamingRecovery": {
-      "title": "Plan name still needed",
-      "description": "Macro could not generate a plan name from the first message after three attempts. Retry with AI or name the plan manually.",
+      "title": "Plan name not generated",
+      "description": "The plan keeps its default name.",
       "retryAi": "Retry AI",
-      "retryingAi": "Retrying AI...",
       "nameManually": "Name manually",
       "manualTitle": "Name This Plan",
       "manualDescription": "Enter the plan name you want to use for this conversation.",
       "saveManualName": "Save plan name",
-      "back": "Back",
       "manualPlaceholder": "e.g. Checkout Recovery Refresh"
     },
     "strategy": "Strategy",
@@ -2431,10 +2545,17 @@
       "deleteFailed": "Failed to delete MCP server.",
       "toggleFailed": "Failed to update MCP server.",
       "transportHint": "Use stdio for local servers or Streamable HTTP for legacy and stateless remote servers.",
-      "transport": { "stdio": "Local stdio", "streamableHttp": "Streamable HTTP" },
+      "transport": {
+        "stdio": "Local stdio",
+        "streamableHttp": "Streamable HTTP"
+      },
       "urlPlaceholder": "https://example.com/mcp",
       "headersPlaceholder": "Authorization=Bearer token\nX-API-Key=value",
-      "protocol": { "auto": "Automatic detection", "legacy": "Legacy session", "modern": "Modern stateless" },
+      "protocol": {
+        "auto": "Automatic detection",
+        "legacy": "Legacy session",
+        "modern": "Modern stateless"
+      },
       "oauth": {
         "enable": "Use OAuth",
         "scopes": "Scopes, separated by spaces",
@@ -2551,31 +2672,122 @@
         }
       },
       "metadata": {
-        "clean": { "title": "@macro metadata is up to date", "body": "No action is needed." },
-        "dirty": { "title": "@macro metadata has local changes", "body": "Macro needs to save metadata changes before syncing.", "nextStep": "Save @macro metadata, then retry the sync." },
-        "ahead": { "title": "@macro metadata is ready to publish", "body": "Your local metadata branch has changes that are not on the remote yet.", "nextStep": "Push @macro when you are ready." },
-        "behind": { "title": "@macro metadata is behind remote", "body": "Remote metadata has updates that are not local yet.", "nextStep": "Pull @macro, then retry your action." },
-        "diverged": { "title": "@macro metadata has diverged", "body": "Local and remote metadata both changed.", "nextStep": "Pull @macro, resolve any conflicts, then push." },
-        "mergeConflict": { "title": "@macro metadata has conflicts", "body": "The metadata branch has unresolved conflict files.", "nextStep": "Resolve the conflicted metadata files, then retry the same sync step." },
-        "missingOrigin": { "title": "@macro remote is not configured", "body": "Macro cannot sync metadata because the repository has no origin remote.", "nextStep": "Configure the Git remote, then retry." },
-        "missingUpstream": { "title": "@macro has no upstream branch", "body": "The metadata branch exists locally but is not linked to a remote branch yet.", "nextStep": "Push @macro to publish it, or ignore this warning to keep metadata local." },
-        "authRequired": { "title": "Git authentication is required", "body": "Macro cannot reach the metadata remote with the current credentials.", "nextStep": "Configure Git authentication, then retry." },
-        "networkError": { "title": "Metadata sync could not reach the remote", "body": "The network or remote service is unavailable right now.", "nextStep": "Check your connection, then retry." },
-        "unknownError": { "title": "Macro metadata sync failed", "body": "Macro could not complete the metadata sync safely.", "nextStep": "Retry the sync. If it fails again, inspect the technical details." }
+        "clean": {
+          "title": "@macro metadata is up to date",
+          "body": "No action is needed."
+        },
+        "dirty": {
+          "title": "@macro metadata has local changes",
+          "body": "Macro needs to save metadata changes before syncing.",
+          "nextStep": "Save @macro metadata, then retry the sync."
+        },
+        "ahead": {
+          "title": "@macro metadata is ready to publish",
+          "body": "Your local metadata branch has changes that are not on the remote yet.",
+          "nextStep": "Push @macro when you are ready."
+        },
+        "behind": {
+          "title": "@macro metadata is behind remote",
+          "body": "Remote metadata has updates that are not local yet.",
+          "nextStep": "Pull @macro, then retry your action."
+        },
+        "diverged": {
+          "title": "@macro metadata has diverged",
+          "body": "Local and remote metadata both changed.",
+          "nextStep": "Pull @macro, resolve any conflicts, then push."
+        },
+        "mergeConflict": {
+          "title": "@macro metadata has conflicts",
+          "body": "The metadata branch has unresolved conflict files.",
+          "nextStep": "Resolve the conflicted metadata files, then retry the same sync step."
+        },
+        "missingOrigin": {
+          "title": "@macro remote is not configured",
+          "body": "Macro cannot sync metadata because the repository has no origin remote.",
+          "nextStep": "Configure the Git remote, then retry."
+        },
+        "missingUpstream": {
+          "title": "@macro has no upstream branch",
+          "body": "The metadata branch exists locally but is not linked to a remote branch yet.",
+          "nextStep": "Push @macro to publish it, or ignore this warning to keep metadata local."
+        },
+        "authRequired": {
+          "title": "Git authentication is required",
+          "body": "Macro cannot reach the metadata remote with the current credentials.",
+          "nextStep": "Configure Git authentication, then retry."
+        },
+        "networkError": {
+          "title": "Metadata sync could not reach the remote",
+          "body": "The network or remote service is unavailable right now.",
+          "nextStep": "Check your connection, then retry."
+        },
+        "unknownError": {
+          "title": "Macro metadata sync failed",
+          "body": "Macro could not complete the metadata sync safely.",
+          "nextStep": "Retry the sync. If it fails again, inspect the technical details."
+        }
       },
       "service": {
-        "gitObjectMissing": { "title": "Git review is paused", "body": "A Git object needed for this review is unavailable. Macro did not modify any working files.", "bodyUncertain": "Git could not read an object required for this operation. Check the technical details before retrying.", "nextStep": "Retry to ask Git for the object again. Open the technical details to inspect the operation, object ID, and sanitized Git output." },
-        "directModeConfigurationRequired": { "title": "The review mode needs configuration", "body": "This project is not a Git repository, but the task metadata does not allow direct review. Macro did not start a Git review or modify any working files.", "nextStep": "Configure Git for this project, or recreate the task in direct mode. The technical details show the stored mode." },
-        "directCheckpointMissing": { "title": "Macro's review checkpoint is unavailable", "body": "The internal checkpoint for this non-Git project's review is missing. Macro did not modify any working files.", "nextStep": "Retry after the task has been prepared again. Open the technical details to inspect the checkpoint identifier." },
-        "directCheckpointCorrupt": { "title": "Macro's review checkpoint is damaged", "body": "The internal checkpoint for this non-Git project's review is incomplete. Macro preserved it and did not modify any working files.", "nextStep": "Retry once. Do not reset the checkpoint if accepted review history must be preserved; open the technical details for diagnosis." },
-        "directCheckpointProjectMismatch": { "title": "Macro's review checkpoint belongs to another project path", "body": "The saved checkpoint identity does not match this project's current path. Macro preserved the checkpoint and did not modify any working files.", "nextStep": "Check the project's saved path or reopen the original project. Use the technical details to identify the checkpoint before changing its metadata." },
-        "resourcePressure": { "title": "Macro is temporarily overloaded", "body": "The system has too many files open, so Macro paused automatic repository refreshes before retrying.", "nextStep": "Wait a moment, then retry. If this keeps happening, close extra project windows or terminals." },
-        "replicaRepair": { "title": "Plan metadata needs repair", "body": "Macro found inconsistent plan metadata and needs to repair the canonical copy before continuing.", "nextStep": "Repair the plan metadata, then retry the action." },
-        "metadataMissing": { "title": "Plan metadata is incomplete", "body": "Macro found a task or conversation that points to plan metadata that is missing or only partially persisted.", "nextStep": "Repair the metadata links, then retry the action." },
-        "conflictAssistantContextChanged": {"title": "Git context changed", "body": "The selected Git context changed while opening the assistant.", "nextStep": "Refresh the Git view and reopen the assistant."},
-        "workspaceUnavailable": { "title": "Workspace state is temporarily unavailable", "body": "Macro could not read the workspace state needed for this action.", "nextStep": "Retry after the workspace finishes updating. If it persists, reopen the project." },
-        "gitNotReady": { "title": "This project is not ready for editable work", "body": "Macro can still use this project for context, but it cannot write to it until Git is ready.", "nextStep": "Open project settings and finish the Git setup." },
-        "fallback": { "title": "Something needs attention", "nextStep": "Review the details, fix the blocking state, then retry." }
+        "gitObjectMissing": {
+          "title": "Git review is paused",
+          "body": "A Git object needed for this review is unavailable. Macro did not modify any working files.",
+          "bodyUncertain": "Git could not read an object required for this operation. Check the technical details before retrying.",
+          "nextStep": "Retry to ask Git for the object again. Open the technical details to inspect the operation, object ID, and sanitized Git output."
+        },
+        "directModeConfigurationRequired": {
+          "title": "The review mode needs configuration",
+          "body": "This project is not a Git repository, but the task metadata does not allow direct review. Macro did not start a Git review or modify any working files.",
+          "nextStep": "Configure Git for this project, or recreate the task in direct mode. The technical details show the stored mode."
+        },
+        "directCheckpointMissing": {
+          "title": "Macro's review checkpoint is unavailable",
+          "body": "The internal checkpoint for this non-Git project's review is missing. Macro did not modify any working files.",
+          "nextStep": "Retry after the task has been prepared again. Open the technical details to inspect the checkpoint identifier."
+        },
+        "directCheckpointCorrupt": {
+          "title": "Macro's review checkpoint is damaged",
+          "body": "The internal checkpoint for this non-Git project's review is incomplete. Macro preserved it and did not modify any working files.",
+          "nextStep": "Retry once. Do not reset the checkpoint if accepted review history must be preserved; open the technical details for diagnosis."
+        },
+        "directCheckpointProjectMismatch": {
+          "title": "Macro's review checkpoint belongs to another project path",
+          "body": "The saved checkpoint identity does not match this project's current path. Macro preserved the checkpoint and did not modify any working files.",
+          "nextStep": "Check the project's saved path or reopen the original project. Use the technical details to identify the checkpoint before changing its metadata."
+        },
+        "resourcePressure": {
+          "title": "Macro is temporarily overloaded",
+          "body": "The system has too many files open, so Macro paused automatic repository refreshes before retrying.",
+          "nextStep": "Wait a moment, then retry. If this keeps happening, close extra project windows or terminals."
+        },
+        "replicaRepair": {
+          "title": "Plan metadata needs repair",
+          "body": "Macro found inconsistent plan metadata and needs to repair the canonical copy before continuing.",
+          "nextStep": "Repair the plan metadata, then retry the action."
+        },
+        "metadataMissing": {
+          "title": "Plan metadata is incomplete",
+          "body": "Macro found a task or conversation that points to plan metadata that is missing or only partially persisted.",
+          "nextStep": "Repair the metadata links, then retry the action."
+        },
+        "conflictAssistantContextChanged": {
+          "title": "Git context changed",
+          "body": "The selected Git context changed while opening the assistant.",
+          "nextStep": "Refresh the Git view and reopen the assistant."
+        },
+        "workspaceUnavailable": {
+          "title": "Workspace state is temporarily unavailable",
+          "body": "Macro could not read the workspace state needed for this action.",
+          "nextStep": "Retry after the workspace finishes updating. If it persists, reopen the project."
+        },
+        "gitNotReady": {
+          "title": "This project is not ready for editable work",
+          "body": "Macro can still use this project for context, but it cannot write to it until Git is ready.",
+          "nextStep": "Open project settings and finish the Git setup."
+        },
+        "fallback": {
+          "title": "Something needs attention",
+          "nextStep": "Review the details, fix the blocking state, then retry."
+        }
       }
     }
   },
@@ -2586,7 +2798,12 @@
         "description": "Base system prompt for Architect conversations."
       }
     },
-    "loadFailed": "Unable to load system prompts. Retry before saving.", "title": "System Prompts", "description": "Customize the base mode prompts and the internal profile prompts used during plan, review, and repository audit flows.", "restoreAll": "Restore All", "saveFailed": "Unable to save system prompts." },
+    "loadFailed": "Unable to load system prompts. Retry before saving.",
+    "title": "System Prompts",
+    "description": "Customize the base mode prompts and the internal profile prompts used during plan, review, and repository audit flows.",
+    "restoreAll": "Restore All",
+    "saveFailed": "Unable to save system prompts."
+  },
   "toast": {
     "languageChanged": "Language changed to {{language}}",
     "settingsSaved": "Settings saved",
@@ -2634,6 +2851,8 @@
     }
   },
   "models": {
+    "catalogSuggestions": "Catalog suggestions",
+    "catalogSuggestionsHint": "Search the provider catalog by ID or name, or enter any model ID.",
     "noProviders": "No providers configured yet. Add a provider first.",
     "noProvidersTitle": "Add a provider before adding models",
     "collectionTitle": "Models",
@@ -2941,7 +3160,17 @@
     "artifactSaveFailed": "Could not save the Goal review artifact",
     "artifactTitle": "Goal review",
     "queueTrackingFailed": "Could not track the queued Goal turn",
-    "artifactStatus": { "achieved": "Achieved", "continue": "Continue", "needs_user": "Needs your response", "cannot_progress": "Cannot progress", "applied": "Applied", "failed": "Failed", "cancelled": "Cancelled", "stale": "Outdated", "timed_out": "Timed out" },
+    "artifactStatus": {
+      "achieved": "Achieved",
+      "continue": "Continue",
+      "needs_user": "Needs your response",
+      "cannot_progress": "Cannot progress",
+      "applied": "Applied",
+      "failed": "Failed",
+      "cancelled": "Cancelled",
+      "stale": "Outdated",
+      "timed_out": "Timed out"
+    },
     "reason": {
       "reviewInterrupted": "The previous review was interrupted. Resume to start another agent turn.",
       "executorInterrupted": "The previous agent turn was interrupted. Resume to continue.",
@@ -3021,6 +3250,11 @@
     "resultInvalidRequest": "The pending request was invalid and has been set aside. Your profile was not changed.",
     "resultLegacy": "A result from an earlier version is available in the diagnostic details.",
     "diagnostics": "Diagnostic details",
+    "sessionReplacedTitle": "Session open in another tab",
+    "sessionReplacedHint": "Reload this tab to continue using Macro here.",
+    "sessionReplacedReload": "Reload",
+    "runtimeUnavailableTitle": "Desktop runtime unavailable",
+    "runtimeUnavailableHint": "Macro is restarting or is not running. Retry once the desktop runtime is ready.",
     "startupTitle": "Profile recovery required",
     "startupRecovery": "Browser data restoration could not finish. The native recovery archive is retained. Check the diagnostic details, free local storage if necessary, then restart Macro to retry.",
     "title": "Backup and restore",

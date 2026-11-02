@@ -19,21 +19,22 @@ function fixture() {
         'tauri:build:debug': 'bun dev/tauri-cli.mjs build --config src-tauri/tauri.local.conf.json --debug',
       },
       dependencies: {
+        '@tauri-apps/api': '2.12.4',
         '@tauri-apps/plugin-dialog': '2.6.0',
         '@tauri-apps/plugin-http': '2.5.7',
         '@tauri-apps/plugin-notification': '2.3.3',
         '@tauri-apps/plugin-opener': '2.5.3',
-        '@tauri-apps/plugin-updater': '2.10.1',
         '@tauri-apps/plugin-process': '2.3.1',
         '@tauri-apps/plugin-store': '2.4.2',
       },
+      devDependencies: { '@tauri-apps/cli': '2.12.4' },
     },
     cargoToml: [
       'tauri-plugin-dialog = "=2.6.0"',
       'tauri-plugin-http = "2"',
       'tauri-plugin-notification = "2.3.3"',
       'tauri-plugin-opener = "2"',
-      'tauri-plugin-updater = "2.10.1"',
+      'tauri-plugin-updater = "=2.13.3"',
       'tauri-plugin-process = "2.3.1"',
       'tauri-plugin-store = "2"',
     ].join('\n'),
@@ -56,7 +57,7 @@ function fixture() {
       '',
       '[[package]]',
       'name = "tauri-plugin-updater"',
-      'version = "2.10.1"',
+      'version = "2.13.3"',
       '',
       '[[package]]',
       'name = "tauri-plugin-process"',
@@ -72,6 +73,8 @@ function fixture() {
         updater: {
           pubkey: publicKey,
           endpoints: [UPDATER_ENDPOINT],
+          requireSignedVersion: true,
+          allowDowngrades: false,
           windows: { installMode: 'quiet' },
         },
       },
@@ -80,14 +83,7 @@ function fixture() {
       bundle: { createUpdaterArtifacts: false },
     },
     tauriCapabilities: {
-      permissions: [
-        'core:app:allow-version',
-        'core:resources:allow-close',
-        'updater:allow-check',
-        'updater:allow-download',
-        'updater:allow-install',
-        'process:allow-restart',
-      ],
+      permissions: ['core:app:allow-version', 'core:resources:allow-close'],
     },
   };
 }
@@ -98,7 +94,7 @@ describe('updater preflight', () => {
   });
 
   test('reads exact Cargo.lock package versions', () => {
-    expect(cargoLockPackageVersion(fixture().cargoLock, 'tauri-plugin-updater')).toBe('2.10.1');
+    expect(cargoLockPackageVersion(fixture().cargoLock, 'tauri-plugin-updater')).toBe('2.13.3');
     expect(cargoLockPackageVersion(fixture().cargoLock, 'tauri-plugin-process')).toBe('2.3.1');
     expect(cargoLockPackageVersion(fixture().cargoLock, 'tauri-plugin-dialog')).toBe('2.6.0');
   });
@@ -119,12 +115,26 @@ describe('updater preflight', () => {
     config.tauriConfig.plugins.updater.pubkey = 'REPLACE_WITH_PUBLIC_KEY';
     config.tauriConfig.plugins.updater.endpoints = [];
     config.tauriConfig.plugins.updater.windows.installMode = 'basicUi';
-    config.packageJson.dependencies['@tauri-apps/plugin-updater'] = '2.11.0';
+    config.tauriConfig.plugins.updater.requireSignedVersion = false;
+    config.tauriConfig.plugins.updater.allowDowngrades = true;
+    config.cargoLock = config.cargoLock.replace('name = "tauri-plugin-updater"\nversion = "2.13.3"', 'name = "tauri-plugin-updater"\nversion = "2.12.0"');
     expect(validateUpdaterConfiguration(config)).toEqual(expect.arrayContaining([
       'plugins.updater.pubkey still contains a placeholder.',
       `plugins.updater.endpoints must include ${UPDATER_ENDPOINT}.`,
       'plugins.updater.windows.installMode must be "quiet".',
-      expect.stringContaining('same major/minor version'),
+      'plugins.updater.requireSignedVersion must be true.',
+      'plugins.updater.allowDowngrades must not be enabled.',
+      'tauri-plugin-updater must resolve to at least 2.13.3.',
+    ]));
+  });
+
+  test('requires the CLI and API versions that support signed versions', () => {
+    const config = fixture();
+    config.packageJson.devDependencies['@tauri-apps/cli'] = '2.11.5';
+    config.packageJson.dependencies['@tauri-apps/api'] = '2.11.5';
+    expect(validateUpdaterConfiguration(config)).toEqual(expect.arrayContaining([
+      '@tauri-apps/cli must be at least 2.12.0 to sign the updater version.',
+      '@tauri-apps/api must be at least 2.12.0.',
     ]));
   });
 
@@ -138,16 +148,32 @@ describe('updater preflight', () => {
     ]));
   });
 
-  test('reports every missing runtime permission required by the updater flow', () => {
+  test('rejects WebView updater commands and the unused JavaScript plugin', () => {
     const config = fixture();
-    config.tauriCapabilities.permissions = ['updater:allow-check'];
+    config.tauriCapabilities.permissions = ['updater:allow-check', 'process:allow-restart'];
+    Object.assign(config.packageJson.dependencies, { '@tauri-apps/plugin-updater': '2.13.3' });
 
     expect(validateUpdaterConfiguration(config)).toEqual(expect.arrayContaining([
-      'src-tauri/capabilities/default.json must grant core:app:allow-version.',
-      'src-tauri/capabilities/default.json must grant core:resources:allow-close.',
-      'src-tauri/capabilities/default.json must grant updater:allow-download.',
-      'src-tauri/capabilities/default.json must grant updater:allow-install.',
-      'src-tauri/capabilities/default.json must grant process:allow-restart.',
+      'src-tauri/capabilities/default.json must not grant updater plugin commands to the WebView.',
+      'src-tauri/capabilities/default.json must not grant process:allow-restart.',
+      'package.json must not include the unused JavaScript updater plugin.',
+    ]));
+  });
+
+  test('rejects structured updater permissions, process defaults, and a dev-only updater plugin', () => {
+    const config = fixture();
+    Object.assign(config.tauriCapabilities, {
+      permissions: [
+        { identifier: 'updater:allow-install', allow: [] },
+        { identifier: 'process:default', allow: [] },
+      ],
+    });
+    Object.assign(config.packageJson.devDependencies, { '@tauri-apps/plugin-updater': '2.13.3' });
+
+    expect(validateUpdaterConfiguration(config)).toEqual(expect.arrayContaining([
+      'src-tauri/capabilities/default.json must not grant updater plugin commands to the WebView.',
+      'src-tauri/capabilities/default.json must not grant process:default.',
+      'package.json must not include the unused JavaScript updater plugin.',
     ]));
   });
 

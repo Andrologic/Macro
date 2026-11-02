@@ -2,17 +2,17 @@
   "hello": {
     "version": "macro-connect-codec-1",
     "profile": "bootstrap",
-    "source_set_sha256": "f88cd1f1e9ba0ef8c642868c10516fa315994c1fcc96144babea949f61466c57",
+    "source_set_sha256": "d7ace9d6ff7ad3c5caa0238c01017526263c7141e7e165431e66d8961dec07b9",
     "content_sha256": "c6ae7440ed0fb4d0bdccdfb936c4bf6ac5c441c96b642c1d9ccbd270b62bdcc6",
     "decision_resource_set_sha256": "6133c2d9ee204a175ae6c176b9c266d4378879c1637936ebd81e85daf4d0b97a",
     "transit_resource_set_sha256": "1454bad31321e0d6467098f0309b5bb96050a396bb6fddecc938233cdf9c602d",
     "authority_resource_set_sha256": "3d82d4b9909789ab0f8dc5f0ba06c751da56b1c0396613a2b29e2407302ab052",
-    "a1_resource_set_sha256": "347a7ae835ff2d77c04c062187e5eb56bb211e5fc148b8156ba093b373aa220c"
+    "a1_resource_set_sha256": "4620999de81e460fbc94b1dff67b4d6fc59714f2ace60bc3b03a9f12107a14ab"
   },
   "resources": [
     {
       "path": "bun.lock",
-      "sha256": "983bd37549e3af246138bf24d276f8b25dd8d7fda8c356352488fd3360384e64"
+      "sha256": "2ee47e0e0ff56933bd7fc4610a36692f726f8f2e08b58128c1389b8c23b60a93"
     },
     {
       "path": "contracts/macro-pilot/v2/strict-json.mjs",
@@ -84,7 +84,7 @@
     },
     {
       "path": "package.json",
-      "sha256": "8b56d77768d91cb7e373a59b1fa34589d48002db48d31569bbfc0843af798389"
+      "sha256": "bd313ee4681ffebae8026cb4d13fece2b8c134e44cec36e3017f2abfa9d3e405"
     },
     {
       "path": "src/services/macroPilot/protocol.ts",

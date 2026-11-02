@@ -17,6 +17,7 @@ import { prepareContextualTextInsertion } from './composerTextInsertion';
 import type { ComposerTextChangeOrigin } from './composerTextChange';
 
 interface LazyComposerEditorProps {
+  historyKey?: string;
   editable: boolean;
   readOnly?: boolean;
   placeholder: string;
@@ -49,6 +50,7 @@ const syncComposerText = (
 
 export const LazyComposerEditor = forwardRef<ComposerEditorHandle, LazyComposerEditorProps>(
   ({
+    historyKey,
     editable,
     readOnly = false,
     placeholder,
@@ -210,6 +212,7 @@ export const LazyComposerEditor = forwardRef<ComposerEditorHandle, LazyComposerE
       return (
         <LoadedEditor
           ref={loadedEditorRef}
+          historyKey={historyKey}
           editable={editable}
           readOnly={readOnly}
           placeholder={placeholder}

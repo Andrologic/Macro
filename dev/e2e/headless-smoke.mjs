@@ -3,7 +3,7 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { mkdtemp, mkdir, realpath, rm, writeFile } from 'node:fs/promises';
-import { createServer } from 'node:net';
+import { createConnection, createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -32,6 +32,33 @@ async function reserveLoopbackPort() {
   return address.port;
 }
 
+async function websocketHandshakeStatus(port) {
+  return new Promise((resolve, reject) => {
+    const socket = createConnection({ host: '127.0.0.1', port });
+    socket.setTimeout(3_000, () => socket.destroy(new Error('WebSocket handshake timed out.')));
+    socket.once('error', reject);
+    socket.once('connect', () => {
+      socket.write([
+        'GET /api/v1/events HTTP/1.1',
+        `Host: 127.0.0.1:${port}`,
+        'Origin: http://127.0.0.1:5173',
+        'Connection: Upgrade',
+        'Upgrade: websocket',
+        'Sec-WebSocket-Version: 13',
+        'Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==',
+        '',
+        '',
+      ].join('\r\n'));
+    });
+    socket.once('data', (chunk) => {
+      socket.destroy();
+      const status = /^HTTP\/1\.1 (\d{3})/.exec(chunk.toString());
+      if (!status) reject(new Error('Invalid WebSocket handshake response.'));
+      else resolve(Number(status[1]));
+    });
+  });
+}
+
 async function runBuild() {
   const buildEnvironment = {
     ...process.env,
@@ -40,6 +67,7 @@ async function runBuild() {
   const processHandle = Bun.spawn([
     'cargo',
     'build',
+    '--locked',
     '--manifest-path',
     manifestPath,
     '--example',
@@ -261,12 +289,32 @@ async function main() {
       const unauthorized = await fetch(`${baseUrl}/health`);
       assert.equal(unauthorized.status, 401, 'Health must reject a missing bearer token.');
 
+      const stream = await fetch(`${baseUrl}/api/v1/events`, {
+        headers: { Accept: 'text/event-stream' },
+      });
+      assert.equal(stream.status, 401, 'Streaming requests must reject a missing bearer token.');
+      assert.equal(
+        await websocketHandshakeStatus(port),
+        401,
+        'WebSocket upgrades must reject a missing bearer token before routing.',
+      );
+
       const invalidBearer = await fetch(`${baseUrl}/health`, {
         headers: { Authorization: 'Bearer invalid-smoke-token' },
       });
       assert.equal(invalidBearer.status, 401, 'Health must reject an invalid bearer token.');
 
       const headers = { Authorization: `Bearer ${bearerToken}` };
+      const reboundHost = await fetch(`${baseUrl}/health`, {
+        headers: { ...headers, Host: `attacker.example:${port}` },
+      });
+      assert.equal(reboundHost.status, 421, 'Authenticated DNS rebinding must be rejected.');
+
+      const hostileOrigin = await fetch(`${baseUrl}/health`, {
+        headers: { ...headers, Origin: 'http://attacker.example' },
+      });
+      assert.equal(hostileOrigin.status, 403, 'Authenticated cross-origin requests must be rejected.');
+
       const health = await fetch(`${baseUrl}/health`, { headers });
       assert.equal(health.status, 200, 'Authorized health request must succeed.');
       assert.deepEqual(await health.json(), {
@@ -299,6 +347,11 @@ async function main() {
         { headers },
       );
       assert.equal(scopedBootstrap.status, 200, 'The effective workspace id must remain routable.');
+
+      const browserBridgeOrigin = await fetch(`${baseUrl}/health`, {
+        headers: { ...headers, Origin: 'http://127.0.0.1:1422' },
+      });
+      assert.equal(browserBridgeOrigin.status, 200, 'The local browser bridge origin must be accepted.');
 
       const agentApproval = await fetch(`${baseUrl}/api/v1/config/pending/accept`, {
         method: 'POST',

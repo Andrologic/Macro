@@ -29,6 +29,9 @@ import {
   retryDatabaseInitialization,
 } from "./services/tauriIpc";
 
+import { isBrowserRuntimeBridgeEnabled } from "./services/tauriRuntimeBridge";
+import { BROWSER_RUNTIME_SESSION_REPLACED_EVENT } from "./services/browserRuntimeEvents";
+
 // =============================================================================
 // LAZY LOADED MODALS - Code Splitting for Non-Critical UI
 // =============================================================================
@@ -176,6 +179,7 @@ const App: React.FC<{ application?: LifecycleScope }> = ({ application }) => {
     details?: string;
   } | null>(null);
   const [bootstrapRetryKey, setBootstrapRetryKey] = useState(0);
+  const [browserRuntimeSessionReplaced, setBrowserRuntimeSessionReplaced] = useState(false);
   const appBootstrapRef = useRef<AppBootstrapController | null>(null);
   const viewOwnerRef = useRef<LifecycleScope | null>(null);
   const retryPendingRef = useRef(false);
@@ -239,6 +243,39 @@ const App: React.FC<{ application?: LifecycleScope }> = ({ application }) => {
     });
     void (application?.track(filters) ?? filters);
   }, [bootstrapRetryKey, application]);
+
+  useEffect(() => {
+    if (!isBrowserRuntimeBridgeEnabled()) return;
+
+    const handleSessionReplaced = () => {
+      setBrowserRuntimeSessionReplaced(true);
+      if (!initStatus.critical) return;
+      notify.actionRequired(
+        t(
+          "startup.browserRuntimeSessionReplacedTitle",
+          "This browser session is no longer connected to Macro.",
+        ),
+        {
+          description: t(
+            "startup.browserRuntimeSessionReplacedDescription",
+            "Another browser tab took control of the desktop runtime. Reload this tab to continue.",
+          ),
+          tone: "warning",
+          notificationKey: BROWSER_RUNTIME_SESSION_REPLACED_EVENT,
+          actions: [
+            {
+              label: t("startup.browserRuntimeSessionReplacedReload", "Reload tab"),
+              onClick: () => window.location.reload(),
+            },
+          ],
+        },
+      );
+    };
+
+    window.addEventListener(BROWSER_RUNTIME_SESSION_REPLACED_EVENT, handleSessionReplaced);
+    return () =>
+      window.removeEventListener(BROWSER_RUNTIME_SESSION_REPLACED_EVENT, handleSessionReplaced);
+  }, [initStatus.critical, t]);
 
   // Ref to track panels that were auto-collapsed during resize
   const autoCollapseRef = useRef<{ left: boolean; right: boolean }>({
@@ -391,6 +428,12 @@ const App: React.FC<{ application?: LifecycleScope }> = ({ application }) => {
   const handleStartupRetry = () => {
     const owner = viewOwnerRef.current;
     if (!owner?.isActive() || retryPendingRef.current) return;
+    if (isBrowserRuntimeBridgeEnabled()) {
+      // A replaced browser session and rejected module imports remain terminal
+      // until reload. Reclaim the session only on this explicit user action.
+      window.location.reload();
+      return;
+    }
     setBootstrapImportError(null);
     setInitStatus(INITIAL_BOOTSTRAP_SNAPSHOT);
     const controller = appBootstrapRef.current;
@@ -508,11 +551,22 @@ const App: React.FC<{ application?: LifecycleScope }> = ({ application }) => {
 
   // Show minimal loading state while critical initialization is pending
   if (!initStatus.critical) {
-    const startupError = bootstrapImportError || initStatus.startupError;
+    const startupError = browserRuntimeSessionReplaced
+      ? {
+          message:
+            t(
+              "startup.browserRuntimeSessionReplacedDescription",
+              "Another browser tab took control of the desktop runtime. Reload this tab to continue.",
+            ),
+          details: "BROWSER_RUNTIME_SESSION_REPLACED",
+        }
+      : bootstrapImportError || initStatus.startupError;
     if (startupError) {
-      const failedSteps = initStatus.startupError
-        ? initStatus.startupError.failedSteps
-        : ["Bootstrap import"];
+      const failedSteps = browserRuntimeSessionReplaced
+        ? ["Browser runtime session replaced"]
+        : initStatus.startupError
+          ? initStatus.startupError.failedSteps
+          : ["Bootstrap import"];
       return (
         <StartupErrorScreen
           message={startupError.message}

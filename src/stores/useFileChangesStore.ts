@@ -243,7 +243,7 @@ interface FileChangesTaskLike {
   title: string;
   description?: string | null;
   status: TaskStatus;
-  task_source: 'architect' | 'mixed' | 'fallback' | 'empty' | 'standalone' | 'plan_finalization';
+  task_source: 'architect' | 'mixed' | 'fallback' | 'empty' | 'standalone' | 'plan_finalization' | 'agsdl';
   project_id?: string | null;
   assigned_branch: string;
   base_branch?: string | null;

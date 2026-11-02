@@ -128,6 +128,8 @@ contribution, and technical references remain available below.
 - [HEADLESS.md](HEADLESS.md) - internal experimental notes for a possible future remote runtime.
 - [docs/configuration.md](docs/configuration.md) - JSON configuration files,
   scopes, schemas, agent tools, skills, and security rules.
+- [Native Codex for AgSDL](docs/agsdl-codex-native.md) - private profile setup,
+  tool policy, continuity, and qualification limits.
 - [Connect reader authority](docs/macro-pilot/connect-reader-authority.md) - bounded
   read authority, synthetic checks, and the native lifecycle limitation.
 - [CONTRIBUTING.md](CONTRIBUTING.md) - contribution guidelines.

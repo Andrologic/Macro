@@ -147,6 +147,7 @@ export function createAssistantStreamRuntime(ports: ChatAssistantStreamPorts) {
 
     const deleteEmptyAssistantMessageFromDb = async () => {
       if (
+        ports.owner.hasDirections(params.conversationId) ||
         ports.owner.latestSession(params.conversationId) !== params.sessionId
       ) {
         return;
@@ -161,14 +162,15 @@ export function createAssistantStreamRuntime(ports: ChatAssistantStreamPorts) {
         console.warn("Failed to delete empty assistant message after stream error:", error);
       }
     };
-    const contextDiagnosticsBaseline: StreamContextDiagnosticsBaseline = {
+    // Isolate once per generation; diagnostics retain this read-only snapshot across deltas.
+    const contextDiagnosticsBaseline: StreamContextDiagnosticsBaseline = structuredClone({
       ...params.contextDiagnosticsBaselineSeed,
       sessionId: params.sessionId,
       assistantMessageId: params.assistantMessage.id,
       orderedMessages: ports.messages.ordered(
         params.conversationId,
-      ).map(message => structuredClone(message)),
-    };
+      ),
+    });
     ports.diagnostics.record({
       conversationId: params.conversationId,
       sessionId: params.sessionId,
@@ -472,6 +474,7 @@ export function createAssistantStreamRuntime(ports: ChatAssistantStreamPorts) {
         clearLiveStreamContextEstimate: ports.diagnostics.clear,
         refreshConversationContextDiagnostics: ports.diagnostics.refresh,
         persistAssistantStreamResult: (...args) => trackEffect(ports.persistence.complete(...args)),
+        onAssistantPersisted: () => ports.owner.confirmSteers(identity),
         persistAssistantPartialStreamResult: (...args) => trackEffect(ports.persistence.partial(...args)),
         consolidatePendingToolBoundaryCompactionAfterPersistence,
         syncMacroMetadataAfterStream: (mode, conversationId) => trackEffect(ports.persistence.sync(mode, conversationId, params.architectPlanAtSend)),
@@ -635,9 +638,13 @@ export function createAssistantStreamRuntime(ports: ChatAssistantStreamPorts) {
           ? compacted
           : compacted?.messages ?? request.messages;
         if (!shouldAcceptStreamUpdate()) return request.messages;
-        return [...compactedMessages, ...ports.owner.consumeSteers(identity)];
+        return compactedMessages;
       },
       consumePendingSteers: () => shouldAcceptStreamUpdate() ? ports.owner.consumeSteers(identity) : [],
+      hasPendingSteers: () => shouldAcceptStreamUpdate() && ports.owner.hasPendingSteers(identity),
+      preparePendingSteers: requestId => ports.owner.deliverSteers(identity, requestId, shouldAcceptStreamUpdate),
+      onSteerRequestEnded: async requestId => { if (shouldAcceptStreamUpdate()) await ports.owner.steerRequestEnded(identity, requestId); },
+      isRequestCurrent: shouldAcceptStreamUpdate,
       providerSteerReceipts: () => ports.owner.providerSteerReceipts(identity),
       onLiveContextUpdate: (snapshot) => {
         if (!shouldAcceptStreamUpdate()) {

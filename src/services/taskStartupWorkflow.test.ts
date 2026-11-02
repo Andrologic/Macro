@@ -46,6 +46,17 @@ const fixture = () => {
 };
 
 describe('task startup without a UI store', () => {
+  it('refuses engine-owned Agent Tasks before legacy admission or workspace creation', async () => {
+    const f = fixture();
+    f.tasks[0] = { ...f.tasks[0], id: 'task:agsdl:v1:run:agent', task_source: 'agsdl' };
+    let leased = false;
+    f.ports.withLifecycleLock = async (_id, operation) => { leased = true; return operation(); };
+    const result = await f.workflow.start(f.tasks[0].id);
+    expect(result.status).toBe('rejected');
+    expect(leased).toBe(false);
+    expect(f.ports.persistArchitectAdmission).not.toHaveBeenCalled();
+    expect(f.ports.prepare).not.toHaveBeenCalled();
+  });
   it('rechecks durable admission after obtaining the native project lease', async () => {
     const f = fixture();
     const lock = deferred();

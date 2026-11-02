@@ -69,6 +69,8 @@ const COPILOT_SUPPORTED_TOOL_ID_SET = new Set([
   "terminal_read",
   "terminal_kill",
   "strategy_generate",
+  "agsdl_get",
+  "agsdl_update",
   "strategy_get",
   "strategy_update",
   "plan_create",
@@ -916,7 +918,7 @@ export const MACRO_TOOL_REGISTRY = [
       require_complete: {
         type: "boolean",
         description:
-          "Fail instead of returning an explicitly truncated diff. Defaults to false.",
+          "Fail instead of returning an explicitly truncated diff. Native libgit2 patch mode also rejects binary markers, invalid UTF-8 and NUL bytes in rendered data; stat/name_only remain summaries. This fidelity guarantee does not cover WSL. Defaults to false.",
       },
     },
     required: [],
@@ -1266,6 +1268,32 @@ export const MACRO_TOOL_REGISTRY = [
       },
       required: [],
     },
+  ),
+  objectTool(
+    "agsdl_get",
+    "Read the calling plan's AgSDL document and revision with bounded UTF-8 responses. Read section guide for the language contract before designing or editing structures. Use path for exact source reads. Follow outline.next_offset to discover every pointer. Explicit sections provide complete reports and oversized values as text pages; concatenate content before parsing JSON.",
+    { type: "object", properties: {
+      plan_id: { type: "string" }, target_branch: { type: "string" }, path: { type: "string", allowEmpty: true },
+      section: { type: "string", enum: ["outline", "outline_entry", "source", "guide", "report", "design", "display", "models", "annex_ids", "error"], description: "Omit for overview. outline lists pointers; source reads path; guide provides the language authoring rules without searching project files; report reads the original report JSON; other sections read their full JSON text." },
+      expected_revision: { type: "string", description: "Use the returned revision for every subsequent page; stale reads fail explicitly." },
+      offset: { type: "number", description: "Nonnegative integer. Entry offset for outline; UTF-8 byte offset for text sections. Follow next_offset until null." },
+      limit: { type: "number", description: "Positive integer. Up to 200 outline entries (default 100) or 16384 text bytes. A byte budget may return fewer; follow next_offset." },
+      cursor: { type: "string", description: "Opaque next_cursor for text sections; binds the target, revision and content. Use instead of offset, with expected_revision. Required to continue models pages because the provider catalog can change independently." },
+      report_index: { type: "number", description: "Nonnegative report index from diagnostics, for section report. Default 0; report_count gives the total." },
+      entry_index: { type: "number", description: "Entry index from an oversized outline placeholder, for section outline_entry. Preserve the same path filter and revision." },
+    }, required: ["plan_id", "target_branch"] },
+  ),
+  objectTool(
+    "agsdl_update",
+    "Edit and save the calling draft plan's AgSDL document. Read agsdl_get first. Supply exactly one of changes, source, example, design_json, or display_json. Design and display metadata are stored outside closed 0.2 source. Atomic pointer edits preserve untouched content. Returns a new revision and diagnostics; never runs agents.",
+    { type: "object", properties: {
+      plan_id: { type: "string" }, target_branch: { type: "string" }, expected_revision: { type: "string" },
+      changes: { type: "array", items: { type: "object", properties: { op: { type: "string", enum: ["set", "remove"] }, path: { type: "string", allowEmpty: true }, value_json: { type: "string", description: "Exact JSON value as text, required for set." } }, required: ["op", "path"] } },
+      source: { type: "string", description: "Complete replacement document; prefer changes for focused edits." },
+      example: { type: "string", enum: ["release", "feature", "hotfix", "bugfix"], description: "Initialize an empty document." },
+      design_json: { type: "string", description: "Complete Macro design metadata as JSON text. Read design_context from agsdl_get first. Metadata stays outside 0.2 source; requirement targetPath values explicitly adapt supported source fields." },
+      display_json: { type: "string", description: "AgSDL 0.2 Macro display metadata patch as JSON text. Read display_context first. Use title and cards mapping existing JSON pointers to title, description or macroGroup strings. Omitted fields remain unchanged; empty strings clear display overrides. Keeps source identities and bytes unchanged." },
+    }, required: ["plan_id", "target_branch", "expected_revision"] },
   ),
   objectTool(
     "plan_get",

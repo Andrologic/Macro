@@ -18,7 +18,9 @@ use crate::ai::types::{
 use crate::ai::{
     emit_timeline, AiState, AuthTask, CopilotRuntimeCache, DownloadTask, ProviderTimeline,
 };
-use crate::core::process::{background_command, background_tokio_command};
+use crate::core::process::{
+    background_command, background_tokio_command, ContainedBackgroundProcess,
+};
 use crate::db::models::{AiModel, ProviderAuthMetadata, ProviderModelInput};
 use crate::db::repository;
 use crate::tool_host::ToolHostConfig;
@@ -34,6 +36,7 @@ use std::fs::{self, File};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::Arc;
+use std::time::Duration;
 use std::time::Instant;
 use tar::Archive;
 use tauri::{path::BaseDirectory, AppHandle, Emitter, Manager};
@@ -418,11 +421,11 @@ fn normalize_copilot_send_timeout_ms(value: Option<i64>) -> i64 {
         .unwrap_or(DEFAULT_COPILOT_SEND_TIMEOUT_MS)
 }
 
-fn spawn_bridge(
+fn bridge_command(
     app_handle: &AppHandle,
     args: &[&str],
     envs: &[(String, String)],
-) -> Result<Child, String> {
+) -> Result<tokio::process::Command, String> {
     let bridge_path = resolve_bridge_path(app_handle)?;
     let mut command = background_tokio_command(bridge_path);
     tracing::debug!(
@@ -442,7 +445,15 @@ fn spawn_bridge(
         command.env(key, value);
     }
 
-    command
+    Ok(command)
+}
+
+fn spawn_bridge(
+    app_handle: &AppHandle,
+    args: &[&str],
+    envs: &[(String, String)],
+) -> Result<Child, String> {
+    bridge_command(app_handle, args, envs)?
         .spawn()
         .map_err(|error| format!("Failed to start Macro AI runtime: {}", error))
 }
@@ -495,13 +506,17 @@ async fn run_bridge_json_command<T: for<'de> Deserialize<'de>>(
     let stderr_task = tokio::spawn(async move {
         let mut stderr_reader = BufReader::new(stderr).lines();
         let mut lines = Vec::new();
-        while let Ok(Some(line)) = stderr_reader.next_line().await {
+        while let Some(line) = stderr_reader
+            .next_line()
+            .await
+            .map_err(|error| format!("Failed to drain AI runtime stderr: {error}"))?
+        {
             let trimmed = line.trim();
             if !trimmed.is_empty() {
                 lines.push(trimmed.to_string());
             }
         }
-        lines.join("\n")
+        Ok::<_, String>(lines.join("\n"))
     });
 
     let mut parsed_values: Vec<Value> = Vec::new();
@@ -539,7 +554,9 @@ async fn run_bridge_json_command<T: for<'de> Deserialize<'de>>(
         .wait()
         .await
         .map_err(|error| format!("Failed to wait for AI runtime process: {}", error))?;
-    let stderr_output = stderr_task.await.unwrap_or_default();
+    let stderr_output = stderr_task
+        .await
+        .map_err(|error| format!("Failed to join AI runtime stderr: {error}"))??;
 
     if !status.success() {
         let message = if !parsed_values.is_empty() {
@@ -1354,6 +1371,18 @@ fn restore_previous_runtime(final_dir: &Path, backup_dir: &Path) -> Result<(), S
     Ok(())
 }
 
+fn checked_archive_size(downloaded: u64, chunk_size: usize, expected: u64) -> Result<u64, String> {
+    let chunk_size = u64::try_from(chunk_size)
+        .map_err(|_| "GitHub Copilot runtime archive exceeds the manifest size.".to_string())?;
+    let next = downloaded
+        .checked_add(chunk_size)
+        .ok_or_else(|| "GitHub Copilot runtime archive exceeds the manifest size.".to_string())?;
+    if next > expected {
+        return Err("GitHub Copilot runtime archive exceeds the manifest size.".to_string());
+    }
+    Ok(next)
+}
+
 async fn install_runtime_archive(
     app_handle: &AppHandle,
     pool: &SqlitePool,
@@ -1399,10 +1428,13 @@ async fn install_runtime_archive(
         ));
     }
 
-    let total_bytes = response
+    if response
         .content_length()
-        .or(Some(asset.archive_size))
-        .filter(|value| *value > 0);
+        .is_some_and(|length| length > asset.archive_size)
+    {
+        return Err("GitHub Copilot runtime archive exceeds the manifest size.".to_string());
+    }
+    let total_bytes = Some(asset.archive_size);
     let mut file = tokio::fs::File::create(&archive_path)
         .await
         .map_err(|error| format!("Failed to create archive file: {}", error))?;
@@ -1419,11 +1451,12 @@ async fn install_runtime_archive(
         let chunk = chunk_result.map_err(|error| {
             format!("Failed while downloading GitHub Copilot runtime: {}", error)
         })?;
+        let next_size = checked_archive_size(downloaded_bytes, chunk.len(), asset.archive_size)?;
         archive_hash.update(&chunk);
         file.write_all(&chunk)
             .await
             .map_err(|error| format!("Failed to write GitHub Copilot archive: {}", error))?;
-        downloaded_bytes += chunk.len() as u64;
+        downloaded_bytes = next_size;
 
         if downloaded_bytes.saturating_sub(last_reported) >= DOWNLOAD_PROGRESS_GRANULARITY_BYTES
             || total_bytes
@@ -1447,7 +1480,7 @@ async fn install_runtime_archive(
         .await
         .map_err(|error| format!("Failed to flush GitHub Copilot archive: {}", error))?;
 
-    let expected_size = total_bytes.unwrap_or(asset.archive_size);
+    let expected_size = asset.archive_size;
     if downloaded_bytes != expected_size {
         return Err(format!(
             "Downloaded GitHub Copilot archive size mismatch (expected {}, got {}).",
@@ -2115,13 +2148,17 @@ async fn stream_chat_inner(
     let attempt = work
         .attempt(&provider.id, "copilot-local-bridge:send")
         .await?;
-    let mut child = spawn_bridge(&app_handle, &["send"], &bridge_envs(&app_handle, &runtime))?;
+    let mut child = ContainedBackgroundProcess::spawn(bridge_command(
+        &app_handle,
+        &["send"],
+        &bridge_envs(&app_handle, &runtime),
+    )?)
+    .map_err(|error| format!("Failed to start Macro AI runtime: {error}"))?;
 
     let mut stderr_task = None;
     let processing = async {
         let stdin = child
-            .stdin
-            .take()
+            .take_stdin()
             .ok_or_else(|| "AI runtime stdin is unavailable.".to_string())?;
         let stdin = Arc::new(Mutex::new(stdin));
         {
@@ -2147,12 +2184,10 @@ async fn stream_chat_inner(
         }
 
         let stdout = child
-            .stdout
-            .take()
+            .take_stdout()
             .ok_or_else(|| "AI runtime stdout is unavailable.".to_string())?;
         let stderr = child
-            .stderr
-            .take()
+            .take_stderr()
             .ok_or_else(|| "AI runtime stderr is unavailable.".to_string())?;
 
         let mut stdout_reader = BufReader::new(stdout).lines();
@@ -2165,10 +2200,11 @@ async fn stream_chat_inner(
                     lines.push(trimmed.to_string());
                 }
             }
-            lines.join("\n")
+            Ok::<_, String>(lines.join("\n"))
         }));
 
         let mut saw_done = false;
+        let mut done_payload = None;
         let mut last_error: Option<(Option<String>, String)> = None;
         let mut emitted_first_provider_event = false;
         let mut emitted_first_token = false;
@@ -2219,27 +2255,22 @@ async fn stream_chat_inner(
                         emitted_first_provider_event = true;
                         timeline.emit("first_provider_event");
                     }
-                    timeline.emit("done");
-                    app_handle
-                        .emit(
-                            "ai:done",
-                            AiStreamDoneEvent {
-                                request_id: request.request_id.clone(),
-                                output_text: content,
-                                tool_calls: Vec::new(),
-                                response_id: None,
-                                output_items: None,
-                                provider_input_items: None,
-                                provider_turn_state: None,
-                                reasoning_summary,
-                                tool_traces,
-                                hidden_context,
-                                accepted_submission_ids: Some(accepted_submission_ids),
-                                completion_reason: completion_reason
-                                    .or_else(|| Some("incomplete".to_string())),
-                            },
-                        )
-                        .map_err(|error| error.to_string())?;
+                    done_payload = Some(AiStreamDoneEvent {
+                        request_id: request.request_id.clone(),
+                        output_text: content,
+                        visible_text: None,
+                        tool_calls: Vec::new(),
+                        response_id: None,
+                        output_items: None,
+                        provider_input_items: None,
+                        provider_turn_state: None,
+                        reasoning_summary,
+                        tool_traces,
+                        hidden_context,
+                        accepted_submission_ids: Some(accepted_submission_ids),
+                        completion_reason: completion_reason
+                            .or_else(|| Some("incomplete".to_string())),
+                    });
                 }
                 BridgeSendEvent::Error { code, message } => {
                     if !emitted_first_provider_event {
@@ -2293,7 +2324,7 @@ async fn stream_chat_inner(
             }
         }
 
-        Ok::<_, String>((saw_done, last_error))
+        Ok::<_, String>((saw_done, done_payload, last_error))
     };
     let result = tokio::select! {
         biased;
@@ -2307,20 +2338,54 @@ async fn stream_chat_inner(
         .lock()
         .await
         .remove(&request.request_id);
-    let cleanup = crate::ai::stream_tasks::finish_child_stream(
-        &mut child,
-        stderr_task,
-        &cancel,
-        result.is_err(),
-    )
-    .await;
-    let (saw_done, last_error) = result?;
-    let (status, stderr_output) = cleanup?;
+    // Always terminate the whole process tree, then join the stderr reader.
+    let status = if result.is_err() || cancel.is_cancelled() {
+        child.terminate_with_grace(Duration::ZERO).await
+    } else {
+        let status = tokio::select! {
+            biased;
+            _ = cancel.cancelled() => child.terminate_with_grace(Duration::ZERO).await,
+            status = child.wait() => status,
+        };
+        match status {
+            Ok(status) => child
+                .terminate_with_grace(Duration::ZERO)
+                .await
+                .map(|_| status),
+            Err(error) => {
+                let cleanup = child.terminate_with_grace(Duration::ZERO).await;
+                cleanup.and(Err(error))
+            }
+        }
+    }
+    .map_err(|error| format!("AI runtime tree end was not confirmed: {error}"));
+    let stderr_output = if let Some(mut task) = stderr_task {
+        match tokio::time::timeout(Duration::from_secs(1), &mut task).await {
+            Ok(Ok(output)) => output,
+            Ok(Err(error)) => Err(format!("AI runtime stderr task failed: {error}")),
+            Err(_) => {
+                task.abort();
+                let _ = task.await;
+                Err("AI runtime stderr drain was not confirmed".to_string())
+            }
+        }
+    } else {
+        Ok(String::new())
+    };
+    let status = status?;
+    let stderr_output = stderr_output?;
+    let (saw_done, done_payload, last_error) = result?;
     if cancel.is_cancelled() {
         return Err("AI stream cancelled.".into());
     }
 
     if saw_done {
+        if let Some(payload) = done_payload {
+            timeline.emit("done");
+            app_handle
+                .emit("ai:done", payload)
+                .map_err(|error| error.to_string())?;
+        }
         return Ok(());
     }
 
@@ -2343,6 +2408,13 @@ async fn stream_chat_inner(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn rejects_archive_chunks_beyond_manifest_size_before_write() {
+        assert_eq!(checked_archive_size(8, 2, 10).unwrap(), 10);
+        assert!(checked_archive_size(8, 3, 10).is_err());
+        assert!(checked_archive_size(u64::MAX, 1, u64::MAX).is_err());
+    }
 
     #[test]
     fn normalizes_copilot_send_timeout_with_tool_completion_margin() {

@@ -32,13 +32,18 @@ import {
 } from '../../services/footerGitContext';
 import { getPlanExecutionModesByProjectId } from '../../services/planExecutionModes';
 import { NotificationCenterPopover } from './NotificationCenterPopover';
-import { UpdateStatusButton } from '../updates/UpdateStatusButton';
 import {
   presentMetadataSyncIssue,
   presentServiceError,
   resolveDegradedErrorPresentation,
 } from '../../services/degradedErrorPresentation';
 import { cn } from '../../utils/cn';
+
+const UpdateStatusButton = React.lazy(() =>
+  import('../updates/UpdateStatusButton').then((module) => ({
+    default: module.UpdateStatusButton,
+  })),
+);
 
 type FooterSyncAction = 'fetch' | 'pull' | 'push';
 type CodeDivergenceStrategy = 'merge' | 'rebase' | 'fastForward';
@@ -2119,7 +2124,7 @@ const FooterContent: React.FC<FooterContentProps> = React.memo(({
                 ) : (
                   <Icon name="folder-git-2" size={12} className="block translate-x-[0.25px] -translate-y-[0.5px] shrink-0 text-primary" />
                 )}
-                <span className="truncate leading-4 text-foreground">{focusedProject?.name || t('project.noProject', 'Aucun projet')}</span>
+                <span className="truncate leading-4 text-foreground">{focusedProject?.name || t('footer.scope.noRepository', 'Aucun dépôt Git sélectionné')}</span>
               </span>
             )}
             <Button
@@ -2251,7 +2256,9 @@ const FooterContent: React.FC<FooterContentProps> = React.memo(({
                 {t('footer.sync.resolve', 'Resolve')}
               </Button>
             )}
-            <UpdateStatusButton />
+            <React.Suspense fallback={<span className="h-7 min-w-7" aria-hidden="true" />}>
+              <UpdateStatusButton />
+            </React.Suspense>
             <Button
               ref={notificationCenterButtonRef}
               type="button"

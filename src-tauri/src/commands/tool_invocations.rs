@@ -69,7 +69,7 @@ pub async fn db_complete_tool_invocation(
     .await?
     {
         return parent
-            .finish_tool(input.identity, Some(input.receipt_id))
+            .finish_tool(input.identity, Some(input.receipt_id), input.result_json)
             .await
             .map_err(Into::into);
     }
@@ -96,7 +96,10 @@ pub async fn db_mark_tool_invocation_unknown(
     )
     .await?
     {
-        return parent.finish_tool(identity, None).await.map_err(Into::into);
+        return parent
+            .finish_tool(identity, None, None)
+            .await
+            .map_err(Into::into);
     }
     tool_invocations::mark_unknown(&pool, identity)
         .await

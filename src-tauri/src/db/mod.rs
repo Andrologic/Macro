@@ -5,6 +5,8 @@ mod portable_normalization_io;
 // integration makes the entry points reachable from the application.
 #[allow(dead_code)]
 pub mod agent_runs;
+#[allow(dead_code)]
+pub(crate) mod agsdl_execution;
 pub(crate) mod chat_admission;
 pub(crate) mod connect_transfer;
 pub(crate) mod conversation_catalog;
@@ -12,10 +14,12 @@ pub(crate) mod conversation_catalog;
 pub(crate) mod conversation_content;
 pub mod conversation_goals;
 pub mod conversation_management;
+pub(crate) mod exact_json;
 pub mod goal_audit_children;
 pub mod goal_audit_transitions;
 mod inactive_budget;
 pub(crate) mod inactive_storage;
+pub(crate) mod migration_history;
 #[allow(dead_code)]
 pub mod models;
 pub mod pilot_files;
@@ -88,9 +92,9 @@ pub(crate) async fn validate_source_opening(
     source_capture::validate_schema(&mut tx).await?;
     chat_admission::validate_schema(&mut tx).await?;
     connect_transfer::validate_schema(&mut tx).await?;
-    let stamps: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM schema_migrations WHERE (version=13 AND name='013_conversation_content_versions') OR (version=14 AND name='014_conversation_catalog_version') OR (version=15 AND name='015_inactive_storage') OR (version=16 AND name='016_source_capture')")
+    let stamps: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM schema_migrations WHERE (version=13 AND name='013_conversation_content_versions') OR (version=14 AND name='014_conversation_catalog_version') OR (version=15 AND name='015_inactive_storage') OR (version=16 AND name='016_source_capture') OR (version=17 AND name='017_chat_admission') OR (version=18 AND name='018_connect_transfer') OR (version=19 AND name='019_connect_publication')")
         .fetch_one(&mut *tx).await?;
-    if stamps != 4 {
+    if stamps != 7 {
         return Err(DbError::Migration("Invalid source opening stamps".into()));
     }
     tx.commit().await?;
@@ -110,8 +114,9 @@ const MIGRATION_003_SQL: &str = include_str!("migrations/002_agent_runs.sql");
 const MIGRATION_004_VERSION: i64 = 4;
 const MIGRATION_004_NAME: &str = "004_message_search";
 const MIGRATION_004_SQL: &str = include_str!("migrations/004_message_search.sql");
-pub(crate) const SUPPORTED_MIGRATION_VERSIONS: &[i64] =
-    &[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19];
+pub(crate) const SUPPORTED_MIGRATION_VERSIONS: &[i64] = &[
+    1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26,
+];
 const MIGRATION_005_VERSION: i64 = 5;
 const MIGRATION_005_NAME: &str = "005_runtime_schema";
 const MIGRATION_005_CHECK_SQL: &str = include_str!("migrations/005_runtime_schema_check.sql");
@@ -119,6 +124,7 @@ const MIGRATION_006_SQL: &str = include_str!("migrations/006_generation_attempts
 const MIGRATION_007_SQL: &str = include_str!("migrations/007_tool_invocations.sql");
 const MIGRATION_008_SQL: &str = include_str!("migrations/008_agent_run_transitions.sql");
 const MIGRATION_009_SQL: &str = include_str!("migrations/009_conversation_goals.sql");
+const MIGRATION_010_SQL: &str = include_str!("migrations/010_visible_message_search.sql");
 
 fn app_db_path(app_dir: &Path) -> PathBuf {
     app_dir.join("macro.db")
@@ -159,12 +165,20 @@ pub async fn init_db(app_handle: &AppHandle) -> DbResult<SqlitePool> {
             }
         }
     });
-    agent_runs::reconcile_active_agent_runs_after_restart(&pool).await?;
-    conversation_goals::reconcile_audits_after_restart(&pool).await?;
-    tool_invocations::reconcile_pending_after_restart(&pool).await?;
-    chat_admission::reconcile_after_restart(&pool).await?;
+    reconcile_runtime_after_restart(&pool).await?;
 
     Ok(pool)
+}
+
+/// The startup path used by init_db, exercised with real reopened SQLite pools.
+pub(crate) async fn reconcile_runtime_after_restart(pool: &SqlitePool) -> DbResult<()> {
+    agent_runs::reconcile_active_agent_runs_after_restart(pool).await?;
+    conversation_goals::reconcile_audits_after_restart(pool).await?;
+    tool_invocations::reconcile_pending_after_restart(pool).await?;
+    agsdl_execution::reconcile_after_restart(pool).await?;
+    chat_admission::reconcile_after_restart(pool).await?;
+
+    Ok(())
 }
 
 /// Create a pool for the given database path.
@@ -248,7 +262,7 @@ async fn run_migrations_on_connection(connection: &mut SqliteConnection) -> DbRe
     }
 
     let user_tables = list_user_tables(connection).await?;
-    normalize_local_pilot_migration_history(connection).await?;
+    migration_history::normalize(connection).await?;
     let applied_migrations = list_applied_migrations(connection).await?;
     validate_migration_history(&applied_migrations)?;
     let is_legacy_database = !user_tables.is_empty() && applied_migrations.is_empty();
@@ -447,7 +461,11 @@ async fn run_migrations_on_connection(connection: &mut SqliteConnection) -> DbRe
             "018_connect_transfer",
             include_str!("migrations/018_connect_transfer.sql"),
         ),
-        (19, "019_connect_publication", include_str!("migrations/019_connect_publication.sql")),
+        (
+            19,
+            "019_connect_publication",
+            include_str!("migrations/019_connect_publication.sql"),
+        ),
     ] {
         if !list_applied_migrations(connection)
             .await?
@@ -457,45 +475,75 @@ async fn run_migrations_on_connection(connection: &mut SqliteConnection) -> DbRe
         }
     }
 
+    if !list_applied_migrations(connection).await?.contains(&20) {
+        apply_migration(
+            connection,
+            20,
+            "020_tool_results".into(),
+            include_str!("migrations/010_tool_results.sql").into(),
+        )
+        .await?;
+    }
+    if !list_applied_migrations(connection).await?.contains(&21) {
+        apply_migration(
+            connection,
+            21,
+            "021_agsdl_execution".into(),
+            include_str!("migrations/011_agsdl_execution.sql").into(),
+        )
+        .await?;
+    }
+    if !list_applied_migrations(connection).await?.contains(&22) {
+        apply_migration(
+            connection,
+            22,
+            "022_execution_host".into(),
+            include_str!("migrations/012_execution_host.sql").into(),
+        )
+        .await?;
+    }
+    if !list_applied_migrations(connection).await?.contains(&23) {
+        apply_migration(
+            connection,
+            23,
+            "023_execution_ui_intents".into(),
+            include_str!("migrations/013_execution_ui_intents.sql").into(),
+        )
+        .await?;
+    }
+    if !list_applied_migrations(connection).await?.contains(&24) {
+        apply_migration(
+            connection,
+            24,
+            "024_execution_process_receipts".into(),
+            include_str!("migrations/014_execution_process_receipts.sql").into(),
+        )
+        .await?;
+    }
+    if !list_applied_migrations(connection).await?.contains(&25) {
+        apply_migration(
+            connection,
+            25,
+            "025_visible_message_search".into(),
+            include_str!("migrations/010_visible_message_search.sql").into(),
+        )
+        .await?;
+    }
+    if !list_applied_migrations(connection).await?.contains(&26) {
+        apply_migration(
+            connection,
+            26,
+            "026_execution_native_operations".into(),
+            include_str!("migrations/016_execution_native_operations.sql").into(),
+        )
+        .await?;
+    }
     conversation_content::validate_schema(connection).await?;
     conversation_catalog::validate_schema(connection).await?;
     source_capture::validate_schema(connection).await?;
     chat_admission::validate_schema(connection).await?;
     connect_transfer::validate_schema(connection).await?;
 
-    Ok(())
-}
-
-// Local Pilot builds used 6/7 before develop published its canonical migrations.
-// Move only those exact historical stamps; schema and application rows stay intact.
-// The surrounding transaction rolls back normalization if a later migration fails.
-async fn normalize_local_pilot_migration_history(
-    connection: &mut SqliteConnection,
-) -> DbResult<()> {
-    for (old, old_name, new, new_name) in [
-        (
-            6,
-            "006_pilot_tool_trace_revisions",
-            10,
-            "010_pilot_tool_trace_revisions",
-        ),
-        (
-            7,
-            "007_conversation_management",
-            11,
-            "011_conversation_management",
-        ),
-    ] {
-        sqlx::query(
-            "UPDATE schema_migrations SET version = ?, name = ? WHERE version = ? AND name = ?",
-        )
-        .bind(new)
-        .bind(new_name)
-        .bind(old)
-        .bind(old_name)
-        .execute(&mut *connection)
-        .await?;
-    }
     Ok(())
 }
 
@@ -519,6 +567,8 @@ fn validate_migration_history(applied: &HashSet<i64>) -> DbResult<()> {
         || (applied.contains(&15) && !applied.contains(&14))
         || (applied.contains(&16) && !applied.contains(&15))
         || (applied.contains(&17) && !applied.contains(&16))
+        || (applied.contains(&18) && !applied.contains(&17))
+        || (applied.contains(&19) && !applied.contains(&18))
     {
         return Err(DbError::Migration(
             "Unsupported or inconsistent migration history; database left unchanged".to_string(),
@@ -1917,7 +1967,7 @@ async fn insert_default_speech_provider(connection: &mut SqliteConnection) -> Db
 }
 
 #[cfg(test)]
-mod migration_tests;
+pub(crate) mod migration_tests;
 
 #[cfg(test)]
 mod tests {
@@ -2219,6 +2269,7 @@ mod tests {
         .execute(&pool)
         .await
         .expect("emulate local Pilot version five");
+        super::migration_tests::drop_agsdl(&mut *pool.acquire().await.unwrap()).await;
         super::inactive_storage::tests::remove_reference_schema_in(
             &mut *pool.acquire().await.unwrap(),
         )
@@ -2647,6 +2698,7 @@ mod tests {
         let temp_dir = TempDir::new().expect("temp dir");
         let db_path = temp_dir.path().join("macro.db");
         let pool = create_pool(&db_path).await.expect("initial pool");
+        super::migration_tests::drop_agsdl(&mut *pool.acquire().await.unwrap()).await;
         super::inactive_storage::tests::remove_reference_schema_in(
             &mut *pool.acquire().await.unwrap(),
         )

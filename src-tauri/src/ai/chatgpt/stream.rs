@@ -1,8 +1,8 @@
 use super::session::{ensure_fresh_secret, force_refresh_secret};
 use super::types::{
-    extract_response_error, AiChatMessageContent, AiChatRequest, AiStreamChunkEvent,
-    AiStreamDoneEvent, AiStreamErrorEvent, AiToolCall, AiToolCallFunction, ChatGptResponsesRequest,
-    ResponsesContentItem, ResponsesMessageItem, DEFAULT_ORIGINATOR,
+    extract_response_error, read_error_response, AiChatMessageContent, AiChatRequest,
+    AiStreamChunkEvent, AiStreamDoneEvent, AiStreamErrorEvent, AiToolCall, AiToolCallFunction,
+    ChatGptResponsesRequest, ResponsesContentItem, ResponsesMessageItem, DEFAULT_ORIGINATOR,
 };
 use crate::ai::{emit_timeline, ProviderTimeline};
 use crate::db::models::ProviderConfig;
@@ -19,7 +19,6 @@ use tauri::{AppHandle, Emitter};
 
 const STREAM_IDLE_TIMEOUT: Duration = Duration::from_secs(60);
 const RESPONSE_HEADERS_TIMEOUT: Duration = Duration::from_secs(30);
-const ERROR_BODY_TIMEOUT: Duration = Duration::from_secs(10);
 const MAX_SSE_BUFFER_BYTES: usize = 1_048_576;
 
 #[derive(Debug, Default, Clone)]
@@ -90,9 +89,15 @@ async fn stream_chat_inner(
         .await
         .map_err(|error| error.to_string())?
         .ok_or_else(|| format!("Provider {} not found.", request.provider_id))?;
+    crate::core::provider_endpoint::validate_provider_endpoint(
+        &provider.base_url,
+        provider.is_local,
+    )
+    .map_err(str::to_string)?;
     let body = build_responses_request(&request)?;
     let client = work
         .configure_http_client(reqwest::Client::builder())
+        .redirect(reqwest::redirect::Policy::none())
         .build()
         .map_err(|error| error.to_string())?;
 
@@ -121,22 +126,13 @@ async fn stream_chat_inner(
     if !response.status().is_success() {
         let status = response.status();
         attempt.http_rejection(status).await?;
-        let body = tokio::time::timeout(ERROR_BODY_TIMEOUT, response.text())
-            .await
-            .map_err(|_| {
-                format!(
-                    "ChatGPT error {} response body timed out after {} seconds.",
-                    status.as_u16(),
-                    ERROR_BODY_TIMEOUT.as_secs()
-                )
-            })?
-            .map_err(|error| {
-                format!(
-                    "Failed to read ChatGPT error {} response body: {}",
-                    status.as_u16(),
-                    error
-                )
-            })?;
+        let body = read_error_response(response).await.map_err(|error| {
+            format!(
+                "Failed to read ChatGPT error {} response body: {}",
+                status.as_u16(),
+                error
+            )
+        })?;
         return Err(extract_response_error(status.as_u16(), &body));
     }
 
@@ -222,6 +218,7 @@ async fn stream_chat_inner(
                 AiStreamDoneEvent {
                     request_id: request.request_id,
                     output_text: completion_accumulator.output_text,
+                    visible_text: None,
                     tool_calls: completion_accumulator.tool_calls,
                     response_id: completion_accumulator.response_id,
                     output_items: optional_output_items(completion_accumulator.output_items),
@@ -288,7 +285,9 @@ async fn send_chatgpt_request(
         .unwrap_or(request.request_id.as_str());
 
     let url = reqwest::Url::parse(&url).map_err(|error| error.to_string())?;
-    let attempt = work.independent_request_attempt(&provider.id, url.as_str()).await?;
+    let attempt = work
+        .independent_request_attempt(&provider.id, url.as_str())
+        .await?;
     let outgoing = client
         .post(url)
         .header(CONTENT_TYPE, "application/json")
@@ -557,6 +556,7 @@ fn process_sse_event(
                     AiStreamDoneEvent {
                         request_id: request.request_id.to_string(),
                         output_text,
+                        visible_text: None,
                         tool_calls,
                         response_id,
                         output_items,
@@ -611,6 +611,7 @@ fn process_sse_event(
                     AiStreamDoneEvent {
                         request_id: request.request_id.to_string(),
                         output_text,
+                        visible_text: None,
                         tool_calls,
                         response_id,
                         output_items,

@@ -457,6 +457,24 @@ describe('useProviderStore secret resolution', () => {
     expect(useProviderStore.getState().selectedModelId).toBe('manual-model');
   });
 
+  it('returns local models while the context catalogue is still pending', async () => {
+    const { useProviderStore } = await loadProviderStore();
+    await useProviderStore.getState().loadProviderConfigs();
+    let release!: () => void;
+    const pending = new Promise<void>((resolve) => { release = resolve; });
+    useProviderStore.setState({ refreshLoadedModelContextCatalog: () => pending });
+    listProviderModelsMock.mockImplementationOnce(async () => [
+      dbModel('provider-openai', 'cached-model'),
+    ]);
+    try {
+      const models = await useProviderStore.getState().loadProviderModels('provider-openai');
+      expect(models.map((model: { id: string }) => model.id)).toEqual(['cached-model']);
+      expect(useProviderStore.getState().isLoadingModels).toBe(false);
+    } finally {
+      release();
+    }
+  });
+
   it('preserves new transport model selection after an old catalog wait', async () => {
     const { useProviderStore } = await loadProviderStore();
     await useProviderStore.getState().loadProviderConfigs();
@@ -2406,11 +2424,15 @@ describe('useProviderStore secret resolution', () => {
       selectedReasoningEffort: null,
     });
 
+    const refresh = mock(async () => { throw new Error('Unavailable catalogue endpoint'); });
+    providerStore.useProviderStore.setState({ refreshModelsForProviderIfNeeded: refresh });
+    const lifecycle = createLifecycleScope();
     const committed = await providerStore.useProviderStore.getState().commitRestoredSelection({
       providerId: 'provider-openai',
       modelId: 'gpt-5-pro',
       reasoningEffort: 'xhigh',
-    });
+    }, { lifecycle });
+    expect(refresh).not.toHaveBeenCalled();
 
     expect(committed).toEqual({
       providerId: 'provider-openai',
@@ -2616,6 +2638,8 @@ describe('useProviderStore secret resolution', () => {
             provider_id: 'provider-openai',
             isEnabled: true,
             contextWindowTokens: 64_000,
+            inputLimitTokens: 123_000,
+            outputLimitTokens: 8_000,
             contextWindowSource: 'provider_overflow_error',
             contextLimitsUpdatedAt: '2026-05-10T00:00:00.000Z',
           },
@@ -2633,8 +2657,8 @@ describe('useProviderStore secret resolution', () => {
       ][0]
     ).toMatchObject({
       contextWindowTokens: 222_000,
-      inputLimitTokens: 200_000,
-      outputLimitTokens: 16_000,
+      inputLimitTokens: 123_000,
+      outputLimitTokens: 8_000,
       contextWindowSource: 'models_dev',
     });
     expect(upsertProviderModelsMock).toHaveBeenCalledWith({
@@ -2643,6 +2667,8 @@ describe('useProviderStore secret resolution', () => {
         expect.objectContaining({
           model_id: 'gpt-catalog',
           context_window_tokens: 222_000,
+          input_limit_tokens: 123_000,
+          output_limit_tokens: 8_000,
           context_window_source: 'models_dev',
         }),
       ],
@@ -2875,6 +2901,40 @@ describe('useProviderStore secret resolution', () => {
     });
   });
 
+  for (const desktop of [false, true]) {
+    for (const source of ['provider_metadata', 'model_metadata'] as const) {
+      it(`preserves a known ${source} window and its date after an incomplete scan, desktop=${desktop}`, async () => {
+        tauriAvailable = desktop;
+        const { useProviderStore: store } = await loadProviderStore();
+        catalogTestables.writeCachedCatalog({ fetchedAt: new Date().toISOString(), providers: {
+          openai: { models: { 'gpt-5': { limit: { context: 400_000 } } } },
+        } });
+        (probeModelsEndpointMock as unknown as {
+          mockImplementationOnce: (implementation: () => Promise<unknown>) => void;
+        }).mockImplementationOnce(async () => ({ success: true, status: 'reachable', source: 'models_endpoint',
+          message: 'Connected', models: [{ id: 'gpt-5', name: 'GPT-5' }] }));
+        store.setState({ providerConfigs: [{ id: 'provider-openai', name: 'OpenAI', providerType: 'openai',
+          baseUrl: 'https://api.openai.com/v1', apiKey: 'synthetic', hasStoredApiKey: true,
+          apiKeyLoaded: true, isEnabled: true, isLocal: false }],
+          modelsByProvider: { 'provider-openai': [{ id: 'gpt-5', name: 'GPT-5', provider_id: 'provider-openai',
+            isEnabled: true, contextWindowTokens: 123_000, contextWindowSource: source,
+            contextLimitsUpdatedAt: '2026-10-01', inputLimitTokens: 100_000, outputLimitTokens: 8_000 }] } });
+        await store.getState().scanModelsForProvider('provider-openai');
+        if (desktop) {
+          expect(upsertProviderModelsMock.mock.calls.at(-1)?.[0].models[0]).toMatchObject({
+            context_window_tokens: 123_000, context_window_source: source, context_limits_updated_at: '2026-10-01',
+            input_limit_tokens: 100_000, output_limit_tokens: 8_000,
+          });
+        } else {
+          expect(store.getState().modelsByProvider['provider-openai'][0]).toMatchObject({
+            contextWindowTokens: 123_000, contextWindowSource: source, contextLimitsUpdatedAt: '2026-10-01',
+            inputLimitTokens: 100_000, outputLimitTokens: 8_000,
+          });
+        }
+      });
+    }
+  }
+
   it('preserves user context overrides when provider scans return metadata', async () => {
     const providerStore = await loadProviderStore();
     (probeModelsEndpointMock as unknown as {
@@ -2918,6 +2978,7 @@ describe('useProviderStore secret resolution', () => {
             contextWindowTokens: 16_000,
             contextWindowSource: 'user_override',
             contextLimitsUpdatedAt: '2026-05-10T00:00:00.000Z',
+            outputLimitTokens: 12_000,
           },
         ],
       },
@@ -2935,6 +2996,7 @@ describe('useProviderStore secret resolution', () => {
           model_id: 'manual-model',
           context_window_tokens: 16_000,
           input_limit_tokens: 180_000,
+          output_limit_tokens: 12_000,
           context_window_source: 'user_override',
         }),
       ],
@@ -3167,6 +3229,63 @@ describe('useProviderStore secret resolution', () => {
     await flushAsyncWork();
 
     expect(probeModelsEndpointMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('selects a provider/model pair atomically and resolves that model’s reasoning', async () => {
+    const { useProviderStore } = await loadProviderStore();
+    const refresh = mock(async () => []);
+    const context = mock(async () => []);
+    useProviderStore.setState({
+      selectedProviderId: 'previous', selectedModelId: 'shared-model', selectedReasoningEffort: 'high',
+      providerConfigs: [{ id: 'target', name: 'Target', providerType: 'openai', baseUrl: 'http://localhost/v1',
+        isEnabled: true, isLocal: true, hasStoredApiKey: false }],
+      modelsByProvider: { target: [{ id: 'shared-model', name: 'Shared model', provider_id: 'target',
+        reasoningCapability: { reasoningEfforts: ['low', 'medium'], defaultReasoningEffort: 'medium',
+          transportMode: 'openai_effort', configurable: true, source: 'manual_override' } }] },
+      refreshModelsForProviderIfNeeded: refresh,
+      ensureSelectedModelContextMetadata: context,
+    });
+    const selections: Array<[string | null, string | null]> = [];
+    const unsubscribe = useProviderStore.subscribe((state: { selectedProviderId: string | null; selectedModelId: string | null }) => {
+      selections.push([state.selectedProviderId, state.selectedModelId]);
+    });
+    useProviderStore.getState().selectProviderModel('target', 'shared-model');
+    unsubscribe();
+    expect(selections).toEqual([['target', 'shared-model']]);
+    expect(useProviderStore.getState().selectedReasoningEffort).toBe('medium');
+    expect(refresh).toHaveBeenCalledWith('target', 'provider_selection');
+    expect(context).toHaveBeenCalledWith('target', 'shared-model', 'model_selection');
+
+    useProviderStore.getState().selectReasoningEffort('low');
+    useProviderStore.getState().selectProviderModel('target', 'shared-model');
+    expect(useProviderStore.getState().selectedReasoningEffort).toBe('low');
+  });
+
+  it('rejects stale model choices from disabled or disconnected providers and disabled models', async () => {
+    const { useProviderStore } = await loadProviderStore();
+    const refresh = mock(async () => []);
+    const context = mock(async () => []);
+    const provider = { id: 'target', name: 'Target', providerType: 'openai', baseUrl: 'http://localhost/v1',
+      isEnabled: true, isLocal: true, hasStoredApiKey: false };
+    useProviderStore.setState({
+      selectedProviderId: 'previous', selectedModelId: 'previous-model',
+      providerConfigs: [provider, { ...provider, id: 'disabled', isEnabled: false },
+        { ...provider, id: 'disconnected', isLocal: false }],
+      modelsByProvider: Object.fromEntries(['target', 'disabled', 'disconnected'].map((id) => [id, [
+        { id: 'shared-model', name: 'Shared model', provider_id: id },
+        { id: 'hidden-model', name: 'Hidden model', provider_id: id, isEnabled: false },
+      ]])),
+      refreshModelsForProviderIfNeeded: refresh,
+      ensureSelectedModelContextMetadata: context,
+    });
+    for (const [providerId, modelId] of [['disabled', 'shared-model'], ['disconnected', 'shared-model'],
+      ['missing', 'shared-model'], ['target', 'hidden-model'], ['target', 'missing-model']]) {
+      useProviderStore.getState().selectProviderModel(providerId!, modelId!);
+      expect(useProviderStore.getState().selectedProviderId).toBe('previous');
+      expect(useProviderStore.getState().selectedModelId).toBe('previous-model');
+    }
+    expect(refresh).not.toHaveBeenCalled();
+    expect(context).not.toHaveBeenCalled();
   });
 
   it('lets manual refresh bypass the provider selection cooldown', async () => {

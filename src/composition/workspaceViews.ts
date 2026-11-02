@@ -6,12 +6,13 @@ import { workspaceDefinitions, type WorkspaceId, type WorkspaceViewId, type Work
 import { createModePanelLoader, type ModePanelLoader, type ModePanelSlot, type ModePanelPreloadResult } from '../components/layout/panelLoader';
 
 const DEFAULT_PRELOAD_TIMEOUT_MS = 450;
+const demoJourney = import.meta.env.DEV && import.meta.env.VITE_MACRO_DEMO === '1';
 const strategyGraphLoader = createModePanelLoader({
   id: 'architect:right:strategy-graph',
   label: 'Strategy graph',
   mode: 'Architect',
   panel: 'right',
-  importComponent: async () => (await import('../components/plan/StrategyGraph')).default,
+  importComponent: async () => (await import('../components/architect/ArchitectStrategyPanel')).default,
 });
 
 const architectProjectNavigatorLoader = createModePanelLoader({
@@ -20,7 +21,7 @@ const architectProjectNavigatorLoader = createModePanelLoader({
   mode: 'Architect',
   panel: 'left',
   importComponent: async () =>
-    (await import('../components/architect/ArchitectProjectNavigator')).default,
+    demoJourney ? (await import('../demo/DemoArchitectNavigator')).default : (await import('../components/architect/ArchitectProjectNavigator')).default,
 });
 
 const taskQueueLoader = createModePanelLoader({
@@ -28,7 +29,7 @@ const taskQueueLoader = createModePanelLoader({
   label: 'Task queue',
   mode: 'Implement',
   panel: 'left',
-  importComponent: async () => (await import('../components/tasks/TaskQueue')).default,
+  importComponent: async () => demoJourney ? (await import('../demo/DemoTaskQueue')).default : (await import('../components/tasks/TaskQueue')).default,
 });
 
 const fileChangesPanelLoader = createModePanelLoader({
@@ -106,8 +107,8 @@ export interface WorkspaceViewContribution extends Contribution<WorkspaceSession
 export const workspaceViews = new ContributionRegistry<WorkspaceViewContribution, WorkspaceSession>();
 
 const presentation: Record<AppMode, { icon: IconName; labelKey: string }> = {
-  Architect: { icon: 'compass', labelKey: 'header.architect' },
-  Implement: { icon: 'code', labelKey: 'header.implement' },
+  Architect: { icon: demoJourney ? 'pencil-ruler' : 'compass', labelKey: 'header.architect' },
+  Implement: { icon: demoJourney ? 'workflow' : 'code', labelKey: demoJourney ? 'header.operate' : 'header.implement' },
   Chat: { icon: 'message-circle', labelKey: 'header.chat' },
 };
 Object.values(workspaceDefinitions).forEach((definition, order) => {

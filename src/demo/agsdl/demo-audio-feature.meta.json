@@ -1,0 +1,66 @@
+{
+  "title": "Améliorer la lecture audio",
+  "description": "Préciser le besoin, réaliser la reprise de lecture puis vérifier les cas de pause et de chargement.",
+  "projectId": "demo-luma",
+  "planKind": "feature",
+  "icon": "tool",
+  "design": {
+    "version": 1,
+    "kind": "blueprint",
+    "purpose": "Préciser le besoin, réaliser la reprise de lecture puis vérifier les cas de pause et de chargement.",
+    "context": "Projet fictif : les services, données et résultats sont simulés.",
+    "rules": [],
+    "requirements": [
+      {
+        "id": "model",
+        "label": "Modèle des agents",
+        "description": "Choix pour cette utilisation simulée",
+        "value": "Macro AI · Démo"
+      }
+    ]
+  },
+  "display": {
+    "title": "Améliorer la lecture audio",
+    "cards": {
+      "/agents/scope": {
+        "title": "Analyste produit"
+      },
+      "/agents/implement": {
+        "title": "Développeur mobile"
+      },
+      "/agents/verify": {
+        "title": "Testeur"
+      },
+      "/flow/steps/scope": {
+        "title": "Préciser la reprise audio"
+      },
+      "/flow/steps/implement": {
+        "title": "Améliorer la lecture audio"
+      },
+      "/flow/steps/verify": {
+        "title": "Vérifier la reprise audio"
+      },
+      "/flow": {
+        "title": "Améliorer la lecture audio"
+      },
+      "/bindings/engine": {
+        "title": "Macro"
+      },
+      "/configurations/standard": {
+        "title": "Standard"
+      },
+      "/configurations/code": {
+        "title": "Développement"
+      },
+      "/configurations/mobile": {
+        "title": "Tests mobiles"
+      },
+      "/bindings/storeConsoles": {
+        "title": "Consoles App Store et Google Play"
+      },
+      "/bindings/lumaRepository": {
+        "title": "Dépôt Luma Mobile"
+      }
+    }
+  }
+}

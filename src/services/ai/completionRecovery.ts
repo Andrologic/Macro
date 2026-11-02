@@ -9,6 +9,9 @@ export const INCOMPLETE_RECOVERY_PROMPT =
   'Continue exactly where it stopped. Return only the missing continuation. ' +
   'Do not repeat text and do not call tools.';
 
+export const isSuccessfulCompletionReason = (reason: StreamCompletionReason | undefined): boolean =>
+  !reason || ['completed', 'length_recovered', 'incomplete_recovered', 'tool_turn_limit', 'post_tool_empty_fallback'].includes(reason);
+
 export const isIncompleteCompletionReason = (
   reason: StreamCompletionReason | undefined,
 ): reason is 'length' | 'incomplete' => reason === 'length' || reason === 'incomplete';

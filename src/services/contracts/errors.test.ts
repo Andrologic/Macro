@@ -10,6 +10,18 @@ import {
 } from './errors';
 
 describe('toServiceError', () => {
+  it('preserves native failure codes independently of the displayed wording', () => {
+    for (const code of ['REVISION_CONFLICT', 'TOOL_EXECUTION_CANCELLED', 'TOOL_EXECUTION_TIMEOUT', 'Database']) {
+      for (const message of ['Operation stopped', 'Completely different wording']) {
+        const direct = toServiceError({ code, message });
+        const remote = toServiceError({ data: { code, message } });
+        expect(direct.code).toBe(code);
+        expect(remote.code).toBe(code);
+        expect(remote.message).toBe(message);
+      }
+    }
+  });
+
   it('normalizes string errors', () => {
     expect(toServiceError('Command not found')).toEqual({
       code: 'UNEXPECTED_ERROR',

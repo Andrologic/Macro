@@ -35,6 +35,20 @@ const invoke = mock(async (command: string, args?: Record<string, unknown>): Pro
     }
     case 'db_complete_tool_invocation': return { status: 'completed' };
     case 'db_mark_tool_invocation_unknown': return { status: 'unknown' };
+    case 'chat_admission_begin_intent': {
+      const identity = args!.identity as { conversationId: string };
+      if (identity.conversationId !== conversation.id) throw new Error('Unexpected admission scope');
+      return { kind: 'conversation' };
+    }
+    case 'chat_admission_write_approval_registry': {
+      const key = 'toolApprovalRecovery:v1';
+      if (args!.conversationId !== conversation.id || args!.receipt !== null || (settings.get(key) ?? null) !== args!.expectedValueJson) {
+        throw new Error('Invalid approval registry admission or revision');
+      }
+      if (args!.valueJson === null) settings.delete(key);
+      else settings.set(key, String(args!.valueJson));
+      return;
+    }
     case 'mcp_runtime_get_snapshot': return { generatedAt: '2026-01-01T00:00:00Z', servers: [] };
     case 'fs_list_dir': return [];
     case 'fs_read_file': return { content: '', language: 'text', is_binary: false, size: 0, encoding: 'utf8' };
@@ -68,13 +82,14 @@ const invoke = mock(async (command: string, args?: Record<string, unknown>): Pro
     }
     case 'db_delete_app_setting': settings.delete(String(args!.key)); return;
     case 'terminal_read':
-    case 'terminal_run': return { id: 'synthetic-terminal', project_id: null, cwd: '/synthetic/target', status: 'idle', output: 'Synthetic output', project_name: null, mount_name: null, workspace_path: null, last_command: null, exit_code: 0, timed_out: false, output_truncated: false, updated_at: '2026-01-01T00:00:00Z' };
+    case 'terminal_run': return { id: 'synthetic-terminal', project_id: null, cwd: '/synthetic/target', status: command === 'terminal_run' ? 'completed' : 'idle', output: 'Synthetic output', project_name: null, mount_name: null, workspace_path: null, last_command: null, exit_code: 0, timed_out: false, output_truncated: false, updated_at: '2026-01-01T00:00:00Z' };
     case 'db_get_app_setting': return settings.has(String(args!.key)) ? { key: args!.key, value_json: settings.get(String(args!.key)) } : null;
     case 'db_get_conversation_compaction_state': return null;
     case 'config_list_pending_changes': return [];
     case 'state_get_snapshot': return { schemaVersion: 1, values: {} };
     case 'state_patch': return { schemaVersion: 1, values: {} };
     case 'db_list_messages': return messages;
+    case 'db_pilot_message_images': return [];
     case 'db_create_message': {
       const p = args!.params as Record<string, unknown>;
       const message = { id: p.id ?? `message-${++messageSequence}`, conversation_id: p.conversationId,
@@ -104,7 +119,9 @@ const invoke = mock(async (command: string, args?: Record<string, unknown>): Pro
     default: unexpectedCommands.push(command); throw new Error(`Unhandled test IPC: ${command}`);
   }
 });
+const actualRuntimeBridge = await import('../tauriRuntimeBridge');
 mock.module('../tauriRuntimeBridge', () => ({
+  ...actualRuntimeBridge,
   invoke,
   isBrowserRuntimeBridgeEnabled: () => false,
   listen: async (event: string, handler: (event: { payload: Record<string, unknown> }) => void) => {
@@ -124,7 +141,8 @@ const httpFetch = mock(async (url: string | URL | Request, init?: RequestInit) =
   }, cancel() { httpBodyCancelled = true; } });
   return new Response(body, { headers: { 'Content-Type': 'text/event-stream' } });
 });
-mock.module('@tauri-apps/plugin-http', () => ({ fetch: httpFetch }));
+const actualTauriHttp = await import('../tauriHttp');
+mock.module('../tauriHttp', () => ({ ...actualTauriHttp, tauriFetch: httpFetch }));
 const { desktopActions } = await import('../../composition/macroPilotDesktop');
 const { assistantProvenance } = await import('./assistantProvenance');
 const { useAppStore } = await import('../../stores/useAppStore');

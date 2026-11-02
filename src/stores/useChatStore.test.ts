@@ -8,9 +8,9 @@ import { registerToolApprovalRecoveryScenarios } from './__tests__/toolApprovalR
 import { afterAll, afterEach, beforeEach, describe, expect, it, mock, spyOn } from 'bun:test';
 import type {
   AgentType,
+  ChatMessage,
   AppMode,
   Conversation,
-  ChatMessage,
   MCPServer,
   PlanNode,
   ProjectGroup,
@@ -22,11 +22,14 @@ import {
   type ArchitectPlanRecord,
   type ArchitectPlanStatus,
 } from '../services/architectPlanService';
+import type { AgsdlEditorDocument } from '../types/agsdl';
 import { createDeferred } from '../test-utils/deferred';
 import { allowChatToolInvocationJournal } from '../test-utils/chatToolInvocationJournal';
 import { installArchitectPlanRuntimePorts } from '../services/architectPlanRuntimeService';
+import { installArchitectPlanPorts } from '../services/architectPlanReadContext';
 import { recoverFailedPlanActivation } from '../components/architect/planActivationRecovery';
 import { registerComposerDraftQueueScenarios } from './__tests__/composerDraftQueue.scenarios';
+import { registerChatDirectionRecoveryScenarios } from './__tests__/chatDirectionRecovery.scenarios';
 import { registerQueuedSubmissionRecoveryScenarios } from './__tests__/queuedSubmissionRecovery.scenarios';
 import { registerArchitectLifecycleScenarios } from './__tests__/architectLifecycle.scenarios';
 import { registerArchitectStrategyScenarios } from './__tests__/architectStrategy.scenarios';
@@ -250,6 +253,7 @@ const appState = {
 };
 
 const providerState = {
+  providers: [{ id: 'provider-1', name: 'Test provider', status: 'online' as const }],
   providerConfigs: DEFAULT_PROVIDER_CONFIGS.map((provider) => ({ ...provider })),
   modelsByProvider: Object.fromEntries(
     Object.entries(DEFAULT_MODELS_BY_PROVIDER).map(([providerId, models]) => [
@@ -347,6 +351,8 @@ const ALL_INTERNAL_TOOL_IDS = [
   'task_todo_get',
   'task_todo_update',
   'strategy_generate',
+  'agsdl_get',
+  'agsdl_update',
   'plan_create',
   'plan_list',
   'plan_get',
@@ -743,6 +749,7 @@ let chatSnapshotMessages: Array<{
   content: string;
   created_at: string;
   tool_traces_json?: string | null;
+  completion_reason?: ChatMessage["completion_reason"];
   turn_id?: string | null;
 }> = [];
 type ArchitectPlanConversationSyncRecord = {
@@ -839,10 +846,15 @@ const updateArchitectPlanMock = mock(async (params: {
   projectId?: string;
   projectIds?: string[];
   targetBranchesByProjectId?: Record<string, string>;
+  agsdl?: AgsdlEditorDocument;
+  expectedAgsdlRevision?: number;
 }) => {
   const existing = architectPlans.get(params.planId);
   if (!existing) {
     throw new Error(`Unknown plan ${params.planId}`);
+  }
+  if (params.agsdl && params.expectedAgsdlRevision !== (existing.agsdl?.revision ?? 0)) {
+    throw new Error('Revision conflict');
   }
   const updated = {
     ...existing,
@@ -860,6 +872,9 @@ const updateArchitectPlanMock = mock(async (params: {
     projectIds: params.projectIds ?? existing.projectIds,
     targetBranchesByProjectId:
       params.targetBranchesByProjectId ?? existing.targetBranchesByProjectId,
+    agsdl: params.agsdl
+      ? { ...params.agsdl, revision: params.expectedAgsdlRevision! + 1 }
+      : existing.agsdl,
     updatedAt: '2026-03-19T01:00:00.000Z',
   };
   architectPlans.set(params.planId, updated);
@@ -1029,12 +1044,11 @@ const getToolModePolicyMock = mock(async (mode: AppMode) => {
         'git_branch_list',
         'git_diff',
         'git_get_tree',
-        'strategy_generate',
+        'agsdl_get',
+        'agsdl_update',
         'plan_list',
         'plan_get',
         'plan_update',
-        'strategy_get',
-        'strategy_update',
       ],
       enforce_macro_only_writes: true,
     };
@@ -1372,6 +1386,8 @@ const updateMessageMock = mock(
     _options?: {
       turnId?: string | null;
       tokenCount?: number;
+      completionReason?: ChatMessage["completion_reason"];
+      generationAttempts?: ChatMessage["generation_attempts"];
       toolTraces?: unknown[];
 	          hiddenContext?: string;
 	          providerInputItems?: unknown[];
@@ -1381,9 +1397,9 @@ const updateMessageMock = mock(
   ) => undefined
 );
 const deleteMessagesAfterMock = mock(async () => undefined);
-const deleteConversationTurnMock = mock(async () => undefined);
+const deleteConversationTurnMock = mock(async (_conversationId: string, _turnId: string): Promise<void> => {});
 const dbTrimConversationReplayMock = mock(async () => undefined);
-const dbPrepareConversationReplayMock = mock(async () => undefined);
+const dbPrepareConversationReplayMock = mock(async (_params: Parameters<typeof actualTauriIpc.dbPrepareConversationReplay>[0]): Promise<void> => {});
 const dbRestoreConversationReplayMock = mock(async () => true);
 const dbCompleteConversationReplayMock = mock(async () => undefined);
 const dbMarkConversationReplayLaunchedMock = mock(async () => undefined);
@@ -1480,9 +1496,9 @@ const terminalRunCommandFromChatMock = mock(
     id: sessionId,
     command,
     timeout_ms: timeoutMs ?? null,
-    status: 'idle',
+    status: 'completed',
     output: '',
-    exit_code: null,
+    exit_code: 0 as number | null,
     timed_out: false,
     updated_at: '2026-03-26T10:00:00.000Z',
   })
@@ -1845,7 +1861,6 @@ const registerUseChatStoreMocks = async () => {
     webSearch: webSearchMock,
     fetchWebPage: fetchWebPageMock,
     extractDomain: (url: string) => new URL(url).hostname,
-    getFaviconUrl: (url: string) => `${url}/favicon.ico`,
     formatSearchResultsAsContext: (results: Array<{ url: string; title: string; snippet: string }>) =>
       results
         .map((result, index) => `[${index + 1}] ${result.title}\nURL: ${result.url}\n${result.snippet}`)
@@ -2085,6 +2100,7 @@ const registerUseChatStoreMocks = async () => {
     deleteArchitectPlan: mock(async () => undefined),
     getArchitectPlanActivationPayload: getArchitectPlanActivationPayloadMock,
     getArchitectPlan: getArchitectPlanMock,
+    migrateArchitectPlanToAgsdl: async (_branchName: string, planId: string) => architectPlans.get(planId) ?? null,
     getArchitectPlanChatMessages: getArchitectPlanChatMessagesMock,
     getArchitectPlanChatTranscript: getArchitectPlanChatTranscriptMock,
     getArchitectPlanProjectIds: (plan: ArchitectPlanRecord) =>
@@ -2846,6 +2862,7 @@ export type UseChatStoreScenarioContext = typeof useChatStoreScenarioContext;
 
 describe('useChatStore ensureArchitectConversationForPlan', () => {
   let localStorageMock: LocalStorageMock;
+  let releasePlanPorts: (() => void) | undefined;
   let releasePlanRuntimePorts: (() => void) | undefined;
 
   beforeEach(async () => {
@@ -2854,6 +2871,7 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     clearConflictAssistantContext('conflict-store');
     await registerUseChatStoreMocks();
     // Isolated stores bypass main.tsx, which installs Plans ports before bootstrap.
+    releasePlanPorts = installArchitectPlanPorts({ getAppState: () => appState });
     releasePlanRuntimePorts = installArchitectPlanRuntimePorts({ getProjectById: appState.getProjectById });
     localStorageMock = createLocalStorageMock();
     (globalThis as { window?: unknown }).window = {
@@ -2911,6 +2929,7 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     toolsStoreState.loadSettings.mockClear();
 
     providerState.providerConfigs = DEFAULT_PROVIDER_CONFIGS.map((provider) => ({ ...provider }));
+    providerState.providers = [{ id: 'provider-1', name: 'Test provider', status: 'online' }];
     providerState.modelsByProvider = Object.fromEntries(
       Object.entries(DEFAULT_MODELS_BY_PROVIDER).map(([providerId, models]) => [
         providerId,
@@ -3103,6 +3122,8 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     await drainComposerDraftWrites().catch(() => undefined);
     releasePlanRuntimePorts?.();
     releasePlanRuntimePorts = undefined;
+    releasePlanPorts?.();
+    releasePlanPorts = undefined;
     Object.defineProperty(globalThis, 'window', {
       configurable: true,
       writable: true,
@@ -3128,6 +3149,38 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
       value: originalLocalStorage,
     });
     mock.restore();
+  });
+
+  it('keeps native workflow Tasks out of legacy conversation creation and provider dispatch', async () => {
+    appState.mode = 'Implement';
+    appState.selectedTaskId = 'task:agsdl:v1:run:agent';
+    taskStoreState.tasks = [{ id: appState.selectedTaskId, project_id: 'project-1', project_ids: ['project-1'],
+      status: 'InProgress', task_source: 'agsdl', plan_id: 'workflow', draft: false, conversation_id: null }];
+    const { useChatStore } = await loadChatStore();
+    useChatStore.setState(createIdleChatStoreState({ conversations: [] }));
+    expect(await useChatStore.getState().ensureConversationForCurrentMode()).toBeNull();
+    expect(createConversationMock).not.toHaveBeenCalled();
+    await expect(useChatStore.getState().sendMessage({ conversationId: 'stale-conversation',
+      taskId: 'task:agsdl:v1:run:agent', content: 'Do not dispatch through the legacy engine.' })).rejects.toMatchObject({ code: 'NATIVE_WORKFLOW_OWNED' });
+    expect(createMessageMock).not.toHaveBeenCalled();
+    expect(streamChatMock).not.toHaveBeenCalled();
+  });
+
+  it('continues a captured Chat Goal while a native workflow Task is selected', async () => {
+    tauriAvailable = true;
+    appState.mode = 'Implement';
+    appState.selectedTaskId = 'task:agsdl:v1:run:agent';
+    taskStoreState.tasks = [{ id: appState.selectedTaskId, task_source: 'agsdl', status: 'InProgress' }];
+    const { useChatStore } = await loadChatStore();
+    useChatStore.setState(createIdleChatStoreState({
+      conversations: [{ ...createConversation('captured-chat'), scope_mode: 'Chat', task_id: null,
+        provider_id: 'provider-1', model_id: 'model-1' }],
+      selectedConversationId: 'other-conversation',
+    }));
+    await useChatStore.getState().sendGoalContinuation('captured-chat', 'Continue the captured objective.');
+    expect(streamChatMock).toHaveBeenCalledTimes(1);
+    expect(getLatestStreamOptions()).toMatchObject({ providerId: 'provider-1', modelId: 'model-1' });
+    expect(bindArchitectPlanConversationMock).not.toHaveBeenCalled();
   });
 
   it('inspects actual questionnaire history and removes a stale draft after a saved human reply without sending', async () => {
@@ -3785,9 +3838,11 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
       expect(chat.getState().selectedConversationId).toBe('conflict-store');
       expect(observed).toEqual([]);
       registerConflictAssistantContext({ ...getConflictAssistantContext('conflict-store')!, conversationId });
+      chat.getState().addComposerContextRef({ kind: 'skill', id: 'previous-skill', label: 'Previous skill' });
       chat.getState().setComposerDraft(conversationId, 'Inspect the verified conflicts.');
       expect(await chat.getState().selectConversation(conversationId)).toBe(true);
       expect(observed).toEqual([{ id: conversationId, draft: 'Inspect the verified conflicts.', verified: true }]);
+      expect(chat.getState().composerContextRefs).toEqual([]);
       expect(providerState.selectedProviderId as string | null).toBe('provider-1');
       expect(providerState.selectedModelId as string | null).toBe('model-1');
       expect(streamChatMock).not.toHaveBeenCalled();
@@ -3967,6 +4022,81 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     } finally { clearConflictAssistantContext('conflict-store'); }
   });
 
+
+  for (const behavior of ['queue', 'steer'] as const) {
+    it(`captures the ${behavior} composer and provider before conflict revalidation`, async () => {
+      const chat = await setupConflictConversation();
+      const streamFinished = createDeferred<void>();
+      const verificationEntered = createDeferred<void>();
+      const verificationFinished = createDeferred<void>();
+      streamChatMock.mockImplementationOnce(async () => { await streamFinished.promise; return { usage: null }; });
+      try {
+        await chat.getState().sendMessage({ conversationId: 'conflict-store', content: 'Inspect the original turn' });
+        const originalRef = { id: 'original-reference', kind: 'file' as const, title: 'Original file', data: { path: '/synthetic/original.ts', projectId: 'project-1' } };
+        const newerRef = { id: 'newer-reference', kind: 'file' as const, title: 'Newer file', data: { path: '/synthetic/newer.ts', projectId: 'project-1' } };
+        chat.getState().replaceComposerContextRefs([originalRef]);
+        conflictGitStatusMock.mockImplementation(async () => {
+          verificationEntered.resolve();
+          await verificationFinished.promise;
+          return { branch: 'feature/api', head_commit: createGitCommitDto(), conflicted_files: ['src/api.ts'], merge_in_progress: true };
+        });
+        const pending = chat.getState().submitDuringActiveTurn({ conversationId: 'conflict-store', content: 'Retain the original context' }, behavior);
+        await verificationEntered.promise;
+        chat.getState().replaceComposerContextRefs([newerRef]);
+        providerState.selectedModelId = 'newer-model';
+        verificationFinished.resolve();
+        await pending;
+        const entry = loadQueuedSubmissions()[0]!;
+        expect(entry.input.contextRefs?.map(ref => ref.id)).toEqual([originalRef.id]);
+        expect(entry.intent.provider.selectedModelId).toBe('model-1');
+        expect(chat.getState().composerContextRefs).toEqual([newerRef]);
+      } finally {
+        verificationFinished.resolve(); streamFinished.resolve();
+        await flushAsyncWork();
+        clearConflictAssistantContext('conflict-store');
+      }
+    });
+  }
+
+  for (const behavior of ['queue', 'steer'] as const) {
+    for (const changed of ['sessionId', 'turnId', 'assistantMessageId'] as const) {
+      it(`refuses ${behavior} when ${changed} changes during conflict revalidation`, async () => {
+        const chat = await setupConflictConversation();
+        const streamFinished = createDeferred<void>();
+        const verificationEntered = createDeferred<void>();
+        const verificationFinished = createDeferred<void>();
+        streamChatMock.mockImplementationOnce(async () => { await streamFinished.promise; return { usage: null }; });
+        try {
+          await chat.getState().sendMessage({ conversationId: 'conflict-store', content: 'Inspect the original turn' });
+          const original = chat.getState().getConversationRuntime('conflict-store');
+          expect(original.sessionId).toBeTruthy();
+          expect(original.turnId).toBeTruthy();
+          createMessageMock.mockClear();
+          conflictGitStatusMock.mockImplementation(async () => {
+            verificationEntered.resolve();
+            await verificationFinished.promise;
+            return { branch: 'feature/api', head_commit: createGitCommitDto(), conflicted_files: ['src/api.ts'], merge_in_progress: true };
+          });
+          const pending = chat.getState().submitDuringActiveTurn({
+            conversationId: 'conflict-store', content: 'Keep this rejected direction',
+            images: [{ id: 'pending-image', mimeType: 'image/png', dataUrl: 'data:image/png;base64,AQID', createdAt: '2026-09-22T00:00:00Z' }],
+          }, behavior);
+          await verificationEntered.promise;
+          chat.setState({ conversationRuntimeById: { 'conflict-store': { ...original, [changed]: 'replacement' } } });
+          verificationFinished.resolve();
+          await expect(pending).rejects.toThrow('no longer running');
+          expect(createMessageMock).not.toHaveBeenCalled();
+          expect(loadQueuedSubmissions()).toEqual([]);
+          expect(chat.getState().messageImagesByMessageId).toEqual({});
+          expect(streamChatMock).toHaveBeenCalledTimes(1);
+        } finally {
+          verificationFinished.resolve(); streamFinished.resolve();
+          await flushAsyncWork();
+          clearConflictAssistantContext('conflict-store');
+        }
+      });
+    }
+  }
 
   it('refuses an active-turn submission without a valid conflict context', async () => {
     const chat = await setupConflictConversation();
@@ -5007,6 +5137,10 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     store.setState(c.createIdleChatStoreState({ conversations: [conversation], selectedConversationId: conversation.id }));
     const images = [{ id: 'synthetic-image', mimeType: 'image/png', dataUrl: 'data:image/png;base64,AQID', createdAt: '2026-10-02T00:00:00Z' }];
     const local = await import('./chat/chatLocalSessionState');
+    const accepted = mock((messageId: string) => {
+      expect(local.loadMessageImagesFromStorage()[messageId]).toEqual(images);
+      expect(store.getState().messages).toContainEqual(expect.objectContaining({ id: messageId, role: 'user' }));
+    });
     const draft = { text: 'Inspect this diagram', images, contextRefs: [] };
     await local.saveComposerDraftsToStorage({ ['conversation:' + conversation.id]: draft });
     const storage = window.localStorage, setItem = storage.setItem;
@@ -5015,22 +5149,25 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
       setItem.call(storage, key, value);
     };
     try {
-      await expect(store.getState().sendMessage({ conversationId: conversation.id, content: draft.text, images }))
+      await expect(store.getState().sendMessage({ conversationId: conversation.id, content: draft.text, images, onUserMessagePublished: accepted }))
         .rejects.toMatchObject({ message: expect.stringContaining('images') });
     } finally { storage.setItem = setItem; }
     expect(c.streamChatMock).not.toHaveBeenCalled();
     expect(c.createMessageMock).not.toHaveBeenCalled();
+    expect(accepted).not.toHaveBeenCalled();
     const recovered = local.loadComposerDraftsFromStorage()['conversation:' + conversation.id];
     expect(recovered).toEqual(draft);
     store.setState(c.createIdleChatStoreState({ conversations: [conversation], selectedConversationId: conversation.id,
       messageImagesByMessageId: local.loadMessageImagesFromStorage() }));
-    const result = await store.getState().sendMessage({ conversationId: conversation.id, content: recovered.text, images: recovered.images });
+    const result = await store.getState().sendMessage({ conversationId: conversation.id, content: recovered.text, images: recovered.images, onUserMessagePublished: accepted });
     await c.flushAsyncWork();
     expect(result.status).toBe('sent');
     expect(c.createMessageMock.mock.calls.filter(call => call[1] === 'user')).toHaveLength(1);
     expect(c.streamChatMock).toHaveBeenCalledTimes(1);
     if (result.status !== 'sent') throw new Error('Expected accepted message');
     expect(local.loadMessageImagesFromStorage()[result.userMessageId]).toEqual(images);
+    expect(accepted).toHaveBeenCalledTimes(1);
+    expect(accepted).toHaveBeenCalledWith(result.userMessageId);
     const options = c.getLatestStreamOptions<{ messages: Array<{ content: unknown }> }>();
     expect(options.messages.some(message => Array.isArray(message.content) && message.content.some(part => part.type === 'image_url'))).toBe(true);
   });
@@ -5074,6 +5211,7 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     });
   }
 
+  registerChatDirectionRecoveryScenarios(useChatStoreScenarioContext);
   registerQueuedSubmissionRecoveryScenarios(useChatStoreScenarioContext);
   registerSendRuntimeAndDeletionScenarios(useChatStoreScenarioContext);
 });

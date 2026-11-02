@@ -1,4 +1,8 @@
 {
+  "remoteAuth": {
+    "agentPrompt": "Token de acceso del servidor headless de Macro",
+    "approvalPrompt": "Token de aprobación del servidor headless de Macro"
+  },
   "mcpForm": {
     "title": "Solicitud de formulario MCP",
     "server": "Servidor",
@@ -41,8 +45,17 @@
     "no": "No"
   },
   "speech": {
-    "button": { "start": "Iniciar dictado", "stop": "Detener dictado", "transcribing": "Audio enviado · Transcribiendo", "enhancing": "Transcripción recibida · Limpieza inteligente" },
-    "recording": { "active": "Grabando", "stopAndInsert": "Detener e insertar la transcripción", "stopAndSend": "Detener, transcribir y enviar" },
+    "button": {
+      "start": "Iniciar dictado",
+      "stop": "Detener dictado",
+      "transcribing": "Audio enviado · Transcribiendo",
+      "enhancing": "Transcripción recibida · Limpieza inteligente"
+    },
+    "recording": {
+      "active": "Grabando",
+      "stopAndInsert": "Detener e insertar la transcripción",
+      "stopAndSend": "Detener, transcribir y enviar"
+    },
     "errors": {
       "title": "Dictado no disponible",
       "provider-missing": "Configura y selecciona primero un proveedor de voz.",
@@ -68,19 +81,43 @@
       "deleteConfirm": "¿Eliminar {{name}} y su clave API guardada localmente?",
       "title": "Dictado por micrófono",
       "description": "Graba desde el compositor, transcribe con el proveedor seleccionado y revisa el texto antes de enviarlo.",
-      "testTitle": "Probar micrófono y transcripción", "testDescription": "Graba hasta 15 segundos y envía la grabación al proveedor seleccionado solo para esta prueba.",
-      "testStart": "Probar micrófono", "testStop": "Detener y transcribir", "testRequesting": "Solicitando acceso al micrófono...", "testTranscribing": "Transcribiendo la prueba...", "testCancelled": "Prueba de micrófono cancelada.", "testFailed": "La prueba de micrófono falló.", "testProviderRequired": "Selecciona un proveedor activo antes de probar.",
-      "activeProvider": "Proveedor activo", "noProvider": "Sin proveedor", "language": "Idioma", "autoLanguage": "Automático",
-      "maxDuration": "Duración máxima de grabación", "enhancementTitle": "Limpieza inteligente de la transcripción", "enhancementDescription": "Usa el modelo activo de la conversación para corregir de forma breve y prudente errores de reconocimiento, vacilaciones y repeticiones.",
-      "noProviderPrivacy": "Selecciona un proveedor para ver dónde se enviará el audio grabado.", "localPrivacy": "Proveedor local o sin clave: el audio se envía al endpoint configurado sin exigir una clave API.",
+      "testTitle": "Probar micrófono y transcripción",
+      "testDescription": "Graba hasta 15 segundos y envía la grabación al proveedor seleccionado solo para esta prueba.",
+      "testStart": "Probar micrófono",
+      "testStop": "Detener y transcribir",
+      "testRequesting": "Solicitando acceso al micrófono...",
+      "testTranscribing": "Transcribiendo la prueba...",
+      "testCancelled": "Prueba de micrófono cancelada.",
+      "testFailed": "La prueba de micrófono falló.",
+      "testProviderRequired": "Selecciona un proveedor activo antes de probar.",
+      "activeProvider": "Proveedor activo",
+      "noProvider": "Sin proveedor",
+      "language": "Idioma",
+      "autoLanguage": "Automático",
+      "maxDuration": "Duración máxima de grabación",
+      "enhancementTitle": "Limpieza inteligente de la transcripción",
+      "enhancementDescription": "Usa el modelo activo de la conversación para corregir de forma breve y prudente errores de reconocimiento, vacilaciones y repeticiones.",
+      "noProviderPrivacy": "Selecciona un proveedor para ver dónde se enviará el audio grabado.",
+      "localPrivacy": "Proveedor local o sin clave: el audio se envía al endpoint configurado sin exigir una clave API.",
       "andrologicPrivacy": "Andrologic procesa el audio mediante la pasarela autenticada de Macro y no lo conserva. Las transcripciones se registran en los registros operativos.",
       "durationUnit": "segundos",
-      "remotePrivacy": "Proveedor remoto: el audio grabado se envía al endpoint configurado.", "providers": "Proveedores de voz",
-      "compatibility": "Admite endpoints de transcripción compatibles con OpenAI y Deepgram.", "addProvider": "Añadir proveedor",
-      "keyStored": "Clave API guardada localmente", "managedAuth": "Autenticación gestionada por Macro", "noKeyRequired": "No se requiere clave API", "keyMissing": "Se requiere clave API",
-      "editProvider": "Editar proveedor", "newProvider": "Nuevo proveedor", "protocol": "Protocolo", "model": "Modelo de transcripción",
-      "endpoint": "URL base", "apiKey": "Clave API", "keepKey": "Déjalo vacío para conservar la clave guardada",
-      "localProvider": "Proveedor local o sin clave", "removeKey": "Eliminar la clave API guardada"
+      "remotePrivacy": "Proveedor remoto: el audio grabado se envía al endpoint configurado.",
+      "providers": "Proveedores de voz",
+      "compatibility": "Admite endpoints de transcripción compatibles con OpenAI y Deepgram.",
+      "addProvider": "Añadir proveedor",
+      "keyStored": "Clave API guardada localmente",
+      "managedAuth": "Autenticación gestionada por Macro",
+      "noKeyRequired": "No se requiere clave API",
+      "keyMissing": "Se requiere clave API",
+      "editProvider": "Editar proveedor",
+      "newProvider": "Nuevo proveedor",
+      "protocol": "Protocolo",
+      "model": "Modelo de transcripción",
+      "endpoint": "URL base",
+      "apiKey": "Clave API",
+      "keepKey": "Déjalo vacío para conservar la clave guardada",
+      "localProvider": "Proveedor local o sin clave",
+      "removeKey": "Eliminar la clave API guardada"
     }
   },
   "startup": {
@@ -97,7 +134,10 @@
       "skipped": "Se omitió la recuperación automática de @macro",
       "blockedConflictDescription": "Macro encontró conflictos sin resolver en el espacio de trabajo de metadatos y no aplicó la recuperación automática.",
       "blockedDirtyDescription": "Macro encontró cambios locales en el espacio de trabajo de metadatos y no aplicó la recuperación automática."
-    }
+    },
+    "browserRuntimeSessionReplacedTitle": "Esta sesión del navegador ya no está conectada a Macro.",
+    "browserRuntimeSessionReplacedDescription": "Otra pestaña del navegador tomó el control del runtime de escritorio. Recarga esta pestaña para continuar.",
+    "browserRuntimeSessionReplacedReload": "Recargar pestaña"
   },
   "shutdown": {
     "activeWorkSingle": "Hay una tarea en curso. Cerrar Macro la interrumpirá.",
@@ -151,7 +191,10 @@
     "installNow": "Instalar ahora"
   },
   "markdown": {
-    "video": "Vídeo"
+    "video": "Vídeo",
+    "loadRemoteImage": "Cargar imagen de {{host}}",
+    "loadRemoteVideo": "Cargar vídeo de {{host}}",
+    "unknownSource": "una fuente desconocida"
   },
   "common": {
     "save": "Guardar",
@@ -225,7 +268,8 @@
     "toggleLeftPanel": "Alternar panel izquierdo",
     "toggleRightPanel": "Alternar panel derecho",
     "settings": "Configuración",
-    "account": "cuenta"
+    "account": "cuenta",
+    "operate": "Operate"
   },
   "onboarding": {
     "open": "Abrir onboarding",
@@ -536,6 +580,7 @@
       "allRepositories": "Todos los repositorios",
       "gitScope": "Alcance de Git",
       "selectRepository": "Seleccionar repositorio",
+      "noRepository": "Ningún repositorio Git seleccionado",
       "selectFolder": "Seleccionar una carpeta Git",
       "folderNotGit": "Esta carpeta no es un repositorio Git.",
       "folderSelectionFailed": "No se pudo seleccionar esta carpeta."
@@ -547,6 +592,10 @@
     "maximize": "maximizar"
   },
   "chat": {
+    "modelInfoContext": "Contexto {{tokens}}",
+    "modelInfoContextFull": "Contexto de {{tokens}} tokens",
+    "modelInfoImages": "Imágenes",
+    "modelInfoTools": "Herramientas",
     "conversationSourcesUsed": "{{count}} conversaciones citadas como fuentes",
     "imageImportContextChanged": "La conversación ha cambiado. No se añadieron las imágenes; selecciónalas de nuevo.",
     "imageImportFailed": "No se añadieron imágenes. Usa PNG, JPEG, GIF o WebP válidos: máximo 2 MB por imagen, 8 MB en total y 10 imágenes.",
@@ -603,6 +652,8 @@
     "stop": "Detener",
     "saveRegenerate": "Guardar y regenerar",
     "mermaidDiagram": "Diagrama de sirena",
+    "renderMermaidDiagram": "Mostrar diagrama",
+    "mermaidExternalResourceWarning": "Al mostrar este diagrama, se pueden contactar sitios externos.",
     "copyCode": "Copiar código",
     "copied": "copiado",
     "showCode": "Mostrar código",
@@ -622,6 +673,13 @@
     "selectProvider": "Seleccione un proveedor",
     "selectModel": "Selecciona un modelo",
     "providerSelector": "Elegir proveedor de IA",
+    "modelSearchLabel": "Buscar modelos",
+    "modelSearchPlaceholder": "Buscar modelos…",
+    "modelSearchClear": "Borrar la búsqueda de modelos",
+    "modelSearchEmpty": "No hay modelos coincidentes.",
+    "modelColumn": "Modelo",
+    "providerColumn": "Proveedor",
+    "modelNavigationHint": "↑↓ navegar · Intro elegir · Esc cerrar",
     "modelSelector": "Elegir modelo de IA",
     "reasoningSelector": "Elegir nivel de razonamiento",
     "noProvidersConfigured": "No hay proveedores configurados",
@@ -652,6 +710,9 @@
     "deleteConversationConfirm": "¿Estás seguro de que deseas eliminar esta conversación?",
     "deleteConversationError": "No se puede eliminar esta conversación.",
     "searchConversations": "Buscar conversaciones...",
+    "searchResults": "Resultados de búsqueda",
+    "searchYou": "Tú",
+    "matchingMessages": "{{count}} mensajes coincidentes",
     "messageResults": "Resultados en mensajes",
     "messageSearchFailed": "La búsqueda de mensajes falló.",
     "noMessageResults": "No hay mensajes coincidentes",
@@ -688,7 +749,11 @@
     "generationAttempts_one": "{{count}} generation attempt",
     "generationAttempts_other": "{{count}} generation attempts",
     "generationAttemptNumber": "Attempt {{number}}",
-    "generationAttemptStatus": { "completed": "completed", "partial": "partial", "abandoned": "abandoned" },
+    "generationAttemptStatus": {
+      "completed": "completed",
+      "partial": "partial",
+      "abandoned": "abandoned"
+    },
     "generationAttemptCostUnknown": "cost unknown",
     "generationAttemptCost": "${{amount}}",
     "generationAttemptRawText": "Attempt text",
@@ -987,7 +1052,13 @@
           "belowThresholdDetail": "El contexto está bajo el umbral de compactación útil"
         }
       }
-    }
+    },
+    "queueWriteInProgress": "Esta instrucción aún se está guardando. Espere a que termine antes de volver a intentarlo.",
+    "queueDirectionDeleted": "Esta instrucción se invalidó por una eliminación o una nueva ejecución. Elimine esta entrada de recuperación antes de continuar manualmente.",
+    "directionContextUnavailable": "El contexto del turno activo no está disponible. Espere a que termine antes de enviar un mensaje.",
+    "providerErrorTitle": "El modelo no pudo completar esta solicitud.",
+    "providerErrorRetry": "Vuelve a intentarlo en unos instantes.",
+    "providerErrorSettings": "Revisa la configuración del modelo antes de volver a intentarlo."
   },
   "skills": {
     "collectionTitle": "Skills",
@@ -1918,7 +1989,76 @@
       "hotfixEmptyHint": "Describe el bug de producción. Macro inferirá los repositorios, propondrá un slug de hotfix y versiones de parche, y luego te pedirá confirmación.",
       "bugfixEmptyHint": "Describe el bug. Macro inferirá los repositorios y propondrá un slug de bugfix antes de pedirte confirmación."
     },
+    "planIcon": {
+      "title": "Elegir un icono",
+      "reset": "Icono predeterminado",
+      "options": {
+        "sparkles": "Destellos",
+        "workflow": "Workflow",
+        "network": "Red",
+        "layers": "Capas",
+        "pencil-ruler": "Diseño",
+        "code": "Código",
+        "terminal": "Terminal",
+        "flag": "Bandera",
+        "target": "Objetivo",
+        "zap": "Rayo",
+        "shield": "Escudo",
+        "tool": "Herramientas",
+        "cpu": "Procesador",
+        "database": "Base de datos",
+        "globe": "Globo",
+        "cloud": "Nube",
+        "message-square": "Conversación",
+        "book-open": "Libro",
+        "folder": "Carpeta",
+        "folder-open": "Carpeta abierta",
+        "file": "Archivo",
+        "file-code": "Archivo de código",
+        "file-text": "Documento",
+        "git-branch": "Rama",
+        "git-commit": "Commit",
+        "git-merge": "Fusión",
+        "git-compare": "Comparación",
+        "history": "Historial",
+        "list-todo": "Lista de verificación",
+        "check-square": "Casilla marcada",
+        "clipboard": "Portapapeles",
+        "clock": "Reloj",
+        "milestone": "Hito",
+        "compass": "Brújula",
+        "map": "Mapa",
+        "folder-tree": "Árbol de carpetas",
+        "server": "Servidor",
+        "hard-drive": "Almacenamiento",
+        "user": "Usuario",
+        "lock": "Candado",
+        "eye": "Ojo",
+        "palette": "Paleta",
+        "image": "Imagen",
+        "camera": "Cámara",
+        "mic": "Micrófono",
+        "bell": "Campana",
+        "settings": "Ajustes",
+        "layout-grid": "Cuadrícula"
+      }
+    },
     "projectNavigator": {
+      "newBlueprint": "Nuevo blueprint",
+      "blueprintCreatedAtRoot": "Blueprint creado en la raíz del proyecto. No se pudo guardar su ubicación en la carpeta.",
+      "newSubfolder": "Nueva subcarpeta",
+      "newFolder": "Nueva carpeta",
+      "renameFolder": "Renombrar carpeta",
+      "folderActions": "Acciones de {{name}}",
+      "removeFolder": "Quitar carpeta",
+      "removeFolderHelp": "El contenido se conserva en la carpeta superior.",
+      "emptyFolder": "Arrastra un blueprint aquí",
+      "moveToFolder": "Mover a…",
+      "projectRoot": "Raíz del proyecto",
+      "folderNameError": "Elige otro nombre para la carpeta.",
+      "folderSaveError": "No se pudo guardar la organización de carpetas.",
+      "macroBlueprints": "Biblioteca Macro",
+      "newMacroBlueprint": "Nuevo blueprint de Macro",
       "title": "Proyectos",
       "searchPlans": "Buscar planes...",
       "noSearchResults": "Ningún plan coincide con esta búsqueda.",
@@ -2057,15 +2197,13 @@
       "targetBranch": "Target: {{branchName}}"
     },
     "planNamingRecovery": {
-      "title": "Plan name still needed",
-      "description": "Macro could not generate a plan name from the first message after three attempts. Retry with AI or name the plan manually.",
-      "retryAi": "Retry AI",
-      "retryingAi": "Retrying AI...",
-      "nameManually": "Name manually",
+      "title": "Nombre del plan no generado",
+      "description": "El plan conserva su nombre predeterminado.",
+      "retryAi": "Reintentar con IA",
+      "nameManually": "Nombrar manualmente",
       "manualTitle": "Name This Plan",
       "manualDescription": "Enter the plan name you want to use for this conversation.",
       "saveManualName": "Save plan name",
-      "back": "Back",
       "manualPlaceholder": "e.g. Checkout Recovery Refresh"
     },
     "strategy": "Estrategia",
@@ -2407,10 +2545,17 @@
       "deleteFailed": "No se pudo eliminar el servidor MCP.",
       "toggleFailed": "No se pudo actualizar el servidor MCP.",
       "transportHint": "Usa stdio para servidores locales o Streamable HTTP para servidores remotos heredados y sin estado.",
-      "transport": { "stdio": "Stdio local", "streamableHttp": "Streamable HTTP" },
+      "transport": {
+        "stdio": "Stdio local",
+        "streamableHttp": "Streamable HTTP"
+      },
       "urlPlaceholder": "https://ejemplo.com/mcp",
       "headersPlaceholder": "Authorization=Bearer token\nX-API-Key=valor",
-      "protocol": { "auto": "Detección automática", "legacy": "Sesión heredada", "modern": "Moderno sin estado" },
+      "protocol": {
+        "auto": "Detección automática",
+        "legacy": "Sesión heredada",
+        "modern": "Moderno sin estado"
+      },
       "oauth": {
         "enable": "Usar OAuth",
         "scopes": "Ámbitos separados por espacios",
@@ -2465,48 +2610,184 @@
     "hideDetails": "Ocultar detalles",
     "showDetails": "Mostrar detalles",
     "degraded": {
-      "fallback": { "title": "Hay algo que requiere atención", "body": "Macro no pudo completar esta acción de forma segura.", "nextStep": "Revise los detalles, corrija el bloqueo y vuelva a intentarlo.", "dynamic": "{{message}}" },
-      "worktree": {
-        "checkedOut": { "title": "Macro no pudo preparar el espacio de trabajo de la tarea", "body": "La rama necesaria para esta tarea sigue abierta en el repositorio principal con cambios locales.", "nextStep": "Confirme, guarde temporalmente o descarte esos cambios locales y vuelva a intentar la tarea." },
-        "missingBase": { "title": "Macro no pudo encontrar la rama base", "body": "Esta tarea necesita una rama base antes de crear su árbol de trabajo.", "nextStep": "Cree la rama o actualice la configuración del flujo Git del proyecto y vuelva a intentarlo." },
-        "fallback": { "title": "Macro no pudo preparar el espacio de trabajo de la tarea", "body": "El espacio de trabajo de la tarea aún no está listo, por lo que Macro no puede revisar ni editar archivos de forma segura.", "nextStep": "Vuelva a intentar la tarea. Si sigue fallando, abra la configuración Git del proyecto y compruebe el estado del repositorio." }
+      "fallback": {
+        "title": "Hay algo que requiere atención",
+        "body": "Macro no pudo completar esta acción de forma segura.",
+        "nextStep": "Revise los detalles, corrija el bloqueo y vuelva a intentarlo.",
+        "dynamic": "{{message}}"
       },
-      "readOnly": { "title": "Este proyecto solo está disponible para lectura", "body": "Este proyecto puede usarse como contexto, pero Macro todavía no puede crear ramas, árboles de trabajo, confirmaciones ni fusiones en él.", "namedBody": "{{projectName}} puede usarse como contexto, pero Macro todavía no puede crear ramas, árboles de trabajo, confirmaciones ni fusiones en él.", "missingGitNextStep": "Inicialice Git para este proyecto y active después el trabajo editable.", "settingsNextStep": "Abra la configuración del proyecto y asegúrese de que el flujo Git esté listo." },
+      "worktree": {
+        "checkedOut": {
+          "title": "Macro no pudo preparar el espacio de trabajo de la tarea",
+          "body": "La rama necesaria para esta tarea sigue abierta en el repositorio principal con cambios locales.",
+          "nextStep": "Confirme, guarde temporalmente o descarte esos cambios locales y vuelva a intentar la tarea."
+        },
+        "missingBase": {
+          "title": "Macro no pudo encontrar la rama base",
+          "body": "Esta tarea necesita una rama base antes de crear su árbol de trabajo.",
+          "nextStep": "Cree la rama o actualice la configuración del flujo Git del proyecto y vuelva a intentarlo."
+        },
+        "fallback": {
+          "title": "Macro no pudo preparar el espacio de trabajo de la tarea",
+          "body": "El espacio de trabajo de la tarea aún no está listo, por lo que Macro no puede revisar ni editar archivos de forma segura.",
+          "nextStep": "Vuelva a intentar la tarea. Si sigue fallando, abra la configuración Git del proyecto y compruebe el estado del repositorio."
+        }
+      },
+      "readOnly": {
+        "title": "Este proyecto solo está disponible para lectura",
+        "body": "Este proyecto puede usarse como contexto, pero Macro todavía no puede crear ramas, árboles de trabajo, confirmaciones ni fusiones en él.",
+        "namedBody": "{{projectName}} puede usarse como contexto, pero Macro todavía no puede crear ramas, árboles de trabajo, confirmaciones ni fusiones en él.",
+        "missingGitNextStep": "Inicialice Git para este proyecto y active después el trabajo editable.",
+        "settingsNextStep": "Abra la configuración del proyecto y asegúrese de que el flujo Git esté listo."
+      },
       "replica": {
-        "missing": { "titleSingular": "Faltan metadatos del plan en {{count}} repositorio", "titlePlural": "Faltan metadatos del plan en {{count}} repositorios", "body": "Macro necesita todas las réplicas esperadas de los metadatos del plan para poder actualizarlo de forma segura.", "nextStep": "Repare los metadatos del plan y vuelva a intentarlo." },
-        "diverged": { "title": "Los metadatos del plan difieren entre repositorios", "body": "Macro encontró más de una versión de estos metadatos y debe elegir una copia canónica antes de continuar.", "nextStep": "Repare desde la réplica más reciente, salvo que necesite expresamente una copia anterior." }
+        "missing": {
+          "titleSingular": "Faltan metadatos del plan en {{count}} repositorio",
+          "titlePlural": "Faltan metadatos del plan en {{count}} repositorios",
+          "body": "Macro necesita todas las réplicas esperadas de los metadatos del plan para poder actualizarlo de forma segura.",
+          "nextStep": "Repare los metadatos del plan y vuelva a intentarlo."
+        },
+        "diverged": {
+          "title": "Los metadatos del plan difieren entre repositorios",
+          "body": "Macro encontró más de una versión de estos metadatos y debe elegir una copia canónica antes de continuar.",
+          "nextStep": "Repare desde la réplica más reciente, salvo que necesite expresamente una copia anterior."
+        }
       },
       "gitFlow": {
-        "repositoryDirty": { "title": "El repositorio tiene cambios locales", "body": "Macro no puede terminar esta fusión mientras el repositorio de destino tenga cambios no confirmados ajenos.", "nextStep": "Confirme, guarde temporalmente o descarte los cambios locales y vuelva a intentar la fusión." },
-        "mergeInProgress": { "title": "Ya hay una fusión en curso", "body": "Macro encontró una fusión sin terminar en este repositorio.", "nextStep": "Termine o cancele la fusión existente y vuelva a intentarlo." },
-        "conflict": { "title": "Resuelva estos conflictos antes de terminar", "body": "El plan aún no puede fusionarse correctamente.", "filesNextStep": "Resuelva los archivos indicados y vuelva a intentar la fusión.", "blockersNextStep": "Resuelva los bloqueos de la fusión y vuelva a intentarlo." }
+        "repositoryDirty": {
+          "title": "El repositorio tiene cambios locales",
+          "body": "Macro no puede terminar esta fusión mientras el repositorio de destino tenga cambios no confirmados ajenos.",
+          "nextStep": "Confirme, guarde temporalmente o descarte los cambios locales y vuelva a intentar la fusión."
+        },
+        "mergeInProgress": {
+          "title": "Ya hay una fusión en curso",
+          "body": "Macro encontró una fusión sin terminar en este repositorio.",
+          "nextStep": "Termine o cancele la fusión existente y vuelva a intentarlo."
+        },
+        "conflict": {
+          "title": "Resuelva estos conflictos antes de terminar",
+          "body": "El plan aún no puede fusionarse correctamente.",
+          "filesNextStep": "Resuelva los archivos indicados y vuelva a intentar la fusión.",
+          "blockersNextStep": "Resuelva los bloqueos de la fusión y vuelva a intentarlo."
+        }
       },
       "metadata": {
-        "clean": { "title": "Los metadatos de @macro están actualizados", "body": "No se necesita ninguna acción." },
-        "dirty": { "title": "Los metadatos de @macro tienen cambios locales", "body": "Macro debe guardar los cambios de metadatos antes de sincronizar.", "nextStep": "Guarde los metadatos de @macro y vuelva a intentar la sincronización." },
-        "ahead": { "title": "Los metadatos de @macro están listos para publicarse", "body": "La rama local de metadatos contiene cambios que aún no están en el remoto.", "nextStep": "Envíe @macro cuando esté listo." },
-        "behind": { "title": "Los metadatos de @macro están atrasados respecto al remoto", "body": "Los metadatos remotos tienen actualizaciones que aún no están en local.", "nextStep": "Descargue @macro y vuelva a intentar la acción." },
-        "diverged": { "title": "Los metadatos de @macro han divergido", "body": "Los metadatos locales y remotos han cambiado.", "nextStep": "Descargue @macro, resuelva los conflictos y envíe los cambios." },
-        "mergeConflict": { "title": "Los metadatos de @macro tienen conflictos", "body": "La rama de metadatos contiene archivos con conflictos sin resolver.", "nextStep": "Resuelva los archivos de metadatos en conflicto y repita el mismo paso de sincronización." },
-        "missingOrigin": { "title": "El remoto de @macro no está configurado", "body": "Macro no puede sincronizar los metadatos porque el repositorio no tiene un remoto origin.", "nextStep": "Configure el remoto Git y vuelva a intentarlo." },
-        "missingUpstream": { "title": "@macro no tiene rama remota de seguimiento", "body": "La rama de metadatos existe localmente, pero aún no está vinculada a una rama remota.", "nextStep": "Envíe @macro para publicarla o ignore este aviso para mantener los metadatos en local." },
-        "authRequired": { "title": "Se requiere autenticación Git", "body": "Macro no puede acceder al remoto de metadatos con las credenciales actuales.", "nextStep": "Configure la autenticación Git y vuelva a intentarlo." },
-        "networkError": { "title": "La sincronización de metadatos no pudo acceder al remoto", "body": "La red o el servicio remoto no están disponibles en este momento.", "nextStep": "Compruebe la conexión y vuelva a intentarlo." },
-        "unknownError": { "title": "Falló la sincronización de metadatos de Macro", "body": "Macro no pudo completar la sincronización de metadatos de forma segura.", "nextStep": "Vuelva a intentar la sincronización. Si vuelve a fallar, consulte los detalles técnicos." }
+        "clean": {
+          "title": "Los metadatos de @macro están actualizados",
+          "body": "No se necesita ninguna acción."
+        },
+        "dirty": {
+          "title": "Los metadatos de @macro tienen cambios locales",
+          "body": "Macro debe guardar los cambios de metadatos antes de sincronizar.",
+          "nextStep": "Guarde los metadatos de @macro y vuelva a intentar la sincronización."
+        },
+        "ahead": {
+          "title": "Los metadatos de @macro están listos para publicarse",
+          "body": "La rama local de metadatos contiene cambios que aún no están en el remoto.",
+          "nextStep": "Envíe @macro cuando esté listo."
+        },
+        "behind": {
+          "title": "Los metadatos de @macro están atrasados respecto al remoto",
+          "body": "Los metadatos remotos tienen actualizaciones que aún no están en local.",
+          "nextStep": "Descargue @macro y vuelva a intentar la acción."
+        },
+        "diverged": {
+          "title": "Los metadatos de @macro han divergido",
+          "body": "Los metadatos locales y remotos han cambiado.",
+          "nextStep": "Descargue @macro, resuelva los conflictos y envíe los cambios."
+        },
+        "mergeConflict": {
+          "title": "Los metadatos de @macro tienen conflictos",
+          "body": "La rama de metadatos contiene archivos con conflictos sin resolver.",
+          "nextStep": "Resuelva los archivos de metadatos en conflicto y repita el mismo paso de sincronización."
+        },
+        "missingOrigin": {
+          "title": "El remoto de @macro no está configurado",
+          "body": "Macro no puede sincronizar los metadatos porque el repositorio no tiene un remoto origin.",
+          "nextStep": "Configure el remoto Git y vuelva a intentarlo."
+        },
+        "missingUpstream": {
+          "title": "@macro no tiene rama remota de seguimiento",
+          "body": "La rama de metadatos existe localmente, pero aún no está vinculada a una rama remota.",
+          "nextStep": "Envíe @macro para publicarla o ignore este aviso para mantener los metadatos en local."
+        },
+        "authRequired": {
+          "title": "Se requiere autenticación Git",
+          "body": "Macro no puede acceder al remoto de metadatos con las credenciales actuales.",
+          "nextStep": "Configure la autenticación Git y vuelva a intentarlo."
+        },
+        "networkError": {
+          "title": "La sincronización de metadatos no pudo acceder al remoto",
+          "body": "La red o el servicio remoto no están disponibles en este momento.",
+          "nextStep": "Compruebe la conexión y vuelva a intentarlo."
+        },
+        "unknownError": {
+          "title": "Falló la sincronización de metadatos de Macro",
+          "body": "Macro no pudo completar la sincronización de metadatos de forma segura.",
+          "nextStep": "Vuelva a intentar la sincronización. Si vuelve a fallar, consulte los detalles técnicos."
+        }
       },
       "service": {
-        "gitObjectMissing": { "title": "La revisión de Git está en pausa", "body": "Un objeto de Git necesario para esta revisión no está disponible. Macro no modificó ningún archivo de trabajo.", "bodyUncertain": "Git no pudo leer un objeto necesario para esta operación. Consulta los detalles técnicos antes de volver a intentarlo.", "nextStep": "Vuelve a intentarlo para que Git solicite el objeto otra vez. Abre los detalles técnicos para consultar la operación, el ID del objeto y la salida de Git depurada." },
-        "directModeConfigurationRequired": { "title": "El modo de revisión necesita configuración", "body": "Este proyecto no es un repositorio Git, pero los metadatos de la tarea no permiten una revisión directa. Macro no inició una revisión Git ni modificó archivos de trabajo.", "nextStep": "Configura Git para este proyecto o vuelve a crear la tarea en modo directo. Los detalles técnicos muestran el modo guardado." },
-        "directCheckpointMissing": { "title": "El punto de control de revisión de Macro no está disponible", "body": "Falta el punto de control interno para revisar este proyecto sin Git. Macro no modificó archivos de trabajo.", "nextStep": "Vuelve a intentarlo después de preparar de nuevo la tarea. Abre los detalles técnicos para consultar el identificador del punto de control." },
-        "directCheckpointCorrupt": { "title": "El punto de control de revisión de Macro está dañado", "body": "El punto de control interno para revisar este proyecto sin Git está incompleto. Macro lo conservó y no modificó archivos de trabajo.", "nextStep": "Vuelve a intentarlo una vez. No restablezcas el punto de control si hay que conservar el historial aceptado. Abre los detalles técnicos para diagnosticarlo." },
-        "directCheckpointProjectMismatch": { "title": "El punto de control de revisión de Macro pertenece a otra ruta de proyecto", "body": "La identidad guardada del punto de control no coincide con la ruta actual de este proyecto. Macro conservó el punto de control y no modificó archivos de trabajo.", "nextStep": "Comprueba la ruta guardada del proyecto o vuelve a abrir el proyecto original. Consulta los detalles técnicos para identificar el punto de control antes de corregir sus metadatos." },
-        "resourcePressure": { "title": "Macro está sobrecargado temporalmente", "body": "El sistema tiene demasiados archivos abiertos, así que Macro pausó las actualizaciones automáticas de los repositorios antes de volver a intentarlo.", "nextStep": "Espere un momento y vuelva a intentarlo. Si sigue ocurriendo, cierre ventanas de proyecto o terminales adicionales." },
-        "replicaRepair": { "title": "Los metadatos del plan deben repararse", "body": "Macro encontró metadatos del plan incoherentes y debe reparar la copia canónica antes de continuar.", "nextStep": "Repare los metadatos del plan y vuelva a intentarlo." },
-        "metadataMissing": { "title": "Los metadatos del plan están incompletos", "body": "Macro encontró una tarea o conversación que apunta a metadatos del plan ausentes o guardados solo parcialmente.", "nextStep": "Repare los vínculos de metadatos y vuelva a intentarlo." },
-        "conflictAssistantContextChanged": {"title": "El contexto de Git ha cambiado", "body": "El contexto de Git seleccionado ha cambiado al abrir el asistente.", "nextStep": "Actualiza la vista de Git y vuelve a abrir el asistente."},
-        "workspaceUnavailable": { "title": "El estado del espacio de trabajo no está disponible temporalmente", "body": "Macro no pudo leer el estado del espacio de trabajo necesario para esta acción.", "nextStep": "Vuelva a intentarlo cuando termine la actualización del espacio de trabajo. Si persiste, vuelva a abrir el proyecto." },
-        "gitNotReady": { "title": "Este proyecto no está listo para editarse", "body": "Macro puede seguir usando este proyecto como contexto, pero no puede escribir en él hasta que Git esté listo.", "nextStep": "Abra la configuración del proyecto y termine de configurar Git." },
-        "fallback": { "title": "Hay algo que requiere atención", "nextStep": "Revise los detalles, corrija el bloqueo y vuelva a intentarlo." }
+        "gitObjectMissing": {
+          "title": "La revisión de Git está en pausa",
+          "body": "Un objeto de Git necesario para esta revisión no está disponible. Macro no modificó ningún archivo de trabajo.",
+          "bodyUncertain": "Git no pudo leer un objeto necesario para esta operación. Consulta los detalles técnicos antes de volver a intentarlo.",
+          "nextStep": "Vuelve a intentarlo para que Git solicite el objeto otra vez. Abre los detalles técnicos para consultar la operación, el ID del objeto y la salida de Git depurada."
+        },
+        "directModeConfigurationRequired": {
+          "title": "El modo de revisión necesita configuración",
+          "body": "Este proyecto no es un repositorio Git, pero los metadatos de la tarea no permiten una revisión directa. Macro no inició una revisión Git ni modificó archivos de trabajo.",
+          "nextStep": "Configura Git para este proyecto o vuelve a crear la tarea en modo directo. Los detalles técnicos muestran el modo guardado."
+        },
+        "directCheckpointMissing": {
+          "title": "El punto de control de revisión de Macro no está disponible",
+          "body": "Falta el punto de control interno para revisar este proyecto sin Git. Macro no modificó archivos de trabajo.",
+          "nextStep": "Vuelve a intentarlo después de preparar de nuevo la tarea. Abre los detalles técnicos para consultar el identificador del punto de control."
+        },
+        "directCheckpointCorrupt": {
+          "title": "El punto de control de revisión de Macro está dañado",
+          "body": "El punto de control interno para revisar este proyecto sin Git está incompleto. Macro lo conservó y no modificó archivos de trabajo.",
+          "nextStep": "Vuelve a intentarlo una vez. No restablezcas el punto de control si hay que conservar el historial aceptado. Abre los detalles técnicos para diagnosticarlo."
+        },
+        "directCheckpointProjectMismatch": {
+          "title": "El punto de control de revisión de Macro pertenece a otra ruta de proyecto",
+          "body": "La identidad guardada del punto de control no coincide con la ruta actual de este proyecto. Macro conservó el punto de control y no modificó archivos de trabajo.",
+          "nextStep": "Comprueba la ruta guardada del proyecto o vuelve a abrir el proyecto original. Consulta los detalles técnicos para identificar el punto de control antes de corregir sus metadatos."
+        },
+        "resourcePressure": {
+          "title": "Macro está sobrecargado temporalmente",
+          "body": "El sistema tiene demasiados archivos abiertos, así que Macro pausó las actualizaciones automáticas de los repositorios antes de volver a intentarlo.",
+          "nextStep": "Espere un momento y vuelva a intentarlo. Si sigue ocurriendo, cierre ventanas de proyecto o terminales adicionales."
+        },
+        "replicaRepair": {
+          "title": "Los metadatos del plan deben repararse",
+          "body": "Macro encontró metadatos del plan incoherentes y debe reparar la copia canónica antes de continuar.",
+          "nextStep": "Repare los metadatos del plan y vuelva a intentarlo."
+        },
+        "metadataMissing": {
+          "title": "Los metadatos del plan están incompletos",
+          "body": "Macro encontró una tarea o conversación que apunta a metadatos del plan ausentes o guardados solo parcialmente.",
+          "nextStep": "Repare los vínculos de metadatos y vuelva a intentarlo."
+        },
+        "conflictAssistantContextChanged": {
+          "title": "El contexto de Git ha cambiado",
+          "body": "El contexto de Git seleccionado ha cambiado al abrir el asistente.",
+          "nextStep": "Actualiza la vista de Git y vuelve a abrir el asistente."
+        },
+        "workspaceUnavailable": {
+          "title": "El estado del espacio de trabajo no está disponible temporalmente",
+          "body": "Macro no pudo leer el estado del espacio de trabajo necesario para esta acción.",
+          "nextStep": "Vuelva a intentarlo cuando termine la actualización del espacio de trabajo. Si persiste, vuelva a abrir el proyecto."
+        },
+        "gitNotReady": {
+          "title": "Este proyecto no está listo para editarse",
+          "body": "Macro puede seguir usando este proyecto como contexto, pero no puede escribir en él hasta que Git esté listo.",
+          "nextStep": "Abra la configuración del proyecto y termine de configurar Git."
+        },
+        "fallback": {
+          "title": "Hay algo que requiere atención",
+          "nextStep": "Revise los detalles, corrija el bloqueo y vuelva a intentarlo."
+        }
       }
     }
   },
@@ -2517,7 +2798,12 @@
         "description": "Instrucción de sistema base para las conversaciones Architect."
       }
     },
-    "loadFailed": "No se pudieron cargar las instrucciones del sistema. Reinténtalo antes de guardar.", "title": "Prompts del sistema", "description": "Personaliza los prompts base de los modos y los perfiles internos usados durante la planificación, la revisión y la auditoría del repositorio.", "restoreAll": "Restaurar todo", "saveFailed": "No se pudieron guardar los prompts del sistema." },
+    "loadFailed": "No se pudieron cargar las instrucciones del sistema. Reinténtalo antes de guardar.",
+    "title": "Prompts del sistema",
+    "description": "Personaliza los prompts base de los modos y los perfiles internos usados durante la planificación, la revisión y la auditoría del repositorio.",
+    "restoreAll": "Restaurar todo",
+    "saveFailed": "No se pudieron guardar los prompts del sistema."
+  },
   "toast": {
     "languageChanged": "Idioma cambiado a {{language}}",
     "settingsSaved": "Configuración guardada",
@@ -2565,6 +2851,8 @@
     }
   },
   "models": {
+    "catalogSuggestions": "Sugerencias del catálogo",
+    "catalogSuggestionsHint": "Busca por ID o nombre en el catálogo del proveedor, o introduce cualquier ID de modelo.",
     "collectionTitle": "Modelos",
     "collectionDescription": "Gestiona los modelos por proveedor",
     "searchPlaceholder": "Buscar modelos...",
@@ -2872,7 +3160,17 @@
     "artifactSaveFailed": "No se pudo guardar el artefacto de revisión del objetivo",
     "artifactTitle": "Revisión del objetivo",
     "queueTrackingFailed": "No se pudo seguir el turno del objetivo en cola",
-    "artifactStatus": { "achieved": "Logrado", "continue": "Continuar", "needs_user": "Necesita tu respuesta", "cannot_progress": "No puede avanzar", "applied": "Aplicado", "failed": "Fallido", "cancelled": "Cancelado", "stale": "Desactualizado", "timed_out": "Tiempo agotado" },
+    "artifactStatus": {
+      "achieved": "Logrado",
+      "continue": "Continuar",
+      "needs_user": "Necesita tu respuesta",
+      "cannot_progress": "No puede avanzar",
+      "applied": "Aplicado",
+      "failed": "Fallido",
+      "cancelled": "Cancelado",
+      "stale": "Desactualizado",
+      "timed_out": "Tiempo agotado"
+    },
     "reason": {
       "reviewInterrupted": "La revisión anterior se interrumpió. Reanuda para iniciar otro turno del agente.",
       "executorInterrupted": "El turno anterior del agente se interrumpió. Reanuda para continuar.",
@@ -2952,6 +3250,11 @@
     "resultInvalidRequest": "La solicitud pendiente no era válida y se ha apartado. Su perfil no se ha modificado.",
     "resultLegacy": "Hay un resultado de una versión anterior en los detalles del diagnóstico.",
     "diagnostics": "Detalles del diagnóstico",
+    "sessionReplacedTitle": "Sesión abierta en otra pestaña",
+    "sessionReplacedHint": "Recarga esta pestaña para seguir usando Macro aquí.",
+    "sessionReplacedReload": "Recargar",
+    "runtimeUnavailableTitle": "Motor de escritorio no disponible",
+    "runtimeUnavailableHint": "Macro se está reiniciando o no está en ejecución. Reinténtalo cuando el motor de escritorio esté listo.",
     "startupTitle": "Es necesario recuperar el perfil",
     "startupRecovery": "No se pudo completar la restauración de los datos del navegador. Se conserva el archivo nativo de recuperación. Consulte el diagnóstico, libere almacenamiento local si es necesario y reinicie Macro para reintentar.",
     "title": "Copia de seguridad y restauración",

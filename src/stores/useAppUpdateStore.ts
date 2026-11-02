@@ -292,7 +292,11 @@ export const createAppUpdateStore = (
             set({ phase: 'installing', error: null, errorOperation: null });
           }
           try {
-            await client.installAndRelaunch();
+            const started = await client.installAndRelaunch();
+            if (!started) {
+              if (revision === stateRevision) set({ phase: 'ready' });
+              return false;
+            }
             return true;
           } catch (error) {
             if (revision !== stateRevision) return false;

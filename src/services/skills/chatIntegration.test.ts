@@ -44,11 +44,13 @@ describe('skill chat integration', () => {
     }));
     useSkillsStore.setState({ runSkillScriptResult: run });
     try {
-      await handleSkillToolCall('skill_run_script', {
+      const result = await handleSkillToolCall('skill_run_script', {
         skill_id: 'sample', script_path: 'scripts/run.sh', allow_workspace: true,
         workspace_path: '/other', project_id: 'other',
         executionContext: { projectId: 'other', workspacePath: '/other' },
       }, 'conversation', null, context);
+      expect(typeof result).toBe('string');
+      expect(String(result)).toContain('exit_code: 0');
       expect(run.mock.calls[0]?.[0].executionContext).toEqual({
         projectId: 'project', workspacePath: '/worktrees/task',
       });
@@ -77,6 +79,28 @@ describe('skill chat integration', () => {
 
     expect(activation).toMatchObject({ isError: true, errorKind: 'permission' });
     expect(script).toMatchObject({ isError: true, errorKind: 'permission' });
+  });
+
+  it.each([1, null])('returns a structured failure when a script has no successful exit code: %s', async (exitCode) => {
+    const original = useSkillsStore.getState().runSkillScriptResult;
+    useSkillsStore.setState({
+      runSkillScriptResult: async () => ({
+        skillId: 'sample', scriptPath: 'run.ts', stdout: 'partial output',
+        stderr: 'script failed', exitCode, timedOut: false, truncated: false,
+      }),
+    });
+    try {
+      const result = await handleSkillToolCall('skill_run_script', {
+        skill_id: 'sample', script_path: 'run.ts',
+      }, 'conversation', null);
+      expect(result).toMatchObject({
+        isError: true, errorKind: 'execution',
+        result: expect.stringContaining('script failed'),
+      });
+      expect(String(result)).toContain('partial output');
+    } finally {
+      useSkillsStore.setState({ runSkillScriptResult: original });
+    }
   });
 
   it('returns a structured execution failure when a skill script times out', async () => {

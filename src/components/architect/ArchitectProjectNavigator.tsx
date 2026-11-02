@@ -1,8 +1,9 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { createPortal } from 'react-dom';
 import { useTranslation } from 'react-i18next';
+import { useAgsdlTranslation } from '../agsdl/useAgsdlTranslation';
 import { ensureScopedBlankPlan } from '../../services/architectAutoPlan';
 import {
+  createArchitectPlan,
   getArchitectPlan,
   getArchitectPlanCrudCapabilities,
   getGitFlowBaseBranch,
@@ -23,6 +24,7 @@ import {
   getArchitectPlanDisplayName,
   getArchitectPlanEditableName,
   getArchitectPlanPrimaryName,
+  getNextDefaultNewPlanLabel,
   isCanonicalArchitectPlan,
 } from '../../services/architectPlanPresentation';
 import { isProjectPlanActionable } from '../../services/globalProjects';
@@ -39,12 +41,15 @@ import { useChatStore } from '../../stores/useChatStore';
 import { useTaskStore } from '../../stores/useTaskStore';
 import { useViewFilterStore } from '../../stores/useViewFilterStore';
 import { cn } from '../../utils/cn';
+import { SidebarMenu, sidebarMenuPosition, isSidebarTextInput, type SidebarMenuPosition } from '../ui/SidebarMenu';
 import { Icon } from '../ui/Icon';
 import { ProjectIcon } from '../project/ProjectIcon';
 import { PanelHeaderIconButton } from '../ui/PanelHeaderIconButton';
 import { SearchBar } from '../ui/SearchBar';
 import { ConfirmPromptModal } from '../ui/ConfirmPromptModal';
 import { notify } from '../ui/toastService';
+import { PlanIconDialog } from './PlanIconDialog';
+import { getPlanIcon, type PlanIcon } from '../../services/planIcon';
 import { PlanFormModal } from './PlanFormModal';
 import {
   registerArchitectPlanSelectorRequestHandler,
@@ -68,6 +73,14 @@ import {
   type ArchitectMenuPosition,
 } from './architectProjectNavigatorMenu';
 
+import { createEmptySystemDocument } from '../../services/agsdl/design';
+import { toPlanLocatorKey } from '../../services/durableIdentity';
+import { useBlueprintFolders } from '../../hooks/useBlueprintFolders';
+import { blueprintFolderId, blueprintFolderAncestors, blueprintFolderTree, canMoveBlueprintFolder, moveBlueprintFolder, moveBlueprintToFolder, nameBlueprintFolder, type BlueprintFolder, type BlueprintNavigatorDrag } from '../../services/blueprintFolders';
+import { BlueprintFolderTree, BLUEPRINT_DRAG_TYPE } from './BlueprintFolderTree';
+
+type NavigatorSection = 'macro' | 'projects';
+const NAVIGATOR_SECTION_IDS = new Set(['macro', 'projects']);
 const MAX_VISIBLE_PLANS_PER_SCOPE = 7;
 const SCOPE_CREATE_MENU_WIDTH = 240;
 const SCOPE_CONTEXT_MENU_WIDTH = 208;
@@ -99,23 +112,30 @@ const scopeIsSelected = (
     : !selectedGroupId && scope.projectId === selectedProjectId;
 
 interface ArchitectProjectNavigatorProps {
+  macroBlueprintProjectId?: string;
   catalogLoader?: typeof loadMacroProjectMetadataForSelection;
+  planCreator?: typeof createArchitectPlan;
   preferenceLoader?: {
     loadPinnedPlanIds: () => Promise<unknown>;
     loadExpandedScopeIds: () => Promise<unknown>;
+    loadCollapsedSections?: () => Promise<unknown>;
   };
 }
 
 const defaultPreferenceLoader: NonNullable<ArchitectProjectNavigatorProps['preferenceLoader']> = {
+  loadCollapsedSections: () => loadPreference<unknown>(PREF_KEYS.ARCHITECT_NAVIGATOR_COLLAPSED_SECTIONS),
   loadPinnedPlanIds: () => loadPreference<unknown>(PREF_KEYS.ARCHITECT_PINNED_PLAN_IDS),
   loadExpandedScopeIds: () => loadPersistedPreference<unknown>(PREF_KEYS.ARCHITECT_NAVIGATOR_EXPANDED_SCOPE_IDS),
 };
 
 export const ArchitectProjectNavigator: React.FC<ArchitectProjectNavigatorProps> = ({
+  macroBlueprintProjectId,
   catalogLoader = loadMacroProjectMetadataForSelection,
+  planCreator = createArchitectPlan,
   preferenceLoader = defaultPreferenceLoader,
 }) => {
   const { t } = useTranslation();
+  const { t: agsdlT } = useAgsdlTranslation();
   const standaloneProjects = useAppStore((state) => state.standaloneProjects);
   const projectGroups = useAppStore((state) => state.projectGroups);
   const selectedGroupId = useAppStore((state) => state.selectedGroupId);
@@ -134,7 +154,15 @@ export const ArchitectProjectNavigator: React.FC<ArchitectProjectNavigatorProps>
   const renameProject = useAppStore((state) => state.renameProject);
   const renameProjectGroup = useAppStore((state) => state.renameProjectGroup);
 
+  const folders = useBlueprintFolders(() => notify.error(t('architect.projectNavigator.folderSaveError', 'Could not save folder organization.')));
+  const [folderForm, setFolderForm] = useState<{ scopeId: string; folder?: BlueprintFolder; parentId?: string | null } | null>(null);
+  const [folderError, setFolderError] = useState<string | null>(null);
+  const [blueprintToMove, setBlueprintToMove] = useState<ArchitectNavigatorPlanEntry | null>(null);
+  const [folderToMove, setFolderToMove] = useState<BlueprintFolder | null>(null);
+  const [draggedItem, setDraggedItem] = useState<BlueprintNavigatorDrag | null>(null);
+  const [rootDropScopeId, setRootDropScopeId] = useState<string | null>(null);
   const [entries, setEntries] = useState<ArchitectNavigatorPlanEntry[]>([]);
+  const [collapsedSections, setCollapsedSections] = useState<string[]>([]);
   const [expandedScopeIds, setExpandedScopeIds] = useState<string[]>([]);
   const [pinnedPlanIds, setPinnedPlanIds] = useState<string[]>([]);
   const [expandedPlanLists, setExpandedPlanLists] = useState<string[]>([]);
@@ -149,11 +177,14 @@ export const ArchitectProjectNavigator: React.FC<ArchitectProjectNavigatorProps>
   const [creatingPlanKind, setCreatingPlanKind] = useState<ArchitectPlanKind | null>(null);
   const [activatingPlanId, setActivatingPlanId] = useState<string | null>(null);
   const [openPlanMenuKey, setOpenPlanMenuKey] = useState<string | null>(null);
+  const [planMenuPosition, setPlanMenuPosition] = useState<SidebarMenuPosition>({ left: 0, top: 0 });
+  const [panelMenuPosition, setPanelMenuPosition] = useState<SidebarMenuPosition | null>(null);
   const [scopeCreateMenu, setScopeCreateMenu] = useState<ScopeCreateMenuState | null>(null);
   const [scopeContextMenu, setScopeContextMenu] = useState<ScopeContextMenuState | null>(null);
   const [scopeToRename, setScopeToRename] = useState<ArchitectNavigatorScope | null>(null);
   const [isRenamingScope, setIsRenamingScope] = useState(false);
   const [planToEdit, setPlanToEdit] = useState<ArchitectNavigatorPlanEntry | null>(null);
+  const [planToChooseIcon, setPlanToChooseIcon] = useState<ArchitectNavigatorPlanEntry | null>(null);
   const [planToDelete, setPlanToDelete] = useState<ArchitectNavigatorPlanEntry | null>(null);
   const [formLoading, setFormLoading] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
@@ -162,6 +193,8 @@ export const ArchitectProjectNavigator: React.FC<ArchitectProjectNavigatorProps>
   const [error, setError] = useState<string | null>(null);
   const requestIdRef = useRef(0);
   const expandedScopesInteractionRef = useRef(false);
+  const sectionsInteractionRef = useRef(false);
+  const collapsedSectionsRef = useRef<string[]>([]);
   const pendingPrimaryRequestRef = useRef<ArchitectPlanSelectorRequestDetail | null>(null);
   const scopeCreateButtonRefs = useRef(new Map<string, HTMLButtonElement>());
 
@@ -212,11 +245,14 @@ export const ArchitectProjectNavigator: React.FC<ArchitectProjectNavigatorProps>
     }
     return result;
   }, [searchedActiveEntries]);
+  const macroScope = useMemo(() => scopes.find(scope => scope.projectId === macroBlueprintProjectId), [scopes, macroBlueprintProjectId]);
+  const projectScopes = useMemo(() => scopes.filter(scope => scope !== macroScope), [scopes, macroScope]);
+  const macroEntries = macroScope ? entriesByScope.get(macroScope.id) ?? [] : [];
   const displayedScopes = useMemo(
     () => hasSearchQuery
-      ? scopes.filter((scope) => (entriesByScope.get(scope.id)?.length ?? 0) > 0)
-      : scopes,
-    [entriesByScope, hasSearchQuery, scopes],
+      ? projectScopes.filter((scope) => (entriesByScope.get(scope.id)?.length ?? 0) > 0)
+      : projectScopes,
+    [entriesByScope, hasSearchQuery, projectScopes],
   );
   const pinnedEntries = useMemo(() => {
     const pinned = new Set(pinnedPlanIds);
@@ -302,7 +338,8 @@ export const ArchitectProjectNavigator: React.FC<ArchitectProjectNavigatorProps>
     void Promise.allSettled([
       preferenceLoader.loadPinnedPlanIds(),
       preferenceLoader.loadExpandedScopeIds(),
-    ]).then(([pinnedResult, expandedResult]) => {
+      preferenceLoader.loadCollapsedSections?.() ?? Promise.resolve([]),
+    ]).then(([pinnedResult, expandedResult, sectionsResult]) => {
       if (cancelled) return;
       const validScopeIds = new Set(scopes.map((scope) => scope.id));
       let didFail = false;
@@ -327,6 +364,16 @@ export const ArchitectProjectNavigator: React.FC<ArchitectProjectNavigatorProps>
                     ? [scopes[0].id]
                     : [],
           );
+        }
+      } else {
+        didFail = true;
+      }
+
+      if (sectionsResult.status === 'fulfilled') {
+        if (!sectionsInteractionRef.current) {
+          const sections = sanitizeArchitectNavigatorIds(sectionsResult.value, NAVIGATOR_SECTION_IDS);
+          collapsedSectionsRef.current = sections;
+          setCollapsedSections(sections);
         }
       } else {
         didFail = true;
@@ -364,6 +411,22 @@ export const ArchitectProjectNavigator: React.FC<ArchitectProjectNavigatorProps>
     setExpandedScopeIds(next);
     void savePreference(PREF_KEYS.ARCHITECT_NAVIGATOR_EXPANDED_SCOPE_IDS, next);
   }, []);
+
+  const setSectionExpanded = useCallback((section: NavigatorSection, expanded: boolean) => {
+    sectionsInteractionRef.current = true;
+    setOpenPlanMenuKey(null);
+    setScopeCreateMenu(null);
+    setScopeContextMenu(null);
+    const current = collapsedSectionsRef.current;
+    const next = expanded
+      ? current.filter((id) => id !== section)
+      : [...new Set([...current, section])];
+    collapsedSectionsRef.current = next;
+    setCollapsedSections(next);
+    void savePreference(PREF_KEYS.ARCHITECT_NAVIGATOR_COLLAPSED_SECTIONS, next);
+  }, []);
+  const macroExpanded = hasSearchQuery || !collapsedSections.includes('macro');
+  const projectsExpanded = hasSearchQuery || !collapsedSections.includes('projects');
 
   const toggleScope = (scopeId: string) => {
     setScopeCreateMenu(null);
@@ -445,6 +508,7 @@ export const ArchitectProjectNavigator: React.FC<ArchitectProjectNavigatorProps>
       hydrateActivePlan: true,
       refreshTasks: true,
       includeArchivedInVisible: false,
+      preserveCurrentActivePlan: true,
       reason: 'manual',
     });
     await refreshPlans();
@@ -478,6 +542,25 @@ export const ArchitectProjectNavigator: React.FC<ArchitectProjectNavigatorProps>
     }
   };
 
+  const choosePlanIcon = async (icon: PlanIcon | null) => {
+    if (!planToChooseIcon || formLoading) return;
+    setFormLoading(true);
+    setFormError(null);
+    try {
+      const current = await getArchitectPlan(planToChooseIcon.branchName, planToChooseIcon.plan.id);
+      if (!current || !getArchitectPlanCrudCapabilities(current).canEditDetails) {
+        throw new Error(t('architect.projectNavigator.editUnavailable', 'Ce plan ne peut plus être modifié.'));
+      }
+      await updateArchitectPlan({ branchName: planToChooseIcon.branchName, planId: current.id, expectedRevision: current.revision, icon });
+      await refreshAfterMutation();
+      setPlanToChooseIcon(null);
+    } catch (error) {
+      setFormError(error instanceof Error ? error.message : t('architect.projectNavigator.editError', 'Impossible de modifier le plan.'));
+    } finally {
+      setFormLoading(false);
+    }
+  };
+
   const archivePlan = async (entry: ArchitectNavigatorPlanEntry) => {
     if (mutatingPlanId) return;
     setOpenPlanMenuKey(null);
@@ -503,6 +586,7 @@ export const ArchitectProjectNavigator: React.FC<ArchitectProjectNavigatorProps>
         });
         taskStore.clearPlanRuntimeState({
           planId: entry.plan.id,
+          branchName: entry.branchName,
           deletedWorktreeKeys: cleanup.flatMap((repository) =>
             repository.deletedWorktrees.map((worktree) => worktree.worktreeKey)),
         });
@@ -537,6 +621,7 @@ export const ArchitectProjectNavigator: React.FC<ArchitectProjectNavigatorProps>
       });
       taskStore.clearPlanRuntimeState({
         planId: planToDelete.plan.id,
+        branchName: planToDelete.branchName,
         deletedWorktreeKeys: cleanup.deletedWorktreeKeys,
       });
       setPlanToDelete(null);
@@ -557,8 +642,10 @@ export const ArchitectProjectNavigator: React.FC<ArchitectProjectNavigatorProps>
   const createPlan = useCallback(async (
     scope: ArchitectNavigatorScope,
     planKind: ArchitectPlanKind,
+    folderId?: string,
   ) => {
     if (creatingScopeId || isBusy || isLoading || error) return;
+    if (folderId && (!folders.ready || folders.busy || !folders.organization.folders.some(folder => folder.id === folderId && folder.scopeId === scope.id))) return;
     const editableProjectIds = scope.projects.filter(isProjectPlanActionable).map((project) => project.id);
     const contextProjectIds = scope.projectIds.filter((projectId) => !editableProjectIds.includes(projectId));
     if (editableProjectIds.length === 0) {
@@ -570,8 +657,15 @@ export const ArchitectProjectNavigator: React.FC<ArchitectProjectNavigatorProps>
     setCreatingPlanKind(planKind);
     setError(null);
     try {
+      setSectionExpanded(macroBlueprintProjectId && scope.projectId === macroBlueprintProjectId ? 'macro' : 'projects', true);
       selectScope(scope);
-      const result = await ensureScopedBlankPlan({
+      const label = getNextDefaultNewPlanLabel(entries.filter(entry => entry.scopeId === scope.id).map(entry => entry.plan));
+      // Explicit folder creation must not reuse or move another folder's empty draft.
+      const result = folderId ? { plan: await planCreator({
+        branchName: getGitFlowBaseBranch(), label, planKind,
+        projectId: editableProjectIds[0], projectIds: editableProjectIds, contextProjectIds,
+        agsdl: createEmptySystemDocument(t('architect.projectNavigator.newBlueprint', 'New blueprint')), status: 'draft', setActive: true,
+      }) } : await ensureScopedBlankPlan({
         branchName: getGitFlowBaseBranch(),
         scopedProjectIds: editableProjectIds,
         contextProjectIds,
@@ -579,6 +673,10 @@ export const ArchitectProjectNavigator: React.FC<ArchitectProjectNavigatorProps>
         trigger: 'explicit_create',
       });
       if (!result) throw new Error(t('architect.projectNavigator.createError', 'Impossible de créer le plan.'));
+      const folderPlaced = !folderId || await folders.update(
+        moveBlueprintToFolder(folders.organization, scope.id, toPlanLocatorKey({ branchName: result.plan.targetBranch, planId: result.plan.id }), folderId),
+        () => notify.warning(t('architect.projectNavigator.blueprintCreatedAtRoot', 'Blueprint created at the project root. Its folder placement could not be saved.')),
+      );
       const activated = await activateArchitectPlan(result.plan.id, {
         targetBranch: result.plan.targetBranch,
         planSummaryHint: summarizePlanRecord(result.plan),
@@ -586,7 +684,7 @@ export const ArchitectProjectNavigator: React.FC<ArchitectProjectNavigatorProps>
       });
       if (!activated) throw new Error(t('architect.projectNavigator.createError', 'Impossible de créer le plan.'));
       await refreshPlans();
-      notify.success(t('architect.projectNavigator.planReady', 'Nouveau plan prêt.'));
+      if (folderPlaced) notify.success(t('architect.projectNavigator.planReady', 'Nouveau plan prêt.'));
     } catch (creationError) {
       const message = creationError instanceof Error
         ? creationError.message
@@ -597,7 +695,7 @@ export const ArchitectProjectNavigator: React.FC<ArchitectProjectNavigatorProps>
       setCreatingScopeId(null);
       setCreatingPlanKind(null);
     }
-  }, [activateArchitectPlan, creatingScopeId, error, isBusy, isLoading, refreshPlans, selectScope, t]);
+  }, [activateArchitectPlan, creatingScopeId, entries, error, folders, isBusy, isLoading, macroBlueprintProjectId, planCreator, refreshPlans, selectScope, setSectionExpanded, t]);
 
   const confirmScopeRename = useCallback(async (value: string) => {
     if (!scopeToRename || isRenamingScope) return;
@@ -702,6 +800,56 @@ export const ArchitectProjectNavigator: React.FC<ArchitectProjectNavigatorProps>
     };
   }, [openPlanMenuKey, scopeContextMenu, scopeCreateMenu]);
 
+  const openFolderForm = (scopeId: string, folder?: BlueprintFolder, parentId?: string | null) => {
+    setScopeCreateMenu(null);
+    setScopeContextMenu(null);
+    setFolderError(null);
+    setFolderForm({ scopeId, folder, parentId });
+  };
+  const confirmFolder = async (name: string) => {
+    if (!folderForm) return;
+    try {
+      const next = nameBlueprintFolder(folders.organization, folderForm.scopeId, folderForm.folder?.id ?? crypto.randomUUID(), name, folderForm.parentId);
+      if (await folders.update(next)) {
+        persistExpandedScopes([...new Set([...expandedScopeIds, folderForm.scopeId])]);
+        if (folderForm.scopeId === macroScope?.id) setSectionExpanded('macro', true);
+        setFolderForm(null);
+      }
+    } catch {
+      setFolderError(t('architect.projectNavigator.folderNameError', 'Choose a different folder name.'));
+    }
+  };
+  const dropBlueprint = (scopeId: string, folderId: string | null, event: React.DragEvent) => {
+    event.preventDefault();
+    event.stopPropagation();
+    setRootDropScopeId(null);
+    if (isBusy || !folders.ready || folders.busy || draggedItem?.scopeId !== scopeId) return;
+    try {
+      const payload = JSON.parse(event.dataTransfer.getData(BLUEPRINT_DRAG_TYPE));
+      if (payload.scopeId !== scopeId || payload.kind !== draggedItem.kind) return;
+      if (draggedItem.kind === 'folder') {
+        const folder = folders.organization.folders.find(folder => folder.id === payload.folderId && folder.scopeId === scopeId);
+        if (!folder || folder.id !== draggedItem.folderId || !canMoveBlueprintFolder(folders.organization, folder.id, folderId)) return;
+        void folders.update(moveBlueprintFolder(folders.organization, folder.id, folderId));
+      } else {
+        const entry = entries.find(entry => entry.scopeId === scopeId && entry.locatorKey === payload.locatorKey && entry.plan.status !== 'archived');
+        if (!entry || entry.locatorKey !== draggedItem.locatorKey) return;
+        void folders.update(moveBlueprintToFolder(folders.organization, scopeId, entry.locatorKey, folderId));
+      }
+    } catch { /* External files and foreign drags cannot move a navigator item. */ }
+    setDraggedItem(null);
+  };
+  const moveScopeId = blueprintToMove?.scopeId ?? folderToMove?.scopeId;
+  const moveDestinations = moveScopeId ? blueprintFolderTree(folders.organization, moveScopeId).filter(({ folder }) =>
+    !folderToMove || !blueprintFolderAncestors(folders.organization, folder.id).some(ancestor => ancestor.id === folderToMove.id)
+  ) : [];
+  const confirmMove = async (destinationId: string | null) => {
+    const next = blueprintToMove
+      ? moveBlueprintToFolder(folders.organization, blueprintToMove.scopeId, blueprintToMove.locatorKey, destinationId)
+      : folderToMove ? moveBlueprintFolder(folders.organization, folderToMove.id, destinationId) : null;
+    if (next && await folders.update(next)) { setBlueprintToMove(null); setFolderToMove(null); }
+  };
+
   const renderPlanRow = (entry: ArchitectNavigatorPlanEntry, showScope = false) => {
     const isActive = entry.plan.id === activeArchitectPlanId &&
       (!activePlanContext?.targetBranch || entry.branchName === activePlanContext.targetBranch);
@@ -728,6 +876,7 @@ export const ArchitectProjectNavigator: React.FC<ArchitectProjectNavigatorProps>
           if (isBusy) return;
           setScopeCreateMenu(null);
           setScopeContextMenu(null);
+          setPlanMenuPosition(sidebarMenuPosition(event));
           setOpenPlanMenuKey(planMenuKey);
         }}
       >
@@ -741,7 +890,7 @@ export const ArchitectProjectNavigator: React.FC<ArchitectProjectNavigatorProps>
           {isActivating || isMutating ? (
             <Icon name="loader" size={12} className="shrink-0 animate-spin text-primary" />
           ) : (
-            <Icon name={getPlanKindIconName(kind)} size={12} className={cn('shrink-0', isActive ? 'text-primary' : 'opacity-70')} />
+            <Icon name={getPlanIcon(entry.plan)} size={12} className={cn('shrink-0', isActive ? 'text-primary' : 'opacity-70')} />
           )}
           <span className="min-w-0 flex-1">
             <span className="flex items-center gap-1.5">
@@ -749,20 +898,17 @@ export const ArchitectProjectNavigator: React.FC<ArchitectProjectNavigatorProps>
             </span>
             {showScope && <span className="block truncate text-[10px] text-muted-foreground/75">{entry.scopeLabel}</span>}
           </span>
-          <span
+          {!entry.plan.hasAgsdl && entry.scopeId !== macroScope?.id && <span
             className="max-w-14 shrink-0 truncate rounded bg-muted/65 px-1.5 py-0.5 text-[9px] font-medium text-muted-foreground"
             title={planKindHelp(kind)}
           >
             {planKindLabel(kind)}
-          </span>
+          </span>}
         </button>
         <button
           type="button"
           onClick={() => togglePin(entry.locatorKey)}
-          className={cn(
-            'flex h-6 w-6 shrink-0 items-center justify-center rounded text-muted-foreground hover:bg-background hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/50',
-            isPinned ? 'opacity-100 text-primary' : 'opacity-0 group-hover/plan:opacity-100 group-focus-within/plan:opacity-100',
-          )}
+          className="flex h-6 w-6 shrink-0 items-center justify-center rounded text-muted-foreground opacity-0 group-hover/plan:opacity-100 hover:bg-background hover:text-foreground focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/50"
           title={isPinned
             ? t('architect.projectNavigator.unpin', 'Désépingler')
             : t('architect.projectNavigator.pin', 'Épingler')}
@@ -775,7 +921,9 @@ export const ArchitectProjectNavigator: React.FC<ArchitectProjectNavigatorProps>
         <div className="relative" data-architect-plan-menu>
           <button
             type="button"
-            onClick={() => {
+            onClick={event => {
+              const rect = event.currentTarget.getBoundingClientRect();
+              setPlanMenuPosition({ left: rect.right - 208, top: rect.bottom + 4 });
               setScopeCreateMenu(null);
               setScopeContextMenu(null);
               setOpenPlanMenuKey((current) => current === planMenuKey ? null : planMenuKey);
@@ -786,14 +934,22 @@ export const ArchitectProjectNavigator: React.FC<ArchitectProjectNavigatorProps>
             )}
             title={t('architect.projectNavigator.planActions', 'Actions du plan')}
             aria-label={t('architect.projectNavigator.planActions', 'Actions du plan')}
-            aria-expanded={openPlanMenuKey === planMenuKey}
+            aria-expanded={openPlanMenuKey === planMenuKey} aria-haspopup="menu"
           >
             <Icon name="more-horizontal" size={12} />
           </button>
           {openPlanMenuKey === planMenuKey && (
-            <div className="absolute right-0 top-8 z-30 w-44 rounded-lg border border-border bg-popover p-1.5 text-xs text-popover-foreground shadow-xl">
+            <SidebarMenu position={planMenuPosition} onClose={() => setOpenPlanMenuKey(null)} aria-label={getArchitectPlanPrimaryName(entry.plan)} data-architect-plan-menu className="w-52">
+              {entry.plan.status !== 'archived' && (
+                <button role="menuitem" type="button" disabled={isBusy || !folders.ready || folders.busy}
+                  onClick={() => { setOpenPlanMenuKey(null); setBlueprintToMove(entry); }}
+                  className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left hover:bg-accent disabled:opacity-50">
+                  <Icon name="folder" size={11} />{t('architect.projectNavigator.moveToFolder', 'Move to…')}
+                </button>
+              )}
               {entry.plan.status !== 'archived' && (
                 <button
+                  role="menuitem"
                   type="button"
                   onClick={() => {
                     setOpenPlanMenuKey(null);
@@ -809,6 +965,7 @@ export const ArchitectProjectNavigator: React.FC<ArchitectProjectNavigatorProps>
               )}
               {capabilities.canEditDetails && (
                 <button
+                  role="menuitem"
                   type="button"
                   onClick={() => {
                     setOpenPlanMenuKey(null);
@@ -821,8 +978,15 @@ export const ArchitectProjectNavigator: React.FC<ArchitectProjectNavigatorProps>
                   {t('architect.projectNavigator.rename', 'Renommer')}
                 </button>
               )}
+              {capabilities.canEditDetails && (
+                <button role="menuitem" type="button" onClick={() => { setOpenPlanMenuKey(null); setFormError(null); setPlanToChooseIcon(entry); }} className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left hover:bg-accent">
+                  <Icon name="palette" size={11} />
+                  {t('architect.planIcon.title', 'Choose an icon')}
+                </button>
+              )}
               {(capabilities.canArchive || capabilities.canRestore) && (
                 <button
+                  role="menuitem"
                   type="button"
                   onClick={() => void archivePlan(entry)}
                   className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left hover:bg-accent"
@@ -835,6 +999,7 @@ export const ArchitectProjectNavigator: React.FC<ArchitectProjectNavigatorProps>
               )}
               {capabilities.canDelete && (
                 <button
+                  role="menuitem"
                   type="button"
                   onClick={() => {
                     setOpenPlanMenuKey(null);
@@ -846,84 +1011,115 @@ export const ArchitectProjectNavigator: React.FC<ArchitectProjectNavigatorProps>
                   {t('architect.projectNavigator.delete', 'Supprimer')}
                 </button>
               )}
-            </div>
+            </SidebarMenu>
           )}
         </div>
       </div>
     );
   };
 
+  const renderFolderTree = (scope: ArchitectNavigatorScope, scopeEntries: ArchitectNavigatorPlanEntry[], children?: React.ReactNode) => (
+    <BlueprintFolderTree scopeId={scope.id} entries={scopeEntries} organization={folders.organization}
+      disabled={isBusy || !folders.ready || folders.busy || Boolean(creatingScopeId)} searching={hasSearchQuery}
+      draggedItem={draggedItem} onDragChange={item => { setDraggedItem(item); setRootDropScopeId(null); }}
+      canCreateBlueprint={!isLoading && !error && scope.projects.some(isProjectPlanActionable) && !creatingScopeId}
+      onCreateBlueprint={folder => void createPlan(scope, 'feature', folder.id)}
+      onDropPlan={dropBlueprint} onUpdate={folders.update} onRename={folder => openFolderForm(scope.id, folder)}
+      onCreate={folder => openFolderForm(scope.id, undefined, folder.id)} onMove={folder => setFolderToMove(folder)} renderPlan={renderPlanRow}>
+      {children}
+    </BlueprintFolderTree>
+  );
+  const dragOverRoot = (scopeId: string, event: React.DragEvent) => {
+    if (!isBusy && folders.ready && !folders.busy && draggedItem?.scopeId === scopeId && (draggedItem.kind === 'blueprint' || canMoveBlueprintFolder(folders.organization, draggedItem.folderId, null))) {
+      event.preventDefault(); event.stopPropagation(); event.dataTransfer.dropEffect = 'move'; setRootDropScopeId(scopeId);
+    }
+  };
+
   const createMenuScope = scopeCreateMenu ? scopesById.get(scopeCreateMenu.scopeId) ?? null : null;
   const createMenuPlanKinds = createMenuScope
-    ? getCreatableArchitectPlanKinds(createMenuScope.projects.map((project) => project.gitFlowSettings))
+    ? getCreatableArchitectPlanKinds(createMenuScope.projects.map((project) => project.gitFlowSettings)).filter(kind => createMenuScope.id !== macroScope?.id || kind === 'feature')
     : [];
   const createMenuPosition = scopeCreateMenu && typeof window !== 'undefined'
     ? getAnchoredArchitectMenuPosition(
         scopeCreateMenu.anchorRect,
         {
           width: SCOPE_CREATE_MENU_WIDTH,
-          height: Math.max(56, createMenuPlanKinds.length * 44 + 12),
+          height: Math.max(152, createMenuPlanKinds.length * 44 + 96),
         },
         { width: window.innerWidth, height: window.innerHeight },
       )
     : null;
   const contextMenuScope = scopeContextMenu ? scopesById.get(scopeContextMenu.scopeId) ?? null : null;
 
+  const createActions = createMenuScope ? createMenuPlanKinds.map((planKind) => {
+    const isCreatingKind = creatingScopeId === createMenuScope.id && creatingPlanKind === planKind;
+    const canCreatePlan = !isLoading && !error && createMenuScope.projects.some(isProjectPlanActionable);
+    return (
+      <button
+        key={planKind}
+        type="button"
+        role="menuitem"
+        disabled={isBusy || Boolean(creatingScopeId) || !canCreatePlan}
+        onClick={() => void createPlan(createMenuScope, planKind)}
+        className="flex w-full items-center gap-2.5 rounded-md px-2 py-1.5 text-left transition-colors hover:bg-accent disabled:cursor-not-allowed disabled:opacity-45"
+      >
+        <Icon
+          name={isCreatingKind ? 'loader' : createMenuScope.id === macroScope?.id ? 'layout-template' : getPlanKindIconName(planKind)}
+          size={12}
+          className={cn('shrink-0 text-muted-foreground', isCreatingKind && 'animate-spin text-primary')}
+        />
+        <span className="min-w-0 flex-1">
+          <span className="block truncate text-xs font-medium text-foreground">
+            {createMenuScope.id === macroScope?.id ? t('architect.projectNavigator.newBlueprint', 'New blueprint') : planKind === 'feature' ? agsdlT('agsdl.design.createSystem', { defaultValue: 'Create a system' }) : planKindLabel(planKind)}
+          </span>
+          {createMenuScope.id !== macroScope?.id && <span className="block text-[10px] text-muted-foreground">
+            {planKind === 'feature' ? agsdlT('agsdl.design.createSystemHelp', { defaultValue: 'Start from scratch or use a blueprint.' }) : planKindHelp(planKind)}
+          </span>}
+        </span>
+      </button>
+    );
+  }) : [];
   const scopeCreateMenuPortal = scopeCreateMenu && createMenuScope && createMenuPosition && typeof document !== 'undefined'
-    ? createPortal(
-        <div
-          role="menu"
+    ? (
+        <SidebarMenu position={createMenuPosition} onClose={() => setScopeCreateMenu(null)}
           aria-label={t('architect.projectNavigator.newPlan', 'Nouveau plan')}
-          className="fixed z-[90] w-60 rounded-lg border border-border bg-popover p-1.5 text-popover-foreground shadow-2xl"
-          style={{ top: createMenuPosition.top, left: createMenuPosition.left }}
+          className={createMenuScope.id === macroScope?.id ? 'w-52' : 'w-60'}
           data-architect-scope-menu
           data-architect-scope-create-menu
         >
-          {createMenuPlanKinds.map((planKind) => {
-            const isCreatingKind = creatingScopeId === createMenuScope.id && creatingPlanKind === planKind;
-            const canCreatePlan = !isLoading && !error && createMenuScope.projects.some(isProjectPlanActionable);
-            return (
-              <button
-                key={planKind}
-                type="button"
-                role="menuitem"
-                disabled={isBusy || Boolean(creatingScopeId) || !canCreatePlan}
-                onClick={() => void createPlan(createMenuScope, planKind)}
-                className="flex w-full items-center gap-2.5 rounded-md px-2 py-1.5 text-left transition-colors hover:bg-accent disabled:cursor-not-allowed disabled:opacity-45"
-              >
-                <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded bg-muted/65 text-muted-foreground">
-                  <Icon
-                    name={isCreatingKind ? 'loader' : getPlanKindIconName(planKind)}
-                    size={12}
-                    className={cn(isCreatingKind && 'animate-spin text-primary')}
-                  />
-                </span>
-                <span className="min-w-0 flex-1">
-                  <span className="block truncate text-xs font-medium text-foreground">
-                    {planKindLabel(planKind)}
-                  </span>
-                  <span className="block truncate text-[10px] text-muted-foreground">
-                    {planKindHelp(planKind)}
-                  </span>
-                </span>
-              </button>
-            );
-          })}
-        </div>,
-        document.body,
+          {createActions.filter((_, index) => createMenuPlanKinds[index] === 'feature')}
+          <button type="button" role="menuitem" disabled={!folders.ready || folders.busy || isBusy || Boolean(creatingScopeId)}
+            onClick={() => openFolderForm(createMenuScope.id)}
+            className="flex w-full items-center gap-2.5 rounded-md px-2 py-1.5 text-xs text-muted-foreground hover:bg-accent hover:text-foreground disabled:opacity-50">
+            <Icon name="folder" size={12} />
+            {t('architect.projectNavigator.newFolder', 'New folder')}
+          </button>
+          {createMenuPlanKinds.some(kind => kind !== 'feature') && <details className="mt-1 border-t border-border pt-1">
+            <summary role="menuitem" className="cursor-pointer rounded-md px-2 py-2 text-[11px] text-muted-foreground hover:bg-accent">
+              {agsdlT('agsdl.design.otherPlanTypes', { defaultValue: 'Other plan types' })}
+            </summary>
+            {createActions.filter((_, index) => createMenuPlanKinds[index] !== 'feature')}
+          </details>}
+        </SidebarMenu>
       )
     : null;
 
   const scopeContextMenuPortal = scopeContextMenu && contextMenuScope && typeof document !== 'undefined'
-    ? createPortal(
-        <div
-          role="menu"
-          aria-label={t('architect.projectNavigator.manageProjects', 'Gérer les projets')}
-          className="fixed z-[90] w-52 rounded-lg border border-border bg-popover p-1.5 text-xs text-popover-foreground shadow-2xl"
-          style={{ top: scopeContextMenu.position.top, left: scopeContextMenu.position.left }}
+    ? (
+        <SidebarMenu position={scopeContextMenu.position} onClose={() => setScopeContextMenu(null)}
+          aria-label={contextMenuScope.label}
+          className="w-52"
           data-architect-scope-menu
           data-architect-scope-context-menu
         >
+          <button type="button" role="menuitem" disabled={isBusy || isLoading || Boolean(creatingScopeId) || !contextMenuScope.projects.some(isProjectPlanActionable)}
+            onClick={() => { setScopeContextMenu(null); void createPlan(contextMenuScope, 'feature'); }}
+            className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left hover:bg-accent disabled:opacity-50">
+            <Icon name="layout-template" size={11} />{t('architect.projectNavigator.newBlueprint', 'New blueprint')}
+          </button>
+          <button type="button" role="menuitem" disabled={!folders.ready || folders.busy || isBusy} onClick={() => openFolderForm(contextMenuScope.id)} className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-muted-foreground hover:bg-accent hover:text-foreground disabled:opacity-50">
+            <Icon name="folder" size={11} />{t('architect.projectNavigator.newFolder', 'New folder')}
+          </button>
           <button
             type="button"
             role="menuitem"
@@ -948,13 +1144,22 @@ export const ArchitectProjectNavigator: React.FC<ArchitectProjectNavigatorProps>
             <Icon name="settings" size={11} />
             {t('architect.projectNavigator.manageProjects', 'Gérer les projets')}
           </button>
-        </div>,
-        document.body,
+        </SidebarMenu>
       )
     : null;
 
   return (
-    <aside className="flex h-full min-h-0 w-full flex-col border-r border-border bg-background" aria-label={t('architect.projectNavigator.title', 'Projets')}>
+    <aside className="flex h-full min-h-0 w-full flex-col border-r border-border bg-background" aria-label={t('architect.projectNavigator.title', 'Projets')}
+      onContextMenu={event => {
+        if (isSidebarTextInput(event.target)) return;
+        event.preventDefault(); event.stopPropagation(); setPanelMenuPosition(sidebarMenuPosition(event));
+      }}>
+      {panelMenuPosition && <SidebarMenu position={panelMenuPosition} onClose={() => setPanelMenuPosition(null)} aria-label={t('architect.projectNavigator.title', 'Projets')} className="w-52">
+        <button role="menuitem" type="button" onClick={() => { setPanelMenuPosition(null); openProjectModal(null); }} className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left hover:bg-accent"><Icon name="plus" size={12} />{t('architect.projectNavigator.addProject', 'Ajouter un projet')}</button>
+        <button role="menuitem" type="button" onClick={() => { setPanelMenuPosition(null); openProjectNavigator(); }} className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left hover:bg-accent"><Icon name="settings" size={12} />{t('architect.projectNavigator.manageProjects', 'Gérer les projets')}</button>
+        <button role="menuitem" type="button" onClick={() => { setPanelMenuPosition(null); setArchitectShowArchived(!showArchived); }} className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left hover:bg-accent"><Icon name={showArchived ? 'layers' : 'archive'} size={12} />{showArchived ? t('architect.projectNavigator.projects', 'Tous les projets') : t('architect.projectNavigator.archives', 'Archives')}</button>
+        <button role="menuitem" type="button" onClick={() => { setPanelMenuPosition(null); void refreshPlans(); }} className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left hover:bg-accent"><Icon name="refresh-cw" size={12} />{t('architect.projectNavigator.refresh', 'Actualiser')}</button>
+      </SidebarMenu>}
       {scopeCreateMenuPortal}
       {scopeContextMenuPortal}
       <div className="flex h-12 shrink-0 items-center justify-between gap-2 border-b border-border px-3">
@@ -1042,19 +1247,50 @@ export const ArchitectProjectNavigator: React.FC<ArchitectProjectNavigatorProps>
           </section>
         )}
 
+        {!showArchived && macroScope && (!hasSearchQuery || macroEntries.length > 0) && (
+          <section aria-label={t('architect.projectNavigator.macroBlueprints', 'Macro library')} data-architect-scope-id={macroScope.id} className="mb-4"
+            onContextMenu={event => { event.preventDefault(); event.stopPropagation(); if (!isBusy) openScopeCreateMenu(macroScope.id, 'header', event.currentTarget.getBoundingClientRect()); }}>
+            <div data-architect-scope-menu
+              onContextMenu={event => {
+                event.preventDefault(); event.stopPropagation();
+                openScopeCreateMenu(macroScope.id, 'header', event.currentTarget.getBoundingClientRect());
+              }}
+              onDragEnter={event => dragOverRoot(macroScope.id, event)} onDragOver={event => dragOverRoot(macroScope.id, event)}
+              onDragLeave={() => setRootDropScopeId(null)} onDrop={event => dropBlueprint(macroScope.id, null, event)}
+              className={cn('flex h-7 items-center gap-1 rounded-md px-1.5', rootDropScopeId === macroScope.id && 'bg-primary/10 ring-1 ring-inset ring-primary/60')}>
+              <h3 className="min-w-0 flex-1">
+                <button
+                  type="button"
+                  aria-expanded={macroExpanded}
+                  aria-controls="architect-macro-blueprints-content"
+                  onClick={() => setSectionExpanded('macro', !macroExpanded)}
+                  className="flex h-7 w-full items-center gap-1.5 rounded text-left text-[11px] font-medium text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-primary/70"
+                >
+                  <Icon name={macroExpanded ? 'chevron-down' : 'chevron-right'} size={12} />
+                  <span className="truncate">{t('architect.projectNavigator.macroBlueprints', 'Macro library')}</span>
+                </button>
+              </h3>
+              <button type="button" disabled={isBusy || isLoading || !!creatingScopeId} onClick={event => openScopeCreateMenu(macroScope.id, 'header', event.currentTarget.getBoundingClientRect())} aria-haspopup="menu" aria-expanded={scopeCreateMenu?.scopeId === macroScope.id} aria-label={t('architect.projectNavigator.newMacroBlueprint', 'New Macro blueprint')} className="flex h-6 w-6 items-center justify-center rounded text-muted-foreground hover:bg-accent hover:text-foreground disabled:opacity-50"><Icon name={creatingScopeId === macroScope.id ? 'loader' : 'plus'} size={12} className={cn(creatingScopeId === macroScope.id && 'animate-spin')} /></button>
+            </div>
+            <div id="architect-macro-blueprints-content" hidden={!macroExpanded} className="space-y-0.5">{renderFolderTree(macroScope, macroEntries)}</div>
+          </section>
+        )}
+
         {!showArchived ? (!hasSearchQuery || searchedActiveEntries.length > 0) && (
           <section aria-labelledby="architect-projects-title">
-          <div className="flex items-center justify-between px-1.5 pb-1.5 pt-0.5">
-            <div className="flex items-center gap-1.5">
-              <h3 id="architect-projects-title" className="text-[11px] font-medium text-muted-foreground">
-                {t('architect.projectNavigator.projects', 'Tous les projets')}
-              </h3>
-              {displayedScopes.length > 0 && (
-                <span className="inline-flex h-4 min-w-4 items-center justify-center rounded-full bg-muted/70 px-1 text-[9px] tabular-nums text-muted-foreground">
-                  {displayedScopes.length}
-                </span>
-              )}
-            </div>
+          <div className="flex h-7 items-center gap-1 px-1.5">
+            <h3 id="architect-projects-title" className="min-w-0 flex-1">
+              <button
+                type="button"
+                aria-expanded={projectsExpanded}
+                aria-controls="architect-projects-content"
+                onClick={() => setSectionExpanded('projects', !projectsExpanded)}
+                className="flex h-7 w-full items-center gap-1.5 rounded text-left text-[11px] font-medium text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-primary/70"
+              >
+                <Icon name={projectsExpanded ? 'chevron-down' : 'chevron-right'} size={12} />
+                <span>{t('architect.projectNavigator.projects', 'Tous les projets')}</span>
+              </button>
+            </h3>
             <button
               type="button"
               onClick={() => void refreshPlans()}
@@ -1066,7 +1302,8 @@ export const ArchitectProjectNavigator: React.FC<ArchitectProjectNavigatorProps>
             </button>
           </div>
 
-          {!isLoading && scopes.length === 0 && (
+          <div id="architect-projects-content" hidden={!projectsExpanded}>
+          {!isLoading && projectScopes.length === 0 && (
             <div className="mx-2 mt-6 text-center">
               <Icon name="folder" size={22} className="mx-auto mb-2 text-muted-foreground/50" />
               <p className="text-xs text-muted-foreground">{t('architect.projectNavigator.noProjects', 'Aucun projet pour l’instant.')}</p>
@@ -1086,7 +1323,8 @@ export const ArchitectProjectNavigator: React.FC<ArchitectProjectNavigatorProps>
               const scopeEntries = entriesByScope.get(scope.id) ?? [];
               const isExpanded = hasSearchQuery || expandedScopeIds.includes(scope.id);
               const isSelected = scopeIsSelected(scope, selectedGroupId, selectedProjectId);
-              const showAll = hasSearchQuery || expandedPlanLists.includes(scope.id);
+              const hasFolders = folders.organization.folders.some(folder => folder.scopeId === scope.id);
+              const showAll = hasFolders || hasSearchQuery || expandedPlanLists.includes(scope.id);
               const visibleEntries = showAll ? scopeEntries : scopeEntries.slice(0, MAX_VISIBLE_PLANS_PER_SCOPE);
               const hiddenCount = scopeEntries.length - visibleEntries.length;
               const canCreatePlan = !isLoading && !error && scope.projects.some(isProjectPlanActionable);
@@ -1097,15 +1335,15 @@ export const ArchitectProjectNavigator: React.FC<ArchitectProjectNavigatorProps>
                   data-architect-scope-id={scope.id}
                   onContextMenu={(event) => {
                     event.preventDefault();
+                    event.stopPropagation();
                     if (isBusy) return;
-                    applyScopeSelection(scope);
                     setOpenPlanMenuKey(null);
                     setScopeCreateMenu(null);
                     setScopeContextMenu({
                       scopeId: scope.id,
                       position: getPointerArchitectMenuPosition(
                         { x: event.clientX, y: event.clientY },
-                        { width: SCOPE_CONTEXT_MENU_WIDTH, height: 72 },
+                        { width: SCOPE_CONTEXT_MENU_WIDTH, height: 144 },
                         { width: window.innerWidth, height: window.innerHeight },
                       ),
                     });
@@ -1113,10 +1351,16 @@ export const ArchitectProjectNavigator: React.FC<ArchitectProjectNavigatorProps>
                 >
                   <div className={cn(
                     'group/scope flex min-h-8 items-center rounded-md transition-colors',
+                    rootDropScopeId === scope.id && 'bg-primary/10 ring-1 ring-inset ring-primary/60',
                     isSelected
                       ? 'bg-accent/80'
                       : 'hover:bg-accent/45',
-                  )} data-architect-scope-menu>
+                  )} data-architect-scope-menu
+                    onDragEnter={event => dragOverRoot(scope.id, event)}
+                    onDragOver={event => dragOverRoot(scope.id, event)}
+                    onDragLeave={() => setRootDropScopeId(null)}
+                    onDrop={event => dropBlueprint(scope.id, null, event)}
+                  >
                     <button
                       type="button"
                       onClick={() => toggleScope(scope.id)}
@@ -1136,9 +1380,9 @@ export const ArchitectProjectNavigator: React.FC<ArchitectProjectNavigatorProps>
                     >
                       <span className={cn('flex h-5 w-5 shrink-0 items-center justify-center rounded', isSelected ? 'text-primary' : 'text-muted-foreground')}>
                         {scope.kind === 'project' && scope.projects[0] ? (
-                          <ProjectIcon project={scope.projects[0]} fallbackIcon="folder" size={13} />
+                          <ProjectIcon project={scope.projects[0]} fallbackIcon="layers" size={13} />
                         ) : (
-                          <Icon name="folder" size={13} />
+                          <Icon name="layers" size={13} />
                         )}
                       </span>
                       <span className={cn('min-w-0 flex-1 truncate text-xs font-medium', isSelected ? 'text-foreground' : 'text-foreground/90')}>{scope.label}</span>
@@ -1169,7 +1413,7 @@ export const ArchitectProjectNavigator: React.FC<ArchitectProjectNavigatorProps>
 
                   {isExpanded && (
                     <div className="ml-7 space-y-0.5 pb-0.5 pt-0.5">
-                      {visibleEntries.length > 0 ? visibleEntries.map((entry) => renderPlanRow(entry)) : (
+                      {renderFolderTree(scope, visibleEntries, (
                         <button
                           type="button"
                           onClick={(event) => {
@@ -1185,7 +1429,7 @@ export const ArchitectProjectNavigator: React.FC<ArchitectProjectNavigatorProps>
                           <Icon name="plus" size={11} />
                           {t('architect.projectNavigator.firstPlan', 'Créer le premier plan')}
                         </button>
-                      )}
+                      ))}
                       {hiddenCount > 0 && (
                         <button
                           type="button"
@@ -1195,7 +1439,7 @@ export const ArchitectProjectNavigator: React.FC<ArchitectProjectNavigatorProps>
                           {t('architect.projectNavigator.showMore', 'Afficher {{count}} de plus', { count: hiddenCount })}
                         </button>
                       )}
-                      {showAll && scopeEntries.length > MAX_VISIBLE_PLANS_PER_SCOPE && (
+                      {showAll && !hasFolders && scopeEntries.length > MAX_VISIBLE_PLANS_PER_SCOPE && (
                         <button
                           type="button"
                           onClick={() => setExpandedPlanLists((current) => current.filter((id) => id !== scope.id))}
@@ -1209,6 +1453,7 @@ export const ArchitectProjectNavigator: React.FC<ArchitectProjectNavigatorProps>
                 </div>
               );
             })}
+          </div>
           </div>
           </section>
         ) : (
@@ -1229,6 +1474,7 @@ export const ArchitectProjectNavigator: React.FC<ArchitectProjectNavigatorProps>
           </section>
         )}
       </div>
+      {planToChooseIcon && <PlanIconDialog value={planToChooseIcon.plan.icon} isLoading={formLoading} error={formError} onSelect={icon => void choosePlanIcon(icon)} onClose={() => { if (!formLoading) setPlanToChooseIcon(null); }} />}
       {planToEdit && (
         <PlanFormModal
           initialValue={getArchitectPlanEditableName(planToEdit.plan)}
@@ -1241,6 +1487,31 @@ export const ArchitectProjectNavigator: React.FC<ArchitectProjectNavigatorProps>
           error={formError}
         />
       )}
+
+      <ConfirmPromptModal
+        isOpen={Boolean(folderForm)}
+        title={folderForm?.folder ? t('architect.projectNavigator.renameFolder', 'Rename folder') : folderForm?.parentId ? t('architect.projectNavigator.newSubfolder', 'New subfolder') : t('architect.projectNavigator.newFolder', 'New folder')}
+        initialValue={folderForm?.folder?.name ?? ''} inputPlaceholder={t('common.name', 'Name')} requireInput
+        confirmLabel={folderForm?.folder ? t('common.rename', 'Rename') : t('architect.planSelector.create', 'Create')}
+        cancelLabel={t('common.cancel', 'Cancel')} isSubmitting={folders.busy}
+        onCancel={() => { if (!folders.busy) setFolderForm(null); }} onConfirm={value => void confirmFolder(value ?? '')}>
+        {folderError && <p role="alert" className="text-xs text-red-400">{folderError}</p>}
+      </ConfirmPromptModal>
+      <ConfirmPromptModal isOpen={Boolean(blueprintToMove || folderToMove)} title={t('architect.projectNavigator.moveToFolder', 'Move to…')}
+        showConfirmButton={false} cancelLabel={t('common.cancel', 'Cancel')} isSubmitting={folders.busy}
+        onCancel={() => { if (!folders.busy) { setBlueprintToMove(null); setFolderToMove(null); } }} onConfirm={() => undefined}>
+        {moveScopeId && [{ folder: null, depth: 0, path: moveScopeId === macroScope?.id ? t('architect.projectNavigator.macroBlueprints', 'Macro library') : t('architect.projectNavigator.projectRoot', 'Project root') }, ...moveDestinations].map(({ folder, depth, path }) => {
+          const currentId = blueprintToMove ? blueprintFolderId(folders.organization, moveScopeId, blueprintToMove.locatorKey) : folderToMove?.parentId ?? null;
+          const selected = currentId === (folder?.id ?? null);
+          const invalid = Boolean(folderToMove && !canMoveBlueprintFolder(folders.organization, folderToMove.id, folder?.id ?? null));
+          return <button key={folder?.id ?? 'root'} type="button" disabled={folders.busy || selected || invalid} title={path}
+            onClick={() => void confirmMove(folder?.id ?? null)}
+            style={{ paddingLeft: 8 + (folder ? depth + 1 : 0) * 12 }}
+            className="flex min-h-9 w-full items-center gap-2 rounded pr-2 text-left text-xs hover:bg-accent disabled:opacity-60">
+            <Icon name={folder ? 'folder' : 'layers'} size={14} /><span className="min-w-0 flex-1 truncate">{folder?.name ?? path}</span>{selected && <Icon name="check" size={12} />}
+          </button>;
+        })}
+      </ConfirmPromptModal>
 
       <ConfirmPromptModal
         isOpen={Boolean(scopeToRename)}

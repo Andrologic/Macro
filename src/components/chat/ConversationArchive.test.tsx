@@ -223,6 +223,10 @@ describe('ConversationArchive', () => {
       expect(rowEvent.defaultPrevented).toBe(true);
     }
     expect(selectConversation).toHaveBeenCalledTimes(2);
+    menuButton!.getBoundingClientRect = () => ({
+      top: 30, bottom: 50, left: 180, right: 200, width: 20, height: 20,
+      x: 180, y: 30, toJSON: () => ({}),
+    });
     await act(async () => { menuButton?.click(); });
     expect(selectConversation).toHaveBeenCalledTimes(2);
     const exportButton = Array.from(document.body.querySelectorAll<HTMLButtonElement>('[data-conversation-actions-menu] button'))
@@ -289,6 +293,34 @@ describe('ConversationArchive', () => {
       await flushRender();
     });
     expect(document.body.querySelector('[data-tour-id="chat-multiselect-toolbar"]')).toBeNull();
+  });
+
+  it('keeps the filtered conversation list available while searching in multi-select mode', async () => {
+    const selectConversation = mock(async () => true);
+    useChatStore.setState({ selectConversation: selectConversation as never });
+    await act(async () => { root?.render(<ConversationArchive />); await flushRender(); });
+    await act(async () => {
+      document.body.querySelector<HTMLButtonElement>('[data-tour-id="chat-multiselect"]')?.click();
+      document.body.querySelector<HTMLButtonElement>('[data-tour-id="chat-search-toggle"]')?.click();
+      await flushRender();
+    });
+    const input = document.body.querySelector<HTMLInputElement>('[data-tour-id="chat-conversation-search"] input');
+    const propsKey = Object.keys(input ?? {}).find((key) => key.startsWith('__reactProps$'));
+    const inputProps = (input as unknown as Record<string, { onChange?: (event: unknown) => void }>)[propsKey!];
+    await act(async () => {
+      inputProps.onChange?.({ target: { value: 'active' } });
+      await flushRender();
+    });
+    expect(document.body.querySelector('[data-tour-id="chat-message-search-results"]') === null).toBe(true);
+    const list = document.body.querySelector('[data-tour-id="chat-conversations-panel"] > .flex-1.overflow-y-auto');
+    expect(list !== null).toBe(true);
+    expect(list?.classList.contains('hidden')).toBe(false);
+    await act(async () => {
+      document.body.querySelector<HTMLButtonElement>('[aria-label="Select all"]')?.click();
+      await flushRender();
+    });
+    expect(document.body.querySelector('[data-tour-id="chat-multiselect-toolbar"]')?.textContent).toContain('1 selected');
+    expect(selectConversation).not.toHaveBeenCalled();
   });
 
   it('shows the archive toggle in the header and switches to the archived view', async () => {
@@ -420,6 +452,26 @@ describe('ConversationArchive', () => {
     expect(stateValues[PREF_KEYS.CHAT_ARCHIVED_CONVERSATION_IDS]).toEqual([]);
   });
 
+  it('opens actions on the right-clicked conversation without selecting it', async () => {
+    const active = useChatStore.getState().conversations[0];
+    const pin = mock(async () => true);
+    const select = mock(async () => true);
+    useChatStore.setState({ conversations: [active, { ...active, id: 'other', title: 'Other conversation' }], selectedConversationId: active.id, togglePinConversation: pin, selectConversation: select as never });
+    await act(async () => { root?.render(<ConversationArchive />); await flushRender(); });
+    const row = [...container!.querySelectorAll<HTMLElement>('[role="button"]')].find(item => item.textContent?.includes('Other conversation'))!;
+    const event = new window.MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: 120, clientY: 160 });
+    await act(async () => { row.dispatchEvent(event); await flushRender(); });
+    expect(event.defaultPrevented).toBe(true);
+    expect(select).not.toHaveBeenCalled();
+    expect(useChatStore.getState().selectedConversationId).toBe(active.id);
+    const pinButton = [...document.querySelectorAll<HTMLButtonElement>('[role="menuitem"]')].find(item => item.textContent?.trim() === 'Pin')!;
+    await act(async () => { pinButton.click(); await flushRender(); });
+    expect(pin).toHaveBeenCalledWith('other');
+    await act(async () => { container!.querySelector('aside')!.dispatchEvent(new window.MouseEvent('contextmenu', { bubbles: true, cancelable: true })); await flushRender(); });
+    expect(document.querySelector('[role="menu"]')?.textContent).toContain('New Chat');
+    expect(document.querySelector('[role="menu"]')?.textContent).not.toContain('Export JSON');
+  });
+
   it('renders conversation actions outside virtual rows and invokes Pin with a mouse click', async () => {
     const active = useChatStore.getState().conversations[0];
     const togglePinConversation = mock(async () => true);
@@ -463,7 +515,6 @@ describe('ConversationArchive', () => {
     const trigger = container!.querySelector<HTMLButtonElement>('[aria-label="Conversation actions"]')!;
     await act(async () => { trigger.focus(); trigger.click(); await flushRender(); });
     const menu = document.body.querySelector<HTMLElement>('[data-conversation-actions-menu]')!;
-    const backdrop = menu.previousElementSibling!;
     expect(menu.parentElement).toBe(document.body);
     expect(menu.className).toContain('z-[80]');
     if (focusMenu) menu.querySelector<HTMLButtonElement>('button')!.focus();
@@ -479,7 +530,7 @@ describe('ConversationArchive', () => {
     expect(useAppStore.getState().settingsOpen).toBe(true);
     expect(dialog).not.toBeNull();
     expect(menu.isConnected).toBe(false);
-    expect(backdrop.isConnected).toBe(false);
+    expect(document.body.querySelector('[role="menu"]')).toBeNull();
     expect(trigger.getAttribute('aria-expanded')).toBe('false');
     expect(dialog.contains(document.activeElement)).toBe(true);
     await act(async () => {
@@ -745,6 +796,14 @@ describe('ConversationArchive', () => {
             role: 'user',
             snippet: 'Indexed needle in the transcript',
             createdAt: '2026-08-16T10:00:00.000Z',
+          }, {
+            messageId: 'assistant-match',
+            conversationId: 'conversation-1',
+            conversationTitle: 'Conversation active',
+            conversationDescription: null,
+            role: 'assistant',
+            snippet: 'The NEEDLE answer',
+            createdAt: '2026-08-16T10:01:00.000Z',
           }],
           nextOffset: null,
         };
@@ -794,12 +853,19 @@ describe('ConversationArchive', () => {
       offset: 0,
     });
     expect(result?.textContent).toContain('Indexed needle');
+    const groups = document.body.querySelectorAll('[data-search-conversation]');
+    expect(groups.length).toBe(1);
+    expect(groups[0]?.querySelectorAll('[data-message-search-result]').length).toBe(2);
+    expect(groups[0]?.textContent?.match(/Conversation active/g)?.length).toBe(1);
+    expect(result?.querySelector('mark')?.textContent).toBe('needle');
+    expect(document.body.querySelector('[data-message-search-result="assistant-match"] mark')?.textContent).toBe('NEEDLE');
     await act(async () => {
       result?.click();
       await flushRender();
     });
     expect(selectConversation).toHaveBeenCalledWith('conversation-1');
     expect(focusedMessages).toEqual(['message-not-loaded']);
+    expect(result?.getAttribute('aria-current')).toBe('true');
     window.removeEventListener('macro:focus-message', focusListener);
   });
 });

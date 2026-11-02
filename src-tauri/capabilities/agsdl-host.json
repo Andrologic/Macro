@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "agsdl-host",
+  "description": "Resident AgSDL host native stream events",
+  "windows": ["agsdl-runtime-host"],
+  "permissions": ["core:event:allow-listen", "core:event:allow-unlisten"]
+}

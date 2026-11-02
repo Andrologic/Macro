@@ -2,7 +2,13 @@ use crate::connect_resources::{TransitCharge, TransitInstance};
 use crate::core::db_state::ChatWorkLifetime;
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
-use std::{process::Stdio, sync::{Arc, atomic::{AtomicBool, Ordering}}};
+use std::{
+    process::Stdio,
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    },
+};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     process::{Child, ChildStdin, ChildStdout, Command},
@@ -21,18 +27,31 @@ const STARTUP: u64 = 8 * PAGE as u64;
 type Result<T> = std::result::Result<T, &'static str>;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum Profile { Bootstrap, Persistent }
+pub(crate) enum Profile {
+    Bootstrap,
+    Persistent,
+}
 impl Profile {
     pub(crate) fn command(self) -> &'static str {
-        match self { Self::Bootstrap => "connect-bootstrap", Self::Persistent => "connect-codec" }
+        match self {
+            Self::Bootstrap => "connect-bootstrap",
+            Self::Persistent => "connect-codec",
+        }
     }
     pub(crate) fn accepts(self, op: u16) -> bool {
-        match self { Self::Bootstrap => op == 10, Self::Persistent => (1..=9).contains(&op) }
+        match self {
+            Self::Bootstrap => op == 10,
+            Self::Persistent => (1..=9).contains(&op),
+        }
     }
     fn identity(self) -> &'static str {
         match self {
-            Self::Bootstrap => include_str!("../../../copilot-bridge/src/connect-bootstrap.identity.json"),
-            Self::Persistent => include_str!("../../../copilot-bridge/src/connect-codec.identity.json"),
+            Self::Bootstrap => {
+                include_str!("../../../copilot-bridge/src/connect-bootstrap.identity.json")
+            }
+            Self::Persistent => {
+                include_str!("../../../copilot-bridge/src/connect-codec.identity.json")
+            }
         }
     }
 }
@@ -64,20 +83,36 @@ struct EncodedSlot {
     index: usize,
 }
 impl Drop for EncodedSlot {
-    fn drop(&mut self) { self.bank.slots[self.index].store(false, Ordering::Release); }
+    fn drop(&mut self) {
+        self.bank.slots[self.index].store(false, Ordering::Release);
+    }
 }
 // Data is declared before its charge so its backing disappears first.
 #[allow(dead_code)]
-enum BytesCharge { External(TransitCharge), Bank(EncodedSlot) }
+enum BytesCharge {
+    External(TransitCharge),
+    Bank(EncodedSlot),
+}
 impl BankOwner {
     pub(crate) fn admit(&self, op: u16) -> Result<Admission> {
-        if !self.profile.accepts(op) { return Err("codec_profile"); }
-        let permit = self.gate.clone().try_acquire_owned().map_err(|_| "codec_busy")?;
+        if !self.profile.accepts(op) {
+            return Err("codec_profile");
+        }
+        let permit = self
+            .gate
+            .clone()
+            .try_acquire_owned()
+            .map_err(|_| "codec_busy")?;
         let charge = self.budget.reserve(BANK).map_err(|_| "transit_limit")?;
-        Ok(Admission { op, bank: Arc::new(JobBank {
-            owner: self.clone(), _charge: charge, _permit: permit,
-            slots: [AtomicBool::new(false), AtomicBool::new(false)],
-        }) })
+        Ok(Admission {
+            op,
+            bank: Arc::new(JobBank {
+                owner: self.clone(),
+                _charge: charge,
+                _permit: permit,
+                slots: [AtomicBool::new(false), AtomicBool::new(false)],
+            }),
+        })
     }
     pub(crate) fn owns(&self, input: &AdmittedInput) -> bool {
         Arc::ptr_eq(&self.gate, &input.bank.owner.gate) && self.profile.accepts(input.input.op)
@@ -85,30 +120,60 @@ impl BankOwner {
 }
 impl JobBank {
     fn slot(self: &Arc<Self>, index: usize) -> Result<EncodedSlot> {
-        self.slots[index].compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+        self.slots[index]
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
             .map_err(|_| "codec_busy")?;
-        Ok(EncodedSlot { bank: self.clone(), index })
+        Ok(EncodedSlot {
+            bank: self.clone(),
+            index,
+        })
     }
     fn adopt(self: &Arc<Self>, bytes: Bytes, index: usize) -> Result<Bytes> {
-        if bytes.data.capacity() > BODY { return Err("codec_limit"); }
+        if bytes.data.capacity() > BODY {
+            return Err("codec_limit");
+        }
         let slot = self.slot(index)?;
-        let Bytes { data, _charge, _receive } = bytes;
+        let Bytes {
+            data,
+            _charge,
+            _receive,
+        } = bytes;
         // BANK and its exclusive slot already cover the same backing.
         drop(_charge);
-        Ok(Bytes { data, _charge: BytesCharge::Bank(slot), _receive })
+        Ok(Bytes {
+            data,
+            _charge: BytesCharge::Bank(slot),
+            _receive,
+        })
     }
 }
 impl Admission {
     pub(crate) fn input(self, facts: &impl serde::Serialize, body: Bytes) -> Result<AdmittedInput> {
         let expectations = Bytes::serialize_charged(BytesCharge::Bank(self.bank.slot(0)?), facts)?;
         let body = self.bank.adopt(body, 1)?;
-        Ok(AdmittedInput { input: Input { op: self.op, expectations, body }, bank: self.bank })
+        Ok(AdmittedInput {
+            input: Input {
+                op: self.op,
+                expectations,
+                body,
+            },
+            bank: self.bank,
+        })
     }
     pub(crate) fn adopt(self, input: Input) -> Result<AdmittedInput> {
-        if self.op != input.op { return Err("codec_input"); }
+        if self.op != input.op {
+            return Err("codec_input");
+        }
         let expectations = self.bank.adopt(input.expectations, 0)?;
         let body = self.bank.adopt(input.body, 1)?;
-        Ok(AdmittedInput { input: Input { op: self.op, expectations, body }, bank: self.bank })
+        Ok(AdmittedInput {
+            input: Input {
+                op: self.op,
+                expectations,
+                body,
+            },
+            bank: self.bank,
+        })
     }
 }
 
@@ -134,7 +199,9 @@ impl Bytes {
         })
     }
     pub(crate) fn adopt_received(
-        data: Vec<u8>, charge: TransitCharge, capacity: usize,
+        data: Vec<u8>,
+        charge: TransitCharge,
+        capacity: usize,
         permit: tokio::sync::OwnedSemaphorePermit,
     ) -> Result<Self> {
         let mut bytes = Self::adopt(data, charge, capacity)?;
@@ -164,8 +231,14 @@ impl Bytes {
         }
         let mut writer = Bounded(Vec::with_capacity(BODY));
         serde_json::to_writer(&mut writer, value).map_err(|_| "codec_input")?;
-        if writer.0.capacity() > BODY { return Err("codec_limit"); }
-        Ok(Self { data: writer.0, _charge: charge, _receive: None })
+        if writer.0.capacity() > BODY {
+            return Err("codec_limit");
+        }
+        Ok(Self {
+            data: writer.0,
+            _charge: charge,
+            _receive: None,
+        })
     }
     pub(crate) fn copy(budget: &TransitInstance, source: &[u8]) -> Result<Self> {
         if source.len() > BODY {
@@ -250,7 +323,11 @@ impl Codec {
     ) -> Result<Self> {
         // Persistent generated A1 module reservation, held until Child retirement.
         // This is a logical module charge, not a bound on JSC code/VM or RSS.
-        let a1_module = if profile == Profile::Bootstrap { Some(budget.reserve(1_835_008).map_err(|_| "transit_limit")?) } else { None };
+        let a1_module = if profile == Profile::Bootstrap {
+            Some(budget.reserve(1_835_008).map_err(|_| "transit_limit")?)
+        } else {
+            None
+        };
         let startup = budget.reserve(STARTUP).map_err(|_| "transit_limit")?;
         command
             .env_clear()
@@ -286,7 +363,11 @@ impl Codec {
             retirement_complete: false,
             retirement_failed: false,
             scratch: Box::new([0; PAGE]),
-            bank_owner: BankOwner { budget: budget.clone(), gate: Arc::new(tokio::sync::Semaphore::new(1)), profile },
+            bank_owner: BankOwner {
+                budget: budget.clone(),
+                gate: Arc::new(tokio::sync::Semaphore::new(1)),
+                profile,
+            },
             budget,
             raw: None,
             raw_turn: None,
@@ -346,7 +427,9 @@ impl Codec {
         Ok(header)
     }
     #[cfg(test)]
-    pub(crate) fn pid(&self) -> u32 { self.child.id().expect("live Child") }
+    pub(crate) fn pid(&self) -> u32 {
+        self.child.id().expect("live Child")
+    }
     pub(crate) async fn hello(&mut self) -> Result<()> {
         #[derive(Deserialize)]
         #[serde(deny_unknown_fields)]
@@ -381,7 +464,8 @@ impl Codec {
         let digest = |value: &serde_json::Value| {
             format!("{:x}", Sha256::digest(serde_json::to_vec(value).unwrap()))
         };
-        let identity: serde_json::Value = serde_json::from_str(self.profile.identity()).map_err(|_| "codec_identity")?;
+        let identity: serde_json::Value =
+            serde_json::from_str(self.profile.identity()).map_err(|_| "codec_identity")?;
         let expected = &identity["hello"];
         // Canonical generated dependency-set identity. A mismatch refuses before BEGIN.
         if a1["retained_units"] != 1_835_008u64
@@ -394,7 +478,10 @@ impl Codec {
             || hello.profile != expected["profile"]
             || hello.source_set_sha256 != expected["source_set_sha256"]
             || match self.profile {
-                Profile::Bootstrap => hello.a1_resource_set_sha256.as_deref() != Some(digest(&a1["resources"]).as_str()),
+                Profile::Bootstrap => {
+                    hello.a1_resource_set_sha256.as_deref()
+                        != Some(digest(&a1["resources"]).as_str())
+                }
                 Profile::Persistent => hello.a1_resource_set_sha256.is_some(),
             }
         {
@@ -414,7 +501,11 @@ impl Codec {
     }
     #[cfg(test)]
     async fn probe_scope(&mut self, phase: u8, after: bool) -> Result<()> {
-        if self.scope_probe.as_ref().is_some_and(|p| p.phase == phase && p.after == after) {
+        if self
+            .scope_probe
+            .as_ref()
+            .is_some_and(|p| p.phase == phase && p.after == after)
+        {
             let probe = self.scope_probe.take().unwrap();
             let _ = probe.reached.send(());
             let _ = probe.resume.await;
@@ -474,28 +565,33 @@ impl Codec {
         Ok(bank)
     }
     pub(crate) async fn run(&mut self, admitted: AdmittedInput) -> Result<Output> {
-        if !self.bank_owner.owns(&admitted) { return Err("codec_owner"); }
+        if !self.bank_owner.owns(&admitted) {
+            return Err("codec_owner");
+        }
         let AdmittedInput { input, bank } = admitted;
         if !self.profile.accepts(input.op) || input.expectations.data.is_empty() {
             return Err("codec_input");
         }
         self.job = self.job.checked_add(1).ok_or("codec_limit")?;
         self.bank = Some(bank.clone());
-        let Input { op, expectations, body } = input;
+        let Input {
+            op,
+            expectations,
+            body,
+        } = input;
         let control = self
             .phase(op, 1, &expectations.data, RAW, BODY, true)
             .await?;
         drop(expectations); // Child cannot enter phase2 before the following BEGIN.
-        // Empty-body poll delegates to the canonical v2 owner. No native grammar
-        // or success is inferred from this descriptor; status 3 remains distinct.
+                            // Empty-body poll delegates to the canonical v2 owner. No native grammar
+                            // or success is inferred from this descriptor; status 3 remains distinct.
         let (units, limit) = match op {
             1 => (1_146_880, 4096),
             2 => (2_293_760, 8192),
             5 if body.data.is_empty() => (RAW, 0),
             _ => (RAW, BODY),
         };
-        self.phase(op, 2, &body.data, units, limit, false)
-            .await?;
+        self.phase(op, 2, &body.data, units, limit, false).await?;
         drop(body);
         let charge = BytesCharge::Bank(bank.slot(1)?);
         let mut result = Bytes {
@@ -537,19 +633,29 @@ impl Codec {
         self.retirement_complete
     }
     pub(crate) async fn retire(&mut self) -> bool {
-        self.retire_until(tokio::time::Instant::now() + std::time::Duration::from_secs(10)).await
+        self.retire_until(tokio::time::Instant::now() + std::time::Duration::from_secs(10))
+            .await
     }
     async fn retire_until(&mut self, deadline: tokio::time::Instant) -> bool {
-        if self.retirement_complete { return true; }
-        if self.retirement_failed { return false; }
+        if self.retirement_complete {
+            return true;
+        }
+        if self.retirement_failed {
+            return false;
+        }
         // This private bundled codec does not spawn external children. The
         // Unix group is containment; only wait proves reap of the owned Child.
         #[cfg(unix)]
         if let Some(pid) = self.child.id() {
-            unsafe { libc::kill(-(pid as i32), libc::SIGKILL); }
+            unsafe {
+                libc::kill(-(pid as i32), libc::SIGKILL);
+            }
         }
         let _ = self.child.start_kill();
-        if !matches!(tokio::time::timeout_at(deadline, self.child.wait()).await, Ok(Ok(_))) {
+        if !matches!(
+            tokio::time::timeout_at(deadline, self.child.wait()).await,
+            Ok(Ok(_))
+        ) {
             return false;
         }
         // Retain every pipe across timeout. On Windows flush joins Tokio's
@@ -606,27 +712,48 @@ mod buffer_ownership_tests {
 
     #[test]
     fn bank_slots_transfer_backings_and_keep_last_hyper_reference_charged() {
-        let budget = TransitOwner::default().instance(uuid::Uuid::new_v4()).unwrap();
-        let owner = BankOwner { budget: budget.clone(), gate: Arc::new(tokio::sync::Semaphore::new(1)), profile: Profile::Persistent };
+        let budget = TransitOwner::default()
+            .instance(uuid::Uuid::new_v4())
+            .unwrap();
+        let owner = BankOwner {
+            budget: budget.clone(),
+            gate: Arc::new(tokio::sync::Semaphore::new(1)),
+            profile: Profile::Persistent,
+        };
         let admission = owner.admit(7).unwrap();
         let body = Bytes::copy(&budget, b"{}").unwrap();
         let pointer = body.data.as_ptr();
-        let input = admission.input(&serde_json::json!({"chunk":"synthetic"}), body).unwrap();
+        let input = admission
+            .input(&serde_json::json!({"chunk":"synthetic"}), body)
+            .unwrap();
         assert_eq!(input.input.body.data.as_ptr(), pointer);
-        let other = BankOwner { budget: budget.clone(), gate: Arc::new(tokio::sync::Semaphore::new(1)), profile: Profile::Persistent };
+        let other = BankOwner {
+            budget: budget.clone(),
+            gate: Arc::new(tokio::sync::Semaphore::new(1)),
+            profile: Profile::Persistent,
+        };
         assert!(!other.owns(&input));
         assert!(owner.owns(&input));
         assert!(owner.admit(10).is_err());
         assert!(owner.admit(7).is_err());
         assert!(input.bank.slot(0).is_err());
         assert!(input.bank.slot(1).is_err());
-        let AdmittedInput { input: Input { expectations, body, .. }, bank } = input;
+        let AdmittedInput {
+            input: Input {
+                expectations, body, ..
+            },
+            bank,
+        } = input;
         drop(expectations);
         let child_a = bank.slot(0).unwrap();
         drop(body);
         let mut data = Vec::with_capacity(BODY);
         data.extend_from_slice(b"{}");
-        let result = Bytes { data, _charge: BytesCharge::Bank(bank.slot(1).unwrap()), _receive: None };
+        let result = Bytes {
+            data,
+            _charge: BytesCharge::Bank(bank.slot(1).unwrap()),
+            _receive: None,
+        };
         drop(child_a);
         drop(bank);
         let shared = bytes::Bytes::from_owner(result);
@@ -638,8 +765,17 @@ mod buffer_ownership_tests {
         drop(last);
         drop(budget.reserve(TRANSIT_INSTANCE_LIMIT).unwrap());
         drop(owner.admit(1).unwrap());
-        let bad = Bytes::adopt(Vec::with_capacity(BODY + 1), budget.reserve((BODY + 1) as u64).unwrap(), BODY + 1).unwrap();
-        assert!(owner.admit(1).unwrap().input(&serde_json::json!({}), bad).is_err());
+        let bad = Bytes::adopt(
+            Vec::with_capacity(BODY + 1),
+            budget.reserve((BODY + 1) as u64).unwrap(),
+            BODY + 1,
+        )
+        .unwrap();
+        assert!(owner
+            .admit(1)
+            .unwrap()
+            .input(&serde_json::json!({}), bad)
+            .is_err());
         drop(budget.reserve(TRANSIT_INSTANCE_LIMIT).unwrap());
     }
 
@@ -692,24 +828,46 @@ mod retirement_tests {
     async fn real_child_reap_finishes_owned_reads_writes_and_stderr_before_credit() {
         for pending_write in [false, true] {
             let directory = tempfile::tempdir().unwrap();
-            let pool = crate::db::create_pool(&directory.path().join("retire.db")).await.unwrap();
+            let pool = crate::db::create_pool(&directory.path().join("retire.db"))
+                .await
+                .unwrap();
             let db = crate::core::db_state::DbPool::default();
             db.set_ready(pool.clone()).await.unwrap();
             let ready = db.wait_until_ready_context().await.unwrap();
-            let budget = TransitOwner::default().instance(uuid::Uuid::new_v4()).unwrap();
+            let budget = TransitOwner::default()
+                .instance(uuid::Uuid::new_v4())
+                .unwrap();
             let mut command = Command::new(super::super::runtime::test_bun());
             command.arg("-e").arg("import {writeSync} from 'node:fs'; writeSync(2,new Uint8Array(4096)); setInterval(()=>{},1000)");
-            let mut codec = Codec::spawn(command, budget.clone(), ready.retain_chat_work(), Profile::Persistent).unwrap();
+            let mut codec = Codec::spawn(
+                command,
+                budget.clone(),
+                ready.retain_chat_work(),
+                Profile::Persistent,
+            )
+            .unwrap();
             let pid = codec.pid();
             if pending_write {
                 // One fixed page, repeatedly written to a Child that never reads.
                 // Direct cancellation leaves the actual pipe owner in Codec.
                 let page = [0u8; PAGE];
                 let write = async {
-                    loop { codec.input.as_mut().unwrap().write_all(&page).await.unwrap(); }
+                    loop {
+                        codec
+                            .input
+                            .as_mut()
+                            .unwrap()
+                            .write_all(&page)
+                            .await
+                            .unwrap();
+                    }
                 };
                 tokio::pin!(write);
-                assert!(tokio::time::timeout(std::time::Duration::from_millis(50), &mut write).await.is_err());
+                assert!(
+                    tokio::time::timeout(std::time::Duration::from_millis(50), &mut write)
+                        .await
+                        .is_err()
+                );
             } else {
                 let mut header = [0; 32];
                 let read = codec.output.as_mut().unwrap().read_exact(&mut header);
@@ -734,14 +892,24 @@ mod retirement_tests {
     #[tokio::test]
     async fn retirement_timeout_keeps_unjoined_drain_and_credit_for_retry() {
         let directory = tempfile::tempdir().unwrap();
-        let pool = crate::db::create_pool(&directory.path().join("retire-timeout.db")).await.unwrap();
+        let pool = crate::db::create_pool(&directory.path().join("retire-timeout.db"))
+            .await
+            .unwrap();
         let db = crate::core::db_state::DbPool::default();
         db.set_ready(pool.clone()).await.unwrap();
         let ready = db.wait_until_ready_context().await.unwrap();
-        let budget = TransitOwner::default().instance(uuid::Uuid::new_v4()).unwrap();
+        let budget = TransitOwner::default()
+            .instance(uuid::Uuid::new_v4())
+            .unwrap();
         let mut command = Command::new(super::super::runtime::test_bun());
         command.arg("-e").arg("setInterval(()=>{},1000)");
-        let mut codec = Codec::spawn(command, budget.clone(), ready.retain_chat_work(), Profile::Persistent).unwrap();
+        let mut codec = Codec::spawn(
+            command,
+            budget.clone(),
+            ready.retain_chat_work(),
+            Profile::Persistent,
+        )
+        .unwrap();
         let drain = codec.stderr.take().unwrap();
         let (release, held) = tokio::sync::oneshot::channel();
         // Hold publication of the real drain's completion. This is not an
@@ -750,9 +918,16 @@ mod retirement_tests {
             let _ = held.await;
             drain.await.map_err(std::io::Error::other)?
         }));
-        assert!(!codec.retire_until(tokio::time::Instant::now() + std::time::Duration::from_millis(200)).await);
+        assert!(
+            !codec
+                .retire_until(tokio::time::Instant::now() + std::time::Duration::from_millis(200))
+                .await
+        );
         assert!(!codec.retirement_complete());
-        assert!(codec.stderr.as_ref().is_some_and(|task| !task.is_finished()));
+        assert!(codec
+            .stderr
+            .as_ref()
+            .is_some_and(|task| !task.is_finished()));
         assert!(budget.reserve(TRANSIT_INSTANCE_LIMIT).is_err());
         assert!(db.set_ready(pool.clone()).await.is_err());
         release.send(()).unwrap();

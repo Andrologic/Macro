@@ -1,5 +1,7 @@
 pub mod architect;
 pub mod metadata;
+pub(crate) mod task_target;
+
 pub mod pilot;
 
 use crate::core::error::{BackendError, Result};

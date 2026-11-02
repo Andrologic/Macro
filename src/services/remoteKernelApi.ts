@@ -289,16 +289,13 @@ const completedRemoteToolExecution = (
   }
   if (Number(statusCode) < 200 || Number(statusCode) >= 300) {
     const body = status.body;
-    const code =
-      body && typeof body === 'object' && 'code' in body && typeof body.code === 'string'
-        ? body.code
-        : 'REMOTE_EXECUTION_COMPLETED_ERROR';
+    const code = remoteErrorCode(body);
     const message =
       body && typeof body === 'object' && 'message' in body && typeof body.message === 'string'
         ? body.message
         : `Remote mutation failed (${statusCode})`;
     throw {
-      code,
+      code: code?.trim() ? code : 'REMOTE_EXECUTION_COMPLETED_ERROR',
       message,
       details: { status: statusCode, body },
     };

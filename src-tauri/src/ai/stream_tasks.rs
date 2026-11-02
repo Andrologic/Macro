@@ -1,497 +1,897 @@
-//! Stream registration and cancellation follow the actual task through cleanup.
-use super::AiState;
-use futures::future::{BoxFuture, FutureExt, Shared};
+//! Own a stream before admission can yield. Request IDs are single-use per process.
+use crate::core::process::ContainedBackgroundProcess;
+use std::collections::HashMap;
 use std::future::Future;
-use std::panic::AssertUnwindSafe;
-use tokio_util::sync::CancellationToken;
+use std::process::ExitStatus;
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
+use tokio::io::{AsyncBufReadExt, BufReader};
+use tokio::process::{ChildStdin, ChildStdout};
+use tokio::sync::{oneshot, watch};
+use tokio::task::{AbortHandle, JoinHandle};
 
-pub(super) struct StreamTask {
-    cancel: CancellationToken,
-    joined: Shared<BoxFuture<'static, Result<(), String>>>,
+type ProcessResult = Result<(ExitStatus, String), String>;
+
+/// Dropping the stream requests tree termination; a separate supervisor owns
+/// the process until bounded reap and pipe draining provide a receipt.
+pub struct OwnedProcess {
+    pub stdin: Option<ChildStdin>,
+    pub stdout: Option<ChildStdout>,
+    _cancel: oneshot::Sender<()>,
+    result: watch::Receiver<Option<ProcessResult>>,
 }
-
-type SpawnedStream = Option<tokio::task::JoinHandle<Result<(), String>>>;
-
-/// Owns the request from command admission, before asynchronous setup, until
-/// the spawned task and its cleanup have returned. It is never serialized.
-pub(crate) struct StreamReservation {
-    state: AiState,
-    request: String,
-    cancel: CancellationToken,
-    completion: Option<tokio::sync::oneshot::Sender<Result<SpawnedStream, String>>>,
-}
-
-impl Drop for StreamReservation {
-    fn drop(&mut self) {
-        // No await or user code runs under this mutex. Drop also covers command
-        // setup failure and unwind, so cancellation cannot leave a stale slot.
-        self.state
-            .stream_tasks
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .remove(&self.request);
-        if let Some(completion) = self.completion.take() {
-            let _ = completion.send(Err("AI stream setup did not complete.".into()));
-        }
-    }
-}
-
-/// Native settlement evidence; never accepted from IPC. Observing a shell
-/// result does not establish the lifetime of processes it may have started.
-pub(crate) enum ToolOutcome<T> {
-    PhysicallyClosed(T),
-    Observed(T),
-}
-
-impl StreamReservation {
-    pub(crate) fn spawn_with_work<F, Fut>(
-        self,
-        work: std::sync::Arc<super::provider_work::ProviderWork>,
-        run: F,
-    ) -> Result<(), String>
-    where
-        F: FnOnce(CancellationToken) -> Fut + Send + 'static,
-        Fut: Future<Output = Result<(), String>> + Send + 'static,
-    {
-        self.launch(move |cancel| async move {
-            let result = if cancel.is_cancelled() {
-                Err("AI stream cancelled before launch.".into())
-            } else {
-                run_catching_panic(async move { run(cancel).await }).await
-            };
-            let settled = work.settle(&result).await;
-            result.and(settled)
-        })
-    }
-
-    /// Own a tool future even if its IPC waiter disappears. This entry point
-    /// requires successful executors to have physically joined their work.
-    /// A returned error or panic never manufactures a physical tool receipt.
-    pub(crate) fn spawn_tool<T, E, F, Fut>(
-        self,
-        work: std::sync::Arc<crate::db::chat_admission::OperationPermit>,
-        run: F,
-    ) -> Result<BoxFuture<'static, Result<Result<T, E>, String>>, String>
-    where
-        T: Send + 'static,
-        E: Send + 'static,
-        F: FnOnce(CancellationToken) -> Fut + Send + 'static,
-        Fut: Future<Output = Result<T, E>> + Send + 'static,
-    {
-        self.spawn_tool_outcome(work, move |cancel| async move {
-            run(cancel).await.map(ToolOutcome::PhysicallyClosed)
-        })
-    }
-
-    pub(crate) fn spawn_tool_outcome<T, E, F, Fut>(
-        self,
-        work: std::sync::Arc<crate::db::chat_admission::OperationPermit>,
-        run: F,
-    ) -> Result<BoxFuture<'static, Result<Result<T, E>, String>>, String>
-    where
-        T: Send + 'static,
-        E: Send + 'static,
-        F: FnOnce(CancellationToken) -> Fut + Send + 'static,
-        Fut: Future<Output = Result<ToolOutcome<T>, E>> + Send + 'static,
-    {
-        let state = self.state.clone();
-        let request = self.request.clone();
-        let (result, received) = tokio::sync::oneshot::channel();
-        self.launch(move |cancel| async move {
-            if cancel.is_cancelled() {
-                work.no_effect().await.map_err(|e| e.to_string())?;
-                let _ = result.send(Err("Native tool cancelled before dispatch.".into()));
-                return Ok(());
+impl OwnedProcess {
+    pub async fn wait(&mut self) -> ProcessResult {
+        loop {
+            if let Some(result) = self.result.borrow_and_update().clone() {
+                return result;
             }
-            work.dispatched().await.map_err(|e| e.to_string())?;
-            // Admission itself awaits SQLite. Cancellation during that wait
-            // must not start an executor which has never been polled.
-            if cancel.is_cancelled() {
-                work.cancelled_before_execution().await.map_err(|e| e.to_string())?;
-                let _ = result.send(Err("Native tool cancelled before execution.".into()));
-                return Ok(());
-            }
-            let outcome = AssertUnwindSafe(async move { run(cancel).await }).catch_unwind().await;
-            let delivery = match outcome {
-                Ok(value) => {
-                    let value = match value {
-                        Ok(ToolOutcome::PhysicallyClosed(value)) => {
-                            work.local_execution_closed().await.map_err(|e| e.to_string())?;
-                            Ok(value)
-                        }
-                        Ok(ToolOutcome::Observed(value)) => Ok(value),
-                        Err(error) => Err(error),
-                    };
-                    async {
-                        work.result_pending().await.map_err(|e| e.to_string())?;
-                        work.completed().await.map_err(|e| e.to_string())?;
-                        Ok(value)
-                    }
-                    .await
-                }
-                Err(_) => {
-                    let _ = work.unknown().await;
-                    Err("Native tool task panicked.".into())
-                }
-            };
-            let settlement = delivery.as_ref().map(|_| ()).map_err(Clone::clone);
-            let _ = result.send(delivery);
-            settlement
-        })?;
-        Ok(async move {
-            let delivered = received.await;
-            // The result channel alone is not proof of task cleanup.
-            if let Some(joined) = state.join_stream_task(&request).await {
-                joined?;
-            }
-            delivered.map_err(|_| "chat_admission_tool_result_lost".to_string())?
-        }
-        .boxed())
-    }
-
-    #[cfg(test)]
-    fn spawn<F, Fut>(mut self, run: F) -> Result<(), String>
-    where
-        F: FnOnce(CancellationToken) -> Fut + Send + 'static,
-        Fut: Future<Output = Result<(), String>> + Send + 'static,
-    {
-        if self.cancel.is_cancelled() {
-            let completion = self.completion.take();
-            drop(self);
-            if let Some(completion) = completion {
-                let _ = completion.send(Ok(None));
-            }
-            return Err("AI stream cancelled before launch.".into());
-        }
-        self.launch(move |cancel| async move {
-            if cancel.is_cancelled() {
-                Ok(())
-            } else {
-                run(cancel).await
-            }
-        })
-    }
-
-    fn launch<F, Fut>(mut self, run: F) -> Result<(), String>
-    where
-        F: FnOnce(CancellationToken) -> Fut + Send + 'static,
-        Fut: Future<Output = Result<(), String>> + Send + 'static,
-    {
-        let completion = self.completion.take().expect("reserved stream completion");
-        let handle = tokio::spawn(async move {
-            let cancel = self.cancel.clone();
-            let result = run_catching_panic(async move { run(cancel).await }).await;
-            // Reservation drop happens after the provider future is dropped.
-            drop(self);
-            result
-        });
-        let _ = completion.send(Ok(Some(handle)));
-        Ok(())
-    }
-}
-
-impl AiState {
-    pub(crate) fn reserve_stream(&self, request: String) -> Result<StreamReservation, String> {
-        let mut tasks = self.stream_tasks.lock().unwrap_or_else(|e| e.into_inner());
-        if tasks.contains_key(&request) {
-            return Err("chat_admission_request_active".into());
-        }
-        let cancel = CancellationToken::new();
-        let (completion, completed) =
-            tokio::sync::oneshot::channel::<Result<SpawnedStream, String>>();
-        let joined = async move {
-            match completed
+            self.result
+                .changed()
                 .await
-                .map_err(|_| "AI stream completion was lost.".to_string())??
-            {
-                Some(handle) => handle
-                    .await
-                    .map_err(|error| format!("AI stream task failed: {error}"))?,
-                None => Ok(()),
-            }
+                .map_err(|_| "Process receipt channel closed")?;
         }
-        .boxed()
-        .shared();
-        tasks.insert(
-            request.clone(),
-            StreamTask {
-                cancel: cancel.clone(),
-                joined,
+    }
+}
+
+#[derive(Clone, Default)]
+pub struct StreamTasks {
+    entries: Arc<Mutex<HashMap<String, Entry>>>,
+}
+
+struct Entry {
+    abort: Option<AbortHandle>,
+    finished: watch::Receiver<Option<Result<(), String>>>,
+    cleanups: Vec<JoinHandle<Result<(), String>>>,
+    admitted: bool,
+}
+
+impl StreamTasks {
+    /// Registration and cancellation share this synchronous lock. No provider
+    /// work can be polled until its owner is installed in the registry.
+    pub fn start<F>(&self, request_id: String, work: F) -> Result<(), String>
+    where
+        F: Future<Output = ()> + Send + 'static,
+    {
+        let mut entries = self
+            .entries
+            .lock()
+            .map_err(|_| "Stream registry poisoned")?;
+        if entries.contains_key(&request_id) {
+            return Err("Stream request ID was already admitted or cancelled.".into());
+        }
+        let (start, admitted) = oneshot::channel();
+        let (finished, receiver) = watch::channel(None);
+        let handle = tokio::spawn(async move {
+            if admitted.await.is_ok() {
+                work.await;
+            }
+        });
+        entries.insert(
+            request_id.clone(),
+            Entry {
+                abort: Some(handle.abort_handle()),
+                admitted: true,
+                finished: receiver,
+                cleanups: Vec::new(),
             },
         );
-        Ok(StreamReservation {
-            state: self.clone(),
-            request,
-            cancel,
-            completion: Some(completion),
+        let registry = self.clone();
+        // The supervisor owns the JoinHandle even if the cancellation caller
+        // disappears. It confirms destruction of the owned future, not reversal
+        // or termination of effects already dispatched outside this process.
+        tokio::spawn(async move {
+            let mut result = match handle.await {
+                Ok(()) => Ok(()),
+                Err(error) if error.is_cancelled() => Ok(()),
+                Err(error) => Err(format!("Stream task failed: {error}")),
+            };
+            // The owned future is destroyed before these resources are joined.
+            let cleanups = match registry.entries.lock() {
+                Ok(mut entries) => entries
+                    .get_mut(&request_id)
+                    .map(|entry| {
+                        entry.abort = None;
+                        std::mem::take(&mut entry.cleanups)
+                    })
+                    .unwrap_or_default(),
+                Err(_) => {
+                    result = Err("Stream registry poisoned".into());
+                    Vec::new()
+                }
+            };
+            for cleanup in cleanups {
+                let outcome = cleanup
+                    .await
+                    .unwrap_or_else(|error| Err(format!("Stream cleanup task failed: {error}")));
+                if let Err(error) = outcome {
+                    result = Err(error);
+                }
+            }
+            finished.send_replace(Some(result));
+        });
+        let _ = start.send(());
+        Ok(())
+    }
+
+    pub fn own_process(
+        &self,
+        request_id: &str,
+        mut process: ContainedBackgroundProcess,
+    ) -> Result<OwnedProcess, String> {
+        let stdin = process.take_stdin();
+        let stdout = process.take_stdout();
+        let stderr = process.take_stderr();
+        let (cancel, cancelled) = oneshot::channel::<()>();
+        let (receipt, result) = watch::channel(None);
+        let cleanup = tokio::spawn(async move {
+            let stderr_read =
+                async move {
+                    let mut output = Vec::new();
+                    if let Some(stderr) = stderr {
+                        let mut lines = BufReader::new(stderr).lines();
+                        while let Some(line) = lines.next_line().await.map_err(|error| {
+                            format!("Failed to drain AI runtime stderr: {error}")
+                        })? {
+                            if !line.trim().is_empty() {
+                                output.push(line.trim().to_owned());
+                            }
+                        }
+                    }
+                    Ok::<_, String>(output.join("\n"))
+                };
+            let process_end = async {
+                let status = tokio::select! {
+                    status = process.wait() => status.map_err(|error| format!("Failed to wait for AI runtime process: {error}"))?,
+                    _ = cancelled => return process.terminate_with_grace(Duration::ZERO).await.map_err(|error| format!("AI runtime stop was not confirmed: {error}")),
+                };
+                // A leader exiting is not proof that its descendants exited.
+                process
+                    .terminate_with_grace(Duration::ZERO)
+                    .await
+                    .map_err(|error| format!("AI runtime tree end was not confirmed: {error}"))?;
+                Ok(status)
+            };
+            let mut stderr_task = tokio::spawn(stderr_read);
+            let status = process_end.await;
+            let stderr = match tokio::time::timeout(Duration::from_secs(1), &mut stderr_task).await
+            {
+                Ok(result) => result
+                    .unwrap_or_else(|error| Err(format!("AI runtime stderr task failed: {error}"))),
+                Err(_) => {
+                    stderr_task.abort();
+                    let _cancelled = stderr_task.await;
+                    Err("AI runtime stderr drain was not confirmed".to_string())
+                }
+            };
+            let outcome = status.and_then(|status| stderr.map(|stderr| (status, stderr)));
+            let cleanup = outcome.as_ref().map(|_| ()).map_err(Clone::clone);
+            receipt.send_replace(Some(outcome));
+            cleanup
+        });
+        // No await between spawning the resource owner and attaching its receipt.
+        let mut entries = self
+            .entries
+            .lock()
+            .map_err(|_| "Stream registry poisoned")?;
+        let entry = entries
+            .get_mut(request_id)
+            .ok_or("Stream resource has no owner")?;
+        entry.cleanups.push(cleanup);
+        Ok(OwnedProcess {
+            stdin,
+            stdout,
+            _cancel: cancel,
+            result,
         })
     }
 
-    #[cfg(test)]
-    async fn spawn_stream<F, Fut>(&self, request: String, run: F) -> Result<(), String>
-    where
-        F: FnOnce(CancellationToken) -> Fut + Send + 'static,
-        Fut: Future<Output = ()> + Send + 'static,
-    {
-        self.reserve_stream(request)?
-            .spawn(move |cancel| async move {
-                run(cancel).await;
-                Ok(())
-            })
-    }
-
-    pub(crate) async fn join_stream_task(&self, request: &str) -> Option<Result<(), String>> {
-        let joined = self
-            .stream_tasks
+    /// A cancel received before admission leaves a tombstone. IDs remain
+    /// single-use so delayed starts, duplicate cancels and late starts cannot
+    /// replace a previous owner. The registry is cleared only on process exit.
+    /// A cancellation tombstone is not evidence that an earlier physical stream
+    /// ended. Recovery must distinguish an owned task from an absent request.
+    pub async fn cancel_owned(&self, request_id: &str) -> Result<bool, String> {
+        let admitted = self
+            .entries
             .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .get(request)
-            .map(|task| task.joined.clone());
-        match joined {
-            Some(joined) => Some(joined.await),
-            None => None,
-        }
+            .map_err(|_| "Stream registry poisoned")?
+            .get(request_id)
+            .is_some_and(|entry| entry.admitted);
+        self.cancel(request_id).await?;
+        Ok(admitted)
     }
 
-    pub(crate) async fn cancel_stream_task(&self, request: &str) -> Result<(), String> {
-        let joined = {
-            let tasks = self.stream_tasks.lock().unwrap_or_else(|e| e.into_inner());
-            tasks.get(request).map(|task| {
-                task.cancel.cancel();
-                task.joined.clone()
-            })
-        };
-        // Setup or physical cleanup can still be running. Join outside the lock.
-        if let Some(joined) = joined {
-            joined.await?;
-        }
-        Ok(())
-    }
-}
-
-/// Never resume a panicked provider future. Its owner still performs cleanup
-/// and records an uncertain effect; the panic payload is not a wire receipt.
-pub(super) async fn run_catching_panic<T>(
-    future: impl Future<Output = Result<T, String>>,
-) -> Result<T, String> {
-    AssertUnwindSafe(future)
-        .catch_unwind()
-        .await
-        .unwrap_or_else(|_| Err("AI stream task panicked.".into()))
-}
-
-/// A cancelled processing future has already released its borrows and pipes.
-/// Keep the actual process and stderr reader owned until both have finished.
-pub(super) async fn finish_child_stream(
-    child: &mut tokio::process::Child,
-    stderr: Option<tokio::task::JoinHandle<String>>,
-    cancel: &CancellationToken,
-    processing_failed: bool,
-) -> Result<(std::process::ExitStatus, String), String> {
-    if processing_failed {
-        let _ = child.start_kill();
-    }
-    let status = tokio::select! {
-        biased;
-        _ = cancel.cancelled() => {
-            let _ = child.start_kill();
-            child.wait().await
-        },
-        status = child.wait() => status,
-    };
-    let stderr_output = if let Some(mut task) = stderr {
-        if processing_failed || status.is_err() {
-            task.abort();
-        }
-        let joined = tokio::select! {
-            biased;
-            _ = cancel.cancelled() => {
-                task.abort();
-                task.await
-            },
-            output = &mut task => output,
-        };
-        match joined {
-            Ok(output) => output,
-            Err(error)
-                if error.is_cancelled()
-                    && (processing_failed || cancel.is_cancelled() || status.is_err()) =>
-            {
-                String::new()
+    pub async fn cancel(&self, request_id: &str) -> Result<(), String> {
+        let mut finished = {
+            let mut entries = self
+                .entries
+                .lock()
+                .map_err(|_| "Stream registry poisoned")?;
+            let entry = entries.entry(request_id.into()).or_insert_with(|| {
+                let (_, receiver) = watch::channel(Some(Ok(())));
+                Entry {
+                    abort: None,
+                    admitted: false,
+                    finished: receiver,
+                    cleanups: Vec::new(),
+                }
+            });
+            if let Some(abort) = &entry.abort {
+                abort.abort();
             }
-            Err(error) => return Err(format!("AI runtime stderr task failed: {error}")),
+            entry.finished.clone()
+        };
+        loop {
+            if let Some(result) = finished.borrow_and_update().clone() {
+                return result;
+            }
+            finished
+                .changed()
+                .await
+                .map_err(|_| "Stream completion was not confirmed")?;
         }
-    } else {
-        String::new()
-    };
-    let status =
-        status.map_err(|error| format!("Failed to wait for AI runtime process: {error}"))?;
-    Ok((status, stderr_output))
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tokio::sync::oneshot;
+    use std::sync::atomic::{AtomicBool, Ordering};
 
     #[tokio::test]
-    async fn cancellation_during_command_setup_prevents_provider_launch() {
-        let state = AiState::default();
-        // The command owns this reservation before its first pool/config await.
-        let reservation = state.reserve_stream("setup".into()).unwrap();
-        let cancellation = state.cancel_stream_task("setup");
-        tokio::pin!(cancellation);
-        assert!(futures::poll!(&mut cancellation).is_pending());
-        assert!(state.reserve_stream("setup".into()).is_err());
-        let invoked = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let observed = invoked.clone();
-        assert!(reservation
-            .spawn(move |_| async move {
-                observed.store(true, std::sync::atomic::Ordering::SeqCst);
-                Ok(())
-            })
+    async fn cancel_before_admission_and_duplicate_start_never_poll_work() {
+        let registry = StreamTasks::default();
+        registry.cancel("early").await.unwrap();
+        assert!(registry
+            .start("early".into(), async { panic!("cancelled work polled") })
             .is_err());
-        cancellation.await.unwrap();
-        assert!(!invoked.load(std::sync::atomic::Ordering::SeqCst));
-        assert!(!state.stream_tasks.lock().unwrap().contains_key("setup"));
-    }
-
-    #[tokio::test]
-    async fn abandoned_command_setup_releases_slot_with_error() {
-        let state = AiState::default();
-        let reservation = state.reserve_stream("setup".into()).unwrap();
-        let cancellation = state.cancel_stream_task("setup");
-        tokio::pin!(cancellation);
-        assert!(futures::poll!(&mut cancellation).is_pending());
-        // The same Drop runs for a setup error, cancelled command future or panic.
-        drop(reservation);
-        assert_eq!(
-            cancellation.await.unwrap_err(),
-            "AI stream setup did not complete."
-        );
-        assert!(!state.stream_tasks.lock().unwrap().contains_key("setup"));
-        assert!(state.reserve_stream("setup".into()).is_ok());
-    }
-
-    #[tokio::test]
-    async fn cancellation_waits_for_cleanup_and_rejects_request_reuse() {
-        let state = AiState::default();
-        let (cancelled, observed) = oneshot::channel();
-        let (release, cleanup) = oneshot::channel();
-        state
-            .spawn_stream("request".into(), move |cancel| async move {
-                cancel.cancelled().await;
-                cancelled.send(()).unwrap();
-                cleanup.await.unwrap();
-            })
-            .await
+        registry
+            .start("active".into(), std::future::pending())
             .unwrap();
-        let cancelling_state = state.clone();
-        let cancellation =
-            tokio::spawn(async move { cancelling_state.cancel_stream_task("request").await });
-        observed.await.unwrap();
-        assert!(!cancellation.is_finished());
-        assert!(state
-            .spawn_stream("request".into(), |_| async {})
-            .await
+        assert!(registry
+            .start("active".into(), async { panic!("duplicate work polled") })
             .is_err());
-        // An unrelated request can still complete during cleanup.
-        let (done, unrelated) = oneshot::channel();
-        state
-            .spawn_stream("other".into(), |_| async move {
-                done.send(()).unwrap();
-            })
-            .await
-            .unwrap();
-        unrelated.await.unwrap();
-        release.send(()).unwrap();
-        cancellation.await.unwrap().unwrap();
-        assert!(!state.stream_tasks.lock().unwrap().contains_key("request"));
-        state.cancel_stream_task("request").await.unwrap();
+        registry.cancel("active").await.unwrap();
+        registry.cancel("active").await.unwrap();
+        assert!(registry.start("active".into(), async {}).is_err());
+    }
+
+    struct DropProof(Arc<AtomicBool>);
+    impl Drop for DropProof {
+        fn drop(&mut self) {
+            self.0.store(true, Ordering::SeqCst);
+        }
     }
 
     #[tokio::test]
-    async fn panic_is_an_error_and_removes_registration_after_future_drop() {
-        let state = AiState::default();
-        let (release, ready) = oneshot::channel();
-        state
-            .spawn_stream("panic".into(), |_| async move {
-                ready.await.unwrap();
-                panic!("synthetic stream panic");
+    async fn cancellation_waits_for_owned_future_destruction_during_admission() {
+        let registry = StreamTasks::default();
+        let dropped = Arc::new(AtomicBool::new(false));
+        let proof = DropProof(dropped.clone());
+        registry
+            .start("admission".into(), async move {
+                let _proof = proof;
+                std::future::pending::<()>().await;
             })
-            .await
             .unwrap();
-        let joined = state
-            .stream_tasks
-            .lock()
-            .unwrap()
-            .get("panic")
-            .unwrap()
-            .joined
-            .clone();
-        release.send(()).unwrap();
-        assert_eq!(joined.await.unwrap_err(), "AI stream task panicked.");
-        assert!(!state.stream_tasks.lock().unwrap().contains_key("panic"));
+        registry.cancel("admission").await.unwrap();
+        assert!(dropped.load(Ordering::SeqCst));
     }
 
-    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn concurrent_cancels_both_wait_for_the_executor_and_preserve_other_owner() {
+        let registry = StreamTasks::default();
+        let dropped = Arc::new(AtomicBool::new(false));
+        let proof = DropProof(dropped.clone());
+        let (running, started) = oneshot::channel();
+        registry
+            .start("running".into(), async move {
+                let _proof = proof;
+                let _ = running.send(());
+                std::future::pending::<()>().await;
+            })
+            .unwrap();
+        registry
+            .start("other".into(), std::future::pending())
+            .unwrap();
+        started.await.unwrap();
+        let (first, second) = tokio::join!(registry.cancel("running"), registry.cancel("running"));
+        first.unwrap();
+        second.unwrap();
+        assert!(dropped.load(Ordering::SeqCst));
+        assert!(registry.entries.lock().unwrap()["other"].abort.is_some());
+        registry.cancel("other").await.unwrap();
+    }
+
     #[tokio::test]
-    async fn cancellation_and_panic_reap_real_child_and_join_stderr_reader() {
-        use std::process::Stdio;
-        use tokio::io::{AsyncBufReadExt, BufReader};
-        for panics in [false, true] {
-            let mut child = tokio::process::Command::new("sh")
-                .args(["-c", "printf 'synthetic-ready\\n' >&2; read ignored"])
-                .stdin(Stdio::piped())
-                .stdout(Stdio::null())
-                .stderr(Stdio::piped())
-                .kill_on_drop(true)
-                .spawn()
-                .unwrap();
-            let (ready, observed) = oneshot::channel();
-            let stderr = child.stderr.take().unwrap();
-            let reader = tokio::spawn(async move {
-                let mut lines = BufReader::new(stderr).lines();
-                let first = lines.next_line().await.unwrap().unwrap();
-                ready.send(first.clone()).unwrap();
-                while lines.next_line().await.unwrap().is_some() {}
-                first
-            });
-            assert_eq!(
-                tokio::time::timeout(std::time::Duration::from_secs(5), observed)
-                    .await
-                    .unwrap()
-                    .unwrap(),
-                "synthetic-ready"
-            );
-            assert!(child.try_wait().unwrap().is_none());
-            let cancel = CancellationToken::new();
-            let request_cancel = cancel.clone();
-            let task = tokio::spawn(async move {
-                let processing = run_catching_panic(async move {
-                    if panics {
-                        panic!("synthetic processing panic");
+    async fn immediate_completion_and_late_cancel_do_not_allow_reuse() {
+        let registry = StreamTasks::default();
+        registry.start("fast".into(), async {}).unwrap();
+        tokio::task::yield_now().await;
+        registry.cancel("fast").await.unwrap();
+        assert!(registry.start("fast".into(), async {}).is_err());
+    }
+}
+
+#[cfg(all(test, unix))]
+mod process_tests {
+    use super::*;
+    use crate::core::process::background_tokio_command;
+    use std::process::Stdio;
+
+    #[tokio::test]
+    async fn cancel_joins_copilot_process_tree_and_stderr_receipt() {
+        let registry = StreamTasks::default();
+        let owned = registry.clone();
+        let (started, ready) = oneshot::channel();
+        let mut command = background_tokio_command("/bin/sh");
+        command
+            .args(["-c", "printf 'synthetic stderr\\n' >&2; sleep 30 & wait"])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        let process = ContainedBackgroundProcess::spawn(command).unwrap();
+        let pid = process.id().unwrap();
+        registry
+            .start("synthetic-copilot".into(), async move {
+                let mut process = owned.own_process("synthetic-copilot", process).unwrap();
+                let _ = started.send(());
+                let _ = process.wait().await;
+            })
+            .unwrap();
+        ready.await.unwrap();
+        tokio::time::timeout(Duration::from_secs(8), registry.cancel("synthetic-copilot"))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(unsafe { libc::kill(pid as libc::pid_t, 0) }, -1);
+        assert!(registry.entries.lock().unwrap()["synthetic-copilot"]
+            .cleanups
+            .is_empty());
+    }
+}
+
+#[cfg(test)]
+mod recovery_tests {
+    use super::*;
+    #[tokio::test]
+    async fn recovery_distinguishes_tombstones_from_joined_streams() {
+        let tasks = StreamTasks::default();
+        assert!(!tasks.cancel_owned("missing").await.unwrap());
+        assert!(!tasks.cancel_owned("missing").await.unwrap());
+        tasks.start("owned".into(), std::future::pending()).unwrap();
+        assert!(tasks.cancel_owned("owned").await.unwrap());
+        assert!(tasks.cancel_owned("owned").await.unwrap());
+        assert!(tasks.start("missing".into(), async {}).is_err());
+    }
+}
+
+mod admitted {
+    // Stream registration and cancellation follow the actual task through cleanup.
+    use super::super::AiState;
+    use futures::future::{BoxFuture, FutureExt, Shared};
+    use std::future::Future;
+    use std::panic::AssertUnwindSafe;
+    use tokio_util::sync::CancellationToken;
+
+    pub(crate) struct StreamTask {
+        cancel: CancellationToken,
+        joined: Shared<BoxFuture<'static, Result<(), String>>>,
+    }
+
+    type SpawnedStream = Option<tokio::task::JoinHandle<Result<(), String>>>;
+
+    /// Owns the request from command admission, before asynchronous setup, until
+    /// the spawned task and its cleanup have returned. It is never serialized.
+    pub(crate) struct StreamReservation {
+        state: AiState,
+        request: String,
+        cancel: CancellationToken,
+        completion: Option<tokio::sync::oneshot::Sender<Result<SpawnedStream, String>>>,
+    }
+
+    impl Drop for StreamReservation {
+        fn drop(&mut self) {
+            // No await or user code runs under this mutex. Drop also covers command
+            // setup failure and unwind, so cancellation cannot leave a stale slot.
+            self.state
+                .admitted_stream_tasks
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .remove(&self.request);
+            if let Some(completion) = self.completion.take() {
+                let _ = completion.send(Err("AI stream setup did not complete.".into()));
+            }
+        }
+    }
+
+    /// Native settlement evidence; never accepted from IPC. Observing a shell
+    /// result does not establish the lifetime of processes it may have started.
+    pub(crate) enum ToolOutcome<T> {
+        PhysicallyClosed(T),
+        Observed(T),
+    }
+
+    impl StreamReservation {
+        pub(crate) fn spawn_with_work<F, Fut>(
+            self,
+            work: std::sync::Arc<super::super::provider_work::ProviderWork>,
+            run: F,
+        ) -> Result<(), String>
+        where
+            F: FnOnce(CancellationToken) -> Fut + Send + 'static,
+            Fut: Future<Output = Result<(), String>> + Send + 'static,
+        {
+            self.launch(move |cancel| async move {
+                let result = if cancel.is_cancelled() {
+                    Err("AI stream cancelled before launch.".into())
+                } else {
+                    run_catching_panic(async move { run(cancel).await }).await
+                };
+                let settled = work.settle(&result).await;
+                result.and(settled)
+            })
+        }
+
+        /// Own a tool future even if its IPC waiter disappears. This entry point
+        /// requires successful executors to have physically joined their work.
+        /// A returned error or panic never manufactures a physical tool receipt.
+        pub(crate) fn spawn_tool<T, E, F, Fut>(
+            self,
+            work: std::sync::Arc<crate::db::chat_admission::OperationPermit>,
+            run: F,
+        ) -> Result<BoxFuture<'static, Result<Result<T, E>, String>>, String>
+        where
+            T: Send + 'static,
+            E: Send + 'static,
+            F: FnOnce(CancellationToken) -> Fut + Send + 'static,
+            Fut: Future<Output = Result<T, E>> + Send + 'static,
+        {
+            self.spawn_tool_outcome(work, move |cancel| async move {
+                run(cancel).await.map(ToolOutcome::PhysicallyClosed)
+            })
+        }
+
+        pub(crate) fn spawn_tool_outcome<T, E, F, Fut>(
+            self,
+            work: std::sync::Arc<crate::db::chat_admission::OperationPermit>,
+            run: F,
+        ) -> Result<BoxFuture<'static, Result<Result<T, E>, String>>, String>
+        where
+            T: Send + 'static,
+            E: Send + 'static,
+            F: FnOnce(CancellationToken) -> Fut + Send + 'static,
+            Fut: Future<Output = Result<ToolOutcome<T>, E>> + Send + 'static,
+        {
+            let state = self.state.clone();
+            let request = self.request.clone();
+            let (result, received) = tokio::sync::oneshot::channel();
+            self.launch(move |cancel| async move {
+                if cancel.is_cancelled() {
+                    work.no_effect().await.map_err(|e| e.to_string())?;
+                    let _ = result.send(Err("Native tool cancelled before dispatch.".into()));
+                    return Ok(());
+                }
+                work.dispatched().await.map_err(|e| e.to_string())?;
+                // Admission itself awaits SQLite. Cancellation during that wait
+                // must not start an executor which has never been polled.
+                if cancel.is_cancelled() {
+                    work.cancelled_before_execution()
+                        .await
+                        .map_err(|e| e.to_string())?;
+                    let _ = result.send(Err("Native tool cancelled before execution.".into()));
+                    return Ok(());
+                }
+                let outcome = AssertUnwindSafe(async move { run(cancel).await })
+                    .catch_unwind()
+                    .await;
+                let delivery = match outcome {
+                    Ok(value) => {
+                        let value = match value {
+                            Ok(ToolOutcome::PhysicallyClosed(value)) => {
+                                work.local_execution_closed()
+                                    .await
+                                    .map_err(|e| e.to_string())?;
+                                Ok(value)
+                            }
+                            Ok(ToolOutcome::Observed(value)) => Ok(value),
+                            Err(error) => Err(error),
+                        };
+                        async {
+                            work.result_pending().await.map_err(|e| e.to_string())?;
+                            work.completed().await.map_err(|e| e.to_string())?;
+                            Ok(value)
+                        }
+                        .await
                     }
+                    Err(_) => {
+                        let _ = work.unknown().await;
+                        Err("Native tool task panicked.".into())
+                    }
+                };
+                let settlement = delivery.as_ref().map(|_| ()).map_err(Clone::clone);
+                let _ = result.send(delivery);
+                settlement
+            })?;
+            Ok(async move {
+                let delivered = received.await;
+                // The result channel alone is not proof of task cleanup.
+                if let Some(joined) = state.join_stream_task(&request).await {
+                    joined?;
+                }
+                delivered.map_err(|_| "chat_admission_tool_result_lost".to_string())?
+            }
+            .boxed())
+        }
+
+        #[cfg(test)]
+        fn spawn<F, Fut>(mut self, run: F) -> Result<(), String>
+        where
+            F: FnOnce(CancellationToken) -> Fut + Send + 'static,
+            Fut: Future<Output = Result<(), String>> + Send + 'static,
+        {
+            if self.cancel.is_cancelled() {
+                let completion = self.completion.take();
+                drop(self);
+                if let Some(completion) = completion {
+                    let _ = completion.send(Ok(None));
+                }
+                return Err("AI stream cancelled before launch.".into());
+            }
+            self.launch(move |cancel| async move {
+                if cancel.is_cancelled() {
                     Ok(())
-                })
-                .await;
-                assert_eq!(processing.is_err(), panics);
-                let result =
-                    finish_child_stream(&mut child, Some(reader), &cancel, processing.is_err())
-                        .await;
-                // wait has reaped the process, not just requested termination.
-                assert!(child.id().is_none());
+                } else {
+                    run(cancel).await
+                }
+            })
+        }
+
+        fn launch<F, Fut>(mut self, run: F) -> Result<(), String>
+        where
+            F: FnOnce(CancellationToken) -> Fut + Send + 'static,
+            Fut: Future<Output = Result<(), String>> + Send + 'static,
+        {
+            let completion = self.completion.take().expect("reserved stream completion");
+            let handle = tokio::spawn(async move {
+                let cancel = self.cancel.clone();
+                let result = run_catching_panic(async move { run(cancel).await }).await;
+                // Reservation drop happens after the provider future is dropped.
+                drop(self);
                 result
             });
-            if !panics {
-                request_cancel.cancel();
+            let _ = completion.send(Ok(Some(handle)));
+            Ok(())
+        }
+    }
+
+    impl AiState {
+        pub(crate) fn reserve_stream(&self, request: String) -> Result<StreamReservation, String> {
+            let mut tasks = self
+                .admitted_stream_tasks
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            if tasks.contains_key(&request) {
+                return Err("chat_admission_request_active".into());
             }
-            let (status, _) = tokio::time::timeout(std::time::Duration::from_secs(5), task)
+            let cancel = CancellationToken::new();
+            let (completion, completed) =
+                tokio::sync::oneshot::channel::<Result<SpawnedStream, String>>();
+            let joined = async move {
+                match completed
+                    .await
+                    .map_err(|_| "AI stream completion was lost.".to_string())??
+                {
+                    Some(handle) => handle
+                        .await
+                        .map_err(|error| format!("AI stream task failed: {error}"))?,
+                    None => Ok(()),
+                }
+            }
+            .boxed()
+            .shared();
+            tasks.insert(
+                request.clone(),
+                StreamTask {
+                    cancel: cancel.clone(),
+                    joined,
+                },
+            );
+            Ok(StreamReservation {
+                state: self.clone(),
+                request,
+                cancel,
+                completion: Some(completion),
+            })
+        }
+
+        #[cfg(test)]
+        async fn spawn_stream<F, Fut>(&self, request: String, run: F) -> Result<(), String>
+        where
+            F: FnOnce(CancellationToken) -> Fut + Send + 'static,
+            Fut: Future<Output = ()> + Send + 'static,
+        {
+            self.reserve_stream(request)?
+                .spawn(move |cancel| async move {
+                    run(cancel).await;
+                    Ok(())
+                })
+        }
+
+        pub(crate) async fn join_stream_task(&self, request: &str) -> Option<Result<(), String>> {
+            let joined = self
+                .admitted_stream_tasks
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .get(request)
+                .map(|task| task.joined.clone());
+            match joined {
+                Some(joined) => Some(joined.await),
+                None => None,
+            }
+        }
+
+        pub(crate) async fn cancel_stream_task(&self, request: &str) -> Result<(), String> {
+            let joined = {
+                let tasks = self
+                    .admitted_stream_tasks
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner());
+                tasks.get(request).map(|task| {
+                    task.cancel.cancel();
+                    task.joined.clone()
+                })
+            };
+            // Setup or physical cleanup can still be running. Join outside the lock.
+            if let Some(joined) = joined {
+                joined.await?;
+            }
+            Ok(())
+        }
+    }
+
+    /// Never resume a panicked provider future. Its owner still performs cleanup
+    /// and records an uncertain effect; the panic payload is not a wire receipt.
+    pub(crate) async fn run_catching_panic<T>(
+        future: impl Future<Output = Result<T, String>>,
+    ) -> Result<T, String> {
+        AssertUnwindSafe(future)
+            .catch_unwind()
+            .await
+            .unwrap_or_else(|_| Err("AI stream task panicked.".into()))
+    }
+
+    /// A cancelled processing future has already released its borrows and pipes.
+    /// Keep the actual process and stderr reader owned until both have finished.
+    pub(crate) async fn finish_child_stream(
+        child: &mut tokio::process::Child,
+        stderr: Option<tokio::task::JoinHandle<String>>,
+        cancel: &CancellationToken,
+        processing_failed: bool,
+    ) -> Result<(std::process::ExitStatus, String), String> {
+        if processing_failed {
+            let _ = child.start_kill();
+        }
+        let status = tokio::select! {
+            biased;
+            _ = cancel.cancelled() => {
+                let _ = child.start_kill();
+                child.wait().await
+            },
+            status = child.wait() => status,
+        };
+        let stderr_output = if let Some(mut task) = stderr {
+            if processing_failed || status.is_err() {
+                task.abort();
+            }
+            let joined = tokio::select! {
+                biased;
+                _ = cancel.cancelled() => {
+                    task.abort();
+                    task.await
+                },
+                output = &mut task => output,
+            };
+            match joined {
+                Ok(output) => output,
+                Err(error)
+                    if error.is_cancelled()
+                        && (processing_failed || cancel.is_cancelled() || status.is_err()) =>
+                {
+                    String::new()
+                }
+                Err(error) => return Err(format!("AI runtime stderr task failed: {error}")),
+            }
+        } else {
+            String::new()
+        };
+        let status =
+            status.map_err(|error| format!("Failed to wait for AI runtime process: {error}"))?;
+        Ok((status, stderr_output))
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use tokio::sync::oneshot;
+
+        #[tokio::test]
+        async fn cancellation_during_command_setup_prevents_provider_launch() {
+            let state = AiState::default();
+            // The command owns this reservation before its first pool/config await.
+            let reservation = state.reserve_stream("setup".into()).unwrap();
+            let cancellation = state.cancel_stream_task("setup");
+            tokio::pin!(cancellation);
+            assert!(futures::poll!(&mut cancellation).is_pending());
+            assert!(state.reserve_stream("setup".into()).is_err());
+            let invoked = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let observed = invoked.clone();
+            assert!(reservation
+                .spawn(move |_| async move {
+                    observed.store(true, std::sync::atomic::Ordering::SeqCst);
+                    Ok(())
+                })
+                .is_err());
+            cancellation.await.unwrap();
+            assert!(!invoked.load(std::sync::atomic::Ordering::SeqCst));
+            assert!(!state
+                .admitted_stream_tasks
+                .lock()
+                .unwrap()
+                .contains_key("setup"));
+        }
+
+        #[tokio::test]
+        async fn abandoned_command_setup_releases_slot_with_error() {
+            let state = AiState::default();
+            let reservation = state.reserve_stream("setup".into()).unwrap();
+            let cancellation = state.cancel_stream_task("setup");
+            tokio::pin!(cancellation);
+            assert!(futures::poll!(&mut cancellation).is_pending());
+            // The same Drop runs for a setup error, cancelled command future or panic.
+            drop(reservation);
+            assert_eq!(
+                cancellation.await.unwrap_err(),
+                "AI stream setup did not complete."
+            );
+            assert!(!state
+                .admitted_stream_tasks
+                .lock()
+                .unwrap()
+                .contains_key("setup"));
+            assert!(state.reserve_stream("setup".into()).is_ok());
+        }
+
+        #[tokio::test]
+        async fn cancellation_waits_for_cleanup_and_rejects_request_reuse() {
+            let state = AiState::default();
+            let (cancelled, observed) = oneshot::channel();
+            let (release, cleanup) = oneshot::channel();
+            state
+                .spawn_stream("request".into(), move |cancel| async move {
+                    cancel.cancelled().await;
+                    cancelled.send(()).unwrap();
+                    cleanup.await.unwrap();
+                })
                 .await
-                .unwrap()
-                .unwrap()
                 .unwrap();
-            assert!(!status.success());
+            let cancelling_state = state.clone();
+            let cancellation =
+                tokio::spawn(async move { cancelling_state.cancel_stream_task("request").await });
+            observed.await.unwrap();
+            assert!(!cancellation.is_finished());
+            assert!(state
+                .spawn_stream("request".into(), |_| async {})
+                .await
+                .is_err());
+            // An unrelated request can still complete during cleanup.
+            let (done, unrelated) = oneshot::channel();
+            state
+                .spawn_stream("other".into(), |_| async move {
+                    done.send(()).unwrap();
+                })
+                .await
+                .unwrap();
+            unrelated.await.unwrap();
+            release.send(()).unwrap();
+            cancellation.await.unwrap().unwrap();
+            assert!(!state
+                .admitted_stream_tasks
+                .lock()
+                .unwrap()
+                .contains_key("request"));
+            state.cancel_stream_task("request").await.unwrap();
+        }
+
+        #[tokio::test]
+        async fn panic_is_an_error_and_removes_registration_after_future_drop() {
+            let state = AiState::default();
+            let (release, ready) = oneshot::channel();
+            state
+                .spawn_stream("panic".into(), |_| async move {
+                    ready.await.unwrap();
+                    panic!("synthetic stream panic");
+                })
+                .await
+                .unwrap();
+            let joined = state
+                .admitted_stream_tasks
+                .lock()
+                .unwrap()
+                .get("panic")
+                .unwrap()
+                .joined
+                .clone();
+            release.send(()).unwrap();
+            assert_eq!(joined.await.unwrap_err(), "AI stream task panicked.");
+            assert!(!state
+                .admitted_stream_tasks
+                .lock()
+                .unwrap()
+                .contains_key("panic"));
+        }
+
+        #[cfg(unix)]
+        #[tokio::test]
+        async fn cancellation_and_panic_reap_real_child_and_join_stderr_reader() {
+            use std::process::Stdio;
+            use tokio::io::{AsyncBufReadExt, BufReader};
+            for panics in [false, true] {
+                let mut child = tokio::process::Command::new("sh")
+                    .args(["-c", "printf 'synthetic-ready\\n' >&2; read ignored"])
+                    .stdin(Stdio::piped())
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::piped())
+                    .kill_on_drop(true)
+                    .spawn()
+                    .unwrap();
+                let (ready, observed) = oneshot::channel();
+                let stderr = child.stderr.take().unwrap();
+                let reader = tokio::spawn(async move {
+                    let mut lines = BufReader::new(stderr).lines();
+                    let first = lines.next_line().await.unwrap().unwrap();
+                    ready.send(first.clone()).unwrap();
+                    while lines.next_line().await.unwrap().is_some() {}
+                    first
+                });
+                assert_eq!(
+                    tokio::time::timeout(std::time::Duration::from_secs(5), observed)
+                        .await
+                        .unwrap()
+                        .unwrap(),
+                    "synthetic-ready"
+                );
+                assert!(child.try_wait().unwrap().is_none());
+                let cancel = CancellationToken::new();
+                let request_cancel = cancel.clone();
+                let task = tokio::spawn(async move {
+                    let processing = run_catching_panic(async move {
+                        if panics {
+                            panic!("synthetic processing panic");
+                        }
+                        Ok(())
+                    })
+                    .await;
+                    assert_eq!(processing.is_err(), panics);
+                    let result =
+                        finish_child_stream(&mut child, Some(reader), &cancel, processing.is_err())
+                            .await;
+                    // wait has reaped the process, not just requested termination.
+                    assert!(child.id().is_none());
+                    result
+                });
+                if !panics {
+                    request_cancel.cancel();
+                }
+                let (status, _) = tokio::time::timeout(std::time::Duration::from_secs(5), task)
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .unwrap();
+                assert!(!status.success());
+            }
         }
     }
 }
+pub(crate) use admitted::{run_catching_panic, StreamReservation, StreamTask, ToolOutcome};

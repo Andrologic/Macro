@@ -485,6 +485,7 @@ describe("tauriIpc executeWorkspaceTool", () => {
     const tauriIpc = await loadTauriIpc();
 
     await tauriIpc.aiStreamChat({
+      providerAdmission: { kind: "conversation" },
       requestId: "req-1",
       providerId: "chatgpt",
       modelId: "gpt-5.4",
@@ -502,6 +503,7 @@ describe("tauriIpc executeWorkspaceTool", () => {
       {
         command: "ai_stream_chat",
         payload: {
+          admission: { kind: "conversation" },
           request: {
             request_id: "req-1",
             provider_id: "chatgpt",
@@ -535,6 +537,7 @@ describe("tauriIpc executeWorkspaceTool", () => {
     const tauriIpc = await loadTauriIpc();
 
     await tauriIpc.aiStreamChat({
+      providerAdmission: { kind: "conversation" },
       requestId: "req-1",
       providerId: "copilot",
       modelId: "gpt-5",

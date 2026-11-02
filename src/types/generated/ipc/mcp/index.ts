@@ -1,7 +1,6 @@
 export type { JsonValue } from '../serde_json/JsonValue';
 export type { McpCallToolResponse } from '../McpCallToolResponse';
 export type { McpCatalogDto } from '../McpCatalogDto';
-export type { McpDiscoverToolsResponse } from '../McpDiscoverToolsResponse';
 export type { McpElicitationAction } from '../McpElicitationAction';
 export type { McpElicitationAnswer } from '../McpElicitationAnswer';
 export type { McpElicitationPrompt } from '../McpElicitationPrompt';

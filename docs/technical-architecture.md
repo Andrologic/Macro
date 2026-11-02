@@ -82,6 +82,70 @@ Elle fournit :
 
 Elle a pour rôle d'isoler le reste de l'interface des détails du transport.
 
+Le service `modelContextCatalog` valide les données models.dev au chargement du
+cache et après une réponse réseau. Une erreur conserve le dernier catalogue
+valide, puis le snapshot embarqué si aucun cache n'est disponible. La clé de
+cache v1 et son TTL de cinq minutes restent inchangés. La résolution sélectionne
+un fournisseur avant le modèle, privilégie les identifiants exacts et accepte
+une identité canonique seulement si elle est unique dans ce fournisseur. Un
+endpoint tiers compatible OpenAI ne désigne pas l'offre officielle OpenAI.
+
+`lookupModelCatalogMetadata` et `listProviderCatalogModels` exposent un contrat
+synchrone commun pour les informations et suggestions de modèles. Ils partagent
+la résolution fournisseur/modèle des limites et ne déclenchent aucun accès
+réseau. La liste conserve les entrées du cache, puis les modèles absents du
+snapshot de la même offre, sans contourner une identité ambiguë. Le contrat
+retourne l'identifiant, le nom, les éventuels description/famille, les limites,
+la date et les capacités optionnelles images/outils. Une capacité absente reste
+inconnue, distincte de `false`. Le catalogue ne vérifie ni les droits du compte
+ni l'activation d'un modèle.
+
+`ModelCatalogSummary` affiche ces informations sans modifier `AIModel` ni le
+transport. Le contexte configuré reste prioritaire, sauf le repli Macro remplacé
+par une limite catalogue connue. Les capacités positives sont croisées avec les
+chemins existants : images dans Chat Completions OpenAI/OpenRouter ou Responses
+ChatGPT, outils natifs autorisés par le fournisseur et non refusés par le
+modèle. Copilot projette actuellement les images en texte et ne les annonce
+donc pas comme utilisables.
+
+Le sélecteur du composeur affiche une liste compacte des couples fournisseur/modèle
+activés, avec le fournisseur sur chaque ligne. Sa recherche conserve fournisseur,
+nom, identifiant et description configurés, et consulte aussi le nom et la famille
+du catalogue, sans persister ces métadonnées dans `AIModel` ou activer de modèles
+supplémentaires. `useProviderStore.selectProviderModel` valide le couple et change
+fournisseur, modèle et effort compatible dans une seule mutation. Les rafraîchissements
+existants du fournisseur et du contexte restent délégués au store. `ChatZone` contrôle
+l'ouverture exclusive du menu de modèles et de la liste séparée de raisonnement.
+
+Les efforts models.dev proviennent de `reasoning_options` de type `effort`.
+Les options `toggle` et `budget_tokens` ne produisent aucun contrôle. Un défaut
+absent reste absent dans les métadonnées source ; la sélection conserve la
+politique Macro et le défaut embarqué du modèle quand il est encore autorisé.
+Les surcharges manuelles et les métadonnées fournisseur restent prioritaires.
+
+La provenance et la date des limites décrivent la fenêtre de contexte. Le contrat
+actuel ne distingue pas la provenance de chaque limite d'entrée ou de sortie.
+Le catalogue complète donc seulement les limites périphériques absentes et
+conserve prudemment les valeurs existantes, même lors d'un rafraîchissement de
+la fenêtre catalogue. Les valeurs explicites du fournisseur et la fenêtre
+utilisateur restent prioritaires.
+
+Le snapshot `src/shared/ai/modelsDevSnapshot.json` est généré depuis la projection
+publique `dev/models-dev/source.json`. Le périmètre fixé dans
+`dev/models-dev/coverage.json` reprend uniquement les modèles du snapshot initial.
+Les entrées absentes de la source gardent leurs limites historiques du 11 mai
+2026 et cette date, sans récupérer les efforts ou la date d'une autre offre.
+Les données réutilisées de models.dev sont sous licence MIT, dont la mention
+complète est distribuée depuis `public/licenses/models.dev-LICENSE.txt`.
+
+Pour une maintenance locale, télécharger `https://models.dev/api.json` hors du
+dépôt, puis lancer `bun dev/models-dev/generate.ts --source <api.json> --date
+<date-de-récupération-ISO>`. La commande conserve seulement les champs consommés,
+sans tarifs, et génère le snapshot dans un ordre stable. La date fournie décrit
+la récupération, pas une mise à jour annoncée par le fournisseur. Vérifier sans
+réseau avec `bun dev/models-dev/generate.ts --check` ; la commande sans arguments
+régénère depuis la projection suivie dans Git.
+
 ### 3.4 Couche runtime desktop
 
 Le runtime desktop est fourni par Tauri.
@@ -246,6 +310,8 @@ Le frontend utilise principalement :
 - Mermaid et React Markdown pour le rendu enrichi
 - Tailwind CSS pour la couche UI
 
+Les médias Markdown distants ne reçoivent leur URL de chargement qu'après un clic explicite. Les diagrammes Mermaid, y compris ceux des conversations enregistrées, attendent aussi un clic avant tout appel au moteur et avant toute réutilisation du cache SVG : Mermaid peut lancer des requêtes pendant le rendu, avant la sanitisation du SVG. Le bouton prévient que l'affichage peut contacter des sites externes. Les favicons de citations s'affichent uniquement sous forme de données d'image intégrées ; sinon l'interface affiche une icône générique.
+
 ### 4.2 Backend desktop
 
 Le backend desktop utilise principalement :
@@ -292,13 +358,94 @@ avant d'ajouter une vue interne, un raccourci ou une entrée de réglages.
 
 Le cœur de l'interface repose sur une configuration centralisée qui affecte facultativement les emplacements gauche, centre et droit selon le mode actif. Le routeur, le shell, le Header et le préchargement consultent tous cette même configuration.
 
-Lorsqu'un emplacement est absent, aucun conteneur, largeur, séparateur, bouton d'ouverture ou préchargement ne lui est associé. Le mode Architect utilise les trois emplacements : navigation projets/plans à gauche, conversation au centre et stratégie à droite.
+Lorsqu'un emplacement est absent, aucun conteneur, largeur, séparateur, bouton d'ouverture ou préchargement ne lui est associé. Le mode Architect utilise les trois emplacements : navigation projets/plans à gauche, conversation au centre et visualisateur AgSDL à droite.
 
-Le navigateur Architect charge un catalogue transverse des plans, mais délègue toute activation à `useAppStore.activateArchitectPlan`. La sélection canonique reste `selectedGroupId`/`selectedProjectId` pour le contexte et `activeArchitectPlanId`/`activePlanContext` pour le plan. Les épingles et les groupes visuellement développés sont de simples préférences d'interface ; ils ne créent pas un nouvel état métier. Le basculement entre plans actifs et archivés reste également un état de vue local : il filtre le catalogue déjà chargé et ne modifie ni la portée projet ni le plan actif. Les menus contextuels réutilisent les mêmes mutations et les mêmes restrictions de types de plans que les actions primaires ; ils ne contournent ni `getCreatableArchitectPlanKinds` ni les capacités CRUD du plan.
+Le navigateur Architect charge un catalogue transverse des plans, mais délègue toute activation à `useAppStore.activateArchitectPlan`. La sélection canonique reste `selectedGroupId`/`selectedProjectId` pour le contexte et `activeArchitectPlanId`/`activePlanContext` pour le plan. Les dossiers visuels du navigateur sont conservés dans la préférence locale `architectBlueprintFolders`, avec une identité composée de la portée et du locator branche/plan. Chaque dossier peut référencer un parent de la même portée. Les mutations empêchent les cycles et la normalisation rattache les parents invalides à la racine sans perdre leur contenu. Ils ne déplacent pas les métadonnées ni le code et ne participent pas à la synchronisation `@macro`. Les épingles et les groupes visuellement développés sont de simples préférences d'interface ; ils ne créent pas un nouvel état métier. Le basculement entre plans actifs et archivés reste également un état de vue local : il filtre le catalogue déjà chargé et ne modifie ni la portée projet ni le plan actif. Les menus contextuels réutilisent les mêmes mutations et les mêmes restrictions de types de plans que les actions primaires ; ils ne contournent ni `getCreatableArchitectPlanKinds` ni les capacités CRUD du plan.
 
 Le shell persiste une largeur dédiée au panneau gauche Architect. Elle est bornée séparément de la largeur générique des panneaux gauche afin qu'une préférence héritée d'un autre mode ne dégrade pas la lisibilité de l'arborescence projets/plans.
 
 Le panneau de conversations Chat conserve son mode de sélection multiple dans un état local au composant. Hors de ce mode, seul un déclencheur compact et accessible est rendu dans l'en-tête à côté de la création de conversation. L'activation rend la barre d'actions groupées et initialise la sélection à vide ; l'annulation ou un changement de vue réinitialise simultanément le mode, la sélection et les modales associées.
+
+Le visualisateur AgSDL est chargé dans `ArchitectStrategyPanel`. `useAgsdlStore`
+partage le document avec les outils `agsdl_get`/`agsdl_update`, par clé branche/plan.
+`AgsdlEditor` lit uniquement ce document de conception. Il ne souscrit plus au
+store d’exécution et ne propose ni lancement, ni capture historique, ni arrêt.
+Son en-tête contient `SaveSystemDialog`, puis l’agrandissement à droite. Le modal
+utilise `useAgsdlStore.save` pour conserver le travail et `saveBlueprint` pour créer
+une copie indépendante. `agsdlExport` préserve les octets de la source AgSDL ; le
+format `macro-agsdl-export` version 1 conserve aussi annexes et métadonnées dans
+une enveloppe distincte. Les fichiers URI externes ne sont pas téléchargés. La
+bibliothèque reste utilisée pour créer un système dans un plan vide.
+`projectSystemOverview` dérive une vue des participants, des conditions et des
+approbations. Les interfaces et les fins techniques restent dans les détails du
+système ; elles ne créent pas de nœuds artificiels. Les bindings typés fournissent
+les libellés d’échange ;
+les routes seules ne prouvent pas un transfert. Les échanges non adjacents sont
+consultables dans la fiche sans ajouter de flèches à la sélection. `WorkflowGraph` utilise React Flow en lecture seule et
+`layoutViewer` place les nœuds selon les routes ou les dépendances héritées.
+L’inspecteur conserve les routes techniques et les références originales.
+Les formulaires de propriétés utilisent `componentFields` et `componentProperties`
+pour produire des changements ciblés sur les propriétaires réels. Les contrats
+consommés et les configurations non prises en charge restent en lecture seule.
+`localizeDiagnostics` exploite les pointeurs, les positions en octets et les
+références non ambiguës pour associer les problèmes aux composants.
+`prepareAgsdlChatContext` joint une référence versionnée à la conversation du plan.
+Le compositeur la présente séparément du texte saisi et la transmet dans
+`hiddenContext`, y compris lors du steering ou d’une mise en file. La version est
+contrôlée avant l’envoi ; les outils relisent le document avant modification.
+L’annulation et le rétablissement utilisent l’historique de `useAgsdlStore`, puis
+la même sauvegarde versionnée que les formulaires.
+La source et les annexes sont persistées
+dans `ArchitectPlanRecord.agsdl`, avec contrôle de révision dans la file de
+mutations du plan. `migrateArchitectPlanToAgsdl` convertit les stratégies sans
+AgSDL au chargement, y compris les plans archivés, dans cette même file et via
+le journal de réplication. La ressource `macro-legacy-plan` conserve les données
+originales ; le visualisateur distingue ces dépendances historiques des routes G.
+Le moteur Implement utilise encore les enregistrements d’exécution historiques.
+
+`src/services/agsdl` contient la projection du graphe, les modifications
+atomiques par pointeurs JSON et les exemples. `src/stores/agsdl/tools.ts`
+orchestre les outils de lecture et de modification du document. Les lecteurs de
+référence 0.2.0 et 0.1.0 sont fournis sous leur licence dans `src/vendor/agsdl`,
+avec leurs adaptations navigateur documentées. Le dispatch dépend du contrat
+explicite ; le lecteur 0.1.0 reste réservé aux documents historiques. Le rapport
+0.2.0 conserve sa portée statique et son JSON sans perte numérique. Les
+métadonnées Macro de conception et de présentation vivent dans l’enveloppe du
+plan pour respecter le schéma fermé 0.2.0. Voir [AgSDL 0.2.0](agsdl-020.md). Le sérialiseur conserve les jetons
+numériques et les valeurs opaques ; les objets de projection JavaScript ne sont
+pas utilisés pour réécrire le document entier. Une mutation d’outil vérifie la
+conversation propriétaire, le statut brouillon et la révision lue. Ces outils
+sont exposés uniquement dans Architect, avec la politique partagée des outils.
+Le moteur résident AgSDL utilise le transport fournisseur et les outils natifs de
+Macro, ou les adaptateurs Codex et Claude explicitement capturés. Codex lance le CLI
+officiel en app-server sous un profil privé et conserve le scheduler existant.
+Les outils natifs Codex suivent sa politique de sandbox ; les admissions,
+références privées, réponses et terminaux restent sous autorité Macro. Le profil `macro-serial-inline-v1` compile une capture immuable avant Start ;
+le journal SQLite fait autorité pour les admissions, les approbations, les effets,
+les réponses et Stop. Le navigateur ne possède ni les droits d'exécution ni la
+preuve de terminaison. Claude utilise un SDK et un CLI externes, un pont MCP
+limité aux outils Macro capturés, le même journal et le même superviseur. Voir les
+[contrats du moteur](agsdl-engine-architecture.md) et le
+[profil Claude contrôlé](agsdl-claude-controlled.md).
+
+Une perte du host révoque son epoch et bloque les continuations anciennes. Les
+exécuteurs natifs peuvent encore enregistrer leurs reçus de fin corrélés, sans
+publier les sorties de cette ancienne activation. Stop confirme la terminaison
+locale uniquement lorsque tous ses effets sont terminés. La provenance du
+processus est enregistrée nativement lors de la réservation, sans backfill des
+anciens effets. Après un crash, son absence peut prouver la fin de l'exécuteur
+local pour ce profil ; le résultat perdu reste explicitement inconnu. Cela ne
+prouve ni l'annulation d'une écriture ni l'absence de travail distant chez le
+fournisseur. Aucun replay automatique n'est permis. L'utilisateur doit vérifier
+les effets avant de demander une nouvelle exécution.
+
+Le profil initial exclut les compositions, les fournisseurs qui lancent un
+processus externe autres que les adaptateurs Codex et Claude qualifiés, Terminal
+et les MCP. Les profils [Codex](agsdl-codex-native.md) et
+[Claude](agsdl-claude-controlled.md) détaillent les limites de ces exceptions.
+Un document statiquement valide peut donc
+rester non exécutable dans Macro. La disponibilité produit est annoncée seulement
+après qualification des commandes réelles de l'application.
 
 ### 5.3 Découpage des panneaux
 
@@ -490,10 +637,17 @@ configurations et les droits sur la cible capturée ; un changement de cible
 bloque la reprise. Le panneau commun de récupération porte l'action de réessai,
 indépendamment des préférences de notification et sans état parallèle dans `ChatZone`.
 
-Une direction avec images sauvegarde d’abord les images sous l’identifiant prévu
-du message, puis le texte. Un refus de sauvegarde des images conserve le brouillon
-sans créer de message utilisateur. Le runtime ne publie la direction qu’après
-confirmation de ces écritures et contrôle son tour propriétaire.
+Une direction active est un sous-type de l'entrée existante, avec une identité propre et l'UUID de son message utilisateur. Le `turn_id` reste celui du tour d'origine. Son intention durable précède l'écriture DB ; les images sont sauvegardées sous ce même UUID avant le texte. Un refus d'intention ou d'images garde le brouillon. Après acceptation, un échec DB ou la perte du propriétaire retourne une récupération acceptée. Une écriture DB ambiguë se résout par lecture de l'UUID dans la conversation et le tour attendus.
+
+La préparation commune normale, replay et overflow exclut les directions non livrées, sauf le message précisément repris. Le contexte réservé au modèle utilise le même filtre AgSDL pour le texte et les `provider_input_items`. La compaction ne prend aucun batch. La boucle choisit les directions juste avant une nouvelle requête autorisée par le budget, écrit le marqueur de remise possible, puis recontrôle Stop et la génération propriétaire. Un remplacement de stream garde la récupération et abandonne son ancien batch volatile. Une fin de requête réelle et une persistance assistant confirmée autorisent le retrait, y compris après un réessai de persistance. L'assistant est associé par UUID, jamais par le seul `turn_id`. L'identité de la requête logique qui porte le batch reste constante pendant les retries du transport ; les tentatives de génération conservent leurs identifiants distincts. La fin réelle de cette requête confirme le même marqueur durable, sans confirmer une tentative arrêtée ou échouée. Une remise incertaine ne déclenche aucun replay automatique ; ce marqueur ne constitue pas un acknowledgement sémantique AgSDL.
+
+Au rechargement, le motif de fin explicite du même assistant certifie sa sauvegarde finale. Le writer final enregistre `completed` si le transport omet ce motif ; les écritures de progression ne certifient jamais une réussite. Le contrat de lecture omet les placeholders assistant vides sans motif de fin ni contenu structuré, y compris au bootstrap. Les sorties natives reconnues dans `provider_turn_state.output_items` restent présentes même sans texte, motif ou duplication dans `provider_input_items`. Un checkpoint de génération seul reste omis. Une ligne retenue pour protéger le user direction ne devient donc ni une bulle vide rechargée ni un élément d'historique provider ou de replay.
+
+La suppression d'un tour et le trim replay marquent les directions ciblées `deletionRequested` dans la file existante avant leur mutation DB. Ils attendent les écritures user déjà engagées, y compris celles dont le message n'est pas publié. La publication et toute nouvelle remise sont alors invalidées. Un refus de ce premier marqueur arrête la suppression avant DB. Après succès DB, le nettoyage local continue même si le retrait de file refuse : le marqueur durable restant interdit toute reprise, y compris après redémarrage, et demande un retrait manuel. Une suppression DB refusée ou ambiguë conserve aussi cette invalidation. Les autres tours et conversations restent intacts. Une reprise est refusée tant que la même direction possède une IO ou préparation encore suivie. Elle ne remplace donc jamais l'opération initiale que la suppression ou le replay doit attendre.
+
+Le retrait manuel et l'édition d'une récupération refusent aussi pendant cette IO, avec une exclusion mutuelle face aux reprises. Le suivi temporaire garde l'identité conversation/tour jusqu'au règlement, même si une confirmation finale ou un nettoyage de conversation retire l'entrée affichée. Une invalidation retrouve alors l'opération et réinscrit seulement son marqueur d'annulation dans la file existante avant d'attendre l'IO. La confirmation normale d'une réponse finale reste immédiate.
+
+Les références des directions acceptées contiennent les passages de conversation déjà résolus. La reprise revalide l'accès à la source et réutilise ces extraits et leur version ; elle ne sélectionne pas de nouveaux passages dans le transcript courant.
 
 `chatTurnRuntime` possède les identités de session, les promesses de stream,
 les instructions en attente et les propriétaires de persistance. Le record des
@@ -576,6 +730,8 @@ de messages et diagnostics, le compositeur, les questionnaires et les dialogues
 d'approbation. Les workflows de rejeu et checkpoints ainsi que les adaptateurs
 Architect/Implement restent une dette distincte de l'orchestration d'un envoi.
 Cette extraction ne supprime donc pas à elle seule la grande SCC historique.
+
+Le [contrat du composeur](composer-contract.md) précise la capture des brouillons, les références persistées, l’acceptation des messages et les protections contre les retours asynchrones.
 
 En mode Implement, l'en-tête de la conversation dérive le contexte visible de la tâche cataloguée sélectionnée. Il utilise `plan_title` et `branch_name` de cette tâche, puis résout les noms de projets depuis le registre déjà chargé. Une valeur absente n'est pas remplacée par une sélection globale et aucun état d'affichage durable n'est ajouté.
 
@@ -736,7 +892,10 @@ champs provider adaptés restent des contrats frontend identifiés. Le canal
 `MCPRuntimeEvent` réservé au frontend n'a pas de DTO Rust à générer. Les erreurs
 natives, elles, dérivent du payload effectivement sérialisé par `CommandError` ;
 la normalisation des erreurs de service conserve aussi les rejets historiques
-sous forme de chaîne ou d'enveloppe distante.
+sous forme de chaîne ou d'enveloppe distante. Une erreur de mutation distante
+récupérée dans un résultat durable conserve aussi le code du corps backend ;
+un ancien corps sans code garde son repli générique. Cette projection ne change
+ni l'identité durable, ni la politique de relance de la mutation.
 
 
 Les exports de `ServiceProvider` restent raccordés au chargement dynamique des
@@ -875,6 +1034,14 @@ Le backend expose de nombreuses commandes Tauri, regroupées par domaine :
 
 Ces commandes sont centralisées dans le point d'entrée du backend.
 
+Le runtime Tauri utilise une version qui vérifie l'origine des requêtes IPC et
+applique les capacités aux commandes personnalisées provenant d'une origine
+distante. Il lie aussi les grandes réponses de canal à leur WebView d'origine.
+La capacité de la fenêtre principale n'accorde aucun accès distant.
+Les anciennes commandes `mcp_discover_tools` et `mcp_call_tool`, qui acceptaient
+une définition de serveur fournie par l'appelant, ne sont plus enregistrées.
+L'interface passe par le runtime MCP persistant et sa politique d'outils.
+
 ### 8.3 Plugins natifs utilisés
 
 Le runtime embarque des plugins Tauri pour :
@@ -883,6 +1050,12 @@ Le runtime embarque des plugins Tauri pour :
 - les requêtes HTTP
 - les dialogues système
 - le stockage natif
+
+Le wrapper `tauriFetch` désactive les redirections automatiques du plugin HTTP
+sur le desktop et dans le pont navigateur. Un serveur qui répond par une
+redirection reçoit donc la requête initiale, mais la cible indiquée dans
+`Location` ne reçoit ni les en-têtes d'authentification ni le corps de la
+requête. Les appels fournisseur traitent cette réponse comme un échec HTTP.
 
 ---
 
@@ -920,7 +1093,20 @@ journaux résident dans `git::operations::workflow`. Ces modules ne dépendent
 ni des commandes Tauri ni de State, Window ou AppHandle.
 
 `core::command_error` conserve le contrat d'erreur sérialisé et
-`core::db_state` l'état d'initialisation DB. Les identifiants de secrets MCP
+`core::db_state` l'état d'initialisation DB. Les conversions depuis `BackendError`
+et `DbError` portent un code explicite, indépendant du message affiché, et
+conservent les détails structurés déjà exposés. Les mutations de fichiers et leur
+rollback conservent ainsi `REVISION_CONFLICT`, y compris lorsqu'il n'apparaît que
+pendant la compensation. Le code initial reste prioritaire s'il est déjà établi ;
+sinon, l'agrégation retient un conflit de compensation, puis à défaut la première
+erreur de compensation typée. Tous les diagnostics restent dans leur ordre
+historique. Les budgets des outils de lecture
+distinguent `TOOL_EXECUTION_CANCELLED` de `TOOL_EXECUTION_TIMEOUT`. Les échecs de
+stockage et d'initialisation DB utilisent le code existant `Database`, tandis que
+la validation d'une entrée DB reste `Validation`. Les producteurs historiques de
+simples messages gardent leur classification de compatibilité ; les erreurs web,
+MCP, fournisseur et de sérialisation non migrées restent sur leurs contrats
+existants. Les identifiants de secrets MCP
 sont définis dans `core::mcp_ids`, accessibles au registre de configuration
 sans importer son adaptateur de commandes.
 
@@ -940,11 +1126,17 @@ Le module `db` porte :
 - les modèles et repositories
 - les commandes de persistance de conversations, messages, providers et contextes locaux
 
-La migration `004_message_search` crée un index FTS5 externe sur le contenu des
-messages. Trois triggers le synchronisent avec les insertions, modifications et
-suppressions. Le repository reçoit la liste des conversations admissibles et
-applique cette portée avant la pagination, puis expose une recherche bornée et
-paginée ainsi qu'une reconstruction déterministe de l'index depuis `messages`.
+La migration `004_message_search` introduit l'index FTS5. La version 10,
+`010_visible_message_search`, le reconstruit sur la vue `message_search_content`.
+Cette projection filtre les blocs `think` et `thinking` des messages assistant,
+y compris sans fermeture, tout en conservant le texte des autres rôles.
+La projection est corrélée à la ligne source ; les triggers ciblent son `rowid`
+sans relire les autres transcriptions. Les mises à jour retirent l'ancien texte
+avant la mutation puis indexent le nouveau texte après la mutation, y compris
+lors d'un changement de rôle. Les suppressions retirent l'ancien texte avant la
+cascade. Le contenu original de `messages` n'est jamais réécrit.
+Le repository applique la portée des conversations avant la pagination, expose
+une recherche bornée et paginée, et reconstruit l'index depuis cette même vue.
 La validation des sauvegardes compare les colonnes, les clés étrangères et leurs
 actions de cascade, les définitions des tables virtuelles, les index applicatifs,
 les vues et les triggers au schéma de référence de la version courante. Une clé
@@ -1125,9 +1317,9 @@ sélectionne un adaptateur de protocole. L'adaptateur OpenAI-compatible envoie u
 multipart vers `/audio/transcriptions`; l'adaptateur Deepgram envoie les octets
 audio vers `/v1/listen`. Les commandes Tauri reçoivent le contenu audio dans un
 corps IPC binaire afin d'éviter une sérialisation JSON ou base64 inutile. Les
-adaptateurs refusent les redirections, limitent la réponse du fournisseur à 1 Mo
-et imposent HTTPS aux fournisseurs distants afin que l'audio et les clés ne
-transitent pas en clair.
+adaptateurs refusent les redirections, limitent la réponse du fournisseur à 1 Mo,
+réservent HTTP aux adresses loopback et imposent HTTPS aux fournisseurs distants
+afin que l'audio et les clés ne transitent pas en clair.
 
 Le provider vocal géré `andrologic-speech` cible
 `https://lmstudio.andrologic.ai/v1/audio/transcriptions` avec le modèle public
@@ -1712,10 +1904,11 @@ futur appelant ne doit dispatcher que dans ce cas. Une nouvelle lecture de
 `pending`, `unknown` ou `completed` renvoie `is_new=false` et n'autorise pas un
 second effet. L'identifiant de reçu peut être partagé entre deux invocations
 distinctes ; sa cohérence est vérifiée à l'intérieur de chaque identité.
-`db_complete_tool_invocation` exige un identifiant de reçu que le futur appelant
-ne doit fournir qu'après confirmation du résultat par le transport. Le journal
-ne stocke ni résultat brut ni preuve de remise du transport. Les entrées encore
-`pending` au démarrage deviennent `unknown`. Une réponse confirmée tardive peut
+`db_complete_tool_invocation` exige un identifiant de reçu fourni après la
+réponse de l’exécuteur. Depuis la migration 10, il peut conserver `result_json`
+et le reçu dans la même transaction. Les anciens résultats absents restent
+`NULL`. Ce résultat local ne constitue pas une preuve de remise au fournisseur.
+Les entrées encore `pending` au démarrage deviennent `unknown`. Une réponse confirmée tardive peut
 clôturer une entrée inconnue, mais aucune entrée non résolue ne doit être rejouée
 automatiquement. La suppression de conversation efface les entrées par cascade.
 La garantie est un dispatch au plus une fois par identité, pas une exécution
@@ -1726,16 +1919,23 @@ restauration d'une sauvegarde ancienne peut oublier des effets postérieurs à
 l'archive ; le futur transport doit donc vérifier son propre identifiant
 d'idempotence avant toute reprise depuis une sauvegarde.
 Le dispatch commun du Chat enregistre désormais l'intention avant d'appeler
-l'exécuteur et ne l'appelle que pour `is_new=true`. Le reçu de fin n'est écrit
-qu'après la réponse de l'exécuteur et le traitement éventuel d'un gros résultat.
-`completed` prouve cette réponse et, si l'écriture de l'artefact a réussi, sa
-conservation. L'échec de cette écriture peut produire un simple aperçu ; le
-journal v7 ne conserve aucun résultat brut et ne garantit pas la reconstruction
-d'une réponse courte. Il ne prouve pas non plus
-l'acceptation par le fournisseur Copilot ; la trace UI reste `unknown` tant que
-ce reçu fournisseur manque. Une annulation, une exception de transport ou un
-échec explicite du traitement du résultat laisse
-l'intention locale `unknown`, sans rejeu automatique. Le mode frontend-only
+l’exécuteur et ne l’appelle que pour `is_new=true`. Après sa réponse et le
+traitement éventuel d’un gros résultat, il persiste le résultat normalisé
+effectivement rendu à la continuation dans `result_json`, avec son reçu de fin.
+Les réponses courtes et les refus sont donc conservés avant la continuation.
+Les contrôles de révision AgSDL renvoient un refus typé : une lecture périmée
+ou une édition refusée avant mutation est une erreur de validation confirmée,
+pas un effet incertain. Les lectures `agsdl_get` sont classées en lecture seule
+et les éditions `agsdl_update` en mutations du workspace. Les erreurs survenues
+après une édition ou pendant sa sauvegarde restent conservatrices : le refus
+de révision ne couvre pas ces opérations potentiellement appliquées.
+Si l’artefact diagnostic d’un refus échoue, le refus borné est conservé par la
+même clôture durable. Une clôture non confirmée bloque la continuation et
+laisse l’intention incertaine. `completed` atteste le résultat local conservé ;
+il ne prouve pas l’acceptation par le fournisseur Copilot. La trace UI reste
+`unknown` tant que ce reçu fournisseur manque. Une annulation, une exception de
+transport ou un traitement de résultat non confirmé laisse l’intention locale
+`unknown`, sans rejeu automatique. Le mode frontend-only
 distant conserve son chemin d'exécution sans écrire dans le journal SQLite
 `tool_invocations`. Pour `write`, `edit`, `delete`, `apply_patch` et les mutations
 Git prises en charge, `remoteKernelApi` utilise déjà l'`invocationId` composé
@@ -1844,6 +2044,65 @@ y compris les lectures de favicon. Chaque appel natif annulable porte un
 identifiant d’exécution ; la commande d’annulation interrompt l’attente réseau
 et la lecture du corps. Le registre conserve temporairement les annulations
 reçues avant le démarrage de la commande.
+
+Le registre natif des streams réserve chaque identifiant avant toute attente de
+préparation du fournisseur. Ces identifiants sont à usage unique pendant la vie
+du processus ; une annulation reçue avant admission interdit un démarrage tardif.
+La commande d’annulation attend la destruction de la tâche possédée. Les wrappers
+ChatGPT, OpenAI compatibles et Copilot exécutent leur travail dans cette tâche.
+Le superviseur joint également le processus Copilot confiné, ses descendants et
+sa lecture stderr ; une erreur de terminaison conserve un reçu d’arrêt incertain.
+Copilot publie sa fin seulement après ce contrôle. Les événements de fin ou
+d’erreur fournisseur ne sont pas des reçus du superviseur : le transport joint
+le registre natif sur chaque sortie avant de libérer l’identité. Une erreur de
+cleanup conserve `StreamStopUnconfirmedError`, sans fallback ni nouvelle requête
+fournisseur. Un Stop concurrent joint cette même finalisation.
+
+Chat conserve sa réservation pendant la préparation, le transport et les outils
+déjà lancés, même si un exécuteur ignore le signal. L’annulation du transport
+rend une promesse de confirmation. Son échec conserve la réservation et expose
+une erreur ; une nouvelle demande peut obtenir la confirmation manquante. Goal
+conserve aussi le créneau de l’enfant tant que cette confirmation manque. Un
+`AbortError` ou la fin du compositeur ne constitue pas cette preuve. Une erreur
+`StreamStopUnconfirmedError` traverse le compositeur même après son callback
+d’abandon ; son `whenStopped` permet de conserver la réservation jusqu’au reçu.
+Les callbacks de projection, persistance et récupération sont observés dès leur
+lancement, puis joints avant la sortie du compositeur. Leur échec reste attaché
+au reçu comme diagnostic secondaire (`secondaryErrors`) et ne peut pas le
+remplacer. Si plusieurs propriétaires restent incertains, leur reçu composite
+attend toutes leurs confirmations. Les observateurs d’erreur du transport
+respectent la même priorité, y compris pour la génération sans streaming. Un
+rejet du reçu Goal reste un arrêt non confirmé : son diagnostic est conservé,
+mais le créneau ne se libère pas sur ce rejet.
+Le diagnostic d’une tentative interrompue conserve aussi le reçu initial si son
+flush ou sa projection échoue. Le service public joint ses callbacks de chargement
+et sélectionne son erreur après le cleanup. Les normalisations HTTP et fournisseur
+préservent les erreurs d’arrêt typées avant toute classification ou nouvelle
+requête. Goal conserve tous les reçus observés par callback, même si le stream
+rejette ensuite une autre erreur ; ses lectures lancées restent jointes. Une
+exception d’observateur ou de logger natif ne court-circuite pas la finalisation.
+Le fetch HTTP Macro utilise le même port `RuntimeInvoke` pour Tauri natif et son
+bridge navigateur. Les commandes du plugin HTTP conservent leurs contrôles de
+scope et les options client. Le propriétaire du corps joint les IPC de lecture
+et de libération déjà lancés : fermer le reader JavaScript ou retirer la ressource
+Tauri ne prouve pas la fin d’une lecture qui possède encore sa réponse native.
+Le premier échec de cancellation reste typé sur `[DONE]`, abort et timeout ; une
+seconde cancellation JavaScript réussie ne le remplace pas. Un EOF reçu ou une
+lecture terminée et son cleanup confirmé permettent la libération. Une réponse
+IPC perdue reste incertaine, sans preuve fabriquée à partir de son rejet.
+Les lectures parallèles génériques et les ports Goal natifs attendent leurs
+opérations déjà lancées, puis révoquent les sorties tardives.
+
+La confirmation concerne la tâche locale du stream, pas les effets externes déjà
+dispatchés. Les outils terminaux rendent des refus et erreurs typés ; un code de
+sortie métier non nul reste un résultat exécuté. Après dispatch, une interruption,
+un résultat non final ou une réponse de transport perdue reste `uncertain` et
+maintient le journal en `unknown`, sans déclaration de réussite ni rejeu aveugle.
+Un résultat final du run terminal confirme sa fin locale même si le kill échoue ;
+son résultat métier peut rester incertain. En revanche, la perte de ce reçu ou un
+état non final conserve le propriétaire avec `StreamStopUnconfirmedError`. Le
+simple accusé de réception du kill ou la projection de session ne prouve pas la
+récupération du processus ; ils ne libèrent pas ce propriétaire.
 
 ### 15.2 Couplage avec les plans
 
@@ -2002,7 +2261,7 @@ Les capabilities runtime séparent les skills en deux niveaux : `skills` pour la
 
 ### 16.3 Protection expérimentale
 
-Le kernel headless peut être protégé par un bearer token. Le token est facultatif uniquement sur une adresse loopback et obligatoire sur toute autre adresse. Lorsqu'il est configuré, il protège aussi `/health`. Sans token sur loopback, `/health` est public comme le reste du prototype local. Sa politique n'est évaluée que pour les projets réellement touchés après routage : une cible explicite utilise son projet, un patch utilise l'union de ses cibles et une recherche globale conserve l'intersection de tous les montages parcourus. Le registre serveur conserve le chemin canonique et l'état de lecture seule de chaque projet ; un client ne peut pas déclarer un montage plus permissif et toute mutation d'un projet autoritairement en lecture seule est refusée. `web_fetch` et les outils terminal restent retirés de la politique tant que le transport headless ne possède pas leurs exécuteurs confinés, approuvables et annulables.
+Le kernel headless exige un bearer token sur toute adresse, y compris loopback. Il protège également `/health`. Un contrôle global vérifie le `Host`, l'`Origin` présent et le bearer avant le routage, y compris pour les flux et les connexions WebSocket. Le jeton du client remote est saisi à l'exécution et conservé uniquement en mémoire ; `VITE_REMOTE_AUTH_TOKEN` est abandonné car Vite exposait sa valeur dans le bundle. Sa politique n'est évaluée que pour les projets réellement touchés après routage : une cible explicite utilise son projet, un patch utilise l'union de ses cibles et une recherche globale conserve l'intersection de tous les montages parcourus. Le registre serveur conserve le chemin canonique et l'état de lecture seule de chaque projet ; un client ne peut pas déclarer un montage plus permissif et toute mutation d'un projet autoritairement en lecture seule est refusée. `web_fetch` et les outils terminal restent retirés de la politique tant que le transport headless ne possède pas leurs exécuteurs confinés, approuvables et annulables.
 
 Les patches de configuration headless sont toujours attribués à une source agent. L’acceptation ou le rejet d’un changement sensible exige un second bearer défini par `MACRO_HEADLESS_APPROVAL_TOKEN`, différent de `MACRO_HEADLESS_BEARER_TOKEN`. Ce second secret représente une décision utilisateur ponctuelle et n’est jamais remplacé par le bearer agent. Les décisions de politique d’outils sont fermées par défaut : elles exigent un projet chargé et une exécution multi-projet doit être autorisée par chaque projet affecté.
 
@@ -2114,6 +2373,44 @@ Ce document ne doit pas être mis à jour pour :
 - des détails d'UX sans impact d'architecture
 - des idées produit non encore traduites en architecture cible
 
+### Conception AgSDL et blueprints
+
+Le raccord de lancement sans interface est défini dans
+[Blueprint workflow launch](blueprint-workflow-launch.md). Il copie un blueprint
+dans les métadonnées du projet cible, puis passe par les intentions natives et
+le moteur existant. La provenance conserve aussi la branche du blueprint. Ce
+service ne crée pas de second moteur ni de stockage de workflows parallèle.
+Le même document décrit la projection des instances d'agents natives dans le
+catalogue de tâches d'Operate. Les identités et états proviennent du journal
+natif ; les tâches ne déclenchent pas un second chat ni un worktree Git.
+
+Les informations de conception Macro sont stockées dans
+`root.annotations.macroDesign`, version 1 : nature du document, objectif, contexte,
+règles, informations à compléter et provenance. Les modifications utilisent les
+patches AgSDL par pointeur et les contrôles de version du store. Les annotations
+inconnues restent préservées. Les groupes de présentation utilisent
+`annotations.macroGroup` sur les déclarations d’agents, ou
+`ControlFlow.annotations.macroSteps[stepId].macroGroup`. Les titres et descriptions
+propres aux étapes utilisent également cette table `macroSteps`. Les étapes G
+restent des enregistrements fermés, sans annotations ajoutées.
+
+Les blueprints sont des snapshots AgSDL persistés dans de nouveaux plans via la
+mutation metadata de création existante. Le document initial et ses annexes sont
+inclus dans cette mutation atomique. L’instanciation copie ces données dans un
+plan vide et épingle la provenance ; elle ne crée ni lien mutable vers le modèle,
+ni stockage localStorage parallèle. L’historique d’édition reste limité à la
+session du store.
+
+La convention de configuration Macro utilise `engine.identity = "macro/desktop"`,
+`engine.version = "1"` et `parameters.providerId` / `parameters.modelId`. Ces
+identifiants locaux référencent le catalogue configuré dans Macro, sans copier
+les secrets. L’éditeur reconnaît l’ancien alias `macro` en version `1` et ne
+remplace que son identité lors de la prochaine sauvegarde du modèle. Une
+configuration d’agent doit être résolue sans ambiguïté avant
+édition ; les autres paramètres et implémentations d’outils sont conservés.
+Cette convention prépare le futur adaptateur d’exécution, elle ne l’implémente pas.
+
+
 ## 20. Durées de vie des ressources frontend
 
 `LifecycleContext` exprime la validité d'un consommateur ; il ne remplace ni
@@ -2205,3 +2502,20 @@ sans retirer un remplacement ou un autre dépôt. Les racines metadata en cache
 sont revalidées avant réutilisation et retirées après nettoyage du projet. Cette
 propriété native ne fait pas dépendre un handle Git du montage d'un panneau et
 n'ajoute ni TTL ni affirmation de fuite mesurée.
+
+HTTP opts into runtime reply provenance through `invokeWithReceipt`. Native
+error callbacks and browser `status: error` envelopes produce
+`RuntimeCommandError`; transport throws, disconnects and missing responses do
+not. Ordinary `invoke` consumers retain their existing error payloads. A received
+admission refusal proves no request was created. A received body-read error
+proves that read ended, but releasing its owner also requires successful body
+cleanup. A failed send also joins request-resource closure before release.
+Cleanup failure alone does not prove resource closure. HTTP error-body
+diagnostics preserve stop receipts before classifying status codes or retrying.
+
+`http_release_webview_resource` retires a finished HTTP request from the caller's
+webview table under one lock. Its typed `removed` or `alreadyAbsent` reply proves
+only table absence. HTTP joins send before retiring the request, on success and
+failure, and keeps the response body's separate resource alive until EOF or body
+cleanup. The command never searches window or app tables. A lost retirement reply
+remains uncertain; removing a table entry never stands in for joining active reads.

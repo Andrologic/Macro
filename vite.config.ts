@@ -1,7 +1,7 @@
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
-import { defineConfig, transformWithEsbuild } from "vite";
+import { defineConfig, loadEnv, transformWithEsbuild } from "vite";
 import react from "@vitejs/plugin-react";
 import {
   generateMacroPilotValidators,
@@ -467,17 +467,48 @@ export const validatePublicSecretFiles = (rootDir: string = projectRoot): void =
 
 // https://vitejs.dev/config/
 // Optimized for Bun runtime - Maximum Performance Configuration
-export default defineConfig(({ command }) => {
+const PUBLIC_VITE_ENV_KEYS = [
+  'VITE_BACKEND_TRANSPORT',
+  'VITE_REMOTE_API_BASE_URL',
+  'VITE_REMOTE_API_PREFIX',
+  'VITE_REMOTE_BACKEND_URL',
+  'VITE_REMOTE_TIMEOUT_MS',
+  'VITE_REMOTE_WORKSPACE_ID',
+] as const;
+
+export default defineConfig(({ command, mode }) => {
   const appVersion = readPackageVersion(projectRoot);
+  const loadedEnv = loadEnv(mode, projectRoot, '');
+  const publicDefines = Object.fromEntries(PUBLIC_VITE_ENV_KEYS.map((key) => [
+    `import.meta.env.${key}`,
+    JSON.stringify(loadedEnv[key] ?? ''),
+  ]));
 
   if (command === "build") {
     validatePublicSecretFiles(projectRoot);
   }
 
   return {
+    cacheDir: process.env.VITE_MACRO_DEMO === '1' ? '.demo-vite-cache' : 'node_modules/.vite',
     base: command === "build" ? "./" : "/",
+    // Vite's prefix matching would expose arbitrary VITE_* secrets. Publish
+    // exact non-secret keys below instead of opening a broad prefix.
+    envPrefix: '__MACRO_NO_PUBLIC_ENV__',
     define: {
       'import.meta.env.VITE_APP_VERSION': JSON.stringify(appVersion),
+      ...publicDefines,
+      'import.meta.env.VITE_MACRO_DEMO': JSON.stringify(
+        command === 'build' ? '' : loadedEnv.VITE_MACRO_DEMO ?? '',
+      ),
+      'import.meta.env.VITE_TAURI_BROWSER_BRIDGE_PORT': JSON.stringify(
+        command === 'build' ? undefined : loadedEnv.VITE_TAURI_BROWSER_BRIDGE_PORT,
+      ) ?? 'undefined',
+      'import.meta.env.VITE_TAURI_BROWSER_BRIDGE': JSON.stringify(
+        command === 'build' ? '' : loadedEnv.VITE_TAURI_BROWSER_BRIDGE ?? '',
+      ),
+      'import.meta.env.VITE_TAURI_BROWSER_BRIDGE_TOKEN': JSON.stringify(
+        command === 'build' ? '' : loadedEnv.VITE_TAURI_BROWSER_BRIDGE_TOKEN ?? '',
+      ),
     },
     // Local JSON is consumed through default exports; emit object literals so
     // large locale objects do not gain an escaped JSON.parse string wrapper.
@@ -522,6 +553,7 @@ export default defineConfig(({ command }) => {
 
       // Code splitting configuration
       rollupOptions: {
+        input: { main: resolve(projectRoot, "index.html"), agsdlHost: resolve(projectRoot, "agsdl-runtime-host.html") },
         output: {
           // Manual chunks for optimal code splitting
           manualChunks: manualChunk,
@@ -586,6 +618,9 @@ export default defineConfig(({ command }) => {
         "react/jsx-dev-runtime",
         "sonner",
         "zustand",
+        // Pre-bundle React Flow for its CommonJS selector dependencies.
+        // The Architect panel still imports it lazily at runtime.
+        "@xyflow/react",
         "i18next",
         "react-i18next",
         "lucide-react",
@@ -599,7 +634,6 @@ export default defineConfig(({ command }) => {
         "@codemirror/view",
         "@codemirror/state",
         "codemirror",
-        "@xyflow/react",
       ],
 
       // Force re-optimization when these change

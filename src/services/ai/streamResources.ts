@@ -1,7 +1,7 @@
 import * as tauriIpc from '../tauriIpc';
 
 export interface ActiveStreamResources {
-  cancel?: () => void;
+  cancel?: () => void | Promise<void>;
   reader: ReadableStreamDefaultReader<Uint8Array> | null;
   stream: ReadableStream<Uint8Array> | null;
   tauriRequestId: string | null;
@@ -42,39 +42,33 @@ export const pruneActiveStreamResources = (sessionId?: string, owner?: ActiveStr
 /**
  * Cancel the currently active stream
  */
-export function cancelStream(sessionId?: string): void {
+export function cancelStream(sessionId?: string): Promise<void> {
   const sessionIds = sessionId
     ? [getStreamSessionId(sessionId)]
     : Array.from(activeStreamResourcesBySessionId.keys());
-
-  sessionIds.forEach((activeSessionId) => {
+  const pending = sessionIds.map(async (activeSessionId) => {
     const resources = activeStreamResourcesBySessionId.get(activeSessionId);
-    if (!resources) {
+    if (!resources) return;
+    if (resources.cancel) {
+      // The invocation owns signal propagation, native joining and cleanup.
+      await resources.cancel();
       return;
     }
-
-    resources.cancel?.();
-
-    if (resources.reader) {
-      resources.reader.cancel().catch(() => {
-        // Ignore errors during cancel
-      });
-      resources.reader = null;
-    }
-    if (resources.stream) {
-      resources.stream.cancel().catch(() => {
-        // Ignore errors during cancel
-      });
-      resources.stream = null;
-    }
+    await resources.reader?.cancel();
+    resources.reader = null;
+    await resources.stream?.cancel();
+    resources.stream = null;
     if (resources.tauriRequestId && tauriIpc.isTauriAvailable()) {
-      void tauriIpc.aiCancelStream(resources.tauriRequestId).catch(() => {
-        // Ignore backend cancel failures
-      });
+      await tauriIpc.aiCancelStream(resources.tauriRequestId);
     }
     resources.tauriRequestId = null;
     pruneActiveStreamResources(activeSessionId, resources);
   });
+  const stopped = Promise.all(pending).then(() => undefined);
+  // Legacy callers request Stop without awaiting it; an awaiting owner still
+  // receives any failure and must keep its admission barrier closed.
+  void stopped.catch(() => undefined);
+  return stopped;
 }
 
 export const getActiveStreamingSessionIds = (): string[] =>

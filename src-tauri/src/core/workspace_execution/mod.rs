@@ -370,9 +370,18 @@ fn to_macro_virtual_relative(path: &str) -> String {
 
 #[derive(Debug, Clone)]
 pub(crate) enum ParsedPatchOperation {
-    Add { path: String, lines: Vec<String> },
-    Update { path: String, hunks: Vec<PatchHunk> },
-    Delete { path: String },
+    Add {
+        path: String,
+        lines: Vec<String>,
+    },
+    Update {
+        path: String,
+        hunks: Vec<PatchHunk>,
+        move_to: Option<String>,
+    },
+    Delete {
+        path: String,
+    },
 }
 
 impl ParsedPatchOperation {
@@ -457,6 +466,13 @@ pub(crate) fn parse_apply_patch(patch_text: &str) -> CommandResult<Vec<ParsedPat
             let mut hunks = Vec::new();
             let mut hunk_lines = Vec::new();
             index += 1;
+            let move_to = lines
+                .get(index)
+                .and_then(|line| line.strip_prefix("*** Move to: "))
+                .map(|path| path.trim().to_string());
+            if move_to.is_some() {
+                index += 1;
+            }
             while index + 1 < lines.len() && !lines[index].starts_with("*** ") {
                 let current = lines[index];
                 if current == "@@" || current.starts_with("@@ ") {
@@ -498,6 +514,7 @@ pub(crate) fn parse_apply_patch(patch_text: &str) -> CommandResult<Vec<ParsedPat
             operations.push(ParsedPatchOperation::Update {
                 path: path.trim().to_string(),
                 hunks,
+                move_to,
             });
             continue;
         }
@@ -543,6 +560,16 @@ pub fn validate_workspace_tool_execution(
         let target_validation = validate_tool_execution(mode, tool_id, Some(operation.path()));
         if !target_validation.allowed {
             return Ok(target_validation);
+        }
+        if let ParsedPatchOperation::Update {
+            move_to: Some(target),
+            ..
+        } = operation
+        {
+            let target_validation = validate_tool_execution(mode, tool_id, Some(&target));
+            if !target_validation.allowed {
+                return Ok(target_validation);
+            }
         }
     }
     Ok(validation)
@@ -780,7 +807,7 @@ async fn write_bytes_atomically_with_parent_creation(
             latest_revision.as_deref(),
         ) {
             let _ = tokio::fs::remove_file(&temp_path).await;
-            return Err(command_error(error.to_string()));
+            return Err(CommandError::from(error));
         }
     }
     if let Err(error) = tokio::fs::rename(&temp_path, path).await {
@@ -982,7 +1009,7 @@ async fn write_wsl_backup_bytes(
         .ok_or_else(|| command_error("Invalid WSL workspace path"))?;
     let target = fs::canonical_wsl_path_within_workspace(&wsl_workspace, &target, Some(false))
         .await
-        .map_err(|error| command_error(error.to_string()))?;
+        .map_err(CommandError::from)?;
     let output = run_wsl_shell_with_stdin(
         &target,
         wsl_mutation_backup_write_script(),
@@ -997,7 +1024,7 @@ async fn write_wsl_backup_bytes(
         Duration::from_secs(15),
     )
     .await
-    .map_err(|error| command_error(error.to_string()))?;
+    .map_err(CommandError::from)?;
     if let Some(actual) = output
         .stdout_text()
         .lines()
@@ -1009,11 +1036,11 @@ async fn write_wsl_backup_bytes(
             Some(actual)
         };
         fs::validate_expected_revision(path, expected_revision, actual_revision)
-            .map_err(|error| command_error(error.to_string()))?;
-        return Err(command_error(format!(
-            "Revision conflict while restoring {}",
-            path
-        )));
+            .map_err(CommandError::from)?;
+        return Err(CommandError::from(BackendError::RevisionConflict {
+            message: format!("Revision conflict while restoring {}", path),
+        })
+        .with_message(format!("Revision conflict while restoring {}", path)));
     }
     Ok(())
 }
@@ -1055,7 +1082,7 @@ type MutationBackupEntry = (
 async fn rollback_pending_file_changes_via_fs(
     backups: &[MutationBackupEntry],
     applied_changes: &[PendingFileChange],
-) -> Vec<String> {
+) -> Vec<CommandError> {
     debug_assert_eq!(backups.len(), applied_changes.len());
     let mut errors = Vec::new();
     for ((workspace, path, display_path, backup, unix_mode, native_target), change) in
@@ -1083,22 +1110,23 @@ async fn rollback_pending_file_changes_via_fs(
                     )
                     .await
                     .map(|_| ())
-                    .map_err(|error| command_error(error.to_string()))
+                    .map_err(CommandError::from)
                 } else {
                     write_wsl_backup_bytes(workspace, path, content, expected, *unix_mode).await
                 };
                 if let Err(error) = result {
-                    if error.message.contains("Revision conflict") {
-                        errors.push(format!(
+                    let message = if error.code() == Some("REVISION_CONFLICT") {
+                        format!(
                             "Rollback conflict for {}: the current file no longer matches Macro's applied mutation; preserving the current filesystem state",
                             display_path
-                        ));
+                        )
                     } else {
-                        errors.push(format!(
+                        format!(
                             "Failed to restore {} during rollback: {}",
                             display_path, error.message
-                        ));
-                    }
+                        )
+                    };
+                    errors.push(error.with_message(message));
                 }
             }
             None => {
@@ -1120,17 +1148,19 @@ async fn rollback_pending_file_changes_via_fs(
                         .await
                     };
                     if let Err(error) = deletion {
-                        if error.to_string().contains("Revision conflict") {
-                            errors.push(format!(
+                        let error = CommandError::from(error);
+                        let message = if error.code() == Some("REVISION_CONFLICT") {
+                            format!(
                                 "Rollback conflict for {}: the current file no longer matches Macro's applied mutation; preserving the current filesystem state",
                                 display_path
-                            ));
+                            )
                         } else {
-                            errors.push(format!(
+                            format!(
                                 "Failed to remove created file {} during rollback: {}",
-                                display_path, error
-                            ));
-                        }
+                                display_path, error.message
+                            )
+                        };
+                        errors.push(error.with_message(message));
                     }
                 }
             }
@@ -1369,7 +1399,7 @@ fn normalize_pending_change_metadata(
 async fn rollback_mutation_backups(
     backups: &MutationBackups,
     changes: &[PendingFileChange],
-) -> Vec<String> {
+) -> Vec<CommandError> {
     rollback_pending_file_changes_via_fs(&backups.0, changes).await
 }
 
@@ -1497,7 +1527,7 @@ async fn prepare_mutation_backups(changes: &[PendingFileChange]) -> CommandResul
                 .map(|(bytes, _)| fs::content_revision(bytes))
                 .as_deref(),
         )
-        .map_err(|error| command_error(error.to_string()))?;
+        .map_err(CommandError::from)?;
         let (backup, unix_mode) = backup
             .map(|(content, unix_mode)| (Some(content), unix_mode))
             .unwrap_or((None, None));
@@ -1534,6 +1564,7 @@ async fn apply_mutation_backups(
                 )
                 .await
                 .map(|_| ())
+                .map_err(CommandError::from)
             } else {
                 fs::write_file_internal_with_revision_and_mode_unlocked(
                     &change.effective_workspace,
@@ -1546,6 +1577,7 @@ async fn apply_mutation_backups(
                 )
                 .await
                 .map(|_| ())
+                .map_err(CommandError::from)
             }
         } else {
             let deletion = if let Some(target) = native_target {
@@ -1564,8 +1596,12 @@ async fn apply_mutation_backups(
                 )
                 .await
             };
-            deletion.map_err(|error| BackendError::Filesystem {
-                message: format!("Failed to delete {}: {}", change.display_path, error),
+            deletion.map_err(|error| {
+                let message = format!(
+                    "File system error: Failed to delete {}: {}",
+                    change.display_path, error
+                );
+                CommandError::from(error).with_message(message)
             })
         };
 
@@ -1575,11 +1611,7 @@ async fn apply_mutation_backups(
                 &changes[..applied_count],
             )
             .await;
-            return Err(command_error(format!(
-                "{}{}",
-                error,
-                rollback_error_suffix(rollback_errors)
-            )));
+            return Err(with_rollback_errors(error, rollback_errors));
         }
     }
 
@@ -1688,11 +1720,10 @@ where
     }
 
     let rollback_errors = rollback_mutation_backups(&backups, &changes).await;
-    Err(command_error(format!(
-        "Post-mutation validation failed; Macro's mutations were rolled back where still possible. Validation errors: {}{}",
+    Err(with_rollback_errors(command_error(format!(
+        "Post-mutation validation failed; Macro's mutations were rolled back where still possible. Validation errors: {}",
         report.errors.join("; "),
-        rollback_error_suffix(rollback_errors)
-    )))
+    )), rollback_errors))
 }
 
 struct PostWriteValidationReport {
@@ -1890,12 +1921,38 @@ fn assemble_post_write_response(
         .map_err(|error| command_error(error.to_string()))
 }
 
-fn rollback_error_suffix(rollback_errors: Vec<String>) -> String {
+fn with_rollback_errors(
+    error: CommandError,
+    mut rollback_errors: Vec<CommandError>,
+) -> CommandError {
     if rollback_errors.is_empty() {
-        String::new()
-    } else {
-        format!(" Rollback errors: {}", rollback_errors.join("; "))
+        return error;
     }
+    let message = format!(
+        "{} Rollback errors: {}",
+        error.message,
+        rollback_errors
+            .iter()
+            .map(|error| error.message.as_str())
+            .collect::<Vec<_>>()
+            .join("; "),
+    );
+    // Preserve an established primary code. Otherwise prefer a compensation
+    // conflict, then the first typed compensation error, without parsing text.
+    if error.code().is_none() {
+        let fallback = rollback_errors
+            .iter()
+            .position(|error| error.code() == Some("REVISION_CONFLICT"))
+            .or_else(|| {
+                rollback_errors
+                    .iter()
+                    .position(|error| error.code().is_some())
+            });
+        if let Some(index) = fallback {
+            return rollback_errors.swap_remove(index).with_message(message);
+        }
+    }
+    error.with_message(message)
 }
 
 fn format_bounded_git_status(
@@ -2164,15 +2221,19 @@ pub async fn execute_workspace_tool_controlled_with_options(
             biased;
             _ = cancellation.cancelled() => {
                 if chat_work.is_some() { let _ = (&mut execution).await; }
-                Err(command_error(format!("Tool execution cancelled: {tool_label}.")))
+                Err(CommandError::from(BackendError::ToolExecutionCancelled {
+                message: format!("Tool execution cancelled: {tool_label}."),
+            }))
             },
             _ = tokio::time::sleep(timeout_duration) => {
                 cancellation.cancel();
                 if chat_work.is_some() { let _ = (&mut execution).await; }
-                Err(command_error(format!(
-                    "Tool execution timed out after {} seconds: {tool_label}. Narrow the path, pattern, or query before retrying.",
-                    timeout_duration.as_secs()
-                )))
+                Err(CommandError::from(BackendError::ToolExecutionTimeout {
+                    message: format!(
+                        "Tool execution timed out after {} seconds: {tool_label}. Narrow the path, pattern, or query before retrying.",
+                        timeout_duration.as_secs()
+                    ),
+                }))
             },
             result = &mut execution => result,
         }
@@ -2184,13 +2245,64 @@ pub async fn execute_workspace_tool_controlled_with_options(
                 if chat_work.is_some() {
                     let _ = (&mut execution).await;
                 }
-                Err(command_error(format!(
-                    "Tool execution timed out after {} seconds: {tool_label}. Narrow the path, pattern, or query before retrying.",
-                    timeout_duration.as_secs()
-                )))
+                Err(CommandError::from(BackendError::ToolExecutionTimeout {
+                    message: format!(
+                        "Tool execution timed out after {} seconds: {tool_label}. Narrow the path, pattern, or query before retrying.",
+                        timeout_duration.as_secs()
+                    ),
+                }))
             }
         }
     }
+}
+
+/// Resident native ownership: cancellation is cooperative, never a dropped
+/// executor future. All inner filesystem/git joins finish before this returns.
+/// Post-write language-server diagnostics are outside this qualified transport.
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn execute_workspace_tool_owned(
+    root: PathBuf,
+    metadata_workspace: PathBuf,
+    git_state: GitState,
+    mode: String,
+    tool_id: String,
+    args: Value,
+    execution_id: String,
+    permissions: Value,
+    expected_roots: Arc<std::collections::BTreeMap<PathBuf, fs::WorkspaceRootIdentity>>,
+) -> CommandResult<String> {
+    if crate::core::tool_policy::agsdl_write_denied(&root, &tool_id, &args, &permissions) {
+        return Err(CommandError::from(BackendError::PermissionDenied(
+            "PERMISSION: Frozen AgSDL write policy denied this invocation".into(),
+        )));
+    }
+    let (cancellation, _registration) = register_tool_execution(Some(&execution_id))
+        .ok_or_else(|| command_error("Native execution identity is absent"))?;
+    if cancellation.is_cancelled() {
+        return Err(CommandError::from(BackendError::ToolExecutionCancelled {
+            message: "Tool execution cancelled before dispatch".into(),
+        }));
+    }
+    let workspace_path = Some(root.to_string_lossy().into_owned());
+    fs::with_expected_workspace_roots(
+        expected_roots,
+        execute_workspace_tool_inner(
+            root,
+            metadata_workspace,
+            git_state,
+            mode,
+            tool_id,
+            args,
+            workspace_path,
+            None,
+            None,
+            Some(false),
+            None,
+            Some(cancellation),
+            WorkspaceToolExecutionOptions::default(),
+        ),
+    )
+    .await
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -2502,7 +2614,7 @@ async fn execute_workspace_tool_inner(
                 expected_revision.as_deref(),
                 Some(&current.revision),
             )
-            .map_err(|error| command_error(error.to_string()))?;
+            .map_err(CommandError::from)?;
             let mutation_revision = expected_revision
                 .clone()
                 .unwrap_or_else(|| current.revision.clone());
@@ -2606,7 +2718,7 @@ async fn execute_workspace_tool_inner(
                 expected_revision.as_deref(),
                 Some(&current.revision),
             )
-            .map_err(|error| command_error(error.to_string()))?;
+            .map_err(CommandError::from)?;
             let mutation_revision = expected_revision
                 .clone()
                 .unwrap_or_else(|| current.revision.clone());
@@ -2717,7 +2829,11 @@ async fn execute_workspace_tool_inner(
                             requested_unix_mode: None,
                         });
                     }
-                    ParsedPatchOperation::Update { path, hunks } => {
+                    ParsedPatchOperation::Update {
+                        path,
+                        hunks,
+                        move_to,
+                    } => {
                         let requested_revision = expected_revisions
                             .get(&normalize_tool_map_path(&path))
                             .cloned();
@@ -2753,6 +2869,55 @@ async fn execute_workspace_tool_inner(
                         let (additions, deletions) =
                             compute_line_change_stats(&current.content, &new_content);
 
+                        if let Some(target) = move_to {
+                            let target_effective_path = remap_macro_tool_path(&target);
+                            let target_workspace = resolve_workspace_for_tool_path(
+                                &workspace,
+                                &git_state,
+                                Some(&target),
+                                workspace_scope.as_deref(),
+                            )
+                            .await?;
+                            let target_absolute = resolve_validated_tool_path(
+                                &target_workspace,
+                                &target_effective_path,
+                                true,
+                            )?;
+                            if target_absolute == absolute_path {
+                                return Err(command_error(
+                                    "Patch move destination must differ from source",
+                                ));
+                            }
+                            pending_changes.push(PendingFileChange {
+                                display_path: target,
+                                effective_workspace: target_workspace,
+                                effective_path: target_effective_path,
+                                absolute_path: target_absolute,
+                                status: "created".into(),
+                                new_content: Some(new_content.clone()),
+                                created: true,
+                                bytes_written: new_content.len() as u64,
+                                additions: new_content.lines().count(),
+                                deletions: 0,
+                                expected_revision: Some(fs::EXPECTED_REVISION_ABSENT.into()),
+                                requested_unix_mode: current.unix_mode,
+                            });
+                            pending_changes.push(PendingFileChange {
+                                display_path: path,
+                                effective_workspace,
+                                effective_path,
+                                absolute_path,
+                                status: "deleted".into(),
+                                new_content: None,
+                                created: false,
+                                bytes_written: 0,
+                                additions: 0,
+                                deletions: current.content.lines().count(),
+                                expected_revision: Some(expected_revision),
+                                requested_unix_mode: None,
+                            });
+                            continue;
+                        }
                         pending_changes.push(PendingFileChange {
                             display_path: path,
                             effective_workspace,

@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, mock, test } from "bun:test";
+import { beforeEach, describe, expect, mock, test, type Mock } from "bun:test";
 import type { ChatMessage, ConversationApprovalGrant, PendingToolApproval, ToolRiskLevel } from "../types";
 import type { ChatToolExecutionPorts, PendingToolApprovalResolution } from "./chatToolExecutionContracts";
 import type { FrozenToolCallContext } from "./chatStreamContracts";
@@ -113,7 +113,7 @@ function setup(tool = "read", riskLevel: ToolRiskLevel = "yolo", loadRuntime?: P
     terminal: {
       cachedSession: () => terminalSession,
       createSession: mock(async () => terminalSession), readSession: mock(async () => terminalSession),
-      runCommand: mock(async () => terminalSession), killSession: mock(async () => terminalSession),
+      runCommand: mock(async () => ({ ...terminalSession, status: "completed" as const })), killSession: mock(async () => terminalSession),
     },
     workspace: {
       executor: async () => executor,
@@ -191,10 +191,20 @@ describe("chat tool execution policy and frozen ownership", () => {
     expect(f.executor.executeWorkspaceTool).not.toHaveBeenCalled();
   });
 
-  test("keeps the Git challenge per turn and normalizes Architect aliases before routing", async () => {
+  test("keeps the Git challenge per turn and requires approval before staging", async () => {
     const f = setup("git_add");
     expect(await f.run({ path: "src" })).toMatchObject({ errorKind: "permission", result: expect.stringContaining("explicitly asked") });
-    expect(await f.run({ path: "src" })).toBe("workspace result");
+    const staging = f.run({ repo_path: "/workspace", paths: ["src"] });
+    await checkpoint();
+    expect(f.pending.get("conversation")).toMatchObject({
+      toolId: "git_add",
+      canApproveForConversation: false,
+      summary: expect.stringContaining("filters may run commands"),
+    });
+    expect(f.executor.executeWorkspaceTool).not.toHaveBeenCalled();
+    f.resolve({ kind: "allow_conversation" });
+    expect(await staging).toBe("workspace result");
+    expect(f.grants.size).toBe(0);
     f.operation.turnId = f.runtime.turnId = "next-turn";
     expect(await f.run({ path: "src" })).toMatchObject({ errorKind: "permission" });
     f.operation.mode = "Architect";
@@ -391,7 +401,10 @@ describe("agent terminal isolation", () => {
   test("rejects manual sessions and omits project metadata from agent results", async () => {
     const f = setup("terminal_read");
     f.ports.terminal.cachedSession = () => ({ ...terminalSession, project_id: "manual" });
-    expect(await f.run({ session_id: "terminal" })).toContain("manual project terminal");
+    expect(await f.run({ session_id: "terminal" })).toMatchObject({
+      kind: "result", isError: true, errorKind: "permission",
+      result: expect.stringContaining("manual project terminal"),
+    });
     f.ports.terminal.cachedSession = () => terminalSession;
     const result = JSON.parse(String(await f.run({ session_id: "terminal" })));
     expect(result).not.toHaveProperty("project_id");
@@ -407,10 +420,11 @@ describe("agent terminal isolation", () => {
     f.resolve({ kind: "allow_once" });
     await checkpoint();
     f.abort.abort();
-    command.resolve(terminalSession);
+    command.resolve({ ...terminalSession, status: "killed" });
     await running;
     expect(f.ports.terminal.runCommand).toHaveBeenCalledWith({ sessionId: "terminal", command: "pwd", timeoutMs: 1_800_000, executionId: expect.any(String) });
-    expect(f.ports.terminal.killSession).toHaveBeenCalledWith("terminal", expect.any(String));
+    expect(f.ports.terminal.killSession).toHaveBeenCalledWith("terminal", expect.any(String), undefined);
+    expect((f.ports.terminal.killSession as Mock<typeof f.ports.terminal.killSession>).mock.calls[0]?.[1]).toBe((f.ports.terminal.runCommand as Mock<typeof f.ports.terminal.runCommand>).mock.calls[0]?.[0].executionId);
     expect(f.ports.terminal.killSession).toHaveBeenCalledTimes(1);
   });
 });
@@ -522,14 +536,6 @@ describe("Architect turn authority with the real handler", () => {
     expect(f.update.mock.calls[0]?.[0].branchName).toBe("branch-a");
     expect(f.activate).not.toHaveBeenCalled();
     expect(f.ensure).not.toHaveBeenCalled();
-  });
-
-  test("strategy lookup uses the captured plan even when another plan is selected", async () => {
-    const f = architectFixture();
-    f.operation.allowedToolIds = ["strategy_get"];
-    f.select("branch-b");
-    await f.execute(f.operation, "strategy_get", {});
-    expect(f.getPlan).toHaveBeenCalledWith("branch-a", "plan-a");
   });
 
   test("preserves an already-started write but skips UI hydration after Stop", async () => {

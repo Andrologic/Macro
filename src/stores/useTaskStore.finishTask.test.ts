@@ -1,9 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
 import { installTauriRuntimeMock, removeTauriRuntimeMock } from '../test-utils/tauriRuntime';
 import { installArchitectPlanRuntimePorts } from '../services/architectPlanRuntimeService';
+import { installArchitectPlanPorts } from '../services/architectPlanReadContext';
 import { deriveFallbackImplementTasks } from '../services/implementTaskCatalog';
 import type { Task, TaskStatus } from '../types';
 let releaseRuntimePorts: (() => void) | undefined;
+let releasePlanPorts: (() => void) | undefined;
 
 const actualArchitectPlanService = await import('../services/architectPlanService');
 const actualArchitectGitFlowService = await import('../services/architectGitFlowService');
@@ -589,6 +591,7 @@ mock.module('../services/index', () => ({
 describe('useTaskStore.finishTask', () => {
   beforeEach(() => {
     installTauriRuntimeMock();
+    releasePlanPorts = installArchitectPlanPorts({ getAppState: () => appStoreState });
     releaseRuntimePorts = installArchitectPlanRuntimePorts({ getProjectById: appStoreState.getProjectById });
 
     planState = {
@@ -719,6 +722,8 @@ describe('useTaskStore.finishTask', () => {
 
   afterEach(() => {
     releaseRuntimePorts?.();
+    releasePlanPorts?.();
+    releasePlanPorts = undefined;
     removeTauriRuntimeMock();
   });
 

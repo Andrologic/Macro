@@ -1,3 +1,4 @@
+pub mod agsdl_execution;
 pub mod ai;
 pub(crate) mod chat_admission;
 pub mod conversation_catalog;
@@ -8,6 +9,7 @@ pub mod fs;
 pub mod git;
 pub mod goal_audit;
 pub mod goal_auditor_read;
+pub mod http_resources;
 pub mod mcp;
 pub mod pilot_device;
 pub mod pilot_files;
@@ -31,7 +33,10 @@ pub use crate::core::workspace_execution::{
     WorkspaceProjectMount, WorkspaceToolExecutionOptions,
 };
 #[doc(hidden)]
-pub use external_apps::{__cmd__list_external_apps, __cmd__open_external_target};
+pub use external_apps::{
+    __cmd__list_external_apps, __cmd__open_external_target,
+    __tauri_command_name_list_external_apps, __tauri_command_name_open_external_target,
+};
 pub use external_apps::{
     list_external_apps, open_external_target, ExternalAppCatalogDto, ExternalAppOptionDto,
 };
@@ -625,6 +630,7 @@ pub struct DbPrepareConversationReplayParams {
     replay_id: String,
     content: String,
     hidden_context: Option<String>,
+    context_refs_json: Option<String>,
     provider_input_items_json: Option<String>,
     code_checkpoints_json: Option<String>,
     delete_context_compaction_state: bool,
@@ -646,6 +652,7 @@ pub async fn db_prepare_conversation_replay(
             replay_id: &params.replay_id,
             content: &params.content,
             hidden_context: params.hidden_context,
+            context_refs_json: params.context_refs_json,
             provider_input_items_json: params.provider_input_items_json,
             code_checkpoints_json: params.code_checkpoints_json,
             delete_context_compaction_state: params.delete_context_compaction_state,
@@ -876,7 +883,7 @@ fn provider_is_enabled(
         }
 }
 
-async fn configured_provider_configs(
+pub(crate) async fn configured_provider_configs(
     manager: &ConfigManager,
     pool: &SqlitePool,
 ) -> CommandResult<Vec<ProviderConfig>> {
@@ -1098,13 +1105,26 @@ async fn configured_provider_models(
             .await
             .map_err(CommandError::from)?
     };
+    let document = manager
+        .effective_user_document(ConfigDocumentKind::Providers)
+        .await;
+    Ok(apply_configured_model_definitions(
+        provider_id,
+        stored_models,
+        &document,
+    ))
+}
+
+/// Apply the same effective manual definitions and overrides for Chat and the execution host.
+pub(crate) fn apply_configured_model_definitions(
+    provider_id: &str,
+    stored_models: Vec<AiModel>,
+    document: &Value,
+) -> Vec<AiModel> {
     let mut models = stored_models
         .into_iter()
         .filter(|model| !model.is_manual)
         .collect::<Vec<_>>();
-    let document = manager
-        .effective_user_document(ConfigDocumentKind::Providers)
-        .await;
     let now = chrono::Utc::now().to_rfc3339();
     if let Some(manual_models) = document.get("manualModels").and_then(Value::as_object) {
         for (stable_id, definition) in manual_models {
@@ -1194,7 +1214,7 @@ async fn configured_provider_models(
         }
     }
     models.sort_by(|left, right| left.name.cmp(&right.name));
-    Ok(models)
+    models
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -1267,11 +1287,11 @@ async fn reconcile_provider_secret_metadata(
     if config.provider_type == "chatgpt" {
         let has_secret = secrets::get_chatgpt_secret_async(&config.id)
             .await
-            .map_err(|error| CommandError {
-                message: format!(
+            .map_err(|error| {
+                command_error(format!(
                     "Failed to access local ChatGPT session for {}: {}",
                     config.id, error
-                ),
+                ))
             })?
             .is_some();
         let linked = matches!(
@@ -1305,11 +1325,11 @@ async fn reconcile_provider_secret_metadata(
     if config.provider_type != "copilot" && !config.is_local && config.has_stored_api_key {
         let has_key = secrets::get_api_key_async(&config.id)
             .await
-            .map_err(|error| CommandError {
-                message: format!(
+            .map_err(|error| {
+                command_error(format!(
                     "Failed to access local provider API key for {}: {}",
                     config.id, error
-                ),
+                ))
             })?
             .is_some();
         if !has_key {
@@ -1349,19 +1369,15 @@ pub async fn db_reveal_provider_api_key(
         .find(|provider| provider.id == id);
 
     if config.is_none() {
-        return Err(CommandError {
-            message: format!("Provider {} not found", id),
-        });
+        return Err(command_error(format!("Provider {} not found", id)));
     }
 
-    let api_key = secrets::get_api_key_async(&id)
-        .await
-        .map_err(|error| CommandError {
-            message: format!(
-                "Failed to access the local provider secret for {}: {}",
-                id, error
-            ),
-        })?;
+    let api_key = secrets::get_api_key_async(&id).await.map_err(|error| {
+        command_error(format!(
+            "Failed to access the local provider secret for {}: {}",
+            id, error
+        ))
+    })?;
 
     Ok(api_key)
 }
@@ -1412,24 +1428,8 @@ fn validate_ai_provider_fields(
         };
     }
 
-    let parsed = reqwest::Url::parse(base_url.trim())
-        .map_err(|_| command_error("Provider base URL must be a valid URL."))?;
-    if !matches!(parsed.scheme(), "http" | "https") {
-        return Err(command_error("Provider base URL must use HTTP or HTTPS."));
-    }
-    if !parsed.username().is_empty() || parsed.password().is_some() {
-        return Err(command_error(
-            "Provider base URLs must not contain credentials.",
-        ));
-    }
-    if parsed.query().is_some() || parsed.fragment().is_some() {
-        return Err(command_error(
-            "Provider base URLs must not contain a query or fragment.",
-        ));
-    }
-    if !is_local && parsed.scheme() != "https" {
-        return Err(command_error("Remote provider base URLs must use HTTPS."));
-    }
+    crate::core::provider_endpoint::validate_provider_endpoint(base_url, is_local)
+        .map_err(command_error)?;
 
     Ok(())
 }
@@ -1442,9 +1442,9 @@ pub async fn db_update_provider_config(
 ) -> CommandResult<()> {
     let pool = get_pool(&pool).await?;
     if params.id == crate::ai::macro_ai::PROVIDER_ID {
-        return Err(CommandError {
-            message: "Macro AI is managed automatically and cannot be edited.".to_string(),
-        });
+        return Err(command_error(
+            "Macro AI is managed automatically and cannot be edited.".to_string(),
+        ));
     }
 
     let provider_id = params.id.clone();
@@ -1581,9 +1581,9 @@ pub async fn db_delete_provider_config(
 ) -> CommandResult<()> {
     let pool = get_pool(&pool).await?;
     if id == crate::ai::macro_ai::PROVIDER_ID {
-        return Err(CommandError {
-            message: "Macro AI is managed automatically and cannot be deleted.".to_string(),
-        });
+        return Err(command_error(
+            "Macro AI is managed automatically and cannot be deleted.".to_string(),
+        ));
     }
 
     let lock = provider_mutation_lock(&id);
@@ -2249,6 +2249,9 @@ mod tests {
         );
         assert!(
             validate_ai_provider_fields("Example", "openai", "http://example.test", false).is_err()
+        );
+        assert!(
+            validate_ai_provider_fields("Example", "openai", "http://example.test", true).is_err()
         );
         assert!(validate_ai_provider_fields(
             "Example",

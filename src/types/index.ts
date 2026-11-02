@@ -2,6 +2,7 @@
 
 import type { SupportedLanguage } from '../i18n/languages';
 import type { IconName } from './icon';
+import type { SystemStartId, SourceRevision, ActivationId, Sequence } from './agsdlExecution';
 import type { Citation } from './citation';
 
 export type ProjectStatus = 'active' | 'paused' | 'archived';
@@ -232,7 +233,7 @@ export interface TaskExecutionTarget {
   predictedBranchId?: string | null;
 }
 
-export type ImplementTaskSource = 'architect' | 'plan_finalization' | 'standalone';
+export type ImplementTaskSource = 'architect' | 'plan_finalization' | 'standalone' | 'agsdl';
 
 export interface PredictedCommit {
   id: string;
@@ -270,7 +271,37 @@ export interface WorkspaceFileReference {
 }
 
 // Context references for chat composer (nodes, branches, skills, files, sources)
-export type ContextRefKind = 'plan-node' | 'predicted-branch' | 'skill' | 'file' | 'source' | 'conversation';
+export type ContextRefKind = 'plan-node' | 'predicted-branch' | 'skill' | 'file' | 'source' | 'agsdl' | 'conversation';
+
+interface AgsdlReferenceIdentity {
+  id: string;
+  conversationId: string;
+  branchName: string;
+  planId: string;
+  document: 'agsdl';
+  path: string;
+  title: string;
+  relatedPaths?: string[];
+}
+
+export interface AgsdlDocumentReference extends AgsdlReferenceIdentity {
+  contextKind?: 'document';
+  version: string;
+  persistedRevision: number;
+  diagnostic?: string;
+}
+export interface AgsdlRuntimeReference extends AgsdlReferenceIdentity {
+  contextKind: 'runtime';
+  systemStartId: SystemStartId;
+  source: SourceRevision;
+  activationId?: ActivationId;
+  cursor: Sequence;
+  diagnosticSelection?: readonly { readonly id: string; readonly sequence: Sequence }[];
+  version?: never;
+  persistedRevision?: never;
+  diagnostic?: never;
+}
+export type AgsdlSelectionReference = AgsdlDocumentReference | AgsdlRuntimeReference;
 
 export interface ConversationContextSource {
   conversationId: string;
@@ -281,10 +312,11 @@ export interface ContextReference {
   kind: ContextRefKind;
   title: string;
   subtitle?: string;
-  data: PlanNode | PredictedBranch | SkillManifest | WorkspaceFileReference | Citation | ConversationContextSource;
+  data: PlanNode | PredictedBranch | SkillManifest | WorkspaceFileReference | Citation | AgsdlSelectionReference | ConversationContextSource;
 }
 
 export interface PersistedContextReference {
+  agsdl?: AgsdlSelectionReference;
   id: string;
   kind: ContextRefKind;
   title: string;
@@ -688,6 +720,8 @@ export interface FileChange {
 }
 
 export interface Task {
+  /** Read-only projection of a native Agent. Native journal owns its state. */
+  workflow_execution?: import('./workflowAgentTask').WorkflowAgentTaskReference;
   id: string;
   plan_id: string;
   project_id: string;

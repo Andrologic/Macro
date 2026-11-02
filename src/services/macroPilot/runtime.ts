@@ -1,3 +1,4 @@
+import { desktopPilotTasks } from './desktopTaskCatalog';
 import { CapabilityCompatibilityError, type ReadAuthoritySupport } from './readAuthority';
 import { REFLECTION_CAPABILITY, REFLECTION_OPERATION } from './conversationReflections';
 import { FILE_CAPABILITIES, FILE_OPERATIONS } from './attachmentFilesHost';
@@ -122,11 +123,11 @@ export class PilotRuntime {
       execute:async(command,guard)=>{
         if (isAppShutdownGateActive()) throw new PilotError('unavailable');
         if(command.kind==='run.start') {
-          const result=await this.actions.start(resolvePilotStartTask(this.ports.tasks().tasks, command.target.task_id).id,guard);
+          const result=await this.actions.start(resolvePilotStartTask(desktopPilotTasks(this.ports), command.target.task_id).id,guard);
           this.localRuns.add(String(command.payload.run_id)); return result;
         }
         if(command.kind==='conversation.send') return this.actions.sendConversation(command.target.conversation_id,String(command.payload.content),guard);
-        if(command.kind==='task.reply') return this.actions.reply(resolvePilotTask(this.ports.tasks().tasks, command.target.task_id).id,String(command.payload.conversation_id),String(command.payload.answer),guard);
+        if(command.kind==='task.reply') return this.actions.reply(resolvePilotTask(desktopPilotTasks(this.ports), command.target.task_id).id,String(command.payload.conversation_id),String(command.payload.answer),guard);
         if(command.kind==='decision.resolve') {
           await this.actions.answerDecision(this.decisionRef(command),command.payload.answers as Array<{step_id:string;answer:string}>,guard);
           this.decisionEvidence[command.target.assistant_message_id]={resolvedAt:new Date().toISOString(),resolvedBy:command.issued_by}; return;
@@ -317,11 +318,11 @@ export class PilotRuntime {
   }
   private decisionRef(command:Command) {
     if(!command.target.conversation_id || !command.target.assistant_message_id) throw new PilotError('invalid_reference');
-    return {conversation_id:command.target.conversation_id,assistant_message_id:command.target.assistant_message_id,task_id:resolvePilotTask(this.ports.tasks().tasks, command.target.task_id).id};
+    return {conversation_id:command.target.conversation_id,assistant_message_id:command.target.assistant_message_id,task_id:resolvePilotTask(desktopPilotTasks(this.ports), command.target.task_id).id};
   }
   private project(previous:unknown,now:string,runs:KnownRun[],instanceId:string,configurationId:string) {
     const persisted=previous ? previous as RuntimeProjectionState : emptyProjection();
-    const app=this.ports.app(); const chat=this.ports.chat(); const tasks=this.ports.tasks().tasks;
+    const app=this.ports.app(); const chat=this.ports.chat(); const tasks=desktopPilotTasks(this.ports);
     const projects=[...new Map([...app.standaloneProjects,...app.projectGroups.flatMap(group=>group.projects)].map(project=>[project.id,project])).values()];
     const knownRuns=runs.filter((run): run is KnownRun & { startedAt: string } => Boolean(run.startedAt)).map(run=>({taskId:run.taskRef.task_id,runId:run.runId,startedAt:run.startedAt,finishedAt:persisted.runs[run.runId]?.snapshot.finished_at as string | undefined}));
     const decisions={...persisted.decisionEvidence,...this.decisionEvidence}; const approvals={...persisted.approvalEvidence,...this.approvalEvidence};
@@ -400,7 +401,7 @@ export class PilotRuntime {
       if (!old?.startedAt || run.startedAt > old.startedAt) latestRuns.set(run.taskRef.task_id, run);
     }
     for(const run of latestRuns.values()) {
-      const task=findPilotTask(this.ports.tasks().tasks, run.taskRef.task_id);
+      const task=findPilotTask(desktopPilotTasks(this.ports), run.taskRef.task_id);
       if(!run.startedAt || task?.status!=='InReview') continue;
       for(const target of task.execution_targets??[]) {
         if(target.executionMode==='direct' || !target.repoPath || !target.targetBranchName) continue;
@@ -420,7 +421,7 @@ export class PilotRuntime {
     return `review:${Array.from(new Uint8Array(digest), value => value.toString(16).padStart(2, '0')).join('')}`;
   }
   private async validateReview(review: Resource): Promise<void> {
-    const task = findPilotTask(this.ports.tasks().tasks, review.ref.task_id);
+    const task = findPilotTask(desktopPilotTasks(this.ports), review.ref.task_id);
     const target = task?.execution_targets?.find(item => item.projectId === review.ref.project_id);
     if (task?.status !== 'InReview' || target?.executionMode === 'direct' || !target?.repoPath || !target.targetBranchName) throw new PilotError('stale_revision');
     const snapshot = await gitReviewSnapshot(target.repoPath);

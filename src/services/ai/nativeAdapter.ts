@@ -1,3 +1,4 @@
+import { StreamStopUnconfirmedError } from "./streamCancellation";
 import type { StreamingChatOptions, StreamingTurnResult } from './contracts';
 import type { ReasoningEffort } from '../../types';
 import type { ToolCallingAdapter, StreamAccumulator } from './toolCallingLoop';
@@ -43,6 +44,7 @@ export function createNativeAdapter(options: StreamingChatOptions, accumulator: 
             providerAdmission: options.providerAdmission,
             steerReceipts: options.providerSteerReceipts?.() ?? [],
             sessionId: options.sessionId,
+            nativeExecution: options.nativeExecution,
             providerId,
             providerType,
             modelId,
@@ -78,6 +80,7 @@ export function createNativeAdapter(options: StreamingChatOptions, accumulator: 
           }, resources);
           break;
         } catch (error) {
+          if (options.executionPolicy === 'native-serial' || options.signal?.aborted || error instanceof StreamStopUnconfirmedError) throw error;
           const message = error instanceof Error ? error.message : String(error);
           const rejection = classifyReasoningRejection(message);
           const rejectedEffort = currentReasoningEffort;

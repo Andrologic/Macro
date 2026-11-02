@@ -1,7 +1,9 @@
-import { describe, expect, it } from 'bun:test';
+import { beforeEach, describe, expect, it } from 'bun:test';
+import { __testables as catalogTestables } from './modelContextCatalog';
 import { getReasoningCapabilityForModel, getValidReasoningEffort } from './reasoningCatalog';
 
 describe('reasoningCatalog', () => {
+  beforeEach(() => { window.localStorage.clear(); catalogTestables.reset(); });
   it('exposes thinking levels for cached Macro AI aliases without metadata', () => {
     for (const modelId of ['macro-ai', 'macro-ai-deep']) {
       const capability = getReasoningCapabilityForModel({ providerType: 'openai', modelId });
@@ -139,4 +141,15 @@ describe('reasoningCatalog', () => {
       defaultReasoningEffort: 'medium',
     });
   });
+  it('retains Macro defaults and source priorities when models.dev supplies real effort options', () => {
+    const params = { providerType: 'openai', modelId: 'gpt-5' };
+    expect(getReasoningCapabilityForModel(params)).toMatchObject({
+      reasoningEfforts: ['minimal', 'low', 'medium', 'high'], defaultReasoningEffort: 'medium', source: 'models_dev',
+    });
+    expect(getReasoningCapabilityForModel({ ...params, supportedReasoningEfforts: ['high'], defaultReasoningEffort: 'high' }))
+      .toMatchObject({ reasoningEfforts: ['high'], defaultReasoningEffort: 'high', source: 'provider_metadata' });
+    expect(getReasoningCapabilityForModel({ ...params, supportedReasoningEfforts: ['high'], manualReasoningEfforts: ['low'], manualDefaultReasoningEffort: 'low' }))
+      .toMatchObject({ reasoningEfforts: ['low'], defaultReasoningEffort: 'low', source: 'manual_override' });
+  });
+
 });
