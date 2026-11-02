@@ -96,7 +96,10 @@ pub async fn db_mark_tool_invocation_unknown(
     )
     .await?
     {
-        return parent.finish_tool(identity, None, None).await.map_err(Into::into);
+        return parent
+            .finish_tool(identity, None, None)
+            .await
+            .map_err(Into::into);
     }
     tool_invocations::mark_unknown(&pool, identity)
         .await

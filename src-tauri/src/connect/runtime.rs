@@ -1,4 +1,4 @@
-use super::codec::{AdmittedInput, Admission, BankOwner, Codec, Input, Output, Profile};
+use super::codec::{Admission, AdmittedInput, BankOwner, Codec, Input, Output, Profile};
 use crate::{
     connect_resources::{TransitInstance, TRANSIT_OWNER},
     core::db_state::{ChatWorkLifetime, DbPool},
@@ -121,7 +121,9 @@ impl Drop for CodecHandle {
 }
 impl CodecHandle {
     pub(crate) fn admit(&self, op: u16) -> Result<Admission, &'static str> {
-        if self.cancel.is_cancelled() { return Err("codec_closed"); }
+        if self.cancel.is_cancelled() {
+            return Err("codec_closed");
+        }
         self.bank.admit(op)
     }
     pub(crate) async fn run(&self, input: Input) -> Result<Output, &'static str> {
@@ -129,8 +131,12 @@ impl CodecHandle {
         self.run_admitted(admitted).await
     }
     pub(crate) async fn run_admitted(&self, input: AdmittedInput) -> Result<Output, &'static str> {
-        if !self.bank.owns(&input) { return Err("codec_owner"); }
-        if self.cancel.is_cancelled() { return Err("codec_closed"); }
+        if !self.bank.owns(&input) {
+            return Err("codec_owner");
+        }
+        if self.cancel.is_cancelled() {
+            return Err("codec_closed");
+        }
         // Disappearance of an in-flight caller retires the process. The owner,
         // not this future, keeps the pipes, credits and join.
         let (response, receive) = oneshot::channel();
@@ -248,7 +254,11 @@ impl TransferRuntime {
         command.arg(profile.command());
         let codec = Codec::spawn(command, budget, lifetime, profile)?;
         #[cfg(test)]
-        let codec = { let mut codec = codec; codec.scope_probe = state.scope_probe.take(); codec };
+        let codec = {
+            let mut codec = codec;
+            codec.scope_probe = state.scope_probe.take();
+            codec
+        };
         let bank = codec.bank_owner.clone();
         #[cfg(test)]
         let pid = codec.pid();
@@ -405,9 +415,9 @@ pub(super) fn test_bun() -> std::path::PathBuf {
 #[cfg(test)]
 mod tests {
     use super::super::codec::Bytes;
+    use super::test_bun as bun;
     use super::*;
     use crate::connect_resources::TRANSIT_INSTANCE_LIMIT;
-    use super::test_bun as bun;
     async fn database() -> (tempfile::TempDir, DbPool, sqlx::SqlitePool) {
         let directory = tempfile::tempdir().unwrap();
         let pool = crate::db::create_pool(&directory.path().join("synthetic.db"))
@@ -589,8 +599,14 @@ mod tests {
                     let budget = owner.budget().unwrap();
                     let (reached, seen) = oneshot::channel();
                     let (resume, wait) = oneshot::channel();
-                    owner.0.lock().unwrap().scope_probe = Some(super::super::codec::ScopeProbe { phase, after, reached, resume: wait });
-                    let entry = Path::new(env!("CARGO_MANIFEST_DIR")).join("../copilot-bridge/src/entry.ts");
+                    owner.0.lock().unwrap().scope_probe = Some(super::super::codec::ScopeProbe {
+                        phase,
+                        after,
+                        reached,
+                        resume: wait,
+                    });
+                    let entry = Path::new(env!("CARGO_MANIFEST_DIR"))
+                        .join("../copilot-bridge/src/entry.ts");
                     let codec = owner.source_codec(&bun(), &entry, &db).await.unwrap();
                     let pid = codec.pid;
                     let admitted = codec.admit(1).unwrap().adopt(input(&budget)).unwrap();
@@ -613,7 +629,9 @@ mod tests {
                     codec.close().await.unwrap();
                     #[cfg(unix)]
                     assert_eq!(unsafe { libc::kill(pid as i32, 0) }, -1);
-                    assert!(owner.profile_events().contains(&(Profile::Persistent, pid, true)));
+                    assert!(owner
+                        .profile_events()
+                        .contains(&(Profile::Persistent, pid, true)));
                     drop(budget.reserve(TRANSIT_INSTANCE_LIMIT).unwrap());
                     db.set_ready(pool).await.unwrap();
                     assert!(owner.shutdown().await);
@@ -636,12 +654,19 @@ mod tests {
         assert!(vectors.status.success());
         let vectors: Vec<serde_json::Value> = serde_json::from_slice(&vectors.stdout).unwrap();
         assert_eq!(vectors.len(), 9);
-        let codec = owner.source_codec(&bun(), &root.join("copilot-bridge/src/entry.ts"), &db).await.unwrap();
+        let codec = owner
+            .source_codec(&bun(), &root.join("copilot-bridge/src/entry.ts"), &db)
+            .await
+            .unwrap();
         let pid = codec.pid;
         for vector in vectors {
             let op = vector["op"].as_u64().unwrap() as u16;
             let body = Bytes::serialize(&budget, &vector["body"]).unwrap();
-            let input = codec.admit(op).unwrap().input(&vector["facts"], body).unwrap();
+            let input = codec
+                .admit(op)
+                .unwrap()
+                .input(&vector["facts"], body)
+                .unwrap();
             let result = codec.run_admitted(input).await.unwrap();
             assert_eq!(result.status, 0, "operation {op}");
             assert!(!result.bytes.as_slice().is_empty());
@@ -665,7 +690,9 @@ mod tests {
         assert!(db.set_ready(pool.clone()).await.is_err());
         // Exactly one raw graph plus BANK and startup fits. Separate native
         // expectation/body reservations would make the real Child fail.
-        let remainder = budget.reserve(TRANSIT_INSTANCE_LIMIT - 524_288 - 28_311_552 - 2_097_152).unwrap();
+        let remainder = budget
+            .reserve(TRANSIT_INSTANCE_LIMIT - 524_288 - 28_311_552 - 2_097_152)
+            .unwrap();
         for _ in 0..2 {
             let result = codec.run(input(&budget)).await.unwrap();
             assert_eq!(result.status, 0);

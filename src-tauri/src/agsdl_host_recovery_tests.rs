@@ -245,7 +245,9 @@ async fn recovery_retries_database_initialization_and_stays_fenced_after_retirem
         .await
         .unwrap();
     let database = DbPool::default();
-    database.set_failed("temporary initialization failure").await;
+    database
+        .set_failed("temporary initialization failure")
+        .await;
     let host = host();
     let supervisor = tokio::spawn(reattach_retained(
         database.clone(),

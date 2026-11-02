@@ -68,7 +68,9 @@ pub fn pilot_review_release(snapshot_id: String) -> CaptureResult<()> {
 /// values. Never log this result or store it in a Pilot capture journal.
 #[tauri::command]
 pub async fn pilot_content_policy() -> CaptureResult<Vec<String>> {
-    crate::secrets::blocking::run(pilot_content_policy_sync).await.map_err(unavailable)?
+    crate::secrets::blocking::run(pilot_content_policy_sync)
+        .await
+        .map_err(unavailable)?
 }
 
 fn pilot_content_policy_sync() -> CaptureResult<Vec<String>> {

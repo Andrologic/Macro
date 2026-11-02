@@ -127,7 +127,10 @@ impl SourceCapture {
     }
     pub(super) async fn lease(&self, pool: &SqlitePool) -> Result<Lease> {
         let mut lease = Lease::new(pool.acquire().await.map_err(error)?);
-        sqlx::query("PRAGMA synchronous=FULL").execute(&mut *lease).await.map_err(error)?;
+        sqlx::query("PRAGMA synchronous=FULL")
+            .execute(&mut *lease)
+            .await
+            .map_err(error)?;
         #[cfg(test)]
         let lease = {
             let mut observed = lease;
@@ -165,7 +168,9 @@ impl SourceCapture {
             return Err("integrity_failed".into());
         }
         let id: i64 = r.try_get("id").map_err(error)?;
-        let transfer_leased = crate::db::connect_transfer::capture_leased(db,id).await.map_err(error)?;
+        let transfer_leased = crate::db::connect_transfer::capture_leased(db, id)
+            .await
+            .map_err(error)?;
         Ok(Journal {
             transfer_leased,
             id: r.try_get("id").map_err(error)?,
@@ -311,7 +316,9 @@ impl SourceCapture {
         let mut lease = self.lease(&scope.generation.ready.pool).await?;
         let mut tx = lease.begin_with("BEGIN IMMEDIATE").await.map_err(error)?;
         let j = self.load(&mut tx, &scope).await?;
-        if j.transfer_leased { return Err("connect_transfer_leased".into()); }
+        if j.transfer_leased {
+            return Err("connect_transfer_leased".into());
+        }
         if j.phase == 2 {
             return Err("capture_pinned".into());
         }

@@ -868,8 +868,6 @@ pub(in crate::db::connect_transfer) async fn source_for_terminal(pool: &SqlitePo
     input.transfer_id
 }
 
-
-
 pub(in crate::db::connect_transfer) async fn reserve_next_source_after_abort(
     pool: &SqlitePool,
     owner: &DbPool,

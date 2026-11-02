@@ -332,14 +332,7 @@ async fn bootstrap_with_codec<B: Vault + 'static>(
     // Do not keep the short bootstrap child idle during network reception.
     *active = Some(launcher.start(Profile::Bootstrap).await?);
     let codec = active.as_ref().ok_or("codec_closed")?;
-    let output = decode(
-        codec,
-        10,
-        facts,
-        response.into_codec_body()?,
-        cancel,
-    )
-    .await?;
+    let output = decode(codec, 10, facts, response.into_codec_body()?, cancel).await?;
     let session: SessionFacts =
         serde_json::from_slice(output.bytes.as_slice()).map_err(|_| "codec_result")?;
     drop(output);
@@ -400,14 +393,7 @@ async fn bootstrap_with_codec<B: Vault + 'static>(
         "connection_origin":identity.context.relay_origin,"account_id":session.account_id},
         "time":{"now_ms":now_ms()?,"dispatch_age_ms":dispatch.elapsed().as_secs_f64()*1000.0}});
     drop(request); // json! copied it into the now-owned op2 facts.
-    let output = decode(
-        codec,
-        2,
-        facts,
-        response.into_codec_body()?,
-        cancel,
-    )
-    .await?;
+    let output = decode(codec, 2, facts, response.into_codec_body()?, cancel).await?;
     let authority: serde_json::Value =
         serde_json::from_slice(output.bytes.as_slice()).map_err(|_| "codec_result")?;
     if authority["type"] != "authority_snapshot" {

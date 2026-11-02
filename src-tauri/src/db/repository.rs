@@ -690,7 +690,9 @@ pub async fn delete_conversations(pool: &SqlitePool, ids: &[String]) -> DbResult
 
 pub async fn delete_app_setting(pool: &SqlitePool, key: &str) -> DbResult<bool> {
     if key == super::chat_admission::intents::APPROVAL_REGISTRY_KEY {
-        return Err(super::DbError::Validation("chat_admission_reserved_setting".into()));
+        return Err(super::DbError::Validation(
+            "chat_admission_reserved_setting".into(),
+        ));
     }
 
     let result = sqlx::query("DELETE FROM app_settings WHERE key = ?")
@@ -2408,7 +2410,8 @@ pub async fn list_provider_configs(pool: &SqlitePool) -> DbResult<Vec<ProviderCo
                 .unwrap_or_default()
                 .to_string(),
             api_key: None,
-            has_stored_api_key: crate::secrets::get_api_key_async(id).await
+            has_stored_api_key: crate::secrets::get_api_key_async(id)
+                .await
                 .map_err(|error| DbError::Validation(error.to_string()))?
                 .is_some(),
             is_enabled: definition
@@ -3155,7 +3158,9 @@ pub async fn set_app_setting(
     value_json: &str,
 ) -> DbResult<AppSettingRecord> {
     if key == super::chat_admission::intents::APPROVAL_REGISTRY_KEY {
-        return Err(super::DbError::Validation("chat_admission_reserved_setting".into()));
+        return Err(super::DbError::Validation(
+            "chat_admission_reserved_setting".into(),
+        ));
     }
 
     let now = chrono::Utc::now().to_rfc3339();
@@ -3189,7 +3194,9 @@ pub async fn compare_and_swap_app_setting(
     value_json: &str,
 ) -> DbResult<CompareAndSwapAppSettingResult> {
     if key == super::chat_admission::intents::APPROVAL_REGISTRY_KEY {
-        return Err(super::DbError::Validation("chat_admission_reserved_setting".into()));
+        return Err(super::DbError::Validation(
+            "chat_admission_reserved_setting".into(),
+        ));
     }
 
     let now = chrono::Utc::now().to_rfc3339();
