@@ -9,14 +9,9 @@
 .agsdl-graph-change-dot { flex: none; width: 6px; height: 6px; border-radius: 50%; background: rgb(var(--primary)); }
 .agsdl-graph-pending { display: inline-flex; color: rgb(var(--muted-foreground)); }
 
-.agsdl-node-capabilities { display: flex; align-items: center; gap: 9px; color: rgb(var(--muted-foreground)); font-size: 10px; line-height: 1.3; }
-.agsdl-node-capabilities:empty { display: none; }
-.agsdl-node-capabilities:not(:empty) { margin-top: 5px; }
-.agsdl-node-capabilities > span { display: inline-flex; align-items: center; gap: 3px; }
-.agsdl-node-capabilities .agsdl-node-skill-name { max-width: 110px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 .agsdl-canvas-content { width: 100%; height: 100%; min-height: 0; }
-.agsdl-block-anchor { width: 100%; }
+.agsdl-block-anchor { display: flex; justify-content: center; width: 100%; }
 .agsdl-graph-menu { position: fixed; width: 208px; max-width: calc(100vw - 16px); padding: 4px; border: 1px solid rgb(var(--border)); border-radius: 8px; background: rgb(var(--popover)); color: rgb(var(--popover-foreground)); box-shadow: 0 8px 24px #0004; font-size: 12px; }
 .agsdl-graph-menu button { display: flex; align-items: center; gap: 8px; width: 100%; border-radius: 4px; padding: 8px; text-align: left; }
 .agsdl-graph-menu button:hover, .agsdl-graph-menu button:focus-visible { background: rgb(var(--accent)); outline: none; }
@@ -46,3 +41,53 @@
 .agsdl-edge-endpoints button { color: rgb(var(--primary)); text-align: left; }
 .agsdl-edge-endpoints button:hover { text-decoration: underline; }
 .agsdl-edge-endpoints button:focus-visible { outline: 2px solid rgb(var(--primary)); outline-offset: 2px; }
+
+.agsdl-edge-exit { position: absolute; pointer-events: none; }
+.agsdl-edge-exit circle { fill: rgb(var(--background)); stroke: rgb(var(--destructive) / 0.4); }
+.agsdl-edge-exit path { fill: none; stroke: rgb(var(--destructive)); stroke-width: 1.6; stroke-linecap: round; }
+.agsdl-graph-legend { position: absolute; left: -1px; bottom: calc(100% + 8px); display: grid; gap: 8px; padding: 10px 12px; white-space: nowrap; border: 1px solid rgb(var(--border)); border-radius: 8px; background: rgb(var(--background)); color: rgb(var(--muted-foreground)); font-size: 11.5px; }
+.agsdl-graph-legend > div { display: flex; align-items: center; gap: 10px; }
+.agsdl-graph-controls button[aria-pressed="true"] { color: rgb(var(--foreground)); background: rgb(var(--accent)); }
+.agsdl-canvas .react-flow__edgelabel-renderer { z-index: 5; }
+.agsdl-preview-lead { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; line-height: 1.45; color: rgb(var(--foreground) / 0.9); }
+.agsdl-preview-lead + .agsdl-preview-list { margin-top: 10px; padding-top: 10px; border-top: 1px solid rgb(var(--border)); }
+.agsdl-preview-list { display: grid; gap: 6px; font-size: 12px; line-height: 1.45; }
+.agsdl-preview-list > div { display: grid; grid-template-columns: 84px 1fr; gap: 10px; }
+.agsdl-preview-list dt { color: rgb(var(--muted-foreground)); }
+.agsdl-preview-list dd { min-width: 0; overflow-wrap: anywhere; }
+.agsdl-preview-list dd.is-literal { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px; }
+.agsdl-block-anchor:has(> .is-routing) { width: fit-content; max-width: 100%; margin: 0 auto; }
+
+/* Hovering a shared agent lights its other blocks. */
+.agsdl-graph-node.is-lit { border-color: rgb(var(--primary)); box-shadow: 0 0 0 3px rgb(var(--primary) / 0.18); }
+.agsdl-graph-node.is-faded { opacity: 0.35; }
+
+/* Queue notches and legend samples share the flow colour. */
+.agsdl-edge-queue { fill: none; stroke-width: 1.5; stroke-linecap: round; }
+.agsdl-legend-sample { flex-shrink: 0; --legend-flow: color-mix(in srgb, rgb(var(--primary)) 60%, rgb(var(--background))); }
+.agsdl-legend-sample path { fill: none; stroke: var(--legend-flow); stroke-width: 1.4; }
+.agsdl-legend-sample .is-head { fill: var(--legend-flow); stroke: none; }
+.agsdl-legend-sample .is-border { stroke: rgb(var(--border)); stroke-width: 2; stroke-linecap: round; }
+
+/* The entry Message arrives from above the first block. */
+.agsdl-node-entry { position: absolute; bottom: 100%; left: calc(50% - 6px); display: flex; align-items: flex-start; gap: 6px; pointer-events: none;
+  --entry-flow: color-mix(in srgb, rgb(var(--primary)) 60%, rgb(var(--background))); }
+.agsdl-node-entry svg { flex: none; overflow: visible; }
+.agsdl-node-entry circle, .agsdl-node-entry .is-head { fill: var(--entry-flow); }
+.agsdl-node-entry path:not(.is-head) { fill: none; stroke: var(--entry-flow); stroke-width: 1.3; }
+.agsdl-node-entry > span { color: rgb(var(--muted-foreground)); font-size: 11px; line-height: 12px; white-space: nowrap; }
+.agsdl-legend-sample circle.is-head { fill: var(--legend-flow); }
+/* A join says whether it waits for all of its members or keeps the first result. */
+.agsdl-node-mode { flex: none; margin-right: 6px; padding: 0 6px; border-radius: 999px; font-size: 10.5px; line-height: 16px; font-weight: 500;
+  color: rgb(var(--muted-foreground)); background: rgb(var(--muted)); }
+.agsdl-node-mode.is-first { color: rgb(var(--primary)); background: rgb(var(--primary) / 0.14); }
+/* A long block heading wraps to a second line before it is cut. */
+.agsdl-graph-node:not(.is-routing) .agsdl-node-title { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; white-space: normal; }
+/* An unfolded composition: a quiet border around its steps, headed by what it runs. */
+.agsdl-composition-frame { width: 100%; height: 100%; border: 1px dashed rgb(var(--muted-foreground) / 0.45); border-radius: 14px; background: rgb(var(--muted) / 0.18); }
+/* Centred on the incoming connection and on the top border, so the connection runs into it. */
+.agsdl-composition-heading-anchor { display: flex; justify-content: center; transform: translateY(-50%); pointer-events: none; }
+.agsdl-composition-heading { display: flex; align-items: center; gap: 6px; flex: none; padding: 3px 8px; border: 1px solid rgb(var(--border)); border-radius: 6px; background: rgb(var(--background)); font-size: 11.5px; line-height: 15px; color: rgb(var(--muted-foreground)); white-space: nowrap; pointer-events: auto; }
+.agsdl-composition-heading svg { flex: none; }
+.agsdl-composition-heading:hover, .agsdl-composition-heading:focus-visible { background: rgb(var(--accent)); color: rgb(var(--foreground)); outline: none; }
+.agsdl-composition-heading strong { font-weight: 600; color: rgb(var(--foreground)); }

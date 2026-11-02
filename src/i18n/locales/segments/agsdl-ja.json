@@ -1,15 +1,4 @@
 {
-  "graphHints": {
-    "skills": "スキル",
-    "structured": "構造化結果の検証",
-    "dynamic": "初期化時に構成を選択",
-    "external": "宣言された外部への作用",
-    "externalShort": "外部への作用",
-    "first": "最初の適切な結果",
-    "all": "すべての結果が必要",
-    "steering": "実行中の指示",
-    "maxVisits": "最大 {{count}} 回"
-  },
   "editor": "AgSDL ビューアー",
   "legacyStrategy": "従来の戦略",
   "loading": "AgSDLを読み込み中...",
@@ -230,7 +219,16 @@
       "engineUnset": "エンジンが未設定",
       "selected": "選択済み"
     },
-    "backToComponent": "前の詳細に戻る"
+    "backToComponent": "前の詳細に戻る",
+    "legend": "凡例",
+    "legendFlow": "フロー",
+    "legendError": "エラー時の出口",
+    "legendQueue": "共有エージェントの待ち行列",
+    "legendEntry": "フローの入口",
+    "joinAll": "すべて",
+    "joinFirst": "最初",
+    "joinAllHint": "すべての結果を待つ",
+    "joinFirstHint": "最初に受け入れ可能な結果を採用"
   },
   "attachToChat": "チャットに添付",
   "chatSelection": "AgSDL の選択",
@@ -527,7 +525,9 @@
     "to": "次の処理",
     "expand": "グループを展開",
     "openTask": "タスクを開く",
-    "canvasMenu": "グラフの操作"
+    "canvasMenu": "グラフの操作",
+    "unfold": "構成を展開",
+    "fold": "構成を折りたたむ"
   },
   "link": {
     "true": "条件を満たす場合",
@@ -582,5 +582,51 @@
     "installation": "Official SDK installation instructions",
     "apiKey": "Anthropic API key",
     "keySaveFailed": "The key could not be saved or its profile could not be qualified."
+  },
+  "preview": {
+    "steers": "指示先",
+    "model": "モデル",
+    "uses": "使用",
+    "receives": "受け取る",
+    "produces": "出力",
+    "limit": "実行回数",
+    "after": "起動元",
+    "arguments": "引数",
+    "effect": "影響",
+    "action": "操作",
+    "targets": "対象",
+    "context": "コンテキスト",
+    "timeout": "期限",
+    "validity": "有効期間",
+    "test": "条件",
+    "mode": "待機",
+    "accept": "採用条件",
+    "agents": "エージェント",
+    "transmits": "渡すもの",
+    "whenLabel": "通る条件",
+    "limitValue_one": "最大 {{count}} 回",
+    "limitValue_other": "最大 {{count}} 回",
+    "effects": {
+      "none": "なし",
+      "external": "外部",
+      "unknown": "未宣言"
+    },
+    "join": {
+      "all": "すべてのメンバー",
+      "first": "最初に採用されたもの",
+      "remaining-finish": "他は完了まで続行",
+      "remaining-stop-and-wait": "他は停止"
+    },
+    "when": {
+      "choice": "{{who}} が「{{name}}」を選択",
+      "error": "{{source}} が失敗",
+      "next": "常に",
+      "true": "条件が真",
+      "false": "条件が偽",
+      "approved": "承認された",
+      "denied": "承認が拒否された",
+      "exchange": "データ交換時",
+      "dependency": "前のブロックの後"
+    }
   }
 }

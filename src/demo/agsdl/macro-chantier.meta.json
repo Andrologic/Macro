@@ -1,0 +1,47 @@
+{
+  "title": "Chantier coordonné",
+  "description": "Préparer, réaliser et vérifier un chantier.",
+  "projectId": "demo-macro-library",
+  "planKind": "feature",
+  "icon": "workflow",
+  "design": {
+    "version": 1,
+    "kind": "blueprint",
+    "purpose": "",
+    "context": "Projet fictif : les services, données et résultats sont simulés.",
+    "rules": [],
+    "requirements": []
+  },
+  "display": {
+    "title": "Chantier coordonné",
+    "cards": {
+      "/agents/agent1": {
+        "title": "Concepteur"
+      },
+      "/agents/agent2": {
+        "title": "Développeur"
+      },
+      "/agents/agent3": {
+        "title": "Vérificateur"
+      },
+      "/flow/steps/agent1": {
+        "title": "Préparer le chantier"
+      },
+      "/flow/steps/agent2": {
+        "title": "Réaliser les changements"
+      },
+      "/flow/steps/agent3": {
+        "title": "Vérifier le résultat"
+      },
+      "/bindings/engine": {
+        "title": "Macro"
+      },
+      "/configurations/standard": {
+        "title": "Standard"
+      },
+      "/configurations/approfondi": {
+        "title": "Approfondi"
+      }
+    }
+  }
+}

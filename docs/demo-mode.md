@@ -23,13 +23,19 @@ lancement natif devra isoler le profil avant le démarrage du backend.
 
 - Quatre projets métier fictifs : Luma Mobile, Atlas Studio, Helio Data et Meridian Commerce.
   Un cinquième, Nouveau projet, ne possède aucun blueprint local.
-- Dix-sept blueprints de projet AgSDL 0.2, avec graphes et conversations : release, assistant client,
+- Treize blueprints de projet AgSDL 0.2, avec graphes et conversations : release, assistant client,
   compte rendu vocal, revue avant livraison, import de catalogue, diagnostic
-  d’incident, remboursement accompagné, dossier éditorial, livraison multi-plateforme, rédaction
-  supervisée, équipe support permanente, recherche en compétition, extraction avec
-  correction, publication à double accord, cellule de crise, correctif piloté par les
-  tests et reprise audio. Deux
-  blueprints communs, Assistant et Chantier coordonné, complètent ces exemples.
+  d’incident, remboursement accompagné, livraison multi-plateforme, rédaction
+  supervisée, équipe support permanente, cellule de crise, correctif piloté par les
+  tests et reprise audio. Deux blueprints communs, Assistant et Chantier coordonné,
+  complètent ces exemples.
+- Chaque blueprint est un document AgSDL écrit comme en production, dans
+  `src/demo/agsdl/<id>.agsdl.json` : configurations nommées avec leur modèle,
+  services propres au projet, ressources et compétences seulement là où le cas
+  les utilise. Le fichier `<id>.meta.json` voisin porte ce que Macro affiche
+  autour du document : titre, projet, icône, conception et titres des blocs.
+  Les identités des services sont fictives. Les documents passent les lecteurs
+  officiels d’AgSDL 0.2 (Python et JavaScript).
 - Graphes avec branches conditionnelles, contrôles parallèles et regroupement,
   points de validation humaine, traitement des erreurs et boucle de diagnostic.
 - Compositions paramétrées réutilisées pour plusieurs agents, avec des sorties
@@ -37,10 +43,9 @@ lancement natif devra isoler le profil avant le démarrage du backend.
   conformément au contrat 0.2.
 - Agents persistants, messages de steering, décisions nommées, limites de visites,
   configurations choisies à l’initialisation et ressources structurées.
-- Compétition avec premier résultat acceptable et arrêt confirmé des autres travaux.
-- Résultat JSON contraint par `valueSchema`, correction sur `OUTPUT_CONSTRAINT`
-  dans le même agent et chemin distinct pour les erreurs techniques.
-- Deux approbations successives sur une même publication à effets externes.
+- Import de catalogue : lignes JSON contraintes par `valueSchema`, correction sur
+  `OUTPUT_CONSTRAINT` dans le même agent et chemin distinct pour les erreurs techniques.
+- Diagnostic d’incident : configuration de l’enquête choisie selon la gravité.
 - Cellule de crise : trois analystes en compétition, décision à trois issues, même
   composition utilisée pour trois spécialistes, double accord, effet externe,
   contrôles parallèles obligatoires et transmission de leurs résultats nommés.
@@ -49,13 +54,17 @@ lancement natif devra isoler le profil avant le démarrage du backend.
   passages, appel de tests en erreur et accord avant une étape d’agent protégée.
 - Lecture des graphes : le chemin principal reste dans une colonne, les
   alternatives se placent à côté, les retours et les connexions éloignées suivent
-  des rails latéraux partagés par bloc cible. Les étapes de routage sont plus
-  discrètes que les agents ; un repère marque le début et la fin des parcours.
-- Les cartes distinguent les types de blocs et indiquent les compétences, les
-  résultats contraints, la sélection de configuration et les effets externes déclarés.
-  Le survol précise leur sens, sans prétendre à une prise en charge à l’exécution.
+  des rails latéraux partagés par bloc cible.
+- Blocs : les étapes d’agent et les approbations sont des cartes, les appels
+  déterministes des barres à angles coupés, les sous-processus des cartes à
+  ouvrir et les étapes de routage des pastilles. La deuxième ligne nomme qui
+  exécute l’étape : l’agent, le service appelé, le valideur ou la composition.
+  Les agents des démos portent un rôle, les étapes une action.
+- Liaisons : trait gris pour l’enchaînement, rouge atténué pour les erreurs, qui
+  partent d’une sortie marquée sur le bord du bloc. La légende s’ouvre depuis les
+  contrôles du graphe ; le détail de chaque liaison reste au survol.
 - Compétences partagées, contenus référencés et équipe sans graphe imposé.
-- Quatre-vingt-neuf tâches réparties entre vingt-deux exécutions fictives, dont une
+- Soixante-seize tâches réparties entre dix-huit exécutions fictives, dont une
   édition archivée. Elles restent individuelles dans les quatre états de la file,
   avec des dépendances et des conversations propres à chaque situation. Fichiers virtuels propres à chaque projet.
 - Consultation et modification des instructions et du modèle d'un agent.
@@ -81,8 +90,8 @@ l'application ne sont pas reproduites. Les réponses du chat sont prédéfinies.
 
 Ne pas qualifier ce mode de démonstration exhaustive avant d'avoir simulé et
 vérifié ces parcours. Les journaux `[demo:unsupported]` identifient les commandes
-à compléter. Ajouter leurs contrats dans `src/demo/runtime.ts` et des fixtures
-dans `src/demo/fixtures.ts`, sans ajouter de contournement dans les composants.
+à compléter. Ajouter leurs contrats dans `src/demo/runtime.ts` et des documents
+dans `src/demo/agsdl/`, sans ajouter de contournement dans les composants.
 
 ## Isolation et vérification
 

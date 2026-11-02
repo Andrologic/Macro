@@ -1,0 +1,178 @@
+{
+  "contract": "agsdl-0.2.0",
+  "id": "example-feature",
+  "content": {
+    "responseCharter": {
+      "value": "Vouvoyer le client. Phrases courtes. Aucun délai ni geste commercial sans validation.",
+      "mediaType": "text/plain"
+    }
+  },
+  "bindings": {
+    "engine": {
+      "contract": {
+        "identity": "macro/agent-engine",
+        "version": "1"
+      },
+      "implementation": {
+        "identity": "macro/desktop",
+        "version": "1"
+      }
+    }
+  },
+  "configurations": {
+    "conseil": {
+      "engine": "engine",
+      "model": {
+        "identity": "claude-sonnet-5-5",
+        "version": "1"
+      }
+    }
+  },
+  "agents": {
+    "specify": {
+      "configuration": "conseil",
+      "prompt": [
+        {
+          "value": "Comprendre la demande. Consignez le résultat et les points qui demandent une décision."
+        }
+      ],
+      "interface": {
+        "inputMediaTypes": [
+          "text/plain",
+          "application/json"
+        ],
+        "outputMediaTypes": [
+          "text/plain"
+        ],
+        "results": {
+          "report": {
+            "mediaTypes": [
+              "text/plain"
+            ],
+            "required": true
+          }
+        }
+      }
+    },
+    "implement": {
+      "configuration": "conseil",
+      "prompt": [
+        {
+          "value": "Préparer la réponse. Consignez le résultat et les points qui demandent une décision."
+        }
+      ],
+      "interface": {
+        "inputMediaTypes": [
+          "text/plain",
+          "application/json"
+        ],
+        "outputMediaTypes": [
+          "text/plain"
+        ],
+        "results": {
+          "report": {
+            "mediaTypes": [
+              "text/plain"
+            ],
+            "required": true
+          }
+        }
+      },
+      "resources": {
+        "charter": {
+          "ref": "responseCharter"
+        }
+      }
+    },
+    "verify": {
+      "configuration": "conseil",
+      "prompt": [
+        {
+          "value": "Vérifier le résultat. Consignez le résultat et les points qui demandent une décision."
+        }
+      ],
+      "interface": {
+        "inputMediaTypes": [
+          "text/plain",
+          "application/json"
+        ],
+        "outputMediaTypes": [
+          "text/plain"
+        ],
+        "results": {
+          "report": {
+            "mediaTypes": [
+              "text/plain"
+            ],
+            "required": true
+          }
+        }
+      },
+      "resources": {
+        "charter": {
+          "ref": "responseCharter"
+        }
+      }
+    }
+  },
+  "flow": {
+    "entry": "specify",
+    "steps": {
+      "specify": {
+        "type": "agent",
+        "agent": "specify",
+        "next": [
+          "prepare-implement"
+        ]
+      },
+      "prepare-implement": {
+        "type": "prepare",
+        "message": {
+          "resources": {
+            "report": {
+              "source": {
+                "path": [
+                  "results",
+                  "report"
+                ]
+              }
+            }
+          }
+        },
+        "next": [
+          "implement"
+        ]
+      },
+      "implement": {
+        "type": "agent",
+        "agent": "implement",
+        "next": [
+          "prepare-verify"
+        ]
+      },
+      "prepare-verify": {
+        "type": "prepare",
+        "message": {
+          "resources": {
+            "report": {
+              "source": {
+                "path": [
+                  "results",
+                  "report"
+                ]
+              }
+            }
+          }
+        },
+        "next": [
+          "verify"
+        ]
+      },
+      "verify": {
+        "type": "agent",
+        "agent": "verify",
+        "next": []
+      }
+    }
+  }
+}

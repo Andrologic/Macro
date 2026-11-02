@@ -1,0 +1,81 @@
+{
+  "title": "Compte rendu vocal",
+  "description": "Transformer une réunion en compte rendu, avec une vérification des passages ambigus.",
+  "projectId": "demo-luma",
+  "planKind": "feature",
+  "icon": "mic",
+  "design": {
+    "version": 1,
+    "kind": "blueprint",
+    "purpose": "Transformer une réunion en compte rendu, avec une vérification des passages ambigus.",
+    "context": "Projet fictif : les services, données et résultats sont simulés.",
+    "rules": [],
+    "requirements": [
+      {
+        "id": "model",
+        "label": "Modèle des agents",
+        "description": "Choix pour cette utilisation simulée",
+        "value": "Macro AI · Démo"
+      }
+    ]
+  },
+  "display": {
+    "title": "Compte rendu vocal",
+    "cards": {
+      "/agents/transcribe": {
+        "title": "Transcripteur"
+      },
+      "/agents/clarify": {
+        "title": "Chargé de clarification"
+      },
+      "/agents/summarize": {
+        "title": "Rédacteur"
+      },
+      "/agents/review": {
+        "title": "Relecteur"
+      },
+      "/flow/steps/transcribe": {
+        "title": "Transcrire la réunion"
+      },
+      "/flow/steps/confidence": {
+        "title": "Passages incertains ?"
+      },
+      "/flow/steps/clarify": {
+        "title": "Clarifier les passages ambigus"
+      },
+      "/flow/steps/prepare": {
+        "title": "Préparer la transcription"
+      },
+      "/flow/steps/summarize": {
+        "title": "Rédiger le compte rendu"
+      },
+      "/flow/steps/handoff": {
+        "title": "Transmettre le compte rendu"
+      },
+      "/flow/steps/review": {
+        "title": "Vérifier la fidélité"
+      },
+      "/flow": {
+        "title": "Compte rendu vocal"
+      },
+      "/bindings/engine": {
+        "title": "Macro"
+      },
+      "/skills/meetingNotes": {
+        "title": "Compte rendu de réunion"
+      },
+      "/configurations/transcription": {
+        "title": "Transcription"
+      },
+      "/configurations/standard": {
+        "title": "Standard"
+      },
+      "/configurations/approfondi": {
+        "title": "Approfondi"
+      },
+      "/bindings/speechService": {
+        "title": "Service de transcription"
+      }
+    }
+  }
+}
