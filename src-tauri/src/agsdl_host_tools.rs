@@ -709,6 +709,7 @@ async fn invoke_tool(
                 tool,
                 args,
                 owned_key,
+                frozen,
                 expected_roots,
             )
             .await

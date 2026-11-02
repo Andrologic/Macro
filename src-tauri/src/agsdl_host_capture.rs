@@ -69,19 +69,17 @@ pub(crate) struct CompilationCapture {
     pub call_scope_json: String,
 }
 
-// Keep requested write ceilings in the durable native envelope without changing
-// the document reader or granting additional permissions.
-fn captured_write_rules(agent: &Value) -> Value {
-    Value::Array(
-        agent
-            .pointer("/permissions/rules")
-            .and_then(Value::as_array)
-            .into_iter()
-            .flatten()
-            .filter(|rule| rule["action"] == "write")
-            .cloned()
-            .collect(),
-    )
+// The 0.2 reader accepts host-specific configuration settings. Keep this
+// transport explicit until the document reader supports Agent.permissions.
+fn captured_write_permissions(mut native: Value, settings: &Value) -> Result<Value> {
+    let rules = settings
+        .get("writeRules")
+        .cloned()
+        .unwrap_or_else(|| json!([]));
+    crate::core::tool_policy::validate_agsdl_write_rules(&rules)
+        .map_err(|message| failure("UNSUPPORTED", "settings.writeRules", message))?;
+    native["writeRules"] = rules;
+    Ok(native)
 }
 
 #[cfg(test)]
@@ -89,18 +87,28 @@ mod write_capture_tests {
     use super::*;
     #[test]
     fn captures_write_rules_without_interpreting_or_widening_them() {
+        let native = json!({"mode":"Implement","allowedToolIds":["write"],"riskLevel":"balanced"});
         let rules = json!([{"action":"write","match":".env*","effect":"deny"}, {"action":"write","effect":"deny"}]);
+        let captured =
+            captured_write_permissions(native.clone(), &json!({"writeRules":rules})).unwrap();
+        assert_eq!(captured["writeRules"], rules);
+        assert_eq!(captured["allowedToolIds"], native["allowedToolIds"]);
         assert_eq!(
-            captured_write_rules(&json!({"permissions":{"rules":rules}})),
-            rules
-        );
-        assert_eq!(captured_write_rules(&json!({})), json!([]));
-        assert_eq!(
-            captured_write_rules(
-                &json!({"permissions":{"rules":[{"action":"read","effect":"deny"}]}})
-            ),
+            captured_write_permissions(native.clone(), &json!({})).unwrap()["writeRules"],
             json!([])
         );
+        for rules in [
+            json!(null),
+            json!({}),
+            json!([{"action":"read","effect":"deny"}]),
+            json!([{"action":"write","effect":"ask"}]),
+            json!([{"action":"write","effect":"deny","match":false}]),
+            json!([{"action":"write","effect":"deny","extra":true}]),
+        ] {
+            assert!(
+                captured_write_permissions(native.clone(), &json!({"writeRules":rules})).is_err()
+            );
+        }
     }
 }
 
@@ -281,6 +289,7 @@ async fn observation(
                     "mode",
                     "maxTurns",
                     "reasoningEffort",
+                    "writeRules",
                 ]
                 .contains(&key.as_str())
             }) {
@@ -312,6 +321,14 @@ async fn observation(
                         .get("bindings")
                         .and_then(|bindings| bindings.get(key))
                 });
+            let captured_permissions = captured_write_permissions(
+                crate::agsdl_host_tools::permissions(
+                    mode,
+                    project.user_read_only || project.is_read_only,
+                    tools,
+                )?,
+                &settings,
+            )?;
             let mut settings = settings.clone();
             if engine.is_some_and(|engine| engine["implementation"]["identity"] == "openai/codex") {
                 let Some((profile, _, _)) = &codex else {
@@ -321,7 +338,7 @@ async fn observation(
                     continue;
                 }
                 settings["nativeProfileJson"] = json!(profile.attestation(
-                    project.user_read_only || project.is_read_only || mode != "Implement",
+                    crate::core::tool_policy::agsdl_native_read_only(&captured_permissions),
                     &scope
                 )?);
             }
@@ -336,7 +353,7 @@ async fn observation(
             configurations.push(json!({
                 "agentName": name, "verifiedRequirementsJson": [],
                 "effectiveSettingsJson": serde_json::to_string(&settings)?,
-                "permissionsJson": serde_json::to_string(&{ let mut captured = crate::agsdl_host_tools::permissions(mode, project.user_read_only || project.is_read_only, tools)?; captured["writeRules"] = captured_write_rules(agent); captured })?,
+                "permissionsJson": serde_json::to_string(&captured_permissions)?,
                 "scopeJson": serde_json::to_string(&scope)?
             }));
         }
@@ -962,7 +979,7 @@ mod exact_capture_tests {
             r#"{"$serde_json::private::RawValue":"not JSON"}"#,
         ] {
             let source = format!(
-                r#"{{"contract":"agsdl-0.2.0","id":"synthetic","bindings":{{"engine":{{"contract":{{"identity":"macro/agent-engine","version":"1"}},"implementation":{{"identity":"macro/desktop","version":"1"}}}}}},"agents":{{"worker":{{"configuration":"fixed","prompt":[{{"value":"Synthetic."}}]}}}},"configurations":{{"fixed":{{"engine":"engine","model":{{"identity":"macro/native-model/p/cA/m/bQ","version":"1"}}}}}},"flow":{{"entry":"prepare","steps":{{"prepare":{{"type":"prepare","message":{{"resources":{{"opaque":{{"value":{data},"mediaType":"application/json"}}}}}},"next":["work"]}},"work":{{"type":"agent","agent":"worker","next":[]}}}}}}}}"#
+                r#"{{"contract":"agsdl-0.2.0","id":"synthetic","bindings":{{"engine":{{"contract":{{"identity":"macro/agent-engine","version":"1"}},"implementation":{{"identity":"macro/desktop","version":"1"}}}}}},"agents":{{"worker":{{"configuration":"fixed","prompt":[{{"value":"Synthetic."}}]}}}},"configurations":{{"fixed":{{"engine":"engine","model":{{"identity":"macro/native-model/p/cA/m/bQ","version":"1"}},"settings":{{"writeRules":[{{"action":"write","effect":"deny","match":".env*"}}]}}}}}},"flow":{{"entry":"prepare","steps":{{"prepare":{{"type":"prepare","message":{{"resources":{{"opaque":{{"value":{data},"mediaType":"application/json"}}}}}},"next":["work"]}},"work":{{"type":"agent","agent":"worker","next":[]}}}}}}}}"#
             );
             std::fs::write(&plan, serde_json::to_vec(&json!({"id":"source", "projectIds":["project"], "revision":1, "agsdl":{"source":source}})).unwrap()).unwrap();
             let locked = lock_execution_source_owner(&workspace, &metadata, &owner, None)
@@ -980,6 +997,16 @@ mod exact_capture_tests {
             .unwrap();
             assert_eq!(observed["configurations"].as_array().unwrap().len(), 1);
             assert_eq!(observed["configurations"][0]["agentName"], "worker");
+            let frozen: Value = serde_json::from_str(
+                observed["configurations"][0]["permissionsJson"]
+                    .as_str()
+                    .unwrap(),
+            )
+            .unwrap();
+            assert_eq!(
+                frozen["writeRules"],
+                json!([{"action":"write","effect":"deny","match":".env*"}])
+            );
             assert_eq!(locked.source, source);
             assert!(codex.is_none() && claude.is_none());
         }

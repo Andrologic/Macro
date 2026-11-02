@@ -202,6 +202,40 @@ Les codes des helpers de lecture et de records, comme `PARSE` et
 erreurs à la frontière concernée vers les codes normatifs avant de former un
 `ErrorInput` ou d'emprunter `onError`.
 
+## Refus d'écriture par chemin
+
+Le lecteur reste à AgSDL 0.2. Le transport transitoire propre à Macro passe par
+`configurations.<nom>.settings.writeRules`, un tableau de règles AgSDL
+`{ "action": "write", "match": ".env*", "effect": "deny" }`.
+`match` est facultatif. Les effets `allow` et `deny` sont acceptés ; `allow`
+n'élargit jamais les droits Macro. Tout autre champ, action ou effet est refusé
+au préflight. Le champ Agent `permissions` de 0.3 reste indisponible.
+
+La capture native conserve ce tableau dans `permissions_json.writeRules` pour
+chaque agent de la configuration. La compilation vérifie que le tableau figé
+correspond à celui de la source. Les appels directs du flow conservent leur
+politique propre et n'héritent pas des réglages d'un agent.
+
+`agsdl_write_denied` contrôle chaque cible de `write`, `edit`, `delete` et
+`apply_patch` avant admission, puis au démarrage de l'exécuteur détenu. Les
+chemins réels résolvent les liens existants et les ancêtres des nouveaux fichiers.
+Le contrôle conserve aussi les chemins lexicaux normalisés pour refuser une
+écriture qui traverse un sous-arbre protégé par un lien. `*` ne traverse pas `/`,
+`**` le traverse et `**/` accepte zéro niveau. Les refus reviennent par le chemin
+`PERMISSION` existant. Une règle `deny` entraîne un refus conservateur des
+mutations de répertoires.
+
+Les patches du workspace courant prennent en charge `*** Move to:`. La cible
+est créée et la source supprimée par la transaction commune ; une cible existante
+est refusée. Les deux chemins sont contrôlés avant toute écriture. Les déplacements
+sur les montages virtuels restent refusés.
+
+Les moteurs Macro et Claude utilisent les outils contrôlés Macro. Pour Codex
+natif, toute règle `write.deny` fige un profil entièrement en lecture seule,
+vérifié à nouveau au lancement. Codex ne reçoit donc jamais un workspace natif
+inscriptible avec un refus de chemin. Cette restriction peut refuser aussi des
+écritures que le motif aurait autorisées.
+
 ## Protocole de publication
 
 Le plan contient `publicationContractJson` par step Agent et

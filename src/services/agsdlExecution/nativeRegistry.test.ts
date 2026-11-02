@@ -1,7 +1,7 @@
 import { expect, it } from 'bun:test';
 import { compilePlan, sourceDigest } from './compiler';
 import { documentFixture, id, json } from './conformanceFixtures';
-import { decode, encode, record } from './exact';
+import { decode, encode, record, type ExactObject } from './exact';
 import { buildNativeRegistry, type NativeRegistryObservation } from './nativeRegistry';
 import { captureToolAliases } from './registry';
 
@@ -150,4 +150,21 @@ it.each(['{"$serde_json::private::Number":"1"}', '{"$serde_json::private::RawVal
   expect(registry.bindings.find(binding => binding.target.kind === 'macro-tool')!.declarationJson).toContain(value);
   expect(result.plan!.agents[0].configurationJson).toContain(value);
   expect(result.plan!.steps.some(step => step.address[0] === 'inspect')).toBe(true);
+});
+
+
+it('compiles write rules through the unchanged 0.2 reader and freezes them without loss', async () => {
+  const { doc, config, observed } = fixture();
+  const writeRules: ExactObject[] = [{ action: 'write', effect: 'deny', match: '.env*' }, { action: 'write', effect: 'allow' }];
+  config.settings = { writeRules };
+  const permissions = { mode: 'Implement', readOnly: false, allowedToolIds: ['read'], riskLevel: 'balanced', writeRules };
+  const capture = { ...observed, configurations: observed.configurations.map(configuration => ({ ...configuration,
+    effectiveSettingsJson: encode({ writeRules }), permissionsJson: encode(permissions) })) };
+  const source = encode(doc);
+  const registry = buildNativeRegistry(source, capture);
+  const result = await compilePlan(source, { owner: { projectId: 'synthetic', planId: 'plan', branch: 'feature/test' }, revision: '1', sourceSha256: id(await sourceDigest(source)) }, registry);
+  expect(result.static.valid).toBe(true);
+  expect(result.runtime.supported).toBe(true);
+  expect(decode(result.plan!.agents[0].permissionsJson)).toEqual(permissions);
+  expect(() => buildNativeRegistry(source, observed)).toThrow('Frozen write rules differ');
 });

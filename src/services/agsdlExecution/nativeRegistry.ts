@@ -73,6 +73,10 @@ export function buildNativeRegistry(authoredSource: string, observed: NativeRegi
     if (typeof agent.configuration !== 'string') continue;
     const configuration: ExactObject = record(record(document.configurations)[agent.configuration]);
     const permissions = record(decode(observation.permissionsJson));
+    const declaredWriteRules = record(configuration.settings ?? {}).writeRules;
+    if (declaredWriteRules !== undefined && !equal(declaredWriteRules, permissions.writeRules)) {
+      return fail('CORRELATION', '/registry/configurations/permissionsJson', 'Frozen write rules differ from the authored host settings.');
+    }
     const allowed = list(permissions.allowedToolIds).map(value => text(value));
     for (const bindingName of Object.values(record(configuration.tools ?? {}))) {
       const declaration = record(document.bindings)[text(bindingName)];

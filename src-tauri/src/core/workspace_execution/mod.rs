@@ -370,9 +370,18 @@ fn to_macro_virtual_relative(path: &str) -> String {
 
 #[derive(Debug, Clone)]
 pub(crate) enum ParsedPatchOperation {
-    Add { path: String, lines: Vec<String> },
-    Update { path: String, hunks: Vec<PatchHunk> },
-    Delete { path: String },
+    Add {
+        path: String,
+        lines: Vec<String>,
+    },
+    Update {
+        path: String,
+        hunks: Vec<PatchHunk>,
+        move_to: Option<String>,
+    },
+    Delete {
+        path: String,
+    },
 }
 
 impl ParsedPatchOperation {
@@ -457,6 +466,13 @@ pub(crate) fn parse_apply_patch(patch_text: &str) -> CommandResult<Vec<ParsedPat
             let mut hunks = Vec::new();
             let mut hunk_lines = Vec::new();
             index += 1;
+            let move_to = lines
+                .get(index)
+                .and_then(|line| line.strip_prefix("*** Move to: "))
+                .map(|path| path.trim().to_string());
+            if move_to.is_some() {
+                index += 1;
+            }
             while index + 1 < lines.len() && !lines[index].starts_with("*** ") {
                 let current = lines[index];
                 if current == "@@" || current.starts_with("@@ ") {
@@ -498,6 +514,7 @@ pub(crate) fn parse_apply_patch(patch_text: &str) -> CommandResult<Vec<ParsedPat
             operations.push(ParsedPatchOperation::Update {
                 path: path.trim().to_string(),
                 hunks,
+                move_to,
             });
             continue;
         }
@@ -543,6 +560,16 @@ pub fn validate_workspace_tool_execution(
         let target_validation = validate_tool_execution(mode, tool_id, Some(operation.path()));
         if !target_validation.allowed {
             return Ok(target_validation);
+        }
+        if let ParsedPatchOperation::Update {
+            move_to: Some(target),
+            ..
+        } = operation
+        {
+            let target_validation = validate_tool_execution(mode, tool_id, Some(&target));
+            if !target_validation.allowed {
+                return Ok(target_validation);
+            }
         }
     }
     Ok(validation)
@@ -2232,8 +2259,14 @@ pub(crate) async fn execute_workspace_tool_owned(
     tool_id: String,
     args: Value,
     execution_id: String,
+    permissions: Value,
     expected_roots: Arc<std::collections::BTreeMap<PathBuf, fs::WorkspaceRootIdentity>>,
 ) -> CommandResult<String> {
+    if crate::core::tool_policy::agsdl_write_denied(&root, &tool_id, &args, &permissions) {
+        return Err(CommandError::from(BackendError::PermissionDenied(
+            "PERMISSION: Frozen AgSDL write policy denied this invocation".into(),
+        )));
+    }
     let (cancellation, _registration) = register_tool_execution(Some(&execution_id))
         .ok_or_else(|| command_error("Native execution identity is absent"))?;
     if cancellation.is_cancelled() {
@@ -2787,7 +2820,11 @@ async fn execute_workspace_tool_inner(
                             requested_unix_mode: None,
                         });
                     }
-                    ParsedPatchOperation::Update { path, hunks } => {
+                    ParsedPatchOperation::Update {
+                        path,
+                        hunks,
+                        move_to,
+                    } => {
                         let requested_revision = expected_revisions
                             .get(&normalize_tool_map_path(&path))
                             .cloned();
@@ -2823,6 +2860,55 @@ async fn execute_workspace_tool_inner(
                         let (additions, deletions) =
                             compute_line_change_stats(&current.content, &new_content);
 
+                        if let Some(target) = move_to {
+                            let target_effective_path = remap_macro_tool_path(&target);
+                            let target_workspace = resolve_workspace_for_tool_path(
+                                &workspace,
+                                &git_state,
+                                Some(&target),
+                                workspace_scope.as_deref(),
+                            )
+                            .await?;
+                            let target_absolute = resolve_validated_tool_path(
+                                &target_workspace,
+                                &target_effective_path,
+                                true,
+                            )?;
+                            if target_absolute == absolute_path {
+                                return Err(command_error(
+                                    "Patch move destination must differ from source",
+                                ));
+                            }
+                            pending_changes.push(PendingFileChange {
+                                display_path: target,
+                                effective_workspace: target_workspace,
+                                effective_path: target_effective_path,
+                                absolute_path: target_absolute,
+                                status: "created".into(),
+                                new_content: Some(new_content.clone()),
+                                created: true,
+                                bytes_written: new_content.len() as u64,
+                                additions: new_content.lines().count(),
+                                deletions: 0,
+                                expected_revision: Some(fs::EXPECTED_REVISION_ABSENT.into()),
+                                requested_unix_mode: current.unix_mode,
+                            });
+                            pending_changes.push(PendingFileChange {
+                                display_path: path,
+                                effective_workspace,
+                                effective_path,
+                                absolute_path,
+                                status: "deleted".into(),
+                                new_content: None,
+                                created: false,
+                                bytes_written: 0,
+                                additions: 0,
+                                deletions: current.content.lines().count(),
+                                expected_revision: Some(expected_revision),
+                                requested_unix_mode: None,
+                            });
+                            continue;
+                        }
                         pending_changes.push(PendingFileChange {
                             display_path: path,
                             effective_workspace,

@@ -358,7 +358,7 @@ fn parse_apply_patch_supports_add_update_delete_sections() {
 
     assert_eq!(parsed.len(), 3);
     match &parsed[0] {
-        ParsedPatchOperation::Update { path, hunks } => {
+        ParsedPatchOperation::Update { path, hunks, .. } => {
             assert_eq!(path, "src/app.ts");
             assert_eq!(hunks.len(), 1);
         }
@@ -396,7 +396,7 @@ fn apply_patch_hunks_to_content_updates_expected_lines() {
     )
     .expect("parse apply_patch");
 
-    let ParsedPatchOperation::Update { path, hunks } = &parsed[0] else {
+    let ParsedPatchOperation::Update { path, hunks, .. } = &parsed[0] else {
         panic!("expected update operation");
     };
 
@@ -438,7 +438,7 @@ fn apply_patch_hunks_advance_past_the_first_repeated_block() {
         "*** Begin Patch\n*** Update File: repeated.txt\n@@\n-old\n+first\n@@\n-old\n+second\n*** End Patch",
     )
     .expect("parse repeated-block patch");
-    let ParsedPatchOperation::Update { path, hunks } = &parsed[0] else {
+    let ParsedPatchOperation::Update { path, hunks, .. } = &parsed[0] else {
         panic!("expected update operation");
     };
     let updated = apply_patch_hunks_to_content(path, "old\nbetween\nold\n", hunks)
@@ -1800,6 +1800,7 @@ async fn owned_workspace_waits_for_the_actual_write_after_stop_request() {
         "write".into(),
         json!({"path":"held.txt","content":"replacement","expected_revision":content_revision(b"original")}),
         id.into(),
+        json!({}),
         roots,
     ));
     tokio::time::timeout(Duration::from_secs(5), reached.wait())
@@ -1846,6 +1847,7 @@ async fn owned_workspace_honors_pre_dispatch_stop_for_delete_and_git() {
             tool.into(),
             json!({"path":"kept.txt"}),
             id,
+            json!({}),
             roots,
         )
         .await
@@ -1945,4 +1947,143 @@ async fn initial_storage_failure_keeps_priority_over_a_real_rollback_conflict() 
     assert!(error.message.contains("Rollback conflict for first.txt"));
     assert_eq!(fs::read_to_string(&first).unwrap(), "external edit\n");
     assert_eq!(fs::read_to_string(&second).unwrap(), "second-original\n");
+}
+
+#[tokio::test]
+async fn agsdl_frozen_write_policy_guards_actual_executor_without_partial_writes() {
+    let workspace = TempDir::new().unwrap();
+    let root = workspace.path().canonicalize().unwrap();
+    fs::create_dir(root.join("sub")).unwrap();
+    fs::create_dir(root.join("docs")).unwrap();
+    fs::write(root.join(".env"), "secret\n").unwrap();
+    fs::write(root.join("allowed.txt"), "old\n").unwrap();
+    let rules = json!({"writeRules":[{"action":"write","effect":"deny","match":".env*"}]});
+    let invoke = |tool: &str, args: serde_json::Value, permissions: serde_json::Value| {
+        let roots = Arc::new(std::collections::BTreeMap::from([(
+            root.clone(),
+            crate::fs::operations::workspace_root_identity(&root).unwrap(),
+        )]));
+        execute_workspace_tool_owned(
+            root.clone(),
+            root.clone(),
+            GitState::new(),
+            "Implement".into(),
+            tool.into(),
+            args,
+            uuid::Uuid::new_v4().to_string(),
+            permissions,
+            roots,
+        )
+    };
+    // Positive control proves that this reaches the real transactional executor.
+    invoke(
+        "write",
+        json!({"path":"allowed.txt","content":"old\n"}),
+        rules.clone(),
+    )
+    .await
+    .unwrap();
+    for (tool, args) in [
+        ("write", json!({"path":".env","content":"changed"})),
+        (
+            "edit",
+            json!({"path":"sub/../.env","old_text":"secret","new_text":"changed"}),
+        ),
+        ("delete", json!({"path":".env"})),
+        (
+            "apply_patch",
+            json!({"patch_text":"*** Begin Patch\n*** Update File: allowed.txt\n@@\n-old\n+changed\n*** Add File: created.txt\n+created\n*** Delete File: .env\n*** End Patch"}),
+        ),
+        (
+            "apply_patch",
+            json!({"patch_text":"*** Begin Patch\n*** Update File: allowed.txt\n*** Move to: .env.local\n@@\n-old\n+changed\n*** End Patch"}),
+        ),
+        (
+            "apply_patch",
+            json!({"patch_text":"*** Begin Patch\n*** Update File: .env\n*** Move to: moved.txt\n@@\n-secret\n+changed\n*** End Patch"}),
+        ),
+    ] {
+        let error = invoke(tool, args, rules.clone()).await.unwrap_err();
+        assert!(error.message.contains("PERMISSION"), "{error:?}");
+        assert_eq!(fs::read_to_string(root.join(".env")).unwrap(), "secret\n");
+        assert_eq!(
+            fs::read_to_string(root.join("allowed.txt")).unwrap(),
+            "old\n"
+        );
+        for path in ["created.txt", ".env.local", "moved.txt"] {
+            assert!(!root.join(path).exists());
+        }
+    }
+    #[cfg(unix)]
+    {
+        fs::write(root.join(r".env\local"), "secret").unwrap();
+        for (tool, args) in [
+            ("write", json!({"path":r".env\local","content":"changed"})),
+            (
+                "edit",
+                json!({"path":r".env\local","old_text":"secret","new_text":"changed"}),
+            ),
+            ("delete", json!({"path":r".env\local"})),
+            (
+                "apply_patch",
+                json!({"patch_text":concat!("*** Begin Patch\n*** Add File: created.txt\n+created\n*** Delete File: ", r".env\local", "\n*** End Patch")}),
+            ),
+        ] {
+            assert!(invoke(tool, args, rules.clone())
+                .await
+                .unwrap_err()
+                .message
+                .contains("PERMISSION"));
+            assert_eq!(
+                fs::read_to_string(root.join(r".env\local")).unwrap(),
+                "secret"
+            );
+            assert!(!root.join("created.txt").exists());
+        }
+    }
+    #[cfg(unix)]
+    fs::set_permissions(root.join("allowed.txt"), fs::Permissions::from_mode(0o755)).unwrap();
+    // Successful moves exercise both the parser and the transactional mutations.
+    invoke("apply_patch", json!({"patch_text":"*** Begin Patch\n*** Update File: allowed.txt\n*** Move to: renamed.txt\n@@\n-old\n+changed\n*** End Patch"}), rules.clone()).await.unwrap();
+    assert!(!root.join("allowed.txt").exists());
+    #[cfg(unix)]
+    assert_eq!(
+        fs::metadata(root.join("renamed.txt"))
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777,
+        0o755
+    );
+    assert_eq!(
+        fs::read_to_string(root.join("renamed.txt")).unwrap(),
+        "changed\n"
+    );
+    #[cfg(unix)]
+    {
+        std::os::unix::fs::symlink("../.env", root.join("docs/link")).unwrap();
+        assert!(invoke(
+            "write",
+            json!({"path":"docs/link","content":"changed"}),
+            rules.clone()
+        )
+        .await
+        .unwrap_err()
+        .message
+        .contains("PERMISSION"));
+        fs::create_dir(root.join("secret")).unwrap();
+        std::os::unix::fs::symlink("../secret", root.join("docs/alias")).unwrap();
+        let rules =
+            json!({"writeRules":[{"action":"write","effect":"deny","match":"docs/**/.env"}]});
+        assert!(invoke(
+            "write",
+            json!({"path":"docs/alias/.env","content":"changed"}),
+            rules
+        )
+        .await
+        .unwrap_err()
+        .message
+        .contains("PERMISSION"));
+        assert!(!root.join("secret/.env").exists());
+    }
 }

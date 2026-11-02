@@ -443,6 +443,41 @@ mod tests {
     }
 }
 
+/// Narrow host-specific transport used while the document reader remains at 0.2.
+pub(crate) fn validate_agsdl_write_rules(rules: &serde_json::Value) -> Result<(), &'static str> {
+    let Some(rules) = rules.as_array() else {
+        return Err("writeRules must be an array");
+    };
+    for rule in rules {
+        let Some(fields) = rule.as_object() else {
+            return Err("Write rules must be objects");
+        };
+        if rule["action"] != "write"
+            || !matches!(rule["effect"].as_str(), Some("allow" | "deny"))
+            || rule.get("match").is_some_and(|value| !value.is_string())
+            || fields
+                .keys()
+                .any(|key| !matches!(key.as_str(), "action" | "effect" | "match"))
+        {
+            return Err("Only write allow/deny rules with an optional string match are supported");
+        }
+    }
+    Ok(())
+}
+
+/// Native Codex tools cannot consult Macro's per-invocation policy. Grant less
+/// by making the entire workspace read-only whenever a write denial is frozen.
+pub(crate) fn agsdl_native_read_only(permissions: &serde_json::Value) -> bool {
+    permissions["readOnly"] == true
+        || permissions["mode"] != "Implement"
+        || permissions.get("writeRules").is_some_and(|rules| {
+            validate_agsdl_write_rules(rules).is_err()
+                || rules
+                    .as_array()
+                    .is_some_and(|rules| rules.iter().any(|rule| rule["effect"] == "deny"))
+        })
+}
+
 /// Resolve existing ancestors as well as existing files, preserving OS symlink/.. semantics.
 fn permission_path(root: &std::path::Path, raw: &str) -> Option<std::path::PathBuf> {
     use std::path::{Component, PathBuf};
@@ -476,6 +511,14 @@ fn permission_path(root: &std::path::Path, raw: &str) -> Option<std::path::PathB
         }
     }
     Some(resolved)
+}
+
+fn permission_match_path(path: &std::path::Path) -> String {
+    #[cfg(windows)]
+    return path.to_string_lossy().replace('\\', "/");
+    // On Unix an antislash is a literal filename character, not a separator.
+    #[cfg(not(windows))]
+    path.to_string_lossy().into_owned()
 }
 
 fn permission_glob(pattern: &[u8], path: &[u8]) -> bool {
@@ -522,6 +565,12 @@ pub(crate) fn agsdl_write_denied(
     if !is_write_tool(tool) {
         return false;
     }
+    if permissions
+        .get("writeRules")
+        .is_some_and(|rules| validate_agsdl_write_rules(rules).is_err())
+    {
+        return true;
+    }
     let mut paths = Vec::new();
     if tool == "apply_patch" {
         for line in args["patch_text"].as_str().unwrap_or("").lines() {
@@ -549,6 +598,25 @@ pub(crate) fn agsdl_write_denied(
         if !path.starts_with(&root) {
             return true;
         }
+        let mut lexical = std::path::PathBuf::new();
+        let expanded = if let Some(rest) = raw.strip_prefix("~/") {
+            let Some(home) = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE"))
+            else {
+                return true;
+            };
+            std::path::PathBuf::from(home).join(rest)
+        } else {
+            root.join(raw)
+        };
+        for component in expanded.components() {
+            match component {
+                std::path::Component::ParentDir => {
+                    lexical.pop();
+                }
+                std::path::Component::CurDir => {}
+                other => lexical.push(other.as_os_str()),
+            }
+        }
         for rule in permissions["writeRules"].as_array().into_iter().flatten() {
             if rule["action"] != "write" || rule["effect"] != "deny" {
                 continue;
@@ -567,7 +635,9 @@ pub(crate) fn agsdl_write_denied(
                 return true;
             }
             if !pattern.contains('*') {
-                if permission_path(&root, pattern).is_none_or(|candidate| candidate == path) {
+                if permission_path(&root, pattern)
+                    .is_none_or(|candidate| candidate == path || candidate == lexical)
+                {
                     return true;
                 }
                 continue;
@@ -579,11 +649,13 @@ pub(crate) fn agsdl_write_denied(
             else {
                 return true;
             };
-            let absolute_pattern = base.join(suffix).to_string_lossy().replace('\\', "/");
-            if permission_glob(
-                absolute_pattern.as_bytes(),
-                path.to_string_lossy().replace('\\', "/").as_bytes(),
-            ) {
+            let absolute_pattern = permission_match_path(&base.join(suffix));
+            if [&path, &lexical].iter().any(|candidate| {
+                permission_glob(
+                    absolute_pattern.as_bytes(),
+                    permission_match_path(candidate).as_bytes(),
+                )
+            }) {
                 return true;
             }
         }
@@ -677,6 +749,14 @@ mod agsdl_write_tests {
         ));
         #[cfg(unix)]
         {
+            for tool in ["write", "edit", "delete"] {
+                assert!(denied(Some(".env*"), tool, json!({"path":r".env\local"})));
+            }
+            assert!(denied(
+                Some(r".env\*"),
+                "write",
+                json!({"path":r".env\local"})
+            ));
             std::os::unix::fs::symlink("../.env", root.join("docs/link")).unwrap();
             assert!(denied(Some(".env*"), "write", json!({"path":"docs/link"})));
             assert!(denied(Some("docs/link"), "edit", json!({"path":".env"})));

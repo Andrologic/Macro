@@ -118,6 +118,13 @@ describe("toolSecurityPolicy", () => {
     expect(result.denialReason).toContain("outside the current workspace");
   });
 
+  it("denies an apply_patch rename whose destination leaves the workspace", () => {
+    const result = evaluateToolSecurity("apply_patch", {
+      patch_text: "*** Begin Patch\n*** Update File: allowed.txt\n*** Move to: ../outside.txt\n@@\n-old\n+new\n*** End Patch",
+    }, { mode: "Implement", riskLevel: "balanced", workspacePath: "/repo" });
+    expect(result.decision).toBe("deny");
+  });
+
   it("uses a tool-level remember key for web search grants", () => {
     const result = evaluateToolSecurity(
       "web_search",
