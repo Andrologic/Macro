@@ -13,6 +13,9 @@ The format is based on Keep a Changelog, and this project uses versions from `pa
 
 ### Fixed
 
+- Replaced expandable generation-attempt details with a plain, spaced message, including while a tool awaits approval.
+- Kept tool approvals reactive to subscription updates, and translated native database-lock refusals without losing task-creation choices.
+- Preserved bounded process-inspection causes and an already-obtained Git exit status when native cleanup cannot be verified.
 - Preserved user text across conversation transports, images before accepting a send, deferred submissions, Goal continuations, and uncertain tool outcomes after failures.
 - Kept plan finalization available after completed tasks are archived, and preserved task-creation choices and errors after a rejected operation.
 - Kept task reviews tied to the selected task across project filters, and made saved Architect strategy changes distinguishable from failed follow-up operations.

@@ -197,9 +197,13 @@ fn pending_migration_preserves_a_divergent_canonical_store_and_quarantines_its_j
             .as_deref(),
         Some("new")
     );
+    let canonical: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&path).expect("canonical store")).unwrap();
+    assert_eq!(canonical["namespaces"]["providers"]["openai"], "new");
+    assert!(uuid::Uuid::parse_str(canonical["policyEpoch"].as_str().unwrap()).is_ok());
     assert_eq!(
-        std::fs::read_to_string(&path).expect("canonical store"),
-        divergent
+        std::fs::read_to_string(temp.path().join("provider-secrets.json.v1.bak")).unwrap(),
+        legacy
     );
     assert!(!temp
         .path()

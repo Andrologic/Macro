@@ -1,0 +1,23 @@
+{
+  "contract_version": "2.0",
+  "type": "response",
+  "request_id": "request-demo",
+  "account_id": "account-demo",
+  "operation": "conversation.file.capture",
+  "result": {
+    "ref": {
+      "instance_id": "instance-demo",
+      "kind": "conversation",
+      "conversation_id": "conversation-demo"
+    },
+    "file_id": "file-demo",
+    "snapshot_id": "capture-demo",
+    "observed_at": "2026-10-10T12:00:00.000Z",
+    "expires_at": "2026-10-10T12:05:00.000Z",
+    "export_policy_revision": "visible-1",
+    "content_state": "available",
+    "mime_type": "text/plain",
+    "total_bytes": 6,
+    "sha256": "5891b5b522d5df086d0ff0b110fbd9d21bb4fc7163af34d08286a2e846f6be03"
+  }
+}

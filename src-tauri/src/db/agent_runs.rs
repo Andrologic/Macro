@@ -671,6 +671,10 @@ pub async fn timeout_agent_run(
 /// other live process can still own a running row; the schema has no instance lease that could
 /// prove this itself.
 pub async fn reconcile_active_agent_runs_after_restart(pool: &SqlitePool) -> DbResult<u64> {
+    reconcile_active_agent_runs_after_restart_in(&mut *pool.acquire().await?).await
+}
+
+pub(crate) async fn reconcile_active_agent_runs_after_restart_in(connection: &mut sqlx::SqliteConnection) -> DbResult<u64> {
     let now = chrono::Utc::now().to_rfc3339();
     let result = sqlx::query(
         r#"
@@ -681,7 +685,7 @@ pub async fn reconcile_active_agent_runs_after_restart(pool: &SqlitePool) -> DbR
     )
     .bind(&now)
     .bind(&now)
-    .execute(pool)
+    .execute(connection)
     .await?;
     Ok(result.rows_affected())
 }

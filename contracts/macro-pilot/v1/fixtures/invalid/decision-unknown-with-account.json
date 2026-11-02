@@ -1,0 +1,55 @@
+{
+  "contract_version": "1.0",
+  "type": "decision",
+  "ref": {
+    "type": "decision",
+    "instance_id": "instance:studio-mac",
+    "workspace_id": "workspace:macro-suite",
+    "task_id": "task:pilot-contract",
+    "decision_id": "decision:topology:01",
+    "conversation_id": "conv-4",
+    "assistant_message_id": "msg-4"
+  },
+  "state": "resolved",
+  "steps": [
+    {
+      "step_id": "scope",
+      "prompt": "How should the client connect?",
+      "choices": [
+        "Automatic",
+        "Local only",
+        "Manual"
+      ],
+      "free_text_allowed": true
+    },
+    {
+      "step_id": "constraints",
+      "prompt": "Which connection constraint should Macro respect?",
+      "choices": [
+        "No extra constraint",
+        "Local network only",
+        "VPN required"
+      ],
+      "free_text_allowed": true,
+      "free_text_placeholder": "Describe another constraint"
+    }
+  ],
+  "resolution": {
+    "answers": [
+      {
+        "step_id": "scope",
+        "answer": "Automatic"
+      },
+      {
+        "step_id": "constraints",
+        "answer": "Keep the connection on the trusted local network."
+      }
+    ],
+    "resolved_by": {
+      "origin": "unknown",
+      "account_id": "account:github:583231"
+    }
+  },
+  "revision": 2,
+  "observed_at": "2026-09-06T12:00:00Z"
+}

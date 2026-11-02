@@ -65,6 +65,7 @@ export interface LinkedConversationDeletionSaga {
   createdAt: string;
   updatedAt: string;
   lastError?: string;
+  requiresPilotAuthorization?: boolean;
 }
 
 export interface LinkedTaskDeletionSaga {
@@ -85,6 +86,7 @@ export interface LinkedTaskDeletionSaga {
   createdAt: string;
   updatedAt: string;
   lastError?: string;
+  requiresPilotAuthorization?: boolean;
 }
 
 export class LinkedConversationDeletionSagaCorruptionError extends Error {
@@ -168,6 +170,7 @@ const parseSagas = (value: string | null | undefined): LinkedConversationDeletio
         (candidate.creationCommitted !== undefined && typeof candidate.creationCommitted !== 'boolean') ||
         (candidate.creationCommitted === true && (ownerType !== 'task' ||
           (candidate.phase !== 'prepared' && candidate.phase !== 'task_deleted'))) ||
+        (candidate.requiresPilotAuthorization !== undefined && typeof candidate.requiresPilotAuthorization !== 'boolean') ||
         (candidate.generation !== undefined && !isDurableGeneration(candidate.generation)) ||
         (
           candidate.legacyCreatedAt !== undefined &&
@@ -298,6 +301,58 @@ const updateSetting = async (
     if (result.applied) return;
   }
   throw new Error(`Conflit persistant pendant la mise à jour du réglage ${key}.`);
+};
+
+type RawSagaEntry = Record<string, unknown>;
+const isRawSagaEntry = (value: unknown): value is RawSagaEntry =>
+  typeof value === 'object' && value !== null && !Array.isArray(value);
+const looksLikeSaga = (entry: RawSagaEntry): boolean =>
+  ['ownerType', 'ownerId', 'taskId', 'conversationId', 'phase', 'requiresPilotAuthorization']
+    .some(key => Object.prototype.hasOwnProperty.call(entry, key));
+const parsePilotRawSagas = (value: string | null): unknown[] => {
+  if (!value) return [];
+  let parsed: unknown;
+  try { parsed = JSON.parse(value); } catch { throw new LinkedConversationDeletionSagaCorruptionError(value); }
+  if (!Array.isArray(parsed)) throw new LinkedConversationDeletionSagaCorruptionError(value);
+  for (const entry of parsed) {
+    if (!isRawSagaEntry(entry)) throw new LinkedConversationDeletionSagaCorruptionError(value);
+    if (looksLikeSaga(entry)) parseSagas(JSON.stringify([entry]));
+  }
+  return parsed;
+};
+const pilotSagaIdentity = (saga: LinkedConversationDeletionSaga): string =>
+  `${getLinkedDeletionSagaKey(saga)}:${saga.requiresPilotAuthorization === true}`;
+
+/** Keep unrelated legacy and foreign entries byte-for-byte across Pilot CAS updates. */
+const mutatePilotRawSagas = async (
+  mutation: (current: LinkedConversationDeletionSaga[]) => LinkedConversationDeletionSaga[],
+  transport: LinkedTaskDeletionSagaTransport,
+): Promise<void> => {
+  if (!transport.isTauriAvailable()) return;
+  for (let attempt = 0; attempt < MAX_CAS_ATTEMPTS; attempt += 1) {
+    const expectedValueJson = (await transport.dbGetAppSetting(SAGA_KEY))?.value_json ?? null;
+    const raw = parsePilotRawSagas(expectedValueJson);
+    const parsed = raw.map(entry => isRawSagaEntry(entry) && looksLikeSaga(entry)
+      ? parseSagas(JSON.stringify([entry]))[0] : null);
+    const next = mutation(parsed.filter((entry): entry is LinkedConversationDeletionSaga => entry !== null));
+    const remaining = new Map(next.map(entry => [pilotSagaIdentity(entry), entry]));
+    const merged: unknown[] = [];
+    raw.forEach((entry, index) => {
+      const current = parsed[index];
+      if (!current) { merged.push(entry); return; }
+      const key = pilotSagaIdentity(current);
+      const replacement = remaining.get(key);
+      if (!replacement) return;
+      merged.push(JSON.stringify(replacement) === JSON.stringify(current) ? entry : replacement);
+      remaining.delete(key);
+    });
+    merged.push(...remaining.values());
+    const valueJson = JSON.stringify(merged);
+    if (valueJson === expectedValueJson || (expectedValueJson === null && merged.length === 0)) return;
+    const result = await transport.dbCompareAndSwapAppSetting({ key: SAGA_KEY, expectedValueJson, valueJson });
+    if (result.applied) return;
+  }
+  throw new Error('Conflit persistant lors de la mise à jour CAS du journal de suppression liée.');
 };
 
 const mutateLinkedConversationDeletionSagas = async (
@@ -432,9 +487,10 @@ const persistLinkedConversationDeletionSaga = async (
   ) {
     throw new StaleLinkedTaskDeletionSagaError();
   }
-  await mutateLinkedConversationDeletionSagas(
+  await (saga.requiresPilotAuthorization ? mutatePilotRawSagas : mutateLinkedConversationDeletionSagas)(
     (current) => {
-      const existing = current.find((entry) => hasSameOwnerIdentity(entry, saga));
+      const existing = current.find((entry) => hasSameOwnerIdentity(entry, saga) &&
+        (!saga.requiresPilotAuthorization || entry.requiresPilotAuthorization === true));
       if (existing) {
         if (startNewGeneration) throw new StaleLinkedTaskDeletionSagaError();
         const existingGeneration = getLinkedDeletionSagaGeneration(existing);
@@ -456,7 +512,8 @@ const persistLinkedConversationDeletionSaga = async (
         ? mergeSameGenerationProgress(existing, saga)
         : saga;
       return [
-        ...current.filter((entry) => !hasSameOwnerIdentity(entry, saga)),
+        ...current.filter((entry) => !hasSameOwnerIdentity(entry, saga) ||
+          (saga.requiresPilotAuthorization && entry.requiresPilotAuthorization !== true)),
         next,
       ];
     },
@@ -467,7 +524,7 @@ const persistLinkedConversationDeletionSaga = async (
     (!startNewGeneration && registryCompletesSaga(completedAfterUpsert, completionIdentity)) ||
     registryCompletesSaga(completedAfterUpsert, saga)
   ) {
-    await mutateLinkedConversationDeletionSagas(
+    await (saga.requiresPilotAuthorization ? mutatePilotRawSagas : mutateLinkedConversationDeletionSagas)(
       (current) => current.filter(
         (entry) => getLinkedDeletionSagaGeneration(entry) !== generation,
       ),
@@ -491,10 +548,17 @@ export const removeLinkedConversationDeletionSaga = async (
   ownerType: LinkedConversationDeletionOwner,
   ownerId: string,
   targetBranch?: string,
-  generation?: string,
+  generation?: string | boolean,
   transport: LinkedTaskDeletionSagaTransport = defaultTransport,
 ): Promise<void> => {
   if (!transport.isTauriAvailable()) return;
+  const pilotOnly = generation === true;
+  if (pilotOnly) {
+    await mutatePilotRawSagas(current => current.filter(entry =>
+      entry.requiresPilotAuthorization !== true || entry.ownerType !== ownerType || entry.ownerId !== ownerId ||
+      (ownerType !== 'conversation' && targetBranch !== undefined && entry.targetBranch !== targetBranch)), transport);
+    return;
+  }
   if (!generation) throw new Error('La génération de suppression liée est requise.');
   const sagaKey = getLinkedDeletionSagaKey({ ownerType, ownerId, targetBranch });
   const generationPrefix = `${sagaKey}:`;
@@ -568,6 +632,7 @@ export const loadLinkedTaskDeletionSagas = async (
           createdAt: saga.createdAt,
           updatedAt: saga.updatedAt,
           lastError: saga.lastError,
+          requiresPilotAuthorization: saga.requiresPilotAuthorization,
         }]
       : [],
   );
@@ -603,7 +668,7 @@ export const startLinkedTaskDeletionSaga = async (
 export const removeLinkedTaskDeletionSaga = async (
   taskId: string,
   targetBranch?: string,
-  generation?: string,
+  generation?: string | boolean,
   transport: LinkedTaskDeletionSagaTransport = defaultTransport,
 ): Promise<void> => removeLinkedConversationDeletionSaga(
   'task',

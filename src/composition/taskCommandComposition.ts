@@ -3,7 +3,7 @@ import { buildTerminalDisplayMetadata, type TerminalDisplayMetadata } from '../s
 import { runWorktreeSetupCommand, type RunWorktreeSetupCommandParams } from '../services/worktreeSetupCommands';
 import { createTaskProjectCommands, type TaskProjectCommandPorts } from '../services/taskProjectCommandWorkflow';
 
-type TerminalCommandInput = Pick<ProjectCommandRequest, 'taskId' | 'projectId' | 'cwd' | 'command'>
+type TerminalCommandInput = Pick<ProjectCommandRequest, 'taskId' | 'projectId' | 'cwd' | 'command' | 'beforeEffect' | 'expectedBranch'>
   & TerminalDisplayMetadata;
 
 export interface TaskCommandTerminalAdapter {
@@ -27,6 +27,7 @@ export function createProjectCommandComposition(dependencies: {
       const common = {
         taskId: request.taskId, projectId: request.projectId,
         cwd: request.cwd, command: request.command,
+        beforeEffect: request.beforeEffect, expectedBranch: request.expectedBranch,
       };
       if (request.purpose === 'worktree_setup') return terminal.startWorktreeSetupCommandTab({
         ...common,

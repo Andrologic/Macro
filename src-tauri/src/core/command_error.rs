@@ -76,6 +76,14 @@ impl CommandError {
     }
 
     pub fn code(&self) -> Option<&'static str> {
+        if self
+            .message
+            .strip_prefix("Validation error: ")
+            .unwrap_or(&self.message)
+            .starts_with("chat_admission_")
+        {
+            return Some("CHAT_ADMISSION_REFUSED");
+        }
         if let Some(error) = self.backend.as_ref() {
             return Some(error.code());
         }

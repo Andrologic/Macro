@@ -123,7 +123,30 @@ testée, mais ces contrôles ne remplacent pas les parcours sur application
 installée. La publication de la 0.1.8 ne qualifie pas ces corrections
 postérieures.
 
-### 3.3 AgSDL, Pilot et Connect à cette base
+
+
+### 3.3 Stabilisation desktop intégrée sur develop
+
+Le chantier de stabilisation desktop est intégré localement à `develop`
+par le commit `0dad2a36`. Les corrections couvrent le transport et la reprise
+des conversations, la finalisation des plans, la création et la restauration
+des tâches, l'historique, la navigation entre projets, les dialogues, le MCP,
+la revue, les actions Git et les textes français.
+
+Les audits indépendants et les parcours ciblés sur un profil QA synthétique
+ont été validés avant intégration. Le contrôle frontend a réussi sur le
+candidat `e43477a4`, dont les sources frontend sont identiques au candidat
+final `6b518c8d`. Ce dernier a aussi passé les contrôles natifs avec Rust 1.95,
+les vérifications des contrats générés et la recette du binaire QA reconstruit.
+L'arbre intégré est identique au candidat final qualifié.
+
+Cette validation porte sur les critères convenus du chantier. Elle ne prouve
+pas la disparition de tout dépassement de délai Git : le diagnostic conserve
+maintenant les causes d'inspection et le statut déjà obtenu. Elle ne garantit
+pas non plus un précontrôle de divergence avant chaque Pull lorsque les
+compteurs affichés sont périmés.
+
+### 3.4 AgSDL, Pilot et Connect à cette base
 
 Au point historique du 22 octobre 2026, la base `2f3dd1d3` ne contenait
 ni l'éditeur AgSDL ni les parcours Macro Pilot et Macro Connect.
@@ -139,6 +162,10 @@ Macro Pilot et Macro Connect ne sont pas déclarés livrés.
 La ligne publique 0.1 reste desktop local-first. Le kernel headless est un
 [prototype expérimental](../HEADLESS.md) ; la supervision mobile, les comptes
 applicatifs et les abonnements restent des objectifs futurs.
+
+### 3.5 Incréments de développement suivants
+
+La suite comprend la visibilité des messages en attente et leur retrait sûr, la lisibilité des tâches et dépendances, le contraste des descriptions et la qualification Windows. Ces travaux ne constituent pas une nouvelle version publiée.
 
 ---
 

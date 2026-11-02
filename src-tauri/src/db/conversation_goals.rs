@@ -631,13 +631,18 @@ pub async fn claim_audit(
 }
 
 pub async fn reconcile_audits_after_restart(pool: &SqlitePool) -> DbResult<u64> {
-    let now = chrono::Utc::now().to_rfc3339();
     let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
-    sqlx::query("UPDATE conversation_goals SET status = 'paused', last_error = NULL, updated_at = ? WHERE status = 'auditing' AND is_current = 1 AND EXISTS (SELECT 1 FROM conversation_goal_audits AS audit WHERE audit.conversation_id = conversation_goals.conversation_id AND audit.goal_id = conversation_goals.goal_id AND audit.goal_revision = conversation_goals.revision AND audit.status IN ('queued', 'running'))")
-        .bind(&now).execute(&mut *tx).await?;
-    let count = sqlx::query("UPDATE conversation_goal_audits SET status = 'interrupted', updated_at = ? WHERE status IN ('queued', 'running')")
-        .bind(&now).execute(&mut *tx).await?.rows_affected();
+    let count = reconcile_audits_after_restart_in(&mut tx).await?;
     tx.commit().await?;
+    Ok(count)
+}
+
+pub(crate) async fn reconcile_audits_after_restart_in(connection: &mut sqlx::SqliteConnection) -> DbResult<u64> {
+    let now = chrono::Utc::now().to_rfc3339();
+    sqlx::query("UPDATE conversation_goals SET status = 'paused', last_error = NULL, updated_at = ? WHERE status = 'auditing' AND is_current = 1 AND EXISTS (SELECT 1 FROM conversation_goal_audits AS audit WHERE audit.conversation_id = conversation_goals.conversation_id AND audit.goal_id = conversation_goals.goal_id AND audit.goal_revision = conversation_goals.revision AND audit.status IN ('queued', 'running'))")
+        .bind(&now).execute(&mut *connection).await?;
+    let count = sqlx::query("UPDATE conversation_goal_audits SET status = 'interrupted', updated_at = ? WHERE status IN ('queued', 'running')")
+        .bind(&now).execute(connection).await?.rows_affected();
     Ok(count)
 }
 

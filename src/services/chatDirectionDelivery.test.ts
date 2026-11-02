@@ -20,7 +20,7 @@ beforeEach(() => {
 });
 afterEach(() => Object.defineProperty(globalThis, 'window', { configurable: true, value: previousWindow }));
 
-function fixture(readBarrier?: Promise<void>) {
+async function fixture(readBarrier?: Promise<void>) {
   const send = chatSendFixture();
   const identity = { conversationId: 'conversation-1', sessionId: 'original-session',
     turnId: 'original-turn', assistantMessageId: 'original-assistant' } satisfies ChatTurnIdentity;
@@ -31,7 +31,7 @@ function fixture(readBarrier?: Promise<void>) {
     status: 'sent' as const, conversationId: identity.conversationId, turnId: identity.turnId,
     userMessageId: 'direction-message', assistantMessageId: 'recovery-assistant',
   }));
-  const queue = createQueuedSubmissionRuntime({
+  const queue = createQueuedSubmissionRuntime({ admit: async () => ({ kind: 'conversation' }), finish: async () => {},
     blocked: id => states.get(id)?.phase === 'streaming', cancelled: () => false,
     read: async () => { if (readBarrier) await readBarrier; return rows; }, send: sendRecovery, publish: () => {}, saveImages: () => true,
     recovery: () => {}, previews: () => {}, pending: () => {}, attempted: () => {},
@@ -53,11 +53,11 @@ function fixture(readBarrier?: Promise<void>) {
   const entry = queue.capture('direction-id', { ...send.input, images: [{ id: 'image', mimeType: 'image/png',
     dataUrl: 'data:image/png;base64,AQID', createdAt: '2026-01-01' }] }, send.snapshot);
   entry.direction = { userMessageId: 'direction-message', target: { ...identity } };
-  queue.accept(entry);
+  await queue.accept(entry);
   rows.push({ id: 'direction-message', conversation_id: identity.conversationId, turn_id: identity.turnId,
     task_id: '', role: 'user', content: send.input.content, timestamp: '2026-01-01' });
   const enqueue = () => owner.enqueueSteer(identity.conversationId, { role: 'user', content: 'Direction' }, identity, entry.id);
-  const options: StreamingChatOptions = {
+  const options: StreamingChatOptions = { providerAdmission: { kind: 'utility' },
     providerId: 'fixture', providerType: 'openai', modelId: 'fixture', baseUrl: 'https://example.invalid',
     messages: [{ role: 'user', content: 'Initial request' }], signal: controller.signal,
     enableWebSearch: false, enableWebFetch: false, onToken() {}, onComplete() {}, onError(error) { throw error; },
@@ -72,7 +72,7 @@ for (const kind of ['generic', 'native'] as const) {
   describe(`${kind} durable direction pipeline`, () => {
     for (const budget of [3, 4]) {
       test(`preserves the last frontier with budget ${budget}`, async () => {
-        const h = fixture(); const requests: StreamMessage[][] = [];
+        const h = await fixture(); const requests: StreamMessage[][] = [];
         const result = await runToolCallingLoop({ ...h.options, maxTurns: budget, allowedToolIds: ['read'], onToolCall: async () => 'result' }, {
           kind, streamTurn: async ({ messages }) => {
             requests.push(structuredClone(messages));
@@ -87,20 +87,20 @@ for (const kind of ['generic', 'native'] as const) {
         expect(saved.direction?.userMessageId).toBe('direction-message');
         if (budget === 3) {
           expect(saved.direction?.delivery).toBeUndefined();
-          h.owner.beginCompletion(h.identity); h.owner.confirmSteers(h.identity);
+          h.owner.beginCompletion(h.identity); await h.owner.confirmSteers(h.identity);
           expect(loadQueuedSubmissions()).toHaveLength(1);
         } else {
           expect(requests[3].filter(message => message.content === 'Direction')).toHaveLength(1);
           expect(saved.direction?.delivery?.requestEnded).toBe(true);
           // Merely finishing a request does not retire a durable direction.
           expect(loadQueuedSubmissions()).toHaveLength(1);
-          h.owner.beginCompletion(h.identity); h.owner.confirmSteers(h.identity);
+          h.owner.beginCompletion(h.identity); await h.owner.confirmSteers(h.identity);
           expect(loadQueuedSubmissions()).toHaveLength(0);
         }
       });
     }
     test('never consumes during compaction at the last tool iteration', async () => {
-      const h = fixture(); let requests = 0;
+      const h = await fixture(); let requests = 0;
       const options = { ...h.options, maxTurns: 3, allowedToolIds: ['read'],
         onToolCall: async () => 'confirmed result', onBeforeFollowUpRequest: async ({ messages }: { messages: StreamMessage[] }) => {
           if (requests === 3) h.enqueue(); return messages;
@@ -116,7 +116,7 @@ for (const kind of ['generic', 'native'] as const) {
       expect(h.owner.hasPendingSteers(h.identity)).toBe(true);
     });
     test('a possible delivery is never automatically replayed after an effect', async () => {
-      const h = fixture(); let requests = 0; let effects = 0;
+      const h = await fixture(); let requests = 0; let effects = 0;
       await expect(runToolCallingLoop({ ...h.options, maxTurns: 2 }, {
         kind, streamTurn: async () => {
           requests += 1;
@@ -133,23 +133,23 @@ for (const kind of ['generic', 'native'] as const) {
 }
 
 test('a rejected durable delivery marker prevents any provider handoff', async () => {
-  const h = fixture(); h.enqueue();
+  const h = await fixture(); h.enqueue();
   window.localStorage.setItem = () => { throw new Error('quota'); };
-  expect(() => h.owner.deliverSteers(h.identity, 'request-2', h.accepts)).toThrow('could not be saved');
+  await expect(h.owner.deliverSteers(h.identity, 'request-2', h.accepts)).rejects.toThrow('could not be saved');
   expect(loadQueuedSubmissions()[0].direction?.delivery).toBeUndefined();
   expect(h.owner.hasPendingSteers(h.identity)).toBe(true);
 });
 
 test('a storage observer can Stop after the marker without a late provider request', async () => {
-  const h = fixture(); h.enqueue();
+  const h = await fixture(); h.enqueue();
   const write = window.localStorage.setItem;
   window.localStorage.setItem = (key, value) => { write(key, value); h.controller.abort(); };
-  expect(h.owner.deliverSteers(h.identity, 'request-2', h.accepts)).toEqual([]);
+  expect(await h.owner.deliverSteers(h.identity, 'request-2', h.accepts)).toEqual([]);
   expect(loadQueuedSubmissions()[0].direction?.delivery?.requestEnded).toBe(false);
 });
 
 test('an earlier completed assistant never confirms a new direction of the same turn', async () => {
-  const h = fixture(); h.owner.set(h.identity.conversationId, null);
+  const h = await fixture(); h.owner.set(h.identity.conversationId, null);
   h.rows.unshift({ id: 'original-assistant', conversation_id: h.identity.conversationId, turn_id: h.identity.turnId,
     task_id: '', role: 'assistant', content: 'Earlier answer', timestamp: '2026-01-01', completion_reason: 'completed' });
   await h.queue.retry(h.identity.conversationId);
@@ -159,7 +159,7 @@ test('an earlier completed assistant never confirms a new direction of the same 
 
 for (const end of ['stop', 'reset', 'release'] as const) {
   test(`${end} preserves accepted direction content and images`, async () => {
-    const h = fixture(); h.enqueue();
+    const h = await fixture(); h.enqueue();
     if (end === 'stop') await h.owner.stop(h.identity.conversationId);
     else if (end === 'reset') h.owner.reset();
     else { h.owner.track(h.identity.conversationId, Promise.resolve()); await new Promise(resolve => setImmediate(resolve)); }
@@ -168,8 +168,8 @@ for (const end of ['stop', 'reset', 'release'] as const) {
   });
 }
 
-test('a DB await owned by an old generation does not enqueue into its overflow replacement', () => {
-  const h = fixture(); const captured = h.owner.captureSteerOwner(h.identity.conversationId);
+test('a DB await owned by an old generation does not enqueue into its overflow replacement', async () => {
+  const h = await fixture(); const captured = h.owner.captureSteerOwner(h.identity.conversationId);
   h.owner.set(h.identity.conversationId, { ...h.identity, phase: 'preparing', abortController: h.controller, lastError: null });
   h.owner.claimStream(h.identity, h.controller);
   expect(captured.isCurrent()).toBe(false);
@@ -178,18 +178,18 @@ test('a DB await owned by an old generation does not enqueue into its overflow r
 
 
 test('turn deletion invalidates sibling directions while preserving another conversation', async () => {
-  const h = fixture();
+  const h = await fixture();
   const sibling = structuredClone(h.entry); sibling.id = 'sibling-direction'; sibling.direction!.userMessageId = 'sibling-user';
   const other = structuredClone(h.entry); other.id = 'other-direction'; other.input.conversationId = 'other-conversation'; other.direction!.userMessageId = 'other-user';
-  h.queue.accept(sibling); h.queue.accept(other);
+  await h.queue.accept(sibling); await h.queue.accept(other);
   const ids = await h.queue.invalidateDirectionTurns(h.identity.conversationId, [h.identity.turnId]);
-  h.queue.finishDirectionDeletion(ids);
+  await h.queue.finishDirectionDeletion(ids);
   expect(loadQueuedSubmissions().map(entry => entry.id)).toEqual(['other-direction']);
 });
 
 test('request ended plus a saved exact assistant retires recovery after restart without a replay', async () => {
-  const h = fixture(); h.enqueue();
-  h.owner.deliverSteers(h.identity, 'request-2', h.accepts); h.owner.steerRequestEnded(h.identity, 'request-2'); h.owner.reset();
+  const h = await fixture(); h.enqueue();
+  await h.owner.deliverSteers(h.identity, 'request-2', h.accepts); await h.owner.steerRequestEnded(h.identity, 'request-2'); h.owner.reset();
   h.owner.set(h.identity.conversationId, null);
   h.rows.push({ id: h.identity.assistantMessageId, conversation_id: h.identity.conversationId, turn_id: h.identity.turnId,
     task_id: '', role: 'assistant', content: 'Confirmed', timestamp: '2026-01-01', completion_reason: 'completed' });
@@ -197,41 +197,41 @@ test('request ended plus a saved exact assistant retires recovery after restart 
   expect(loadQueuedSubmissions()).toEqual([]); expect(h.sendRecovery).not.toHaveBeenCalled();
 });
 
-test('a replacement generation recovers the prior pending batch before accepting its own', () => {
-  const h = fixture(); h.enqueue();
+test('a replacement generation recovers the prior pending batch before accepting its own', async () => {
+  const h = await fixture(); h.enqueue();
   h.owner.set(h.identity.conversationId, { ...h.identity, phase: 'preparing', abortController: h.controller, lastError: null });
   const next = h.owner.claimStream(h.identity, h.controller)!;
-  expect(h.owner.deliverSteers(h.identity, 'successor-request', next)).toEqual([]);
+  expect(await h.owner.deliverSteers(h.identity, 'successor-request', next)).toEqual([]);
   expect(loadQueuedSubmissions()[0].direction?.delivery).toBeUndefined();
-  expect(h.owner.deliverSteers(h.identity, 'late-original-request', h.accepts)).toEqual([]);
+  expect(await h.owner.deliverSteers(h.identity, 'late-original-request', h.accepts)).toEqual([]);
 });
 
 for (const detach of ['confirmed', 'remove', 'restore'] as const) {
   test(`${detach} keeps active IO discoverable by turn invalidation until it settles`, async () => {
-    const h = fixture();
+    const h = await fixture();
     let resolveWrite!: () => void;
     const pending = new Promise<void>(resolve => { resolveWrite = resolve; });
     const writing = h.queue.writeDirection(h.entry.id, () => pending);
     await Promise.resolve();
     if (detach === 'confirmed') {
       h.enqueue();
-      h.owner.deliverSteers(h.identity, 'request', h.accepts);
-      h.owner.steerRequestEnded(h.identity, 'request');
-      h.queue.confirmDirections([h.entry.id], h.identity.assistantMessageId);
-    } else if (detach === 'remove') h.queue.remove([h.identity.conversationId]);
-    else h.queue.restore([]);
+      await h.owner.deliverSteers(h.identity, 'request', h.accepts);
+      await h.owner.steerRequestEnded(h.identity, 'request');
+      await h.queue.confirmDirections([h.entry.id], h.identity.assistantMessageId);
+    } else if (detach === 'remove') await h.queue.remove([h.identity.conversationId]);
+    else await h.queue.restore([]);
     expect(loadQueuedSubmissions()).toEqual([]);
     let invalidated = false;
     const invalidating = h.queue.invalidateDirectionTurns(h.identity.conversationId, [h.identity.turnId])
       .then(ids => { invalidated = true; return ids; });
-    await Promise.resolve(); await Promise.resolve();
+    await new Promise(resolve => setImmediate(resolve));
     expect(invalidated).toBe(false);
     expect(loadQueuedSubmissions()[0].direction?.deletionRequested).toBe(true);
     await expect(h.queue.writeDirection(h.entry.id, async () => {})).rejects.toThrow('invalidated');
     resolveWrite(); await writing;
     const ids = await invalidating;
     expect(ids).toEqual([h.entry.id]);
-    h.queue.finishDirectionDeletion(ids);
+    await h.queue.finishDirectionDeletion(ids);
     expect(loadQueuedSubmissions()).toEqual([]);
   });
 }
@@ -240,7 +240,7 @@ for (const detach of ['confirmed', 'remove', 'restore'] as const) {
 test('manual removal holds the mutation lock across its read and refuses a simultaneous retry or write', async () => {
   let releaseRead!: () => void;
   const readBarrier = new Promise<void>(resolve => { releaseRead = resolve; });
-  const h = fixture(readBarrier);
+  const h = await fixture(readBarrier);
   h.queue.pause(h.identity.conversationId);
   h.owner.set(h.identity.conversationId, null);
   const removing = h.queue.removeEntry(h.entry.id);
@@ -251,4 +251,26 @@ test('manual removal holds the mutation lock across its read and refuses a simul
   } finally { releaseRead(); await removing; }
   expect(loadQueuedSubmissions()).toEqual([]);
   expect(h.sendRecovery).not.toHaveBeenCalled();
+});
+
+test('a queued confirmation preserves a turn deletion marker committed ahead of it', async () => {
+  const h = await fixture();
+  h.enqueue();
+  await h.owner.deliverSteers(h.identity, 'request', h.accepts);
+  await h.owner.steerRequestEnded(h.identity, 'request');
+  const invalidating = h.queue.invalidateDirectionTurns(h.identity.conversationId, [h.identity.turnId]);
+  const confirming = h.queue.confirmDirections([h.entry.id], h.identity.assistantMessageId);
+  await Promise.all([invalidating, confirming]);
+  expect(loadQueuedSubmissions()).toHaveLength(1);
+  expect(loadQueuedSubmissions()[0].direction?.deletionRequested).toBe(true);
+});
+
+test('a delivery marker queued behind turn invalidation refuses the provider handoff', async () => {
+  const h = await fixture();
+  h.enqueue();
+  const invalidating = h.queue.invalidateDirectionTurns(h.identity.conversationId, [h.identity.turnId]);
+  const delivering = h.owner.deliverSteers(h.identity, 'request', h.accepts);
+  await expect(delivering).rejects.toThrow('no longer belongs');
+  await invalidating;
+  expect(loadQueuedSubmissions()[0].direction?.delivery).toBeUndefined();
 });

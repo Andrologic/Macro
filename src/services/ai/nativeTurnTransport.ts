@@ -1,6 +1,8 @@
 import { StreamStopUnconfirmedError, preserveStreamStopError } from './streamCancellation';
+import { MacroServiceError, toServiceError } from '../contracts/errors';
+import type { ChatIntentReceipt, ProviderAdmission } from '../ipc/chatAdmission';
 import type { ToolResultBlock } from '../../shared/toolResultContent';
-import { projectCopilotMessageContent } from './copilotPromptCodec';
+import { projectNativeMessages } from './nativeMessageProjection';
 import {
   buildAssistantProviderInputItemsFromTurn,
   buildFunctionCallOutputProviderInputItem,
@@ -48,6 +50,8 @@ import { devLogger } from '../../utils/devLogger';
 const DONE_SUBMISSION_GRACE_MS = 5_000;
 
 export const streamNativeTurnViaTauri = async (params: {
+  providerAdmission: ProviderAdmission;
+  steerReceipts?: ChatIntentReceipt[];
   sessionId?: string;
   nativeExecution?: StreamingChatOptions['nativeExecution'];
   providerId: string;
@@ -99,8 +103,12 @@ export const streamNativeTurnViaTauri = async (params: {
 
   let fullContent = '';
   let executionRegistered = false;
+  let submitted = false;
+  if (params.providerAdmission.kind === 'globalChat' && !params.conversationId) {
+    throw new MacroServiceError('CHAT_ADMISSION_REFUSED', 'The admitted conversation is missing.');
+  }
 
-  return new Promise<StreamingTurnResult>((resolve, reject) => {
+  const delivery = new Promise<StreamingTurnResult>((resolve, reject) => {
     let settled = false;
     let cancellationRequested = false;
     let cancellation: Promise<void> | undefined;
@@ -563,23 +571,13 @@ export const streamNativeTurnViaTauri = async (params: {
         const tools = normalizeNativeProviderTools(params.tools, params.providerType);
 
         const nativeRequest: Parameters<typeof tauriIpc.aiStreamChat>[0] = {
+          providerAdmission: params.providerAdmission,
           requestId,
           providerId: params.providerId,
           modelId: params.modelId,
           reasoningEffort: params.reasoningEffort ?? null,
           conversationId: params.conversationId ?? null,
-          messages: params.messages.map((message) => ({
-            role: message.role,
-            content: params.providerType === 'copilot' ? projectCopilotMessageContent(message) : message.content,
-            ...(message.tool_calls ? { tool_calls: message.tool_calls } : {}),
-            ...(message.tool_call_id ? { tool_call_id: message.tool_call_id } : {}),
-            ...(message.provider_input_items
-              ? { provider_input_items: message.provider_input_items }
-              : {}),
-            ...(params.providerType === 'chatgpt' && message.provider_turn_state
-              ? { provider_turn_state: message.provider_turn_state }
-              : {}),
-          })),
+          messages: projectNativeMessages(params.messages, params.providerType),
           tools,
           toolChoice: 'auto',
           parallelToolCalls: false,
@@ -597,10 +595,12 @@ export const streamNativeTurnViaTauri = async (params: {
           executionRegistered = true;
           if (stopped() || params.signal?.aborted) { signalHandler(); return; }
         }
+        submitted = true;
         await own((params.nativeExecution?.dispatch ?? tauriIpc.aiStreamChat)(nativeRequest));
       } catch (error) {
         if (cancellationRequested) return;
-        finish(() => reject(error instanceof Error ? error : new Error(String(error))));
+        const normalized = toServiceError(error);
+        finish(() => reject(error instanceof Error ? error : new MacroServiceError(normalized.code, normalized.message)));
       }
     })();
   }).then(async result => {
@@ -608,4 +608,47 @@ export const streamNativeTurnViaTauri = async (params: {
     if (executionRegistered) await params.nativeExecution?.visibleMessage(requestId, result.visibleText ?? result.content);
     return result;
   });
+
+  let result: StreamingTurnResult;
+  try {
+    result = await delivery;
+  } catch (error) {
+    if (submitted && params.providerAdmission.kind === 'globalChat') {
+      let receipt;
+      try {
+        receipt = await tauriIpc.chatAdmissionJoinProvider(params.providerAdmission.context, params.conversationId!, requestId);
+      } catch (joinError) {
+        if (params.signal?.aborted) throw error;
+        throw new MacroServiceError('CHAT_ADMISSION_UNAVAILABLE', 'The native provider could not be reconciled.', { error, joinError });
+      }
+      if (!params.signal?.aborted && receipt.phase !== 'no_effect') {
+        throw new MacroServiceError('CHAT_ADMISSION_UNCERTAIN', 'The previous provider request has no confirmed rejection. It was not sent again.', { error, receipt });
+      }
+    }
+    throw error;
+  }
+  if (params.providerAdmission.kind !== 'globalChat') return result;
+  let receipt;
+  try {
+    receipt = await tauriIpc.chatAdmissionJoinProvider(params.providerAdmission.context, params.conversationId!, requestId);
+  } catch (error) {
+    devLogger.warn('Native provider completion could not be reconciled', toServiceError(error));
+    return { ...result, admissionOutcome: 'unavailable', completionReason: 'admission_unresolved' };
+  }
+  // Preserve the complete received payload, including provider-only items, but
+  // never let the tool loop resume an unresolved native request automatically.
+  const completed = receipt.phase === 'completed' && !receipt.taskError;
+  if (completed && params.steerReceipts?.length) {
+    try {
+      await tauriIpc.chatAdmissionCompleteSteerHandoff(params.providerAdmission.context, params.conversationId!, requestId, params.steerReceipts);
+    } catch (error) {
+      devLogger.warn('Steer handoff could not be recorded', toServiceError(error));
+      return { ...result, admissionOutcome: 'unavailable', completionReason: 'admission_unresolved' };
+    }
+  }
+  return {
+    ...result,
+    admissionOutcome: receipt.taskError && receipt.phase === 'completed' ? 'unavailable' : receipt.phase,
+    completionReason: completed ? result.completionReason : 'admission_unresolved',
+  };
 };

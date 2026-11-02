@@ -85,7 +85,7 @@ export function registerChatDirectionRecoveryScenarios(c: UseChatStoreScenarioCo
           const actual = options as unknown as StreamingChatOptions;
           const prepare = actual.preparePendingSteers!; const finish = actual.onSteerRequestEnded!;
           actual.preparePendingSteers = id => { prepared.push(id); return prepare(id); };
-          actual.onSteerRequestEnded = id => { ended.push(id); finish(id); };
+          actual.onSteerRequestEnded = id => { ended.push(id); return finish(id); };
           const result = await runToolCallingLoop({ ...actual, maxTurns: 3 }, {
             kind, streamTurn: async ({ messages, onRetry }) => {
               h.requests.push(structuredClone(messages));
@@ -310,7 +310,7 @@ export function registerChatDirectionRecoveryScenarios(c: UseChatStoreScenarioCo
         const send = mock(async () => { throw new Error('Unexpected provider replay'); });
         for (const progress of ['', 'Partial checkpoint']) {
           assistant.content = progress;
-          const queue = createQueuedSubmissionRuntime({ blocked: () => false, cancelled: () => false,
+          const queue = createQueuedSubmissionRuntime({ admit: async () => ({ kind: 'conversation' }), finish: async () => {}, blocked: () => false, cancelled: () => false,
             read: id => loadConversationMessages({ isTauriAvailable: () => true, ipc: { listMessages: c.listMessagesMock } } as unknown as ChatPersistenceAdapters,
               { conversationId: id, conversations: h.store.getState().conversations }),
             send, publish() {}, saveImages: () => true, recovery() {}, previews() {}, pending() {}, attempted() {},

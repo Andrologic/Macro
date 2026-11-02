@@ -1,0 +1,9 @@
+{
+  "decision_contract": "transfer-decision-1",
+  "type": "decision_request",
+  "operation": "content.read",
+  "operation_id": "00000000-0000-0000-0000-000000000027",
+  "expected_revision": "3",
+  "body": {},
+  "transfer_id": "00000000-0000-0000-0000-000000000004"
+}

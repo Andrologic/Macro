@@ -1,0 +1,1071 @@
+import type { ReadAuthoritySupport } from './readAuthority';
+import { afterAll, beforeEach, expect, it, mock } from 'bun:test';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { spawn } from 'node:child_process';
+import { createInterface } from 'node:readline';
+import { Buffer } from 'node:buffer';
+import type { ContentCapture, ContentDelivery, ContentDeliveryResult, ContentEvent, ContentRequest } from './contentProtocol';
+import type { DbConversation, DbMessage } from '../tauriIpc';
+
+const settings = new Map<string, string>();
+const nativeCalls: string[] = [];
+let supported = true;
+let nativeRevision = 'a'.repeat(64);
+let fresh = true;
+let secretValues = ['configured-password'];
+let repoPath = '/private/test-repository';
+let bridge: ((command: string, args: Record<string, unknown>) => Promise<unknown>) | undefined;
+let policyWait: Promise<unknown> | undefined;
+let beforeFresh: (() => void) | undefined;
+let nativeFailure: string | undefined;
+let captureWait: Promise<void> | undefined;
+let messageWait: Promise<void> | undefined;
+let messagesUnavailable = false;
+let taskRecords: Array<Record<string, unknown>> = [];
+let branchRecords: Array<{ name: string; commit: string }> = [];
+let extraProjects: Array<{ id: string; name: string; path: string }> = [];
+const conversation: DbConversation = { id: 'chat:one', title: 'Global chat', description: null, scope_mode: 'Chat', task_id: null, project_id: null, group_id: null, provider_id: null, model_id: null, reasoning_effort: null, created_at: '2026-01-01T00:00:00Z', updated_at: '2026-01-01T00:00:00Z', last_message: null, message_count: 1, is_pinned: false };
+let conversations: DbConversation[] = [];
+let messages: DbMessage[] = [];
+// Synthetic schema14 catalog at the actual desktop invoke boundary. The token
+// depends on persisted rows, so existing mutation/authorization tests keep their
+// source changes visible when the primary owner reuses a sealed catalog.
+async function catalogRead(command: string, args: Record<string, unknown>) {
+  const input = args.input as { expected_token: unknown; after?: { id: string } | null; limit: number };
+  const rows = structuredClone(conversations).sort((a, b) => Buffer.compare(Buffer.from(a.id), Buffer.from(b.id)));
+  const hash = new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(JSON.stringify(rows))));
+  const hex = Array.from(hash, byte => byte.toString(16).padStart(2, '0')).join('');
+  const token = { version: 1, generation: 'd'.repeat(32), incarnation: 'e'.repeat(32), revision: BigInt(`0x${hex.slice(0, 15)}`).toString() };
+  if (input.expected_token && JSON.stringify(input.expected_token) !== JSON.stringify(token)) throw new Error('stale_revision');
+  if (command === 'db_conversation_catalog_version') return token;
+  const start = input.after ? rows.findIndex(row => row.id === input.after!.id) + 1 : 0;
+  const items = rows.slice(start, start + input.limit);
+  return { token, ...(!input.after ? { total_raw: String(rows.length) } : {}), items,
+    next_after: start + items.length < rows.length ? { id: items.at(-1)!.id } : null, admission_estimate_bytes: 8192 };
+}
+// Synthetic schema13 adapter for the real desktop IPC composition. It derives
+// tokens only from content dependencies, never the observation journal itself.
+async function contentToken(conversationId: string) {
+  if (messagesUnavailable) throw new Error('unavailable');
+  await messageWait;
+  const conversation = conversations.find(c=>c.id===conversationId); if (!conversation) throw new Error('not_found');
+  const rows=messages.filter(m=>m.conversation_id===conversationId);
+  const receipts=[...settings].filter(([key])=>rows.some(m=>key===`chat:assistant-visible-provenance:v1:${m.id}`));
+  const hash=new Uint8Array(await crypto.subtle.digest('SHA-256',new TextEncoder().encode(JSON.stringify([conversation,rows,receipts]))));
+  const hex=Array.from(hash,b=>b.toString(16).padStart(2,'0')).join('');
+  return {version:1,incarnation:'b'.repeat(32),revision:BigInt(`0x${hex.slice(0,15)}`).toString()};
+}
+async function contentRead(command:string,args:Record<string,unknown>) {
+  const input=args.input as {conversation_id:string;expected_token?:unknown;after?:{id:string;created_at:string};limit:number;ids:string[]};
+  const conversationId=command==='db_conversation_content_version'?String(args.conversationId):input.conversation_id;
+  const token=await contentToken(conversationId);
+  if(command==='db_conversation_content_version')return token;
+  if(input.expected_token&&JSON.stringify(input.expected_token)!==JSON.stringify(token))throw new Error('stale_revision');
+  const rows=messages.filter(m=>m.conversation_id===conversationId);
+  if(command==='db_conversation_content_metadata'){
+    const descriptors=rows.map(({id,conversation_id,role,created_at})=>({id,conversation_id,role,created_at})).sort((a,b)=>a.created_at<b.created_at?-1:a.created_at>b.created_at?1:a.id<b.id?-1:1);
+    const start=input.after?descriptors.findIndex(d=>d.id===input.after!.id&&d.created_at===input.after!.created_at)+1:0;
+    const items=descriptors.slice(start,start+input.limit);const last=items.at(-1);
+    return {token,...(!input.after?{opening:{total_raw:String(rows.length),total_exportable:String(rows.filter(m=>m.role==='user'||m.role==='assistant').length),conversation:conversations.find(c=>c.id===conversationId),metadata:{conversation_id:conversationId,revision:'1',archived:false,response_revision:'0',read_revision:'0',pending_tool:false,provider_failed:false,question_message_id:null,preview_message_id:null}}}:{}),items,next_after:start+items.length<descriptors.length?last:null,admission_estimate_bytes:8192};
+  }
+  const items=input.ids.map(id=>{const m=rows.find(m=>m.id===id)!;return {id:m.id,conversation_id:m.conversation_id,role:m.role,content:m.content,created_at:m.created_at,completion_reason:m.completion_reason??null,provider_turn_state_json:m.provider_turn_state_json,tool_traces_json:m.tool_traces_json,provenance_json:settings.get(`chat:assistant-visible-provenance:v1:${m.id}`)??null,response_revision_decimal:m.role==='assistant'?String(rows.indexOf(m)+1):null};});
+  return {token,items,consumed_count:items.length,admission_estimate_bytes:4096+new TextEncoder().encode(JSON.stringify(items)).length*6};
+}
+const nativeSnapshots = new Map<string, Record<string, unknown>>();
+const core = await import('@tauri-apps/api/core');
+mock.module('@tauri-apps/api/core', () => ({ ...core, invoke: async (command: string, args: Record<string, unknown> = {}) => {
+  nativeCalls.push(command);
+  if (command.startsWith('db_conversation_catalog_')) return catalogRead(command, args);
+  if (command.startsWith('db_conversation_content_')) return contentRead(command,args);
+  if (bridge && (command === 'db_get_app_setting' || command === 'db_compare_and_swap_app_setting' || command === 'pilot_review_commit')) return bridge(command, args);
+  if (command === 'db_get_app_setting') return settings.has(String(args.key)) ? { value_json: settings.get(String(args.key)) } : null;
+  if (command === 'db_compare_and_swap_app_setting') {
+    const applied = (settings.get(String(args.key)) ?? null) === args.expectedValueJson;
+    if (applied) settings.set(String(args.key), String(args.valueJson));
+    return { applied };
+  }
+  if (command === 'pilot_files_authorize') return;
+  if (command === 'pilot_files_list') return [];
+  if (command === 'pilot_content_policy') { await policyWait; if (!supported) throw 'content_unavailable'; return secretValues; }
+  if (command === 'host_telemetry_read') return { sampleId: 'sample:synthetic', observedAt: new Date().toISOString(), expiresAt: new Date(Date.now() + 5000).toISOString(), availability: 'available', reason: null, cpuPercent: 25, memoryUsedBytes: 1024, memoryTotalBytes: 4096 };
+  if (command === 'workspace_resolve_project_icons') {
+    const data = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScLbtAAAAABJRU5ErkJggg==';
+    const bytes = Uint8Array.from(atob(data), char => char.charCodeAt(0));
+    const revision = Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256', bytes)), byte => byte.toString(16).padStart(2, '0')).join('');
+    return (args.projectIds as string[]).map(projectId => ({ projectId, icon: { dataUrl: `data:image/png;base64,${data}`, revision, sourcePath: 'public/favicon.png' } }));
+  }
+  if (command === 'workspace_get_bootstrap') throw new Error('Pilot reads must not bootstrap workspaces');
+  if (command === 'workspace_list_tasks') return { tasks: taskRecords };
+  if (command === 'git_branch_list') return { local: branchRecords, remote: [] };
+  if (command === 'db_conversation_metadata') return conversations.map(c => ({ conversation_id: c.id, revision: 1, archived: false, response_revision: 0, read_revision: 0, pending_tool: false, question_message_id: null }));
+  if (command === 'db_list_conversations') return structuredClone(conversations);
+  if (command === 'db_get_pilot_reflection_message') {
+    const message=messages.find(m => m.id === args.messageId && m.conversation_id === args.conversationId && m.role === 'assistant');
+    const target=conversations.find(c => c.id === args.conversationId);
+    return message && target ? { state: 'ready',message: { id: message.id,conversation_id: message.conversation_id,turn_id: message.turn_id ?? null,role: 'assistant',content: message.content,has_hidden_context: Boolean(message.hidden_context),tool_traces: [],conversation_scope_mode: target.scope_mode,conversation_task_id: target.task_id } } : { state: 'unavailable',message: null };
+  }
+  if (command === 'db_get_message') return structuredClone(messages.find(m => m.id === args.messageId) ?? null);
+  if (command === 'db_search_messages') return { results: messages.filter(m => (args.conversationIds as string[]).includes(m.conversation_id) && m.content.includes('Hello')).map(m => ({ messageId: m.id, conversationId: m.conversation_id, conversationTitle: 'Synthetic', conversationDescription: null, role: m.role, snippet: 'Synthetic snippet', createdAt: m.created_at })), nextOffset: null };
+  if (command === 'db_get_conversation') return structuredClone(conversations.find(c => c.id === args.id) ?? null);
+  if (command === 'db_list_messages') { if (messagesUnavailable) throw 'unavailable'; await messageWait; return structuredClone(messages.filter(message => message.conversation_id === args.conversationId)); }
+  if (command === 'pilot_tool_traces_list') return { revision: 1, traces: messages.filter(message => message.conversation_id === args.conversationId && message.role === 'assistant').flatMap(message =>
+    (JSON.parse(message.tool_traces_json || '[]') as Array<{ tool_call_id: string; tool_name: string; status: string; detail?: string }>).map((trace, trace_index) => ({
+      message_id: message.id, trace_index, tool_call_id: trace.tool_call_id, tool_name: trace.tool_name, status: trace.status,
+      has_detail: Boolean(trace.detail), detail_bytes: new TextEncoder().encode(trace.detail || '').length,
+    }))) };
+  if (command === 'pilot_tool_trace_read') {
+    const message = messages.find(message => message.id === args.messageId && message.conversation_id === args.conversationId)!;
+    return { revision: 1, detail: JSON.parse(message.tool_traces_json!)[Number(args.traceIndex)].detail || '' };
+  }
+  if (command === 'pilot_review_commit') {
+    const input = args.input as { snapshotId: string; key: string; expectedValueJson: string | null; valueJson: string };
+    beforeFresh?.();
+    const nativeInput = args.input as { branches?: { base: string; head: string }; request: { source: { kind: string; base_sha?: string; head_sha?: string } } };
+    if (nativeInput.request.source.kind === 'commits' && (
+      branchRecords.find(branch => branch.name === nativeInput.branches?.base)?.commit !== nativeInput.request.source.base_sha ||
+      branchRecords.find(branch => branch.name === nativeInput.branches?.head)?.commit !== nativeInput.request.source.head_sha)) throw 'stale_revision';
+    if (bridge) {
+      const ok = await bridge('pilot_review_fresh', { snapshotId: input.snapshotId, request: (args.input as { request: unknown }).request });
+      if (!ok) throw 'stale_revision';
+    } else if (!fresh) throw 'stale_revision';
+    const applied = (settings.get(input.key) ?? null) === input.expectedValueJson;
+    if (applied) settings.set(input.key, input.valueJson);
+    return applied;
+  }
+  if (command.startsWith('pilot_review_')) {
+    if (bridge) return bridge(command, args);
+    const id = String(args.snapshotId);
+    if (command === 'pilot_review_capture') {
+      if (nativeFailure) throw nativeFailure;
+      const request = args.request as { source: unknown };
+      const observed = Date.now();
+      const info = { snapshot_id: crypto.randomUUID(), revision_token: nativeRevision, source: request.source, head_sha: null,
+        observed_at: new Date(observed).toISOString(), expires_at: new Date(observed + 300_000).toISOString(), export_policy_revision: 'visible-1', availability: 'complete', file_count: 1 };
+      nativeSnapshots.set(info.snapshot_id, info); await captureWait; return info;
+    }
+    if (command === 'pilot_review_release') { nativeSnapshots.delete(id); return; }
+    if (!nativeSnapshots.has(id)) throw 'snapshot_expired';
+    if (command === 'pilot_review_fresh') { beforeFresh?.(); return fresh; }
+    if (command === 'pilot_review_files') return { capture: nativeSnapshots.get(id), offset: 0, total: 1, next_cursor: null, items: [{ file_id: 'file:one', position: 0, old_path: 'hello.txt', new_path: 'hello.txt', change: 'modified', content_state: 'text', patch_bytes: 6 }] };
+    if (command === 'pilot_review_read') return { snapshot_id: id, file_id: 'file:one', offset_bytes: 0, next_offset_bytes: null, total_bytes: 6, patch: '+hello' };
+  }
+  throw new Error(`Unexpected test IPC: ${command}`);
+} }));
+afterAll(() => mock.restore());
+mock.module('./desktopTaskCatalog', () => ({ desktopPilotTasks: () => taskRecords }));
+const { PilotRuntime } = await import('./runtime');
+const { desktopStorePorts } = await import('../../composition/macroPilotDesktop');
+const { MacroPilotNativeClient } = await import('./nativeClient');
+const { validateContentMessage } = await import('./contentProtocol');
+const { useChatStore } = await import('../../stores/useChatStore');
+const { useAppStore } = await import('../../stores/useAppStore');
+const { CONTENT_BUDGET } = await import('./contentHost');
+const { secretForms } = await import('./desktopContentHost');
+const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
+async function until(check: () => boolean, timeout = 8000) { const end = Date.now() + timeout; while (!check()) { if (Date.now() > end) throw new Error('condition timed out'); await sleep(10); } }
+const instanceId = 'instance:test';
+const accountId = 'account:github:1';
+const ref = { instance_id: instanceId, workspace_id: 'workspace:config:test', task_id: 'task:one', project_id: 'project:one', review_id: 'review:unstaged' };
+let requestSequence = 0;
+function request(operation: ContentRequest['operation'], body: unknown, requestId = `request:${++requestSequence}`): ContentRequest {
+  return { contract_version: '2.0', type: 'request', account_id: accountId, request_id: requestId, operation, body } as ContentRequest;
+}
+function harness(readAuthoritySupport?: ReadAuthoritySupport) {
+  const project = (value: { id: string; name: string; path: string }) => ({ ...value, mountName: value.id,
+    created_at: '2026-01-01T00:00:00Z', status: 'active' as const, gitSetupState: 'ready' as const,
+    metadata: { description: '', tags: [], team_members: [], api_contracts: [], dependencies: [] } });
+  useAppStore.setState({
+    standaloneProjects: [{ id: 'project:one', name: 'Project', path: repoPath }, ...extraProjects].map(project),
+    projectGroups: [{ id: 'group:closed', name: 'Closed', isOpen: false, projects: [project({ id: 'project:closed', name: 'Closed', path: '/private/closed' })] }],
+  });
+  const account = { contract_version: '1.0', type: 'account', account_id: accountId, identity: { provider: 'github', subject: '1', login: 'test' }, revision: 1 };
+  const session = { contract_version: '1.0', type: 'device_session', ref: { type: 'session', account_id: accountId, session_id: 'session:desktop' }, device_id: 'device:desktop', state: 'active', issued_at: new Date().toISOString(), expires_at: new Date(Date.now() + 86400000).toISOString(), revision: 1 };
+  const values: Record<string, unknown> = { macro_pilot_native_v1: { configurationId: 'config:test', relayOrigin: 'https://pilot.example.test', account, deviceSession: session,
+    instance: { contract_version: '1.0', type: 'instance', ref: { type: 'instance', instance_id: instanceId }, label: 'Test', connection_state: 'reachable', supported_contract_versions: ['1.0'], revision: 1 }, instanceCreationId: 'creation:test' } };
+  const queue: ContentDelivery[] = [];
+  const deliveredRequests = new Map<string, ContentDelivery>();
+  const results: ContentDeliveryResult[] = [];
+  const events: ContentEvent[] = [];
+  const requests: Array<{ path: string; body: Record<string, unknown>; headers: Headers }> = [];
+  let wake: (() => void) | undefined;
+  let rejectReadAuthority: 'canonical' | 'malformed' | 'header' | '401' | '403' | undefined;
+  let rejectReliability = false;
+  let acknowledgedLegacyPoll = false;
+  let acknowledgeIdlePoll = false;
+  let loseResult = false;
+  let lostResultDelay = 0;
+  let rejectResults = 0;
+  let loseEvent = false;
+  let revoked = false;
+  let eventWait: Promise<void> | undefined;
+  let disconnectWait: Promise<void> | undefined;
+  let disconnectFailures = 0;
+  let onAuthorize: (() => void) | undefined;
+  let onLostResult: (() => void) | undefined;
+  const authorizedRequests = new Set<string>();
+  const authorityBindings = new Map<string, string>();
+  let authorizationMs = 5000;
+  const client = new MacroPilotNativeClient({
+    randomBytes: size => crypto.getRandomValues(new Uint8Array(size)),
+    sha256: async value => new Uint8Array(await crypto.subtle.digest('SHA-256', new Uint8Array(value))),
+    now: () => new Date(),
+    getStateSnapshot: async () => ({ schemaVersion: 1, values }),
+    setStateValue: async (key, value) => { values[key] = structuredClone(value); return { schemaVersion: 1, values }; },
+    secretRead: async () => 'd'.repeat(43), secretWrite: async () => {}, secretDelete: async () => {},
+    fetch: async (input, init) => {
+      const path = new URL(String(input)).pathname;
+      const headers = new Headers(init?.headers);
+      const body = init?.body ? JSON.parse(String(init.body)) as Record<string, unknown> : {};
+      requests.push({ path, body, headers });
+      const json = (data: unknown, status = 200) => new Response(JSON.stringify(data), { status, headers: { 'content-type': 'application/json', 'x-request-id': (data as { request_id?: string }).request_id ?? headers.get('x-request-id')! } });
+      if (path.endsWith('/me')) return json({ account, device_session: session });
+      if (path.endsWith('/disconnect')) {
+        if (disconnectFailures-- > 0) return json({ code: 'unavailable' }, 503);
+        await disconnectWait; return new Response(null, { status: 204 });
+      }
+      if (path.endsWith('/logout')) return new Response(null, { status: 204 });
+      const signal = init?.signal;
+      if (path.endsWith('/poll')) {
+        if (path.includes('/v1/')) { await new Promise<void>(resolve => { if (signal?.aborted) resolve(); else signal?.addEventListener('abort', () => resolve(), { once: true }); }); throw Error('aborted'); }
+        if (rejectReadAuthority && (body.capabilities as string[] | undefined)?.includes('read-authority-1')) {
+          const status = rejectReadAuthority === '401' ? 401 : rejectReadAuthority === '403' ? 403 : 400;
+          const requestId = headers.get('x-request-id')!;
+          return json(rejectReadAuthority === 'malformed' ? { code: 'validation_failed' } : {
+            contract_version: '1.0', type: 'error', request_id: rejectReadAuthority === 'header' ? 'request:other' : requestId,
+            error: { code: rejectReadAuthority === '401' ? 'unauthorized' : rejectReadAuthority === '403' ? 'forbidden' : 'validation_failed', message: 'Synthetic rejection', retryable: false },
+          }, status);
+        }
+        if (rejectReliability && (body.capabilities as string[] | undefined)?.includes('network-reliability-1')) return json({ code: 'validation_failed' }, 422);
+        if (rejectReliability && !acknowledgedLegacyPoll) { acknowledgedLegacyPoll = true; return new Response(null, { status: 204 }); }
+        if (acknowledgeIdlePoll) { acknowledgeIdlePoll = false; return new Response(null, { status: 204 }); }
+        while (!queue.length && !signal?.aborted) await new Promise<void>(resolve => { wake = resolve; signal?.addEventListener('abort', () => resolve(), { once: true }); });
+        if (signal?.aborted) throw Error('aborted');
+        return json(queue.shift()!);
+      }
+      if (path.endsWith('/authorize')) {
+        const id = String(body.request_id);
+        if (authorizedRequests.has(id)) return json({ code: 'conflict' }, 409);
+        authorizedRequests.add(id);
+        onAuthorize?.();
+        if (revoked) return json({ code: 'session_revoked' }, 401);
+        return json({ transport_version: '2.0', type: 'authorized', request_id: body.request_id, execute_before: new Date(Date.now() + authorizationMs).toISOString(), ...(body.required_permissions ? { granted_permissions: body.required_permissions } : {}),...(authorityBindings.has(id) ? { authority_binding: authorityBindings.get(id) } : {}) });
+      }
+      if (path.endsWith('/result')) {
+        if (rejectResults-- > 0) throw Error('Synthetic request lost before relay acceptance');
+        if (revoked) return json({ code: 'session_revoked' }, 401);
+        results.push(structuredClone(body) as unknown as ContentDeliveryResult);
+        if (loseResult) { loseResult = false; onLostResult?.(); await sleep(lostResultDelay); throw Error('lost response'); }
+        return new Response(null, { status: 204 });
+      }
+      if (path.endsWith('/events')) {
+        events.push(structuredClone(body) as unknown as ContentEvent);
+        await eventWait;
+        if (loseEvent) { loseEvent = false; throw Error('lost acknowledgement'); }
+        return new Response(null, { status: 204 });
+      }
+      throw Error(`Unexpected HTTP: ${path}`);
+    },
+  });
+  const runtime = new PilotRuntime(client, undefined, desktopStorePorts, readAuthoritySupport);
+  function enqueue(input: ContentRequest, source = 'session:mobile') {
+    const delivery: ContentDelivery = { transport_version: '2.0', type: 'delivery', request_id: input.request_id, instance_id: instanceId, account_id: accountId, source_session_id: source, expires_at: deliveredRequests.get(input.request_id)?.expires_at ?? new Date(Date.now() + 60_000).toISOString(), request: input, ...(input.operation === 'conversations.search' ? { capabilities: ['conversations-1'] } : input.operation === 'conversation.files.list' ? { authority_binding: 'grant:files', capabilities: ['conversation-files-1'] } : input.operation === 'conversation.reflections.read' ? { authority_binding: 'grant:reflections',capabilities: ['conversations-1','conversation-reflections-1'] } : input.operation === 'instance.telemetry' || input.operation === 'project.icon' ? { capabilities: ['host-telemetry-1', 'project-icons-1'] } : 'consistency' in input.body ? { capabilities: ['task-details-1', 'network-reliability-1'] } : {}) };
+    expect(validateContentMessage(delivery)).toBe(true);
+    if (delivery.authority_binding) authorityBindings.set(input.request_id, delivery.authority_binding);
+    deliveredRequests.set(input.request_id, delivery); queue.push(delivery); wake?.();
+  }
+  async function deliver(input: ContentRequest, source = 'session:mobile') {
+    const start = results.length; enqueue(input, source);
+    await until(() => results.slice(start).some(result => result.request_id === input.request_id));
+    const result = results.slice(start).find(result => result.request_id === input.request_id)!;
+    expect(validateContentMessage(result)).toBe(true); return result.response;
+  }
+  return { client, runtime, deliver, enqueue, results, events, requests, values,
+    rejectResults: (count: number) => { rejectResults = count; },
+    authorizationDuration: (ms: number) => { authorizationMs = ms; },
+    rejectAuthority: (mode: typeof rejectReadAuthority) => { rejectReadAuthority = mode; },
+    legacyRelay: () => { rejectReliability = true; },
+    acceptIdlePoll: () => { acknowledgeIdlePoll = true; },
+    waitDisconnect: (wait: Promise<void>, failures = 0) => { disconnectWait = wait; disconnectFailures = failures; },
+    waitEvents: (wait: Promise<void>) => { eventWait = wait; },
+    loseResult: (delay = 0, onLoss?: () => void) => { loseResult = true; lostResultDelay = delay; onLostResult = onLoss; }, loseEvent: () => { loseEvent = true; }, revoke: () => { revoked = true; },
+    authorize: (callback: () => void) => { onAuthorize = callback; } };
+}
+beforeEach(() => {
+  settings.clear(); nativeCalls.length = 0; nativeSnapshots.clear(); supported = true; fresh = true; bridge = undefined; beforeFresh = undefined; policyWait = undefined;
+  nativeFailure = undefined; captureWait = undefined; messageWait = undefined; messagesUnavailable = false; branchRecords = []; extraProjects = [];
+  taskRecords = [{ id: 'task:one', project_id: 'project:one', status: 'Todo', execution_targets: [] }];
+  nativeRevision = 'a'.repeat(64); secretValues = ['configured-password']; repoPath = '/private/test-repository';
+  conversations = [structuredClone(conversation)];
+  messages = [{ id: 'message:user', conversation_id: conversation.id, role: 'user', content: 'Hello from persistence', created_at: conversation.created_at, token_count: null, tool_traces_json: null, hidden_context: '/private/hidden', provider_input_items_json: null, provider_turn_state_json: null }];
+});
+it('runs all content operations through the real runtime/client/IPC, retries verbatim and persists idempotent verdicts', async () => {
+  const h = harness(); const chatState = useChatStore.getState();
+  try {
+    await h.runtime.start();
+    const projects = await h.deliver(request('projects.list', { instance_id: instanceId }));
+    expect(projects).toMatchObject({ type: 'response', result: { items: [{ project_id: 'project:closed' }, { project_id: 'project:one' }] } });
+    const list = await h.deliver(request('conversations.list', { instance_id: instanceId, kind: 'conversation' }));
+    expect(list).toMatchObject({ type: 'response', result: { items: [{ ref: { kind: 'conversation', conversation_id: conversation.id } }] } });
+    const read = await h.deliver(request('conversation.read', { ref: { instance_id: instanceId, kind: 'conversation', conversation_id: conversation.id } }));
+    expect(read).toMatchObject({ type: 'response', result: { items: [{ text: 'Hello from persistence' }] } });
+    expect(JSON.stringify(read)).not.toContain('private'); expect(useChatStore.getState()).toBe(chatState);
+    for (const kind of ['staged', 'unstaged', 'local_total']) {
+      const r = await h.deliver(request('review.get', { ref: { ...ref, review_id: `review:${kind}` } }));
+      expect(r).toMatchObject({ type: 'response', result: { source: { kind, head_sha: null } } });
+      expect(JSON.stringify(r)).not.toContain('revision_token');
+    }
+    const get = request('review.get', { ref });
+    h.loseResult();
+    const got = await h.deliver(get);
+    expect(got.type).toBe('response'); if (got.type !== 'response' || got.operation !== 'review.get') throw Error('review');
+    await until(() => h.results.filter(result => result.request_id === get.request_id).length === 2);
+    expect(h.results.at(-1)).toEqual(h.results.at(-2));
+    const redelivery = await h.deliver(get); expect(redelivery).toEqual(got);
+    const capture = got.result;
+    const files = await h.deliver(request('diff.files', { ref, snapshot_id: capture.snapshot_id }));
+    expect(files).toMatchObject({ type: 'response', result: { items: [{ file_id: 'file:one' }] } });
+    const patch = await h.deliver(request('diff.read', { ref, snapshot_id: capture.snapshot_id, file_id: 'file:one', offset_bytes: 0 }));
+    expect(patch).toMatchObject({ type: 'response', result: { patch: '+hello', snapshot_id: capture.snapshot_id } });
+    const foreign = await h.deliver(request('diff.files', { ref, snapshot_id: capture.snapshot_id }), 'session:other');
+    expect(foreign).toMatchObject({ type: 'error', code: 'snapshot_expired' });
+    const verdictBody = { ref, snapshot_id: capture.snapshot_id, expected_revision: capture.revision, idempotency_key: 'verdict:one:unique', verdict: 'approve' };
+    const verdict = await h.deliver(request('review.verdict', verdictBody));
+    expect(verdict).toMatchObject({ type: 'response', result: { outcome: 'applied', revision: capture.revision + 1 } });
+    await h.runtime.stop(); await h.runtime.start();
+    const duplicate = await h.deliver(request('review.verdict', verdictBody));
+    expect(duplicate).toMatchObject({ type: 'response', result: { outcome: 'duplicate', revision: capture.revision + 1 } });
+    const conflict = await h.deliver(request('review.verdict', { ...verdictBody, verdict: 'request_changes' }));
+    expect(conflict).toMatchObject({ type: 'error', code: 'conflict' });
+    const persisted = [...settings.values()].join('');
+    expect(persisted).not.toContain(repoPath); expect(persisted).not.toContain(secretValues[0]); expect(persisted).not.toContain('Hello from persistence');
+    const contentRequests = h.requests.filter(r => r.path.includes('/v2/'));
+    expect(contentRequests.length).toBeGreaterThan(10);
+    for (const r of contentRequests) {
+      expect(r.headers.get('authorization')).toBe(`Bearer ${'d'.repeat(43)}`); expect(r.headers.get('x-instance-key')).toBe('d'.repeat(43));
+      if (r.body.request_id) expect(r.headers.get('x-request-id')).toBe(String(r.body.request_id));
+    }
+  } finally { await h.runtime.stop(); }
+});
+it('observes changes without remote reads, retries durable events and resets the stream on restart', async () => {
+  const h = harness(); h.loseEvent();
+  try {
+    await h.runtime.start(); await until(() => h.requests.some(r => r.path.includes('/v2/') && r.path.endsWith('/poll')));
+    expect(h.events).toHaveLength(0);
+    conversations[0].title = 'First catalog edit';
+    await until(() => h.events.length >= 2);
+    expect(h.events[0]).toEqual(h.events[1]);
+    const oldStream = h.events[0].stream_id;
+    const oldRevision = h.events.find(e => e.change.kind === 'conversation.changed')?.change.revision ?? 0;
+    conversations[0].title = 'Changed while nobody is reading';
+    await until(() => h.events.some(e => e.change.kind === 'conversation.changed' && e.change.revision > oldRevision));
+    conversations = []; messages = [];
+    await until(() => h.events.some(e => e.change.kind === 'conversation.removed'));
+    await h.runtime.stop();
+    const polls = h.requests.filter(r => r.path.includes('/v2/') && r.path.endsWith('/poll')).length;
+    await h.runtime.start();
+    await until(() => h.requests.filter(r => r.path.includes('/v2/') && r.path.endsWith('/poll')).length > polls);
+    expect(h.events.every(e => e.stream_id === oldStream)).toBe(true);
+    conversations.push(structuredClone(conversation));
+    await until(() => h.events.some(e => e.stream_id !== oldStream));
+    expect(h.requests.filter(r => r.path.endsWith('/result'))).toHaveLength(0);
+  } finally { await h.runtime.stop(); }
+});
+it('fails stale verdicts without requiring reads and keeps a revision on unchanged reads', async () => {
+  const h = harness();
+  try {
+    await h.runtime.start();
+    const a = await h.deliver(request('review.get', { ref }));
+    const b = await h.deliver(request('review.get', { ref }));
+    if (a.type !== 'response' || a.operation !== 'review.get' || b.type !== 'response' || b.operation !== 'review.get') throw Error('review');
+    expect(a.result.revision).toBe(b.result.revision);
+    fresh = false;
+    const body = { ref, snapshot_id: b.result.snapshot_id, expected_revision: b.result.revision, idempotency_key: 'verdict:fresh:unique', verdict: 'request_changes' };
+    expect(await h.deliver(request('review.verdict', body))).toMatchObject({ type: 'error', code: 'stale_revision' });
+    fresh = true;
+    expect(await h.deliver(request('review.verdict', body))).toMatchObject({ type: 'response', result: { outcome: 'applied' } });
+    expect(nativeCalls).not.toContain('pilot_review_files'); expect(nativeCalls).not.toContain('pilot_review_read');
+  } finally { await h.runtime.stop(); }
+});
+it('does not advertise content on an unsupported native platform while v1 remains running', async () => {
+  supported = false; const h = harness();
+  try {
+    await h.runtime.start(); await until(() => nativeCalls.includes('pilot_content_policy')); await sleep(30);
+    expect(h.requests.some(r => r.path.includes('/v1/') && r.path.endsWith('/poll'))).toBe(true);
+    expect(h.requests.some(r => r.path.includes('/v2/'))).toBe(false);
+  } finally { await h.runtime.stop(); }
+});
+it('drops content on revocation before emission and releases native captures', async () => {
+  const h = harness();
+  try {
+    await h.runtime.start(); h.authorize(() => h.revoke());
+    void h.deliver(request('review.get', { ref })).catch(() => undefined);
+    await until(() => h.client.getState().deviceSession === null);
+    await until(() => nativeSnapshots.size === 0);
+    expect(h.results).toHaveLength(0);
+  } finally { await h.runtime.stop(); }
+});
+it('refreshes configured raw and encoded secrets and shares a conservative aggregate cache budget', async () => {
+  const h = harness();
+  try {
+    await h.runtime.start();
+    const forms = secretForms(['configured-password']); expect(forms).toContain(btoa('configured-password'));
+    messages[0].content = btoa('configured-password');
+    const result = await h.deliver(request('conversation.read', { ref: { instance_id: instanceId, kind: 'conversation', conversation_id: conversation.id } }));
+    expect(result).toMatchObject({ type: 'response', result: { items: [{ content_state: 'withheld' }] } });
+    secretValues = ['rotated-password']; messages[0].content = 'rotated-password';
+    const rotated = await h.deliver(request('conversation.read', { ref: { instance_id: instanceId, kind: 'conversation', conversation_id: conversation.id } }));
+    expect(rotated).toMatchObject({ type: 'response', result: { items: [{ content_state: 'withheld' }] } });
+    expect(Object.values(CONTENT_BUDGET).reduce((a, b) => a + b, 0)).toBeLessThan(64 * 1024 * 1024);
+  } finally { await h.runtime.stop(); }
+});
+it('rejects invalidated diff reads and preserves an approved state through native resource pressure', async () => {
+  const h = harness();
+  try {
+    await h.runtime.start();
+    const response = await h.deliver(request('review.get', { ref }));
+    if (response.type !== 'response' || response.operation !== 'review.get') throw Error('review');
+    const capture = response.result;
+    await h.deliver(request('review.verdict', { ref, snapshot_id: capture.snapshot_id, expected_revision: capture.revision, idempotency_key: 'verdict:capacity:unique', verdict: 'approve' }));
+    nativeFailure = 'resource_limit';
+    const calls = nativeCalls.filter(c => c === 'pilot_review_capture').length;
+    await until(() => nativeCalls.filter(c => c === 'pilot_review_capture').length > calls);
+    nativeFailure = undefined;
+    const again = await h.deliver(request('review.get', { ref }));
+    expect(again).toMatchObject({ type: 'response', result: { state: 'approved', revision: capture.revision + 1 } });
+    nativeRevision = 'b'.repeat(64);
+    await until(() => h.events.some(event => event.change.kind === 'review.changed' && event.change.scope.review_id === ref.review_id && event.change.revision > capture.revision + 1));
+    expect(await h.deliver(request('diff.files', { ref, snapshot_id: capture.snapshot_id }))).toMatchObject({ type: 'error', code: 'stale_revision' });
+    expect(await h.deliver(request('diff.read', { ref, snapshot_id: capture.snapshot_id, file_id: 'file:one', offset_bytes: 0 }))).toMatchObject({ type: 'error', code: 'stale_revision' });
+  } finally { await h.runtime.stop(); }
+});
+it('rejects a candidate when the secret policy changes while authorization is in flight', async () => {
+  const h = harness(); messages[0].content = 'new-private-password';
+  try {
+    await h.runtime.start();
+    h.authorize(() => { secretValues = ['new-private-password']; });
+    const result = await h.deliver(request('conversation.read', { ref: { instance_id: instanceId, kind: 'conversation', conversation_id: conversation.id } }));
+    expect(result).toMatchObject({ type: 'error', code: 'snapshot_expired' });
+    expect(JSON.stringify(h.results)).not.toContain('new-private-password');
+  } finally { await h.runtime.stop(); }
+});
+it('waits for a late native capture after logout and never reintroduces its result', async () => {
+  const h = harness(); let release!: () => void;
+  try {
+    await h.runtime.start(); await until(() => h.requests.some(r => r.path.includes('/v2/') && r.path.endsWith('/poll')));
+    captureWait = new Promise<void>(resolve => { release = resolve; });
+    const before = nativeCalls.filter(c => c === 'pilot_review_capture').length;
+    void h.deliver(request('review.get', { ref })).catch(() => undefined);
+    await until(() => nativeCalls.filter(c => c === 'pilot_review_capture').length > before);
+    await h.client.logout();
+    expect(h.client.getState().account).toBeNull();
+    let stopped = false; const stopping = h.runtime.stop().then(() => { stopped = true; });
+    await sleep(30); expect(stopped).toBe(false);
+    release(); await stopping;
+    expect(h.results).toHaveLength(0); expect(nativeSnapshots.size).toBe(0);
+  } finally { release?.(); await h.runtime.stop(); }
+});
+it('serves a review while background content-version observations are blocked and interleaves deliveries between Git observations', async () => {
+  const h = harness(); let releaseMessages!: () => void; let releaseCapture!: () => void;
+  try {
+    await h.runtime.start(); await until(() => h.requests.some(r => r.path.includes('/v2/') && r.path.endsWith('/poll')));
+    expect(await h.deliver(request('conversation.read', { ref: { instance_id: instanceId, kind: 'conversation', conversation_id: conversation.id } }))).toMatchObject({ type: 'response' });
+    const before = nativeCalls.filter(c => c === 'db_conversation_content_version').length;
+    messageWait = new Promise<void>(resolve => { releaseMessages = resolve; });
+    await until(() => nativeCalls.filter(c => c === 'db_conversation_content_version').length > before);
+    expect(await h.deliver(request('review.get', { ref }))).toMatchObject({ type: 'response' });
+    releaseMessages(); messageWait = undefined;
+    taskRecords = Array.from({ length: 10 }, (_, i) => ({ ...taskRecords[0], id: `task:many:${i}` }));
+    captureWait = new Promise<void>(resolve => { releaseCapture = resolve; });
+    const capturesBefore = nativeCalls.filter(c => c === 'pilot_review_capture').length;
+    await until(() => nativeCalls.filter(c => c === 'pilot_review_capture').length > capturesBefore);
+    const waiting = h.deliver(request('projects.list', { instance_id: instanceId }));
+    await sleep(30); releaseCapture(); captureWait = undefined;
+    expect(await waiting).toMatchObject({ type: 'response' });
+    expect(nativeCalls.filter(c => c === 'pilot_review_capture').length - capturesBefore).toBe(1);
+  } finally { releaseMessages?.(); releaseCapture?.(); await h.runtime.stop(); }
+});
+it('resolves canonical commit reviews and rechecks tracked branches at the native decision boundary', async () => {
+  const commitRef = { ...ref, review_id: 'review:commits:one', run_id: 'run:one:valid' };
+  const base = 'a'.repeat(40); const head = 'b'.repeat(40);
+  taskRecords = [{ id: 'task:one', project_id: 'project:one', status: 'InReview', execution_targets: [{ projectId: 'project:one', executionMode: 'worktree', repoPath, targetBranchName: 'develop', branchName: 'feature/test' }] }];
+  branchRecords = [{ name: 'develop', commit: base }, { name: 'feature/test', commit: head }];
+  settings.set('macroPilot:supervision:v1:["config:test","instance:test"]', JSON.stringify({ version: 2, projection: null, snapshots: [], streams: {}, journal: {}, runs: [], reviews: [{
+    contract_version: '1.0', type: 'review', ref: { ...commitRef, type: 'review' }, related_run: { type: 'run', instance_id: instanceId, workspace_id: ref.workspace_id, task_id: ref.task_id, run_id: 'run:one:valid' },
+    git_revision: { base_sha: base, head_sha: head }, state: 'pending', revision: 1, updated_at: new Date().toISOString(),
+  }] }));
+  const h = harness();
+  try {
+    await h.runtime.start();
+    // The first producer poll is still pending at this point.
+    expect(h.runtime.getStatus()).toBe('inactive');
+    const result = await h.deliver(request('review.get', { ref: commitRef }));
+    if (result.type !== 'response' || result.operation !== 'review.get') throw Error(JSON.stringify(result));
+    expect(result.result.source).toEqual({ kind: 'commits', base_sha: base, head_sha: head });
+    beforeFresh = () => { branchRecords[0].commit = head; };
+    const verdict = await h.deliver(request('review.verdict', { ref: commitRef, snapshot_id: result.result.snapshot_id, expected_revision: result.result.revision, idempotency_key: 'verdict:branches:unique', verdict: 'approve' }));
+    expect(verdict).toMatchObject({ type: 'error', code: 'stale_revision' });
+    await until(() => h.events.some(e => e.change.kind === 'review.changed' && e.change.scope.review_id === commitRef.review_id && e.change.revision > result.result.revision));
+    expect(await h.deliver(request('diff.files', { ref: commitRef, snapshot_id: result.result.snapshot_id }))).toMatchObject({ type: 'error', code: 'stale_revision' });
+  } finally { await h.runtime.stop(); }
+});
+it('continues Git invalidations and durable event upload while transcript storage is unavailable', async () => {
+  const h = harness();
+  try {
+    await h.runtime.start();
+    const response = await h.deliver(request('review.get', { ref }));
+    if (response.type !== 'response' || response.operation !== 'review.get') throw Error('review');
+    messagesUnavailable = true; nativeRevision = 'e'.repeat(64);
+    await until(() => h.events.some(event => event.change.kind === 'review.changed' && event.change.scope.review_id === ref.review_id && event.change.revision > response.result.revision));
+    expect(await h.deliver(request('diff.files', { ref, snapshot_id: response.result.snapshot_id }))).toMatchObject({ type: 'error', code: 'stale_revision' });
+    expect(await h.deliver(request('review.get', { ref }))).toMatchObject({ type: 'response' });
+  } finally { await h.runtime.stop(); }
+});
+it('keeps deliveries moving while an event acknowledgement is blocked on HTTP', async () => {
+  const h = harness(); let release!: () => void;
+  h.waitEvents(new Promise<void>(resolve => { release = resolve; }));
+  try {
+    await h.runtime.start(); await until(() => h.requests.some(r => r.path.includes('/v2/') && r.path.endsWith('/poll')));
+    conversations[0].title = 'Actual edit before the blocked event';
+    await until(() => h.events.length > 0);
+    expect(await h.deliver(request('projects.list', { instance_id: instanceId }))).toMatchObject({ type: 'response' });
+  } finally { release(); await h.runtime.stop(); }
+});
+it('keeps first reads and pages valid while twelve unchanged review references are discovered', async () => {
+  taskRecords = Array.from({ length: 4 }, (_, i) => ({ id: i === 0 ? 'task:one' : `task:discovery:${i}`, project_id: 'project:one', status: 'Todo', execution_targets: [] }));
+  extraProjects = Array.from({ length: 103 }, (_, i) => ({ id: `project:extra:${i}`, name: `Project ${i}`, path: repoPath }));
+  messages = Array.from({ length: 105 }, (_, i) => ({ ...messages[0], id: `message:discovery:${i}` }));
+  const h = harness();
+  try {
+    await h.runtime.start();
+    const projects = await h.deliver(request('projects.list', { instance_id: instanceId }));
+    const review = await h.deliver(request('review.get', { ref }));
+    const transcriptRef = { instance_id: instanceId, kind: 'conversation', conversation_id: conversation.id };
+    const transcript = await h.deliver(request('conversation.read', { ref: transcriptRef }));
+    if (projects.type !== 'response' || projects.operation !== 'projects.list' || !('page' in projects.result) || review.type !== 'response' || review.operation !== 'review.get' || transcript.type !== 'response' || transcript.operation !== 'conversation.read') throw Error('first reads failed');
+    expect(projects.result.page.total).toBe(105); expect(projects.result.items).toHaveLength(100);
+    expect(transcript.result.page.total).toBe(105);
+    await until(() => {
+      const journal = [...settings.entries()].find(([key]) => key.startsWith('macroPilot:content-host:v2:'))?.[1];
+      return journal !== undefined && Object.keys(JSON.parse(journal).reviews).length === 12;
+    }, 20_000);
+    // The first native content observation advances the old metadata-only
+    // revision conservatively. Discovering unchanged Git refs adds no events.
+    expect(h.events.every(event => ['conversations.changed', 'conversation.changed', 'conversation.resource_changed'].includes(event.change.kind))).toBe(true);
+    const initialContentEvents = h.events.length; expect(initialContentEvents).toBeLessThanOrEqual(2);
+    expect(await h.deliver(request('projects.list', { instance_id: instanceId, continuation: { snapshot_id: projects.result.page.snapshot_id, cursor: projects.result.page.next_cursor } }))).toMatchObject({ type: 'response', result: { page: { offset: 100, revision: projects.result.page.revision }, items: expect.any(Array) } });
+    expect(await h.deliver(request('conversation.read', { ref: transcriptRef, continuation: { snapshot_id: transcript.result.page.snapshot_id, cursor: transcript.result.page.next_cursor } }))).toMatchObject({ type: 'response', result: { page: { offset: 100, revision: transcript.result.page.revision } } });
+    expect(await h.deliver(request('diff.files', { ref, snapshot_id: review.result.snapshot_id }))).toMatchObject({ type: 'response' });
+    expect(h.events).toHaveLength(initialContentEvents);
+    nativeRevision = 'c'.repeat(64);
+    const changed = await h.deliver(request('review.get', { ref }));
+    expect(changed).toMatchObject({ type: 'response', result: { revision: review.result.revision + 1 } });
+    await until(() => h.events.some(event => event.change.kind === 'review.changed' && event.change.scope.task_id === ref.task_id && event.change.scope.review_id === ref.review_id));
+    expect(await h.deliver(request('diff.files', { ref, snapshot_id: review.result.snapshot_id }))).toMatchObject({ type: 'error', code: 'stale_revision' });
+  } finally { await h.runtime.stop(); }
+});
+it('retains an unchanged review revision across restart and invalidates a removed task', async () => {
+  const h = harness();
+  try {
+    await h.runtime.start();
+    const first = await h.deliver(request('review.get', { ref }));
+    if (first.type !== 'response' || first.operation !== 'review.get') throw Error('review');
+    await h.runtime.stop(); await h.runtime.start();
+    expect(await h.deliver(request('review.get', { ref }))).toMatchObject({ type: 'response', result: { revision: first.result.revision } });
+    expect(h.events).toHaveLength(0);
+    taskRecords = [];
+    await until(() => h.events.some(event => event.change.kind === 'review.changed' && event.change.scope.review_id === ref.review_id && event.change.revision === first.result.revision + 1));
+    expect(await h.deliver(request('review.get', { ref }))).toMatchObject({ type: 'error', code: 'not_found' });
+  } finally { await h.runtime.stop(); }
+});
+it('confirms the producer reset before either poll and retries a failed reset without advertising', async () => {
+  const h = harness(); let release!: () => void;
+  h.waitDisconnect(new Promise<void>(resolve => { release = resolve; }), 1);
+  try {
+    await h.runtime.start();
+    await until(() => h.requests.filter(r => r.path.endsWith('/disconnect')).length === 2);
+    expect(h.requests.some(r => r.path.endsWith('/poll'))).toBe(false);
+    release();
+    await until(() => h.requests.some(r => r.path.includes('/v2/') && r.path.endsWith('/poll')));
+    const firstPoll = h.requests.findIndex(r => r.path.endsWith('/poll'));
+    expect(h.requests.slice(0, firstPoll).filter(r => r.path.endsWith('/disconnect'))).toHaveLength(2);
+    expect(h.events).toHaveLength(0);
+  } finally { release(); await h.runtime.stop(); }
+});
+it.skipIf(!process.env.PILOT_CAPTURE_BRIDGE)('uses real native Git captures through all runtime review handlers and detects a real edit before verdict', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'pilot-runtime-')); repoPath = dir;
+  const runGit = (...args: string[]) => { const result = Bun.spawnSync(['git', '-C', dir, ...args]); if (result.exitCode) throw Error(result.stderr.toString()); return result.stdout.toString(); };
+  runGit('init', '-q'); runGit('config', 'user.name', 'Test'); runGit('config', 'user.email', 'test@example.invalid');
+  await writeFile(join(dir, 'hello.txt'), 'before\n'); runGit('add', '.'); runGit('commit', '-qm', 'fixture');
+  await writeFile(join(dir, 'hello.txt'), 'after\n');
+  const before = runGit('status', '--porcelain=v1');
+  const child = spawn(process.env.PILOT_CAPTURE_BRIDGE!, [], { stdio: ['pipe', 'pipe', 'inherit'] });
+  const lines = createInterface({ input: child.stdout });
+  const pending: Array<{ resolve(value: unknown): void; reject(reason: unknown): void }> = [];
+  lines.on('line', line => { const value = JSON.parse(line); const call = pending.shift()!; if ('error' in value) call.reject(value.error); else call.resolve(value.result); });
+  bridge = (command, args) => new Promise((resolve, reject) => { pending.push({ resolve, reject }); child.stdin.write(`${JSON.stringify({ command, args })}\n`); });
+  const h = harness();
+  try {
+    await h.runtime.start();
+    const response = await h.deliver(request('review.get', { ref }));
+    if (response.type !== 'response' || response.operation !== 'review.get') throw Error(JSON.stringify(response));
+    const capture: ContentCapture = response.result;
+    const files = await h.deliver(request('diff.files', { ref, snapshot_id: capture.snapshot_id }));
+    if (files.type !== 'response' || files.operation !== 'diff.files') throw Error('files');
+    expect(files.result.items[0].new_path).toBe('hello.txt');
+    const patch = await h.deliver(request('diff.read', { ref, snapshot_id: capture.snapshot_id, file_id: files.result.items[0].file_id, offset_bytes: 0 }));
+    expect(JSON.stringify(patch)).toContain('+after');
+    await writeFile(join(dir, 'hello.txt'), 'other\n');
+    const verdict = await h.deliver(request('review.verdict', { ref, snapshot_id: capture.snapshot_id, expected_revision: capture.revision, idempotency_key: 'verdict:native:unique', verdict: 'approve' }));
+    expect(verdict).toMatchObject({ type: 'error', code: 'stale_revision' });
+    expect(runGit('status', '--porcelain=v1')).toBe(before);
+    const next = await h.deliver(request('review.get', { ref }));
+    if (next.type !== 'response' || next.operation !== 'review.get') throw Error('next');
+    expect(next.result.revision).toBeGreaterThan(capture.revision);
+    expect(await h.deliver(request('review.verdict', { ref, snapshot_id: next.result.snapshot_id, expected_revision: next.result.revision, idempotency_key: 'verdict:native:new', verdict: 'approve' }))).toMatchObject({ type: 'response', result: { outcome: 'applied' } });
+    // Hold native patches near their actual 32 MiB limit, then create large
+    // conversation snapshots while those native handles remain alive.
+    await writeFile(join(dir, 'hello.txt'), 'x'.repeat(900_000));
+    let nativeLimit = false; let nativeHeld = 0;
+    for (let i = 0; i < 45; i++) {
+      const held = await h.deliver(request('review.get', { ref }));
+      if (held.type === 'error') { expect(held.code).toBe('resource_limit'); nativeLimit = true; break; }
+      nativeHeld++;
+    }
+    expect(nativeLimit).toBe(true); expect(nativeHeld).toBeGreaterThan(25); expect(nativeHeld).toBeLessThan(40);
+    messages = Array.from({ length: 100 }, (_, i) => ({ ...messages[0], id: `message:large:${i}`, content: 'visible '.repeat(2000) }));
+    let contentLimit = false; let conversationsHeld = 0;
+    for (let i = 0; i < 25; i++) {
+      const held = await h.deliver(request('conversation.read', { ref: { instance_id: instanceId, kind: 'conversation', conversation_id: conversation.id } }));
+      if (held.type === 'error') { expect(held.code).toBe('resource_limit'); contentLimit = true; break; }
+      conversationsHeld++;
+    }
+    expect(contentLimit).toBe(true); expect(conversationsHeld).toBeGreaterThan(5);
+    expect(Object.values(CONTENT_BUDGET).reduce((a, b) => a + b, 0)).toBeLessThan(64 * 1024 * 1024);
+  } finally { await h.runtime.stop(); lines.close(); child.stdin.end(); child.kill(); await rm(dir, { recursive: true, force: true }); }
+});
+
+it('serves cards and public tool details through authenticated deliveries without loading each task', async () => {
+  taskRecords = [{ id: 'task:one', project_id: 'project:one', status: 'Pending', task_source: 'standalone', title: 'Demo task',
+    description: 'Description on the card', draft: true, plan_title: null, feature_slug: 'demo-feature', task_kind: 'feature', execution_targets: [] }];
+  messages.push({ ...messages[0], id: 'message:tools', role: 'assistant', content: '<think>private reasoning</think>',
+    hidden_context: 'hidden replay', provider_turn_state_json: '{"private":"provider replay"}',
+    tool_traces_json: JSON.stringify([{ tool_call_id: 'call:demo', tool_name: 'read_file', status: 'done', detail: 'README.md' }]) });
+  const h = harness();
+  try {
+    await h.runtime.start();
+    const cards = await h.deliver(request('task.cards.list', { instance_id: instanceId }));
+    expect(cards).toMatchObject({ type: 'response', result: { items: [{ description: { text: 'Description on the card' }, draft: true, feature: { text: 'demo-feature' } }] } });
+    expect(nativeCalls).not.toContain('configuration_get_snapshot');
+    const toolRef = { instance_id: instanceId, kind: 'conversation', conversation_id: conversation.id };
+    const transcriptReads = nativeCalls.filter(command => command === 'db_list_messages').length;
+    const listed = await h.deliver(request('conversation.tools.list', { ref: toolRef }));
+    expect(nativeCalls.filter(command => command === 'db_list_messages')).toHaveLength(transcriptReads);
+    expect(nativeCalls).not.toContain('pilot_tool_trace_read');
+    if (listed.type !== 'response' || listed.operation !== 'conversation.tools.list') throw Error('tools');
+    expect(listed.result.items).toHaveLength(1);
+    expect(JSON.stringify(listed)).not.toContain('private'); expect(JSON.stringify(listed)).not.toContain('README.md');
+    const detail = await h.deliver(request('conversation.tool.read', { ref: toolRef, snapshot_id: listed.result.page.snapshot_id,
+      item_id: listed.result.items[0].trace_id, offset_bytes: 0 }));
+    expect(detail).toMatchObject({ type: 'response', result: { content: { text: 'README.md' } } });
+    expect(h.requests.some(item => item.body.type === 'poll' && (item.body.capabilities as string[] | undefined)?.includes('task-details-1'))).toBe(true);
+  } finally { await h.runtime.stop(); }
+});
+
+
+it('retries an identical result after its execution lease expires without executing again', async () => {
+  const h = harness();
+  try {
+    await h.runtime.start();
+    h.loseResult(5100);
+    const input = request('conversations.list', { instance_id: instanceId, kind: 'conversation' });
+    const response = await h.deliver(input);
+    expect(response.type).toBe('response');
+    await until(() => h.results.filter(result => result.request_id === input.request_id).length === 2);
+    const replies = h.results.filter(result => result.request_id === input.request_id);
+    expect(replies[1]).toEqual(replies[0]);
+    expect(h.requests.filter(r => r.path.endsWith(`/${input.request_id}/authorize`))).toHaveLength(1);
+  } finally { await h.runtime.stop(); }
+}, 12000);
+
+it('falls back from the reliability offer while retaining negotiated task capabilities', async () => {
+  const h = harness(); h.legacyRelay();
+  try {
+    await h.runtime.start();
+    await until(() => h.requests.filter(r => r.path.includes('/v2/') && r.path.endsWith('/poll')).length >= 7);
+    const polls = h.requests.filter(r => r.path.includes('/v2/') && r.path.endsWith('/poll'));
+    expect(polls[0].body.capabilities).toContain('network-reliability-1');
+    expect(polls[0].body.capabilities).toContain('conversations-1');
+    expect(polls[0].body.capabilities).toContain('conversation-history-1');
+    expect(polls[0].body.capabilities).toContain('conversation-interactions-1');
+    expect(polls[0].body.capabilities).toContain('host-telemetry-1');
+    expect(polls[0].body.capabilities).toContain('project-icons-1');
+    expect(polls[1].body.capabilities).not.toContain('host-telemetry-1');
+    expect(polls[1].body.capabilities).not.toContain('project-icons-1');
+    expect(polls[2].body.capabilities).toEqual(['task-details-1', 'task-actions-1', 'network-reliability-1', 'conversations-1', 'conversation-history-1', 'conversation-interactions-1']);
+    expect(polls[3].body.capabilities).toEqual(['task-details-1', 'task-actions-1', 'network-reliability-1', 'conversations-1', 'conversation-history-1']);
+    expect(polls[4].body.capabilities).toEqual(['task-details-1', 'task-actions-1', 'network-reliability-1', 'conversations-1']);
+    expect(polls[5].body.capabilities).toEqual(['task-details-1', 'task-actions-1', 'network-reliability-1']);
+    expect(polls[6].body.capabilities).toEqual(['task-details-1', 'task-actions-1']);
+    const catalog = await h.deliver(request('conversations.list', { instance_id: instanceId, kind: 'conversation' }));
+    expect(JSON.stringify(catalog)).not.toContain('content_revision');
+    conversations[0].title = 'Legacy edit';
+    await until(() => h.events.some(e => e.change.kind === 'conversation.changed'));
+    expect(h.events.some(e => e.change.kind === 'conversation.resource_changed')).toBe(false);
+  } finally { await h.runtime.stop(); }
+});
+
+it('requires negotiated Architect visibility for tool lists, continuations and details', async () => {
+  conversations[0].scope_mode = 'Architect';
+  messages[0].role = 'assistant';
+  messages[0].tool_traces_json = JSON.stringify(Array.from({ length: 51 }, (_, i) => ({ tool_call_id: `tool:${i}`, tool_name: 'read_file', status: 'done', detail: 'Synthetic public detail' })));
+  const h = harness();
+  const target = { instance_id: instanceId, kind: 'conversation', conversation_id: conversation.id };
+  const consistency = 'network-reliability-1';
+  try {
+    await h.runtime.start();
+    expect(await h.deliver(request('conversations.list', { instance_id: instanceId, kind: 'conversation' }))).toMatchObject({ result: { items: [] } });
+    const before = nativeCalls.filter(name => name === 'pilot_tool_traces_list').length;
+    expect(await h.deliver(request('conversation.tools.list', { ref: target }))).toMatchObject({ type: 'error', code: 'not_found' });
+    expect(nativeCalls.filter(name => name === 'pilot_tool_traces_list')).toHaveLength(before);
+    const first = await h.deliver(request('conversation.tools.list', { ref: target, consistency }));
+    if (first.type !== 'response' || first.operation !== 'conversation.tools.list') throw Error('Architect tool list failed');
+    expect(first.result.items).toHaveLength(50);
+    const continuation = { snapshot_id: first.result.page.snapshot_id, cursor: first.result.page.next_cursor };
+    const detail = { ref: target, snapshot_id: first.result.page.snapshot_id, item_id: first.result.items[0].trace_id, offset_bytes: 0 };
+    expect(await h.deliver(request('conversation.tools.list', { ref: target, continuation }))).toMatchObject({ type: 'error', code: 'snapshot_expired' });
+    expect(await h.deliver(request('conversation.tool.read', detail))).toMatchObject({ type: 'error', code: 'snapshot_expired' });
+    expect(await h.deliver(request('conversation.tools.list', { ref: target, continuation, consistency }))).toMatchObject({ result: { page: { offset: 50 }, items: expect.any(Array) } });
+    expect(await h.deliver(request('conversation.tool.read', { ...detail, consistency }))).toMatchObject({ result: { content: { text: 'Synthetic public detail' } } });
+    // A previously legal legacy capture must lose visibility when its mode changes.
+    conversations[0].scope_mode = 'Chat';
+    const legacy = await h.deliver(request('conversation.tools.list', { ref: target }));
+    if (legacy.type !== 'response' || legacy.operation !== 'conversation.tools.list') throw Error('Legacy Chat tool list failed');
+    conversations[0].scope_mode = 'Architect';
+    expect(await h.deliver(request('conversation.tool.read', { ...detail, snapshot_id: legacy.result.page.snapshot_id }))).toMatchObject({ type: 'error', code: 'not_found' });
+  } finally { await h.runtime.stop(); }
+});
+
+it('legacy tool list rechecks Chat to Architect during final authorization', async () => {
+  messages[0].role = 'assistant';
+  messages[0].tool_traces_json = JSON.stringify([{ tool_call_id: 'tool:0', tool_name: 'read_file', status: 'done', detail: 'Synthetic public detail' }]);
+  const h = harness();
+  const target = { instance_id: instanceId, kind: 'conversation', conversation_id: conversation.id };
+  try {
+    await h.runtime.start();
+    h.authorize(() => { conversations[0].scope_mode = 'Architect'; });
+    const result = await h.deliver(request('conversation.tools.list', { ref: target }));
+    expect(result).toMatchObject({ type: 'error', code: 'not_found' });
+  } finally { await h.runtime.stop(); }
+});
+it('legacy tool detail rechecks Chat to Architect during final authorization', async () => {
+  messages[0].role = 'assistant';
+  messages[0].tool_traces_json = JSON.stringify([{ tool_call_id: 'tool:0', tool_name: 'read_file', status: 'done', detail: 'Synthetic public detail' }]);
+  const h = harness();
+  const target = { instance_id: instanceId, kind: 'conversation', conversation_id: conversation.id };
+  try {
+    await h.runtime.start();
+    const first = await h.deliver(request('conversation.tools.list', { ref: target }));
+    if (first.type !== 'response' || first.operation !== 'conversation.tools.list') throw Error('list failed');
+    h.authorize(() => { conversations[0].scope_mode = 'Architect'; });
+    const result = await h.deliver(request('conversation.tool.read', { ref: target, snapshot_id: first.result.page.snapshot_id, item_id: first.result.items[0].trace_id, offset_bytes: 0 }));
+    expect(result).toMatchObject({ type: 'error', code: 'not_found' });
+  } finally { await h.runtime.stop(); }
+});
+it('legacy continuation rechecks mode during final authorization', async () => {
+  messages[0].role = 'assistant';
+  messages[0].tool_traces_json = JSON.stringify(Array.from({ length: 51 }, (_, i) => ({ tool_call_id: `tool:${i}`, tool_name: 'read_file', status: 'done', detail: 'Synthetic public detail' })));
+  const h = harness(); const target = { instance_id: instanceId, kind: 'conversation', conversation_id: conversation.id };
+  try {
+    await h.runtime.start();
+    const first = await h.deliver(request('conversation.tools.list', { ref: target }));
+    if (first.type !== 'response' || first.operation !== 'conversation.tools.list') throw Error('list failed');
+    h.authorize(() => { conversations[0].scope_mode = 'Architect'; });
+    const result = await h.deliver(request('conversation.tools.list', { ref: target, continuation: { snapshot_id: first.result.page.snapshot_id, cursor: first.result.page.next_cursor } }));
+    expect(result).toMatchObject({ type: 'error', code: 'not_found' });
+  } finally { await h.runtime.stop(); }
+});
+
+it('routes negotiated telemetry and bounded project logos through native IPC with supervise before each emission', async () => {
+  const h = harness();
+  try {
+    await h.runtime.start();
+    const cpu = request('instance.telemetry', { instance_id: instanceId });
+    expect(await h.deliver(cpu)).toMatchObject({ type: 'response', result: { instance_id: instanceId, availability: 'available', cpu_percent: 25, memory_used_bytes: 1024, memory_total_bytes: 4096 } });
+    expect(nativeCalls.filter(command => command === 'host_telemetry_read')).toHaveLength(1);
+    const logo = request('project.icon', { ref: { instance_id: instanceId, workspace_id: 'workspace:config:test', project_id: 'project:one' } });
+    const response = await h.deliver(logo);
+    expect(response).toMatchObject({ type: 'response', result: { availability: 'available', icon: { mime_type: 'image/png' } } });
+    expect(JSON.stringify(response)).not.toContain('sourcePath');
+    expect(JSON.stringify(response)).not.toContain('public/favicon.png');
+    for (const input of [cpu, logo]) {
+      const authorizations = h.requests.filter(item => item.path.endsWith(`/${input.request_id}/authorize`));
+      expect(authorizations).toHaveLength(1);
+      expect(authorizations.every(item => JSON.stringify(item.body.required_permissions) === JSON.stringify(['supervise']))).toBe(true);
+    }
+  } finally { await h.runtime.stop(); }
+});
+
+it('routes real visible reflection history through negotiated runtime, supervise and minimal native IPC',async () => {
+  const runtimeWindow=window as Window & { __TAURI_INTERNALS__?: { invoke?: unknown } };
+  const oldRuntime=runtimeWindow.__TAURI_INTERNALS__;
+  runtimeWindow.__TAURI_INTERNALS__={invoke:()=>{}};
+  messages[0]={...messages[0],role:'assistant',turn_id:'turn:visible',content:'<think>Réflexion réelle é🙂</think>Réponse finale',hidden_context:null,provider_turn_state_json:'{"private":"never-export"}'};
+  const { mapDbConversationToConversation }=await import('../chatDbMappers');
+  const before=useChatStore.getState();useChatStore.setState({conversations:[mapDbConversationToConversation(conversation)]});
+  const h=harness();
+  try {
+    await h.runtime.start();
+    const input=request('conversation.reflections.read',{ref:{instance_id:instanceId,kind:'conversation',conversation_id:conversation.id},message_id:messages[0].id});
+    expect(await h.deliver(input)).toMatchObject({type:'response',result:{message_id:messages[0].id,turn_id:'turn:visible',source:'history',items:[{text:'Réflexion réelle é🙂'}]}});
+    const polls=h.requests.filter(item=>item.path.endsWith('/poll')&&item.path.includes('/v2/'));
+    expect(polls.some(item=>(item.body.capabilities as string[])?.includes('conversation-reflections-1'))).toBe(true);
+    const auth=h.requests.filter(item=>item.path.endsWith(`/${input.request_id}/authorize`));
+    expect(auth).toHaveLength(1);expect(auth.every(item=>JSON.stringify(item.body.required_permissions)==='["supervise"]')).toBe(true);
+    expect(nativeCalls.filter(command=>command==='db_get_pilot_reflection_message').length).toBeGreaterThanOrEqual(3);
+    expect(nativeCalls).not.toContain('db_get_message');expect(nativeCalls).not.toContain('db_list_messages');
+    expect(JSON.stringify(h.results)).not.toContain('never-export');
+  } finally {await h.runtime.stop();runtimeWindow.__TAURI_INTERNALS__=oldRuntime;useChatStore.setState(before,true);}
+});
+
+it('keeps demand-only producers idle across observation, stop and restart without remote reads', async () => {
+  const runtimeWindow = window as Window & { __TAURI_INTERNALS__?: { invoke?: unknown } };
+  const oldRuntime = runtimeWindow.__TAURI_INTERNALS__;
+  runtimeWindow.__TAURI_INTERNALS__ = { invoke: () => {} };
+  const h = harness(); h.acceptIdlePoll();
+  const metadataCalls = () => nativeCalls.filter(command => command === 'db_conversation_catalog_version').length;
+  const demandCalls = () => nativeCalls.filter(command => /^(?:host_telemetry_read|workspace_resolve_project_icons|db_get_pilot_reflection_message|pilot_files_)/.test(command));
+  try {
+    await h.runtime.start();
+    await until(() => h.requests.filter(item => item.path.includes('/v2/') && item.path.endsWith('/poll')).length >= 2);
+    const offer = h.requests.find(item => item.path.includes('/v2/') && item.path.endsWith('/poll'))!.body.capabilities;
+    expect(offer).toEqual(expect.arrayContaining(['host-telemetry-1', 'project-icons-1', 'conversation-reflections-1', 'conversation-files-1']));
+    const baseline = metadataCalls();
+    await until(() => metadataCalls() >= baseline + 4);
+    expect(demandCalls()).toEqual([]);
+    expect(nativeCalls.filter(command => command === 'db_list_messages')).toEqual([]);
+    expect(h.events).toEqual([]);
+    expect(h.results).toEqual([]);
+    const observations = metadataCalls() - baseline;
+    await h.runtime.stop();
+    const stoppedCalls = nativeCalls.length;
+    const stoppedRequests = h.requests.length;
+    await sleep(1100);
+    expect(nativeCalls).toHaveLength(stoppedCalls);
+    expect(h.requests).toHaveLength(stoppedRequests);
+    const pausedCalls = nativeCalls.length - stoppedCalls;
+    await h.runtime.start();
+    await until(() => h.requests.length > stoppedRequests && h.requests.at(-1)!.path.endsWith('/poll'));
+    expect(demandCalls()).toEqual([]);
+    expect(nativeCalls.filter(command => command === 'db_list_messages')).toEqual([]);
+    expect(h.events).toEqual([]);
+    console.log('SYNTHETIC_IDLE_PRODUCERS', JSON.stringify({ identity_catalog_calls_during_idle: observations,
+      telemetry_icon_reflection_file_calls: demandCalls().length, transcript_reads: 0,
+      remote_results: h.results.length, changed_events: h.events.length, paused_native_calls: pausedCalls }));
+  } finally { await h.runtime.stop(); runtimeWindow.__TAURI_INTERNALS__ = oldRuntime; }
+});
+
+for (const change of ['modify', 'delete'] as const) it(`refuses a transcript changed during final relay authorization: ${change}`, async () => {
+  const h = harness();
+  try {
+    await h.runtime.start();
+    h.authorize(() => {
+      if (change === 'modify') messages[0].content = 'Changed during authorization';
+      else conversations = [];
+    });
+    const result = await h.deliver(request('conversation.read', { ref: { instance_id: instanceId, kind: 'conversation', conversation_id: conversation.id }, consistency: 'network-reliability-1' }));
+    expect(result).toMatchObject({ type: 'error', code: 'stale_revision' });
+    expect(JSON.stringify(result)).not.toContain('Hello from persistence');
+  } finally { await h.runtime.stop(); }
+});
+
+for (const change of ['modify', 'delete'] as const) it(`blocks a stale transcript retry after a lost transport acknowledgement: ${change}`, async () => {
+  const h = harness();
+  try {
+    await h.runtime.start();
+    h.loseResult(0, () => {
+      if (change === 'modify') messages[0].content = 'Changed after the first emission';
+      else conversations = [];
+    });
+    const input = request('conversation.read', { ref: { instance_id: instanceId, kind: 'conversation', conversation_id: conversation.id }, consistency: 'network-reliability-1' });
+    expect(await h.deliver(input)).toMatchObject({ type: 'response' });
+    await sleep(1700);
+    expect(h.requests.filter(r => r.path.endsWith(`/${input.request_id}/authorize`))).toHaveLength(1);
+    await h.runtime.stop();
+    expect(h.results.filter(result => result.request_id === input.request_id)).toHaveLength(1);
+  } finally { await h.runtime.stop(); }
+}, 10000);
+
+it('requires the conversation emission guard in the native producer transport', async () => {
+  const h = harness();
+  try {
+    await h.runtime.start();
+    const input = request('conversation.read', { ref: { instance_id: instanceId, kind: 'conversation', conversation_id: conversation.id } });
+    await h.deliver(input);
+    const result = h.results.find(result => result.request_id === input.request_id)!;
+    await expect(h.client.requestContent(`/pilot/v2/instances/${instanceId}/deliveries/${input.request_id}/result`, result, new AbortController().signal)).rejects.toMatchObject({ code: 'invalid_configuration' });
+    expect(h.results.filter(result => result.request_id === input.request_id)).toHaveLength(1);
+  } finally { await h.runtime.stop(); }
+});
+
+it('uses one-shot V2 authorization across guarded conversation, machine, file and reflection reads', async () => {
+  const runtimeWindow = window as Window & { __TAURI_INTERNALS__?: { invoke?: unknown } };
+  const oldRuntime = runtimeWindow.__TAURI_INTERNALS__; runtimeWindow.__TAURI_INTERNALS__ = { invoke: () => {} };
+  messages[0] = { ...messages[0], role: 'assistant', turn_id: 'turn:visible', content: '<think>Public reflection</think>Public answer', hidden_context: null };
+  const { mapDbConversationToConversation } = await import('../chatDbMappers');
+  const beforeChat = useChatStore.getState(); useChatStore.setState({ conversations: [mapDbConversationToConversation(conversation)] });
+  const h = harness();
+  try {
+    await h.runtime.start();
+    const reads = [
+      request('conversation.read', { ref: { instance_id: instanceId, kind: 'conversation', conversation_id: conversation.id } }),
+      request('conversations.list', { instance_id: instanceId, kind: 'conversation' }),
+      request('conversation.files.list', { ref: { instance_id: instanceId, kind: 'conversation', conversation_id: conversation.id } }),
+      request('project.icon', { ref: { instance_id: instanceId, workspace_id: 'workspace:config:test', project_id: 'project:one' } }),
+      request('instance.telemetry', { instance_id: instanceId }),
+      request('conversation.reflections.read', { ref: { instance_id: instanceId, kind: 'conversation', conversation_id: conversation.id }, message_id: messages[0].id }),
+    ];
+    for (const input of reads) {
+      expect(await h.deliver(input)).toMatchObject({ type: 'response', operation: input.operation });
+      expect(h.requests.filter(r => r.path.endsWith(`/${input.request_id}/authorize`))).toHaveLength(1);
+    }
+  } finally { await h.runtime.stop(); runtimeWindow.__TAURI_INTERNALS__ = oldRuntime; useChatStore.setState(beforeChat); }
+});
+
+it('does not renew an effect lease during asynchronous policy validation', async () => {
+  const h = harness();
+  try {
+    await h.runtime.start();
+    const capture = await h.deliver(request('review.get', { ref }));
+    if (capture.type !== 'response' || capture.operation !== 'review.get') throw Error('capture');
+    h.authorizationDuration(20);
+    h.authorize(() => { policyWait = sleep(60); });
+    const input = request('review.verdict', { ref, snapshot_id: capture.result.snapshot_id, expected_revision: capture.result.revision, verdict: 'approve', idempotency_key: 'verdict:expired:one-shot' });
+    h.enqueue(input);
+    await until(() => h.requests.some(r => r.path.endsWith(`/${input.request_id}/authorize`)));
+    await sleep(100);
+    await h.runtime.stop();
+    expect(h.requests.filter(r => r.path.endsWith(`/${input.request_id}/authorize`))).toHaveLength(1);
+    expect(nativeCalls.filter(command => command === 'pilot_review_commit')).toHaveLength(0);
+    expect(h.results.filter(result => result.request_id === input.request_id)).toHaveLength(0);
+  } finally { await h.runtime.stop(); }
+});
+
+it('reuses the one-shot grant and prepared result on redelivery after exhausted transport retries', async () => {
+  const h = harness();
+  try {
+    await h.runtime.start(); h.rejectResults(3);
+    const input = request('conversation.read', { ref: { instance_id: instanceId, kind: 'conversation', conversation_id: conversation.id } });
+    h.enqueue(input);
+    await until(() => h.requests.filter(r => r.path.endsWith(`/${input.request_id}/result`)).length === 3);
+    expect((await h.deliver(input)).type).toBe('response');
+    expect(h.requests.filter(r => r.path.endsWith(`/${input.request_id}/authorize`))).toHaveLength(1);
+    expect(h.requests.filter(r => r.path.endsWith(`/${input.request_id}/result`))).toHaveLength(4);
+    const attempts = h.requests.filter(r => r.path.endsWith(`/${input.request_id}/result`));
+    expect(attempts.every(r => JSON.stringify(r.body) === JSON.stringify(attempts[0].body))).toBe(true);
+  } finally { await h.runtime.stop(); }
+}, 10000);
+
+
+it.each(['source', 'policy'] as const)('terminates a search invalidated by %s before fetch and replays its terminal receipt', async change => {
+  const h = harness();
+  const input = request('conversations.search', { instance_id: instanceId, kind: 'conversation', query: 'Hello' });
+  const bRef = { instance_id: instanceId, kind: 'conversation', conversation_id: 'chat:two' };
+  conversations[0].description = 'Public fixed description';
+  conversations.push({ ...conversation, id: bRef.conversation_id });
+  messages.push({ ...messages[0], id: 'message:two', conversation_id: bRef.conversation_id, content: 'Public B' });
+  const original = h.client.requestContent.bind(h.client);
+  let prepared = false, failedCalls = 0;
+  h.client.requestContent = async (path, body, signal, options) => {
+    if (decodeURIComponent(path).endsWith(`/${input.request_id}/result`) && !prepared) {
+      prepared = true;
+      if (change === 'source') messages[0].content = 'Public A after edit';
+      else secretValues = ['new-public-policy-value'];
+      // An API call rejected before reaching native credentials/guards cannot
+      // establish that the relay may have received this response.
+      failedCalls++;
+      throw new Error('Synthetic local failure before native request');
+    }
+    return original(path, body, signal, options);
+  };
+  try {
+    await h.runtime.start();
+    const terminal = await h.deliver(input);
+    expect(terminal).toMatchObject({ type: 'error', code: change === 'source' ? 'stale_revision' : 'snapshot_expired', retryable: false });
+    const reads = nativeCalls.filter(c => c === 'db_search_messages').length;
+    expect(reads).toBe(1);
+    expect(await h.deliver(input)).toEqual(terminal);
+    expect(nativeCalls.filter(c => c === 'db_search_messages')).toHaveLength(reads);
+    const sends = h.requests.filter(r => decodeURIComponent(r.path).endsWith(`/${input.request_id}/result`));
+    expect(sends).toHaveLength(2);
+    expect(sends.every(r => JSON.stringify(r.body.response) === JSON.stringify(terminal))).toBe(true);
+    expect(JSON.stringify(sends)).not.toContain('Hello from persistence');
+    expect(JSON.stringify(sends)).not.toContain('Public A after edit');
+    expect(h.requests.filter(r => decodeURIComponent(r.path).endsWith(`/${input.request_id}/authorize`))).toHaveLength(1);
+    expect(failedCalls).toBe(1);
+    const b = await h.deliver(request('conversation.read', { ref: bRef, consistency: 'network-reliability-1' }));
+    expect(b).toMatchObject({ type: 'response' });
+    expect(JSON.stringify(b)).toContain('Public B');
+  } finally { await h.runtime.stop(); }
+});
+
+it('keeps the canonical search response after lost acknowledgement and stale redelivery', async () => {
+  const h = harness();
+  const input = request('conversations.search', { instance_id: instanceId, kind: 'conversation', query: 'Hello' });
+  conversations[0].description = 'Public fixed description';
+  const original = h.client.requestContent.bind(h.client);
+  let deliveries = 0;
+  h.client.requestContent = async (path, body, signal, options) => {
+    const response = await original(path, body, signal, options);
+    if (path.endsWith('/poll') && response.status === 200 && (response.data as ContentDelivery).request_id === input.request_id) deliveries++;
+    return response;
+  };
+  try {
+    await h.runtime.start();
+    h.loseResult(0, () => { messages[0].content = 'Public A after edit'; });
+    const canonical = await h.deliver(input);
+    expect(canonical.type).toBe('response');
+    await sleep(1700);
+    h.enqueue(input);
+    await until(() => deliveries === 2);
+    await sleep(1700);
+    await h.runtime.stop();
+    expect(deliveries).toBe(2);
+    expect(nativeCalls.filter(c => c === 'db_get_message').length).toBeGreaterThanOrEqual(6);
+    const sends = h.requests.filter(r => decodeURIComponent(r.path).endsWith(`/${input.request_id}/result`));
+    expect(sends).toHaveLength(1);
+    expect(sends[0].body.response).toEqual(canonical);
+    expect(h.requests.filter(r => decodeURIComponent(r.path).endsWith(`/${input.request_id}/authorize`))).toHaveLength(1);
+    expect(nativeCalls.filter(c => c === 'db_search_messages')).toHaveLength(1);
+    expect(h.results.filter(r => r.request_id === input.request_id)).toHaveLength(1);
+  } finally { await h.runtime.stop(); }
+}, 10000);
+
+it('keeps the producer B7 offer absent without an independently demonstrated lifecycle barrier', async () => {
+  const h=harness(); h.acceptIdlePoll();
+  try {
+    await h.runtime.start(); await until(()=>h.requests.some(r=>r.path.includes('/v2/') && r.path.endsWith('/poll')));
+    expect(h.requests.filter(r=>r.path.includes('/v2/') && r.path.endsWith('/poll')).every(r=>!(r.body.capabilities as string[]).includes('read-authority-1'))).toBe(true);
+  } finally { await h.runtime.stop(); }
+});
+it('drops only B7 after a closed correlated old-relay error while keeping the local producer alive', async () => {
+  const h=harness({suspensionBarrierVerified:true}); h.rejectAuthority('canonical');
+  try {
+    await h.runtime.start(); await until(()=>h.requests.filter(r=>r.path.includes('/v2/') && r.path.endsWith('/poll')).length>=2);
+    const polls=h.requests.filter(r=>r.path.includes('/v2/') && r.path.endsWith('/poll'));
+    expect(polls[0].body.capabilities).toContain('read-authority-1');
+    expect(polls[1].body.capabilities).toEqual((polls[0].body.capabilities as string[]).filter(c=>c!=='read-authority-1'));
+    expect(polls[0].headers.get('x-request-id')).not.toBe(polls[1].headers.get('x-request-id'));
+    expect(h.client.getState().status).toBe('connected'); expect(h.runtime.isStarted()).toBe(true);
+  } finally { await h.runtime.stop(); }
+});
+for(const mode of ['malformed','header','401','403'] as const) it(`never downgrades a producer B7 offer after ${mode}`, async () => {
+  const h=harness({suspensionBarrierVerified:true}); h.rejectAuthority(mode);
+  try {
+    await h.runtime.start(); await until(()=>h.requests.some(r=>r.path.includes('/v2/') && r.path.endsWith('/poll')));
+    if(mode!=='401') await until(()=>h.requests.filter(r=>r.path.includes('/v2/') && r.path.endsWith('/poll')).length>=2);
+    else await until(()=>h.client.getState().deviceSession===null);
+    expect(h.requests.filter(r=>r.path.includes('/v2/') && r.path.endsWith('/poll')).every(r=>(r.body.capabilities as string[]).includes('read-authority-1'))).toBe(true);
+  } finally { await h.runtime.stop(); }
+});

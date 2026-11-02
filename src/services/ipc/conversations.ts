@@ -334,10 +334,7 @@ export async function importMessages(
   });
 }
 
-export async function updateMessage(
-  id: string,
-  content: string,
-  options?: {
+export type MessageUpdateOptions = {
     turnId?: string | null;
     tokenCount?: number;
     toolTraces?: ToolTrace[];
@@ -347,10 +344,10 @@ export async function updateMessage(
     contextRefs?: unknown[];
     completionReason?: ChatCompletionReason;
     generationAttempts?: import('../ai/contracts').GenerationAttempt[];
-  },
-): Promise<void> {
-  return invoke("db_update_message", {
-    params: {
+  };
+
+export function buildMessageUpdateParams(id: string, content: string, options?: MessageUpdateOptions) {
+  return {
       id,
       turnId: options?.turnId ?? null,
       content,
@@ -374,8 +371,11 @@ export async function updateMessage(
       generationAttemptsJson: options?.generationAttempts
         ? JSON.stringify(options.generationAttempts)
         : null,
-    },
-  });
+    };
+}
+
+export async function updateMessage(id: string, content: string, options?: MessageUpdateOptions): Promise<void> {
+  return invoke("db_update_message", { params: buildMessageUpdateParams(id, content, options) });
 }
 
 export async function deleteMessagesAfter(

@@ -2,7 +2,7 @@ import { createQueuedSubmissionRuntime } from './chatQueuedSubmissionRuntime';
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
 import { chatSendFixture } from '../../test-utils/chatSendFixture';
 import { usePersistenceHealth } from '../../services/persistenceHealth';
-import { captureQueuedSubmission, loadQueuedSubmissions, saveQueuedSubmissions, QUEUED_SUBMISSIONS_STORAGE_KEY } from './chatQueuedSubmissions';
+import { captureQueuedSubmission, loadQueuedSubmissions, readQueuedSubmissions, saveQueuedSubmissions, QUEUED_SUBMISSIONS_STORAGE_KEY } from './chatQueuedSubmissions';
 
 const previousWindow = globalThis.window;
 beforeEach(() => {
@@ -62,6 +62,7 @@ describe('queued submissions local recovery', () => {
   it('preserves corrupt recovery data and reports it instead of overwriting it', () => {
     window.localStorage.setItem(QUEUED_SUBMISSIONS_STORAGE_KEY, '{broken');
     expect(loadQueuedSubmissions()).toEqual([]);
+    expect(() => readQueuedSubmissions()).toThrow();
     expect(saveQueuedSubmissions([])).toBe(false);
     expect(window.localStorage.getItem(QUEUED_SUBMISSIONS_STORAGE_KEY)).toBe('{broken');
     expect(usePersistenceHealth.getState().issues[QUEUED_SUBMISSIONS_STORAGE_KEY]).toBeDefined();
@@ -98,7 +99,7 @@ it('invalidates every direction of the targeted turn while preserving other turn
     direction('other-turn', 'a', 'other'), direction('other-conversation', 'b', 'target'),
     captureQueuedSubmission('ordinary', { ...f.input, conversationId: 'a' }, f.snapshot)];
   expect(saveQueuedSubmissions(original)).toBe(true);
-  const queue = createQueuedSubmissionRuntime({ blocked: () => false, cancelled: () => false,
+  const queue = createQueuedSubmissionRuntime({ admit: async () => ({ kind: 'conversation' }), finish: async () => {}, blocked: () => false, cancelled: () => false,
     read: async () => [], send: async () => { throw new Error('Unexpected replay'); }, publish() {}, saveImages: () => true,
     recovery() {}, previews() {}, pending() {}, attempted() {},
   });
@@ -106,6 +107,6 @@ it('invalidates every direction of the targeted turn while preserving other turn
   expect(ids).toEqual(['first', 'pending']);
   expect(queue.hasEntry('first')).toBe(false); expect(queue.hasEntry('pending')).toBe(false);
   expect(loadQueuedSubmissions().filter(entry => entry.direction?.deletionRequested).map(entry => entry.id)).toEqual(ids);
-  queue.finishDirectionDeletion(ids);
-  expect(loadQueuedSubmissions()).toEqual(original.slice(2));
+  await queue.finishDirectionDeletion(ids);
+  expect(loadQueuedSubmissions()).toEqual(JSON.parse(JSON.stringify(original.slice(2))));
 });

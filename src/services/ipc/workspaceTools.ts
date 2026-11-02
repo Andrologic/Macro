@@ -30,6 +30,7 @@ export async function getToolModePolicy(
 }
 
 export async function executeWorkspaceTool(params: {
+  chatAdmission?: import('./chatAdmission').ChatToolAdmission;
   mode: AppMode;
   toolId: string;
   args: Record<string, unknown>;
@@ -56,6 +57,7 @@ export async function executeWorkspaceTool(params: {
     virtualRootEnabled: params.virtualRootEnabled ?? null,
     focusedProjectId: params.focusedProjectId ?? null,
     executionId: params.executionId ?? null,
+    ...(params.chatAdmission ? { chatAdmission: { ...params.chatAdmission, requestId: crypto.randomUUID() } } : {}),
   });
 }
 

@@ -58,7 +58,7 @@ export const isArtifactMutation = (
 };
 
 export const readArtifactFileSnapshot = async (
-  file: Pick<ArtifactFileMutation, 'workspacePath' | 'workspaceScope' | 'path'>,
+  file: Pick<ArtifactFileMutation, 'workspacePath' | 'path'> & { workspaceScope: tauriIpc.WorkspaceScope },
   transport: Transport = tauriIpc,
 ): Promise<{ content: string | null; revision: string | undefined }> => {
   if (!await transport.fsExists(file.path, file)) return { content: null, revision: 'absent' };

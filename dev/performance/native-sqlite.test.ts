@@ -3,7 +3,8 @@ import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from 'nod
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { execFileSync } from 'node:child_process';
-import { sourceFingerprint, stageVerifiedBinary } from './native-sqlite';
+import { createHash } from 'node:crypto';
+import { sourceFingerprint, stageVerifiedBinary, validateNativeArgs, validateContentBaseline, validateCurrentContentBaseline, nativeContentFixture, currentNativeContentFixture, schema15ContentFixture, schema16ContentFixture, schema13ContentFixture } from './native-sqlite';
 
 test('native fingerprint detects untracked and tracked source changes, excludes Cargo outputs', () => {
   const root = mkdtempSync(join(tmpdir(), 'macro-native-provenance-'));
@@ -48,4 +49,210 @@ test('rejects a cache replacement between build and copy, accepts only this invo
     writeFileSync(source, JSON.stringify({ sourceSha256: 'later', buildNonce: 'later' }));
     expect(readIdentity(staged)).toEqual(expected);
   } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test('native content pilot is explicit and cannot silently shorten the campaign', () => {
+  for (const args of [[], ['--self-test'], ['--diagnostics'], ['--content-baseline'], ['--content-baseline', '--pilot']]) {
+    expect(() => validateNativeArgs(args)).not.toThrow();
+  }
+  for (const args of [['--pilot'], ['--content-baseline', '--samples=3'], ['--diagnostics', '--pilot'], ['--content-baseline', '--content-baseline']]) {
+    expect(() => validateNativeArgs(args)).toThrow('Usage');
+  }
+});
+
+function contentPilot() {
+  const names = ['get_message','list_messages_bounded','count_exportable','catalog_metadata','serde_get_message',
+    'serde_all_messages','serde_catalog_metadata','update_stream_commit','import100_commit','delete100_commit','provenance_cas','provenance_get'];
+  const flags = Object.fromEntries(['empty_and_missing','timestamp_id_ties','all_14_fields','unicode_preview_future_latest',
+    'duplicate_and_foreign_key_errors','metadata_failure_rolls_back_message_and_fts','wal_reader_and_writer_wait',
+    'commit_file_reopen_exact_content_metadata_fts'].map(key=>[key,true]));
+  return {schema:3,mode:'content-baseline',pilot:true,reference_eligible:false,warmup:1,samples:3,fixture_sha256:'a'.repeat(64),
+    contract_checks:{...flags,rows_after_reopen:4},admission_controls:{seven_payload_fields_refused:true,sql_rejection_before_fetch:true,fetch_probe_negative_control:true,legacy_receipt_not_projected:true,cas_conflict_refused:true},
+    cases:[100,1000,10000].map(size => ({initial_messages:size,final_messages:size,bounded_admitted:size<10000,
+      runtime:{migrations:[1,3,4,5,6,7,8,9,10,11,12],journal_mode:'wal',synchronous:1,foreign_keys:1},
+      checks:{exact_14_fields:true,missing:true,writes_and_resets:true,metadata_fts:true,reopen:true,integrity:true,cleanup:true},
+      cells:Object.fromEntries([...names,...(size<10000?['serde_bounded_messages']:[])].map(name => [name,{
+        raw_ms:[1,2,3],summary:{unit:'ms',count:3,p50:2,p95:3,max:3},outcomes:Array.from({length:3},()=>{
+          const outcome:Record<string,unknown>={};
+          if (['get_message','provenance_get'].includes(name)) Object.assign(outcome,{rows:1,outcome:'ok'});
+          if (name==='count_exportable') outcome.rows=size;
+          if (name==='catalog_metadata') outcome.conversations=1;
+          if (name.startsWith('serde_')) outcome.bytes=42;
+          if (name==='list_messages_bounded') Object.assign(outcome,size<10000?{rows:size,outcome:'ok'}:{rows_returned:0,outcome:'resource_limit'});
+          if (['update_stream_commit','import100_commit','delete100_commit','provenance_cas'].includes(name))
+            Object.assign(outcome,{start_rows:size+(name==='delete100_commit'?100:0),end_rows:size+(name==='import100_commit'?100:0)});
+          if (name==='import100_commit') outcome.inserted=100;
+          if (name==='delete100_commit') outcome.deleted=100;
+          if (name==='provenance_cas') outcome.applied=true;
+          return outcome;
+        }),
+      }]))})),
+  };
+}
+test('rejects incomplete, relabelled, miscounted and incorrect native content evidence', () => {
+  expect(() => validateContentBaseline(contentPilot(), true)).not.toThrow();
+  expect(() => validateContentBaseline(contentPilot(), false)).toThrow();
+  const truncated = contentPilot(); truncated.cases.pop();
+  expect(() => validateContentBaseline(truncated,true)).toThrow('cases');
+  const dropped = contentPilot(); delete dropped.cases[0].cells.get_message;
+  expect(() => validateContentBaseline(dropped,true)).toThrow('cells');
+  const short = contentPilot(); short.cases[0].cells.get_message.raw_ms.pop();
+  expect(() => validateContentBaseline(short,true)).toThrow('samples');
+  const falseSummary = contentPilot(); falseSummary.cases[0].cells.get_message.summary.p95=1;
+  expect(() => validateContentBaseline(falseSummary,true)).toThrow('summary');
+  const falseCount = contentPilot(); falseCount.cases[0].cells.count_exportable.outcomes[0].rows=0;
+  expect(() => validateContentBaseline(falseCount,true)).toThrow('count');
+  const missingCheck = contentPilot(); missingCheck.cases[0].checks.cleanup=false;
+  expect(() => validateContentBaseline(missingCheck,true)).toThrow('checks');
+});
+
+test('rejects audit adversaries starting with a valid content report', () => {
+  const valid=contentPilot();
+  expect(()=>validateContentBaseline(valid,true)).not.toThrow();
+  const mutations:Array<(value:ReturnType<typeof contentPilot>)=>void>=[
+    v=>{v.cases[0].cells.list_messages_bounded.outcomes[0].rows=0;},
+    v=>{v.cases[0].cells.list_messages_bounded.outcomes[0].rows=1;},
+    v=>{v.cases[2].cells.list_messages_bounded.outcomes[0].rows_returned=10000;},
+    v=>{v.cases[2].cells.list_messages_bounded.outcomes[0].rows=0;},
+    v=>{v.cases[0].cells.import100_commit.outcomes[0].inserted=0;},
+    v=>{v.cases[0].cells.delete100_commit.outcomes[0].deleted=0;},
+    v=>{for(const key of Object.keys(v.contract_checks)) if(key!=='all_14_fields'&&key!=='rows_after_reopen') Reflect.deleteProperty(v.contract_checks,key);},
+    v=>{v.cases[0].cells.provenance_get.outcomes[0].rows=0;},
+  ];
+  for (const pilot of [true,false]) {
+    const report=structuredClone(valid);
+    if (!pilot) {
+      report.pilot=false;report.reference_eligible=true;report.warmup=10;report.samples=100;
+      for(const entry of report.cases) for(const cell of Object.values(entry.cells)) {
+        const outcomes=cell.outcomes;
+        cell.raw_ms=Array.from({length:100},(_,i)=>i%3+1);
+        cell.outcomes=Array.from({length:100},(_,i)=>structuredClone(outcomes[i%3]));
+        cell.summary={unit:'ms',count:100,p50:2,p95:3,max:3};
+      }
+    }
+    expect(()=>validateContentBaseline(report,pilot)).not.toThrow();
+    for (const mutate of mutations) {
+      const altered=structuredClone(report);mutate(altered);
+      expect(()=>validateContentBaseline(altered,pilot)).toThrow();
+    }
+    for (const key of Object.keys(report.contract_checks)) {
+      const altered=structuredClone(report);
+      Reflect.deleteProperty(altered.contract_checks,key);
+      expect(()=>validateContentBaseline(altered,pilot)).toThrow('contract');
+    }
+  }
+});
+
+function nativePilot(schema = 8) {
+  const fixture = schema === 4 ? schema13ContentFixture : schema === 5 ? nativeContentFixture : schema === 6 ? schema15ContentFixture : schema === 7 ? schema16ContentFixture : currentNativeContentFixture;
+  const legacy = contentPilot();
+  const report = {...legacy, schema, fixture, percentile:'nearest-rank',
+    raw_observation_order:'execution order, warmup excluded'};
+  report.fixture_sha256 = createHash('sha256').update(fixture)
+    .update(readFileSync(new URL('../../src-tauri/examples/performance-sqlite/content_baseline.rs', import.meta.url))).digest('hex');
+  Object.assign(report.admission_controls, {native_large_receipt_refused:true,native_prefix_exact:true,
+    native_missing_suffix_refused:true,native_stale_token_refused:true});
+  for (const entry of report.cases) {
+    entry.runtime.migrations.push(13);
+    if (schema >= 5) entry.runtime.migrations.push(14);
+    if (schema >= 6) entry.runtime.migrations.push(15);
+    if (schema >= 7) entry.runtime.migrations.push(16);
+    if (schema >= 8) entry.runtime.migrations.push(17);
+    Object.assign(entry.checks,{native_fields_positions_tokens:true,native_mutations_before_reset:true,
+      native_admission_bytes:true,native_reopen:true});
+    const size = entry.initial_messages;
+    for (const name of ['native_version','native_metadata_open100','native_metadata_after50','native_window50']) {
+      const outcome:Record<string,unknown> = {outcome:'ok'};
+      if (name === 'native_version') outcome.token = {version:1,incarnation:'a'.repeat(32),revision:'123'};
+      else {
+        Object.assign(outcome,{serialized_bytes:42,admission_estimate_bytes:4096});
+        if (name === 'native_window50') Object.assign(outcome,{rows:50,consumed_count:50,start_position:size-50});
+        else {
+          const offset = name === 'native_metadata_open100' ? 0 : 50;
+          Object.assign(outcome,{offset,rows:Math.min(100,size-offset),opening:offset===0,has_more:size>offset+100});
+        }
+      }
+      entry.cells[name] = {raw_ms:[1,2,3],summary:{unit:'ms',count:3,p50:2,p95:3,max:3},
+        outcomes:Array.from({length:3},()=>structuredClone(outcome))};
+    }
+  }
+  return report;
+}
+
+test('keeps historical evidence valid and rejects mixed native protocol identities', () => {
+  expect(()=>validateContentBaseline(contentPilot(),true)).not.toThrow();
+  expect(()=>validateCurrentContentBaseline(contentPilot(),true)).toThrow('protocol 8');
+  const valid = nativePilot();
+  expect(()=>validateContentBaseline(valid,true)).not.toThrow();
+  expect(()=>validateCurrentContentBaseline(valid,true)).not.toThrow();
+  const altered = nativePilot(); altered.fixture_sha256 = 'b'.repeat(64);
+  expect(()=>validateCurrentContentBaseline(altered,true)).toThrow('hash');
+  const oldRuntime = nativePilot(); oldRuntime.cases[0].runtime.migrations.pop();
+  expect(()=>validateContentBaseline(oldRuntime,true)).toThrow('runtime');
+  const oldProtocol = nativePilot(); oldProtocol.schema=3;
+  expect(()=>validateContentBaseline(oldProtocol,true)).toThrow('runtime');
+  const oldFixture = nativePilot(); oldFixture.fixture = 'content-v2:synthetic;schema12';
+  expect(()=>validateContentBaseline(oldFixture,true)).toThrow('fixture');
+  const newRuntime = contentPilot(); newRuntime.cases[0].runtime.migrations.push(13);
+  expect(()=>validateContentBaseline(newRuntime,true)).toThrow('runtime');
+});
+
+test('rejects missing native controls, truncated pages, unsafe tokens and byte/count mismatches', () => {
+  const mutations:Array<(value:ReturnType<typeof nativePilot>)=>void> = [
+    v=>{delete v.cases[0].cells.native_version;},
+    v=>{Reflect.deleteProperty(v.admission_controls,'native_prefix_exact');},
+    v=>{Reflect.deleteProperty(v.cases[0].checks,'native_mutations_before_reset');},
+    v=>{v.cases[0].cells.native_metadata_after50.outcomes[0].rows=100;},
+    v=>{v.cases[0].cells.native_metadata_after50.outcomes[0].opening=true;},
+    v=>{v.cases[2].cells.native_metadata_open100.outcomes[0].has_more=false;},
+    v=>{v.cases[0].cells.native_window50.outcomes[0].consumed_count=49;},
+    v=>{v.cases[0].cells.native_window50.outcomes[0].start_position=0;},
+    v=>{v.cases[0].cells.native_window50.outcomes[0].serialized_bytes=4097;},
+    v=>{v.cases[0].cells.native_window50.outcomes[0].admission_estimate_bytes=4_194_305;},
+    v=>{v.cases[0].cells.native_version.outcomes[0].token={version:1,incarnation:'a'.repeat(32),revision:'01'};},
+    v=>{v.cases[0].cells.native_version.outcomes[0].token={version:1,incarnation:'a'.repeat(32),revision:'9223372036854775808'};},
+  ];
+  for (const mutate of mutations) {
+    const report=nativePilot(); mutate(report);
+    expect(()=>validateContentBaseline(report,true)).toThrow();
+  }
+});
+
+
+test('keeps schema13 and schema14 reports historical without relabelling them', () => {
+  const historical = nativePilot(4), current = nativePilot(5);
+  expect(()=>validateContentBaseline(historical,true)).not.toThrow();
+  expect(()=>validateCurrentContentBaseline(historical,true)).toThrow('protocol 8');
+  expect(()=>validateContentBaseline(current,true)).not.toThrow();
+  expect(()=>validateCurrentContentBaseline(current,true)).toThrow('protocol 8');
+  expect(current.fixture).not.toBe(historical.fixture);
+  expect(current.fixture_sha256).not.toBe(historical.fixture_sha256);
+  for (const original of [historical,current]) {
+    for (const mutate of [
+      (value:typeof current)=>{value.schema=value.schema===4?5:4;},
+      (value:typeof current)=>{value.fixture=value.schema===4?nativeContentFixture:schema13ContentFixture;},
+      (value:typeof current)=>{value.cases[0].runtime.migrations=value.schema===4?[1,3,4,5,6,7,8,9,10,11,12,13,14]:[1,3,4,5,6,7,8,9,10,11,12,13];},
+    ]) {
+      const mixed=structuredClone(original);mutate(mixed);
+      expect(()=>validateContentBaseline(mixed,true)).toThrow();
+    }
+  }
+});
+
+ test('current schema17 identity refuses historical protocol, mixed migrations and stale fixture hashes', () => {
+  const current = nativePilot(8);
+  expect(()=>validateCurrentContentBaseline(current,true)).not.toThrow();
+  for (const schema of [4,5,6,7]) expect(()=>validateCurrentContentBaseline(nativePilot(schema),true)).toThrow('protocol 8');
+  const historical = nativePilot(7);
+  const snapshot = JSON.stringify(historical);
+  validateContentBaseline(historical,true);
+  expect(JSON.stringify(historical)).toBe(snapshot);
+  for (const mutate of [
+    (v:typeof current)=>{v.fixture=nativeContentFixture;},
+    (v:typeof current)=>{v.fixture_sha256=historical.fixture_sha256;},
+    (v:typeof current)=>{v.cases[0].runtime.migrations.pop();},
+  ]) {const altered=structuredClone(current);mutate(altered);expect(()=>validateCurrentContentBaseline(altered,true)).toThrow();}
+  const source=readFileSync(new URL('../../src-tauri/examples/performance-sqlite/content_baseline.rs',import.meta.url),'utf8');
+  expect(source).toContain(currentNativeContentFixture);
+  expect(source).toContain('"schema":8,"mode":"content-baseline"');
 });

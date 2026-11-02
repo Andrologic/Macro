@@ -1,0 +1,205 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.macro.andrologic.ai/macro-pilot/v2/portable-chat-history/frame.schema.json",
+  "oneOf": [
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "format",
+        "content_contract_sha256",
+        "records",
+        "bytes",
+        "manifest_sha256"
+      ],
+      "properties": {
+        "kind": {
+          "const": "portable_archive"
+        },
+        "format": {
+          "const": "portable-chat-history-1"
+        },
+        "content_contract_sha256": {
+          "$ref": "#/$defs/hash"
+        },
+        "records": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "bytes": {
+          "$ref": "#/$defs/counter"
+        },
+        "manifest_sha256": {
+          "$ref": "#/$defs/hash"
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "header",
+        "offset",
+        "data"
+      ],
+      "properties": {
+        "header": {
+          "$ref": "#/$defs/header"
+        },
+        "offset": {
+          "$ref": "#/$defs/counter"
+        },
+        "data": {
+          "type": "string",
+          "maxLength": 5460,
+          "pattern": "^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$"
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "hash": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "counter": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9007199254740991
+    },
+    "header": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "ordinal": {
+          "$ref": "#/$defs/counter"
+        },
+        "entry": {
+          "oneOf": [
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "kind": {
+                  "const": "message"
+                },
+                "role": {
+                  "enum": [
+                    "user",
+                    "assistant"
+                  ]
+                }
+              },
+              "required": [
+                "kind",
+                "role"
+              ]
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "kind": {
+                  "const": "historical_text"
+                },
+                "purpose": {
+                  "enum": [
+                    "portable_metadata",
+                    "original_text",
+                    "historical_data"
+                  ]
+                }
+              },
+              "required": [
+                "kind",
+                "purpose"
+              ]
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "kind": {
+                  "const": "asset"
+                },
+                "mime": {
+                  "enum": [
+                    "text_plain",
+                    "image_png",
+                    "image_jpeg",
+                    "image_webp"
+                  ]
+                }
+              },
+              "required": [
+                "kind",
+                "mime"
+              ]
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "kind": {
+                  "const": "citation"
+                }
+              },
+              "required": [
+                "kind"
+              ]
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "kind": {
+                  "const": "association"
+                },
+                "from": {
+                  "$ref": "#/$defs/counter"
+                },
+                "to": {
+                  "$ref": "#/$defs/counter"
+                },
+                "position": {
+                  "$ref": "#/$defs/counter"
+                },
+                "relation": {
+                  "enum": [
+                    "data_for_message",
+                    "asset_for_message",
+                    "citation_for_message"
+                  ]
+                }
+              },
+              "required": [
+                "kind",
+                "from",
+                "to",
+                "position",
+                "relation"
+              ]
+            }
+          ]
+        },
+        "bytes": {
+          "$ref": "#/$defs/counter"
+        },
+        "sha256": {
+          "$ref": "#/$defs/hash"
+        },
+        "origin": {
+          "$ref": "#/$defs/counter"
+        }
+      },
+      "required": [
+        "ordinal",
+        "entry",
+        "bytes",
+        "sha256"
+      ]
+    }
+  }
+}

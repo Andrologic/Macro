@@ -24,6 +24,7 @@ describe("tool availability at the model boundary", () => {
   it('refuses a provider batch with a missing call ID before any tool runs', async () => {
     const handler = mock(() => 'unexpected');
     const options: StreamingChatOptions = {
+    providerAdmission: { kind: 'utility' },
       providerId: 'fixture', providerType: 'openai', modelId: 'model', baseUrl: 'https://example.invalid',
       messages: [], allowedToolIds: ['read'], maxTurns: 1,
       onToken: () => undefined, onComplete: () => undefined, onError: () => undefined,
@@ -48,6 +49,7 @@ describe("tool availability at the model boundary", () => {
     }));
     const handler = mock(() => 'unexpected');
     const options: StreamingChatOptions = {
+    providerAdmission: { kind: 'utility' },
       providerId: 'fixture', providerType: 'openai', modelId: 'model', baseUrl: 'https://example.invalid',
       messages: [], allowedToolIds: mcpTools.map(tool => tool.id), mcpTools, maxTurns: 1,
       onToken: () => undefined, onComplete: () => undefined, onError: () => undefined,
@@ -100,6 +102,7 @@ describe("tool availability at the model boundary", () => {
     const toolName = scenario === "invalid-ast" ? "ast_grep" : "apply_patch";
     let executed = false;
     const options: StreamingChatOptions = {
+    providerAdmission: { kind: 'utility' },
       providerId: "fixture", providerType: "openai", modelId: "gpt-5", baseUrl: "https://example.invalid", messages: [], allowedToolIds, maxTurns: 1,
       onToken: () => undefined, onComplete: () => undefined, onError: () => undefined,
       onToolCall: () => { executed = true; return "unexpected"; },
@@ -131,7 +134,7 @@ describe("tool availability at the model boundary", () => {
 
 it.each(['{"results":{"large":{"value":9007199254740993}}}', '{ malformed publication'])('passes publication arguments unchanged to the native collector: %s', async raw => {
   const seen: string[] = [];
-  const options: StreamingChatOptions = {
+  const options: StreamingChatOptions = { providerAdmission: { kind: 'utility' },
     providerId: 'fixture', providerType: 'openai', modelId: 'model', baseUrl: 'https://example.invalid',
     messages: [], allowedToolIds: [], maxTurns: 1, executionPolicy: 'native-serial',
     onToken: () => undefined, onComplete: () => undefined, onError: () => undefined,
@@ -164,7 +167,7 @@ it('offers captured aliases with real schemas and retains exact alias calls', as
   const raw = '{"path":"file.txt","offset":9007199254740993}';
   const seen: string[] = [];
   const results: ToolResult[] = [];
-  const options: StreamingChatOptions = {
+  const options: StreamingChatOptions = { providerAdmission: { kind: 'utility' },
     providerId: 'fixture', providerType: 'openai', modelId: 'model', baseUrl: 'https://example.invalid',
     messages: [], allowedToolIds: ['read', 'write'], maxTurns: 1, executionPolicy: 'native-serial',
     onToken: () => undefined, onComplete: () => undefined, onError: () => undefined,
@@ -204,7 +207,7 @@ it.each([
   [{ name: 'alias', toolId: 'mcp__unknown' }],
 ].map(toolAliases => ({ toolAliases })))('rejects an unqualified or colliding alias before the provider request: %j', async ({ toolAliases }) => {
   const provider = mock(async () => { throw new Error('Unexpected provider request'); });
-  const options: StreamingChatOptions = {
+  const options: StreamingChatOptions = { providerAdmission: { kind: 'utility' },
     providerId: 'fixture', providerType: 'openai', modelId: 'model', baseUrl: 'https://example.invalid',
     messages: [], allowedToolIds: ['read', 'write', 'mcp__unknown'], executionPolicy: 'native-serial',
     onToken: () => undefined, onComplete: () => undefined, onError: () => undefined,

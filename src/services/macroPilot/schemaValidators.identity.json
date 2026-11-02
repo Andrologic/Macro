@@ -1,0 +1,97 @@
+{
+  "format": "macro-pilot-a1-private-1",
+  "retained_units": 1835008,
+  "inventory": {
+    "source_utf16_units": 438396,
+    "schema_nodes": 2429,
+    "schema_string_units": 32954,
+    "diagnostic_slots": 126,
+    "logical_units": 1629548
+  },
+  "resources": [
+    {
+      "path": "bun.lock",
+      "sha256": "2ee47e0e0ff56933bd7fc4610a36692f726f8f2e08b58128c1389b8c23b60a93"
+    },
+    {
+      "path": "contracts/macro-pilot/transport/schema.json",
+      "sha256": "ed7ffd6bdc9242f856b01da00af2df612f4fa7119f5ac9c25555756b30016964"
+    },
+    {
+      "path": "contracts/macro-pilot/v1/common.schema.json",
+      "sha256": "0d8aa8bb0999e57efbad21365daad429c442edda949737214b39c51ff5d51563"
+    },
+    {
+      "path": "contracts/macro-pilot/v1/identity.schema.json",
+      "sha256": "2951829d65ff294c3eee49ccc6e047212fb9992c8bb74d05f10c3f5c804ee950"
+    },
+    {
+      "path": "contracts/macro-pilot/v1/protocol.schema.json",
+      "sha256": "59c36b0ff4d7cb813175efa3f22aefb80a189996c27e8d1b7d49b6cb3473d4d8"
+    },
+    {
+      "path": "contracts/macro-pilot/v1/schema.json",
+      "sha256": "07c29f4262c6614a857430c389513441f187359f9f81514e0b4fd02ff85c1196"
+    },
+    {
+      "path": "contracts/macro-pilot/v1/supervision.schema.json",
+      "sha256": "8362b1b861f57070100be89e232fa5d5517a1853bd478e8b9952db396d09464b"
+    },
+    {
+      "path": "copilot-bridge/src/connect-bootstrap-operations.ts",
+      "sha256": "7535648a8c7f8bff7a5bba5640df08669df7b998e633c5519acec93374c2c6de"
+    },
+    {
+      "path": "copilot-bridge/src/connect-bootstrap.ts",
+      "sha256": "72d427a016dd6a491f279f5f425c7d923909ea30d4f4f81f0a34b89e5df8e404"
+    },
+    {
+      "path": "copilot-bridge/src/connect-codec-engine.ts",
+      "sha256": "f5d8929059772cad1bdfd48c472d0abef44a5607f58e040a009af00074c283e8"
+    },
+    {
+      "path": "copilot-bridge/src/connect-codec-framing.ts",
+      "sha256": "0c31de4476aee92f2ba4f391507d9eb376a23d220ff0bfd556338a35d5deb72a"
+    },
+    {
+      "path": "copilot-bridge/src/connect-codec-operations.ts",
+      "sha256": "c2173e52caf6193a6abb6787987ff1690192f0edf857ae258a96a934bdc102a3"
+    },
+    {
+      "path": "copilot-bridge/src/connect-codec-values.ts",
+      "sha256": "9dc2e0a6e199567cb8885713e00b1ac205fe74c41b1ec60208ab46138ff26dea"
+    },
+    {
+      "path": "copilot-bridge/src/connect-codec.ts",
+      "sha256": "8b22cb5c09fb480affb946875a51df7f91ebc44ed2fa68a6fbbc3eebe35143d1"
+    },
+    {
+      "path": "copilot-bridge/src/entry.ts",
+      "sha256": "a3e136868451bf2c30ff7d9ee6e13898a713f686cd531b1f7e2daddeb90ead58"
+    },
+    {
+      "path": "dev/generate-macro-pilot-validators.ts",
+      "sha256": "ff2d5f9e7b9d75c85fa8342e21e055a14de25929dfb7ff7718a72a0609b75cb7"
+    },
+    {
+      "path": "src/services/macroPilot/protocol.ts",
+      "sha256": "49f83c52c616c32cc96e847932ee78c1d461dc25e57cb439523d358b16160cb8"
+    },
+    {
+      "path": "src/services/macroPilot/schemaValidators.generated.d.mts",
+      "sha256": "7d77896312ced0fe4ff7a55b5f76ed571347c9cc28b8cc3cafc5c13c083eca8f"
+    },
+    {
+      "path": "src/services/macroPilot/schemaValidators.generated.mjs",
+      "sha256": "f18939922e262e6bec745287bcb5f8a994eb817fafecb669289b22f0c2da32ca"
+    },
+    {
+      "path": "src/services/macroPilot/schemaValidators.notice.txt",
+      "sha256": "db342d0f44671a75a50cc436933caaa3a99c8bb8e4a520f96593f78f8b9bbebe"
+    },
+    {
+      "path": "src/services/macroPilot/schemaValidators.ts",
+      "sha256": "19558271778a9a12509ea4c9eab0f20d0e55b7c8d89637cb9c5b1ba38ef70de3"
+    }
+  ]
+}

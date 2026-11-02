@@ -33,6 +33,7 @@ export interface ChatStreamLifecycleRuntimeAdapters {
   shouldAcceptStreamUpdate: () => boolean;
   isAbortSignalAborted: () => boolean;
   isTurnCurrent?: () => boolean;
+  getInterruptedProviderText?: () => string | undefined;
   appendTokenChunk: (messageId: string, chunk: string) => void;
   getAssistantMessage: (messageId: string) => ChatMessage | undefined;
   updateMessageFields: (
@@ -65,7 +66,7 @@ export interface ChatStreamLifecycleRuntimeAdapters {
     assistantMessage: ChatMessage,
   ) => Promise<void>;
   consolidatePendingToolBoundaryCompactionAfterPersistence: () => Promise<void>;
-  onAssistantPersisted?: () => void;
+  onAssistantPersisted?: () => void | Promise<void>;
   syncMacroMetadataAfterStream: (
     mode: AppMode,
     conversationId: string,
@@ -212,7 +213,7 @@ export const createChatStreamLifecycleRuntime = (params: {
     }
 
     try {
-      if (!adapters.isAbortSignalAborted() && isSuccessfulCompletionReason(result.completionReason)) adapters.onAssistantPersisted?.();
+      if (!adapters.isAbortSignalAborted() && isSuccessfulCompletionReason(result.completionReason)) await adapters.onAssistantPersisted?.();
     } catch (error) {
       adapters.warn('Direction recovery remains pending after assistant persistence.', error);
     }
@@ -278,6 +279,8 @@ export const createChatStreamLifecycleRuntime = (params: {
     assistantMessage: ChatMessage | undefined,
   ): Promise<boolean> => {
     if (errorPresentation.displayTarget === "transcript") {
+      // This local diagnostic contains provider-authored text, not final output.
+      adapters.updateMessageFields(stream.assistantMessageId, { completion_reason: "provider_error" });
       adapters.updateMessageContent(
         stream.assistantMessageId,
         buildAssistantContentWithProviderError(
@@ -317,10 +320,30 @@ export const createChatStreamLifecycleRuntime = (params: {
         stream.assistantMessageId,
       );
       if (assistantMessage && hasAssistantProgress(assistantMessage)) {
-        await persistPartialAssistantSafely(
-          assistantMessage,
-          "Failed to persist partial assistant response after abort:",
-        );
+        const providerDeltaText = adapters.getInterruptedProviderText?.();
+        if (providerDeltaText) {
+          // An explicit stop is a terminal boundary for the provider delta range.
+          // Preserve its provenance without presenting the answer as complete.
+          adapters.updateMessageFields(stream.assistantMessageId, {
+            completion_reason: "incomplete",
+          });
+          adapters.clearLiveStreamContextEstimate(stream.conversationId);
+          await persistAssistantStreamResultAndConsolidate({
+            visibleContent: assistantMessage.content,
+            toolTraces: assistantMessage.tool_traces ?? [],
+            hiddenContext: assistantMessage.hidden_context,
+            providerInputItems: assistantMessage.provider_input_items,
+            providerTurnState: assistantMessage.provider_turn_state,
+            completionReason: "incomplete",
+            interruptedProviderText: providerDeltaText,
+          });
+        } else {
+          // Tool/system progress alone cannot establish assistant provenance.
+          await persistPartialAssistantSafely(
+            assistantMessage,
+            "Failed to persist partial assistant response after abort:",
+          );
+        }
       } else {
         adapters.removeEmptyAssistantPlaceholder(stream.assistantMessageId);
         await adapters.deleteEmptyAssistantMessageFromDb();
@@ -384,10 +407,14 @@ export const createChatStreamLifecycleRuntime = (params: {
             message:
               result.completionReason === "length"
                 ? "Le fournisseur a de nouveau atteint sa limite de sortie après la tentative de reprise."
+                : result.completionReason === "admission_unresolved"
+                  ? "La fin de l’exécution n’a pas pu être confirmée. La réponse reçue a été conservée."
                 : result.completionReason === "incomplete"
                   ? "Le fournisseur a interrompu la réponse avant sa fin."
                   : `Le fournisseur a terminé la réponse avec le motif : ${result.completionReason}.`,
-            suggestedAction: "Relance la demande pour poursuivre la réponse.",
+            suggestedAction: result.completionReason === "admission_unresolved"
+              ? "Cette exécution doit être réconciliée avant toute relance."
+              : "Relance la demande pour poursuivre la réponse.",
           },
           assistantMessageId: stream.assistantMessageId,
         });

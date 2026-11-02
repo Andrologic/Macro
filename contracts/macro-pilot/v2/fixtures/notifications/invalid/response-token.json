@@ -1,0 +1,13 @@
+{
+  "contract_version": "2.0",
+  "type": "response",
+  "request_id": "request-demo",
+  "account_id": "account-demo",
+  "operation": "notifications.register",
+  "result": {
+    "enrollment_id": "enrollment-demo",
+    "revision": 1,
+    "enabled": false,
+    "token": "synthetic-notification-token-00000000000000000000000000000000000"
+  }
+}

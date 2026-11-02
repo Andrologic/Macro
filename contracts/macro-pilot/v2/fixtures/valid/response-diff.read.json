@@ -1,0 +1,15 @@
+{
+  "contract_version": "2.0",
+  "request_id": "request-demo",
+  "account_id": "account-demo",
+  "type": "response",
+  "operation": "diff.read",
+  "result": {
+    "snapshot_id": "snapshot-demo",
+    "file_id": "file-demo",
+    "offset_bytes": 0,
+    "next_offset_bytes": null,
+    "total_bytes": 3,
+    "patch": "+a\n"
+  }
+}

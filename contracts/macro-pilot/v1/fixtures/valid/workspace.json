@@ -1,0 +1,11 @@
+{
+  "contract_version": "1.0",
+  "type": "workspace",
+  "ref": {
+    "type": "workspace",
+    "instance_id": "instance:studio-mac",
+    "workspace_id": "workspace:macro-suite"
+  },
+  "label": "Macro suite",
+  "revision": 4
+}

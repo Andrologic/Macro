@@ -78,6 +78,7 @@ export async function skillsReadResource(params: {
 }
 
 export async function skillsRunScript(params: {
+  chatAdmission?: import('./chatAdmission').ChatToolAdmission;
   skillId: string;
   scriptPath: string;
   args?: string[];
@@ -88,6 +89,7 @@ export async function skillsRunScript(params: {
   projectRoots?: SkillProjectRoot[];
 }): Promise<SkillScriptRunResult> {
   return invoke<SkillScriptRunResult>("skills_run_script", {
+    ...(params.chatAdmission ? { chatAdmission: { ...params.chatAdmission, requestId: crypto.randomUUID() } } : {}),
     skillId: params.skillId,
     scriptPath: params.scriptPath,
     args: params.args ?? [],

@@ -655,3 +655,20 @@ export { httpReleaseWebviewResource } from "./ipc/httpResources";
 export { executionHostOwners, executionHostInspect, executionHostBegin, executionHostPrepareTerminal, executionHostCommitTerminal, executionHostAppendResponse, executionHostReadResponses, executionHostCloseResponses, executionHostRegisterProvider, executionHostDispatchProvider, executionHostEndProvider } from './ipc/agsdlExecution';
 
 export { stageExecutionIntent, readExecutionIntents, readExecutionIntent, submitExecutionIntent, closeExecutionIntent, ensureExecutionStop } from './ipc/agsdlExecution';
+
+export * from "./ipc/pilot";
+
+export { listMessagesBounded, conversationSetArchives, conversationMetadata, conversationResponseVersion, conversationAcknowledge, conversationAction, conversationImportArchives, getMessage, getPilotReflectionMessage } from './ipc/conversationManagement';
+export type { ConversationMetadata, ConversationActionInput, ConversationActionResult, PilotReflectionMessage, PilotReflectionMessageRead, PilotReflectionToolAnchor } from './ipc/conversationManagement';
+
+export type { HostTelemetryDto, HostTelemetryAvailability, HostTelemetryReason } from "../types/generated/ipc";
+
+export { hostTelemetryRead } from "./ipc/hostTelemetry";
+
+export * from "./ipc/pilotFiles";
+
+export * from './ipc/conversationContent';
+
+export * from './ipc/conversationCatalog';
+
+export * from './ipc/chatAdmission';

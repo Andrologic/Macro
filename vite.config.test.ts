@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it } from 'bun:test';
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import viteConfig, { isPathInside, validatePublicSecretFiles } from './vite.config';
+import viteConfig, { isMacroPilotValidatorsImport, isPathInside, validatePublicSecretFiles } from './vite.config';
 
 it('keeps startup CSS and the shared preload helper out of deferred vendor chunks', async () => {
   if (typeof viteConfig !== 'function') throw new Error('Expected Vite config factory');
@@ -15,6 +15,9 @@ it('keeps startup CSS and the shared preload helper out of deferred vendor chunk
   expect(output.manualChunks('/fixture/node_modules/xterm/lib/xterm.js', graph)).toBe('terminal-vendor');
   expect(output.manualChunks('/fixture/node_modules/xterm/css/xterm.css', graph)).toBeUndefined();
   expect(output.manualChunks('\0vite/preload-helper.js', graph)).toBe('utils-vendor');
+  expect(output.manualChunks('\0macro-pilot-schema-validators', graph)).toBe('pilot-schema-validators');
+  expect(output.manualChunks('/fixture/src/services/macroPilot/contentValidators.generated.js', graph)).toBe('nativeClient-content-validation');
+  expect(output.manualChunks('/fixture/src/services/markdownRenderProjection.ts', graph)).toBe('markdown-render-projection');
 });
 
 it('publishes only explicit public Vite values and excludes bridge tokens from builds', async () => {
@@ -79,6 +82,14 @@ describe('isPathInside', () => {
 
     expect(isPathInside(root, join(root, 'src', 'parse.ts'))).toBe(true);
     expect(isPathInside(root, join(tmpdir(), 'macro-parser-sibling', 'parse.ts'))).toBe(false);
+  });
+});
+
+describe('isMacroPilotValidatorsImport', () => {
+  it('recognizes protocol imports carrying a Vite HMR query', () => {
+    const importer = `${join(import.meta.dir, 'src/services/macroPilot/protocol.ts')}?t=123`;
+
+    expect(isMacroPilotValidatorsImport('./schemaValidators', importer)).toBe(true);
   });
 });
 

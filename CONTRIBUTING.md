@@ -81,6 +81,14 @@ See [`docs/ci.md`](docs/ci.md) for path classification details, required branch 
 - Keep user-facing strings routed through the existing i18n patterns when applicable.
 - Use the shared notification system for user-facing notifications.
 
+## Documentation
+
+Practical documentation lives in [docs/README.md](docs/README.md), with separate
+paths for users and agents. Follow its authoring checklist when adding a guide.
+Update the relevant guide in the same pull request as a user-facing workflow
+change. Record the application version used for a walkthrough and distinguish
+source review from an actual run in the desktop app.
+
 ## Pull Requests
 
 Pull requests should include:
