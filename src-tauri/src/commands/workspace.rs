@@ -202,7 +202,7 @@ pub fn workspace_renew_plan_lifecycle_lock(lease_id: String) -> Result<()> {
     renew_lifecycle_lease(
         PLAN_LIFECYCLE_LEASES.get_or_init(|| StdMutex::new(HashMap::new())),
         &lease_id,
-        "Le bail du cycle de vie du plan est invalide ou a expiré.",
+        "The plan lifecycle lease is invalid or has expired.",
     )
 }
 
@@ -211,7 +211,7 @@ pub fn workspace_release_plan_lifecycle_lock(lease_id: String) -> Result<()> {
     let normalized = lease_id.trim();
     if normalized.is_empty() {
         return Err(BackendError::Validation(
-            "Le bail du cycle de vie du plan est invalide.".to_string(),
+            "The plan lifecycle lease is invalid.".to_string(),
         ));
     }
     PLAN_LIFECYCLE_LEASES
@@ -282,7 +282,7 @@ pub fn workspace_renew_task_lifecycle_lock(lease_id: String) -> Result<()> {
     renew_lifecycle_lease(
         TASK_LIFECYCLE_LEASES.get_or_init(|| StdMutex::new(HashMap::new())),
         &lease_id,
-        "Le bail du cycle de vie de la tâche est invalide ou a expiré.",
+        "The task lifecycle lease is invalid or has expired.",
     )
 }
 
@@ -291,7 +291,7 @@ pub fn workspace_release_task_lifecycle_lock(lease_id: String) -> Result<()> {
     let normalized = lease_id.trim();
     if normalized.is_empty() {
         return Err(BackendError::Validation(
-            "Le bail du cycle de vie de la tâche est invalide.".to_string(),
+            "The task lifecycle lease is invalid.".to_string(),
         ));
     }
     TASK_LIFECYCLE_LEASES
@@ -356,7 +356,7 @@ async fn register_project_config_roots(
             .await
         {
             errors.push(format!(
-                "Impossible de préparer la destination du projet {} : {}",
+                "Failed to prepare project destination {}: {}",
                 project.id, error.message
             ));
         }
@@ -371,12 +371,12 @@ async fn register_project_config_roots(
                 .await
             {
                 errors.push(format!(
-                    "Impossible d’invalider la configuration indisponible du projet {} : {} ({})",
+                    "Failed to invalidate unavailable configuration for project {}: {} ({})",
                     project.id, error.message, error.code
                 ));
             }
             errors.push(format!(
-                "La racine du projet {} est absente : {}",
+                "The root for project {} is missing: {}",
                 project.id,
                 project_path.display()
             ));
@@ -391,13 +391,13 @@ async fn register_project_config_roots(
                         .await
                     {
                         errors.push(format!(
-                            "Impossible d’invalider la configuration du projet {} : {}",
+                            "Failed to invalidate configuration for project {}: {}",
                             project.id, invalidation.message
                         ));
                     }
                     roots.remove(&project.id);
                     errors.push(format!(
-                        "Impossible de résoudre la configuration du projet {} : {error}",
+                        "Failed to resolve configuration for project {}: {error}",
                         project.id
                     ));
                     continue;
@@ -471,27 +471,27 @@ async fn register_project_config_roots(
                                 .await
                             {
                                 errors.push(format!(
-                                    "Impossible d’initialiser la configuration Git du projet {} : {} ({})",
+                                    "Failed to initialize Git configuration for project {}: {} ({})",
                                     project.id, error.message, error.code
                                 ));
                                 tracing::warn!(
                                     project_id = %project.id,
                                     code = %error.code,
                                     message = %error.message,
-                                    "Impossible d’initialiser la configuration Git détectée du projet"
+                                    "Failed to initialize detected project Git configuration"
                                 );
                             }
                         }
                         Err(error) => {
                             errors.push(format!(
-                                "Impossible de préparer la configuration Git du projet {} : {} ({})",
+                                "Failed to prepare Git configuration for project {}: {} ({})",
                                 project.id, error.message, error.code
                             ));
                             tracing::warn!(
                                 project_id = %project.id,
                                 code = %error.code,
                                 message = %error.message,
-                                "Impossible de préparer le document Git du projet"
+                                "Failed to prepare project Git document"
                             );
                         }
                     }
@@ -504,7 +504,7 @@ async fn register_project_config_roots(
                     roots.insert(project.id.clone(), root);
                 }
                 errors.push(format!(
-                    "Impossible de charger la configuration du projet {} : {} ({})",
+                    "Failed to load configuration for project {}: {} ({})",
                     project.id, error.message, error.code
                 ));
             }
@@ -537,7 +537,7 @@ async fn reconcile_loaded_project_config_roots(
     } else {
         Err(BackendError::Internal {
             message: format!(
-                "Réconciliation des configurations incomplète : {}",
+                "Configuration reconciliation incomplete: {}",
                 errors.join(" ; ")
             ),
         })
@@ -602,7 +602,7 @@ async fn record_committed_reconciliation(
     errors: Vec<String>,
 ) -> crate::config::ConfigDocument {
     let message = (!errors.is_empty()).then(|| format!(
-        "L’opération « {operation} » est terminée et son résultat est conservé dans le registre. La réconciliation de sa configuration a rencontré les erreurs suivantes : {}. Ne relancez pas l’opération ; réessayez uniquement le rechargement de la configuration.",
+        "The operation '{operation}' completed and its result is retained in the registry. Configuration reconciliation encountered the following errors: {}. Do not repeat the operation; only retry reloading the configuration.",
         errors.join(" ; "),
     ));
     config_manager
@@ -622,7 +622,7 @@ async fn load_bootstrap_with_config_diagnostic(
     let bootstrap = workspace::get_bootstrap(workspace_path, metadata_root).await?;
     let message = register_project_config_roots(workspace_path, metadata_root, git_state, config_manager, config_watcher)
         .await.err().map(|error| format!(
-            "Le registre a été lu et ses projets restent disponibles. La réconciliation de configuration a échoué : {error}. Réessayez uniquement le rechargement de configuration."
+            "The registry was read and its projects remain available. Configuration reconciliation failed: {error}. Only retry reloading the configuration."
         ));
     let diagnostic = config_manager
         .record_reconciliation_diagnostic(message)
@@ -632,7 +632,7 @@ async fn load_bootstrap_with_config_diagnostic(
 
 fn emit_config_diagnostic(app: &tauri::AppHandle, document: &crate::config::ConfigDocument) {
     if let Err(error) = app.emit("config://changed", document) {
-        tracing::warn!(%error, "Le diagnostic de configuration reste disponible dans le snapshot");
+        tracing::warn!(%error, "The configuration diagnostic remains available in the snapshot");
     }
 }
 
@@ -892,7 +892,7 @@ pub async fn workspace_recover_missing_metadata(
         workspace::recover_missing_metadata(&workspace_path, &metadata_root, request).await?;
     reconcile_after_committed_operation(
         &app,
-        "restauration des métadonnées",
+        "metadata restoration",
         None,
         &workspace_path,
         &metadata_root,
@@ -921,7 +921,7 @@ pub async fn workspace_reconcile_project_registry_from_hints(
             .await?;
     reconcile_after_committed_operation(
         &app,
-        "réconciliation du registre",
+        "registry reconciliation",
         None,
         &workspace_path,
         &metadata_root,
@@ -949,7 +949,7 @@ pub async fn workspace_discover_recoverable_projects(
         workspace::discover_recoverable_projects(&workspace_path, &metadata_root, request).await?;
     reconcile_after_committed_operation(
         &app,
-        "récupération des projets",
+        "project recovery",
         None,
         &workspace_path,
         &metadata_root,
@@ -1185,7 +1185,7 @@ pub async fn workspace_create_project(
     if result.is_ok() {
         reconcile_after_committed_operation(
             &app,
-            "création du projet",
+            "project creation",
             None,
             &workspace_path,
             &metadata_root,
@@ -1267,7 +1267,7 @@ pub async fn workspace_create_project_with_git_setup(
     if result.is_ok() {
         reconcile_after_committed_operation(
             &app,
-            "création du projet",
+            "project creation",
             None,
             &workspace_path,
             &metadata_root,
@@ -1340,7 +1340,7 @@ pub async fn workspace_create_new_project_repo(
     if result.is_ok() {
         reconcile_after_committed_operation(
             &app,
-            "création du dépôt",
+            "repository creation",
             None,
             &workspace_path,
             &metadata_root,
@@ -1385,7 +1385,7 @@ pub async fn workspace_import_git_repo(
     let result = workspace::import_git_repo(&workspace_path, &metadata_root, request).await?;
     reconcile_after_committed_operation(
         &app,
-        "import du dépôt",
+        "repository import",
         None,
         &workspace_path,
         &metadata_root,
@@ -1428,7 +1428,7 @@ pub async fn workspace_create_project_group(
             .await?;
     reconcile_after_committed_operation(
         &app,
-        "création du groupe",
+        "group creation",
         None,
         &workspace_path,
         &metadata_root,
@@ -1462,7 +1462,7 @@ pub async fn workspace_move_project_to_group(
     .await?;
     reconcile_after_committed_operation(
         &app,
-        "déplacement du projet",
+        "project move",
         None,
         &workspace_path,
         &metadata_root,
@@ -1874,12 +1874,12 @@ pub async fn workspace_revert_manual_feature_to_draft(
 ) -> Result<ManualFeatureDto> {
     let workspace_path = workspace_root.inner().0.read().await.clone();
     let (metadata_root, lease_id) = if let Some(lease_id) = task_lifecycle_lease_id {
-        let metadata_root = task_lifecycle_lease_metadata_root(&lease_id, &task_id).ok_or_else(|| {
-            BackendError::Validation(
-                "Le bail du cycle de vie de la tâche est invalide ou ne correspond pas à cette tâche."
-                    .to_string(),
-            )
-        })?;
+        let metadata_root =
+            task_lifecycle_lease_metadata_root(&lease_id, &task_id).ok_or_else(|| {
+                BackendError::Validation(
+                    "The task lifecycle lease is invalid or does not match this task.".to_string(),
+                )
+            })?;
         (metadata_root, Some(lease_id))
     } else {
         (
@@ -1919,12 +1919,12 @@ pub async fn workspace_delete_manual_feature_draft(
 ) -> Result<bool> {
     let workspace_path = workspace_root.inner().0.read().await.clone();
     let (metadata_root, lease_id) = if let Some(lease_id) = task_lifecycle_lease_id {
-        let metadata_root = task_lifecycle_lease_metadata_root(&lease_id, &task_id).ok_or_else(|| {
-            BackendError::Validation(
-                "Le bail du cycle de vie de la tâche est invalide ou ne correspond pas à cette tâche."
-                    .to_string(),
-            )
-        })?;
+        let metadata_root =
+            task_lifecycle_lease_metadata_root(&lease_id, &task_id).ok_or_else(|| {
+                BackendError::Validation(
+                    "The task lifecycle lease is invalid or does not match this task.".to_string(),
+                )
+            })?;
         (metadata_root, Some(lease_id))
     } else {
         (
@@ -1999,12 +1999,12 @@ pub async fn workspace_delete_manual_feature(
 ) -> Result<()> {
     let workspace_path = workspace_root.inner().0.read().await.clone();
     let (metadata_root, lease_id) = if let Some(lease_id) = task_lifecycle_lease_id {
-        let metadata_root = task_lifecycle_lease_metadata_root(&lease_id, &task_id).ok_or_else(|| {
-            BackendError::Validation(
-                "Le bail du cycle de vie de la tâche est invalide ou ne correspond pas à cette tâche."
-                    .to_string(),
-            )
-        })?;
+        let metadata_root =
+            task_lifecycle_lease_metadata_root(&lease_id, &task_id).ok_or_else(|| {
+                BackendError::Validation(
+                    "The task lifecycle lease is invalid or does not match this task.".to_string(),
+                )
+            })?;
         (metadata_root, Some(lease_id))
     } else {
         (
@@ -2145,7 +2145,7 @@ mod tests {
             .unwrap();
         let document = record_committed_reconciliation(
             &manager,
-            "création du projet",
+            "project creation",
             vec!["watch limit".into()],
         )
         .await;
@@ -2153,8 +2153,8 @@ mod tests {
         assert_eq!(diagnostic.code, "config.project.reconciliation_incomplete");
         assert!(diagnostic
             .message
-            .contains("résultat est conservé dans le registre"));
-        assert!(diagnostic.message.contains("Ne relancez pas l’opération"));
+            .contains("result is retained in the registry"));
+        assert!(diagnostic.message.contains("Do not repeat the operation"));
         assert!(diagnostic.message.contains("watch limit"));
         assert_eq!(
             manager.get_snapshot(&[]).await.unwrap().diagnostics.len(),
@@ -2195,7 +2195,7 @@ mod tests {
         .expect_err("watch failure must reach the caller");
         assert!(error
             .to_string()
-            .contains("Réconciliation des configurations incomplète"));
+            .contains("Configuration reconciliation incomplete"));
         std::fs::create_dir(&root).unwrap();
         watcher.watch_project_root("project", &root).unwrap();
         assert_eq!(watcher.subscribed_project_roots(), vec![root.clone()]);

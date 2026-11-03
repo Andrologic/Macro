@@ -1983,13 +1983,30 @@ pub async fn db_get_provider_settings(
     })
 }
 
+fn update_provider_settings_options(
+    options: &mut serde_json::Map<String, Value>,
+    filter_free_models: Option<bool>,
+    copilot_send_timeout_ms: Option<i64>,
+    clear_copilot_send_timeout: Option<bool>,
+) {
+    if let Some(value) = filter_free_models {
+        options.insert("filterFreeModels".to_string(), Value::Bool(value));
+    }
+    if clear_copilot_send_timeout == Some(true) {
+        options.remove("copilotSendTimeoutMs");
+    } else if let Some(timeout) = copilot_send_timeout_ms {
+        options.insert("copilotSendTimeoutMs".to_string(), Value::from(timeout));
+    }
+}
+
 #[tauri::command]
 pub async fn db_update_provider_settings(
     pool: State<'_, DbPool>,
     config_manager: State<'_, ConfigManager>,
     provider_id: String,
     filter_free_models: Option<bool>,
-    copilot_send_timeout_ms: Option<Option<i64>>,
+    copilot_send_timeout_ms: Option<i64>,
+    clear_copilot_send_timeout: Option<bool>,
 ) -> CommandResult<()> {
     let pool = get_pool(&pool).await?;
     let current = configured_provider_configs(config_manager.inner(), &pool)
@@ -2006,19 +2023,12 @@ pub async fn db_update_provider_settings(
         .and_then(Value::as_object)
         .cloned()
         .unwrap_or_default();
-    if let Some(value) = filter_free_models {
-        options.insert("filterFreeModels".to_string(), Value::Bool(value));
-    }
-    if let Some(value) = copilot_send_timeout_ms {
-        match value {
-            Some(timeout) => {
-                options.insert("copilotSendTimeoutMs".to_string(), Value::from(timeout));
-            }
-            None => {
-                options.remove("copilotSendTimeoutMs");
-            }
-        }
-    }
+    update_provider_settings_options(
+        &mut options,
+        filter_free_models,
+        copilot_send_timeout_ms,
+        clear_copilot_send_timeout,
+    );
     patch_provider_definition(
         config_manager.inner(),
         &provider_id,
@@ -2079,6 +2089,23 @@ pub async fn db_set_setting(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn provider_settings_timeout_can_be_set_preserved_and_cleared_for_rollback() {
+        let mut options = serde_json::Map::new();
+        update_provider_settings_options(&mut options, None, Some(120_000), None);
+        assert_eq!(options["copilotSendTimeoutMs"], serde_json::json!(120_000));
+        update_provider_settings_options(&mut options, Some(true), None, None);
+        assert_eq!(options["copilotSendTimeoutMs"], serde_json::json!(120_000));
+        update_provider_settings_options(&mut options, None, Some(240_000), Some(false));
+        assert_eq!(options["copilotSendTimeoutMs"], serde_json::json!(240_000));
+        // A rollback to an originally unset timeout must remove the override.
+        update_provider_settings_options(&mut options, None, None, Some(true));
+        assert!(!options.contains_key("copilotSendTimeoutMs"));
+        assert_eq!(options["filterFreeModels"], serde_json::json!(true));
+        update_provider_settings_options(&mut options, None, Some(120_000), Some(true));
+        assert!(!options.contains_key("copilotSendTimeoutMs"));
+    }
 
     #[tokio::test]
     async fn configured_chatgpt_catalog_requires_provenance_and_keeps_manual_preferences() {

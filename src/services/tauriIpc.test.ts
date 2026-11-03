@@ -549,6 +549,25 @@ describe("tauriIpc executeWorkspaceTool", () => {
       });
   });
 
+  it("explicitly clears an unset timeout during provider settings rollback", async () => {
+    const tauriIpc = await loadTauriIpc();
+    await tauriIpc.updateProviderSettings({
+      providerId: "copilot",
+      copilotSendTimeoutMs: null,
+    });
+    await tauriIpc.updateProviderSettings({ providerId: "copilot", filterFreeModels: true });
+    expect(invokeCalls).toEqual([
+      {
+        command: "db_update_provider_settings",
+        payload: { providerId: "copilot", clearCopilotSendTimeout: true },
+      },
+      {
+        command: "db_update_provider_settings",
+        payload: { providerId: "copilot", filterFreeModels: true },
+      },
+    ]);
+  });
+
   it("updates provider settings partially", async () => {
     const tauriIpc = await loadTauriIpc();
 
