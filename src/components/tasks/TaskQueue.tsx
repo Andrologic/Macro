@@ -3,7 +3,8 @@ import { groupTaskQueueLanes, TASK_QUEUE_LANES, type TaskQueueLane } from '../..
 import { getPlanFinalizationTaskDisplayTitle } from '../../services/planFinalization';
 import { getWorktreeDiagnosticTargets, type WorktreeDiagnosticTarget } from '../../services/worktreeDiagnostics';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { openPath } from '@tauri-apps/plugin-opener';
+import { openProjectInExternalApp } from '../../services/projectOpeners';
+import { useAgsdlTranslation } from '../agsdl/useAgsdlTranslation';
 import { useTranslation } from 'react-i18next';
 import { useShallow } from 'zustand/react/shallow';
 import { useAppStore } from '../../stores/useAppStore';
@@ -301,6 +302,7 @@ const TaskItem: React.FC<TaskItemProps> = ({
   onAction,
 }) => {
   const { t } = useTranslation();
+  const { t: tAgsdl } = useAgsdlTranslation();
   const [showMenu, setShowMenu] = useState(false);
   const [menuPosition, setMenuPosition] = useState<TaskMenuPosition | null>(null);
   const menuButtonRef = useRef<HTMLButtonElement>(null);
@@ -400,7 +402,7 @@ const TaskItem: React.FC<TaskItemProps> = ({
     ? multiRepoPresentation?.nextActionLabel
     : null;
   const runAttentionLabel = task.workflow_execution?.runAttention
-    ? `${t(`agsdl.execution.state.${task.workflow_execution.runAttention.state}`, task.workflow_execution.runAttention.state === 'failed' ? 'Failed' : 'Uncertain')} · ${t('implement.viewExecutionGraph', 'View workflow')}`
+    ? `${tAgsdl(`agsdl.execution.state.${task.workflow_execution.runAttention.state}`, task.workflow_execution.runAttention.state === 'failed' ? 'Failed' : 'Uncertain')} · ${t('implement.viewExecutionGraph', 'View workflow')}`
     : null;
   const nextAction = runAttentionLabel || pendingRequestLabel || reviewNextAction;
   const instruction = nextAction || waitingReason;
@@ -1925,7 +1927,7 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className, excludedProjectIds
               label: t('implement.openWorktree', 'Open worktree'),
               variant: 'secondary' as const,
               onClick: () => {
-                void openPath(target.worktreePath!).catch((error) => {
+                void openProjectInExternalApp({ targetPath: target.worktreePath!, action: 'files' }).catch((error) => {
                   notify.error(
                     t('implement.openWorktreeFailed', 'Could not open the worktree'),
                     { description: toServiceError(error).message },
@@ -1938,7 +1940,7 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className, excludedProjectIds
                 label: t('implement.openRepository', 'Open repository'),
                 variant: 'secondary' as const,
                 onClick: () => {
-                  void openPath(target.repoPath).catch((error) => {
+                  void openProjectInExternalApp({ targetPath: target.repoPath, action: 'files' }).catch((error) => {
                     notify.error(
                       t('implement.openRepositoryFailed', 'Could not open the repository'),
                       { description: toServiceError(error).message },

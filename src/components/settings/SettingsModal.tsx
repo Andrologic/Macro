@@ -7,12 +7,14 @@ import { SettingsContent } from './SettingsContent';
 import { cn } from '../../utils/cn';
 import { useAppVersion } from '../../hooks/useAppVersion';
 import { Dialog } from '../ui/Dialog';
+import { useShortcutsStore } from '../../stores/useShortcutsStore';
 import { PromptDraftProvider } from './views/promptDraft';
 import { SettingsSearchProvider } from './search/SettingsSearch';
 
 export const SettingsModal: React.FC = () => {
   const { t } = useTranslation();
   const appVersion = useAppVersion();
+  const closeSettingsBinding = useShortcutsStore((state) => state.bindings['app.closeSettings']);
   const { settingsOpen, closeSettings, activeSettingsTab, setSettingsTab } = useAppStore();
 
   useSyncExternalStore(settingsRegistry.subscribe, settingsRegistry.getRevision, settingsRegistry.getRevision);
@@ -27,6 +29,8 @@ export const SettingsModal: React.FC = () => {
 
   return (
     <Dialog
+      dialogId="settings"
+      closeOnEscape={closeSettingsBinding === 'Escape'}
       title={t('settings.title') || 'Settings'}
       onClose={closeSettings}
       backdropClassName="fixed inset-0 z-50 flex items-center justify-center bg-black/60 animate-fade-in p-3 md:p-6"

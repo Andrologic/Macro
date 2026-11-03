@@ -7,6 +7,7 @@ import { useChatStore } from '../stores/useChatStore';
 import { useProviderStore } from '../stores/useProviderStore';
 import { useConversationGoalStore } from '../stores/useConversationGoalStore';
 import { hasOpenDialog } from '../components/ui/dialogPresence';
+import { isTopmostDialog } from '../components/ui/Dialog';
 
 export const useGlobalShortcuts = (): void => {
   const bindings = useShortcutsStore((state) => state.bindings);
@@ -24,8 +25,9 @@ export const useGlobalShortcuts = (): void => {
 
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.repeat) return;
-      if (hasOpenDialog()) return;
+      if (event.repeat || event.defaultPrevented) return;
+      const dialogOpen = hasOpenDialog();
+      if (dialogOpen && !isTopmostDialog('settings')) return;
 
       const editable = isEditableTarget(event.target);
       const focusedElement = document.activeElement;
@@ -41,6 +43,7 @@ export const useGlobalShortcuts = (): void => {
         settingsOpen,
       };
       const matchingShortcut = commandRegistry.list(availability).find((command) => {
+        if (dialogOpen && command.id !== 'app.closeSettings') return false;
         const definition = { ...command.definition, id: command.id };
         const binding = Object.hasOwn(bindings, definition.id)
           ? bindings[definition.id]

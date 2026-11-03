@@ -174,7 +174,7 @@ export const ContextToolbox: React.FC<ContextToolboxProps> = ({ className }) => 
     if (selectedConversationId) {
       return selectedConversationId;
     }
-    const conversation = await createConversation(t('chat.newChat', 'New Chat'), null, null);
+    const conversation = await createConversation(t('chat.newConversation', 'New Conversation'), null, null);
     return conversation.id;
   }, [createConversation, selectedConversationId, t]);
 
