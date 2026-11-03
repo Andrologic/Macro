@@ -2318,7 +2318,8 @@ mod tests {
         assert!(diagnostic
             .diagnostics
             .iter()
-            .any(|entry| entry.message.contains("Failed to load") && entry.message.contains("project")));
+            .any(|entry| entry.message.contains("Failed to load")
+                && entry.message.contains("project")));
         assert_eq!(
             watcher.subscribed_project_roots(),
             vec![config_root.canonicalize().unwrap()]
@@ -2382,7 +2383,8 @@ mod tests {
         assert!(diagnostic
             .diagnostics
             .iter()
-            .any(|entry| entry.message.contains("Failed to load") && entry.message.contains("project")));
+            .any(|entry| entry.message.contains("Failed to load")
+                && entry.message.contains("project")));
         assert!(watcher.subscribed_project_roots().is_empty());
         assert_eq!(
             watcher.desired_project_roots().get("project"),
