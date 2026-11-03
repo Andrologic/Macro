@@ -39,8 +39,11 @@ import { createInstance } from 'i18next';
 import fr from '../../i18n/locales/fr.json';
 import frImplement from '../../i18n/locales/segments/implement-fr.json';
 import enImplement from '../../i18n/locales/segments/implement-en.json';
+import frAgsdl from '../../i18n/locales/segments/agsdl-fr.json';
 const frenchTranslator = createInstance();
 await frenchTranslator.init({ showSupportNotice: false, lng: 'fr', resources: { fr: { translation: { ...fr, implement: frImplement } } } });
+frenchTranslator.addResourceBundle('fr', 'agsdl', { agsdl: frAgsdl });
+const openProjectInExternalApp = mock(async (_params: { targetPath: string; action: string }) => undefined);
 let frenchFinalization = false;
 let frenchTaskErrors = false;
 
@@ -131,6 +134,12 @@ const loadTaskQueueModules = async () => {
   virtualListRowKeys = [];
   notifyMock = createNotifyMock();
   installReactI18nextMock(translationMock);
+  openProjectInExternalApp.mockReset();
+  openProjectInExternalApp.mockResolvedValue(undefined);
+  mock.module('../../services/projectOpeners', () => ({ openProjectInExternalApp }));
+  mock.module('../agsdl/useAgsdlTranslation', () => ({
+    useAgsdlTranslation: () => ({ t: frenchTranslator.getFixedT('fr', 'agsdl') }),
+  }));
   registerVirtualListMock();
   mock.module('../ui/toastService', () => ({
     notify: notifyMock,
@@ -1580,6 +1589,19 @@ describe('TaskQueue', () => {
       .toContain('Clean up worktree');
   });
 
+  it.each(['failed', 'uncertain'] as const)('translates workflow %s attention in the AGSDL namespace', async (state) => {
+    seedTasks([makeTask('workflow-attention', 'Pending', {
+      workflow_execution: {
+        state, runAttention: { state, activationIds: [] },
+      },
+    })]);
+    await act(async () => {
+      root?.render(<TaskQueueComponent />);
+      await flushRender();
+    });
+    expect(document.body.textContent).toContain(`${frenchTranslator.t(`agsdl.execution.state.${state}`, { ns: 'agsdl' })} · View workflow`);
+  });
+
   it('warns after archiving succeeds with a pending dirty-worktree cleanup', async () => {
     const task = makeTask('archive-with-dirty-worktree', 'Completed', {
       title: 'Archive with local edits',
@@ -1642,12 +1664,22 @@ describe('TaskQueue', () => {
     expect(notifyMock.actionRequired).toHaveBeenCalledTimes(1);
     const [title, options] = notifyMock.actionRequired.mock.calls[0] as [
       string,
-      { description: string; actions: Array<{ label: string }> },
+      { description: string; actions: Array<{ label: string; onClick: () => void }> },
     ];
     expect(title).toBe('Task archived, cleanup pending');
     expect(options.description).toContain('feature/archive-with-dirty-worktree');
     expect(options.description).toContain('/tmp/project-1/.macro/worktrees/archive-with-dirty-worktree');
     expect(options.actions.map((action) => action.label)).toEqual(['Open worktree', 'Retry']);
+    options.actions[0]!.onClick();
+    expect(openProjectInExternalApp).toHaveBeenCalledWith({
+      targetPath: '/tmp/project-1/.macro/worktrees/archive-with-dirty-worktree', action: 'files', fallbackToSystemFiles: true,
+    });
+    openProjectInExternalApp.mockRejectedValueOnce(new Error('Could not launch file manager'));
+    options.actions[0]!.onClick();
+    await Promise.resolve();
+    expect(notifyMock.error).toHaveBeenCalledWith('Could not open the worktree', {
+      description: 'Could not launch file manager',
+    });
   });
 
   it('opens the repository instead of a removed worktree when branch cleanup remains', async () => {
@@ -1711,12 +1743,14 @@ describe('TaskQueue', () => {
 
     const [, options] = notifyMock.actionRequired.mock.calls[0] as [
       string,
-      { description: string; actions: Array<{ label: string }> },
+      { description: string; actions: Array<{ label: string; onClick: () => void }> },
     ];
     expect(options.description).toContain('worktree has already been removed');
     expect(options.description).toContain('feature/archive-with-branch-cleanup');
     expect(options.description).toContain('/tmp/project-1');
     expect(options.actions.map((action) => action.label)).toEqual(['Open repository', 'Retry']);
+    options.actions[0]!.onClick();
+    expect(openProjectInExternalApp).toHaveBeenCalledWith({ targetPath: '/tmp/project-1', action: 'files', fallbackToSystemFiles: true });
   });
 
   it('provides three display filters and keeps project management in the context menu', async () => {

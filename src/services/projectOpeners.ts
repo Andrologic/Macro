@@ -227,14 +227,31 @@ export const shouldRenderProjectOpenAction = (
   action: ProjectOpenAction
 ): boolean => selection[action] !== NONE_PROJECT_OPEN_APP_ID;
 
+const builtinFilesAppId = (): string => {
+  const platform = navigator.platform.toLowerCase();
+  if (platform.includes('mac')) return 'finder';
+  if (platform.includes('win')) return 'explorer';
+  return 'xdg-open';
+};
+
 export const openProjectInExternalApp = async (params: {
   targetPath: string;
   action: ProjectOpenAction;
   appId?: string | null;
+  /** Use the system file manager when no files app is configured. */
+  fallbackToSystemFiles?: boolean;
 }): Promise<void> => {
-  const resolvedAppId =
+  let resolvedAppId =
     params.appId?.trim() ||
     (await loadProjectOpenSettings()).selectedAppIdsByAction[params.action];
+
+  if (
+    params.fallbackToSystemFiles
+    && params.action === 'files'
+    && (!resolvedAppId || resolvedAppId === NONE_PROJECT_OPEN_APP_ID)
+  ) {
+    resolvedAppId = builtinFilesAppId();
+  }
 
   if (!resolvedAppId || resolvedAppId === NONE_PROJECT_OPEN_APP_ID) {
     return;

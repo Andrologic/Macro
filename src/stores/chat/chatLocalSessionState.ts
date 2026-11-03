@@ -303,12 +303,6 @@ function validateComposerDrafts(
   }
 
   const entries = Object.entries(value);
-  if (entries.length > MAX_COMPOSER_DRAFTS) {
-    throw new ComposerDraftValidationError(
-      `Too many composer drafts. The limit is ${MAX_COMPOSER_DRAFTS}. Original data preserved.`,
-    );
-  }
-
   for (const [contextKey, draft] of entries) {
     if (!contextKey || contextKey.length > MAX_SHORT_FIELD_LENGTH) {
       throw new ComposerDraftValidationError(
@@ -336,7 +330,7 @@ const parseComposerDraftsJson = (
   const entries = Object.entries(parsed);
   const damaged = entries.length > MAX_COMPOSER_DRAFTS;
   const drafts: Array<[string, PersistedComposerDraft]> = [];
-  for (const [contextKey, value] of entries.slice(0, MAX_COMPOSER_DRAFTS)) {
+  for (const [contextKey, value] of entries.slice(-MAX_COMPOSER_DRAFTS)) {
     const draft = contextKey && contextKey.length <= MAX_SHORT_FIELD_LENGTH
       ? parseComposerDraft(value)
       : null;
@@ -367,7 +361,7 @@ export const loadComposerDraftsFromStorage = (): Record<
     if (parsed.damaged) {
       reportPersistenceIssue(
         COMPOSER_DRAFTS_STORAGE_KEY,
-        "Some stored composer drafts could not be restored. Valid drafts were recovered; the original data was preserved.",
+        "Some stored composer drafts could not be restored. Valid drafts were recovered; the damaged entries will be discarded on the next save.",
       );
     } else {
       clearPersistenceIssue(COMPOSER_DRAFTS_STORAGE_KEY);
@@ -384,6 +378,48 @@ export const loadComposerDraftsFromStorage = (): Record<
   }
 };
 
+// Object entry order records insertion age. Always keep the newest entry on quota retry.
+const writeEntriesWithEviction = (
+  key: string,
+  entries: Array<[string, unknown]>,
+  maxEntries: number,
+  maxLength = Infinity,
+): void => {
+  const retained = entries.slice(-maxEntries);
+  // Serialized size of each `"key":value,` member, so trimming to a budget costs
+  // one pass instead of re-serializing the whole map per evicted entry.
+  const sizes = retained.map(([entryKey, value]) =>
+    JSON.stringify(entryKey).length + (JSON.stringify(value) ?? "null").length + 2);
+  let total = sizes.reduce((sum, size) => sum + size, 1);
+  const trimTo = (budget: number) => {
+    while (retained.length > 1 && total > budget) {
+      retained.shift();
+      total -= sizes.shift()!;
+    }
+  };
+  trimTo(maxLength);
+  while (true) {
+    const serialized = JSON.stringify(Object.fromEntries(retained));
+    if (serialized.length > maxLength) {
+      if (retained.length <= 1) throw new Error("Storage entry exceeds the storage limit.");
+      trimTo(Math.min(total - 1, maxLength));
+      continue;
+    }
+    try {
+      window.localStorage.setItem(key, serialized);
+      return;
+    } catch (error) {
+      const quotaExceeded = error instanceof Error && (
+        error.name === "QuotaExceededError" ||
+        error.name === "NS_ERROR_DOM_QUOTA_REACHED"
+      );
+      if (!quotaExceeded || retained.length <= 1) throw error;
+      // Shrink by a fifth per quota failure: few attempts, bounded over-eviction.
+      trimTo(Math.min(total - 1, Math.floor(serialized.length * 0.8)));
+    }
+  }
+};
+
 export const saveComposerDraftsToStorage = (
   draftsByContextKey: Record<string, PersistedComposerDraft>,
 ): boolean => {
@@ -396,19 +432,10 @@ export const saveComposerDraftsToStorage = (
   }
   try {
     validateComposerDrafts(draftsByContextKey);
-    const previous = window.localStorage.getItem(COMPOSER_DRAFTS_STORAGE_KEY);
-    if (previous !== null) {
-      validateComposerDrafts(JSON.parse(previous) as unknown);
-    }
-    const serialized = JSON.stringify(draftsByContextKey);
-    if (typeof serialized !== "string") {
-      throw new ComposerDraftValidationError(
-        "The composer drafts could not be serialized. Original data preserved.",
-      );
-    }
-    window.localStorage.setItem(
+    writeEntriesWithEviction(
       COMPOSER_DRAFTS_STORAGE_KEY,
-      serialized,
+      Object.entries(draftsByContextKey),
+      MAX_COMPOSER_DRAFTS,
     );
     clearPersistenceIssue(COMPOSER_DRAFTS_STORAGE_KEY);
     return true;
@@ -483,12 +510,12 @@ export const saveQuestionnaireDraftsToStorage = (
 export const MAX_MESSAGE_IMAGES_STORAGE_LENGTH = 40_000_000;
 const MAX_MESSAGES_WITH_IMAGES = 2_000;
 
-const parseMessageImages = (raw: string, recover = false): Record<string, MessageImageAttachment[]> => {
-  if (raw.length > MAX_MESSAGE_IMAGES_STORAGE_LENGTH) throw new Error("Stored message images exceed the recovery limit. Original data preserved.");
+const parseMessageImages = (raw: string, recover = false, bounded = true): Record<string, MessageImageAttachment[]> => {
+  if (bounded && raw.length > MAX_MESSAGE_IMAGES_STORAGE_LENGTH) throw new Error("Stored message images exceed the recovery limit. Original data preserved.");
   const parsed: unknown = JSON.parse(raw);
   if (!isRecord(parsed)) throw new Error("Invalid stored message images. Original data preserved.");
   const entries = Object.entries(parsed);
-  if (entries.length > MAX_MESSAGES_WITH_IMAGES) throw new Error("Too many stored message images. Original data preserved.");
+  if (bounded && entries.length > MAX_MESSAGES_WITH_IMAGES) throw new Error("Too many stored message images. Original data preserved.");
   const valid: Array<[string, MessageImageAttachment[]]> = [];
   let damaged = false;
   for (const [key, images] of entries) {
@@ -502,7 +529,7 @@ const parseMessageImages = (raw: string, recover = false): Record<string, Messag
   }
   if (damaged) {
     if (!recover) throw new Error("Invalid stored message images. Original data preserved.");
-    reportPersistenceIssue(MESSAGE_IMAGES_STORAGE_KEY, "Some stored message images are invalid. Valid images were recovered; the original data is preserved.");
+    reportPersistenceIssue(MESSAGE_IMAGES_STORAGE_KEY, "Some stored message images are invalid. Valid images were recovered; the invalid entries will be discarded on the next save.");
   }
   return Object.fromEntries(valid);
 };
@@ -525,12 +552,14 @@ export const saveMessageImagesToStorage = (
 ): boolean => {
   if (!hasLocalStorage()) return false;
   try {
-    // Validate the previous value before replacing it, including after a failed load.
-    const previous = window.localStorage.getItem(MESSAGE_IMAGES_STORAGE_KEY);
-    if (previous !== null) parseMessageImages(previous);
     const serialized = JSON.stringify(imagesByMessageId);
-    parseMessageImages(serialized);
-    window.localStorage.setItem(MESSAGE_IMAGES_STORAGE_KEY, serialized);
+    parseMessageImages(serialized, false, false);
+    writeEntriesWithEviction(
+      MESSAGE_IMAGES_STORAGE_KEY,
+      Object.entries(imagesByMessageId),
+      MAX_MESSAGES_WITH_IMAGES,
+      MAX_MESSAGE_IMAGES_STORAGE_LENGTH,
+    );
     clearPersistenceIssue(MESSAGE_IMAGES_STORAGE_KEY);
     return true;
   } catch (error) {

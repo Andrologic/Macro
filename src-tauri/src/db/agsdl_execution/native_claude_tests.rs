@@ -35,8 +35,16 @@ async fn simulated_claude_resumes_exactly_retains_preterminal_refs_and_refuses_a
     for p in [&directory, &workspace, &bootstrap] {
         std::fs::create_dir(p).unwrap();
     }
+    // Run the fake runner with -B: macOS's system Python otherwise writes a
+    // bytecode cache under HOME/Library, which the context check rightly refuses.
+    let interpreter = temp.path().join("python3-no-bytecode");
+    std::fs::write(&interpreter, "#!/bin/sh\nexec /usr/bin/python3 -B \"$@\"\n").unwrap();
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&interpreter, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
     let profile = Profile {
-        node: "/usr/bin/python3".into(),
+        node: interpreter,
         sdk: "/synthetic/sdk.mjs".into(),
         zod: "/synthetic/zod".into(),
         cli: "/synthetic/claude".into(),
@@ -57,7 +65,7 @@ async fn simulated_claude_resumes_exactly_retains_preterminal_refs_and_refuses_a
     std::fs::write(profile.runner_path(),r#"import sys,json,os,subprocess,uuid
 from pathlib import Path
 root=Path(__file__).parent
-child=subprocess.Popen(['/usr/bin/sleep','30'],start_new_session=True)
+child=subprocess.Popen(['/bin/sleep','30'],start_new_session=True)
 with (root/'children').open('a') as f:f.write(str(child.pid)+'\n')
 def ask(method,params):
  print(json.dumps({'id':str(uuid.uuid4()),'method':method,'params':params}),flush=True)

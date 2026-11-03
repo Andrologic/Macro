@@ -1,6 +1,8 @@
 import { commandRegistry } from '../shortcuts/runtime';
 import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
 import React from 'react';
+import i18n from '../i18n';
+import { Dialog } from '../components/ui/Dialog';
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { shortcutDefinitions, type ShortcutId } from '../shortcuts/catalog';
@@ -91,10 +93,10 @@ describe('useGlobalShortcuts', () => {
   let promptHistoryDirections: string[];
   let cleanupPromptHistoryListener: (() => void) | null;
 
-  const renderHook = async () => {
+  const renderHook = async (children: React.ReactNode = null) => {
     const TestComponent = () => {
       useGlobalShortcuts();
-      return null;
+      return <>{children}</>;
     };
     await act(async () => {
       root?.render(<TestComponent />);
@@ -172,6 +174,7 @@ describe('useGlobalShortcuts', () => {
   beforeEach(async () => {
     (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean })
       .IS_REACT_ACT_ENVIRONMENT = true;
+    await i18n.changeLanguage('en');
     shortcutsState = {
       bindings: buildDefaultBindings(),
       promptHistoryNavigationMode: 'contextual_arrows',
@@ -285,6 +288,62 @@ describe('useGlobalShortcuts', () => {
     expect(appState.closeSettings.mock.calls).toHaveLength(1);
   });
 
+
+  it('runs only the customized settings close shortcut through a mounted dialog', async () => {
+    appState.settingsOpen = true;
+    shortcutsState.bindings['app.closeSettings'] = 'Mod+Shift+X';
+    await renderHook(
+      <Dialog dialogId="settings" closeOnEscape={false} title="Settings" onClose={appState.closeSettings}>
+        <input aria-label="Settings field" />
+      </Dialog>,
+    );
+    const input = document.querySelector('input')!;
+    await dispatchShortcut('app.toggleLeftPanel', input);
+    await dispatchShortcut('chat.newConversation', input);
+    await dispatchBinding('Escape', input);
+    expect(appState.setLeftPanelOpen).not.toHaveBeenCalled();
+    expect(chatState.createConversation).not.toHaveBeenCalled();
+    expect(appState.closeSettings).not.toHaveBeenCalled();
+    expect((await dispatchShortcut('app.closeSettings', input)).defaultPrevented).toBe(true);
+    expect(appState.closeSettings).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps settings open while a nested dialog is topmost', async () => {
+    appState.settingsOpen = true;
+    shortcutsState.bindings['app.closeSettings'] = 'Mod+Shift+X';
+    const closeNested = mock(() => undefined);
+    await renderHook(
+      <Dialog dialogId="settings" closeOnEscape={false} title="Settings" onClose={appState.closeSettings}>
+        <Dialog title="Nested" onClose={closeNested}><button>Nested action</button></Dialog>
+      </Dialog>,
+    );
+    const target = document.activeElement!;
+    expect((await dispatchShortcut('app.closeSettings', target)).defaultPrevented).toBe(false);
+    await dispatchBinding('Escape', target);
+    expect(closeNested).toHaveBeenCalledTimes(1);
+    expect(appState.closeSettings).not.toHaveBeenCalled();
+  });
+
+  it('does not close a mounted settings dialog when the shortcut is disabled', async () => {
+    appState.settingsOpen = true;
+    shortcutsState.bindings['app.closeSettings'] = null;
+    await renderHook(
+      <Dialog dialogId="settings" closeOnEscape={false} title="Settings" onClose={appState.closeSettings}>
+        <button>Settings action</button>
+      </Dialog>,
+    );
+    await dispatchBinding('Escape', document.activeElement!);
+    expect(appState.closeSettings).not.toHaveBeenCalled();
+  });
+
+  it('uses the current language for conversations created by shortcut', async () => {
+    i18n.addResourceBundle('fr', 'translation', { chat: { newConversation: 'Nouvelle conversation' } }, true, true);
+    await i18n.changeLanguage('fr');
+    await renderHook();
+    await dispatchShortcut('chat.newConversation');
+    expect(chatState.createConversation).toHaveBeenCalledWith('Nouvelle conversation', null, null);
+  });
+
   it('creates a new chat conversation in Chat mode', async () => {
     await renderHook();
 
@@ -333,6 +392,23 @@ describe('useGlobalShortcuts', () => {
     await dispatchBinding('Alt+L');
 
     expect(appState.setLeftPanelOpen.mock.calls).toEqual([[false]]);
+  });
+
+  it('prefers a binding matching the typed character over a physical-key fallback', async () => {
+    shortcutsState = {
+      ...shortcutsState,
+      bindings: {
+        ...shortcutsState.bindings,
+        'app.toggleLeftPanel': 'Mod+;',
+      },
+    };
+    await renderHook();
+
+    // AZERTY-style layout: the physical Comma key produces ';'.
+    await dispatchBinding('Mod+;', window, { code: 'Comma' });
+
+    expect(appState.setLeftPanelOpen.mock.calls).toEqual([[false]]);
+    expect(appState.openSettings.mock.calls).toEqual([]);
   });
 
   it('cycles provider and model selections', async () => {

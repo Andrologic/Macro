@@ -37,7 +37,8 @@ The repo uses:
 | `bun run tauri:build` | Build the Tauri desktop app. |
 | `bun run tauri:build:dmg` | Build a native macOS DMG. |
 | `bun run tauri:build:dmg:mac-universal:test` | Build a universal macOS DMG for Apple Silicon and Intel Macs. |
-| `bun run typecheck` | Run TypeScript type checking. |
+| `bun run typecheck` | Type-check the frontend and Vite configuration. |
+| `bun run typecheck:node` | Type-check the Vite configuration and its tests only. |
 | `bun run lint` | Run ESLint. |
 | `bun run i18n:audit` | Audit locale coverage. |
 | `bun run test` | Run frontend and service tests with bounded parallelism. |
@@ -103,8 +104,9 @@ which injects it into the local browser page. The token is therefore visible in
 that page's DevTools; it protects against unrelated browser origins, not against
 a hostile process already running on the machine. The WebSocket server also
 requires the exact configured loopback browser origin and binds only to
-`127.0.0.1:1430`. Always use `bun run tauri:dev:browser`; do not expose either
-local port through a proxy.
+`127.0.0.1` on `MACRO_TAURI_BROWSER_BRIDGE_PORT`, defaulting to `1430`.
+Always use `bun run tauri:dev:browser`; do not expose either local port through
+a proxy.
 
 Automated checks that exercise mutable state must use a separate Tauri identifier,
 not only a temporary `MACRO_CONFIG_DIR`. Set `MACRO_TAURI_BROWSER_CONFIG` to an
@@ -114,7 +116,8 @@ It also derives a dedicated log directory under the operating system's temporary
 directory; the QA host therefore neither reads nor writes Macro's production logs.
 If port 1422 is occupied, set `build.devUrl` in the merged QA config to another
 `http://127.0.0.1:<port>` origin. The launcher uses that port for Vite and the
-bridge origin check; the authenticated WebSocket remains on port 1430.
+bridge origin check. Set `MACRO_TAURI_BROWSER_BRIDGE_PORT` to choose a separate
+authenticated WebSocket port; it defaults to `1430`.
 Before creating fixtures, inspect the native process's open SQLite files and call
 `workspace_get_bootstrap`; continue only when both point to the intended isolated
 profile and synthetic workspace.
@@ -219,9 +222,9 @@ bun run ci
 Notes on validation cost and behavior:
 
 - Tests run one `bun test` process per file for isolation, with a bounded
-  concurrency (6 by default, overridable with `--concurrency=<n>` or
-  `MACRO_TEST_CONCURRENCY`). Pass a filter such as `bun run test composer` to
-  run a subset, or `--list` to print the selected files.
+  concurrency of `max(1, min(available cores - 1, 6))` by default. Override it
+  with `--concurrency=<n>` or `MACRO_TEST_CONCURRENCY`. Pass a filter such as
+  `bun run test composer` to run a subset, or `--list` to print the selected files.
 - Coverage is opt-in through `bun run test:coverage`; plain runs skip
   instrumentation entirely. Each run clears stale data, keeps isolated raw
   reports in `coverage/tests/<file>/`, and writes the merged application-line

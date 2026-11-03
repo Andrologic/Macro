@@ -1,3 +1,5 @@
+import i18n from 'i18next';
+
 const SPECIAL_KEY_ALIASES: Record<string, string> = {
   esc: 'Escape',
   escape: 'Escape',
@@ -9,6 +11,20 @@ const SPECIAL_KEY_ALIASES: Record<string, string> = {
   comma: ',',
   period: '.',
   slash: '/',
+};
+
+const PUNCTUATION_CODE_KEYS: Record<string, string> = {
+  Backquote: '`',
+  Minus: '-',
+  Equal: '=',
+  BracketLeft: '[',
+  BracketRight: ']',
+  Backslash: '\\',
+  Semicolon: ';',
+  Quote: "'",
+  Comma: ',',
+  Period: '.',
+  Slash: '/',
 };
 
 const MODIFIER_KEYS = new Set(['Meta', 'Control', 'Alt', 'Shift']);
@@ -71,7 +87,7 @@ export const eventToBinding = (event: KeyboardEvent): string | null => {
 };
 
 export const formatBindingForDisplay = (binding: string | null): string => {
-  if (!binding) return 'Unassigned';
+  if (!binding) return i18n.t('common.disabled', 'Disabled');
   const isMac = navigator.platform.toLowerCase().includes('mac');
   return binding
     .split('+')
@@ -84,7 +100,16 @@ export const formatBindingForDisplay = (binding: string | null): string => {
     .join(' + ');
 };
 
-export const bindingMatchesEvent = (binding: string, event: KeyboardEvent): boolean => {
+export type BindingMatchMode = 'any' | 'key' | 'physical';
+
+// 'key' matches the produced character only, 'physical' only the physical key
+// fallback. Callers should prefer 'key' so a layout where one physical key
+// produces another binding's character cannot trigger two commands.
+export const bindingMatchesEvent = (
+  binding: string,
+  event: KeyboardEvent,
+  mode: BindingMatchMode = 'any',
+): boolean => {
   const normalized = normalizeBinding(binding);
   if (!normalized) return false;
 
@@ -98,7 +123,14 @@ export const bindingMatchesEvent = (binding: string, event: KeyboardEvent): bool
   const eventKey = eventParts[eventParts.length - 1];
   const eventModifiers = new Set(eventParts.slice(0, -1));
 
-  if (key !== eventKey) return false;
+  const codeKey = /^Digit[0-9]$/.test(event.code)
+    ? event.code.slice(-1)
+    : PUNCTUATION_CODE_KEYS[event.code];
+  const keyMatches = key === eventKey;
+  const physicalMatches = key === codeKey;
+  if (mode === 'key' ? !keyMatches : mode === 'physical' ? !physicalMatches : !keyMatches && !physicalMatches) {
+    return false;
+  }
   if (modifiers.size !== eventModifiers.size) return false;
   for (const modifier of modifiers) {
     if (!eventModifiers.has(modifier)) return false;

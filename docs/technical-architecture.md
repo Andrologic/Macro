@@ -537,7 +537,10 @@ Mesure de cette extraction, hors tests et déclarations `.d.ts` :
 | Arêtes de types | 671 | 679 |
 | Plus grande SCC statique | 25 | 16 |
 | Plus grande SCC avec imports dynamiques | 34 | 24 |
-| Exceptions de frontières | 40 | 36 |
+| Exceptions de frontières | 40 | 32 |
+
+Le nombre d'exceptions reflète la baseline actuelle dans
+`dev/architecture/import-boundaries.baseline.json`.
 
 Une même paire de modules peut porter une arête runtime et une arête de types.
 Le graphe conserve aussi les imports dynamiques ; les déplacer ne contourne pas
@@ -1046,10 +1049,16 @@ L'interface passe par le runtime MCP persistant et sa politique d'outils.
 
 Le runtime embarque des plugins Tauri pour :
 
-- l'ouverture de ressources externes
-- les requêtes HTTP
-- les dialogues système
-- le stockage natif
+- l'instance unique et le retour au premier plan, `single-instance`
+- l'ouverture de ressources externes, `opener`
+- les requêtes HTTP, `http`
+- les dialogues système, `dialog`
+- les notifications natives, `notification`
+- le contrôle du processus de l'application, `process`
+- les mises à jour, `updater`
+
+Le plugin `tauri_remote_ui` s'ajoute uniquement en debug avec la fonctionnalité
+`browser-runtime-debug` pour le pont navigateur.
 
 Le wrapper `tauriFetch` désactive les redirections automatiques du plugin HTTP
 sur le desktop et dans le pont navigateur. Un serveur qui répond par une
@@ -1068,6 +1077,10 @@ Le backend Rust est organisé en modules de domaine.
 Les blocs principaux sont :
 
 - `core/`
+- `config/`
+- `secrets/`
+- `ipc_contracts/`
+- `lsp/`
 - `db/`
 - `fs/`
 - `git/`
@@ -1075,6 +1088,8 @@ Les blocs principaux sont :
 - `commands/`
 - `ai/`
 - `speech/`
+- `agsdl_host.rs` et `agsdl_host_{capture,catalogue,claude,codex,compiler,provider,tasks,tools}.rs`
+- `agsdl_intent_coordinator.rs`
 
 ### 9.2 `core`
 

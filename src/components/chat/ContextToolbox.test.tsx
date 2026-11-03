@@ -378,7 +378,7 @@ const loadContextToolbox = async () => {
         fallbackOrOptions?: string | { defaultValue?: string },
         maybeOptions?: { defaultValue?: string },
       ) => {
-        if (frenchToolDescriptions && (_key.startsWith('chat.contextToolbox.toolDescriptions.') || _key === 'chat.contextToolbox.sourceSummary')) {
+        if (frenchToolDescriptions && (_key.startsWith('chat.contextToolbox.toolDescriptions.') || _key === 'chat.contextToolbox.sourceSummary' || _key === 'chat.newConversation')) {
           const values = typeof fallbackOrOptions === 'object' ? fallbackOrOptions : maybeOptions;
           return frenchI18n.t(_key, { ...values });
         }
@@ -887,6 +887,7 @@ describe('ContextToolbox', () => {
   });
 
   it('keeps uploaded files visible when the toolbox creates the chat conversation', async () => {
+    frenchToolDescriptions = true;
     selectedConversationIdMock = null;
     contextCitations = [];
     const { ContextToolbox } = await loadContextToolbox();
@@ -906,7 +907,7 @@ describe('ContextToolbox', () => {
       }),
     );
 
-    expect(createConversationMock).toHaveBeenCalled();
+    expect(createConversationMock).toHaveBeenCalledWith(frenchI18n.t('chat.newConversation'), null, null);
     expect(container?.textContent).toContain('upload-from-empty.md');
     expect(container?.textContent).not.toContain('Visible after conversation creation.');
     expect(container?.textContent).not.toContain('Delete');

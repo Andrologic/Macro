@@ -118,4 +118,23 @@ describe('projectOpeners', () => {
       appId: 'cursor',
     });
   });
+  it('falls back to the system file manager only when asked and files are disabled', async () => {
+    const { openProjectInExternalApp } = await loadProjectOpeners();
+    Object.defineProperty(navigator, 'platform', { configurable: true, value: 'MacIntel' });
+
+    await openProjectInExternalApp({ targetPath: '/workspace/api', action: 'files', appId: 'none' });
+    expect(openExternalTargetMock).not.toHaveBeenCalled();
+
+    await openProjectInExternalApp({
+      targetPath: '/workspace/api',
+      action: 'files',
+      appId: 'none',
+      fallbackToSystemFiles: true,
+    });
+    expect(openExternalTargetMock).toHaveBeenCalledWith({
+      targetPath: '/workspace/api',
+      action: 'files',
+      appId: 'finder',
+    });
+  });
 });

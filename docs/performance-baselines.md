@@ -112,12 +112,12 @@ initial-load transfer. Fonts, native binaries, source maps and framing are exclu
 | `MarkdownRichContent-CnCMovbT.js` | 10,736 | 3,893 |
 
 Vite warned about mixed static/dynamic imports of `tauriRuntimeBridge` and a
-chunk above 1,200 kB. The measured largest `index` chunk exceeds the existing
-1,425,000-byte entry budget in `dev/check-bundle-size.mjs` by 27,987 bytes.
-This is an observation on the unchanged product base, not a new regression
-introduced by this developer-only tooling. The temporary output was removed;
-the bundle budget command itself was not run against `dist`. Investigate this
-base/toolchain result before changing chunk boundaries or relaxing a budget.
+chunk above 1,200 kB. The measured largest `index` chunk is 197,013 bytes below
+the current 1,650,000-byte entry budget in `dev/check-bundle-size.mjs`.
+This measurement describes the unchanged product base used for this tooling
+experiment. The temporary output was removed; the bundle budget command itself
+was not run against `dist`. Use a fresh build and `bun run bundle:check` before
+changing chunk boundaries or budgets.
 
 ## Runtime measurements still absent
 

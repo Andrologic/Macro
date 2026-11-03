@@ -18,7 +18,6 @@ const TAURI_PLUGIN_PAIRS = Object.freeze([
   ['@tauri-apps/plugin-notification', 'tauri-plugin-notification'],
   ['@tauri-apps/plugin-opener', 'tauri-plugin-opener'],
   ['@tauri-apps/plugin-process', 'tauri-plugin-process'],
-  ['@tauri-apps/plugin-store', 'tauri-plugin-store'],
 ]);
 
 function atLeast(version, major, minor, patch = 0) {

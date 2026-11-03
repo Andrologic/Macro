@@ -1,3 +1,4 @@
+import i18n from '../i18n';
 import { afterEach, describe, expect, it } from 'bun:test';
 import {
   bindingMatchesEvent,
@@ -18,6 +19,7 @@ const setPlatform = (platform: string) => {
 describe('shortcut utils', () => {
   afterEach(() => {
     setPlatform(originalPlatform);
+    void i18n.changeLanguage('en');
   });
 
   it('normalizes modifier aliases and special keys', () => {
@@ -61,4 +63,43 @@ describe('shortcut utils', () => {
       }))
     ).toBe(false);
   });
+
+  it.each([
+    ['1', '&', 'Digit1'], ['2', 'é', 'Digit2'], ['3', '"', 'Digit3'],
+    ['/', ':', 'Slash'], ['.', ';', 'Period'], [',', 'm', 'Comma'],
+    ['[', '^', 'BracketLeft'], [']', '$', 'BracketRight'],
+  ])('matches Mod+%s by physical code on other layouts', (key, layoutKey, code) => {
+    for (const platform of ['MacIntel', 'Win32']) {
+      setPlatform(platform);
+      const modifiers = platform === 'MacIntel' ? { metaKey: true } : { ctrlKey: true };
+      const event = new KeyboardEvent('keydown', { key: layoutKey, code, ...modifiers });
+      expect(bindingMatchesEvent(`Mod+${key}`, event)).toBe(true);
+      expect(bindingMatchesEvent(`Mod+${layoutKey}`, event)).toBe(true);
+      expect(bindingMatchesEvent(`Mod+Shift+${key}`, event)).toBe(false);
+      expect(bindingMatchesEvent(`Alt+${key}`, event)).toBe(false);
+    }
+  });
+
+  it('separates typed-key and physical-key matches for callers that rank them', () => {
+    setPlatform('MacIntel');
+    const event = new KeyboardEvent('keydown', { key: ';', code: 'Comma', metaKey: true });
+    expect(bindingMatchesEvent('Mod+;', event, 'key')).toBe(true);
+    expect(bindingMatchesEvent('Mod+;', event, 'physical')).toBe(false);
+    expect(bindingMatchesEvent('Mod+,', event, 'key')).toBe(false);
+    expect(bindingMatchesEvent('Mod+,', event, 'physical')).toBe(true);
+  });
+
+  it('keeps letter shortcuts tied to the typed key', () => {
+    setPlatform('Win32');
+    const event = new KeyboardEvent('keydown', { key: 'a', code: 'KeyQ', ctrlKey: true });
+    expect(bindingMatchesEvent('Mod+A', event)).toBe(true);
+    expect(bindingMatchesEvent('Mod+Q', event)).toBe(false);
+  });
+
+  it('localizes disabled shortcut labels with the existing common translation', async () => {
+    i18n.addResourceBundle('fr', 'translation', { common: { disabled: 'Désactivé' } }, true, true);
+    await i18n.changeLanguage('fr');
+    expect(formatBindingForDisplay(null)).toBe('Désactivé');
+  });
+
 });

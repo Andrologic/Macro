@@ -20,6 +20,7 @@ const FOCUSABLE_SELECTOR = [
 ].join(',');
 
 interface OpenDialogEntry {
+  dialogId?: string;
   order: number;
   zIndex: number;
   escapeHandlers: Set<EscapeHandler>;
@@ -55,6 +56,11 @@ const getTopmostDialog = (): HTMLElement | null => {
     }
   }
   return topmost?.[0] ?? null;
+};
+
+export const isTopmostDialog = (dialogId: string): boolean => {
+  const topmost = getTopmostDialog();
+  return topmost !== null && openDialogs.get(topmost)?.dialogId === dialogId;
 };
 
 const readDialogZIndex = (className: string): number => {
@@ -134,6 +140,8 @@ const synchronizeBackgroundInertness = (): void => {
 };
 
 export interface DialogProps {
+  dialogId?: string;
+  closeOnEscape?: boolean;
   title: string;
   onClose: () => void;
   children: React.ReactNode;
@@ -150,6 +158,8 @@ export interface DialogProps {
 export const Dialog: React.FC<DialogProps> = ({
   title,
   onClose,
+  dialogId,
+  closeOnEscape = true,
   children,
   backdropClassName = 'fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4',
   panelClassName = 'flex w-full justify-center',
@@ -169,6 +179,7 @@ export const Dialog: React.FC<DialogProps> = ({
   const panelRef = useRef<HTMLDivElement>(null);
   const previousFocusRef = useRef<FocusTarget | null>(null);
   const onCloseRef = useRef(onClose);
+  const closeOnEscapeRef = useRef(closeOnEscape);
   const returnFocusRefRef = useRef(returnFocusRef);
   const escapeHandlersRef = useRef<Set<EscapeHandler>>(new Set());
   const portalsRef = useRef<Set<HTMLElement>>(new Set());
@@ -197,8 +208,9 @@ export const Dialog: React.FC<DialogProps> = ({
 
   useEffect(() => {
     onCloseRef.current = onClose;
+    closeOnEscapeRef.current = closeOnEscape;
     returnFocusRefRef.current = returnFocusRef;
-  }, [onClose, returnFocusRef]);
+  }, [onClose, closeOnEscape, returnFocusRef]);
 
   useEffect(() => {
     const root = rootRef.current;
@@ -208,6 +220,7 @@ export const Dialog: React.FC<DialogProps> = ({
     const activeElement = document.activeElement;
     previousFocusRef.current = isFocusTarget(activeElement) ? activeElement : null;
     openDialogs.set(root, {
+      dialogId,
       order: dialogOrder,
       zIndex: effectiveZIndex,
       escapeHandlers: escapeHandlersRef.current,
@@ -225,17 +238,15 @@ export const Dialog: React.FC<DialogProps> = ({
       if (getTopmostDialog() !== root) return;
 
       if (event.key === 'Escape') {
+        const entry = openDialogs.get(root);
+        const handlers = entry ? Array.from(entry.escapeHandlers).reverse() : [];
+        const handled = handlers.some((handler) => handler() !== false);
+        if (!handled && !closeOnEscapeRef.current) return;
+
         event.preventDefault();
         event.stopPropagation();
         event.stopImmediatePropagation();
-
-        const entry = openDialogs.get(root);
-        const handlers = entry ? Array.from(entry.escapeHandlers).reverse() : [];
-        for (const handler of handlers) {
-          if (handler() !== false) return;
-        }
-
-        onCloseRef.current();
+        if (!handled) onCloseRef.current();
         return;
       }
 
@@ -272,7 +283,7 @@ export const Dialog: React.FC<DialogProps> = ({
         !returnFocusTarget.closest('[inert], [hidden]');
       restoreFocusAfterDialogClose(canReturnToTarget ? returnFocusTarget : previousFocusRef.current);
     };
-  }, [dialogOrder, effectiveZIndex, initialFocusRef]);
+  }, [dialogId, dialogOrder, effectiveZIndex, initialFocusRef]);
 
   return createPortal(
     <ParentDialogZIndexContext.Provider value={effectiveZIndex}>

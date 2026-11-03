@@ -61,15 +61,15 @@ fn lock_update_state() -> std::sync::MutexGuard<'static, ()> {
 
 fn lock_update_directory(directory: &Path) -> Result<fs::File, String> {
     fs::create_dir_all(directory)
-        .map_err(|error| format!("Impossible de préparer le verrou des mises à jour : {error}"))?;
+        .map_err(|error| format!("Failed to prepare update lock: {error}"))?;
     let file = fs::OpenOptions::new()
         .read(true)
         .write(true)
         .create(true)
         .open(directory.join(UPDATE_LOCK_FILE))
-        .map_err(|error| format!("Impossible d'ouvrir le verrou des mises à jour : {error}"))?;
+        .map_err(|error| format!("Failed to open update lock: {error}"))?;
     file.lock_exclusive()
-        .map_err(|error| format!("Impossible de verrouiller les mises à jour : {error}"))?;
+        .map_err(|error| format!("Failed to lock updates: {error}"))?;
     Ok(file)
 }
 
@@ -229,7 +229,7 @@ fn update_dir(app: &AppHandle) -> Result<PathBuf, String> {
     app.path()
         .app_cache_dir()
         .map(|path| path.join(UPDATE_DIRECTORY))
-        .map_err(|error| format!("Impossible d'ouvrir le cache des mises à jour : {error}"))
+        .map_err(|error| format!("Failed to open update cache: {error}"))
 }
 
 fn persisted_update_channel(app_data_dir: &Path) -> Result<Option<&'static str>, String> {
@@ -286,10 +286,10 @@ fn read_manifest_file(path: &Path) -> Result<Option<StagedUpdateManifest>, Strin
         return Ok(None);
     }
     let contents = fs::read_to_string(&path)
-        .map_err(|error| format!("Impossible de lire l'état de la mise à jour : {error}"))?;
+        .map_err(|error| format!("Failed to read update state: {error}"))?;
     serde_json::from_str(&contents)
         .map(Some)
-        .map_err(|error| format!("L'état de la mise à jour est illisible : {error}"))
+        .map_err(|error| format!("Update state is unreadable: {error}"))
 }
 
 fn read_manifest(app: &AppHandle) -> Result<Option<StagedUpdateManifest>, String> {
@@ -319,17 +319,17 @@ where
 {
     let parent = path
         .parent()
-        .ok_or_else(|| "Le chemin de mise à jour est invalide.".to_string())?;
+        .ok_or_else(|| "Invalid update path.".to_string())?;
     fs::create_dir_all(parent)
-        .map_err(|error| format!("Impossible de créer le cache des mises à jour : {error}"))?;
+        .map_err(|error| format!("Failed to create update cache: {error}"))?;
     let mut temporary = TempFileBuilder::new()
         .prefix(".macro-update-")
         .tempfile_in(parent)
-        .map_err(|error| format!("Impossible de préparer la mise à jour : {error}"))?;
+        .map_err(|error| format!("Failed to prepare update: {error}"))?;
     temporary
         .write_all(bytes)
         .and_then(|_| temporary.as_file().sync_all())
-        .map_err(|error| format!("Impossible d'enregistrer la mise à jour : {error}"))?;
+        .map_err(|error| format!("Failed to save update: {error}"))?;
     persist(temporary, path)?;
     if let Err(error) = sync_parent(parent) {
         // The rename is the commit point: returning an ordinary error here
@@ -349,14 +349,14 @@ fn persist_temporary_file(temporary: NamedTempFile, path: &Path) -> Result<(), S
     temporary
         .persist(path)
         .map(|_| ())
-        .map_err(|error| format!("Impossible de finaliser la mise à jour : {}", error.error))
+        .map_err(|error| format!("Failed to finalize update: {}", error.error))
 }
 
 #[cfg(unix)]
 fn sync_parent_directory(parent: &Path) -> Result<(), String> {
     fs::File::open(parent)
         .and_then(|directory| directory.sync_all())
-        .map_err(|error| format!("Impossible de synchroniser le cache des mises à jour : {error}"))
+        .map_err(|error| format!("Failed to sync update cache: {error}"))
 }
 
 #[cfg(not(unix))]
@@ -366,7 +366,7 @@ fn sync_parent_directory(_parent: &Path) -> Result<(), String> {
 
 fn write_manifest_file(path: &Path, manifest: &StagedUpdateManifest) -> Result<(), String> {
     let bytes = serde_json::to_vec_pretty(manifest)
-        .map_err(|error| format!("Impossible d'enregistrer l'état de la mise à jour : {error}"))?;
+        .map_err(|error| format!("Failed to save update state: {error}"))?;
     atomic_write(path, &bytes)
 }
 
@@ -505,9 +505,7 @@ fn read_update_generation_directory(directory: &Path) -> Result<String, String> 
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
             Ok("initial-generation".to_string())
         }
-        Err(error) => Err(format!(
-            "Impossible de lire la génération des mises à jour : {error}"
-        )),
+        Err(error) => Err(format!("Failed to read update generation: {error}")),
     }
 }
 
@@ -548,19 +546,18 @@ fn read_publication_backup(
         return Ok(None);
     }
     let contents = fs::read_to_string(&path)
-        .map_err(|error| format!("Impossible de lire la transaction de mise à jour : {error}"))?;
+        .map_err(|error| format!("Failed to read update transaction: {error}"))?;
     serde_json::from_str(&contents)
         .map(Some)
-        .map_err(|error| format!("La transaction de mise à jour est illisible : {error}"))
+        .map_err(|error| format!("Update transaction is unreadable: {error}"))
 }
 
 fn write_publication_backup(
     directory: &Path,
     backup: &StagedUpdatePublicationBackup,
 ) -> Result<(), String> {
-    let bytes = serde_json::to_vec_pretty(backup).map_err(|error| {
-        format!("Impossible d'enregistrer la transaction de mise à jour : {error}")
-    })?;
+    let bytes = serde_json::to_vec_pretty(backup)
+        .map_err(|error| format!("Failed to save update transaction: {error}"))?;
     atomic_write(&directory.join(PUBLICATION_BACKUP_FILE), &bytes)
 }
 
@@ -868,11 +865,11 @@ pub fn app_installer_close_respond(accepted: bool) -> Result<(), String> {
         INSTALLER_CLOSE_CANCELLED_FILE
     });
     fs::write(&response, if accepted { "accepted" } else { "cancelled" })
-        .map_err(|error| format!("Impossible de répondre à l'installateur : {error}"))?;
+        .map_err(|error| format!("Failed to reply to installer: {error}"))?;
     let request = installer_marker(INSTALLER_CLOSE_REQUEST_FILE);
     if request.exists() {
         fs::remove_file(request)
-            .map_err(|error| format!("Impossible de terminer la demande de fermeture : {error}"))?;
+            .map_err(|error| format!("Failed to complete shutdown request: {error}"))?;
     }
     Ok(())
 }
@@ -919,7 +916,7 @@ pub fn app_update_exit_after_clean_shutdown(app: AppHandle) -> Result<(), String
     Ok(())
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn app_exit_cleanly(app: AppHandle) -> Result<(), String> {
     let _state_guard = lock_update_state();
     let _file_guard = lock_update_directory(&update_dir(&app)?)?;
@@ -948,7 +945,7 @@ fn consume_matching_clean_shutdown(
     Ok(clean_shutdown_matches(&marker, manifest, current_version))
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn app_update_status(app: AppHandle) -> Result<AppUpdateSnapshot, String> {
     let _state_guard = lock_update_state();
     let _file_guard = lock_update_directory(&update_dir(&app)?)?;
@@ -1074,7 +1071,7 @@ pub async fn app_update_check_and_stage(app: AppHandle) -> Result<AppUpdateSnaps
     })
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn app_update_discard(app: AppHandle) -> Result<(), String> {
     let _state_guard = lock_update_state();
     let _file_guard = lock_update_directory(&update_dir(&app)?)?;
@@ -1180,7 +1177,7 @@ fn load_staged_update_for_activation(
     }
     if manifest.activation_attempts >= MAX_ACTIVATION_ATTEMPTS && !force {
         manifest.phase = StagedUpdatePhase::Failed;
-        manifest.error = Some("L'installation a échoué à deux reprises.".to_string());
+        manifest.error = Some("Installation failed twice.".to_string());
         write_manifest(app, &manifest)?;
         return Ok(None);
     }
@@ -1303,12 +1300,12 @@ fn install_package(
 ) -> Result<(), String> {
     let directory = update_dir(app)?;
     fs::create_dir_all(&directory)
-        .map_err(|error| format!("Impossible de préparer l'installateur : {error}"))?;
+        .map_err(|error| format!("Failed to prepare installer: {error}"))?;
     let installer_path = directory.join(format!("Macro-{}-setup.exe", manifest.version));
 
     if bytes.starts_with(b"PK\x03\x04") {
         let mut archive = zip::ZipArchive::new(Cursor::new(bytes))
-            .map_err(|error| format!("L'archive de mise à jour est illisible : {error}"))?;
+            .map_err(|error| format!("Update archive is unreadable: {error}"))?;
         let mut found = false;
         for index in 0..archive.len() {
             let mut entry = archive.by_index(index).map_err(|error| error.to_string())?;
@@ -1319,20 +1316,20 @@ fn install_package(
                 continue;
             }
             let mut output = fs::File::create(&installer_path)
-                .map_err(|error| format!("Impossible d'extraire l'installateur : {error}"))?;
+                .map_err(|error| format!("Failed to extract installer: {error}"))?;
             std::io::copy(&mut entry, &mut output)
-                .map_err(|error| format!("Impossible d'extraire l'installateur : {error}"))?;
+                .map_err(|error| format!("Failed to extract installer: {error}"))?;
             output.sync_all().map_err(|error| error.to_string())?;
             found = true;
             break;
         }
         if !found {
-            return Err("L'archive ne contient aucun installateur Macro.".to_string());
+            return Err("The archive contains no Macro installer.".to_string());
         }
     } else if bytes.starts_with(b"MZ") {
         atomic_write(&installer_path, bytes)?;
     } else {
-        return Err("Le format du paquet de mise à jour n'est pas pris en charge.".to_string());
+        return Err("Unsupported update package format.".to_string());
     }
 
     let embedded_version = windows_product_version(&installer_path)?;
@@ -1344,7 +1341,7 @@ fn install_package(
     background_command(&installer_path)
         .args(["/S", "/R", "/UPDATE"])
         .spawn()
-        .map_err(|error| format!("Impossible de lancer l'installation silencieuse : {error}"))?;
+        .map_err(|error| format!("Failed to launch silent installation: {error}"))?;
     app.exit(0);
     Ok(())
 }
@@ -1696,8 +1693,7 @@ mod tests {
                                 std::fs::Permissions::from_mode(original_mode),
                             )
                             .unwrap();
-                            let message =
-                                format!("Impossible de finaliser la mise à jour : {}", error.error);
+                            let message = format!("Failed to finalize update: {}", error.error);
                             drop(error);
                             Err(message)
                         }

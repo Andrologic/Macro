@@ -225,14 +225,14 @@ impl ConfigManager {
         if root.as_os_str().is_empty() {
             return Err(ConfigApiError::new(
                 "config.root.empty",
-                "Le dossier de configuration est vide.",
+                "The configuration directory is empty.",
             ));
         }
         fs::create_dir_all(&root).map_err(|error| {
             ConfigApiError::new(
                 "config.root.create_failed",
                 format!(
-                    "Impossible de créer le dossier de configuration {} : {error}",
+                    "Failed to create configuration directory {}: {error}",
                     root.display()
                 ),
             )
@@ -314,7 +314,7 @@ impl ConfigManager {
                 // target document/lock can be reached.
                 if let Err(transition_error) = self.prepare_project_root(project_id, None).await {
                     error.message = format!(
-                        "{} Révocation incomplète : {}",
+                        "{} Revocation incomplete: {}",
                         error.message, transition_error.message
                     );
                     error.diagnostics.extend(transition_error.diagnostics);
@@ -512,8 +512,10 @@ impl ConfigManager {
             .unresolved_project_repositories
             .contains(project_id)
         {
-            return Err(ConfigApiError::new("config.project.resolution_pending",
-                "La destination metadata du projet est indisponible. Réessayez la réconciliation du registre."));
+            return Err(ConfigApiError::new(
+                "config.project.resolution_pending",
+                "The project metadata destination is unavailable. Retry registry reconciliation.",
+            ));
         }
         if self
             .state
@@ -525,7 +527,9 @@ impl ConfigManager {
         {
             return Err(ConfigApiError::new(
                 "config.project.transition_incomplete",
-                format!("La transition de configuration du projet {project_id} doit être terminée avant utilisation."),
+                format!(
+                    "The configuration transition for project {project_id} must finish before use."
+                ),
             ));
         }
         Ok(())
@@ -860,12 +864,12 @@ impl ConfigManager {
                 let resumed = self.resume_project_transition(&project_id).await?;
                 if self.state.read().await.unresolved_project_repositories.contains(&project_id) {
                     return Err(ConfigApiError::new("config.project.resolution_pending",
-                        "La destination metadata du projet est indisponible. Réessayez la réconciliation du registre."));
+                        "The project metadata destination is unavailable. Retry registry reconciliation."));
                 }
                 let repository = self.state.read().await.project_repository_roots.get(&project_id).cloned();
                 if repository.is_some_and(|path| !path.is_dir()) {
                     self.prepare_project_root(&project_id, None).await?;
-                    return Err(ConfigApiError::new("config.project.repository_missing", "Le dépôt du projet est indisponible."));
+                    return Err(ConfigApiError::new("config.project.repository_missing", "The project repository is unavailable."));
                 }
                 let (root, previous_identity, needs_retry) = {
                     let state = self.state.read().await;
@@ -915,7 +919,7 @@ impl ConfigManager {
                         return Err(ConfigApiError::new(
                             "config.project.root_missing",
                             format!(
-                                "La racine de configuration du projet {project_id} est absente."
+                                "The configuration root for project {project_id} is missing."
                             ),
                         ));
                     }
@@ -982,14 +986,17 @@ impl ConfigManager {
         let root = state.project_roots.get(project_id).ok_or_else(|| {
             ConfigApiError::new(
                 "config.project.not_registered",
-                "La racine metadata du projet n’a pas encore été enregistrée.",
+                "The project metadata root has not been registered yet.",
             )
         })?;
         let canonical = root.canonicalize().map_err(|error| {
             ConfigApiError::new("config.project.root_missing", error.to_string())
         })?;
         if &canonical != root {
-            return Err(ConfigApiError::new("config.project.root_changed", "La racine de configuration a changé. Son rechargement est nécessaire avant utilisation."));
+            return Err(ConfigApiError::new(
+                "config.project.root_changed",
+                "The configuration root has changed. Reload it before use.",
+            ));
         }
         let identity = DirectoryIdentity::read(root)
             .map_err(|message| ConfigApiError::new("config.project.root_missing", message))?;
@@ -999,7 +1006,10 @@ impl ConfigManager {
             .and_then(Option::as_ref)
             != Some(&identity)
         {
-            return Err(ConfigApiError::new("config.project.root_changed", "La racine de configuration a changé. Son rechargement est nécessaire avant utilisation."));
+            return Err(ConfigApiError::new(
+                "config.project.root_changed",
+                "The configuration root has changed. Reload it before use.",
+            ));
         }
         Ok(Some(PendingRootBinding {
             path: root.clone(),
@@ -1052,7 +1062,7 @@ impl ConfigManager {
             atomic_write_json(&path, &sparse_document(kind)).map_err(|error| {
                 ConfigApiError::new(
                     "config.document.create_failed",
-                    format!("Impossible de créer {} : {error}", path.display()),
+                    format!("Failed to create {}: {error}", path.display()),
                 )
             })?;
         }
@@ -1096,7 +1106,7 @@ impl ConfigManager {
         let raw = fs::read(&path).map_err(|error| {
             ConfigApiError::new(
                 "config.document.read_failed",
-                format!("Impossible de lire {} : {error}", path.display()),
+                format!("Failed to read {}: {error}", path.display()),
             )
         })?;
         let (value, parse_diagnostic) = match serde_json::from_slice::<Value>(&raw) {
@@ -1123,7 +1133,7 @@ impl ConfigManager {
             tracing::warn!(
                 document = ?kind,
                 path = %path.display(),
-                "Configuration initiale invalide, conservation des valeurs par défaut"
+                "Invalid initial configuration; retaining defaults"
             );
         }
 
@@ -1151,7 +1161,7 @@ impl ConfigManager {
                     write_runtime_json(&approved_path, &baseline, &key.scope).map_err(|error| {
                         ConfigApiError::new(
                             "config.approved.recovery_failed",
-                            format!("Impossible de recréer la copie approuvée : {error}"),
+                            format!("Failed to recreate approved copy: {error}"),
                         )
                     })?;
                     runtime_diagnostics.push(ConfigDiagnostic {
@@ -1159,7 +1169,7 @@ impl ConfigManager {
                         scope: key.scope.clone(),
                         path: None,
                         code: "config.approved.recovered".to_string(),
-                        message: "La copie approuvée interne était corrompue. Macro l’a remplacée par une baseline sûre et a conservé une sauvegarde de diagnostic.".to_string(),
+                        message: "The internal approved copy was corrupt. Macro replaced it with a safe baseline and retained a diagnostic backup.".to_string(),
                         severity: "warning".to_string(),
                     });
                     baseline
@@ -1170,7 +1180,7 @@ impl ConfigManager {
             write_runtime_json(&approved_path, &baseline, &key.scope).map_err(|error| {
                 ConfigApiError::new(
                     "config.approved.create_failed",
-                    format!("Impossible de créer la copie approuvée : {error}"),
+                    format!("Failed to create approved copy: {error}"),
                 )
             })?;
             baseline
@@ -1186,7 +1196,7 @@ impl ConfigManager {
                     scope: key.scope.clone(),
                     path: None,
                     code: "config.pending.recovered".to_string(),
-                    message: "La demande sensible interne était corrompue. Macro l’a isolée et a recalculé la proposition depuis le document JSON.".to_string(),
+                    message: "The internal sensitive change request was corrupt. Macro quarantined it and recalculated the proposal from the JSON document.".to_string(),
                     severity: "warning".to_string(),
                 });
                 None
@@ -1226,7 +1236,7 @@ impl ConfigManager {
                     write_runtime_json(&approved_path, &value, &key.scope).map_err(|error| {
                         ConfigApiError::new(
                             "config.approved.write_failed",
-                            format!("Impossible de promouvoir la configuration : {error}"),
+                            format!("Failed to promote configuration: {error}"),
                         )
                     })?;
                     approved = value.clone();
@@ -1289,7 +1299,7 @@ impl ConfigManager {
         fs::create_dir_all(&schema_root).map_err(|error| {
             ConfigApiError::new(
                 "config.schema.create_failed",
-                format!("Impossible de créer le dossier des schémas : {error}"),
+                format!("Failed to create schema directory: {error}"),
             )
         })?;
         for (kind, schema) in schema_map() {
@@ -1297,7 +1307,7 @@ impl ConfigManager {
                 |error| {
                     ConfigApiError::new(
                         "config.schema.write_failed",
-                        format!("Impossible d’écrire le schéma {:?} : {error}", kind),
+                        format!("Failed to write schema {:?}: {error}", kind),
                     )
                 },
             )?;
@@ -1329,7 +1339,7 @@ impl ConfigManager {
         if !kind.supports_project_scope() {
             return Err(ConfigApiError::new(
                 "config.scope.forbidden",
-                "Ce document ne peut pas être surchargé au niveau projet.",
+                "This document cannot be overridden at project scope.",
             ));
         }
         let key = DocumentKey {
@@ -1352,7 +1362,7 @@ impl ConfigManager {
             .ok_or_else(|| {
                 ConfigApiError::new(
                     "config.project.not_registered",
-                    "La racine metadata du projet n’a pas encore été enregistrée.",
+                    "The project metadata root has not been registered yet.",
                 )
             })?;
         let path = project_root.join(kind.file_name());
@@ -1363,7 +1373,7 @@ impl ConfigManager {
                 atomic_write_json_locked(&path, &sparse_document(kind)).map_err(|error| {
                     ConfigApiError::new(
                         "config.document.create_failed",
-                        format!("Impossible de créer {} : {error}", path.display()),
+                        format!("Failed to create {}: {error}", path.display()),
                     )
                 })?;
             }
@@ -1401,7 +1411,7 @@ impl ConfigManager {
                     ConfigApiError::new(
                         "config.project.not_registered",
                         format!(
-                            "La configuration du projet {project_id} n’a pas été enregistrée ou chargée."
+                            "The configuration for project {project_id} has not been registered or loaded."
                         ),
                     )
                 })?;
@@ -1454,7 +1464,7 @@ impl ConfigManager {
         let stored = state.documents.get(&key).ok_or_else(|| {
             ConfigApiError::new(
                 "config.document.not_found",
-                "Le document de configuration demandé est introuvable.",
+                "The requested configuration document was not found.",
             )
         })?;
         Ok(document_with_diagnostics(&state, &key, stored))
@@ -1592,7 +1602,7 @@ impl ConfigManager {
         schema_map().remove(&kind).ok_or_else(|| {
             ConfigApiError::new(
                 "config.schema.not_found",
-                "Le schéma demandé est introuvable.",
+                "The requested schema was not found.",
             )
         })
     }
@@ -1639,7 +1649,7 @@ impl ConfigManager {
             let stored = state.documents.get(&key).cloned().ok_or_else(|| {
                 ConfigApiError::new(
                     "config.document.not_found",
-                    "Le document de configuration demandé est introuvable.",
+                    "The requested configuration document was not found.",
                 )
             })?;
             if state.pending_changes.values().any(|pending| {
@@ -1647,7 +1657,7 @@ impl ConfigManager {
             }) {
                 return Err(ConfigApiError::new(
                     "config.pending.unresolved",
-                    "Une modification sensible de ce document attend une décision. Acceptez-la ou rejetez-la avant une nouvelle écriture.",
+                    "A sensitive change to this document is awaiting a decision. Accept or reject it before writing again.",
                 )
                 .with_document(to_document(&key, &stored)));
             }
@@ -1680,14 +1690,14 @@ impl ConfigManager {
             let current = state.documents.get(&key).expect("loaded document");
             return Err(ConfigApiError::new(
                 "config.pending.unresolved",
-                "Une modification sensible de ce document attend une décision. Acceptez-la ou rejetez-la avant une nouvelle écriture.",
+                "A sensitive change to this document is awaiting a decision. Accept or reject it before writing again.",
             )
             .with_document(to_document(&key, current)));
         }
         let current_raw = fs::read(&stored.path).map_err(|error| {
             ConfigApiError::new(
                 "config.document.read_failed",
-                format!("Impossible de relire {} : {error}", stored.path.display()),
+                format!("Failed to reread {}: {error}", stored.path.display()),
             )
         })?;
         let is_explicit_ui_replacement = request.source == ConfigChangeSource::UserInterface
@@ -1705,14 +1715,14 @@ impl ConfigManager {
             Err(error) => {
                 return Err(ConfigApiError::new(
                     "config.document.invalid_on_disk",
-                    format!("Le document sur disque est invalide : {error}"),
+                    format!("The document on disk is invalid: {error}"),
                 ))
             }
         };
         if stored.invalid && !is_explicit_ui_replacement {
             return Err(ConfigApiError::new(
                 "config.document.invalid_on_disk",
-                "Le document sur disque est invalide. Corrigez-le ou rechargez-le avant toute écriture.",
+                "The document on disk is invalid. Fix or reload it before writing.",
             )
             .with_document(to_document(&key, &stored))
             .with_diagnostics(stored.diagnostics));
@@ -1720,7 +1730,7 @@ impl ConfigManager {
         if stored.read_only {
             return Err(ConfigApiError::new(
                 "config.document.future_version",
-                "Ce document utilise une version de schéma plus récente et reste en lecture seule.",
+                "This document uses a newer schema version and remains read-only.",
             )
             .with_document(to_document(&key, &stored)));
         }
@@ -1730,7 +1740,7 @@ impl ConfigManager {
             conflict.etag = current_disk_etag;
             return Err(ConfigApiError::new(
                 "config.etag.conflict",
-                "Le document a été modifié depuis sa lecture. Rechargez-le avant de réessayer.",
+                "The document has changed since it was read. Reload it before retrying.",
             )
             .with_document(to_document(&key, &conflict)));
         }
@@ -1738,20 +1748,20 @@ impl ConfigManager {
         let patch_value = serde_json::to_value(&request.patch).map_err(|error| {
             ConfigApiError::new(
                 "config.patch.serialize_failed",
-                format!("Le patch JSON n’est pas sérialisable : {error}"),
+                format!("The JSON patch cannot be serialized: {error}"),
             )
         })?;
         let patch: Patch = serde_json::from_value(patch_value).map_err(|error| {
             ConfigApiError::new(
                 "config.patch.invalid",
-                format!("Le patch JSON RFC 6902 est invalide : {error}"),
+                format!("Invalid RFC 6902 JSON patch: {error}"),
             )
         })?;
         let mut proposed = current_disk;
         json_patch::patch(&mut proposed, &patch).map_err(|error| {
             ConfigApiError::new(
                 "config.patch.apply_failed",
-                format!("Impossible d’appliquer le patch JSON : {error}"),
+                format!("Failed to apply JSON patch: {error}"),
             )
         })?;
 
@@ -1761,7 +1771,7 @@ impl ConfigManager {
         if !validation.valid {
             return Err(ConfigApiError::new(
                 "config.document.validation_failed",
-                "Le document proposé ne respecte pas le contrat de configuration.",
+                "The proposed document does not satisfy the configuration contract.",
             )
             .with_diagnostics(validation.diagnostics));
         }
@@ -1823,7 +1833,7 @@ impl ConfigManager {
                         ConfigApiError::new(
                             "config.document.write_failed_with_publication_rollback_failed",
                             format!(
-                                "Impossible d’écrire {} : {error}. La publication préparée n’a pas pu être compensée : {}",
+                                "Failed to write {}: {error}. Rolling back the prepared publication also failed: {}",
                                 stored.path.display(), cleanup_error.message
                             ),
                         )
@@ -1834,7 +1844,7 @@ impl ConfigManager {
                     ConfigApiError::new(
                         "config.document.write_failed_with_pending_cleanup_failed",
                         format!(
-                            "Impossible d’écrire {} : {error}. La demande sensible préparée n’a pas pu être retirée : {}",
+                            "Failed to write {}: {error}. Removing the prepared sensitive change request also failed: {}",
                             stored.path.display(), cleanup_error.message
                         ),
                     )
@@ -1842,7 +1852,7 @@ impl ConfigManager {
             }
             return Err(ConfigApiError::new(
                 "config.document.write_failed",
-                format!("Impossible d’écrire {} : {error}", stored.path.display()),
+                format!("Failed to write {}: {error}", stored.path.display()),
             ));
         }
         if let Some(publication) = &durable_publication {
@@ -1850,7 +1860,7 @@ impl ConfigManager {
                 .map_err(|error| {
                     ConfigApiError::new(
                         "config.approved.write_failed",
-                        format!("Impossible de promouvoir la configuration : {error}"),
+                        format!("Failed to promote configuration: {error}"),
                     )
                 })
                 .and_then(|()| remove_file_if_exists(&pending_path))
@@ -1861,7 +1871,7 @@ impl ConfigManager {
                         ConfigApiError::new(
                             "config.publication.failed_with_rollback_failed",
                             format!(
-                                "{} La compensation durable a aussi échoué : {}",
+                                "{} Durable rollback also failed: {}",
                                 error.message, rollback_error.message
                             ),
                         )
@@ -1878,7 +1888,7 @@ impl ConfigManager {
             let stored = state.documents.get_mut(&key).ok_or_else(|| {
                 ConfigApiError::new(
                     "config.document.not_found",
-                    "Le document de configuration a disparu pendant l’écriture.",
+                    "The configuration document disappeared during the write.",
                 )
             })?;
             stored.disk_value = proposed.clone();
@@ -1986,7 +1996,7 @@ impl ConfigManager {
             .ok_or_else(|| {
                 ConfigApiError::new(
                     "config.document.not_found",
-                    "Le document de configuration demandé est introuvable.",
+                    "The requested configuration document was not found.",
                 )
             })?;
         let _file_guard = lock_document_file_async(current.path.clone()).await?;
@@ -2006,7 +2016,7 @@ impl ConfigManager {
         let raw = fs::read(&current.path).map_err(|error| {
             ConfigApiError::new(
                 "config.document.read_failed",
-                format!("Impossible de lire {} : {error}", current.path.display()),
+                format!("Failed to read {}: {error}", current.path.display()),
             )
         })?;
         let parsed = serde_json::from_slice::<Value>(&raw);
@@ -2193,7 +2203,7 @@ impl ConfigManager {
             write_runtime_json(&approved_path, &proposed, &key.scope).map_err(|error| {
                 ConfigApiError::new(
                     "config.approved.write_failed",
-                    format!("Impossible de promouvoir la configuration : {error}"),
+                    format!("Failed to promote configuration: {error}"),
                 )
             })?;
             remove_file_if_exists(&pending_path)?;
@@ -2272,7 +2282,7 @@ impl ConfigManager {
             .ok_or_else(|| {
                 ConfigApiError::new(
                     "config.pending.not_found",
-                    "La modification sensible en attente est introuvable.",
+                    "The pending sensitive change was not found.",
                 )
             })?;
         let key = DocumentKey {
@@ -2296,7 +2306,7 @@ impl ConfigManager {
             .ok_or_else(|| {
                 ConfigApiError::new(
                     "config.document.not_found",
-                    "Le document associé à la modification est introuvable.",
+                    "The document associated with this change was not found.",
                 )
             })?;
         let _file_guard = lock_document_file_async(stored.path.clone()).await?;
@@ -2314,7 +2324,7 @@ impl ConfigManager {
             .ok_or_else(|| {
                 ConfigApiError::new(
                     "config.pending.conflict",
-                    "La modification sensible persistée a changé depuis sa lecture.",
+                    "The persisted sensitive change has changed since it was read.",
                 )
             })?;
         let canonical = read_json_value(&stored.path)?;
@@ -2324,7 +2334,7 @@ impl ConfigManager {
         {
             return Err(ConfigApiError::new(
                 "config.etag.conflict",
-                "Le fichier a changé depuis la demande d’approbation.",
+                "The file has changed since approval was requested.",
             )
             .with_document(to_document(&key, &stored)));
         }
@@ -2333,7 +2343,7 @@ impl ConfigManager {
         if !approved_matches_proposal && etag(&approved) != durable.approved_etag {
             return Err(ConfigApiError::new(
                 "config.pending.baseline_conflict",
-                "La copie approuvée a changé depuis la demande d’approbation.",
+                "The approved copy has changed since approval was requested.",
             ));
         }
         if !approved_matches_proposal {
@@ -2346,7 +2356,7 @@ impl ConfigManager {
             .map_err(|error| {
                 ConfigApiError::new(
                     "config.approved.write_failed",
-                    format!("Impossible de promouvoir la configuration approuvée : {error}"),
+                    format!("Failed to promote approved configuration: {error}"),
                 )
             })?;
         }
@@ -2357,7 +2367,7 @@ impl ConfigManager {
         let stored = state.documents.get_mut(&key).ok_or_else(|| {
             ConfigApiError::new(
                 "config.document.not_found",
-                "Le document associé à la modification est introuvable.",
+                "The document associated with this change was not found.",
             )
         })?;
         stored.disk_value = canonical;
@@ -2384,7 +2394,7 @@ impl ConfigManager {
         if !restore_approved {
             return Err(ConfigApiError::new(
                 "config.pending.restore_required",
-                "Le refus doit confirmer explicitement la restauration de la dernière version approuvée.",
+                "Rejection must explicitly confirm restoring the last approved version.",
             ));
         }
         let _reference_guard = self.lock_mcp_configuration_mutation().await;
@@ -2398,7 +2408,7 @@ impl ConfigManager {
             .ok_or_else(|| {
                 ConfigApiError::new(
                     "config.pending.not_found",
-                    "La modification sensible en attente est introuvable.",
+                    "The pending sensitive change was not found.",
                 )
             })?;
         let key = DocumentKey {
@@ -2422,7 +2432,7 @@ impl ConfigManager {
             .ok_or_else(|| {
                 ConfigApiError::new(
                     "config.document.not_found",
-                    "Le document associé à la modification est introuvable.",
+                    "The document associated with this change was not found.",
                 )
             })?;
         let _file_guard = lock_document_file_async(stored.path.clone()).await?;
@@ -2440,19 +2450,19 @@ impl ConfigManager {
             .ok_or_else(|| {
                 ConfigApiError::new(
                     "config.pending.conflict",
-                    "La modification sensible persistée a changé depuis sa lecture.",
+                    "The persisted sensitive change has changed since it was read.",
                 )
             })?;
         if etag(&approved) != durable.approved_etag {
             return Err(ConfigApiError::new(
                 "config.pending.baseline_conflict",
-                "La copie approuvée a changé depuis la demande d’approbation.",
+                "The approved copy has changed since approval was requested.",
             ));
         }
         atomic_write_json_locked(&stored.path, &approved).map_err(|error| {
             ConfigApiError::new(
                 "config.document.restore_failed",
-                format!("Impossible de restaurer la version approuvée : {error}"),
+                format!("Failed to restore approved version: {error}"),
             )
         })?;
         remove_file_if_exists(&pending_document_path(self.root(), &key))?;
@@ -2461,7 +2471,7 @@ impl ConfigManager {
         let stored = state.documents.get_mut(&key).ok_or_else(|| {
             ConfigApiError::new(
                 "config.document.not_found",
-                "Le document associé à la modification est introuvable.",
+                "The document associated with this change was not found.",
             )
         })?;
         stored.disk_value = approved.clone();
@@ -2568,7 +2578,7 @@ impl ConfigManager {
             .ok_or_else(|| {
                 ConfigApiError::new(
                     "config.document.not_found",
-                    "Le document de configuration demandé est introuvable.",
+                    "The requested configuration document was not found.",
                 )
             })
     }
@@ -2639,7 +2649,7 @@ fn resolve_project_config_root(root: &Path) -> Result<PendingRootBinding, Config
         fs::create_dir_all(&root).map_err(|error| {
             ConfigApiError::new(
                 "config.project.create_failed",
-                format!("Impossible de créer le dossier de configuration du projet : {error}"),
+                format!("Failed to create project configuration directory: {error}"),
             )
         })?;
     }
@@ -2689,7 +2699,7 @@ fn runtime_file_exists(path: &Path) -> Result<bool, ConfigApiError> {
     path.try_exists().map_err(|error| {
         ConfigApiError::new(
             "config.runtime.read_failed",
-            format!("Impossible de vérifier {} : {error}", path.display()),
+            format!("Failed to check {}: {error}", path.display()),
         )
     })
 }
@@ -2707,13 +2717,13 @@ fn read_project_transition(
     if value.get("target").is_none() {
         return Err(ConfigApiError::new(
             "config.project.transition.invalid",
-            "La cible de transition est absente.",
+            "The transition target is missing.",
         ));
     }
     let intent: DurableProjectRootTransition = serde_json::from_value(value).map_err(|error| {
         ConfigApiError::new(
             "config.project.transition.invalid",
-            format!("L’intention de transition est invalide : {error}"),
+            format!("Invalid transition intent: {error}"),
         )
     })?;
     if intent.project_id != project_id
@@ -2725,7 +2735,7 @@ fn read_project_transition(
     {
         return Err(ConfigApiError::new(
             "config.project.transition.invalid",
-            "L’intention ne correspond pas au projet ou à une racine absolue.",
+            "The intent does not match the project or an absolute root.",
         ));
     }
     Ok(Some(intent))
@@ -2741,7 +2751,7 @@ fn write_project_transition(
     if path.with_extension("fail-write").exists() {
         return Err(ConfigApiError::new(
             "config.project.transition.write_failed",
-            "Échec injecté pendant l’écriture de l’intention projet.",
+            "Injected failure while writing project intent.",
         ));
     }
     let value = serde_json::to_value(intent).map_err(|error| {
@@ -2778,7 +2788,7 @@ fn acknowledge_project_transition(
     {
         return Err(ConfigApiError::new(
             "config.pending.invalid",
-            "La proposition à renouveler est invalide. Elle est conservée pour diagnostic.",
+            "The proposal to renew is invalid. It has been retained for diagnostics.",
         )
         .with_diagnostics(validation.diagnostics));
     }
@@ -2786,7 +2796,7 @@ fn acknowledge_project_transition(
         if pending.project_root != intent.target {
             return Err(ConfigApiError::new(
                 "config.project.transition.ack_conflict",
-                "L’acquittement ne correspond pas à la cible de transition.",
+                "The acknowledgement does not match the transition target.",
             ));
         }
         // A previous rename may have succeeded before its directory fsync failed.
@@ -2835,13 +2845,13 @@ fn read_json_value(path: &Path) -> Result<Value, ConfigApiError> {
     let bytes = fs::read(path).map_err(|error| {
         ConfigApiError::new(
             "config.runtime.read_failed",
-            format!("Impossible de lire {} : {error}", path.display()),
+            format!("Failed to read {}: {error}", path.display()),
         )
     })?;
     serde_json::from_slice(&bytes).map_err(|error| {
         ConfigApiError::new(
             "config.runtime.invalid_json",
-            format!("Le fichier privé {} est invalide : {error}", path.display()),
+            format!("Invalid private file {}: {error}", path.display()),
         )
     })
 }
@@ -2856,7 +2866,7 @@ fn read_durable_pending(
     serde_json::from_value(value).map(Some).map_err(|error| {
         ConfigApiError::new(
             "config.pending.invalid",
-            format!("La demande sensible durable est invalide : {error}"),
+            format!("Invalid durable sensitive change request: {error}"),
         )
     })
 }
@@ -2869,14 +2879,14 @@ fn read_runtime_state(
     let approved = read_json_value(&approved_document_path(root, key)).map_err(|_| {
         ConfigApiError::new(
             "config.approved.invalid",
-            "La copie approuvée est absente ou invalide. L’écriture est bloquée par sécurité.",
+            "The approved copy is missing or invalid. Writing is blocked for safety.",
         )
     })?;
     let validation = validate_document(key.kind, &key.scope, &approved);
     if !validation.valid || validation.read_only {
         return Err(ConfigApiError::new(
             "config.approved.invalid",
-            "La copie approuvée ne respecte pas le schéma courant. L’écriture est bloquée par sécurité.",
+            "The approved copy does not satisfy the current schema. Writing is blocked for safety.",
         )
         .with_diagnostics(validation.diagnostics));
     }
@@ -2897,7 +2907,7 @@ fn require_pending_document(
     }) {
         return Err(ConfigApiError::new(
             "config.pending.invalid",
-            "La modification sensible persistée ne correspond pas au document verrouillé.",
+            "The persisted sensitive change does not match the locked document.",
         ));
     }
     Ok(())
@@ -2907,7 +2917,7 @@ fn pending_value(pending: &DurablePendingSensitiveChange) -> Result<Value, Confi
     serde_json::to_value(pending).map_err(|error| {
         ConfigApiError::new(
             "config.pending.serialize_failed",
-            format!("Impossible de sérialiser la demande sensible : {error}"),
+            format!("Failed to serialize sensitive change request: {error}"),
         )
     })
 }
@@ -2919,7 +2929,7 @@ fn require_pending_root_binding(
     if pending.is_some_and(|pending| pending.project_root.as_ref() != project_root) {
         return Err(ConfigApiError::new(
             "config.project.transition_required",
-            "La liaison de la proposition nécessite une transition du projet avant utilisation.",
+            "The proposal binding requires a project transition before use.",
         ));
     }
     Ok(())
@@ -2933,14 +2943,14 @@ fn write_durable_pending(
     if path.with_extension("fail-write").exists() {
         return Err(ConfigApiError::new(
             "config.pending.write_failed",
-            "Échec injecté pendant l’écriture de la demande sensible.",
+            "Injected failure while writing sensitive change request.",
         ));
     }
     let value = pending_value(pending)?;
     write_runtime_json(path, &value, &pending.pending.scope).map_err(|error| {
         ConfigApiError::new(
             "config.pending.write_failed",
-            format!("Impossible de conserver la demande sensible : {error}"),
+            format!("Failed to persist sensitive change request: {error}"),
         )
     })
 }
@@ -2955,7 +2965,7 @@ fn read_durable_config_publication(
     serde_json::from_value(value).map(Some).map_err(|error| {
         ConfigApiError::new(
             "config.publication.invalid",
-            format!("Le journal de publication est invalide : {error}"),
+            format!("Invalid publication journal: {error}"),
         )
     })
 }
@@ -2967,13 +2977,13 @@ fn write_durable_config_publication(
     let value = serde_json::to_value(publication).map_err(|error| {
         ConfigApiError::new(
             "config.publication.serialize_failed",
-            format!("Impossible de sérialiser le journal de publication : {error}"),
+            format!("Failed to serialize publication journal: {error}"),
         )
     })?;
     write_runtime_json(path, &value, &publication.scope).map_err(|error| {
         ConfigApiError::new(
             "config.publication.write_failed",
-            format!("Impossible de préparer la publication de configuration : {error}"),
+            format!("Failed to prepare configuration publication: {error}"),
         )
     })
 }
@@ -2990,14 +3000,14 @@ fn rollback_config_publication(
     {
         return Err(ConfigApiError::new(
             "config.publication.invalid",
-            "Le journal de publication ne correspond pas au document verrouillé.",
+            "The publication journal does not match the locked document.",
         ));
     }
     let validation = validate_document(key.kind, &key.scope, &publication.previous_document);
     if !validation.valid || validation.read_only {
         return Err(ConfigApiError::new(
             "config.publication.invalid",
-            "La version de restauration du journal n’est pas valide.",
+            "Invalid journal rollback version.",
         )
         .with_diagnostics(validation.diagnostics));
     }
@@ -3007,7 +3017,7 @@ fn rollback_config_publication(
     if current_etag != publication.previous_etag && current_etag != publication.proposed_etag {
         return Err(ConfigApiError::new(
             "config.publication.conflict",
-            "Le document canonique a changé depuis la publication interrompue. Macro conserve cette version et le journal pour une récupération explicite.",
+            "The canonical document has changed since the interrupted publication. Macro retains this version and the journal for explicit recovery.",
         ));
     }
 
@@ -3016,7 +3026,7 @@ fn rollback_config_publication(
     if approved_etag != publication.previous_etag && approved_etag != publication.proposed_etag {
         return Err(ConfigApiError::new(
             "config.publication.conflict",
-            "La copie approuvée a changé depuis la publication interrompue. Macro conserve cette version et le journal pour une récupération explicite.",
+            "The approved copy has changed since the interrupted publication. Macro retains this version and the journal for explicit recovery.",
         ));
     }
 
@@ -3024,7 +3034,7 @@ fn rollback_config_publication(
     if canonical_path.with_extension("fail-rollback").exists() {
         return Err(ConfigApiError::new(
             "config.publication.rollback_failed",
-            "Échec injecté pendant la compensation de publication.",
+            "Injected failure during publication rollback.",
         ));
     }
     if current_etag != publication.previous_etag {
@@ -3032,7 +3042,7 @@ fn rollback_config_publication(
             |error| {
                 ConfigApiError::new(
                     "config.publication.rollback_failed",
-                    format!("Impossible de restaurer le document canonique : {error}"),
+                    format!("Failed to restore canonical document: {error}"),
                 )
             },
         )?;
@@ -3044,7 +3054,7 @@ fn rollback_config_publication(
     {
         return Err(ConfigApiError::new(
             "config.publication.rollback_failed",
-            "Interruption injectée après la restauration du document canonique.",
+            "Injected interruption after restoring the canonical document.",
         ));
     }
     // Both files must be restored before deleting the recovery journal, even
@@ -3054,7 +3064,7 @@ fn rollback_config_publication(
             |error| {
                 ConfigApiError::new(
                     "config.publication.rollback_failed",
-                    format!("Impossible de restaurer la copie approuvée : {error}"),
+                    format!("Failed to restore approved copy: {error}"),
                 )
             },
         )?;
@@ -3078,7 +3088,7 @@ fn write_approved_document(path: &Path, value: &Value, scope: &ConfigScope) -> R
     #[cfg(test)]
     if path.with_extension("fail-write-once").exists() {
         let _ = fs::remove_file(path.with_extension("fail-write-once"));
-        return Err("Échec injecté pendant l’écriture de la copie approuvée.".to_string());
+        return Err("Injected failure while writing approved copy.".to_string());
     }
     write_runtime_json(path, value, scope)
 }
@@ -3088,7 +3098,7 @@ fn remove_file_if_exists(path: &Path) -> Result<(), ConfigApiError> {
     if path.with_extension("fail-remove").exists() {
         return Err(ConfigApiError::new(
             "config.runtime.remove_failed",
-            "Échec injecté pendant la suppression du journal runtime.",
+            "Injected failure while removing runtime journal.",
         ));
     }
     match fs::remove_file(path) {
@@ -3096,7 +3106,7 @@ fn remove_file_if_exists(path: &Path) -> Result<(), ConfigApiError> {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
         Err(error) => Err(ConfigApiError::new(
             "config.runtime.remove_failed",
-            format!("Impossible de supprimer {} : {error}", path.display()),
+            format!("Failed to remove {}: {error}", path.display()),
         )),
     }
 }
@@ -3104,14 +3114,19 @@ fn remove_file_if_exists(path: &Path) -> Result<(), ConfigApiError> {
 // The approved file is the commit point. Cleanup failure cannot undo consent
 // already persisted; retain the pending file for cleanup during the next load.
 fn cleanup_committed_pending(path: &Path, key: &DocumentKey) -> Option<ConfigDiagnostic> {
-    remove_file_if_exists(path).err().map(|error| ConfigDiagnostic {
-        document: key.kind,
-        scope: key.scope.clone(),
-        path: None,
-        code: "config.pending.cleanup_deferred".to_string(),
-        message: format!("La configuration est enregistrée. Le nettoyage sera repris au prochain chargement : {}", error.message),
-        severity: "warning".to_string(),
-    })
+    remove_file_if_exists(path)
+        .err()
+        .map(|error| ConfigDiagnostic {
+            document: key.kind,
+            scope: key.scope.clone(),
+            path: None,
+            code: "config.pending.cleanup_deferred".to_string(),
+            message: format!(
+                "Configuration is saved. Cleanup will resume on the next load: {}",
+                error.message
+            ),
+            severity: "warning".to_string(),
+        })
 }
 
 fn backup_corrupt_runtime_file(path: &Path) {
@@ -3130,7 +3145,7 @@ fn backup_corrupt_runtime_file(path: &Path) {
             path = %path.display(),
             backup = %backup_path.display(),
             %error,
-            "Impossible de sauvegarder le fichier runtime corrompu"
+            "Failed to back up corrupt runtime file"
         );
     }
 }
@@ -3139,13 +3154,13 @@ fn lock_document_file(path: &Path) -> Result<DocumentFileLock, ConfigApiError> {
     let parent = path.parent().ok_or_else(|| {
         ConfigApiError::new(
             "config.document.invalid_path",
-            "Le document n’a pas de dossier parent.",
+            "The document has no parent directory.",
         )
     })?;
     fs::create_dir_all(parent).map_err(|error| {
         ConfigApiError::new(
             "config.document.lock_failed",
-            format!("Impossible de préparer le verrou : {error}"),
+            format!("Failed to prepare lock: {error}"),
         )
     })?;
     let lock_path = path.with_extension(format!(
@@ -3162,16 +3177,13 @@ fn lock_document_file(path: &Path) -> Result<DocumentFileLock, ConfigApiError> {
         .map_err(|error| {
             ConfigApiError::new(
                 "config.document.lock_failed",
-                format!(
-                    "Impossible d’ouvrir le verrou {} : {error}",
-                    lock_path.display()
-                ),
+                format!("Failed to open lock {}: {error}", lock_path.display()),
             )
         })?;
     file.lock_exclusive().map_err(|error| {
         ConfigApiError::new(
             "config.document.lock_failed",
-            format!("Impossible de verrouiller {} : {error}", path.display()),
+            format!("Failed to lock {}: {error}", path.display()),
         )
     })?;
     Ok(DocumentFileLock { file })
@@ -3220,7 +3232,7 @@ async fn lock_document_file_async(path: PathBuf) -> Result<DocumentFileLock, Con
         .map_err(|error| {
             ConfigApiError::new(
                 "config.document.lock_failed",
-                format!("La tâche de verrouillage a échoué : {error}"),
+                format!("The locking task failed: {error}"),
             )
         })?
 }
@@ -3309,7 +3321,7 @@ pub(crate) fn atomic_write_json(path: &Path, value: &Value) -> Result<(), String
 fn atomic_write_json_locked(path: &Path, value: &Value) -> Result<(), String> {
     let parent = path
         .parent()
-        .ok_or_else(|| "Le chemin cible n’a pas de dossier parent.".to_string())?;
+        .ok_or_else(|| "The target path has no parent directory.".to_string())?;
     fs::create_dir_all(parent).map_err(|error| error.to_string())?;
 
     let temp_path = parent.join(format!(

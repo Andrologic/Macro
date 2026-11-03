@@ -1,3 +1,4 @@
+import i18n from 'i18next';
 import { ContributionRegistry, type Contribution } from '../domains/shell/contributionRegistry';
 import { shortcutDefinitions, shortcutDefinitionsById, type ShortcutDefinition, type ShortcutId } from './catalog';
 import type { PromptHistoryNavigationMode } from '../stores/useShortcutsStore';
@@ -138,7 +139,7 @@ const builtinShortcutRuntimeDefinitions: Record<ShortcutId, ShortcutRuntimeDefin
     constraints: { mode: 'Chat' },
     contextHints: ['chatMode'],
     handler: ({ chatState }) => {
-      void chatState.createConversation('New Conversation', null, null);
+      void chatState.createConversation(i18n.t('chat.newConversation', 'New Conversation'), null, null);
       return true;
     },
   }),

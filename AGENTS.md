@@ -6,7 +6,7 @@ source code and linked docs when a task needs detail.
 
 ## Project Map
 
-- Frontend: React 19, TypeScript, Vite, Tailwind CSS, Zustand, Jotai.
+- Frontend: React 19, TypeScript, Vite, Tailwind CSS, Zustand.
 - Desktop backend: Tauri v2 and Rust in `src-tauri/`.
 - Package manager and repo script runtime: Bun.
 - UI code lives under `src/components/`.
@@ -16,7 +16,8 @@ source code and linked docs when a task needs detail.
 - Static assets and themes live under `public/`.
 - Product behavior source of truth: `docs/functional-spec.md`.
 - Technical architecture source of truth: `docs/technical-architecture.md`.
-- Setup, release, and script overview: `README.md`.
+- Development setup and script overview: `DEVELOPMENT.md`.
+- Release downloads, installation, and source builds: `INSTALL.md`.
 - Contribution and PR checks: `CONTRIBUTING.md`.
 - Stable release work: read `docs/release-agent-runbook.md` before preparing,
   tagging, publishing, recovering, or cleaning up a release.

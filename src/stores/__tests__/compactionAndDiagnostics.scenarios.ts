@@ -1426,6 +1426,88 @@ export const registerCompactionAndDiagnosticsScenarios = (
       ]);
     });
 
+    for (const previousStatus of [null, { phase: 'safety_compacting' as const }, { phase: 'compacted' as const, summaryText: 'Previous summary' }]) {
+      it(`clears safety compaction on Stop after previous phase ${previousStatus?.phase ?? 'idle'}`, async () => {
+        appState.mode = 'Chat';
+        appState.selectedGroupId = null;
+        appState.selectedProjectId = null;
+        localStorage.setItem('macro_compaction.auto', JSON.stringify(false));
+        localStorage.setItem('macro_compaction.prune', JSON.stringify(false));
+        localStorage.setItem('macro_compaction.reservedTokens', JSON.stringify(0));
+        providerState.modelsByProvider = {
+          'provider-1': [
+            {
+              id: 'model-1',
+              name: 'Small context model',
+              isEnabled: true,
+              contextWindowTokens: 8000,
+              outputLimitTokens: 1200,
+            } as never,
+          ],
+        };
+        const summaryDeferred = createDeferred<string>();
+        queueSendChatNonStreamingImplementation(async () => summaryDeferred.promise);
+
+        const { useChatStore } = await loadChatStore();
+        const oldContext = 'ancien contexte utile\n'.repeat(5000);
+        const messages = [
+          {
+            id: 'u1',
+            task_id: '',
+            conversation_id: 'chat-conv',
+            role: 'user' as const,
+            content: `Analyse ce gros historique.\n${oldContext}`,
+            timestamp: '2026-04-14T10:00:00.000Z',
+          },
+          {
+            id: 'a1',
+            task_id: '',
+            conversation_id: 'chat-conv',
+            role: 'assistant' as const,
+            content: `Historique analysé.\n${oldContext}`,
+            timestamp: '2026-04-14T10:01:00.000Z',
+          },
+        ];
+        useChatStore.setState(createIdleChatStoreState({
+          conversations: [
+            {
+              ...createConversation('chat-conv', ''),
+              message_count: messages.length,
+            },
+          ],
+          messages,
+          selectedConversationId: 'chat-conv',
+          selectedConversationIdsByMode: { Chat: 'chat-conv' },
+          conversationCompactionStatusById: previousStatus ? { 'chat-conv': previousStatus } : {},
+        }));
+
+        const sendPromise = useChatStore.getState().sendMessage({
+          conversationId: 'chat-conv',
+          content: 'Continue avec une réponse courte.',
+        });
+        await flushAsyncWork();
+
+        expect(streamChatMock).not.toHaveBeenCalled();
+        expect(
+          useChatStore.getState().conversationCompactionStatusById['chat-conv'],
+        ).toMatchObject({
+          phase: 'safety_compacting',
+          kind: 'safety_prestream',
+        });
+
+        useChatStore.getState().stopStreaming();
+        summaryDeferred.resolve(JSON.stringify({
+          currentObjective: 'Stopped request', userInstructions: [], decisions: [],
+          openQuestions: [], activeFiles: [], toolFacts: [], remainingWork: [], summary: 'Synthetic summary',
+        }));
+        await sendPromise;
+        await flushAsyncWork();
+        expect(useChatStore.getState().conversationCompactionStatusById['chat-conv']?.phase ?? 'idle').toBe(previousStatus?.phase === 'compacted' ? 'compacted' : 'idle');
+        expect(useChatStore.getState().sessionCompactionEventsByConversationId['chat-conv'] ?? []).toEqual([]);
+        expect(streamChatMock).not.toHaveBeenCalled();
+      });
+    }
+
     it('ignores legacy compaction preferences and still runs safety prestream compaction', async () => {
       appState.mode = 'Chat';
       appState.selectedGroupId = null;

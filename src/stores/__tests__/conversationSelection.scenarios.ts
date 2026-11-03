@@ -1,3 +1,4 @@
+import { createLifecycleScope } from "../../services/lifecycleScope";
 import { describe, expect, it, mock } from 'bun:test';
 import { createDeferred } from '../../test-utils/deferred';
 import type { UseChatStoreScenarioContext } from '../useChatStore.test';
@@ -352,6 +353,29 @@ export const registerConversationSelectionScenarios = (
       expect(providerState.selectedProviderId).toBe('provider-2');
       expect(providerState.selectedModelId).toBe('model-2a');
       expect(providerState.selectedReasoningEffort).toBe('high');
+    });
+
+    it('resets message loading after its lifecycle stops so a later selection can retry', async () => {
+      context.tauriAvailable = true;
+      appState.mode = 'Chat';
+      const { useChatStore } = await loadChatStore();
+      useChatStore.setState(createIdleChatStoreState({
+        conversations: [{ ...createConversation('load-aborted', ''), message_count: 1 }],
+        selectedConversationId: 'load-aborted', selectedConversationIdsByMode: { Chat: 'load-aborted' },
+      }));
+      const gate = createDeferred<[]>();
+      context.listMessagesMock.mockImplementationOnce(() => gate.promise);
+      const lifecycle = createLifecycleScope();
+      const pending = useChatStore.getState().ensureConversationForCurrentMode(lifecycle);
+      await flushAsyncWork();
+      expect(useChatStore.getState().messageLoadStatusByConversationId['load-aborted']).toBe('loading');
+      lifecycle.stop();
+      gate.resolve([]);
+      await pending.catch(() => undefined);
+      expect(useChatStore.getState().messageLoadStatusByConversationId['load-aborted']).toBe('idle');
+      expect(useChatStore.getState().lastError).toBeNull();
+      await useChatStore.getState().ensureMessagesLoaded('load-aborted');
+      expect(useChatStore.getState().messageLoadStatusByConversationId['load-aborted']).toBe('ready');
     });
 
     it('isolates source additions made while another conversation is loading', async () => {

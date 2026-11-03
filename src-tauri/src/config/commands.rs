@@ -95,7 +95,7 @@ pub async fn list_orphan_secrets(
     let (api_keys, sessions) = referenced_secret_ids(&documents);
     let entries = crate::secrets::list_secret_metadata().map_err(|error| ConfigApiError {
         code: "config.secrets.read_failed".to_string(),
-        message: format!("Impossible de lire les métadonnées des secrets : {error}"),
+        message: format!("Failed to read secret metadata: {error}"),
         document: None,
         diagnostics: Vec::new(),
     })?;
@@ -141,7 +141,7 @@ pub async fn delete_orphan_secret(
     if !matches!(request.secret_type.as_str(), "apiKey" | "chatgptSession") {
         return Err(ConfigApiError {
             code: "config.secrets.invalid_type".to_string(),
-            message: "Le type de secret à supprimer est invalide.".to_string(),
+            message: "Invalid secret type for deletion.".to_string(),
             document: None,
             diagnostics: Vec::new(),
         });
@@ -154,7 +154,7 @@ pub async fn delete_orphan_secret(
     if !is_orphan {
         return Err(ConfigApiError {
             code: "config.secrets.not_orphan".to_string(),
-            message: "Ce secret est encore utilisé ou n’existe plus.".to_string(),
+            message: "This secret is still in use or no longer exists.".to_string(),
             document: None,
             diagnostics: Vec::new(),
         });
@@ -162,7 +162,7 @@ pub async fn delete_orphan_secret(
     crate::secrets::delete_secret_metadata(&request.id, &request.secret_type).map_err(|error| {
         ConfigApiError {
             code: "config.secrets.delete_failed".to_string(),
-            message: format!("Impossible de supprimer le secret orphelin : {error}"),
+            message: format!("Failed to delete orphan secret: {error}"),
             document: None,
             diagnostics: Vec::new(),
         }
@@ -298,7 +298,7 @@ pub async fn config_open_directory(
         .open_path(target.to_string_lossy().to_string(), None::<&str>)
         .map_err(|error| ConfigApiError {
             code: "config.directory.open_failed".to_string(),
-            message: format!("Impossible d’ouvrir le dossier de configuration : {error}"),
+            message: format!("Failed to open configuration directory: {error}"),
             document: None,
             diagnostics: Vec::new(),
         })?;

@@ -111,8 +111,6 @@ const installFileChangesRuntimeMock = () => {
   let etagRevision = 0;
 
   installTauriRuntimeMock(mock(async (command: string, payload?: Record<string, unknown>) => {
-    if (command === 'plugin:store|load') return 1;
-    if (command === 'plugin:store|get') return [undefined, false];
     if (command === 'config_get_snapshot') {
       return {
         schemaVersion: 1,

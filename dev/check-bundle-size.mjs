@@ -15,13 +15,13 @@ const BUDGETS = [
   // The 0.1.7 task recovery fix builds a 61,741 B chunk; keep a narrow margin.
   { name: 'task-queue', pattern: /^TaskQueue-.*\.js$/, limitBytes: 62_000 },
   { name: 'markdown-rich-content', pattern: /^MarkdownRichContent-.*\.js$/, limitBytes: 70_000 },
-  // The combined locales measure 141,796 B (es), 144,891 B (de),
-  // 147,826 B (fr), 148,609 B (ko), and 164,614 B (ja).
-  // Keep about 1% headroom, with the shared fr/ko budget based on ko.
-  { name: 'locale-fragment-es', pattern: /^es-.*\.js$/, limitBytes: 143_300 },
-  { name: 'locale-fragment-de', pattern: /^de-.*\.js$/, limitBytes: 146_400 },
-  { name: 'locale-fragment-fr-ko', pattern: /^(fr|ko)-.*\.js$/, limitBytes: 150_100 },
-  { name: 'locale-fragment-ja', pattern: /^ja-.*\.js$/, limitBytes: 166_300 },
+  // The combined locales measure 144,742 B (es), 147,953 B (de),
+  // 149,024 B (fr), 151,422 B (ko), and 169,631 B (ja) after the locale
+  // translation pass. Keep about 1% headroom, with the shared fr/ko budget based on ko.
+  { name: 'locale-fragment-es', pattern: /^es-.*\.js$/, limitBytes: 146_200 },
+  { name: 'locale-fragment-de', pattern: /^de-.*\.js$/, limitBytes: 149_500 },
+  { name: 'locale-fragment-fr-ko', pattern: /^(fr|ko)-.*\.js$/, limitBytes: 153_000 },
+  { name: 'locale-fragment-ja', pattern: /^ja-.*\.js$/, limitBytes: 171_400 },
 ];
 
 const formatKiB = (bytes) => `${(bytes / 1024).toFixed(1)} KiB`;
