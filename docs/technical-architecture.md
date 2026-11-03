@@ -1056,7 +1056,6 @@ Le runtime embarque des plugins Tauri pour :
 - les notifications natives, `notification`
 - le contrôle du processus de l'application, `process`
 - les mises à jour, `updater`
-- le stockage natif, `store`
 
 Le plugin `tauri_remote_ui` s'ajoute uniquement en debug avec la fonctionnalité
 `browser-runtime-debug` pour le pont navigateur.

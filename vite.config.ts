@@ -485,7 +485,10 @@ export default defineConfig(({ command, mode }): UserConfig => {
       terserOptions: {
         compress: {
           passes: 2,
-          drop_console: process.env.NODE_ENV === 'production',
+          // Keep console.error/warn in release builds for crash diagnostics.
+          pure_funcs: process.env.NODE_ENV === 'production'
+            ? ['console.log', 'console.info', 'console.debug', 'console.trace']
+            : [],
           drop_debugger: process.env.NODE_ENV === 'production',
         },
         format: {
