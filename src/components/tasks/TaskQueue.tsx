@@ -1927,7 +1927,7 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className, excludedProjectIds
               label: t('implement.openWorktree', 'Open worktree'),
               variant: 'secondary' as const,
               onClick: () => {
-                void openProjectInExternalApp({ targetPath: target.worktreePath!, action: 'files' }).catch((error) => {
+                void openProjectInExternalApp({ targetPath: target.worktreePath!, action: 'files', fallbackToSystemFiles: true }).catch((error) => {
                   notify.error(
                     t('implement.openWorktreeFailed', 'Could not open the worktree'),
                     { description: toServiceError(error).message },
@@ -1940,7 +1940,7 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className, excludedProjectIds
                 label: t('implement.openRepository', 'Open repository'),
                 variant: 'secondary' as const,
                 onClick: () => {
-                  void openProjectInExternalApp({ targetPath: target.repoPath, action: 'files' }).catch((error) => {
+                  void openProjectInExternalApp({ targetPath: target.repoPath, action: 'files', fallbackToSystemFiles: true }).catch((error) => {
                     notify.error(
                       t('implement.openRepositoryFailed', 'Could not open the repository'),
                       { description: toServiceError(error).message },

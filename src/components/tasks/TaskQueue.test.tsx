@@ -1672,7 +1672,7 @@ describe('TaskQueue', () => {
     expect(options.actions.map((action) => action.label)).toEqual(['Open worktree', 'Retry']);
     options.actions[0]!.onClick();
     expect(openProjectInExternalApp).toHaveBeenCalledWith({
-      targetPath: '/tmp/project-1/.macro/worktrees/archive-with-dirty-worktree', action: 'files',
+      targetPath: '/tmp/project-1/.macro/worktrees/archive-with-dirty-worktree', action: 'files', fallbackToSystemFiles: true,
     });
     openProjectInExternalApp.mockRejectedValueOnce(new Error('Could not launch file manager'));
     options.actions[0]!.onClick();
@@ -1750,7 +1750,7 @@ describe('TaskQueue', () => {
     expect(options.description).toContain('/tmp/project-1');
     expect(options.actions.map((action) => action.label)).toEqual(['Open repository', 'Retry']);
     options.actions[0]!.onClick();
-    expect(openProjectInExternalApp).toHaveBeenCalledWith({ targetPath: '/tmp/project-1', action: 'files' });
+    expect(openProjectInExternalApp).toHaveBeenCalledWith({ targetPath: '/tmp/project-1', action: 'files', fallbackToSystemFiles: true });
   });
 
   it('provides three display filters and keeps project management in the context menu', async () => {

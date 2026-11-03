@@ -394,6 +394,23 @@ describe('useGlobalShortcuts', () => {
     expect(appState.setLeftPanelOpen.mock.calls).toEqual([[false]]);
   });
 
+  it('prefers a binding matching the typed character over a physical-key fallback', async () => {
+    shortcutsState = {
+      ...shortcutsState,
+      bindings: {
+        ...shortcutsState.bindings,
+        'app.toggleLeftPanel': 'Mod+;',
+      },
+    };
+    await renderHook();
+
+    // AZERTY-style layout: the physical Comma key produces ';'.
+    await dispatchBinding('Mod+;', window, { code: 'Comma' });
+
+    expect(appState.setLeftPanelOpen.mock.calls).toEqual([[false]]);
+    expect(appState.openSettings.mock.calls).toEqual([]);
+  });
+
   it('cycles provider and model selections', async () => {
     await renderHook();
 

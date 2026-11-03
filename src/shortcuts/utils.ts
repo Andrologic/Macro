@@ -100,7 +100,16 @@ export const formatBindingForDisplay = (binding: string | null): string => {
     .join(' + ');
 };
 
-export const bindingMatchesEvent = (binding: string, event: KeyboardEvent): boolean => {
+export type BindingMatchMode = 'any' | 'key' | 'physical';
+
+// 'key' matches the produced character only, 'physical' only the physical key
+// fallback. Callers should prefer 'key' so a layout where one physical key
+// produces another binding's character cannot trigger two commands.
+export const bindingMatchesEvent = (
+  binding: string,
+  event: KeyboardEvent,
+  mode: BindingMatchMode = 'any',
+): boolean => {
   const normalized = normalizeBinding(binding);
   if (!normalized) return false;
 
@@ -117,7 +126,11 @@ export const bindingMatchesEvent = (binding: string, event: KeyboardEvent): bool
   const codeKey = /^Digit[0-9]$/.test(event.code)
     ? event.code.slice(-1)
     : PUNCTUATION_CODE_KEYS[event.code];
-  if (key !== eventKey && key !== codeKey) return false;
+  const keyMatches = key === eventKey;
+  const physicalMatches = key === codeKey;
+  if (mode === 'key' ? !keyMatches : mode === 'physical' ? !physicalMatches : !keyMatches && !physicalMatches) {
+    return false;
+  }
   if (modifiers.size !== eventModifiers.size) return false;
   for (const modifier of modifiers) {
     if (!eventModifiers.has(modifier)) return false;

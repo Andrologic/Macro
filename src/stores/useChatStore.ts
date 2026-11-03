@@ -4075,6 +4075,9 @@ export const useChatStore = create<ChatStore>((set, get) => {
         ...previousCompactionStatus,
         phase: "safety_compacting",
         kind: params.mode,
+        // A footprint or reason from an earlier pass would misreport current pressure.
+        reason: null,
+        footprintAfter: undefined,
         updatedAt: new Date().toISOString(),
       });
       ownedCompactionStatus = get().conversationCompactionStatusById[params.conversationId] ?? null;

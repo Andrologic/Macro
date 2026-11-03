@@ -80,6 +80,15 @@ describe('shortcut utils', () => {
     }
   });
 
+  it('separates typed-key and physical-key matches for callers that rank them', () => {
+    setPlatform('MacIntel');
+    const event = new KeyboardEvent('keydown', { key: ';', code: 'Comma', metaKey: true });
+    expect(bindingMatchesEvent('Mod+;', event, 'key')).toBe(true);
+    expect(bindingMatchesEvent('Mod+;', event, 'physical')).toBe(false);
+    expect(bindingMatchesEvent('Mod+,', event, 'key')).toBe(false);
+    expect(bindingMatchesEvent('Mod+,', event, 'physical')).toBe(true);
+  });
+
   it('keeps letter shortcuts tied to the typed key', () => {
     setPlatform('Win32');
     const event = new KeyboardEvent('keydown', { key: 'a', code: 'KeyQ', ctrlKey: true });

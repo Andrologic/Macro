@@ -42,15 +42,18 @@ export const useGlobalShortcuts = (): void => {
         promptHistoryNavigationMode,
         settingsOpen,
       };
-      const matchingShortcut = commandRegistry.list(availability).find((command) => {
+      const commands = commandRegistry.list(availability);
+      const findShortcut = (mode: 'key' | 'physical') => commands.find((command) => {
         if (dialogOpen && command.id !== 'app.closeSettings') return false;
         const definition = { ...command.definition, id: command.id };
         const binding = Object.hasOwn(bindings, definition.id)
           ? bindings[definition.id]
           : definition.defaultBinding;
-        return Boolean(binding && bindingMatchesEvent(binding, event)) &&
+        return Boolean(binding && bindingMatchesEvent(binding, event, mode)) &&
           isShortcutAvailable(definition, availability);
       });
+      // The produced character wins over the physical-key fallback.
+      const matchingShortcut = findShortcut('key') ?? findShortcut('physical');
 
       if (!matchingShortcut) return;
 
