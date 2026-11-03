@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
+import { auditTranslationKeys, isUntranslatedEnglish } from "./key-audit.mjs";
 
 const root = process.cwd();
 const languageModulePath = path.join(root, "src", "i18n", "languages.ts");
@@ -97,6 +98,9 @@ const englishEntries = flattenObject(englishLocale);
 const englishKeys = new Map(englishEntries);
 const frenchKeys = new Map(flattenObject(readLocale("fr")));
 
+// Exact keys and source values only: a changed English value needs renewed review.
+// Exceptions cover brands, protocol/code tokens and valid shared vocabulary.
+const englishAllowlist = readJson(path.join(root, "dev/i18n/identical-english-allowlist.json"));
 const localeErrors = [];
 const copiedFrenchErrors = [];
 const translationKeyErrors = [];
@@ -138,6 +142,10 @@ for (const language of supportedLanguages) {
       );
     }
 
+    if (isUntranslatedEnglish(language, key, localizedValue, englishValue, englishAllowlist)) {
+      localeErrors.push(`${language}.json copies English for ${key}: ${JSON.stringify(localizedValue)}`);
+    }
+
     const frenchValue = frenchKeys.get(key);
     if (
       language !== "fr" &&
@@ -175,27 +183,10 @@ for (const dir of sourceDirs) {
   }
 }
 
-const translationKeyPattern = /\bt\(\s*['"]([^'"`]+)['"]/g;
-
-for (const dir of sourceDirs) {
-  if (!fs.existsSync(dir)) continue;
-  for (const file of walkFiles(dir).filter((filePath) => /\.(ts|tsx)$/.test(filePath))) {
-    const content = fs.readFileSync(file, "utf8");
-    const seenKeys = new Set();
-    for (const match of content.matchAll(translationKeyPattern)) {
-      const key = match[1];
-      if (!key || seenKeys.has(key)) continue;
-      seenKeys.add(key);
-      const hasPluralVariant =
-        englishKeys.has(`${key}_one`) ||
-        englishKeys.has(`${key}_other`);
-      if (!englishKeys.has(key) && !hasPluralVariant) {
-        translationKeyErrors.push(
-          `${path.relative(root, file)} references missing i18n key: ${key}`
-        );
-      }
-    }
-  }
+for (const file of walkFiles(path.join(root, "src")).filter(file => /\.(ts|tsx)$/.test(file) && !/\.test\.|[/\\]__tests__[/\\]/.test(file))) {
+  const content = fs.readFileSync(file, "utf8");
+  translationKeyErrors.push(...auditTranslationKeys(content, file, englishKeys)
+    .map(error => `${path.relative(root, file)} ${error}`));
 }
 
 const uiLiteralErrors = [];

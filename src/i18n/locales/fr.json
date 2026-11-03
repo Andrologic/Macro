@@ -433,11 +433,11 @@
       "metadataNeedsAttention": "La synchronisation du code est terminée. Celle des métadonnées demande une intervention.",
       "reviewRecovery": "Examiner la reprise",
       "done": "Terminé.",
-      "macroClean": "@macro clean",
-      "macroPending": "@macro pending",
-      "macroFailed": "@macro failed",
-      "macroConflict": "@macro conflict",
-      "macroUnknown": "@macro unknown",
+      "macroClean": "@macro à jour",
+      "macroPending": "@macro en attente",
+      "macroFailed": "@macro en échec",
+      "macroConflict": "@macro en conflit",
+      "macroUnknown": "@macro état inconnu",
       "hintCommitRequired": "commit requis",
       "hintAhead": "{{count}} en avance",
       "hintPushRequired": "push requis",
@@ -474,11 +474,11 @@
       "review": "Examiner",
       "retrySync": "Relancer la synchronisation",
       "macroSaveAction": "Enregistrer @macro",
-      "macroCommit": "@macro commit",
+      "macroCommit": "commit @macro",
       "macroCommitting": "@macro commit en cours...",
-      "macroPull": "@macro pull",
+      "macroPull": "récupérer @macro",
       "macroPulling": "@macro pull en cours...",
-      "macroPush": "@macro push",
+      "macroPush": "envoyer @macro",
       "macroPushing": "@macro push en cours...",
       "fetchDirtyDescription": "Le fetch du code est terminé. @macro a encore des changements locaux à enregistrer.",
       "macroDirtyDescription": "@macro a encore des changements locaux à enregistrer avant le pull ou le push.",
@@ -790,7 +790,7 @@
     "skillApprovalUnknownScript": "Script inconnu",
     "skillApprovalSkill": "Skill",
     "skillApprovalScript": "Script",
-    "skillApprovalArgs": "Args",
+    "skillApprovalArgs": "Arguments",
     "skillApprovalRuntime": "Exécution",
     "skillApprovalRuntimeValue": "délai {{timeout}} · espace de travail {{workspace}}",
     "toolApprovalCategoryModify": "Modification",
@@ -961,7 +961,7 @@
     "contextWindow": {
       "ariaLabel": "Diagnostic du contexte",
       "titleWithPercent": "{{label}} · {{percent}} du budget utile",
-      "providerFallback": "Provider",
+      "providerFallback": "Fournisseur",
       "modelFallback": "Modèle non sélectionné",
       "usefulBudgetShort": "budget utile",
       "none": "Aucun",
@@ -1001,7 +1001,7 @@
         "default": "Compacter maintenant"
       },
       "metrics": {
-        "payload": "Payload",
+        "payload": "Charge utile",
         "modelLimit": "Limite modèle",
         "estimatedLimit": "Limite estimée",
         "usefulBudget": "Budget utile",
@@ -1009,11 +1009,11 @@
         "limitSource": "Source limite",
         "confidence": "Confiance",
         "totalContext": "Contexte total",
-        "checkpoint": "Checkpoint"
+        "checkpoint": "Point de contrôle"
       },
       "limitSource": {
         "userOverride": "Override utilisateur",
-        "providerMetadata": "Provider",
+        "providerMetadata": "Fournisseur",
         "modelMetadata": "Modèle",
         "providerOverflowError": "Erreur provider",
         "macroFallback": "Fallback Macro",
@@ -1375,7 +1375,7 @@
       },
       "channels": {
         "inApp": "Dans l'application",
-        "desktop": "Desktop",
+        "desktop": "Bureau",
         "allChannels": "Tous les canaux"
       },
       "summary": {
@@ -1780,7 +1780,7 @@
         "git-merge": "Fusion",
         "git-compare": "Comparaison",
         "history": "Historique",
-        "list-todo": "Checklist",
+        "list-todo": "Liste de contrôle",
         "check-square": "Case cochée",
         "clipboard": "Presse-papiers",
         "clock": "Horloge",
@@ -1971,7 +1971,7 @@
     "fitToScreen": "Ajuster à l'écran",
     "selectProject": "Sélectionnez un projet pour afficher la stratégie",
     "validate": "Valider le plan",
-    "graphView": "Graph",
+    "graphView": "Graphe",
     "branchesView": "Branches",
     "dependencyFlow": "Flux de dépendances",
     "itemsCount": "{{count}} articles",
@@ -2052,7 +2052,7 @@
   },
   "git": {
     "gitTree": "Arbre Git",
-    "gitGraph": "Git Graph",
+    "gitGraph": "Graphe Git",
     "branches": "Branches",
     "commits": "Commits",
     "changes": "Changements",
@@ -2221,7 +2221,7 @@
       "maxTurnsDescription": "Nombre maximal de cycles IA/outils avant que Macro arrête la boucle agent et affiche une notice dans le chat."
     },
     "architectMacroOnly": "Architect : @macro uniquement",
-    "architectFullOnly": "Architect Full",
+    "architectFullOnly": "Architect complet",
     "security": {
       "title": "Sécurité et approbations",
       "description": "Choisissez la marge de manœuvre de Macro avant de demander votre validation.",
@@ -2334,6 +2334,12 @@
         "failed": "Échec de l’autorisation MCP.",
         "loggedOut": "Autorisation MCP supprimée.",
         "logoutFailed": "Impossible de supprimer l’autorisation MCP."
+      },
+      "status": {
+        "online": "En ligne",
+        "degraded": "Dégradé",
+        "offline": "Hors ligne",
+        "unconfigured": "Non configuré"
       }
     }
   },
@@ -2554,7 +2560,35 @@
     "editors": {
       "promptArchitect": {
         "label": "Mode Architect",
-        "description": "Invite système de base pour les conversations Architect."
+        "description": "Prompt système de base des conversations Architect."
+      },
+      "promptImplement": {
+        "label": "Mode Implement",
+        "description": "Prompt système de base des conversations Implement."
+      },
+      "promptChat": {
+        "label": "Mode Chat",
+        "description": "Prompt système de base des conversations générales."
+      },
+      "promptPlanExplorer": {
+        "label": "Profil d’exploration des plans",
+        "description": "Consignes supplémentaires pour la planification et l’exploration dans Architect."
+      },
+      "promptTaskReviewer": {
+        "label": "Profil de revue des tâches",
+        "description": "Consignes supplémentaires pour la revue d’une tâche Implement."
+      },
+      "promptRepoAuditor": {
+        "label": "Profil d’audit du dépôt",
+        "description": "Consignes supplémentaires pour les conflits Git, la finalisation et l’audit du dépôt."
+      },
+      "promptGoalAuditor": {
+        "label": "Profil d’audit des objectifs",
+        "description": "Consignes supplémentaires pour les audits en lecture seule des objectifs de conversation."
+      },
+      "smartCommitPrompt": {
+        "label": "Prompt de génération des commits",
+        "description": "Guide les messages Conventional Commit générés par l’IA. Macro valide le message final et retire les scopes avant le commit."
       }
     },
     "loadFailed": "Impossible de charger les invites système. Réessayez avant d’enregistrer.",
@@ -2698,7 +2732,7 @@
     "contextWindowResetSuccess": "Fenêtre de contexte réinitialisée",
     "contextWindowResetFailed": "Impossible de réinitialiser la fenêtre de contexte",
     "contextWindowSourceUser": "Défini",
-    "contextWindowSourceProvider": "Provider",
+    "contextWindowSourceProvider": "Fournisseur",
     "contextWindowSourceCatalog": "Catalogue",
     "contextWindowSourceLearned": "Apprise",
     "contextWindowSourceEstimated": "Estimée",

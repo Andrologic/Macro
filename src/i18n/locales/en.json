@@ -2334,6 +2334,12 @@
         "failed": "MCP authorization failed.",
         "loggedOut": "MCP authorization removed.",
         "logoutFailed": "Failed to remove MCP authorization."
+      },
+      "status": {
+        "online": "Online",
+        "degraded": "Degraded",
+        "offline": "Offline",
+        "unconfigured": "Unconfigured"
       }
     }
   },
@@ -2555,6 +2561,34 @@
       "promptArchitect": {
         "label": "Architect Mode",
         "description": "Base system prompt for Architect conversations."
+      },
+      "promptImplement": {
+        "label": "Implement Mode",
+        "description": "Base system prompt for Implement conversations."
+      },
+      "promptChat": {
+        "label": "Chat Mode",
+        "description": "Base system prompt for general chat conversations."
+      },
+      "promptPlanExplorer": {
+        "label": "Plan Explorer Profile",
+        "description": "Extra guidance injected for Architect planning and exploration flows."
+      },
+      "promptTaskReviewer": {
+        "label": "Task Reviewer Profile",
+        "description": "Extra guidance injected while reviewing an Implement task in review."
+      },
+      "promptRepoAuditor": {
+        "label": "Repo Auditor Profile",
+        "description": "Extra guidance injected for Git conflict, finalization, and repository audit flows."
+      },
+      "promptGoalAuditor": {
+        "label": "Goal Auditor Profile",
+        "description": "Extra guidance injected for read-only conversation goal audits."
+      },
+      "smartCommitPrompt": {
+        "label": "Commit generation prompt",
+        "description": "Guides AI-generated Conventional Commit messages. Macro still validates the final message and removes scopes before committing."
       }
     },
     "loadFailed": "Unable to load system prompts. Retry before saving.",
