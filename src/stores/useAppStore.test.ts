@@ -267,6 +267,7 @@ const chatStoreState = {
 const taskStoreState = {
   tasks: [] as Array<{
     id: string;
+    node_id?: string;
     status: string;
     project_id?: string | null;
     project_ids?: string[];
@@ -1942,6 +1943,20 @@ describe('useAppStore architect plan resolution', () => {
     expect(useAppStore.getState().mode).toBe('Architect');
     expect(listArchitectPlansMock).not.toHaveBeenCalled();
     expect(ensureProjectGroupPlanMock).not.toHaveBeenCalled();
+  });
+
+  it('remembers the selected Implement conversation through an unambiguous legacy task reference', async () => {
+    const { useAppStore } = await loadIsolatedUseAppStore();
+    taskStoreState.tasks = [{ id: 'task:v1:feature:plan:node', node_id: 'legacy-node', status: 'InProgress', project_id: 'project-1' }];
+    chatStoreState.conversations = [{ id: 'legacy-conversation', scope_mode: 'Implement', task_id: 'legacy-node' }];
+    chatStoreState.selectedConversationId = 'legacy-conversation';
+    useAppStore.setState({ mode: 'Implement', projectGroups: bootstrapProjectGroups, selectedGroupId: 'group-1',
+      selectedProjectId: 'project-1', selectedTaskId: taskStoreState.tasks[0].id });
+    useAppStore.getState().setSelectedGroup(null, { ensureAutoPlan: false, restoreProjectContext: false });
+    await flushAsyncWork();
+    expect(upsertLocalProjectContextStateMock).toHaveBeenCalledWith(expect.objectContaining({
+      groupId: 'group-1', implementConversationId: 'legacy-conversation', lastTaskId: taskStoreState.tasks[0].id,
+    }));
   });
 
   it('preserves the latest mode while group notification navigation settles', async () => {

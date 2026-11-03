@@ -709,6 +709,7 @@ export const createTerminalStore = (initialPort?: TerminalLifecyclePort) => crea
   const blockedTabs = new Set<string>();
   const closedTabs = new Set<string>();
   const closingTabs = new Map<string, Promise<void>>();
+  const openingTabs = new Map<string, Promise<TerminalTab>>();
   const listenerCleanups = new Set<() => void>();
   const captureRuntime = () => {
     const epoch = runtimeEpoch;
@@ -721,6 +722,7 @@ export const createTerminalStore = (initialPort?: TerminalLifecyclePort) => crea
     }
   };
   let initializePromise: Promise<void> | null = null;
+  let initialTerminalEvents: Array<() => void> | null = null;
   let pendingOutputEvents: Record<string, tauriIpc.TerminalOutputEvent> = {};
   let outputFlushTimer: number | null = null;
   let manualSelectionRevision = 0;
@@ -909,7 +911,10 @@ export const createTerminalStore = (initialPort?: TerminalLifecyclePort) => crea
       registrationsScope.track(Promise.resolve().then(() => {
         if (!isCurrent()) return;
         return listen<T>(name, (event) => {
-          if (isCurrent()) handler(event);
+          if (!isCurrent()) return;
+          const dispatch = () => { if (isCurrent()) handler(event); };
+          if (initialTerminalEvents) initialTerminalEvents.push(dispatch);
+          else dispatch();
         }).then((unlisten) => {
           if (isCurrent()) acquired.add(unlisten);
           else unlisten();
@@ -1165,6 +1170,8 @@ export const createTerminalStore = (initialPort?: TerminalLifecyclePort) => crea
       runtimeContext = undefined;
       manualSelectionRevision += 1;
       initializePromise = null;
+      openingTabs.clear();
+      initialTerminalEvents = null;
       for (const cleanup of listenerCleanups) cleanup();
       if (outputFlushTimer !== null) globalThis.clearTimeout(outputFlushTimer);
       outputFlushTimer = null;
@@ -1203,6 +1210,7 @@ export const createTerminalStore = (initialPort?: TerminalLifecyclePort) => crea
 
       initializePromise = acquisitionScope.track((async () => {
         set({ initializing: true });
+        initialTerminalEvents = [];
         try {
           const [savedHeight, savedActiveTabId, savedLastManualProjects] = await Promise.all([
             loadPreference<number>(PREF_KEYS.TERMINAL_PANEL_HEIGHT),
@@ -1215,6 +1223,8 @@ export const createTerminalStore = (initialPort?: TerminalLifecyclePort) => crea
           const lastManualProjectIdByTaskId = normalizeLastManualProjectIdByTaskId(
             savedLastManualProjects
           );
+          await registerListeners(current);
+          assertCurrent(current);
           const tabDtos = (await loadTabsWithRetry(current)).filter((dto) => !blockedTabs.has(dto.id));
           assertCurrent(current);
           const tabs = tabDtos.reduce<Record<string, TerminalTab>>((acc, dto) => {
@@ -1252,13 +1262,17 @@ export const createTerminalStore = (initialPort?: TerminalLifecyclePort) => crea
             lastManualProjectIdByTaskId,
             hiddenTerminalTabCount: computeCurrentHiddenCount(nextState),
           });
-          await registerListeners(current);
-          assertCurrent(current);
+          const queuedEvents = initialTerminalEvents;
+          initialTerminalEvents = null;
+          queuedEvents?.forEach((dispatch) => dispatch());
           set({ initialized: true, initializing: false });
           await get().syncTerminalDisplayMetadata();
           assertCurrent(current);
         } catch (error) {
-          if (current()) set({ initializing: false });
+          if (current()) {
+            initialTerminalEvents = null;
+            set({ initializing: false });
+          }
           throw error;
         }
       })()).finally(() => {
@@ -1445,29 +1459,40 @@ export const createTerminalStore = (initialPort?: TerminalLifecyclePort) => crea
         throw new Error(getManualTerminalUnavailableMessage());
       }
 
-      const siblingTabs = get()
-        .getTabsForTask(context.taskId)
-        .filter((tab) => tab.kind === 'manual' && tab.projectId === context.projectId);
-      const instanceIndex = getNextManualInstanceIndex(siblingTabs);
-      const displayMetadata = buildTerminalDisplayMetadata({
-        projectLabel: context.projectLabel,
-        taskLabel: context.taskLabel,
-        instanceIndex,
-      });
+      const key = JSON.stringify(['manual', context.taskId, context.projectId]);
+      let pending = openingTabs.get(key);
+      if (!pending) {
+        pending = (async () => {
+          const siblingTabs = get()
+            .getTabsForTask(context.taskId)
+            .filter((tab) => tab.kind === 'manual' && tab.projectId === context.projectId);
+          const instanceIndex = getNextManualInstanceIndex(siblingTabs);
+          const displayMetadata = buildTerminalDisplayMetadata({
+            projectLabel: context.projectLabel,
+            taskLabel: context.taskLabel,
+            instanceIndex,
+          });
 
-      const dto = await acquisitionScope.track(tauriIpc.terminalCreateTab({
-        kind: 'manual',
-        projectId: context.projectId,
-        cwd: context.cwd,
-        title: displayMetadata.title,
-        taskId: context.taskId,
-        promptContext: displayMetadata.promptContext,
-      }));
-      const tab = mapTabDto(dto, get().tabs[dto.id]);
-      if (!current() || blockedTabs.has(dto.id)) return tab;
-      const isLatestSelection = selectionRevision === manualSelectionRevision;
-      upsertTab(tab, { activate: isLatestSelection, openPanel: isLatestSelection ? true : undefined });
-      if (isLatestSelection) {
+          const dto = await acquisitionScope.track(tauriIpc.terminalCreateTab({
+            kind: 'manual',
+            projectId: context.projectId,
+            cwd: context.cwd,
+            title: displayMetadata.title,
+            taskId: context.taskId,
+            promptContext: displayMetadata.promptContext,
+          }));
+          const tab = mapTabDto(dto, get().tabs[dto.id]);
+          if (!current() || blockedTabs.has(dto.id)) return tab;
+          upsertTab(tab, {});
+          return tab;
+        })().finally(() => {
+          if (openingTabs.get(key) === pending) openingTabs.delete(key);
+        });
+        openingTabs.set(key, pending);
+      }
+      const tab = await pending;
+      if (current() && !blockedTabs.has(tab.id) && selectionRevision === manualSelectionRevision) {
+        upsertTab(tab, { activate: true, openPanel: true });
         persistLastManualProjectSelection(context.taskId, context.projectId);
         set({ lastManualContext: context });
       }
@@ -1504,26 +1529,40 @@ export const createTerminalStore = (initialPort?: TerminalLifecyclePort) => crea
       assertCurrent(current);
       const resolvedProject = resolveSupportedTerminalProject(projectId);
       const resolvedProjectId = resolvedProject.projectId;
-      const existing = Object.values(get().tabs).find(
-        (tab) => tab.kind === 'task' && tab.taskId === taskId && tab.projectId === resolvedProjectId
-      );
-      if (existing) assertCurrent(current, existing.id);
-      const dto = existing
-        ? existing.hasLiveSession
-          ? await acquisitionScope.track(tauriIpc.terminalReadTab(existing.id))
-          : await acquisitionScope.track(tauriIpc.terminalReconnectTab(existing.id))
-        : await acquisitionScope.track(tauriIpc.terminalCreateTab({
-            kind: 'task',
-            projectId: resolvedProjectId,
-            cwd,
-            title,
-            taskId,
-            promptContext: promptContext ?? null,
-          }));
+      const key = JSON.stringify(['task', taskId, resolvedProjectId]);
+      let pending = openingTabs.get(key);
+      if (!pending) {
+        pending = (async () => {
+          const existing = Object.values(get().tabs).find(
+            (tab) => tab.kind === 'task' && tab.taskId === taskId && tab.projectId === resolvedProjectId
+          );
+          if (existing) assertCurrent(current, existing.id);
+          const dto = existing
+            ? existing.hasLiveSession
+              ? await acquisitionScope.track(tauriIpc.terminalReadTab(existing.id))
+              : await acquisitionScope.track(tauriIpc.terminalReconnectTab(existing.id))
+            : await acquisitionScope.track(tauriIpc.terminalCreateTab({
+                kind: 'task',
+                projectId: resolvedProjectId,
+                cwd,
+                title,
+                taskId,
+                promptContext: promptContext ?? null,
+              }));
 
-      const tab = mapTabDto(dto, get().tabs[dto.id]);
-      if (!current() || blockedTabs.has(dto.id)) return tab;
-      upsertTab(tab, { activate: reveal, openPanel: reveal ? true : undefined });
+          const tab = mapTabDto(dto, get().tabs[dto.id]);
+          if (!current() || blockedTabs.has(dto.id)) return tab;
+          upsertTab(tab, {});
+          return tab;
+        })().finally(() => {
+          if (openingTabs.get(key) === pending) openingTabs.delete(key);
+        });
+        openingTabs.set(key, pending);
+      }
+      const tab = await pending;
+      if (current() && !blockedTabs.has(tab.id)) {
+        upsertTab(tab, { activate: reveal, openPanel: reveal ? true : undefined });
+      }
       return tab;
     },
 

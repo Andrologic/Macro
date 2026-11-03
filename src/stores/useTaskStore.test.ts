@@ -2222,6 +2222,30 @@ describe('useTaskStore merge workflow review loading', () => {
     expect(useTaskStore.getState().lastError).toContain('active task operation');
   });
 
+  it('blocks deletion while a legacy node reference has a running conversation', async () => {
+    const task = buildStandaloneTask({
+      id: 'manual-task-running-conversation',
+      task_source: 'standalone',
+      standalone_kind: 'manual_feature',
+      draft: true,
+      conversation_id: null,
+      node_id: 'legacy-node',
+      execution_targets: [],
+    });
+    chatStoreConversations = [{ id: 'conversation-running', task_id: 'legacy-node' }];
+    chatStoreRuntimeById = {
+      'conversation-running': { phase: 'streaming' },
+    };
+
+    const { useTaskStore } = await loadIsolatedTaskStore();
+    useTaskStore.setState({ tasks: [task], lastError: null });
+
+    await useTaskStore.getState().deleteTask(task.id);
+
+    expect(workspaceDeleteManualFeatureDraftMock).not.toHaveBeenCalled();
+    expect(useTaskStore.getState().lastError).toContain('active task operation');
+  });
+
   it('does not start linked deletion when its complete preflight fails', async () => {
     const task = buildStandaloneTask({
       id: 'manual-task-preflight',

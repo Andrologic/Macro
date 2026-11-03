@@ -1,3 +1,4 @@
+import { resolveTaskReference, taskReferenceMatches } from "../services/durableIdentity";
 import { type LifecycleContext } from '../services/lifecycleScope';
 import type { SettingsTab } from '../domains/shell/settings';
 import { isWorkspaceMode as isAppMode, workspaceDefinitions } from '../domains/shell/workspace';
@@ -703,12 +704,17 @@ const persistCurrentProjectContext = async (
     selectedArchitectConversation || architectConversations[0]?.id || null;
 
   const taskIdSet = new Set(tasksForProject.map((task) => task.id));
+  const lastTask = lastTaskId ? resolveTaskReference(taskStore.tasks, lastTaskId) : undefined;
+  const isProjectTaskReference = (reference: string | null | undefined) => {
+    const task = reference ? resolveTaskReference(taskStore.tasks, reference) : undefined;
+    return Boolean(task && taskIdSet.has(task.id));
+  };
   const implementByTask = lastTaskId
     ? sortByUpdatedAtDesc(
         chatStore.conversations.filter(
           (conversation) =>
             conversation.scope_mode === "Implement" &&
-            conversation.task_id === lastTaskId,
+            Boolean(lastTask && taskReferenceMatches(taskStore.tasks, lastTask, conversation.task_id)),
         ),
       )
     : [];
@@ -716,7 +722,7 @@ const persistCurrentProjectContext = async (
     chatStore.conversations.filter(
       (conversation) =>
         conversation.scope_mode === "Implement" &&
-        Boolean(conversation.task_id && taskIdSet.has(conversation.task_id)),
+        isProjectTaskReference(conversation.task_id),
     ),
   );
 
@@ -724,7 +730,7 @@ const persistCurrentProjectContext = async (
     selectedConversation &&
     selectedConversation.scope_mode === "Implement" &&
     selectedConversation.task_id &&
-    taskIdSet.has(selectedConversation.task_id)
+    isProjectTaskReference(selectedConversation.task_id)
       ? selectedConversation.id
       : null;
   const implementConversationId =

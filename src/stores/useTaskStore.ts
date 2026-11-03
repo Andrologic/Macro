@@ -27,7 +27,7 @@ import { useAppStore } from './useAppStore';
 import { useChatStore } from './useChatStore';
 import { isConversationRuntimeActive } from './chat/chatRuntimeState';
 import { loadPlanLifecycleSagas } from '../services/planLifecycleSaga';
-import { getTaskBusinessId, resolveTaskReference, toPlanLocatorKey } from '../services/durableIdentity';
+import { getTaskBusinessId, resolveTaskReference, taskReferenceMatches, toPlanLocatorKey } from '../services/durableIdentity';
 import { useGitStore } from './useGitStore';
 import { useTerminalStore } from './useTerminalStore';
 import {
@@ -2406,7 +2406,7 @@ export const useTaskStore = create<TaskStore>((set, get) => {
     const conversationIds = new Set<string>();
     if (task?.conversation_id) conversationIds.add(task.conversation_id);
     for (const conversation of chatState.conversations) {
-      if (conversation.task_id === taskId) conversationIds.add(conversation.id);
+      if (task && taskReferenceMatches(get().tasks, task, conversation.task_id)) conversationIds.add(conversation.id);
     }
     return [...conversationIds].some((conversationId) =>
       isConversationRuntimeActive(chatState.conversationRuntimeById[conversationId]),

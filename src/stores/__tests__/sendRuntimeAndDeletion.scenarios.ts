@@ -1368,6 +1368,51 @@ export const registerSendRuntimeAndDeletionScenarios = (
       expect(cancelStreamMock.mock.calls).toEqual([['session-task-1']]);
     });
 
+    it('stops a legacy node-linked stream when its durable task becomes completed', async () => {
+      appState.mode = 'Implement';
+      appState.selectedTaskId = 'task-1';
+      taskStoreState.tasks = [createImplementTask({ status: 'InProgress', node_id: 'legacy-node' })];
+
+      const { cancelStream } = await import('../../services/streamingChat');
+      const cancelStreamMock = cancelStream as unknown as { mockClear: () => void; mock: { calls: unknown[][] } };
+      cancelStreamMock.mockClear();
+
+      const { useChatStore } = await loadChatStore();
+      await Promise.resolve();
+
+      const abortController = new AbortController();
+      useChatStore.setState({
+        conversations: [
+          {
+            ...createConversation('implement-conv'),
+            scope_mode: 'Implement',
+            task_id: 'legacy-node',
+            title: 'Task - Implement checkout',
+          },
+        ],
+        conversationRuntimeById: {
+          'implement-conv': {
+            phase: 'streaming',
+            sessionId: 'session-task-1',
+            assistantMessageId: 'assistant-1',
+            abortController,
+            lastError: null,
+          },
+        },
+        selectedConversationId: 'implement-conv',
+        selectedConversationIdsByMode: { Implement: 'implement-conv' },
+      });
+
+      const previousTasks = taskStoreState.tasks;
+      taskStoreState.tasks = [createImplementTask({ status: 'Completed', node_id: 'legacy-node' })];
+      emitTaskStoreUpdate(previousTasks);
+      await Promise.resolve();
+
+      expect(useChatStore.getState().getConversationRuntime('implement-conv').phase).toBe('idle');
+      expect(abortController.signal.aborted).toBe(true);
+      expect(cancelStreamMock.mock.calls).toEqual([['session-task-1']]);
+    });
+
     it('keeps an active Implement stream running for non-completed task transitions', async () => {
       appState.mode = 'Implement';
       appState.selectedTaskId = 'task-1';
@@ -1564,6 +1609,7 @@ export const registerSendRuntimeAndDeletionScenarios = (
 
       expect(useChatStore.getState().conversations).toEqual([]);
       expect(useChatStore.getState().getConversationMessages('chat-1')).toEqual([]);
+      expect(useChatStore.getState().messageLoadStatusByConversationId['chat-1']).toBeUndefined();
     });
 
     it('persists and resumes toolbox cleanup after a conversation deletion commits', async () => {

@@ -2702,7 +2702,8 @@ export const useChatStore = create<ChatStore>((set, get) => {
           loadedMessages,
         );
       } catch (error) {
-      lifecycle?.assertActive();
+        if (lifecycle && !lifecycle.isActive()) throw error;
+        if (deletedConversationIds.has(conversationId)) return;
         set((state) => ({
           messageLoadStatusByConversationId: {
             ...state.messageLoadStatusByConversationId,
@@ -2711,6 +2712,14 @@ export const useChatStore = create<ChatStore>((set, get) => {
           lastError: toServiceError(error).message,
         }));
         throw error;
+      } finally {
+        set((state) => {
+          if (state.messageLoadStatusByConversationId[conversationId] !== "loading") return state;
+          const statuses = { ...state.messageLoadStatusByConversationId };
+          if (deletedConversationIds.has(conversationId)) delete statuses[conversationId];
+          else statuses[conversationId] = "idle";
+          return { messageLoadStatusByConversationId: statuses };
+        });
       }
     })();
 
@@ -2995,8 +3004,8 @@ export const useChatStore = create<ChatStore>((set, get) => {
   };
 
   const stopActiveStreamsForCompletedTasks = (
-    previousTasks: Pick<ImplementTask, "id" | "status">[],
-    nextTasks: Pick<ImplementTask, "id" | "status">[],
+    previousTasks: Pick<ImplementTask, "id" | "status" | "node_id">[],
+    nextTasks: Pick<ImplementTask, "id" | "status" | "node_id">[],
   ) => {
     const previousStatusByTaskId = new Map(
       previousTasks.map((task) => [task.id, task.status]),
@@ -3019,7 +3028,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
       if (
         conversation.scope_mode === "Implement" &&
         conversation.task_id &&
-        completedTaskIds.has(conversation.task_id)
+        completedTaskIds.has(resolveTaskReference(nextTasks, conversation.task_id)?.id ?? "")
       ) {
         stopConversationRuntimeLocally(conversation.id);
       }
@@ -3127,8 +3136,8 @@ export const useChatStore = create<ChatStore>((set, get) => {
         }
 
         stopActiveStreamsForCompletedTasks(
-          previousState.tasks as Pick<ImplementTask, "id" | "status">[],
-          nextState.tasks as Pick<ImplementTask, "id" | "status">[],
+          previousState.tasks,
+          nextState.tasks,
         );
         scheduleImplementAwaitingResponseReconciliation();
       },
@@ -4041,13 +4050,36 @@ export const useChatStore = create<ChatStore>((set, get) => {
     const assertCurrent = () => {
       if (params.isCurrent && !params.isCurrent()) throw new ChatTurnSupersededError();
     };
-    const waitForCurrentCompaction = async <T>(pending: Promise<T>): Promise<T> => {
-      try { return await pending; } finally { assertCurrent(); }
-    };
     assertCurrent();
-    const toolDefinitions = getToolDefinitionsForIds(params.allowedToolIds);
     const previousCompactionStatus =
       get().conversationCompactionStatusById[params.conversationId] ?? null;
+    let statusBeforeNewCompaction = isTransientCompactionStatus(previousCompactionStatus)
+      ? null : previousCompactionStatus;
+    let ownedCompactionStatus = previousCompactionStatus;
+    const restoreCompactionStatus = () => {
+      // A superseded request must not clear the activity of its replacement.
+      if ((get().conversationCompactionStatusById[params.conversationId] ?? null) !== ownedCompactionStatus) return;
+      clearLatestRunningSessionCompactionEvent(params.conversationId, params.mode);
+      setConversationCompactionStatus(params.conversationId, statusBeforeNewCompaction);
+    };
+    const waitForCurrentCompaction = async <T>(pending: Promise<T>): Promise<T> => {
+      try {
+        return await pending;
+      } finally {
+        if (params.isCurrent && !params.isCurrent()) restoreCompactionStatus();
+        assertCurrent();
+      }
+    };
+    if (params.mode === "safety_prestream") {
+      setConversationCompactionStatus(params.conversationId, {
+        ...previousCompactionStatus,
+        phase: "safety_compacting",
+        kind: params.mode,
+        updatedAt: new Date().toISOString(),
+      });
+      ownedCompactionStatus = get().conversationCompactionStatusById[params.conversationId] ?? null;
+    }
+    const toolDefinitions = getToolDefinitionsForIds(params.allowedToolIds);
     const currentCompactionState = await waitForCurrentCompaction(getConversationCompactionState(
       params.conversationId,
     ));
@@ -4055,23 +4087,11 @@ export const useChatStore = create<ChatStore>((set, get) => {
       .reverse()
       .find((message) => message.role === "assistant")
       ?.completion_reason ?? null;
-    if (isTransientCompactionStatus(previousCompactionStatus)) {
-      const persistedStatus = currentCompactionState
+    if (!previousCompactionStatus || isTransientCompactionStatus(previousCompactionStatus)) {
+      statusBeforeNewCompaction = currentCompactionState
         ? resolveCompactionStatusFromState(currentCompactionState)
         : null;
-      const restoredStatus: ConversationCompactionStatus = {
-        ...persistedStatus,
-        ...previousCompactionStatus,
-        phase: previousCompactionStatus.phase,
-      };
-      setConversationCompactionStatus(
-        params.conversationId,
-        restoredStatus,
-      );
     }
-    const statusBeforeNewCompaction =
-      get().conversationCompactionStatusById[params.conversationId] ??
-      previousCompactionStatus;
     const { footprintFields } = getSelectedModelContext(
       params.providerId,
       params.modelId,
@@ -4138,6 +4158,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
             statusBeforeNewCompaction,
             params.displayAfterMessageId,
           );
+          ownedCompactionStatus = get().conversationCompactionStatusById[params.conversationId] ?? null;
         },
         generateSummary: (input) =>
           generateCompactionSummary(
@@ -4149,9 +4170,8 @@ export const useChatStore = create<ChatStore>((set, get) => {
           ),
       }));
     } catch (error) {
+      restoreCompactionStatus();
       assertCurrent();
-      clearLatestRunningSessionCompactionEvent(params.conversationId, params.mode);
-      setConversationCompactionStatus(params.conversationId, statusBeforeNewCompaction);
       await waitForCurrentCompaction(recordConversationCompactionEvent({
         conversationId: params.conversationId,
         trigger: getCompactionEventTrigger(params.mode),
@@ -13265,6 +13285,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
           if (!(contextKey in next)) return state;
           delete next[contextKey];
         } else {
+          delete next[contextKey];
           next[contextKey] = {
             text: draft.text,
             images: [...draft.images],

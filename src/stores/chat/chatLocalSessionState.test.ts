@@ -160,24 +160,26 @@ describe("chatLocalSessionState", () => {
     });
   });
 
-  it("preserves corrupt image storage and reports failed writes", () => {
+  it("repairs corrupt image storage with a valid new value", () => {
     window.localStorage.setItem("macro_chat_message_images", '{"message":[{"dataUrl":"bad"}]}');
     const raw = window.localStorage.getItem("macro_chat_message_images");
     expect(loadMessageImagesFromStorage()).toEqual({});
-    expect(saveMessageImagesToStorage({})).toBe(false);
     expect(window.localStorage.getItem("macro_chat_message_images")).toBe(raw);
-    expect(usePersistenceHealth.getState().issues.macro_chat_message_images).toBeDefined();
+    expect(saveMessageImagesToStorage({})).toBe(true);
+    expect(window.localStorage.getItem("macro_chat_message_images")).toBe("{}");
+    expect(usePersistenceHealth.getState().issues.macro_chat_message_images).toBeUndefined();
   });
 
-  it("recovers valid images beside an invalid image without replacing the raw history", () => {
+  it("saves recovered images beside an invalid image", () => {
     const image = { id: "valid", mimeType: "image/png", dataUrl: "data:image/png;base64,YQ==", createdAt: "2026-09-05T10:00:00Z" };
     const raw = JSON.stringify({ message: [image, { id: "invalid", dataUrl: "bad" }] });
     window.localStorage.setItem("macro_chat_message_images", raw);
     const recovered = loadMessageImagesFromStorage();
     expect(recovered).toEqual({ message: [image] });
-    expect(saveMessageImagesToStorage(recovered)).toBe(false);
     expect(window.localStorage.getItem("macro_chat_message_images")).toBe(raw);
-    expect(usePersistenceHealth.getState().issues.macro_chat_message_images).toBeDefined();
+    expect(saveMessageImagesToStorage(recovered)).toBe(true);
+    expect(loadMessageImagesFromStorage()).toEqual(recovered);
+    expect(usePersistenceHealth.getState().issues.macro_chat_message_images).toBeUndefined();
   });
 
   it("rejects oversized history before parsing it", () => {
@@ -388,10 +390,6 @@ describe("chatLocalSessionState", () => {
     expect(saveComposerDraftsToStorage(previous)).toBe(true);
     const previousRaw = window.localStorage.getItem(COMPOSER_DRAFTS_STORAGE_KEY);
     const overLimitCases: Array<Record<string, PersistedComposerDraft>> = [
-      Object.fromEntries(Array.from({ length: 51 }, (_, index) => [
-        `conversation:${index}`,
-        { text: "draft", images: [], contextRefs: [] },
-      ])),
       { "conversation:text": { text: "x".repeat(200_001), images: [], contextRefs: [] } },
       { "conversation:images": { text: "draft", images: Array.from({ length: 11 }, () => image), contextRefs: [] } },
       { "conversation:refs": { text: "draft", images: [], contextRefs: Array.from({ length: 51 }, () => reference) } },
@@ -415,8 +413,8 @@ describe("chatLocalSessionState", () => {
     const restored = loadComposerDraftsFromStorage();
 
     expect(Object.keys(restored)).toHaveLength(50);
-    expect(restored["conversation:0"]?.text).toBe("draft-0");
-    expect(restored["conversation:50"]).toBeUndefined();
+    expect(restored["conversation:50"]?.text).toBe("draft-50");
+    expect(restored["conversation:0"]).toBeUndefined();
     expect(window.localStorage.getItem(COMPOSER_DRAFTS_STORAGE_KEY)).toBe(raw);
     expect(usePersistenceHealth.getState().issues[COMPOSER_DRAFTS_STORAGE_KEY]).toContain("recovered");
   });
@@ -433,6 +431,71 @@ describe("chatLocalSessionState", () => {
     });
     expect(window.localStorage.getItem(COMPOSER_DRAFTS_STORAGE_KEY)).toBe(raw);
     expect(usePersistenceHealth.getState().issues[COMPOSER_DRAFTS_STORAGE_KEY]).toContain("original data");
+  });
+
+  for (const broken of ['not-json', JSON.stringify({ bad: { text: 123 } })]) {
+    it(`repairs damaged draft storage on the next valid save: ${broken}`, () => {
+      window.localStorage.setItem(COMPOSER_DRAFTS_STORAGE_KEY, broken);
+      const valid = { current: { text: "new", images: [], contextRefs: [] } };
+      expect(saveComposerDraftsToStorage(valid)).toBe(true);
+      expect(loadComposerDraftsFromStorage()).toEqual(valid);
+      expect(usePersistenceHealth.getState().issues).toEqual({});
+    });
+  }
+
+  it("evicts the oldest composer drafts above 50 contexts", () => {
+    const drafts = Object.fromEntries(Array.from({ length: 51 }, (_, index) => [
+      `context:${index}`, { text: `draft-${index}`, images: [], contextRefs: [] },
+    ]));
+    expect(saveComposerDraftsToStorage(drafts)).toBe(true);
+    const restored = loadComposerDraftsFromStorage();
+    expect(Object.keys(restored)).toHaveLength(50);
+    expect(restored["context:0"]).toBeUndefined();
+    expect(restored["context:50"]).toEqual(drafts["context:50"]);
+    expect(Object.keys(drafts)).toHaveLength(51);
+  });
+
+  it("evicts oldest message entries at the count and serialized size limits", () => {
+    const images = Object.fromEntries(Array.from({ length: 2001 }, (_, index) => [`message:${index}`, []]));
+    expect(saveMessageImagesToStorage(images)).toBe(true);
+    expect(Object.keys(loadMessageImagesFromStorage())).toHaveLength(2000);
+    expect(loadMessageImagesFromStorage()["message:0"]).toBeUndefined();
+    const image = { id: "image", mimeType: "image/png", dataUrl: `data:image/png;base64,${"A".repeat(8_000_000)}`, createdAt: "2026-09-05T10:00:00Z" };
+    const large = Object.fromEntries(Array.from({ length: 5 }, (_, index) => [`message:${index}`, [image]]));
+    expect(saveMessageImagesToStorage(large)).toBe(true);
+    expect(Object.keys(loadMessageImagesFromStorage())).toEqual(["message:1", "message:2", "message:3", "message:4"]);
+  });
+
+  for (const kind of ["drafts", "images"] as const) {
+    it(`evicts the oldest ${kind} and retries quota errors`, () => {
+      const storage = window.localStorage;
+      const write = storage.setItem.bind(storage);
+      let writes = 0;
+      storage.setItem = (key, value) => {
+        writes += 1;
+        if (Object.keys(JSON.parse(value)).length > 1) throw new DOMException("quota", "QuotaExceededError");
+        write(key, value);
+      };
+      const image = { id: "image", mimeType: "image/png", dataUrl: "data:image/png;base64,YQ==", createdAt: "2026-09-05T10:00:00Z" };
+      if (kind === "drafts") {
+        const draft = { text: "new", images: [], contextRefs: [] };
+        expect(saveComposerDraftsToStorage({ old: draft, newest: draft })).toBe(true);
+        expect(loadComposerDraftsFromStorage()).toEqual({ newest: draft });
+      } else {
+        expect(saveMessageImagesToStorage({ old: [image], newest: [image] })).toBe(true);
+        expect(loadMessageImagesFromStorage()).toEqual({ newest: [image] });
+      }
+      expect(writes).toBe(2);
+      expect(usePersistenceHealth.getState().issues).toEqual({});
+    });
+  }
+
+  it("rejects invalid new image content while allowing replacement of broken JSON", () => {
+    window.localStorage.setItem("macro_chat_message_images", "not-json");
+    expect(saveMessageImagesToStorage({ message: [{ dataUrl: "bad" }] } as never)).toBe(false);
+    expect(window.localStorage.getItem("macro_chat_message_images")).toBe("not-json");
+    expect(saveMessageImagesToStorage({ message: [] })).toBe(true);
+    expect(loadMessageImagesFromStorage()).toEqual({ message: [] });
   });
 
   it("ignores invalid composer draft storage without throwing", () => {
