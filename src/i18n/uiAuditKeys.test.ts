@@ -12,6 +12,11 @@ const REQUIRED_UI_KEYS = [
   'startup.metadataRecovery.blockedConflictDescription',
   'startup.metadataRecovery.blockedDirtyDescription',
   'notifications.mcpServersUnavailable',
+  ...[
+    'promptArchitect', 'promptImplement', 'promptChat', 'promptPlanExplorer',
+    'promptTaskReviewer', 'promptRepoAuditor', 'promptGoalAuditor', 'smartCommitPrompt',
+  ].flatMap(key => [`prompts.editors.${key}.label`, `prompts.editors.${key}.description`]),
+  ...['online', 'degraded', 'offline', 'unconfigured'].map(status => `tools.mcp.status.${status}`),
 ] as const;
 
 const readTranslationKey = (translation: unknown, key: string): unknown =>
@@ -23,7 +28,7 @@ const readTranslationKey = (translation: unknown, key: string): unknown =>
   }, translation);
 
 describe('UI audit translation keys', () => {
-  it('defines metadata recovery and MCP warning text in every supported locale', async () => {
+  it('defines recovery messages, prompt editors and MCP statuses in every supported locale', async () => {
     for (const language of SUPPORTED_LANGUAGE_CODES) {
       const translation = await loadTranslation(language);
 
