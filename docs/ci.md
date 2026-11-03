@@ -1,6 +1,8 @@
 # Continuous integration and release governance
 
-Macro uses two GitHub Actions workflows with deliberately different cost profiles.
+Macro uses four GitHub Actions workflows: `ci.yml`, `preview.yml`,
+`publish-update-channel.yml`, and `release.yml`. They validate changes, build
+previews, publish update-channel manifests, and prepare stable releases.
 
 ## Local validation gate
 
@@ -20,13 +22,15 @@ request workflow:
 | --- | --- |
 | Every push | Whitespace errors in the pushed range, version manifests, and tracked-binary policy |
 | JavaScript or TypeScript | ESLint on changed files plus changed, sibling, and direct-relative-importing test files |
+| Frontend, extracted native modules, architecture tooling, `package.json`, or `vite.config.ts` | Import-boundary check with `architecture:check` |
+| Copilot bridge, shared tools, generated IPC types, Copilot fixtures, Bun manifests, or CI scripts | `typecheck:copilot` |
 | Rust | `cargo fmt --check` when an existing Rust source changes |
 | Workflows or CI scripts | Workflow syntax and repository Actions policy |
 | Bun manifests or lockfile | Frozen lockfile consistency, without installing packages |
 | Locales or i18n tooling | Translation audit |
 | Updater manifests or tooling | Updater configuration preflight |
 
-The hook never installs dependencies, type-checks the whole application, builds
+The hook never installs dependencies, type-checks the whole frontend, builds
 the frontend, or runs a complete frontend or Rust suite. If a selected check
 needs missing dependencies, it exits with an instruction to run `bun install`
 once. Use `bun run ci` whenever an exhaustive local rehearsal is useful. GitHub
@@ -70,11 +74,17 @@ The always-present `Classify changes` check compares pull requests from their me
 | Draft pull request | `Classify changes` only |
 | Documentation or issue templates only | `Classify changes` only |
 | Frontend or shared UI code | Classification and `Linux validation` |
-| Rust, Tauri, or AI sidecar code | Classification, `Linux validation`, and `Windows native check` |
-| Workflows, manifests, lockfiles, or build scripts | All three checks, conservatively |
-| Unclassified path | All three checks, conservatively |
+| Rust, Tauri, or AI sidecar code | Classification, `Linux validation`, `Windows native check`, and `macOS native recovery smoke` |
+| Workflows, manifests, lockfiles, or build scripts | All four checks, conservatively |
+| Unclassified path | All four checks, conservatively |
 
-`Linux validation` keeps frontend checks in one runner and adds Rust checks only when native or configuration files are involved. `Windows native check` performs a focused `cargo check`; it does not duplicate frontend tests or build an installer. Ordinary CI never uses a macOS runner.
+`Linux validation` keeps frontend checks in one runner and adds Rust checks only
+when native or configuration files are involved. `Windows native check` runs the
+`windows-core` profile for native changes, adds the sidecar profile when needed,
+and uses the conservative `windows` profile for configuration changes. It also
+runs `dev/ci/native-recovery-smoke.mjs` for migration, recovery, and updater
+coverage. It does not build an installer. `macOS native recovery smoke` runs the
+same smoke script on `macos-15` for native or configuration changes.
 
 All actions are pinned to immutable commits, checkouts do not persist credentials, jobs have timeouts, and ordinary CI has read-only repository permissions. Pull requests from forks therefore receive the same validation without repository write access or release secrets.
 
@@ -127,7 +137,7 @@ Repository administrators must apply the following settings manually. Workflow f
 For `develop`:
 
 - require a pull request and resolved conversations;
-- require `Classify changes`, `Linux validation`, and `Windows native check`;
+- require `Classify changes`, `Linux validation`, `Windows native check`, and `macOS native recovery smoke`;
 - require the job checks themselves (job-level `skipped` conclusions are acceptable; do not add workflow-level path filters that leave checks pending);
 - block direct pushes except, if desired, a narrowly scoped administrator break-glass account;
 - block force-pushes and deletion.
@@ -135,7 +145,7 @@ For `develop`:
 For `main`:
 
 - require a pull request from a release or hotfix branch and resolved conversations;
-- require the same three checks;
+- require the same four checks;
 - block all direct pushes, force-pushes, and deletion.
 
 Use GitHub rulesets or equivalent branch protection. Confirm the exact check names after the workflows have run once on an authorized pull request.

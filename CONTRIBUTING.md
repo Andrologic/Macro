@@ -50,8 +50,10 @@ feature branches and against `origin/main` for release and hotfix branches. It
 always checks pushed whitespace, versions, and tracked binaries. It then runs
 ESLint for changed scripts and related tests for changed TypeScript,
 `cargo fmt --check` for changed Rust, and the relevant dependency-lock,
-workflow, updater, or translation policy checks. It does not install
-dependencies or run repository-wide typechecks, builds, or test suites.
+workflow, updater, or translation policy checks. Changes affecting domain
+boundaries also run the import-boundary guard. Copilot bridge inputs, Bun
+manifests, and CI scripts trigger `typecheck:copilot`. The gate does not install
+dependencies or run repository-wide frontend typechecks, builds, or test suites.
 
 GitHub's pull request checks are the merge authority and run the exhaustive
 profiles on clean runners. Use `bun run ci` when a full validation is useful
@@ -68,7 +70,7 @@ a transient infrastructure failure.
 
 ## CI Cost Model
 
-The change classifier always reports a check. Draft pull requests and documentation-only changes stop there. Frontend changes add one Linux job; Rust, Tauri, sidecar, workflow, manifest, lockfile, and build-script changes also add a focused Windows native check. macOS and full desktop installers are reserved for authorized release tags.
+The change classifier always reports a check. Draft pull requests and documentation-only changes stop there. Frontend changes add one Linux job; Rust, Tauri, sidecar, workflow, manifest, lockfile, and build-script changes also add Windows native validation and a macOS recovery smoke job. Full desktop installers are built by the release and preview workflows.
 
 See [`docs/ci.md`](docs/ci.md) for path classification details, required branch and tag rules, and protected release-environment setup.
 
