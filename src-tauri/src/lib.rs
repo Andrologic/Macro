@@ -137,7 +137,6 @@ use core::{
     apply_runtime_workspace, finalize_desktop_workspace_path, init_logging,
     init_process_environment, load_config,
 };
-use fs::watcher::init_watcher;
 use git::GitState;
 use serde::Serialize;
 use std::sync::{
@@ -147,9 +146,7 @@ use std::sync::{
 #[cfg(target_os = "macos")]
 use tauri::utils::config::Color;
 #[cfg(all(feature = "browser-runtime-debug", not(debug_assertions)))]
-compile_error!(
-    "La fonctionnalité browser-runtime-debug est strictement réservée aux builds debug."
-);
+compile_error!("The browser-runtime-debug feature is only available in debug builds.");
 
 #[cfg(all(debug_assertions, feature = "browser-runtime-debug"))]
 use tauri::Listener;
@@ -165,6 +162,7 @@ pub type WorkspaceRoot = Arc<RwLock<std::path::PathBuf>>;
 #[cfg(all(debug_assertions, feature = "browser-runtime-debug"))]
 fn install_browser_runtime_event_relays(app: &tauri::AppHandle) {
     const EVENTS: &[&str] = &[
+        "app-update://download-progress",
         "ai:auth-success",
         "ai:auth-cancelled",
         "ai:auth-error",
@@ -723,10 +721,8 @@ pub fn run() {
             )?;
             app.manage(tool_host_config);
 
-            // Initialize file system watcher
-            if let Err(e) = init_watcher(app, workspace_path) {
-                tracing::warn!("Failed to initialize file system watcher: {}", e);
-            }
+            // No frontend consumer subscribes to fs:change. Keep the watcher
+            // dormant until a consumer and workspace-root retargeting exist.
 
             // Initialize database asynchronously
             tauri::async_runtime::spawn(async move {
