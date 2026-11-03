@@ -361,7 +361,7 @@ export const loadComposerDraftsFromStorage = (): Record<
     if (parsed.damaged) {
       reportPersistenceIssue(
         COMPOSER_DRAFTS_STORAGE_KEY,
-        "Some stored composer drafts could not be restored. Valid drafts were recovered; the original data was preserved.",
+        "Some stored composer drafts could not be restored. Valid drafts were recovered; the damaged entries will be discarded on the next save.",
       );
     } else {
       clearPersistenceIssue(COMPOSER_DRAFTS_STORAGE_KEY);
@@ -386,13 +386,25 @@ const writeEntriesWithEviction = (
   maxLength = Infinity,
 ): void => {
   const retained = entries.slice(-maxEntries);
+  // Serialized size of each `"key":value,` member, so trimming to a budget costs
+  // one pass instead of re-serializing the whole map per evicted entry.
+  const sizes = retained.map(([entryKey, value]) =>
+    JSON.stringify(entryKey).length + (JSON.stringify(value) ?? "null").length + 2);
+  let total = sizes.reduce((sum, size) => sum + size, 1);
+  const trimTo = (budget: number) => {
+    while (retained.length > 1 && total > budget) {
+      retained.shift();
+      total -= sizes.shift()!;
+    }
+  };
+  trimTo(maxLength);
   while (true) {
     const serialized = JSON.stringify(Object.fromEntries(retained));
-    if (serialized.length > maxLength && retained.length > 1) {
-      retained.shift();
+    if (serialized.length > maxLength) {
+      if (retained.length <= 1) throw new Error("Storage entry exceeds the storage limit.");
+      trimTo(Math.min(total - 1, maxLength));
       continue;
     }
-    if (serialized.length > maxLength) throw new Error("Storage entry exceeds the storage limit.");
     try {
       window.localStorage.setItem(key, serialized);
       return;
@@ -402,7 +414,8 @@ const writeEntriesWithEviction = (
         error.name === "NS_ERROR_DOM_QUOTA_REACHED"
       );
       if (!quotaExceeded || retained.length <= 1) throw error;
-      retained.shift();
+      // Shrink by a fifth per quota failure: few attempts, bounded over-eviction.
+      trimTo(Math.min(total - 1, Math.floor(serialized.length * 0.8)));
     }
   }
 };
@@ -516,7 +529,7 @@ const parseMessageImages = (raw: string, recover = false, bounded = true): Recor
   }
   if (damaged) {
     if (!recover) throw new Error("Invalid stored message images. Original data preserved.");
-    reportPersistenceIssue(MESSAGE_IMAGES_STORAGE_KEY, "Some stored message images are invalid. Valid images were recovered; the original data is preserved.");
+    reportPersistenceIssue(MESSAGE_IMAGES_STORAGE_KEY, "Some stored message images are invalid. Valid images were recovered; the invalid entries will be discarded on the next save.");
   }
   return Object.fromEntries(valid);
 };

@@ -419,7 +419,7 @@ describe("chatLocalSessionState", () => {
     expect(usePersistenceHealth.getState().issues[COMPOSER_DRAFTS_STORAGE_KEY]).toContain("recovered");
   });
 
-  it("recovers valid drafts beside invalid content and preserves the original value", () => {
+  it("recovers valid drafts beside invalid content and replaces damaged entries on the next save", () => {
     const raw = JSON.stringify({
       "conversation:valid": { text: "kept", images: [], contextRefs: [] },
       "conversation:invalid": { text: "x".repeat(200_001), images: [], contextRefs: [] },
@@ -430,7 +430,7 @@ describe("chatLocalSessionState", () => {
       "conversation:valid": { text: "kept", images: [], contextRefs: [] },
     });
     expect(window.localStorage.getItem(COMPOSER_DRAFTS_STORAGE_KEY)).toBe(raw);
-    expect(usePersistenceHealth.getState().issues[COMPOSER_DRAFTS_STORAGE_KEY]).toContain("original data");
+    expect(usePersistenceHealth.getState().issues[COMPOSER_DRAFTS_STORAGE_KEY]).toContain("discarded on the next save");
   });
 
   for (const broken of ['not-json', JSON.stringify({ bad: { text: 123 } })]) {
@@ -489,6 +489,24 @@ describe("chatLocalSessionState", () => {
       expect(usePersistenceHealth.getState().issues).toEqual({});
     });
   }
+
+  it("bounds quota retries when many entries exceed the storage quota", () => {
+    const storage = window.localStorage;
+    const write = storage.setItem.bind(storage);
+    let writes = 0;
+    storage.setItem = (key, value) => {
+      writes += 1;
+      if (value.length > 20_000) throw new DOMException("quota", "QuotaExceededError");
+      write(key, value);
+    };
+    const image = { id: "image", mimeType: "image/png", dataUrl: `data:image/png;base64,${"A".repeat(1_000)}`, createdAt: "2026-09-05T10:00:00Z" };
+    const images = Object.fromEntries(Array.from({ length: 1_000 }, (_, index) => [`message:${index}`, [image]]));
+    expect(saveMessageImagesToStorage(images)).toBe(true);
+    const kept = Object.keys(loadMessageImagesFromStorage());
+    expect(kept.at(-1)).toBe("message:999");
+    expect(kept.length).toBeGreaterThan(10);
+    expect(writes).toBeLessThan(30);
+  });
 
   it("rejects invalid new image content while allowing replacement of broken JSON", () => {
     window.localStorage.setItem("macro_chat_message_images", "not-json");
