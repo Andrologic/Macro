@@ -1,10 +1,9 @@
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
-import { defineConfig, loadEnv, transformWithEsbuild } from "vite";
+import { defineConfig, loadEnv, transformWithEsbuild, type UserConfig } from "vite";
 import react from "@vitejs/plugin-react";
 
-// @ts-expect-error process is a nodejs global
 const host = process.env.TAURI_DEV_HOST;
 const projectRoot = dirname(fileURLToPath(import.meta.url));
 const ALLOWED_PUBLIC_SECRET_FILES = new Set(["ai-keys.local.example.json"]);
@@ -177,7 +176,7 @@ const manualVendorChunk = (id: string): string | undefined => {
     return "react-vendor";
   }
 
-  if (hasNodePackage(moduleId, "zustand") || hasNodePackage(moduleId, "jotai")) {
+  if (hasNodePackage(moduleId, "zustand")) {
     return "state-vendor";
   }
 
@@ -293,11 +292,7 @@ const manualVendorChunk = (id: string): string | undefined => {
     return "diagram-d3-vendor";
   }
 
-  if (
-    hasNodePackage(moduleId, "dagre-d3-es") ||
-    hasNodePackage(moduleId, "dagre") ||
-    hasNodePackage(moduleId, "graphlib")
-  ) {
+  if (hasNodePackage(moduleId, "dagre-d3-es")) {
     return "diagram-layout-vendor";
   }
 
@@ -430,7 +425,7 @@ const PUBLIC_VITE_ENV_KEYS = [
   'VITE_REMOTE_WORKSPACE_ID',
 ] as const;
 
-export default defineConfig(({ command, mode }) => {
+export default defineConfig(({ command, mode }): UserConfig => {
   const appVersion = readPackageVersion(projectRoot);
   const loadedEnv = loadEnv(mode, projectRoot, '');
   const publicDefines = Object.fromEntries(PUBLIC_VITE_ENV_KEYS.map((key) => [
@@ -475,6 +470,8 @@ export default defineConfig(({ command, mode }) => {
       }),
     ],
 
+    esbuild: { legalComments: 'none' },
+
     // =============================================================================
     // BUILD OPTIMIZATIONS - Code Splitting & Chunking
     // =============================================================================
@@ -488,20 +485,12 @@ export default defineConfig(({ command, mode }) => {
       terserOptions: {
         compress: {
           passes: 2,
+          drop_console: process.env.NODE_ENV === 'production',
+          drop_debugger: process.env.NODE_ENV === 'production',
         },
         format: {
           comments: false,
         },
-      },
-
-      // Aggressive esbuild options
-      esbuildOptions: {
-        // Remove console.log in production
-        drop: process.env.NODE_ENV === 'production' ? ['console', 'debugger'] : [],
-        // Legal comments handling
-        legalComments: 'none',
-        // Target modern engines
-        target: 'esnext',
       },
 
       // Code splitting configuration

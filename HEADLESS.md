@@ -68,9 +68,15 @@ Current endpoints include:
 - `GET /v1/tools/mode-policy?mode=Architect|Chat|Implement`
 - `POST /v1/tools/validate`
 - `POST /v1/tools/execute`
+- `GET /v1/tools/executions/{execution_id}`
+- `POST /v1/tools/checkpoint-snapshot`
+- `POST /v1/tools/cancel`
 - `GET /api/v1/tools/mode-policy?mode=Architect|Chat|Implement`
 - `POST /api/v1/tools/validate`
 - `POST /api/v1/tools/execute`
+- `GET /api/v1/tools/executions/{execution_id}`
+- `POST /api/v1/tools/checkpoint-snapshot`
+- `POST /api/v1/tools/cancel`
 - `GET /api/v1/workspace/bootstrap`
 - `GET /api/v1/workspaces/{workspace_id}/bootstrap`
 - `GET /api/v1/workspace/tasks`
