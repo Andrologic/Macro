@@ -4053,7 +4053,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
     assertCurrent();
     const previousCompactionStatus =
       get().conversationCompactionStatusById[params.conversationId] ?? null;
-    let statusBeforeNewCompaction = isTransientCompactionStatus(previousCompactionStatus)
+    let statusBeforeNewCompaction: ConversationCompactionStatus | null = isTransientCompactionStatus(previousCompactionStatus)
       ? null : previousCompactionStatus;
     let ownedCompactionStatus = previousCompactionStatus;
     const restoreCompactionStatus = () => {
