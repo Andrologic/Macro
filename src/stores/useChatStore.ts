@@ -4087,10 +4087,26 @@ export const useChatStore = create<ChatStore>((set, get) => {
       .reverse()
       .find((message) => message.role === "assistant")
       ?.completion_reason ?? null;
+    const persistedCompactionStatus = currentCompactionState
+      ? resolveCompactionStatusFromState(currentCompactionState)
+      : null;
     if (!previousCompactionStatus || isTransientCompactionStatus(previousCompactionStatus)) {
-      statusBeforeNewCompaction = currentCompactionState
-        ? resolveCompactionStatusFromState(currentCompactionState)
-        : null;
+      statusBeforeNewCompaction = persistedCompactionStatus;
+    }
+    const liveCompactionStatus =
+      get().conversationCompactionStatusById[params.conversationId] ?? null;
+    if (
+      persistedCompactionStatus
+      && isTransientCompactionStatus(liveCompactionStatus)
+      && liveCompactionStatus === ownedCompactionStatus
+    ) {
+      // Keep the persisted summary visible while the transient phase runs.
+      setConversationCompactionStatus(params.conversationId, {
+        ...persistedCompactionStatus,
+        ...liveCompactionStatus,
+        phase: liveCompactionStatus.phase,
+      });
+      ownedCompactionStatus = get().conversationCompactionStatusById[params.conversationId] ?? null;
     }
     const { footprintFields } = getSelectedModelContext(
       params.providerId,
