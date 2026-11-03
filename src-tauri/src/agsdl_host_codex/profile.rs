@@ -503,12 +503,14 @@ mod tests {
     #[test]
     fn bootstrap_is_stable_and_changes_are_refused_without_deleting_data() {
         let private = tempfile::tempdir().unwrap();
-        let context = private.path().join("context");
-        let path = bootstrap(private.path(), &context).unwrap();
-        assert_eq!(bootstrap(private.path(), &context).unwrap(), path);
+        // Bootstrap requires a canonical path; macOS temp dirs sit behind /var -> /private/var.
+        let root = private.path().canonicalize().unwrap();
+        let context = root.join("context");
+        let path = bootstrap(&root, &context).unwrap();
+        assert_eq!(bootstrap(&root, &context).unwrap(), path);
         std::fs::write(path.join("foreign"), "synthetic").unwrap();
         assert_eq!(
-            bootstrap(private.path(), &context).unwrap_err().code,
+            bootstrap(&root, &context).unwrap_err().code,
             "CODEX_CONTEXT_UNQUALIFIED"
         );
         assert_eq!(
@@ -518,7 +520,7 @@ mod tests {
         std::fs::remove_file(path.join("foreign")).unwrap();
         std::fs::remove_dir(&path).unwrap();
         assert_eq!(
-            bootstrap(private.path(), &context).unwrap_err().code,
+            bootstrap(&root, &context).unwrap_err().code,
             "CODEX_CONTEXT_UNQUALIFIED"
         );
         assert!(!path.exists());

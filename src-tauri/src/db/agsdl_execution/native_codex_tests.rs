@@ -71,7 +71,7 @@ async fn simulated_codex_resumes_two_activations_keeps_instances_separate_and_jo
 import sys,json,os,subprocess
 from pathlib import Path
 root=Path(__file__).parent
-child=subprocess.Popen(['/usr/bin/sleep','30'],start_new_session=True)
+child=subprocess.Popen(['/bin/sleep','30'],start_new_session=True)
 with (root/'children').open('a') as f:f.write(str(child.pid)+'\n')
 thread=None
 for line in sys.stdin:
@@ -439,7 +439,7 @@ async fn native_stop_receipt_requires_correlated_stop_and_join_and_preserves_pri
             ai.stream_tasks
                 .start(stage.into(), async move {
                     let mut command =
-                        crate::core::process::background_contained_tokio_command("/usr/bin/sleep");
+                        crate::core::process::background_contained_tokio_command("/bin/sleep");
                     command.arg("30");
                     let process =
                         crate::core::process::ContainedBackgroundProcess::spawn(command).unwrap();
