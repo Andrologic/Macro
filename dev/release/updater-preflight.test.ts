@@ -25,7 +25,6 @@ function fixture() {
         '@tauri-apps/plugin-notification': '2.3.3',
         '@tauri-apps/plugin-opener': '2.5.3',
         '@tauri-apps/plugin-process': '2.3.1',
-        '@tauri-apps/plugin-store': '2.4.2',
       },
       devDependencies: { '@tauri-apps/cli': '2.12.4' },
     },
@@ -36,7 +35,6 @@ function fixture() {
       'tauri-plugin-opener = "2"',
       'tauri-plugin-updater = "=2.13.3"',
       'tauri-plugin-process = "2.3.1"',
-      'tauri-plugin-store = "2"',
     ].join('\n'),
     cargoLock: [
       '[[package]]',
@@ -62,10 +60,6 @@ function fixture() {
       '[[package]]',
       'name = "tauri-plugin-process"',
       'version = "2.3.1"',
-      '',
-      '[[package]]',
-      'name = "tauri-plugin-store"',
-      'version = "2.4.4"',
     ].join('\n'),
     tauriConfig: {
       bundle: { createUpdaterArtifacts: true },

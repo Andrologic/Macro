@@ -347,8 +347,7 @@ const manualVendorChunk = (id: string): string | undefined => {
     hasNodePackage(moduleId, "@tauri-apps/plugin-dialog") ||
     hasNodePackage(moduleId, "@tauri-apps/plugin-http") ||
     hasNodePackage(moduleId, "@tauri-apps/plugin-notification") ||
-    hasNodePackage(moduleId, "@tauri-apps/plugin-opener") ||
-    hasNodePackage(moduleId, "@tauri-apps/plugin-store")
+    hasNodePackage(moduleId, "@tauri-apps/plugin-opener")
   ) {
     return "desktop-vendor";
   }
