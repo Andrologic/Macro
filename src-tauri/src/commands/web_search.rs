@@ -928,7 +928,7 @@ mod tests {
         assert_eq!(body.len(), 6);
 
         let error = append_bounded_chunk(&mut body, &[3], 6, "Test").expect_err("over limit");
-        assert!(error.message.contains("limite : 6 octets"));
+        assert!(error.message.contains("limit: 6 bytes"));
         assert_eq!(body.len(), 6, "the overflowing chunk must not be appended");
     }
 
@@ -1050,7 +1050,7 @@ mod tests {
                 .unwrap_err();
             let payload = serde_json::to_value(error).unwrap();
             assert_eq!(payload["code"], "WEB_FETCH_DESTINATION_BLOCKED");
-            assert!(payload["message"].as_str().unwrap().contains("interdit"));
+            assert!(payload["message"].as_str().unwrap().contains("not allowed"));
         }
     }
 

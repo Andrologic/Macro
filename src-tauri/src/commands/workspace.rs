@@ -2120,7 +2120,7 @@ mod tests {
             .diagnostics
             .iter()
             .any(|entry| entry.message.contains("missing")
-                && entry.message.contains("projets restent disponibles")));
+                && entry.message.contains("projects remain available")));
         assert!(manager.get_snapshot(&[healthy.id]).await.is_ok());
         assert_eq!(watcher.subscribed_project_roots().len(), 1);
         let corrupt_metadata = temp.path().join("corrupt-metadata");
@@ -2318,7 +2318,7 @@ mod tests {
         assert!(diagnostic
             .diagnostics
             .iter()
-            .any(|entry| entry.message.contains("charger") && entry.message.contains("project")));
+            .any(|entry| entry.message.contains("Failed to load") && entry.message.contains("project")));
         assert_eq!(
             watcher.subscribed_project_roots(),
             vec![config_root.canonicalize().unwrap()]
@@ -2382,7 +2382,7 @@ mod tests {
         assert!(diagnostic
             .diagnostics
             .iter()
-            .any(|entry| entry.message.contains("charger") && entry.message.contains("project")));
+            .any(|entry| entry.message.contains("Failed to load") && entry.message.contains("project")));
         assert!(watcher.subscribed_project_roots().is_empty());
         assert_eq!(
             watcher.desired_project_roots().get("project"),
