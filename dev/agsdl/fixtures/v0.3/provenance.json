@@ -1112,6 +1112,26 @@
       "upstream": "tooling/tests/test_validator.py",
       "path": "dev/agsdl/fixtures/v0.3/tooling/tests/test_validator.py",
       "sha256": "138960e9bf6c21139b6b0b0eb0b94f4cf7da2bee34077f568fd7ac571da4f767"
+    },
+    {
+      "upstream": "harnesses/codex/CHANGELOG.md",
+      "path": "src/vendor/agsdl/v0.3/harnesses/codex/CHANGELOG.md",
+      "sha256": "8a53d74b5820b36d9d021d120e0d682ec948287b292d2ef9202533ff29a8449e"
+    },
+    {
+      "upstream": "harnesses/claude-code/CHANGELOG.md",
+      "path": "src/vendor/agsdl/v0.3/harnesses/claude-code/CHANGELOG.md",
+      "sha256": "8a53d74b5820b36d9d021d120e0d682ec948287b292d2ef9202533ff29a8449e"
+    },
+    {
+      "upstream": "harnesses/opencode/CHANGELOG.md",
+      "path": "src/vendor/agsdl/v0.3/harnesses/opencode/CHANGELOG.md",
+      "sha256": "8a53d74b5820b36d9d021d120e0d682ec948287b292d2ef9202533ff29a8449e"
+    },
+    {
+      "upstream": "harnesses/pi/CHANGELOG.md",
+      "path": "src/vendor/agsdl/v0.3/harnesses/pi/CHANGELOG.md",
+      "sha256": "8a53d74b5820b36d9d021d120e0d682ec948287b292d2ef9202533ff29a8449e"
     }
   ]
 }
