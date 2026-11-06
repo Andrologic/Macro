@@ -1,6 +1,8 @@
+import type { ViewerRoute030 } from "./viewer030";
 import type { ViewerCard } from "./viewer";
 
 export interface ViewerEdge {
+  route030?: ViewerRoute030;
   id: string;
   source: string;
   target: string;
