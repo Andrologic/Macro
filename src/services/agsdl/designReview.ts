@@ -1,6 +1,6 @@
 import { clone, decimal, NumberToken, parse } from "../../vendor/agsdl/v0.2/values.mjs";
 import { readDesign, defaultDesign, type AgsdlEnvelopeMetadata } from "./design";
-import { AGSDL_CONTRACT, keyId, list, object, pointerPart, readDocument, text } from "./document";
+import { keyId, list, object, pointerPart, readDocument, text } from "./document";
 import { projectViewer, type ViewerCard } from "./viewer";
 
 export type DesignChangeAspect = "identity" | "instructions" | "connections" | "configuration";
@@ -30,7 +30,8 @@ function withoutPrompt(value: Record<string, unknown>, agentLike = false) {
 interface Participant { card: ViewerCard; parts: Record<DesignChangeAspect, unknown> }
 interface Snapshot { participants: Map<string, Participant>; residual: Record<string, unknown>; doc: Record<string, unknown>; coveredCatalogs?: Record<string, Set<string>> }
 function snapshot(source: string, metadata?: AgsdlEnvelopeMetadata): Snapshot {
-  if (readDocument(source).contract === AGSDL_CONTRACT) return snapshot020(source, metadata);
+  if (readDocument(source).contract === 'agsdl-0.3.0') return snapshot030(source, metadata);
+  if (readDocument(source).contract === 'agsdl-0.2.0') return snapshot020(source, metadata);
   const doc = readDocument(source), residual = clone(doc);
   const viewer = projectViewer(source);
   const definitions = list(doc.definitions).map(object), relations = list(doc.relations).map(object);
@@ -96,7 +97,7 @@ export function reviewDesignChanges(before: string, after: string, beforeMetadat
     const old = before ? snapshot(before, beforeMetadata) : empty, next = after ? snapshot(after, afterMetadata) : empty;
     // Compare declarations not already attributed to participants. Use both snapshots
     // so removing a reference does not make an unchanged declaration look modified.
-    for (const map of ["content", "skills"]) {
+    for (const map of ["content", "skills", "mcpServers"]) {
       const oldNames = old.coveredCatalogs?.[map] ?? new Set<string>(), nextNames = next.coveredCatalogs?.[map] ?? new Set<string>();
       const names = new Set([...oldNames, ...nextNames].filter(name =>
         (oldNames.has(name) && nextNames.has(name)) || stable(object(old.doc[map])[name]) === stable(object(next.doc[map])[name])));
@@ -123,7 +124,12 @@ export function reviewDesignChanges(before: string, after: string, beforeMetadat
       }
     }
     for (const [id, { card }] of old.participants) if (!next.participants.has(id) && !(id.startsWith("definition:") && list(next.doc.definitions).some(value => keyId(object(value).key) === keyId(card.details.key) && stable(value) === stable(card.details)))) changes.push({ kind: "removed", title: card.title, before: card.mission });
-    const configurationValue = (doc: Record<string, unknown>) => doc.contract === AGSDL_CONTRACT ? { configurations: doc.configurations, bindings: doc.bindings } : doc.runtime;
+    const configurationValue = (doc: Record<string, unknown>) => doc.contract === 'agsdl-0.3.0'
+      ? Object.fromEntries(Object.entries(object(doc.agents)).map(([name, value]) => {
+        const { instructions: _instructions, resources: _resources, title: _title, description: _description, ...configuration } = object(value);
+        return [name, configuration];
+      }))
+      : doc.contract === 'agsdl-0.2.0' ? { configurations: doc.configurations, bindings: doc.bindings } : doc.runtime;
     const configuration = stable(configurationValue(old.doc)) !== stable(configurationValue(next.doc));
     const previousDesign = before ? readDesign(before, beforeMetadata?.design) : defaultDesign();
     const currentDesign = after ? readDesign(after, afterMetadata?.design) : defaultDesign();
@@ -199,5 +205,80 @@ function snapshot020(source: string, metadata?: AgsdlEnvelopeMetadata): Snapshot
     const { title: _title, description: _description, ...rest } = value;
     return [path, rest];
   }).filter(([_, rest]) => Object.keys(rest as object).length));
+  return { participants, doc, coveredCatalogs, residual: { document: residual, title: metadata?.display?.title, cards: remainingCards, migration: metadata?.migration } };
+}
+
+/** Attribute 0.3 changes directly from source pointers, independently of the viewer's rollout. */
+function snapshot030(source: string, metadata?: AgsdlEnvelopeMetadata): Snapshot {
+  const doc = reviewDocument(source), residual = clone(doc);
+  const participants = new Map<string, Participant>();
+  const cards = metadata?.display?.cards ?? {};
+  const coveredCatalogs: Record<string, Set<string>> = { content: new Set(), skills: new Set(), mcpServers: new Set() };
+  const resolve = (value: unknown): unknown => {
+    if (Array.isArray(value)) return value.map(resolve);
+    const use = object(value);
+    if (typeof use.ref === 'string') {
+      coveredCatalogs.content.add(use.ref);
+      return { use, declaration: object(doc.content)[use.ref] };
+    }
+    return value;
+  };
+  const resources = (value: unknown) => Object.fromEntries(Object.entries(object(value)).map(([name, use]) => [name, resolve(use)]));
+  const message = (value: unknown) => {
+    if (value === undefined) return undefined;
+    const record = object(value);
+    return { ...record, prompt: resolve(record.prompt), resources: resources(record.resources) };
+  };
+  const route = (value: unknown): unknown => {
+    if (Array.isArray(value)) return value.map(route);
+    if (!value || typeof value !== 'object') return value;
+    return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, key === 'message' ? message(item) : route(item)]));
+  };
+  const mission = (value: unknown): string => {
+    if (typeof value === 'string') return value;
+    if (Array.isArray(value)) return value.map(mission).filter(Boolean).join('\n\n');
+    const record = object(value);
+    if ('declaration' in record) return mission(record.declaration);
+    return typeof record.value === 'string' ? record.value : text(record.uri);
+  };
+  const declarations = (catalog: string, names: unknown) => list(names).map(name => {
+    const id = text(name); coveredCatalogs[catalog].add(id);
+    return { id, declaration: object(doc[catalog])[id] };
+  });
+  const add = (path: string, id: string, kind: string, details: Record<string, unknown>, instructions: unknown, connections: unknown, configuration: unknown) => {
+    const card: ViewerCard = { id, path, kind, title: cards[path]?.title || text(details.title) || id,
+      mission: mission(instructions) || cards[path]?.description || '', unresolved: false, inputs: [], outputs: [], branches: [], details };
+    participants.set(`${path}:0`, { card, parts: { identity: { title: card.title, kind, description: details.description }, instructions, connections, configuration } });
+  };
+  for (const [name, value] of Object.entries(object(doc.agents))) {
+    const agent = object(value);
+    const { instructions, resources: info, skills, mcpServers, title: _title, description: _description, ...settings } = agent;
+    add(`/agents/${pointerPart(name)}`, name, 'Agent', agent, resolve(instructions), resources(info),
+      { ...settings, skills: declarations('skills', skills), mcpServers: declarations('mcpServers', mcpServers) });
+  }
+  const flows: Array<[string, Record<string, unknown>]> = [
+    ['/flow', object(doc.flow)],
+    ...Object.entries(object(doc.compositions)).map(([name, value]): [string, Record<string, unknown>] => [`/compositions/${pointerPart(name)}`, object(value)]),
+  ];
+  for (const [base, flow] of flows) {
+    if (!Object.keys(flow).length) continue;
+    const { steps, entry, onError, title: _title, description: _description, ...settings } = flow;
+    add(base, base.split('/').at(-1)!, base === '/flow' ? 'Flow' : 'Composition', flow, undefined, { entry, onError: route(onError) }, settings);
+    for (const [name, value] of Object.entries(object(steps))) {
+      const step = object(value);
+      const { prompt, next, onError, title: _title, description: _description, ...settings } = step;
+      const server = text(object(step.mcp).server);
+      if (server) coveredCatalogs.mcpServers.add(server);
+      add(`${base}/steps/${pointerPart(name)}`, name, text(step.type), step, resolve(prompt),
+        { next: route(next), onError: route(onError) },
+        { ...settings, ...(server ? { server: object(doc.mcpServers)[server] } : {}) });
+    }
+  }
+  delete residual.agents; delete residual.flow; delete residual.compositions;
+  const remainingCards = Object.fromEntries(Object.entries(cards).map(([path, card]) => {
+    if (!participants.has(`${path}:0`)) return [path, card];
+    const { title: _title, description: _description, ...rest } = card;
+    return [path, rest];
+  }).filter(([, rest]) => Object.keys(rest as object).length));
   return { participants, doc, coveredCatalogs, residual: { document: residual, title: metadata?.display?.title, cards: remainingCards, migration: metadata?.migration } };
 }

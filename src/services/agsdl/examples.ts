@@ -1,5 +1,6 @@
-import { AGSDL_CONTRACT, LEGACY_AGSDL_CONTRACT } from "./document";
-import { defaultDesign, type AgsdlEnvelopeMetadata, type AgsdlDisplayMetadata } from "./design";
+import { LEGACY_AGSDL_CONTRACT } from "./document";
+import { defaultDesign, type AgsdlEnvelopeMetadata, type AgsdlAuthoringContract, type AgsdlDisplayMetadata } from "./design";
+import { productExample030 } from "./examples030";
 import { MACRO_ENGINE_CONTRACT, MACRO_ENGINE_IMPLEMENTATION } from "./macroAgentConfiguration";
 
 export const AGSDL_EXAMPLES = [
@@ -223,9 +224,10 @@ export function createLegacyExample(kind: AgsdlExample): string {
 }
 
 /** Example bindings describe implementation choices without claiming runtime support. */
-export function createExample(kind: AgsdlExample, contract = AGSDL_CONTRACT): string {
+export function createExample(kind: AgsdlExample, contract: AgsdlAuthoringContract = 'agsdl-0.3.0'): string {
   if (contract === LEGACY_AGSDL_CONTRACT) return createLegacyExample(kind);
-  if (contract !== AGSDL_CONTRACT) throw new Error('Unsupported AgSDL example contract.');
+  if (contract === 'agsdl-0.3.0') return JSON.stringify(productExample030(kind), null, 2);
+  if (contract !== 'agsdl-0.2.0') throw new Error('Unsupported AgSDL example contract.');
   const stages = workflows[kind];
   const agents = Object.fromEntries(stages.map(([id, _title, body]) => [id, {
     configuration: 'project',
@@ -240,7 +242,7 @@ export function createExample(kind: AgsdlExample, contract = AGSDL_CONTRACT): st
     ];
   }));
   return JSON.stringify({
-    contract: AGSDL_CONTRACT, id: `example-${kind}`,
+    contract: 'agsdl-0.2.0', id: `example-${kind}`,
     content: { projectGuidance: { value: 'Replace with the project checklist, commands and conventions before execution.' } },
     bindings: { engine: { contract: MACRO_ENGINE_CONTRACT, implementation: MACRO_ENGINE_IMPLEMENTATION } },
     configurations: { project: { engine: 'engine' } },
@@ -249,7 +251,8 @@ export function createExample(kind: AgsdlExample, contract = AGSDL_CONTRACT): st
 }
 
 /** Human labels travel with the Macro envelope; AgSDL names remain stable source identities. */
-export function createExampleDocument(kind: AgsdlExample): { source: string; annexes: Record<string, string> } & AgsdlEnvelopeMetadata {
+export function createExampleDocument(kind: AgsdlExample, contract: AgsdlAuthoringContract = 'agsdl-0.3.0'): { source: string; annexes: Record<string, string> } & AgsdlEnvelopeMetadata {
+  if (contract === 'agsdl-0.3.0') return { source: createExample(kind, contract), annexes: {}, design: defaultDesign(), display: { title: kind[0].toUpperCase() + kind.slice(1), cards: { '/agents/implement': { title: kind === 'release' ? 'Release evidence' : 'Implementation and verification' }, '/agents/review': { title: 'Independent review' }, '/flow/steps/implement': { title: 'Complete the mission' }, '/flow/steps/review': { title: 'Independent review' } } } };
   const cards: NonNullable<AgsdlDisplayMetadata['cards']> = {};
   for (const [id, title] of workflows[kind]) {
     cards[`/agents/${id}`] = { title };
@@ -258,5 +261,5 @@ export function createExampleDocument(kind: AgsdlExample): { source: string; ann
   }
   // The first Agent receives the entry Message directly, so it has no Prepare step.
   delete cards[`/flow/steps/prepare-${workflows[kind][0][0]}`];
-  return { source: createExample(kind), annexes: {}, design: defaultDesign(), display: { title: kind[0].toUpperCase() + kind.slice(1), cards } };
+  return { source: createExample(kind, contract), annexes: {}, design: defaultDesign(), display: { title: kind[0].toUpperCase() + kind.slice(1), cards } };
 }

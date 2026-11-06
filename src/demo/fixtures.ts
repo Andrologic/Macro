@@ -23,7 +23,8 @@ export const demoProjects: Project[] = projectSeeds.map(seed => ({
 }));
 export const demoTasks: Task[] = [];
 export function demoPlan(id: string, title: string, projectId: string, kind: 'release' | 'feature') {
-  const document = createExampleDocument(kind);
+  // These simulated scenarios intentionally retain their historical 0.2 graph semantics.
+  const document = createExampleDocument(kind, 'agsdl-0.2.0');
   const labels = kind === 'release' ? ['Vérifier les prérequis', 'Relire les changements', 'Vérifier les installateurs'] : ['Comprendre la demande', 'Préparer la réponse', 'Vérifier le résultat'];
   const parsed = JSON.parse(document.source);
   const agentIds = Object.keys(parsed.agents);

@@ -147,8 +147,11 @@ describe('included blueprint adaptation', () => {
       expect(design.context).toBe('');
       expect(design.requirements).toEqual([{ id: 'projectGuidance', label: 'Project instructions', description: 'Project checklist, commands and conventions to apply.', value: '', targetPath: '/content/projectGuidance/value' }]);
       const doc = JSON.parse(template.source);
-      expect(doc.configurations.project.engine).toBe('engine');
-      expect(doc.bindings.engine.implementation.identity).toBe('macro/desktop');
+      expect(doc.contract).toBe('agsdl-0.3.0');
+      expect(doc.agents.implement.harness).toBe('codex');
+      expect(doc.agents.implement.model).toBeUndefined();
+      expect(doc.agents.review.permissions).toBe('read-only');
+      expect(doc.bindings).toBeUndefined();
       expect(doc.annotations).toBeUndefined();
     }
   });
