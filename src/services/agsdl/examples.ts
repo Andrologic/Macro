@@ -223,7 +223,7 @@ export function createLegacyExample(kind: AgsdlExample): string {
   );
 }
 
-/** Example bindings describe implementation choices without claiming runtime support. */
+/** Preserve historical shapes explicitly; new product examples describe 0.3 missions. */
 export function createExample(kind: AgsdlExample, contract: AgsdlAuthoringContract = 'agsdl-0.3.0'): string {
   if (contract === LEGACY_AGSDL_CONTRACT) return createLegacyExample(kind);
   if (contract === 'agsdl-0.3.0') return JSON.stringify(productExample030(kind), null, 2);
@@ -252,7 +252,16 @@ export function createExample(kind: AgsdlExample, contract: AgsdlAuthoringContra
 
 /** Human labels travel with the Macro envelope; AgSDL names remain stable source identities. */
 export function createExampleDocument(kind: AgsdlExample, contract: AgsdlAuthoringContract = 'agsdl-0.3.0'): { source: string; annexes: Record<string, string> } & AgsdlEnvelopeMetadata {
-  if (contract === 'agsdl-0.3.0') return { source: createExample(kind, contract), annexes: {}, design: defaultDesign(), display: { title: kind[0].toUpperCase() + kind.slice(1), cards: { '/agents/implement': { title: kind === 'release' ? 'Release evidence' : 'Implementation and verification' }, '/agents/review': { title: 'Independent review' }, '/flow/steps/implement': { title: 'Complete the mission' }, '/flow/steps/review': { title: 'Independent review' } } } };
+  if (contract === LEGACY_AGSDL_CONTRACT) return { source: createLegacyExample(kind), annexes: {} };
+  if (contract === 'agsdl-0.3.0') return {
+    source: createExample(kind, contract), annexes: {}, design: defaultDesign(),
+    display: { title: kind[0].toUpperCase() + kind.slice(1), cards: {
+      '/agents/implement': { title: kind === 'release' ? 'Release evidence' : 'Implementation and verification' },
+      '/agents/review': { title: 'Independent review' },
+      '/flow/steps/implement': { title: 'Complete the mission' },
+      '/flow/steps/review': { title: 'Independent review' },
+    } },
+  };
   const cards: NonNullable<AgsdlDisplayMetadata['cards']> = {};
   for (const [id, title] of workflows[kind]) {
     cards[`/agents/${id}`] = { title };
