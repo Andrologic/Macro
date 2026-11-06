@@ -34,6 +34,7 @@ interface Resident030 {
 /** Pure ownership/FIFO bookkeeping. Native still owns admission, scheduling and persistence. */
 export class AgentInstances030 {
   private readonly instances = new Map<string, Resident030>();
+  private readonly definitions = new Map<string, string>();
   private readonly keys = new Map<string, string>();
   private readonly allocated = new Set<string>();
   private readonly deliveries = new Map<string, { signature: string; decision: InstanceDeliveryDecision030 }>();
@@ -41,6 +42,8 @@ export class AgentInstances030 {
   resolve(definitionId: string, configurationDigest: string, selector: InstanceSelector030, delivery?: 'queue' | 'steer'): InstanceRecord030 {
     if (!definitionId.trim() || !configurationDigest.trim() || selector.kind === 'named' && !selector.name.trim()) fail('CORRELATION', '', 'Invalid instance identity.');
     if (selector.kind === 'new' && delivery !== undefined) fail('CORRELATION', '', 'A fresh instance cannot declare delivery.');
+    const digest = this.definitions.get(definitionId);
+    if (digest !== undefined && digest !== configurationDigest) fail('CORRELATION', '', 'Definition configuration changed across instances.');
     const key = encode([definitionId, selector.kind, selector.kind === 'named' ? selector.name : '']);
     const existing = selector.kind === 'new' ? undefined : this.keys.get(key);
     if (existing) {
@@ -51,6 +54,7 @@ export class AgentInstances030 {
     const instanceId = this.allocateId();
     if (!instanceId.trim() || this.allocated.has(instanceId)) fail('CORRELATION', '', 'Instance allocator reused an identity.');
     this.allocated.add(instanceId);
+    this.definitions.set(definitionId, configurationDigest);
     const record: InstanceRecord030 = { instanceId, definitionId, configurationDigest, selector: clone(selector), memory: null };
     this.instances.set(instanceId, { record, active: null, countsForFlow: true, queue: [] });
     if (selector.kind !== 'new') this.keys.set(key, instanceId);

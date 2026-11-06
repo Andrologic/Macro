@@ -40,3 +40,12 @@ it('discards new instances and preserves memory only on the matching durable ins
   instances.deliver(shared, delivery('three'));
   expect(() => instances.finish(shared, 'three', checkpoint)).toThrow('advance');
 });
+it('pins the configuration of a definition across all selectors and discarded fresh instances', () => {
+  const instances = fixtures();
+  const first = instances.resolve('a', 'd1', { kind: 'new' });
+  instances.deliver(first.instanceId, delivery('only')); instances.finish(first.instanceId, 'only');
+  for (const selector of [{ kind: 'shared' }, { kind: 'named', name: 'n' }, { kind: 'new' }] as const) {
+    expect(() => instances.resolve('a', 'd2', selector)).toThrow('Definition configuration');
+    expect(instances.resolve('a', 'd1', selector).configurationDigest).toBe('d1');
+  }
+});

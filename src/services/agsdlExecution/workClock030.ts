@@ -86,19 +86,42 @@ export class HumanWaitRegistry030 {
   private readonly works = new Map<string, RegisteredWork030>();
   private readonly requests = new Map<string, Request030>();
   private last: bigint | null = null;
+  private readonly registered = new Set<string>();
+  private readonly pending = new Map<string, HumanResolution030>();
   registerWork(workId: string, clock: WorkClock030, answerTimeoutMs: Integer030 | null): void {
-    if (!workId.trim() || this.works.has(workId)) fail('CORRELATION', '', 'Work must be registered exactly once.');
+    if (!workId.trim() || this.registered.has(workId)) fail('CORRELATION', '', 'Work must be registered exactly once.');
+    this.registered.add(workId);
     this.works.set(workId, { clock, answerTimeoutMs: answerTimeoutMs === null ? null : integer030(answerTimeoutMs, true) });
+  }
+  /** Decisions survive every API call until09 persists and acknowledges them. */
+  pendingResolutions(): readonly HumanResolution030[] { return clone([...this.pending.values()]); }
+  acknowledgeResolution(requestId: string): void {
+    if (!this.get(requestId).resolution) fail('CORRELATION', '', 'Cannot acknowledge an unresolved request.');
+    this.pending.delete(requestId);
+  }
+  /** Retire a terminal work without deleting historical requests or decisions. */
+  unregisterWork(workId: string, nowMs: string): WorkClockSnapshot030 {
+    const work = this.works.get(workId);
+    if (!work) fail('CORRELATION', '', 'Unknown or retired work.');
+    this.tick(nowMs);
+    for (const request of this.requests.values()) {
+      if (request.resolution || !request.attached.includes(workId)) continue;
+      if (request.input.reviewer === 'person') work.clock.detachHuman(request.input.requestId, nowMs);
+      request.attached = request.attached.filter(id => id !== workId);
+      request.timeout = this.limit(request.input.reviewer, request.attached);
+    }
+    this.works.delete(workId);
+    return work.clock.snapshot();
   }
   open(input: HumanRequestInput030): HumanRequestSnapshot030 {
     if (!input.requestId.trim()) fail('CORRELATION', '', 'A human request needs an identity.');
-    this.workIds(input.workIds);
     const signature = encode(input as unknown as ExactObject);
     const prior = this.requests.get(input.requestId);
     if (prior) {
       if (prior.signature !== signature) fail('CORRELATION', '', 'Human request identity has conflicting content.');
       return this.snapshot(prior);
     }
+    this.workIds(input.workIds);
     this.tick(input.openedAtMs);
     const request: Request030 = { input: clone(input), signature, attached: [...input.workIds], timeout: this.limit(input.reviewer, input.workIds), resolution: null };
     this.requests.set(input.requestId, request);
@@ -165,6 +188,7 @@ export class HumanWaitRegistry030 {
     if (request.input.reviewer === 'person') for (const workId of request.attached) this.works.get(workId)!.clock.closeHuman(request.input.requestId, atMs);
     request.resolution = { requestId: request.input.requestId, answer, expired, resolvedAtMs: atMs,
       workActions: request.attached.map(workId => ({ workId, action: request.input.kind === 'plan' && answer.decision === 'no' && !answer.comment?.trim() ? 'PLAN_REJECTED' : 'continue' })) };
+    this.pending.set(request.input.requestId, clone(request.resolution));
     return clone(request.resolution);
   }
   private snapshot(request: Request030): HumanRequestSnapshot030 {
