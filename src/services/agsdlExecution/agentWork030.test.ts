@@ -133,3 +133,48 @@ it('retains visible text across corrections and the final provider boundary', ()
   send({ kind: 'visibleText', messageId: 'm3', textParts: ['Done'] });
   expect(send({ kind: 'physicalEnded', providerEnded: true, effectsEnded: true }).decision).toMatchObject({ kind: 'finished', outcome: 'success', output: { text: 'First attempt\nCorrected\nDone', resultsJson: '{"x":1}' } });
 });
+it('preserves definition-wide check filters for disjoint steps and graphless work', () => {
+  const agent = '{"completionCheck":{"command":"test","choices":["a","b"]}}';
+  for (const choice of ['a', 'b']) {
+    const { send, contract } = harness(agent, { agentJson: json(agent), choices: [choice] });
+    expect(contract.completionCheck?.choices).toEqual(['a', 'b']);
+    expect(send({ kind: 'submit', callId: 'c', argumentsJson: `{"choice":"${choice}"}` }).decision.kind).toBe('checkRequested');
+  }
+  const graphless = harness(agent);
+  expect(graphless.send({ kind: 'turnEnded', turnId: 't' }).decision.kind).toBe('correction');
+  expect(graphless.send({ kind: 'submit', callId: 'c', argumentsJson: '{}' }).decision.kind).toBe('accepted');
+});
+it('journals identical and conflicting calls after stop, including dominated successes', () => {
+  const { send } = harness();
+  const submitted = { kind: 'submit', callId: 'accepted', argumentsJson: '{}' } as const;
+  send(submitted, 'accepted'); send({ kind: 'stop', reason: 'TIMEOUT' });
+  const replacement = send(submitted, 'accepted');
+  expect(send(submitted, 'other')).toEqual(replacement);
+  const late = { kind: 'submit', callId: 'late', argumentsJson: '{}' } as const;
+  const receipt = send(late, 'late');
+  expect(send(late, 'late')).toEqual(receipt);
+  expect(() => send({ ...late, argumentsJson: '{"unknown":1}' }, 'late')).toThrow('conflicting');
+  expect(send({ kind: 'physicalEnded', providerEnded: true, effectsEnded: true }).decision).toMatchObject({ code: 'TIMEOUT', outcome: 'failure' });
+});
+it('validates concurrent submissions and gives valid competing calls a definitive receipt', () => {
+  for (const exitCode of [0, 1]) {
+    const { send } = harness('{"completionCheck":{"command":"test"}}');
+    const first = send({ kind: 'submit', callId: 'first', argumentsJson: '{}' }).decision;
+    if (first.kind !== 'checkRequested') throw new Error('check required');
+    expect(send({ kind: 'submit', callId: 'invalid', argumentsJson: '{"unknown":1}' }).decision).toMatchObject({ kind: 'correction', category: 'submission' });
+    const competing = { kind: 'submit', callId: 'competing', argumentsJson: '{}' } as const;
+    const refusal = send(competing);
+    expect(refusal.decision).toMatchObject({ kind: 'submissionNotAdmitted', checkId: first.check.checkId });
+    send({ kind: 'checkEnded', checkId: first.check.checkId, physicalState: 'ended', exitCode, stdout: '', stderr: '' });
+    expect(send(competing)).toEqual(refusal);
+    expect(send({ ...competing, callId: 'new-call' }).decision.kind).toBe(exitCode === 0 ? 'waiting' : 'checkRequested');
+  }
+});
+it('honors a zero check budget and preserves native failure codes', () => {
+  const { send } = harness('{"completionCheck":{"command":"test","maxFailures":0}}');
+  const first = send({ kind: 'submit', callId: 'first', argumentsJson: '{}' }).decision;
+  if (first.kind !== 'checkRequested') throw new Error('check required');
+  expect(send({ kind: 'checkEnded', checkId: first.check.checkId, physicalState: 'ended', exitCode: 1, stdout: '', stderr: '' }).decision).toEqual({ kind: 'stopping', code: 'CHECK_FAILED' });
+  const native = harness(); native.send({ kind: 'stop', reason: 'AGENT_FAILED' });
+  expect(native.send({ kind: 'physicalEnded', providerEnded: true, effectsEnded: true }).decision).toMatchObject({ code: 'AGENT_FAILED' });
+});

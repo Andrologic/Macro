@@ -11,7 +11,7 @@ export interface WorkOwner030 {
   readonly agentInstanceId: string;
   readonly ownerEpoch: string;
 }
-export type WorkFailureCode030 = 'OUTPUT_INVALID' | 'CHECK_FAILED' | 'PLAN_REJECTED' | 'TIMEOUT' | 'STOPPED' | 'REVOKED';
+export type WorkFailureCode030 = 'OUTPUT_INVALID' | 'CHECK_FAILED' | 'PLAN_REJECTED' | 'TIMEOUT' | 'STOPPED' | 'REVOKED' | 'AGENT_FAILED' | 'HARNESS_REFUSED' | 'INTERRUPTED';
 export type WorkEventBody030 =
   | { readonly kind: 'visibleText'; readonly messageId: string; readonly textParts: readonly string[] }
   | { readonly kind: 'submit'; readonly callId: string; readonly argumentsJson: string }
@@ -45,6 +45,7 @@ export type WorkDecision030 =
   | { readonly kind: 'correction'; readonly category: 'check'; readonly exitCode: number | null; readonly stdout: string; readonly stderr: string; readonly truncated: boolean }
   | { readonly kind: 'checkRequested'; readonly check: CheckRequest030 }
   | { readonly kind: 'accepted'; readonly output: WorkOutput030 }
+  | { readonly kind: 'submissionNotAdmitted'; readonly reason: 'CHECK_IN_PROGRESS'; readonly checkId: string }
   | { readonly kind: 'planRequired' }
   | { readonly kind: 'planWaiting'; readonly planId: string; readonly text: string }
   | { readonly kind: 'planAccepted'; readonly planId: string }
@@ -135,7 +136,16 @@ export class AgentWorkController030 {
     if (prior && prior.signature !== signature) fail('CORRELATION', '', 'Event or provider operation identity has conflicting bytes.');
     // Revocation/stop wins even over a previously accepted receipt replay.
     if (this.stopCode !== null && event.kind !== 'physicalEnded' && event.kind !== 'stop') {
-      return this.receipt({ kind: 'stopping', code: this.stopCode });
+      if (prior) {
+        if (prior.receipt.decision.kind !== 'stopping') prior.receipt = this.receipt({ kind: 'stopping', code: this.stopCode });
+        this.events.set(input.eventId, prior);
+        return clone(prior.receipt);
+      }
+      const receipt = this.receipt({ kind: 'stopping', code: this.stopCode });
+      const entry = { signature, receipt: clone(receipt) };
+      this.events.set(input.eventId, entry);
+      if (key !== null) this.operations.set(key, entry);
+      return receipt;
     }
     if (prior) {
       this.events.set(input.eventId, prior);
@@ -200,7 +210,16 @@ export class AgentWorkController030 {
       this.checkFailures++;
       return { kind: 'correction', category: 'check', exitCode: event.exitCode, ...boundedOutput030(event.stdout, event.stderr, this.options.maxCheckOutputBytes) };
     }
-    if (this.state === 'checking') return { kind: 'waiting', for: 'check' };
+    if (this.state === 'checking') {
+      if (event.kind === 'submit') {
+        const validation = validateAgentSubmission030(this.contract, event.argumentsJson, this.validateValueSchema);
+        if (validation.kind === 'invalid') return this.correction(validation.diagnostics);
+        // Definitive receipt for this call, not a promise that is never resumed.
+        // A new call may be admitted after the reserved check ends.
+        return { kind: 'submissionNotAdmitted', reason: 'CHECK_IN_PROGRESS', checkId: this.pendingCheck!.checkId };
+      }
+      return { kind: 'waiting', for: 'check' };
+    }
     if (this.state === 'accepted') return { kind: 'waiting', for: 'physicalEnd' };
     if (event.kind === 'planPresented') {
       if (!event.text.trim()) fail('CORRELATION', '/plan', 'A presented plan must contain text.');

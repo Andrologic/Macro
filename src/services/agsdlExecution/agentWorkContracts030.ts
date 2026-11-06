@@ -71,7 +71,8 @@ export function createAgentWorkContract030(input: AgentWorkContractInput030): Ag
     const command = text(value.command);
     if (!command.trim()) fail('CORRELATION', '/completionCheck/command', 'A completion check needs a command.');
     const filter = has(value, 'choices') ? names030(list(value.choices).map(item => text(item))) : null;
-    if (filter?.some(choice => !choices?.includes(choice))) fail('CORRELATION', '/completionCheck/choices', 'A check filter must name choices of this step.');
+    // The document validator checks the union of choices across all uses of this
+    // definition. Keep its filter unchanged, including for graphless works.
     check = Object.freeze({ command, choices: filter, maxFailures: has(value, 'maxFailures') ? integer030(importNumber030(value.maxFailures)) : '3' });
   }
   const planFirst = agent.planFirst ?? null;
