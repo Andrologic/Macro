@@ -1,0 +1,15 @@
+{
+  "contract": "agsdl-0.3.0",
+  "id": "directories-unsupported",
+  "agents": {
+    "a": {
+      "harness": "limited",
+      "permissions": {
+        "preset": "full",
+        "directories": {
+          "../docs": "read"
+        }
+      }
+    }
+  }
+}

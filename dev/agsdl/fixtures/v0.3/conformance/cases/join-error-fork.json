@@ -1,0 +1,31 @@
+{
+  "contract": "agsdl-0.3.0",
+  "id": "join-error-fork",
+  "agents": {},
+  "flow": {
+    "entry": "s",
+    "steps": {
+      "s": {
+        "type": "call",
+        "command": "true",
+        "onError": [
+          "a",
+          "b"
+        ]
+      },
+      "a": {
+        "type": "call",
+        "command": "true",
+        "next": "j"
+      },
+      "b": {
+        "type": "call",
+        "command": "true",
+        "next": "j"
+      },
+      "j": {
+        "type": "join"
+      }
+    }
+  }
+}

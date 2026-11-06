@@ -1,0 +1,96 @@
+{
+  "contract": "agsdl-0.3.0",
+  "id": "fanout-nested",
+  "agents": {
+    "lead": {
+      "harness": "example",
+      "permissions": "read-only",
+      "results": {
+        "files": {
+          "schema": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "summary": {
+          "mediaType": "text/plain"
+        }
+      }
+    },
+    "worker": {
+      "harness": "example",
+      "permissions": "workspace",
+      "results": {
+        "parts": {
+          "schema": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      }
+    }
+  },
+  "flow": {
+    "entry": "plan",
+    "steps": {
+      "plan": {
+        "type": "agent",
+        "agent": "lead",
+        "maxVisits": 3,
+        "next": {
+          "split": {
+            "step": "fix",
+            "each": [
+              "results",
+              "files"
+            ]
+          },
+          "none": []
+        }
+      },
+      "fix": {
+        "type": "agent",
+        "agent": "worker",
+        "instance": "new",
+        "next": {
+          "step": "part",
+          "each": [
+            "results",
+            "parts"
+          ]
+        }
+      },
+      "gather": {
+        "type": "join",
+        "failures": "keep",
+        "next": {
+          "done": "summary",
+          "incomplete": "plan"
+        }
+      },
+      "summary": {
+        "type": "agent",
+        "agent": "lead"
+      },
+      "part": {
+        "type": "agent",
+        "agent": "worker",
+        "instance": "new",
+        "next": "inner"
+      },
+      "inner": {
+        "type": "join",
+        "next": "check"
+      },
+      "check": {
+        "type": "call",
+        "command": "true",
+        "next": "gather"
+      }
+    }
+  }
+}

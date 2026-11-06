@@ -1,0 +1,101 @@
+{
+  "description": "A request to a person that an MCP server makes during a call, left unanswered for the call's answerTimeoutMs, is declined by the host; the tool goes on with the refusal.",
+  "document": {
+    "contract": "agsdl-0.3.0",
+    "id": "call-answer-timeout",
+    "mcpServers": {
+      "github": {
+        "url": "https://mcp.example.com/github"
+      }
+    },
+    "agents": {
+      "ops": {
+        "harness": "example",
+        "permissions": "read-only"
+      }
+    },
+    "flow": {
+      "entry": "open-issue",
+      "steps": {
+        "open-issue": {
+          "type": "call",
+          "mcp": {
+            "server": "github",
+            "tool": "create_issue"
+          },
+          "arguments": {
+            "title": {
+              "value": "Nightly build failed"
+            }
+          },
+          "timeoutMs": 60000,
+          "answerTimeoutMs": 600000,
+          "next": {
+            "passed": [],
+            "failed": "report"
+          }
+        },
+        "report": {
+          "type": "agent",
+          "agent": "ops",
+          "prompt": "Report that no issue was opened."
+        }
+      }
+    }
+  },
+  "entry": {
+    "prompt": "Start."
+  },
+  "timeline": [
+    {
+      "work": "open-issue",
+      "request": "question"
+    },
+    {
+      "elapse": 600001
+    },
+    {
+      "running": [
+        {
+          "step": "open-issue"
+        }
+      ]
+    },
+    {
+      "work": "open-issue",
+      "tool": {
+        "content": {
+          "error": "Creation declined."
+        },
+        "isError": true
+      }
+    },
+    {
+      "running": [
+        {
+          "step": "report"
+        }
+      ]
+    },
+    {
+      "work": "report",
+      "returns": {
+        "text": "No issue opened."
+      }
+    }
+  ],
+  "expect": {
+    "run": "succeeded",
+    "starts": {
+      "open-issue": 1,
+      "report": 1
+    },
+    "answers": [
+      {
+        "work": "open-issue",
+        "answer": "no"
+      }
+    ],
+    "failures": []
+  }
+}

@@ -1,0 +1,56 @@
+{
+  "contract": "agsdl-0.3.0",
+  "id": "instructions-all-routes",
+  "agents": {
+    "triage": {
+      "harness": "example",
+      "permissions": "read-only"
+    },
+    "architect": {
+      "harness": "example",
+      "permissions": "read-only",
+      "instructs": true,
+      "results": {
+        "plan": {
+          "mediaType": "text/markdown"
+        }
+      }
+    },
+    "reviewer": {
+      "harness": "example",
+      "permissions": "read-only",
+      "instructs": true
+    },
+    "builder": {
+      "harness": "example",
+      "permissions": "workspace"
+    }
+  },
+  "flow": {
+    "entry": "triage",
+    "steps": {
+      "triage": {
+        "type": "agent",
+        "agent": "triage",
+        "next": {
+          "design": "design",
+          "review": "review"
+        }
+      },
+      "design": {
+        "type": "agent",
+        "agent": "architect",
+        "next": "build"
+      },
+      "review": {
+        "type": "agent",
+        "agent": "reviewer",
+        "next": "build"
+      },
+      "build": {
+        "type": "agent",
+        "agent": "builder"
+      }
+    }
+  }
+}

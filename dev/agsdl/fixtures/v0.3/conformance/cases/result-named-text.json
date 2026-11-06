@@ -1,0 +1,15 @@
+{
+  "contract": "agsdl-0.3.0",
+  "id": "result-named-text",
+  "agents": {
+    "a": {
+      "harness": "example",
+      "permissions": "read-only",
+      "results": {
+        "text": {
+          "mediaType": "text/plain"
+        }
+      }
+    }
+  }
+}

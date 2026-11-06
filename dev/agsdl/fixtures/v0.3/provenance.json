@@ -1,0 +1,1117 @@
+{
+  "tag": "v0.3.0",
+  "tagObject": "4dd9b647cd9d477e5d07e089f23f3a1e7728ea39",
+  "commit": "bd9f8a5b16923476fd20ac2650bd1729ee151917",
+  "files": [
+    {
+      "upstream": "LICENSE",
+      "path": "dev/agsdl/fixtures/v0.3/LICENSE",
+      "sha256": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4"
+    },
+    {
+      "upstream": "conformance/README.md",
+      "path": "dev/agsdl/fixtures/v0.3/conformance/README.md",
+      "sha256": "151d36f58a778b1767f00a6a564f8b795631e0d0b58340c211bdff1272a72c0e"
+    },
+    {
+      "upstream": "conformance/cases/agent-conduct.json",
+      "path": "dev/agsdl/fixtures/v0.3/conformance/cases/agent-conduct.json",
+      "sha256": "1876c764f3be2e8877ba59a10746522affcdbbd0bc26b8e5336cd7391d973c4f"
+    },
+    {
+      "upstream": "conformance/cases/agents-only.json",
+      "path": "dev/agsdl/fixtures/v0.3/conformance/cases/agents-only.json",
+      "sha256": "d21f11609a7a4c492c258b37e09b1957fc43e69391b74e1f90e247140422b101"
+    },
+    {
+      "upstream": "conformance/cases/approval-composition-entry-resource.json",
+      "path": "dev/agsdl/fixtures/v0.3/conformance/cases/approval-composition-entry-resource.json",
+      "sha256": "b7c11f25b24cbbde2a9601300410efb2b81d5e8bc302664d184a65df94b2346b"
+    },
+    {
+      "upstream": "conformance/cases/approval-composition-entry.json",
+      "path": "dev/agsdl/fixtures/v0.3/conformance/cases/approval-composition-entry.json",
+      "sha256": "a2e263c88dd710218f5986b61bd769cf27cccb8bb9ce974cfdececfd4f1b07e1"
+    },
+    {
+      "upstream": "conformance/cases/approval-entry.json",
+      "path": "dev/agsdl/fixtures/v0.3/conformance/cases/approval-entry.json",
+      "sha256": "24120d02b4db44bae8ee3e841adfc91c57c8b58fa52bf42a2f9c10ef59f8f235"
+    },
+    {
+      "upstream": "conformance/cases/approval-message-resource.json",
+      "path": "dev/agsdl/fixtures/v0.3/conformance/cases/approval-message-resource.json",
+      "sha256": "263bef5eda71dab8548e2bb82ed6df475a03762b96217c97392aacd55a082e77"
+    },
+    {
+      "upstream": "conformance/cases/approval-message.json",
+      "path": "dev/agsdl/fixtures/v0.3/conformance/cases/approval-message.json",
+      "sha256": "d0d9329d00193e95d8a03d9a7b130a29198f67ab046eae33c22c988b2ee1c6bd"
+    },
+    {
+      "upstream": "conformance/cases/approval-output-path.json",
+      "path": "dev/agsdl/fixtures/v0.3/conformance/cases/approval-output-path.json",
+      "sha256": "e7295ae53b8c1dd8e304d5927e54c0d510a9198a127a116a0f4d1b755578cd97"
+    },
+    {
+      "upstream": "conformance/cases/approval.json",
+      "path": "dev/agsdl/fixtures/v0.3/conformance/cases/approval.json",
+      "sha256": "016d6fc5655148a2d8ce8772ac842a54ad7a36167607d695eacd3ec42ab1dcf5"
+    },
+    {
+      "upstream": "conformance/cases/approximate-support.json",
+      "path": "dev/agsdl/fixtures/v0.3/conformance/cases/approximate-support.json",
+      "sha256": "4d0c85655616ee3521c2c0f6a24131f56f8c742d9e7522387ead37f427d29269"
+    },
+    {
+      "upstream": "conformance/cases/branch-ends-without-result.json",
+      "path": "dev/agsdl/fixtures/v0.3/conformance/cases/branch-ends-without-result.json",
+      "sha256": "bf967ac093418ccbb0d7d048552cf748171cd5f514ebe8bc6115cbf470f7785f"
+    },
+    {
+      "upstream": "conformance/cases/branch-exit.json",
+      "path": "dev/agsdl/fixtures/v0.3/conformance/cases/branch-exit.json",
+      "sha256": "bd6726a9f2ea3f085d3f60c9baffe136e7578749e1f05f1c697e1c04786be1ed"
+    },
+    {
+      "upstream": "conformance/cases/call-answer-timeout-command.json",
+      "path": "dev/agsdl/fixtures/v0.3/conformance/cases/call-answer-timeout-command.json",
+      "sha256": "70ba18d668784c386da8672343bd1bfb770b547ed976b80a395a32e28452de04"
+    },
+    {
+      "upstream": "conformance/cases/call-outcome-keys.json",
+      "path": "dev/agsdl/fixtures/v0.3/conformance/cases/call-outcome-keys.json",
+      "sha256": "ec876b637420f52f1abb5b3c9aa8342d8b8fd6c64b9f186e729965423d3ee36a"
+    },
+    {
+      "upstream": "conformance/cases/call-outcome.json",
+      "path": "dev/agsdl/fixtures/v0.3/conformance/cases/call-outcome.json",
+      "sha256": "5638fa8e79b2cfe9da23d05b18665a73c5ba638224d13f1c650018834c6cb0dd"
+    },
+    {
+      "upstream": "conformance/cases/call-value-without-parse.json",
+      "path": "dev/agsdl/fixtures/v0.3/conformance/cases/call-value-without-parse.json",
+      "sha256": "63d62a22baa69ae86305edd4d2a7ec846372de74bfbd524e308c5621dba413e0"
+    },
+    {
+      "upstream": "conformance/cases/completion-check-denied.json",
+      "path": "dev/agsdl/fixtures/v0.3/conformance/cases/completion-check-denied.json",
+      "sha256": "876ea5411ffb8f6a6bc1d92757b3ec5dac1509c81b13d3e14afa50ea7e22c7e8"
+    },
+    {
+      "upstream": "conformance/cases/completion-check-unknown-choice.json",
+      "path": "dev/agsdl/fixtures/v0.3/conformance/cases/completion-check-unknown-choice.json",
+      "sha256": "0ae68b5780dbe81f019f3dcc99e689496b7f97229e0eb9bc2c6d4ac5538653a8"
+    },
+    {
+      "upstream": "conformance/cases/compose-branch-exit.json",
+      "path": "dev/agsdl/fixtures/v0.3/conformance/cases/compose-branch-exit.json",
+      "sha256": "f0447d6c083858dd32e4311c23324451e81fe0c91b1b9a5ab42accdb56a76388"
+    },
+    {
+      "upstream": "conformance/cases/compose-branches.json",
+      "path": "dev/agsdl/fixtures/v0.3/conformance/cases/compose-branches.json",
+      "sha256": "1765966796fbd9500f81d0c4163193a17c091bb41d68d1228282f7a0fefd9026"
+    },
+    {
+      "upstream": "conformance/cases/compose-error-fork.json",
+      "path": "dev/agsdl/fixtures/v0.3/conformance/cases/compose-error-fork.json",
+      "sha256": "51866134f18db13d795bcdbe5a3dba2bc7ab8c9eee39a730dd2b9eae6bb4950a"
+    },
+    {
+      "upstream": "conformance/cases/compose-fanout-open.json",
+      "path": "dev/agsdl/fixtures/v0.3/conformance/cases/compose-fanout-open.json",
+      "sha256": "7357466f6f3278bb20b565044a1e0765d471cb446d58961c5545a7dbb3c3bd9b"
+    },
+    {
+      "upstream": "conformance/cases/compose-nested-fork.json",
+      "path": "dev/agsdl/fixtures/v0.3/conformance/cases/compose-nested-fork.json",
+      "sha256": "187254060e62c56dfaa63797760ab4617d4672ef9ac2c26a7f6e4f4e5950706c"
+    },
+    {
+      "upstream": "conformance/cases/compose-open-fork.json",
+      "path": "dev/agsdl/fixtures/v0.3/conformance/cases/compose-open-fork.json",
+      "sha256": "3eda77fee9b9216e9cadb3aa508d7528b1a0a878775c40a9ba67a41be77dffed"
+    },
+    {
+      "upstream": "conformance/cases/compose-output-fanout.json",
+      "path": "dev/agsdl/fixtures/v0.3/conformance/cases/compose-output-fanout.json",
+      "sha256": "71354e4ecbcc8f391f95a14bb086eb2a7b2393af9e5f9ffb1534f550c69051e8"
+    },
+    {
+      "upstream": "conformance/cases/compose-output-prompt.json",
+      "path": "dev/agsdl/fixtures/v0.3/conformance/cases/compose-output-prompt.json",
+      "sha256": "f83e8732d298147374f8e8d6847e0b1c2a6da48288ea258c70abec072ccf4d24"
+    },
+    {
+      "upstream": "conformance/cases/compose-parameter-prompt.json",
+      "path": "dev/agsdl/fixtures/v0.3/conformance/cases/compose-parameter-prompt.json",
+      "sha256": "258aba191cfbdfb03d1b5885b6e4098ad2f95b917610a89d3b35c7b2d4731655"
+    },
+    {
+      "upstream": "conformance/cases/compose-two-joins.json",
+      "path": "dev/agsdl/fixtures/v0.3/conformance/cases/compose-two-joins.json",
+      "sha256": "8e9cdaf8ecbe7f999d3435607bb56a60f57fd6d0a2dcf951b0b38812a6e47cbd"
+    },
+    {
+      "upstream": "conformance/cases/composition-cycle.json",
+      "path": "dev/agsdl/fixtures/v0.3/conformance/cases/composition-cycle.json",
+      "sha256": "84be4afd55c7fcd1da2f98ad3ee815d1d01c36a0414ef32d5dd84d19af44175d"
+    },
+    {
+      "upstream": "conformance/cases/composition-parameters.json",
+      "path": "dev/agsdl/fixtures/v0.3/conformance/cases/composition-parameters.json",
+      "sha256": "f701123d6053af1e6348f521c97239ca24d5b59e57e754e0592c9371d7c4d10d"
+    },
+    {
+      "upstream": "conformance/cases/content-references.json",
+      "path": "dev/agsdl/fixtures/v0.3/conformance/cases/content-references.json",
+      "sha256": "b1385dc3efcd18b3c28e4cc959df380a9386faf0cf2c187c8525c6c18b213f1e"
+    },
+    {
+      "upstream": "conformance/cases/default-prompt-ref.json",
+      "path": "dev/agsdl/fixtures/v0.3/conformance/cases/default-prompt-ref.json",
+      "sha256": "2ad0ab8993d2d9aa62e69cb4a56062f90b83043b89535be212e45036bc9a47bd"
+    },
+    {
+      "upstream": "conformance/cases/delegate-match.json",
+      "path": "dev/agsdl/fixtures/v0.3/conformance/cases/delegate-match.json",
+      "sha256": "a9904947beffae9b803c2541e334ea9601ef6473a54b7b8e7f96b2955236ea1f"
+    },
+    {
+      "upstream": "conformance/cases/delivery-with-new.json",
+      "path": "dev/agsdl/fixtures/v0.3/conformance/cases/delivery-with-new.json",
+      "sha256": "d75c6461f5c2ceb99d552d928772706e0f66cf0c69879283d471290b2ee1a304"
+    },
+    {
+      "upstream": "conformance/cases/directories-unsupported.json",
+      "path": "dev/agsdl/fixtures/v0.3/conformance/cases/directories-unsupported.json",
+      "sha256": "647a0cead0f7686e78f06edc71f41622fb4badec96f027117885749ba322d76b"
+    },
+    {
+      "upstream": "conformance/cases/duplicate-target.json",
+      "path": "dev/agsdl/fixtures/v0.3/conformance/cases/duplicate-target.json",
+      "sha256": "30158de044529335fa985c6cfcaafc9d52db1bd9736b8fc798b05254334639e0"
+    },
+    {
+      "upstream": "conformance/cases/effort-open.json",
+      "path": "dev/agsdl/fixtures/v0.3/conformance/cases/effort-open.json",
+      "sha256": "50e6dbc6e06a34b15a182528e054a0d4f6b76f06c276093b770ed1561f5f3b55"
+    },
+    {
+      "upstream": "conformance/cases/error-path-string.json",
+      "path": "dev/agsdl/fixtures/v0.3/conformance/cases/error-path-string.json",
+      "sha256": "3ae09c4a252862e079926fe0cada7fa179ad1db02854fb456e1682387068785f"
+    },
+    {
+      "upstream": "conformance/cases/error-route.json",
+      "path": "dev/agsdl/fixtures/v0.3/conformance/cases/error-route.json",
+      "sha256": "6672215c29b1d19a87668549aece71b2f9838ed578f05d8bcbccf2c5f9ef8ed5"
+    },
+    {
+      "upstream": "conformance/cases/fanout-command-json.json",
+      "path": "dev/agsdl/fixtures/v0.3/conformance/cases/fanout-command-json.json",
+      "sha256": "85be52fa169442e9dd14911a0e85691425b6d30b769b9dc21bc0e713ffc6de6e"
+    },
+    {
+      "upstream": "conformance/cases/fanout-command-lines.json",
+      "path": "dev/agsdl/fixtures/v0.3/conformance/cases/fanout-command-lines.json",
+      "sha256": "8f60a7c01b713e7fce2d5943025dca417fc7051283e376ae287d417597de3873"
+    },
+    {
+      "upstream": "conformance/cases/fanout-each-item.json",
+      "path": "dev/agsdl/fixtures/v0.3/conformance/cases/fanout-each-item.json",
+      "sha256": "f0081819a14bb8990d0eb75197fb1ad58b0e33935f42671570a4cf7dd13400e6"
+    },
+    {
+      "upstream": "conformance/cases/fanout-entry-index.json",
+      "path": "dev/agsdl/fixtures/v0.3/conformance/cases/fanout-entry-index.json",
+      "sha256": "66d12cfa26213c84dd3184ff43d0e718d4f2621750138219f0b6dfa5f07e6161"
+    },
+    {
+      "upstream": "conformance/cases/fanout-instructions-index.json",
+      "path": "dev/agsdl/fixtures/v0.3/conformance/cases/fanout-instructions-index.json",
+      "sha256": "3cf9f727cbee82190fbac0d3825fb2fd5e5bef259a25ae13f473a6171189c59d"
+    },
+    {
+      "upstream": "conformance/cases/fanout-instructions-shared.json",
+      "path": "dev/agsdl/fixtures/v0.3/conformance/cases/fanout-instructions-shared.json",
+      "sha256": "244a1f8262611bcfd4a1b4bb508457f7961e38cb6d7d963f939897675421dda8"
+    },
+    {
+      "upstream": "conformance/cases/fanout-instructions.json",
+      "path": "dev/agsdl/fixtures/v0.3/conformance/cases/fanout-instructions.json",
+      "sha256": "556503b4d3ee73185f21118067617769ea5aff860f472c047d7bedbe33a0cdf0"
+    },
+    {
+      "upstream": "conformance/cases/fanout-item-path.json",
+      "path": "dev/agsdl/fixtures/v0.3/conformance/cases/fanout-item-path.json",
+      "sha256": "192dee64df1c423e872474db51ffd54ea30b95dbdf93c89d7f6007edb2faba3c"
+    },
+    {
+      "upstream": "conformance/cases/fanout-item-prompt.json",
+      "path": "dev/agsdl/fixtures/v0.3/conformance/cases/fanout-item-prompt.json",
+      "sha256": "1893a315c936534b76e617badd386107e4c361204c216bb05606dfc254d7a094"
+    },
+    {
+      "upstream": "conformance/cases/fanout-line-field.json",
+      "path": "dev/agsdl/fixtures/v0.3/conformance/cases/fanout-line-field.json",
+      "sha256": "85f2d6d6e0e86cf8d5ac1438572aa4cef379ea2fba89bcf9310f5133fe3e964e"
+    },
+    {
+      "upstream": "conformance/cases/fanout-mixed.json",
+      "path": "dev/agsdl/fixtures/v0.3/conformance/cases/fanout-mixed.json",
+      "sha256": "80be8df4b6bc95ee992078003979f60fe4a47c7109c3c54e57c858f22098cd14"
+    },
+    {
+      "upstream": "conformance/cases/fanout-nested.json",
+      "path": "dev/agsdl/fixtures/v0.3/conformance/cases/fanout-nested.json",
+      "sha256": "449677ed0cc29deb4559f771da690c29947c69e90749830cec5d56a144879f31"
+    },
+    {
+      "upstream": "conformance/cases/fanout-not-list.json",
+      "path": "dev/agsdl/fixtures/v0.3/conformance/cases/fanout-not-list.json",
+      "sha256": "5c63c3a6f268dbb2f6ad3e4a248bca94004172eb1867c4f348b5d953b003e4dd"
+    },
+    {
+      "upstream": "conformance/cases/fanout-options-without-each.json",
+      "path": "dev/agsdl/fixtures/v0.3/conformance/cases/fanout-options-without-each.json",
+      "sha256": "c79e0d78dfda9176d73c746454956d58c96b53dbb6592d96aa0450af93bed627"
+    },
+    {
+      "upstream": "conformance/cases/fanout-quorum.json",
+      "path": "dev/agsdl/fixtures/v0.3/conformance/cases/fanout-quorum.json",
+      "sha256": "c3cd240ec64a410f22df470ac5c9142b602e1bfa10105ef57c3427f49408ea7f"
+    },
+    {
+      "upstream": "conformance/cases/fanout-shared-instance.json",
+      "path": "dev/agsdl/fixtures/v0.3/conformance/cases/fanout-shared-instance.json",
+      "sha256": "4ec113f19c5883b175350e84f1b55590e39a46e4e065d1e862cf1c221b0ea031"
+    },
+    {
+      "upstream": "conformance/cases/fanout-to-call.json",
+      "path": "dev/agsdl/fixtures/v0.3/conformance/cases/fanout-to-call.json",
+      "sha256": "9a1885caeb799fe10f614f03e25d44cd147d8dc5e4a27cd5477191959d416bc1"
+    },
+    {
+      "upstream": "conformance/cases/fanout-visits.json",
+      "path": "dev/agsdl/fixtures/v0.3/conformance/cases/fanout-visits.json",
+      "sha256": "afc6f42cdccbfec2aec2636f44ba29e70fb873194a5474aad47d745dc9aaecf8"
+    },
+    {
+      "upstream": "conformance/cases/fanout.json",
+      "path": "dev/agsdl/fixtures/v0.3/conformance/cases/fanout.json",
+      "sha256": "aec8d93d0f4ddd1e92e20c4fb7161854cc96eb5fe2a996a73e2d1403d91f300f"
+    },
+    {
+      "upstream": "conformance/cases/flow-error-fork.json",
+      "path": "dev/agsdl/fixtures/v0.3/conformance/cases/flow-error-fork.json",
+      "sha256": "61c49019b5c2ea834e1a8f0bdd86b4dc11da69767054a3c4ec8fba2f9ab59d7a"
+    },
+    {
+      "upstream": "conformance/cases/flow-error-join.json",
+      "path": "dev/agsdl/fixtures/v0.3/conformance/cases/flow-error-join.json",
+      "sha256": "fdd9360f4f3bc6f93c8c2ac2583b16761423306cf7de8b62e22fb203f667350e"
+    },
+    {
+      "upstream": "conformance/cases/flow-error-path.json",
+      "path": "dev/agsdl/fixtures/v0.3/conformance/cases/flow-error-path.json",
+      "sha256": "09e676f97522a28ab23499e29a5ad6e6a0000528836979c47318fba58c229d4e"
+    },
+    {
+      "upstream": "conformance/cases/flow-error-prompt.json",
+      "path": "dev/agsdl/fixtures/v0.3/conformance/cases/flow-error-prompt.json",
+      "sha256": "64755ead2082638045d6101fb4a7ca609867ac44bc3b5f18a78541eaaeabe7a3"
+    },
+    {
+      "upstream": "conformance/cases/flow-error.json",
+      "path": "dev/agsdl/fixtures/v0.3/conformance/cases/flow-error.json",
+      "sha256": "99e7d8e0f1170d408404926ad9c2a56663ea73a6f7801125ce33413477ad49e4"
+    },
+    {
+      "upstream": "conformance/cases/harness-permissions.json",
+      "path": "dev/agsdl/fixtures/v0.3/conformance/cases/harness-permissions.json",
+      "sha256": "789cc468ef679f55262fb7402d6577e6ee7ebde86e1422defd985b969dd26032"
+    },
+    {
+      "upstream": "conformance/cases/harness-settings.json",
+      "path": "dev/agsdl/fixtures/v0.3/conformance/cases/harness-settings.json",
+      "sha256": "277d1338cc25234c020b8522e91a57af0e0c7bf87dc02497826e2ca17f696295"
+    },
+    {
+      "upstream": "conformance/cases/harness-unsupported.json",
+      "path": "dev/agsdl/fixtures/v0.3/conformance/cases/harness-unsupported.json",
+      "sha256": "66c4ae4c94c303d8ff5c6c7bd486accc9c24659b0c61b6d4b1ea92159141a0ca"
+    },
+    {
+      "upstream": "conformance/cases/harness-value.json",
+      "path": "dev/agsdl/fixtures/v0.3/conformance/cases/harness-value.json",
+      "sha256": "86d983fdb540d337a0a557f484255ffd887e3580d1850803260f983956d10c18"
+    },
+    {
+      "upstream": "conformance/cases/instructions-all-routes.json",
+      "path": "dev/agsdl/fixtures/v0.3/conformance/cases/instructions-all-routes.json",
+      "sha256": "853db5c06e1fdc6c7331fddd61e94a493e1586028ee6abbc9c23018ecd645150"
+    },
+    {
+      "upstream": "conformance/cases/instructions-default-prompt.json",
+      "path": "dev/agsdl/fixtures/v0.3/conformance/cases/instructions-default-prompt.json",
+      "sha256": "6c7abd7d3529fff41f3600402b1a94b32ad7ef1ff99086edf38745ba827c7ace"
+    },
+    {
+      "upstream": "conformance/cases/instructions-not-instructing.json",
+      "path": "dev/agsdl/fixtures/v0.3/conformance/cases/instructions-not-instructing.json",
+      "sha256": "fd8feafd368d7a967dfd1630aa80cccb1337d00f40e117b4bb6d4434c2b68475"
+    },
+    {
+      "upstream": "conformance/cases/integer-index.json",
+      "path": "dev/agsdl/fixtures/v0.3/conformance/cases/integer-index.json",
+      "sha256": "d14d5a100e257fce4d3eebc2511dbfd135608ad48ee9ea7e9ceced3305c5975c"
+    },
+    {
+      "upstream": "conformance/cases/join-branch-instructions.json",
+      "path": "dev/agsdl/fixtures/v0.3/conformance/cases/join-branch-instructions.json",
+      "sha256": "cf38653658499f1aad9247c89a3dbacf7dcaa713c5eeff1926c5dc7b40a964ef"
+    },
+    {
+      "upstream": "conformance/cases/join-branch-path.json",
+      "path": "dev/agsdl/fixtures/v0.3/conformance/cases/join-branch-path.json",
+      "sha256": "342a5a3678c9762cc2f3ef2e6d47bbca5b9a9d01646946afa5e81bf8d7b02420"
+    },
+    {
+      "upstream": "conformance/cases/join-compose-origin.json",
+      "path": "dev/agsdl/fixtures/v0.3/conformance/cases/join-compose-origin.json",
+      "sha256": "a9e944cabbe9a8b1c17526881be1f798ef2025cdb4a0d624135428ac9e94f7f7"
+    },
+    {
+      "upstream": "conformance/cases/join-direct-branch.json",
+      "path": "dev/agsdl/fixtures/v0.3/conformance/cases/join-direct-branch.json",
+      "sha256": "586ad9ef76b5814674a341cb333dd8419533e1a0a12cf3363b847552bd078bd8"
+    },
+    {
+      "upstream": "conformance/cases/join-entry-from-outside.json",
+      "path": "dev/agsdl/fixtures/v0.3/conformance/cases/join-entry-from-outside.json",
+      "sha256": "295cf8f3cf2861acba4566fde2bdd63ef636880d846a22db58e05ce4292420d7"
+    },
+    {
+      "upstream": "conformance/cases/join-error-fork.json",
+      "path": "dev/agsdl/fixtures/v0.3/conformance/cases/join-error-fork.json",
+      "sha256": "c4199cb671d3cb6a80cbf43e4027ef0515d281e58a4329bcaaa19bb952fbf0a2"
+    },
+    {
+      "upstream": "conformance/cases/join-finish-shared.json",
+      "path": "dev/agsdl/fixtures/v0.3/conformance/cases/join-finish-shared.json",
+      "sha256": "7aece3e45d90c9ee022c30933dd749bf620e56320d980394adf3883455d2067e"
+    },
+    {
+      "upstream": "conformance/cases/join-foreign-input.json",
+      "path": "dev/agsdl/fixtures/v0.3/conformance/cases/join-foreign-input.json",
+      "sha256": "5c0a1b3d4f17f2ddfdc5e298511f41ec463fd19b27f296a85168b64edc4b0314"
+    },
+    {
+      "upstream": "conformance/cases/join-item-field.json",
+      "path": "dev/agsdl/fixtures/v0.3/conformance/cases/join-item-field.json",
+      "sha256": "fab1bbf68db5025989a752f3d5163dc5b91d97ef64e0d915e1ad2f88cbe9343e"
+    },
+    {
+      "upstream": "conformance/cases/join-keep-done-only.json",
+      "path": "dev/agsdl/fixtures/v0.3/conformance/cases/join-keep-done-only.json",
+      "sha256": "73b851439159df7d1cb6da4941b5a47a2cf4ae012d5e66c225ef33249fc9bfc6"
+    },
+    {
+      "upstream": "conformance/cases/join-keep-failures.json",
+      "path": "dev/agsdl/fixtures/v0.3/conformance/cases/join-keep-failures.json",
+      "sha256": "b8c24dfc0137e0ef9fa5e101997d31733383af7cc8c21e6a6503b6dd4330f768"
+    },
+    {
+      "upstream": "conformance/cases/join-keep-quorum.json",
+      "path": "dev/agsdl/fixtures/v0.3/conformance/cases/join-keep-quorum.json",
+      "sha256": "373e1e11e3ab5a464806f5013c54f88cd3850dc6a98e9e337819627edbf90f63"
+    },
+    {
+      "upstream": "conformance/cases/join-kept-failure.json",
+      "path": "dev/agsdl/fixtures/v0.3/conformance/cases/join-kept-failure.json",
+      "sha256": "4c562a1e93a547dedbd1aa31baf3e8574df082b3a9ec270217cab377678990a6"
+    },
+    {
+      "upstream": "conformance/cases/join-max-failures-alone.json",
+      "path": "dev/agsdl/fixtures/v0.3/conformance/cases/join-max-failures-alone.json",
+      "sha256": "1d83fbeaf04fda910ae603ac76fc31b80119e7655a35157bbad9d7a4121353aa"
+    },
+    {
+      "upstream": "conformance/cases/join-mixed-exit.json",
+      "path": "dev/agsdl/fixtures/v0.3/conformance/cases/join-mixed-exit.json",
+      "sha256": "522962126042577db015917a03ebdadef1d1e6ff740abe5f5920175bb2af805a"
+    },
+    {
+      "upstream": "conformance/cases/join-no-fork.json",
+      "path": "dev/agsdl/fixtures/v0.3/conformance/cases/join-no-fork.json",
+      "sha256": "778cd3201f4a40a8f655d450bf56d9a47eebeaa8fe44accaef8d315f91ae5236"
+    },
+    {
+      "upstream": "conformance/cases/join-open-fork.json",
+      "path": "dev/agsdl/fixtures/v0.3/conformance/cases/join-open-fork.json",
+      "sha256": "d54b0f69aa94650d399d7661c54b2387973b316e6afc35a06d584254c4e5979c"
+    },
+    {
+      "upstream": "conformance/cases/join-quorum-count.json",
+      "path": "dev/agsdl/fixtures/v0.3/conformance/cases/join-quorum-count.json",
+      "sha256": "0eb85a9eec6981555df6b7e64e3a69ff61dbd4209be6f10ba955f00d7e6fc48f"
+    },
+    {
+      "upstream": "conformance/cases/join-shared-step.json",
+      "path": "dev/agsdl/fixtures/v0.3/conformance/cases/join-shared-step.json",
+      "sha256": "290303de6466c9a235bd838f139939c2d7f4133684252f1b6535c8556c5f53a0"
+    },
+    {
+      "upstream": "conformance/cases/join-wait-shared.json",
+      "path": "dev/agsdl/fixtures/v0.3/conformance/cases/join-wait-shared.json",
+      "sha256": "4368b207c8bb0f60e8bc70f71fb36ab537c2fc621021fc1130cf3bcdc6c958c6"
+    },
+    {
+      "upstream": "conformance/cases/json-suffix.json",
+      "path": "dev/agsdl/fixtures/v0.3/conformance/cases/json-suffix.json",
+      "sha256": "ae8674966832fe88ed8947586f87952730fe2bfdab411fb87f3cd28d7b55a71d"
+    },
+    {
+      "upstream": "conformance/cases/mcp-empty-argument.json",
+      "path": "dev/agsdl/fixtures/v0.3/conformance/cases/mcp-empty-argument.json",
+      "sha256": "622b3a3f4b53de62702641d706c2d246e84202a90f38940df39c2ceb0b03ec61"
+    },
+    {
+      "upstream": "conformance/cases/message-path.json",
+      "path": "dev/agsdl/fixtures/v0.3/conformance/cases/message-path.json",
+      "sha256": "71e0213e7291cbffab5e7a6008c50df9a280d07841347dea941d6b3bbb46f508"
+    },
+    {
+      "upstream": "conformance/cases/name-newline.json",
+      "path": "dev/agsdl/fixtures/v0.3/conformance/cases/name-newline.json",
+      "sha256": "c283db740f6641af66f7460cb0a6f7044eab0b58b03476df2cd6e6200e11a0d6"
+    },
+    {
+      "upstream": "conformance/cases/nested-choices.json",
+      "path": "dev/agsdl/fixtures/v0.3/conformance/cases/nested-choices.json",
+      "sha256": "f2cb6fbc8779b059e6937728a861286bb36e4c1103097bd02d8bb1d5bd99dd7d"
+    },
+    {
+      "upstream": "conformance/cases/nested-compositions.json",
+      "path": "dev/agsdl/fixtures/v0.3/conformance/cases/nested-compositions.json",
+      "sha256": "a9952d7c15de0902bb1c7fcaba3738ec06628dfde48f3ea7cca2a18205b2bb51"
+    },
+    {
+      "upstream": "conformance/cases/nested-join.json",
+      "path": "dev/agsdl/fixtures/v0.3/conformance/cases/nested-join.json",
+      "sha256": "2ae0123be47355ced9eea52b4d5bb0412f1358d248beca7892461e3ea66253fb"
+    },
+    {
+      "upstream": "conformance/cases/output-message.json",
+      "path": "dev/agsdl/fixtures/v0.3/conformance/cases/output-message.json",
+      "sha256": "9477f82060dfa74c984dec062de9de615720357c8c7afbeded6ca0606b0418b1"
+    },
+    {
+      "upstream": "conformance/cases/outside-unsupported.json",
+      "path": "dev/agsdl/fixtures/v0.3/conformance/cases/outside-unsupported.json",
+      "sha256": "aae524ea5c5254f4c6a4f0a7bb0bc475a0a0b96838a6a19df1a5acfcefbe8ca6"
+    },
+    {
+      "upstream": "conformance/cases/parallel-join.json",
+      "path": "dev/agsdl/fixtures/v0.3/conformance/cases/parallel-join.json",
+      "sha256": "bfaf68ee6a1fee374101ff4703f15026222036fad8e7de943da06a3dba3cc57c"
+    },
+    {
+      "upstream": "conformance/cases/parallel-no-join-shared.json",
+      "path": "dev/agsdl/fixtures/v0.3/conformance/cases/parallel-no-join-shared.json",
+      "sha256": "628627ef55ba4af847bc25c651c4b13b504c6554e6cc0d43c0ffae272d246b24"
+    },
+    {
+      "upstream": "conformance/cases/parse-bom.json",
+      "path": "dev/agsdl/fixtures/v0.3/conformance/cases/parse-bom.json",
+      "sha256": "d0c781f696064ec039744d8ffdfba6f84ba91738b596bc231edf64d7c3961531"
+    },
+    {
+      "upstream": "conformance/cases/parse-duplicate-key.json",
+      "path": "dev/agsdl/fixtures/v0.3/conformance/cases/parse-duplicate-key.json",
+      "sha256": "683de9e1d31176f893b7d1bbf8075ba534d2f1c9824e8008427d57174a1ae56e"
+    },
+    {
+      "upstream": "conformance/cases/parse-not-json.json",
+      "path": "dev/agsdl/fixtures/v0.3/conformance/cases/parse-not-json.json",
+      "sha256": "d82efe1c8d493fb2baaebaf0043c579af3736fdd2353458c5881c8b3fd2d04d4"
+    },
+    {
+      "upstream": "conformance/cases/permissions-missing.json",
+      "path": "dev/agsdl/fixtures/v0.3/conformance/cases/permissions-missing.json",
+      "sha256": "581b741592d826b85a2f305d0118218e910cf3b9dbdc8352d3bbc55d7c044974"
+    },
+    {
+      "upstream": "conformance/cases/permissions-zone.json",
+      "path": "dev/agsdl/fixtures/v0.3/conformance/cases/permissions-zone.json",
+      "sha256": "7fe4f6f4944a37d0145dda25aad792b122540a2446010474d0af1cb524568e7e"
+    },
+    {
+      "upstream": "conformance/cases/prompt-from-results.json",
+      "path": "dev/agsdl/fixtures/v0.3/conformance/cases/prompt-from-results.json",
+      "sha256": "e8f2c064f52ca921f0f2367ca3e309634d178fd69721b241140c6873acc7d337"
+    },
+    {
+      "upstream": "conformance/cases/prompt-missing.json",
+      "path": "dev/agsdl/fixtures/v0.3/conformance/cases/prompt-missing.json",
+      "sha256": "9822f676870da4551774b3f9ae03b17ed0d2be9e4fe2feff08024e1e17a85c05"
+    },
+    {
+      "upstream": "conformance/cases/quorum-no-next.json",
+      "path": "dev/agsdl/fixtures/v0.3/conformance/cases/quorum-no-next.json",
+      "sha256": "e15fcd0fb37bcb2517e9d63223cfb77fbfd843fa3f75ff71e9dcbe3d29b48ad3"
+    },
+    {
+      "upstream": "conformance/cases/quorum-vote.json",
+      "path": "dev/agsdl/fixtures/v0.3/conformance/cases/quorum-vote.json",
+      "sha256": "7c442392d2befcb6eeac2a30a05c8cbccfd040ea7f56520a079648ffd15f11c8"
+    },
+    {
+      "upstream": "conformance/cases/read-only-write-directory.json",
+      "path": "dev/agsdl/fixtures/v0.3/conformance/cases/read-only-write-directory.json",
+      "sha256": "84356b5471f0e2a6afc0bf0b901964788bc53ad68a6aaa1731b1f88ee4f884c4"
+    },
+    {
+      "upstream": "conformance/cases/reference-unknown.json",
+      "path": "dev/agsdl/fixtures/v0.3/conformance/cases/reference-unknown.json",
+      "sha256": "25447e2917bc680682eb8ec606ea61a533f128707488de3ee6213d03e4397189"
+    },
+    {
+      "upstream": "conformance/cases/result-named-text.json",
+      "path": "dev/agsdl/fixtures/v0.3/conformance/cases/result-named-text.json",
+      "sha256": "79c4dead6f956f4ad642089d46ea4bd0df6e39e2ad9a4c4b101f6a15b4308a35"
+    },
+    {
+      "upstream": "conformance/cases/review-loop.json",
+      "path": "dev/agsdl/fixtures/v0.3/conformance/cases/review-loop.json",
+      "sha256": "4610999a0443b642e91bcc66efe2341160faca02be8978f3cf377fcbe77da5c6"
+    },
+    {
+      "upstream": "conformance/cases/reviewer-unsupported.json",
+      "path": "dev/agsdl/fixtures/v0.3/conformance/cases/reviewer-unsupported.json",
+      "sha256": "cbf5483dee4e63b07b3ae305bb548dda485d5eedabe297a000f8cc4d70ceba92"
+    },
+    {
+      "upstream": "conformance/cases/routes-approval-empty.json",
+      "path": "dev/agsdl/fixtures/v0.3/conformance/cases/routes-approval-empty.json",
+      "sha256": "c8f4afdcceebf7f2a163020aebe61eb5f778647024414674fb9979c789fb6667"
+    },
+    {
+      "upstream": "conformance/cases/routes-entry-join.json",
+      "path": "dev/agsdl/fixtures/v0.3/conformance/cases/routes-entry-join.json",
+      "sha256": "8d5ff5720eb8748862220dc8af755759864afeecbb8912502401f6bef2382755"
+    },
+    {
+      "upstream": "conformance/cases/routes-message-to-join.json",
+      "path": "dev/agsdl/fixtures/v0.3/conformance/cases/routes-message-to-join.json",
+      "sha256": "73b57c5b62bbee68eff8e39cb207c70320e9faa0d439dc4c247aeddf9bb57de2"
+    },
+    {
+      "upstream": "conformance/cases/routes-output-at-top.json",
+      "path": "dev/agsdl/fixtures/v0.3/conformance/cases/routes-output-at-top.json",
+      "sha256": "28f58310430b9222b0d20c5fc91fe73b0315285e58eb20d0d4f1ae77f5586b6e"
+    },
+    {
+      "upstream": "conformance/cases/routes-quorum-keys.json",
+      "path": "dev/agsdl/fixtures/v0.3/conformance/cases/routes-quorum-keys.json",
+      "sha256": "a3527f8251d1b0d4e5d8e7d887150ad1027dcac893cdd8ddfeccb081561a440e"
+    },
+    {
+      "upstream": "conformance/cases/schema-closed-object.json",
+      "path": "dev/agsdl/fixtures/v0.3/conformance/cases/schema-closed-object.json",
+      "sha256": "d6e891e3b7d5237f5a48b22464b963c8d000ad64284e4bf3fc971f444f16f85d"
+    },
+    {
+      "upstream": "conformance/cases/schema-inconsistent.json",
+      "path": "dev/agsdl/fixtures/v0.3/conformance/cases/schema-inconsistent.json",
+      "sha256": "02aa1fce4de6f06c7c4977814b57edd75fef19da58ea6aa719e9d28ace3175ec"
+    },
+    {
+      "upstream": "conformance/cases/schema-item-bounds.json",
+      "path": "dev/agsdl/fixtures/v0.3/conformance/cases/schema-item-bounds.json",
+      "sha256": "45a74586a83c3c07a5bc3d868b326145fcecd8e752e8f1b54b69560522d6ebc3"
+    },
+    {
+      "upstream": "conformance/cases/schema-max-items-index.json",
+      "path": "dev/agsdl/fixtures/v0.3/conformance/cases/schema-max-items-index.json",
+      "sha256": "f6c241ec7f2ba4df8b5e07de09abe8e7324be9ef6d251a314670b8210e844474"
+    },
+    {
+      "upstream": "conformance/cases/shape-call-both.json",
+      "path": "dev/agsdl/fixtures/v0.3/conformance/cases/shape-call-both.json",
+      "sha256": "a8b2b1a3a28de7b935b7ad9bd2f049e45c37bc65a62bcd6fb76b156b24c921cf"
+    },
+    {
+      "upstream": "conformance/cases/shape-invalid-choice.json",
+      "path": "dev/agsdl/fixtures/v0.3/conformance/cases/shape-invalid-choice.json",
+      "sha256": "efeb2a2aed7bfda30be13d9395324d2debb4b08a62510b6d09f386ccd67091fd"
+    },
+    {
+      "upstream": "conformance/cases/shape-parse-mcp.json",
+      "path": "dev/agsdl/fixtures/v0.3/conformance/cases/shape-parse-mcp.json",
+      "sha256": "7c5698ba513bba3073ce401c0ce471daadda7a1be97e2fc1cc9bc39e4b8bffc3"
+    },
+    {
+      "upstream": "conformance/cases/shape-reserved-choice.json",
+      "path": "dev/agsdl/fixtures/v0.3/conformance/cases/shape-reserved-choice.json",
+      "sha256": "c3ec6252ba6b6cc0d9eb8cc2a69e8832b4a89861a533493a9931e2678a3ae6e0"
+    },
+    {
+      "upstream": "conformance/cases/shape-reserved-output.json",
+      "path": "dev/agsdl/fixtures/v0.3/conformance/cases/shape-reserved-output.json",
+      "sha256": "41b4d1743d9f95586dd6dcac06f0abb4e7aa6de8613a62ba63565b5f6ed6894a"
+    },
+    {
+      "upstream": "conformance/cases/shape-unknown-field.json",
+      "path": "dev/agsdl/fixtures/v0.3/conformance/cases/shape-unknown-field.json",
+      "sha256": "2664c96baf719587945224e5285203cb7b9d6fa9f8033c2990e4d8e3769ef89e"
+    },
+    {
+      "upstream": "conformance/cases/shape-wrong-contract.json",
+      "path": "dev/agsdl/fixtures/v0.3/conformance/cases/shape-wrong-contract.json",
+      "sha256": "022f9c60a2aca2f6736fb647dbfbc64561a0bdaccb1d439f82eeae3c09f83088"
+    },
+    {
+      "upstream": "conformance/cases/shared-instance-parallel.json",
+      "path": "dev/agsdl/fixtures/v0.3/conformance/cases/shared-instance-parallel.json",
+      "sha256": "d87cef59fc2f7008bfab2468431f5d04fae4da8f246c2c8b8e3836c2db63b127"
+    },
+    {
+      "upstream": "conformance/cases/shell-bypass-closed.json",
+      "path": "dev/agsdl/fixtures/v0.3/conformance/cases/shell-bypass-closed.json",
+      "sha256": "20a0f45d2a496529471969d95eec3737f236a4d3572feaf7637e0a56b44721c6"
+    },
+    {
+      "upstream": "conformance/cases/shell-bypass.json",
+      "path": "dev/agsdl/fixtures/v0.3/conformance/cases/shell-bypass.json",
+      "sha256": "2cfec1abc217d910112a4cdefe2ec967e6af363e7cec053d87538c9a356bbbe0"
+    },
+    {
+      "upstream": "conformance/cases/shell-prefix-unsupported.json",
+      "path": "dev/agsdl/fixtures/v0.3/conformance/cases/shell-prefix-unsupported.json",
+      "sha256": "2fadca7501bebe20d421dd81abd00091efcbe247db4ba290065820975950800a"
+    },
+    {
+      "upstream": "conformance/cases/shell-prefix.json",
+      "path": "dev/agsdl/fixtures/v0.3/conformance/cases/shell-prefix.json",
+      "sha256": "4f2d089dd79f7429697516da546ff35adca2379640e08bb7f259b482f0300a4f"
+    },
+    {
+      "upstream": "conformance/cases/shell-star-closed.json",
+      "path": "dev/agsdl/fixtures/v0.3/conformance/cases/shell-star-closed.json",
+      "sha256": "e2a5b0f8151e7a207345dab769d8169a771cfaea75c7b6c079cf0998d6109d9b"
+    },
+    {
+      "upstream": "conformance/cases/steer-in-branch.json",
+      "path": "dev/agsdl/fixtures/v0.3/conformance/cases/steer-in-branch.json",
+      "sha256": "b3b2557366c61208bcb4268a6625f9c7ac6d3bff9c7747ccacfd837b18b067b1"
+    },
+    {
+      "upstream": "conformance/cases/time-limits.json",
+      "path": "dev/agsdl/fixtures/v0.3/conformance/cases/time-limits.json",
+      "sha256": "82df017b6601d96af6c49f773ce73c885834e6ce50726413b687f1e5c0469e4a"
+    },
+    {
+      "upstream": "conformance/cases/unreachable-step.json",
+      "path": "dev/agsdl/fixtures/v0.3/conformance/cases/unreachable-step.json",
+      "sha256": "f37d5b25bb1770b315737d1ddce8857199c2499b65755e88ec4ceb8405774fc2"
+    },
+    {
+      "upstream": "conformance/cases/unverified-harness.json",
+      "path": "dev/agsdl/fixtures/v0.3/conformance/cases/unverified-harness.json",
+      "sha256": "ddfcb6783c9a64fc0780c357efdcd964c0ff1a0f1d892c3000b7e7d0a44b9fbd"
+    },
+    {
+      "upstream": "conformance/cases/uri-ip-literal.json",
+      "path": "dev/agsdl/fixtures/v0.3/conformance/cases/uri-ip-literal.json",
+      "sha256": "267382d92964fd273efc78d877ba67d26f9b828c040e8ce837fa9baf4eac2e71"
+    },
+    {
+      "upstream": "conformance/cases/uri-syntax.json",
+      "path": "dev/agsdl/fixtures/v0.3/conformance/cases/uri-syntax.json",
+      "sha256": "aebaa1877e81fb92e33445b4a78daebb32d0d076d84e186b18a0a023140849ed"
+    },
+    {
+      "upstream": "conformance/expected.json",
+      "path": "dev/agsdl/fixtures/v0.3/conformance/expected.json",
+      "sha256": "4ba54697efc67444068aec8e2e4abb3edeb94d27c5e4fae86143f2cf49843d1e"
+    },
+    {
+      "upstream": "conformance/modules/example/module.json",
+      "path": "dev/agsdl/fixtures/v0.3/conformance/modules/example/module.json",
+      "sha256": "95de087ea2d6a97fe36aabbc6ce0fd262c0831dc3f0aad52e2cc10949381db5f"
+    },
+    {
+      "upstream": "conformance/modules/limited/module.json",
+      "path": "dev/agsdl/fixtures/v0.3/conformance/modules/limited/module.json",
+      "sha256": "ef068b819b36ac5876d2083366c6743a2d91c04968a6e74898fb26a648cc8ab5"
+    },
+    {
+      "upstream": "conformance/runs/answer-timeout-ask.json",
+      "path": "dev/agsdl/fixtures/v0.3/conformance/runs/answer-timeout-ask.json",
+      "sha256": "e64965fd480db2de6593b47661da7d4f12b8457b176b420a39503909e0a9ce77"
+    },
+    {
+      "upstream": "conformance/runs/answer-timeout-plan.json",
+      "path": "dev/agsdl/fixtures/v0.3/conformance/runs/answer-timeout-plan.json",
+      "sha256": "c9460d0675eecaa9edbc1eb9b82076ba35425522c69ac4a47f53ae2c42af802f"
+    },
+    {
+      "upstream": "conformance/runs/approval-comments.json",
+      "path": "dev/agsdl/fixtures/v0.3/conformance/runs/approval-comments.json",
+      "sha256": "3d8f6655d0ed9f567b7a6770f3a7899bb5b279a653a7661b951c0bfac437acf2"
+    },
+    {
+      "upstream": "conformance/runs/approval.json",
+      "path": "dev/agsdl/fixtures/v0.3/conformance/runs/approval.json",
+      "sha256": "a5594faf1ec7552958091bdcf3af3b47d2e4562750513d68ce11659e48f2db2a"
+    },
+    {
+      "upstream": "conformance/runs/call-answer-timeout.json",
+      "path": "dev/agsdl/fixtures/v0.3/conformance/runs/call-answer-timeout.json",
+      "sha256": "fa7726bbbc65df75eeaec7df5c94d2a5f2a71dfab492d6bb94911642076b512a"
+    },
+    {
+      "upstream": "conformance/runs/command-json-invalid.json",
+      "path": "dev/agsdl/fixtures/v0.3/conformance/runs/command-json-invalid.json",
+      "sha256": "c4b29ec6d9809bcae401b54748eb8482ca662186fd23bc15eb8db5c568cefb47"
+    },
+    {
+      "upstream": "conformance/runs/command-lines.json",
+      "path": "dev/agsdl/fixtures/v0.3/conformance/runs/command-lines.json",
+      "sha256": "34433121b4940af3ed94355b0446514c9ad5bee61de7e2daac0669ab5ea541f7"
+    },
+    {
+      "upstream": "conformance/runs/command-outcome.json",
+      "path": "dev/agsdl/fixtures/v0.3/conformance/runs/command-outcome.json",
+      "sha256": "ceab028542ef93ceed4c567eab27f72103b2568ab9568796917dd58a46878984"
+    },
+    {
+      "upstream": "conformance/runs/compose-body-failure.json",
+      "path": "dev/agsdl/fixtures/v0.3/conformance/runs/compose-body-failure.json",
+      "sha256": "910709be5053ce395f0c85a8b94e9e3e7157e7290da3a2d357699fd470506fb4"
+    },
+    {
+      "upstream": "conformance/runs/composition.json",
+      "path": "dev/agsdl/fixtures/v0.3/conformance/runs/composition.json",
+      "sha256": "92a9cf5728f38de3176426c833972fd2c6bf103e2f0a8a314d65d0b3d4cfad3d"
+    },
+    {
+      "upstream": "conformance/runs/delivery-queue.json",
+      "path": "dev/agsdl/fixtures/v0.3/conformance/runs/delivery-queue.json",
+      "sha256": "b562c8cdd9954ee183adc3e624ee3bbf292be8cfa18f327db506b2de221b1d2a"
+    },
+    {
+      "upstream": "conformance/runs/delivery-steer.json",
+      "path": "dev/agsdl/fixtures/v0.3/conformance/runs/delivery-steer.json",
+      "sha256": "5b364684f9dea58a020b8801fa0534869afaeeb9b0a59d40b253072f9b2db2fe"
+    },
+    {
+      "upstream": "conformance/runs/error-route.json",
+      "path": "dev/agsdl/fixtures/v0.3/conformance/runs/error-route.json",
+      "sha256": "a1ce326c8829ba6ce153aa37470b7fe0415c8121265b7231dffb9b2830c4bb83"
+    },
+    {
+      "upstream": "conformance/runs/fanout-empty.json",
+      "path": "dev/agsdl/fixtures/v0.3/conformance/runs/fanout-empty.json",
+      "sha256": "51a6233d38c93226b637ae429369828f8a78ecc3ecd61b4a0837178122b4172f"
+    },
+    {
+      "upstream": "conformance/runs/fanout-keep.json",
+      "path": "dev/agsdl/fixtures/v0.3/conformance/runs/fanout-keep.json",
+      "sha256": "444a5e4dc9baec1f82f8e6788f1ae7dad66a1db04086398471836a2ba2b26cbc"
+    },
+    {
+      "upstream": "conformance/runs/fanout-limit.json",
+      "path": "dev/agsdl/fixtures/v0.3/conformance/runs/fanout-limit.json",
+      "sha256": "3c45b90f38ba7cf0458abeb15fff0ca092be2308fc092eeaa1169146caa68b7e"
+    },
+    {
+      "upstream": "conformance/runs/fanout-max-failures.json",
+      "path": "dev/agsdl/fixtures/v0.3/conformance/runs/fanout-max-failures.json",
+      "sha256": "a81a7e0279b3d8f7efda141bec9e9338f872960fbb914cf6cabfe3df6294b047"
+    },
+    {
+      "upstream": "conformance/runs/fanout-missions.json",
+      "path": "dev/agsdl/fixtures/v0.3/conformance/runs/fanout-missions.json",
+      "sha256": "ecdbd7c9c5c9dc3f6aa6ad2671a40c00fee1cf211cd099206b8ee47efe13e54c"
+    },
+    {
+      "upstream": "conformance/runs/fanout-one-at-a-time.json",
+      "path": "dev/agsdl/fixtures/v0.3/conformance/runs/fanout-one-at-a-time.json",
+      "sha256": "cc44042eef2b15e8e60ecbab84a6bbadccd23a6d1a7c3c4b15f68f6a5f5c1348"
+    },
+    {
+      "upstream": "conformance/runs/fanout-operand.json",
+      "path": "dev/agsdl/fixtures/v0.3/conformance/runs/fanout-operand.json",
+      "sha256": "4f897247c05dbe3372a87812d0689ab8e03ba37a0f7c2a704a1cd6d58abdbe9f"
+    },
+    {
+      "upstream": "conformance/runs/finish-branch-goes-on.json",
+      "path": "dev/agsdl/fixtures/v0.3/conformance/runs/finish-branch-goes-on.json",
+      "sha256": "d09dbb6ba3e4eb7268a0d84fbe935c37ac2ea5d0faa236d99a7eb3cf487c8779"
+    },
+    {
+      "upstream": "conformance/runs/flow-error.json",
+      "path": "dev/agsdl/fixtures/v0.3/conformance/runs/flow-error.json",
+      "sha256": "512b767c866eb2ac299eb8b364e3f860de89f04dd01a212b6f9de72b6ae8b7ad"
+    },
+    {
+      "upstream": "conformance/runs/join-all.json",
+      "path": "dev/agsdl/fixtures/v0.3/conformance/runs/join-all.json",
+      "sha256": "51ca76e1ced2c0d8c747ba23495616bad32d069637b94691a2d1770a8959ae2a"
+    },
+    {
+      "upstream": "conformance/runs/join-branch-failed.json",
+      "path": "dev/agsdl/fixtures/v0.3/conformance/runs/join-branch-failed.json",
+      "sha256": "43fcd7aff38cec494d9268b80c94a1e3065f9ed1909eac07951ec276922c2abf"
+    },
+    {
+      "upstream": "conformance/runs/join-branch-steer.json",
+      "path": "dev/agsdl/fixtures/v0.3/conformance/runs/join-branch-steer.json",
+      "sha256": "c66096b2d8a6a4b50bd6457827914f8b6aa2bbe67399aaba50b4f50c71261ca9"
+    },
+    {
+      "upstream": "conformance/runs/join-group-closes.json",
+      "path": "dev/agsdl/fixtures/v0.3/conformance/runs/join-group-closes.json",
+      "sha256": "21ae34a4cfe24d25b42c6d935af5ed0891b334ee7513c573407f8452204ee200"
+    },
+    {
+      "upstream": "conformance/runs/mission-priority.json",
+      "path": "dev/agsdl/fixtures/v0.3/conformance/runs/mission-priority.json",
+      "sha256": "efbd2fa71dda02ce2c73ea99af67f40e0bfadfbe1c770c82baab57f35b5e26e8"
+    },
+    {
+      "upstream": "conformance/runs/parallel-no-join.json",
+      "path": "dev/agsdl/fixtures/v0.3/conformance/runs/parallel-no-join.json",
+      "sha256": "def7ffc77fa5bed808b7a4697a29baec4eeddd29a6765f9493018bb9737bd96c"
+    },
+    {
+      "upstream": "conformance/runs/quorum-finish.json",
+      "path": "dev/agsdl/fixtures/v0.3/conformance/runs/quorum-finish.json",
+      "sha256": "49ae35767301569041700883370fc6ada49717200348103a5bd2025114e4f6eb"
+    },
+    {
+      "upstream": "conformance/runs/quorum-missed.json",
+      "path": "dev/agsdl/fixtures/v0.3/conformance/runs/quorum-missed.json",
+      "sha256": "6c476d29ae9a21abe555c4c20aee29593fd31006174412dd3f8c81bb21272c82"
+    },
+    {
+      "upstream": "conformance/runs/quorum-reached.json",
+      "path": "dev/agsdl/fixtures/v0.3/conformance/runs/quorum-reached.json",
+      "sha256": "3ebf931fd00937d07ceb80d709f179bb07a8add1fa93a20e6b77a2c7fe402116"
+    },
+    {
+      "upstream": "conformance/runs/quorum-unreachable.json",
+      "path": "dev/agsdl/fixtures/v0.3/conformance/runs/quorum-unreachable.json",
+      "sha256": "b01ed57ae25c2ebbbd1039ad45b682e47eecfa689bdb197dad4b9faf8c7c52fc"
+    },
+    {
+      "upstream": "conformance/runs/quorum-wait.json",
+      "path": "dev/agsdl/fixtures/v0.3/conformance/runs/quorum-wait.json",
+      "sha256": "1da961c08147ec8bc62fe28f03971935943bfc0bad24b6acf3abf5a7fae681ab"
+    },
+    {
+      "upstream": "conformance/runs/sequence-loop.json",
+      "path": "dev/agsdl/fixtures/v0.3/conformance/runs/sequence-loop.json",
+      "sha256": "0be291e5e08a2c8014e7a79a3a61e94886473a99fec75f8d1708737c62853492"
+    },
+    {
+      "upstream": "conformance/runs/timeout-pauses-for-person.json",
+      "path": "dev/agsdl/fixtures/v0.3/conformance/runs/timeout-pauses-for-person.json",
+      "sha256": "7b7ebdb7b021b230cbb7163050a60fe222b522d404541ccd8c77f4f0eaeaeab5"
+    },
+    {
+      "upstream": "conformance/runs/visit-limit.json",
+      "path": "dev/agsdl/fixtures/v0.3/conformance/runs/visit-limit.json",
+      "sha256": "df6c0886c92931692ba095f851793b4003021fa9605f3f23bdc9718082ff495c"
+    },
+    {
+      "upstream": "conformance/runs/wait-group-closes.json",
+      "path": "dev/agsdl/fixtures/v0.3/conformance/runs/wait-group-closes.json",
+      "sha256": "2f3fbe87c1f64cea9236c29a2c88ee4df1dbc9bb99375b2d61012915792fb6cb"
+    },
+    {
+      "upstream": "examples/README.md",
+      "path": "dev/agsdl/fixtures/v0.3/examples/README.md",
+      "sha256": "765e41c2e62fd8d563662ad16ce99b5541db242888c9009d8a0a31a860a41d5d"
+    },
+    {
+      "upstream": "examples/assistant.json",
+      "path": "dev/agsdl/fixtures/v0.3/examples/assistant.json",
+      "sha256": "21ebf9f9e7b9327cab9a131ad3e5a73fecc5f2604b669f6811e4c38d001b18ec"
+    },
+    {
+      "upstream": "examples/ci-watcher.json",
+      "path": "dev/agsdl/fixtures/v0.3/examples/ci-watcher.json",
+      "sha256": "24509c843e3e67d584bb58af8c9d4bc037ee6f07f4db591bd87c63ebb3e97931"
+    },
+    {
+      "upstream": "examples/fix-each-file.json",
+      "path": "dev/agsdl/fixtures/v0.3/examples/fix-each-file.json",
+      "sha256": "e5a98bfb71bfb0c2eb823b5f43ff85b7e43e92bfe085e110d92e991e6f33b4d4"
+    },
+    {
+      "upstream": "examples/fix-until-green.json",
+      "path": "dev/agsdl/fixtures/v0.3/examples/fix-until-green.json",
+      "sha256": "05ca37d8d23ceb3011152f62d512b9d32b4ef1513239a1bbe07633430b87ac05"
+    },
+    {
+      "upstream": "examples/parallel-review.json",
+      "path": "dev/agsdl/fixtures/v0.3/examples/parallel-review.json",
+      "sha256": "b4930bc95ea6ab399e183df3ca02b8e0f0126c40302d6eb1102f5f0a3336ab68"
+    },
+    {
+      "upstream": "examples/plan-and-build.json",
+      "path": "dev/agsdl/fixtures/v0.3/examples/plan-and-build.json",
+      "sha256": "b78e85d1bab146c101e6e25ec1dc5de1e8b86301ca2b5b6b09c5529932628884"
+    },
+    {
+      "upstream": "examples/release-approval.json",
+      "path": "dev/agsdl/fixtures/v0.3/examples/release-approval.json",
+      "sha256": "5ae13f030fbbe131f94c78fffe4a8dbd766c2bdc7ede9a0245ac9d0dcb2b9305"
+    },
+    {
+      "upstream": "examples/reusable-review.json",
+      "path": "dev/agsdl/fixtures/v0.3/examples/reusable-review.json",
+      "sha256": "2e293fab962d8580df64d40f9dd9aafb1326442e797e3c4105173195d9d940ab"
+    },
+    {
+      "upstream": "examples/review-changed-files.json",
+      "path": "dev/agsdl/fixtures/v0.3/examples/review-changed-files.json",
+      "sha256": "0ba80c5615911d689518143091fe4c89b2641f5755fab752ce9d3d0bef1bb8c9"
+    },
+    {
+      "upstream": "examples/write-and-review.json",
+      "path": "dev/agsdl/fixtures/v0.3/examples/write-and-review.json",
+      "sha256": "4aaabad731f3ba985553af5f9301fe4a5f704f316588eb2185b51056113f12c4"
+    },
+    {
+      "upstream": "harnesses/claude-code/module.json",
+      "path": "src/vendor/agsdl/v0.3/harnesses/claude-code/module.json",
+      "sha256": "834263af6e664191e65e028e9edff83712f1393b6fd92dd833d2885eb4d46513"
+    },
+    {
+      "upstream": "harnesses/codex/module.json",
+      "path": "src/vendor/agsdl/v0.3/harnesses/codex/module.json",
+      "sha256": "06f86882fd7ee47cd9df8f266f24a501f5efa012319ea48d68364357f772db40"
+    },
+    {
+      "upstream": "harnesses/opencode/module.json",
+      "path": "src/vendor/agsdl/v0.3/harnesses/opencode/module.json",
+      "sha256": "2d2a750ffb0565e9d1435e3e9ba250e37465558f679622565e20ed76dfbd5fa7"
+    },
+    {
+      "upstream": "harnesses/pi/module.json",
+      "path": "src/vendor/agsdl/v0.3/harnesses/pi/module.json",
+      "sha256": "d80157681ade6afea4aa662587d7c0c9d3eb2ff9710b3526b6b642a563c2715d"
+    },
+    {
+      "upstream": "schema/agsdl.schema.json",
+      "path": "src/vendor/agsdl/v0.3/schema/agsdl.schema.json",
+      "sha256": "6d7531303a1240254f6e8274ec43d31b8de40cc554d3149a14ec6542682939b9"
+    },
+    {
+      "upstream": "schema/harness-module.schema.json",
+      "path": "src/vendor/agsdl/v0.3/schema/harness-module.schema.json",
+      "sha256": "aba2b843f98c0fa9bc92f4d616c44ed9a3192ff4b23201ad44a1d2f0a3b69eb7"
+    },
+    {
+      "upstream": "schema/run-scenario.schema.json",
+      "path": "src/vendor/agsdl/v0.3/schema/run-scenario.schema.json",
+      "sha256": "c688927b7401ee2f1be74fb8511ea112720786534c5e5071d0886e5068a3c6a9"
+    },
+    {
+      "upstream": "spec/README.md",
+      "path": "dev/agsdl/fixtures/v0.3/spec/README.md",
+      "sha256": "20ebbf7cd659d4cab47edf0dbfe21480d776fb2fc9b555945cb2a4d7ab774410"
+    },
+    {
+      "upstream": "spec/agents.md",
+      "path": "dev/agsdl/fixtures/v0.3/spec/agents.md",
+      "sha256": "d913c818200c36e472f1f6e73a5a0229e7352f21180e1570a7f80c7251642952"
+    },
+    {
+      "upstream": "spec/document.md",
+      "path": "dev/agsdl/fixtures/v0.3/spec/document.md",
+      "sha256": "cdf55dd312883afb20f8347ebe8f3013968a0f5638b7a24ac7e302b69594e9e0"
+    },
+    {
+      "upstream": "spec/flow.md",
+      "path": "dev/agsdl/fixtures/v0.3/spec/flow.md",
+      "sha256": "e50da55569ce6cb86f981f444f7102831e5e7d181c91e10819f0b3abab7a8688"
+    },
+    {
+      "upstream": "spec/harnesses.md",
+      "path": "dev/agsdl/fixtures/v0.3/spec/harnesses.md",
+      "sha256": "c4308b17b2c8dcd18b46e3c2a266ec7697f850805467f8410b39d6df68b5cac2"
+    },
+    {
+      "upstream": "spec/open-questions.md",
+      "path": "dev/agsdl/fixtures/v0.3/spec/open-questions.md",
+      "sha256": "97944b0fa48cdbc59451eb0e58737c106c4c2f380cbdd3928596e9ff1de18006"
+    },
+    {
+      "upstream": "spec/validation.md",
+      "path": "dev/agsdl/fixtures/v0.3/spec/validation.md",
+      "sha256": "389ebfcd4587ce67fade78ef77695c2f1ae41dcbfd986bf8c2993b6dc9f96240"
+    },
+    {
+      "upstream": "tooling/agsdl/__init__.py",
+      "path": "dev/agsdl/fixtures/v0.3/tooling/agsdl/__init__.py",
+      "sha256": "2ad2b3d422e9ef506aef862d1c2a2da9b28b9e5dc9d49d803b6dac74c71ca6c0"
+    },
+    {
+      "upstream": "tooling/agsdl/__main__.py",
+      "path": "dev/agsdl/fixtures/v0.3/tooling/agsdl/__main__.py",
+      "sha256": "bbdab0f5fccdb70934829eb2359889371c30d098345c0502d6f7001a9e8f0d70"
+    },
+    {
+      "upstream": "tooling/agsdl/graph.py",
+      "path": "dev/agsdl/fixtures/v0.3/tooling/agsdl/graph.py",
+      "sha256": "b27424d0c874cb0a794b54cbf7649880b584b89d2ba700bfe47586b22d09daf5"
+    },
+    {
+      "upstream": "tooling/agsdl/jsoninput.py",
+      "path": "dev/agsdl/fixtures/v0.3/tooling/agsdl/jsoninput.py",
+      "sha256": "468c4fc466c63386e8753d671ad10c262b53561d10b482d6ccd3f4a08dfcf4a5"
+    },
+    {
+      "upstream": "tooling/agsdl/mermaid.py",
+      "path": "dev/agsdl/fixtures/v0.3/tooling/agsdl/mermaid.py",
+      "sha256": "3ce05ab038d10ce8336010c7725a2df4e1efabd2acd220b027d75e53db7391d8"
+    },
+    {
+      "upstream": "tooling/agsdl/permissions.py",
+      "path": "dev/agsdl/fixtures/v0.3/tooling/agsdl/permissions.py",
+      "sha256": "0998ca8caaec9b4b1df819a2f6c126ad7e998f5a9d7ba31f0929cd42a5d1eae6"
+    },
+    {
+      "upstream": "tooling/agsdl/schemacheck.py",
+      "path": "dev/agsdl/fixtures/v0.3/tooling/agsdl/schemacheck.py",
+      "sha256": "c0613835f31a72b2d84140659b2b73e2457c9239f5a924c5915ebbd6e54ef387"
+    },
+    {
+      "upstream": "tooling/agsdl/validator.py",
+      "path": "dev/agsdl/fixtures/v0.3/tooling/agsdl/validator.py",
+      "sha256": "865caf76d6819d3622f75018150dce8ca3ff92abc725726e23e75d99eea8f765"
+    },
+    {
+      "upstream": "tooling/agsdl/valueschema.py",
+      "path": "dev/agsdl/fixtures/v0.3/tooling/agsdl/valueschema.py",
+      "sha256": "3d9e310000b839914249e00203b293e02967c1375b6d1b7ec63a401633021cca"
+    },
+    {
+      "upstream": "tooling/tests/test_runs.py",
+      "path": "dev/agsdl/fixtures/v0.3/tooling/tests/test_runs.py",
+      "sha256": "76de535e45c855ccc99aa00bdfc0592066fe1094d180f70f2ea80107c482e929"
+    },
+    {
+      "upstream": "tooling/tests/test_validator.py",
+      "path": "dev/agsdl/fixtures/v0.3/tooling/tests/test_validator.py",
+      "sha256": "138960e9bf6c21139b6b0b0eb0b94f4cf7da2bee34077f568fd7ac571da4f767"
+    }
+  ]
+}

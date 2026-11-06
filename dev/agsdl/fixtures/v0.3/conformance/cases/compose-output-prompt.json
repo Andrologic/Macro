@@ -1,0 +1,64 @@
+{
+  "contract": "agsdl-0.3.0",
+  "id": "compose-output-prompt",
+  "agents": {
+    "lead": {
+      "harness": "example",
+      "permissions": "read-only",
+      "instructs": true
+    },
+    "worker": {
+      "harness": "example",
+      "permissions": "workspace"
+    }
+  },
+  "compositions": {
+    "plan": {
+      "parameters": [
+        "planner"
+      ],
+      "entry": "write",
+      "outputs": [
+        "planned"
+      ],
+      "steps": {
+        "write": {
+          "type": "agent",
+          "agent": {
+            "parameter": "planner"
+          },
+          "next": {
+            "output": "planned"
+          }
+        }
+      }
+    }
+  },
+  "flow": {
+    "entry": "triage",
+    "steps": {
+      "triage": {
+        "type": "agent",
+        "agent": "worker",
+        "next": {
+          "hard": "plan",
+          "easy": "build"
+        }
+      },
+      "plan": {
+        "type": "compose",
+        "composition": "plan",
+        "agents": {
+          "planner": "lead"
+        },
+        "next": {
+          "planned": "build"
+        }
+      },
+      "build": {
+        "type": "agent",
+        "agent": "worker"
+      }
+    }
+  }
+}

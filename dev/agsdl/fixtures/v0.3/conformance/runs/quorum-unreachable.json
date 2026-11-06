@@ -1,0 +1,109 @@
+{
+  "description": "A quorum that the paths a route starts cannot reach is missed as the group opens, and none of them start.",
+  "document": {
+    "contract": "agsdl-0.3.0",
+    "id": "quorum-unreachable",
+    "agents": {
+      "lead": {
+        "harness": "example",
+        "permissions": "workspace"
+      },
+      "reviewer": {
+        "harness": "example",
+        "permissions": "read-only"
+      }
+    },
+    "flow": {
+      "entry": "spread",
+      "steps": {
+        "spread": {
+          "type": "agent",
+          "agent": "lead",
+          "next": {
+            "full": [
+              "r1",
+              "r2"
+            ],
+            "quick": "r1"
+          }
+        },
+        "r1": {
+          "type": "agent",
+          "agent": "reviewer",
+          "instance": "new",
+          "next": {
+            "approve": "vote",
+            "reject": "vote"
+          }
+        },
+        "r2": {
+          "type": "agent",
+          "agent": "reviewer",
+          "instance": "new",
+          "next": {
+            "approve": "vote",
+            "reject": "vote"
+          }
+        },
+        "vote": {
+          "type": "join",
+          "quorum": {
+            "count": 2,
+            "accept": [
+              "approve"
+            ]
+          },
+          "next": {
+            "reached": "publish",
+            "missed": "revise"
+          }
+        },
+        "publish": {
+          "type": "call",
+          "command": "make publish"
+        },
+        "revise": {
+          "type": "agent",
+          "agent": "lead",
+          "prompt": "Revise."
+        }
+      }
+    }
+  },
+  "timeline": [
+    {
+      "work": "spread",
+      "returns": {
+        "choice": "quick"
+      }
+    },
+    {
+      "running": [
+        {
+          "step": "revise"
+        }
+      ]
+    },
+    {
+      "work": "revise",
+      "returns": {
+        "text": "Revised."
+      }
+    }
+  ],
+  "expect": {
+    "run": "succeeded",
+    "starts": {
+      "spread": 1,
+      "revise": 1
+    },
+    "joins": [
+      {
+        "join": "vote",
+        "outcome": "missed"
+      }
+    ],
+    "cancelled": [],
+    "failures": []
+  }
+}

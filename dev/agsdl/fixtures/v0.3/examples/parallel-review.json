@@ -1,0 +1,128 @@
+{
+  "contract": "agsdl-0.3.0",
+  "id": "parallel-review",
+  "title": "Three reviews and a vote",
+  "description": "A lead prepares a change; three fresh reviewers vote; two approvals publish it.",
+  "agents": {
+    "lead": {
+      "harness": "claude-code",
+      "model": {
+        "name": "example/large",
+        "effort": "high"
+      },
+      "instructions": "Prepare the change for review, then address review findings.",
+      "permissions": "workspace"
+    },
+    "reviewer": {
+      "harness": "opencode",
+      "description": "Reviews a change and approves or rejects it.",
+      "instructions": "Review the change for correctness and clarity. Choose approve or reject, and explain why.",
+      "permissions": "read-only",
+      "results": {
+        "findings": {
+          "required": true,
+          "schema": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "file": {
+                  "type": "string"
+                },
+                "problem": {
+                  "type": "string"
+                },
+                "severity": {
+                  "type": "string",
+                  "enum": [
+                    "minor",
+                    "major"
+                  ]
+                }
+              },
+              "required": [
+                "file",
+                "problem",
+                "severity"
+              ],
+              "additionalProperties": false
+            }
+          }
+        }
+      }
+    }
+  },
+  "flow": {
+    "entry": "prepare",
+    "steps": {
+      "prepare": {
+        "type": "agent",
+        "agent": "lead",
+        "maxVisits": 3,
+        "next": [
+          "review_a",
+          "review_b",
+          "review_c"
+        ]
+      },
+      "review_a": {
+        "type": "agent",
+        "agent": "reviewer",
+        "instance": "new",
+        "next": {
+          "approve": "vote",
+          "reject": "vote"
+        }
+      },
+      "review_b": {
+        "type": "agent",
+        "agent": "reviewer",
+        "instance": "new",
+        "next": {
+          "approve": "vote",
+          "reject": "vote"
+        }
+      },
+      "review_c": {
+        "type": "agent",
+        "agent": "reviewer",
+        "instance": "new",
+        "next": {
+          "approve": "vote",
+          "reject": "vote"
+        }
+      },
+      "vote": {
+        "type": "join",
+        "title": "Two approvals?",
+        "quorum": {
+          "count": 2,
+          "accept": [
+            "approve"
+          ]
+        },
+        "remaining": "stop",
+        "next": {
+          "reached": "publish",
+          "missed": {
+            "step": "prepare",
+            "message": {
+              "prompt": "The reviewers rejected the change. Address their findings.",
+              "resources": {
+                "reviews": {
+                  "from": [
+                    "branches"
+                  ]
+                }
+              }
+            }
+          }
+        }
+      },
+      "publish": {
+        "type": "call",
+        "command": "make publish"
+      }
+    }
+  }
+}

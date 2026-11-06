@@ -1,0 +1,92 @@
+{
+  "description": "Paths that meet no join end on their own; an unhandled failure on one does not stop the other, and fails the run.",
+  "document": {
+    "contract": "agsdl-0.3.0",
+    "id": "parallel-no-join",
+    "agents": {
+      "lead": {
+        "harness": "example",
+        "permissions": "workspace"
+      },
+      "dev": {
+        "harness": "example",
+        "permissions": "workspace"
+      }
+    },
+    "flow": {
+      "entry": "start",
+      "steps": {
+        "start": {
+          "type": "agent",
+          "agent": "lead",
+          "next": [
+            "docs",
+            "code"
+          ]
+        },
+        "docs": {
+          "type": "agent",
+          "agent": "dev",
+          "instance": "new"
+        },
+        "code": {
+          "type": "agent",
+          "agent": "dev",
+          "instance": "new"
+        }
+      }
+    }
+  },
+  "entry": {
+    "prompt": "Start."
+  },
+  "timeline": [
+    {
+      "work": "start",
+      "returns": {
+        "text": "Go."
+      }
+    },
+    {
+      "running": [
+        {
+          "step": "docs"
+        },
+        {
+          "step": "code"
+        }
+      ]
+    },
+    {
+      "work": "docs",
+      "fails": "AGENT_FAILED"
+    },
+    {
+      "running": [
+        {
+          "step": "code"
+        }
+      ]
+    },
+    {
+      "work": "code",
+      "returns": {
+        "text": "Done."
+      }
+    }
+  ],
+  "expect": {
+    "run": "failed",
+    "starts": {
+      "start": 1,
+      "docs": 1,
+      "code": 1
+    },
+    "failures": [
+      {
+        "step": "docs",
+        "code": "AGENT_FAILED"
+      }
+    ]
+  }
+}

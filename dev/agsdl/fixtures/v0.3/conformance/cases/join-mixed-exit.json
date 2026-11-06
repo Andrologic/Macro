@@ -1,0 +1,46 @@
+{
+  "contract": "agsdl-0.3.0",
+  "id": "join-mixed-exit",
+  "agents": {
+    "reviewer": {
+      "harness": "example",
+      "permissions": "read-only"
+    }
+  },
+  "flow": {
+    "entry": "o",
+    "steps": {
+      "o": {
+        "type": "agent",
+        "agent": "reviewer",
+        "next": [
+          "p",
+          "s"
+        ]
+      },
+      "p": {
+        "type": "agent",
+        "agent": "reviewer",
+        "instance": "new",
+        "next": "merge"
+      },
+      "s": {
+        "type": "agent",
+        "agent": "reviewer",
+        "instance": "new",
+        "next": [
+          "merge",
+          "notify"
+        ]
+      },
+      "merge": {
+        "type": "join"
+      },
+      "notify": {
+        "type": "agent",
+        "agent": "reviewer",
+        "instance": "new"
+      }
+    }
+  }
+}

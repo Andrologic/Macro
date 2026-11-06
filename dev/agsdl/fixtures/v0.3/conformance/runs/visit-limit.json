@@ -1,0 +1,85 @@
+{
+  "description": "Starting a step beyond maxVisits fails it without doing the work; unhandled, the run fails.",
+  "document": {
+    "contract": "agsdl-0.3.0",
+    "id": "visit-limit",
+    "agents": {
+      "writer": {
+        "harness": "example",
+        "permissions": "workspace"
+      },
+      "reviewer": {
+        "harness": "example",
+        "permissions": "read-only"
+      }
+    },
+    "flow": {
+      "entry": "write",
+      "steps": {
+        "write": {
+          "type": "agent",
+          "agent": "writer",
+          "next": "review"
+        },
+        "review": {
+          "type": "agent",
+          "agent": "reviewer",
+          "instance": "new",
+          "maxVisits": 2,
+          "next": {
+            "revise": "write",
+            "ready": []
+          }
+        }
+      }
+    }
+  },
+  "entry": {
+    "prompt": "Start."
+  },
+  "timeline": [
+    {
+      "work": "write",
+      "returns": {
+        "text": "Draft 1"
+      }
+    },
+    {
+      "work": "review",
+      "returns": {
+        "choice": "revise"
+      }
+    },
+    {
+      "work": "write",
+      "returns": {
+        "text": "Draft 2"
+      }
+    },
+    {
+      "work": "review",
+      "returns": {
+        "choice": "revise"
+      }
+    },
+    {
+      "work": "write",
+      "returns": {
+        "text": "Draft 3"
+      }
+    }
+  ],
+  "expect": {
+    "run": "failed",
+    "starts": {
+      "write": 3,
+      "review": 2
+    },
+    "failures": [
+      {
+        "step": "review",
+        "code": "VISIT_LIMIT"
+      }
+    ]
+  }
+}

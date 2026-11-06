@@ -1,0 +1,32 @@
+{
+  "contract": "agsdl-0.3.0",
+  "id": "join-no-fork",
+  "agents": {
+    "a": {
+      "harness": "example",
+      "permissions": "read-only"
+    }
+  },
+  "flow": {
+    "entry": "s",
+    "steps": {
+      "s": {
+        "type": "agent",
+        "agent": "a",
+        "next": {
+          "x": "t",
+          "y": "j"
+        }
+      },
+      "t": {
+        "type": "agent",
+        "agent": "a",
+        "instance": "t",
+        "next": "j"
+      },
+      "j": {
+        "type": "join"
+      }
+    }
+  }
+}

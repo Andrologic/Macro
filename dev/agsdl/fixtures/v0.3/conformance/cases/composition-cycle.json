@@ -1,0 +1,41 @@
+{
+  "contract": "agsdl-0.3.0",
+  "id": "composition-cycle",
+  "agents": {
+    "a": {
+      "harness": "example",
+      "permissions": "read-only"
+    }
+  },
+  "flow": {
+    "entry": "s",
+    "steps": {
+      "s": {
+        "type": "compose",
+        "composition": "loop",
+        "next": {
+          "done": []
+        }
+      }
+    }
+  },
+  "compositions": {
+    "loop": {
+      "entry": "again",
+      "outputs": [
+        "done"
+      ],
+      "steps": {
+        "again": {
+          "type": "compose",
+          "composition": "loop",
+          "next": {
+            "done": {
+              "output": "done"
+            }
+          }
+        }
+      }
+    }
+  }
+}

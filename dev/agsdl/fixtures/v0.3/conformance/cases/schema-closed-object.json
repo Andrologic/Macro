@@ -1,0 +1,45 @@
+{
+  "contract": "agsdl-0.3.0",
+  "id": "schema-closed-object",
+  "agents": {
+    "a": {
+      "harness": "example",
+      "permissions": "full",
+      "results": {
+        "o": {
+          "schema": {
+            "type": "object",
+            "additionalProperties": false
+          }
+        }
+      }
+    }
+  },
+  "flow": {
+    "entry": "s",
+    "steps": {
+      "s": {
+        "type": "agent",
+        "agent": "a",
+        "next": {
+          "step": "t",
+          "message": {
+            "resources": {
+              "x": {
+                "from": [
+                  "results",
+                  "o",
+                  "missing"
+                ]
+              }
+            }
+          }
+        }
+      },
+      "t": {
+        "type": "agent",
+        "agent": "a"
+      }
+    }
+  }
+}
