@@ -6,6 +6,10 @@ export interface LocalizedDiagnostic {
   rule: string;
   details: string;
   path?: string;
+  severity?: "error" | "warning";
+  step?: string[];
+  /** Present only when the authored pointer identifies source bytes. */
+  span?: { start: number; end: number };
   targets: string[];
 }
 
@@ -59,17 +63,19 @@ export function localizeDiagnostics(source: string, reports: AgsdlReport[], card
       return card.path.startsWith("/legacy/") && definition?.kind === "Agent" && object(definition.annotations).macroLegacyNodeId === card.id;
     })).map(card => card.path);
   };
-  const diagnostics = reports.flatMap(report => report.results.flatMap(result => result.findings.map(finding => {
-    if (result.input !== "primary") return { rule: finding.rule, details: finding.details, path: undefined, targets: [] };
+  const diagnostics: LocalizedDiagnostic[] = reports.flatMap(report => report.results.flatMap(result => result.findings.map(finding => {
+    const context = { severity: finding.severity, step: finding.step };
+    if (result.input !== "primary") return { ...context, rule: finding.rule, details: finding.details, path: undefined, targets: [] };
     let path = finding.location.pointer;
-    if (path !== undefined && !spans.has(path)) path = undefined;
     if (path === undefined && Number.isSafeInteger(finding.location.byte)) {
       const byte = finding.location.byte!;
       path = [...spans].filter(([, span]) => byte >= span.start && byte < span.end).sort((a, b) => (a[1].end - a[1].start) - (b[1].end - b[1].start))[0]?.[0];
     }
     const invocation = finding.invocation && spans.has(finding.invocation) ? finding.invocation : undefined;
-    const targets = [...new Set([...targetsFor(path), ...targetsFor(invocation)])];
-    return { rule: finding.rule, details: finding.details, path, targets };
+    const span = path === undefined ? undefined : spans.get(path);
+    const targets = [...new Set([...targetsFor(span ? path : undefined), ...targetsFor(invocation)])]
+      .filter(target => !finding.rule.startsWith("HARNESS_") || target.startsWith("/agents/"));
+    return { ...context, rule: finding.rule, details: finding.details, path, span, targets };
   })));
   list(doc.unresolved).forEach((value, index) => {
     const unresolved = object(value);

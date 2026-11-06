@@ -1,12 +1,15 @@
-import { parse, run, stringify } from "../../vendor/agsdl/browser-reader.mjs";
+import { run } from "../../vendor/agsdl/browser-reader.mjs";
+import { parse, read as read030, NumberToken, stringify } from "../../vendor/agsdl/v0.3/reader.mjs";
+import type { ExactObject, ReaderOptions030, Report030 } from "../../vendor/agsdl/v0.3/reader.mjs";
 import { read as read020 } from "../../vendor/agsdl/v0.2/reader.mjs";
 import { stringify as stringify020 } from "../../vendor/agsdl/v0.2/values.mjs";
 import type { AgsdlChange, AgsdlReport } from "../../types/agsdl";
 
-export const AGSDL_CONTRACT = "agsdl-0.2.0";
+export const AGSDL_CONTRACT = "agsdl-0.3.0";
+export const AGSDL_020_CONTRACT = "agsdl-0.2.0";
 export const LEGACY_AGSDL_CONTRACT = "agsdl-0.1.0";
 export const isSupportedContract = (contract: unknown): boolean =>
-  contract === AGSDL_CONTRACT || contract === LEGACY_AGSDL_CONTRACT;
+  contract === AGSDL_CONTRACT || contract === AGSDL_020_CONTRACT || contract === LEGACY_AGSDL_CONTRACT;
 export const MAX_AGSDL_BYTES = 1024 * 1024;
 const encoder = new TextEncoder();
 const decoder = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
@@ -15,7 +18,7 @@ export const decodeSource = (bytes: ArrayBuffer): string =>
 export const pointerPart = (part: string | number): string =>
   String(part).replaceAll("~", "~0").replaceAll("/", "~1");
 export const object = (value: unknown): Record<string, unknown> =>
-  value !== null && typeof value === "object" && !Array.isArray(value)
+  value !== null && typeof value === "object" && !Array.isArray(value) && !(value instanceof NumberToken)
     ? (value as Record<string, unknown>)
     : {};
 export const list = (value: unknown): unknown[] =>
@@ -27,8 +30,22 @@ export const keyId = (value: unknown): string => {
   return JSON.stringify([key.scope, key.id, key.version]);
 };
 
+/** TextEncoder replaces lone UTF-16 surrogates; reject them before encoding. */
+function encodeSource(source: string): Uint8Array {
+  for (let i = 0; i < source.length; i++) {
+    const unit = source.charCodeAt(i);
+    if (unit >= 0xd800 && unit <= 0xdbff) {
+      const low = source.charCodeAt(++i);
+      if (!(low >= 0xdc00 && low <= 0xdfff)) throw new Error("Invalid JSON: unpaired UTF-16 surrogate.");
+    } else if (unit >= 0xdc00 && unit <= 0xdfff) {
+      throw new Error("Invalid JSON: unpaired UTF-16 surrogate.");
+    }
+  }
+  return encoder.encode(source);
+}
+
 export function scanSource(source: string) {
-  const bytes = encoder.encode(source);
+  const bytes = encodeSource(source);
   if (bytes.length > MAX_AGSDL_BYTES)
     throw new Error("AgSDL document exceeds the 1 MiB editor limit.");
   const parsed = parse(bytes);
@@ -40,11 +57,24 @@ export function scanSource(source: string) {
 }
 
 export function readDocument(source: string): Record<string, unknown> {
-  scanSource(source);
-  const doc: unknown = JSON.parse(source);
+  const parsed = scanSource(source);
+  const doc: unknown = object(parsed.tree).contract === AGSDL_CONTRACT ? parsed.tree : JSON.parse(source);
   if (doc === null || typeof doc !== "object" || Array.isArray(doc))
     throw new Error("An AgSDL document must be a JSON object.");
   return doc as Record<string, unknown>;
+}
+
+/** Normative exact input, without the editor's document-size limit. */
+export function readExactDocument(source: string | Uint8Array): ExactObject {
+  const parsed = parse(typeof source === "string" ? encodeSource(source) : source);
+  if (parsed.error) throw new Error(`Invalid JSON at byte ${parsed.error.byte}.`);
+  if (parsed.tree === null || typeof parsed.tree !== "object" || Array.isArray(parsed.tree) || parsed.tree instanceof NumberToken)
+    throw new Error("An AgSDL document must be a JSON object.");
+  return parsed.tree as ExactObject;
+}
+
+export function validateDocumentBytes(bytes: Uint8Array, options?: ReaderOptions030): Report030 {
+  return read030(bytes, options);
 }
 
 export function sourceAt(source: string, path: string): string {
@@ -103,7 +133,7 @@ export function applyChanges(source: string, changes: AgsdlChange[]): string {
       ? "/" + parts.map(pointerPart).join("/")
       : "";
     const parentSpan = parsed.spans.get(parentPath);
-    let parent = parsed.tree;
+    let parent: unknown = parsed.tree;
     for (const part of parts) {
       if (
         parent === null ||
@@ -149,8 +179,17 @@ export function applyChanges(source: string, changes: AgsdlChange[]): string {
 export async function validateDocument(
   source: string,
   annexes: Record<string, string> = {},
+  options?: ReaderOptions030,
 ): Promise<AgsdlReport[]> {
-  const primary = encoder.encode(source);
+  let primary: Uint8Array;
+  try { primary = encodeSource(source); } catch (error) {
+    return [{ operation: "readDocument", scope: "parse", executionSupport: "not-assessed",
+      results: [{ input: "primary", unit: "document", verdict: "fail", findings: [{
+        rule: "PARSE", outcome: "fail", severity: "error", location: { pointer: "" },
+        details: error instanceof Error ? error.message : "Invalid Unicode input.",
+      }] }],
+    }];
+  }
   const annexBytes = Object.fromEntries(
     Object.entries(annexes).map(([id, value]) => [id, encoder.encode(value)]),
   );
@@ -164,7 +203,23 @@ export async function validateDocument(
   try { contract = readDocument(source).contract; } catch {
     // The official 0.2 parser supplies a scoped report for malformed byte input.
   }
-  if (contract === AGSDL_CONTRACT || contract === undefined) {
+  if (contract === AGSDL_CONTRACT) {
+    const report = read030(primary, options);
+    return [{
+      operation: "readDocument", contract: report.contract,
+      scope: "document-and-harness-declarations", executionSupport: "not-assessed",
+      documentReportJson: stringify(report), annexesAssessment: "not-used-by-contract",
+      results: [{ input: "primary", unit: "document", verdict: report.valid ? "pass" : "fail",
+        findings: report.diagnostics.map(diagnostic => ({
+          rule: diagnostic.code, outcome: diagnostic.severity === "warning" ? "warning" : "fail",
+          severity: diagnostic.severity, details: diagnostic.message,
+          location: { pointer: diagnostic.path },
+          ...(diagnostic.step === undefined ? {} : { step: diagnostic.step }),
+        })),
+      }],
+    }];
+  }
+  if (contract === AGSDL_020_CONTRACT || contract === undefined) {
     const report = read020(primary);
     const documentReportJson = stringify020(report);
     return [{
