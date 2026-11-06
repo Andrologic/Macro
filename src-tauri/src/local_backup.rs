@@ -320,6 +320,11 @@ async fn check_database(path: &Path) -> Result<()> {
             .map_err(|e| e.to_string())?;
     }
     for (version, table) in [
+        (17, "engine_human_works030"),
+        (17, "engine_human_requests030"),
+        (17, "engine_work_checks030"),
+        (17, "engine_work_events030"),
+        (17, "engine_work_protocol030"),
         (16, "engine_native_operations"),
         (14, "engine_effect_processes"),
         (13, "engine_ui_intents"),
@@ -1324,6 +1329,11 @@ mod tests {
             .unwrap();
 
         for statement in [
+            "DROP TABLE engine_human_works030",
+            "DROP TABLE engine_human_requests030",
+            "DROP TABLE engine_work_checks030",
+            "DROP TABLE engine_work_events030",
+            "DROP TABLE engine_work_protocol030",
             "DROP TABLE engine_native_operations",
             "DROP TABLE engine_effect_processes",
             "DROP TABLE engine_ui_intents",
@@ -1523,7 +1533,7 @@ mod tests {
                 .fetch_one(&pool)
                 .await
                 .unwrap(),
-            16
+            17
         );
         assert_eq!(
             sqlx::query_scalar::<_, String>(
@@ -1588,7 +1598,7 @@ mod tests {
             .fetch_one(&mut db)
             .await
             .unwrap();
-        assert_eq!(version, 16);
+        assert_eq!(version, 17);
         sqlx::query("INSERT INTO schema_migrations VALUES (99, 'future', 'synthetic')")
             .execute(&mut db)
             .await
@@ -2976,5 +2986,36 @@ mod tests {
             .await
             .unwrap_err()
             .contains("constraints"));
+    }
+    #[tokio::test]
+    async fn protocol017_backup_validation_accepts_v16_and_rejects_missing_current_table() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("protocol-backup.db");
+        let pool = crate::db::create_pool(&path).await.unwrap();
+        pool.close().await;
+        check_database(&path).await.unwrap();
+        let mut db = connection(&path).await.unwrap();
+        sqlx::query("DROP TABLE engine_human_works030")
+            .execute(&mut db)
+            .await
+            .unwrap();
+        db.close().await.unwrap();
+        assert!(check_database(&path).await.is_err());
+        let mut db = connection(&path).await.unwrap();
+        sqlx::raw_sql(
+            "DROP TABLE engine_human_requests030;
+            DROP TABLE engine_work_checks030;
+            DROP TABLE engine_work_events030;
+            DROP TABLE engine_work_protocol030;
+            DELETE FROM schema_migrations WHERE version=17;",
+        )
+        .execute(&mut db)
+        .await
+        .unwrap();
+        db.close().await.unwrap();
+        check_database(&path).await.unwrap();
+        let pool = crate::db::create_pool(&path).await.unwrap();
+        pool.close().await;
+        check_database(&path).await.unwrap();
     }
 }

@@ -13,6 +13,9 @@ pub(crate) mod prepared;
 pub(crate) mod process_recovery;
 pub(crate) mod public;
 pub(crate) mod responses;
+pub(crate) mod work_protocol030;
+#[cfg(test)]
+mod work_protocol030_tests;
 use super::exact_json::{equal_optional, record_equal};
 use dto::*;
 use serde::{Deserialize, Serialize};

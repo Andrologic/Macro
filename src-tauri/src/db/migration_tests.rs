@@ -56,6 +56,11 @@ async fn drop_visible_search(connection: &mut SqliteConnection) {
          DROP TRIGGER messages_search_update_insert;
          DROP TABLE message_search;
          DROP VIEW message_search_content;
+         DROP TABLE engine_human_works030;
+         DROP TABLE engine_human_requests030;
+         DROP TABLE engine_work_checks030;
+         DROP TABLE engine_work_events030;
+         DROP TABLE engine_work_protocol030;
          DROP TABLE engine_native_operations;
          DELETE FROM schema_migrations WHERE version >= 15;",
     )
@@ -857,7 +862,7 @@ async fn joins_both_published_v10_histories_without_replacing_stamps_or_data() {
                 .fetch_one(&upgraded)
                 .await
                 .unwrap(),
-            16
+            17
         );
         assert_eq!(
             sqlx::query_scalar::<_, String>(
@@ -973,4 +978,90 @@ async fn joined_migration_rolls_back_both_branch_variants_and_rejects_unknown_v1
         old.close().await.unwrap();
         create_pool(&path).await.unwrap().close().await;
     }
+}
+
+#[tokio::test]
+async fn protocol017_upgrades_v16_without_rewriting_snapshots_and_rolls_back_failed_stamp() {
+    let temp = TempDir::new().unwrap();
+    let path = temp.path().join("protocol-upgrade.db");
+    let pool = create_pool(&path).await.unwrap();
+    sqlx::raw_sql("DROP TABLE engine_human_works030;
+        DROP TABLE engine_human_requests030;
+        DROP TABLE engine_work_checks030;
+        DROP TABLE engine_work_events030;
+        DROP TABLE engine_work_protocol030;
+        DELETE FROM schema_migrations WHERE version=17;
+        INSERT INTO engine_systems VALUES ('historical','request','{}','{ \"versions\":{\"contract\":\"agsdl-0.2.0\"},\"exact\":9007199254740993 }','[]','{}');
+        CREATE TRIGGER fail_protocol_stamp BEFORE INSERT ON schema_migrations WHEN NEW.version=17 BEGIN SELECT RAISE(ABORT,'synthetic'); END;")
+        .execute(&pool).await.unwrap();
+    let snapshot: String =
+        sqlx::query_scalar("SELECT snapshot_json FROM engine_systems WHERE system_id='historical'")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    let stamps: Vec<(i64, String, String)> =
+        sqlx::query_as("SELECT version,name,applied_at FROM schema_migrations ORDER BY version")
+            .fetch_all(&pool)
+            .await
+            .unwrap();
+    pool.close().await;
+    assert!(create_pool(&path).await.is_err());
+    let mut connection =
+        SqliteConnection::connect_with(&SqliteConnectOptions::new().filename(&path))
+            .await
+            .unwrap();
+    assert!(
+        !table_exists(&mut connection, "engine_work_protocol030".into())
+            .await
+            .unwrap()
+    );
+    assert_eq!(
+        sqlx::query_as::<_, (i64, String, String)>(
+            "SELECT version,name,applied_at FROM schema_migrations ORDER BY version"
+        )
+        .fetch_all(&mut connection)
+        .await
+        .unwrap(),
+        stamps
+    );
+    sqlx::query("DROP TRIGGER fail_protocol_stamp")
+        .execute(&mut connection)
+        .await
+        .unwrap();
+    connection.close().await.unwrap();
+    let upgraded = create_pool(&path).await.unwrap();
+    assert_eq!(
+        sqlx::query_scalar::<_, String>(
+            "SELECT snapshot_json FROM engine_systems WHERE system_id='historical'"
+        )
+        .fetch_one(&upgraded)
+        .await
+        .unwrap(),
+        snapshot
+    );
+    assert_eq!(sqlx::query_as::<_, (i64,String,String)>("SELECT version,name,applied_at FROM schema_migrations WHERE version<17 ORDER BY version").fetch_all(&upgraded).await.unwrap(), stamps);
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT count(*) FROM engine_work_protocol030")
+            .fetch_one(&upgraded)
+            .await
+            .unwrap(),
+        0
+    );
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT max(version) FROM schema_migrations")
+            .fetch_one(&upgraded)
+            .await
+            .unwrap(),
+        17
+    );
+    assert_eq!(
+        sqlx::query("PRAGMA foreign_key_check")
+            .fetch_all(&upgraded)
+            .await
+            .unwrap()
+            .len(),
+        0
+    );
+    upgraded.close().await;
+    create_pool(&path).await.unwrap().close().await;
 }
