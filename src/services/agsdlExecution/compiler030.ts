@@ -47,6 +47,10 @@ export async function compilePlan030(authoredSource: string, source: SourceRevis
         ? [`Harness ${observation.harness} version ${observation.version ?? 'unknown'} against module range ${module.harnessVersions}`]
         : [];
     }) };
+    // Graphless delivery is selected later by the host. It must qualify the
+    // actual message before admitting resources to an agent instance.
+    runtime = { ...runtime, unassessed: [...runtime.unassessed,
+      'Native admission of resources in later graphless messages'] };
     assessment = reportToAssessment(read(bytes, { modules }));
     if (!assessment.valid) return unavailable();
     // Everything caller-owned is copied before the asynchronous digest.

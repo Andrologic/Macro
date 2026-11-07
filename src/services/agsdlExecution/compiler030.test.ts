@@ -203,4 +203,18 @@ describe('0.3 compiler wire plan', () => {
     expect(result.runtime.diagnostics).toContainEqual(expect.objectContaining({ code: 'HOST_CAPABILITY', message: expect.stringContaining('call.mcp') }));
     expect((await compile(doc, mcp)).runtime.supported).toBe(true);
   });
+  it('reports an approximate resource path for a default call message', async () => {
+    const doc = document030();
+    doc.flow = { entry: 'call', steps: { call: { type: 'call', command: 'true', next: 'work' }, work: { type: 'agent', agent: 'worker' } } };
+    const base = registry030(doc);
+    const withoutResources = { ...base, harnesses: base.harnesses.map(harness => ({ ...harness,
+      capabilities: harness.capabilities.filter(capability => capability.name !== 'resources') })) };
+    expect((await compile(doc, withoutResources)).runtime.diagnostics).toContainEqual(expect.objectContaining({ code: 'HARNESS_CAPABILITY' }));
+    const approximate = { ...base, harnesses: base.harnesses.map(harness => ({ ...harness,
+      capabilities: harness.capabilities.map(capability => capability.name === 'resources' ? { ...capability, support: 'approximate' as const } : capability) })) };
+    const result = await compile(doc, approximate);
+    expect(result.runtime.supported).toBe(true);
+    expect(result.runtime.diagnostics).toContainEqual(expect.objectContaining({ code: 'HARNESS_APPROXIMATE', severity: 'warning' }));
+    expect(result.runtime.unassessed).toContain('Native admission of resources in later graphless messages');
+  });
 });

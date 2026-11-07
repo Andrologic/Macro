@@ -228,3 +228,49 @@ test('message resources and queue delivery require observed capabilities at thei
   fails(() => captureAgent030(encode(input.document), 'worker', without(input.registry, 'delivery.queue')), 'HARNESS_CAPABILITY');
   expect(captureAgent030(encode(input.document), 'worker', input.registry).agentName).toBe('worker');
 });
+
+test('default, error, approval and composition messages qualify resources at the receiving definition', () => {
+  const flows: ExactObject[] = [
+    { entry: 'work', steps: { work: { type: 'agent', agent: 'worker' } } },
+    { entry: 'start', steps: { start: { type: 'call', command: 'true', next: 'work' }, work: { type: 'agent', agent: 'worker' } } },
+    { entry: 'start', steps: { start: { type: 'call', command: 'true', onError: 'work' }, work: { type: 'agent', agent: 'worker' } } },
+    { entry: 'start', steps: { start: { type: 'call', command: 'true', next: 'approval' }, approval: { type: 'approval', next: { yes: 'work' } }, work: { type: 'agent', agent: 'worker' } } },
+    { entry: 'start', steps: { start: { type: 'call', command: 'true', next: 'nested' }, nested: { type: 'compose', composition: 'fragment', next: { done: [] } } } },
+  ];
+  for (const flow of flows) {
+    const input = fixture();
+    input.document.flow = flow;
+    if (Object.hasOwn(record(flow.steps), 'nested')) input.document.compositions = {
+      fragment: { entry: 'work', outputs: ['done'], steps: { work: { type: 'agent', agent: 'worker', next: { output: 'done' } } } },
+    };
+    fails(() => captureAgent030(encode(input.document), 'worker', without(input.registry, 'resources')), 'HARNESS_CAPABILITY');
+    expect(captureAgent030(encode(input.document), 'worker', input.registry).agentName).toBe('worker');
+  }
+  for (const failure of [false, true]) {
+    const input = fixture();
+    input.document.compositions = { fragment: { entry: 'call', outputs: ['done'], steps: {
+      call: { type: 'call', command: 'true', next: { output: 'done' } },
+    } } };
+    input.document.flow = { entry: 'nested', steps: {
+      nested: { type: 'compose', composition: 'fragment', next: { done: failure ? [] : 'work' }, ...(failure ? { onError: 'work' } : {}) },
+      work: { type: 'agent', agent: 'worker' },
+    } };
+    fails(() => captureAgent030(encode(input.document), 'worker', without(input.registry, 'resources')), 'HARNESS_CAPABILITY');
+    expect(captureAgent030(encode(input.document), 'worker', input.registry).agentName).toBe('worker');
+  }
+});
+
+test('an explicit message without resources replaces a default containing resources', () => {
+  const input = fixture();
+  input.document.flow = { entry: 'start', steps: {
+    start: { type: 'call', command: 'true', next: { step: 'work', message: { prompt: 'Continue.' } } },
+    work: { type: 'agent', agent: 'worker' },
+  } };
+  expect(captureAgent030(encode(input.document), 'worker', without(input.registry, 'resources')).agentName).toBe('worker');
+  input.document.flow = { entry: 'start', steps: {
+    start: { type: 'call', command: 'true', next: { step: 'approval', message: { prompt: 'Continue.' } } },
+    approval: { type: 'approval', next: { yes: 'work' } },
+    work: { type: 'agent', agent: 'worker' },
+  } };
+  expect(captureAgent030(encode(input.document), 'worker', without(input.registry, 'resources')).agentName).toBe('worker');
+});

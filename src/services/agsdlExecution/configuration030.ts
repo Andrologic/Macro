@@ -1,4 +1,4 @@
-import { Graph } from '../../vendor/agsdl/v0.3/graph.mjs';
+import { Graph, analyse_joins } from '../../vendor/agsdl/v0.3/graph.mjs';
 import { equal, loadHarnessModule, validateExact, type HarnessModule030 } from '../../vendor/agsdl/v0.3/reader.mjs';
 import { validate as validateValue } from '../../vendor/agsdl/v0.3/valueschema.mjs';
 import type { ExactJsonText } from './contracts';
@@ -168,6 +168,38 @@ function requireRange(observation: HarnessObservation030, range: string, pointer
   if (!proof) fail('HARNESS_VERSION_UNVERIFIED', pointer, `No native range evaluation binds harness ${observation.harness}, version ${observation.version}, and range ${range}.`);
 }
 
+/** The host entry message is unknown at compilation. Approvals forward the
+ * message they received, including resources, until an explicit message
+ * replaces it. The vendor graph expands compositions and inherited errors. */
+function flowResourceReceivers(document: ExactObject): Set<string> {
+  if (!has(document, 'flow')) return new Set();
+  const [initial] = analyse_joins(Graph.for_scope(document));
+  const members = new Set([...initial.values()].flatMap(info => [...info.branches.values()].flatMap(branch => [...branch])));
+  const covered = Graph.flow_error_covered(document, members);
+  const inBranch = new Map<string | null, Set<string>>();
+  for (const composition of [null, ...Object.keys(record(document.compositions ?? {}))]) {
+    const [infos] = analyse_joins(Graph.for_scope(document, composition, composition === null ? covered : undefined));
+    inBranch.set(composition, new Set([...infos.values()].flatMap(info => [...info.branches.values()].flatMap(branch => [...branch]))));
+  }
+  const graph = Graph.for_flow(document, inBranch, covered);
+  const receivers = new Set<string>();
+  if (graph.root !== null) receivers.add(graph.root);
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (const edge of graph.edges) {
+      const source = graph.nodes.get(edge.src);
+      const message = edge.message === null ? null : record(edge.message as ExactValue);
+      const hasResources = message !== null
+        ? has(message, 'resources') && Object.keys(record(message.resources)).length > 0
+        : edge.kind === 'error' || source?.type === 'agent' || source?.type === 'call' || source?.type === 'join'
+          || source?.type === 'approval' && receivers.has(edge.src);
+      if (hasResources && !receivers.has(edge.dst)) { receivers.add(edge.dst); changed = true; }
+    }
+  }
+  return receivers;
+}
+
 export function usedProperties030(document: ExactObject, agentName: string, agent: ExactObject, pointer: string): Map<string, string> {
   const used = new Map<string, string>();
   for (const key of ['resources', 'skills', 'mcpServers']) {
@@ -185,6 +217,7 @@ export function usedProperties030(document: ExactObject, agentName: string, agen
   }
   // The vendor graph resolves parameter bindings through nested compositions.
   // Abstract unbound parameters carry no concrete definition to qualify.
+  const receivers = flowResourceReceivers(document);
   const graphs = has(document, 'flow') ? [Graph.for_flow(document)] : [];
   for (const name of Object.keys(record(document.compositions ?? {}))) graphs.push(Graph.for_composition(document, name));
   for (const graph of graphs) for (const node of graph.nodes.values()) {
@@ -193,8 +226,7 @@ export function usedProperties030(document: ExactObject, agentName: string, agen
     if (node.decl.instance === 'new') used.set('instance.new', `${where}/instance`);
     else if (node.decl.delivery !== 'steer') used.set('delivery.queue', `${where}/delivery`);
     if (node.decl.delivery === 'steer') used.set('delivery.steer', `${where}/delivery`);
-    if (graph.edges.some(edge => edge.dst === node.addr && edge.message !== null && typeof edge.message === 'object'
-      && has(record(edge.message as ExactValue), 'resources') && Object.keys(record(record(edge.message as ExactValue).resources)).length)) {
+    if (graph === graphs[0] && has(document, 'flow') && receivers.has(node.addr)) {
       used.set('resources', where);
     }
   }
