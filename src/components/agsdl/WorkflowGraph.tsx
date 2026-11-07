@@ -47,7 +47,10 @@ function WorkflowNode({ data }: NodeProps<GraphNode>) {
   const warning = Boolean(card.issueCount) || card.unresolved || card.branches.some(branch => branch.reference.unresolved) || card.dependencies?.some(ref => ref.unresolved);
   const control = !data.members && ["prepare", "condition", "join"].includes(card.kind);
   const maxVisits = card.edition030 ? card.edition030.maxVisitsJson : typeof card.details.maxVisits === "number" ? card.details.maxVisits : undefined;
-  const label = [data.kindLabel, data.title !== data.kindLabel ? data.title : "", data.subtitle, warning ? t("agsdl.viewer.unresolved") : ""].filter(Boolean).join(" · ");
+  const maxVisitsLabel = maxVisits === undefined ? undefined : card.edition030
+    ? `${t("agsdl.edition030.visitLimit")}: ${maxVisits}`
+    : t("agsdl.graphHints.maxVisits", { count: maxVisits });
+  const label = [data.kindLabel, data.title !== data.kindLabel ? data.title : "", data.subtitle, maxVisitsLabel, warning ? t("agsdl.viewer.unresolved") : ""].filter(Boolean).join(" · ");
   return (
     <>
       <Handle type="target" position={Position.Top} id="in" />
@@ -77,12 +80,12 @@ function WorkflowNode({ data }: NodeProps<GraphNode>) {
         <span className="agsdl-node-text">
           <span className="agsdl-node-title">{data.title}</span>
           {data.subtitle && <span className="agsdl-node-subtitle">{data.subtitle}</span>}
-          {!data.members && card.capabilities && <span className="agsdl-node-capabilities">
-            {card.capabilities.skills.length > 0 && <span title={`${t("agsdl.graphHints.skills")}: ${card.capabilities.skills.join(", ")}`} aria-label={`${t("agsdl.graphHints.skills")}: ${card.capabilities.skills.join(", ")}`}><Sparkles size={11} aria-hidden="true" /><span className="agsdl-node-skill-name">{card.capabilities.skills.at(-1)}</span></span>}
-            {card.capabilities.structuredResults && <span title={t("agsdl.graphHints.structured")} aria-label={t("agsdl.graphHints.structured")}><Braces size={12} aria-hidden="true" /></span>}
-            {card.capabilities.dynamicConfiguration && <span title={t("agsdl.graphHints.dynamic")} aria-label={t("agsdl.graphHints.dynamic")}><Shuffle size={12} aria-hidden="true" /></span>}
-            {maxVisits !== undefined && <span title={t("agsdl.graphHints.maxVisits", { count: typeof maxVisits === "number" ? maxVisits : undefined, defaultValue: `${t("agsdl.edition030.visitLimit")}: ${maxVisits}` })} aria-label={t("agsdl.graphHints.maxVisits", { count: typeof maxVisits === "number" ? maxVisits : undefined, defaultValue: `${t("agsdl.edition030.visitLimit")}: ${maxVisits}` })}><RotateCcw size={11} aria-hidden="true" /><span>{maxVisits}</span></span>}
-            {card.capabilities.externalEffects && <span title={t("agsdl.graphHints.external")} aria-label={t("agsdl.graphHints.external")}><Zap size={12} aria-hidden="true" /><span>{t("agsdl.graphHints.externalShort")}</span></span>}
+          {!data.members && (card.capabilities || maxVisits !== undefined) && <span className="agsdl-node-capabilities">
+            {card.capabilities && card.capabilities.skills.length > 0 && <span title={`${t("agsdl.graphHints.skills")}: ${card.capabilities.skills.join(", ")}`} aria-label={`${t("agsdl.graphHints.skills")}: ${card.capabilities.skills.join(", ")}`}><Sparkles size={11} aria-hidden="true" /><span className="agsdl-node-skill-name">{card.capabilities.skills.at(-1)}</span></span>}
+            {card.capabilities?.structuredResults && <span title={t("agsdl.graphHints.structured")} aria-label={t("agsdl.graphHints.structured")}><Braces size={12} aria-hidden="true" /></span>}
+            {card.capabilities?.dynamicConfiguration && <span title={t("agsdl.graphHints.dynamic")} aria-label={t("agsdl.graphHints.dynamic")}><Shuffle size={12} aria-hidden="true" /></span>}
+            {maxVisits !== undefined && <span title={maxVisitsLabel} aria-label={maxVisitsLabel}><RotateCcw size={11} aria-hidden="true" /><span>{maxVisits}</span></span>}
+            {card.capabilities?.externalEffects && <span title={t("agsdl.graphHints.external")} aria-label={t("agsdl.graphHints.external")}><Zap size={12} aria-hidden="true" /><span>{t("agsdl.graphHints.externalShort")}</span></span>}
           </span>}
 
         </span>

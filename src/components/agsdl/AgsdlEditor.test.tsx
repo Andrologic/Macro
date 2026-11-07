@@ -40,6 +40,19 @@ describe("AgSDL viewer", () => {
     await act(async () => root!.render(<AgsdlEditor target={target} />));
   };
 
+  it("shows exact visit limits accessibly on agent, call and unresolved agent steps", async () => {
+    const source = `{"contract":"agsdl-0.3.0","id":"limits","agents":{"a":{"harness":"codex","permissions":"read-only"}},"flow":{"entry":"agent","steps":{"agent":{"type":"agent","agent":"a","title":"Agent step","maxVisits":9007199254740993,"next":"call"},"call":{"type":"call","title":"Call step","command":"echo","maxVisits":7,"next":"unresolved"},"unresolved":{"type":"agent","agent":"missing","title":"Unknown agent","maxVisits":3}}}}`;
+    await mount(source);
+    const node = (title: string) => Array.from(container!.querySelectorAll<HTMLButtonElement>('.agsdl-graph-node')).find(item => item.textContent?.includes(title))!;
+    for (const [title, limit] of [['Agent step', '9007199254740993'], ['Call step', '7'], ['Unknown agent', '3']]) {
+      const item = node(title);
+      expect(item).toBeDefined();
+      expect(item.textContent).toContain(limit);
+      expect(item.getAttribute('aria-label')).toContain(`Visit limit: ${limit}`);
+      expect(item.querySelector(`[title="Visit limit: ${limit}"]`)).not.toBeNull();
+    }
+  });
+
   it("returns from definitions to the previously selected graph", async () => {
     const source = JSON.stringify({ contract: "agsdl-0.3.0", id: "x", agents: { a: { harness: "codex", permissions: "read-only" } },
       flow: { entry: "one", steps: { one: { type: "agent", agent: "a", title: "Flow step" } } },
