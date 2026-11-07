@@ -66,6 +66,18 @@ describe('exact operands and constraints', () => {
     for (const invalid of ['{"a":1,"a":2}', '1.', '[1,]', 'NaN']) expect(() => decode(invalid)).toThrow('exact JSON');
     expect(decode('null')).toBeNull();
   });
+  it('rejects isolated UTF-16 surrogates before encoding without changing valid Unicode', () => {
+    for (const unit of [0xd800, 0xdbff, 0xdc00, 0xdfff]) {
+      const isolated = String.fromCharCode(unit);
+      expect(() => decode(`"${isolated}"`)).toThrow('exact JSON');
+      expect(() => decode(`{"${isolated}":"value"}`)).toThrow('exact JSON');
+      expect(() => decode(JSON.stringify(isolated))).toThrow('exact JSON');
+    }
+    for (const valid of ['\uFFFD', '😀', '\uD800\uDC00', '\uDBFF\uDFFF']) {
+      expect(decode(JSON.stringify(valid))).toBe(valid);
+      expect(record(decode(JSON.stringify({ [valid]: valid })))[valid]).toBe(valid);
+    }
+  });
   it('compares numeric values exactly, mathematical integers and distinct Boolean types', () => {
     expect(exactValues.equal(json('9007199254740993'), json('9007199254740992'))).toBe(false);
     expect(exactValues.equal(json('1.00'), json('1e0'))).toBe(true);

@@ -21,6 +21,19 @@ function harness(agent = '{}', route: Parameters<typeof createAgentWorkContract0
   return { contract, controller, send };
 }
 describe('030 exact submission and work protocol', () => {
+  it('corrects malformed Unicode submissions without silently publishing replacement text', () => {
+    const { send, controller } = harness('{"results":{"textual":{"required":true,"mediaType":"text/plain"}}}');
+    const refused = send({ kind: 'submit', callId: 'invalid-unicode', argumentsJson: `{"results":{"textual":"${String.fromCharCode(0xd800)}"}}` });
+    expect(refused.decision.kind).toBe('correction');
+    if (refused.decision.kind === 'correction' && refused.decision.category === 'submission') {
+      expect(refused.decision.diagnostics[0].rule).toBe('JSON');
+    }
+    expect(controller.snapshot().accepted).toBeNull();
+    expect(controller.snapshot().submissionCorrections).toBe('1');
+    const valid = send({ kind: 'submit', callId: 'literal-replacement', argumentsJson: '{"results":{"textual":"�"}}' });
+    expect(valid.decision.kind).toBe('accepted');
+    if (valid.decision.kind === 'accepted') expect(decode(valid.decision.output.resultsJson)).toEqual({ textual: '�' });
+  });
   it('keeps huge budgets exact without exponent expansion', () => {
     expect(compareIntegers030('1e999999999999999999999', '9007199254740993')).toBe(1);
     expect(compareIntegers030('1.00e2', '100')).toBe(0);
