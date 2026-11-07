@@ -93,6 +93,7 @@ export function resolveRouteMessage030(documentJson: ExactJsonText, target: Rout
     if (Object.keys(resolved).some(key => !['value', 'uri', 'mediaType'].includes(key)) || has(resolved, 'value') === has(resolved, 'uri')) return fail('CONTENT_UNAVAILABLE', pointer, 'Expected one inline value or URI source.');
     if (has(resolved, 'mediaType')) text(resolved.mediaType);
     if (has(resolved, 'uri')) text(resolved.uri);
+    if (usage === 'resource' && has(resolved, 'uri')) return clone(resolved);
     const captured = content.resolveSource ? record(decode(content.resolveSource(encode(resolved), { usage, pointer }))) : clone(resolved);
     if (has(captured, 'value') === has(captured, 'uri') || has(captured, 'ref')) return fail('CONTENT_UNAVAILABLE', pointer, 'Captured content must be a resolved source.');
     if (usage === 'prompt' && has(captured, 'uri')) return fail('CONTENT_UNAVAILABLE', pointer, 'Prompt URI has not been captured as content.');

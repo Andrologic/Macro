@@ -70,18 +70,27 @@ describe('AgSDL 0.3 descriptive routes', () => {
 describe('instructions required by the selected route only', () => {
   const yes = j('{"instructs":true}'), no = j('{}');
   it('distinguishes terminal, scalar and list expectations', () => {
-    expect(instructionsExpectation030(yes, j('[]'))).toBe('none');
-    expect(instructionsExpectation030(no, j('"worker"'))).toBe('none');
-    expect(instructionsExpectation030(yes, j('"worker"'))).toBe('string');
-    expect(instructionsExpectation030(yes, j('{"step":"worker","message":{}}'))).toBe('none');
-    expect(instructionsExpectation030(yes, j('{"step":"worker","message":{"prompt":{"from":["instructions"]}}}'))).toBe('string');
-    expect(instructionsExpectation030(yes, j('{"step":"worker","each":["instructions"],"message":{"prompt":{"from":["item"]}}}'))).toBe('list');
-    expect(instructionsExpectation030(yes, j('"run"'), scope)).toBe('none');
-    expect(instructionsExpectation030(yes, j('"gather"'), scope)).toBe('none');
+    expect(instructionsExpectation030(yes, j('[]'), scope)).toBe('none');
+    expect(instructionsExpectation030(no, j('"worker"'), scope)).toBe('none');
+    expect(instructionsExpectation030(yes, j('"worker"'), scope)).toBe('string');
+    expect(instructionsExpectation030(yes, j('{"step":"worker","message":{}}'), scope)).toBe('none');
+    expect(instructionsExpectation030(yes, j('{"step":"worker","message":{"prompt":{"from":["instructions"]}}}'), scope)).toBe('string');
+    expect(instructionsExpectation030(yes, j('{"step":"worker","each":["instructions"],"message":{"prompt":{"from":["item"]}}}'), scope)).toBe('list');
+  });
+  it('requires destination context and excludes calls and joins in both target forms', () => {
+    // @ts-expect-error A captured scope is required, including at the public API boundary.
+    code(() => instructionsExpectation030(yes, j('"run"')), 'ROUTES');
+    for (const target of ['"run"', '{"step":"run"}', '"gather"', '{"step":"gather"}']) {
+      expect(instructionsExpectation030(yes, j(target), scope)).toBe('none');
+      expect(instructionsExpectation030(yes, j(`["worker",${target}]`), scope)).toBe('string');
+      expect(instructionsExpectation030(yes, j(`[{"step":"worker","each":["instructions"]},${target}]`), scope)).toBe('list');
+    }
+    const bodyScope: Scope030 = { ...scope, outputs: ['done'] };
+    expect(instructionsExpectation030(yes, j('{"output":"done"}'), bodyScope)).toBe('none');
   });
   it('refuses a list of missions also used as a single default or explicit prompt', () => {
-    for (const other of ['"review"', '{"step":"review","message":{"prompt":{"from":["instructions"]}}}']) code(() => instructionsExpectation030(yes, j(`[{"step":"worker","each":["instructions"]},${other}]`)), 'MESSAGE_PATH');
-    expect(instructionsExpectation030(yes, j('[{"step":"worker","each":["instructions"]},{"step":"review","message":{"resources":{"missions":{"from":["instructions"]}}}}]'))).toBe('list');
+    for (const other of ['"review"', '{"step":"review","message":{"prompt":{"from":["instructions"]}}}']) code(() => instructionsExpectation030(yes, j(`[{"step":"worker","each":["instructions"]},${other}]`), scope), 'MESSAGE_PATH');
+    expect(instructionsExpectation030(yes, j('[{"step":"worker","each":["instructions"]},{"step":"review","message":{"resources":{"missions":{"from":["instructions"]}}}}]'), scope)).toBe('list');
     expect(encode(decode(j('9007199254740993')))).toBe(j('9007199254740993'));
   });
 });

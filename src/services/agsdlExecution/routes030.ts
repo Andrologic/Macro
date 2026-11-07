@@ -147,15 +147,14 @@ export function preflightExpansion030(targets: readonly RouteTarget030[], source
   }
   return Object.freeze({ kind: 'ready', batches: Object.freeze(batches) });
 }
-/** Pass scope to distinguish calls/joins from message receivers for named targets. */
-export function instructionsExpectation030(sourceAgentJson: ExactJsonText, chosenRouteJson: ExactJsonText, scope?: Scope030): 'none' | 'string' | 'list' {
+/** Resolve destination types from the captured scope before requiring a mission. */
+export function instructionsExpectation030(sourceAgentJson: ExactJsonText, chosenRouteJson: ExactJsonText, scope: Scope030): 'none' | 'string' | 'list' {
+  if (!scope) return fail('ROUTES', '', 'A captured route scope is required to classify destinations.');
   if (record(decode(sourceAgentJson)).instructs !== true) return 'none';
-  const route = decode(chosenRouteJson);
-  const rawTargets = Array.isArray(route) ? route : [route];
-  const targets = scope ? normalizeRoute030(chosenRouteJson, scope).map(target => {
+  const targets = normalizeRoute030(chosenRouteJson, scope).map(target => {
     if (target.kind === 'output' || !['agent', 'approval', 'compose'].includes(text(record(decode(target.stepJson)).type))) return null;
     return typeof decode(target.declarationJson) === 'string' ? { step: '' } : record(decode(target.declarationJson));
-  }) : rawTargets.map(raw => typeof raw === 'string' ? { step: raw } : record(raw));
+  });
   let expects = false, fanout = false, single = false;
   for (const target of targets) {
     if (!target || has(target, 'output')) continue;
