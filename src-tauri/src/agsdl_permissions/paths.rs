@@ -217,6 +217,14 @@ impl NormalizedRule {
         };
         glob(pattern, subject, false, action == Action::Shell)
     }
+    /// Identical scopes give the same match set for asks and denies, including
+    /// both logical and physical path patterns captured under their contexts.
+    pub(super) fn same_scope(&self, other: &Self) -> bool {
+        self.action == other.action
+            && self.pattern == other.pattern
+            && self.logical == other.logical
+            && self.physical == other.physical
+    }
     pub(super) fn covers_all(&self) -> bool {
         match &self.pattern {
             None => true,
@@ -329,7 +337,15 @@ pub(super) fn glob(pattern: &str, subject: &str, paths: bool, command: bool) -> 
 /// This ensures a restrictive authored pattern cannot be evaded by spelling.
 fn network_ip_matches(pattern: &str, ip: std::net::IpAddr) -> Result<bool> {
     use std::net::IpAddr;
-    let matches_v6 = |ip: std::net::Ipv6Addr| ipv6_glob(pattern.as_bytes(), ip);
+    // Adjacent stars are equivalent to one star. Collapse them before the
+    // state machine so its epsilon closure has at most one transition.
+    let mut compact = Vec::with_capacity(pattern.len());
+    for byte in pattern.bytes() {
+        if byte != b'*' || compact.last() != Some(&b'*') {
+            compact.push(byte);
+        }
+    }
+    let matches_v6 = |ip: std::net::Ipv6Addr| ipv6_glob(&compact, ip);
     match ip {
         IpAddr::V4(ip) => {
             Ok(glob(pattern, &ip.to_string(), false, false)? || matches_v6(ip.to_ipv6_mapped()))
@@ -347,14 +363,15 @@ fn network_ip_matches(pattern: &str, ip: std::net::IpAddr) -> Result<bool> {
 
 fn glob_advance(pattern: &[u8], states: &[usize], value: &[u8]) -> Vec<usize> {
     fn closure(pattern: &[u8], states: &mut Vec<usize>) {
-        let mut cursor = 0;
-        while cursor < states.len() {
-            let state = states[cursor];
-            if pattern.get(state) == Some(&b'*') && !states.contains(&(state + 1)) {
-                states.push(state + 1);
-            }
-            cursor += 1;
-        }
+        let skips: Vec<_> = states
+            .iter()
+            .copied()
+            .filter(|&state| pattern.get(state) == Some(&b'*'))
+            .map(|state| state + 1)
+            .collect();
+        states.extend(skips);
+        states.sort_unstable();
+        states.dedup();
     }
     let mut states = states.to_vec();
     closure(pattern, &mut states);

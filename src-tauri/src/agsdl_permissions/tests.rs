@@ -761,3 +761,176 @@ fn absent_shell_needs_native_evidence_not_an_unreachable_ask_mediation() {
         .any(|e| e == "observed-no-shell-entry-points"));
     assert!(!plan.requirements.iter().any(|r| r.action == Action::Shell));
 }
+
+#[test]
+fn equal_deny_scope_shadows_ask_across_layers_but_other_asks_remain() {
+    let f = Fixture::new();
+    let requested = f.policy(
+        json!({"preset":"full","rules":[{"action":"shell","match":"git push *","effect":"ask"}]}),
+    );
+    let host = f.policy(
+        json!({"preset":"full","rules":[{"action":"shell","match":"git push *","effect":"deny"}]}),
+    );
+    let p = EffectivePolicy::new(requested.clone(), host, f.policy(json!("full")));
+    let mut o = observed(&p);
+    o.guarantees
+        .retain(|g| !(g.action == Action::Shell && g.effect == Effect::Ask));
+    o.person_reviewer_evidence = None;
+    assert!(check_enforcement(&p, &o, ExecutionPurpose::Agent).is_ok());
+    let host = f.policy(
+        json!({"preset":"full","rules":[{"action":"shell","match":"git pull *","effect":"deny"}]}),
+    );
+    let p = EffectivePolicy::new(requested, host, f.policy(json!("full")));
+    o.policy_digest = p.fingerprint();
+    assert!(check_enforcement(&p, &o, ExecutionPurpose::Agent).is_err());
+}
+
+#[test]
+fn absent_filesystem_actions_remove_unnecessary_path_proofs_only_without_shell() {
+    let f = Fixture::new();
+    let p = EffectivePolicy::new(
+        f.policy(json!("workspace")),
+        f.policy(json!({})),
+        f.policy(json!("full")),
+    );
+    let mut o = observed(&p);
+    o.shell_absent_evidence = Some("no-shell".into());
+    o.mcp_absent_evidence = Some("no-mcp".into());
+    for g in &mut o.guarantees {
+        if matches!(g.action, Action::Read | Action::Write) && g.effect == Effect::Deny {
+            g.mechanism = EnforcementMechanism::Unavailable;
+        }
+    }
+    o.outside_read_evidence = None;
+    o.path_race_evidence = None;
+    assert!(check_enforcement(&p, &o, ExecutionPurpose::Agent).is_ok());
+    // If read is possible, outside and race protection remain necessary.
+    for g in &mut o.guarantees {
+        if g.action == Action::Read && g.effect == Effect::Deny {
+            g.mechanism = EnforcementMechanism::Harness;
+        }
+    }
+    assert!(check_enforcement(&p, &o, ExecutionPurpose::Agent).is_err());
+}
+
+#[test]
+fn ipv6_matcher_agrees_with_enumerated_spelling_oracle() {
+    // Independent oracle enumerates legal representations and matches each
+    // with regex, rather than sharing the matcher's glob state machine.
+    fn spellings(
+        groups: &[u16],
+        compressed: Option<(usize, usize)>,
+        tail: Option<&str>,
+    ) -> Vec<String> {
+        let mut values = vec![String::new()];
+        let mut i = 0;
+        let mut just_compressed = false;
+        while i < groups.len() {
+            if let Some((start, end)) = compressed {
+                if i == start {
+                    for value in &mut values {
+                        value.push_str("::");
+                    }
+                    i = end;
+                    just_compressed = true;
+                    continue;
+                }
+            }
+            if i > 0 && !just_compressed {
+                for value in &mut values {
+                    value.push(':');
+                }
+            }
+            just_compressed = false;
+            let minimum = format!("{:x}", groups[i]).len();
+            values = values
+                .into_iter()
+                .flat_map(|value| {
+                    (minimum..=4)
+                        .map(move |width| format!("{}{:0width$x}", value, groups[i], width = width))
+                })
+                .collect();
+            i += 1;
+        }
+        if let Some(tail) = tail {
+            for value in &mut values {
+                if !just_compressed {
+                    value.push(':');
+                }
+                value.push_str(tail);
+            }
+        }
+        values
+    }
+    fn all_spellings(ip: std::net::Ipv6Addr) -> Vec<String> {
+        let groups = ip.segments();
+        let octets = ip.octets();
+        let dotted = format!(
+            "{}.{}.{}.{}",
+            octets[12], octets[13], octets[14], octets[15]
+        );
+        let mut result = Vec::new();
+        for (parts, tail) in [(&groups[..], None), (&groups[..6], Some(dotted.as_str()))] {
+            result.extend(spellings(parts, None, tail));
+            for start in 0..parts.len() {
+                for end in start + 1..=parts.len() {
+                    if parts[end - 1] != 0 {
+                        break;
+                    }
+                    result.extend(spellings(parts, Some((start, end)), tail));
+                }
+            }
+        }
+        if let Some(mapped) = ip.to_ipv4_mapped() {
+            result.push(mapped.to_string());
+        }
+        assert!(result
+            .iter()
+            .all(|spelling| spelling.parse::<std::net::IpAddr>().is_ok()));
+        result
+    }
+    let f = Fixture::new();
+    for address in [
+        "2001:db8:0:0:1234:5678:abcd:ef01",
+        "2001:db8:1234:5678:9abc:def0:0:0",
+        "::ffff:192.0.2.1",
+        "::",
+    ] {
+        let ip = address.parse::<std::net::Ipv6Addr>().unwrap();
+        let variants = all_spellings(ip);
+        let patterns = [
+            "2001:0db8:*",
+            "2001:*:1234:*",
+            "2001:db8::1234:*",
+            "2001:*:ffff:*",
+            "*0000*",
+            "*0*0*0*",
+            "::ffff:192.0.2.*",
+            "192.0.2.*",
+            "192.0.3.*",
+            "2001:db8:1234:5678:9abc:def0::*",
+            "::*",
+            "****no-match****",
+        ];
+        for pattern in patterns {
+            let expression = format!(
+                "(?s)^{}$",
+                pattern
+                    .split('*')
+                    .map(regex::escape)
+                    .collect::<Vec<_>>()
+                    .join(".*")
+            );
+            let regex = regex::Regex::new(&expression).unwrap();
+            let expected = variants.iter().any(|spelling| regex.is_match(spelling));
+            let p = f.policy(json!({"preset":"full", "rules":[{"action":"network","match":pattern,"effect":"deny"}]}));
+            let actual = effect(
+                &p,
+                ActionRequest::Network {
+                    host: address.into(),
+                },
+            ) == Effect::Deny;
+            assert_eq!(actual, expected, "{pattern} against {address}");
+        }
+    }
+}
