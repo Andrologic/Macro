@@ -351,17 +351,17 @@ export const AgsdlEditor: React.FC<{
             title={selectedCard ? nodeTitle(selectedCard) : selectedEdge ? t(selectedEdge.dependency ? "agsdl.viewer.dependencies" : "agsdl.viewer.connection") : document.title}
             card={selectedCard ?? routeCard} canEdit={!attaching && (selectedCard === currentCard || !!routeCard || selectedCard?.kind === "Route") && (!planStatus || planStatus === "draft")} target={target}
             onBack={previousSelection ? goBack : undefined}
-            onAttach={!attaching && ((selectedCard && selectedCard === currentCard) || selectedEdge) ? () => attachContext(selectedCard
-              ? { path: selectedCard.edition030?.ownerPath ?? selectedCard.path, title: nodeTitle(selectedCard) }
-              : selectedEdge ? { path: selectedEdge.route030?.path ?? selectedEdge.source, relatedPaths: [selectedEdge!.source, selectedEdge!.target], title: `${selectedEdge!.label}: ${nodeTitle(cards.find(card => card.path === selectedEdge!.source)!)} → ${nodeTitle(cards.find(card => card.path === selectedEdge!.target)!)}` }
+            onAttach={!attaching && ((selectedCard && selectedCard === currentCard) || selectedEdge) ? () => attachContext(selectedEdge
+              ? { path: selectedEdge.route030?.path ?? selectedEdge.source, relatedPaths: [selectedEdge.source, selectedEdge.target], title: `${selectedEdge.label}: ${nodeTitle(cards.find(card => card.path === selectedEdge.source)!)} → ${nodeTitle(cards.find(card => card.path === selectedEdge.target)!)}` }
+              : selectedCard ? { path: selectedCard.edition030?.ownerPath ?? selectedCard.path, title: nodeTitle(selectedCard) }
               : { path: "", title: document.title }) : undefined}
             onClose={() => { setSelection(undefined); setDiagnosticError(""); }}>
             <section className="agsdl-inspector" aria-label={t("agsdl.properties")}>
               {diagnosticError && <p role="alert" className="agsdl-unresolved">{diagnosticError}</p>}
-              {selectedCard ? inspect(selectedCard) : selectedEdge ? <WorkflowEdgeSummary connection={selectedEdge}
+              {selectedEdge ? <WorkflowEdgeSummary connection={selectedEdge}
                 sourceTitle={nodeTitle(cards.find(card => card.path === selectedEdge.source)!)}
                 targetTitle={nodeTitle(cards.find(card => card.path === selectedEdge.target)!)}
-                onSource={() => select(selectedEdge.source)} onTarget={() => select(selectedEdge.target)} /> : null}
+                onSource={() => select(selectedEdge.source)} onTarget={() => select(selectedEdge.target)} /> : selectedCard ? inspect(selectedCard) : null}
             </section>
           </ComponentDetailsDialog>}
         </>}

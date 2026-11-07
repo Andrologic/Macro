@@ -16,6 +16,9 @@ async function mount(){
  host=document.createElement("div");document.body.appendChild(host);root=createRoot(host);
  await act(async()=>root!.render(<AgsdlEditor target={target}/>));
  act(()=>Array.from(document.body.querySelectorAll<HTMLButtonElement>("button")).find(b=>b.textContent==="Route QA")!.click());
+ expect(document.body.querySelector(".agsdl-edge-summary")?.textContent).toContain("a");
+ expect(document.body.querySelector(".agsdl-edge-summary")?.textContent).toContain("b");
+ expect(document.body.querySelectorAll(".agsdl-edge-endpoints button")).toHaveLength(2);
  act(()=>Array.from(document.body.querySelectorAll<HTMLButtonElement>("button")).find(b=>b.textContent==="Edit component")!.click());
 }
 function value(text:string){act(()=>{const input=document.body.querySelector("textarea")!;Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype,"value")!.set!.call(input,text);input.dispatchEvent(new Event("input",{bubbles:true}));});}

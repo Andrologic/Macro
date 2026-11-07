@@ -128,3 +128,11 @@ it('keeps the preview open while the pointer moves from its block onto the previ
   });
   expect(document.querySelector('[role="tooltip"]')).toBeNull();
 });
+
+
+it('does not present a call description as agent instructions', async () => {
+  await mount();
+  await act(async () => root!.render(<WorkflowBlockSummary card={{ ...card, kind: 'call', mission: 'Runs a check', promptSources: undefined, edition030: { sourceJson: '{}', routes: [] } }} />));
+  expect(host.textContent).toContain('Runs a check');
+  expect(host.textContent).not.toContain('Instructions');
+});
