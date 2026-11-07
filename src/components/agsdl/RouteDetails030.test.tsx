@@ -6,7 +6,7 @@ import type { AgsdlChange } from "../../types/agsdl";
 mock.module("./WorkflowGraph", () => ({ WorkflowGraph: ({select}: {select:(path:string)=>void}) => <button onClick={()=>select("/flow/steps/a/next")}>Route QA</button> }));
 const { AgsdlEditor } = await import("./AgsdlEditor");
 const target={branchName:"develop",planId:"route-qa"}, key=agsdlSessionKey(target);
-const source='{"contract":"agsdl-0.3.0","id":"x","agents":{},"flow":{"entry":"a","steps":{"a":{"type":"call","command":"echo","next":"b"},"b":{"type":"call","command":"echo"}}}}';
+const source='{"contract":"agsdl-0.3.0","id":"x","agents":{},"flow":{"entry":"a","steps":{"a":{"type":"call","command":"echo source","next":"b"},"b":{"type":"call","command":"echo target"}}}}';
 let root:Root|undefined, host:HTMLDivElement;
 const original={load:useAgsdlStore.getState().load,validate:useAgsdlStore.getState().validate,edit:useAgsdlStore.getState().edit,save:useAgsdlStore.getState().save};
 afterEach(()=>{act(()=>root?.unmount());host?.remove();mock.restore();useAgsdlStore.setState({...original,sessions:{}});});
@@ -47,7 +47,7 @@ it("navigates both endpoints and returns to the route, then guards a draft on cl
   const endpoint = Array.from(document.body.querySelectorAll<HTMLButtonElement>('.agsdl-edge-endpoints button')).find(button => button.textContent === label)!;
   act(() => endpoint.click());
   expect(document.body.querySelector('[role="dialog"] header strong')?.textContent).toBe(label);
-  expect(document.body.querySelector('.agsdl-inspector')?.textContent).toContain('echo');
+  expect(document.body.querySelector('.agsdl-inspector')?.textContent).toContain(label === 'a' ? 'echo source' : 'echo target');
   act(() => Array.from(document.body.querySelectorAll<HTMLButtonElement>('button')).find(button => button.textContent === 'Back to previous details')!.click());
   expect(document.body.querySelectorAll('.agsdl-edge-endpoints button')).toHaveLength(2);
  }
