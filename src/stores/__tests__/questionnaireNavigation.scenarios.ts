@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'bun:test';
+import { reservePilotAction } from '../../services/macroPilot/actionReservations';
 import type { ChatMessage, Conversation } from '../../types';
 import type { useChatStore as UseChatStore } from '../useChatStore';
 
@@ -119,6 +120,31 @@ export const registerQuestionnaireNavigationScenarios = (
         currentStep: { id: 'risk' },
         answersByStepId: { scope: 'Balanced', timing: 'This week' },
       });
+    });
+
+    it('submits a Chat questionnaire under its Pilot reservation and reauthorizes before sending', async () => {
+      const useChatStore = await loadQuestionnaire(2, {
+        currentStepIndex: 1,
+        answersByStepId: { scope: 'Balanced', risk: 'Safe' },
+        draftTextByStepId: {},
+      });
+      useChatStore.setState({ conversations: useChatStore.getState().conversations.map(conversation => ({
+        ...conversation, provider_id: 'provider-1', model_id: 'model-1', scope_mode: 'Chat',
+      })) });
+      const reservation = reservePilotAction({ conversationId: 'chat-conv' });
+      let effects = 0;
+      try {
+        const result = await useChatStore.getState().submitActiveQuestionnaire('chat-conv', {
+          pilotActionToken: reservation.token,
+          beforeEffect: async () => { effects++; },
+        });
+        expect(result?.status).toBe('sent');
+        expect(effects).toBeGreaterThan(0);
+        expect(useChatStore.getState().getConversationMessages('chat-conv')
+          .filter(message => message.role === 'user')).toHaveLength(1);
+      } finally {
+        reservation.release();
+      }
     });
 
     it('repositions direct questionnaire submission to the first unanswered step', async () => {

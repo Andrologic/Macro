@@ -1,0 +1,63 @@
+{
+  "contract": "agsdl-0.3.0",
+  "id": "join-keep-quorum",
+  "agents": {
+    "lead": {
+      "harness": "example",
+      "permissions": "read-only"
+    },
+    "worker": {
+      "harness": "example",
+      "permissions": "workspace"
+    }
+  },
+  "flow": {
+    "entry": "lead",
+    "steps": {
+      "lead": {
+        "type": "agent",
+        "agent": "lead",
+        "next": [
+          "w1",
+          "w2"
+        ]
+      },
+      "w1": {
+        "type": "agent",
+        "agent": "worker",
+        "instance": "new",
+        "next": {
+          "ok": "gather",
+          "no": "gather"
+        }
+      },
+      "w2": {
+        "type": "agent",
+        "agent": "worker",
+        "instance": "new",
+        "next": {
+          "ok": "gather",
+          "no": "gather"
+        }
+      },
+      "gather": {
+        "type": "join",
+        "failures": "keep",
+        "quorum": {
+          "count": 1,
+          "accept": [
+            "ok"
+          ]
+        },
+        "next": {
+          "reached": "summary",
+          "missed": []
+        }
+      },
+      "summary": {
+        "type": "agent",
+        "agent": "lead"
+      }
+    }
+  }
+}

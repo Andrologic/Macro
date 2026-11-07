@@ -69,6 +69,7 @@ pub fn default_document(kind: ConfigDocumentKind) -> Value {
         ConfigDocumentKind::Settings => json!({
             "schemaVersion": CURRENT_SCHEMA_VERSION,
             "language": "en",
+            "connectTransferResources": ConnectTransferResources::default(),
             "appearance": {
                 "theme": "macro-dark",
                 "zoomMode": "auto",
@@ -631,6 +632,30 @@ pub fn validate_document(
         }
     }
 
+    if kind == ConfigDocumentKind::Settings && !read_only {
+        if let Some(resources) = value.get("connectTransferResources") {
+            if !resources.is_null() && !resources.is_object() {
+                diagnostics.push(diagnostic(
+                    kind,
+                    scope,
+                    Some("/connectTransferResources".to_string()),
+                    "config.schema.invalid",
+                    "La politique de ressources Connect doit être un objet ou null.",
+                ));
+            } else if serde_json::from_value::<ConnectTransferResources>(resources.clone())
+                .is_ok_and(|policy| !policy.valid())
+            {
+                diagnostics.push(diagnostic(
+                    kind,
+                    scope,
+                    Some("/connectTransferResources".to_string()),
+                    "config.settings.connect_resources_out_of_range",
+                    "La politique de ressources Connect doit respecter la version 1 et ses bornes.",
+                ));
+            }
+        }
+    }
+
     if kind == ConfigDocumentKind::Providers && matches!(scope, ConfigScope::User) {
         let defaults = default_document(ConfigDocumentKind::Providers);
         let default_providers = defaults.get("providers").and_then(Value::as_object);
@@ -945,6 +970,14 @@ pub fn descriptors() -> Vec<ConfigDescriptor> {
             Restrictive,
             ApprovalRequired,
             Restart,
+        ),
+        descriptor(
+            Settings,
+            "/connectTransferResources",
+            &["user"],
+            Replace,
+            ApprovalRequired,
+            Live,
         ),
         descriptor(Settings, "/language", &["user"], Replace, Normal, Live),
         descriptor(Settings, "/appearance", &["user"], Deep, Normal, Live),
@@ -1793,6 +1826,34 @@ mod tests {
             .diagnostics
             .iter()
             .any(|entry| entry.code == "config.schema.invalid"));
+    }
+
+    #[test]
+    fn manual_model_reasoning_survives_document_validation_and_reload() {
+        let mut document = sparse_document(ConfigDocumentKind::Providers);
+        document["manualModels"] = json!({
+            "local:model": {
+                "providerId": "local",
+                "modelId": "local-reasoner",
+                "displayName": "Local reasoner",
+                "enabled": true,
+                "reasoningEfforts": ["low", "medium", "high"],
+                "defaultReasoningEffort": "medium"
+            }
+        });
+        let result =
+            validate_document(ConfigDocumentKind::Providers, &ConfigScope::User, &document);
+        assert!(result.valid, "{:?}", result.diagnostics);
+        let parsed: ProvidersDocument = serde_json::from_value(document).unwrap();
+        let reloaded = serde_json::to_value(parsed).unwrap();
+        assert_eq!(
+            reloaded["manualModels"]["local:model"]["reasoningEfforts"],
+            json!(["low", "medium", "high"])
+        );
+        assert_eq!(
+            reloaded["manualModels"]["local:model"]["defaultReasoningEffort"],
+            "medium"
+        );
     }
 
     #[test]

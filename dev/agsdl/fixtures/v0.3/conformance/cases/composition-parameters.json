@@ -1,0 +1,48 @@
+{
+  "contract": "agsdl-0.3.0",
+  "id": "composition-parameters",
+  "agents": {
+    "a": {
+      "harness": "example",
+      "permissions": "read-only"
+    }
+  },
+  "flow": {
+    "entry": "s",
+    "steps": {
+      "s": {
+        "type": "compose",
+        "composition": "c",
+        "agents": {
+          "other": "a"
+        },
+        "next": {
+          "done": [],
+          "extra": []
+        }
+      }
+    }
+  },
+  "compositions": {
+    "c": {
+      "parameters": [
+        "worker"
+      ],
+      "entry": "w",
+      "outputs": [
+        "done"
+      ],
+      "steps": {
+        "w": {
+          "type": "agent",
+          "agent": {
+            "parameter": "worker"
+          },
+          "next": {
+            "output": "done"
+          }
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,62 @@
+{
+  "contract": "agsdl-0.3.0",
+  "id": "message-path",
+  "agents": {
+    "a": {
+      "harness": "example",
+      "permissions": "read-only",
+      "results": {
+        "report": {
+          "schema": {
+            "type": "object",
+            "properties": {
+              "ok": {
+                "type": "boolean"
+              }
+            },
+            "additionalProperties": false
+          }
+        }
+      }
+    }
+  },
+  "flow": {
+    "entry": "s",
+    "steps": {
+      "s": {
+        "type": "agent",
+        "agent": "a",
+        "next": {
+          "step": "t",
+          "message": {
+            "resources": {
+              "r1": {
+                "from": [
+                  "results",
+                  "missing"
+                ]
+              },
+              "r2": {
+                "from": [
+                  "results",
+                  "report",
+                  "nope"
+                ]
+              },
+              "r3": {
+                "from": [
+                  "choice"
+                ]
+              }
+            }
+          }
+        }
+      },
+      "t": {
+        "type": "agent",
+        "agent": "a",
+        "instance": "t"
+      }
+    }
+  }
+}

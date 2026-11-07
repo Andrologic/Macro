@@ -1,4 +1,18 @@
 {
+  "edition030": {
+    "visitLimit": "Visit limit",
+    "mission": "Mission",
+    "definitions": "Definitions",
+    "exactHint": "Edit each property as exact JSON. Leave an optional property blank to remove it.",
+    "modelHint": "Model and effort are independent. Blank uses the harness default. Availability is checked at launch.",
+    "effort": "Effort",
+    "harnessDefault": "Harness default",
+    "editFailed": "The edit could not be saved. Check the JSON and document revision, then retry.",
+    "authorityHint": "Standing instructions frame the agent. Route prompts give its mission. Resources and results are information. Permissions are requests; effective capabilities require a launch assessment.",
+    "definition": "Shared agent definition",
+    "quorum": "Quorum",
+    "humanChoice": "Human choice"
+  },
   "graphHints": {
     "skills": "Skills",
     "structured": "Validated structured result",
@@ -69,6 +83,8 @@
   "retry": "Retry",
   "agentTools": "Agent tools",
   "kind": {
+    "Flow": "Flow",
+    "McpServer": "MCP server",
     "invoke": "Invoke agent",
     "condition": "Condition",
     "approval": "Approval",
@@ -230,7 +246,16 @@
       "engineUnset": "Engine not configured",
       "selected": "Selected"
     },
-    "backToComponent": "Back to previous details"
+    "backToComponent": "Back to previous details",
+    "legend": "Legend",
+    "legendFlow": "Flow",
+    "legendError": "Exit on error",
+    "legendQueue": "Queue of a shared agent",
+    "legendEntry": "Flow entry point",
+    "joinAll": "All",
+    "joinFirst": "First",
+    "joinAllHint": "Waits for every result",
+    "joinFirstHint": "Keeps the first acceptable result"
   },
   "attachToChat": "Attach to chat",
   "chatSelection": "AgSDL selection",
@@ -527,7 +552,9 @@
     "to": "Next",
     "expand": "Expand group",
     "openTask": "Open task",
-    "canvasMenu": "Graph actions"
+    "canvasMenu": "Graph actions",
+    "unfold": "Expand the composition",
+    "fold": "Collapse the composition"
   },
   "link": {
     "true": "If yes",
@@ -582,5 +609,51 @@
     "installation": "Official SDK installation instructions",
     "apiKey": "Anthropic API key",
     "keySaveFailed": "The key could not be saved or its profile could not be qualified."
+  },
+  "preview": {
+    "steers": "Steers",
+    "model": "Model",
+    "uses": "Uses",
+    "receives": "Receives",
+    "produces": "Produces",
+    "limit": "Visits",
+    "after": "Launched by",
+    "arguments": "Arguments",
+    "effect": "Effect",
+    "action": "Action",
+    "targets": "Targets",
+    "context": "Context",
+    "timeout": "Timeout",
+    "validity": "Validity",
+    "test": "Tests",
+    "mode": "Waits for",
+    "accept": "Accepts if",
+    "agents": "Agents",
+    "transmits": "Delivers",
+    "whenLabel": "Taken when",
+    "limitValue_one": "{{count}} at most",
+    "limitValue_other": "{{count}} at most",
+    "effects": {
+      "none": "none",
+      "external": "external",
+      "unknown": "not declared"
+    },
+    "join": {
+      "all": "every member",
+      "first": "the first accepted",
+      "remaining-finish": "others finish",
+      "remaining-stop-and-wait": "others stop"
+    },
+    "when": {
+      "choice": "{{who}} chooses “{{name}}”",
+      "error": "{{source}} fails",
+      "next": "Always",
+      "true": "The condition is true",
+      "false": "The condition is false",
+      "approved": "Approval is given",
+      "denied": "Approval is refused",
+      "exchange": "On a data exchange",
+      "dependency": "After the previous block"
+    }
   }
 }

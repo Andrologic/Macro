@@ -1,0 +1,57 @@
+{
+  "contract": "agsdl-0.3.0",
+  "id": "nested-join",
+  "agents": {
+    "a": {
+      "harness": "example",
+      "permissions": "read-only"
+    }
+  },
+  "flow": {
+    "entry": "start",
+    "steps": {
+      "start": {
+        "type": "agent",
+        "agent": "a",
+        "next": [
+          "left",
+          "right"
+        ]
+      },
+      "left": {
+        "type": "agent",
+        "agent": "a",
+        "instance": "l",
+        "next": [
+          "l1",
+          "l2"
+        ]
+      },
+      "l1": {
+        "type": "agent",
+        "agent": "a",
+        "instance": "new",
+        "next": "inner"
+      },
+      "l2": {
+        "type": "agent",
+        "agent": "a",
+        "instance": "new",
+        "next": "inner"
+      },
+      "inner": {
+        "type": "join",
+        "next": "outer"
+      },
+      "right": {
+        "type": "agent",
+        "agent": "a",
+        "instance": "r",
+        "next": "outer"
+      },
+      "outer": {
+        "type": "join"
+      }
+    }
+  }
+}

@@ -5,7 +5,7 @@ import { runToolCallingLoop, type ToolCallingAdapter } from './toolCallingLoop';
 
 function fixture(maxTurns: number | null | undefined, executionPolicy?: 'native-serial') {
   const dispatch = mock(async () => ({ kind: 'result' as const, result: 'Simulated read' }));
-  const options: StreamingChatOptions = {
+  const options: StreamingChatOptions = { providerAdmission: { kind: 'utility' },
     providerId: 'fixture', providerType: 'openai', modelId: 'fixture', baseUrl: 'https://example.invalid',
     messages: [], allowedToolIds: ['read'], maxTurns, executionPolicy,
     onToken() {}, onComplete() {}, onError() {},

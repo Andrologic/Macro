@@ -1,0 +1,46 @@
+{
+  "contract": "agsdl-0.3.0",
+  "id": "flow-error-path",
+  "agents": {
+    "dev": {
+      "harness": "example",
+      "permissions": "workspace"
+    },
+    "support": {
+      "harness": "example",
+      "permissions": "read-only"
+    }
+  },
+  "flow": {
+    "entry": "build",
+    "steps": {
+      "build": {
+        "type": "call",
+        "command": "make",
+        "next": "ship"
+      },
+      "ship": {
+        "type": "agent",
+        "agent": "dev"
+      },
+      "notify": {
+        "type": "agent",
+        "agent": "support"
+      }
+    },
+    "onError": {
+      "step": "notify",
+      "message": {
+        "prompt": "A step failed.",
+        "resources": {
+          "why": {
+            "from": [
+              "data",
+              "output"
+            ]
+          }
+        }
+      }
+    }
+  }
+}

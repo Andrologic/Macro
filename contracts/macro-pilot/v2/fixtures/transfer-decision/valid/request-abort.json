@@ -1,0 +1,11 @@
+{
+  "decision_contract": "transfer-decision-1",
+  "type": "decision_request",
+  "operation": "abort",
+  "operation_id": "00000000-0000-0000-0000-000000000061",
+  "expected_revision": "3",
+  "body": {
+    "reason": "user_cancelled"
+  },
+  "transfer_id": "00000000-0000-0000-0000-000000000004"
+}

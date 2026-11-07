@@ -1,0 +1,20 @@
+{
+  "transport_version": "2.0",
+  "type": "poll",
+  "capabilities": [
+    "task-details-1",
+    "task-actions-1",
+    "network-reliability-1",
+    "conversations-1",
+    "conversation-history-1",
+    "conversation-interactions-1",
+    "conversation-models-1",
+    "host-telemetry-1",
+    "project-icons-1",
+    "attachment-transfer-1",
+    "conversation-attachments-1",
+    "conversation-files-1",
+    "conversation-reflections-1",
+    "read-authority-1"
+  ]
+}

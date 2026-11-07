@@ -442,3 +442,447 @@ mod tests {
         }
     }
 }
+
+/// Narrow host-specific transport used while the document reader remains at 0.2.
+pub(crate) fn validate_agsdl_write_rules(rules: &serde_json::Value) -> Result<(), &'static str> {
+    let Some(rules) = rules.as_array() else {
+        return Err("writeRules must be an array");
+    };
+    for rule in rules {
+        let Some(fields) = rule.as_object() else {
+            return Err("Write rules must be objects");
+        };
+        if rule["action"] != "write"
+            || !matches!(rule["effect"].as_str(), Some("allow" | "deny"))
+            || rule.get("match").is_some_and(|value| !value.is_string())
+            || fields
+                .keys()
+                .any(|key| !matches!(key.as_str(), "action" | "effect" | "match"))
+        {
+            return Err("Only write allow/deny rules with an optional string match are supported");
+        }
+    }
+    Ok(())
+}
+
+/// Native Codex tools cannot consult Macro's per-invocation policy. Grant less
+/// by making the entire workspace read-only whenever a write denial is frozen.
+pub(crate) fn agsdl_native_read_only(permissions: &serde_json::Value) -> bool {
+    permissions["readOnly"] == true
+        || permissions["mode"] != "Implement"
+        || permissions.get("writeRules").is_some_and(|rules| {
+            validate_agsdl_write_rules(rules).is_err()
+                || rules
+                    .as_array()
+                    .is_some_and(|rules| rules.iter().any(|rule| rule["effect"] == "deny"))
+        })
+}
+
+/// Resolve existing ancestors as well as existing files, preserving OS symlink/.. semantics.
+fn permission_path(root: &std::path::Path, raw: &str) -> Option<std::path::PathBuf> {
+    use std::path::{Component, PathBuf};
+    let input = if let Some(rest) = raw.strip_prefix("~/") {
+        PathBuf::from(std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE"))?)
+            .join(rest)
+    } else {
+        root.join(raw)
+    };
+    let mut resolved = PathBuf::new();
+    for component in input.components() {
+        match component {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                resolved.pop();
+            }
+            other => {
+                resolved.push(other.as_os_str());
+                // A Windows drive/UNC prefix alone is not an absolute filesystem
+                // target yet. Resolve it once its root component has been added.
+                if !resolved.is_absolute() {
+                    continue;
+                }
+                match std::fs::canonicalize(&resolved) {
+                    Ok(path) => resolved = path,
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                        if std::fs::symlink_metadata(&resolved)
+                            .is_ok_and(|meta| meta.file_type().is_symlink())
+                        {
+                            return None;
+                        }
+                    }
+                    Err(_) => return None,
+                }
+            }
+        }
+    }
+    Some(resolved)
+}
+
+#[cfg(any(windows, test))]
+fn permission_windows_path(value: &str) -> String {
+    let value = value.replace('\\', "/");
+    if let Some(rest) = value.strip_prefix("//?/UNC/") {
+        format!("//{rest}")
+    } else {
+        value.strip_prefix("//?/").unwrap_or(&value).to_string()
+    }
+}
+
+fn permission_match_path(path: &std::path::Path) -> String {
+    use unicode_normalization::UnicodeNormalization;
+    let text = path.to_string_lossy();
+    #[cfg(windows)]
+    let text = permission_windows_path(&text);
+    // macOS and Windows commonly address files without regard to case. Matching
+    // conservatively on case-sensitive volumes grants less, never more.
+    #[cfg(any(windows, target_os = "macos"))]
+    let text = text.to_uppercase();
+    // NFD also preserves glob boundaries such as e* + combining accent.
+    // An antislash remains a literal filename character on Unix.
+    text.nfd().collect()
+}
+
+fn permission_glob(pattern: &[u8], path: &[u8]) -> bool {
+    // Dynamic programming avoids exponential backtracking on untrusted patterns.
+    let mut row = vec![false; path.len() + 1];
+    row[0] = true;
+    let mut i = 0;
+    while i < pattern.len() {
+        let mut next = vec![false; path.len() + 1];
+        if pattern[i] == b'*' {
+            let cross = pattern.get(i + 1) == Some(&b'*');
+            if cross {
+                i += 1;
+            }
+            next[0] = row[0];
+            for j in 0..path.len() {
+                next[j + 1] = row[j + 1] || (next[j] && (cross || path[j] != b'/'));
+            }
+            if cross && pattern.get(i + 1) == Some(&b'/') {
+                let star = next.clone();
+                for j in 1..=path.len() {
+                    next[j] = row[j] || (star[j - 1] && path[j - 1] == b'/');
+                }
+                i += 1;
+            }
+        } else {
+            for j in 0..path.len() {
+                next[j + 1] = row[j] && pattern[i] == path[j];
+            }
+        }
+        row = next;
+        i += 1;
+    }
+    row[path.len()]
+}
+
+/// All targets are admitted together before the workspace executor can mutate anything.
+pub(crate) fn agsdl_write_denied(
+    root: &std::path::Path,
+    tool: &str,
+    args: &serde_json::Value,
+    permissions: &serde_json::Value,
+) -> bool {
+    if !is_write_tool(tool) {
+        return false;
+    }
+    if permissions
+        .get("writeRules")
+        .is_some_and(|rules| validate_agsdl_write_rules(rules).is_err())
+    {
+        return true;
+    }
+    let mut paths = Vec::new();
+    if tool == "apply_patch" {
+        for line in args["patch_text"].as_str().unwrap_or("").lines() {
+            for prefix in [
+                "*** Add File: ",
+                "*** Update File: ",
+                "*** Delete File: ",
+                "*** Move to: ",
+            ] {
+                if let Some(path) = line.strip_prefix(prefix) {
+                    paths.push(path.trim());
+                }
+            }
+        }
+    } else if let Some(path) = args["path"].as_str() {
+        paths.push(path);
+    }
+    let Some(root) = permission_path(root, ".") else {
+        return true;
+    };
+    for raw in paths {
+        // These aliases select a separate metadata workspace in the executor.
+        // The captured workspace grants no authority over that separate root.
+        if is_macro_scoped_path(raw) {
+            return true;
+        }
+        let Some(path) = permission_path(&root, raw) else {
+            return true;
+        };
+        if !crate::fs::path_is_same_or_descendant(&path, &root) {
+            return true;
+        }
+        // Existing targets are lexically normalized by the real write validator
+        // before capability lookup. Canonicalize that returned path as well: with
+        // symlinks followed by .., it can name a third target distinct from both
+        // OS resolution of the raw path and lexical resolution of that raw path.
+        let Ok(execution_path) =
+            crate::fs::validate_path_for_write(std::path::Path::new(raw), &root)
+        else {
+            return true;
+        };
+        let Some(executed) = execution_path
+            .to_str()
+            .and_then(|raw| permission_path(&root, raw))
+        else {
+            return true;
+        };
+        if !crate::fs::path_is_same_or_descendant(&executed, &root) {
+            return true;
+        }
+        let mut lexical = std::path::PathBuf::new();
+        let expanded = if let Some(rest) = raw.strip_prefix("~/") {
+            let Some(home) = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE"))
+            else {
+                return true;
+            };
+            std::path::PathBuf::from(home).join(rest)
+        } else {
+            root.join(raw)
+        };
+        for component in expanded.components() {
+            match component {
+                std::path::Component::ParentDir => {
+                    lexical.pop();
+                }
+                std::path::Component::CurDir => {}
+                other => lexical.push(other.as_os_str()),
+            }
+        }
+        for rule in permissions["writeRules"].as_array().into_iter().flatten() {
+            if rule["action"] != "write" || rule["effect"] != "deny" {
+                continue;
+            }
+            let Some(pattern) = rule.get("match") else {
+                return true;
+            };
+            let Some(pattern) = pattern.as_str() else {
+                return true;
+            };
+            // Resolve the literal prefix, so patterns through symlinked directories agree
+            // with normalized targets. Wildcards themselves are never filesystem names.
+            // A directory mutation can affect denied descendants. Conservatively
+            // reject it rather than trusting a non-atomic recursive enumeration.
+            if path.is_dir() || executed.is_dir() {
+                return true;
+            }
+            #[cfg(windows)]
+            let native_pattern = pattern.replace('\\', "/");
+            #[cfg(windows)]
+            let pattern = native_pattern.as_str();
+            if !pattern.contains('*') {
+                if permission_path(&root, pattern).is_none_or(|candidate| {
+                    [&path, &lexical, &executed].iter().any(|target| {
+                        permission_match_path(&candidate) == permission_match_path(target)
+                    })
+                }) {
+                    return true;
+                }
+                continue;
+            }
+            let wildcard = pattern.find('*').unwrap_or(pattern.len());
+            let prefix_end = pattern[..wildcard].rfind('/').map(|i| i + 1).unwrap_or(0);
+            let (prefix, suffix) = pattern.split_at(prefix_end);
+            let Some(base) = permission_path(&root, if prefix.is_empty() { "." } else { prefix })
+            else {
+                return true;
+            };
+            let absolute_pattern = permission_match_path(&base.join(suffix));
+            if [&path, &lexical, &executed].iter().any(|candidate| {
+                permission_glob(
+                    absolute_pattern.as_bytes(),
+                    permission_match_path(candidate).as_bytes(),
+                )
+            }) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+#[cfg(test)]
+mod agsdl_write_tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn windows_namespace_paths_match_the_same_absolute_patterns() {
+        for (pattern, target) in [
+            (r"C:\repo\.env*", r"\\?\C:\repo\.env.local"),
+            (
+                r"\\server\share\repo\.env*",
+                r"\\?\UNC\server\share\repo\.env.local",
+            ),
+        ] {
+            assert!(permission_glob(
+                permission_windows_path(pattern).as_bytes(),
+                permission_windows_path(target).as_bytes()
+            ));
+        }
+    }
+
+    #[test]
+    fn equivalent_unicode_spellings_cannot_widen_write_access() {
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::write(temp.path().join("é.txt"), "protected").unwrap();
+        for pattern in ["e\u{301}*", "é*", "e*\u{301}.txt", "e\u{301}.txt"] {
+            let rules = json!({"writeRules":[{"action":"write","effect":"deny","match":pattern}]});
+            assert!(
+                agsdl_write_denied(
+                    temp.path(),
+                    "write",
+                    &json!({"path":"é.txt","content":"changed"}),
+                    &rules
+                ),
+                "{pattern}"
+            );
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_absolute_rules_resolve_the_literal_prefix() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().canonicalize().unwrap();
+        std::fs::write(root.join(".env.local"), "protected").unwrap();
+        let plain_root = permission_windows_path(root.to_str().unwrap()).replace('/', "\\");
+        for pattern in [
+            format!("{plain_root}\\.env*"),
+            format!("{plain_root}\\.env.local"),
+        ] {
+            assert!(agsdl_write_denied(
+                &root,
+                "write",
+                &json!({"path":".env.local","content":"changed"}),
+                &json!({"writeRules":[{"action":"write","effect":"deny","match":pattern}]})
+            ));
+        }
+        // Positive control detects an accidental deny-all during drive/UNC resolution.
+        assert!(!agsdl_write_denied(
+            &root,
+            "write",
+            &json!({"path":"allowed.txt","content":"changed"}),
+            &json!({"writeRules":[{"action":"write","effect":"deny","match":".env*"}]})
+        ));
+    }
+
+    #[test]
+    fn frozen_write_rules_cover_all_targets() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        std::fs::create_dir(root.join("sub")).unwrap();
+        std::fs::create_dir(root.join("docs")).unwrap();
+        std::fs::write(root.join(".env"), "secret").unwrap();
+        let denied = |pattern: Option<&str>, tool: &str, args: serde_json::Value| {
+            let rule = match pattern {
+                Some(pattern) => json!({"action":"write","effect":"deny","match":pattern}),
+                None => json!({"action":"write","effect":"deny"}),
+            };
+            agsdl_write_denied(
+                root,
+                tool,
+                &args,
+                &json!({"writeRules":[rule, {"action":"write","effect":"allow"}]}),
+            )
+        };
+        for tool in ["write", "edit", "delete"] {
+            for path in [".env", ".env.local", "sub/../.env"] {
+                assert!(denied(Some(".env*"), tool, json!({"path":path})));
+            }
+            assert!(!denied(Some(".env*"), tool, json!({"path":"config/.env"})));
+            assert!(denied(
+                Some("**/.env*"),
+                tool,
+                json!({"path":"config/.env"})
+            ));
+            assert!(denied(Some("**/.env*"), tool, json!({"path":".env"})));
+            assert!(denied(
+                Some("src/generated/**"),
+                tool,
+                json!({"path":"src/generated/a/b.ts"})
+            ));
+            assert!(!denied(
+                Some("src/generated/**"),
+                tool,
+                json!({"path":"src/gen.ts"})
+            ));
+            assert!(denied(None, tool, json!({"path":"anything"})));
+        }
+        for header in [
+            "*** Add File: .env",
+            "*** Update File: .env",
+            "*** Delete File: .env",
+            "*** Update File: safe\n*** Move to: .env",
+        ] {
+            let patch =
+                format!("*** Begin Patch\n*** Add File: allowed\n+ok\n{header}\n*** End Patch");
+            assert!(denied(
+                Some(".env*"),
+                "apply_patch",
+                json!({"patch_text":patch})
+            ));
+            assert!(!root.join("allowed").exists());
+        }
+        assert!(agsdl_write_denied(
+            root,
+            "write",
+            &json!({"path":"../outside"}),
+            &json!({"writeRules":[{"action":"write","effect":"allow"}]})
+        ));
+        assert!(denied(
+            Some("unrelated/**"),
+            "delete",
+            json!({"path":"docs"})
+        ));
+        assert!(!agsdl_write_denied(
+            root,
+            "read",
+            &json!({"path":".env"}),
+            &json!({"writeRules":[{"action":"write","effect":"deny"}]})
+        ));
+        assert!(denied(
+            Some(root.join(".env*").to_str().unwrap()),
+            "write",
+            json!({"path":".env"})
+        ));
+        #[cfg(unix)]
+        {
+            for tool in ["write", "edit", "delete"] {
+                assert!(denied(Some(".env*"), tool, json!({"path":r".env\local"})));
+            }
+            assert!(denied(
+                Some(r".env\*"),
+                "write",
+                json!({"path":r".env\local"})
+            ));
+            std::os::unix::fs::symlink("../.env", root.join("docs/link")).unwrap();
+            assert!(denied(Some(".env*"), "write", json!({"path":"docs/link"})));
+            assert!(denied(Some("docs/link"), "edit", json!({"path":".env"})));
+            std::os::unix::fs::symlink("../../outside", root.join("docs/outside")).unwrap();
+            assert!(denied(
+                Some(".env*"),
+                "write",
+                json!({"path":"docs/outside"})
+            ));
+            std::os::unix::fs::symlink("../sub", root.join("docs/dir")).unwrap();
+            assert!(denied(
+                Some("sub/**"),
+                "write",
+                json!({"path":"docs/dir/new"})
+            ));
+        }
+    }
+}

@@ -39,6 +39,7 @@ static WEB_OPERATION_CANCELLATIONS: OnceLock<Mutex<WebOperationCancellationRegis
     OnceLock::new();
 
 struct WebOperationCancellation {
+    native: Option<tokio_util::sync::CancellationToken>,
     cancelled: AtomicBool,
     notify: Notify,
 }
@@ -46,6 +47,7 @@ struct WebOperationCancellation {
 impl WebOperationCancellation {
     fn new() -> Self {
         Self {
+            native: None,
             cancelled: AtomicBool::new(false),
             notify: Notify::new(),
         }
@@ -58,6 +60,10 @@ impl WebOperationCancellation {
 
     fn is_cancelled(&self) -> bool {
         self.cancelled.load(Ordering::Acquire)
+            || self
+                .native
+                .as_ref()
+                .is_some_and(|token| token.is_cancelled())
     }
 
     async fn cancelled(&self) {
@@ -68,7 +74,11 @@ impl WebOperationCancellation {
             if self.is_cancelled() {
                 return;
             }
-            notified.await;
+            if let Some(native) = &self.native {
+                tokio::select! { _ = notified => {}, _ = native.cancelled() => return }
+            } else {
+                notified.await;
+            }
         }
     }
 }
@@ -106,8 +116,19 @@ fn validate_web_operation_id(execution_id: &str) -> CommandResult<()> {
     Ok(())
 }
 
+#[cfg(test)]
 fn register_web_operation_cancellation(
     execution_id: Option<&str>,
+) -> CommandResult<(
+    Option<Arc<WebOperationCancellation>>,
+    Option<WebOperationCancellationGuard>,
+)> {
+    register_web_operation_cancellation_owned(execution_id, None)
+}
+
+fn register_web_operation_cancellation_owned(
+    execution_id: Option<&str>,
+    native: Option<tokio_util::sync::CancellationToken>,
 ) -> CommandResult<(
     Option<Arc<WebOperationCancellation>>,
     Option<WebOperationCancellationGuard>,
@@ -118,7 +139,9 @@ fn register_web_operation_cancellation(
     let execution_id = execution_id.trim();
     validate_web_operation_id(execution_id)?;
 
-    let cancellation = Arc::new(WebOperationCancellation::new());
+    let mut cancellation = WebOperationCancellation::new();
+    cancellation.native = native;
+    let cancellation = Arc::new(cancellation);
     let registry = WEB_OPERATION_CANCELLATIONS
         .get_or_init(|| Mutex::new(WebOperationCancellationRegistry::default()));
     let mut registry = registry
@@ -487,7 +510,8 @@ pub async fn web_search_get_secret_status(
     provider: String,
 ) -> CommandResult<WebSearchSecretStatus> {
     let provider = normalize_provider(&provider)?;
-    let has_secret = secrets::get_api_key(&secret_id(provider))
+    let has_secret = secrets::get_api_key_async(&secret_id(provider))
+        .await
         .map_err(|error| command_error(format!("Failed to check secret: {error}")))?
         .is_some_and(|value| !value.trim().is_empty());
     Ok(WebSearchSecretStatus {
@@ -503,8 +527,10 @@ pub async fn web_search_set_secret(
 ) -> CommandResult<WebSearchSecretStatus> {
     let provider = normalize_provider(&input.provider)?;
     match input.value.as_deref().map(str::trim) {
-        Some(value) if !value.is_empty() => secrets::set_api_key(&secret_id(provider), value),
-        _ => secrets::delete_api_key(&secret_id(provider)),
+        Some(value) if !value.is_empty() => {
+            secrets::set_api_key_async(&secret_id(provider), value).await
+        }
+        _ => secrets::delete_api_key_async(&secret_id(provider)).await,
     }
     .map_err(|error| command_error(format!("Failed to update secret: {error}")))?;
 
@@ -517,9 +543,47 @@ pub async fn web_search_execute(
     query: String,
     include_raw_content: Option<bool>,
     execution_id: Option<String>,
+    admission_runtime: State<'_, crate::db::chat_admission::runtime::ChatAdmissionRuntime>,
+    ai_state: State<'_, crate::ai::AiState>,
+    window: tauri::WebviewWindow,
+    chat_admission: Option<crate::db::chat_admission::runtime::ChatToolAdmission>,
+) -> CommandResult<Vec<WebSearchResultDto>> {
+    if let Some(admission) = chat_admission {
+        let execution_id = Some(execution_id.unwrap_or_else(|| admission.request_id.clone()));
+        let (reservation, work) = super::chat_admission::admit_tool(
+            &admission_runtime,
+            &ai_state,
+            window.label(),
+            admission,
+        )
+        .await?;
+        let manager = manager.inner().clone();
+        let received = reservation
+            .spawn_tool(work, move |cancel| async move {
+                web_search_execute_owned(
+                    &manager,
+                    query,
+                    include_raw_content,
+                    execution_id,
+                    Some(cancel),
+                )
+                .await
+            })
+            .map_err(command_error)?;
+        return received.await.map_err(command_error)?;
+    }
+    web_search_execute_owned(&manager, query, include_raw_content, execution_id, None).await
+}
+
+async fn web_search_execute_owned(
+    manager: &ConfigManager,
+    query: String,
+    include_raw_content: Option<bool>,
+    execution_id: Option<String>,
+    native_cancel: Option<tokio_util::sync::CancellationToken>,
 ) -> CommandResult<Vec<WebSearchResultDto>> {
     let (cancellation, _cancellation_guard) =
-        register_web_operation_cancellation(execution_id.as_deref())?;
+        register_web_operation_cancellation_owned(execution_id.as_deref(), native_cancel)?;
     ensure_web_operation_active(cancellation.as_deref())?;
 
     let query = query.trim();
@@ -553,7 +617,8 @@ pub async fn web_search_execute(
         .and_then(|value| u32::try_from(value).ok())
         .unwrap_or(DEFAULT_MAX_RESULTS)
         .clamp(1, MAX_RESULTS);
-    let api_key = secrets::get_api_key(&secret_id(provider))
+    let api_key = secrets::get_api_key_async(&secret_id(provider))
+        .await
         .map_err(|error| command_error(format!("Failed to read secret: {error}")))?
         .filter(|value| !value.trim().is_empty())
         .ok_or_else(|| command_error("No web search API key is configured."))?;
@@ -580,9 +645,38 @@ pub async fn web_fetch_execute(
     url: String,
     resource_kind: String,
     execution_id: Option<String>,
+    admission_runtime: State<'_, crate::db::chat_admission::runtime::ChatAdmissionRuntime>,
+    ai_state: State<'_, crate::ai::AiState>,
+    window: tauri::WebviewWindow,
+    chat_admission: Option<crate::db::chat_admission::runtime::ChatToolAdmission>,
+) -> CommandResult<WebFetchResourceDto> {
+    if let Some(admission) = chat_admission {
+        let execution_id = Some(execution_id.unwrap_or_else(|| admission.request_id.clone()));
+        let (reservation, work) = super::chat_admission::admit_tool(
+            &admission_runtime,
+            &ai_state,
+            window.label(),
+            admission,
+        )
+        .await?;
+        let received = reservation
+            .spawn_tool(work, move |cancel| async move {
+                web_fetch_execute_owned(url, resource_kind, execution_id, Some(cancel)).await
+            })
+            .map_err(command_error)?;
+        return received.await.map_err(command_error)?;
+    }
+    web_fetch_execute_owned(url, resource_kind, execution_id, None).await
+}
+
+async fn web_fetch_execute_owned(
+    url: String,
+    resource_kind: String,
+    execution_id: Option<String>,
+    native_cancel: Option<tokio_util::sync::CancellationToken>,
 ) -> CommandResult<WebFetchResourceDto> {
     let (cancellation, _cancellation_guard) =
-        register_web_operation_cancellation(execution_id.as_deref())?;
+        register_web_operation_cancellation_owned(execution_id.as_deref(), native_cancel)?;
     ensure_web_operation_active(cancellation.as_deref())?;
 
     let normalized = url.trim();
@@ -1002,6 +1096,22 @@ mod tests {
         fn drop(&mut self) {
             self.dropped.store(true, Ordering::Release);
         }
+    }
+
+    #[tokio::test]
+    async fn native_cancellation_before_web_fetch_registration_prevents_transport() {
+        let cancel = tokio_util::sync::CancellationToken::new();
+        let execution = web_fetch_execute_owned(
+            "not-a-url".into(),
+            "page".into(),
+            Some("native-cancel-before-web".into()),
+            Some(cancel.clone()),
+        );
+        cancel.cancel();
+        let error = execution.await.unwrap_err();
+        assert!(error.message.contains("was cancelled"));
+        let registry = WEB_OPERATION_CANCELLATIONS.get().unwrap().lock().unwrap();
+        assert!(!registry.active.contains_key("native-cancel-before-web"));
     }
 
     #[tokio::test]

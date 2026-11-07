@@ -1,0 +1,72 @@
+{
+  "description": "A failing step follows its onError with the error as default message; a handled failure does not fail the run.",
+  "document": {
+    "contract": "agsdl-0.3.0",
+    "id": "error-route",
+    "agents": {
+      "dev": {
+        "harness": "example",
+        "permissions": "workspace"
+      },
+      "ops": {
+        "harness": "example",
+        "permissions": "read-only"
+      }
+    },
+    "flow": {
+      "entry": "build",
+      "steps": {
+        "build": {
+          "type": "agent",
+          "agent": "dev",
+          "onError": "notify",
+          "next": []
+        },
+        "notify": {
+          "type": "agent",
+          "agent": "ops",
+          "prompt": "Report the failure."
+        }
+      }
+    }
+  },
+  "entry": {
+    "prompt": "Start."
+  },
+  "timeline": [
+    {
+      "work": "build",
+      "fails": "AGENT_FAILED"
+    },
+    {
+      "work": "notify",
+      "returns": {
+        "text": "Reported."
+      }
+    }
+  ],
+  "expect": {
+    "run": "succeeded",
+    "starts": {
+      "build": 1,
+      "notify": 1
+    },
+    "messages": [
+      {
+        "to": "notify",
+        "prompt": "Report the failure.",
+        "resources": {
+          "error": {
+            "code": "AGENT_FAILED"
+          }
+        }
+      }
+    ],
+    "failures": [
+      {
+        "step": "build",
+        "code": "AGENT_FAILED"
+      }
+    ]
+  }
+}

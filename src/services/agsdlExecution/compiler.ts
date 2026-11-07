@@ -34,6 +34,21 @@ export interface CompilationResult {
   readonly compiledPlanJson: ExactJsonText | null;
   readonly productRuntimeAvailable: boolean;
 }
+export type VersionedCompiledPlan = CompiledPlan | import('./contracts030').CompiledPlan030;
+export type VersionedCompilationResult = CompilationResult | import('./contracts030').CompilationResult030;
+
+/** Explicit 0.3 entry point. Loading it does not change the historical compiler. */
+export async function compilePlan030(authoredSource: string, source: SourceRevision, registry: import('./contracts030').CapturedRegistry030): Promise<import('./contracts030').CompilationResult030> {
+  return (await import('./compiler030')).compilePlan030(authoredSource, source, registry);
+}
+
+/** Dispatch by the authored edition; a registry cannot rewrite the contract. */
+export async function compileVersionedPlan(authoredSource: string, source: SourceRevision, registry: CapturedRegistry | import('./contracts030').CapturedRegistry030): Promise<VersionedCompilationResult> {
+  let contract: unknown;
+  try { contract = record(decode(authoredSource)).contract; } catch { /* Let the edition reader report malformed JSON. */ }
+  if (contract === 'agsdl-0.3.0') return compilePlan030(authoredSource, source, registry as import('./contracts030').CapturedRegistry030);
+  return compilePlan(authoredSource, source, registry as CapturedRegistry);
+}
 /** Credential key checks apply only to authored/effective settings, not public data or schemas. */
 function rejectSettingsSecrets(value: ExactValue, pointer: string): void {
   if (value === null || typeof value !== 'object' || value instanceof NumberToken) return;

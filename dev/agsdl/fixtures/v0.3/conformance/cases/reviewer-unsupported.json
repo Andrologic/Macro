@@ -1,0 +1,13 @@
+{
+  "contract": "agsdl-0.3.0",
+  "id": "reviewer-unsupported",
+  "agents": {
+    "a": {
+      "harness": "limited",
+      "permissions": {
+        "preset": "full",
+        "reviewer": "model"
+      }
+    }
+  }
+}

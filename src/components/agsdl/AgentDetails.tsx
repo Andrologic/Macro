@@ -83,11 +83,16 @@ export function AgentDetails({ card, cards, source, onSelect, captured = false }
   const responseRecipients = card.branches.filter(branch => branch.label === "next").map(branch => branch.reference)
     .filter((ref, index, all) => all.findIndex(other => other.target === ref.target && other.label === ref.label) === index);
   const { catalogue, load } = useAgsdlModelCatalogue();
-  useEffect(() => { void load().catch(() => {}); }, [load]);
+  useEffect(() => { if (!card.edition030) void load().catch(() => {}); }, [load, card.edition030]);
   const reference = (ref: ViewerReference) => <ReferencePreview reference={ref} cards={cards} onSelect={onSelect} />;
   const configTools = configurations.flatMap(config => config.tools.map(tool => tool.reference));
   const tools = [...(card.tools ?? []), ...configTools].filter((ref, index, all) =>
     all.findIndex(other => other.target === ref.target && other.label === ref.label) === index);
+  if (card.edition030) return <div className="agsdl-agent-details">
+    <p>{t("agsdl.edition030.authorityHint")}</p>
+    <pre className="agsdl-source-value">{card.edition030.sourceJson}</pre>
+    {card.edition030.definitionJson && card.path !== card.edition030.agentPath && <details><DisclosureSummary>{t("agsdl.edition030.definition")}</DisclosureSummary><pre className="agsdl-source-value">{card.edition030.definitionJson}</pre></details>}
+  </div>;
   return <div className="agsdl-agent-details">
     {captured && <p className="agsdl-muted">{t("agsdl.execution.declaredConfiguration")}</p>}
     {card.participant && <p>{reference(card.participant)}</p>}

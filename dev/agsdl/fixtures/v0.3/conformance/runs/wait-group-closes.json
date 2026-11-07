@@ -1,0 +1,124 @@
+{
+  "description": "With remaining wait, a route that leaves a branch closes the group, and its target starts only once the other branches have ended.",
+  "document": {
+    "contract": "agsdl-0.3.0",
+    "id": "wait-group-closes",
+    "agents": {
+      "lead": {
+        "harness": "example",
+        "permissions": "workspace"
+      },
+      "reviewer": {
+        "harness": "example",
+        "permissions": "read-only"
+      }
+    },
+    "flow": {
+      "entry": "analyze",
+      "steps": {
+        "analyze": {
+          "type": "agent",
+          "agent": "lead",
+          "next": [
+            "security",
+            "performance"
+          ]
+        },
+        "security": {
+          "type": "agent",
+          "agent": "reviewer",
+          "instance": "new",
+          "next": {
+            "ok": "merge",
+            "escalate": "triage"
+          }
+        },
+        "performance": {
+          "type": "agent",
+          "agent": "reviewer",
+          "instance": "new",
+          "next": "merge"
+        },
+        "merge": {
+          "type": "join",
+          "remaining": "wait",
+          "next": "report"
+        },
+        "report": {
+          "type": "agent",
+          "agent": "lead",
+          "prompt": "Write the report."
+        },
+        "triage": {
+          "type": "agent",
+          "agent": "lead",
+          "prompt": "Handle the escalation."
+        }
+      }
+    }
+  },
+  "entry": {
+    "prompt": "Start."
+  },
+  "timeline": [
+    {
+      "work": "analyze",
+      "returns": {
+        "text": "Review this."
+      }
+    },
+    {
+      "work": "security",
+      "returns": {
+        "text": "Secret in the code.",
+        "choice": "escalate"
+      }
+    },
+    {
+      "running": [
+        {
+          "step": "performance"
+        }
+      ]
+    },
+    {
+      "work": "performance",
+      "returns": {
+        "text": "Fast enough."
+      }
+    },
+    {
+      "running": [
+        {
+          "step": "triage"
+        }
+      ]
+    },
+    {
+      "work": "triage",
+      "returns": {
+        "text": "Handled."
+      }
+    }
+  ],
+  "expect": {
+    "run": "succeeded",
+    "starts": {
+      "analyze": 1,
+      "security": 1,
+      "performance": 1,
+      "triage": 1
+    },
+    "cancelled": [],
+    "joins": [],
+    "messages": [
+      {
+        "to": "triage",
+        "resources": {
+          "text": "Secret in the code."
+        }
+      }
+    ],
+    "failures": []
+  }
+}

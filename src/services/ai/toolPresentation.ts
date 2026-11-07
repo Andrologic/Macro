@@ -5,6 +5,24 @@ const escapeToolContextAttribute = (value: string): string =>
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;');
 
+export const decodeToolContextAttribute = (attribute: string): string =>
+  attribute.replace(/&quot;/g, '"').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&');
+
+/** Inspect the attributes of this formatter's literal headers without trying
+ * to split results. A result may itself contain delimiters or another header;
+ * recognized headers there are inspected conservatively too, never re-parsed
+ * as a claim about result boundaries. Call only for known tool-context data. */
+export function visitToolContextAttributes(
+  value: string,
+  consume: (attributes: { toolCallId: string; toolName: string; detail?: string }) => void,
+): void {
+  const headers = /(?:^|\n)<tool_context tool_call_id="([^"<>]*)" tool="([^"<>]*)"(?: detail="([^"<>]*)")?>\n/g;
+  let header: RegExpExecArray | null;
+  while ((header = headers.exec(value))) {
+    consume({ toolCallId: decodeToolContextAttribute(header[1]), toolName: decodeToolContextAttribute(header[2]), ...(header[3] === undefined ? {} : { detail: decodeToolContextAttribute(header[3]) }) });
+  }
+}
+
 export const formatToolTraceDetail = (toolName: string, args: Record<string, unknown>): string | undefined => {
   if (toolName === 'mcp_search') {
     return typeof args.query === 'string' ? args.query : undefined;

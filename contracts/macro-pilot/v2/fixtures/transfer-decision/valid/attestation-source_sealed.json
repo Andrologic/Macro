@@ -1,0 +1,14 @@
+{
+  "decision_contract": "transfer-decision-1",
+  "type": "producer_attestation",
+  "kind": "source_sealed",
+  "format_version": "1",
+  "binding_digest": "e55b3a7a088968fceb10ccf848c4a5d304da3e16f81ee11f16931ce04247475b",
+  "subject_digest": "a21e8e04d4c009a7762c94ea57763439cbcce04deb49d4fdfe753caef889a57d",
+  "producer_instance_id": "source-synthetic",
+  "producer_generation": "producer-source-synthetic",
+  "delivery_id": "00000000-0000-0000-0000-000000000020",
+  "challenge_id": "00000000-0000-0000-0000-000000000021",
+  "request_digest": "08e768257545f27b6e23cc728661c594e997675fc90d3bd2ee8e09d2eaa2a230",
+  "prior_receipt_digest": "94f0f343badf920801cdc19cccf626c12a5e8b91602d002a3024ffc80333e891"
+}

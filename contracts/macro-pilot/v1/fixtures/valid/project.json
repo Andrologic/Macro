@@ -1,0 +1,14 @@
+{
+  "contract_version": "1.0",
+  "type": "project",
+  "ref": {
+    "type": "project",
+    "instance_id": "instance:studio-mac",
+    "workspace_id": "workspace:macro-suite",
+    "project_id": "project:macro-desktop"
+  },
+  "label": "Macro",
+  "state": "active",
+  "repository_state": "ready",
+  "revision": 12
+}

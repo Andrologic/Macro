@@ -1,7 +1,6 @@
 import type { AgsdlChange } from "../../types/agsdl";
 import { createExample, createLegacyExample } from "./examples";
 import {
-  AGSDL_CONTRACT,
   sourceAt,
   keyId,
   list,
@@ -36,7 +35,8 @@ export function renameStep(
   name: string,
 ): AgsdlChange[] {
   const doc = readDocument(source);
-  if (doc.contract === AGSDL_CONTRACT) {
+  if (doc.contract === "agsdl-0.3.0") return renameStep030(source, graphIndex, stepIndex, name);
+  if (doc.contract === "agsdl-0.2.0") {
     if (graphIndex !== 0) throw new Error('Edit composition steps through their explicit composition source paths.');
     return renameFlowStep(source, stepIndex, name);
   }
@@ -71,7 +71,16 @@ export function renameStep(
 /** Add a complete Agent declaration. Adding its invocation remains a draft graph edit. */
 export function addAgent(source: string, graphIndex?: number): AgsdlChange[] {
   const doc = readDocument(source);
-  if (doc.contract === AGSDL_CONTRACT) {
+  if (doc.contract === "agsdl-0.3.0") {
+    const id = nextId("agent", Object.keys(object(doc.agents))), changes = [set(`/agents/${id}`, { harness: "codex", permissions: "read-only" })];
+    if (graphIndex !== undefined) {
+      if (graphIndex !== 0 || !doc.flow) throw new Error("Select an existing flow or edit a composition explicitly.");
+      const step = nextId("step", Object.keys(object(object(doc.flow).steps)));
+      changes.push(set(`/flow/steps/${step}`, { type: "agent", agent: id }));
+    }
+    return changes;
+  }
+  if (doc.contract === "agsdl-0.2.0") {
     if (graphIndex !== undefined && graphIndex !== 0) throw new Error('Composition Agents require an explicitly declared Agent parameter.');
     return addPersistentAgent(source, graphIndex);
   }
@@ -185,7 +194,13 @@ export function addStep(
   kind: "condition" | "approval" | "end" | "prepare" | "call" | "join",
 ): AgsdlChange[] {
   const doc = readDocument(source);
-  if (doc.contract === AGSDL_CONTRACT) {
+  if (doc.contract === "agsdl-0.3.0") {
+    if (graphIndex !== 0 || !doc.flow) throw new Error("Select the flow scope explicitly.");
+    if (!["call", "approval", "join"].includes(kind)) throw new Error("This step type does not exist in AgSDL 0.3. Use an empty route to end a path.");
+    const id = nextId(kind, Object.keys(object(object(doc.flow).steps)));
+    return [set(`/flow/steps/${id}`, kind === "call" ? { type: kind, command: "echo" } : { type: kind, next: kind === "approval" ? { approve: [], reject: [] } : { done: [] } })];
+  }
+  if (doc.contract === "agsdl-0.2.0") {
     if (graphIndex !== 0) throw new Error('Edit composition steps through their explicit composition source paths.');
     return addFlowStep(source, kind);
   }
@@ -251,7 +266,13 @@ export function addStep(
 export function addDefinition(source: string, kind: string): AgsdlChange[] {
   if (kind === "Agent") return addAgent(source);
   const doc = readDocument(source);
-  if (doc.contract === AGSDL_CONTRACT) return addPersistentDeclaration(source, kind);
+  if (doc.contract === "agsdl-0.3.0") {
+    const map = kind === "Skill" ? "skills" : kind === "Tool" ? "mcpServers" : "content";
+    const id = nextId(kind.toLowerCase(), Object.keys(object(doc[map])));
+    const value = kind === "Skill" ? { uri: "skills/example/SKILL.md" } : kind === "Tool" ? { command: ["example-mcp-server"] } : { value: "" };
+    return [set(doc[map] === undefined ? `/${map}` : `/${map}/${id}`, doc[map] === undefined ? { [id]: value } : value)];
+  }
+  if (doc.contract === "agsdl-0.2.0") return addPersistentDeclaration(source, kind);
   const root = object(object(doc.root).key);
   const id = nextId(kind.toLowerCase(), definitionIds(doc));
   const key = { ...root, id };
@@ -326,8 +347,9 @@ function addPersistentAgent(source: string, graphIndex?: number): AgsdlChange[] 
   const id = nextId('agent', Object.keys(object(doc.agents)));
   const configuration = nextId(`${id}-configuration`, Object.keys(object(doc.configurations)));
   const binding = nextId(`${id}-engine`, Object.keys(object(doc.bindings)));
-  const sample = readDocument(createExample('release'));
-  const agent = structuredClone(object(object(sample.agents).checklist));
+  const sample = readDocument(createExample('release', 'agsdl-0.2.0'));
+  // The sample is freshly parsed for each operation and needs no clone.
+  const agent = object(object(sample.agents).checklist);
   agent.configuration = configuration;
   agent.prompt = [{ value: 'Describe this agent’s responsibility, expected evidence, and completion criteria.' }];
   agent.resources = {};
@@ -375,4 +397,31 @@ function addPersistentDeclaration(source: string, kind: string): AgsdlChange[] {
     return [set(`/bindings/${id}`, { contract: { identity: 'example/tool', version: '1' }, implementation: { identity: 'example/configure-tool', version: '1' }, effects: 'unknown' })];
   }
   throw new Error('This definition kind belongs to AgSDL 0.1. Use Agents, content, skills or bindings in 0.2.');
+}
+
+
+function renameStep030(source: string, graphIndex: number, stepIndex: number, name: string): AgsdlChange[] {
+  const doc = readDocument(source);
+  const scopes = [...(doc.flow ? ["/flow"] : []), ...Object.keys(object(doc.compositions)).map(id => `/compositions/${pointerPart(id)}`)];
+  const scope = scopes[graphIndex];
+  if (!scope) throw new Error("Select an existing scope.");
+  const flow = object(readDocument(sourceAt(source, scope))), steps = object(flow.steps), old = Object.keys(steps)[stepIndex];
+  if (!old || !/^[A-Za-z][A-Za-z0-9_-]{0,63}$/.test(name) || (old !== name && Object.hasOwn(steps, name))) throw new Error("Invalid or duplicate step name.");
+  if (old === name) return [];
+  const changes: AgsdlChange[] = [{ op: "set", path: `${scope}/steps/${pointerPart(name)}`, valueJson: sourceAt(source, `${scope}/steps/${pointerPart(old)}`) }, { op: "remove", path: `${scope}/steps/${pointerPart(old)}` }];
+  const route = (value: unknown, path: string) => {
+    if (value === old) changes.push(set(path, name));
+    else if (Array.isArray(value)) value.forEach((item, index) => route(item, `${path}/${index}`));
+    else if (object(value).step === old) changes.push(set(`${path}/step`, name));
+  };
+  if (flow.entry === old) changes.push(set(`${scope}/entry`, name));
+  route(flow.onError, `${scope}/onError`);
+  for (const [id, value] of Object.entries(steps)) {
+    const step = object(value), path = `${scope}/steps/${pointerPart(id === old ? name : id)}`;
+    const next = step.next;
+    if (typeof next === "string" || Array.isArray(next) || Object.hasOwn(object(next), "step") || Object.hasOwn(object(next), "output")) route(next, `${path}/next`);
+    else for (const [key, target] of Object.entries(object(next))) route(target, `${path}/next/${pointerPart(key)}`);
+    route(step.onError, `${path}/onError`);
+  }
+  return changes;
 }

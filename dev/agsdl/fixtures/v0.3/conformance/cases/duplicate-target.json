@@ -1,0 +1,28 @@
+{
+  "contract": "agsdl-0.3.0",
+  "id": "duplicate-target",
+  "agents": {
+    "a": {
+      "harness": "example",
+      "permissions": "read-only"
+    }
+  },
+  "flow": {
+    "entry": "s",
+    "steps": {
+      "s": {
+        "type": "agent",
+        "agent": "a",
+        "next": [
+          "t",
+          "t"
+        ]
+      },
+      "t": {
+        "type": "agent",
+        "agent": "a",
+        "instance": "b"
+      }
+    }
+  }
+}

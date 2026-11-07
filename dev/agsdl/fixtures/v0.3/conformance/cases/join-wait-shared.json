@@ -1,0 +1,64 @@
+{
+  "contract": "agsdl-0.3.0",
+  "id": "join-wait-shared",
+  "agents": {
+    "w": {
+      "harness": "example",
+      "permissions": "full"
+    },
+    "r": {
+      "harness": "example",
+      "permissions": "full"
+    }
+  },
+  "flow": {
+    "entry": "lead",
+    "steps": {
+      "lead": {
+        "type": "agent",
+        "agent": "r",
+        "next": [
+          "w1",
+          "r2"
+        ]
+      },
+      "w1": {
+        "type": "agent",
+        "agent": "w",
+        "next": {
+          "ok": "j",
+          "no": "j"
+        }
+      },
+      "r2": {
+        "type": "agent",
+        "agent": "r",
+        "instance": "new",
+        "next": {
+          "ok": "j",
+          "no": "j"
+        }
+      },
+      "j": {
+        "type": "join",
+        "quorum": {
+          "count": 1,
+          "accept": [
+            "ok"
+          ]
+        },
+        "remaining": "wait",
+        "next": {
+          "reached": "polish",
+          "missed": []
+        }
+      },
+      "polish": {
+        "type": "agent",
+        "agent": "w",
+        "delivery": "steer",
+        "prompt": "Polish."
+      }
+    }
+  }
+}

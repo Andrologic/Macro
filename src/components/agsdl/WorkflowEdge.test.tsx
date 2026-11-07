@@ -112,3 +112,42 @@ it('dismisses pinned previews on graph movement and only closes its popup on Esc
   expect(document.querySelector('[role="tooltip"]')).toBeNull();
   expect(edge.isConnected).toBe(true);
 });
+
+it('announces a normal 0.3 choice called onError without treating it as an error route', async () => {
+  const edge = await mount(data({ connection: {
+    id: '/flow/steps/a/next/onError', source: 'a', target: 'b', label: 'onError', dependency: false,
+    route030: { path: '/flow/steps/a/next/onError', sourcePath: '/flow/steps/a', role: 'normal', key: 'onError', targetKind: 'step', target: 'b' },
+  } }));
+  expect(edge.getAttribute('aria-label')).toContain('onError');
+  expect(edge.getAttribute('aria-label')).not.toContain('On error');
+  expect(edge.getAttribute('aria-label')).toContain('Check quality');
+  expect(edge.getAttribute('aria-label')).toContain('Publish');
+  await event(edge, 'click');
+  expect(document.querySelector('[role="tooltip"]')?.textContent).toContain('onError');
+  expect(document.querySelector('[role="tooltip"]')?.textContent).not.toContain('fails');
+  expect(document.querySelector('.agsdl-edge-exit')).toBeNull();
+});
+
+it('describes all named 0.3 choices by their actual key and distinguishes an error route', async () => {
+  for (const label of ['onError', 'next', 'success', 'true', 'false', 'approved', 'denied']) {
+    const edge = await mount(data({ connection: { id: label, source: 'a', target: 'b', label, dependency: false,
+      route030: { path: `/flow/steps/a/next/${label}`, sourcePath: '/flow/steps/a', role: 'normal', key: label, targetKind: 'step', target: 'b' } } }));
+    await event(edge, 'click');
+    expect(document.querySelector('[role="tooltip"]')?.textContent).toContain(label);
+    expect(edge.getAttribute('aria-label')).toContain(label);
+    expect(document.querySelector('.agsdl-edge-exit')).toBeNull();
+  }
+  const edge = await mount(data({ connection: { id: 'error', source: 'a', target: 'b', label: 'onError', dependency: false,
+    route030: { path: '/flow/steps/a/onError', sourcePath: '/flow/steps/a', role: 'error', targetKind: 'step', target: 'b' } } }));
+  await event(edge, 'click');
+  expect(edge.getAttribute('aria-label')).toContain('On error');
+  expect(document.querySelector('[role="tooltip"]')?.textContent).toContain('fails');
+});
+
+it('stops a queued arrival short of the block and marks the queue notch on its border', async () => {
+  const hit = await mount(data({ queued: true, route: { kind: 'orthogonal', steps: [] } }));
+  expect(hit.querySelector('.agsdl-edge-queue')).not.toBeNull();
+  expect(hit.querySelector('path.react-flow__edge-path')?.getAttribute('d')).toEndWith('L0 92');
+  await mount(data({ route: { kind: 'orthogonal', steps: [] } }));
+  expect(document.querySelector('.agsdl-edge-queue')).toBeNull();
+});

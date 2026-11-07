@@ -1,0 +1,85 @@
+{
+  "description": "The flow's onError handles a top-level step without its own; a failure of the handler reaches no handler and fails the run.",
+  "document": {
+    "contract": "agsdl-0.3.0",
+    "id": "flow-error",
+    "agents": {
+      "dev": {
+        "harness": "example",
+        "permissions": "workspace"
+      },
+      "ops": {
+        "harness": "example",
+        "permissions": "read-only"
+      }
+    },
+    "flow": {
+      "entry": "plan",
+      "steps": {
+        "plan": {
+          "type": "agent",
+          "agent": "dev",
+          "next": "build"
+        },
+        "build": {
+          "type": "agent",
+          "agent": "dev",
+          "next": []
+        },
+        "report": {
+          "type": "agent",
+          "agent": "ops",
+          "prompt": "Report the failure."
+        }
+      },
+      "onError": "report"
+    }
+  },
+  "entry": {
+    "prompt": "Start."
+  },
+  "timeline": [
+    {
+      "work": "plan",
+      "returns": {
+        "text": "Plan."
+      }
+    },
+    {
+      "work": "build",
+      "fails": "HARNESS_REFUSED"
+    },
+    {
+      "work": "report",
+      "fails": "AGENT_FAILED"
+    }
+  ],
+  "expect": {
+    "run": "failed",
+    "starts": {
+      "plan": 1,
+      "build": 1,
+      "report": 1
+    },
+    "messages": [
+      {
+        "to": "report",
+        "resources": {
+          "error": {
+            "code": "HARNESS_REFUSED"
+          }
+        }
+      }
+    ],
+    "failures": [
+      {
+        "step": "build",
+        "code": "HARNESS_REFUSED"
+      },
+      {
+        "step": "report",
+        "code": "AGENT_FAILED"
+      }
+    ]
+  }
+}

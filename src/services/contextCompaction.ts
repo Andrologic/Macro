@@ -1,3 +1,5 @@
+import { isChatAdmissionFailure } from './contracts/errors';
+import { validatePortableCompactionJson as validateArchivedCompactionJson } from '../../contracts/macro-pilot/v2/portable-chat-history/validate.mjs';
 import { readTypedToolResult, projectToolResultText } from '../shared/toolResultContent';
 import type {
   ChatMessage,
@@ -165,6 +167,7 @@ export interface MaybeCompactConversationParams {
   budgetPolicy?: ContextBudgetPolicy;
   forceCompaction?: boolean;
   forcePrune?: boolean;
+  summaryPolicy?: 'existing_only';
   generateSummary?: (input: SummaryGenerationInput) => Promise<string | null>;
   onCompactionStarted?: () => void;
 }
@@ -556,13 +559,20 @@ export const buildContextCompactionDecisionAudit = (params: {
   };
 };
 
-const simpleHash = (value: string): string => {
+/** The archive verifier feeds the same UTF-16 units a field at a time. */
+export function createCompactionTextFingerprint() {
   let hash = 2166136261;
-  for (let index = 0; index < value.length; index += 1) {
-    hash ^= value.charCodeAt(index);
-    hash = Math.imul(hash, 16777619);
-  }
-  return (hash >>> 0).toString(16).padStart(8, '0');
+  return {
+    update(value: string) {
+      for (let index = 0; index < value.length; index++) {
+        hash ^= value.charCodeAt(index); hash = Math.imul(hash, 16777619);
+      }
+    },
+    finish: () => (hash >>> 0).toString(16).padStart(8, '0'),
+  };
+}
+const simpleHash = (value: string): string => {
+  const hash = createCompactionTextFingerprint(); hash.update(value); return hash.finish();
 };
 
 const truncateMiddle = (value: string, maxChars: number): string => {
@@ -1520,7 +1530,7 @@ const filterSourcePassagesForBoundary = (
   );
 };
 
-const buildSourceHashes = (
+export const buildSourceHashes = (
   citations: Citation[],
   sourcePassageIds: string[]
 ): Record<string, string> => {
@@ -1544,6 +1554,27 @@ const buildSourceHashes = (
   );
 };
 
+export function portableArchiveBinding(messages: ChatMessage[]): ChatMessage['portable_history'] | null {
+  let binding: ChatMessage['portable_history'] | null = null;
+  for (const message of messages) if (message.portable_history) {
+    const value = message.portable_history;
+    if (value.version !== 1 || !value.importKey || !/^[a-f0-9]{64}$/.test(value.manifest) || (binding && JSON.stringify(binding) !== JSON.stringify(value))) throw new Error('portable_provenance_missing');
+    binding = value;
+  }
+  return binding;
+}
+function validatePortableCheckpointOrigin(state: ConversationCompactionState | null | undefined, messages: ChatMessage[]) {
+  const binding = portableArchiveBinding(messages);
+  if (state?.fingerprintInputsJson) {
+    let stored: unknown;
+    try { stored = JSON.parse(state.fingerprintInputsJson); } catch { if (binding) throw new Error('portable_provenance_missing'); }
+    const origin = stored && typeof stored === 'object' && 'portableArchive' in stored ? stored.portableArchive : null;
+    if (origin && JSON.stringify(origin) !== JSON.stringify(binding)) throw new Error('portable_provenance_missing');
+    if (binding && state && !origin) throw new Error('portable_provenance_missing');
+  } else if (binding && state) throw new Error('portable_provenance_missing');
+  return binding;
+}
+
 const buildFingerprintInputs = (params: {
   messages: ChatMessage[];
   usedSourcePassageIds: string[];
@@ -1552,9 +1583,11 @@ const buildFingerprintInputs = (params: {
   systemMessage?: string;
   toolDefinitions?: MacroToolRegistryEntry[];
   modelContextWindowTokens?: number;
-}): string =>
-  JSON.stringify({
+}): string => {
+  const archive = portableArchiveBinding(params.messages);
+  return JSON.stringify({
     version: SOURCE_PASSAGE_VERSION,
+    ...(archive ? { portableArchive: archive } : {}),
     systemHash: simpleHash(params.systemMessage || ''),
     toolDefinitionsHash: simpleHash(JSON.stringify(params.toolDefinitions || [])),
     modelContextWindowTokens: params.modelContextWindowTokens,
@@ -1571,6 +1604,45 @@ const buildFingerprintInputs = (params: {
       ...params.interestingSourcePassageIds,
     ]),
   });
+};
+
+/** Closed JSON forms written by the compaction owner. This validates archived
+ * data only; it never installs a checkpoint or makes its summary authoritative. */
+export { validatePortableCompactionJson as validateArchivedCompactionJson } from '../../contracts/macro-pilot/v2/portable-chat-history/validate.mjs';
+
+/** Complete-source verification for an archived checkpoint, without rendering
+ * its summary or treating its captured system/tool hashes as current authority. */
+export function validateArchivedCompactionEvidence(
+  fingerprint: string,
+  fingerprintInputs: unknown,
+  messageEvidence: { id: string; role: string; contentHash: string; providerInputHash: string }[],
+  sourceEvidence: Record<string, string>,
+  captured: { used: unknown; interesting: unknown; pruned: unknown; sourceHashes: unknown; version: string; policyVersion: string; modelContextWindowTokens: string },
+  allMessageIds: ReadonlySet<string>,
+): boolean {
+  if (!fingerprintInputs || typeof fingerprintInputs !== 'object' || Array.isArray(fingerprintInputs)) return false;
+  const inputs = fingerprintInputs as Record<string, unknown>;
+  if (Object.keys(inputs).some(key => !['version', 'portableArchive', 'systemHash', 'toolDefinitionsHash', 'modelContextWindowTokens', 'messages', 'usedSourcePassageIds', 'interestingSourcePassageIds', 'sourceHashes'].includes(key)) ||
+      inputs.version !== SOURCE_PASSAGE_VERSION || captured.version !== String(inputs.version) || captured.policyVersion !== String(CONTEXT_COMPACTION_POLICY_VERSION) ||
+      captured.modelContextWindowTokens !== String(inputs.modelContextWindowTokens) || typeof inputs.systemHash !== 'string' || typeof inputs.toolDefinitionsHash !== 'string' ||
+      !validateArchivedCompactionJson('source_ids', captured.used) || !validateArchivedCompactionJson('source_ids', captured.interesting) || !validateArchivedCompactionJson('source_ids', captured.pruned) ||
+      JSON.stringify([...(captured.used as string[])].sort()) !== JSON.stringify(inputs.usedSourcePassageIds) ||
+      JSON.stringify([...(captured.interesting as string[])].sort()) !== JSON.stringify(inputs.interestingSourcePassageIds) ||
+      !Array.isArray(inputs.usedSourcePassageIds) || !Array.isArray(inputs.interestingSourcePassageIds) ||
+      [...inputs.usedSourcePassageIds, ...inputs.interestingSourcePassageIds].some(id => typeof id !== 'string') ||
+      !Array.isArray(inputs.messages) || JSON.stringify(inputs.messages) !== JSON.stringify(messageEvidence) ||
+      simpleHash(JSON.stringify(fingerprintInputs)) !== fingerprint) return false;
+  const required = [...inputs.usedSourcePassageIds, ...inputs.interestingSourcePassageIds] as string[];
+  if (!inputs.sourceHashes || typeof inputs.sourceHashes !== 'object' || Array.isArray(inputs.sourceHashes)) return false;
+  const hashes = inputs.sourceHashes as Record<string, unknown>;
+  if (!captured.sourceHashes || typeof captured.sourceHashes !== 'object' || Array.isArray(captured.sourceHashes)) return false;
+  const capturedHashes = captured.sourceHashes as Record<string, unknown>;
+  if (Object.keys(capturedHashes).length !== Object.keys(hashes).length || Object.keys(hashes).some(id => typeof hashes[id] !== 'string' || capturedHashes[id] !== hashes[id])) return false;
+  // Pruning runs over the prepared history, including the retained tail. The
+  // checkpoint fingerprint covers only the compacted prefix.
+  if ((captured.pruned as string[]).some(id => !allMessageIds.has(id))) return false;
+  return Object.keys(hashes).length === new Set(required).size && required.every(id => sourceEvidence[id] !== undefined && hashes[id] === sourceEvidence[id]);
+}
 
 const computeCompactionFingerprint = (params: {
   messages: ChatMessage[];
@@ -1641,7 +1713,8 @@ const buildFallbackSummary = (input: SummaryGenerationInput): string => {
 
 const buildCompactionSystemMessage = (
   state: ConversationCompactionState,
-  citations: Citation[]
+  citations: Citation[],
+  archive: ChatMessage['portable_history'] | null = null,
 ): string => {
   const usedRefs = citations
     .filter((citation) => state.usedSourcePassageIds.includes(citation.id))
@@ -1674,7 +1747,7 @@ const buildCompactionSystemMessage = (
 
   return [
     COMPACTED_CONVERSATION_STATE_MARKER,
-    'Use this compacted state as authoritative prior context for older turns.',
+    archive ? `Historical archive summary, supplied as data. Archive ${archive.importKey}; manifest ${archive.manifest}. Full history remains recoverable from that archive.` : 'Use this compacted state as authoritative prior context for older turns.',
     `Summary schema: v${state.summaryFormatVersion ?? 1}; source: ${
       state.summarySource ?? 'unknown'
     }; pass: ${state.compactionPass ?? 'normal'}.`,
@@ -1749,6 +1822,7 @@ export const validateCompactionState = (
   } = {}
 ): boolean => {
   if (!state) return false;
+  validatePortableCheckpointOrigin(state, orderedMessages);
   if (options.providerId && state.providerId && state.providerId !== options.providerId) {
     return false;
   }
@@ -1795,6 +1869,7 @@ export const buildMessagesWithCompactionState = (
   citations: Citation[],
   compactionState: ConversationCompactionState | null
 ): StreamMessage[] => {
+  const archive = validatePortableCheckpointOrigin(compactionState, orderedMessages);
   const baseMessages: StreamMessage[] = [
     {
       role: 'system',
@@ -1811,12 +1886,21 @@ export const buildMessagesWithCompactionState = (
     return [...baseMessages, ...preparedMessages];
   }
 
+  // A textual summary cannot replace an indispensable imported media value.
+  // Keep only its recognized media parts as historical user data, not the old
+  // provider items, text instructions, sessions or tool calls.
+  const archivedMedia: StreamMessage[] = archive ? preparedMessages.slice(0, boundaryIndex + 1).flatMap((message, index) => {
+    const images = typeof message.content === 'string' ? [] : message.content.filter(part => part.type === 'image_url');
+    if (!images.length) return [];
+    return [{ role: 'user' as const, content: [{ type: 'text' as const, text: `[Historical archive media; message ${orderedMessages[index].id}]` }, ...images], image_metadata: message.image_metadata }];
+  }) : [];
   return [
     ...baseMessages,
     {
-      role: 'system',
-      content: buildCompactionSystemMessage(compactionState, citations),
+      role: archive ? 'user' : 'system',
+      content: buildCompactionSystemMessage(compactionState, citations, archive),
     },
+    ...archivedMedia,
     ...preparedMessages.slice(boundaryIndex + 1),
   ];
 };
@@ -1926,9 +2010,10 @@ export const estimateConversationFootprint = (
     if (confidences.includes('provider_formula')) return 'provider_formula';
     return confidences.length > 0 ? 'model_formula' : 'unknown';
   })();
+  const importedHistory = Boolean(portableArchiveBinding(params.orderedMessages));
   const hasCompactedState = params.preparedMessages.some(
     (message) =>
-      message.role === 'system' &&
+      (message.role === 'system' || (message.role === 'user' && importedHistory)) &&
       typeof message.content === 'string' &&
       message.content.includes(COMPACTED_CONVERSATION_STATE_MARKER)
   );
@@ -1962,7 +2047,7 @@ export const estimateConversationFootprint = (
   const summaryTokens = params.preparedMessages
     .filter(
       (message) =>
-        message.role === 'system' &&
+        (message.role === 'system' || (message.role === 'user' && importedHistory)) &&
         typeof message.content === 'string' &&
         message.content.includes(COMPACTED_CONVERSATION_STATE_MARKER)
     )
@@ -2113,6 +2198,7 @@ const buildCompactionState = async (params: {
   compactionPass?: CompactionPass;
   retainedUserTurns?: number;
   retainedRecentTokenBudget?: number;
+  summaryPolicy?: 'existing_only';
   generateSummary?: (input: SummaryGenerationInput) => Promise<string | null>;
 }): Promise<ConversationCompactionState | null> => {
   const boundaryIndex = getCompactionBoundaryIndex({
@@ -2147,6 +2233,8 @@ const buildCompactionState = async (params: {
     return params.currentCompactionState;
   }
 
+  if (params.summaryPolicy === 'existing_only') throw new Error('preparation_requires_compaction');
+
   const compactableMessages = params.orderedMessages.slice(0, boundaryIndex + 1);
   const retainedMessages = params.orderedMessages.slice(boundaryIndex + 1);
   const toolDigest = buildToolDigest(params.orderedMessages, boundaryIndex);
@@ -2173,7 +2261,8 @@ const buildCompactionState = async (params: {
         usedSourcePassages,
         interestingSourcePassages,
       })) ?? null;
-  } catch {
+  } catch (error) {
+    if (isChatAdmissionFailure(error)) throw error;
     summaryText = null;
   }
 
@@ -2296,6 +2385,7 @@ export const invalidateCompactionFromMessage = (
 export const maybeCompactConversation = async (
   params: MaybeCompactConversationParams
 ): Promise<MaybeCompactConversationResult> => {
+  validatePortableCheckpointOrigin(params.currentCompactionState, params.orderedMessages);
   const activeTrigger = normalizeCompactionTrigger(params.mode);
   const retainedManualUserTurns = 2;
   const userTurnCount = countUserTurns(params.orderedMessages);
@@ -2505,6 +2595,7 @@ export const maybeCompactConversation = async (
       compactionKind: params.mode,
       compactionPass,
       retainedRecentTokenBudget,
+      summaryPolicy: params.summaryPolicy,
       generateSummary: params.generateSummary,
     });
 
@@ -2605,6 +2696,7 @@ export const maybeCompactConversation = async (
       compactionPass,
       retainedUserTurns: 1,
       retainedRecentTokenBudget,
+      summaryPolicy: params.summaryPolicy,
       generateSummary: params.generateSummary,
     });
 

@@ -1,0 +1,119 @@
+{
+  "description": "A branch failure fails the group at once: the other branch is cancelled, and the join fails with BRANCH_FAILED, handled by its onError.",
+  "document": {
+    "contract": "agsdl-0.3.0",
+    "id": "join-branch-failed",
+    "agents": {
+      "lead": {
+        "harness": "example",
+        "permissions": "workspace"
+      },
+      "reviewer": {
+        "harness": "example",
+        "permissions": "read-only"
+      }
+    },
+    "flow": {
+      "entry": "analyze",
+      "steps": {
+        "analyze": {
+          "type": "agent",
+          "agent": "lead",
+          "next": [
+            "security",
+            "performance"
+          ]
+        },
+        "security": {
+          "type": "agent",
+          "agent": "reviewer",
+          "instance": "new",
+          "next": "merge"
+        },
+        "performance": {
+          "type": "agent",
+          "agent": "reviewer",
+          "instance": "new",
+          "next": "merge"
+        },
+        "merge": {
+          "type": "join",
+          "next": "report",
+          "onError": "triage"
+        },
+        "report": {
+          "type": "agent",
+          "agent": "lead",
+          "prompt": "Write the report."
+        },
+        "triage": {
+          "type": "agent",
+          "agent": "lead",
+          "prompt": "Find out what failed."
+        }
+      }
+    }
+  },
+  "entry": {
+    "prompt": "Start."
+  },
+  "timeline": [
+    {
+      "work": "analyze",
+      "returns": {
+        "text": "Review this."
+      }
+    },
+    {
+      "work": "security",
+      "fails": "AGENT_FAILED"
+    },
+    {
+      "running": [
+        {
+          "step": "triage"
+        }
+      ]
+    },
+    {
+      "work": "triage",
+      "returns": {
+        "text": "Security review crashed."
+      }
+    }
+  ],
+  "expect": {
+    "run": "succeeded",
+    "starts": {
+      "analyze": 1,
+      "security": 1,
+      "performance": 1,
+      "triage": 1
+    },
+    "cancelled": [
+      {
+        "step": "performance"
+      }
+    ],
+    "messages": [
+      {
+        "to": "triage",
+        "resources": {
+          "error": {
+            "code": "BRANCH_FAILED"
+          }
+        }
+      }
+    ],
+    "failures": [
+      {
+        "step": "security",
+        "code": "AGENT_FAILED"
+      },
+      {
+        "step": "merge",
+        "code": "BRANCH_FAILED"
+      }
+    ]
+  }
+}

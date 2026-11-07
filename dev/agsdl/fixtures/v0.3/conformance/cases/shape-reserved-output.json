@@ -1,0 +1,39 @@
+{
+  "contract": "agsdl-0.3.0",
+  "id": "shape-reserved-output",
+  "agents": {
+    "a": {
+      "harness": "example",
+      "permissions": "full"
+    }
+  },
+  "compositions": {
+    "c": {
+      "entry": "s",
+      "steps": {
+        "s": {
+          "type": "agent",
+          "agent": "a",
+          "next": {
+            "output": "step"
+          }
+        }
+      },
+      "outputs": [
+        "step"
+      ]
+    }
+  },
+  "flow": {
+    "entry": "c",
+    "steps": {
+      "c": {
+        "type": "compose",
+        "composition": "c",
+        "next": {
+          "step": []
+        }
+      }
+    }
+  }
+}

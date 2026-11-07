@@ -397,6 +397,63 @@
       "families": [
         "db"
       ],
+      "name": "ConversationActionInput",
+      "origin": "macro_lib::db::conversation_management::ConversationActionInput",
+      "path": "ConversationActionInput.ts"
+    },
+    {
+      "families": [
+        "db"
+      ],
+      "name": "ConversationActionResult",
+      "origin": "macro_lib::db::conversation_management::ConversationActionResult",
+      "path": "ConversationActionResult.ts"
+    },
+    {
+      "families": [
+        "db"
+      ],
+      "name": "ConversationCatalogAnchor",
+      "origin": "macro_lib::db::models::ConversationCatalogAnchor",
+      "path": "ConversationCatalogAnchor.ts"
+    },
+    {
+      "families": [
+        "db"
+      ],
+      "name": "ConversationCatalogPage",
+      "origin": "macro_lib::db::models::ConversationCatalogPage",
+      "path": "ConversationCatalogPage.ts"
+    },
+    {
+      "families": [
+        "db"
+      ],
+      "name": "ConversationCatalogPageInput",
+      "origin": "macro_lib::db::models::ConversationCatalogPageInput",
+      "path": "ConversationCatalogPageInput.ts"
+    },
+    {
+      "families": [
+        "db"
+      ],
+      "name": "ConversationCatalogToken",
+      "origin": "macro_lib::db::models::ConversationCatalogToken",
+      "path": "ConversationCatalogToken.ts"
+    },
+    {
+      "families": [
+        "db"
+      ],
+      "name": "ConversationCatalogVersionInput",
+      "origin": "macro_lib::db::models::ConversationCatalogVersionInput",
+      "path": "ConversationCatalogVersionInput.ts"
+    },
+    {
+      "families": [
+        "db",
+        "pilot_files"
+      ],
       "name": "ConversationCitation",
       "origin": "macro_lib::db::models::ConversationCitation",
       "path": "ConversationCitation.ts"
@@ -413,6 +470,86 @@
       "families": [
         "db"
       ],
+      "name": "ConversationContentAnchor",
+      "origin": "macro_lib::db::models::ConversationContentAnchor",
+      "path": "ConversationContentAnchor.ts"
+    },
+    {
+      "families": [
+        "db"
+      ],
+      "name": "ConversationContentDescriptor",
+      "origin": "macro_lib::db::models::ConversationContentDescriptor",
+      "path": "ConversationContentDescriptor.ts"
+    },
+    {
+      "families": [
+        "db"
+      ],
+      "name": "ConversationContentItem",
+      "origin": "macro_lib::db::models::ConversationContentItem",
+      "path": "ConversationContentItem.ts"
+    },
+    {
+      "families": [
+        "db"
+      ],
+      "name": "ConversationContentMetadata",
+      "origin": "macro_lib::db::models::ConversationContentMetadata",
+      "path": "ConversationContentMetadata.ts"
+    },
+    {
+      "families": [
+        "db"
+      ],
+      "name": "ConversationContentMetadataInput",
+      "origin": "macro_lib::db::models::ConversationContentMetadataInput",
+      "path": "ConversationContentMetadataInput.ts"
+    },
+    {
+      "families": [
+        "db"
+      ],
+      "name": "ConversationContentMetadataPage",
+      "origin": "macro_lib::db::models::ConversationContentMetadataPage",
+      "path": "ConversationContentMetadataPage.ts"
+    },
+    {
+      "families": [
+        "db"
+      ],
+      "name": "ConversationContentOpening",
+      "origin": "macro_lib::db::models::ConversationContentOpening",
+      "path": "ConversationContentOpening.ts"
+    },
+    {
+      "families": [
+        "db"
+      ],
+      "name": "ConversationContentToken",
+      "origin": "macro_lib::db::models::ConversationContentToken",
+      "path": "ConversationContentToken.ts"
+    },
+    {
+      "families": [
+        "db"
+      ],
+      "name": "ConversationContentWindow",
+      "origin": "macro_lib::db::models::ConversationContentWindow",
+      "path": "ConversationContentWindow.ts"
+    },
+    {
+      "families": [
+        "db"
+      ],
+      "name": "ConversationContentWindowInput",
+      "origin": "macro_lib::db::models::ConversationContentWindowInput",
+      "path": "ConversationContentWindowInput.ts"
+    },
+    {
+      "families": [
+        "db"
+      ],
       "name": "ConversationGoal",
       "origin": "macro_lib::db::conversation_goals::ConversationGoal",
       "path": "ConversationGoal.ts"
@@ -424,6 +561,14 @@
       "name": "ConversationGoalAudit",
       "origin": "macro_lib::db::conversation_goals::ConversationGoalAudit",
       "path": "ConversationGoalAudit.ts"
+    },
+    {
+      "families": [
+        "db"
+      ],
+      "name": "ConversationMetadata",
+      "origin": "macro_lib::db::conversation_management::ConversationMetadata",
+      "path": "ConversationMetadata.ts"
     },
     {
       "families": [
@@ -1557,6 +1702,30 @@
     },
     {
       "families": [
+        "host_telemetry"
+      ],
+      "name": "HostTelemetryAvailability",
+      "origin": "macro_lib::host_telemetry::HostTelemetryAvailability",
+      "path": "HostTelemetryAvailability.ts"
+    },
+    {
+      "families": [
+        "host_telemetry"
+      ],
+      "name": "HostTelemetryDto",
+      "origin": "macro_lib::host_telemetry::HostTelemetryDto",
+      "path": "HostTelemetryDto.ts"
+    },
+    {
+      "families": [
+        "host_telemetry"
+      ],
+      "name": "HostTelemetryReason",
+      "origin": "macro_lib::host_telemetry::HostTelemetryReason",
+      "path": "HostTelemetryReason.ts"
+    },
+    {
+      "families": [
         "execution"
       ],
       "name": "HostToolInvocation",
@@ -1852,7 +2021,8 @@
     },
     {
       "families": [
-        "db"
+        "db",
+        "pilot_files"
       ],
       "name": "Message",
       "origin": "macro_lib::db::models::Message",
@@ -1913,6 +2083,254 @@
       "name": "PersistedEffect",
       "origin": "macro_lib::db::agsdl_execution::PersistedEffect",
       "path": "PersistedEffect.ts"
+    },
+    {
+      "families": [
+        "pilot_files"
+      ],
+      "name": "PilotAttachmentMetadata",
+      "origin": "macro_lib::db::pilot_files::PilotAttachmentMetadata",
+      "path": "PilotAttachmentMetadata.ts"
+    },
+    {
+      "families": [
+        "pilot_files"
+      ],
+      "name": "PilotCitationScope",
+      "origin": "macro_lib::db::pilot_files::PilotCitationScope",
+      "path": "PilotCitationScope.ts"
+    },
+    {
+      "families": [
+        "pilot_files"
+      ],
+      "name": "PilotConversationKind",
+      "origin": "macro_lib::db::pilot_files::PilotConversationKind",
+      "path": "PilotConversationKind.ts"
+    },
+    {
+      "families": [
+        "pilot_files"
+      ],
+      "name": "PilotFileAuthorizeInput",
+      "origin": "macro_lib::db::pilot_files::PilotFileAuthorizeInput",
+      "path": "PilotFileAuthorizeInput.ts"
+    },
+    {
+      "families": [
+        "pilot_files"
+      ],
+      "name": "PilotFileBeginInput",
+      "origin": "macro_lib::db::pilot_files::PilotFileBeginInput",
+      "path": "PilotFileBeginInput.ts"
+    },
+    {
+      "families": [
+        "pilot_files"
+      ],
+      "name": "PilotFileChunkInput",
+      "origin": "macro_lib::db::pilot_files::PilotFileChunkInput",
+      "path": "PilotFileChunkInput.ts"
+    },
+    {
+      "families": [
+        "pilot_files"
+      ],
+      "name": "PilotFileContentState",
+      "origin": "macro_lib::db::pilot_files::PilotFileContentState",
+      "path": "PilotFileContentState.ts"
+    },
+    {
+      "families": [
+        "pilot_files"
+      ],
+      "name": "PilotFileContextRef",
+      "origin": "macro_lib::db::pilot_files::PilotFileContextRef",
+      "path": "PilotFileContextRef.ts"
+    },
+    {
+      "families": [
+        "pilot_files"
+      ],
+      "name": "PilotFileContextState",
+      "origin": "macro_lib::db::pilot_files::PilotFileContextState",
+      "path": "PilotFileContextState.ts"
+    },
+    {
+      "families": [
+        "pilot_files"
+      ],
+      "name": "PilotFileGuard",
+      "origin": "macro_lib::db::pilot_files::PilotFileGuard",
+      "path": "PilotFileGuard.ts"
+    },
+    {
+      "families": [
+        "pilot_files"
+      ],
+      "name": "PilotFileImage",
+      "origin": "macro_lib::db::pilot_files::PilotFileImage",
+      "path": "PilotFileImage.ts"
+    },
+    {
+      "families": [
+        "pilot_files"
+      ],
+      "name": "PilotFileRead",
+      "origin": "macro_lib::db::pilot_files::PilotFileRead",
+      "path": "PilotFileRead.ts"
+    },
+    {
+      "families": [
+        "pilot_files"
+      ],
+      "name": "PilotFileReadInput",
+      "origin": "macro_lib::db::pilot_files::PilotFileReadInput",
+      "path": "PilotFileReadInput.ts"
+    },
+    {
+      "families": [
+        "pilot_files"
+      ],
+      "name": "PilotFileReceipt",
+      "origin": "macro_lib::db::pilot_files::PilotFileReceipt",
+      "path": "PilotFileReceipt.ts"
+    },
+    {
+      "families": [
+        "pilot_files"
+      ],
+      "name": "PilotFileRef",
+      "origin": "macro_lib::db::pilot_files::PilotFileRef",
+      "path": "PilotFileRef.ts"
+    },
+    {
+      "families": [
+        "pilot_files"
+      ],
+      "name": "PilotFileScope",
+      "origin": "macro_lib::db::pilot_files::PilotFileScope",
+      "path": "PilotFileScope.ts"
+    },
+    {
+      "families": [
+        "pilot_files"
+      ],
+      "name": "PilotFileSource",
+      "origin": "macro_lib::db::pilot_files::PilotFileSource",
+      "path": "PilotFileSource.ts"
+    },
+    {
+      "families": [
+        "pilot_files"
+      ],
+      "name": "PilotFileSourceKind",
+      "origin": "macro_lib::db::pilot_files::PilotFileSourceKind",
+      "path": "PilotFileSourceKind.ts"
+    },
+    {
+      "families": [
+        "pilot_files"
+      ],
+      "name": "PilotFileState",
+      "origin": "macro_lib::db::pilot_files::PilotFileState",
+      "path": "PilotFileState.ts"
+    },
+    {
+      "families": [
+        "pilot_files"
+      ],
+      "name": "PilotFileTransferInput",
+      "origin": "macro_lib::db::pilot_files::PilotFileTransferInput",
+      "path": "PilotFileTransferInput.ts"
+    },
+    {
+      "families": [
+        "pilot_files"
+      ],
+      "name": "PilotInspectAttachmentsInput",
+      "origin": "macro_lib::db::pilot_files::PilotInspectAttachmentsInput",
+      "path": "PilotInspectAttachmentsInput.ts"
+    },
+    {
+      "families": [
+        "pilot_files"
+      ],
+      "name": "PilotPrepareSendInput",
+      "origin": "macro_lib::db::pilot_files::PilotPrepareSendInput",
+      "path": "PilotPrepareSendInput.ts"
+    },
+    {
+      "families": [
+        "pilot_files"
+      ],
+      "name": "PilotPreparedSend",
+      "origin": "macro_lib::db::pilot_files::PilotPreparedSend",
+      "path": "PilotPreparedSend.ts"
+    },
+    {
+      "families": [
+        "db"
+      ],
+      "name": "PilotReflectionMessage",
+      "origin": "macro_lib::db::pilot_reflections::PilotReflectionMessage",
+      "path": "PilotReflectionMessage.ts"
+    },
+    {
+      "families": [
+        "db"
+      ],
+      "name": "PilotReflectionMessageRead",
+      "origin": "macro_lib::db::pilot_reflections::PilotReflectionMessageRead",
+      "path": "PilotReflectionMessageRead.ts"
+    },
+    {
+      "families": [
+        "db"
+      ],
+      "name": "PilotReflectionToolAnchor",
+      "origin": "macro_lib::db::pilot_reflections::PilotReflectionToolAnchor",
+      "path": "PilotReflectionToolAnchor.ts"
+    },
+    {
+      "families": [
+        "db"
+      ],
+      "name": "PilotReflectionToolStatus",
+      "origin": "macro_lib::db::pilot_reflections::PilotReflectionToolStatus",
+      "path": "PilotReflectionToolStatus.ts"
+    },
+    {
+      "families": [
+        "pilot_files"
+      ],
+      "name": "PilotSendMarkInput",
+      "origin": "macro_lib::db::pilot_files::PilotSendMarkInput",
+      "path": "PilotSendMarkInput.ts"
+    },
+    {
+      "families": [
+        "pilot_files"
+      ],
+      "name": "PilotSendReadInput",
+      "origin": "macro_lib::db::pilot_files::PilotSendReadInput",
+      "path": "PilotSendReadInput.ts"
+    },
+    {
+      "families": [
+        "pilot_files"
+      ],
+      "name": "PilotSendReceipt",
+      "origin": "macro_lib::db::pilot_files::PilotSendReceipt",
+      "path": "PilotSendReceipt.ts"
+    },
+    {
+      "families": [
+        "pilot_files"
+      ],
+      "name": "PilotSendState",
+      "origin": "macro_lib::db::pilot_files::PilotSendState",
+      "path": "PilotSendState.ts"
     },
     {
       "families": [

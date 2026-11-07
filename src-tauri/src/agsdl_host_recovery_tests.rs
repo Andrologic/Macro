@@ -518,7 +518,7 @@ async fn recovery_retries_a_transient_sql_failure_without_hiding_b_or_replaying_
         .unwrap();
     sqlx::query("CREATE TRIGGER fail_resume BEFORE UPDATE ON engine_systems WHEN NEW.system_id IN (SELECT system_id FROM recovery_fault) BEGIN SELECT RAISE(FAIL, 'temporary failure'); END").execute(&pool).await.unwrap();
     let database = DbPool::default();
-    database.set_ready(pool.clone());
+    database.set_ready(pool.clone()).await.unwrap();
     let host = host();
     let supervisor = tokio::spawn(reattach_retained(
         database,
@@ -583,7 +583,9 @@ async fn recovery_retries_database_initialization_and_stays_fenced_after_retirem
         .await
         .unwrap();
     let database = DbPool::default();
-    database.set_failed("temporary initialization failure");
+    database
+        .set_failed("temporary initialization failure")
+        .await;
     let host = host();
     let supervisor = tokio::spawn(reattach_retained(
         database.clone(),
@@ -592,7 +594,7 @@ async fn recovery_retries_database_initialization_and_stays_fenced_after_retirem
         Duration::from_millis(10),
     ));
     tokio::time::sleep(Duration::from_millis(20)).await;
-    database.set_ready(pool.clone());
+    database.set_ready(pool.clone()).await.unwrap();
     let job = next(&host).await;
     close(&host);
     // A reply from the retired physical generation cannot attach or rotate ownership.
@@ -622,7 +624,7 @@ async fn recovery_keeps_an_incompatible_capture_closed_without_repeated_compilat
         .await
         .unwrap();
     let database = DbPool::default();
-    database.set_ready(pool.clone());
+    database.set_ready(pool.clone()).await.unwrap();
     let host = host();
     let supervisor = tokio::spawn(reattach_retained(
         database,
@@ -749,7 +751,7 @@ async fn recovery_retries_a_full_compiler_mailbox_in_the_same_generation() {
         jobs.push(next(&host).await);
     }
     let database = DbPool::default();
-    database.set_ready(pool);
+    database.set_ready(pool).await.unwrap();
     let supervisor = tokio::spawn(reattach_retained(
         database,
         host.clone(),
@@ -795,7 +797,7 @@ async fn recovery_survives_a_real_compile_timeout_and_late_reply_before_resuming
     let a = &receipts[0];
     let b = &receipts[1];
     let database = DbPool::default();
-    database.set_ready(pool.clone());
+    database.set_ready(pool.clone()).await.unwrap();
     let host = host();
     let supervisor = tokio::spawn(reattach_retained(
         database,

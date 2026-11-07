@@ -150,7 +150,7 @@ for (const runtime of ['bridge', 'native'] as const) {
       let state: import('../types').ConversationRuntimeState = { ...EMPTY_CONVERSATION_RUNTIME, phase: 'streaming', sessionId, turnId: 'turn', assistantMessageId: 'assistant', abortController: controller };
       const settled = mock(() => {});
       const owner = createChatTurnRuntime({ state: { read: () => state, project: (_id, next) => { state = next ?? EMPTY_CONVERSATION_RUNTIME; }, isDeleted: () => false }, cancelTransport: async () => {}, settled });
-      const run = runAssistantStream({ sessionId, providerId: 'custom', providerType: 'custom', modelId: 'fixture', baseUrl: 'https://example.invalid', messages: [], signal: controller.signal,
+      const run = runAssistantStream({ providerAdmission: { kind: 'utility' }, sessionId, providerId: 'custom', providerType: 'custom', modelId: 'fixture', baseUrl: 'https://example.invalid', messages: [], signal: controller.signal,
         onGenerationAttemptProgress: attempt => { if (phase === 'abort' && attempt.rawText) controller.abort(); },
         lifecycle: { appendTokenChunk() {}, onComplete: () => { state = EMPTY_CONVERSATION_RUNTIME; }, onError: () => { state = { ...state, phase: 'error', abortController: null }; }, onAbort: () => { state = EMPTY_CONVERSATION_RUNTIME; } }, streamChatImpl: streamChat,
       });

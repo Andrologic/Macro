@@ -1,0 +1,21 @@
+{
+  "contract_version": "2.0",
+  "type": "request",
+  "request_id": "request-demo",
+  "account_id": "account-demo",
+  "operation": "attachment.begin",
+  "body": {
+    "ref": {
+      "instance_id": "instance-demo",
+      "kind": "conversation",
+      "conversation_id": "conversation-demo"
+    },
+    "intent_id": "intent-demo",
+    "batch_id": "batch-demo",
+    "intent_expires_at": "2026-10-10T12:15:00.000Z",
+    "file_name": "sample.txt",
+    "mime_type": "text/plain",
+    "total_bytes": 6,
+    "sha256": "5891b5b522d5df086d0ff0b110fbd9d21bb4fc7163af34d08286a2e846f6be03"
+  }
+}

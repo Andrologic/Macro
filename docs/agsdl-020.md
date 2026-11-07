@@ -1,6 +1,8 @@
 # AgSDL 0.2.0 dans Macro
 
-Les nouveaux systèmes Architect utilisent le contrat publié `agsdl-0.2.0`.
+Ce document décrit l’édition historique `agsdl-0.2.0`. Les nouveaux systèmes
+Architect utilisent désormais [AgSDL 0.3](agsdl-030.md). Les sources 0.2 restent
+conservées dans leur édition.
 Le lecteur provient du tag `v0.2.0`, commit
 `ae478d6203dd1571af064317238fd0a0f7dece75`. Sa licence Apache-2.0,
 sa provenance et ses adaptations navigateur figurent dans

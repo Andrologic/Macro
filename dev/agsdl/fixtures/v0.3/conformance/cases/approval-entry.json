@@ -1,0 +1,38 @@
+{
+  "contract": "agsdl-0.3.0",
+  "id": "approval-entry",
+  "mcpServers": {
+    "releases": {
+      "url": "https://mcp.example.com/releases"
+    }
+  },
+  "agents": {},
+  "flow": {
+    "entry": "approve",
+    "steps": {
+      "approve": {
+        "type": "approval",
+        "title": "Publish?",
+        "next": {
+          "publish": "publish"
+        }
+      },
+      "publish": {
+        "type": "call",
+        "mcp": {
+          "server": "releases",
+          "tool": "publish"
+        },
+        "arguments": {
+          "notes": {
+            "path": [
+              "message",
+              "resources",
+              "notes"
+            ]
+          }
+        }
+      }
+    }
+  }
+}

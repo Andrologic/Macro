@@ -1,0 +1,15 @@
+{
+  "contract_version": "2.0",
+  "type": "response",
+  "request_id": "request-demo",
+  "account_id": "account-demo",
+  "operation": "notification.resolve",
+  "result": {
+    "destination": {
+      "kind": "instance_activity",
+      "instance_id": "instance-demo"
+    },
+    "observed_at": "not-a-date",
+    "expires_at": "2026-01-01T00:15:00Z"
+  }
+}

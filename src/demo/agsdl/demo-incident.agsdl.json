@@ -1,0 +1,305 @@
+{
+  "contract": "agsdl-0.2.0",
+  "id": "demo-incident",
+  "content": {
+    "severity": {
+      "value": "critique",
+      "mediaType": "text/plain"
+    }
+  },
+  "bindings": {
+    "engine": {
+      "contract": {
+        "identity": "macro/agent-engine",
+        "version": "1"
+      },
+      "implementation": {
+        "identity": "macro/desktop",
+        "version": "1"
+      }
+    },
+    "telemetry": {
+      "contract": {
+        "identity": "macro/observability",
+        "version": "1"
+      },
+      "implementation": {
+        "identity": "grafana/http",
+        "version": "1"
+      },
+      "effects": "none"
+    },
+    "classification": {
+      "contract": {
+        "identity": "macro/structured-choice",
+        "version": "1"
+      },
+      "implementation": {
+        "identity": "macro/desktop",
+        "version": "1"
+      },
+      "effects": "none"
+    }
+  },
+  "configurations": {
+    "rapide": {
+      "engine": "engine",
+      "model": {
+        "identity": "claude-haiku-5-5",
+        "version": "1"
+      },
+      "tools": {
+        "telemetry": "telemetry"
+      }
+    },
+    "analyse": {
+      "engine": "engine",
+      "model": {
+        "identity": "claude-sonnet-5-5",
+        "version": "1"
+      },
+      "tools": {
+        "telemetry": "telemetry"
+      }
+    },
+    "analyseApprofondie": {
+      "engine": "engine",
+      "model": {
+        "identity": "claude-opus-5-5",
+        "version": "1"
+      },
+      "tools": {
+        "telemetry": "telemetry"
+      }
+    },
+    "redaction": {
+      "engine": "engine",
+      "model": {
+        "identity": "claude-sonnet-5-5",
+        "version": "1"
+      }
+    }
+  },
+  "agents": {
+    "triage": {
+      "configuration": "rapide",
+      "prompt": [
+        {
+          "value": "Délimiter la période, les utilisateurs concernés et les symptômes observés."
+        }
+      ],
+      "interface": {
+        "results": {
+          "report": {
+            "mediaTypes": [
+              "text/plain"
+            ],
+            "required": true
+          }
+        }
+      }
+    },
+    "investigate": {
+      "configuration": {
+        "select": {
+          "path": [
+            "resources",
+            "severity",
+            "value"
+          ]
+        },
+        "cases": {
+          "standard": "analyse",
+          "critique": "analyseApprofondie"
+        }
+      },
+      "prompt": [
+        {
+          "value": "Comparer les traces avec les métriques. Présenter une hypothèse vérifiable, sans la confondre avec un fait."
+        }
+      ],
+      "interface": {
+        "results": {
+          "report": {
+            "mediaTypes": [
+              "text/plain"
+            ],
+            "required": true
+          }
+        }
+      },
+      "resources": {
+        "severity": {
+          "ref": "severity"
+        }
+      }
+    },
+    "verify": {
+      "configuration": "analyseApprofondie",
+      "prompt": [
+        {
+          "value": "Vérifier l’hypothèse contre les traces. Répondre Confirmée uniquement avec une preuve."
+        }
+      ],
+      "interface": {
+        "results": {
+          "report": {
+            "mediaTypes": [
+              "text/plain"
+            ],
+            "required": true
+          }
+        }
+      }
+    },
+    "conclude": {
+      "configuration": "redaction",
+      "prompt": [
+        {
+          "value": "Résumer la cause, l’impact et les mesures de prévention."
+        }
+      ],
+      "interface": {
+        "results": {
+          "report": {
+            "mediaTypes": [
+              "text/plain"
+            ],
+            "required": true
+          }
+        }
+      }
+    }
+  },
+  "flow": {
+    "entry": "triage",
+    "steps": {
+      "triage": {
+        "type": "agent",
+        "agent": "triage",
+        "next": {
+          "investigate": [
+            "investigate",
+            "collect"
+          ],
+          "escalate": [
+            "conclude"
+          ]
+        },
+        "decision": {
+          "binding": "classification",
+          "choices": [
+            "investigate",
+            "escalate"
+          ]
+        }
+      },
+      "collect": {
+        "type": "call",
+        "binding": "telemetry",
+        "next": [
+          "metrics"
+        ],
+        "arguments": {
+          "interval": {
+            "value": "15m"
+          },
+          "service": {
+            "value": "catalog-api"
+          }
+        }
+      },
+      "metrics": {
+        "type": "prepare",
+        "message": {
+          "prompt": [
+            {
+              "value": "Intégrer les métriques des 15 dernières minutes à l’hypothèse en cours."
+            }
+          ],
+          "resources": {
+            "metrics": {
+              "select": {
+                "path": [
+                  "data"
+                ]
+              },
+              "mediaType": "application/json"
+            }
+          }
+        },
+        "next": [
+          "refocus"
+        ]
+      },
+      "refocus": {
+        "type": "agent",
+        "agent": "investigate",
+        "delivery": "steering",
+        "steers": "investigate"
+      },
+      "investigate": {
+        "type": "agent",
+        "agent": "investigate",
+        "next": [
+          "handoff"
+        ],
+        "maxVisits": 3
+      },
+      "handoff": {
+        "type": "prepare",
+        "message": {
+          "resources": {
+            "report": {
+              "source": {
+                "path": [
+                  "results",
+                  "report"
+                ]
+              }
+            }
+          }
+        },
+        "next": [
+          "verify"
+        ]
+      },
+      "verify": {
+        "type": "agent",
+        "agent": "verify",
+        "next": [
+          "confirmed"
+        ],
+        "maxVisits": 3
+      },
+      "confirmed": {
+        "type": "condition",
+        "test": {
+          "equals": [
+            {
+              "path": [
+                "text"
+              ]
+            },
+            {
+              "value": "Confirmée"
+            }
+          ]
+        },
+        "next": {
+          "true": [
+            "conclude"
+          ],
+          "false": [
+            "investigate"
+          ]
+        }
+      },
+      "conclude": {
+        "type": "agent",
+        "agent": "conclude",
+        "next": []
+      }
+    }
+  }
+}

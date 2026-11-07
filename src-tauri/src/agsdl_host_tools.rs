@@ -469,7 +469,7 @@ async fn invoke_tool(
     let snapshot = repository::read_snapshot(&pool, &request.context.owner.system_start_id).await?;
     let mut registry = exact_json::value(&capture.registry_json)?;
     registry["toolPolicyInput"] = json!({"invocationIdentity":key(&request),"toolId":tool,"bindingJson":request.binding_json,
-        "argumentsJson":request.arguments_json,"mode":mode,"riskLevel":current["riskLevel"],"capturedRiskLevel":frozen["riskLevel"],"root":root,"allowedToolIds":current["allowedToolIds"]});
+        "argumentsJson":request.arguments_json,"mode":mode,"riskLevel":current["riskLevel"],"capturedRiskLevel":frozen["riskLevel"],"root":root,"allowedToolIds":current["allowedToolIds"],"writeDenied":crate::core::tool_policy::agsdl_write_denied(&root, &tool, &args, &frozen)});
     if request.context.work.agent_instance_id.is_none() {
         let inspection = repository::inspection::read(&pool, &request.context.owner).await?;
         let activation = inspection
@@ -594,7 +594,9 @@ async fn invoke_tool(
             )
         })?;
     host.authenticate_owner(&webview, &request.context.owner)?;
-    if decision == "deny" {
+    if decision == "deny"
+        || crate::core::tool_policy::agsdl_write_denied(&root, &tool, &args, &frozen)
+    {
         return Ok(HostToolReceipt::Rejected {
             code: result
                 .pointer("/toolPolicy/code")
@@ -707,6 +709,7 @@ async fn invoke_tool(
                 tool,
                 args,
                 owned_key,
+                frozen,
                 expected_roots,
             )
             .await

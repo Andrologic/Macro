@@ -147,9 +147,43 @@ describe('included blueprint adaptation', () => {
       expect(design.context).toBe('');
       expect(design.requirements).toEqual([{ id: 'projectGuidance', label: 'Project instructions', description: 'Project checklist, commands and conventions to apply.', value: '', targetPath: '/content/projectGuidance/value' }]);
       const doc = JSON.parse(template.source);
-      expect(doc.configurations.project.engine).toBe('engine');
-      expect(doc.bindings.engine.implementation.identity).toBe('macro/desktop');
+      expect(doc.contract).toBe('agsdl-0.3.0');
+      expect(doc.agents.implement.harness).toBe('codex');
+      expect(doc.agents.implement.model).toBeUndefined();
+      expect(doc.agents.review.permissions).toBe('read-only');
+      expect(doc.bindings).toBeUndefined();
       expect(doc.annotations).toBeUndefined();
     }
   });
+});
+
+it('copies and saves all supported editions without rewriting source or annexes', async () => {
+  const { createExampleDocument } = await import('../../services/agsdl/examples');
+  for (const contract of ['agsdl-0.1.0', 'agsdl-0.2.0', 'agsdl-0.3.0'] as const) {
+    const draft = createExampleDocument('feature', contract);
+    const source = draft.source.replace('"contract":', '"contract" :');
+    const h = harness();
+    const template = { id: 'synthetic', name: 'Template', kind: 'blueprint' as const, ...draft, source, annexes: { archive: 'exact bytes' } };
+    await instantiateDesign(target, template, 'v1', {}, h.deps);
+    expect(JSON.parse(h.session.source).contract).toBe(contract);
+    // 0.1 annotations own its design kind; 0.2/0.3 metadata-only cloning leaves source unchanged.
+    if (contract !== 'agsdl-0.1.0') expect(h.session.source).toBe(source);
+    const before = h.session.source;
+    await saveBlueprint(target, 'Saved blueprint', h.deps);
+    expect(JSON.parse(h.created()!.agsdl!.source).contract).toBe(contract);
+    if (contract !== 'agsdl-0.1.0') expect(h.created()!.agsdl!.source).toBe(before);
+    expect(h.created()!.agsdl!.annexes).toEqual({ archive: 'exact bytes' });
+    expect(h.session.source).toBe(before);
+  }
+});
+
+it('prefers the persisted label, display override, native 0.3 title and fallback in that order', async () => {
+  const h = harness(builtInDesignSources()[0].source);
+  h.plan.label = '';
+  h.plan.agsdl!.display = { title: 'Display override' };
+  expect((await listDesignSources(h.deps)).sources.find(item => !item.builtin)?.name).toBe('Display override');
+  h.plan.agsdl!.display = undefined;
+  expect((await listDesignSources(h.deps)).sources.find(item => !item.builtin)?.name).toBe('Release');
+  h.plan.label = 'Plan label';
+  expect((await listDesignSources(h.deps)).sources.find(item => !item.builtin)?.name).toBe('Plan label');
 });

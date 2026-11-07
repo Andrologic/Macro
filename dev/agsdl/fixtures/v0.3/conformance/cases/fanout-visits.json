@@ -1,0 +1,93 @@
+{
+  "contract": "agsdl-0.3.0",
+  "id": "fanout-visits",
+  "agents": {
+    "lead": {
+      "harness": "example",
+      "permissions": "read-only",
+      "results": {
+        "files": {
+          "schema": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "minItems": 1,
+            "maxItems": 50
+          }
+        },
+        "summary": {
+          "mediaType": "text/plain"
+        }
+      }
+    },
+    "worker": {
+      "harness": "example",
+      "permissions": "workspace"
+    }
+  },
+  "flow": {
+    "entry": "plan",
+    "steps": {
+      "plan": {
+        "type": "agent",
+        "agent": "lead",
+        "maxVisits": 3,
+        "next": {
+          "split": {
+            "step": "fix",
+            "each": [
+              "results",
+              "files"
+            ],
+            "concurrency": 4,
+            "max": 50
+          },
+          "none": []
+        }
+      },
+      "fix": {
+        "type": "agent",
+        "agent": "worker",
+        "instance": "new",
+        "next": "gather",
+        "maxVisits": 3
+      },
+      "gather": {
+        "type": "join",
+        "failures": "keep",
+        "next": {
+          "done": {
+            "step": "summary",
+            "message": {
+              "prompt": "Summarize.",
+              "resources": {
+                "first": {
+                  "from": [
+                    "branches",
+                    "fix",
+                    0,
+                    "item"
+                  ]
+                },
+                "text": {
+                  "from": [
+                    "branches",
+                    "fix",
+                    0,
+                    "text"
+                  ]
+                }
+              }
+            }
+          },
+          "incomplete": "plan"
+        }
+      },
+      "summary": {
+        "type": "agent",
+        "agent": "lead"
+      }
+    }
+  }
+}

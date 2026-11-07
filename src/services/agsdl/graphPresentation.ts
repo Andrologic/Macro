@@ -73,3 +73,23 @@ export function graphNeighborhood(path: string, edges: ViewerEdge[]) {
   }
   return { nodes, edges: relations };
 }
+
+export type GraphBlockShape = 'card' | 'execution' | 'subprocess' | 'routing';
+
+/** Agents and approvals are cards, calls run code, compositions open, routing steps are pills. */
+export function graphBlockShape(card: ViewerCard): GraphBlockShape {
+  if (['prepare', 'condition', 'join'].includes(card.kind)) return 'routing';
+  if (card.kind === 'call') return 'execution';
+  if (card.kind === 'compose') return 'subprocess';
+  return 'card';
+}
+
+/** Who performs the step, as declared in AgSDL: the agent, the called binding, the approver or the composition. */
+export function graphBlockPerformer(card: ViewerCard, shownTitle: string): string | undefined {
+  const reference = card.kind === 'agent' ? card.participant
+    : card.kind === 'call' ? card.tools?.[0]
+      : card.kind === 'approval' ? card.approvalBinding
+        : card.kind === 'compose' ? card.composition : undefined;
+  const label = reference?.label?.trim();
+  return label && label !== shownTitle.trim() ? label : undefined;
+}

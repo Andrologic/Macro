@@ -11,7 +11,14 @@ mod tests;
 pub use auth::{cancel_auth, start_browser_auth};
 pub(crate) use models::{available_models, persist_model_enrichments, recover_auth_mutations};
 pub use models::{disconnect_auth, sync_models};
-pub use stream::{cancel_stream, stream_chat};
+pub(crate) use stream::stream_chat;
+#[cfg(test)]
+pub(crate) fn portable_history_proof_request(
+    request: &AiChatRequest,
+) -> Result<serde_json::Value, String> {
+    serde_json::to_value(stream::build_responses_request(request)?)
+        .map_err(|_| "serialization_failed".into())
+}
 // Retain the historical public path while shared consumers use ai::types.
 #[allow(unused_imports)]
 pub use types::AiChatRequest;
@@ -30,7 +37,7 @@ pub(crate) async fn lock_auth_mutation(provider_id: &str) -> Result<AuthMutation
     let process_guard = AUTH_MUTATION_LOCK.lock().await;
     let lock_path =
         crate::secrets::chatgpt_auth_lock_path(provider_id).map_err(|error| error.to_string())?;
-    let file_guard = tokio::task::spawn_blocking(move || {
+    crate::secrets::blocking::run(move || {
         let file = OpenOptions::new()
             .create(true)
             .read(true)
@@ -48,13 +55,11 @@ pub(crate) async fn lock_auth_mutation(provider_id: &str) -> Result<AuthMutation
                 lock_path.display()
             )
         })?;
-        Ok::<_, String>(file)
+        Ok::<_, String>(AuthMutationGuard {
+            _process_guard: process_guard,
+            _file_guard: file,
+        })
     })
     .await
-    .map_err(|error| format!("L’acquisition du verrou d’authentification a échoué : {error}"))??;
-
-    Ok(AuthMutationGuard {
-        _process_guard: process_guard,
-        _file_guard: file_guard,
-    })
+    .map_err(|error| format!("L’acquisition du verrou d’authentification a échoué : {error}"))?
 }

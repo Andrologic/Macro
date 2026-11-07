@@ -1,0 +1,29 @@
+{
+  "contract": "agsdl-0.3.0",
+  "id": "shell-prefix",
+  "agents": {
+    "a": {
+      "harness": "limited",
+      "permissions": {
+        "preset": "full",
+        "rules": [
+          {
+            "action": "shell",
+            "match": "git push *",
+            "effect": "deny"
+          },
+          {
+            "action": "shell",
+            "match": "rm",
+            "effect": "deny"
+          },
+          {
+            "action": "shell",
+            "match": "npm run * --watch",
+            "effect": "allow"
+          }
+        ]
+      }
+    }
+  }
+}

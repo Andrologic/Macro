@@ -33,3 +33,18 @@ it('rejects an event attributed to another native owner or event id', () => {
   const foreign = JSON.stringify({ owner: { ...owner, ownerEpoch: '2' }, eventId: 'one', event: { kind: 'turnEnded', turnId: 'turn' } });
   expect(() => evaluateHostWork030(context, 'one', '0', contractJson, EMPTY_WORK_JOURNAL030, foreign, optionsJson, () => [])).toThrow();
 });
+
+it('uses the shipped 030 value schema reader for a real work submission', async () => {
+  const { NumberToken, parse } = await import('../../vendor/agsdl/v0.3/json.mjs');
+  const { validate } = await import('../../vendor/agsdl/v0.3/valueschema.mjs');
+  const { connectValueSchemaValidator030 } = await import('./valueSchemaPort030');
+  const validator = connectValueSchemaValidator030({ NumberToken, parse, validate });
+  const contract = JSON.stringify(createAgentWorkContract030({ agentJson: '{"results":{"data":{"required":true,"schema":{"type":"integer"}}}}' as ExactJsonText }));
+  const send = (id: string, revision: string, state: string, argumentsJson: string) => evaluateHostWork030(
+    context, id, revision, contract, state, event(id, { kind: 'submit', callId: id, argumentsJson }), optionsJson, validator,
+  );
+  const invalid = send('invalid', '0', EMPTY_WORK_JOURNAL030, '{"results":{"data":"not an integer"}}');
+  expect(JSON.parse(invalid.receiptJson).decision.kind).toBe('correction');
+  const valid = send('valid', '1', invalid.stateJson, '{"results":{"data":9007199254740993}}');
+  expect(JSON.parse(valid.receiptJson).decision.output.resultsJson).toBe('{"data":9007199254740993}');
+});

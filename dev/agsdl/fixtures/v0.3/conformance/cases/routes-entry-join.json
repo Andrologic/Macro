@@ -1,0 +1,23 @@
+{
+  "contract": "agsdl-0.3.0",
+  "id": "routes-entry-join",
+  "agents": {
+    "a": {
+      "harness": "example",
+      "permissions": "read-only"
+    }
+  },
+  "flow": {
+    "entry": "j",
+    "steps": {
+      "j": {
+        "type": "join",
+        "next": "s"
+      },
+      "s": {
+        "type": "agent",
+        "agent": "a"
+      }
+    }
+  }
+}

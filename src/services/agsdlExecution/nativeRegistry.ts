@@ -4,6 +4,11 @@ import type { ExactJsonText } from './contracts';
 import { decode, encode, equal, fail, has, list, record, text, type ExactObject } from './exact';
 import { captureRegistry, ENGINE_CAPABILITIES, INVOCATION_CAPABILITIES, PUBLICATION_PROTOCOL, requireExactRequirements, type BindingAttestation, type CapturedRegistry, type ConfigurationAttestation, type ModelCatalogueEntry } from './registry';
 
+/** 0.3 observations are already native captures, never inferred from declarations. */
+export async function buildNativeRegistry030(observed: import('./contracts030').CapturedRegistry030): Promise<import('./contracts030').CapturedRegistry030> {
+  return (await import('./configuration030')).captureRegistry030(observed);
+}
+
 /** Native observations supplied only in the authenticated compiler ticket. No UI intake. */
 export interface NativeRegistryObservation {
   readonly format: 'macro-native-registry-observation/1';
@@ -73,6 +78,10 @@ export function buildNativeRegistry(authoredSource: string, observed: NativeRegi
     if (typeof agent.configuration !== 'string') continue;
     const configuration: ExactObject = record(record(document.configurations)[agent.configuration]);
     const permissions = record(decode(observation.permissionsJson));
+    const declaredWriteRules = record(configuration.settings ?? {}).writeRules;
+    if (declaredWriteRules !== undefined && !equal(declaredWriteRules, permissions.writeRules)) {
+      return fail('CORRELATION', '/registry/configurations/permissionsJson', 'Frozen write rules differ from the authored host settings.');
+    }
     const allowed = list(permissions.allowedToolIds).map(value => text(value));
     for (const bindingName of Object.values(record(configuration.tools ?? {}))) {
       const declaration = record(document.bindings)[text(bindingName)];

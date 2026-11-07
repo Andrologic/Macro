@@ -307,6 +307,13 @@ des anciennes tâches.
 
 #### Visualisation AgSDL
 
+Les nouvelles créations et les blueprints inclus utilisent [AgSDL 0.3](agsdl-030.md).
+Une copie conserve l’édition de son modèle. Les documents 0.1/0.2 gardent leur
+source, leurs annexes et leurs guides sans conversion implicite. Les outils
+chargent le guide de la source à la demande, avec le guide 0.3 pour une source
+vide. Un catalogue de modèles Chat ne prouve pas la disponibilité d’un harness
+natif ; sans raccord qualifié, le catalogue 0.3 reste explicitement non évalué.
+
 Le panneau droit Architect présente un canvas AgSDL non éditable. La conversation
 conserve sa place centrale. L’agent peut modifier le document ; une modale permet
 aussi de modifier le nom, les instructions et les propriétés prises en charge d’un
@@ -404,7 +411,7 @@ L'utilisateur peut joindre explicitement jusqu'à trois autres conversations du 
 
 Le chat affiche au même emplacement flottant les informations et erreurs liées à la composition : erreur d'exécution Macro, incompatibilité entre une skill et le modèle choisi, conversation archivée et tâche bloquée. Ces notices restent au-dessus des contrôles sans modifier la hauteur du composer. Les réponses d'erreur de l'agent restent dans la transcription à laquelle elles appartiennent. Les questionnaires, les demandes d'approbation et la barre d'objectif gardent leurs interfaces dédiées, car l'utilisateur doit pouvoir agir directement dessus.
 
-Pour chaque réponse, le chat affiche le nombre de tentatives de génération dans un simple message, espacé du contenu et de l'indicateur d'activité, sans bloc dépliant. L'historique conserve l'identité de chaque requête fournisseur, y compris les renvois internes des transports HTTP et natif, son texte brut et la portion retenue dans la réponse. Les tentatives partielles ou abandonnées et les chevauchements retirés restent enregistrés séparément. Un coût non attribuable à une tentative reste inconnu, jamais nul. La continuation d'une réponse incomplète se fait dans la session courante ; un redémarrage ne relance pas automatiquement la génération. Les tokens d'une tentative encore en cours au moment d'un crash peuvent manquer dans l'historique.
+Le chat n'affiche pas le nombre ni les détails des tentatives de génération. Les interruptions de réponse et les erreurs gardent leurs notices dédiées. L'historique conserve l'identité de chaque requête fournisseur, y compris les renvois internes des transports HTTP et natif, son texte brut et la portion retenue dans la réponse. Les tentatives partielles ou abandonnées et les chevauchements retirés restent enregistrés séparément. Un coût non attribuable à une tentative reste inconnu, jamais nul. La continuation d'une réponse incomplète se fait dans la session courante ; un redémarrage ne relance pas automatiquement la génération. Les tokens d'une tentative encore en cours au moment d'un crash peuvent manquer dans l'historique.
 
 La création du nom sollicite le fournisseur configuré pendant au plus 15 secondes. Si cette requête échoue ou ne répond pas, Macro utilise un titre et un nom de branche locaux issus du premier message, puis poursuit la création de l'espace de travail. Le fournisseur de métadonnées ne peut donc pas bloquer indéfiniment le premier démarrage.
 
@@ -1288,6 +1295,20 @@ L'utilisateur doit pouvoir :
 La création complète de plans depuis mobile n'est pas un besoin central initial.
 La supervision distante du mode Implement est la priorité.
 Dans la ligne 0.1, cette continuité reste une cible produit : le support stable concerne d'abord l'expérience desktop local-first.
+
+Le raccordement optionnel Macro Pilot utilise une identité GitHub commune au desktop et au compagnon mobile. Le compte n'est pas requis pour le travail local. Le serveur assure l'identité et le relais des échanges ; Macro doit rester ouvert pour exécuter les tâches et fournir leur contenu. Cette supervision n'active pas le kernel headless expérimental décrit en section 20.
+
+Après connexion à Macro Connect, le desktop crée automatiquement son instance avec le nom du périphérique. Les appareils du même compte y accèdent sans appairage. Une révocation explicite reste effective ; elle n’est jamais annulée par une actualisation.
+
+Un téléphone associé dispose de l'accès standard à tous les projets de l'instance, sans configuration de droits par projet. Les conversations Implement restent rattachées à leur tâche réelle ; les conversations du mode Chat sont consultables dans un espace séparé. Les contenus en cours, incomplets ou non transmis doivent être signalés explicitement.
+
+La review distante donne accès au catalogue du diff et à ses fragments pour les changements indexés, non indexés, locaux cumulés et les comparaisons de commits canoniques. L'utilisateur peut approuver ou demander des modifications sans devoir parcourir tous les fichiers. Un verdict porte sur une révision précise et ne réalise aucun stage, commit Git, merge ou push. Une source devenue différente exige une nouvelle review.
+
+Les réglages desktop permettent de consulter le compte et ses sessions, de révoquer une session ou toutes les sessions, de se déconnecter et de confirmer la suppression du compte du relais. Ces opérations conservent les projets et conversations locaux. Recréer un compte ne restaure pas ses anciennes associations.
+
+La section Macro Connect présente le compte et la liste des appareils actifs, dont cet ordinateur. Les détails et la déconnexion de chaque appareil sont accessibles dans son menu. La déconnexion globale et la suppression du compte sont regroupées dans « Gérer le compte » et nécessitent une confirmation. Le dépannage reste replié ; les actions à vérifier ne sont affichées que lorsqu’une intervention est nécessaire.
+
+La disponibilité du contenu est négociée séparément de la gestion du compte et de la supervision existante. Le raccordement de contenu actuel n'est pas annoncé sous Windows ou WSL ; une fonction absente doit rester présentée comme indisponible. Le [contrat public de contenu et de compte](macro-pilot/content-contract-v2.md) précise les échanges. La présence de cette implémentation ne constitue pas une validation d'une installation de relais ou d'un appareil mobile particulier.
 
 ### 19.3 Périmètre des notifications
 

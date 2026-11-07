@@ -40,6 +40,9 @@ pub mod db {
         GoalCriterionStatus, GoalEvidence, GoalStatus, GoalVerdict, GoalVerdictKind,
         ResumeConversationGoalAuditInput, UpdateConversationGoalInput,
     };
+    pub use crate::db::conversation_management::{
+        ConversationActionInput, ConversationActionResult, ConversationMetadata,
+    };
     pub use crate::db::goal_audit_children::ReserveGoalAuditChildSelection;
     pub use crate::db::goal_audit_transitions::{
         GoalAuditTransition, RecordGoalAuditTransitionInput,
@@ -48,18 +51,25 @@ pub mod db {
         AgentRun, AgentRunStatus, AgentRunUsageInput, AiModel, AppSettingRecord,
         ArchitectPlanConversationSyncRecord, CancelAgentRunInput, ChatBootstrapSnapshot,
         ChatSnapshot, CompareAndSwapAppSettingResult, CompleteAgentRunInput, Conversation,
-        ConversationCitation, ConversationCompactionStateRecord, ConversationSourceSnapshot,
-        ConversationToolboxStateRecord, CreateAgentRunInput, CreateConversationInput,
-        CreateGitRepositoryInput, CreateGitWorktreeInput, CreateMessageInput, FailAgentRunInput,
-        GitRepositoryRecord, GitWorktreeRecord, ImportMessageInput,
-        InsertConversationCompactionEventInput, Message, MessageSearchPage, MessageSearchResult,
-        ProjectContextStateRecord, ProjectRegistryDbRepairReport, ProviderAuthMetadata,
-        ProviderConfig, ProviderModelInput, ProviderSettings, ReconcileProjectRegistryInput,
-        SessionContextStateRecord, SpeechProviderConfig, TerminalTabRecord, TimeOutAgentRunInput,
-        UpdateProviderConfigInput, UpsertArchitectPlanConversationSyncInput,
-        UpsertConversationCitationInput, UpsertConversationCompactionStateInput,
-        UpsertConversationToolboxStateInput, UpsertProjectContextStateInput,
-        UpsertSessionContextStateInput,
+        ConversationCatalogPage, ConversationCatalogPageInput, ConversationCatalogToken,
+        ConversationCatalogVersionInput, ConversationCitation, ConversationCompactionStateRecord,
+        ConversationContentMetadataInput, ConversationContentMetadataPage,
+        ConversationContentToken, ConversationContentWindow, ConversationContentWindowInput,
+        ConversationSourceSnapshot, ConversationToolboxStateRecord, CreateAgentRunInput,
+        CreateConversationInput, CreateGitRepositoryInput, CreateGitWorktreeInput,
+        CreateMessageInput, FailAgentRunInput, GitRepositoryRecord, GitWorktreeRecord,
+        ImportMessageInput, InsertConversationCompactionEventInput, Message, MessageSearchPage,
+        MessageSearchResult, ProjectContextStateRecord, ProjectRegistryDbRepairReport,
+        ProviderAuthMetadata, ProviderConfig, ProviderModelInput, ProviderSettings,
+        ReconcileProjectRegistryInput, SessionContextStateRecord, SpeechProviderConfig,
+        TerminalTabRecord, TimeOutAgentRunInput, UpdateProviderConfigInput,
+        UpsertArchitectPlanConversationSyncInput, UpsertConversationCitationInput,
+        UpsertConversationCompactionStateInput, UpsertConversationToolboxStateInput,
+        UpsertProjectContextStateInput, UpsertSessionContextStateInput,
+    };
+    pub use crate::db::pilot_reflections::{
+        PilotReflectionMessage, PilotReflectionMessageRead, PilotReflectionToolAnchor,
+        PilotReflectionToolStatus,
     };
     pub use crate::db::tool_invocations::{
         CompleteToolInvocationInput, RecordToolInvocationInput, RecordToolInvocationResult,

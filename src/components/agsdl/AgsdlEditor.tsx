@@ -47,6 +47,8 @@ export const AgsdlEditor: React.FC<{
   const [attaching, setAttaching] = useState(false);
   const [diagnosticError, setDiagnosticError] = useState("");
   const [graphIndex, setGraphIndex] = useState(0);
+  const [definitions030, setDefinitions030] = useState(false);
+  const [graphChosen030, setGraphChosen030] = useState(false);
   const [selection, setSelection] = useState<{ key: string; path: string; card?: ViewerCard; trail?: Array<{ key: string; path: string; card?: ViewerCard }> }>();
   useEffect(() => {
     let active = true;
@@ -90,11 +92,12 @@ export const AgsdlEditor: React.FC<{
     }
   }, [source, displayMetadata, migrationMetadata]);
   const document = parsed.document;
-  const visibleGraphIndex = Math.min(graphIndex, Math.max(0, (document?.graphs.length ?? 0) - 1));
-  const graph = document?.graphs[visibleGraphIndex];
+  const visibleGraphIndex = Math.max(0, Math.min(graphIndex, Math.max(0, (document?.graphs.length ?? 0) - 1)));
+  const edition030 = document?.contract === "agsdl-0.3.0";
+  const graph = edition030 && (definitions030 || (!Object.hasOwn(document.systemDetails, "flow") && !graphChosen030)) ? undefined : document?.graphs[visibleGraphIndex];
   const selected = selection?.key === key ? selection.path : "";
   const system = useMemo(() => projectSystemOverview(graph, document?.legacyCards.length
-    ? document.legacyCards : document?.declarations.filter(item => ["Agent", "System"].includes(item.kind)) ?? []), [graph, document]);
+    ? document.legacyCards : document?.declarations.filter(item => edition030 || ["Agent", "System"].includes(item.kind)) ?? []), [graph, document, edition030]);
   const diagnostics = useMemo(() => source && document ? localizeDiagnostics(source, session?.reports ?? [], [...document.graphs.flatMap(graph => graph.cards), ...document.declarations, ...document.legacyCards]) : [], [source, document, session?.reports]);
   const cards = useMemo(() => system.cards.map(card => ({ ...card, issueCount: diagnostics.filter(issue => issue.targets.includes(card.path)).length })), [system.cards, diagnostics]);
   const selectedEdge = system.edges.find(edge => edge.id === selected);
@@ -102,10 +105,12 @@ export const AgsdlEditor: React.FC<{
   // Keep an open form alive if an agent removes its component. Its captured
   // version will reject saving; the user's text remains available to copy.
   const snapshotCard = selection?.key === key ? selection.card : undefined;
+  const routeCardFor = (edge: typeof selectedEdge): ViewerCard | undefined => edge?.route030 ? { path: edge.id, id: edge.id, title: edge.label, kind: "Route", mission: "", unresolved: false, inputs: [], outputs: [], branches: [], details: { contract: "agsdl-0.3.0" }, edition030: { sourceJson: edge.route030.valueJson ?? "", routes: [edge.route030] } } : undefined;
+  const routeCard = routeCardFor(selectedEdge);
   const selectedCard = snapshotCard && (!currentCard || currentCard.id !== snapshotCard.id) ? snapshotCard : currentCard;
   const select = (path: string) => {
     setDiagnosticError("");
-    const card = cards.find(item => item.path === path) ?? graph?.cards.find(item => item.path === path) ?? document?.declarations.find(item => item.path === path);
+    const card = cards.find(item => item.path === path) ?? graph?.cards.find(item => item.path === path) ?? document?.declarations.find(item => item.path === path) ?? routeCardFor(system.edges.find(edge => edge.id === path));
     setSelection(current => !path ? undefined : {
       key, path, card,
       trail: current?.key === key && current.path && current.path !== path
@@ -117,7 +122,7 @@ export const AgsdlEditor: React.FC<{
   const goBack = () => {
     if (!previousSelection) return;
     const index = document?.graphs.findIndex(graph => graph.cards.some(card => card.path === previousSelection.path)) ?? -1;
-    if (index >= 0) setGraphIndex(index);
+    if (index >= 0) { setGraphIndex(index); setDefinitions030(false); setGraphChosen030(true); }
     setSelection({ ...previousSelection, trail: selection?.trail?.slice(0, -1) });
     setDiagnosticError("");
   };
@@ -136,7 +141,7 @@ export const AgsdlEditor: React.FC<{
   }}>{t("agsdl.viewer.correctIssue")}</button>;
   const nodeTitle = (item: ViewerCard) => {
     const hasTitle = !!((item.details.displayAnnotations ?? item.details.annotations) as { title?: string } | undefined)?.title;
-    if (item.kind === "approval" && item.details.contract !== "agsdl-0.2.0" && !hasTitle) return t("agsdl.viewer.approvalRequired");
+    if (item.kind === "approval" && !["agsdl-0.2.0", "agsdl-0.3.0"].includes(String(item.details.contract)) && !hasTitle) return t("agsdl.viewer.approvalRequired");
     if (item.kind === "end" && !hasTitle) return t(`agsdl.edge.${item.outcome}`, { defaultValue: item.title });
     return item.title || t("agsdl.viewer.unnamed");
   };
@@ -212,13 +217,14 @@ export const AgsdlEditor: React.FC<{
   );
   const inspect = (item: ViewerCard) => (
     <>
-      {["Agent", "invoke", "agent"].includes(item.kind)
+      {item.edition030 && <><p>{t("agsdl.edition030.authorityHint")}</p><pre className="agsdl-source-value">{item.edition030.sourceJson}</pre>{item.edition030.definitionJson && item.path !== item.edition030.agentPath && <details><summary>{t("agsdl.edition030.definition")}</summary><pre className="agsdl-source-value">{item.edition030.definitionJson}</pre></details>}</>}
+      {!item.edition030 && ["Agent", "invoke", "agent"].includes(item.kind)
         ? <AgentDetails card={item} cards={[...(document?.graphs.flatMap(graph => graph.cards) ?? []), ...(document?.declarations ?? []), ...(document?.legacyCards ?? [])]} source={source!} onSelect={select} />
         : item.mission && <p className="agsdl-mission">{item.mission}</p>}
       {item.composition && <p>{reference(item.composition)}</p>}
       {diagnosticAction(diagnostics.filter(issue => issue.targets.includes(item.path)), item.path, nodeTitle(item))}
       {item.unresolved && <p className="agsdl-unresolved">{t("agsdl.viewer.unresolvedAgent")}</p>}
-      {!["Agent", "invoke", "agent"].includes(item.kind) && <>
+      {!item.edition030 && !["Agent", "invoke", "agent"].includes(item.kind) && <>
         {item.interfaces?.length ? <section className="agsdl-ports"><h4>{t("agsdl.viewer.property.interfaces")}</h4>{item.interfaces.map((ref, index) => <div key={index}>{reference(ref)}</div>)}</section> : null}
         {item.dependencies && <section className="agsdl-ports">
           <h4>{t("agsdl.viewer.dependencies")}</h4>
@@ -259,7 +265,7 @@ export const AgsdlEditor: React.FC<{
     </>
   );
   return (
-    <div className="agsdl-viewer" data-agsdl-plan={target.planId} aria-label={t("agsdl.editor")} onKeyDown={event => { if (event.key === "Escape") { setSelection(undefined); } }}>
+    <div className="agsdl-viewer" data-agsdl-plan={target.planId} aria-label={t("agsdl.editor")} onKeyDown={event => { if (event.key === "Escape" && !selectedCard && !selectedEdge) { setSelection(undefined); } }}>
       <header className="agsdl-viewer-header">
         <strong title={document?.title}>{document?.title || t("agsdl.editor")}</strong>
         <div className="agsdl-header-actions">
@@ -270,15 +276,24 @@ export const AgsdlEditor: React.FC<{
             {expanded ? <X size={14} /> : <Maximize2 size={14} />}
           </button>}
         </div>
-        {document && document.graphs.length > 1 && (
+        {edition030 && <button onClick={() => {
+          if (graph) setDefinitions030(true);
+          else { setDefinitions030(false); setGraphChosen030(true); }
+          setSelection(undefined);
+        }}>{t("agsdl.edition030.definitions")}</button>}
+        {document && (document.graphs.length > 1 || (edition030 && document.graphs.length > 0)) && (
           <select
             aria-label={t("agsdl.graph")}
-            value={visibleGraphIndex}
+            value={edition030 && !graph ? -1 : visibleGraphIndex}
             onChange={(event) => {
-              setGraphIndex(Number(event.target.value));
+              const nextIndex = Number(event.target.value);
+              setGraphChosen030(true);
+              setDefinitions030(nextIndex === -1);
+              if (nextIndex >= 0) setGraphIndex(nextIndex);
               setSelection(undefined);
             }}
           >
+            {edition030 && <option value={-1}>{t("agsdl.edition030.definitions")}</option>}
             {document.graphs.map((graph, index) => (
               <option key={graph.path} value={index}>
                 {graph.title || `${t("agsdl.graph")} ${index + 1}`}
@@ -321,13 +336,13 @@ export const AgsdlEditor: React.FC<{
         : document && <>
           {cards.length > 0 ? <WorkflowGraph
             key={`${key}:${graph?.path ?? "declarations"}`}
-            cards={cards} edges={system.edges} selected={selected}
+            cards={cards} edges={system.edges} entry={system.entry} compositions={document.graphs} declarations={document.declarations} selected={selected}
             select={select} title={nodeTitle} source={source}
             onAttach={!attaching ? path => {
               const card = cards.find(item => item.path === path);
               if (!card) return;
               setAttaching(true);
-              void attachContext({ path, title: nodeTitle(card) }).catch((error: unknown) => {
+              void attachContext({ path: card.edition030?.ownerPath ?? path, title: nodeTitle(card) }).catch((error: unknown) => {
                 select(path); setDiagnosticError(agsdlErrorText(error, t));
               }).finally(() => setAttaching(false));
             } : undefined}
@@ -339,19 +354,19 @@ export const AgsdlEditor: React.FC<{
           {(selectedCard || selectedEdge) && <ComponentDetailsDialog
             key={selectedCard?.path ?? selectedEdge!.id}
             title={selectedCard ? nodeTitle(selectedCard) : selectedEdge ? t(selectedEdge.dependency ? "agsdl.viewer.dependencies" : "agsdl.viewer.connection") : document.title}
-            card={selectedCard} canEdit={!attaching && selectedCard === currentCard && (!planStatus || planStatus === "draft")} target={target}
+            card={selectedCard ?? routeCard} canEdit={!attaching && (selectedCard === currentCard || !!routeCard || selectedCard?.kind === "Route") && (!planStatus || planStatus === "draft")} target={target}
             onBack={previousSelection ? goBack : undefined}
-            onAttach={!attaching && ((selectedCard && selectedCard === currentCard) || selectedEdge) ? () => attachContext(selectedCard
-              ? { path: selectedCard.path, title: nodeTitle(selectedCard) }
-              : selectedEdge ? { path: selectedEdge.source, relatedPaths: [selectedEdge!.target], title: `${selectedEdge!.label}: ${nodeTitle(cards.find(card => card.path === selectedEdge!.source)!)} → ${nodeTitle(cards.find(card => card.path === selectedEdge!.target)!)}` }
+            onAttach={!attaching && ((selectedCard && selectedCard === currentCard) || selectedEdge) ? () => attachContext(selectedEdge
+              ? { path: selectedEdge.route030?.path ?? selectedEdge.source, relatedPaths: [selectedEdge.source, selectedEdge.target], title: `${selectedEdge.label}: ${nodeTitle(cards.find(card => card.path === selectedEdge.source)!)} → ${nodeTitle(cards.find(card => card.path === selectedEdge.target)!)}` }
+              : selectedCard ? { path: selectedCard.edition030?.ownerPath ?? selectedCard.path, title: nodeTitle(selectedCard) }
               : { path: "", title: document.title }) : undefined}
             onClose={() => { setSelection(undefined); setDiagnosticError(""); }}>
             <section className="agsdl-inspector" aria-label={t("agsdl.properties")}>
               {diagnosticError && <p role="alert" className="agsdl-unresolved">{diagnosticError}</p>}
-              {selectedCard ? inspect(selectedCard) : selectedEdge ? <WorkflowEdgeSummary connection={selectedEdge}
+              {selectedEdge ? <WorkflowEdgeSummary connection={selectedEdge}
                 sourceTitle={nodeTitle(cards.find(card => card.path === selectedEdge.source)!)}
                 targetTitle={nodeTitle(cards.find(card => card.path === selectedEdge.target)!)}
-                onSource={() => select(selectedEdge.source)} onTarget={() => select(selectedEdge.target)} /> : null}
+                onSource={() => select(selectedEdge.source)} onTarget={() => select(selectedEdge.target)} /> : selectedCard ? inspect(selectedCard) : null}
             </section>
           </ComponentDetailsDialog>}
         </>}

@@ -1,3 +1,4 @@
+import { conversationImportArchives, conversationMetadata, isTauriAvailable } from '../services/tauriIpc';
 import type { LifecycleContext } from '../types/lifecycle';
 import { create } from 'zustand';
 import { loadPreference, PREF_KEYS } from '../services/preferences';
@@ -27,7 +28,11 @@ export const useConversationArchiveStore = create<ConversationArchiveState>((set
     archiveHydrationPromise = loadPreference<string[]>(
       PREF_KEYS.CHAT_ARCHIVED_CONVERSATION_IDS
     )
-      .then((ids) => {
+      .then(async (ids) => {
+        if (isTauriAvailable()) {
+          await conversationImportArchives(ids);
+          ids = (await conversationMetadata()).filter(m => m.archived).map(m => m.conversation_id);
+        }
         if (archiveMutationVersion === hydrationVersion && context?.isActive() !== false) {
           set({
             archivedConversationIds: new Set(ids),

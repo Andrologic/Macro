@@ -170,7 +170,17 @@
     "agsdl.persistence.format": "Format",
     "agsdl.journey.blueprints": "Blueprints",
     "agsdl.demoLaunch.blueprint": "Blueprint",
-    "agsdl.link.payload.message": "Message"
+    "agsdl.link.payload.message": "Message",
+    "settings.pilot.label": "Macro Connect",
+    "settings.pilot.title": "Macro Connect",
+    "settings.connectReader.chat": "Chat",
+    "settings.connectReader.conversation": "Conversation",
+    "settings.connectReader.role.assistant": "Assistant",
+    "settings.pilot.clientKind.mobile": "Mobile",
+    "settings.pilot.sessionState.active": "Active",
+    "agsdl.preview.arguments": "Arguments",
+    "agsdl.preview.action": "Action",
+    "agsdl.preview.agents": "Agents"
   },
   "de": {
     "mcpForm.server": "Server",
@@ -306,7 +316,15 @@
     "agsdl.chatSystem": "System",
     "agsdl.execution.agent": "Agent",
     "agsdl.persistence.export": "Export",
-    "agsdl.persistence.format": "Format"
+    "agsdl.persistence.format": "Format",
+    "settings.pilot.label": "Macro Connect",
+    "settings.pilot.title": "Macro Connect",
+    "settings.connectReader.computer": "Computer",
+    "settings.connectReader.chat": "Chat",
+    "settings.pilot.availability.online": "Online",
+    "settings.pilot.availability.offline": "Offline",
+    "settings.pilot.online": "Online",
+    "settings.pilot.clientKind.desktop": "Desktop"
   },
   "es": {
     "mcpForm.no": "No",
@@ -388,7 +406,11 @@
     "agsdl.kind.Principal": "Principal",
     "agsdl.viewer.property.interfaces": "Interfaces",
     "agsdl.viewer.detail.prompt": "Prompt",
-    "agsdl.link.payload.error": "Error"
+    "agsdl.link.payload.error": "Error",
+    "settings.pilot.label": "Macro Connect",
+    "settings.pilot.title": "Macro Connect",
+    "settings.connectReader.chat": "Chat",
+    "settings.connectReader.attention.error": "Error"
   },
   "ja": {
     "header.architect": "Architect",
@@ -447,7 +469,9 @@
     "implement.taskKindDirect": "Direct",
     "implement.taskKindBugfix": "Bugfix",
     "implement.taskKindHotfix": "Hotfix",
-    "implement.taskTodoProgressCompact": "{{done}}/{{total}}"
+    "implement.taskTodoProgressCompact": "{{done}}/{{total}}",
+    "settings.pilot.label": "Macro Connect",
+    "settings.pilot.title": "Macro Connect"
   },
   "ko": {
     "header.architect": "Architect",
@@ -506,6 +530,8 @@
     "implement.taskKindDirect": "Direct",
     "implement.taskKindBugfix": "Bugfix",
     "implement.taskKindHotfix": "Hotfix",
-    "implement.taskTodoProgressCompact": "{{done}}/{{total}}"
+    "implement.taskTodoProgressCompact": "{{done}}/{{total}}",
+    "settings.pilot.label": "Macro Connect",
+    "settings.pilot.title": "Macro Connect"
   }
 }

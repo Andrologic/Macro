@@ -8,8 +8,8 @@ import ts from 'typescript';
 import { chatBoundaryViolations, isExtractedNativeFile, nativeBoundaryViolations } from './extracted-boundaries.mjs';
 
 export const BASELINE_PATH = 'dev/architecture/import-boundaries.baseline.json';
-export const SOURCE_EXTENSIONS = Object.freeze(['.ts', '.tsx', '.mjs']);
-export const EXCLUDED_SUFFIXES = Object.freeze(['.d.ts', '.test.ts', '.test.tsx']);
+export const SOURCE_EXTENSIONS = Object.freeze(['.ts', '.tsx', '.js', '.mjs']);
+export const EXCLUDED_SUFFIXES = Object.freeze(['.d.ts', '.d.mts', '.test.ts', '.test.tsx', '.scenarios.ts', '.scenarios.tsx']);
 
 export const OWNERS = Object.freeze(['Chat', 'Tasks/Plans', 'Providers', 'Shell']);
 
@@ -87,7 +87,7 @@ function sorted(values) {
 
 function isSourceFile(path) {
   const normalized = normalizePath(path);
-  return SOURCE_EXTENSIONS.includes(extname(normalized)) && !EXCLUDED_SUFFIXES.some((suffix) => normalized.endsWith(suffix));
+  return !normalized.startsWith('src/test-utils/') && SOURCE_EXTENSIONS.includes(extname(normalized)) && !EXCLUDED_SUFFIXES.some((suffix) => normalized.endsWith(suffix));
 }
 
 function sourceFileNames(rootDirectory, sourceDirectory = 'src') {
@@ -111,7 +111,7 @@ function sourceFileNames(rootDirectory, sourceDirectory = 'src') {
 }
 
 function gitSourceFileNames(rootDirectory, ref) {
-  const output = execFileSync('git', ['-C', rootDirectory, 'ls-tree', '-rz', ref, '--', 'src', 'src-tauri/src'], {
+  const output = execFileSync('git', ['-C', rootDirectory, 'ls-tree', '-rz', ref, '--', 'src', 'src-tauri/src', 'contracts/macro-pilot/v2'], {
     encoding: 'utf8',
   });
   return sorted(output.split('\0').filter(Boolean).map((entry) => {
@@ -126,10 +126,10 @@ function readGitFile(rootDirectory, ref, path) {
 }
 
 function createFilesystemReader(rootDirectory) {
-  const resolutionFiles = sourceFileNames(rootDirectory);
+  const resolutionFiles = [...sourceFileNames(rootDirectory), ...sourceFileNames(rootDirectory, 'contracts/macro-pilot/v2')];
   return {
     resolutionFiles,
-    files: resolutionFiles.filter(isSourceFile),
+    files: resolutionFiles.filter((path) => path.startsWith('src/') && isSourceFile(path)),
     nativeFiles: sourceFileNames(rootDirectory, 'src-tauri/src').filter(isExtractedNativeFile),
     read(path) {
       return readFileSync(join(rootDirectory, path), 'utf8');
@@ -139,10 +139,10 @@ function createFilesystemReader(rootDirectory) {
 
 function createGitReader(rootDirectory, ref) {
   const allFiles = gitSourceFileNames(rootDirectory, ref);
-  const resolutionFiles = allFiles.filter((path) => path.startsWith('src/'));
+  const resolutionFiles = allFiles.filter((path) => path.startsWith('src/') || path.startsWith('contracts/macro-pilot/v2/'));
   return {
     resolutionFiles,
-    files: resolutionFiles.filter(isSourceFile),
+    files: resolutionFiles.filter((path) => path.startsWith('src/') && isSourceFile(path)),
     nativeFiles: allFiles.filter(isExtractedNativeFile),
     read(path) {
       return readGitFile(rootDirectory, ref, path);
@@ -153,7 +153,7 @@ function createGitReader(rootDirectory, ref) {
 export function createVirtualReader(sources) {
   const normalizedSources = new Map(Object.entries(sources).map(([path, text]) => [normalizePath(path), text]));
   return {
-    resolutionFiles: sorted([...normalizedSources.keys()].filter((path) => path.startsWith('src/'))),
+    resolutionFiles: sorted([...normalizedSources.keys()].filter((path) => path.startsWith('src/') || path.startsWith('contracts/macro-pilot/v2/'))),
     files: sorted([...normalizedSources.keys()].filter((path) => path.startsWith('src/') && isSourceFile(path))),
     nativeFiles: sorted([...normalizedSources.keys()].filter(isExtractedNativeFile)),
     read(path) {
@@ -170,7 +170,7 @@ export function createVirtualReader(sources) {
 
 function scriptKindFor(path) {
   if (path.endsWith('.tsx')) return TSX_SCRIPT_KIND;
-  return path.endsWith('.mjs') ? ts.ScriptKind.JS : ts.ScriptKind.TS;
+  return path.endsWith('.js') || path.endsWith('.mjs') ? ts.ScriptKind.JS : ts.ScriptKind.TS;
 }
 
 function diagnosticMessage(diagnostic) {
@@ -443,10 +443,10 @@ function localModulePath(from, specifier, aliases) {
 // Vite's default extension order, checked differentially against the installed resolver.
 const VITE_EXTENSIONS = ['.mjs', '.js', '.mts', '.ts', '.jsx', '.tsx', '.json'];
 
-function resolveLocalImport(from, specifier, available, aliases) {
+function resolveLocalImport(from, specifier, available, aliases, kinds) {
   const base = localModulePath(from, specifier, aliases);
   if (base === undefined) return undefined;
-  if (base !== 'src' && !base.startsWith('src/')) throw new Error(`Import guard cannot resolve a source import outside src/: ${specifier}`);
+  if (base !== 'src' && !base.startsWith('src/') && !base.startsWith('contracts/macro-pilot/v2/')) throw new Error(`Import guard cannot resolve a source import outside src/: ${specifier}`);
   const candidates = [base];
   // Exact files precede JS-output remapping; appended extensions keep the original suffix.
   if (/\.(?:js|mjs|cjs|jsx)$/.test(base)) {
@@ -456,6 +456,10 @@ function resolveLocalImport(from, specifier, available, aliases) {
   candidates.push(...VITE_EXTENSIONS.map((extension) => base + extension));
   for (const candidate of candidates) {
     if (available.has(candidate)) return candidate;
+  }
+  if (kinds.every((kind) => kind === 'type')) {
+    const declaration = base.replace(/\.(js|mjs)$/, (_, extension) => extension === 'mjs' ? '.d.mts' : '.d.ts');
+    if (available.has(declaration)) return declaration;
   }
   if (available.has(`${base}/package.json`)) {
     throw new Error(`Import guard requires explicit file imports for source directories with package.json: ${specifier}`);
@@ -490,13 +494,19 @@ function collectGraph(reader) {
   const diagnostics = [];
   const unresolved = [];
   const externalImports = [];
-  for (const from of reader.files) {
+  const files = [...reader.files];
+  const scheduled = new Set(files);
+  for (const from of files) {
     const result = collectImports(from, reader.read(from));
     diagnostics.push(...result.diagnostics.map((message) => ({ file: from, message })));
     for (const importEntry of result.imports) {
+      // JSON contracts are data, not executable modules in the dependency graph.
+      if (extname(importEntry.source.split(/[?#]/, 1)[0]).toLowerCase() === '.json') continue;
       let to;
       try {
-        to = resolveLocalImport(from, importEntry.source, available, aliases);
+        to = resolveLocalImport(from, importEntry.source, available, aliases, importEntry.kinds);
+        if (to?.startsWith('src/test-utils/')) throw new Error(`Production sources cannot import test utilities: ${to}`);
+        if (to && /\.(?:scenarios|test)\.tsx?$/.test(to)) throw new Error(`Production sources cannot import test modules: ${to}`);
         if (to && !isSourceFile(to)) {
           if (!EXCLUDED_SUFFIXES.some((suffix) => to.endsWith(suffix)) && isTargetedModuleSpecifier(to)) throw new Error(`Import guard resolved an unsupported source module: ${to}`);
           continue;
@@ -514,6 +524,10 @@ function collectGraph(reader) {
         continue;
       }
       const key = pairKey(from, to);
+      if (!scheduled.has(to)) {
+        scheduled.add(to);
+        files.push(to);
+      }
       const edge = edges.get(key) ?? { from, to, kinds: new Set(), lines: [], hasEagerRuntime: false, hasLazyRuntime: false };
       for (const kind of importEntry.kinds) edge.kinds.add(kind);
       if (importEntry.kinds.includes('runtime')) {
@@ -533,7 +547,7 @@ function collectGraph(reader) {
     hasLazyRuntime: edge.hasLazyRuntime,
     lines: edge.lines.sort((left, right) => left.line - right.line),
   })).sort((left, right) => `${left.from}|${left.to}`.localeCompare(`${right.from}|${right.to}`));
-  return { edges: serializedEdges, externalImports, diagnostics, unresolved };
+  return { files, edges: serializedEdges, externalImports, diagnostics, unresolved };
 }
 
 function edgeHasKind(edge, kind) {
@@ -669,8 +683,8 @@ function exceptionsForReport(violations) {
 
 export function analyzeReader(reader, sourceRef = 'worktree') {
   const graph = collectGraph(reader);
-  const sccs = stronglyConnectedComponents(reader.files, graph.edges);
-  const eagerSccs = stronglyConnectedComponents(reader.files, graph.edges, true);
+  const sccs = stronglyConnectedComponents(graph.files, graph.edges);
+  const eagerSccs = stronglyConnectedComponents(graph.files, graph.edges, true);
   const dynamicSccs = sccs.filter((component) => graph.edges.some((edge) =>
     edge.hasLazyRuntime && component.includes(edge.from) && component.includes(edge.to)));
   const violations = ruleViolations(graph.edges);
@@ -682,7 +696,7 @@ export function analyzeReader(reader, sourceRef = 'worktree') {
   return {
     schemaVersion: 1,
     sourceRef,
-    fileCount: reader.files.length,
+    fileCount: graph.files.length,
     edgeCount: graph.edges.length,
     runtimeEdgeCount: edgeCounts.runtime,
     typeEdgeCount: edgeCounts.type,

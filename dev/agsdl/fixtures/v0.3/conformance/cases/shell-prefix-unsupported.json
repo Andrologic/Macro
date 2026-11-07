@@ -1,0 +1,19 @@
+{
+  "contract": "agsdl-0.3.0",
+  "id": "shell-prefix-unsupported",
+  "agents": {
+    "a": {
+      "harness": "limited",
+      "permissions": {
+        "preset": "full",
+        "rules": [
+          {
+            "action": "shell",
+            "match": "git push * --force",
+            "effect": "deny"
+          }
+        ]
+      }
+    }
+  }
+}

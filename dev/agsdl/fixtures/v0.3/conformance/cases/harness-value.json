@@ -1,0 +1,14 @@
+{
+  "contract": "agsdl-0.3.0",
+  "id": "harness-value",
+  "agents": {
+    "a": {
+      "harness": "limited",
+      "permissions": "full",
+      "model": {
+        "name": "anything/new",
+        "effort": "max"
+      }
+    }
+  }
+}

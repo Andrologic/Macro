@@ -69,7 +69,7 @@ export async function listDesignSources(deps = dependencies()): Promise<DesignSo
             // after undo). It is not a malformed document and should not hide the
             // usable entries or show a misleading load error.
             if (!plan?.agsdl || !plan.agsdl.source.trim()) return { source: undefined, failureCount: 0 };
-            const name = plan.label || plan.agsdl.display?.title || text(object(object(readDocument(plan.agsdl.source).root).annotations).title) || plan.title;
+            const name = plan.label || plan.agsdl.display?.title || text(readDocument(plan.agsdl.source).title) || text(object(object(readDocument(plan.agsdl.source).root).annotations).title) || plan.title;
             return {
               source: { id: JSON.stringify([branch, plan.id]), name, kind: readDesign(plan.agsdl.source, plan.agsdl.design).kind, source: plan.agsdl.source, design: structuredClone(plan.agsdl.design), display: structuredClone(plan.agsdl.display), migration: structuredClone(plan.agsdl.migration), annexes: { ...plan.agsdl.annexes }, origin: { planId: plan.id, name, revision: plan.agsdl.revision } } satisfies DesignSource,
               failureCount: 0,

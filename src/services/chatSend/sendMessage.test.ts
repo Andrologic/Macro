@@ -36,6 +36,19 @@ describe('sendMessage use case without UI stores', () => {
     expect(f.createMessage.mock.calls.filter(call => call[1] === 'user')).toHaveLength(1);
   });
 
+  it('waits for durable acknowledgement before preparing the assistant', async () => {
+    const f = fixture();
+    const entered = deferred();
+    const release = deferred();
+    f.ports.messages.onUserPersisted = async () => { entered.resolve(); await release.promise; };
+    const sending = f.run();
+    await entered.promise;
+    expect(f.ports.stream.prepare).not.toHaveBeenCalled();
+    release.resolve();
+    await sending;
+    expect(f.ports.stream.prepare).toHaveBeenCalledTimes(1);
+  });
+
   it('retains a saved message when preparation fails and resumes it without another user write', async () => {
     const f = fixture();
     const prepare = f.ports.stream.prepare;
@@ -490,4 +503,100 @@ it('does not discard the DB tail of an interrupted preparation containing durabl
   f.createMessage.mockImplementation(async (...args) => { const row = await create(...args); if (args[1] === 'assistant') f.stop(); return row; });
   expect((await f.run()).assistantMessageId).toBeNull(); expect(f.deleteAfter).not.toHaveBeenCalled();
   expect(f.ports.stream.start).not.toHaveBeenCalled();
+});
+
+describe('Pilot attachment durable launch guards', () => {
+  it('awaits a preparation marker before any provider preparation', async () => {
+    const f = fixture();
+    const marker = deferred();
+    f.ports.preparation.authorizePilotEffect = async () => {};
+    const sending = sendMessage({ ...f.input, pilotTarget: { mode: 'Chat', actionToken: Symbol(),
+      beforeAssistantPrepare: () => marker.promise } }, f.snapshot, f.ports);
+    for (let i = 0; i < 12; i++) await Promise.resolve();
+    expect(f.ports.stream.prepare).not.toHaveBeenCalled();
+    marker.resolve();
+    await sending;
+    expect(f.ports.stream.prepare).toHaveBeenCalledTimes(1);
+  });
+
+  it('rechecks asynchronous authorization before starting a prepared assistant', async () => {
+    const f = fixture();
+    let afterMarker = false;
+    f.ports.messages.beforeAssistantStart = async () => { afterMarker = true; };
+    f.ports.preparation.authorizePilotEffect = async () => { if (afterMarker) f.stop(); };
+    const result = await sendMessage({ ...f.input, pilotTarget: { mode: 'Chat', actionToken: Symbol() } }, f.snapshot, f.ports);
+    expect(result.assistantMessageId).toBeNull();
+    expect(f.ports.stream.start).not.toHaveBeenCalled();
+  });
+
+  it('rejects a different scoped model before user persistence', async () => {
+    const f = fixture('Implement');
+    f.ports.preparation.authorizePilotEffect = async () => {};
+    f.ports.configuration.selectScoped = () => ({ providerId: 'provider-1', modelId: 'changed-model', reasoningEffort: 'high' });
+    await expect(sendMessage({ ...f.input, pilotTarget: { taskId: 'task-1', actionToken: Symbol(),
+      expectedModel: { providerId: 'provider-1', modelId: 'model-1', reasoningEffort: 'high' } } }, f.snapshot, f.ports))
+      .rejects.toMatchObject({ message: 'The model changed before sending.' });
+    expect(f.createMessage).not.toHaveBeenCalled();
+  });
+});
+
+it('hands a questionnaire to the admitted turn only after the human answer is durable', async () => {
+  const f = fixture('Chat');
+  const context = { handle: 'new-parent', runtime: 'browser' };
+  const receipt = { operationId: 'question', runtime: 'browser', revision: 0,
+    identity: { conversationId: f.input.conversationId, kind: 'question' as const, id: 'question-message' } };
+  const entered = deferred();
+  const handoff = deferred();
+  f.ports.admission.begin = async () => ({ kind: 'globalChat', context });
+  f.ports.admission.closePreparation = async () => {};
+  f.ports.admission.handoffQuestion = async (actual, conversation, response, captured) => {
+    expect(actual).toEqual(context);
+    expect(conversation).toBe(f.input.conversationId);
+    expect(response).toBeTruthy();
+    expect(captured).toEqual(receipt);
+    expect(f.createMessage.mock.calls.filter(call => call[1] === 'user')).toHaveLength(1);
+    entered.resolve();
+    await handoff.promise;
+  };
+  const sending = sendMessage({ ...f.input, questionIntent: receipt }, f.snapshot, f.ports);
+  await entered.promise;
+  expect(f.ports.stream.start).not.toHaveBeenCalled();
+  handoff.resolve();
+  await sending;
+  expect(f.ports.stream.start).toHaveBeenCalledTimes(1);
+  expect(JSON.stringify(f.createMessage.mock.calls)).not.toContain('new-parent');
+});
+
+it('retains a questionnaire handoff failure without starting the provider', async () => {
+  const f = fixture('Chat');
+  const receipt = { operationId: 'question', runtime: 'browser', revision: 0,
+    identity: { conversationId: f.input.conversationId, kind: 'question' as const, id: 'question-message' } };
+  f.ports.admission.begin = async () => ({ kind: 'globalChat', context: { handle: 'parent', runtime: 'browser' } });
+  f.ports.admission.closePreparation = async () => {};
+  f.ports.admission.handoffQuestion = async () => { throw new Error('Question receipt unavailable'); };
+  await expect(sendMessage({ ...f.input, questionIntent: receipt }, f.snapshot, f.ports)).rejects.toMatchObject({ message: 'Question receipt unavailable' });
+  expect(f.ports.stream.start).not.toHaveBeenCalled();
+});
+
+it('keeps metadata under the captured parent even when main preparation fails', async () => {
+  const f = fixture();
+  const metadata = deferred<void>();
+  const started = deferred<void>();
+  const context = { handle: 'metadata-parent', runtime: 'browser' };
+  f.ports.admission.begin = async () => ({ kind: 'globalChat', context });
+  f.ports.admission.closePreparation = async (received) => { expect(received).toEqual(context); f.events.push('closed'); };
+  f.ports.preparation.generateMetadata = async params => {
+    expect(params.providerAdmission).toEqual({ kind: 'globalChat', context });
+    expect(params.signal).toBeInstanceOf(AbortSignal);
+    started.resolve();
+    await metadata.promise;
+  };
+  f.ports.stream.prepare = async () => { throw new Error('Synthetic main preparation failure'); };
+  const sending = f.run().then(() => null, error => error);
+  await started.promise;
+  await Promise.resolve();
+  expect(f.events).not.toContain('closed');
+  metadata.resolve();
+  expect(await sending).toMatchObject({ message: 'Synthetic main preparation failure' });
+  expect(f.events).toContain('closed');
 });

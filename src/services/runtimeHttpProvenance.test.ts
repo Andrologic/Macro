@@ -76,7 +76,7 @@ for (const runtime of ['native', 'browser'] as const) {
       const controller = new AbortController();
       let state: ConversationRuntimeState = { ...EMPTY_CONVERSATION_RUNTIME, phase: 'streaming', sessionId: 'fixture', turnId: 'turn', assistantMessageId: 'assistant', abortController: controller };
       const owner = createChatTurnRuntime({ state: { read: () => state, project: (_id, next) => { state = next ?? EMPTY_CONVERSATION_RUNTIME; }, isDeleted: () => false }, cancelTransport: async () => {}, settled: () => {} });
-      const run = runAssistantStream({ sessionId: 'fixture', providerId: 'custom', providerType: 'custom', modelId: 'fixture', baseUrl: 'https://example.invalid', messages: [], signal: controller.signal,
+      const run = runAssistantStream({ providerAdmission: { kind: 'utility' }, sessionId: 'fixture', providerId: 'custom', providerType: 'custom', modelId: 'fixture', baseUrl: 'https://example.invalid', messages: [], signal: controller.signal,
         lifecycle: { appendTokenChunk() {}, onComplete() {}, onError: () => { state = EMPTY_CONVERSATION_RUNTIME; } }, streamChatImpl: streamChat });
       owner.track('conversation', run);
       const error = await run.catch(error => error);
@@ -116,7 +116,7 @@ for (const status of [401, 503]) for (const streaming of [true, false]) {
     });
     let state: ConversationRuntimeState = { ...EMPTY_CONVERSATION_RUNTIME, phase: 'streaming', sessionId: 'fixture', turnId: 'turn', assistantMessageId: 'assistant', abortController: new AbortController() };
     const owner = createChatTurnRuntime({ state: { read: () => state, project: (_id, next) => { state = next ?? EMPTY_CONVERSATION_RUNTIME; }, isDeleted: () => false }, cancelTransport: async () => {}, settled: () => {} });
-    const run = runAssistantStream({ sessionId: 'fixture', providerId: 'custom', providerType: 'custom', modelId: 'fixture', baseUrl: 'https://example.invalid', messages: [], signal: state.abortController!.signal,
+    const run = runAssistantStream({ providerAdmission: { kind: 'utility' }, sessionId: 'fixture', providerId: 'custom', providerType: 'custom', modelId: 'fixture', baseUrl: 'https://example.invalid', messages: [], signal: state.abortController!.signal,
       lifecycle: { appendTokenChunk() {}, onComplete() {}, onError: () => { state = EMPTY_CONVERSATION_RUNTIME; } },
       streamChatImpl: streaming ? streamChat : async options => { await sendChatNonStreaming(options); },
     });

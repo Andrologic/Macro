@@ -319,6 +319,11 @@ export const getProjectMetadataScopes = (
 export const getScopeWorkspaceScope = (scope: ArchitectMetadataScope): tauriIpc.WorkspaceScope =>
   scope.workspaceScope ?? METADATA_WORKSPACE_SCOPE;
 
+export const existingMetadataScope = (scope: ArchitectMetadataScope): ArchitectMetadataScope => ({
+  ...scope,
+  workspaceScope: getScopeWorkspaceScope(scope) === 'metadata' ? 'metadata_existing' : getScopeWorkspaceScope(scope),
+});
+
 export const getWorkspaceFallbackScope = async (): Promise<ArchitectMetadataScope | null> => {
   if (!tauriIpc.isTauriAvailable()) {
     return null;

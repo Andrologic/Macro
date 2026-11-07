@@ -1166,6 +1166,18 @@ Au démarrage, une demande illisible est isolée et signalée par un statut de
 récupération. Le bootstrap portable laisse `ConfigManager` choisir le runtime
 approuvé avant d'appliquer le workspace ; il ne parse pas le fichier brut.
 
+Toute restauration portable détache les secrets gérés, même sur le même poste
+avec les mêmes identifiants. Le magasin de secrets du receveur et ses fichiers
+de migration sont retirés ; les champs d'authentification SQLite et de
+configuration sont nettoyés. L'état Pilot conserve l'adresse du relais mais
+reçoit un nouveau contexte de configuration sans identité de session ou
+d'instance, sans accès ni effacement du vault OS. Les services nécessitent une
+reconnexion. Le rollback automatique interne restitue conjointement les octets
+privés de la configuration, de l'état et des secrets dans leur contexte original.
+Une préservation sélectionnée volontairement est normalisée en portable et ne
+réactive pas les clés. Ces garanties n'impliquent ni chiffrement des archives ni
+révocation distante des credentials ou des authentifications d'outils externes.
+
 Avant la capture ou la restauration, les chemins gérés sont contrôlés même si
 l'archive omet leurs fichiers. Les checkpoints utilisent les mêmes limites de
 profondeur et de nombre de nœuds implicites lors de la validation et de la
@@ -1174,6 +1186,108 @@ rétablir une ancienne feuille fichier. La demande terminée est retirée avant 
 journal de restauration pour empêcher son rejeu après récupération. Les statuts
 natifs exposent un code et un chemin ; l'interface traduit le résumé et conserve
 les messages techniques dans les détails du diagnostic.
+
+Les ports internes `repository::conversation_content_version`,
+`conversation_content_metadata` et `conversation_content_window` alimentent les captures TypeScript par une
+lecture progressive du transcript. La migration 13 conserve une incarnation
+aléatoire de 128 bits et une révision entière par conversation. Les mutations des
+conversations, messages, métadonnées de gestion et reçus de provenance invalident
+ce token dans la transaction d'écriture. Les victimes de `REPLACE` sont prises en
+compte par clé et par rowid, avec récursivité SQLite activée ou désactivée.
+
+La version ne lit que l'existence et le token. L'ouverture du catalogue fournit
+les totaux brut et exportable, la conversation et ses métadonnées de gestion.
+Les pages suivantes rendent seulement les descripteurs et le token attendu.
+Le parcours natif BINARY conserve les dates brutes pour le tri actuel du frontend.
+Il ne lit aucune longueur de futur corps dans les descripteurs. Les calculs de
+métadonnées de gestion existants peuvent toujours inspecter du contenu et du JSON
+dans SQLite à l'ouverture.
+
+La fenêtre reçoit de 1 à 100 IDs distincts et vérifie leur appartenance ainsi que
+leur rôle avant de rendre un préfixe. Les longueurs UTF-8 des huit champs utiles
+et du reçu brut sont admises avant leur hydratation, sous une estimation
+conservative de 4 194 304 octets. Chaque page utilise une transaction courte et
+un snapshot cohérent pour le token, l'admission et le fetch. Chaque assistant
+porte aussi sa révision de réponse décimale, ou null si elle est absente. Les
+types et propriétaires de ces révisions sont vérifiés avant le fetch brut. Les
+tickets de lecture portent seulement sur les réponses effectivement rendues et
+refusent une conversion numérique non sûre. Ces contrats internes n'annoncent
+aucune capacité supplémentaire. Leur plafond ne vaut ni limite avant décodage
+IPC, ni borne RSS.
+
+ConversationCaptures construit un catalogue de descripteurs immuable par capture,
+valide tous les rôles puis conserve le tri TypeScript sur les dates brutes. Les
+corps sont demandés par lots ciblés sur les places restantes de la page. Un seul
+reliquat brut de lot, borné à 4 Mio, et la page publique courante sont retenus et
+comptés au quota. Le reliquat est consommé ou libéré avant tout nouveau lot. Les
+frontières publiques dépendent des tailles rendues exactes, sans dépendre du
+reliquat. Le manager délègue directement ses fenêtres de 50 lignes, y compris
+backward et saut ancré, sans assembler le transcript complet. Les sources sans
+ports natifs conservent leur lecteur historique ; une erreur de port déclaré ne
+déclenche aucun repli vers ce lecteur.
+
+Le journal CAS v4 préserve les horloges et observations v2/v3 non visitées. Il
+distingue les anciennes empreintes des observations natives avec token et époque
+de source. L'horloge conversations avance au-delà de ses révisions préservées
+pour les seules ressources changées, avec retrait monotone des suppressions. Une
+perte CAS impose une nouvelle lecture du journal gagnant. Les namespaces desktop
+principal et management restent distincts. Deux propriétaires d'un même namespace
+avec des époques différentes peuvent se faire avancer mutuellement.
+
+Avant toute émission ou reprise, même pour une réponse retenue, une garde fraîche
+vérifie token, époque, binding, politique effective, références, activité runtime
+directe et expiration absolue de cinq minutes. Elle ne relit ni catalogue de
+messages, ni COUNT, ni corps inchangé. Les catalogues projets/tâches/conversations
+nécessaires restent observés hors token. Les quotas restent séparés : 24 Mio pour
+les captures principales, 8 Mio pour les captures management et le budget
+existant de 8 Mio du manager. Les réservations en vol et les reliquats sont
+comptés, sans déduire de ces quotas une borne RSS.
+
+Les sauvegardes antérieures à 13 restent comparées à leur schéma d'origine avant
+migration d'une copie. Une archive déclarant 13 doit conserver le DDL complet de
+la table de versions et tous les triggers attendus. Le démarrage rejette aussi
+un stamp 13 dont ces objets sont incomplets ou modifiés. Une restauration peut
+réintroduire un ancien token durable ; une époque de source neuve au constructeur
+et à clear rend les anciens handles inutilisables. L'époque persistée n'est pas
+restaurée comme époque active.
+
+Les ports internes `db_conversation_catalog_version` et
+`db_conversation_catalog_page` ajoutent un parcours natif primaire admis avant
+fetch des chaînes, limité à 100 lignes et 4 Mio par page. Ils rendent les quinze
+champs Conversation actuels. Le parcours par ID BINARY est indépendant du tri
+TypeScript public. La migration 14 ajoute un singleton durable et trois triggers
+sur conversations, couvrant aussi REPLACE par clé ou rowid. Chaque appel valide
+le schéma et le singleton. Le compteur i64 reste une chaîne décimale canonique.
+
+Le token de catalogue ajoute une génération volatile détenue avec le pool dans
+l'état Ready, renouvelée à chaque installation. Un résultat en attente est retiré
+si ce propriétaire change. La restauration supportée au démarrage renouvelle
+cette génération même si le token durable revient à une ancienne valeur. Les
+archives antérieures à 14 restent validées contre leur schéma sans modification,
+puis seule une copie est migrée. Le remplacement arbitraire du fichier sous un
+pool ouvert ne fait pas partie de ce contrat.
+
+La source desktop primaire branche ces ports dans `ConversationCaptures`. Ce
+propriétaire assemble les quinze valeurs sans normalisation, valide le parcours
+BINARY complet et contrôle le token à la clôture, après les lectures dynamiques.
+Il conserve un seul catalogue immuable dans son époque. Chaque réutilisation
+confirme fraîchement le token ; projets, tâches, activité et tokens des transcripts
+surveillés restent relus pour chacune des deux observations. Le tri public et les
+empreintes du journal CAS v4 sont conservés. Le token catalogue ne devient pas une
+horloge publique. Une erreur d'un port déclaré ne déclenche aucun repli historique.
+Le management garde explicitement sa source actuelle.
+
+La paire observée et le CAS gardent leurs deux tentatives et leur délai initial.
+Un abandon retire le cache ; une génération différente retire aussi les captures
+et continuations de l'ancienne époque. La validation d'émission repasse par ce
+même lecteur, y compris à chaud. Cette paire ne couvre pas les mutations futures.
+
+Les réservations précèdent pages, projections, copies, encodages, digests et
+parsing du journal. Le cache, les captures et les observations simultanées sont
+comptés ensemble dans le budget existant, avec une facturation conservatrice des
+lignes partagées. La pagination ne borne pas la taille totale admissible. Cette
+comptabilité déclarée ne borne ni les allocations amont IPC/stores/stockage ni le
+heap ou le RSS du processus.
 
 ### 9.4 `fs`
 
@@ -2057,7 +2171,52 @@ Au redémarrage, le backend marque les audits restés `queued` ou `running` comm
 
 La désactivation d'un but courant utilise `(conversationId, goalId, expectedRevision)` et empêche sa réapparition après redémarrage. Le bandeau est réhydraté depuis le but courant natif ; Pause, édition, Reprendre et Stop utilisent la révision native avant de publier l'état dans le store. Les champs `lastExecutorTurnAt`, `awaitingUserSinceAt`, `executorTurnCount` et `lastError` sont lus directement. Les résultats d'audit sont des artefacts rattachés au but et à sa conversation de projet, écrits et récupérés par le journal de mutations des métadonnées existant. Le verdict natif appliqué permet de reconstruire un artefact manquant sans créer de plan fictif. Les listes utilisateur et le bootstrap de conversation excluent les enfants internes identifiés par leur run `goal_auditor`, pour que la restauration d’une tâche retrouve son exécuteur. Les snapshots complets et la lecture directe conservent ces enfants et leurs messages. La suppression du parent supprime ses enfants d’évaluation dans la même transaction ; Stop conserve les historiques.
 
+### 15.5 Supervision relayée Macro Pilot
+
+`src/services/macroPilot/runtime.ts` coordonne la supervision et le contenu d'une seule instance desktop active. Le client natif isole l'authentification, le coffre et le transport vers un relais compatible. L'exécution réutilise les tâches, stores et adaptateurs de providers existants ; elle nécessite que Macro reste ouvert. Le serveur de relais n'exécute ni les providers ni les outils locaux. Le kernel headless de la section suivante conserve son cycle de vie distinct.
+
+Les identifiants locaux des tâches peuvent contenir une branche Git encodée. `taskIdentity.ts` conserve ceux qui respectent déjà le contrat et calcule un identifiant SHA-256 stable pour les autres. La projection v1 et les références de contenu v2 utilisent cette même conversion. Les actions retrouvent une unique tâche du catalogue local par son identifiant de transport, sans modifier les identifiants stockés ni accepter un identifiant de nœud ambigu entre branches.
+
+Le [contrat public v2](macro-pilot/content-contract-v2.md) sépare la négociation ACCOUNT, sans instance, de la négociation du contenu d'une instance associée. Le runtime annonce le contenu seulement après préparation de ses sources et de sa politique. Les enveloppes et comportements v1 restent indépendants. La perte de session ou le remplacement du producteur annule puis attend les anciennes boucles avant de démarrer les suivantes.
+
+`contentHost.ts` coordonne les catalogues persistés de conversations, les captures Git et leurs événements. Les captures sont transitoires et liées au compte, à la session, à l'instance et à la révision. Les métadonnées durables conservent les révisions, décisions, empreintes, reçus idempotents et événements en attente, sans texte de conversation ni patch. Un nouveau cycle de vie renouvelle le flux lorsque la continuité ne peut pas être garantie. L'observation des conversations et les attentes HTTP d'événements ne retiennent pas la file des décisions ; les captures Git sont observées une par une. Les identités, titres et activités des conversations sont observés sans charger leur historique. La surveillance du contenu se limite aux conversations ayant une capture mobile encore valide (cinq minutes au maximum) ; une lecture explicite valide toujours l'historique demandé. Une capture expirée ou un changement de cycle de vie retire cette surveillance, sans supprimer les empreintes nécessaires à la validation suivante.
+
+Les commandes natives `pilot_content_policy` et `pilot_review_commit` passent par les wrappers typés de `tauriIpc.ts`. La première fournit des valeurs du coffre uniquement pour détecter les contenus à ne pas exporter. La seconde conserve le verrou du dépôt, acquiert le verrou d'écriture SQLite, recontrôle la capture, les branches suivies, la politique et l'échéance, puis enregistre ensemble décision, reçu et événement. Elle ne modifie pas Git. Les écritures d'un éditeur externe après le dernier contrôle ne sont pas rendues atomiques avec SQLite.
+
+L’extension négociée [network-reliability-1](macro-pilot/network-reliability-contract.md) ajoute des révisions durables par conversation, des diagnostics provider issus d’une liste fermée et une lecture conditionnelle des projets. Les révisions historiques du journal de captures v3 sont conservées par le journal v4 des lectures natives ; les reçus des commandes restent indépendants. Les réponses et événements destinés aux anciens clients conservent leurs règles de compatibilité décrites dans ce contrat.
+
+Les budgets conservateurs sont de 24 Mio pour les captures de conversations, 32 Mio pour les captures natives et 7 Mio pour les métadonnées et réponses du host. Les limites de pagination, d'expiration et d'enveloppe restent celles du contrat. La préparation native refuse actuellement Windows et WSL pour le contenu v2 ; ACCOUNT et la supervision v1 gardent leurs capacités propres. Le [guide d'intégration](macro-pilot/content-consumer-guide.md) décrit les vérifications nécessaires avec un relais et un compagnon compatibles.
+
 ---
+
+### 15.6 Détails et actions des tâches dans Pilot
+
+Le [contrat de complétion](macro-pilot/task-completion-contract.md) ajoute deux
+capacités négociées à v2. `task.cards.list` fournit les descriptions et badges
+par pages, sans lecture par tâche. `TaskCompletionHost` capture séparément les
+artéfacts visibles et les traces structurées publiques ; les corps sont lus à
+la demande. Les empreintes et reçus persistent, les captures restent en mémoire,
+liées au compte, à la session, à l'instance et à la politique d'export.
+
+Les actions réutilisent les stores desktop avec réservation et contrôle avant
+effet. Le relais atteste `respond` pour les mutations de tâches et ajoute
+`approve_tools` pour les commandes configurées. Une action dont le reçu est
+consommé mais non terminé ne peut pas être relancée automatiquement. Les journaux
+de suppression et de réplication créés par Pilot conservent cette origine pour
+empêcher une reprise automatique après perte de l'autorisation. Une suppression
+avec restauration de code en attente exige une intervention desktop.
+
+### 15.7 Proposition d'évolution entre appareils
+
+Pour ajouter un rôle de consommateur desktop, optimiser les connexions par
+instance ou transférer une conversation entre PC, consulter la
+[proposition Macro Connect entre appareils](macro-connect-peer-architecture.md).
+Elle distingue l'existant des extensions à construire, notamment l'import
+portable, la cession d'exécution et la coordination sans historique sur le relais.
+Le [plan de réalisation](macro-connect-implementation-plan.md) place les mesures
+avant les optimisations. La [conception du transfert](macro-connect-transfer-design.md)
+fixe les réservations, les décisions et les cas de récupération à implémenter.
+Ces documents ne modifient pas les contrats v1 et v2 en vigueur.
 
 ## 16. Fondation expérimentale : backend distant et kernel headless
 
@@ -2240,7 +2399,21 @@ Le même document décrit la projection des instances d'agents natives dans le
 catalogue de tâches d'Operate. Les identités et états proviennent du journal
 natif ; les tâches ne déclenchent pas un second chat ni un worktree Git.
 
-Les informations de conception Macro sont stockées dans
+Les constructeurs et les blueprints inclus créent en [AgSDL 0.3](agsdl-030.md).
+Les branches de construction historiques restent explicitement 0.1/0.2. La
+copie d’un blueprint conserve son édition et ses octets. `guide030.ts` fournit
+la référence d’auteur chargée à la demande ; `tools.ts` garde les guides des
+sources importées, la pagination UTF-8 et les contrôles de révision.
+`harnessCatalogue.ts` décrit l’API native attendue par `readHarnessCatalogue` ;
+elle ne déduit aucune installation depuis les préférences des fournisseurs Chat
+et n’ajoute pas d’IPC. Le runtime reste propriétaire de la qualification.
+
+En 0.2/0.3, les informations de conception et de présentation sont dans
+l’enveloppe du plan, hors source. Les adaptations ciblent une chaîne existante
+sans réécrire les autres valeurs. La revue 0.3 utilise les pointeurs source des
+agents, routes et compositions, indépendamment de la projection du viewer.
+
+Pour les documents historiques 0.1, les informations de conception sont stockées dans
 `root.annotations.macroDesign`, version 1 : nature du document, objectif, contexte,
 règles, informations à compléter et provenance. Les modifications utilisent les
 patches AgSDL par pointeur et les contrôles de version du store. Les annotations

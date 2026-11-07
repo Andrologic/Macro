@@ -1,0 +1,14 @@
+{
+  "contract": "agsdl-0.3.0",
+  "id": "effort-open",
+  "agents": {
+    "a": {
+      "harness": "example",
+      "permissions": "full",
+      "model": {
+        "name": "example/large",
+        "effort": "deep"
+      }
+    }
+  }
+}

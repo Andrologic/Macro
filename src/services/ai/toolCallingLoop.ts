@@ -147,7 +147,7 @@ export async function runToolCallingLoop(
         costUsd: null,
       });
       if (turnCount > 0) {
-        const pending = options.preparePendingSteers?.(requestId) ?? [];
+        const pending = await options.preparePendingSteers?.(requestId) ?? [];
         if (options.signal?.aborted || options.isRequestCurrent?.() === false) return complete();
         messages.push(...pending.map(cloneStreamMessage));
       }
@@ -187,7 +187,7 @@ export async function runToolCallingLoop(
         accumulator.appendSystemChunk(turn.stopped, true);
         return complete();
       }
-      options.onSteerRequestEnded?.(requestId);
+      await options.onSteerRequestEnded?.(requestId);
       const result = turn.result;
       result.toolTraces?.forEach(accumulator.upsertToolTraceFromProvider);
       if (result.hiddenContext) accumulator.addHiddenContextBlock(result.hiddenContext);
@@ -200,7 +200,8 @@ export async function runToolCallingLoop(
         throw new Error('Provider returned a tool call without a stable call ID. Macro refused to execute the batch.');
       }
       const rawCalls = getValidToolCalls(result.toolCalls);
-      const incomplete = isIncompleteCompletionReason(result.completionReason);
+      const admissionUnresolved = result.admissionOutcome !== undefined && result.admissionOutcome !== 'completed';
+      const incomplete = admissionUnresolved || isIncompleteCompletionReason(result.completionReason);
       const recoveryAttemptedTool = recovering && rawCalls.length > 0;
       const calls = incomplete || recoveryAttemptedTool ? [] : rawCalls;
 
@@ -250,6 +251,7 @@ export async function runToolCallingLoop(
         });
       }
       if (!calls.length) {
+        if (admissionUnresolved) return complete('admission_unresolved');
         if (incomplete && !recovering) {
           recoveryCause = result.completionReason === 'length' ? 'length' : 'incomplete';
           messages.push({ role: 'system', content: INCOMPLETE_RECOVERY_PROMPT });

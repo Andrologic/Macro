@@ -1,0 +1,73 @@
+{
+  "contract": "agsdl-0.3.0",
+  "id": "fanout-quorum",
+  "agents": {
+    "lead": {
+      "harness": "example",
+      "permissions": "read-only",
+      "results": {
+        "files": {
+          "schema": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "summary": {
+          "mediaType": "text/plain"
+        }
+      }
+    },
+    "worker": {
+      "harness": "example",
+      "permissions": "workspace"
+    }
+  },
+  "flow": {
+    "entry": "plan",
+    "steps": {
+      "plan": {
+        "type": "agent",
+        "agent": "lead",
+        "maxVisits": 3,
+        "next": {
+          "split": {
+            "step": "fix",
+            "each": [
+              "results",
+              "files"
+            ]
+          },
+          "none": []
+        }
+      },
+      "fix": {
+        "type": "agent",
+        "agent": "worker",
+        "instance": "new",
+        "next": {
+          "ok": "gather",
+          "no": "gather"
+        }
+      },
+      "gather": {
+        "type": "join",
+        "quorum": {
+          "count": 3,
+          "accept": [
+            "ok"
+          ]
+        },
+        "next": {
+          "reached": "summary",
+          "missed": []
+        }
+      },
+      "summary": {
+        "type": "agent",
+        "agent": "lead"
+      }
+    }
+  }
+}

@@ -1,0 +1,66 @@
+{
+  "contract": "agsdl-0.3.0",
+  "id": "compose-parameter-prompt",
+  "agents": {
+    "a": {
+      "harness": "example",
+      "permissions": "full",
+      "instructs": true
+    }
+  },
+  "compositions": {
+    "c": {
+      "parameters": [
+        "p"
+      ],
+      "entry": "s",
+      "outputs": [
+        "done"
+      ],
+      "steps": {
+        "s": {
+          "type": "agent",
+          "agent": "a",
+          "next": {
+            "one": "x",
+            "two": "y"
+          }
+        },
+        "x": {
+          "type": "agent",
+          "agent": "a",
+          "next": "z"
+        },
+        "y": {
+          "type": "agent",
+          "agent": {
+            "parameter": "p"
+          },
+          "next": "z"
+        },
+        "z": {
+          "type": "agent",
+          "agent": "a",
+          "next": {
+            "output": "done"
+          }
+        }
+      }
+    }
+  },
+  "flow": {
+    "entry": "c",
+    "steps": {
+      "c": {
+        "type": "compose",
+        "composition": "c",
+        "agents": {
+          "p": "a"
+        },
+        "next": {
+          "done": []
+        }
+      }
+    }
+  }
+}

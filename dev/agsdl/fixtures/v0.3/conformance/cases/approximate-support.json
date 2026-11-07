@@ -1,0 +1,27 @@
+{
+  "contract": "agsdl-0.3.0",
+  "id": "approximate-support",
+  "agents": {
+    "dev": {
+      "harness": "limited",
+      "permissions": "full",
+      "plan": true,
+      "planFirst": "auto"
+    }
+  },
+  "flow": {
+    "entry": "work",
+    "steps": {
+      "work": {
+        "type": "agent",
+        "agent": "dev",
+        "next": "watch"
+      },
+      "watch": {
+        "type": "agent",
+        "agent": "dev",
+        "delivery": "steer"
+      }
+    }
+  }
+}

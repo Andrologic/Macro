@@ -26,6 +26,8 @@ export interface TaskProjectCommand {
   worktreePath: string;
   command: string;
   openTerminalOnRun: boolean;
+  beforeEffect?: () => Promise<void>;
+  expectedBranch?: string | null;
 }
 
 export class MissingProjectCommandError extends Error {
@@ -144,10 +146,12 @@ export function createTaskProjectCommands(runner: ProjectCommandRunner, ports: T
       for (const target of targets) {
         currentProjectName = target.projectName;
         if (cancelled()) return result('cancelled');
+        await target.beforeEffect?.();
         const session = await runner.start({
           purpose: 'task', taskId, taskTitle: input.taskTitle,
           projectId: target.projectId, projectName: target.projectName,
           cwd: target.worktreePath, command: target.command, reveal: target.openTerminalOnRun,
+          beforeEffect: target.beforeEffect, expectedBranch: target.expectedBranch,
         });
         if (cancelled()) {
           await close(taskId, session.id);

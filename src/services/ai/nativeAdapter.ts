@@ -41,6 +41,8 @@ export function createNativeAdapter(options: StreamingChatOptions, accumulator: 
       while (true) {
         try {
           turnResult = await streamNativeTurnViaTauri({
+            providerAdmission: options.providerAdmission,
+            steerReceipts: options.providerSteerReceipts?.() ?? [],
             sessionId: options.sessionId,
             nativeExecution: options.nativeExecution,
             providerId,

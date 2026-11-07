@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'bun:test';
-import { graphGroups, graphNeighborhood, presentFocusedGraph, presentGraph } from './graphPresentation';
+import { graphBlockPerformer, graphBlockShape, graphGroups, graphNeighborhood, presentFocusedGraph, presentGraph } from './graphPresentation';
 import { layoutViewer, type ViewerEdge } from './graphLayout';
 import type { ViewerCard } from './viewer';
 const card = (path: string, group?: string): ViewerCard => ({ path, id: path, title: path, kind: 'invoke', mission: '', unresolved: false, inputs: [], outputs: [], branches: [], details: group ? { annotations: { macroGroup: group } } : {} });
@@ -69,5 +69,32 @@ describe('single contextual graph', () => {
     const result = presentFocusedGraph(cards, edges, new Set(['macro-group:Quality']), 'a');
     expect(result.edges[0].source).toBe('macro-group:Quality');
     expect(result.edges[0].originals[0].id).toBe('a-c');
+  });
+});
+
+describe('graph block reading', () => {
+  const step = (kind: string, extra: Partial<ViewerCard> = {}): ViewerCard => ({
+    path: `/flow/steps/${kind}`, id: kind, title: 'Run the step', kind, mission: '', unresolved: false, inputs: [], outputs: [], branches: [], details: {}, ...extra,
+  });
+  const ref = (label: string) => ({ label, source: 'unknown' as const });
+
+  it('names who performs each step from its AgSDL reference', () => {
+    expect(graphBlockPerformer(step('agent', { participant: ref('Reviewer') }), 'Review')).toBe('Reviewer');
+    expect(graphBlockPerformer(step('call', { tools: [ref('Portal test suite')] }), 'Run tests')).toBe('Portal test suite');
+    expect(graphBlockPerformer(step('approval', { approvalBinding: ref('Operations') }), 'Approve')).toBe('Operations');
+    expect(graphBlockPerformer(step('compose', { composition: ref('Shared review') }), 'Check')).toBe('Shared review');
+    expect(graphBlockPerformer(step('condition'), 'Passed?')).toBeUndefined();
+  });
+
+  it('omits a performer that only repeats the title', () => {
+    expect(graphBlockPerformer(step('agent', { participant: ref('Write the report') }), 'Write the report')).toBeUndefined();
+  });
+
+  it('gives routing, execution and sub-process steps their own shape', () => {
+    expect(['prepare', 'condition', 'join'].map(kind => graphBlockShape(step(kind)))).toEqual(['routing', 'routing', 'routing']);
+    expect(graphBlockShape(step('call'))).toBe('execution');
+    expect(graphBlockShape(step('compose'))).toBe('subprocess');
+    expect(graphBlockShape(step('agent'))).toBe('card');
+    expect(graphBlockShape(step('approval'))).toBe('card');
   });
 });

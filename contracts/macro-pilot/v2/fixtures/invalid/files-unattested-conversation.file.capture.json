@@ -1,0 +1,27 @@
+{
+  "transport_version": "2.0",
+  "type": "delivery",
+  "request_id": "request-demo",
+  "account_id": "account-demo",
+  "instance_id": "instance-demo",
+  "source_session_id": "session-demo",
+  "expires_at": "2026-10-10T12:01:00.000Z",
+  "capabilities": [
+    "conversation-files-1"
+  ],
+  "request": {
+    "contract_version": "2.0",
+    "type": "request",
+    "request_id": "request-demo",
+    "account_id": "account-demo",
+    "operation": "conversation.file.capture",
+    "body": {
+      "ref": {
+        "instance_id": "instance-demo",
+        "kind": "conversation",
+        "conversation_id": "conversation-demo"
+      },
+      "file_id": "file-demo"
+    }
+  }
+}

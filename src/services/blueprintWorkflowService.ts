@@ -1,9 +1,9 @@
 import { createArchitectPlan, getArchitectPlan, type ArchitectPlanRecord } from './architectPlanService';
 import * as ipc from './ipc/agsdlExecution';
 import { getConversation } from './ipc/conversations';
-import { AGSDL_CONTRACT, readDocument } from './agsdl/document';
+import { readDocument } from './agsdl/document';
 import { readDesign, withDocumentDesign } from './agsdl/design';
-import { assertProjection, executionInput, executionPrompt } from './agsdl/executionView';
+import { assertProjection, executionInput, executionProfileForContract, executionPrompt } from './agsdl/executionView';
 import { sameSource } from './agsdl/runtimeSelection';
 import { sourceDigest } from './agsdlExecution/compiler';
 import { sanitizeId } from './architectPlanReadModel';
@@ -117,7 +117,7 @@ export function createBlueprintWorkflowService(overrides: Partial<BlueprintWorkf
     const design = readDesign(document.source, document.design);
     const projects = original.projectIds ?? (original.projectId ? [original.projectId] : []);
     if (design.kind !== 'blueprint' || (projects.length && !projects.includes(scope.owner.projectId)) ||
-      readDocument(document.source).contract !== AGSDL_CONTRACT) fail('BLUEPRINT_UNAVAILABLE');
+      executionProfileForContract(readDocument(document.source).contract) === undefined) fail('BLUEPRINT_UNAVAILABLE');
     const copy = withDocumentDesign(document.source, { ...design, kind: 'system', origin: {
       planId: blueprint.planId, branchName: blueprint.branchName, revision: blueprint.revision,
       name: original.label || original.title,
@@ -168,6 +168,11 @@ export function createBlueprintWorkflowService(overrides: Partial<BlueprintWorkf
     if (snapshot.systemStartId !== receipt.systemStartId || receipt.snapshot.systemStartId !== receipt.systemStartId ||
       !sameSource(snapshot.source, intent.payload.request.source) || !sameSource(receipt.snapshot.source, snapshot.source) ||
       snapshot.authoredSource !== receipt.snapshot.authoredSource ||
+      snapshot.versions.contract !== readDocument(snapshot.authoredSource).contract ||
+      snapshot.versions.profile !== executionProfileForContract(snapshot.versions.contract) ||
+      snapshot.versions.profile !== intent.payload.request.profile ||
+      (['snapshot', 'contract', 'compiler', 'runtime', 'registry', 'profile'] as const)
+        .some(key => snapshot.versions[key] !== receipt.snapshot.versions[key]) ||
       await sourceDigest(snapshot.authoredSource) !== snapshot.source.sourceSha256) fail('RECEIPT_INVALID');
     const projection = await ports.projection(snapshot.systemStartId);
     assertProjection(projection, snapshot);
@@ -215,11 +220,15 @@ export function createBlueprintWorkflowService(overrides: Partial<BlueprintWorkf
     if (!preflight.productRuntimeAvailable || !preflight.staticValid || !preflight.runtimeSupported || preflight.incomplete) {
       throw new BlueprintWorkflowError('RUNTIME_UNAVAILABLE', preflight);
     }
+    const profile = executionProfileForContract(readDocument(preflight.authoredSource).contract);
+    // These IPC ports still admit only the historical 0.2 request contract.
+    // The versioned native ports must be connected before a 0.3 Start is sent.
+    if (profile !== 'macro-serial-inline-v1') throw new BlueprintWorkflowError('RUNTIME_UNAVAILABLE', preflight);
     const { hasEntry } = executionInput(preflight.authoredSource);
     if (hasEntry && !request.prompt?.trim()) fail('INPUT_REQUIRED');
     if (!hasEntry && request.prompt !== undefined) fail('INPUT_NOT_APPLICABLE');
     const staged = await ports.stage({ ...key, payload: { kind: 'start', request: {
-      source: expected, profile: 'macro-serial-inline-v1', associations: {}, requestId: key.intentId,
+      source: expected, profile, associations: {}, requestId: key.intentId,
       entry: hasEntry ? { deliveryId: `${key.intentId}:entry` as DeliveryId, messageJson: executionPrompt(request.prompt!) } : null,
     } } });
     assertIntent(staged, key);

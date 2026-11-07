@@ -4,7 +4,7 @@ use super::types::{
     AiStreamChunkEvent, AiStreamDoneEvent, AiStreamErrorEvent, AiToolCall, AiToolCallFunction,
     ChatGptResponsesRequest, ResponsesContentItem, ResponsesMessageItem, DEFAULT_ORIGINATOR,
 };
-use crate::ai::{emit_timeline, AiState, ProviderTimeline};
+use crate::ai::{emit_timeline, ProviderTimeline};
 use crate::db::models::ProviderConfig;
 use crate::db::repository;
 use crate::secrets::ChatGptSecret;
@@ -30,44 +30,51 @@ struct StreamingCompletionAccumulator {
     reasoning_summary: String,
 }
 
-pub async fn cancel_stream(ai_state: &AiState, request_id: &str) -> Result<(), String> {
-    ai_state.stream_tasks.cancel(request_id).await
-}
-
-pub async fn stream_chat(
+pub(crate) async fn stream_chat(
     app_handle: AppHandle,
     pool: SqlitePool,
-    _ai_state: AiState,
     request: AiChatRequest,
+    reservation: crate::ai::stream_tasks::StreamReservation,
+    work: std::sync::Arc<crate::ai::provider_work::ProviderWork>,
 ) -> Result<(), String> {
-    let request_id = request.request_id.clone();
-    let provider_id = request.provider_id.clone();
-    let started_at = Instant::now();
-    if let Err(error) = stream_chat_inner(app_handle.clone(), pool, request).await {
-        emit_timeline(
-            &app_handle,
-            &request_id,
-            &provider_id,
-            "chatgpt",
-            started_at,
-            "error",
-        );
-        let _ = app_handle.emit(
-            "ai:error",
-            AiStreamErrorEvent {
-                request_id,
-                message: error,
-                status: None,
-            },
-        );
-    }
-    Ok(())
+    let task_request_id = request.request_id.clone();
+    let task_provider_id = request.provider_id.clone();
+    let app_for_task = app_handle.clone();
+    let task_started_at = Instant::now();
+
+    reservation.spawn_with_work(work.clone(), move |cancel| async move {
+        let result = tokio::select! {
+            biased;
+            _ = cancel.cancelled() => Err("AI stream cancelled.".to_string()),
+            result = stream_chat_inner(app_for_task.clone(), pool, request, &work) => result,
+        };
+        if let Err(message) = &result {
+            emit_timeline(
+                &app_for_task,
+                &task_request_id,
+                &task_provider_id,
+                "chatgpt",
+                task_started_at,
+                "error",
+            );
+            let _ = app_for_task.emit(
+                "ai:error",
+                AiStreamErrorEvent {
+                    request_id: task_request_id.clone(),
+                    message: message.clone(),
+                    status: None,
+                },
+            );
+        }
+        result
+    })
 }
 
 async fn stream_chat_inner(
     app_handle: AppHandle,
     pool: SqlitePool,
     request: AiChatRequest,
+    work: &crate::ai::provider_work::ProviderWork,
 ) -> Result<(), String> {
     let started_at = Instant::now();
     let timeline = ProviderTimeline::new(
@@ -88,28 +95,37 @@ async fn stream_chat_inner(
     )
     .map_err(str::to_string)?;
     let body = build_responses_request(&request)?;
-    let client = reqwest::Client::builder()
+    let client = work
+        .configure_http_client(reqwest::Client::builder())
         .redirect(reqwest::redirect::Policy::none())
         .build()
         .map_err(|error| error.to_string())?;
 
     let secret_started_at = Instant::now();
-    let mut secret = ensure_fresh_secret(&pool, &request.provider_id).await?;
+    let secret = ensure_fresh_secret(&pool, &request.provider_id).await?;
     if secret_started_at.elapsed().as_millis() > 50 {
         timeline.emit("auth_ready");
     }
     timeline.emit("provider_request_sent");
-    let mut response = send_chatgpt_request(&client, &provider, &request, &secret, &body).await?;
-
-    if response.status() == StatusCode::UNAUTHORIZED {
-        secret = force_refresh_secret(&pool, &request.provider_id, &secret).await?;
-        timeline.emit("auth_refreshed");
-        timeline.emit("provider_request_sent");
-        response = send_chatgpt_request(&client, &provider, &request, &secret, &body).await?;
-    }
+    let (response, attempt) = send_chatgpt_request_with_refresh(
+        &client,
+        &provider,
+        &request,
+        &secret,
+        &body,
+        work,
+        || async {
+            let refreshed = force_refresh_secret(&pool, &request.provider_id, &secret).await?;
+            timeline.emit("auth_refreshed");
+            timeline.emit("provider_request_sent");
+            Ok(refreshed)
+        },
+    )
+    .await?;
 
     if !response.status().is_success() {
         let status = response.status();
+        attempt.http_rejection(status).await?;
         let body = read_error_response(response).await.map_err(|error| {
             format!(
                 "Failed to read ChatGPT error {} response body: {}",
@@ -191,6 +207,7 @@ async fn stream_chat_inner(
     }
 
     if !saw_completed {
+        attempt.uncertain().await?;
         timeline.emit("done");
         let provider_input_items = optional_output_items(
             normalize_provider_input_items_for_replay(&completion_accumulator.output_items)?,
@@ -220,13 +237,38 @@ async fn stream_chat_inner(
     Ok(())
 }
 
+async fn send_chatgpt_request_with_refresh<F, Fut>(
+    client: &reqwest::Client,
+    provider: &ProviderConfig,
+    request: &AiChatRequest,
+    secret: &ChatGptSecret,
+    body: &ChatGptResponsesRequest,
+    work: &crate::ai::provider_work::ProviderWork,
+    refresh: F,
+) -> Result<(reqwest::Response, crate::ai::provider_work::ProviderAttempt), String>
+where
+    F: FnOnce() -> Fut,
+    Fut: std::future::Future<Output = Result<ChatGptSecret, String>>,
+{
+    let (response, attempt) =
+        send_chatgpt_request(client, provider, request, secret, body, work).await?;
+    if response.status() != StatusCode::UNAUTHORIZED {
+        return Ok((response, attempt));
+    }
+    attempt.http_rejection(response.status()).await?;
+    drop(response);
+    let secret = refresh().await?;
+    send_chatgpt_request(client, provider, request, &secret, body, work).await
+}
+
 async fn send_chatgpt_request(
     client: &reqwest::Client,
     provider: &ProviderConfig,
     request: &AiChatRequest,
     secret: &ChatGptSecret,
     body: &ChatGptResponsesRequest,
-) -> Result<reqwest::Response, String> {
+    work: &crate::ai::provider_work::ProviderWork,
+) -> Result<(reqwest::Response, crate::ai::provider_work::ProviderAttempt), String> {
     let account_id = secret
         .account_id
         .clone()
@@ -242,29 +284,34 @@ async fn send_chatgpt_request(
         .filter(|value| !value.is_empty())
         .unwrap_or(request.request_id.as_str());
 
-    tokio::time::timeout(
-        RESPONSE_HEADERS_TIMEOUT,
-        client
-            .post(&url)
-            .header(CONTENT_TYPE, "application/json")
-            .header(ACCEPT, "text/event-stream")
-            .header(AUTHORIZATION, format!("Bearer {}", secret.access_token))
-            .header("ChatGPT-Account-Id", account_id)
-            .header("originator", DEFAULT_ORIGINATOR)
-            .header("conversation_id", stable_conversation_id)
-            .header("session_id", stable_conversation_id)
-            .header("x-client-request-id", request.request_id.to_string())
-            .json(body)
-            .send(),
-    )
-    .await
-    .map_err(|_| {
-        format!(
-            "ChatGPT response headers timed out after {} seconds.",
-            RESPONSE_HEADERS_TIMEOUT.as_secs()
-        )
-    })?
-    .map_err(|error| format!("Failed to send ChatGPT request: {}", error))
+    let url = reqwest::Url::parse(&url).map_err(|error| error.to_string())?;
+    let attempt = work
+        .independent_request_attempt(&provider.id, url.as_str())
+        .await?;
+    let outgoing = client
+        .post(url)
+        .header(CONTENT_TYPE, "application/json")
+        .header(ACCEPT, "text/event-stream")
+        .header(AUTHORIZATION, format!("Bearer {}", secret.access_token))
+        .header("ChatGPT-Account-Id", account_id)
+        .header("originator", DEFAULT_ORIGINATOR)
+        .header("conversation_id", stable_conversation_id)
+        .header("session_id", stable_conversation_id)
+        .header("x-client-request-id", request.request_id.to_string())
+        .json(body)
+        .build()
+        .map_err(|error| error.to_string())?;
+    attempt.dispatched().await?;
+    tokio::time::timeout(RESPONSE_HEADERS_TIMEOUT, client.execute(outgoing))
+        .await
+        .map_err(|_| {
+            format!(
+                "ChatGPT response headers timed out after {} seconds.",
+                RESPONSE_HEADERS_TIMEOUT.as_secs()
+            )
+        })?
+        .map_err(|error| format!("Failed to send ChatGPT request: {}", error))
+        .map(|response| (response, attempt))
 }
 
 #[derive(Debug, Default)]
@@ -1520,5 +1567,83 @@ mod tests {
         assert!(terminal);
         assert_eq!(processed.len(), 2);
         assert!(!processed.iter().any(|data| data.contains("suffix")));
+    }
+}
+
+#[cfg(test)]
+mod admission_tests {
+    use super::*;
+    use crate::ai::provider_work::tests::{fixture, HttpServer};
+
+    #[tokio::test]
+    async fn only_explicit_unauthorized_response_refreshes_once() {
+        let server = HttpServer::start(vec![
+            Some("HTTP/1.1 401 Unauthorized\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}"),
+            Some("HTTP/1.1 401 Unauthorized\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}"),
+        ])
+        .await;
+        let (_dir, pool, _runtime, work) = fixture("codex-request").await;
+        let provider = ProviderConfig {
+            id: "synthetic-codex".into(),
+            name: "Synthetic".into(),
+            provider_type: "chatgpt".into(),
+            base_url: server.url.clone(),
+            api_key: None,
+            has_stored_api_key: false,
+            is_enabled: true,
+            is_local: false,
+            auth_status: None,
+            auth_source: None,
+            plan_type: None,
+            account_label: None,
+            token_expires_at: None,
+            created_at: String::new(),
+            updated_at: String::new(),
+        };
+        let request: AiChatRequest = serde_json::from_value(json!({
+            "request_id": "codex-request", "provider_id": "synthetic-codex", "model_id": "synthetic",
+            "conversation_id": "chat", "messages": [{"role": "user", "content": "Synthetic request"}],
+        })).unwrap();
+        let body = build_responses_request(&request).unwrap();
+        let secret = ChatGptSecret {
+            access_token: "synthetic-not-a-credential".into(),
+            refresh_token: String::new(),
+            access_token_expires_at: None,
+            account_id: Some("synthetic-account".into()),
+            auth_source: "synthetic".into(),
+        };
+        let refreshed = std::sync::atomic::AtomicUsize::new(0);
+        let client = reqwest::Client::builder()
+            .no_proxy()
+            .timeout(Duration::from_secs(2))
+            .build()
+            .unwrap();
+        let (response, attempt) = send_chatgpt_request_with_refresh(
+            &client,
+            &provider,
+            &request,
+            &secret,
+            &body,
+            &work,
+            || async {
+                refreshed.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                Ok(secret.clone())
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        attempt.http_rejection(response.status()).await.unwrap();
+        work.settle(&Err("Synthetic auth rejection".into()))
+            .await
+            .unwrap();
+        assert_eq!(server.stop().await, 2);
+        assert_eq!(refreshed.load(std::sync::atomic::Ordering::SeqCst), 1);
+        let phases: Vec<String> =
+            sqlx::query_scalar("SELECT phase FROM chat_admission_operations WHERE kind='provider'")
+                .fetch_all(&pool)
+                .await
+                .unwrap();
+        assert_eq!(phases, vec!["no_effect", "no_effect", "no_effect"]);
     }
 }

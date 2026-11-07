@@ -12,7 +12,7 @@ function deferred() {
 
 const checkpoint = () => new Promise<void>((resolve) => setImmediate(resolve));
 
-function setup() {
+function setup(directions?: Parameters<typeof createChatTurnRuntime>[0]['directions']) {
   const states = new Map<string, ConversationRuntimeState>();
   const deleted = new Set<string>();
   const cancelTransport = mock<(_sessionId: string) => void | Promise<void>>(() => undefined);
@@ -26,7 +26,7 @@ function setup() {
       },
       isDeleted: (id) => deleted.has(id),
     },
-    cancelTransport,
+    cancelTransport, directions,
     settled,
   });
   function begin(conversationId: string, sessionId = `${conversationId}-session`) {
@@ -329,4 +329,54 @@ test("reservation and Stop retain the receipt even when runtime error projection
   await checkpoint();
   owner.assertCanSend("conversation", { available: true, hasUnsavedResponse: false });
   expect(settled).toHaveBeenCalledTimes(1);
+});
+
+test('only consumed steers reach provider receipts and their metadata stays out of messages', () => {
+  const h = setup();
+  const a = h.begin('a');
+  const receipt = { operationId: 'steer-op', runtime: 'browser', revision: 0,
+    identity: { conversationId: 'a', kind: 'steer' as const, id: 'steer-message' } };
+  const message = { role: 'user' as const, content: 'Direction' };
+  expect(h.runtime.enqueueSteer('a', message, a.identity, undefined, { kind: 'globalChat', receipt })).toBe(true);
+  expect(h.runtime.providerSteerReceipts(a.identity)).toEqual([]);
+  expect(h.runtime.consumeSteers(a.identity)).toEqual([message]);
+  expect(h.runtime.providerSteerReceipts(a.identity)).toEqual([receipt]);
+  expect(JSON.stringify(message)).not.toContain('steer-op');
+  const b = h.begin('a', 'successor');
+  expect(h.runtime.providerSteerReceipts(b.identity)).toEqual([]);
+  h.runtime.reset();
+  expect(h.runtime.providerSteerReceipts(a.identity)).toEqual([]);
+});
+
+test('a durable direction carries its admission receipt only after delivery to its exact owner', async () => {
+  const h = setup();
+  const { identity } = h.begin('a');
+  const receipt = { operationId: 'direction-op', runtime: 'browser', revision: 0,
+    identity: { conversationId: 'a', kind: 'steer' as const, id: 'direction-message' } };
+  const message = { role: 'user' as const, content: 'Direction' };
+  expect(h.runtime.enqueueSteer('a', message, identity, 'direction', { kind: 'globalChat', receipt })).toBe(true);
+  expect(h.runtime.consumeSteers(identity)).toEqual([]);
+  expect(h.runtime.providerSteerReceipts(identity)).toEqual([]);
+  expect(await h.runtime.deliverSteers({ ...identity, assistantMessageId: 'other' }, 'request', () => true)).toEqual([]);
+  expect(await h.runtime.deliverSteers(identity, 'request', () => true)).toEqual([message]);
+  expect(h.runtime.providerSteerReceipts(identity)).toEqual([receipt]);
+  expect(h.runtime.providerSteerReceipts({ ...identity, assistantMessageId: 'other' })).toEqual([]);
+});
+
+test('a direction accepted during an awaited delivery marker remains pending for the next request', async () => {
+  const marker = deferred();
+  const entered = deferred();
+  const h = setup({ attempt: async () => { entered.resolve(); await marker.promise; },
+    ended() {}, confirmed() {}, recover() {} });
+  const { identity } = h.begin('a');
+  const first = { role: 'user' as const, content: 'First direction' };
+  const second = { role: 'user' as const, content: 'Second direction' };
+  h.runtime.enqueueSteer('a', first, identity, 'first');
+  const delivering = h.runtime.deliverSteers(identity, 'request-1', () => true);
+  await entered.promise;
+  expect(h.runtime.enqueueSteer('a', second, identity, 'second')).toBe(true);
+  marker.resolve();
+  expect(await delivering).toEqual([first]);
+  expect(h.runtime.hasPendingSteers(identity)).toBe(true);
+  expect(await h.runtime.deliverSteers(identity, 'request-2', () => true)).toEqual([second]);
 });

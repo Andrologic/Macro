@@ -1,0 +1,32 @@
+{
+  "contract_version": "2.0",
+  "request_id": "request-demo",
+  "account_id": "account-demo",
+  "type": "response",
+  "operation": "conversations.list",
+  "result": {
+    "page": {
+      "snapshot_id": "snapshot-demo",
+      "revision": 1,
+      "observed_at": "2026-01-01T00:00:00Z",
+      "expires_at": "2026-01-01T00:05:00Z",
+      "export_policy_revision": "visible-1",
+      "offset": 0,
+      "total": 1,
+      "next_cursor": null
+    },
+    "items": [
+      {
+        "ref": {
+          "instance_id": "instance-demo",
+          "kind": "implement",
+          "workspace_id": "workspace-demo",
+          "task_id": "task-demo",
+          "conversation_id": "conversation-task"
+        },
+        "revision": 1,
+        "activity": "unknown"
+      }
+    ]
+  }
+}

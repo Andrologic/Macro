@@ -1,0 +1,52 @@
+{
+  "contract": "agsdl-0.3.0",
+  "id": "json-suffix",
+  "agents": {
+    "a": {
+      "harness": "example",
+      "permissions": "read-only",
+      "results": {
+        "area": {
+          "mediaType": "application/geo+json",
+          "schema": {
+            "type": "object",
+            "properties": {
+              "type": {
+                "type": "string"
+              }
+            },
+            "additionalProperties": true
+          }
+        }
+      }
+    }
+  },
+  "flow": {
+    "entry": "s",
+    "steps": {
+      "s": {
+        "type": "agent",
+        "agent": "a",
+        "next": {
+          "step": "t",
+          "message": {
+            "resources": {
+              "kind": {
+                "from": [
+                  "results",
+                  "area",
+                  "type"
+                ]
+              }
+            }
+          }
+        }
+      },
+      "t": {
+        "type": "agent",
+        "agent": "a",
+        "instance": "t"
+      }
+    }
+  }
+}

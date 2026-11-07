@@ -1,0 +1,34 @@
+{
+  "contract": "agsdl-0.3.0",
+  "id": "review-loop",
+  "agents": {
+    "writer": {
+      "harness": "example",
+      "permissions": "workspace"
+    },
+    "reviewer": {
+      "harness": "example",
+      "permissions": "read-only"
+    }
+  },
+  "flow": {
+    "entry": "write",
+    "steps": {
+      "write": {
+        "type": "agent",
+        "agent": "writer",
+        "next": "review"
+      },
+      "review": {
+        "type": "agent",
+        "agent": "reviewer",
+        "instance": "new",
+        "maxVisits": 3,
+        "next": {
+          "revise": "write",
+          "ready": []
+        }
+      }
+    }
+  }
+}

@@ -2,10 +2,12 @@
   "compilerOptions": {
     "composite": true,
     "skipLibCheck": true,
+    "target": "ES2022",
+    "lib": ["ES2022"],
     "module": "ESNext",
     "moduleResolution": "bundler",
     "allowSyntheticDefaultImports": true,
     "types": ["bun-types"]
   },
-  "include": ["vite.config.ts", "vite.config.test.ts"]
+  "include": ["vite.config.ts", "vite.config.test.ts", "dev/generate-macro-pilot-validators.ts"]
 }

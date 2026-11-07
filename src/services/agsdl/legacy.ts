@@ -1,7 +1,6 @@
 import type { AgsdlEditorDocument } from "../../types/agsdl";
 import type { ArchitectPlanRecord } from "../architectPlanService";
 
-import { AGSDL_CONTRACT } from "./document";
 import { defaultDesign } from "./design";
 import { MACRO_ENGINE_CONTRACT, MACRO_ENGINE_IMPLEMENTATION } from "./macroAgentConfiguration";
 
@@ -214,7 +213,7 @@ export const convertLegacyPlan = (plan: LegacyPlan): AgsdlEditorDocument | null 
   const issues = issueCodes(plan);
   if (plan.nodes.some(node => node.dependencies.length)) issues.push('topology-not-migrated');
   const source = JSON.stringify({
-    contract: AGSDL_CONTRACT, id: `legacy-${safeId(plan.id, 'plan').replace(/[^A-Za-z0-9_-]/g, '-')}`,
+    contract: "agsdl-0.2.0", id: `legacy-${safeId(plan.id, 'plan').replace(/[^A-Za-z0-9_-]/g, '-')}`,
     agents,
     configurations: { legacy: { engine: 'legacyEngine' } },
     bindings: { legacyEngine: { contract: MACRO_ENGINE_CONTRACT, implementation: MACRO_ENGINE_IMPLEMENTATION } },

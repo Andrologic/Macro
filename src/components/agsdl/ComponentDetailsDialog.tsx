@@ -1,3 +1,4 @@
+import { ComponentDetails030 } from "./ComponentDetails030";
 import { DiscardChangesDialog } from "./DiscardChangesDialog";
 import { DisclosureSummary } from "./DisclosureSummary";
 import { useState, type ReactNode } from "react";
@@ -14,7 +15,11 @@ import type { ViewerCard } from "../../services/agsdl/viewer";
 import { AgsdlUserError } from "../../services/agsdl/userErrors";
 import { agsdlErrorText } from "./errorText";
 
-export function ComponentDetailsDialog({ title, target, card, canEdit = true, children, onClose, onAttach, onBack }: {
+export function ComponentDetailsDialog(props: Parameters<typeof HistoricalComponentDetailsDialog>[0]) {
+  return props.card?.edition030 ? <ComponentDetails030 {...props} /> : <HistoricalComponentDetailsDialog {...props} />;
+}
+
+function HistoricalComponentDetailsDialog({ title, target, card, canEdit = true, children, onClose, onAttach, onBack }: {
   title: string; target: AgsdlTarget; card?: ViewerCard; canEdit?: boolean; children: ReactNode; onClose: () => void; onAttach?: () => Promise<void>; onBack?: () => void;
 }) {
   const { t } = useAgsdlTranslation();

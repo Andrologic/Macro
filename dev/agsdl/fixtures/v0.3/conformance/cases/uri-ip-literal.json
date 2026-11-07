@@ -1,0 +1,15 @@
+{
+  "contract": "agsdl-0.3.0",
+  "id": "uri-ip-literal",
+  "agents": {
+    "a": {
+      "harness": "example",
+      "permissions": "full"
+    }
+  },
+  "content": {
+    "bad": {
+      "uri": "http://[broken"
+    }
+  }
+}
