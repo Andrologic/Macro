@@ -934,3 +934,76 @@ fn ipv6_matcher_agrees_with_enumerated_spelling_oracle() {
         }
     }
 }
+
+#[test]
+fn filesystem_absence_evidence_survives_mixed_guarantee_order_and_partial_absence() {
+    let f = Fixture::new();
+    let p = EffectivePolicy::new(
+        f.policy(json!("workspace")),
+        f.policy(json!({})),
+        f.policy(json!("full")),
+    );
+    let mut o = observed(&p);
+    o.shell_absent_evidence = Some("no-shell".into());
+    o.mcp_absent_evidence = Some("no-mcp".into());
+    for g in &mut o.guarantees {
+        if matches!(g.action, Action::Read | Action::Write) && g.effect == Effect::Deny {
+            g.mechanism = EnforcementMechanism::Harness;
+            g.evidence = format!("harness-{:?}", g.action);
+        }
+    }
+    for action in [Action::Read, Action::Write] {
+        o.guarantees.push(ObservedGuarantee {
+            action,
+            effect: Effect::Deny,
+            mechanism: EnforcementMechanism::Unavailable,
+            evidence: format!("absent-{action:?}"),
+        });
+    }
+    o.outside_read_evidence = None;
+    o.path_race_evidence = None;
+    for _ in 0..2 {
+        let plan = check_enforcement(&p, &o, ExecutionPurpose::Agent).unwrap();
+        assert!(plan.evidence.iter().any(|proof| proof == "absent-Read"));
+        assert!(plan.evidence.iter().any(|proof| proof == "absent-Write"));
+        o.guarantees.reverse();
+    }
+    o.guarantees.retain(|g| {
+        !(g.action == Action::Write && g.mechanism == EnforcementMechanism::Unavailable)
+    });
+    assert!(check_enforcement(&p, &o, ExecutionPurpose::Agent).is_err());
+    o.path_race_evidence = Some("race-proof".into());
+    let plan = check_enforcement(&p, &o, ExecutionPurpose::Agent).unwrap();
+    assert!(plan.evidence.iter().any(|proof| proof == "absent-Read"));
+    assert!(plan.evidence.iter().any(|proof| proof == "race-proof"));
+}
+
+#[test]
+fn unavailable_filesystem_tools_do_not_suppress_sandbox_proofs_when_shell_is_possible() {
+    let f = Fixture::new();
+    let p = f.effective(json!("workspace"));
+    let mut o = observed(&p);
+    for action in [Action::Read, Action::Write] {
+        o.guarantees.insert(
+            0,
+            ObservedGuarantee {
+                action,
+                effect: Effect::Deny,
+                mechanism: EnforcementMechanism::Unavailable,
+                evidence: format!("tool-only-{action:?}"),
+            },
+        );
+    }
+    o.outside_read_evidence = None;
+    assert!(check_enforcement(&p, &o, ExecutionPurpose::Agent).is_err());
+    o.outside_read_evidence = Some("outside-sandbox".into());
+    o.path_race_evidence = None;
+    assert!(check_enforcement(&p, &o, ExecutionPurpose::Agent).is_err());
+    o.path_race_evidence = Some("race-sandbox".into());
+    let plan = check_enforcement(&p, &o, ExecutionPurpose::Agent).unwrap();
+    assert!(!plan
+        .evidence
+        .iter()
+        .any(|proof| proof.starts_with("tool-only-")));
+    assert!(plan.evidence.iter().any(|proof| proof == "outside-sandbox"));
+}

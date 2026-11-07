@@ -250,6 +250,12 @@ pub fn check_enforcement(
                     && g.effect == effect
                     && !g.evidence.trim().is_empty()
                     && (g.mechanism != EnforcementMechanism::Unavailable || effect == Effect::Deny)
+                    // When absence removes an ask or a filesystem proof, the
+                    // returned plan must retain the actual absence evidence.
+                    && !(effect == Effect::Deny
+                        && matches!(action, Action::Read | Action::Write)
+                        && unavailable(action)
+                        && g.mechanism != EnforcementMechanism::Unavailable)
                     && !(shell
                         && matches!(action, Action::Read | Action::Write | Action::Network)
                         && g.mechanism != EnforcementMechanism::Sandbox)
