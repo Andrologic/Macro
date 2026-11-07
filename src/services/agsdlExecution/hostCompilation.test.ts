@@ -1,8 +1,11 @@
 import { expect, it } from 'bun:test';
+import { readFileSync } from 'node:fs';
 import { compilePlan, sourceDigest } from './compiler';
 import { id, json } from './conformanceFixtures';
 import { buildNativeRegistry, type NativeRegistryObservation } from './nativeRegistry';
-import { encodeHostCompilation, HOST_COMPILE_RESULT_LIMIT } from './hostCompilation';
+import { compileHost030, encodeHostCompilation, HOST_COMPILE_RESULT_LIMIT } from './hostCompilation';
+import type { CapturedRegistry030 } from './contracts030';
+import type { SourceRevision } from './contracts';
 
 async function fixture(instruction: string) {
   const model = { identity: 'macro/native-model/p/c3ludGhldGlj/m/c3ludGhldGlj', version: '1' };
@@ -69,4 +72,50 @@ it('closes a permissive tool policy while retaining its exact native input on si
   expect(refusal.toolPolicy.input).toEqual(input);
   expect(refusal.toolPolicy.decision).toBe('deny');
   expect(refusal.toolPolicy.code).toBe('INPUT_LIMIT');
+});
+
+it('runs the 0.3 reader without inventing native qualification and binds refusals to the ticket', async () => {
+  const authored = '{"contract":"agsdl-0.3.0","id":"fixture","agents":{"worker":{"harness":"codex","permissions":"read-only"}},"content":{"number":{"value":9007199254740993}}}';
+  const source: SourceRevision = { owner: { projectId: 'p', planId: 'p', branch: 'feature/p' }, revision: '1', sourceSha256: id(await sourceDigest(authored)) };
+  const modules = ['codex', 'claude-code', 'opencode', 'pi'].map(harness => ({ harness,
+    moduleJson: json(readFileSync(new URL(`../../vendor/agsdl/v0.3/harnesses/${harness}/module.json`, import.meta.url), 'utf8')) }));
+  const registry: CapturedRegistry030 = { format: 'macro-agsdl-registry/030', version: 'native-capture', modules, harnesses: [], agents: [] };
+  const ticket = { ...registry, startEntry: null, callPermissions: { allowed: false } };
+  const result = JSON.parse(await compileHost030(authored, source, ticket));
+  expect(result.static.valid).toBe(true);
+  expect(result.runtime).toMatchObject({ source, registryVersion: registry.version, supported: false });
+  expect(result.runtime.diagnostics[0]).toMatchObject({ code: 'CORRELATION', pointer: '/agents/worker' });
+  expect(result.entryValidation).toEqual({ messageJson: null, valid: true, shapeValid: true, unassessed: [] });
+  expect(JSON.parse(result.capturedRegistryJson)).toEqual(registry);
+  expect(result.productRuntimeAvailable).toBe(false);
+
+  const malformed = JSON.parse(await compileHost030('{', source, ticket));
+  expect(malformed.static.valid).toBe(false);
+  expect(malformed.runtime).toMatchObject({ source, registryVersion: registry.version, supported: false });
+});
+
+it('checks 0.3 entry and graphless messages separately from content authority', async () => {
+  const registry: CapturedRegistry030 = { format: 'macro-agsdl-registry/030', version: 'capture', modules: [], harnesses: [], agents: [] };
+  const sourceFor = async (authored: string): Promise<SourceRevision> => ({ owner: { projectId: 'p', planId: 'p', branch: 'feature/p' }, revision: '1', sourceSha256: id(await sourceDigest(authored)) });
+  const agents = '"agents":{"worker":{"harness":"synthetic","permissions":"read-only"}}';
+  for (const step of ['{"type":"call","command":"true"}', '{"type":"approval","next":{"yes":[]}}']) {
+    const authored = `{"contract":"agsdl-0.3.0","id":"test",${agents},"flow":{"entry":"work","steps":{"work":${step}}}}`;
+    const messageJson = '{"prompt":"Hello"}';
+    const result = JSON.parse(await compileHost030(authored, await sourceFor(authored), { ...registry, startEntry: { messageJson } } as never));
+    expect(result.static.valid).toBe(true);
+    expect(result.entryValidation).toMatchObject({ messageJson, shapeValid: true, valid: true });
+  }
+  const authored = `{"contract":"agsdl-0.3.0","id":"test",${agents}}`;
+  const source = await sourceFor(authored);
+  const input = { agentName: 'worker', messageJson: '{"resources":{"n":{"value":9007199254740993}}}' };
+  const result = JSON.parse(await compileHost030(authored, source, { ...registry, deliveryInput: input } as never));
+  expect(result.deliveryValidation).toMatchObject({ input, shapeValid: true, valid: false, unassessed: ['Native resource delivery qualification'] });
+  const uri = { agentName: 'worker', messageJson: '{"prompt":[{"uri":"file:///tmp/example"}]}' };
+  expect(JSON.parse(await compileHost030(authored, source, { ...registry, deliveryInput: uri } as never)).deliveryValidation)
+    .toMatchObject({ input: uri, shapeValid: true, valid: false, unassessed: ['Native content capture for URI'] });
+  const plain = { agentName: 'worker', messageJson: '{"prompt":"ok"}' };
+  expect(JSON.parse(await compileHost030(authored, source, { ...registry, deliveryInput: plain } as never)).deliveryValidation)
+    .toMatchObject({ input: plain, shapeValid: true, valid: true });
+  const unknown = { ...plain, agentName: 'other' };
+  expect(JSON.parse(await compileHost030(authored, source, { ...registry, deliveryInput: unknown } as never)).deliveryValidation.valid).toBe(false);
 });
