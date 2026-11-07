@@ -2,11 +2,12 @@ import { describe, expect, it } from 'bun:test';
 import { addAgent, addDefinition, addStep, renameStep } from './editing';
 import { applyChanges, validateDocument } from './document';
 import { createExample, createLegacyExample } from './examples';
-import { createEmptySystem } from './design';
+
+const empty020 = () => '{"contract":"agsdl-0.2.0","id":"test","agents":{},"configurations":{},"bindings":{}}';
 
 describe('AgSDL editing by contract', () => {
   it('adds a complete persistent Agent and explicit engine binding to an empty 0.2 draft', async () => {
-    const draft = createEmptySystem('Test');
+    const draft = empty020();
     const source = applyChanges(draft, addAgent(draft, 0));
     const doc = JSON.parse(source);
     expect(Object.values(doc.agents)).toHaveLength(1);
@@ -14,7 +15,7 @@ describe('AgSDL editing by contract', () => {
     expect((await validateDocument(source)).flatMap(report => report.results).every(result => result.verdict === 'pass')).toBe(true);
   });
   it('renames flow map keys and every control reference while retaining opaque source numbers', () => {
-    const doc = JSON.parse(createExample('release'));
+    const doc = JSON.parse(createExample('release', 'agsdl-0.2.0'));
     doc.bindings.engine.settings = { number: 0 };
     doc.flow.steps.review.onError = ['checklist'];
     doc.flow.steps['prepare-review'].next = ['checklist'];
@@ -30,7 +31,7 @@ describe('AgSDL editing by contract', () => {
     expect(() => renameStep(source, 0, 0, 'invalid name')).toThrow();
   });
   it('authors 0.2 content and skills without declaration annotations', async () => {
-    let source = createEmptySystem('Test');
+    let source = empty020();
     for (const kind of ['Instructions', 'Resource', 'Skill', 'Tool']) source = applyChanges(source, addDefinition(source, kind));
     const doc = JSON.parse(source);
     expect(doc.content['instructions-1']).toEqual({ value: '' });
@@ -39,7 +40,7 @@ describe('AgSDL editing by contract', () => {
     expect((await validateDocument(source)).flatMap(report => report.results).every(result => result.verdict === 'pass')).toBe(true);
   });
   it('requires deliberate references for Join and Approval instead of invented protected calls', () => {
-    const source = createExample('release');
+    const source = createExample('release', 'agsdl-0.2.0');
     expect(() => addStep(source, 0, 'join')).toThrow('direct fork');
     expect(() => addStep(source, 0, 'approval')).toThrow('protected Call');
     expect(() => addStep(source, 0, 'end')).toThrow('empty next');

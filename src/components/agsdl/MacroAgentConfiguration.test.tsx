@@ -24,7 +24,7 @@ afterEach(() => {
   useAgsdlModelCatalogue.setState(originalCatalogue);
   useProviderStore.setState({ providers: originalProviders.providers, modelsByProvider: originalProviders.modelsByProvider });
 });
-async function mount(source = createExample("release"), catalogue = nativeCatalogue) {
+async function mount(source = createExample("release", "agsdl-0.2.0"), catalogue = nativeCatalogue) {
   useAgsdlModelCatalogue.setState({ catalogue, loading: false, error: undefined, load: async () => useAgsdlModelCatalogue.getState().catalogue ?? catalogue });
   useProviderStore.setState({
     providers: [{ id: "demo-provider", name: "Demo provider", status: "online" }],
@@ -68,7 +68,7 @@ it("rejects a model selection if the agent has changed the document while the fo
 
 it("shows Macro provider and model names while keeping opaque parameters collapsed", async () => {
   await mount();
-  const doc = JSON.parse(createExample("release"));
+  const doc = JSON.parse(createExample("release", "agsdl-0.2.0"));
   doc.runtime.configurations[0].agents[0].engine = { identity: "macro/desktop", version: "1" };
   doc.runtime.configurations[0].agents[0].parameters = { providerId: "demo-provider", modelId: "demo-model", temperature: 0.5 };
   const source = JSON.stringify(doc);

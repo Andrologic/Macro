@@ -32,7 +32,7 @@ const submit = () => act(async () => { document.body.querySelector("form")!.disp
 
 describe("component detail editing", () => {
   it("saves a 0.2 literal prompt without replacing an external Engine configuration", async () => {
-    const doc = JSON.parse(createExample("release"));
+    const doc = JSON.parse(createExample("release", "agsdl-0.2.0"));
     doc.bindings.engine = { contract: { identity: "example/engine", version: "1" }, implementation: { identity: "example/runtime", version: "1" } };
     const source = JSON.stringify(doc);
     await mount(() => {}, source);

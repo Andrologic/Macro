@@ -10,7 +10,7 @@ import { createExample } from '../../services/agsdl/examples';
 let root: Root | undefined;
 let host: HTMLDivElement;
 afterEach(() => { act(() => root?.unmount()); host?.remove(); });
-const card = projectViewer(createExample('release')).graphs[0].cards[0];
+const card = projectViewer(createExample('release', 'agsdl-0.2.0')).graphs[0].cards[0];
 const actions = (run = () => {}): GraphPopupAction[] => [
   { label: 'Details', icon: null, run }, { label: 'Open task', icon: null, run },
 ];

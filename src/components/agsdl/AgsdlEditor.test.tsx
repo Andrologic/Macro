@@ -41,7 +41,7 @@ describe("AgSDL viewer", () => {
   };
 
   it("reads 0.2 metadata and opens the persistent participant without creating a task from its prompt", async () => {
-    const source = createExample("feature");
+    const source = createExample("feature", "agsdl-0.2.0");
     await mount(source);
     act(() => useAgsdlStore.setState(state => ({ sessions: { ...state.sessions, [key]: { ...state.sessions[key], display: { title: "Feature review", cards: { "/flow/steps/specify": { title: "Specification visit" } } } } } })));
     expect(container!.querySelector("header strong")?.textContent).toBe("Feature review");
@@ -56,7 +56,7 @@ describe("AgSDL viewer", () => {
   });
 
   it("opens details and attaches the exact block from its context menu", async () => {
-    await mount(createExample("feature"));
+    await mount(createExample("feature", "agsdl-0.2.0"));
     const first = container!.querySelector<HTMLButtonElement>(".agsdl-graph-node")!;
     await act(async () => first.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true })));
     expect(document.querySelector('[role="menu"]')).not.toBeNull();
@@ -71,7 +71,7 @@ describe("AgSDL viewer", () => {
   });
 
   it("keeps Architect on the authored document even when an execution capture is selected", async () => {
-    const authoredSource = createExample("feature");
+    const authoredSource = createExample("feature", "agsdl-0.2.0");
     const currentDocument = JSON.parse(authoredSource);
     const agent = Object.keys(currentDocument.agents)[0];
     currentDocument.agents[agent].prompt = [{ value: "Current draft prompt" }];
