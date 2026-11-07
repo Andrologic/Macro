@@ -85,11 +85,6 @@ export function layoutViewer(cards: ViewerCard[], edges: ViewerEdge[], heights: 
   const byPath = new Map(cards.map(card => [card.path, card]));
   const cardIndex = new Map(cards.map((card, index) => [card.path, index]));
   const flow = edges.filter(edge => !edge.exchangeOnly && byPath.has(edge.source) && byPath.has(edge.target));
-  const parallelCounts = new Map<string, number>();
-  for (const edge of flow) if (edge.route030?.role === "normal") {
-    const key = JSON.stringify([edge.source, edge.target]);
-    parallelCounts.set(key, (parallelCounts.get(key) ?? 0) + 1);
-  }
   const outgoing = new Map(cards.map(card => [card.path, [] as ViewerEdge[]]));
   const incoming = new Map(cards.map(card => [card.path, 0]));
   for (const edge of flow) {
@@ -299,18 +294,26 @@ export function layoutViewer(cards: ViewerCard[], edges: ViewerEdge[], heights: 
     before[Math.min(...ranks)] = VIEWER_FRAME.top + VIEWER_FRAME.heading;
     after[Math.max(...ranks)] = VIEWER_FRAME.padding;
   }
-  // Only forward routes in a corridor need extra vertical tracks. Rails and
-  // returns already have lateral lanes and must not expand unrelated rows.
+  // Allocate distinct bands per parallel group in each corridor, leaving the
+  // ordinary routes their own channel. Rails do not expand unrelated rows.
   const rowGaps = new Array<number>(layerCount).fill(ROW_GAP);
+  const parallel = new Map<string, ViewerEdge[]>();
   for (const [edge, chain] of chains) {
     if (edge.route030?.role !== "normal") continue;
-    const count = parallelCounts.get(JSON.stringify([edge.source, edge.target])) ?? 1;
-    if (count < 2) continue;
-    const required = (count - 1) * PARALLEL_GAP * 2 + 90;
-    for (const id of chain.slice(0, -1)) {
-      const layer = nodes.get(id)!.layer;
-      rowGaps[layer] = Math.max(rowGaps[layer], required);
-    }
+    if (chain.length < 2) continue;
+    const key = JSON.stringify([edge.source, edge.target]);
+    parallel.set(key, [...(parallel.get(key) ?? []), edge]);
+  }
+  const bands = new Map<string, { layer: number; offset: number }>();
+  const usedBand = new Array<number>(layerCount).fill(0);
+  for (const [key, edges] of parallel) if (edges.length > 1) {
+    const chain = chains.get(edges[0])!;
+    const horizontal = chain.slice(0, -1).findIndex((id, index) => Math.abs(nodes.get(id)!.x - nodes.get(chain[index + 1])!.x) > 0.5);
+    const layer = nodes.get(chain[horizontal < 0 ? 0 : horizontal])!.layer;
+    const offset = 50 + usedBand[layer];
+    bands.set(key, { layer, offset });
+    usedBand[layer] += (edges.length - 1) * PARALLEL_GAP * 2 + 52;
+    rowGaps[layer] = ROW_GAP + 50 + usedBand[layer];
   }
   const rowTop: number[] = [], rowBottom: number[] = [];
   let y = 0;
@@ -321,7 +324,7 @@ export function layoutViewer(cards: ViewerCard[], edges: ViewerEdge[], heights: 
     rowBottom.push(y + height);
     y += height + after[index] + rowGaps[index];
   });
-  const channel = (layer: number) => rowBottom[layer] + after[layer] + rowGaps[layer] / 2;
+  const channel = (layer: number) => rowBottom[layer] + after[layer] + rowGaps[layer] - ROW_GAP / 2;
 
   // Horizontal runs sharing a corridor get separate tracks unless they share an end.
   const routes = new Map<string, ViewerEdgeRoute>();
@@ -357,20 +360,14 @@ export function layoutViewer(cards: ViewerCard[], edges: ViewerEdge[], heights: 
 
   // Distinct authored choices can share both endpoints. Give each a separate
   // pointer-sized track, even when many choices exceed the ordinary track cap.
-  const parallel = new Map<string, ViewerEdge[]>();
-  for (const [edge, steps] of runSteps) {
-    if (edge.route030?.role !== "normal" || !steps.length) continue;
-    const key = JSON.stringify([edge.source, edge.target]);
-    parallel.set(key, [...(parallel.get(key) ?? []), edge]);
-  }
-  for (const edges of parallel.values()) if (edges.length > 1) edges.forEach((edge, index) => {
+  for (const [key, edges] of parallel) if (edges.length > 1) edges.forEach((edge, index) => {
     const steps = runSteps.get(edge)!;
     const route = routes.get(edge.id)!;
-    const offset = (index - (edges.length - 1) / 2) * PARALLEL_GAP;
+    const band = bands.get(key)!;
+    const y = rowBottom[band.layer] + after[band.layer] + band.offset + index * PARALLEL_GAP * 2;
     const horizontal = steps.findIndex(({ run }) => run.x2 - run.x1 > 0.5);
-    if (horizontal >= 0) route.steps[horizontal].y = channel(steps[horizontal].run.layer) + offset;
+    if (horizontal >= 0) route.steps[horizontal].y = y;
     else {
-      const y = rowBottom[steps[0].run.layer] + after[steps[0].run.layer] + 20 + index * PARALLEL_GAP * 2;
       const sideways = (index % 2 === 0 ? -1 : 1) * (Math.floor(index / 2) + 1) * PARALLEL_GAP;
       route.steps.splice(0, 1, { y, x: steps[0].run.x1 + sideways }, { y: y + 32, x: steps[0].run.x1 });
     }

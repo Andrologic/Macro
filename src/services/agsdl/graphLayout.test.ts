@@ -108,6 +108,27 @@ describe("AgSDL reading layout", () => {
       }
     }
   });
+  it("allocates separate corridors to crossing groups and ordinary routes in either order", () => {
+    const cards = ["a", "b", "c", "d"].map(id => card(id));
+    const branch = (from: string, to: string, key: string): ViewerEdge => ({ ...edge(from, to, key), route030: {
+      path: `/flow/steps/${from}/next/${key}`, sourcePath: `/flow/steps/${from}`, role: "normal", key, targetKind: "step",
+    } });
+    const failure: ViewerEdge = { ...edge("a", "c", "onError"), route030: {
+      path: "/flow/steps/a/onError", sourcePath: "/flow/steps/a", role: "error", targetKind: "step",
+    } };
+    const ordinary = [branch("a", "d", "other"), branch("b", "c", "other"), failure];
+    const left = ["c0", "c1", "c2"].map(key => branch("a", "c", key));
+    const right = ["c0", "c1", "c2"].map(key => branch("b", "d", key));
+    for (const order of [[...ordinary, ...left, ...right], [...ordinary, ...right.reverse(), ...left.reverse()]]) {
+      const graph = layoutViewer(cards, order);
+      const ys = [...left, ...right].map(item => graph.routes.get(item.id)!.steps[0].y).sort((a, b) => a - b);
+      expect(ys.every((y, i) => i === 0 || y - ys[i - 1] >= 18)).toBe(true);
+      const baseline = graph.routes.get(ordinary[0].id)!.steps[0].y;
+      expect(ys.every(y => Math.abs(y - baseline) >= 18)).toBe(true);
+      const failureY = graph.routes.get(failure.id)!.steps[0].y;
+      expect(ys.every(y => Math.abs(y - failureY) >= 18)).toBe(true);
+    }
+  });
   it("keeps the main path in one straight column below the tallest card of each row", () => {
     const cards = ["a", "b", "c"].map(id => card(id));
     const graph = layoutViewer(cards, [edge("a", "b"), edge("b", "c")], { [cards[0].path]: 180 });
