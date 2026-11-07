@@ -92,3 +92,31 @@ describe('0.3 change attribution', () => {
     expect(reviewDesignChanges(large, large.replace('9007199254740993123', '90071992547409931230e-1'))).toEqual({ changes: [], configuration: false, design: false, other: false });
   });
 });
+
+it.each(['/agents/review', '/flow/steps/review'])('reviews display descriptions at %s with or without authored instructions', path => {
+  for (const populated of [false, true]) {
+    const source = changed(createExample('feature'), doc => {
+      if (populated) doc.flow.steps.review.prompt = 'Inspect this candidate.';
+      else { delete doc.agents.review.instructions; delete doc.flow.steps.review.prompt; }
+    });
+    const metadata = (description: string) => ({ display: { cards: { [path]: { description } } } });
+    const review = reviewDesignChanges(source, source, metadata('First description'), metadata('Changed description'));
+    expect(review.changes).toMatchObject([{ path, aspects: ['instructions'] }]);
+    expect(review.changes[0].details).toMatchObject([{ aspect: 'instructions', before: expect.stringContaining('First description'), after: expect.stringContaining('Changed description') }]);
+    expect(review.configuration).toBe(false);
+    expect(review.other).toBe(false);
+    expect(reviewDesignChanges(source, source, metadata('Unchanged'), metadata('Unchanged'))).toEqual({ changes: [], configuration: false, design: false, other: false });
+  }
+});
+
+it('ignores equivalent numeric spellings in routes and still reports changed limits exactly', () => {
+  const source = JSON.stringify(authoringPatterns030().fanout);
+  for (const [before, after] of [['"max":100', '"max":1e2'], ['"concurrency":2', '"concurrency":2.0']] as const) {
+    expect(source).toContain(before);
+    expect(reviewDesignChanges(source, source.replace(before, after))).toEqual({ changes: [], configuration: false, design: false, other: false });
+  }
+  expect(reviewDesignChanges(source, source.replace('"max":100', '"max":101'))).toMatchObject({ changes: [{ path: '/flow/steps/files', aspects: ['connections'] }], other: false });
+  const large = source.replace('"max":100', '"max":9007199254740993123');
+  expect(reviewDesignChanges(large, large.replace('9007199254740993123', '90071992547409931230e-1'))).toEqual({ changes: [], configuration: false, design: false, other: false });
+  expect(reviewDesignChanges(large, large.replace('9007199254740993123', '9007199254740993124')).changes).toMatchObject([{ path: '/flow/steps/files', aspects: ['connections'] }]);
+});

@@ -231,7 +231,7 @@ function snapshot030(source: string, metadata?: AgsdlEnvelopeMetadata): Snapshot
   };
   const route = (value: unknown): unknown => {
     if (Array.isArray(value)) return value.map(route);
-    if (!value || typeof value !== 'object') return value;
+    if (!value || typeof value !== 'object' || value instanceof NumberToken) return value;
     return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, key === 'message' ? message(item) : route(item)]));
   };
   const mission = (value: unknown): string => {
@@ -246,9 +246,10 @@ function snapshot030(source: string, metadata?: AgsdlEnvelopeMetadata): Snapshot
     return { id, declaration: object(doc[catalog])[id] };
   });
   const add = (path: string, id: string, kind: string, details: Record<string, unknown>, instructions: unknown, connections: unknown, configuration: unknown) => {
+    const description = cards[path]?.description;
     const card: ViewerCard = { id, path, kind, title: cards[path]?.title || text(details.title) || id,
-      mission: mission(instructions) || cards[path]?.description || '', unresolved: false, inputs: [], outputs: [], branches: [], details };
-    participants.set(`${path}:0`, { card, parts: { identity: { title: card.title, kind, description: details.description }, instructions, connections, configuration } });
+      mission: [mission(instructions), description].filter(Boolean).join('\n\n'), unresolved: false, inputs: [], outputs: [], branches: [], details };
+    participants.set(`${path}:0`, { card, parts: { identity: { title: card.title, kind, description: details.description }, instructions: { content: instructions, description }, connections, configuration } });
   };
   for (const [name, value] of Object.entries(object(doc.agents))) {
     const agent = object(value);
