@@ -25,6 +25,16 @@ describe('strict exact JSON input', () => {
     expect(parsed.spans.get('')).toEqual({ start: 1, end: bytes(source).length - 1 });
   });
 
+  test('refuses sparse or non-JSON arrays instead of changing their contents', () => {
+    const sparse = new Array(1) as unknown[] & { extra?: number };
+    sparse.extra = 7;
+    expect(() => stringify(sparse)).toThrow('JSON array');
+    const extra = [1] as number[] & { extra?: number };
+    extra.extra = 7;
+    expect(() => stringify(extra)).toThrow('JSON array');
+    expect(stringify([null, 7])).toBe('[null,7]');
+  });
+
   test('rejects malformed JSON, escaped duplicate keys, BOM and invalid scalars', () => {
     for (const source of ['', 'NaN', 'Infinity', '-Infinity', '01', '+1', '1.', '1e', 'true false',
       '[1,]', '{"a":1,}', '{"a":1,"\\u0061":2}', '\ufeff{}', '"\\ud800"', '"\\udc00"',

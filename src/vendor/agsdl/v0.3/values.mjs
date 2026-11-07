@@ -112,7 +112,8 @@ export function stringify(value) {
       output.push(array ? '[' : '{');
       pending.push({ leave: v }, { text: array ? ']' : '}' });
       // Array holes are not JSON values either.
-      if (array && keys.length !== v.length) throw new TypeError('Expected a JSON array');
+      if (array && (keys.length !== v.length || keys.some((key, index) => key !== String(index))))
+        throw new TypeError('Expected a JSON array');
       for (let i = keys.length - 1; i >= 0; i--) {
         const key = keys[i];
         pending.push({ value: v[key] });

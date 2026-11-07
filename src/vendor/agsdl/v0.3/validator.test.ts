@@ -235,6 +235,13 @@ describe('exact authored numbers and reader boundaries', () => {
     object(steps.fix).maxVisits = new NumberToken('1e999999');
     expect(validateExact(document, { modules }).valid).toBe(true);
   });
+  it('reports PARSE for a mutated sparse array with a non-index property', () => {
+    const document = object(exact('{"contract":"agsdl-0.3.0","id":"test","agents":{},"content":{"item":{"value":[]}}}'));
+    const sparse = new Array(1) as ExactValue[] & { extra?: number };
+    sparse.extra = 7;
+    object(object(document.content).item).value = sparse;
+    expect(codes(validateExact(document), 'error')).toEqual(['PARSE']);
+  });
   it('rejects unpaired UTF-16 surrogates in mutated exact values and keys', () => {
     for (const raw of ['\ud800', '\udc00', 'x\ud800y']) {
       const document = object(exact('{"contract":"agsdl-0.3.0","id":"test","agents":{},"content":{"item":{"value":"ok"}}}'));
