@@ -40,8 +40,48 @@ describe("AgSDL viewer", () => {
     await act(async () => root!.render(<AgsdlEditor target={target} />));
   };
 
+  it("shows exact visit limits accessibly on all 0.3 step types", async () => {
+    const source = `{"contract":"agsdl-0.3.0","id":"limits","agents":{"a":{"harness":"codex","permissions":"read-only"}},"flow":{"entry":"agent","steps":{"agent":{"type":"agent","agent":"a","title":"Agent step","maxVisits":9007199254740993,"next":"call"},"call":{"type":"call","title":"Call step","command":"echo","maxVisits":7,"next":"unresolved"},"unresolved":{"type":"agent","agent":"missing","title":"Unknown agent","maxVisits":3,"next":"approval"},"approval":{"type":"approval","title":"Approval step","maxVisits":4,"next":"join"},"join":{"type":"join","title":"Join step","quorum":{"count":2},"maxVisits":5,"next":"compose"},"compose":{"type":"compose","title":"Compose step","composition":"missing","maxVisits":12345678901234567890123456789012345678901234567890}}}}`;
+    await mount(source);
+    const node = (title: string) => Array.from(container!.querySelectorAll<HTMLButtonElement>('.agsdl-graph-node')).find(item => item.textContent?.includes(title))!;
+    for (const [title, limit] of [['Agent step', '9007199254740993'], ['Call step', '7'], ['Unknown agent', '3'], ['Approval step', '4'], ['Join step', '5'], ['Compose step', '12345678901234567890123456789012345678901234567890']]) {
+      const item = node(title);
+      expect(item).toBeDefined();
+      expect(item.textContent).toContain(limit);
+      expect(item.getAttribute('aria-label')).toContain(`Visit limit: ${limit}`);
+      expect(item.querySelector(`[title="Visit limit: ${limit}"]`)).not.toBeNull();
+    }
+    expect(node('Join step').textContent).toContain('Quorum');
+    expect(node('Join step').getAttribute('aria-label')).toContain('Quorum');
+  });
+
+  it("returns from definitions to the previously selected graph", async () => {
+    const source = JSON.stringify({ contract: "agsdl-0.3.0", id: "x", agents: { a: { harness: "codex", permissions: "read-only" } },
+      flow: { entry: "one", steps: { one: { type: "agent", agent: "a", title: "Flow step" } } },
+      compositions: { fragment: { title: "Fragment", entry: "two", steps: { two: { type: "agent", agent: "a", title: "Template step" } }, outputs: [] } } });
+    await mount(source);
+    const graphSelect = container!.querySelector<HTMLSelectElement>('select[aria-label="Graph"]')!;
+    act(() => { graphSelect.value = '1'; graphSelect.dispatchEvent(new Event('change', { bubbles: true })); });
+    expect(container!.textContent).toContain('Template step');
+    act(() => { graphSelect.value = '-1'; graphSelect.dispatchEvent(new Event('change', { bubbles: true })); });
+    expect(container!.querySelector('.agsdl-graph-caption')?.textContent).toContain('without a workflow graph');
+    act(() => Array.from(container!.querySelectorAll<HTMLButtonElement>('button')).find(button => button.textContent === 'Definitions')!.click());
+    expect(container!.textContent).toContain('Template step');
+    expect(container!.querySelector('.agsdl-graph-caption')).toBeNull();
+  });
+
+  it("opens a composition from definitions when no main flow exists", async () => {
+    const source = JSON.stringify({ contract: "agsdl-0.3.0", id: "x", agents: {},
+      compositions: { fragment: { title: "Fragment", entry: "only", steps: { only: { type: "call", command: "echo", title: "Template step" } }, outputs: [] } } });
+    await mount(source);
+    expect(container!.querySelector('.agsdl-graph-caption')).not.toBeNull();
+    act(() => Array.from(container!.querySelectorAll<HTMLButtonElement>('button')).find(button => button.textContent === 'Definitions')!.click());
+    expect(container!.textContent).toContain('Template step');
+    expect(container!.querySelector('.agsdl-graph-caption')).toBeNull();
+  });
+
   it("reads 0.2 metadata and opens the persistent participant without creating a task from its prompt", async () => {
-    const source = createExample("feature");
+    const source = createExample("feature", "agsdl-0.2.0");
     await mount(source);
     act(() => useAgsdlStore.setState(state => ({ sessions: { ...state.sessions, [key]: { ...state.sessions[key], display: { title: "Feature review", cards: { "/flow/steps/specify": { title: "Specification visit" } } } } } })));
     expect(container!.querySelector("header strong")?.textContent).toBe("Feature review");
@@ -56,7 +96,7 @@ describe("AgSDL viewer", () => {
   });
 
   it("opens details and attaches the exact block from its context menu", async () => {
-    await mount(createExample("feature"));
+    await mount(createExample("feature", "agsdl-0.2.0"));
     const first = container!.querySelector<HTMLButtonElement>(".agsdl-graph-node")!;
     await act(async () => first.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true })));
     expect(document.querySelector('[role="menu"]')).not.toBeNull();
@@ -71,7 +111,7 @@ describe("AgSDL viewer", () => {
   });
 
   it("keeps Architect on the authored document even when an execution capture is selected", async () => {
-    const authoredSource = createExample("feature");
+    const authoredSource = createExample("feature", "agsdl-0.2.0");
     const currentDocument = JSON.parse(authoredSource);
     const agent = Object.keys(currentDocument.agents)[0];
     currentDocument.agents[agent].prompt = [{ value: "Current draft prompt" }];

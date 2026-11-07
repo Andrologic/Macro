@@ -62,7 +62,7 @@ import { createExample, createExampleDocument, AGSDL_EXAMPLES } from './examples
 
 describe('AgSDL 0.2 design envelopes', () => {
   it('keeps Macro metadata outside the closed document and preserves source exactly', async () => {
-    const draft = createEmptySystemDocument('Préparer la release');
+    const draft = createEmptySystemDocument('Préparer la release', 'agsdl-0.2.0');
     const source = draft.source.replace('"agents": {}', '"agents" : {}');
     const changed = withDocumentDesign(source, { ...readDesign(source, draft.design), purpose: 'Publier après vérification' }, draft);
     expect(changed.source).toBe(source);
@@ -73,12 +73,12 @@ describe('AgSDL 0.2 design envelopes', () => {
     expect(() => designChanges(source, readDesign(source))).toThrow('envelope');
   });
   it('rejects malformed envelope metadata without discarding it', () => {
-    const draft = createEmptySystemDocument('Test');
+    const draft = createEmptySystemDocument('Test', 'agsdl-0.2.0');
     const malformed = { ...draft.design!, version: 2 };
     expect(() => readDesign(draft.source, malformed as never)).toThrow('preserved');
   });
   it('keeps existing row extensions and supports removal of optional target paths', () => {
-    const draft = createEmptySystemDocument('Test');
+    const draft = createEmptySystemDocument('Test', 'agsdl-0.2.0');
     const design = { ...draft.design!, requirements: [{ id: 'guide', label: 'Guide', description: '', value: '', targetPath: '/content/guide/value', extension: 'retained' }] };
     const next = { ...design, requirements: [{ id: 'guide', label: 'Instructions', description: '', value: 'Check evidence' }] };
     const updated = withDocumentDesign(draft.source, next, { design });
@@ -88,12 +88,12 @@ describe('AgSDL 0.2 design envelopes', () => {
     const source = createEmptySystem('Historical');
     const inventory = manualMigrationInventory(source);
     expect(inventory.originalSource).toBe(source);
-    expect(inventory.to).toBe('agsdl-0.2.0');
+    expect(inventory.to).toBe('agsdl-0.3.0');
     expect(inventory.requiresAuthoring).toContain('persistent-agent-lifecycle');
     expect(JSON.parse(source).contract).toBe('agsdl-0.1.0');
   });
   it('ships human labels as presentation metadata without adding source fields', () => {
-    const document = createExampleDocument('release'), doc = JSON.parse(document.source);
+    const document = createExampleDocument('release', 'agsdl-0.2.0'), doc = JSON.parse(document.source);
     expect(document.display?.cards?.['/agents/review'].title).toBe('PR review');
     expect(document.display?.cards?.['/flow/steps/review'].title).toBe('PR review');
     expect(doc.agents.review.title).toBeUndefined();
@@ -104,7 +104,7 @@ describe('AgSDL 0.2 design envelopes', () => {
   });
   it('creates valid 0.2 examples with authored configurations and explicit transfer', async () => {
     for (const kind of AGSDL_EXAMPLES) {
-      const source = createExample(kind), doc = JSON.parse(source);
+      const source = createExample(kind, 'agsdl-0.2.0'), doc = JSON.parse(source);
       expect(doc.contract).toBe('agsdl-0.2.0');
       expect(doc.root).toBeUndefined();
       expect(doc.configurations.project.engine).toBe('engine');
@@ -156,7 +156,7 @@ describe('adaptation support assertions', () => {
 it('preserves blueprint provenance when ordinary design edits omit origin in both editions', () => {
   const origin = { branchName: 'develop', planId: 'blueprint', name: 'Blueprint', revision: 2 };
   const next = { ...defaultDesign(), context: 'Edited context' };
-  const modern = createEmptySystemDocument('Copy');
+  const modern = createEmptySystemDocument('Copy', 'agsdl-0.2.0');
   modern.design!.origin = origin;
   expect(withDocumentDesign(modern.source, next, modern).design?.origin).toEqual(origin);
   expect(withDocumentDesign(modern.source, { ...next, origin: { planId: 'blueprint', name: 'Blueprint', revision: 2 } }, modern).design?.origin).toEqual(origin);

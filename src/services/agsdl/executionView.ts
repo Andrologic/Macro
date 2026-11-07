@@ -5,6 +5,12 @@ import { pointerPart, readDocument, object } from "./document";
 import type { ExactJsonText } from "../agsdlExecution/contracts";
 import { sameSource } from "./runtimeSelection";
 
+/** Profile is determined by the captured contract, never by the current default. */
+export function executionProfileForContract(contract: unknown): 'macro-serial-inline-v1' | 'macro-agsdl-030-v1' | undefined {
+  if (contract === 'agsdl-0.2.0') return 'macro-serial-inline-v1';
+  if (contract === 'agsdl-0.3.0') return 'macro-agsdl-030-v1';
+}
+
 export function assertProjection(page: PublicProjection, snapshot: PublicSnapshot): void {
   if (page.systemStartId !== snapshot.systemStartId || !sameSource(page.source, snapshot.source) || page.agents.length > 64 || page.activations.length > 64 ||
       page.activations.some(item => item.work.systemStartId !== snapshot.systemStartId) || (page.nextPage && page.nextPage.cursor !== page.cursor)) throw new Error("Invalid public projection page");

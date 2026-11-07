@@ -84,7 +84,7 @@ export function blockDetails(card: ViewerCard, declarations: ViewerCard[], steps
   if (card.kind === "join") {
     // Members count only once launched by this step; name it as the graph does.
     add("after", [sibling(step.after)]);
-    add("mode", [typeof step.mode === "string" ? step.mode : "all", typeof step.remaining === "string" ? `remaining: ${step.remaining}` : undefined]);
+    add("mode", [card.edition030 && step.quorum ? "quorum" : typeof step.mode === "string" ? step.mode : "all", typeof step.remaining === "string" ? `remaining: ${step.remaining}` : undefined]);
     add("accept", [predicateText(step.accept)]);
   }
   if (card.kind === "compose") add("agents", Object.entries(object(step.agents)).map(([parameter, agent]) => `${parameter} → ${title(`/agents/${String(agent)}`, String(agent))}`));
@@ -100,7 +100,8 @@ export function blockDetails(card: ViewerCard, declarations: ViewerCard[], steps
   const fields = object(context.value);
   if (Object.keys(fields).length && Object.hasOwn(context, "value")) add("context", Object.entries(fields).map(([name, value]) => `${name} = ${JSON.stringify(value)}`));
   else if (Object.hasOwn(scope, "context")) add("context", [operandText(scope.context)]);
-  if (typeof step.maxVisits === "number") add("limit", [String(step.maxVisits)]);
+  if (card.edition030?.maxVisitsJson !== undefined) add("limit", [card.edition030.maxVisitsJson]);
+  else if (typeof step.maxVisits === "number") add("limit", [String(step.maxVisits)]);
   return details;
 }
 
@@ -108,7 +109,8 @@ export function blockDetails(card: ViewerCard, declarations: ViewerCard[], steps
 export interface EdgeDetails { route: "next" | "choice" | "true" | "false" | "approved" | "denied" | "error" | "exchange" | "dependency"; choice?: string; transmits: string[] }
 export function edgeDetails(edge: ViewerEdge): EdgeDetails {
   const route = edge.exchangeOnly ? "exchange" : edge.dependency ? "dependency"
+    : edge.route030 ? edge.route030.role === "error" ? "error" : edge.route030.key === undefined ? "next" : "choice"
     : edge.label === "onError" ? "error" : ["next", "success", ""].includes(edge.label) ? "next"
       : ["true", "false", "approved", "denied"].includes(edge.label) ? edge.label as EdgeDetails["route"] : "choice";
-  return { route, ...(route === "choice" ? { choice: edge.label } : {}), transmits: list(edge.transfers).map(String) };
+  return { route, ...(route === "choice" ? { choice: edge.route030?.key ?? edge.label } : {}), transmits: list(edge.transfers).map(String) };
 }

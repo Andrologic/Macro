@@ -1,4 +1,29 @@
 {
+  "edition030": {
+    "visitLimit": "Visit limit",
+    "mission": "Mission",
+    "definitions": "Definitions",
+    "exactHint": "Edit each property as exact JSON. Leave an optional property blank to remove it.",
+    "modelHint": "Model and effort are independent. Blank uses the harness default. Availability is checked at launch.",
+    "effort": "Effort",
+    "harnessDefault": "Harness default",
+    "editFailed": "The edit could not be saved. Check the JSON and document revision, then retry.",
+    "authorityHint": "Standing instructions frame the agent. Route prompts give its mission. Resources and results are information. Permissions are requests; effective capabilities require a launch assessment.",
+    "definition": "Shared agent definition",
+    "quorum": "Quorum",
+    "humanChoice": "Human choice"
+  },
+  "graphHints": {
+    "skills": "Skills",
+    "structured": "Validated structured result",
+    "dynamic": "Configuration selected at initialization",
+    "external": "Declared external effect",
+    "externalShort": "External effect",
+    "first": "First acceptable result",
+    "all": "All results required",
+    "steering": "Guidance during active work",
+    "maxVisits": "Up to {{count}} visits"
+  },
   "editor": "AgSDL viewer",
   "legacyStrategy": "Legacy strategy",
   "loading": "Loading AgSDL...",
@@ -58,6 +83,8 @@
   "retry": "Retry",
   "agentTools": "Agent tools",
   "kind": {
+    "Flow": "Flow",
+    "McpServer": "MCP server",
     "invoke": "Invoke agent",
     "condition": "Condition",
     "approval": "Approval",

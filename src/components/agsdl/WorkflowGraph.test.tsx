@@ -54,3 +54,16 @@ it('unfolds a composition step in place and folds it back from the frame heading
   expect(titles()).not.toContain('Concepteur de l’intervention');
   expect(crisis.querySelector('.agsdl-composition-frame')).toBeNull();
 });
+
+it('retains the visit limit and runtime status on a 0.3 node', async () => {
+  const source = '{"contract":"agsdl-0.3.0","id":"runtime","agents":{"a":{"harness":"codex"}},"flow":{"entry":"a","steps":{"a":{"type":"agent","agent":"a","title":"Review","maxVisits":9007199254740993}}}}';
+  const projected = projectViewer(source);
+  const graph = projected.graphs[0];
+  host = document.createElement('div'); document.body.append(host); root = createRoot(host);
+  await act(async () => root!.render(<WorkflowGraph cards={graph.cards} edges={[]} entry={graph.entry.target} selected="" select={() => {}} title={card => card.title}
+    nativeActivations={{ '/flow/steps/a': { state: 'active', activations: [] } }} />));
+  const node = host.querySelector<HTMLButtonElement>('.agsdl-graph-node')!;
+  expect(node.querySelector('[role="img"]')?.getAttribute('aria-label')).toBeTruthy();
+  expect(node.querySelector('[title="Visit limit: 9007199254740993"]')?.getAttribute('aria-label')).toBe('Visit limit: 9007199254740993');
+  expect(node.textContent).toContain('9007199254740993');
+});

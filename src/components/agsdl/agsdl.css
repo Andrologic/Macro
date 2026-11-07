@@ -185,3 +185,11 @@ details[open] > .agsdl-disclosure-summary > .agsdl-disclosure-chevron { transfor
 .agsdl-action-button:hover:not(:disabled) { background: rgb(var(--muted)); }
 .agsdl-action-button.is-primary { background: rgb(var(--primary)); color: rgb(var(--primary-foreground)); border-color: transparent; }
 .agsdl-detail-modal > header > strong { flex: 1; }
+
+.agsdl-exact-form .agsdl-edit-field textarea { min-height: 52px; }
+.agsdl-exact-form .agsdl-edit-field small { overflow-wrap: anywhere; }
+
+.agsdl-node-capabilities { display: flex; align-items: center; gap: 6px; min-width: 0; overflow: hidden; color: rgb(var(--muted-foreground)); font-size: 10px; }
+.agsdl-node-capabilities > span { display: inline-flex; align-items: center; gap: 3px; min-width: 0; }
+.agsdl-node-capabilities svg { flex: none; }
+.agsdl-node-visit-value, .agsdl-node-skill-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

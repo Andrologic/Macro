@@ -2,7 +2,7 @@ import { useEffect, useId, useRef, useState } from 'react';
 import { BaseEdge, EdgeLabelRenderer, getSmoothStepPath, type Edge, type EdgeProps } from '@xyflow/react';
 import { ArrowDown, ArrowDownToLine, ArrowRightLeft, Check, CornerUpLeft, GitBranch, Info, Link2, X } from 'lucide-react';
 import type { ViewerEdge, ViewerEdgeRoute } from '../../services/agsdl/graphLayout';
-import { viewerEdgePath } from '../../services/agsdl/graphLayout';
+import { isFailureEdge, viewerEdgePath } from '../../services/agsdl/graphLayout';
 import { WorkflowGraphPopup } from './WorkflowGraphPopup';
 import { WorkflowEdgePreview } from './WorkflowPreviews';
 import { useAgsdlTranslation } from './useAgsdlTranslation';
@@ -25,9 +25,10 @@ export type GraphEdge = Edge<WorkflowEdgeData, 'workflow'>;
 const QUEUE_GAP = 8;
 
 const namedRouteKey = (route: string) => ['true', 'false', 'approved', 'denied', 'onError'].includes(route) ? `agsdl.link.${route}` : 'agsdl.link.branch';
-const routeKey = (edge: ViewerEdge) => !['next', 'success', 'exchange', 'dependency', ''].includes(edge.label) ? edge.label : undefined;
+const routeKey = (edge: ViewerEdge) => edge.route030 ? edge.route030.role === 'error' ? 'onError' : edge.route030.key : !['next', 'success', 'exchange', 'dependency', ''].includes(edge.label) ? edge.label : undefined;
 function edgeSymbol(edge: ViewerEdge, size: number) {
   const props = { size, 'aria-hidden': true as const };
+  if (edge.route030?.role === "normal" && edge.route030.key) return <GitBranch {...props} />;
   switch (routeKey(edge)) {
     case 'true': case 'approved': return <Check {...props} />;
     case 'false': case 'denied': return <X {...props} />;
@@ -46,7 +47,7 @@ const transferKeys: Record<string, string> = {
 export function WorkflowEdgeSummary({ connection: edge, sourceTitle, targetTitle, onSource, onTarget }: Pick<WorkflowEdgeData, 'connection' | 'sourceTitle' | 'targetTitle'> & { onSource?: () => void; onTarget?: () => void }) {
   const { t } = useAgsdlTranslation();
   const route = routeKey(edge);
-  const heading = route ? t(namedRouteKey(route), { name: edge.label })
+  const heading = edge.route030?.key && edge.route030.role === "normal" ? t("agsdl.link.branch", { name: edge.route030.key }) : route ? t(namedRouteKey(route), { name: edge.label })
     : t(`agsdl.link.${edge.exchangeOnly ? 'exchange' : edge.dependency ? 'dependency' : 'sequence'}`);
   const transfers = [...new Set((edge.transfers ?? []).map(name => transferKeys[name] ? t(`agsdl.link.payload.${transferKeys[name]}`) : t(`agsdl.edge.${name}`, { defaultValue: name })))];
   return <div className="agsdl-edge-summary">
@@ -56,6 +57,7 @@ export function WorkflowEdgeSummary({ connection: edge, sourceTitle, targetTitle
       <ArrowDown size={13} aria-hidden="true" />
       {onTarget ? <button type="button" onClick={onTarget}>{targetTitle}</button> : <strong>{targetTitle}</strong>}
     </div>
+    {edge.route030 && <><small>{edge.route030.path}</small><pre className="agsdl-source-value">{edge.route030.valueJson}</pre></>}
     {transfers.length > 0 && <section><small>{t('agsdl.link.payloadTitle')}</small><div className="agsdl-edge-payloads">{transfers.map(name => <span key={name}>{name}</span>)}</div></section>}
     {edge.exchangeOnly && <p className="agsdl-edge-note">{t('agsdl.link.exchangeHint')}</p>}
     {edge.dependency && <p className="agsdl-edge-note">{t('agsdl.link.dependencyHint')}</p>}
@@ -67,7 +69,7 @@ export function WorkflowEdge(props: EdgeProps<GraphEdge>) {
   const { t } = useAgsdlTranslation();
   const data = props.data!;
   const route = data.route;
-  const failure = data.connection.label === 'onError';
+  const failure = isFailureEdge(data.connection);
   // A queued arrival stops short of the block, leaving room for its queue notch.
   const handles = data.queued ? { ...props, targetY: props.targetY - QUEUE_GAP } : props;
   const path = route ? viewerEdgePath(route, handles, failure) : getSmoothStepPath(handles)[0];
@@ -97,7 +99,7 @@ export function WorkflowEdge(props: EdgeProps<GraphEdge>) {
   useEffect(() => () => clearTimeout(timer.current), []);
   useEffect(() => { clearTimeout(timer.current); pinned.current = false; setPreview(false); setMenu(undefined); }, [data.dismissSignal]);
   return <>
-    <g ref={setAnchor} className="agsdl-edge-hit" role="button" tabIndex={0} aria-label={`${routeKey(data.connection) ? t(namedRouteKey(routeKey(data.connection)!), { name: data.connection.label }) : t(`agsdl.link.${data.connection.exchangeOnly ? "exchange" : data.connection.dependency ? "dependency" : "sequence"}`)} · ${data.sourceTitle} → ${data.targetTitle}`} aria-describedby={preview ? id : undefined}
+    <g ref={setAnchor} className="agsdl-edge-hit" role="button" tabIndex={0} aria-label={`${routeKey(data.connection) ? t(data.connection.route030?.role === "normal" ? "agsdl.link.branch" : namedRouteKey(routeKey(data.connection)!), { name: data.connection.label }) : t(`agsdl.link.${data.connection.exchangeOnly ? "exchange" : data.connection.dependency ? "dependency" : "sequence"}`)} · ${data.sourceTitle} → ${data.targetTitle}`} aria-describedby={preview ? id : undefined}
       onMouseEnter={event => { pointerPosition.current = { left: event.clientX + 12, top: event.clientY + 12 }; show(); }} onMouseLeave={leave}
       onFocus={() => { pointerPosition.current = undefined; show(); }} onBlur={() => { suppressed.current = false; if (!menu) { clearTimeout(timer.current); if (!pinned.current) setPreview(false); } }}
       onClick={event => { event.stopPropagation(); pin(); }}

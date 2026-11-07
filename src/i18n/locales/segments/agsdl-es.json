@@ -1,4 +1,29 @@
 {
+  "edition030": {
+    "visitLimit": "Límite de visitas",
+    "mission": "Misión",
+    "definitions": "Definiciones",
+    "exactHint": "Edite cada propiedad como JSON exacto. Deje vacía una propiedad opcional para eliminarla.",
+    "modelHint": "Modelo y esfuerzo son independientes. Un valor vacío usa el predeterminado del harness. La disponibilidad se comprueba al iniciar.",
+    "effort": "Esfuerzo",
+    "harnessDefault": "Predeterminado del harness",
+    "editFailed": "No se pudo guardar. Compruebe el JSON y la revisión del documento y vuelva a intentarlo.",
+    "authorityHint": "Las instrucciones permanentes enmarcan al agente. Los prompts de ruta definen su misión. Recursos y resultados son información. Los permisos son solicitudes; las capacidades efectivas requieren evaluación al iniciar.",
+    "definition": "Definición compartida del agente",
+    "quorum": "Quórum",
+    "humanChoice": "Decisión humana"
+  },
+  "graphHints": {
+    "skills": "Habilidades",
+    "structured": "Resultado estructurado validado",
+    "dynamic": "Configuración elegida al iniciar",
+    "external": "Efecto externo declarado",
+    "externalShort": "Efecto externo",
+    "first": "Primer resultado aceptable",
+    "all": "Todos los resultados requeridos",
+    "steering": "Instrucción durante el trabajo",
+    "maxVisits": "Hasta {{count}} pasadas"
+  },
   "editor": "Visor AgSDL",
   "legacyStrategy": "Estrategia heredada",
   "loading": "Cargando AgSDL...",
@@ -58,6 +83,8 @@
   "retry": "Reintentar",
   "agentTools": "Herramientas del agente",
   "kind": {
+    "Flow": "Flujo",
+    "McpServer": "Servidor MCP",
     "invoke": "Invocar agente",
     "condition": "Condición",
     "approval": "Aprobación",

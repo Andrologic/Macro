@@ -28,6 +28,7 @@
 .agsdl-execution-block-details .agsdl-block-prompt { display: block; overflow: visible; }
 
 .agsdl-edge-hit { pointer-events: all; cursor: pointer; outline: none; }
+.agsdl-edge-hit path { pointer-events: stroke; }
 .agsdl-edge-hit:focus-visible .react-flow__edge-path { stroke-width: 3; }
 .agsdl-edge-summary header { display: flex; align-items: center; gap: 8px; font-size: 12px; }
 .agsdl-edge-summary header svg { flex: none; color: rgb(var(--muted-foreground)); }

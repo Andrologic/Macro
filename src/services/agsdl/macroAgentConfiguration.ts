@@ -1,9 +1,12 @@
 import type { AgsdlChange } from "../../types/agsdl";
-import { keyId, list, object, readDocument, text, pointerPart } from "./document";
+import { keyId, list, object, readDocument, scanSource, sourceAt, text, pointerPart } from "./document";
 import type { ViewerCard } from "./viewer";
 import { macroNativeModelEdition, readMacroNativeModel } from "./nativeModelEdition";
 
 export interface MacroConfiguration {
+  edition030?: boolean;
+  effort?: string;
+  harness?: string;
   editable: boolean;
   engine?: "macro" | "codex" | "claude";
   providerId: string;
@@ -14,6 +17,12 @@ export interface MacroConfiguration {
 /** Only an unambiguous, already declared graph binding can be configured here. */
 export function macroAgentConfiguration(source: string, card: ViewerCard): MacroConfiguration {
   const blocked = { editable: false, providerId: "", modelId: "" };
+  if (card.edition030) {
+    const path = card.edition030.agentPath;
+    if (!path) return blocked;
+    const agent = object(scanSource(sourceAt(source, path)).tree), model = object(agent.model);
+    return { editable: true, edition030: true, providerId: "", modelId: text(model.name), effort: text(model.effort), harness: text(agent.harness), bindingPath: path };
+  }
   const doc = readDocument(source);
   if (doc.contract === "agsdl-0.2.0") return configuration02(doc, card);
   if (doc.contract !== "agsdl-0.1.0" || !["Agent", "invoke"].includes(card.kind)) return blocked;
@@ -49,9 +58,10 @@ export function macroAgentConfiguration(source: string, card: ViewerCard): Macro
     bindingPath: `/runtime/configurations/${configs[0].index}/agents/${bindings[0].index}` };
 }
 
-export function macroConfigurationChanges(source: string, card: ViewerCard, providerId: string, modelId: string): AgsdlChange[] {
+export function macroConfigurationChanges(source: string, card: ViewerCard, providerId: string, modelId: string, effort?: string): AgsdlChange[] {
   const config = macroAgentConfiguration(source, card);
   if (!config.editable || !config.bindingPath) throw new Error("agsdl.macroConfig.unsupported");
+  if (config.edition030) return agentModelChanges030(source, config.bindingPath, { name: modelId || undefined, effort: effort || undefined });
   const doc = readDocument(source);
   if (doc.contract === "agsdl-0.2.0") return configurationChanges02(doc, config, providerId, modelId);
   const parts = config.bindingPath.split("/");
@@ -122,5 +132,20 @@ function configurationChanges02(doc: Record<string, unknown>, config: MacroConfi
   if (settings.modelId !== modelId) changes.push({ op: "set", path: `${path}/settings/modelId`, valueJson: JSON.stringify(modelId) });
   // Exact configuration claims cease to apply after any configuration change.
   if (declaration.claims !== undefined) changes.push({ op: "remove", path: `${path}/claims` });
+  return changes;
+}
+
+
+/** Both model properties are optional and independent. No availability gate at save time. */
+export function agentModelChanges030(source: string, agentPath: string, value: { name?: string; effort?: string }): AgsdlChange[] {
+  const agent = object(scanSource(sourceAt(source, agentPath)).tree), model = object(agent.model);
+  if (model.name === value.name && model.effort === value.effort) return [];
+  const path = `${agentPath}/model`;
+  const changes: AgsdlChange[] = [];
+  if (agent.model === undefined && (value.name !== undefined || value.effort !== undefined)) changes.push({ op: "set", path, valueJson: "{}" });
+  for (const key of ["name", "effort"] as const) {
+    if (model[key] === value[key]) continue;
+    changes.push(value[key] === undefined ? { op: "remove", path: `${path}/${key}` } : { op: "set", path: `${path}/${key}`, valueJson: JSON.stringify(value[key]) });
+  }
   return changes;
 }

@@ -1,13 +1,67 @@
-import { parse, run, stringify } from "../../vendor/agsdl/browser-reader.mjs";
+import { run, stringify as stringifyLegacy } from "../../vendor/agsdl/browser-reader.mjs";
+import { parse, read as read030, NumberToken, stringify, ModuleError } from "../../vendor/agsdl/v0.3/reader.mjs";
+import type { ExactObject, ReaderOptions030, Report030 } from "../../vendor/agsdl/v0.3/reader.mjs";
 import { read as read020 } from "../../vendor/agsdl/v0.2/reader.mjs";
 import { stringify as stringify020 } from "../../vendor/agsdl/v0.2/values.mjs";
 import type { AgsdlChange, AgsdlReport } from "../../types/agsdl";
+import { rememberSourceLocations, workerRequest } from "./reader030WorkerProtocol";
+import type { WorkerResponse } from "./reader030WorkerProtocol";
 
-export const AGSDL_CONTRACT = "agsdl-0.2.0";
+export const AGSDL_CONTRACT = "agsdl-0.3.0";
+export const AGSDL_020_CONTRACT = "agsdl-0.2.0";
 export const LEGACY_AGSDL_CONTRACT = "agsdl-0.1.0";
 export const isSupportedContract = (contract: unknown): boolean =>
-  contract === AGSDL_CONTRACT || contract === LEGACY_AGSDL_CONTRACT;
+  contract === AGSDL_CONTRACT || contract === AGSDL_020_CONTRACT || contract === LEGACY_AGSDL_CONTRACT;
 export const MAX_AGSDL_BYTES = 1024 * 1024;
+
+/** Identify an authored 0.3 marker without building an AST or spans on the UI thread. */
+export function has030Contract(source: string): boolean {
+  const whitespace = (char: string | undefined) => char === " " || char === "\t" || char === "\r" || char === "\n";
+  const stringEnd = (start: number) => {
+    for (let i = start + 1; i < source.length; i++) {
+      if (source[i] === "\\") i++;
+      else if (source[i] === '"') return i + 1;
+    }
+    return -1;
+  };
+  let i = 0;
+  while (whitespace(source[i])) i++;
+  if (source[i] !== "{") return false;
+  let depth = 0;
+  while (i < source.length) {
+    const char = source[i];
+    if (char === "{" || char === "[") { depth++; i++; continue; }
+    if (char === "}" || char === "]") { if (--depth <= 0) return false; i++; continue; }
+    if (char !== '"') { i++; continue; }
+    const end = stringEnd(i);
+    if (end < 0) return false;
+    if (depth === 1) {
+      const key = source.slice(i, end);
+      let next = end;
+      while (whitespace(source[next])) next++;
+      if (source[next] === ":" && key.length <= 50) {
+        let isContract = key === '"contract"';
+        if (!isContract && key.includes("\\")) {
+          try { isContract = JSON.parse(key) === "contract"; } catch { /* worker performs strict parsing */ }
+        }
+        if (isContract) {
+          next++;
+          while (whitespace(source[next])) next++;
+          if (source[next] === '"') {
+            const valueEnd = stringEnd(next);
+            if (valueEnd < 0) return false;
+            const value = source.slice(next, valueEnd);
+            try { if (JSON.parse(value) === AGSDL_CONTRACT) return true; } catch { /* malformed marker */ }
+            i = valueEnd;
+            continue;
+          }
+        }
+      }
+    }
+    i = end;
+  }
+  return false;
+}
 const encoder = new TextEncoder();
 const decoder = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
 export const decodeSource = (bytes: ArrayBuffer): string =>
@@ -15,7 +69,7 @@ export const decodeSource = (bytes: ArrayBuffer): string =>
 export const pointerPart = (part: string | number): string =>
   String(part).replaceAll("~", "~0").replaceAll("/", "~1");
 export const object = (value: unknown): Record<string, unknown> =>
-  value !== null && typeof value === "object" && !Array.isArray(value)
+  value !== null && typeof value === "object" && !Array.isArray(value) && !(value instanceof NumberToken)
     ? (value as Record<string, unknown>)
     : {};
 export const list = (value: unknown): unknown[] =>
@@ -27,8 +81,22 @@ export const keyId = (value: unknown): string => {
   return JSON.stringify([key.scope, key.id, key.version]);
 };
 
+/** TextEncoder replaces lone UTF-16 surrogates; reject them before encoding. */
+function encodeSource(source: string): Uint8Array {
+  for (let i = 0; i < source.length; i++) {
+    const unit = source.charCodeAt(i);
+    if (unit >= 0xd800 && unit <= 0xdbff) {
+      const low = source.charCodeAt(++i);
+      if (!(low >= 0xdc00 && low <= 0xdfff)) throw new Error("Invalid JSON: unpaired UTF-16 surrogate.");
+    } else if (unit >= 0xdc00 && unit <= 0xdfff) {
+      throw new Error("Invalid JSON: unpaired UTF-16 surrogate.");
+    }
+  }
+  return encoder.encode(source);
+}
+
 export function scanSource(source: string) {
-  const bytes = encoder.encode(source);
+  const bytes = encodeSource(source);
   if (bytes.length > MAX_AGSDL_BYTES)
     throw new Error("AgSDL document exceeds the 1 MiB editor limit.");
   const parsed = parse(bytes);
@@ -40,11 +108,24 @@ export function scanSource(source: string) {
 }
 
 export function readDocument(source: string): Record<string, unknown> {
-  scanSource(source);
-  const doc: unknown = JSON.parse(source);
+  const parsed = scanSource(source);
+  const doc: unknown = object(parsed.tree).contract === AGSDL_CONTRACT ? parsed.tree : JSON.parse(source);
   if (doc === null || typeof doc !== "object" || Array.isArray(doc))
     throw new Error("An AgSDL document must be a JSON object.");
   return doc as Record<string, unknown>;
+}
+
+/** Normative exact input, without the editor's document-size limit. */
+export function readExactDocument(source: string | Uint8Array): ExactObject {
+  const parsed = parse(typeof source === "string" ? encodeSource(source) : source);
+  if (parsed.error) throw new Error(`Invalid JSON at byte ${parsed.error.byte}.`);
+  if (parsed.tree === null || typeof parsed.tree !== "object" || Array.isArray(parsed.tree) || parsed.tree instanceof NumberToken)
+    throw new Error("An AgSDL document must be a JSON object.");
+  return parsed.tree as ExactObject;
+}
+
+export function validateDocumentBytes(bytes: Uint8Array, options?: ReaderOptions030): Report030 {
+  return read030(bytes, options);
 }
 
 export function sourceAt(source: string, path: string): string {
@@ -54,7 +135,7 @@ export function sourceAt(source: string, path: string): string {
   return decoder.decode(parsed.bytes.subarray(span.start, span.end));
 }
 
-function decodePointer(path: string): string[] {
+function decodePointer(path: string, contract: unknown): string[] {
   if (path === "") return [];
   if (!path.startsWith("/") || /~(?![01])/u.test(path))
     throw new Error("Invalid JSON pointer.");
@@ -62,7 +143,10 @@ function decodePointer(path: string): string[] {
     .slice(1)
     .split("/")
     .map((part) => part.replaceAll("~1", "/").replaceAll("~0", "~"));
+  // The 0.3 scanner creates null-prototype JSON objects. Member names are data;
+  // applyChanges still checks own properties, JSON parents and array indices.
   if (
+    contract !== AGSDL_CONTRACT &&
     parts.some((part) =>
       ["__proto__", "constructor", "prototype"].includes(part),
     )
@@ -84,7 +168,7 @@ export function applyChanges(source: string, changes: AgsdlChange[]): string {
   for (const change of changes) {
     if (change.op !== "set" && change.op !== "remove")
       throw new Error("Unknown AgSDL edit operation.");
-    const parts = decodePointer(change.path);
+    const parts = decodePointer(change.path, contract);
     const parsed = scanSource(candidate);
     const replacement =
       change.op === "set" ? scanSource(change.valueJson ?? "").tree : undefined;
@@ -103,7 +187,7 @@ export function applyChanges(source: string, changes: AgsdlChange[]): string {
       ? "/" + parts.map(pointerPart).join("/")
       : "";
     const parentSpan = parsed.spans.get(parentPath);
-    let parent = parsed.tree;
+    let parent: unknown = parsed.tree;
     for (const part of parts) {
       if (
         parent === null ||
@@ -149,8 +233,17 @@ export function applyChanges(source: string, changes: AgsdlChange[]): string {
 export async function validateDocument(
   source: string,
   annexes: Record<string, string> = {},
+  options?: ReaderOptions030,
 ): Promise<AgsdlReport[]> {
-  const primary = encoder.encode(source);
+  let primary: Uint8Array;
+  try { primary = encodeSource(source); } catch (error) {
+    return [{ operation: "readDocument", scope: "parse", executionSupport: "not-assessed",
+      results: [{ input: "primary", unit: "document", verdict: "fail", findings: [{
+        rule: "PARSE", outcome: "fail", severity: "error", location: { pointer: "" },
+        details: error instanceof Error ? error.message : "Invalid Unicode input.",
+      }] }],
+    }];
+  }
   const annexBytes = Object.fromEntries(
     Object.entries(annexes).map(([id, value]) => [id, encoder.encode(value)]),
   );
@@ -161,10 +254,47 @@ export async function validateDocument(
   )
     throw new Error("AgSDL inputs exceed the 1 MiB editor limit.");
   let contract: unknown;
-  try { contract = readDocument(source).contract; } catch {
+  try { contract = has030Contract(source) ? AGSDL_CONTRACT : readDocument(source).contract; } catch {
     // The official 0.2 parser supplies a scoped report for malformed byte input.
   }
-  if (contract === AGSDL_CONTRACT || contract === undefined) {
+  if (contract === AGSDL_CONTRACT) {
+    const request = workerRequest(primary, options);
+    if (typeof Worker === "undefined") throw new Error("AgSDL 0.3 validation requires Web Worker support in this host.");
+    return new Promise<AgsdlReport[]>((resolve, reject) => {
+      let worker: Worker;
+      try { worker = new Worker(new URL("./reader030.worker.ts", import.meta.url), { type: "module" }); }
+      catch (error) { reject(new Error("AgSDL 0.3 validation could not start a Web Worker.", { cause: error })); return; }
+      const finish = () => { worker.onmessage = null; worker.onerror = null; worker.onmessageerror = null; worker.terminate(); };
+      worker.onmessage = (event: MessageEvent<WorkerResponse>) => {
+        finish();
+        if (!event.data || typeof event.data !== "object" || !("error" in event.data || "report" in event.data)) {
+          reject(new Error("AgSDL 0.3 Web Worker returned an invalid message."));
+        } else if ("error" in event.data) {
+          const error = event.data.error;
+          if (!error || typeof error !== "object" || typeof error.name !== "string" || typeof error.message !== "string") {
+            reject(new Error("AgSDL 0.3 Web Worker returned an invalid error."));
+          } else {
+            reject(error.name === "ModuleError" ? new ModuleError(error.message) : Object.assign(new Error(error.message), { name: error.name }));
+          }
+        } else if (!event.data.report || typeof event.data.report !== "object" || !Array.isArray(event.data.report.results)) {
+          reject(new Error("AgSDL 0.3 Web Worker returned an invalid report."));
+        } else if (!Array.isArray(event.data.spans)) {
+          reject(new Error("AgSDL 0.3 Web Worker returned invalid source locations."));
+        } else {
+          try {
+            rememberSourceLocations(event.data.report, source, new Map(event.data.spans));
+            resolve([event.data.report]);
+          } catch {
+            reject(new Error("AgSDL 0.3 Web Worker returned invalid source locations."));
+          }
+        }
+      };
+      worker.onerror = (event) => { finish(); reject(new Error(`AgSDL 0.3 Web Worker failed: ${event.message}`)); };
+      worker.onmessageerror = () => { finish(); reject(new Error("AgSDL 0.3 Web Worker returned an unreadable message.")); };
+      try { worker.postMessage(request); } catch (error) { finish(); reject(error); }
+    });
+  }
+  if (contract === AGSDL_020_CONTRACT || contract === undefined) {
     const report = read020(primary);
     const documentReportJson = stringify020(report);
     return [{
@@ -200,7 +330,7 @@ export async function validateDocument(
     operations.map(async (operation) => {
       const result = await run({ operation, primary, annexes: annexBytes });
       // This is the vendored reader's report boundary, not a user-supplied object.
-      return JSON.parse(stringify(result.report)) as AgsdlReport;
+      return JSON.parse(stringifyLegacy(result.report)) as AgsdlReport;
     }),
   );
 }

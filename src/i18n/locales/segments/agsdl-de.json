@@ -1,4 +1,29 @@
 {
+  "edition030": {
+    "visitLimit": "Besuchsgrenze",
+    "mission": "Auftrag",
+    "definitions": "Definitionen",
+    "exactHint": "Jede Eigenschaft als exaktes JSON bearbeiten. Optionale Eigenschaften zum Entfernen leer lassen.",
+    "modelHint": "Modell und Aufwand sind unabhängig. Leer verwendet den Harness-Standard. Verfügbarkeit wird beim Start geprüft.",
+    "effort": "Aufwand",
+    "harnessDefault": "Harness-Standard",
+    "editFailed": "Speichern fehlgeschlagen. JSON und Dokumentversion prüfen und erneut versuchen.",
+    "authorityHint": "Dauerhafte Anweisungen bestimmen den Agenten. Routenprompts geben den Auftrag. Ressourcen und Ergebnisse sind Informationen. Berechtigungen sind Anfragen; tatsächliche Fähigkeiten werden beim Start geprüft.",
+    "definition": "Gemeinsame Agentendefinition",
+    "quorum": "Erforderliche Stimmen",
+    "humanChoice": "Menschliche Entscheidung"
+  },
+  "graphHints": {
+    "skills": "Skills",
+    "structured": "Geprüftes strukturiertes Ergebnis",
+    "dynamic": "Konfigurationswahl bei Initialisierung",
+    "external": "Deklarierte externe Auswirkung",
+    "externalShort": "Externe Auswirkung",
+    "first": "Erstes akzeptables Ergebnis",
+    "all": "Alle Ergebnisse erforderlich",
+    "steering": "Anweisung während der Arbeit",
+    "maxVisits": "Bis zu {{count}} Durchläufe"
+  },
   "editor": "AgSDL-Ansicht",
   "legacyStrategy": "Bisherige Strategie",
   "loading": "AgSDL wird geladen...",
@@ -58,6 +83,8 @@
   "retry": "Erneut versuchen",
   "agentTools": "Agentenwerkzeuge",
   "kind": {
+    "Flow": "Ablauf",
+    "McpServer": "MCP-Server",
     "invoke": "Agent aufrufen",
     "condition": "Bedingung",
     "approval": "Genehmigung",

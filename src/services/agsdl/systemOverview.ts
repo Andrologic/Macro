@@ -28,8 +28,9 @@ export function projectSystemOverview(graph: ViewerGraph | undefined, declaratio
     for (const branch of card.branches) {
       // Legacy failure routing stays in the technical inspector. A 0.2
       // decision named failure remains a normal authored choice.
-      if ((graph.contract !== "agsdl-0.2.0" && branch.label === "failure") || branch.reference.unresolved) continue;
+      if ((!["agsdl-0.2.0", "agsdl-0.3.0"].includes(graph.contract ?? "") && branch.label === "failure") || branch.reference.unresolved) continue;
       add(card.path, branch.reference.target, branch.label, branch.path, branch.transfers);
+      if (branch.route030 && branch.reference.target && byPath.has(branch.reference.target)) edges[edges.length - 1].route030 = branch.route030;
     }
   }
   for (const card of cards) {

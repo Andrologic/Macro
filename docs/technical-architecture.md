@@ -2399,7 +2399,21 @@ Le même document décrit la projection des instances d'agents natives dans le
 catalogue de tâches d'Operate. Les identités et états proviennent du journal
 natif ; les tâches ne déclenchent pas un second chat ni un worktree Git.
 
-Les informations de conception Macro sont stockées dans
+Les constructeurs et les blueprints inclus créent en [AgSDL 0.3](agsdl-030.md).
+Les branches de construction historiques restent explicitement 0.1/0.2. La
+copie d’un blueprint conserve son édition et ses octets. `guide030.ts` fournit
+la référence d’auteur chargée à la demande ; `tools.ts` garde les guides des
+sources importées, la pagination UTF-8 et les contrôles de révision.
+`harnessCatalogue.ts` décrit l’API native attendue par `readHarnessCatalogue` ;
+elle ne déduit aucune installation depuis les préférences des fournisseurs Chat
+et n’ajoute pas d’IPC. Le runtime reste propriétaire de la qualification.
+
+En 0.2/0.3, les informations de conception et de présentation sont dans
+l’enveloppe du plan, hors source. Les adaptations ciblent une chaîne existante
+sans réécrire les autres valeurs. La revue 0.3 utilise les pointeurs source des
+agents, routes et compositions, indépendamment de la projection du viewer.
+
+Pour les documents historiques 0.1, les informations de conception sont stockées dans
 `root.annotations.macroDesign`, version 1 : nature du document, objectif, contexte,
 règles, informations à compléter et provenance. Les modifications utilisent les
 patches AgSDL par pointeur et les contrôles de version du store. Les annotations

@@ -1,4 +1,5 @@
 import { describe, expect, it } from "bun:test";
+import { getViewportForBounds } from "@xyflow/react";
 import { layoutViewer, routeViewerEdge, viewerEdgePath, viewerLayoutBounds, VIEWER_CARD_WIDTH, VIEWER_FRAME, type ViewerEdge, type ViewerLayoutNode } from "./graphLayout";
 import { presentGraph } from "./graphPresentation";
 import type { ViewerCard } from "./viewer";
@@ -16,6 +17,118 @@ const overlaps = (nodes: ViewerLayoutNode[]) => nodes.some((a, index) => nodes.s
   && a.position.y < b.position.y + b.height && b.position.y < a.position.y + a.height));
 
 describe("AgSDL reading layout", () => {
+  it("keeps 0.3 choices with identical endpoints separately selectable", () => {
+    const cards = [card("a"), card("b")];
+    const choices = ["onError", "next"].map(key => ({ ...edge("a", "b", key), route030: {
+      path: `/flow/steps/a/next/${key}`, sourcePath: "/flow/steps/a", role: "normal" as const, key, targetKind: "step" as const,
+    } }));
+    const graph = layoutViewer(cards, choices);
+    const source = at(graph, "a"), target = at(graph, "b");
+    const handles = { sourceX: center(source), sourceY: source.position.y + source.height, targetX: center(target), targetY: target.position.y };
+    const paths = choices.map(item => viewerEdgePath(graph.routes.get(item.id)!, handles));
+    expect(paths[0]).not.toBe(paths[1]);
+  });
+  it("separates many parallel choices on forward tracks, long rails, returns and self-loops", () => {
+    const choices = (from: string, to: string) => Array.from({ length: 8 }, (_, index) => {
+      const key = `choice${index}`;
+      return { ...edge(from, to, key), route030: { path: `/flow/steps/${from}/next/${key}`,
+        sourcePath: `/flow/steps/${from}`, role: "normal" as const, key, targetKind: "step" as const } };
+    });
+    const check = (ids: string[], backbone: ViewerEdge[], from: string, to: string, rail: boolean) => {
+      const branches = choices(from, to), graph = layoutViewer(ids.map(id => card(id)), [...backbone, ...branches]);
+      const source = at(graph, from), target = at(graph, to);
+      const handles = { sourceX: center(source), sourceY: source.position.y + source.height, targetX: center(target), targetY: target.position.y };
+      const routes = branches.map(item => graph.routes.get(item.id)!);
+      expect(new Set(routes.map(route => viewerEdgePath(route, handles))).size).toBe(branches.length);
+      if (rail) {
+        const rails = routes.map(route => route.steps[0].x!).sort((a, b) => a - b);
+        expect(rails.every((x, i) => i === 0 || x - rails[i - 1] >= 18)).toBe(true);
+        const bounds = viewerLayoutBounds(graph);
+        expect(rails.every(x => x >= bounds.x && x <= bounds.x + bounds.width)).toBe(true);
+      }
+    };
+    check(["a", "b"], [], "a", "b", false);
+    check(["a", "b", "c"], [edge("a", "c")], "a", "b", false);
+    check(["a", "b", "c"], [edge("a", "b"), edge("b", "c")], "a", "c", false);
+    check(["a", "b", "c", "d"], [edge("a", "b"), edge("b", "c"), edge("c", "d")], "a", "d", true);
+    check(["a", "b"], [edge("a", "b")], "b", "a", true);
+    check(["a"], [], "a", "a", true);
+  });
+  it("reserves a pointer-sized vertical segment for each aligned choice in either order", () => {
+    const cards = [card("a"), card("b")];
+    const choices = Array.from({ length: 9 }, (_, i) => ({ ...edge("a", "b", `choice${i}`), route030: {
+      path: `/flow/steps/a/next/choice${i}`, sourcePath: "/flow/steps/a", role: "normal" as const, key: `choice${i}`, targetKind: "step" as const,
+    } }));
+    for (const ordered of [choices, [...choices].reverse()]) {
+      const graph = layoutViewer(cards, ordered), x = center(at(graph, "a"));
+      const segments = ordered.map(item => graph.routes.get(item.id)!.steps).map(steps => ({ x: steps[0].x!, y1: steps[0].y, y2: steps[1].y }));
+      expect(segments.every(segment => segment.x !== x && segment.y2 - segment.y1 >= 30)).toBe(true);
+      const sorted = [...segments].sort((a, b) => a.y1 - b.y1);
+      expect(sorted.every((segment, i) => i === 0 || segment.y1 - sorted[i - 1].y2 >= 16)).toBe(true);
+    }
+  });
+  it("separates 0.3 rails from different sources and includes all steps in both bounds", () => {
+    const cards = ["a", "b", "c", "d"].map(id => card(id));
+    const branches = ["c", "d"].flatMap(source => ["x", "y"].map(key => ({ ...edge(source, "a", key), route030: {
+      path: `/flow/steps/${source}/next/${key}`, sourcePath: `/flow/steps/${source}`, role: "normal" as const, key, targetKind: "step" as const,
+    } })));
+    const error = { ...edge("d", "a", "onError"), route030: { path: "/flow/steps/d/onError", sourcePath: "/flow/steps/d", role: "error" as const, targetKind: "step" as const } };
+    for (const order of [branches, [...branches].reverse()]) {
+      const graph = layoutViewer(cards, [edge("a", "b"), edge("b", "c"), edge("c", "d"), ...order, error]);
+      const routes = [...branches, error].map(item => graph.routes.get(item.id)!);
+      const xs = routes.map(route => route.steps[0].x!).sort((a, b) => a - b);
+      expect(xs.every((x, i) => i === 0 || x - xs[i - 1] >= 18)).toBe(true);
+      const bounds = viewerLayoutBounds(graph);
+      for (const route of routes) for (const step of route.steps) {
+        if (step.x !== undefined) expect(step.x >= bounds.x && step.x <= bounds.x + bounds.width).toBe(true);
+        expect(step.y >= bounds.y && step.y <= bounds.y + bounds.height).toBe(true);
+      }
+    }
+  });
+  it("keeps unrelated rows compact when a long graph has many loop or forward choices", () => {
+    const cards = Array.from({ length: 20 }, (_, i) => card(`n${i}`));
+    const backbone = cards.slice(0, -1).map((_, i) => edge(`n${i}`, `n${i + 1}`));
+    const choices = (from: string, to: string, count: number) => Array.from({ length: count }, (_, i) => ({ ...edge(from, to, `c${i}`), route030: {
+      path: `/flow/steps/${from}/next/c${i}`, sourcePath: `/flow/steps/${from}`, role: "normal" as const, key: `c${i}`, targetKind: "step" as const,
+    } }));
+    const base = layoutViewer(cards, backbone);
+    const loops = layoutViewer(cards, [...backbone, ...choices("n0", "n0", 40)]);
+    const forward = layoutViewer(cards, [...backbone, ...choices("n10", "n11", 9)]);
+    expect(viewerLayoutBounds(loops).height).toBeLessThan(viewerLayoutBounds(base).height + 100);
+    expect(viewerLayoutBounds(forward).height).toBeLessThan(viewerLayoutBounds(base).height + 600);
+    expect(at(forward, "n9").position.y).toBe(at(base, "n9").position.y);
+    expect(at(forward, "n19").position.y - at(forward, "n12").position.y).toBe(at(base, "n19").position.y - at(base, "n12").position.y);
+    for (const graph of [loops, forward]) {
+      const bounds = viewerLayoutBounds(graph);
+      for (const [width, height] of [[1366, 768], [1440, 900], [400, 300]]) {
+        const minZoom = Math.min(0.1, width / (bounds.width * 4), height / (bounds.height * 4));
+        const viewport = getViewportForBounds(bounds, width, height, minZoom, 1, 0.16);
+        expect(bounds.width * viewport.zoom).toBeLessThanOrEqual(width);
+        expect(bounds.height * viewport.zoom).toBeLessThanOrEqual(height);
+      }
+    }
+  });
+  it("allocates separate corridors to crossing groups and ordinary routes in either order", () => {
+    const cards = ["a", "b", "c", "d"].map(id => card(id));
+    const branch = (from: string, to: string, key: string): ViewerEdge => ({ ...edge(from, to, key), route030: {
+      path: `/flow/steps/${from}/next/${key}`, sourcePath: `/flow/steps/${from}`, role: "normal", key, targetKind: "step",
+    } });
+    const failure: ViewerEdge = { ...edge("a", "c", "onError"), route030: {
+      path: "/flow/steps/a/onError", sourcePath: "/flow/steps/a", role: "error", targetKind: "step",
+    } };
+    const ordinary = [branch("a", "d", "other"), branch("b", "c", "other"), failure];
+    const left = ["c0", "c1", "c2"].map(key => branch("a", "c", key));
+    const right = ["c0", "c1", "c2"].map(key => branch("b", "d", key));
+    for (const order of [[...ordinary, ...left, ...right], [...ordinary, ...right.reverse(), ...left.reverse()]]) {
+      const graph = layoutViewer(cards, order);
+      const ys = [...left, ...right].map(item => graph.routes.get(item.id)!.steps[0].y).sort((a, b) => a - b);
+      expect(ys.every((y, i) => i === 0 || y - ys[i - 1] >= 18)).toBe(true);
+      const baseline = graph.routes.get(ordinary[0].id)!.steps[0].y;
+      expect(ys.every(y => Math.abs(y - baseline) >= 18)).toBe(true);
+      const failureY = graph.routes.get(failure.id)!.steps[0].y;
+      expect(ys.every(y => Math.abs(y - failureY) >= 18)).toBe(true);
+    }
+  });
   it("keeps the main path in one straight column below the tallest card of each row", () => {
     const cards = ["a", "b", "c"].map(id => card(id));
     const graph = layoutViewer(cards, [edge("a", "b"), edge("b", "c")], { [cards[0].path]: 180 });

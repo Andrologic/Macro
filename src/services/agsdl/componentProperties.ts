@@ -4,6 +4,8 @@ import type { ViewerCard } from "./viewer";
 
 export interface PropertyOption { value: string; label: string }
 export interface ComponentProperty {
+  exactJson?: boolean;
+  optional?: boolean;
   path: string;
   label: string;
   value: string;
@@ -27,6 +29,7 @@ const same = (a: unknown, b: unknown): boolean => {
 
 /** Project the real owners. Unsupported contracts stay readable and are never rewritten. */
 export function componentProperties(source: string, card: ViewerCard): ComponentProperties {
+  if (card.edition030) return properties030(source, card);
   const doc = readDocument(source);
   if (doc.contract === "agsdl-0.2.0") return { fields: [], shared: false, unsupported: true };
   const parsed = scanSource(source);
@@ -135,6 +138,16 @@ export function componentProperties(source: string, card: ViewerCard): Component
 }
 
 export function propertyChanges(fields: ComponentProperty[], values: string[]): AgsdlChange[] {
+  if (fields.some(field => field.exactJson)) return fields.flatMap((field, index): AgsdlChange[] => {
+    const value = values[index];
+    if (field.readonly || value === undefined || value === field.value) return [];
+    if (!value.trim()) {
+      if (!field.optional) throw new Error("agsdl.viewer.requiredProperty");
+      return field.removePath ? [{ op: "remove", path: field.removePath }] : [];
+    }
+    scanSource(value);
+    return [{ op: "set", path: field.path, valueJson: value }];
+  });
   for (const group of new Set(fields.map(field => field.referenceGroup).filter(Boolean))) {
     const members = fields.map((field, index) => ({ field, value: values[index] ?? field.value })).filter(item => item.field.referenceGroup === group);
     if (!members.some(item => item.value !== item.field.value)) continue;
@@ -161,4 +174,45 @@ export function propertyChanges(fields: ComponentProperty[], values: string[]): 
   });
   // Replace existing entries and append first; remove array entries from the end.
   return [...changes.filter(change => change.op !== "remove"), ...changes.filter(change => change.op === "remove").sort((a, b) => Number(b.path.split("/").at(-1)) - Number(a.path.split("/").at(-1)))];
+}
+
+
+const agentKeys030 = ["description", "harness", "harnessVersion", "harnessSettings", "model", "instructions", "resources", "skills", "mcpServers", "permissions", "results", "instructs", "plan", "planFirst", "completionCheck", "maxCorrections", "answerTimeoutMs"];
+const stepKeys030: Record<string, string[]> = {
+  agent: ["agent", "instance", "delivery", "prompt", "timeoutMs"],
+  call: ["command", "mcp", "parse", "arguments", "timeoutMs", "answerTimeoutMs"],
+  approval: ["timeoutMs"], compose: ["composition", "agents"],
+  join: ["quorum", "remaining", "failures", "maxFailures"],
+};
+
+/** Full property access uses exact subtrees; blank optional fields remove, never null them. */
+function properties030(source: string, card: ViewerCard): ComponentProperties {
+  const parsed = scanSource(source), fields: ComponentProperty[] = [];
+  const add = (path: string, keys: string[], required: string[] = []) => {
+    const parentSpan = parsed.spans.get(path);
+    if (!parentSpan) return;
+    let owner: unknown = parsed.tree;
+    for (const part of path.split("/").slice(1)) owner = object(owner)[part.replaceAll("~1", "/").replaceAll("~0", "~")];
+    const all = [...new Set([...keys, ...Object.keys(object(owner))])];
+    for (const key of all) {
+      const at = `${path}/${pointerPart(key)}`, span = parsed.spans.get(at);
+      fields.push({ path: at, label: key, value: span ? new TextDecoder().decode(parsed.bytes.subarray(span.start, span.end)) : "",
+        exactJson: true, optional: !required.includes(key), ...(span ? { removePath: at } : {}), readonly: key === "contract" });
+    }
+  };
+  if ((card.edition030?.ownerPath ?? card.path) === "") add("", ["$schema", "title", "description", "id", "content", "skills", "mcpServers", "agents", "flow", "compositions"], ["contract", "id", "agents"]);
+  else if (card.kind === "Agent") add(card.path, agentKeys030, ["harness", "permissions"]);
+  else if (["agent", "call", "approval", "compose", "join"].includes(card.kind)) {
+    add(card.path, ["type", "title", "description", "maxVisits", ...stepKeys030[card.kind], "next", "onError"], ["type", ...(card.kind === "agent" ? ["agent"] : card.kind === "compose" ? ["composition", "next"] : card.kind === "approval" ? ["next"] : [])]);
+    if (card.edition030?.agentPath) add(card.edition030.agentPath, agentKeys030, ["harness", "permissions"]);
+  } else if (card.kind === "Composition") add(card.path, ["title", "description", "parameters", "entry", "steps", "outputs"], ["entry", "steps", "outputs"]);
+  else if (card.kind === "Flow") add(card.path, ["entry", "steps", "onError"], ["entry", "steps"]);
+  else if (card.kind === "Skill") add(card.path, ["uri"], ["uri"]);
+  else if (card.kind === "McpServer") add(card.path, ["command", "url"]);
+  else if (card.kind === "Resource") add(card.path, ["value", "uri", "mediaType"]);
+  else if (card.kind === "Route") {
+    const span = parsed.spans.get(card.path);
+    if (span) fields.push({ path: card.path, label: "route", value: new TextDecoder().decode(parsed.bytes.subarray(span.start, span.end)), exactJson: true, optional: false });
+  }
+  return { fields, shared: !!card.edition030?.agentPath || ["Agent", "Resource", "Skill", "McpServer", "Composition"].includes(card.kind), unsupported: !fields.length };
 }

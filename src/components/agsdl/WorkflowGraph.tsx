@@ -1,9 +1,9 @@
 import { groupNativeState, type NativeCardActivation } from "../../services/agsdl/executionView";
 import { useCallback, useEffect, useId, useMemo, useRef, useState, type ReactNode } from "react";
 import { Background, getViewportForBounds, Handle, MarkerType, Panel, Position, ReactFlow, ReactFlowProvider, useReactFlow, type Node, type NodeProps, type NodeChange } from "@xyflow/react";
-import { Bot, Boxes, ChevronDown, ChevronRight, ChevronUp, CircleHelp, Info, Layers, List, MessageSquare, MessageSquarePlus, LocateFixed, Minus, Plus, Terminal, UserCheck } from "lucide-react";
+import { Bot, Boxes, ChevronDown, ChevronRight, ChevronUp, CircleHelp, Info, Layers, List, MessageSquare, MessageSquarePlus, LocateFixed, Minus, Plus, Terminal, UserCheck, Sparkles, Braces, Shuffle, RotateCcw, Zap } from "lucide-react";
 import { useElementSize } from "../../hooks/useElementSize";
-import { layoutViewer, routeViewerEdge, VIEWER_CARD_WIDTH, VIEWER_FRAME, viewerLayoutBounds, type ViewerEdge } from "../../services/agsdl/graphLayout";
+import { isFailureEdge, layoutViewer, routeViewerEdge, VIEWER_CARD_WIDTH, VIEWER_FRAME, viewerLayoutBounds, type ViewerEdge } from "../../services/agsdl/graphLayout";
 import { graphBlockPerformer, graphBlockShape, graphNeighborhood, presentFocusedGraph, presentGraph } from "../../services/agsdl/graphPresentation";
 import { blockDetails, type BlockDetail } from "../../services/agsdl/blockDetails";
 import "./graphPresentation.css";
@@ -58,10 +58,23 @@ function WorkflowNode({ data }: NodeProps<GraphNode>) {
   const heading = data.performer ?? data.title;
   const subtitle = data.performer ? data.title : data.subtitle;
   // A join either waits for all of its members or keeps the first acceptable result.
-  const joinMode = card.kind === "join" ? card.details.mode === "first" ? "first" : "all" : undefined;
+  const joinMode = card.kind === "join" ? card.edition030 && card.details.quorum ? "quorum" : card.details.mode === "first" ? "first" : "all" : undefined;
+  const joinLabel = joinMode === "quorum" ? t("agsdl.edition030.quorum") : joinMode ? t(`agsdl.viewer.${joinMode === "first" ? "joinFirst" : "joinAll"}`) : undefined;
+  const joinHint = joinMode === "quorum" ? joinLabel : joinMode ? t(`agsdl.viewer.${joinMode === "first" ? "joinFirstHint" : "joinAllHint"}`) : undefined;
+  const maxVisits = card.edition030 ? card.edition030.maxVisitsJson : typeof card.details.maxVisits === "number" ? card.details.maxVisits : undefined;
+  const maxVisitsLabel = maxVisits === undefined ? undefined : card.edition030
+    ? `${t("agsdl.edition030.visitLimit")}: ${maxVisits}`
+    : t("agsdl.graphHints.maxVisits", { count: maxVisits });
   const label = [data.entry ? t("agsdl.viewer.legendEntry") : "", data.kindLabel, heading !== data.kindLabel ? heading : "", subtitle,
-    joinMode ? t(`agsdl.viewer.${joinMode === "first" ? "joinFirstHint" : "joinAllHint"}`) : "", warning ? t("agsdl.viewer.unresolved") : ""].filter(Boolean).join(" · ");
+    joinHint, maxVisitsLabel, warning ? t("agsdl.viewer.unresolved") : ""].filter(Boolean).join(" · ");
   const status = data.task || data.native ? <WorkflowStatusBadge task={data.task} native={data.native} /> : null;
+  const capabilities = !data.members && (card.capabilities || maxVisits !== undefined) && <span className="agsdl-node-capabilities">
+    {card.capabilities && card.capabilities.skills.length > 0 && <span title={`${t("agsdl.graphHints.skills")}: ${card.capabilities.skills.join(", ")}`} aria-label={`${t("agsdl.graphHints.skills")}: ${card.capabilities.skills.join(", ")}`}><Sparkles size={11} aria-hidden="true" /><span className="agsdl-node-skill-name">{card.capabilities.skills.at(-1)}</span></span>}
+    {card.capabilities?.structuredResults && <span title={t("agsdl.graphHints.structured")} aria-label={t("agsdl.graphHints.structured")}><Braces size={12} aria-hidden="true" /></span>}
+    {card.capabilities?.dynamicConfiguration && <span title={t("agsdl.graphHints.dynamic")} aria-label={t("agsdl.graphHints.dynamic")}><Shuffle size={12} aria-hidden="true" /></span>}
+    {maxVisits !== undefined && <span title={maxVisitsLabel} aria-label={maxVisitsLabel}><RotateCcw size={11} aria-hidden="true" /><span className="agsdl-node-visit-value">{maxVisits}</span></span>}
+    {card.capabilities?.externalEffects && <span title={t("agsdl.graphHints.external")} aria-label={t("agsdl.graphHints.external")}><Zap size={12} aria-hidden="true" /><span>{t("agsdl.graphHints.externalShort")}</span></span>}
+  </span>;
   return (
     <>
       <Handle type="target" position={Position.Top} id="in" />
@@ -94,15 +107,17 @@ function WorkflowNode({ data }: NodeProps<GraphNode>) {
       >
         {shape === "routing" ? <>
           {status}
-          {joinMode && <span className={`agsdl-node-mode is-${joinMode}`} title={t(`agsdl.viewer.${joinMode === "first" ? "joinFirstHint" : "joinAllHint"}`)}>
-            {t(`agsdl.viewer.${joinMode === "first" ? "joinFirst" : "joinAll"}`)}
+          {joinMode && <span className={`agsdl-node-mode is-${joinMode}`} title={joinHint}>
+            {joinLabel}
           </span>}
           <span className="agsdl-node-title">{data.title}</span>
+          {capabilities}
         </> : <>
           <span className="agsdl-node-tile">{status ?? <Icon size={shape === "execution" ? 15 : 14} aria-hidden="true" />}</span>
           <span className="agsdl-node-text">
             <span className="agsdl-node-title">{heading}</span>
             {subtitle && <span className="agsdl-node-subtitle">{subtitle}</span>}
+            {capabilities}
           </span>
           {shape === "subprocess" && <ChevronRight size={15} className="agsdl-node-chevron" aria-hidden="true" />}
           {data.members && <ChevronDown size={14} className="agsdl-node-chevron" aria-hidden="true" />}
@@ -141,7 +156,7 @@ function LegendSample({ children }: { children: ReactNode }) {
 }
 const nodeTypes = { workflow: WorkflowNode, frame: CompositionFrame, frameHeading: CompositionFrameHeading };
 const edgeTypes = { workflow: WorkflowEdge };
-const fitOptions = { padding: 0.16, minZoom: 0.5, maxZoom: 1 };
+const fitOptions = { padding: 0.16, minZoom: 0.1, maxZoom: 1 };
 
 function Canvas({ cards: declaredCards, edges: declaredEdges, entry: declaredEntry, compositions = [], declarations = [], selected, select, title, changedPaths = [], trackedTasks = {}, nativeActivations = {}, selectionMode = "inspect", onAttach, onOpenTask, onInspect }: {
   cards: ViewerCard[];
@@ -191,14 +206,16 @@ function Canvas({ cards: declaredCards, edges: declaredEdges, entry: declaredEnt
   const overview = useMemo(() => presentGraph(cards, connections, collapsed, "overview"), [cards, connections, collapsed]);
   const framed = useMemo(() => expansion.frames.map(frame => frame.members), [expansion.frames]);
   const layout = useMemo(() => layoutViewer(overview.cards, overview.edges, heights, framed), [overview.cards, overview.edges, heights, framed]);
+  const bounds = useMemo(() => layout.nodes.length ? viewerLayoutBounds(layout) : undefined, [layout]);
+  const minZoom = bounds && width && height ? Math.min(fitOptions.minZoom, width / (bounds.width * 4), height / (bounds.height * 4)) : fitOptions.minZoom;
   const focus = inspectedEdge || active || hovered;
   const neighborhood = graphNeighborhood(focus, presentation.edges);
   const hasFocus = Boolean(focus) && (presentation.cards.some(card => card.path === focus) || presentation.edges.some(edge => edge.id === focus));
   // Fit the blocks and their side rails, within the same zoom limits as the initial view.
   const fit = useCallback(() => {
     if (!width || !height || !layout.nodes.length) return;
-    void flow.setViewport(getViewportForBounds(viewerLayoutBounds(layout), width, height, fitOptions.minZoom, fitOptions.maxZoom, fitOptions.padding));
-  }, [flow, layout, width, height]);
+    if (bounds) void flow.setViewport(getViewportForBounds(bounds, width, height, minZoom, fitOptions.maxZoom, fitOptions.padding));
+  }, [flow, layout.nodes.length, bounds, width, height, minZoom]);
   const fitted = useRef(false);
   useEffect(() => {
     if (!width || !height || !layout.nodes.length || fitted.current || layout.nodes.some(node => heights[node.card.path] === undefined)) return;
@@ -238,7 +255,7 @@ function Canvas({ cards: declaredCards, edges: declaredEdges, entry: declaredEnt
         related: hoveredAgent ? agentKey(card) === hoveredAgent ? "lit" : "faded" : undefined,
         entry: card.path === entry || Boolean(group?.members.some(member => member.path === entry)),
         subtitle: group ? t("agsdl.designGraph.members", { count: group.members.length, defaultValue: "{{count}} components" })
-          : performer ? "" : card.kind === "approval" && !card.approvalBinding && !card.approvers?.length ? t("agsdl.viewer.approverMissing") : "",
+          : performer ? "" : card.kind === "approval" && card.edition030 ? t("agsdl.edition030.humanChoice") : card.kind === "compose" && card.edition030 ? card.composition?.label ?? "" : card.kind === "approval" && !card.approvalBinding && !card.approvers?.length ? t("agsdl.viewer.approverMissing") : "",
         select: path => { setHighlighted(path); if (selectionMode === "select") select(originalStepPath(path)); }, inspect: path => { setHighlighted(path); (onInspect ?? select)(originalStepPath(path)); }, expand: group ? () => expandGroup(group.id) : undefined, focus: setHovered,
         unfold: card.kind === "compose" && compositions.some(graph => graph.path === card.composition?.target) ? () => toggleComposition(card.path) : undefined,
         incoming: [...new Set(presentation.edges.filter(edge => edge.target === card.path).map(edge => displayTitle(presentation.cards.find(item => item.path === edge.source)!)))],
@@ -249,7 +266,7 @@ function Canvas({ cards: declaredCards, edges: declaredEdges, entry: declaredEnt
         dismissSignal,
         members: group?.members.map(title),
         changed: changedPaths.some(path => path === card.path || (group?.members.some(member => member.path === path))),
-        pending: card.details.contract !== "agsdl-0.2.0" && (card.kind === "Agent" || card.kind === "invoke") && !card.mission.trim(),
+        pending: !["agsdl-0.2.0", "agsdl-0.3.0"].includes(String(card.details.contract)) && (card.kind === "Agent" || card.kind === "invoke") && !card.mission.trim(),
         native: group ? groupNativeState(group.members.flatMap(member => nativeActivations[member.path] ? [nativeActivations[member.path]] : []), group.members.length) : nativeActivations[card.path],
         task: group ? groupTaskState(group.members.flatMap(member => trackedTasks[member.path] ? [trackedTasks[member.path]] : []), group.members.length) : trackedTasks[card.path],
       },
@@ -305,7 +322,7 @@ function Canvas({ cards: declaredCards, edges: declaredEdges, entry: declaredEnt
   const litPaths = new Set(hoveredAgent ? presentation.cards.filter(card => agentKey(card) === hoveredAgent).map(card => card.path) : []);
   const edges: GraphEdge[] = presentation.edges.map(edge => {
     // The theme accent carries the flow, the theme's destructive colour the failures.
-    const failure = edge.label === "onError";
+    const failure = isFailureEdge(edge);
     const focused = hasFocus && neighborhood.edges.has(edge.id);
     // Opaque mixes keep overlapping lines at the same intensity.
     const color = `color-mix(in srgb, rgb(var(--${failure ? "destructive" : "primary"})) ${focused ? 100 : 60}%, rgb(var(--background)))`;
@@ -339,8 +356,8 @@ function Canvas({ cards: declaredCards, edges: declaredEdges, entry: declaredEnt
         onEdgeMouseEnter={(_, edge) => setHovered(edge.id)} onEdgeMouseLeave={() => setHovered("")}
         onPaneContextMenu={event => { event.preventDefault(); setDismissSignal(value => value + 1); setPaneMenu({ left: event.clientX, top: event.clientY }); }}
         onMoveStart={() => { setDismissSignal(value => value + 1); setPaneMenu(undefined); }}
-        onPaneClick={() => { setPaneMenu(undefined); clearSelection(); }} fitView fitViewOptions={fitOptions}
-        minZoom={0.3} maxZoom={1.8} zoomOnDoubleClick={false}
+        onPaneClick={() => { setPaneMenu(undefined); clearSelection(); }} fitView fitViewOptions={{ ...fitOptions, minZoom }}
+        minZoom={minZoom} maxZoom={1.8} zoomOnDoubleClick={false}
       >
         <Panel position="top-left" className="agsdl-reading-tools">
           {presentation.groups.length > 0 && <details ref={groupMenu} className="agsdl-reading-groups">

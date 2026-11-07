@@ -1,8 +1,16 @@
 import { expect, it } from "bun:test";
-import { appendProjection, groupNativeState, nativeCardActivations, nativeRunState } from "./executionView";
+import { appendProjection, executionProfileForContract, groupNativeState, nativeCardActivations, nativeRunState } from "./executionView";
+
 import type { PublicProjection, PublicSnapshot, PublicActivation, SourceRevision, SystemStartId, Sequence } from "../agsdlExecution/contracts";
 import { projectViewer } from "./viewer";
 import { createExample } from "./examples";
+
+it('selects the profile from the explicit document contract', () => {
+  expect(executionProfileForContract('agsdl-0.2.0')).toBe('macro-serial-inline-v1');
+  expect(executionProfileForContract('agsdl-0.3.0')).toBe('macro-agsdl-030-v1');
+  expect(executionProfileForContract('agsdl-0.1.0')).toBeUndefined();
+  expect(executionProfileForContract(undefined)).toBeUndefined();
+});
 const source = { owner: { projectId: "p", planId: "plan", branch: "work" }, revision: "1", sourceSha256: "a".repeat(64) } as SourceRevision;
 const snapshot = { systemStartId: "run", source } as PublicSnapshot;
 const page = (overrides: Partial<PublicProjection> = {}): PublicProjection => ({ systemStartId: "run" as SystemStartId, source, cursor: "9007199254740993" as Sequence, agents: [], activations: [], nextPage: { cursor: "9007199254740993" as Sequence, offset: 64 }, systemStop: { kind: "none" }, ...overrides });

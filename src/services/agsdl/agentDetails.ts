@@ -31,6 +31,7 @@ export interface AgentConfiguration {
 
 /** Runtime declarations belong to the exact agent and graph, never to the global provider settings. */
 export function agentConfigurations(source: string, card: ViewerCard): AgentConfiguration[] {
+  if (card.edition030) return [];
   const doc = readDocument(source);
   if (doc.contract === "agsdl-0.2.0") {
     const agents = object(doc.agents);
