@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Port of AgSDL v0.3.0 tooling/agsdl/schemacheck.py. See LICENSE.
 // Implements the published AgSDL keyword subset, not arbitrary JSON Schema.
-import { equal, compareNumbers, isNumber, isObject, json_type_matches, stringify } from './values.mjs';
+import { equal, compareNumbers, isNumber, isObject, json_type_matches, stringify, orderedEntries } from './values.mjs';
 export { equal as json_equal, isNumber as is_number, isInteger as is_integer,
   json_type_matches } from './values.mjs';
 
@@ -107,7 +107,7 @@ export class SchemaChecker {
         if (!Object.hasOwn(value, name)) errors.push([at, `missing field ${stringify(name)}`]);
       }
       const properties = schema.properties || {};
-      for (const [key, item] of Object.entries(value)) {
+      for (const [key, item] of orderedEntries(value)) {
         const child = `${path}${pointer([key])}`;
         if (Object.hasOwn(schema, 'propertyNames')) {
           const probe = [];

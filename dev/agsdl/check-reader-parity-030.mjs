@@ -18,10 +18,11 @@ assert.equal(manifest.commit, 'bd9f8a5b16923476fd20ac2650bd1729ee151917');
 const reference = mkdtempSync(join(tmpdir(), 'macro-agsdl030-parity-'));
 const files = dir => readdirSync(join(corpus, dir)).filter(name => name.endsWith('.json')).sort();
 const modules = new Map(['example', 'limited'].map(name => [name, loadHarnessModule(readFileSync(join(corpus, `conformance/modules/${name}/module.json`)))]));
+// Compare codes, locations, severity and order without sorting diagnostics.
+// Human-readable messages need not duplicate Python repr formatting.
 const normalize = report => ({
   contract: report.contract, valid: report.valid,
-  diagnostics: report.diagnostics.map(({ severity, code, path, step }) => ({ severity, code, path, ...(step === undefined ? {} : { step }) }))
-    .sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b))),
+  diagnostics: report.diagnostics.map(({ severity, code, path, step }) => ({ severity, code, path, ...(step === undefined ? {} : { step }) })),
   joins: report.joins,
 });
 const codes = (report, severity) => [...new Set(report.diagnostics.filter(d => d.severity === severity).map(d => d.code))].sort();
@@ -94,5 +95,5 @@ print(json.dumps(out))
     for (const item of scenario.expect.cancelled ?? []) check(item.step, 'work');
     for (const item of scenario.expect.answers ?? []) check(item.work, 'work');
   }
-  console.log(`AgSDL 0.3 static parity: ${compared} reports (144 cases, 10 examples, 37 scenario documents), exact diagnostic locations and joins; ${manifest.files.length} provenance hashes verified.`);
+  console.log(`AgSDL 0.3 static parity: ${compared} reports (144 cases, 10 examples, 37 scenario documents), ordered diagnostic codes, severities, locations and joins; ${manifest.files.length} provenance hashes verified.`);
 } finally { rmSync(reference, { recursive: true, force: true }); }

@@ -2,6 +2,18 @@
 // Port of AgSDL v0.3.0 schemacheck.py JSON value helpers. See LICENSE.
 import { NumberToken } from '../v0.2/json.mjs';
 
+// JSON text can order numeric-looking keys differently from Object.keys.
+// Keep that order outside the JSON objects, including across exact snapshots.
+const sourceKeyOrder = new WeakMap();
+export function rememberKeyOrder(value, keys) { sourceKeyOrder.set(value, keys); }
+export function orderedKeys(value) {
+  const keys = Object.keys(value), source = sourceKeyOrder.get(value);
+  if (!source || (source.length === keys.length && source.every((key, i) => key === keys[i]))) return keys;
+  const known = new Set(source);
+  return [...source.filter(key => Object.hasOwn(value, key)), ...keys.filter(key => !known.has(key))];
+}
+export const orderedEntries = value => orderedKeys(value).map(key => [key, value[key]]);
+
 export const isNumber = (value) => value instanceof NumberToken ||
   (typeof value === 'number' && Number.isFinite(value));
 export const isObject = (value) => value !== null && typeof value === 'object' &&
@@ -108,7 +120,7 @@ export function stringify(value) {
     else if (Array.isArray(v) || isObject(v)) {
       if (active.has(v)) throw new TypeError('Cannot stringify cyclic JSON');
       active.add(v);
-      const array = Array.isArray(v), keys = Object.keys(v);
+      const array = Array.isArray(v), keys = orderedKeys(v);
       output.push(array ? '[' : '{');
       pending.push({ leave: v }, { text: array ? ']' : '}' });
       // Array holes are not JSON values either.

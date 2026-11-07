@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Port of AgSDL v0.3.0 tooling/agsdl/valueschema.py. See LICENSE.
-import { equal, compareNumbers, isInteger, json_type_matches, stringify } from './values.mjs';
+import { equal, compareNumbers, isInteger, json_type_matches, stringify, orderedEntries } from './values.mjs';
 import { pointer } from './schemacheck.mjs';
 
 const ARRAY_ONLY = ['items', 'minItems', 'maxItems'];
@@ -10,7 +10,16 @@ export const is_index = isInteger;
 export function consistency(schema, path = []) {
   const problems = [], pending = [[schema, path]];
   while (pending.length) {
-    const [node, here] = pending.pop(), kind = node.type;
+    const [node, here, childrenDone] = pending.pop(), kind = node.type;
+    if (childrenDone) {
+      const minimum = node.minItems ?? 0;
+      if (compareNumbers(minimum, node.maxItems ?? minimum) > 0)
+        problems.push([pointer([...here, 'minItems']), 'minItems exceeds maxItems']);
+      if (kind === 'array' && Object.hasOwn(node, 'items')) pending.push([node.items, [...here, 'items']]);
+      continue;
+    }
+    // The reference checks object children before bounds, then array items.
+    pending.push([node, here, true]);
     for (const key of ARRAY_ONLY) {
       if (Object.hasOwn(node, key) && kind !== 'array')
         problems.push([pointer([...here, key]), `${key} is allowed only on arrays`]);
@@ -32,13 +41,9 @@ export function consistency(schema, path = []) {
         if (!Object.hasOwn(declared, name))
           problems.push([pointer([...here, 'required', i]), `${stringify(name)} is not a declared property`]);
       }
-      for (const [name, child] of Object.entries(declared).reverse())
+      for (const [name, child] of orderedEntries(declared).reverse())
         pending.push([child, [...here, 'properties', name]]);
     }
-    const minimum = node.minItems ?? 0;
-    if (compareNumbers(minimum, node.maxItems ?? minimum) > 0)
-      problems.push([pointer([...here, 'minItems']), 'minItems exceeds maxItems']);
-    if (kind === 'array' && Object.hasOwn(node, 'items')) pending.push([node.items, [...here, 'items']]);
   }
   return problems;
 }
@@ -67,7 +72,7 @@ export function validate(value, schema, path = []) {
         if (!Object.hasOwn(item, name)) problems.push([at, `missing ${stringify(name)}`]);
       }
       // Schedule unknown fields too, preserving the published traversal order.
-      for (const [name, child] of Object.entries(item).reverse()) {
+      for (const [name, child] of orderedEntries(item).reverse()) {
         if (Object.hasOwn(declared, name)) pending.push([child, declared[name], [...here, name]]);
         else if (node.additionalProperties === false)
           pending.push([child, null, [...here, name], `unknown ${stringify(name)}`]);
