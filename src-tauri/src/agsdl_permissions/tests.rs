@@ -60,6 +60,7 @@ fn observed(p: &EffectivePolicy) -> EnforcementObservation {
             .collect(),
         shell_matching: ShellMatching::CommandText,
         shell_absent_evidence: None,
+        mcp_absent_evidence: None,
         outside_read_evidence: Some("test-outside".into()),
         path_race_evidence: Some("test-path-race".into()),
         descendant_ceiling_evidence: Some("test-child".into()),
@@ -551,4 +552,152 @@ fn durable_restore_preserves_canonical_capture_and_detects_tampering() {
         EffectivePolicy::restore_capture(&bytes.replace("workspace", "other"), &digest).is_err()
     );
     assert!(EffectivePolicy::restore_capture("{}", &digest).is_err());
+}
+
+#[test]
+fn ip_rules_match_equivalent_ipv6_spellings_in_both_directions() {
+    let f = Fixture::new();
+    for (rule, target) in [
+        ("::1", "0:0:0:0:0:0:0:1"),
+        ("2001:0db8:0000:0000:0000:0000:0000:0001", "2001:db8::1"),
+    ] {
+        let p = f.policy(
+            json!({"preset":"full", "rules":[{"action":"network","match":rule,"effect":"deny"}]}),
+        );
+        assert_eq!(
+            effect(
+                &p,
+                ActionRequest::Network {
+                    host: target.into()
+                }
+            ),
+            Effect::Deny
+        );
+    }
+    let p = f.policy(json!({"preset":"full", "rules":[{"action":"network","match":"2001:db8:*","effect":"ask"}]}));
+    assert_eq!(
+        effect(
+            &p,
+            ActionRequest::Network {
+                host: "2001:0db8:0:0:0:0:0:1".into()
+            }
+        ),
+        Effect::Ask
+    );
+    assert_eq!(
+        effect(
+            &p,
+            ActionRequest::Network {
+                host: "2001:db9::1".into()
+            }
+        ),
+        Effect::Allow
+    );
+}
+
+#[test]
+fn outside_evidence_only_applies_to_a_preset_without_a_universal_read_rule() {
+    let f = Fixture::new();
+    for requested in [
+        json!({"rules":[{"action":"read","effect":"allow"}]}),
+        json!({"preset":"workspace","rules":[{"action":"read","effect":"allow"}]}),
+    ] {
+        let p = f.effective(requested);
+        let mut o = observed(&p);
+        o.outside_read_evidence = None;
+        assert!(check_enforcement(&p, &o, ExecutionPurpose::Agent).is_ok());
+    }
+    let p = f.effective(json!("workspace"));
+    let mut o = observed(&p);
+    o.outside_read_evidence = None;
+    assert!(check_enforcement(&p, &o, ExecutionPurpose::Agent).is_err());
+}
+
+#[test]
+fn absent_mcp_needs_evidence_and_a_universal_deny_shadows_ask() {
+    let f = Fixture::new();
+    let p = f.effective(json!({"preset":"read-only","rules":[{"action":"mcp","effect":"ask"}]}));
+    let mut o = observed(&p);
+    o.guarantees.retain(|g| g.action != Action::Mcp);
+    assert!(check_enforcement(&p, &o, ExecutionPurpose::Agent).is_err());
+    o.mcp_absent_evidence = Some("observed-no-mcp-servers-or-resources".into());
+    o.person_reviewer_evidence = None;
+    let plan = check_enforcement(&p, &o, ExecutionPurpose::Agent).unwrap();
+    assert!(plan
+        .evidence
+        .iter()
+        .any(|e| e == "observed-no-mcp-servers-or-resources"));
+    assert!(!plan.requirements.iter().any(|r| r.action == Action::Mcp));
+
+    let p = f.effective(json!({"preset":"read-only","rules":[
+        {"action":"mcp","effect":"ask"}, {"action":"mcp","effect":"deny"}
+    ]}));
+    let mut o = observed(&p);
+    o.guarantees
+        .retain(|g| !(g.action == Action::Mcp && g.effect == Effect::Ask));
+    o.person_reviewer_evidence = None;
+    assert!(check_enforcement(&p, &o, ExecutionPurpose::Agent).is_ok());
+    o.guarantees.retain(|g| g.action != Action::Mcp);
+    assert!(check_enforcement(&p, &o, ExecutionPurpose::Agent).is_err());
+}
+
+#[test]
+fn plan_lock_closes_shell_bypass_only_when_plan_lock_evidence_exists() {
+    let f = Fixture::new();
+    let p = f.effective(json!("full"));
+    let mut o = observed(&p);
+    for g in &mut o.guarantees {
+        g.mechanism = EnforcementMechanism::Harness;
+    }
+    assert!(check_enforcement(&p, &o, ExecutionPurpose::PlanLocked).is_ok());
+    o.plan_lock_evidence = None;
+    assert!(check_enforcement(&p, &o, ExecutionPurpose::PlanLocked).is_err());
+    // Unlocking requires a fresh qualification; the shell can bypass harness rules again.
+    let p = f.effective(json!("workspace"));
+    let mut o = observed(&p);
+    for g in &mut o.guarantees {
+        g.mechanism = EnforcementMechanism::Harness;
+    }
+    assert!(check_enforcement(&p, &o, ExecutionPurpose::PlanLocked).is_ok());
+    assert!(check_enforcement(&p, &o, ExecutionPurpose::Agent).is_err());
+}
+
+#[test]
+fn captured_default_deny_shadows_ask_from_another_ceiling() {
+    let f = Fixture::new();
+    let requested = f.policy(json!({"preset":"full", "rules":[{"action":"mcp","effect":"ask"}]}));
+    let host = f.policy(json!("read-only"));
+    let current = f.policy(json!("full"));
+    let p = EffectivePolicy::new(requested, host, current);
+    let request = ActionRequest::Mcp {
+        server: "docs".into(),
+        tool: None,
+    };
+    assert_eq!(
+        evaluate_effective(&p, &request, ExecutionPurpose::Agent)
+            .unwrap()
+            .effect,
+        Effect::Deny
+    );
+    let mut o = observed(&p);
+    o.guarantees
+        .retain(|g| !(g.action == Action::Mcp && g.effect == Effect::Ask));
+    o.person_reviewer_evidence = None;
+    assert!(check_enforcement(&p, &o, ExecutionPurpose::Agent).is_ok());
+}
+
+#[test]
+fn shell_prefix_matcher_can_enforce_a_universal_default_deny() {
+    let f = Fixture::new();
+    let p = f.effective(
+        json!({"preset":"read-only", "rules":[{"action":"shell","match":"rm*","effect":"deny"}]}),
+    );
+    let mut o = observed(&p);
+    for g in &mut o.guarantees {
+        if g.action == Action::Shell {
+            g.mechanism = EnforcementMechanism::Harness;
+        }
+    }
+    o.shell_matching = ShellMatching::Prefix;
+    assert!(check_enforcement(&p, &o, ExecutionPurpose::Agent).is_ok());
 }
