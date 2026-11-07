@@ -1,15 +1,24 @@
-import { loadHarnessModule, read, stringify } from '../../vendor/agsdl/v0.3/reader.mjs';
+import { loadHarnessModule, ModuleError, readWithSpans, stringify } from '../../vendor/agsdl/v0.3/reader.mjs';
 import type { WorkerRequest, WorkerResponse } from './reader030WorkerProtocol';
 
 self.onmessage = (event: MessageEvent<WorkerRequest>) => {
   let response: WorkerResponse;
   try {
-    const { primary, modules } = event.data;
-    const options = modules === undefined ? undefined : {
-      modules: new Map(modules.map(([name, json]) => [name, loadHarnessModule(new TextEncoder().encode(json))])),
+    const { primary, modules, moduleError } = event.data;
+    let loaded: Map<string, ReturnType<typeof loadHarnessModule>> | undefined;
+    const options = modules === undefined && moduleError === undefined ? undefined : {
+      get modules() {
+        if (moduleError !== undefined) throw new ModuleError(moduleError);
+        return loaded ??= new Map(modules!.map(([name, json]) => [name, loadHarnessModule(new TextEncoder().encode(json))]));
+      },
     };
-    const report = read(primary, options);
-    response = { report: {
+    const { report, spans } = readWithSpans(primary, options);
+    const locations: [string, { start: number; end: number }][] = [];
+    for (const { path } of report.diagnostics) {
+      const span = spans.get(path);
+      if (span) locations.push([path, span]);
+    }
+    response = { spans: locations, report: {
       operation: 'readDocument', contract: report.contract,
       scope: 'document-and-harness-declarations', executionSupport: 'not-assessed',
       documentReportJson: stringify(report), annexesAssessment: 'not-used-by-contract',

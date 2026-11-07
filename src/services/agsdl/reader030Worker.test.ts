@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'bun:test';
 import { readFileSync, readdirSync } from 'node:fs';
-import { validateDocument, validateDocumentBytes } from './document';
+import { has030Contract, validateDocument, validateDocumentBytes } from './document';
+import { localizeDiagnostics } from './diagnostics';
+import type { ViewerCard } from './viewer';
 import { loadHarnessModule, ModuleError, parse, stringify } from '../../vendor/agsdl/v0.3/reader.mjs';
 import type { HarnessModule030 } from '../../vendor/agsdl/v0.3/reader.mjs';
 
@@ -50,6 +52,44 @@ describe('AgSDL 0.3 worker', () => {
     }
     expect(count).toBe(191);
   }, 60000);
+  it('dispatches top-level 0.3 markers even when escaped, late or followed by invalid JSON', async () => {
+    const valid = '{"id":"late","agents":{},"content":{"x":{"value":"} \\"contract\\":\\"agsdl-0.1.0\\""}},"\\u0063ontract":"agsdl-0.3.0"}';
+    expect(has030Contract(valid)).toBe(true);
+    expect((await validateDocument(valid))[0].contract).toBe('agsdl-0.3.0');
+    const nested = '{"contract":"agsdl-0.2.0","other":{"contract":"agsdl-0.3.0"}}';
+    expect(has030Contract(nested)).toBe(false);
+    expect((await validateDocument(nested))[0].contract).toBe('agsdl-0.2.0');
+    const malformed = '{"contract":"agsdl-0.3.0","id":"x","agents":{},';
+    const [report] = await validateDocument(malformed);
+    expect(report.contract).toBe('agsdl-0.3.0');
+    expect(report.results[0].findings[0].rule).toBe('PARSE');
+    const invalid = { ...modules.get('example')!, name: '\ud800' };
+    const [beforeModules] = await validateDocument(malformed, {}, { modules: new Map([['x', invalid]]) });
+    expect(beforeModules.results[0].findings[0].rule).toBe('PARSE');
+    await expect(validateDocument(valid, {}, { modules: new Map([['x', invalid]]) })).rejects.toBeInstanceOf(ModuleError);
+  });
+  it('handles deeply nested literal data without synchronous span construction', async () => {
+    const depth = 16000;
+    const literal = '['.repeat(depth) + '0' + ']'.repeat(depth);
+    const source = `{"id":"deep","agents":{"a":{"harness":"unknown","permissions":"full"}},"content":{"x":{"value":${literal}}},"contract":"agsdl-0.3.0"}`;
+    let completed = false;
+    const start = performance.now();
+    const pending = validateDocument(source).then(result => { completed = true; return result; });
+    const synchronousMs = performance.now() - start;
+    await new Promise(resolve => setTimeout(resolve, 0));
+    const tickMs = performance.now() - start;
+    expect(completed).toBe(false);
+    const [report] = await pending;
+    expect(report.results[0].verdict).toBe('pass');
+    const cards: ViewerCard[] = [{ path: '/agents/a', id: 'a', kind: 'Agent', title: '', mission: '',
+      unresolved: false, inputs: [], outputs: [], branches: [], details: { agentName: 'a' } }];
+    const localizeStart = performance.now();
+    const findings = localizeDiagnostics(source, [report], cards);
+    const localizationMs = performance.now() - localizeStart;
+    expect(findings.find(item => item.rule === 'HARNESS_UNVERIFIED')?.targets).toEqual(['/agents/a']);
+    console.log(`deep literal localization: ${localizationMs.toFixed(1)} ms`);
+    console.log(`deep literal: ${bytes(source).length} bytes, sync ${synchronousMs.toFixed(1)} ms, tick ${tickMs.toFixed(1)} ms, total ${(performance.now() - start).toFixed(1)} ms`);
+  }, 30000);
   it('preserves numeric modules, empty and default registries, and module errors', async () => {
     const json = '{"name":"custom","version":"1.0.0","contract":"agsdl-0.3.0","harnessVersions":"*","properties":{},"permissions":{},"settings":{"type":"object","properties":{"limit":{"type":"number","enum":[900719925474099312345,1.00000000000000000001]}}}}';
     const custom = loadHarnessModule(bytes(json));
@@ -85,7 +125,7 @@ describe('AgSDL 0.3 worker', () => {
               if (mode === 'error') this.onerror?.({ message: 'broken' } as ErrorEvent);
               else if (mode === 'messageerror') this.onmessageerror?.();
               else if (mode === 'malformed-error') this.onmessage?.({ data: { error: null } } as MessageEvent);
-              else if (mode === 'success') this.onmessage?.({ data: { report: { operation: 'readDocument', results: [] } } } as MessageEvent);
+              else if (mode === 'success') this.onmessage?.({ data: { report: { operation: 'readDocument', results: [] }, spans: [] } } as MessageEvent);
               else this.onmessage?.({ data: null } as MessageEvent);
             });
           }

@@ -1,5 +1,6 @@
 import type { AgsdlReport } from "../../types/agsdl";
-import { keyId, list, object, pointerPart, readDocument, scanSource, text } from "./document";
+import { has030Contract, keyId, list, object, pointerPart, readDocument, scanSource, text } from "./document";
+import { locationsForSource } from "./reader030WorkerProtocol";
 import type { ViewerCard } from "./viewer";
 
 export interface LocalizedDiagnostic {
@@ -15,6 +16,24 @@ export interface LocalizedDiagnostic {
 
 /** Only a real source span or an unambiguous AgSDL key can establish a location. */
 export function localizeDiagnostics(source: string, reports: AgsdlReport[], cards: ViewerCard[]): LocalizedDiagnostic[] {
+  if (has030Contract(source)) {
+    return reports.flatMap(report => {
+      const locations = locationsForSource(report, source);
+      return report.results.flatMap(result => result.findings.map(finding => {
+        const path = result.input === "primary" ? finding.location.pointer : undefined;
+        const span = path === undefined ? undefined : locations?.get(path);
+        const targets = !span || !path ? [] : cards.filter(card => {
+          if (finding.rule.startsWith("HARNESS_") && !card.path.startsWith("/agents/")) return false;
+          if (path === card.path || path.startsWith(`${card.path}/`)) return true;
+          const name = text(card.details.agentName) || text(card.details.agent);
+          const agent = name ? `/agents/${pointerPart(name)}` : undefined;
+          return !!agent && (path === agent || path.startsWith(`${agent}/`));
+        }).map(card => card.path);
+        return { rule: finding.rule, details: finding.details, path, span,
+          severity: finding.severity, step: finding.step, targets };
+      }));
+    });
+  }
   const doc = readDocument(source);
   const { spans } = scanSource(source);
   const definitions = list(doc.definitions).map(object);

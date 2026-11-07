@@ -4,7 +4,7 @@ import type { ExactObject, ReaderOptions030, Report030 } from "../../vendor/agsd
 import { read as read020 } from "../../vendor/agsdl/v0.2/reader.mjs";
 import { stringify as stringify020 } from "../../vendor/agsdl/v0.2/values.mjs";
 import type { AgsdlChange, AgsdlReport } from "../../types/agsdl";
-import { workerRequest } from "./reader030WorkerProtocol";
+import { rememberSourceLocations, workerRequest } from "./reader030WorkerProtocol";
 import type { WorkerResponse } from "./reader030WorkerProtocol";
 
 export const AGSDL_CONTRACT = "agsdl-0.3.0";
@@ -13,6 +13,55 @@ export const LEGACY_AGSDL_CONTRACT = "agsdl-0.1.0";
 export const isSupportedContract = (contract: unknown): boolean =>
   contract === AGSDL_CONTRACT || contract === AGSDL_020_CONTRACT || contract === LEGACY_AGSDL_CONTRACT;
 export const MAX_AGSDL_BYTES = 1024 * 1024;
+
+/** Identify an authored 0.3 marker without building an AST or spans on the UI thread. */
+export function has030Contract(source: string): boolean {
+  const whitespace = (char: string | undefined) => char === " " || char === "\t" || char === "\r" || char === "\n";
+  const stringEnd = (start: number) => {
+    for (let i = start + 1; i < source.length; i++) {
+      if (source[i] === "\\") i++;
+      else if (source[i] === '"') return i + 1;
+    }
+    return -1;
+  };
+  let i = 0;
+  while (whitespace(source[i])) i++;
+  if (source[i] !== "{") return false;
+  let depth = 0;
+  while (i < source.length) {
+    const char = source[i];
+    if (char === "{" || char === "[") { depth++; i++; continue; }
+    if (char === "}" || char === "]") { if (--depth <= 0) return false; i++; continue; }
+    if (char !== '"') { i++; continue; }
+    const end = stringEnd(i);
+    if (end < 0) return false;
+    if (depth === 1) {
+      const key = source.slice(i, end);
+      let next = end;
+      while (whitespace(source[next])) next++;
+      if (source[next] === ":" && key.length <= 50) {
+        let isContract = key === '"contract"';
+        if (!isContract && key.includes("\\")) {
+          try { isContract = JSON.parse(key) === "contract"; } catch { /* worker performs strict parsing */ }
+        }
+        if (isContract) {
+          next++;
+          while (whitespace(source[next])) next++;
+          if (source[next] === '"') {
+            const valueEnd = stringEnd(next);
+            if (valueEnd < 0) return false;
+            const value = source.slice(next, valueEnd);
+            try { if (JSON.parse(value) === AGSDL_CONTRACT) return true; } catch { /* malformed marker */ }
+            i = valueEnd;
+            continue;
+          }
+        }
+      }
+    }
+    i = end;
+  }
+  return false;
+}
 const encoder = new TextEncoder();
 const decoder = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
 export const decodeSource = (bytes: ArrayBuffer): string =>
@@ -202,7 +251,7 @@ export async function validateDocument(
   )
     throw new Error("AgSDL inputs exceed the 1 MiB editor limit.");
   let contract: unknown;
-  try { contract = readDocument(source).contract; } catch {
+  try { contract = has030Contract(source) ? AGSDL_CONTRACT : readDocument(source).contract; } catch {
     // The official 0.2 parser supplies a scoped report for malformed byte input.
   }
   if (contract === AGSDL_CONTRACT) {
@@ -226,7 +275,16 @@ export async function validateDocument(
           }
         } else if (!event.data.report || typeof event.data.report !== "object" || !Array.isArray(event.data.report.results)) {
           reject(new Error("AgSDL 0.3 Web Worker returned an invalid report."));
-        } else resolve([event.data.report]);
+        } else if (!Array.isArray(event.data.spans)) {
+          reject(new Error("AgSDL 0.3 Web Worker returned invalid source locations."));
+        } else {
+          try {
+            rememberSourceLocations(event.data.report, source, new Map(event.data.spans));
+            resolve([event.data.report]);
+          } catch {
+            reject(new Error("AgSDL 0.3 Web Worker returned invalid source locations."));
+          }
+        }
       };
       worker.onerror = (event) => { finish(); reject(new Error(`AgSDL 0.3 Web Worker failed: ${event.message}`)); };
       worker.onmessageerror = () => { finish(); reject(new Error("AgSDL 0.3 Web Worker returned an unreadable message.")); };

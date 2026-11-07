@@ -78,6 +78,11 @@ export interface ReaderOptions030 {
   modules?: ReadonlyMap<string, HarnessModule030>;
 }
 export function read(bytes: Uint8Array, options?: ReaderOptions030): Report030;
+/** Read once and retain authored byte spans for host-side diagnostic localization. */
+export function readWithSpans(bytes: Uint8Array, options?: ReaderOptions030): {
+  report: Report030;
+  spans: Map<string, { start: number; end: number }>;
+};
 export function validateExact(document: ExactValue, options?: ReaderOptions030): Report030;
 /** Throws ModuleError for malformed JSON, shape or inconsistent settings. */
 export function loadHarnessModule(bytes: Uint8Array): HarnessModule030;

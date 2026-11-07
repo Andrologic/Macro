@@ -43,14 +43,18 @@ function registry(options) {
   return modules;
 }
 
-export function read(bytes, options) {
+export function readWithSpans(bytes, options) {
   const parsed = parse(bytes);
   if (parsed.error) {
     const report = new Report();
     report.error('PARSE', '', parsed.error.message);
-    return report.as_json();
+    return { report: report.as_json(), spans: parsed.spans };
   }
-  return validate_document(parsed.tree, registry(options)).as_json();
+  return { report: validate_document(parsed.tree, registry(options)).as_json(), spans: parsed.spans };
+}
+
+export function read(bytes, options) {
+  return readWithSpans(bytes, options).report;
 }
 
 export function validateExact(document, options) {

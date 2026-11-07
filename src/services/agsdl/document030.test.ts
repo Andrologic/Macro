@@ -5,6 +5,7 @@ import { equal } from '../../vendor/agsdl/v0.3/reader.mjs';
 import { AGSDL_CONTRACT, AGSDL_020_CONTRACT, LEGACY_AGSDL_CONTRACT, readDocument, readExactDocument, validateDocument, validateDocumentBytes, applyChanges, sourceAt, object, MAX_AGSDL_BYTES } from './document';
 import { NumberToken, parse, stringify, loadHarnessModule } from '../../vendor/agsdl/v0.3/reader.mjs';
 import { localizeDiagnostics } from './diagnostics';
+import { rememberSourceLocations } from './reader030WorkerProtocol';
 import type { ViewerCard } from './viewer';
 import type { AgsdlReport } from '../../types/agsdl';
 
@@ -87,6 +88,19 @@ describe('AgSDL 0.3 document boundary', () => {
     expect(report.executionSupport).toBe('not-assessed');
     expect(() => loadHarnessModule(bytes('{}'))).toThrow();
   });
+  it('uses worker locations only for the source they were generated from', async () => {
+    const raw = source(',"agents":{"worker":{"harness":"unknown","permissions":"full"}}').replace('"agents":{},', '');
+    const cards: ViewerCard[] = [{ path: '/agents/worker', id: 'worker', kind: 'Agent',
+      title: '', mission: '', unresolved: false, inputs: [], outputs: [], branches: [], details: { agentName: 'worker' } }];
+    const reports = await validateDocument(raw);
+    const diagnostics = localizeDiagnostics(raw, reports, cards);
+    const warning = diagnostics.find(item => item.rule === 'HARNESS_UNVERIFIED');
+    expect(warning?.targets).toEqual(['/agents/worker']);
+    expect(warning?.span).toBeDefined();
+    expect(localizeDiagnostics(raw.replace('"unknown"', '"different"'), reports, cards)
+      .find(item => item.rule === 'HARNESS_UNVERIFIED')?.targets).toEqual([]);
+    expect(localizeDiagnostics(raw, [], cards)).toEqual([]);
+  });
   it('preserves normative paths and expanded steps; harness findings target only agent details', () => {
     const raw = source(',"flow":{"entry":"use","steps":{"use":{"type":"agent","agent":"worker"}}}').replace('"agents":{}', '"agents":{"worker":{"harness":"unknown"}}');
     const cards: ViewerCard[] = [
@@ -97,6 +111,8 @@ describe('AgSDL 0.3 document boundary', () => {
       { rule: 'HARNESS_UNVERIFIED', outcome: 'warning', severity: 'warning', details: '', location: { pointer: '/agents/worker/harness' } },
       { rule: 'REFERENCE', outcome: 'fail', severity: 'error', details: '', location: { pointer: '/missing/field' }, step: ['use', 'inner'] },
     ] }] };
+    const spanStart = raw.indexOf('"unknown"');
+    rememberSourceLocations(report, raw, new Map([['/agents/worker/harness', { start: spanStart, end: spanStart + 9 }]]));
     const diagnostics = localizeDiagnostics(raw, [report], cards);
     expect(diagnostics[0].targets).toEqual(['/agents/worker']);
     expect(diagnostics[0].severity).toBe('warning');
