@@ -1014,6 +1014,48 @@ async fn host_revocation_is_scoped_and_cannot_rotate_a_replacement_epoch() {
 }
 
 #[tokio::test]
+async fn response_sequence_allocation_is_atomic_and_retransmission_keeps_exact_bytes() {
+    let (_temp, pool, _receipt, runtime) = setup().await;
+    let d = delivery(&pool, &runtime, "second", "response-atomic").await;
+    accept_delivery(&pool, &runtime, d.clone()).await.unwrap();
+    assert!(matches!(
+        begin(&pool, &runtime, &d.delivery_id).await.unwrap(),
+        Admission::Admitted(..)
+    ));
+    let provider = effect(&runtime, &d.work);
+    register_effect(&pool, provider.clone()).await.unwrap();
+    let first = responses::Emission {
+        context: provider.context,
+        provider_attempt_id: "provider-1".into(),
+        sequence: String::new(),
+        identity: "first".into(),
+        kind: "message".into(),
+        body_json: r#"{"text":"one"}"#.into(),
+    };
+    let mut second = first.clone();
+    second.identity = "second".into();
+    second.body_json = r#"{"text":"two"}"#.into();
+    let (a, b) = tokio::join!(
+        responses::append_next(&pool, first.clone()),
+        responses::append_next(&pool, second)
+    );
+    let (a, inserted_a) = a.unwrap();
+    let (b, inserted_b) = b.unwrap();
+    assert!(inserted_a && inserted_b);
+    let mut sequences = [a.sequence.clone(), b.sequence];
+    sequences.sort();
+    assert_eq!(sequences, ["1", "2"]);
+    let (retry, inserted) = responses::append_next(&pool, first.clone()).await.unwrap();
+    assert!(!inserted);
+    assert_eq!(retry.sequence, a.sequence);
+    let mut changed = first;
+    changed.body_json = r#"{ "text": "one" }"#.into();
+    assert!(responses::append_next(&pool, changed).await.is_err());
+    let (events, _) = responses::read(&pool, &runtime, &d.work).await.unwrap();
+    assert_eq!(events.len(), 2);
+}
+
+#[tokio::test]
 async fn exact_response_journal_requires_attempt_receipts_and_physical_end_before_closure() {
     let (_temp, pool, _receipt, runtime) = setup().await;
     let d = delivery(&pool, &runtime, "second", "response-delivery").await;
