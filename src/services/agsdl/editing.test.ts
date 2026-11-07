@@ -6,6 +6,13 @@ import { createExample, createLegacyExample } from './examples';
 const empty020 = () => '{"contract":"agsdl-0.2.0","id":"test","agents":{},"configurations":{},"bindings":{}}';
 
 describe('AgSDL editing by contract', () => {
+  it('adds a 0.2 agent deterministically without changing its example', () => {
+    const source = createExample('release', 'agsdl-0.2.0');
+    const changes = addAgent(source);
+    expect(addAgent(source)).toEqual(changes);
+    expect(() => applyChanges(source, changes)).not.toThrow();
+    expect(createExample('release', 'agsdl-0.2.0')).toBe(source);
+  });
   it('keeps sample agent declarations editable across repeated operations', () => {
     const source = createExample('release');
     const changes = addAgent(source);

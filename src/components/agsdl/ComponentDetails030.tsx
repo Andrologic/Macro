@@ -4,8 +4,7 @@ import { DiscardChangesDialog } from "./DiscardChangesDialog";
 import { useAgsdlTranslation } from "./useAgsdlTranslation";
 import { agsdlSessionKey, useAgsdlStore, type AgsdlTarget } from "../../stores/useAgsdlStore";
 import { componentProperties, propertyChanges, type ComponentProperties } from "../../services/agsdl/componentProperties";
-import { stringify } from "../../vendor/agsdl/browser-reader.mjs";
-import { object, scanSource } from "../../services/agsdl/document";
+import { object, pointerPart, scanSource } from "../../services/agsdl/document";
 import type { ViewerCard } from "../../services/agsdl/viewer";
 
 export function ComponentDetails030({ title, target, card, canEdit = true, children, onClose, onAttach, onBack }: {
@@ -69,11 +68,17 @@ export function ComponentDetails030({ title, target, card, canEdit = true, child
 function Model030({ value, disabled, onChange }: { value: string; disabled: boolean; onChange: (value: string) => void }) {
   const { t } = useAgsdlTranslation();
   let model: Record<string, unknown>;
-  try { model = value.trim() ? object(scanSource(value).tree) : {}; } catch { return null; }
+  let parsed: ReturnType<typeof scanSource> | undefined;
+  try { parsed = value.trim() ? scanSource(value) : undefined; model = parsed ? object(parsed.tree) : {}; } catch { return null; }
   const change = (key: string, input: string) => {
-    const next: Record<string, unknown> = { ...model };
-    if (input) next[key] = input; else delete next[key];
-    onChange(Object.keys(next).length || value.trim() ? stringify(next) : "");
+    const keys = Object.keys(model).filter(item => item !== key);
+    if (input) keys.push(key);
+    const entries = keys.map(item => {
+      if (item === key) return `${JSON.stringify(item)}:${JSON.stringify(input)}`;
+      const span = parsed!.spans.get(`/${pointerPart(item)}`)!;
+      return `${JSON.stringify(item)}:${new TextDecoder().decode(parsed!.bytes.subarray(span.start, span.end))}`;
+    });
+    onChange(entries.length || value.trim() ? `{${entries.join(",")}}` : "");
   };
   return <fieldset disabled={disabled}><legend>{t("agsdl.macroConfig.title")}</legend><p>{t("agsdl.edition030.modelHint")}</p>
     {(["name", "effort"] as const).map(key => <label className="agsdl-edit-field" key={key}><span>{t(key === "name" ? "agsdl.macroConfig.model" : "agsdl.edition030.effort")}</span>
