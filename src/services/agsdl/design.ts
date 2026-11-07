@@ -113,6 +113,10 @@ export function createEmptySystem(_title: string): string {
 export function createEmptySystemDocument(title: string): { source: string; annexes: Record<string, string> } & AgsdlEnvelopeMetadata {
   return { source: createEmptySystem(title), annexes: {}, design: defaultDesign(), display: { title } };
 }
+export function createEmptyBlueprintDocument(title: string) {
+  const document = createEmptySystemDocument(title);
+  return { ...document, design: { ...defaultDesign(), ...document.design, kind: 'blueprint' as const } };
+}
 /** Migration requires a separately authored target and a reviewed loss list. */
 export function manualMigrationInventory(source: string) {
   const doc = readDocument(source);

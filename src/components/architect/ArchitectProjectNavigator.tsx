@@ -73,7 +73,7 @@ import {
   type ArchitectMenuPosition,
 } from './architectProjectNavigatorMenu';
 
-import { createEmptySystemDocument } from '../../services/agsdl/design';
+import { createEmptyBlueprintDocument } from '../../services/agsdl/design';
 import { toPlanLocatorKey } from '../../services/durableIdentity';
 import { useBlueprintFolders } from '../../hooks/useBlueprintFolders';
 import { blueprintFolderId, blueprintFolderAncestors, blueprintFolderTree, canMoveBlueprintFolder, moveBlueprintFolder, moveBlueprintToFolder, nameBlueprintFolder, type BlueprintFolder, type BlueprintNavigatorDrag } from '../../services/blueprintFolders';
@@ -643,6 +643,7 @@ export const ArchitectProjectNavigator: React.FC<ArchitectProjectNavigatorProps>
     scope: ArchitectNavigatorScope,
     planKind: ArchitectPlanKind,
     folderId?: string,
+    documentKind: 'system' | 'blueprint' = 'system',
   ) => {
     if (creatingScopeId || isBusy || isLoading || error) return;
     if (folderId && (!folders.ready || folders.busy || !folders.organization.folders.some(folder => folder.id === folderId && folder.scopeId === scope.id))) return;
@@ -660,11 +661,13 @@ export const ArchitectProjectNavigator: React.FC<ArchitectProjectNavigatorProps>
       setSectionExpanded(macroBlueprintProjectId && scope.projectId === macroBlueprintProjectId ? 'macro' : 'projects', true);
       selectScope(scope);
       const label = getNextDefaultNewPlanLabel(entries.filter(entry => entry.scopeId === scope.id).map(entry => entry.plan));
-      // Explicit folder creation must not reuse or move another folder's empty draft.
-      const result = folderId ? { plan: await planCreator({
+      const isBlueprint = Boolean(folderId) || documentKind === 'blueprint'
+        || Boolean(macroBlueprintProjectId && scope.projectId === macroBlueprintProjectId);
+      // A new blueprint must not reuse another blank draft.
+      const result = isBlueprint ? { plan: await planCreator({
         branchName: getGitFlowBaseBranch(), label, planKind,
         projectId: editableProjectIds[0], projectIds: editableProjectIds, contextProjectIds,
-        agsdl: createEmptySystemDocument(t('architect.projectNavigator.newBlueprint', 'New blueprint')), status: 'draft', setActive: true,
+        agsdl: createEmptyBlueprintDocument(t('architect.projectNavigator.newBlueprint', 'New blueprint')), status: 'draft', setActive: true,
       }) } : await ensureScopedBlankPlan({
         branchName: getGitFlowBaseBranch(),
         scopedProjectIds: editableProjectIds,
@@ -1113,7 +1116,7 @@ export const ArchitectProjectNavigator: React.FC<ArchitectProjectNavigatorProps>
           data-architect-scope-context-menu
         >
           <button type="button" role="menuitem" disabled={isBusy || isLoading || Boolean(creatingScopeId) || !contextMenuScope.projects.some(isProjectPlanActionable)}
-            onClick={() => { setScopeContextMenu(null); void createPlan(contextMenuScope, 'feature'); }}
+            onClick={() => { setScopeContextMenu(null); void createPlan(contextMenuScope, 'feature', undefined, 'blueprint'); }}
             className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left hover:bg-accent disabled:opacity-50">
             <Icon name="layout-template" size={11} />{t('architect.projectNavigator.newBlueprint', 'New blueprint')}
           </button>
