@@ -792,6 +792,114 @@ pub struct ExecutionExternalDelivery {
     pub agent_name: String,
     pub message_json: String,
 }
+
+/// The registry is loaded from the native capture, never supplied by the message.
+/// An approximate resource channel remains permitted but must be surfaced as a
+/// warning by the 0.3 projection when that projection is connected.
+fn graphless_resource_support030(
+    registry: &Value,
+    agent_name: &str,
+    message_json: &str,
+) -> Result<Option<&'static str>> {
+    let message = exact_json::value(message_json)?;
+    let message = message.as_object().ok_or_else(|| {
+        failure(
+            "INPUT_CONSTRAINT",
+            "message",
+            "External message must be an object",
+        )
+    })?;
+    if !message.contains_key("resources") {
+        return Ok(None);
+    }
+    let unverified = || {
+        failure(
+            "HARNESS_UNVERIFIED",
+            "message.resources",
+            "Resource delivery has no qualified native harness observation",
+        )
+    };
+    if registry.get("format").and_then(Value::as_str) != Some("macro-agsdl-registry/030") {
+        return Err(unverified());
+    }
+    let agents = registry
+        .get("agents")
+        .and_then(Value::as_array)
+        .ok_or_else(unverified)?;
+    let mut matching_agents = agents
+        .iter()
+        .filter(|agent| agent.get("agentName").and_then(Value::as_str) == Some(agent_name));
+    let agent = matching_agents.next().ok_or_else(unverified)?;
+    if matching_agents.next().is_some() {
+        return Err(unverified());
+    }
+    let declaration = agent
+        .get("agentDeclarationJson")
+        .and_then(Value::as_str)
+        .ok_or_else(unverified)?;
+    let declaration = exact_json::value(declaration).map_err(|_| unverified())?;
+    let harness = declaration
+        .get("harness")
+        .and_then(Value::as_str)
+        .filter(|name| !name.is_empty())
+        .ok_or_else(unverified)?;
+    let observations = registry
+        .get("harnesses")
+        .and_then(Value::as_array)
+        .ok_or_else(unverified)?;
+    let mut matching = observations
+        .iter()
+        .filter(|observation| observation.get("harness").and_then(Value::as_str) == Some(harness));
+    let observation = matching.next().ok_or_else(unverified)?;
+    if matching.next().is_some()
+        || observation.get("qualified").and_then(Value::as_bool) != Some(true)
+        || observation.get("installation").and_then(Value::as_str) != Some("available")
+        || observation
+            .get("version")
+            .and_then(Value::as_str)
+            .is_none_or(str::is_empty)
+        || observation
+            .get("adapterId")
+            .and_then(Value::as_str)
+            .is_none_or(str::is_empty)
+    {
+        return Err(unverified());
+    }
+    let capabilities = observation
+        .get("capabilities")
+        .and_then(Value::as_array)
+        .ok_or_else(unverified)?;
+    let mut matching = capabilities
+        .iter()
+        .filter(|capability| capability.get("name").and_then(Value::as_str) == Some("resources"));
+    let capability = matching.next().ok_or_else(unverified)?;
+    if matching.next().is_some() {
+        return Err(unverified());
+    }
+    let evidence = capability
+        .get("evidenceJson")
+        .and_then(Value::as_str)
+        .filter(|s| !s.trim().is_empty())
+        .ok_or_else(unverified)?;
+    let evidence = exact_json::value(evidence).map_err(|_| unverified())?;
+    if evidence.is_null()
+        || evidence.as_object().is_some_and(|object| object.is_empty())
+        || evidence.as_array().is_some_and(|array| array.is_empty())
+        || evidence.as_str().is_some_and(str::is_empty)
+    {
+        return Err(unverified());
+    }
+    match capability.get("support").and_then(Value::as_str) {
+        Some("native") => Ok(Some("native")),
+        Some("approximate") => Ok(Some("approximate")),
+        Some("absent") => Err(failure(
+            "HARNESS_UNSUPPORTED",
+            "message.resources",
+            "The qualified harness cannot receive resources",
+        )),
+        _ => Err(unverified()),
+    }
+}
 pub(crate) async fn deliver(
     host: &HostState,
     pool: &sqlx::SqlitePool,
@@ -814,6 +922,12 @@ pub(crate) async fn deliver_linked(
         super::db::agsdl_execution::read_snapshot(pool, &request.system_start_id).await?;
     let capture = super::db::agsdl_execution::capture::read(pool, &owner).await?;
     let mut registry = exact_json::value(&capture.registry_json)?;
+    if snapshot.versions.contract == "agsdl-0.3.0"
+        && graphless_resource_support030(&registry, &request.agent_name, &request.message_json)?
+            == Some("approximate")
+    {
+        tracing::warn!("Graphless resource delivery uses an approximate harness channel");
+    }
     registry["deliveryInput"] =
         json!({"agentName":request.agent_name,"messageJson":request.message_json});
     let receipt = host
@@ -882,6 +996,63 @@ mod exact_capture_tests {
     use super::*;
     use crate::agsdl_host_catalogue::NativeModelCatalogue;
     use crate::workspace::metadata::{ProjectDto, WorkspaceState};
+
+    #[test]
+    fn graphless_resources_require_the_captured_qualified_harness() {
+        let registry = json!({
+            "format":"macro-agsdl-registry/030",
+            "agents":[{"agentName":"worker","agentDeclarationJson":"{\"harness\":\"codex\"}"}],
+            "harnesses":[{"harness":"codex","qualified":true,"installation":"available",
+                "version":"0.166.0","adapterId":"adapter",
+                "capabilities":[{"name":"resources","support":"approximate","evidenceJson":"{\"receipt\":\"observed\"}"}]}]
+        });
+        assert_eq!(
+            graphless_resource_support030(&registry, "worker", r#"{"prompt":"x"}"#).unwrap(),
+            None
+        );
+        let message = r#"{"resources":{"input":{"value":9007199254740993}}}"#;
+        assert_eq!(
+            graphless_resource_support030(&registry, "worker", message).unwrap(),
+            Some("approximate")
+        );
+        let mut native = registry.clone();
+        native["harnesses"][0]["capabilities"][0]["support"] = "native".into();
+        assert_eq!(
+            graphless_resource_support030(&native, "worker", message).unwrap(),
+            Some("native")
+        );
+        let mut unqualified = registry.clone();
+        unqualified["harnesses"][0]["qualified"] = false.into();
+        assert_eq!(
+            graphless_resource_support030(&unqualified, "worker", message)
+                .unwrap_err()
+                .code,
+            "HARNESS_UNVERIFIED"
+        );
+        let mut missing_evidence = registry.clone();
+        missing_evidence["harnesses"][0]["capabilities"][0]["evidenceJson"] = "{}".into();
+        assert_eq!(
+            graphless_resource_support030(&missing_evidence, "worker", message)
+                .unwrap_err()
+                .code,
+            "HARNESS_UNVERIFIED"
+        );
+        let mut absent = registry.clone();
+        absent["harnesses"][0]["capabilities"][0]["support"] = "absent".into();
+        assert_eq!(
+            graphless_resource_support030(&absent, "worker", message)
+                .unwrap_err()
+                .code,
+            "HARNESS_UNSUPPORTED"
+        );
+        assert!(graphless_resource_support030(
+            &registry,
+            "worker",
+            r#"{"resources":{},"resources":{}}"#
+        )
+        .is_err());
+        assert!(graphless_resource_support030(&registry, "other", message).is_err());
+    }
 
     #[tokio::test]
     async fn native_observation_retains_configurations_with_opaque_public_source_data() {
