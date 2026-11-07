@@ -8,8 +8,15 @@ self.onmessage = (event: MessageEvent<WorkerRequest>) => {
     let loaded: Map<string, ReturnType<typeof loadHarnessModule>> | undefined;
     const options = modules === undefined && moduleError === undefined ? undefined : {
       get modules() {
+        if (loaded) return loaded;
+        const entries = new Map<string, ReturnType<typeof loadHarnessModule>>();
+        for (const [name, json] of modules ?? []) {
+          const module = loadHarnessModule(new TextEncoder().encode(json));
+          if (name !== module.name) throw new ModuleError(`module registry key '${name}' does not match name '${module.name}'`);
+          entries.set(name, module);
+        }
         if (moduleError !== undefined) throw new ModuleError(moduleError);
-        return loaded ??= new Map(modules!.map(([name, json]) => [name, loadHarnessModule(new TextEncoder().encode(json))]));
+        return loaded = entries;
       },
     };
     const { report, spans } = readWithSpans(primary, options);

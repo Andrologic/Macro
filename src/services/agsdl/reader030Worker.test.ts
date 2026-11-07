@@ -101,6 +101,11 @@ describe('AgSDL 0.3 worker', () => {
     await expect(validateDocument(source, {}, { modules: new Map([['wrong', custom]]) })).rejects.toBeInstanceOf(ModuleError);
     const invalid = { ...custom, name: '\ud800' };
     await expect(validateDocument(source, {}, { modules: new Map([['x', invalid]]) })).rejects.toBeInstanceOf(ModuleError);
+    const ordered = { modules: new Map([['wrong', custom], ['later', invalid]]) };
+    let expected = '';
+    try { validateDocumentBytes(bytes(source), ordered); } catch (error) { expected = (error as Error).message; }
+    expect(expected).toContain("module registry key 'wrong'");
+    await expect(validateDocument(source, {}, ordered)).rejects.toThrow(expected);
   });
   it('keeps parallel responses separate', async () => {
     const a = '{"contract":"agsdl-0.3.0","id":"a","agents":{}}';

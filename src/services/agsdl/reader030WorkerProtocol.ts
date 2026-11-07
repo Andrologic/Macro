@@ -9,11 +9,13 @@ export type WorkerResponse = { report: AgsdlReport; spans: [string, SourceSpan][
 /** Snapshot exact JSON before crossing the structured-clone boundary. */
 export function workerRequest(primary: Uint8Array, options?: ReaderOptions030): WorkerRequest {
   if (options?.modules === undefined) return { primary };
+  const modules: [string, string][] = [];
   try {
-    return { primary, modules: Array.from(options.modules, ([name, module]) => [name, stringify(module)]) };
+    for (const [name, module] of options.modules) modules.push([name, stringify(module)]);
+    return { primary, modules };
   } catch (error) {
-    // The reader checks input parsing before loading the registry.
-    return { primary, moduleError: error instanceof Error ? error.message : String(error) };
+    // Keep earlier entries: their validation errors take precedence over this one.
+    return { primary, modules, moduleError: error instanceof Error ? error.message : String(error) };
   }
 }
 
