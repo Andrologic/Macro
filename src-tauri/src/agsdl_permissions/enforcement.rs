@@ -39,6 +39,9 @@ pub struct EnforcementObservation {
     /// Empty when shell exists. Otherwise an observed absence of every shell
     /// entry point, not merely a missing tool in a catalogue.
     pub shell_absent_evidence: Option<String>,
+    /// Native observation that no MCP server, tool or resource is exposed.
+    #[serde(default)]
+    pub mcp_absent_evidence: Option<String>,
     pub outside_read_evidence: Option<String>,
     pub path_race_evidence: Option<String>,
     pub descendant_ceiling_evidence: Option<String>,
@@ -90,18 +93,38 @@ fn shell_possible(policy: &NormalizedPolicy) -> bool {
     rules.iter().any(|r| r.effect != Effect::Deny)
         || matches!(policy.preset, Some(Preset::Workspace | Preset::Full))
 }
+fn default_denies_action(preset: Option<Preset>, action: Action) -> bool {
+    matches!(
+        (preset, action),
+        (None, _)
+            | (
+                Some(Preset::ReadOnly),
+                Action::Write | Action::Shell | Action::Network | Action::Mcp | Action::Delegate
+            )
+            | (Some(Preset::Workspace), Action::Network)
+    )
+}
+fn universally_denies(policy: &NormalizedPolicy, action: Action) -> bool {
+    let rules: Vec<_> = policy
+        .rules
+        .iter()
+        .filter(|rule| rule.action == action)
+        .collect();
+    rules
+        .iter()
+        .any(|rule| rule.effect == Effect::Deny && rule.covers_all())
+        || (default_denies_action(policy.preset, action)
+            && rules.iter().all(|rule| rule.effect == Effect::Deny))
+}
+
 fn requirements(policy: &NormalizedPolicy, action: Action) -> BTreeSet<Effect> {
     let rules: Vec<_> = policy.rules.iter().filter(|r| r.action == action).collect();
     let mut effects: BTreeSet<_> = rules.iter().map(|r| r.effect).collect();
     if !rules.iter().any(|r| r.covers_all()) {
-        let default = match (policy.preset, action) {
-            (None, _)
-            | (
-                Some(Preset::ReadOnly),
-                Action::Write | Action::Shell | Action::Network | Action::Mcp | Action::Delegate,
-            )
-            | (Some(Preset::Workspace), Action::Network) => Effect::Deny,
-            _ => Effect::Allow,
+        let default = if default_denies_action(policy.preset, action) {
+            Effect::Deny
+        } else {
+            Effect::Allow
         };
         effects.insert(default);
         if action == Action::Write && policy.preset != Some(Preset::Full) {
@@ -141,7 +164,10 @@ pub fn check_enforcement(
             "Qualification is absent or belongs to another policy",
         ));
     }
-    let shell = !present(&observed.shell_absent_evidence) && policy.policies().all(shell_possible);
+    // A verified plan lock denies every shell action during this purpose only.
+    let shell = purpose != ExecutionPurpose::PlanLocked
+        && !present(&observed.shell_absent_evidence)
+        && policy.policies().all(shell_possible);
     let mut required = BTreeSet::new();
     for layer in policy.policies() {
         for action in ACTIONS {
@@ -150,12 +176,27 @@ pub fn check_enforcement(
             }
         }
     }
-    if purpose == ExecutionPurpose::PlanLocked {
-        for action in ACTIONS.into_iter().filter(|a| *a != Action::Read) {
+    // A universal denial in any ceiling makes all less restrictive effects
+    // unreachable, even when another layer has an ask rule for the action.
+    for action in ACTIONS {
+        let denied = (purpose == ExecutionPurpose::PlanLocked && action != Action::Read)
+            || policy
+                .policies()
+                .any(|layer| universally_denies(layer, action));
+        if denied {
+            required.remove(&(action, Effect::Ask));
             required.insert((action, Effect::Deny));
         }
     }
+    if present(&observed.mcp_absent_evidence) {
+        required.retain(|(action, _)| *action != Action::Mcp);
+    }
     let mut evidence = Vec::new();
+    if let Some(absent) = &observed.mcp_absent_evidence {
+        if !absent.trim().is_empty() {
+            evidence.push(absent.clone());
+        }
+    }
     if let Some(absent) = &observed.shell_absent_evidence {
         if !absent.trim().is_empty() {
             evidence.push(absent.clone());
@@ -176,6 +217,11 @@ pub fn check_enforcement(
                     && !(action == Action::Shell
                         && g.mechanism == EnforcementMechanism::Harness
                         && observed.shell_matching == ShellMatching::Prefix
+                        && !(effect == Effect::Deny
+                            && (purpose == ExecutionPurpose::PlanLocked
+                                || policy
+                                    .policies()
+                                    .any(|layer| universally_denies(layer, action))))
                         && policy.policies().any(|layer| {
                             layer.rules.iter().any(|r| {
                                 r.action == action
@@ -199,7 +245,14 @@ pub fn check_enforcement(
             &mut evidence,
         )?;
     }
-    if policy.policies().any(|p| p.outside == Outside::Deny) {
+    if policy.policies().any(|p| {
+        p.preset.is_some()
+            && p.outside == Outside::Deny
+            && !p
+                .rules
+                .iter()
+                .any(|r| r.action == Action::Read && r.covers_all())
+    }) {
         need(
             &observed.outside_read_evidence,
             "outside-read confinement",

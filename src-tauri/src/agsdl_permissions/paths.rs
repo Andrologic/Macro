@@ -154,10 +154,11 @@ impl NormalizedRule {
         }
         if rule.action == Action::Network {
             rule.pattern = rule.pattern.map(|pattern| {
+                let pattern = pattern.to_ascii_lowercase();
+                let pattern = pattern.trim_end_matches('.');
                 pattern
-                    .to_ascii_lowercase()
-                    .trim_end_matches('.')
-                    .to_owned()
+                    .parse::<std::net::IpAddr>()
+                    .map_or_else(|_| pattern.to_owned(), |ip| ip.to_string())
             });
         }
         let (logical, physical) = match (&rule.pattern, rule.action) {
@@ -248,7 +249,7 @@ impl Subject {
                 let host = host.strip_suffix('.').unwrap_or(&host);
                 // Ports, URLs and userinfo are not destination hosts.09 must
                 // supply the actual host again at each redirect/connection.
-                let ip = host.parse::<std::net::IpAddr>().is_ok();
+                let ip = host.parse::<std::net::IpAddr>();
                 let domain = !host.is_empty()
                     && host.len() <= 253
                     && host.split('.').all(|label| {
@@ -260,12 +261,12 @@ impl Subject {
                                 .bytes()
                                 .all(|c| c.is_ascii_alphanumeric() || c == b'-')
                     });
-                if !ip && !domain {
+                if ip.is_err() && !domain {
                     return Err(invalid(
                         "Network subject must be a destination IP or ASCII/IDNA host without port",
                     ));
                 }
-                subject.logical = host.into();
+                subject.logical = ip.map_or_else(|_| host.to_owned(), |ip| ip.to_string());
             }
             ActionRequest::Mcp { server, tool } => {
                 if server.is_empty()
