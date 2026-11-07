@@ -183,6 +183,7 @@ export const createGoalAuditProviderExecutor = (
     try {
       if (signal.aborted) throw abortError();
       await (ports.stream ?? streamChat)({
+          providerAdmission: { kind: 'conversation' },
           sessionId: request.childRunId,
           conversationId: readToolContext.childConversationId,
           internalAgentProfile: "goal_auditor",

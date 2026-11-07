@@ -167,6 +167,7 @@ interface SkillsStore {
   runSkillScriptResult: (
     request: SkillScriptRunRequest,
     permissionSnapshot?: SkillPermissionSnapshot | null,
+    chatAdmission?: import('../services/ipc/chatAdmission').ChatToolAdmission,
   ) => Promise<SkillScriptRunResult | string>;
 }
 
@@ -558,7 +559,7 @@ export const useSkillsStore = create<SkillsStore>((set, get) => ({
     return response.content;
   },
 
-  runSkillScriptResult: async (request, permissionSnapshot = null) => {
+  runSkillScriptResult: async (request, permissionSnapshot = null, chatAdmission) => {
     if (!canRunSkillScriptFromSnapshot(permissionSnapshot, request.skillId)) {
       return 'Skill scripts were not enabled when this turn started. Enable Scripts for this skill in Settings and retry on the next turn.';
     }
@@ -593,6 +594,7 @@ export const useSkillsStore = create<SkillsStore>((set, get) => ({
     }
     return services.runSkillScript({
       ...scriptRequest,
+      ...(chatAdmission ? { chatAdmission } : {}),
       projectRoots,
       workspacePath,
       workspaceRoot,

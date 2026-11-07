@@ -1,0 +1,12 @@
+{
+  "contract_version": "2.0",
+  "request_id": "request-demo",
+  "account_id": "account-demo",
+  "type": "response",
+  "operation": "projects.list",
+  "result": {
+    "not_modified": true,
+    "revision": 1,
+    "observed_at": "2026-01-01T00:00:00Z"
+  }
+}

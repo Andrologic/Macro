@@ -1,0 +1,12 @@
+{
+  "contract_version": "2.0",
+  "type": "instance",
+  "ref": {
+    "type": "instance",
+    "instance_id": "instance:studio-mac"
+  },
+  "label": "Studio Mac",
+  "connection_state": "reachable",
+  "supported_contract_versions": ["2.0"],
+  "revision": 1
+}

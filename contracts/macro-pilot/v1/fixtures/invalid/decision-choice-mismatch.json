@@ -1,0 +1,41 @@
+{
+  "contract_version": "1.0",
+  "type": "decision",
+  "ref": {
+    "type": "decision",
+    "instance_id": "instance:studio-mac",
+    "workspace_id": "workspace:macro-suite",
+    "task_id": "task:pilot-contract",
+    "run_id": "run:pilot-contract:01",
+    "decision_id": "decision:connection:01"
+  },
+  "state": "resolved",
+  "steps": [
+    {
+      "step_id": "scope",
+      "prompt": "How should the client connect?",
+      "choices": [
+        "Automatic",
+        "Local only",
+        "Manual"
+      ],
+      "free_text_allowed": false
+    }
+  ],
+  "resolution": {
+    "answers": [
+      {
+        "step_id": "scope",
+        "answer": "Unknown"
+      }
+    ],
+    "resolved_by": {
+      "account_id": "account:github:583231",
+      "session_id": "session:phone:01J8T",
+      "device_id": "device:iphone:01J8T"
+    },
+    "resolved_at": "2026-09-06T12:01:00Z"
+  },
+  "revision": 2,
+  "created_at": "2026-09-06T12:00:00Z"
+}

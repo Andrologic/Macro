@@ -24,6 +24,10 @@ let streamGate: (() => Promise<void>) | undefined;
 let listenerGate: Promise<void> | undefined;
 let submissionGate: ((submission: Submission) => Promise<void>) | undefined;
 const emit = (event: string, payload: Record<string, unknown>) => handlers.get(event)?.({ payload });
+let nativePhase: import('../ipc/chatAdmission').ChatWorkPhase = 'completed';
+let handoffGate: Promise<void> | undefined;
+const handoff = mock(async (_context: unknown, _conversation: string, _request: string, _receipts: unknown[]) => { await handoffGate; });
+
 
 mock.module('../tauriRuntimeBridge', () => ({ ...bridge, listen: async (event: string, handler: Handler) => {
   handlers.set(event, handler);
@@ -32,6 +36,8 @@ mock.module('../tauriRuntimeBridge', () => ({ ...bridge, listen: async (event: s
 } }));
 mock.module('../tauriIpc', () => ({ ...ipc,
   isTauriAvailable: () => true,
+  chatAdmissionJoinProvider: async () => ({ phase: nativePhase, taskError: null }),
+  chatAdmissionCompleteSteerHandoff: handoff,
   aiCancelStream: async () => { cancelCount += 1; await cancelGate?.(); },
   aiStreamChat: async (request: Parameters<typeof ipc.aiStreamChat>[0]) => {
     requestId = request.requestId;
@@ -64,6 +70,9 @@ beforeEach(() => {
   cancelGate = undefined;
   streamGate = undefined;
   listenerGate = undefined;
+  nativePhase = 'completed';
+  handoffGate = undefined;
+  handoff.mockClear();
 });
 
 const deferred = <T>() => {
@@ -82,6 +91,7 @@ const waitFor = async (condition: () => boolean) => {
 };
 
 const turn = (overrides: Partial<NativeParams>) => streamNativeTurnViaTauri({
+  providerAdmission: { kind: 'utility' },
   providerId: 'copilot', providerType: 'copilot', modelId: 'fixture',
   messages: [], tools: [], allowedToolIds: ['read', 'write', 'question', 'mcp__fixture__read', 'unknown_tool'],
   onDelta() {}, ...overrides,
@@ -624,7 +634,7 @@ for (const phase of ['flush', 'projection'] as const) {
     const session = { id: 'terminal', project_id: null, status: 'idle' } as import('../tauriIpc').TerminalSessionDto;
     const terminal = { cachedSession: () => session, readSession: async () => session, createSession: async () => session,
       runCommand: async () => { throw terminalReceipt; }, killSession: async () => session };
-    const running = runAssistantStream({ sessionId: `attempt-${phase}`, providerId: 'copilot', providerType: 'copilot', modelId: 'fixture', baseUrl: 'https://example.invalid', messages: [], allowedToolIds: ['terminal_run'], signal: controller.signal,
+    const running = runAssistantStream({ providerAdmission: { kind: 'utility' }, sessionId: `attempt-${phase}`, providerId: 'copilot', providerType: 'copilot', modelId: 'fixture', baseUrl: 'https://example.invalid', messages: [], allowedToolIds: ['terminal_run'], signal: controller.signal,
       onToolCall: (_name, args) => executeChatAgentTerminal(terminal, 'terminal_run', args, controller.signal),
       onGenerationAttemptsUpdate: phase === 'projection' ? async () => { await Promise.resolve(); throw diagnostic; } : undefined,
       lifecycle: { appendTokenChunk: () => { if (phase === 'flush') throw diagnostic; }, onComplete: () => {}, onError: () => { state = { ...state, phase: 'error', abortController: null }; } }, streamChatImpl: streamChat,
@@ -709,12 +719,13 @@ test('a recovered duplicate provider effect never authorizes a new native dispat
 });
 
 test('resident dispatch receives the exact request envelope acknowledged at registration', async () => {
-  let captured: Parameters<typeof ipc.aiStreamChat>[0] | undefined;
-  const dispatch = mock(async (envelope: Parameters<typeof ipc.aiStreamChat>[0]) => {
+  let captured: import('../ipc/ai').AiStreamChatInput | undefined;
+  const dispatch = mock(async (envelope: import('../ipc/ai').AiStreamChatInput) => {
     if (!captured) throw new Error('Registration envelope missing');
     expect(envelope).toBe(captured);
     expect(envelope.messages[0].content).toBe('9007199254740993');
-    await ipc.aiStreamChat(envelope);
+    expect(envelope).toHaveProperty('providerAdmission', { kind: 'utility' });
+    await ipc.aiStreamChat(envelope as Parameters<typeof ipc.aiStreamChat>[0]);
   });
   const pending = turn({ providerType: 'openai', providerId: 'fixture', messages: [{ role: 'user', content: '9007199254740993' }], nativeExecution: {
     beforeRequest: async (id, envelope) => {
@@ -748,7 +759,7 @@ test('resident shared loop retains an ended tool and completes its second native
     responses: { agentName: configuration.agentName, interfaceJson: json('{}'), stepJson: null, publicationContractJson: null } };
   const rawArguments = '{ "path" : "qa-9007199254740993.txt" }';
   const toolResult = 'FILE: qa-9007199254740993.txt\nSOURCE: WORKSPACE_FILE\nExact retained result';
-  const requests: Parameters<typeof ipc.aiStreamChat>[0][] = [];
+  const requests: import('../ipc/ai').AiStreamChatInput[] = [];
   const emissions: import('../../types/generated/ipc').Emission[] = [];
   const order: string[] = [];
   const dispatchTool = createResidentToolDispatch(residentRequest, {
@@ -774,7 +785,8 @@ test('resident shared loop retains an ended tool and completes its second native
       expect(envelope).toBe(requests.at(-1)!);
       const turnNumber = requests.length;
       order.push(`dispatch:${turnNumber}`);
-      await ipc.aiStreamChat(envelope);
+      expect(envelope).toHaveProperty('providerAdmission', { kind: 'utility' });
+      await ipc.aiStreamChat(envelope as Parameters<typeof ipc.aiStreamChat>[0]);
       queueMicrotask(() => emit('ai:done', { request_id: envelope.requestId,
         output_text: turnNumber === 1 ? '' : 'Final native answer',
         provider_turn_state: { response_id: `annotation-${turnNumber}`, output_items: [] },
@@ -810,7 +822,7 @@ test('ordinary native Chat keeps assistant and tool continuation annotations on 
   const { runToolCallingLoop } = await import('./toolCallingLoop');
   const { createStreamAccumulator } = await import('./streamAccumulator');
   const options: import('./contracts').StreamingChatOptions = {
-    providerId: 'fixture', providerType: 'chatgpt', modelId: 'fixture', baseUrl: '', mode: 'Chat', messages: [{ role: 'user', content: 'Read' }],
+    providerAdmission: { kind: 'conversation' }, providerId: 'fixture', providerType: 'chatgpt', modelId: 'fixture', baseUrl: '', mode: 'Chat', messages: [{ role: 'user', content: 'Read' }],
     allowedToolIds: ['read'], onToken() {}, onComplete() {}, onError(error) { throw error; },
     onToolCall: async () => 'Read result',
   };
@@ -846,4 +858,34 @@ test('resident visible message keeps exact provider content without structured r
   // Chat presentation is unchanged; the AgSDL collector receives only visible bytes.
   expect(result.content).toBe(`<think>Plan ok.\n</think>${exact}`);
   expect(visible).toEqual([exact]);
+});
+
+test('Codex retains its result until the confirmed steer handoff has been recorded', async () => {
+  const gate = deferred<void>();
+  handoffGate = gate.promise;
+  const receipt = { operationId: 'steer', runtime: 'browser', revision: 0,
+    identity: { conversationId: 'chat', kind: 'steer' as const, id: 'direction' } };
+  const run = turn({ providerType: 'chatgpt', conversationId: 'chat',
+    providerAdmission: { kind: 'globalChat', context: { handle: 'parent', runtime: 'browser' } }, steerReceipts: [receipt] });
+  let returned = false;
+  void run.then(() => { returned = true; });
+  await started;
+  emit('ai:done', { request_id: requestId, output_text: 'Confirmed answer', tool_calls: [] });
+  await waitFor(() => handoff.mock.calls.length === 1);
+  expect(returned).toBe(false);
+  expect(handoff.mock.calls[0]?.[3]).toEqual([receipt]);
+  gate.resolve();
+  expect((await run).admissionOutcome).toBe('completed');
+});
+
+test('Codex preserves its payload and pending direction when provider admission is uncertain', async () => {
+  nativePhase = 'unknown';
+  const run = turn({ providerType: 'chatgpt', conversationId: 'chat',
+    providerAdmission: { kind: 'globalChat', context: { handle: 'parent', runtime: 'browser' } },
+    steerReceipts: [{ operationId: 'steer', runtime: 'browser', revision: 0,
+      identity: { conversationId: 'chat', kind: 'steer', id: 'direction' } }] });
+  await started;
+  emit('ai:done', { request_id: requestId, output_text: 'Received but uncertain', tool_calls: [] });
+  expect(await run).toMatchObject({ content: 'Received but uncertain', admissionOutcome: 'unknown', completionReason: 'admission_unresolved' });
+  expect(handoff).not.toHaveBeenCalled();
 });

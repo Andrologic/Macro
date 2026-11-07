@@ -301,6 +301,36 @@ describe('scoped MCP runtime', () => {
     expect(cancelOperation).toHaveBeenCalledWith(capturedOperationId);
   });
 
+  it('keeps an admitted MCP call pending until its native owner returns after abort', async () => {
+    const runtime = await resolveScopedMcpRuntime({ admitted_server: stdioDefinition }, [], {
+      deps: {
+        mcpRuntimeConnect: async received => snapshotFor(received),
+        mcpRuntimeRefreshCatalog: async key => catalogFor(key, ['slow']),
+      },
+    });
+    let release!: (value: { content: string }) => void;
+    let started!: () => void;
+    const start = new Promise<void>(resolve => { started = resolve; });
+    const gate = new Promise<{ content: string }>(resolve => { release = resolve; });
+    const cancel = mock(async () => true);
+    const controller = new AbortController();
+    let settled = false;
+    const pending = callScopedMcpTool('mcp__admitted_server__slow', {}, runtime.servers, {
+      chatAdmission: { context: { handle: 'local-handle', runtime: 'local-runtime' },
+        identity: { conversationId: 'conversation', turnId: 'turn', messageId: 'message', callId: 'call' } },
+      signal: controller.signal,
+      deps: { mcpRuntimeCallTool: async () => { started(); return gate; }, mcpRuntimeCancelOperation: cancel },
+    });
+    void pending.then(() => { settled = true; }, () => { settled = true; });
+    await start;
+    controller.abort();
+    await Promise.resolve();
+    expect(cancel).toHaveBeenCalledTimes(1);
+    expect(settled).toBe(false);
+    release({ content: 'native owner returned' });
+    await expect(pending).rejects.toMatchObject({ name: 'AbortError' });
+  });
+
   it('skips execution entirely when the signal is already aborted', async () => {
     const connect = mock(async (received: MCPRuntimeSelector) => snapshotFor(received));
     const refreshCatalog = mock(async (key: MCPRuntimeKey) => catalogFor(key, ['list']));

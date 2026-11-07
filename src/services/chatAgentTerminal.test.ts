@@ -69,11 +69,14 @@ test('kills the exact execution after a run has started and the signal aborts', 
   const command = deferred<typeof session>();
   terminal.runCommand.mockReturnValue(command.promise);
   const controller = new AbortController();
+  const admission = { context: { handle: 'handle', runtime: 'runtime' }, identity: { conversationId: 'conversation', turnId: 'turn', messageId: 'message', callId: 'call' } };
   const running = executeChatAgentTerminal(
     terminal,
     'terminal_run',
     { session_id: 'session', command: 'synthetic' },
     controller.signal,
+    undefined,
+    admission,
   );
 
   await new Promise<void>((resolve) => setImmediate(resolve));
@@ -81,7 +84,7 @@ test('kills the exact execution after a run has started and the signal aborts', 
   command.resolve({ ...session, status: "killed" });
   await running;
   expect(terminal.runCommand).toHaveBeenCalledWith(expect.objectContaining({ sessionId: 'session', command: 'synthetic', executionId: expect.any(String) }));
-  expect(terminal.killSession).toHaveBeenCalledWith('session', expect.any(String));
+  expect(terminal.killSession).toHaveBeenCalledWith('session', expect.any(String), admission);
   expect(terminal.killSession.mock.calls[0]?.[1]).toBe(terminal.runCommand.mock.calls[0]?.[0].executionId);
 });
 

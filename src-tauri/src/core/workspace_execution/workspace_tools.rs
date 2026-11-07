@@ -1477,7 +1477,16 @@ pub(crate) async fn execute_virtual_workspace_tool(
                             requested_unix_mode: None,
                         });
                     }
-                    ParsedPatchOperation::Update { path, hunks } => {
+                    ParsedPatchOperation::Update {
+                        path,
+                        hunks,
+                        move_to,
+                    } => {
+                        if move_to.is_some() {
+                            return Err(command_error(
+                                "Patch moves are unavailable across virtual mounts",
+                            ));
+                        }
                         let requested_revision = expected_revisions
                             .get(&normalize_tool_map_path(&path))
                             .cloned();

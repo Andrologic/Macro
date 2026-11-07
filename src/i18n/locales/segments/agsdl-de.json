@@ -1,15 +1,4 @@
 {
-  "graphHints": {
-    "skills": "Skills",
-    "structured": "Geprüftes strukturiertes Ergebnis",
-    "dynamic": "Konfigurationswahl bei Initialisierung",
-    "external": "Deklarierte externe Auswirkung",
-    "externalShort": "Externe Auswirkung",
-    "first": "Erstes akzeptables Ergebnis",
-    "all": "Alle Ergebnisse erforderlich",
-    "steering": "Anweisung während der Arbeit",
-    "maxVisits": "Bis zu {{count}} Durchläufe"
-  },
   "editor": "AgSDL-Ansicht",
   "legacyStrategy": "Bisherige Strategie",
   "loading": "AgSDL wird geladen...",
@@ -230,7 +219,16 @@
       "engineUnset": "Engine nicht konfiguriert",
       "selected": "Ausgewählt"
     },
-    "backToComponent": "Zurück zu den vorherigen Details"
+    "backToComponent": "Zurück zu den vorherigen Details",
+    "legend": "Legende",
+    "legendFlow": "Ablauf",
+    "legendError": "Ausgang bei Fehler",
+    "legendQueue": "Warteschlange eines geteilten Agenten",
+    "legendEntry": "Einstiegspunkt des Ablaufs",
+    "joinAll": "Alle",
+    "joinFirst": "Erstes",
+    "joinAllHint": "Wartet auf alle Ergebnisse",
+    "joinFirstHint": "Behält das erste akzeptable Ergebnis"
   },
   "attachToChat": "Zum Chat hinzufügen",
   "chatSelection": "AgSDL-Auswahl",
@@ -527,7 +525,9 @@
     "to": "Weiter",
     "expand": "Gruppe aufklappen",
     "openTask": "Aufgabe öffnen",
-    "canvasMenu": "Graphaktionen"
+    "canvasMenu": "Graphaktionen",
+    "unfold": "Komposition aufklappen",
+    "fold": "Komposition zuklappen"
   },
   "link": {
     "true": "Wenn ja",
@@ -582,5 +582,51 @@
     "installation": "Offizielle SDK-Installationsanleitung",
     "apiKey": "Anthropic-API-Schlüssel",
     "keySaveFailed": "Der Schlüssel konnte nicht gespeichert oder sein Profil nicht qualifiziert werden."
+  },
+  "preview": {
+    "steers": "Hinweis für",
+    "model": "Modell",
+    "uses": "Nutzt",
+    "receives": "Erhält",
+    "produces": "Liefert",
+    "limit": "Durchläufe",
+    "after": "Gestartet von",
+    "arguments": "Argumente",
+    "effect": "Wirkung",
+    "action": "Aktion",
+    "targets": "Ziele",
+    "context": "Kontext",
+    "timeout": "Frist",
+    "validity": "Gültigkeit",
+    "test": "Prüft",
+    "mode": "Wartet auf",
+    "accept": "Akzeptiert wenn",
+    "agents": "Agenten",
+    "transmits": "Übergibt",
+    "whenLabel": "Gilt wenn",
+    "limitValue_one": "höchstens {{count}}",
+    "limitValue_other": "höchstens {{count}}",
+    "effects": {
+      "none": "keine",
+      "external": "extern",
+      "unknown": "nicht angegeben"
+    },
+    "join": {
+      "all": "alle Mitglieder",
+      "first": "das erste akzeptierte",
+      "remaining-finish": "die anderen beenden",
+      "remaining-stop-and-wait": "die anderen stoppen"
+    },
+    "when": {
+      "choice": "{{who}} wählt „{{name}}“",
+      "error": "{{source}} schlägt fehl",
+      "next": "Immer",
+      "true": "Die Bedingung ist wahr",
+      "false": "Die Bedingung ist falsch",
+      "approved": "Die Freigabe wird erteilt",
+      "denied": "Die Freigabe wird abgelehnt",
+      "exchange": "Bei einem Datenaustausch",
+      "dependency": "Nach dem vorherigen Block"
+    }
   }
 }

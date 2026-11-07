@@ -8,6 +8,8 @@ export interface ProjectCommandRequest {
   cwd: string;
   command: string;
   reveal: boolean;
+  beforeEffect?: () => Promise<void>;
+  expectedBranch?: string | null;
 }
 
 export interface ProjectCommandSession {
@@ -55,17 +57,26 @@ export class ProjectCommandRunner {
   }
 
   /** Subscribe then re-read so completion/removal during subscription cannot be lost. */
-  waitForCompletion(id: string): Promise<ProjectCommandSession | null> {
-    return new Promise((resolve) => {
+  waitForCompletion(id: string, signal?: AbortSignal): Promise<ProjectCommandSession | null> {
+    return new Promise((resolve, reject) => {
       let settled = false;
       let unsubscribe: (() => void) | undefined;
+      const cleanup = () => { unsubscribe?.(); signal?.removeEventListener('abort', abort); };
+      const abort = () => {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        reject(new Error('Setup command wait cancelled.'));
+      };
       const check = () => {
         const session = this.execution.read(id);
         if (settled || (session && !isFinalProjectCommand(session))) return;
         settled = true;
-        unsubscribe?.();
+        cleanup();
         resolve(session);
       };
+      if (signal?.aborted) { abort(); return; }
+      signal?.addEventListener('abort', abort, { once: true });
       check();
       if (settled) return;
       unsubscribe = this.execution.subscribe(check);

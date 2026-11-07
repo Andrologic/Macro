@@ -44,6 +44,8 @@ export function chatSendFixture(mode: ChatSendSnapshot['mode'] = 'Chat') {
   // Other persistence operations are outside this use case; fail if accidentally called.
   const unexpected = async (): Promise<never> => { throw new Error('Unexpected persistence operation'); };
   const ports: ChatSendPorts<SendTask, { taskId: string }, { prepared: true }> = {
+    // This fixture has an explicit project, so native scope resolution returns Conversation.
+    admission: { begin: async () => ({ kind: 'conversation' }), closePreparation: unexpected, handoffQuestion: unexpected },
     owner: {
       track: () => {},
       read: (id) => runtimes.get(id) ?? { phase: 'idle', sessionId: null },

@@ -602,7 +602,13 @@ export const executeRemoteWorkspaceToolDetailed = async (params: {
       try {
         recoveredBeforeRetry = await pollRemoteMutationResult(executionId);
       } catch (recoveryError) {
-        if (remoteErrorCode(recoveryError) === 'REMOTE_MUTATION_PENDING') throw recoveryError;
+        if (
+          ['REMOTE_MUTATION_PENDING', 'REMOTE_MUTATION_OUTCOME_INDETERMINATE'].includes(
+            remoteErrorCode(recoveryError) ?? '',
+          )
+        ) {
+          throw recoveryError;
+        }
         // A status lookup can fail with the same transient transport outage.
         // The single resend below still uses the durable execution identity.
       }

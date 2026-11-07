@@ -102,9 +102,11 @@ export interface ArchitectPlanReplicaMutationTarget {
   chatMessages?: ArchitectPlanChatMessage[];
   replacePlanDirectory?: boolean;
   extraFiles?: Record<string, string>;
+  targetedTaskId?: string;
 }
 
 export interface ArchitectPlanReplicaMutationPayload {
+  requiresPilotAuthorization?: boolean;
   targets: ArchitectPlanReplicaMutationTarget[];
   commitMessage: string;
 }
@@ -147,6 +149,7 @@ export const isReplicaMutationPayload = (
       !!message && typeof message.id === 'string' && (message.role === 'user' || message.role === 'assistant') &&
       typeof message.content === 'string' && typeof message.createdAt === 'string'
     ))) && (target.replacePlanDirectory === undefined || typeof target.replacePlanDirectory === 'boolean') &&
+    (target.targetedTaskId === undefined || (typeof target.targetedTaskId === 'string' && target.targetedTaskId.length > 0)) &&
     (target.extraFiles === undefined || (target.extraFiles !== null && typeof target.extraFiles === 'object' &&
       Object.entries(target.extraFiles).every(([path, content]) =>
         path.startsWith('artifacts/') && !path.includes('..') && !path.includes('\\') &&
@@ -219,8 +222,12 @@ export const getRegistryWorkspaceKey = (
 export const applyArchitectPlanReplicaMutation = async (
   entry: ArchitectPlanMutationJournalEntry<ArchitectPlanReplicaMutationPayload>,
   registrySnapshot: ValidProjectRegistrySnapshot | null | undefined,
+  beforeEffect?: () => Promise<void>,
+  onWrite?: (workspacePath: string | null | undefined, path: string) => void,
 ): Promise<void> => {
   for (const target of entry.payload.targets) {
+    const targetOnWrite = onWrite ? (path: string) => onWrite(target.scope.workspacePath, path) : undefined;
+    await beforeEffect?.();
     if (target.action === 'upsert' && target.plan) {
       if (target.replacePlanDirectory) {
         await removePlanAtScope(target.scope, entry.branchName, entry.planId);
@@ -228,6 +235,7 @@ export const applyArchitectPlanReplicaMutation = async (
       await writePlanAtScope(target.scope, entry.branchName, target.plan, registrySnapshot, {
         chatMessages: target.chatMessages,
         skipManifest: target.chatMessages !== undefined,
+        beforeEffect, targetedTaskId: target.targetedTaskId, onWrite: targetOnWrite,
       });
       if (target.chatMessages) {
         await writePlanChatAtScope(
@@ -248,12 +256,15 @@ export const applyArchitectPlanReplicaMutation = async (
             workspaceScope: getScopeWorkspaceScope(target.scope),
             workspacePath: target.scope.workspacePath,
           });
+          targetOnWrite?.(`${getPlanDir(entry.branchName, entry.planId)}/${relativePath}`);
         }
       }
     } else if (target.action === 'remove') {
       await removePlanAtScope(target.scope, entry.branchName, entry.planId);
     }
-    await writeIndexAtScope(target.scope, entry.branchName, target.index);
+    await beforeEffect?.();
+    await writeIndexAtScope(target.scope, entry.branchName, target.index, beforeEffect, targetOnWrite,
+      beforeEffect ? { pilotOnly: true, targetedPlanId: entry.planId } : undefined);
   }
 };
 
@@ -316,6 +327,7 @@ export const recoverArchitectPlanReplicaMutationsUnlocked = async (
         );
         continue;
       }
+      if (entry.payload.requiresPilotAuthorization) throw new Error('Pilot metadata mutation requires desktop inspection before recovery.');
       const scopesBelongToWorkspace = entry.payload.targets.every((target) => {
         if (target.scope.source === 'local') return true;
         const root = normalizeProjectRegistryPath(target.scope.workspacePath || target.scope.repoPath);
@@ -377,10 +389,15 @@ export const runArchitectPlanReplicaMutation = async (params: {
   registrySnapshot: ValidProjectRegistrySnapshot | null | undefined;
   deps: ResolvedArchitectPlanServiceDependencies;
   commitMessage: string;
+  beforeEffect?: () => Promise<void>;
 }): Promise<void> => {
   const workspaceKey = await resolveReplicaWorkspaceKey(params.deps, params.registrySnapshot, params.targets);
   await withReplicaTransactionLock(workspaceKey, async () => {
-    await recoverArchitectPlanReplicaMutationsUnlocked(params.deps, params.registrySnapshot, workspaceKey);
+    await params.beforeEffect?.();
+    if (params.beforeEffect) {
+      const pending = await loadArchitectPlanMutationJournal(params.deps.tauri, { pilotOnly: true });
+      if (pending.some(entry => entry.workspaceKey === workspaceKey)) throw new Error('content_unavailable');
+    } else await recoverArchitectPlanReplicaMutationsUnlocked(params.deps, params.registrySnapshot, workspaceKey);
     const now = new Date().toISOString();
     const entry: ArchitectPlanMutationJournalEntry<ArchitectPlanReplicaMutationPayload> = {
     id: createArchitectPlanMutationId(params),
@@ -389,35 +406,68 @@ export const runArchitectPlanReplicaMutation = async (params: {
     planId: params.planId,
     operation: params.operation,
     phase: 'prepared',
-    payload: { targets: params.targets, commitMessage: params.commitMessage },
+    payload: { targets: params.targets, commitMessage: params.commitMessage,
+      ...(params.beforeEffect ? { requiresPilotAuthorization: true } : {}) },
     createdAt: now,
     updatedAt: now,
   };
     let currentEntry = entry;
-    await upsertArchitectPlanMutationJournal(currentEntry, params.deps.tauri);
+    const writtenMetadataPathsByWorkspace = new Map<string, Set<string>>();
+    const noteWrite = params.beforeEffect
+      ? (workspacePath: string | null | undefined, path: string) => {
+          const key = workspacePath?.trim();
+          if (!key) return;
+          const paths = writtenMetadataPathsByWorkspace.get(key) ?? new Set<string>();
+          paths.add(path);
+          writtenMetadataPathsByWorkspace.set(key, paths);
+        }
+      : undefined;
+    const journalOptions = params.beforeEffect ? { pilotOnly: true } : undefined;
+    const pilotDeps = params.beforeEffect ? {
+      ...params.deps,
+      tauri: {
+        ...params.deps.tauri,
+        macroBranchCommitIfDirty: async (args?: Parameters<typeof params.deps.tauri.macroBranchCommitIfDirty>[0]) => {
+          await params.beforeEffect?.();
+          const workspacePath = args?.workspacePath?.trim();
+          return params.deps.tauri.macroBranchCommitIfDirty({
+            ...args, pilotOnly: true,
+            metadataPaths: workspacePath ? Array.from(writtenMetadataPathsByWorkspace.get(workspacePath) ?? []) : [],
+          });
+        },
+      },
+    } : params.deps;
+    await params.beforeEffect?.();
+    await upsertArchitectPlanMutationJournal(currentEntry, params.deps.tauri, journalOptions);
     try {
     currentEntry = { ...currentEntry, phase: 'applying', updatedAt: new Date().toISOString() };
-    await upsertArchitectPlanMutationJournal(currentEntry, params.deps.tauri);
-    await applyArchitectPlanReplicaMutation(currentEntry, params.registrySnapshot);
+    await params.beforeEffect?.();
+    await upsertArchitectPlanMutationJournal(currentEntry, params.deps.tauri, journalOptions);
+    await applyArchitectPlanReplicaMutation(currentEntry, params.registrySnapshot, params.beforeEffect, noteWrite);
     currentEntry = { ...currentEntry, phase: 'files_applied', updatedAt: new Date().toISOString() };
-    await upsertArchitectPlanMutationJournal(currentEntry, params.deps.tauri);
+    await params.beforeEffect?.();
+    await upsertArchitectPlanMutationJournal(currentEntry, params.deps.tauri, journalOptions);
     currentEntry = { ...currentEntry, phase: 'committing', updatedAt: new Date().toISOString() };
-    await upsertArchitectPlanMutationJournal(currentEntry, params.deps.tauri);
+    await params.beforeEffect?.();
+    await upsertArchitectPlanMutationJournal(currentEntry, params.deps.tauri, journalOptions);
+    await params.beforeEffect?.();
     await commitMetadataScopes(
       params.targets
         .filter((target) => shouldCommitMutationTarget(target, params.registrySnapshot))
         .map((target) => target.scope),
       params.commitMessage,
-      { commit: true },
-      params.deps,
+      { commit: true, metadataPathsByWorkspace: params.beforeEffect ? writtenMetadataPathsByWorkspace : undefined },
+      pilotDeps,
     );
-    await removeArchitectPlanMutationJournal(currentEntry.id, params.deps.tauri);
+    await params.beforeEffect?.();
+    await removeArchitectPlanMutationJournal(currentEntry.id, params.deps.tauri, journalOptions);
     } catch (error) {
+      await params.beforeEffect?.();
       await upsertArchitectPlanMutationJournal({
         ...currentEntry,
         updatedAt: new Date().toISOString(),
         lastError: toErrorMessage(error),
-      }, params.deps.tauri);
+      }, params.deps.tauri, journalOptions);
       throw error;
     }
   });
@@ -433,6 +483,7 @@ export const buildUpsertReplicaMutationTarget = async (params: {
   chatMessages?: ArchitectPlanChatMessage[];
   replacePlanDirectory?: boolean;
   extraFiles?: Record<string, string>;
+  targetedTaskId?: string;
 }): Promise<ArchitectPlanReplicaMutationTarget> => {
   const index = await readIndexAtScope(params.scope, params.branchName, params.registrySnapshot);
   const previousSummary = index.plans.find((candidate) => candidate.id === params.plan.id);
@@ -451,6 +502,7 @@ export const buildUpsertReplicaMutationTarget = async (params: {
     chatMessages: params.chatMessages,
     replacePlanDirectory: params.replacePlanDirectory,
     extraFiles: params.extraFiles,
+    targetedTaskId: params.targetedTaskId,
     index: {
       ...index,
       version: 3,
@@ -532,6 +584,7 @@ export const commitMetadataScopes = async (
     mutationKind?: MacroMetadataMutationKind;
     mutationLabel?: string | null;
     structural?: boolean;
+    metadataPathsByWorkspace?: ReadonlyMap<string, ReadonlySet<string>>;
   },
   deps?: ResolvedArchitectPlanServiceDependencies
 ): Promise<void> => {
@@ -556,9 +609,13 @@ export const commitMetadataScopes = async (
   }
 
   if (options?.commit) {
+    const commitScopes = options.metadataPathsByWorkspace
+      ? repoScopes.filter(scope => options.metadataPathsByWorkspace?.get(scope.workspacePath as string)?.size)
+      : repoScopes;
+    if (commitScopes.length === 0) return;
     await flushMacroMetadata({
       trigger: 'explicit_checkpoint',
-      workspacePaths: repoScopes.map((scope) => scope.workspacePath as string),
+      workspacePaths: commitScopes.map((scope) => scope.workspacePath as string),
       message: commitMessage,
     }, getArchitectPlanMetadataCoordinatorDeps(resolvedDeps));
     return;

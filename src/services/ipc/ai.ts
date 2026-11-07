@@ -1,3 +1,4 @@
+import type { ProviderAdmission } from './chatAdmission';
 /** ai IPC wrappers and frontend adapters. */
 
 import type {
@@ -170,8 +171,8 @@ export function toNativeAiChatRequest(params: AiStreamChatInput) {
       copilot_send_timeout_ms: params.copilotSendTimeoutMs ?? null,
     };
 }
-export async function aiStreamChat(params: AiStreamChatInput): Promise<void> {
-  return invoke("ai_stream_chat", { request: toNativeAiChatRequest(params) });
+export async function aiStreamChat(params: AiStreamChatInput & { providerAdmission: ProviderAdmission }): Promise<void> {
+  return invoke("ai_stream_chat", { admission: params.providerAdmission, request: toNativeAiChatRequest(params) });
 }
 
 export async function aiCancelStream(requestId: string): Promise<void> {

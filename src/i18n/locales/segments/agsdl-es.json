@@ -1,15 +1,4 @@
 {
-  "graphHints": {
-    "skills": "Habilidades",
-    "structured": "Resultado estructurado validado",
-    "dynamic": "Configuración elegida al iniciar",
-    "external": "Efecto externo declarado",
-    "externalShort": "Efecto externo",
-    "first": "Primer resultado aceptable",
-    "all": "Todos los resultados requeridos",
-    "steering": "Instrucción durante el trabajo",
-    "maxVisits": "Hasta {{count}} pasadas"
-  },
   "editor": "Visor AgSDL",
   "legacyStrategy": "Estrategia heredada",
   "loading": "Cargando AgSDL...",
@@ -230,7 +219,16 @@
       "engineUnset": "Motor sin configurar",
       "selected": "Seleccionada"
     },
-    "backToComponent": "Volver a los detalles anteriores"
+    "backToComponent": "Volver a los detalles anteriores",
+    "legend": "Leyenda",
+    "legendFlow": "Secuencia",
+    "legendError": "Salida en caso de error",
+    "legendQueue": "Cola de un agente compartido",
+    "legendEntry": "Punto de entrada del flujo",
+    "joinAll": "Todos",
+    "joinFirst": "Primero",
+    "joinAllHint": "Espera todos los resultados",
+    "joinFirstHint": "Conserva el primer resultado aceptable"
   },
   "attachToChat": "Adjuntar al chat",
   "chatSelection": "Selección AgSDL",
@@ -527,7 +525,9 @@
     "to": "Siguiente",
     "expand": "Expandir el grupo",
     "openTask": "Abrir tarea",
-    "canvasMenu": "Acciones del grafo"
+    "canvasMenu": "Acciones del grafo",
+    "unfold": "Desplegar la composición",
+    "fold": "Plegar la composición"
   },
   "link": {
     "true": "Si se cumple",
@@ -582,5 +582,51 @@
     "installation": "Instrucciones oficiales de instalación del SDK",
     "apiKey": "Clave API de Anthropic",
     "keySaveFailed": "No se pudo guardar la clave o verificar su perfil."
+  },
+  "preview": {
+    "steers": "Indicación para",
+    "model": "Modelo",
+    "uses": "Usa",
+    "receives": "Recibe",
+    "produces": "Produce",
+    "limit": "Pasadas",
+    "after": "Lanzados por",
+    "arguments": "Argumentos",
+    "effect": "Efecto",
+    "action": "Acción",
+    "targets": "Destinos",
+    "context": "Contexto",
+    "timeout": "Plazo",
+    "validity": "Validez",
+    "test": "Comprueba",
+    "mode": "Espera",
+    "accept": "Acepta si",
+    "agents": "Agentes",
+    "transmits": "Transmite",
+    "whenLabel": "Se toma si",
+    "limitValue_one": "{{count}} como máximo",
+    "limitValue_other": "{{count}} como máximo",
+    "effects": {
+      "none": "ninguno",
+      "external": "externo",
+      "unknown": "no declarado"
+    },
+    "join": {
+      "all": "todos los miembros",
+      "first": "el primero aceptado",
+      "remaining-finish": "los demás terminan",
+      "remaining-stop-and-wait": "los demás se detienen"
+    },
+    "when": {
+      "choice": "{{who}} elige «{{name}}»",
+      "error": "{{source}} falla",
+      "next": "Siempre",
+      "true": "La condición es verdadera",
+      "false": "La condición es falsa",
+      "approved": "Se concede la aprobación",
+      "denied": "Se rechaza la aprobación",
+      "exchange": "En un intercambio de datos",
+      "dependency": "Después del bloque anterior"
+    }
   }
 }

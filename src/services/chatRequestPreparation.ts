@@ -60,7 +60,7 @@ export interface PreparedChatRequestContext {
 }
 
 export type PrepareChatRequestCompaction = Pick<PrepareAssistantStreamParams,
-  "conversationId" | "providerId" | "modelId" | "reasoningEffort" | "providerConfig" |
+  "providerAdmission" | "conversationId" | "providerId" | "modelId" | "reasoningEffort" | "providerConfig" |
   "forceCompaction" | "forcePrune"
 > & Pick<PreparedChatRequestContext,
   "systemMessage" | "preparedMessages" | "orderedMessages" | "citations"
@@ -355,6 +355,7 @@ export const prepareAssistantStreamLaunch = async (
     }> = {},
   ) =>
     ports.compaction.compact({
+      providerAdmission: params.providerAdmission,
       conversationId: params.conversationId,
       providerId: params.providerId,
       modelId: params.modelId,

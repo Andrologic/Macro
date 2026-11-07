@@ -1,0 +1,34 @@
+{
+  "transport_version": "2.0",
+  "type": "delivery",
+  "request_id": "request-demo",
+  "account_id": "account-demo",
+  "instance_id": "instance-demo",
+  "source_session_id": "session-demo",
+  "expires_at": "2026-10-10T12:01:00.000Z",
+  "authority_binding": "authority-demo",
+  "capabilities": [
+    "conversation-attachments-1"
+  ],
+  "request": {
+    "contract_version": "2.0",
+    "type": "request",
+    "request_id": "request-demo",
+    "account_id": "account-demo",
+    "operation": "conversation.send.attachments",
+    "body": {
+      "ref": {
+        "instance_id": "instance-demo",
+        "kind": "conversation",
+        "conversation_id": "conversation-demo"
+      },
+      "intent_id": "send-demo",
+      "intent_expires_at": "2026-10-10T12:15:00.000Z",
+      "expected_revision": 1,
+      "content": "Read this file",
+      "attachment_ids": [
+        "attachment-demo"
+      ]
+    }
+  }
+}

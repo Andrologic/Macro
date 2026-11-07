@@ -190,7 +190,7 @@ fn arguments_digest(value: &Value) -> DbResult<String> {
     Ok(format!("{:x}", digest.finalize()))
 }
 
-async fn get_on_connection(
+pub(crate) async fn get_on_connection(
     connection: &mut sqlx::SqliteConnection,
     identity: &ToolInvocationIdentity,
 ) -> DbResult<Option<ToolInvocation>> {
@@ -210,6 +210,24 @@ pub async fn record(
     pool: &SqlitePool,
     input: RecordToolInvocationInput,
 ) -> DbResult<RecordToolInvocationResult> {
+    // A successful pre-dispatch insert must survive before authorizing the effect.
+    let mut connection = pool.acquire().await?;
+    sqlx::query("PRAGMA synchronous = FULL")
+        .execute(&mut *connection)
+        .await?;
+    let mut tx = connection.begin_with("BEGIN IMMEDIATE").await?;
+    let result = record_on_connection(&mut tx, input).await?;
+    tx.commit().await?;
+    sqlx::query("PRAGMA synchronous = NORMAL")
+        .execute(&mut *connection)
+        .await?;
+    Ok(result)
+}
+
+pub(crate) async fn record_on_connection(
+    connection: &mut sqlx::SqliteConnection,
+    input: RecordToolInvocationInput,
+) -> DbResult<RecordToolInvocationResult> {
     validate_identity(&input.identity)?;
     nonempty(&input.tool_name, "tool_name")?;
     if let Some(id) = &input.remote_execution_id {
@@ -218,13 +236,6 @@ pub async fn record(
     // Sort object keys at every depth, regardless of serde_json's map feature.
     // Never persist the supplied arguments or put them in an error message.
     let digest = arguments_digest(&input.arguments)?;
-    // The shared pool uses WAL/NORMAL. A successful pre-dispatch insert must
-    // survive power loss before is_new can authorize the effect.
-    let mut connection = pool.acquire().await?;
-    sqlx::query("PRAGMA synchronous = FULL")
-        .execute(&mut *connection)
-        .await?;
-    let mut tx = connection.begin_with("BEGIN IMMEDIATE").await?;
     let now = chrono::Utc::now().to_rfc3339();
     let inserted = sqlx::query(
         "INSERT OR IGNORE INTO tool_invocations (conversation_id, turn_id, message_id, call_id, tool_name, effect_class, arguments_sha256, remote_execution_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
@@ -239,10 +250,10 @@ pub async fn record(
     .bind(&input.remote_execution_id)
     .bind(&now)
     .bind(&now)
-    .execute(&mut *tx)
+    .execute(&mut *connection)
     .await?
     .rows_affected() == 1;
-    let row = get_on_connection(&mut tx, &input.identity)
+    let row = get_on_connection(&mut *connection, &input.identity)
         .await?
         .ok_or_else(|| DbError::Validation("Tool invocation conversation does not exist".into()))?;
     if row.tool_name != input.tool_name
@@ -254,10 +265,6 @@ pub async fn record(
             "Conflicting tool invocation identity".into(),
         ));
     }
-    tx.commit().await?;
-    sqlx::query("PRAGMA synchronous = NORMAL")
-        .execute(&mut *connection)
-        .await?;
     Ok(RecordToolInvocationResult {
         invocation: row,
         is_new: inserted,
@@ -270,16 +277,30 @@ pub async fn complete(
 ) -> DbResult<ToolInvocation> {
     validate_identity(&input.identity)?;
     opaque_id(&input.receipt_id, "receipt_id")?;
-    if let Some(result) = &input.result_json {
-        super::exact_json::validate(result)
-            .map_err(|_| DbError::Validation("Invalid tool result JSON".into()))?;
-    }
     let mut connection = pool.acquire().await?;
     sqlx::query("PRAGMA synchronous = FULL")
         .execute(&mut *connection)
         .await?;
     let mut tx = connection.begin_with("BEGIN IMMEDIATE").await?;
-    let previous = get_on_connection(&mut tx, &input.identity)
+    let row = complete_on_connection(&mut tx, input).await?;
+    tx.commit().await?;
+    sqlx::query("PRAGMA synchronous = NORMAL")
+        .execute(&mut *connection)
+        .await?;
+    Ok(row)
+}
+
+pub(crate) async fn complete_on_connection(
+    connection: &mut sqlx::SqliteConnection,
+    input: CompleteToolInvocationInput,
+) -> DbResult<ToolInvocation> {
+    validate_identity(&input.identity)?;
+    opaque_id(&input.receipt_id, "receipt_id")?;
+    if let Some(result) = &input.result_json {
+        super::exact_json::validate(result)
+            .map_err(|_| DbError::Validation("Invalid tool result JSON".into()))?;
+    }
+    let previous = get_on_connection(&mut *connection, &input.identity)
         .await?
         .ok_or_else(|| DbError::Validation("Tool invocation not found".into()))?;
     if previous.status == ToolInvocationStatus::Completed {
@@ -294,10 +315,6 @@ pub async fn complete(
                 "Conflicting tool invocation receipt".into(),
             ));
         }
-        tx.commit().await?;
-        sqlx::query("PRAGMA synchronous = NORMAL")
-            .execute(&mut *connection)
-            .await?;
         return Ok(previous);
     }
     let now = chrono::Utc::now().to_rfc3339();
@@ -309,14 +326,10 @@ pub async fn complete(
         .bind(&input.identity.turn_id)
         .bind(&input.identity.message_id)
         .bind(&input.identity.call_id)
-        .execute(&mut *tx).await?;
-    let row = get_on_connection(&mut tx, &input.identity)
+        .execute(&mut *connection).await?;
+    let row = get_on_connection(&mut *connection, &input.identity)
         .await?
         .expect("row locked by transaction");
-    tx.commit().await?;
-    sqlx::query("PRAGMA synchronous = NORMAL")
-        .execute(&mut *connection)
-        .await?;
     Ok(row)
 }
 
@@ -324,20 +337,38 @@ pub async fn mark_unknown(
     pool: &SqlitePool,
     identity: ToolInvocationIdentity,
 ) -> DbResult<ToolInvocation> {
-    validate_identity(&identity)?;
     let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
+    let row = mark_unknown_on_connection(&mut tx, identity).await?;
+    tx.commit().await?;
+    Ok(row)
+}
+
+pub(crate) async fn mark_unknown_on_connection(
+    connection: &mut sqlx::SqliteConnection,
+    identity: ToolInvocationIdentity,
+) -> DbResult<ToolInvocation> {
+    validate_identity(&identity)?;
     sqlx::query("UPDATE tool_invocations SET status = 'unknown', updated_at = ? WHERE conversation_id = ? AND turn_id = ? AND message_id = ? AND call_id = ? AND status = 'pending'")
         .bind(chrono::Utc::now().to_rfc3339())
         .bind(&identity.conversation_id)
         .bind(&identity.turn_id)
         .bind(&identity.message_id)
         .bind(&identity.call_id)
-        .execute(&mut *tx).await?;
-    let row = get_on_connection(&mut tx, &identity)
+        .execute(&mut *connection).await?;
+    let row = get_on_connection(&mut *connection, &identity)
         .await?
         .ok_or_else(|| DbError::Validation("Tool invocation not found".into()))?;
-    tx.commit().await?;
     Ok(row)
+}
+
+pub(crate) async fn has_unresolved_on_connection(
+    connection: &mut sqlx::SqliteConnection,
+    conversation_id: &str,
+) -> DbResult<bool> {
+    nonempty(conversation_id, "conversation_id")?;
+    let pending: i64 = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM tool_invocations WHERE conversation_id=? AND status IN ('pending','unknown'))")
+        .bind(conversation_id).fetch_one(connection).await?;
+    Ok(pending != 0)
 }
 
 pub async fn list_unresolved(
@@ -410,11 +441,17 @@ pub(super) async fn project_completed_traces(
 }
 
 pub async fn reconcile_pending_after_restart(pool: &SqlitePool) -> DbResult<()> {
+    reconcile_pending_after_restart_in(&mut *pool.acquire().await?).await
+}
+
+pub(crate) async fn reconcile_pending_after_restart_in(
+    db: &mut sqlx::SqliteConnection,
+) -> DbResult<()> {
     sqlx::query(
         "UPDATE tool_invocations SET status = 'unknown', updated_at = ? WHERE status = 'pending'",
     )
     .bind(chrono::Utc::now().to_rfc3339())
-    .execute(pool)
+    .execute(db)
     .await?;
     Ok(())
 }

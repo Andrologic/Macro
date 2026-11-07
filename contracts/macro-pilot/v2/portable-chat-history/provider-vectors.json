@@ -1,0 +1,238 @@
+[
+  {
+    "name": "responses-final",
+    "valid": true,
+    "value": [
+      {
+        "type": "message",
+        "role": "assistant",
+        "status": "completed",
+        "content": [
+          {
+            "type": "output_text",
+            "text": "final"
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "name": "responses-user-image",
+    "valid": true,
+    "value": [
+      {
+        "type": "message",
+        "role": "user",
+        "content": [
+          {
+            "type": "input_image",
+            "image_url": "data:image/png;base64,iVBORw=="
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "name": "observable-reflection-private-opaque",
+    "valid": true,
+    "value": [
+      {
+        "type": "reasoning",
+        "summary": [
+          {
+            "type": "summary_text",
+            "text": "observed"
+          }
+        ],
+        "encrypted_content": "synthetic opaque"
+      }
+    ]
+  },
+  {
+    "name": "call-result-complete",
+    "valid": true,
+    "value": [
+      {
+        "type": "function_call",
+        "call_id": "call",
+        "name": "read_sources",
+        "arguments": "{\"integer\":9007199254740993,\"overflow\":1e400}"
+      },
+      {
+        "type": "function_call_output",
+        "call_id": "call",
+        "output": "fact",
+        "macro_tool_result": {
+          "version": 1,
+          "isError": false,
+          "blocks": [
+            {
+              "type": "text",
+              "text": "fact"
+            }
+          ]
+        }
+      }
+    ]
+  },
+  {
+    "name": "macro-assistant",
+    "valid": true,
+    "value": [
+      {
+        "type": "chat_completion_message",
+        "role": "assistant",
+        "content": "final",
+        "visible_content": "<think>observed</think>final",
+        "reasoning_content": "observed",
+        "reasoning_details": [],
+        "tool_calls": []
+      }
+    ]
+  },
+  {
+    "name": "macro-tool",
+    "valid": true,
+    "value": [
+      {
+        "type": "chat_completion_message",
+        "role": "tool",
+        "tool_call_id": "call",
+        "tool_name": "read_sources",
+        "content": "fact"
+      }
+    ]
+  },
+  {
+    "name": "unknown-context",
+    "valid": false,
+    "value": [
+      {
+        "type": "reasoning",
+        "summary": [],
+        "remote_required_context": {}
+      }
+    ]
+  },
+  {
+    "name": "pending",
+    "valid": false,
+    "value": [
+      {
+        "type": "message",
+        "role": "assistant",
+        "status": "in_progress",
+        "content": []
+      }
+    ]
+  },
+  {
+    "name": "wrong-role-part",
+    "valid": false,
+    "value": [
+      {
+        "type": "message",
+        "role": "assistant",
+        "content": [
+          {
+            "type": "input_text",
+            "text": "wrong"
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "name": "annotated",
+    "valid": false,
+    "value": [
+      {
+        "type": "message",
+        "role": "assistant",
+        "content": [
+          {
+            "type": "output_text",
+            "text": "x",
+            "annotations": [
+              {}
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "name": "macro-tool-visible",
+    "valid": false,
+    "value": [
+      {
+        "type": "chat_completion_message",
+        "role": "tool",
+        "tool_call_id": "call",
+        "content": "x",
+        "visible_content": "x"
+      }
+    ]
+  },
+  {
+    "name": "macro-reasoning-details",
+    "valid": false,
+    "value": [
+      {
+        "type": "chat_completion_message",
+        "role": "assistant",
+        "content": "x",
+        "reasoning_details": [
+          {}
+        ]
+      }
+    ]
+  },
+  {
+    "name": "unknown-key",
+    "valid": false,
+    "value": [
+      {
+        "type": "function_call",
+        "call_id": "call",
+        "name": "read_sources",
+        "arguments": "{}",
+        "extra": true
+      }
+    ]
+  },
+  {
+    "name": "null-id",
+    "valid": false,
+    "value": [
+      {
+        "type": "message",
+        "role": "user",
+        "id": null,
+        "content": []
+      }
+    ]
+  },
+  {
+    "name": "typed-extra",
+    "valid": false,
+    "value": [
+      {
+        "type": "function_call_output",
+        "call_id": "call",
+        "output": "x",
+        "macro_tool_result": {
+          "version": 1,
+          "isError": false,
+          "blocks": [
+            {
+              "type": "text",
+              "text": "x",
+              "extra": true
+            }
+          ]
+        }
+      }
+    ]
+  }
+]

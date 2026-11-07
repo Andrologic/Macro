@@ -1,0 +1,519 @@
+{
+  "contract": "agsdl-0.2.0",
+  "id": "demo-fix",
+  "bindings": {
+    "engine": {
+      "contract": {
+        "identity": "macro/agent-engine",
+        "version": "1"
+      },
+      "implementation": {
+        "identity": "macro/desktop",
+        "version": "1"
+      }
+    },
+    "ticketDecision": {
+      "contract": {
+        "identity": "macro/structured-choice",
+        "version": "1"
+      },
+      "implementation": {
+        "identity": "macro/desktop",
+        "version": "1"
+      },
+      "effects": "none"
+    },
+    "reviewDecision": {
+      "contract": {
+        "identity": "macro/structured-choice",
+        "version": "1"
+      },
+      "implementation": {
+        "identity": "macro/desktop",
+        "version": "1"
+      },
+      "effects": "none"
+    },
+    "testSuite": {
+      "contract": {
+        "identity": "macro/test-suite",
+        "version": "1"
+      },
+      "implementation": {
+        "identity": "vitest/cli",
+        "version": "1"
+      },
+      "effects": "none"
+    },
+    "releaseApproval": {
+      "contract": {
+        "identity": "macro/human-approval",
+        "version": "1"
+      },
+      "implementation": {
+        "identity": "macro/desktop",
+        "version": "1"
+      },
+      "effects": "none"
+    },
+    "ticketTracker": {
+      "contract": {
+        "identity": "macro/issue-tracker",
+        "version": "1"
+      },
+      "implementation": {
+        "identity": "linear/http",
+        "version": "1"
+      },
+      "effects": "external"
+    },
+    "atlasRepository": {
+      "contract": {
+        "identity": "macro/git-repository",
+        "version": "1"
+      },
+      "implementation": {
+        "identity": "github/rest",
+        "version": "1"
+      },
+      "effects": "external"
+    }
+  },
+  "configurations": {
+    "rapide": {
+      "engine": "engine",
+      "model": {
+        "identity": "claude-haiku-5-5",
+        "version": "1"
+      },
+      "tools": {
+        "tracker": "ticketTracker"
+      }
+    },
+    "standard": {
+      "engine": "engine",
+      "model": {
+        "identity": "claude-sonnet-5-5",
+        "version": "1"
+      },
+      "tools": {
+        "repository": "atlasRepository"
+      }
+    },
+    "code": {
+      "engine": "engine",
+      "model": {
+        "identity": "claude-sonnet-5-5",
+        "version": "1"
+      },
+      "tools": {
+        "repository": "atlasRepository"
+      }
+    },
+    "approfondi": {
+      "engine": "engine",
+      "model": {
+        "identity": "claude-opus-5-5",
+        "version": "1"
+      },
+      "tools": {
+        "repository": "atlasRepository"
+      }
+    },
+    "conseil": {
+      "engine": "engine",
+      "model": {
+        "identity": "claude-sonnet-5-5",
+        "version": "1"
+      },
+      "tools": {
+        "tracker": "ticketTracker"
+      }
+    }
+  },
+  "agents": {
+    "triage": {
+      "configuration": "rapide",
+      "prompt": [
+        {
+          "value": "Lire le ticket et choisir correctif, évolution, question ou doublon. Justifier le choix en une phrase."
+        }
+      ],
+      "interface": {
+        "results": {
+          "report": {
+            "mediaTypes": [
+              "text/plain"
+            ],
+            "required": true
+          }
+        }
+      }
+    },
+    "designer": {
+      "configuration": "standard",
+      "prompt": [
+        {
+          "value": "Décrire le comportement attendu et les critères d’acceptation avant tout développement."
+        }
+      ],
+      "interface": {
+        "results": {
+          "report": {
+            "mediaTypes": [
+              "text/plain"
+            ],
+            "required": true
+          }
+        }
+      }
+    },
+    "developer": {
+      "configuration": "code",
+      "prompt": [
+        {
+          "value": "Corriger le portail avec un changement minimal. Ajouter ou adapter les tests qui démontrent la correction."
+        }
+      ],
+      "interface": {
+        "results": {
+          "report": {
+            "mediaTypes": [
+              "text/plain"
+            ],
+            "required": true
+          }
+        }
+      }
+    },
+    "reviewer": {
+      "configuration": "approfondi",
+      "prompt": [
+        {
+          "value": "Relire le changement et ses tests. Choisir accepter ou reprendre, avec les remarques bloquantes."
+        }
+      ],
+      "interface": {
+        "results": {
+          "report": {
+            "mediaTypes": [
+              "text/plain"
+            ],
+            "required": true
+          }
+        }
+      }
+    },
+    "releaser": {
+      "configuration": "code",
+      "prompt": [
+        {
+          "value": "Fusionner et publier le correctif autorisé. Indiquer la version publiée."
+        }
+      ],
+      "interface": {
+        "results": {
+          "report": {
+            "mediaTypes": [
+              "text/plain"
+            ],
+            "required": true
+          }
+        }
+      }
+    },
+    "support": {
+      "configuration": "conseil",
+      "prompt": [
+        {
+          "value": "Répondre à la question posée dans le ticket, sans engager de développement."
+        }
+      ],
+      "interface": {
+        "results": {
+          "report": {
+            "mediaTypes": [
+              "text/plain"
+            ],
+            "required": true
+          }
+        }
+      }
+    },
+    "duplicate": {
+      "configuration": "rapide",
+      "prompt": [
+        {
+          "value": "Identifier le ticket d’origine et expliquer le rattachement au demandeur."
+        }
+      ],
+      "interface": {
+        "results": {
+          "report": {
+            "mediaTypes": [
+              "text/plain"
+            ],
+            "required": true
+          }
+        }
+      }
+    },
+    "recovery": {
+      "configuration": "approfondi",
+      "prompt": [
+        {
+          "value": "Expliquer pourquoi les tests ou la publication n’ont pas pu s’exécuter. Ne pas relancer d’action."
+        }
+      ],
+      "interface": {
+        "results": {
+          "report": {
+            "mediaTypes": [
+              "text/plain"
+            ],
+            "required": true
+          }
+        }
+      }
+    }
+  },
+  "flow": {
+    "entry": "triage",
+    "steps": {
+      "triage": {
+        "type": "agent",
+        "agent": "triage",
+        "decision": {
+          "binding": "ticketDecision",
+          "choices": [
+            "correctif",
+            "evolution",
+            "question",
+            "doublon"
+          ]
+        },
+        "next": {
+          "correctif": [
+            "change"
+          ],
+          "evolution": [
+            "design"
+          ],
+          "question": [
+            "answer"
+          ],
+          "doublon": [
+            "link"
+          ]
+        }
+      },
+      "design": {
+        "type": "agent",
+        "agent": "designer",
+        "next": [
+          "change"
+        ]
+      },
+      "change": {
+        "type": "compose",
+        "composition": "testedChange",
+        "agents": {
+          "developer": "developer"
+        },
+        "next": {
+          "green": [
+            "review"
+          ]
+        },
+        "onError": [
+          "recovery"
+        ]
+      },
+      "review": {
+        "type": "agent",
+        "agent": "reviewer",
+        "decision": {
+          "binding": "reviewDecision",
+          "choices": [
+            "accepter",
+            "reprendre"
+          ]
+        },
+        "maxVisits": 2,
+        "next": {
+          "accepter": [
+            "releaseApproval"
+          ],
+          "reprendre": [
+            "remarks"
+          ]
+        }
+      },
+      "remarks": {
+        "type": "prepare",
+        "message": {
+          "prompt": [
+            {
+              "value": "Reprendre le correctif selon les remarques de relecture."
+            }
+          ],
+          "resources": {
+            "review": {
+              "source": {
+                "path": [
+                  "results",
+                  "report"
+                ]
+              }
+            }
+          }
+        },
+        "next": [
+          "change"
+        ]
+      },
+      "releaseApproval": {
+        "type": "approval",
+        "call": "release",
+        "binding": "releaseApproval",
+        "timeoutMs": 3600000,
+        "validForMs": 900000,
+        "next": {
+          "approved": [
+            "release"
+          ],
+          "denied": [
+            "remarks"
+          ]
+        },
+        "onError": [
+          "recovery"
+        ]
+      },
+      "release": {
+        "type": "agent",
+        "agent": "releaser",
+        "next": [],
+        "scope": {
+          "action": "release",
+          "resources": [
+            "repository:atlas-portal/main"
+          ],
+          "context": {
+            "path": [
+              "text"
+            ]
+          }
+        },
+        "onError": [
+          "recovery"
+        ]
+      },
+      "answer": {
+        "type": "agent",
+        "agent": "support",
+        "next": []
+      },
+      "link": {
+        "type": "agent",
+        "agent": "duplicate",
+        "next": []
+      },
+      "recovery": {
+        "type": "agent",
+        "agent": "recovery",
+        "next": []
+      }
+    }
+  },
+  "compositions": {
+    "testedChange": {
+      "agentParameters": [
+        "developer"
+      ],
+      "entry": "develop",
+      "outputs": [
+        "green"
+      ],
+      "steps": {
+        "develop": {
+          "type": "agent",
+          "agent": {
+            "parameter": "developer"
+          },
+          "next": [
+            "tests"
+          ],
+          "maxVisits": 4
+        },
+        "tests": {
+          "type": "call",
+          "binding": "testSuite",
+          "arguments": {
+            "suite": {
+              "value": "portal"
+            }
+          },
+          "next": [
+            "passed"
+          ],
+          "onError": [
+            {
+              "error": true
+            }
+          ]
+        },
+        "passed": {
+          "type": "condition",
+          "test": {
+            "equals": [
+              {
+                "path": [
+                  "data",
+                  "exitCode"
+                ]
+              },
+              {
+                "value": 0
+              }
+            ]
+          },
+          "next": {
+            "true": [
+              {
+                "output": "green"
+              }
+            ],
+            "false": [
+              "failures"
+            ]
+          }
+        },
+        "failures": {
+          "type": "prepare",
+          "message": {
+            "prompt": [
+              {
+                "value": "Corriger les tests en échec sans modifier leurs attentes."
+              }
+            ],
+            "resources": {
+              "failures": {
+                "select": {
+                  "path": [
+                    "data",
+                    "report"
+                  ]
+                },
+                "mediaType": "application/json"
+              }
+            }
+          },
+          "next": [
+            "develop"
+          ]
+        }
+      }
+    }
+  }
+}

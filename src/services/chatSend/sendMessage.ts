@@ -1,3 +1,4 @@
+import type { ProviderAdmission } from '../ipc/chatAdmission';
 import type { ChatMessage } from '../../types';
 import type { PrepareAssistantStreamParams } from '../chatStreamContracts';
 import {
@@ -23,8 +24,16 @@ export async function sendMessage<Task extends SendTask, Recovery, Launch>(
   const { mode, agentType, architectPlan, provider } = snapshot;
   let executionContext = snapshot.executionContext;
   const resolvedTaskId = mode === 'Chat' ? '' : (input.taskId ?? snapshot.conversationTaskId ?? snapshot.selectedTaskId);
+  const authorizePilotEffect = async () => {
+    if (!input.pilotTarget) return;
+    if (!preparation.authorizePilotEffect) throw new Error('Pilot authorization is unavailable.');
+    await preparation.authorizePilotEffect(conversationId, resolvedTaskId);
+  };
   const abortController = new AbortController();
   let lease: SendLease | null = null;
+  let providerAdmission: Exclude<ProviderAdmission, { kind: 'utility' }> = { kind: 'conversation' };
+  let handedToStream = false;
+  let completeMetadata: (() => Promise<void>) | undefined;
   let assistantMessageId: string | null = null;
   let launchError: unknown = null;
   let releaseAdmission: (() => void) | undefined;
@@ -63,10 +72,14 @@ export async function sendMessage<Task extends SendTask, Recovery, Launch>(
     const messageId = input.persistedUserMessage?.id ?? input.userMessageId ?? (images?.length ? crypto.randomUUID() : undefined);
     if (messageId && images?.length) {
       if (!messages.saveImages) throw new Error('Image persistence is unavailable.');
+      await authorizePilotEffect();
+      if (!isCurrent()) throw new DOMException('Send cancelled before saving images.', 'AbortError');
       messages.saveImages(messageId, images);
       if (!isCurrent()) throw new DOMException('Send cancelled before saving text.', 'AbortError');
     }
     try {
+      await authorizePilotEffect();
+      if (!isCurrent()) throw new DOMException('Send cancelled before saving text.', 'AbortError');
       message = input.persistedUserMessage ?? await createUserMessage(messages.persistence, {
         id: messageId, conversationId, turnId: current.turnId, taskId: resolvedTaskId,
         content, hiddenContext, providerInputItems, contextRefs,
@@ -79,7 +92,7 @@ export async function sendMessage<Task extends SendTask, Recovery, Launch>(
       message = saved;
     }
     if (messageId && message.id !== messageId) throw new Error('The saved message has a different identity.');
-    messages.onUserPersisted?.(message);
+    await messages.onUserPersisted?.(message);
     return message;
   };
 
@@ -93,6 +106,10 @@ export async function sendMessage<Task extends SendTask, Recovery, Launch>(
     preparation.onTurnCaptured?.(conversationId, current);
     admission = new Promise<void>(resolve => { releaseAdmission = resolve; });
     owner.track(conversationId, admission);
+    if (mode === 'Chat') {
+      providerAdmission = await ports.admission.begin(conversationId, current.turnId, current.sessionId);
+      if (!isCurrent()) return cancelled();
+    }
     await messages.ensureLoaded(conversationId);
     if (!isCurrent()) return cancelled();
     timeline('messages_ready', { conversationId });
@@ -125,11 +142,18 @@ export async function sendMessage<Task extends SendTask, Recovery, Launch>(
       projectIds: executionContext.projectIds, focusProjectId: executionContext.focusedProjectId, mode,
     });
     if (!isCurrent()) return cancelled();
-    const scopedModel = snapshot.modelSelectionCaptured
+    const scopedModel = snapshot.modelSelectionCaptured && !input.pilotTarget?.taskId
       ? null : configuration.selectScoped(scopedConfiguration, snapshot, internalAgentProfile);
     const providerId = scopedModel?.providerId ?? provider.selectedProviderId;
     const modelId = scopedModel?.modelId ?? provider.selectedModelId;
     const reasoningEffort = scopedModel ? scopedModel.reasoningEffort : provider.selectedReasoningEffort;
+    const expectedModel = input.pilotTarget?.expectedModel;
+    if (expectedModel && (providerId !== expectedModel.providerId || modelId !== expectedModel.modelId ||
+        (reasoningEffort ?? null) !== expectedModel.reasoningEffort)) {
+      throw new Error('The model changed before sending.');
+    }
+    await authorizePilotEffect();
+    if (!isCurrent()) return cancelled();
     projection.persistSelection(mode, conversationId);
     if (provider.isLoading) throw new Error('Provider settings are still loading.');
     if (!providerId || !modelId) throw new Error('Select a provider and model before sending a message.');
@@ -162,6 +186,7 @@ export async function sendMessage<Task extends SendTask, Recovery, Launch>(
     }
     if (mode === 'Implement' && resolvedTaskId) {
       if (task?.task_source === 'standalone' && task.standalone_kind === 'manual_feature' && task.draft === true) {
+        await authorizePilotEffect();
         recovery = await tasks.finalizeDraft({
           ...model, conversationId, taskId: resolvedTaskId, userContent: content,
           onStep: (step) => tasks.setLaunchStep(conversationId, current.sessionId, step),
@@ -169,6 +194,7 @@ export async function sendMessage<Task extends SendTask, Recovery, Launch>(
         if (!isCurrent()) return cancelled();
         finalizedDraft = recovery !== null;
       }
+      await authorizePilotEffect();
       task = (await tasks.assertReady(resolvedTaskId)) ?? task;
       if (!isCurrent()) return cancelled();
       tasks.assertExecutionContextReady(task);
@@ -185,7 +211,13 @@ export async function sendMessage<Task extends SendTask, Recovery, Launch>(
       return sentWithoutAssistant(persistedUserMessage);
     };
     if (!isCurrent()) return returnSavedUser();
+    if (input.questionIntent) {
+      if (providerAdmission.kind !== 'globalChat') throw new Error('Questionnaire admission scope changed.');
+      await ports.admission.handoffQuestion(providerAdmission.context, conversationId, persistedUserMessage.id, input.questionIntent);
+      if (!isCurrent()) return returnSavedUser();
+    }
     if (messages.hasInterruptedApproval(conversationId)) {
+      await authorizePilotEffect();
       await messages.clearApprovalRecovery(conversationId)
         .catch((error) => projection.approvalRecoveryError(toServiceError(error).message));
       if (!isCurrent()) return returnSavedUser();
@@ -208,10 +240,18 @@ export async function sendMessage<Task extends SendTask, Recovery, Launch>(
           if (!isCurrent()) return sentWithoutAssistant(persistedUserMessage);
         }
       }
-      if (!skipMetadata) void preparation.generateMetadata({ ...model, conversationId, firstUserContent: content, architectPlan });
+      if (!skipMetadata && !input.pilotTarget) {
+        const generate = () => preparation.generateMetadata({ ...model, conversationId, firstUserContent: content, architectPlan,
+          providerAdmission, signal: abortController.signal });
+        // Global metadata uses the same provider context after the main work
+        // joins, while its admitted parent still prevents a competing freeze.
+        if (providerAdmission.kind === 'globalChat') completeMetadata = generate;
+        else void generate().catch(() => {});
+      }
     }
     try {
       const request: PrepareAssistantStreamParams = {
+        providerAdmission,
         conversationId, replyToMessageId: persistedUserMessage.id, userContent: content, resolvedTaskId,
         modeAtSend: mode, agentTypeAtSend: agentType, providerId, modelId, reasoningEffort,
         architectPlanAtSend: snapshot.modelSelectionCaptured ? architectPlan : undefined,
@@ -219,11 +259,19 @@ export async function sendMessage<Task extends SendTask, Recovery, Launch>(
         scopedTurnConfigurationOverride: scopedConfiguration,
         providerSupportsNativeToolCalling: configuration.supportsNativeToolCalling(providerId, modelId),
       };
+      await authorizePilotEffect();
+      if (!isCurrent()) return sentWithoutAssistant(persistedUserMessage);
+      await input.pilotTarget?.beforeAssistantPrepare?.();
+      if (!isCurrent()) return sentWithoutAssistant(persistedUserMessage);
+      await authorizePilotEffect();
+      if (!isCurrent()) return sentWithoutAssistant(persistedUserMessage);
       const launch = await stream.prepare(request);
       if (!isCurrent()) return sentWithoutAssistant(persistedUserMessage);
       timeline('compaction_done', { conversationId, providerId, providerType: providerForUse.providerType });
       let assistant: ChatMessage;
       try {
+        await authorizePilotEffect();
+        if (!isCurrent()) return sentWithoutAssistant(persistedUserMessage);
         assistant = await createAssistantPlaceholderMessage(messages.persistence, {
           conversationId, turnId: current.turnId, taskId: resolvedTaskId,
         });
@@ -241,14 +289,20 @@ export async function sendMessage<Task extends SendTask, Recovery, Launch>(
       if (!isCurrent()) return sentWithoutAssistant(persistedUserMessage);
       setPreparing(conversationId, current, assistant.id);
       timeline('provider_stream_start_requested', { conversationId, providerId, providerType: providerForUse.providerType });
-      messages.beforeAssistantStart?.(assistant);
+      await authorizePilotEffect();
       if (!isCurrent()) return sentWithoutAssistant(persistedUserMessage);
-      stream.start({
-        ...request, sessionId: current.sessionId, assistantMessage: assistant,
+      await messages.beforeAssistantStart?.(assistant);
+      if (!isCurrent()) return sentWithoutAssistant(persistedUserMessage);
+      await authorizePilotEffect();
+      if (!isCurrent()) return sentWithoutAssistant(persistedUserMessage);
+      await stream.start({
+        ...request, completeMetadata, sessionId: current.sessionId, assistantMessage: assistant,
         architectPlanAtSend: architectPlan, abortController,
+        pilotActionToken: input.pilotTarget?.actionToken,
         providerSupportsNativeToolCalling: configuration.supportsNativeToolCalling(providerId, modelId),
       }, launch);
-      messages.onAssistantStarted?.();
+      handedToStream = true;
+      await messages.onAssistantStarted?.(assistant);
       if (firstManualFeatureMessage) tasks.completeLaunch(conversationId, current.sessionId);
     } catch (error) {
       if (!ownsTurn()) return sentWithoutAssistant(persistedUserMessage);
@@ -279,6 +333,13 @@ export async function sendMessage<Task extends SendTask, Recovery, Launch>(
     } else projection.sendError(normalized.message);
     throw normalized;
   } finally {
-    releaseAdmission?.();
+    try {
+      if (!handedToStream && providerAdmission.kind === 'globalChat') {
+        if (completeMetadata) await Promise.allSettled([Promise.resolve().then(completeMetadata)]);
+        await ports.admission.closePreparation(providerAdmission.context, conversationId);
+      }
+    } finally {
+      releaseAdmission?.();
+    }
   }
 }

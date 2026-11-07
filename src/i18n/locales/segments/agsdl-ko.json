@@ -1,15 +1,4 @@
 {
-  "graphHints": {
-    "skills": "스킬",
-    "structured": "구조화된 결과 검증",
-    "dynamic": "초기화 시 구성 선택",
-    "external": "선언된 외부 영향",
-    "externalShort": "외부 영향",
-    "first": "첫 번째 적합한 결과",
-    "all": "모든 결과 필요",
-    "steering": "작업 중 지시",
-    "maxVisits": "최대 {{count}}회"
-  },
   "editor": "AgSDL 뷰어",
   "legacyStrategy": "기존 전략",
   "loading": "AgSDL 로드 중...",
@@ -230,7 +219,16 @@
       "engineUnset": "엔진 미설정",
       "selected": "선택됨"
     },
-    "backToComponent": "이전 상세 정보로 돌아가기"
+    "backToComponent": "이전 상세 정보로 돌아가기",
+    "legend": "범례",
+    "legendFlow": "흐름",
+    "legendError": "오류 시 출구",
+    "legendQueue": "공유 에이전트의 대기열",
+    "legendEntry": "흐름의 진입점",
+    "joinAll": "전체",
+    "joinFirst": "첫 결과",
+    "joinAllHint": "모든 결과를 기다림",
+    "joinFirstHint": "처음 수용 가능한 결과를 채택"
   },
   "attachToChat": "채팅에 첨부",
   "chatSelection": "AgSDL 선택",
@@ -527,7 +525,9 @@
     "to": "다음 단계",
     "expand": "그룹 펼치기",
     "openTask": "작업 열기",
-    "canvasMenu": "그래프 작업"
+    "canvasMenu": "그래프 작업",
+    "unfold": "구성 펼치기",
+    "fold": "구성 접기"
   },
   "link": {
     "true": "조건 충족 시",
@@ -582,5 +582,51 @@
     "installation": "공식 SDK 설치 지침",
     "apiKey": "Anthropic API 키",
     "keySaveFailed": "키를 저장하지 못했거나 프로필을 검증하지 못했습니다."
+  },
+  "preview": {
+    "steers": "지시 대상",
+    "model": "모델",
+    "uses": "사용",
+    "receives": "받는 것",
+    "produces": "생성",
+    "limit": "실행 횟수",
+    "after": "시작한 단계",
+    "arguments": "인수",
+    "effect": "영향",
+    "action": "작업",
+    "targets": "대상",
+    "context": "컨텍스트",
+    "timeout": "기한",
+    "validity": "유효 기간",
+    "test": "조건",
+    "mode": "대기",
+    "accept": "채택 조건",
+    "agents": "에이전트",
+    "transmits": "전달",
+    "whenLabel": "진행 조건",
+    "limitValue_one": "최대 {{count}}회",
+    "limitValue_other": "최대 {{count}}회",
+    "effects": {
+      "none": "없음",
+      "external": "외부",
+      "unknown": "미선언"
+    },
+    "join": {
+      "all": "모든 구성원",
+      "first": "처음 채택된 결과",
+      "remaining-finish": "나머지는 끝까지 실행",
+      "remaining-stop-and-wait": "나머지는 중지"
+    },
+    "when": {
+      "choice": "{{who}}이(가) “{{name}}”을(를) 선택",
+      "error": "{{source}} 실패",
+      "next": "항상",
+      "true": "조건이 참",
+      "false": "조건이 거짓",
+      "approved": "승인됨",
+      "denied": "승인 거부됨",
+      "exchange": "데이터 교환 시",
+      "dependency": "이전 블록 이후"
+    }
   }
 }

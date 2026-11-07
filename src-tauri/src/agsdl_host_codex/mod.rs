@@ -316,7 +316,7 @@ pub(crate) async fn run(
     let scope: Value = serde_json::from_str(&request.context.scope_json)?;
     let permissions: Value = serde_json::from_str(&request.context.permissions_json)?;
     let root = required(&scope, "root")?;
-    let read_only = permissions["readOnly"] == true || permissions["mode"] != "Implement";
+    let read_only = crate::core::tool_policy::agsdl_native_read_only(&permissions);
     let expected_profile = profile.identity();
     let settings: Value = serde_json::from_str(&configuration.settings_json)?;
     if settings["nativeProfileJson"] != profile.attestation(read_only, &scope)? {
@@ -740,6 +740,43 @@ pub(crate) async fn stopped_receipt(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn frozen_write_denials_make_native_tools_read_only() {
+        let profile = Profile {
+            executable: "/synthetic/bin/codex".into(),
+            directory: "/synthetic/private".into(),
+            home: "/synthetic/home".into(),
+            bootstrap: "/synthetic/bootstrap".into(),
+            digest: "synthetic".into(),
+        };
+        let scope = json!({"root":"/synthetic/project"});
+        for rule in [
+            json!({"action":"write","effect":"deny","match":".env*"}),
+            json!({"action":"write","effect":"deny"}),
+        ] {
+            let frozen = json!({"mode":"Implement","readOnly":false,"writeRules":[rule]});
+            let read_only = crate::core::tool_policy::agsdl_native_read_only(&frozen);
+            assert!(read_only);
+            let settings = profile
+                .settings(std::path::Path::new("/synthetic/project"), read_only)
+                .unwrap();
+            assert_eq!(
+                settings["permissions"]["macro-agsdl"]["filesystem"]["/synthetic/project"],
+                "read"
+            );
+            let attested: Value =
+                serde_json::from_str(&profile.attestation(read_only, &scope).unwrap()).unwrap();
+            assert_eq!(attested["readOnly"], true);
+            assert_ne!(
+                profile.attestation(false, &scope).unwrap(),
+                profile.attestation(read_only, &scope).unwrap()
+            );
+        }
+        assert!(!crate::core::tool_policy::agsdl_native_read_only(
+            &json!({"mode":"Implement","writeRules":[{"action":"write","effect":"allow"}]})
+        ));
+    }
+
     #[test]
     fn native_message_keeps_exact_resource_numbers() {
         let text = message_text(r#"{"prompt":[{"value":"Do the work"}],"resources":{"number":{"value":9007199254740993},"large":{"value":1e9999}}}"#).unwrap();

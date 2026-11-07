@@ -1,0 +1,14 @@
+{
+  "contract_version": "1.0",
+  "type": "device_session",
+  "ref": {
+    "type": "session",
+    "account_id": "account:github:583231",
+    "session_id": "session:tablet:01J8T"
+  },
+  "device_id": "device:ipad:01J8T",
+  "state": "active",
+  "issued_at": "2026-09-06T10:00:00Z",
+  "expires_at": "2026-09-07T10:00:00Z",
+  "revision": 1
+}

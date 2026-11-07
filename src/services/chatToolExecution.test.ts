@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, mock, test } from "bun:test";
+import { beforeEach, describe, expect, mock, test, type Mock } from "bun:test";
 import type { ChatMessage, ConversationApprovalGrant, PendingToolApproval, ToolRiskLevel } from "../types";
 import type { ChatToolExecutionPorts, PendingToolApprovalResolution } from "./chatToolExecutionContracts";
 import type { FrozenToolCallContext } from "./chatStreamContracts";
@@ -20,7 +20,11 @@ const recovery = await import("./toolApprovalRecovery");
 const loadConfiguration = mock(async (): Promise<ScopedTurnConfiguration | null> => null);
 const saveRecovery = mock(async (_id: string, _approval: PendingToolApproval | null): Promise<void> => { });
 mock.module("./configurationClient", () => ({ ...configuration, loadScopedTurnConfiguration: loadConfiguration }));
-mock.module("./toolApprovalRecovery", () => ({ ...recovery, persistToolApprovalRecovery: saveRecovery }));
+mock.module("./toolApprovalRecovery", () => ({ ...recovery, persistToolApprovalRecovery: saveRecovery,
+  admitToolApprovalRecovery: async (conversationId: string, approval: PendingToolApproval) => {
+    if (!conversationId || !approval.assistantMessageId || !approval.toolCallId) throw new Error("Missing approval identity");
+    return { kind: "conversation" as const };
+  } }));
 const { createChatToolExecution } = await import("./chatToolExecution");
 
 function deferred<T>() {
@@ -38,6 +42,7 @@ const terminalSession: TerminalSessionDto = {
 function setup(tool = "read", riskLevel: ToolRiskLevel = "yolo", loadRuntime?: Parameters<typeof createChatToolExecution>[1]) {
   const abort = new AbortController();
   const operation: FrozenToolCallContext = {
+    providerAdmission: { kind: 'conversation' },
     conversationId: "conversation", sessionId: "session", turnId: "turn", assistantMessageId: "assistant",
     mode: "Implement", agentType: "build", taskId: "task", signal: abort.signal,
     executionContext: {
@@ -150,7 +155,7 @@ describe("chat tool execution policy and frozen ownership", () => {
     enabled.resolve(true);
     expect(await pending).toBe("script result");
     expect(f.ports.handlers.skill).toHaveBeenCalledWith(
-      "skill_run_script", args, "conversation", undefined, f.operation.executionContext,
+      "skill_run_script", args, "conversation", undefined, f.operation.executionContext, undefined,
     );
   });
 
@@ -418,7 +423,8 @@ describe("agent terminal isolation", () => {
     command.resolve({ ...terminalSession, status: "killed" });
     await running;
     expect(f.ports.terminal.runCommand).toHaveBeenCalledWith({ sessionId: "terminal", command: "pwd", timeoutMs: 1_800_000, executionId: expect.any(String) });
-    expect(f.ports.terminal.killSession).toHaveBeenCalledWith("terminal", expect.any(String));
+    expect(f.ports.terminal.killSession).toHaveBeenCalledWith("terminal", expect.any(String), undefined);
+    expect((f.ports.terminal.killSession as Mock<typeof f.ports.terminal.killSession>).mock.calls[0]?.[1]).toBe((f.ports.terminal.runCommand as Mock<typeof f.ports.terminal.runCommand>).mock.calls[0]?.[0].executionId);
     expect(f.ports.terminal.killSession).toHaveBeenCalledTimes(1);
   });
 });

@@ -1,0 +1,12 @@
+{
+  "contract_version": "1.0",
+  "type": "account",
+  "account_id": "account:github:583231",
+  "identity": {
+    "provider": "github",
+    "subject": "583231",
+    "login": "macro-pilot",
+    "avatar_url": "https://sk-proj-000000000000000000000000@example.invalid/avatar.png"
+  },
+  "revision": 1
+}

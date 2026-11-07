@@ -8,6 +8,7 @@ import {
   configurationApplyPatch,
   configurationAcceptPendingChange,
   configurationRejectPendingChange,
+  configurationGetLoadedSnapshot,
   loadScopedTurnConfiguration,
   resolveScopedModelSelection,
   resolveScopedTurnConfiguration,
@@ -363,5 +364,17 @@ describe('scoped turn configuration', () => {
       'config_patch',
       'config_apply_patch',
     ]);
+  });
+});
+
+describe('Pilot configuration observation', () => {
+  afterEach(() => removeTauriRuntimeMock());
+  it('uses the loaded native snapshot without remote fallback or discovery', async () => {
+    const calls: unknown[] = [];
+    installTauriRuntimeMock(async (command, args) => { calls.push({ command, args }); return snapshot({}); });
+    await configurationGetLoadedSnapshot(['project-fixture']);
+    expect(calls).toEqual([{ command: 'config_get_snapshot', args: { projectIds: ['project-fixture'], observeOnly: true } }]);
+    removeTauriRuntimeMock();
+    await expect(configurationGetLoadedSnapshot(['project-fixture'])).rejects.toThrow('content_unavailable');
   });
 });

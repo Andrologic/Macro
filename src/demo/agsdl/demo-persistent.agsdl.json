@@ -1,0 +1,234 @@
+{
+  "contract": "agsdl-0.2.0",
+  "id": "demo-persistent",
+  "content": {
+    "editorialBrief": {
+      "value": "Dossier sur la migration du portail client. Public : décideurs. 1 200 mots, trois sources vérifiables.",
+      "mediaType": "text/plain"
+    }
+  },
+  "bindings": {
+    "engine": {
+      "contract": {
+        "identity": "macro/agent-engine",
+        "version": "1"
+      },
+      "implementation": {
+        "identity": "macro/desktop",
+        "version": "1"
+      }
+    },
+    "atlasCms": {
+      "contract": {
+        "identity": "macro/cms",
+        "version": "1"
+      },
+      "implementation": {
+        "identity": "strapi/rest",
+        "version": "1"
+      },
+      "effects": "external"
+    }
+  },
+  "configurations": {
+    "redaction": {
+      "engine": "engine",
+      "model": {
+        "identity": "claude-sonnet-5-5",
+        "version": "1"
+      },
+      "tools": {
+        "cms": "atlasCms"
+      }
+    },
+    "approfondi": {
+      "engine": "engine",
+      "model": {
+        "identity": "claude-opus-5-5",
+        "version": "1"
+      }
+    }
+  },
+  "agents": {
+    "writer": {
+      "configuration": "redaction",
+      "prompt": [
+        {
+          "value": "Rédiger le dossier en conservant les décisions éditoriales entre les messages. Intégrer les consignes reçues pendant la rédaction."
+        }
+      ],
+      "interface": {
+        "results": {
+          "report": {
+            "mediaTypes": [
+              "text/plain"
+            ],
+            "required": true
+          }
+        }
+      },
+      "resources": {
+        "brief": {
+          "ref": "editorialBrief"
+        }
+      }
+    },
+    "observer": {
+      "configuration": "approfondi",
+      "prompt": [
+        {
+          "value": "Vérifier l’angle et les sources. Transmettre une consigne courte au rédacteur si le dossier s’éloigne de la demande."
+        }
+      ],
+      "interface": {
+        "results": {
+          "report": {
+            "mediaTypes": [
+              "text/plain"
+            ],
+            "required": true
+          }
+        }
+      }
+    },
+    "reviewer": {
+      "configuration": "approfondi",
+      "prompt": [
+        {
+          "value": "Comparer le dossier au brief. Répondre Prêt lorsque les critères sont satisfaits, sinon formuler une demande de révision."
+        }
+      ],
+      "interface": {
+        "results": {
+          "report": {
+            "mediaTypes": [
+              "text/plain"
+            ],
+            "required": true
+          }
+        }
+      },
+      "resources": {
+        "brief": {
+          "ref": "editorialBrief"
+        }
+      }
+    }
+  },
+  "flow": {
+    "entry": "start",
+    "steps": {
+      "start": {
+        "type": "prepare",
+        "message": {
+          "prompt": [
+            {
+              "ref": "editorialBrief"
+            }
+          ]
+        },
+        "next": [
+          "write",
+          "observe"
+        ]
+      },
+      "write": {
+        "type": "agent",
+        "agent": "writer",
+        "next": [
+          "review"
+        ]
+      },
+      "observe": {
+        "type": "agent",
+        "agent": "observer",
+        "next": [
+          "advice"
+        ]
+      },
+      "advice": {
+        "type": "prepare",
+        "message": {
+          "prompt": [
+            {
+              "value": "Intégrer la consigne de l’observateur."
+            }
+          ],
+          "resources": {
+            "guidance": {
+              "select": {
+                "path": [
+                  "text"
+                ]
+              },
+              "mediaType": "text/plain"
+            }
+          }
+        },
+        "next": [
+          "steer"
+        ]
+      },
+      "steer": {
+        "type": "agent",
+        "agent": "writer",
+        "delivery": "steering",
+        "steers": "write"
+      },
+      "review": {
+        "type": "agent",
+        "agent": "reviewer",
+        "next": [
+          "ready"
+        ],
+        "maxVisits": 3
+      },
+      "ready": {
+        "type": "condition",
+        "test": {
+          "equals": [
+            {
+              "path": [
+                "text"
+              ]
+            },
+            {
+              "value": "Prêt"
+            }
+          ]
+        },
+        "next": {
+          "true": [
+            "finish"
+          ],
+          "false": [
+            "revise"
+          ]
+        }
+      },
+      "revise": {
+        "type": "agent",
+        "agent": "writer",
+        "next": [
+          "review"
+        ],
+        "maxVisits": 2
+      },
+      "finish": {
+        "type": "prepare",
+        "message": {
+          "resources": {
+            "dossier": {
+              "select": {
+                "path": [
+                  "text"
+                ]
+              },
+              "mediaType": "text/plain"
+            }
+          }
+        }
+      }
+    }
+  }
+}

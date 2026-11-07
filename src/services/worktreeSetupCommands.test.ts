@@ -335,4 +335,48 @@ describe('runWorktreeSetupCommand', () => {
       tabId: 'setup-tab-1',
     });
   });
+  it('settles a pending setup wait when the Pilot lifecycle is cancelled', async () => {
+    const controller = new AbortController();
+    const started = waitForNextStart();
+    const pending = runWorktreeSetupCommand({ ...commandParams('sleep forever'), signal: controller.signal });
+    const settled = pending.catch(error => error);
+    await started; controller.abort();
+    expect((await settled).message).toContain('cancelled');
+    expect(closeTab).not.toHaveBeenCalled();
+  });
+
+  it('returns a failed setup result when the terminal disappears', async () => {
+    const started = waitForNextStart();
+    const pending = runWorktreeSetupCommand(commandParams('sleep forever'));
+    await started;
+    terminalBackend.setState({ tabs: {} });
+    await expect(pending).resolves.toMatchObject({ failed: true });
+  });
+
+  it('cancels a Pilot subscriber without cancelling the shared local setup', async () => {
+    const started = waitForNextStart();
+    const params = commandParams('shared setup');
+    const local = runWorktreeSetupCommand(params);
+    await started;
+    const controller = new AbortController();
+    const joined = runWorktreeSetupCommand({ ...params, signal: controller.signal }).catch(error => error);
+    controller.abort();
+    expect((await joined).message).toContain('cancelled');
+    expect(startWorktreeSetupCommandTab).toHaveBeenCalledTimes(1);
+    publishTab('setup-tab-1', { status: 'completed', hasLiveSession: false, lastExitCode: 0 });
+    await expect(local).resolves.toMatchObject({ failed: false });
+  });
+
+  it('does not close a completed setup terminal after authorization is revoked', async () => {
+    startWorktreeSetupCommandTab.mockImplementationOnce(async () => {
+      const tab = buildTab('setup-revoked', { status: 'completed', hasLiveSession: false, lastExitCode: 0 });
+      terminalBackend.setState({ tabs: { [tab.id]: tab } });
+      return tab;
+    });
+    await expect(runWorktreeSetupCommand({ ...commandParams('echo fixture'),
+      beforeEffect: async () => { throw new Error('authorization revoked'); },
+    })).rejects.toThrow('authorization revoked');
+    expect(closeTab).not.toHaveBeenCalled();
+  });
+
 });

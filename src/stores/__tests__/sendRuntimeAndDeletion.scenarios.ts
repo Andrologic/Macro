@@ -154,9 +154,9 @@ export const registerSendRuntimeAndDeletionScenarios = (
       }) as unknown as typeof streamChatMock);
       const sending = useChatStore.getState().sendMessage({ conversationId, content: 'Inspect capture', contextRefs: refs, hiddenContext: hidden });
       await flushAsyncWork();
-      const options = getLatestStreamOptions<{ preparePendingSteers: (id: string) => Array<{content: unknown}>; onSteerRequestEnded: (id: string) => void }>();
+      const options = getLatestStreamOptions<{ preparePendingSteers: (id: string) => Promise<Array<{content: unknown}>>; onSteerRequestEnded: (id: string) => Promise<void> }>();
       await useChatStore.getState().submitDuringActiveTurn({ conversationId, content: 'Direct with capture', contextRefs: refs, hiddenContext: hidden }, 'steer');
-      const directions = options.preparePendingSteers('runtime-followup'); options.onSteerRequestEnded('runtime-followup');
+      const directions = await options.preparePendingSteers('runtime-followup'); await options.onSteerRequestEnded('runtime-followup');
       expect(directions[0]?.content).toContain(hidden);
       await useChatStore.getState().submitDuringActiveTurn({ conversationId, content: 'Queue capture', contextRefs: refs, hiddenContext: hidden }, 'queue');
       hold.resolve(); await sending; await flushAsyncWork(); await flushAsyncWork();
@@ -193,13 +193,13 @@ export const registerSendRuntimeAndDeletionScenarios = (
       }));
       const sending = useChatStore.getState().sendMessage({ conversationId: 'chat-context', content: 'First', hiddenContext: initialContext });
       await flushAsyncWork();
-      const options = getLatestStreamOptions<{ preparePendingSteers: (id: string) => Array<{content: unknown}>; onSteerRequestEnded: (id: string) => void; messages: unknown[] }>();
+      const options = getLatestStreamOptions<{ preparePendingSteers: (id: string) => Promise<Array<{content: unknown}>>; onSteerRequestEnded: (id: string) => Promise<void>; messages: unknown[] }>();
       expect(JSON.stringify(options.messages)).toContain('initial reference');
       const capturedRefs = [{ id: 'captured-file', kind: 'file' as const, title: 'Captured file', path: '/synthetic/captured.ts' }];
       useChatStore.setState({ composerContextRefs: [{ id: 'later-file', kind: 'file', title: 'Later file', data: { path: '/synthetic/later.ts' } }] });
       await useChatStore.getState().submitDuringActiveTurn({ conversationId: 'chat-context', content: 'Steer visibly', hiddenContext: steerContext, contextRefs: capturedRefs }, 'steer');
-      const steers = options.preparePendingSteers('mock-followup-request');
-      options.onSteerRequestEnded('mock-followup-request');
+      const steers = await options.preparePendingSteers('mock-followup-request');
+      await options.onSteerRequestEnded('mock-followup-request');
       expect(steers[0]?.content).toContain('steer reference');
       const persisted = useChatStore.getState().getConversationMessages('chat-context').find((message: ChatMessage) => message.content === 'Steer visibly');
       expect(persisted?.hidden_context).toContain('steer reference');
@@ -319,6 +319,33 @@ export const registerSendRuntimeAndDeletionScenarios = (
       expect(useChatStore.getState().conversations).toHaveLength(0);
       expect(notice).not.toHaveBeenCalled();
       notice.mockRestore();
+  });
+
+    it('keeps a remote Chat send on its stored scope and model while Implement is active', async () => {
+      appState.mode = 'Implement'; appState.agentType = 'build';
+      appState.selectedTaskId = 'task-1'; appState.selectedProjectId = 'project-2';
+      providerState.selectedProviderId = 'unrelated-provider'; providerState.selectedModelId = 'unrelated-model';
+      context.tauriAvailable = true;
+      await savePreferenceForTest('toolRiskLevel', 'yolo');
+      const { useChatStore } = await loadChatStore();
+      useChatStore.setState(createIdleChatStoreState({ conversations: [{
+        ...createConversation('remote-chat'), scope_mode: 'Chat', project_id: 'project-1', group_id: null,
+        provider_id: 'provider-1', model_id: 'model-1', reasoning_effort: 'high',
+      }], selectedConversationId: 'other-conversation' }));
+      const result = await useChatStore.getState().sendMessage({ conversationId: 'remote-chat', content: 'Continue here.',
+        contextRefs: [], pilotTarget: { mode: 'Chat', actionToken: Symbol('remote-test'), beforeEffect: async () => undefined },
+      });
+      expect(result.status).toBe('sent');
+      const options = getLatestStreamOptions<{
+        conversationId: string; providerId: string; modelId: string;
+        onToolCall?: (name: string, args: Record<string, unknown>, id: string) => Promise<unknown>;
+      }>();
+      expect(options.conversationId).toBe('remote-chat');
+      expect(options.providerId).toBe('provider-1'); expect(options.modelId).toBe('model-1');
+      expect(useChatStore.getState().conversations[0]?.reasoning_effort).toBe('high');
+      expect(options).toMatchObject({ mode: 'Chat', reasoningEffort: 'high' });
+      const { resolveProjectExecutionContext } = await import('../../services/projectExecutionContext');
+      expect(resolveProjectExecutionContext).toHaveBeenCalledWith(expect.objectContaining({ mode: 'Chat', conversationId: 'remote-chat', activeRepositoryPath: null, workspacePathOverridesByProjectId: undefined }));
     });
 
     it('freezes cited conversation passages in the normal user message before streaming', async () => {
@@ -2157,7 +2184,8 @@ export const registerSendRuntimeAndDeletionScenarios = (
       appState.mode = 'Chat';
       context.tauriAvailable = true;
       const deferredA = createDeferred<Array<ReturnType<typeof createChatMessageRecord>>>();
-      listMessagesMock.mockImplementationOnce(async () => deferredA.promise);
+      const loadStarted = createDeferred<void>();
+      listMessagesMock.mockImplementationOnce(async () => { loadStarted.resolve(undefined); return deferredA.promise; });
       const { useChatStore } = await loadChatStore();
       useChatStore.setState(createIdleChatStoreState({
         conversations: [
@@ -2171,7 +2199,7 @@ export const registerSendRuntimeAndDeletionScenarios = (
       const sendA = useChatStore.getState().sendMessage({
         conversationId: 'chat-a', content: 'late A',
       });
-      await Promise.resolve();
+      await loadStarted.promise;
       expect(listMessagesMock).toHaveBeenCalledWith('chat-a');
       expect(useChatStore.getState().getConversationRuntime('chat-a').phase).toBe('preparing');
       useChatStore.getState().stopConversationStream('chat-a');

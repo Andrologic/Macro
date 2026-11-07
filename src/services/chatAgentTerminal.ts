@@ -19,6 +19,7 @@ export async function executeChatAgentTerminal(
   args: Record<string, unknown>,
   signal: AbortSignal,
   isCurrent: () => boolean = () => true,
+  chatAdmission?: import('./ipc/chatAdmission').ChatToolAdmission,
 ): Promise<ToolResultResolution> {
   const result = (text: string, errorKind?: ToolResultResolution["errorKind"]): ToolResultResolution => ({
     kind: "result", result: text, ...(errorKind ? { isError: true, errorKind } : {}), toString: () => text,
@@ -57,6 +58,7 @@ export async function executeChatAgentTerminal(
     if (normalizedToolName === "terminal_create_session") {
       effectDispatched = true;
       const session = await terminal.createSession({
+        chatAdmission,
         projectId: null,
         cwd: typeof args.cwd === "string" ? args.cwd : null,
       });
@@ -89,7 +91,7 @@ export async function executeChatAgentTerminal(
       let cancellation: Promise<Outcome> | undefined;
       const abortListener = () => {
         // Calling through a promise also observes synchronous transport failures.
-        cancellation ??= observe(Promise.resolve().then(() => terminal.killSession(sessionId, executionId)));
+        cancellation ??= observe(Promise.resolve().then(() => terminal.killSession(sessionId, executionId, chatAdmission)));
       };
       signal.addEventListener("abort", abortListener, { once: true });
       if (!isCurrentOperation()) {
@@ -101,6 +103,7 @@ export async function executeChatAgentTerminal(
       let kill: Outcome | undefined;
       try {
         run = await observe(Promise.resolve().then(() => terminal.runCommand({
+          chatAdmission,
           sessionId,
           command,
           executionId,
@@ -154,7 +157,7 @@ export async function executeChatAgentTerminal(
       return result(`Unknown terminal tool ${normalizedToolName}.`, "validation");
     }
     effectDispatched = true;
-    const session = await terminal.killSession(sessionId);
+    const session = await terminal.killSession(sessionId, undefined, chatAdmission);
     if (!isCurrentOperation() || session.status === "running") return uncertain("Terminal cancellation did not confirm a final state.", serializeAgentTerminalSession(session).result);
     return serializeAgentTerminalSession(session);
   } catch (error) {

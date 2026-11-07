@@ -71,6 +71,7 @@ const createWorkspaceToolExecutionId = (): string => {
 };
 
 export interface ExecuteWorkspaceToolOptions {
+  chatAdmission?: import('./ipc/chatAdmission').ChatToolAdmission;
   /** Best-effort cancellation fence for callers that own a generation. */
   signal?: AbortSignal;
   workspacePath?: string | null;
@@ -2154,17 +2155,17 @@ export const executeWorkspaceTool = async (
       observeMutation(async () => { await onCodeCheckpoint(checkpoint); }) };
   }
   const mutations: MutationFilesystem = {
-    fsWriteFile: request => observeMutation(() => tauriIpc.fsWriteFile(request)),
-    fsDelete: request => observeMutation(() => tauriIpc.fsDelete(request)),
+    fsWriteFile: request => observeMutation(() => tauriIpc.fsWriteFile({ ...request, chatAdmission: options.chatAdmission })),
+    fsDelete: request => observeMutation(() => tauriIpc.fsDelete({ ...request, chatAdmission: options.chatAdmission })),
   };
   const invokeNativeTool = (request: Parameters<typeof tauriIpc.executeWorkspaceTool>[0]) =>
     isMutatingWorkspaceTool(request.toolId)
       ? observeMutation(async () => {
-          const result = await tauriIpc.executeWorkspaceTool(request);
+          const result = await tauriIpc.executeWorkspaceTool({ ...request, chatAdmission: options.chatAdmission });
           if (typeof result !== "string" || !result) throw new Error("The native mutation returned no acknowledgement.");
           return result;
         }, "tool_execute_workspace")
-      : tauriIpc.executeWorkspaceTool(request);
+      : tauriIpc.executeWorkspaceTool({ ...request, chatAdmission: options.chatAdmission });
   let nativeDiagnostics: unknown[] = [];
   const diagnosticsAfterCheckpoint = async (): Promise<unknown[]> => {
     const isReady = (item: unknown): item is Record<string, unknown> =>
@@ -2528,7 +2529,7 @@ export const executeWorkspaceTool = async (
           return backendResult;
         }
       } catch (error) {
-        if (mutationResultLost || !isUnknownCommandError(error, "tool_execute_workspace")) {
+        if (options.chatAdmission || mutationResultLost || !isUnknownCommandError(error, "tool_execute_workspace")) {
           throw error;
         }
       }
@@ -2555,7 +2556,7 @@ export const executeWorkspaceTool = async (
             return backendResult;
           }
         } catch (error) {
-          if (mutationResultLost || !isUnknownCommandError(error, "tool_execute_workspace")) {
+          if (options.chatAdmission || mutationResultLost || !isUnknownCommandError(error, "tool_execute_workspace")) {
             throw error;
           }
         }

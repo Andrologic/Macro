@@ -1,0 +1,842 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.macro.andrologic.ai/macro-pilot/v2/transfer-transit/schema.json",
+  "title": "Closed transfer-transit-1 wire envelopes, no runtime authority",
+  "$ref": "#/$defs/message",
+  "$defs": {
+    "session": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "transfer_id",
+        "transit_id",
+        "binding_digest",
+        "frozen_digest",
+        "manifest_digest",
+        "content_contract_sha256",
+        "portable_records",
+        "portable_payload_bytes",
+        "portable_fragments",
+        "stream_bytes"
+      ],
+      "properties": {
+        "transfer_id": {
+          "$ref": "https://schemas.macro.andrologic.ai/macro-pilot/v2/transfer-decision.schema.json#/$defs/uuid"
+        },
+        "transit_id": {
+          "$ref": "https://schemas.macro.andrologic.ai/macro-pilot/v2/transfer-decision.schema.json#/$defs/uuid"
+        },
+        "binding_digest": {
+          "$ref": "https://schemas.macro.andrologic.ai/macro-pilot/v2/transfer-decision.schema.json#/$defs/hash"
+        },
+        "frozen_digest": {
+          "$ref": "https://schemas.macro.andrologic.ai/macro-pilot/v2/transfer-decision.schema.json#/$defs/hash"
+        },
+        "manifest_digest": {
+          "$ref": "https://schemas.macro.andrologic.ai/macro-pilot/v2/transfer-decision.schema.json#/$defs/hash"
+        },
+        "content_contract_sha256": {
+          "$ref": "https://schemas.macro.andrologic.ai/macro-pilot/v2/transfer-decision.schema.json#/$defs/hash"
+        },
+        "portable_records": {
+          "$ref": "https://schemas.macro.andrologic.ai/macro-pilot/v2/transfer-decision.schema.json#/$defs/positive"
+        },
+        "portable_payload_bytes": {
+          "$ref": "https://schemas.macro.andrologic.ai/macro-pilot/v2/transfer-decision.schema.json#/$defs/decimal"
+        },
+        "portable_fragments": {
+          "$ref": "https://schemas.macro.andrologic.ai/macro-pilot/v2/transfer-decision.schema.json#/$defs/positive"
+        },
+        "stream_bytes": {
+          "$ref": "https://schemas.macro.andrologic.ai/macro-pilot/v2/transfer-decision.schema.json#/$defs/positive"
+        }
+      }
+    },
+    "block": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "sequence",
+        "offset",
+        "length",
+        "sha256",
+        "eof"
+      ],
+      "properties": {
+        "sequence": {
+          "$ref": "https://schemas.macro.andrologic.ai/macro-pilot/v2/transfer-decision.schema.json#/$defs/decimal"
+        },
+        "offset": {
+          "$ref": "https://schemas.macro.andrologic.ai/macro-pilot/v2/transfer-decision.schema.json#/$defs/decimal"
+        },
+        "length": {
+          "$ref": "https://schemas.macro.andrologic.ai/macro-pilot/v2/transfer-decision.schema.json#/$defs/positive"
+        },
+        "sha256": {
+          "$ref": "https://schemas.macro.andrologic.ai/macro-pilot/v2/transfer-decision.schema.json#/$defs/hash"
+        },
+        "eof": {
+          "type": "boolean"
+        }
+      }
+    },
+    "cursor": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "next_sequence",
+        "next_offset",
+        "eof",
+        "last"
+      ],
+      "properties": {
+        "next_sequence": {
+          "$ref": "https://schemas.macro.andrologic.ai/macro-pilot/v2/transfer-decision.schema.json#/$defs/decimal"
+        },
+        "next_offset": {
+          "$ref": "https://schemas.macro.andrologic.ai/macro-pilot/v2/transfer-decision.schema.json#/$defs/decimal"
+        },
+        "eof": {
+          "type": "boolean"
+        },
+        "last": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/block"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      }
+    },
+    "open": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "transit_contract",
+        "type",
+        "request_id",
+        "session"
+      ],
+      "properties": {
+        "transit_contract": {
+          "const": "transfer-transit-1"
+        },
+        "type": {
+          "const": "transit.open"
+        },
+        "request_id": {
+          "$ref": "https://schemas.macro.andrologic.ai/macro-pilot/v2/transfer-decision.schema.json#/$defs/id"
+        },
+        "session": {
+          "$ref": "#/$defs/session"
+        }
+      }
+    },
+    "opened": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "transit_contract",
+        "type",
+        "request_id",
+        "session",
+        "cursor"
+      ],
+      "properties": {
+        "transit_contract": {
+          "const": "transfer-transit-1"
+        },
+        "type": {
+          "const": "transit.opened"
+        },
+        "request_id": {
+          "$ref": "https://schemas.macro.andrologic.ai/macro-pilot/v2/transfer-decision.schema.json#/$defs/id"
+        },
+        "session": {
+          "$ref": "#/$defs/session"
+        },
+        "cursor": {
+          "$ref": "#/$defs/cursor"
+        }
+      }
+    },
+    "pull": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "transit_contract",
+        "type",
+        "request_id",
+        "transfer_id",
+        "transit_id",
+        "sequence",
+        "offset"
+      ],
+      "properties": {
+        "transit_contract": {
+          "const": "transfer-transit-1"
+        },
+        "type": {
+          "const": "transit.pull"
+        },
+        "request_id": {
+          "$ref": "https://schemas.macro.andrologic.ai/macro-pilot/v2/transfer-decision.schema.json#/$defs/id"
+        },
+        "transfer_id": {
+          "$ref": "https://schemas.macro.andrologic.ai/macro-pilot/v2/transfer-decision.schema.json#/$defs/uuid"
+        },
+        "transit_id": {
+          "$ref": "https://schemas.macro.andrologic.ai/macro-pilot/v2/transfer-decision.schema.json#/$defs/uuid"
+        },
+        "sequence": {
+          "$ref": "https://schemas.macro.andrologic.ai/macro-pilot/v2/transfer-decision.schema.json#/$defs/decimal"
+        },
+        "offset": {
+          "$ref": "https://schemas.macro.andrologic.ai/macro-pilot/v2/transfer-decision.schema.json#/$defs/decimal"
+        }
+      }
+    },
+    "chunk": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "transit_contract",
+        "type",
+        "request_id",
+        "transfer_id",
+        "transit_id",
+        "sequence",
+        "offset",
+        "length",
+        "sha256",
+        "eof",
+        "data_utf8"
+      ],
+      "properties": {
+        "transit_contract": {
+          "const": "transfer-transit-1"
+        },
+        "type": {
+          "const": "transit.chunk"
+        },
+        "request_id": {
+          "$ref": "https://schemas.macro.andrologic.ai/macro-pilot/v2/transfer-decision.schema.json#/$defs/id"
+        },
+        "transfer_id": {
+          "$ref": "https://schemas.macro.andrologic.ai/macro-pilot/v2/transfer-decision.schema.json#/$defs/uuid"
+        },
+        "transit_id": {
+          "$ref": "https://schemas.macro.andrologic.ai/macro-pilot/v2/transfer-decision.schema.json#/$defs/uuid"
+        },
+        "sequence": {
+          "$ref": "https://schemas.macro.andrologic.ai/macro-pilot/v2/transfer-decision.schema.json#/$defs/decimal"
+        },
+        "offset": {
+          "$ref": "https://schemas.macro.andrologic.ai/macro-pilot/v2/transfer-decision.schema.json#/$defs/decimal"
+        },
+        "length": {
+          "$ref": "https://schemas.macro.andrologic.ai/macro-pilot/v2/transfer-decision.schema.json#/$defs/positive"
+        },
+        "sha256": {
+          "$ref": "https://schemas.macro.andrologic.ai/macro-pilot/v2/transfer-decision.schema.json#/$defs/hash"
+        },
+        "eof": {
+          "type": "boolean"
+        },
+        "data_utf8": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 65536
+        }
+      }
+    },
+    "ack": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "transit_contract",
+        "type",
+        "request_id",
+        "transfer_id",
+        "transit_id",
+        "sequence",
+        "offset",
+        "length",
+        "sha256",
+        "eof",
+        "next_offset"
+      ],
+      "properties": {
+        "transit_contract": {
+          "const": "transfer-transit-1"
+        },
+        "type": {
+          "const": "transit.ack"
+        },
+        "request_id": {
+          "$ref": "https://schemas.macro.andrologic.ai/macro-pilot/v2/transfer-decision.schema.json#/$defs/id"
+        },
+        "transfer_id": {
+          "$ref": "https://schemas.macro.andrologic.ai/macro-pilot/v2/transfer-decision.schema.json#/$defs/uuid"
+        },
+        "transit_id": {
+          "$ref": "https://schemas.macro.andrologic.ai/macro-pilot/v2/transfer-decision.schema.json#/$defs/uuid"
+        },
+        "sequence": {
+          "$ref": "https://schemas.macro.andrologic.ai/macro-pilot/v2/transfer-decision.schema.json#/$defs/decimal"
+        },
+        "offset": {
+          "$ref": "https://schemas.macro.andrologic.ai/macro-pilot/v2/transfer-decision.schema.json#/$defs/decimal"
+        },
+        "length": {
+          "$ref": "https://schemas.macro.andrologic.ai/macro-pilot/v2/transfer-decision.schema.json#/$defs/positive"
+        },
+        "sha256": {
+          "$ref": "https://schemas.macro.andrologic.ai/macro-pilot/v2/transfer-decision.schema.json#/$defs/hash"
+        },
+        "eof": {
+          "type": "boolean"
+        },
+        "next_offset": {
+          "$ref": "https://schemas.macro.andrologic.ai/macro-pilot/v2/transfer-decision.schema.json#/$defs/positive"
+        }
+      }
+    },
+    "statusRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "transit_contract",
+        "type",
+        "request_id",
+        "transfer_id",
+        "transit_id"
+      ],
+      "properties": {
+        "transit_contract": {
+          "const": "transfer-transit-1"
+        },
+        "type": {
+          "const": "transit.status"
+        },
+        "request_id": {
+          "$ref": "https://schemas.macro.andrologic.ai/macro-pilot/v2/transfer-decision.schema.json#/$defs/id"
+        },
+        "transfer_id": {
+          "$ref": "https://schemas.macro.andrologic.ai/macro-pilot/v2/transfer-decision.schema.json#/$defs/uuid"
+        },
+        "transit_id": {
+          "$ref": "https://schemas.macro.andrologic.ai/macro-pilot/v2/transfer-decision.schema.json#/$defs/uuid"
+        }
+      }
+    },
+    "status": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "transit_contract",
+        "type",
+        "request_id",
+        "transfer_id",
+        "transit_id",
+        "cursor"
+      ],
+      "properties": {
+        "transit_contract": {
+          "const": "transfer-transit-1"
+        },
+        "type": {
+          "const": "transit.progress"
+        },
+        "request_id": {
+          "$ref": "https://schemas.macro.andrologic.ai/macro-pilot/v2/transfer-decision.schema.json#/$defs/id"
+        },
+        "transfer_id": {
+          "$ref": "https://schemas.macro.andrologic.ai/macro-pilot/v2/transfer-decision.schema.json#/$defs/uuid"
+        },
+        "transit_id": {
+          "$ref": "https://schemas.macro.andrologic.ai/macro-pilot/v2/transfer-decision.schema.json#/$defs/uuid"
+        },
+        "cursor": {
+          "$ref": "#/$defs/cursor"
+        }
+      }
+    },
+    "close": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "transit_contract",
+        "type",
+        "request_id",
+        "transfer_id",
+        "transit_id"
+      ],
+      "properties": {
+        "transit_contract": {
+          "const": "transfer-transit-1"
+        },
+        "type": {
+          "const": "transit.close"
+        },
+        "request_id": {
+          "$ref": "https://schemas.macro.andrologic.ai/macro-pilot/v2/transfer-decision.schema.json#/$defs/id"
+        },
+        "transfer_id": {
+          "$ref": "https://schemas.macro.andrologic.ai/macro-pilot/v2/transfer-decision.schema.json#/$defs/uuid"
+        },
+        "transit_id": {
+          "$ref": "https://schemas.macro.andrologic.ai/macro-pilot/v2/transfer-decision.schema.json#/$defs/uuid"
+        }
+      }
+    },
+    "accepted": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "transit_contract",
+        "type",
+        "request_id"
+      ],
+      "properties": {
+        "transit_contract": {
+          "const": "transfer-transit-1"
+        },
+        "type": {
+          "const": "accepted"
+        },
+        "request_id": {
+          "$ref": "https://schemas.macro.andrologic.ai/macro-pilot/v2/transfer-decision.schema.json#/$defs/id"
+        }
+      }
+    },
+    "error": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "transit_contract",
+        "type",
+        "request_id",
+        "code",
+        "retryable"
+      ],
+      "properties": {
+        "transit_contract": {
+          "const": "transfer-transit-1"
+        },
+        "type": {
+          "const": "error"
+        },
+        "request_id": {
+          "$ref": "https://schemas.macro.andrologic.ai/macro-pilot/v2/transfer-decision.schema.json#/$defs/id"
+        },
+        "code": {
+          "$ref": "https://schemas.macro.andrologic.ai/macro-pilot/v2/transfer-decision.schema.json#/$defs/errorCode"
+        },
+        "retryable": {
+          "type": "boolean"
+        }
+      }
+    },
+    "decisionRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "transit_contract",
+        "type",
+        "request_id",
+        "request"
+      ],
+      "properties": {
+        "transit_contract": {
+          "const": "transfer-transit-1"
+        },
+        "type": {
+          "const": "decision.request"
+        },
+        "request_id": {
+          "$ref": "https://schemas.macro.andrologic.ai/macro-pilot/v2/transfer-decision.schema.json#/$defs/id"
+        },
+        "request": {
+          "$ref": "https://schemas.macro.andrologic.ai/macro-pilot/v2/transfer-decision.schema.json#/$defs/request"
+        }
+      }
+    },
+    "challenge": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "transit_contract",
+        "type",
+        "request_id",
+        "request",
+        "kind"
+      ],
+      "properties": {
+        "transit_contract": {
+          "const": "transfer-transit-1"
+        },
+        "type": {
+          "const": "decision.challenge"
+        },
+        "request_id": {
+          "$ref": "https://schemas.macro.andrologic.ai/macro-pilot/v2/transfer-decision.schema.json#/$defs/id"
+        },
+        "request": {
+          "$ref": "https://schemas.macro.andrologic.ai/macro-pilot/v2/transfer-decision.schema.json#/$defs/request"
+        },
+        "kind": {
+          "$ref": "https://schemas.macro.andrologic.ai/macro-pilot/v2/transfer-decision.schema.json#/$defs/attestationKind"
+        }
+      }
+    },
+    "exchange": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "transit_contract",
+        "type",
+        "request_id",
+        "exchange"
+      ],
+      "properties": {
+        "transit_contract": {
+          "const": "transfer-transit-1"
+        },
+        "type": {
+          "const": "decision.exchange"
+        },
+        "request_id": {
+          "$ref": "https://schemas.macro.andrologic.ai/macro-pilot/v2/transfer-decision.schema.json#/$defs/id"
+        },
+        "exchange": {
+          "$ref": "https://schemas.macro.andrologic.ai/macro-pilot/v2/transfer-decision.schema.json#/$defs/exchange"
+        }
+      }
+    },
+    "receipt": {
+      "oneOf": [
+        {
+          "$ref": "https://schemas.macro.andrologic.ai/macro-pilot/v2/transfer-decision.schema.json#/$defs/stepReceipt"
+        },
+        {
+          "$ref": "https://schemas.macro.andrologic.ai/macro-pilot/v2/transfer-decision.schema.json#/$defs/birthReceipt"
+        },
+        {
+          "$ref": "https://schemas.macro.andrologic.ai/macro-pilot/v2/transfer-decision.schema.json#/$defs/terminal"
+        },
+        {
+          "$ref": "https://schemas.macro.andrologic.ai/macro-pilot/v2/transfer-decision.schema.json#/$defs/activation"
+        }
+      ]
+    },
+    "decisionResult": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "receipt",
+            "status"
+          ],
+          "properties": {
+            "kind": {
+              "enum": [
+                "retry",
+                "terminal"
+              ]
+            },
+            "receipt": {
+              "$ref": "#/$defs/receipt"
+            },
+            "status": {
+              "oneOf": [
+                {
+                  "$ref": "https://schemas.macro.andrologic.ai/macro-pilot/v2/transfer-decision.schema.json#/$defs/status"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "status"
+          ],
+          "properties": {
+            "kind": {
+              "const": "status"
+            },
+            "status": {
+              "$ref": "https://schemas.macro.andrologic.ai/macro-pilot/v2/transfer-decision.schema.json#/$defs/status"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "status"
+          ],
+          "properties": {
+            "kind": {
+              "const": "source_status"
+            },
+            "status": {
+              "$ref": "https://schemas.macro.andrologic.ai/macro-pilot/v2/transfer-decision.schema.json#/$defs/sourceStatus"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "error"
+          ],
+          "properties": {
+            "kind": {
+              "const": "error"
+            },
+            "error": {
+              "$ref": "https://schemas.macro.andrologic.ai/macro-pilot/v2/transfer-decision.schema.json#/$defs/error"
+            }
+          }
+        }
+      ]
+    },
+    "decisionReply": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "transit_contract",
+        "type",
+        "request_id",
+        "result"
+      ],
+      "properties": {
+        "transit_contract": {
+          "const": "transfer-transit-1"
+        },
+        "type": {
+          "const": "decision.reply"
+        },
+        "request_id": {
+          "$ref": "https://schemas.macro.andrologic.ai/macro-pilot/v2/transfer-decision.schema.json#/$defs/id"
+        },
+        "result": {
+          "$ref": "#/$defs/decisionResult"
+        }
+      }
+    },
+    "received": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "transit_contract",
+        "type",
+        "request_id",
+        "exchange"
+      ],
+      "properties": {
+        "transit_contract": {
+          "const": "transfer-transit-1"
+        },
+        "type": {
+          "const": "proof.received"
+        },
+        "request_id": {
+          "$ref": "https://schemas.macro.andrologic.ai/macro-pilot/v2/transfer-decision.schema.json#/$defs/id"
+        },
+        "exchange": {
+          "$ref": "https://schemas.macro.andrologic.ai/macro-pilot/v2/transfer-decision.schema.json#/$defs/exchange"
+        }
+      }
+    },
+    "attestation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "transit_contract",
+        "type",
+        "request_id",
+        "attestation"
+      ],
+      "properties": {
+        "transit_contract": {
+          "const": "transfer-transit-1"
+        },
+        "type": {
+          "const": "proof.result"
+        },
+        "request_id": {
+          "$ref": "https://schemas.macro.andrologic.ai/macro-pilot/v2/transfer-decision.schema.json#/$defs/id"
+        },
+        "attestation": {
+          "$ref": "https://schemas.macro.andrologic.ai/macro-pilot/v2/transfer-decision.schema.json#/$defs/attestation"
+        }
+      }
+    },
+    "deliveryBody": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "request",
+            "exchange"
+          ],
+          "properties": {
+            "kind": {
+              "const": "proof.challenge"
+            },
+            "request": {
+              "$ref": "https://schemas.macro.andrologic.ai/macro-pilot/v2/transfer-decision.schema.json#/$defs/request"
+            },
+            "exchange": {
+              "$ref": "https://schemas.macro.andrologic.ai/macro-pilot/v2/transfer-decision.schema.json#/$defs/exchange"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "message"
+          ],
+          "properties": {
+            "kind": {
+              "const": "transit.pull"
+            },
+            "message": {
+              "$ref": "#/$defs/pull"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "message"
+          ],
+          "properties": {
+            "kind": {
+              "const": "transit.chunk"
+            },
+            "message": {
+              "$ref": "#/$defs/chunk"
+            }
+          }
+        }
+      ]
+    },
+    "delivery": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "transit_contract",
+        "type",
+        "request_id",
+        "delivery_id",
+        "instance_id",
+        "producer_generation",
+        "connection_id",
+        "body"
+      ],
+      "properties": {
+        "transit_contract": {
+          "const": "transfer-transit-1"
+        },
+        "type": {
+          "const": "producer.delivery"
+        },
+        "request_id": {
+          "$ref": "https://schemas.macro.andrologic.ai/macro-pilot/v2/transfer-decision.schema.json#/$defs/id"
+        },
+        "delivery_id": {
+          "$ref": "https://schemas.macro.andrologic.ai/macro-pilot/v2/transfer-decision.schema.json#/$defs/uuid"
+        },
+        "instance_id": {
+          "$ref": "https://schemas.macro.andrologic.ai/macro-pilot/v2/transfer-decision.schema.json#/$defs/id"
+        },
+        "producer_generation": {
+          "$ref": "https://schemas.macro.andrologic.ai/macro-pilot/v2/transfer-decision.schema.json#/$defs/id"
+        },
+        "connection_id": {
+          "$ref": "https://schemas.macro.andrologic.ai/macro-pilot/v2/transfer-decision.schema.json#/$defs/uuid"
+        },
+        "body": {
+          "$ref": "#/$defs/deliveryBody"
+        }
+      }
+    },
+    "message": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/open"
+        },
+        {
+          "$ref": "#/$defs/opened"
+        },
+        {
+          "$ref": "#/$defs/pull"
+        },
+        {
+          "$ref": "#/$defs/chunk"
+        },
+        {
+          "$ref": "#/$defs/ack"
+        },
+        {
+          "$ref": "#/$defs/statusRequest"
+        },
+        {
+          "$ref": "#/$defs/status"
+        },
+        {
+          "$ref": "#/$defs/close"
+        },
+        {
+          "$ref": "#/$defs/accepted"
+        },
+        {
+          "$ref": "#/$defs/error"
+        },
+        {
+          "$ref": "#/$defs/decisionRequest"
+        },
+        {
+          "$ref": "#/$defs/challenge"
+        },
+        {
+          "$ref": "#/$defs/exchange"
+        },
+        {
+          "$ref": "#/$defs/decisionReply"
+        },
+        {
+          "$ref": "#/$defs/received"
+        },
+        {
+          "$ref": "#/$defs/attestation"
+        },
+        {
+          "$ref": "#/$defs/delivery"
+        }
+      ]
+    }
+  }
+}

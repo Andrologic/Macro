@@ -1,3 +1,8 @@
+pub use super::conversation_catalog::{conversation_catalog_page, conversation_catalog_version};
+#[allow(unused_imports)]
+pub use super::conversation_content::{
+    conversation_content_metadata, conversation_content_version, conversation_content_window,
+};
 use super::models::*;
 use super::DbError;
 use super::DbResult;
@@ -382,7 +387,7 @@ pub async fn get_conversation(pool: &SqlitePool, id: &str) -> DbResult<Option<Co
     get_conversation_with_connection(&mut connection, id).await
 }
 
-async fn get_conversation_with_connection(
+pub(super) async fn get_conversation_with_connection(
     connection: &mut SqliteConnection,
     id: &str,
 ) -> DbResult<Option<Conversation>> {
@@ -399,23 +404,27 @@ async fn get_conversation_with_connection(
     .fetch_optional(&mut *connection)
     .await?;
 
-    Ok(row.map(|row| Conversation {
-        id: row.get("id"),
-        title: row.get("title"),
-        description: row.get("description"),
-        scope_mode: row.get("scope_mode"),
-        task_id: row.get("task_id"),
-        group_id: row.get("group_id"),
-        project_id: row.get("project_id"),
-        provider_id: row.get("provider_id"),
-        model_id: row.get("model_id"),
-        reasoning_effort: row.get("reasoning_effort"),
-        created_at: row.get("created_at"),
-        updated_at: row.get("updated_at"),
-        last_message: row.get("last_message"),
-        message_count: row.get("message_count"),
-        is_pinned: row.get::<i32, _>("is_pinned") != 0,
-    }))
+    row.as_ref().map(conversation_from_row).transpose()
+}
+
+pub(super) fn conversation_from_row(row: &sqlx::sqlite::SqliteRow) -> DbResult<Conversation> {
+    Ok(Conversation {
+        id: row.try_get("id")?,
+        title: row.try_get("title")?,
+        description: row.try_get("description")?,
+        scope_mode: row.try_get("scope_mode")?,
+        task_id: row.try_get("task_id")?,
+        group_id: row.try_get("group_id")?,
+        project_id: row.try_get("project_id")?,
+        provider_id: row.try_get("provider_id")?,
+        model_id: row.try_get("model_id")?,
+        reasoning_effort: row.try_get("reasoning_effort")?,
+        created_at: row.try_get("created_at")?,
+        updated_at: row.try_get("updated_at")?,
+        last_message: row.try_get("last_message")?,
+        message_count: row.try_get("message_count")?,
+        is_pinned: row.try_get::<i32, _>("is_pinned")? != 0,
+    })
 }
 
 pub async fn create_conversation(
@@ -680,6 +689,12 @@ pub async fn delete_conversations(pool: &SqlitePool, ids: &[String]) -> DbResult
 }
 
 pub async fn delete_app_setting(pool: &SqlitePool, key: &str) -> DbResult<bool> {
+    if key == super::chat_admission::intents::APPROVAL_REGISTRY_KEY {
+        return Err(super::DbError::Validation(
+            "chat_admission_reserved_setting".into(),
+        ));
+    }
+
     let result = sqlx::query("DELETE FROM app_settings WHERE key = ?")
         .bind(key)
         .execute(pool)
@@ -890,6 +905,20 @@ pub async fn update_git_worktree_project_access(
 
 // ============ MESSAGES ============
 
+pub async fn get_message(pool: &SqlitePool, id: &str) -> DbResult<Option<Message>> {
+    let mut transaction = pool.begin().await?;
+    let size: Option<i64> = sqlx::query_scalar("SELECT length(CAST(content AS BLOB)) + COALESCE(length(CAST(hidden_context AS BLOB)),0) + COALESCE(length(CAST(provider_turn_state_json AS BLOB)),0) + COALESCE(length(CAST(tool_traces_json AS BLOB)),0) + COALESCE(length(CAST(provider_input_items_json AS BLOB)),0) + COALESCE(length(CAST(context_refs_json AS BLOB)),0) + COALESCE(length(CAST(generation_attempts_json AS BLOB)),0) FROM messages WHERE id = ?").bind(id).fetch_optional(&mut *transaction).await?;
+    if size.is_some_and(|n| n > 4 * 1024 * 1024) {
+        return Err(DbError::Validation("resource_limit".into()));
+    }
+    let row = sqlx::query("SELECT * FROM messages WHERE id = ?")
+        .bind(id)
+        .fetch_optional(&mut *transaction)
+        .await?;
+    transaction.commit().await?;
+    Ok(row.as_ref().map(map_message_row))
+}
+
 pub async fn list_messages(pool: &SqlitePool, conversation_id: &str) -> DbResult<Vec<Message>> {
     let mut connection = pool.acquire().await?;
     let mut messages = list_messages_with_connection(&mut connection, conversation_id).await?;
@@ -920,25 +949,53 @@ async fn list_messages_with_connection(
 
     let messages = rows
         .into_iter()
-        .map(|row| Message {
-            id: row.get("id"),
-            conversation_id: row.get("conversation_id"),
-            turn_id: row.get("turn_id"),
-            role: row.get("role"),
-            content: row.get("content"),
-            created_at: row.get("created_at"),
-            token_count: row.get("token_count"),
-            tool_traces_json: row.get("tool_traces_json"),
-            hidden_context: row.get("hidden_context"),
-            provider_input_items_json: row.get("provider_input_items_json"),
-            provider_turn_state_json: row.get("provider_turn_state_json"),
-            context_refs_json: row.get("context_refs_json"),
-            completion_reason: row.get("completion_reason"),
-            generation_attempts_json: row.get("generation_attempts_json"),
-        })
+        .map(|row| map_list_message_row(&row))
         .collect();
 
     Ok(messages)
+}
+
+// Ordinals belong only to the explicit 14-column list projection above.
+// Do not use this mapper for SELECT * or a differently ordered projection.
+pub(crate) fn map_list_message_row(row: &sqlx::sqlite::SqliteRow) -> Message {
+    Message {
+        id: row.get(0),
+        conversation_id: row.get(1),
+        turn_id: row.get(2),
+        role: row.get(3),
+        content: row.get(4),
+        created_at: row.get(5),
+        token_count: row.get(6),
+        tool_traces_json: row.get(7),
+        hidden_context: row.get(8),
+        provider_input_items_json: row.get(9),
+        provider_turn_state_json: row.get(10),
+        context_refs_json: row.get(11),
+        completion_reason: row.get(12),
+        generation_attempts_json: row.get(13),
+    }
+}
+
+/// The remote window has a conservative budget before any transcript strings
+/// cross IPC. The read transaction keeps the size check and fetch consistent.
+pub async fn list_messages_bounded(
+    pool: &SqlitePool,
+    conversation_id: &str,
+) -> DbResult<Vec<Message>> {
+    let mut tx = pool.begin().await?;
+    let size: i64 = sqlx::query_scalar("SELECT COALESCE(SUM(2048 + 6 * (length(CAST(id AS BLOB)) + length(CAST(conversation_id AS BLOB)) + length(CAST(content AS BLOB)) + COALESCE(length(CAST(hidden_context AS BLOB)),0) + COALESCE(length(CAST(provider_turn_state_json AS BLOB)),0) + COALESCE(length(CAST(tool_traces_json AS BLOB)),0) + COALESCE(length(CAST(provider_input_items_json AS BLOB)),0) + COALESCE(length(CAST(context_refs_json AS BLOB)),0) + COALESCE(length(CAST(generation_attempts_json AS BLOB)),0) + COALESCE(length(CAST(turn_id AS BLOB)),0) + length(CAST(role AS BLOB)) + length(CAST(created_at AS BLOB)) + COALESCE(length(CAST(completion_reason AS BLOB)),0))),0) FROM messages WHERE conversation_id = ?")
+        .bind(conversation_id).fetch_one(&mut *tx).await?;
+    if size > 4 * 1024 * 1024 {
+        return Err(DbError::Validation("resource_limit".into()));
+    }
+    let rows = sqlx::query(
+        "SELECT * FROM messages WHERE conversation_id = ? ORDER BY created_at ASC, id ASC",
+    )
+    .bind(conversation_id)
+    .fetch_all(&mut *tx)
+    .await?;
+    tx.commit().await?;
+    Ok(rows.iter().map(map_message_row).collect())
 }
 
 pub async fn get_conversation_source_snapshot(
@@ -1120,7 +1177,9 @@ pub async fn create_message(pool: &SqlitePool, input: CreateMessageInput) -> DbR
         .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
     let now = chrono::Utc::now().to_rfc3339();
 
-    let mut transaction = pool.begin().await?;
+    // Acquire the writer before any reads. A deferred WAL transaction cannot
+    // upgrade a stale read snapshot while another writer holds the database.
+    let mut transaction = pool.begin_with("BEGIN IMMEDIATE").await?;
     sqlx::query(
         r#"
         INSERT INTO messages (
@@ -1262,6 +1321,7 @@ pub async fn import_messages(
     Ok(inserted)
 }
 
+#[derive(serde::Serialize)]
 pub struct UpdateMessageContentInput<'a> {
     pub id: &'a str,
     pub turn_id: Option<String>,
@@ -1280,6 +1340,17 @@ pub async fn update_message_content(
     pool: &SqlitePool,
     input: UpdateMessageContentInput<'_>,
 ) -> DbResult<()> {
+    // Acquire the writer before any reads, including admitted final writes.
+    let mut transaction = pool.begin_with("BEGIN IMMEDIATE").await?;
+    update_message_content_with_connection(&mut transaction, input).await?;
+    transaction.commit().await?;
+    Ok(())
+}
+
+pub(crate) async fn update_message_content_with_connection(
+    connection: &mut sqlx::SqliteConnection,
+    input: UpdateMessageContentInput<'_>,
+) -> DbResult<()> {
     let UpdateMessageContentInput {
         id,
         turn_id,
@@ -1294,11 +1365,10 @@ pub async fn update_message_content(
         generation_attempts_json,
     } = input;
 
-    let mut transaction = pool.begin().await?;
     let conversation_id: Option<String> =
         sqlx::query_scalar("SELECT conversation_id FROM messages WHERE id = ?")
             .bind(id)
-            .fetch_optional(&mut *transaction)
+            .fetch_optional(&mut *connection)
             .await?;
 
     sqlx::query(
@@ -1319,15 +1389,13 @@ pub async fn update_message_content(
     .bind(completion_reason)
     .bind(generation_attempts_json)
     .bind(id)
-    .execute(&mut *transaction)
+    .execute(&mut *connection)
     .await?;
 
     if let Some(conversation_id) = conversation_id {
-        refresh_conversation_metadata_with_connection(&mut *transaction, conversation_id, None)
+        refresh_conversation_metadata_with_connection(&mut *connection, conversation_id, None)
             .await?;
     }
-
-    transaction.commit().await?;
 
     Ok(())
 }
@@ -2342,7 +2410,8 @@ pub async fn list_provider_configs(pool: &SqlitePool) -> DbResult<Vec<ProviderCo
                 .unwrap_or_default()
                 .to_string(),
             api_key: None,
-            has_stored_api_key: crate::secrets::get_api_key(id)
+            has_stored_api_key: crate::secrets::get_api_key_async(id)
+                .await
                 .map_err(|error| DbError::Validation(error.to_string()))?
                 .is_some(),
             is_enabled: definition
@@ -2754,6 +2823,14 @@ pub async fn get_conversation_compaction_state(
     pool: &SqlitePool,
     conversation_id: &str,
 ) -> DbResult<Option<ConversationCompactionStateRecord>> {
+    let mut connection = pool.acquire().await?;
+    get_conversation_compaction_state_with_connection(&mut connection, conversation_id).await
+}
+
+async fn get_conversation_compaction_state_with_connection(
+    connection: &mut sqlx::SqliteConnection,
+    conversation_id: &str,
+) -> DbResult<Option<ConversationCompactionStateRecord>> {
     let row = sqlx::query(
         r#"
         SELECT conversation_id, up_to_message_id, summary_text, tool_digest_json,
@@ -2770,7 +2847,7 @@ pub async fn get_conversation_compaction_state(
         "#,
     )
     .bind(conversation_id)
-    .fetch_optional(pool)
+    .fetch_optional(connection)
     .await?;
 
     Ok(row.map(|row| ConversationCompactionStateRecord {
@@ -2858,6 +2935,17 @@ pub async fn upsert_conversation_compaction_state(
     pool: &SqlitePool,
     input: UpsertConversationCompactionStateInput,
 ) -> DbResult<ConversationCompactionStateRecord> {
+    let mut transaction = pool.begin_with("BEGIN IMMEDIATE").await?;
+    let result =
+        upsert_conversation_compaction_state_with_connection(&mut transaction, input).await?;
+    transaction.commit().await?;
+    Ok(result)
+}
+
+pub(crate) async fn upsert_conversation_compaction_state_with_connection(
+    connection: &mut sqlx::SqliteConnection,
+    input: UpsertConversationCompactionStateInput,
+) -> DbResult<ConversationCompactionStateRecord> {
     let now = chrono::Utc::now().to_rfc3339();
     let conversation_id = input.conversation_id.clone();
 
@@ -2939,10 +3027,10 @@ pub async fn upsert_conversation_compaction_state(
     .bind(&input.last_trigger)
     .bind(&now)
     .bind(&now)
-    .execute(pool)
+    .execute(&mut *connection)
     .await?;
 
-    get_conversation_compaction_state(pool, &conversation_id)
+    get_conversation_compaction_state_with_connection(connection, &conversation_id)
         .await?
         .ok_or_else(|| sqlx::Error::RowNotFound.into())
 }
@@ -3069,6 +3157,12 @@ pub async fn set_app_setting(
     key: &str,
     value_json: &str,
 ) -> DbResult<AppSettingRecord> {
+    if key == super::chat_admission::intents::APPROVAL_REGISTRY_KEY {
+        return Err(super::DbError::Validation(
+            "chat_admission_reserved_setting".into(),
+        ));
+    }
+
     let now = chrono::Utc::now().to_rfc3339();
 
     sqlx::query(
@@ -3099,6 +3193,12 @@ pub async fn compare_and_swap_app_setting(
     expected_value_json: Option<&str>,
     value_json: &str,
 ) -> DbResult<CompareAndSwapAppSettingResult> {
+    if key == super::chat_admission::intents::APPROVAL_REGISTRY_KEY {
+        return Err(super::DbError::Validation(
+            "chat_admission_reserved_setting".into(),
+        ));
+    }
+
     let now = chrono::Utc::now().to_rfc3339();
     let result = sqlx::query(
         r#"
@@ -3648,6 +3748,226 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn list_message_projection_matches_named_decode_with_ties_and_nullable_fields() {
+        let (_directory, pool) = test_pool().await;
+        seed_search_conversation(&pool, "projection-chat", "Synthetic projection").await;
+        for id in ["tie-z", "tie-a", "early"] {
+            let populated = id != "tie-a";
+            let value =
+                |field: &str| populated.then(|| format!(r#"{{"synthetic":"{field}-{id}"}}"#));
+            create_message(
+                &pool,
+                CreateMessageInput {
+                    id: Some(id.into()),
+                    conversation_id: "projection-chat".into(),
+                    turn_id: populated.then(|| format!("turn-{id}")),
+                    role: "assistant".into(),
+                    content: format!("Contenu é界🙂 {id}"),
+                    token_count: populated.then_some(37),
+                    tool_traces_json: value("tools"),
+                    hidden_context: value("hidden"),
+                    provider_input_items_json: value("inputs"),
+                    provider_turn_state_json: value("state"),
+                    context_refs_json: value("refs"),
+                    completion_reason: populated.then(|| "stop".into()),
+                    generation_attempts_json: value("attempts"),
+                },
+            )
+            .await
+            .unwrap();
+            sqlx::query("UPDATE messages SET created_at = ? WHERE id = ?")
+                .bind(if id == "early" {
+                    "2026-01-01"
+                } else {
+                    "2026-01-02"
+                })
+                .bind(id)
+                .execute(&pool)
+                .await
+                .unwrap();
+        }
+        // Independent named decoding also covers schema column order different
+        // from a later explicit projection. The optimized mapper is not reused.
+        let named = sqlx::query(
+            "SELECT * FROM messages WHERE conversation_id = ? ORDER BY created_at ASC, id ASC",
+        )
+        .bind("projection-chat")
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+        let reference: Vec<_> = named.iter().map(map_message_row).collect();
+        let listed = list_messages(&pool, "projection-chat").await.unwrap();
+        assert_eq!(
+            listed.iter().map(|m| m.id.as_str()).collect::<Vec<_>>(),
+            ["early", "tie-a", "tie-z"]
+        );
+        assert_eq!(
+            serde_json::to_value(listed).unwrap(),
+            serde_json::to_value(reference).unwrap()
+        );
+        pool.close().await;
+    }
+
+    // SELECT * evaluates this expression and fails. The size query must reject
+    // oversized rows without reaching that fetch, even before row decoding.
+    async fn install_admission_fetch_probe(pool: &SqlitePool) {
+        sqlx::query("ALTER TABLE messages RENAME TO admission_messages")
+            .execute(pool)
+            .await
+            .unwrap();
+        sqlx::query(
+            "CREATE VIEW messages AS SELECT *, abs(-9223372036854775808) AS hydration_probe FROM admission_messages",
+        )
+        .execute(pool)
+        .await
+        .unwrap();
+    }
+
+    async fn seed_admission_message(pool: &SqlitePool, id: &str, content: &str, attempts: &str) {
+        sqlx::query(
+            "INSERT INTO messages (id, conversation_id, role, content, created_at, generation_attempts_json) VALUES (?, 'admission-chat', 'assistant', ?, '2026-01-01', ?)",
+        )
+        .bind(id)
+        .bind(content)
+        .bind(serde_json::json!([{"rawText": attempts}]).to_string())
+        .execute(pool)
+        .await
+        .unwrap();
+    }
+
+    fn assert_admission_limit<T: std::fmt::Debug>(result: DbResult<T>) {
+        assert!(
+            matches!(&result, Err(DbError::Validation(reason)) if reason == "resource_limit"),
+            "expected SQL size rejection before SELECT * fetch, got {result:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn message_admission_rejects_generation_attempts_alone_before_fetch() {
+        let (_directory, pool) = test_pool().await;
+        seed_search_conversation(&pool, "admission-chat", "Synthetic admission").await;
+        seed_admission_message(
+            &pool,
+            "large-attempts",
+            "",
+            &"x".repeat(4 * 1024 * 1024 + 1),
+        )
+        .await;
+        install_admission_fetch_probe(&pool).await;
+        let single = get_message(&pool, "large-attempts").await;
+        let conversation = list_messages_bounded(&pool, "admission-chat").await;
+        assert_admission_limit(single);
+        assert_admission_limit(conversation);
+        pool.close().await;
+    }
+
+    #[tokio::test]
+    async fn message_admission_rejects_content_plus_generation_attempts_before_fetch() {
+        let (_directory, pool) = test_pool().await;
+        seed_search_conversation(&pool, "admission-chat", "Synthetic admission").await;
+        seed_admission_message(
+            &pool,
+            "combined-payload",
+            &"x".repeat(2 * 1024 * 1024),
+            &"y".repeat(2 * 1024 * 1024 + 1),
+        )
+        .await;
+        install_admission_fetch_probe(&pool).await;
+        assert_admission_limit(get_message(&pool, "combined-payload").await);
+        pool.close().await;
+    }
+
+    #[tokio::test]
+    async fn message_admission_rejects_cumulative_conversation_before_fetch() {
+        let (_directory, pool) = test_pool().await;
+        seed_search_conversation(&pool, "admission-chat", "Synthetic admission").await;
+        let attempts = "é".repeat(180_000);
+        for id in ["attempt-a", "attempt-b"] {
+            seed_admission_message(&pool, id, "", &attempts).await;
+        }
+        // Each row fits both existing budgets; only their combined bounded-list
+        // estimate exceeds 4 MiB. UTF-8 must be counted in bytes by SQLite.
+        assert!(get_message(&pool, "attempt-a").await.unwrap().is_some());
+        sqlx::query("DELETE FROM messages WHERE id = 'attempt-b'")
+            .execute(&pool)
+            .await
+            .unwrap();
+        assert_eq!(
+            list_messages_bounded(&pool, "admission-chat")
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
+        seed_admission_message(&pool, "attempt-b", "", &attempts).await;
+        install_admission_fetch_probe(&pool).await;
+        assert_admission_limit(list_messages_bounded(&pool, "admission-chat").await);
+        pool.close().await;
+    }
+
+    #[tokio::test]
+    async fn message_admission_preserves_small_nullable_utf8_rows_and_fetch_probe() {
+        let (_directory, pool) = test_pool().await;
+        seed_search_conversation(&pool, "admission-chat", "Synthetic admission").await;
+        for (id, populated) in [("small-a", true), ("small-b", false)] {
+            let value = |field: &str| populated.then(|| format!(r#"{{"{field}":"é界🙂"}}"#));
+            create_message(
+                &pool,
+                CreateMessageInput {
+                    id: Some(id.into()),
+                    conversation_id: "admission-chat".into(),
+                    turn_id: populated.then(|| "turn-é".into()),
+                    role: "assistant".into(),
+                    content: "Contenu é界🙂".into(),
+                    token_count: populated.then_some(37),
+                    tool_traces_json: value("tools"),
+                    hidden_context: value("hidden"),
+                    provider_input_items_json: value("inputs"),
+                    provider_turn_state_json: value("state"),
+                    context_refs_json: value("refs"),
+                    completion_reason: populated.then(|| "stop".into()),
+                    generation_attempts_json: value("attempts"),
+                },
+            )
+            .await
+            .unwrap();
+        }
+        let expected = list_messages(&pool, "admission-chat").await.unwrap();
+        let bounded = list_messages_bounded(&pool, "admission-chat")
+            .await
+            .unwrap();
+        assert_eq!(
+            serde_json::to_value(&bounded).unwrap(),
+            serde_json::to_value(&expected).unwrap()
+        );
+        for message in expected {
+            let single = get_message(&pool, &message.id).await.unwrap().unwrap();
+            assert_eq!(
+                serde_json::to_value(single).unwrap(),
+                serde_json::to_value(message).unwrap()
+            );
+        }
+        assert!(get_message(&pool, "missing").await.unwrap().is_none());
+        assert!(list_messages_bounded(&pool, "missing")
+            .await
+            .unwrap()
+            .is_empty());
+        install_admission_fetch_probe(&pool).await;
+        for error in [
+            get_message(&pool, "small-a").await.unwrap_err(),
+            list_messages_bounded(&pool, "admission-chat")
+                .await
+                .unwrap_err(),
+        ] {
+            assert!(
+                matches!(error, DbError::Sqlx(ref source) if source.to_string().contains("integer overflow")),
+                "fetch probe did not run: {error:?}"
+            );
+        }
+        pool.close().await;
+    }
+
+    #[tokio::test]
     async fn generation_attempts_survive_message_reload() {
         let (_dir, pool) = test_pool().await;
         let conversation = create_test_conversation(&pool, "Attempts").await;
@@ -4065,6 +4385,95 @@ mod tests {
                 .results
                 .is_empty()
         );
+    }
+
+    #[tokio::test]
+    async fn message_writes_wait_for_concurrent_writer_without_losing_content() {
+        let (_temp_dir, pool) = test_pool().await;
+        seed_search_conversation(&pool, "writer-chat", "Writer contention").await;
+        seed_search_message(&pool, "writer-message", "writer-chat", "Initial content").await;
+
+        // Pilot receipts and transcript writes share this pool. A writer may
+        // already be active when a streaming message needs to be persisted.
+        let mut writer = pool.begin_with("BEGIN IMMEDIATE").await.expect("writer");
+        sqlx::query("INSERT INTO app_settings (key, value_json, updated_at) VALUES ('writer-test', '{}', '2026-10-10T10:00:00Z')")
+            .execute(&mut *writer)
+            .await
+            .expect("hold writer");
+        let update_pool = pool.clone();
+        let mut update = tokio::spawn(async move {
+            update_message_content(
+                &update_pool,
+                UpdateMessageContentInput {
+                    id: "writer-message",
+                    turn_id: None,
+                    content: "Updated content",
+                    token_count: None,
+                    tool_traces_json: None,
+                    hidden_context: None,
+                    provider_input_items_json: None,
+                    provider_turn_state_json: None,
+                    context_refs_json: None,
+                    completion_reason: None,
+                    generation_attempts_json: None,
+                },
+            )
+            .await
+        });
+        let create_pool = pool.clone();
+        let mut create = tokio::spawn(async move {
+            create_message(
+                &create_pool,
+                CreateMessageInput {
+                    id: Some("new-message".into()),
+                    conversation_id: "writer-chat".into(),
+                    turn_id: None,
+                    role: "user".into(),
+                    content: "New reply".into(),
+                    token_count: None,
+                    tool_traces_json: None,
+                    hidden_context: None,
+                    provider_input_items_json: None,
+                    provider_turn_state_json: None,
+                    context_refs_json: None,
+                    completion_reason: None,
+                    generation_attempts_json: None,
+                },
+            )
+            .await
+        });
+        let early = tokio::time::timeout(std::time::Duration::from_millis(200), &mut update).await;
+        let early_create =
+            tokio::time::timeout(std::time::Duration::from_millis(200), &mut create).await;
+        writer.commit().await.expect("release writer");
+        assert!(
+            early_create.is_err(),
+            "message insert must wait for writer, got {early_create:?}"
+        );
+        assert!(
+            early.is_err(),
+            "message update must wait for the writer, got {early:?}"
+        );
+        update
+            .await
+            .expect("update task")
+            .expect("persist message after writer");
+        create
+            .await
+            .expect("create task")
+            .expect("persist new reply after writer");
+        let stored: String =
+            sqlx::query_scalar("SELECT content FROM messages WHERE id = 'writer-message'")
+                .fetch_one(&pool)
+                .await
+                .expect("stored content");
+        assert_eq!(stored, "Updated content");
+        let count: i64 =
+            sqlx::query_scalar("SELECT message_count FROM conversations WHERE id = 'writer-chat'")
+                .fetch_one(&pool)
+                .await
+                .expect("metadata");
+        assert_eq!(count, 2);
     }
 
     #[tokio::test]

@@ -1,4 +1,5 @@
 import { expect, mock, test } from "bun:test";
+import { persistAssistantCompletionResult } from "./chatPersistenceService";
 import type { ChatMessage } from "../types";
 import { retryAssistantPersistence, type AssistantPersistenceRecoveryPorts } from "./chatAssistantPersistenceRuntime";
 
@@ -14,7 +15,7 @@ function fixture() {
     message = { ...message!, persistence_state: "failed", persistence_error: error }; return error;
   });
   const clearError = mock(() => {});
-  const removeSavedCopy = mock(() => {});
+  const removeSavedCopy = mock<(_id: string) => boolean | Promise<boolean>>(() => true);
   const resumeQueue = mock(() => {});
   const ports: AssistantPersistenceRecoveryPorts = {
     persistence: { isTauriAvailable: () => true, ipc: {
@@ -26,7 +27,16 @@ function fixture() {
       read: () => message,
       patch: (_id, fields) => { message = { ...message!, ...fields }; }, failed,
     },
-    recovery: { clearError, removeSavedCopy, resumeQueue },
+    recovery: { clearError, resumeQueue, save: async saved => {
+      await persistAssistantCompletionResult(ports.persistence, {
+        assistantMessageId: saved.id, persistedAssistant: saved,
+        result: { visibleContent: saved.content, hiddenContext: saved.hidden_context,
+          providerInputItems: saved.provider_input_items, providerTurnState: saved.provider_turn_state,
+          toolTraces: saved.tool_traces ?? [], completionReason: saved.completion_reason,
+          generationAttempts: saved.generation_attempts },
+      });
+      if (!await removeSavedCopy(saved.id)) throw new Error('The saved recovery copy could not be removed.');
+    } },
   };
   return { ports, update, failed, clearError, removeSavedCopy, resumeQueue, read: () => message, remove: () => { message = undefined; } };
 }
@@ -65,4 +75,17 @@ test("does not reinsert a removed response or clear another runtime when the wri
   expect(f.read()).toBeUndefined();
   expect(f.clearError).not.toHaveBeenCalled();
   expect(f.resumeQueue).not.toHaveBeenCalled();
+});
+
+
+test("keeps recovery and the queue paused until saved-copy removal is acknowledged", async () => {
+  const f = fixture();
+  f.removeSavedCopy.mockImplementationOnce(async () => false);
+  await expect(retryAssistantPersistence("assistant-a", f.ports)).rejects.toThrow("could not be removed");
+  expect(f.read()?.persistence_state).toBe("failed");
+  expect(f.clearError).not.toHaveBeenCalled();
+  expect(f.resumeQueue).not.toHaveBeenCalled();
+  await retryAssistantPersistence("assistant-a", f.ports);
+  expect(f.read()?.persistence_state).toBeUndefined();
+  expect(f.resumeQueue).toHaveBeenCalledTimes(1);
 });

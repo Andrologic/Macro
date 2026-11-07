@@ -23,7 +23,7 @@ fn native_transport() {
         .block_on(db::tool_invocations::reconcile_pending_after_restart(&pool))
         .unwrap();
     let managed_pool = commands::DbPool::default();
-    managed_pool.set_ready(pool.clone());
+    managed_pool.set_ready(pool.clone()).await.unwrap();
     let workspace: WorkspaceRoot = Arc::new(RwLock::new(root.clone()));
     let config_manager = runtime
         .block_on(crate::config::ConfigManager::initialize(

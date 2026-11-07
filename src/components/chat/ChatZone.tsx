@@ -5,6 +5,8 @@ import { captureComposerSnapshot, hasMultipleAgsdlContexts, rebindAgsdlContextRe
 import type { ContextRefKind } from "../../types";
 import { useAgsdlTranslation } from "../agsdl/useAgsdlTranslation";
 import { AgsdlSentSelection } from "../agsdl/AgsdlChatSelection";
+import { observeConversationMessage } from '../../services/conversationReadObservation';
+import { acknowledgeDisplayedConversation } from '../../services/conversationManagementService';
 import { getPlanFinalizationTaskDisplayTitle } from '../../services/planFinalization';
 import { useShortcutBinding } from '../../hooks/useShortcutBinding';
 import React, {
@@ -55,7 +57,6 @@ import { cn } from '../../utils/cn';
 import { ModelDropdown } from '../ai/ModelDropdown';
 import { ReasoningDropdown } from '../ai/ReasoningDropdown';
 import { MarkdownRenderer } from './MarkdownRenderer';
-import { GenerationAttemptDetails } from './GenerationAttemptDetails';
 import { useScrollMagnet } from '../../hooks/useScrollMagnet';
 import { useSpeechDictation } from '../../hooks/useSpeechDictation';
 import { ScrollSeparator } from './ScrollSeparator';
@@ -79,6 +80,7 @@ import {
 import { ARCHITECT_GENERATE_STRATEGY_BUTTON_PROMPT_SUFFIX } from '../../services/architectChat';
 import { getArchitectPlanPrimaryName } from '../../services/architectPlanPresentation';
 import { resolveActiveConversationQuestionnaire } from '../../services/chatQuestionnaires';
+import { buildImplementKickoffPrompt } from '../../services/implementKickoff';
 import { getServiceRuntimeCapabilities } from '../../services';
 import {
   clearConflictAssistantInternalAgentProfile,
@@ -139,6 +141,10 @@ import {
   validateImageAttachments,
   acquireAttachmentImport,
 } from '../../services/conversationFileAttachments';
+
+const QueuedMessagesPanel = React.lazy(() =>
+  import('./QueuedMessagesPanel').then((module) => ({ default: module.QueuedMessagesPanel })),
+);
 
 const ConversationGoalBanner = React.lazy(() =>
   import('./ConversationGoalBanner').then((module) => ({
@@ -792,6 +798,16 @@ const ChatMessageRowBase: React.FC<ChatMessageRowProps> = ({
 }) => {
   const { t } = useTranslation();
   const message = virtualMessage.item.message;
+  const observedRow = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    if (!observedRow.current || message.role !== 'assistant' || !message.content || assistantActivity || message.persistence_state === 'failed' || message.persistence_state === 'retrying') return;
+    // Capture this rendered message, before asynchronous reads can see a new turn.
+    const displayed = { ...message };
+    return observeConversationMessage(observedRow.current, () => {
+      void acknowledgeDisplayedConversation(displayed.conversation_id, [displayed])
+        .then(() => useChatStore.getState().refreshConversationMetadata()).catch(() => undefined);
+    });
+  }, [message, assistantActivity]);
   const citedConversations = message.context_refs?.filter(
     (ref) => ref.kind === 'conversation' && ref.conversationId && ref.snippet,
   ) ?? [];
@@ -819,7 +835,7 @@ const ChatMessageRowBase: React.FC<ChatMessageRowProps> = ({
 
   return (
     <div
-      ref={measureElement}
+      ref={(element) => { observedRow.current = element; measureElement(element); }}
       data-index={virtualMessage.index}
       data-scroll-magnet-anchor={message.id}
       id={`chat-message-${message.id}`}
@@ -893,7 +909,6 @@ const ChatMessageRowBase: React.FC<ChatMessageRowProps> = ({
                     completionReason={message.completion_reason}
                     hasPreviousContent={hasAssistantVisibleBody}
                   />
-                  <GenerationAttemptDetails attempts={message.generation_attempts} />
                   {hasAssistantPersistenceFailure && (
                     <div
                       data-chat-unsaved-assistant-response={message.persistence_state}
@@ -1117,52 +1132,6 @@ const MemoizedChatMessageRow = React.memo(
  * PERFORMANCE: Lazy loaded via ModeRouter, though shared across all modes
  * Critical component that should load quickly once needed
  */
-const buildImplementKickoffPrompt = (params: {
-  title: string;
-  description?: string;
-  projectScope: string;
-  branchName: string;
-  dependencies: string[];
-  estimatedChanges: Array<{ operation: string; path: string }>;
-  notes?: string;
-}): string => {
-  const dependencyContext = params.dependencies.length > 0
-    ? params.dependencies.join(', ')
-    : 'none';
-  const estimatedChanges = params.estimatedChanges.length > 0
-    ? params.estimatedChanges
-      .map((change) => `${change.operation} ${change.path}`)
-      .join('\n')
-    : 'No estimated file changes provided.';
-  const executionNotes = params.notes?.trim();
-
-  return [
-    'You are starting implementation for this task.',
-    'Start with a concise context summary so the developer immediately understands what needs to be done.',
-    'Then propose an ordered execution plan.',
-    'If critical information is missing, stop and ask blocking questions before coding.',
-    'Use the question tool for blocking structured clarifications.',
-    'When you use it, make a single question tool call in the turn, include 1 to 5 sequential questions, and provide exactly 3 suggested choices per question.',
-    'Use the optional intro for short context, keep each prompt concrete, and wait for the user questionnaire response before continuing.',
-    '',
-    'TASK CONTEXT',
-    `- Title: ${params.title}`,
-    `- Description: ${params.description || 'No description provided.'}`,
-    `- Project Scope: ${params.projectScope}`,
-    `- Branch: ${params.branchName}`,
-    `- Dependencies: ${dependencyContext}`,
-    '- Estimated file changes:',
-    estimatedChanges,
-    ...(executionNotes
-      ? [
-        '',
-        'DEVELOPER NOTES',
-        executionNotes,
-      ]
-      : []),
-  ].join('\n');
-};
-
 // Keep row actions stable while calling the handler from the latest committed render.
 function useMessageAction<Args extends unknown[], Result>(handler: (...args: Args) => Result) {
   const handlerRef = useRef(handler);
@@ -1225,6 +1194,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     toolApprovalRecoveryError,
     dismissToolApprovalRecoveryError,
     stopStreaming,
+    hasQueuedMessages,
     sendMessage,
     submitDuringActiveTurn = async () => 'steered' as const,
     clearLastError,
@@ -1293,6 +1263,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     toolApprovalRecoveryError: state.toolApprovalRecoveryError,
     dismissToolApprovalRecoveryError: state.dismissToolApprovalRecoveryError,
     stopStreaming: state.stopStreaming,
+    hasQueuedMessages: (state.queuedSubmissionPreviews ?? []).some(entry => entry.conversationId === state.selectedConversationId),
     sendMessage: state.sendMessage,
     submitDuringActiveTurn: state.submitDuringActiveTurn,
     clearLastError: state.clearLastError,
@@ -4266,6 +4237,11 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
         <ScrollSeparator state={separatorState} />
         <footer className="bg-card/30 p-3" data-tour-id="chat-footer">
           <div className="w-full max-w-3xl mx-auto space-y-3">
+            {selectedConversationId && hasQueuedMessages && (
+              <Suspense fallback={null}>
+                <QueuedMessagesPanel conversationId={selectedConversationId} />
+              </Suspense>
+            )}
             {!activeQuestionnaire && !activePendingToolApproval && <input
               ref={composerFileInputRef}
               type="file"
@@ -4642,6 +4618,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
                       onClick={handleStopStreaming}
                       data-tour-id="chat-stop-button"
                       aria-label={t('chat.stop', 'Stop')}
+                      title={t('chat.stopQueueDescription', 'Stops the current response and pauses queued messages. Queued messages are retained.')}
                       className="rounded-lg bg-red-500 hover:bg-red-600 text-white px-3 h-9 flex items-center gap-2"
                     >
                       <Icon name="square" size={14} />

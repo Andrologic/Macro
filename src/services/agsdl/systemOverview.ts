@@ -52,5 +52,7 @@ export function projectSystemOverview(graph: ViewerGraph | undefined, declaratio
       if (name && !edge.transfers?.includes(name)) (edge.transfers ??= []).push(name);
     }
   }
-  return { cards, edges };
+  // The step that receives the consumer's entry Message.
+  const entry = graph.entry.unresolved ? undefined : graph.entry.target;
+  return { cards, edges, entry };
 }

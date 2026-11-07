@@ -1,0 +1,48 @@
+{
+  "decision_contract": "transfer-decision-1",
+  "type": "decision_request",
+  "operation": "reconcile",
+  "operation_id": "00000000-0000-0000-0000-000000000055",
+  "expected_revision": "0",
+  "body": {
+    "binding": {
+      "transfer_id": "00000000-0000-0000-0000-000000000004",
+      "provenance": {
+        "source": {
+          "relay_origin": "https://relay.example.test",
+          "account_id": "account-synthetic",
+          "source_instance_id": "source-synthetic",
+          "source_conversation_id": "chat-synthetic"
+        },
+        "lineage_id": "00000000-0000-0000-0000-000000000002",
+        "installation_id": "00000000-0000-0000-0000-000000000003",
+        "birth_generation": "00000000-0000-0000-0000-000000000001"
+      },
+      "epoch": "9007199254740993",
+      "target_instance_id": "target-synthetic",
+      "relay_recovery_generation": "00000000-0000-0000-0000-000000000001",
+      "initiator": {
+        "account_id": "account-synthetic",
+        "session_id": "initiator-session-synthetic",
+        "device_id": "initiator-device-synthetic",
+        "session_revision": "9007199254740993",
+        "account_epoch": "9007199254740993",
+        "source_access_revision": "9007199254740993",
+        "target_access_revision": "9007199254740993"
+      },
+      "source_producer_generation": "producer-source-synthetic",
+      "target_producer_generation": "producer-target-synthetic"
+    },
+    "frozen": {
+      "format_version": "1",
+      "binding_digest": "e55b3a7a088968fceb10ccf848c4a5d304da3e16f81ee11f16931ce04247475b",
+      "ownership_revision": "9007199254740993",
+      "content_incarnation": "0123456789abcdef0123456789abcdef",
+      "content_revision": "9007199254740993",
+      "sha256": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+    },
+    "expected_ledger_revision": "1",
+    "action": "abort_missing"
+  },
+  "transfer_id": "00000000-0000-0000-0000-000000000004"
+}

@@ -1,0 +1,45 @@
+{
+  "descriptor": {
+    "kind": "portable_archive",
+    "format": "portable-chat-history-1",
+    "content_contract_sha256": "c6ae7440ed0fb4d0bdccdfb936c4bf6ac5c441c96b642c1d9ccbd270b62bdcc6",
+    "records": 3,
+    "bytes": 883,
+    "manifest_sha256": "65bd8e19ef46f0a37849514c24aa9f09be3058160fec68f685b7e200302a1f8d"
+  },
+  "headers": [
+    {
+      "ordinal": 0,
+      "entry": {
+        "kind": "historical_text",
+        "purpose": "portable_metadata"
+      },
+      "bytes": 605,
+      "sha256": "910ae208cfb9bc7b980dbeba37376df51c264ef61a4bdf4ca36dbe6dd8d09d41"
+    },
+    {
+      "ordinal": 1,
+      "entry": {
+        "kind": "historical_text",
+        "purpose": "portable_metadata"
+      },
+      "bytes": 263,
+      "sha256": "67bedb5a819e82a622ee58427ae8435ba47462f6d91cf0185ff390ace47bb9b2"
+    },
+    {
+      "ordinal": 2,
+      "entry": {
+        "kind": "message",
+        "role": "user"
+      },
+      "bytes": 15,
+      "sha256": "1fcce73bbf16b7ca0f6a5a13b3d3ba14cdf37c04e0ed12e7ab7aa95d05f776ad",
+      "origin": 1
+    }
+  ],
+  "payloadBase64": [
+    "eyJ2ZXJzaW9uIjoxLCJub3JtYWxpemVyIjoibWFjcm8tcG9ydGFibGUtaGlzdG9yeS0xIiwicG9saWN5IjoiZml4dHVyZSIsInNvdXJjZSI6eyJvcmRpbmFsIjowLCJyb3ciOjAsImZhbWlseSI6MCwidGFnIjowLCJzcWxUeXBlIjoyfSwiY2xhc3NpZmljYXRpb24iOiJleGNsdWRlZF9sb2NhbF9tZXRhZGF0YSIsInJlYXNvbiI6ImNhcHR1cmVfcHJvdmVuYW5jZV9vbmx5IiwiY2FwdHVyZU1hbmlmZXN0IjoiYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYSIsInNvdXJjZUxpbWl0cyI6WyJicm93c2VyX3Vub2JzZXJ2ZWQiLCJmaWxlc19za2lsbHNfb3RoZXJfY2hhdHNfdW5vYnNlcnZlZCIsIm9wYXF1ZV9qc29uX3NlbWFudGljc191bmV2YWx1YXRlZCIsInJ1bnRpbWVfaW50ZW50aW9uc191bmF0dGVzdGVkIiwibm90X25vcm1hbGl6ZWQiLCJub3RfRl9hZG1pc3Npb24iXSwicmVtYWluaW5nTGltaXRzIjpbIm5vdF9GX2FkbWlzc2lvbiIsInJ1bnRpbWVfaW50ZW50aW9uc191bmF0dGVzdGVkIiwibm90X3Byb3ZpZGVyX3Nlc3Npb25fcmVzdW1wdGlvbiIsInJlY29nbml6ZWRfc2hhcGVzX29ubHkiXX0=",
+    "eyJ2ZXJzaW9uIjoxLCJub3JtYWxpemVyIjoibWFjcm8tcG9ydGFibGUtaGlzdG9yeS0xIiwicG9saWN5IjoiZml4dHVyZSIsInNvdXJjZSI6eyJvcmRpbmFsIjoxLCJyb3ciOjEsImZhbWlseSI6MSwidGFnIjo0LCJzcWxUeXBlIjoyfSwiY2xhc3NpZmljYXRpb24iOiJyZXRhaW5lZF9vcmlnaW5hbCIsInJlYXNvbiI6InJlY29nbml6ZWRfaGlzdG9yeSIsIm1lYW5pbmciOiJtZXNzYWdlIiwibWVzc2FnZSI6InVzZXIiLCJ0aW1lc3RhbXAiOiIyMDI2LTAxLTAxIn0=",
+    "77u/aGVsbG8gw6nwn5mC"
+  ]
+}

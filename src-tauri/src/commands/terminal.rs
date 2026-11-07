@@ -700,11 +700,17 @@ async fn resolve_project_target(
     workspace_path: &Path,
     metadata_root: &Path,
     project_id: &str,
+    pilot_only: bool,
 ) -> CommandResult<ProjectTerminalTarget> {
-    let project = workspace::get_project_by_id(workspace_path, metadata_root, project_id)
-        .await
-        .map_err(|error| command_error(error.to_string()))?
-        .ok_or_else(|| command_error(format!("Unknown project id: {}", project_id)))?;
+    let project = if pilot_only {
+        workspace::pilot::get_project_by_id_from_primary(metadata_root, project_id)
+            .map_err(|error| command_error(error.to_string()))?
+    } else {
+        workspace::get_project_by_id(workspace_path, metadata_root, project_id)
+            .await
+            .map_err(|error| command_error(error.to_string()))?
+    }
+    .ok_or_else(|| command_error(format!("Unknown project id: {}", project_id)))?;
 
     if project.is_read_only {
         return Err(command_error(format!(
@@ -724,6 +730,29 @@ async fn resolve_project_target(
         mount_name: project.mount_name,
         workspace_path,
     })
+}
+
+async fn resolve_existing_metadata_root(workspace_path: PathBuf) -> CommandResult<PathBuf> {
+    if parse_wsl_unc_path(&workspace_path.to_string_lossy()).is_some() {
+        return Err(command_error(
+            "Macro metadata-scoped terminals are not yet available for WSL projects.",
+        ));
+    }
+
+    let fallback = workspace_path.join(".macro");
+    let root = tokio::task::spawn_blocking(move || {
+        crate::git::find_existing_macro_metadata_worktree_root(&workspace_path)
+            .or_else(|| fallback.is_dir().then_some(fallback))
+    })
+    .await
+    .map_err(|error| command_error(format!("Metadata root task failed: {}", error)))?
+    .ok_or_else(|| {
+        command_error(
+            "Pilot terminal requires an existing Macro metadata root; no metadata was created.",
+        )
+    })?;
+
+    Ok(root)
 }
 
 fn is_within(root: &Path, candidate: &Path) -> bool {
@@ -809,6 +838,101 @@ fn resolve_session_cwd(
         "cwd must remain inside the selected project or a valid worktree: {}",
         canonical_candidate.display()
     )))
+}
+
+fn resolve_pilot_session_cwd(
+    project_root: &Path,
+    cwd: Option<&str>,
+    expected_branch: Option<&str>,
+) -> CommandResult<PathBuf> {
+    let canonical_project_root = canonicalize_existing_dir(project_root)?;
+    let candidate = cwd
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+        .map(|requested| {
+            if requested.is_absolute() {
+                requested
+            } else {
+                canonical_project_root.join(requested)
+            }
+        })
+        .unwrap_or_else(|| canonical_project_root.clone());
+    let canonical_candidate = canonicalize_existing_dir(&candidate)?;
+
+    if expected_branch.is_none() {
+        if canonical_candidate != canonical_project_root {
+            return Err(command_error(
+                "Pilot direct terminal cwd must equal the selected project root.",
+            ));
+        }
+        return Ok(canonical_project_root);
+    }
+
+    let project_repo = open_pilot_repo(&canonical_project_root, "project")?;
+    let candidate_repo = open_pilot_repo(&canonical_candidate, "cwd")?;
+    let candidate_is_project_root = canonical_candidate == canonical_project_root;
+    if !candidate_is_project_root && !candidate_repo.is_worktree() {
+        return Err(command_error(format!(
+            "Pilot cwd must be a worktree of the selected project: {}",
+            canonical_candidate.display()
+        )));
+    }
+
+    let project_commondir = canonicalize_repo_commondir(&project_repo)?;
+    let candidate_commondir = canonicalize_repo_commondir(&candidate_repo)?;
+    if project_commondir != candidate_commondir {
+        return Err(command_error(format!(
+            "Pilot cwd belongs to a different repository: {}",
+            canonical_candidate.display()
+        )));
+    }
+    validate_pilot_branch(&candidate_repo, expected_branch, "cwd")?;
+    Ok(canonical_candidate)
+}
+
+fn open_pilot_repo(path: &Path, label: &str) -> CommandResult<git2::Repository> {
+    git2::Repository::discover(path)
+        .or_else(|_| git2::Repository::open(path))
+        .map_err(|error| {
+            command_error(format!(
+                "Pilot {} is not a Git repository: {}",
+                label, error
+            ))
+        })
+}
+
+fn canonicalize_repo_commondir(repo: &git2::Repository) -> CommandResult<PathBuf> {
+    repo.commondir().canonicalize().map_err(|error| {
+        command_error(format!(
+            "Failed to resolve the Pilot repository common directory: {}",
+            error
+        ))
+    })
+}
+
+fn validate_pilot_branch(
+    repo: &git2::Repository,
+    expected_branch: Option<&str>,
+    label: &str,
+) -> CommandResult<()> {
+    let Some(expected_branch) = expected_branch
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    else {
+        return Ok(());
+    };
+    let actual_branch = repo
+        .head()
+        .ok()
+        .and_then(|head| head.shorthand().ok().map(str::to_string));
+    if actual_branch.as_deref() != Some(expected_branch) {
+        return Err(command_error(format!(
+            "Pilot {} is on branch {:?}; expected {}.",
+            label, actual_branch, expected_branch
+        )));
+    }
+    Ok(())
 }
 
 fn build_terminal_record(
@@ -2506,7 +2630,8 @@ pub async fn terminal_create_tab(
     let workspace_path = workspace_root.inner().0.read().await.clone();
     let metadata_root =
         resolve_metadata_root(workspace_path.clone(), git_state.inner().clone()).await?;
-    let project = resolve_project_target(&workspace_path, &metadata_root, &project_id).await?;
+    let project =
+        resolve_project_target(&workspace_path, &metadata_root, &project_id, false).await?;
     let session_cwd =
         resolve_session_cwd(&project.workspace_path, cwd.as_deref(), git_state.inner())?;
     let record = build_terminal_record(
@@ -2538,6 +2663,8 @@ pub async fn terminal_start_command_tab(
     title: String,
     task_id: Option<String>,
     prompt_context: Option<TerminalPromptContext>,
+    pilot_only: Option<bool>,
+    expected_branch: Option<String>,
     command: String,
 ) -> CommandResult<TerminalTabDto> {
     let trimmed_command = command.trim();
@@ -2546,11 +2673,23 @@ pub async fn terminal_start_command_tab(
     }
 
     let workspace_path = workspace_root.inner().0.read().await.clone();
-    let metadata_root =
-        resolve_metadata_root(workspace_path.clone(), git_state.inner().clone()).await?;
-    let project = resolve_project_target(&workspace_path, &metadata_root, &project_id).await?;
-    let session_cwd =
-        resolve_session_cwd(&project.workspace_path, cwd.as_deref(), git_state.inner())?;
+    let pilot_only = pilot_only.unwrap_or(false);
+    let metadata_root = if pilot_only {
+        resolve_existing_metadata_root(workspace_path.clone()).await?
+    } else {
+        resolve_metadata_root(workspace_path.clone(), git_state.inner().clone()).await?
+    };
+    let project =
+        resolve_project_target(&workspace_path, &metadata_root, &project_id, pilot_only).await?;
+    let session_cwd = if pilot_only {
+        resolve_pilot_session_cwd(
+            &project.workspace_path,
+            cwd.as_deref(),
+            expected_branch.as_deref(),
+        )?
+    } else {
+        resolve_session_cwd(&project.workspace_path, cwd.as_deref(), git_state.inner())?
+    };
     let mut record = build_terminal_record(
         kind.trim(),
         project_id,
@@ -3359,34 +3498,37 @@ where
 }
 
 async fn finish_child_output(
-    mut stdout_task: tokio::task::JoinHandle<CommandResult<()>>,
-    mut stderr_task: tokio::task::JoinHandle<CommandResult<()>>,
+    stdout_task: tokio::task::JoinHandle<CommandResult<()>>,
+    stderr_task: tokio::task::JoinHandle<CommandResult<()>>,
     output: Arc<StdMutex<BoundedChildOutput>>,
 ) -> CommandResult<(String, bool, bool)> {
-    let drain_result = tokio::time::timeout(
+    let abort_stdout = stdout_task.abort_handle();
+    let abort_stderr = stderr_task.abort_handle();
+    let drain = async move {
+        // Join both readers even when one fails. No detached stderr/stdout task
+        // may outlive the process owner's return.
+        let (stdout, stderr) = tokio::join!(stdout_task, stderr_task);
+        stdout
+            .map_err(|error| command_error(format!("Terminal stdout task failed: {error}")))??;
+        stderr
+            .map_err(|error| command_error(format!("Terminal stderr task failed: {error}")))??;
+        Ok::<(), crate::commands::CommandError>(())
+    };
+    tokio::pin!(drain);
+    let drain_incomplete = match tokio::time::timeout(
         Duration::from_millis(LEGACY_COMMAND_DRAIN_TIMEOUT_MS),
-        async {
-            (&mut stdout_task).await.map_err(|error| {
-                command_error(format!("Terminal stdout task failed: {}", error))
-            })??;
-            (&mut stderr_task).await.map_err(|error| {
-                command_error(format!("Terminal stderr task failed: {}", error))
-            })??;
-            Ok::<(), crate::commands::CommandError>(())
-        },
+        &mut drain,
     )
-    .await;
-
-    let drain_incomplete = match drain_result {
+    .await
+    {
         Ok(result) => {
             result?;
             false
         }
         Err(_) => {
-            stdout_task.abort();
-            stderr_task.abort();
-            let _ = stdout_task.await;
-            let _ = stderr_task.await;
+            abort_stdout.abort();
+            abort_stderr.abort();
+            let _ = drain.await;
             true
         }
     };
@@ -3582,7 +3724,7 @@ pub async fn create_legacy_session_internal(
             let metadata_root =
                 resolve_metadata_root(workspace_path.clone(), git_state.clone()).await?;
             let project =
-                resolve_project_target(&workspace_path, &metadata_root, &project_id).await?;
+                resolve_project_target(&workspace_path, &metadata_root, &project_id, false).await?;
             let session_cwd =
                 resolve_session_cwd(&project.workspace_path, cwd.as_deref(), &git_state)?;
             (
@@ -3642,6 +3784,30 @@ pub async fn run_legacy_session_internal(
     timeout_ms: Option<u64>,
     execution_id: Option<String>,
 ) -> CommandResult<TerminalSessionDto> {
+    run_legacy_session_owned(
+        terminal_store,
+        session_id,
+        command,
+        timeout_ms,
+        execution_id,
+        None,
+    )
+    .await
+}
+
+async fn run_legacy_session_owned(
+    terminal_store: TerminalSessionStore,
+    session_id: String,
+    command: String,
+    timeout_ms: Option<u64>,
+    execution_id: Option<String>,
+    native_cancel: Option<tokio_util::sync::CancellationToken>,
+) -> CommandResult<TerminalSessionDto> {
+    // A process group is not a closed descendant owner: a command may fork
+    // with detached descriptors or leave the group. Neither shell exit nor
+    // best-effort termination can certify all of its effects have stopped.
+    let requires_physical_receipt = native_cancel.is_some();
+    let native_cancel = native_cancel.unwrap_or_default();
     let trimmed_command = command.trim();
     if trimmed_command.is_empty() {
         return Err(command_error("Command cannot be empty"));
@@ -3658,9 +3824,10 @@ pub async fn run_legacy_session_internal(
                 "A command is already running in this session",
             ));
         }
-        if execution_id
-            .as_ref()
-            .is_some_and(|id| session.pending_kill_execution_ids.remove(id))
+        if native_cancel.is_cancelled()
+            || execution_id
+                .as_ref()
+                .is_some_and(|id| session.pending_kill_execution_ids.remove(id))
         {
             session.status = "killed".to_string();
             session.last_command = Some(trimmed_command.to_string());
@@ -3734,24 +3901,24 @@ pub async fn run_legacy_session_internal(
 
     let kill_requested_before_registration = {
         let mut sessions = terminal_store.legacy_sessions.lock().await;
-        let session = sessions
-            .get_mut(&session_id)
-            .ok_or_else(|| command_error(format!("Unknown terminal session id: {}", session_id)))?;
-        if session.kill_requested {
-            true
-        } else {
-            session.pid = pid;
-            #[cfg(windows)]
-            {
-                session.windows_job = windows_job.clone();
+        match sessions.get_mut(&session_id) {
+            Some(session) if !session.kill_requested => {
+                session.pid = pid;
+                #[cfg(windows)]
+                {
+                    session.windows_job = windows_job.clone();
+                }
+                session.updated_at = current_timestamp();
+                false
             }
-            session.updated_at = current_timestamp();
-            false
+            // A removed session cannot abandon the already spawned child.
+            _ => true,
         }
     };
 
     let normalized_timeout_ms = normalize_legacy_timeout_ms(timeout_ms);
     let mut timed_out = false;
+    let mut cancelled_by_native_owner = false;
     #[cfg(windows)]
     if !kill_requested_before_registration {
         if let Err(error) = launch_gate.release() {
@@ -3763,32 +3930,47 @@ pub async fn run_legacy_session_internal(
             return Err(error);
         }
     }
-    let exit_status = if kill_requested_before_registration {
-        #[cfg(not(windows))]
-        let stopped = stop_legacy_child_tree(&mut child, pid).await?;
-        #[cfg(windows)]
-        let stopped = stop_legacy_child_tree(&mut child, windows_job.clone()).await?;
-        stopped
-    } else {
-        match tokio::time::timeout(Duration::from_millis(normalized_timeout_ms), child.wait()).await
-        {
-            Ok(result) => result.map_err(|error| {
-                command_error(format!("Failed to wait for terminal command: {}", error))
-            })?,
-            Err(_) => {
-                timed_out = true;
-                #[cfg(not(windows))]
-                let stopped = stop_legacy_child_tree(&mut child, pid).await?;
-                #[cfg(windows)]
-                let stopped = stop_legacy_child_tree(&mut child, windows_job.clone()).await?;
-                stopped
+    let exit_status = async {
+        Ok::<_, crate::commands::CommandError>(if kill_requested_before_registration {
+            #[cfg(not(windows))]
+            let stopped = stop_legacy_child_tree(&mut child, pid).await?;
+            #[cfg(windows)]
+            let stopped = stop_legacy_child_tree(&mut child, windows_job.clone()).await?;
+            stopped
+        } else {
+            let waited = tokio::select! {
+                biased;
+                _ = native_cancel.cancelled() => None,
+                result = tokio::time::timeout(Duration::from_millis(normalized_timeout_ms), child.wait()) => Some(result),
+            };
+            match waited {
+                Some(Ok(result)) => result.map_err(|error| {
+                    command_error(format!("Failed to wait for terminal command: {}", error))
+                })?,
+                outcome => {
+                    timed_out = outcome.is_some();
+                    cancelled_by_native_owner = outcome.is_none();
+                    #[cfg(not(windows))]
+                    let stopped = stop_legacy_child_tree(&mut child, pid).await?;
+                    #[cfg(windows)]
+                    let stopped = stop_legacy_child_tree(&mut child, windows_job.clone()).await?;
+                    stopped
+                }
             }
-        }
-    };
-
-    let (combined_output, output_truncated, drain_incomplete) =
-        finish_child_output(stdout_task, stderr_task, output).await?;
-    if drain_incomplete {
+        })
+    }
+    .await;
+    if exit_status.is_err() {
+        #[cfg(not(windows))]
+        let _ = stop_legacy_child_tree(&mut child, pid).await;
+        #[cfg(windows)]
+        let _ = stop_legacy_child_tree(&mut child, windows_job.clone()).await;
+    }
+    // Drain or abort-and-join both readers before propagating a wait error.
+    let output_result = finish_child_output(stdout_task, stderr_task, output).await;
+    let exit_status = exit_status?;
+    let (combined_output, output_truncated, drain_incomplete) = output_result?;
+    if drain_incomplete || requires_physical_receipt {
         drop(process_guard);
     } else {
         process_guard.disarm();
@@ -3799,7 +3981,8 @@ pub async fn run_legacy_session_internal(
         .get_mut(&session_id)
         .ok_or_else(|| command_error(format!("Unknown terminal session id: {}", session_id)))?;
 
-    let was_killed = session.kill_requested || session.status == "killed";
+    let was_killed =
+        cancelled_by_native_owner || session.kill_requested || session.status == "killed";
     session.output = combined_output;
     session.exit_code = exit_status.code();
     session.timed_out = timed_out;
@@ -3826,6 +4009,31 @@ pub async fn run_legacy_session_internal(
     let dto = session.to_dto();
     session_run_guard.disarm();
     Ok(dto)
+}
+
+async fn run_admitted_legacy_session(
+    store: TerminalSessionStore,
+    session_id: String,
+    command: String,
+    timeout_ms: Option<u64>,
+    execution_id: String,
+    cancel: tokio_util::sync::CancellationToken,
+    owner: Arc<crate::db::chat_admission::OperationPermit>,
+) -> CommandResult<crate::ai::stream_tasks::ToolOutcome<TerminalSessionDto>> {
+    let result = run_legacy_session_owned(
+        store,
+        session_id,
+        command,
+        timeout_ms,
+        Some(execution_id),
+        Some(cancel),
+    )
+    .await;
+    if result.is_err() {
+        let _ = owner.unknown().await;
+    }
+    // The DTO reports the observed shell outcome, not descendant quiescence.
+    result.map(crate::ai::stream_tasks::ToolOutcome::Observed)
 }
 
 pub async fn read_legacy_session_internal(
@@ -3924,6 +4132,10 @@ pub async fn kill_legacy_session_internal(
 
 #[tauri::command]
 pub async fn terminal_create_session(
+    admission_runtime: State<'_, crate::db::chat_admission::runtime::ChatAdmissionRuntime>,
+    ai_state: State<'_, crate::ai::AiState>,
+    window: tauri::WebviewWindow,
+    chat_admission: Option<crate::db::chat_admission::runtime::ChatToolAdmission>,
     workspace_root: State<'_, WorkspaceMetadataRoot>,
     git_state: State<'_, GitState>,
     terminal_store: State<'_, TerminalSessionStore>,
@@ -3931,6 +4143,26 @@ pub async fn terminal_create_session(
     cwd: Option<String>,
 ) -> CommandResult<TerminalSessionDto> {
     let workspace_path = workspace_root.inner().0.read().await.clone();
+    if let Some(admission) = chat_admission {
+        if project_id.is_some() {
+            return Err(command_error("chat_admission_manual_terminal_refused"));
+        }
+        let (reservation, work) = super::chat_admission::admit_tool(
+            &admission_runtime,
+            &ai_state,
+            window.label(),
+            admission,
+        )
+        .await?;
+        let git = git_state.inner().clone();
+        let store = terminal_store.inner().clone();
+        let received = reservation
+            .spawn_tool(work, move |_cancel| async move {
+                create_legacy_session_internal(workspace_path, git, store, project_id, cwd).await
+            })
+            .map_err(command_error)?;
+        return received.await.map_err(command_error)?;
+    }
     create_legacy_session_internal(
         workspace_path,
         git_state.inner().clone(),
@@ -3943,12 +4175,50 @@ pub async fn terminal_create_session(
 
 #[tauri::command]
 pub async fn terminal_run(
+    admission_runtime: State<'_, crate::db::chat_admission::runtime::ChatAdmissionRuntime>,
+    ai_state: State<'_, crate::ai::AiState>,
+    window: tauri::WebviewWindow,
+    chat_admission: Option<crate::db::chat_admission::runtime::ChatToolAdmission>,
     terminal_store: State<'_, TerminalSessionStore>,
     session_id: String,
     command: String,
     timeout_ms: Option<u64>,
     execution_id: Option<String>,
 ) -> CommandResult<TerminalSessionDto> {
+    if let Some(admission) = chat_admission {
+        let store = terminal_store.inner().clone();
+        if read_legacy_session_internal(store.clone(), session_id.clone())
+            .await?
+            .project_id
+            .is_some()
+        {
+            return Err(command_error("chat_admission_manual_terminal_refused"));
+        }
+        let (reservation, work) = super::chat_admission::admit_tool(
+            &admission_runtime,
+            &ai_state,
+            window.label(),
+            admission,
+        )
+        .await?;
+        let execution_id = execution_id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+        let owner = work.clone();
+        let received = reservation
+            .spawn_tool_outcome(work, move |cancel| async move {
+                run_admitted_legacy_session(
+                    store,
+                    session_id,
+                    command,
+                    timeout_ms,
+                    execution_id,
+                    cancel,
+                    owner,
+                )
+                .await
+            })
+            .map_err(command_error)?;
+        return received.await.map_err(command_error)?;
+    }
     run_legacy_session_internal(
         terminal_store.inner().clone(),
         session_id,
@@ -3969,10 +4239,42 @@ pub async fn terminal_read(
 
 #[tauri::command]
 pub async fn terminal_kill(
+    admission_runtime: State<'_, crate::db::chat_admission::runtime::ChatAdmissionRuntime>,
+    ai_state: State<'_, crate::ai::AiState>,
+    window: tauri::WebviewWindow,
+    chat_admission: Option<crate::db::chat_admission::runtime::ChatToolAdmission>,
     terminal_store: State<'_, TerminalSessionStore>,
     session_id: String,
     execution_id: Option<String>,
 ) -> CommandResult<TerminalSessionDto> {
+    if let Some(admission) = chat_admission {
+        let store = terminal_store.inner().clone();
+        if read_legacy_session_internal(store.clone(), session_id.clone())
+            .await?
+            .project_id
+            .is_some()
+        {
+            return Err(command_error("chat_admission_manual_terminal_refused"));
+        }
+        let (reservation, work) = super::chat_admission::admit_tool(
+            &admission_runtime,
+            &ai_state,
+            window.label(),
+            admission,
+        )
+        .await?;
+        let owner = work.clone();
+        let received = reservation
+            .spawn_tool(work, move |_cancel| async move {
+                let result = kill_legacy_session_internal(store, session_id, execution_id).await;
+                if result.is_err() {
+                    let _ = owner.unknown().await;
+                }
+                result
+            })
+            .map_err(command_error)?;
+        return received.await.map_err(command_error)?;
+    }
     kill_legacy_session_internal(terminal_store.inner().clone(), session_id, execution_id).await
 }
 
@@ -3987,13 +4289,32 @@ mod tests {
     use std::fs;
     use tempfile::TempDir;
 
+    #[tokio::test]
+    async fn output_reader_failure_still_joins_the_other_reader() {
+        let (release, gate) = tokio::sync::oneshot::channel();
+        let stdout = tokio::spawn(async { Err(command_error("synthetic reader failure")) });
+        let stderr = tokio::spawn(async move {
+            let _ = gate.await;
+            Ok(())
+        });
+        let finished = tokio::spawn(finish_child_output(
+            stdout,
+            stderr,
+            Arc::new(StdMutex::new(BoundedChildOutput::default())),
+        ));
+        tokio::task::yield_now().await;
+        assert!(!finished.is_finished());
+        release.send(()).unwrap();
+        assert!(finished.await.unwrap().is_err());
+    }
+
     async fn terminal_lifecycle_fixture() -> (TempDir, DbPool, TerminalTabRecord) {
         let temp = TempDir::new().unwrap();
         let sql = crate::db::create_pool(&temp.path().join("terminal.db"))
             .await
             .unwrap();
         let pool = DbPool::default();
-        pool.set_ready(sql);
+        pool.set_ready(sql).await.unwrap();
         let record = build_terminal_record(
             "manual",
             "project".into(),
@@ -4775,6 +5096,328 @@ mod tests {
 
     #[cfg(unix)]
     #[tokio::test]
+    async fn admitted_shell_results_never_certify_unowned_descendant_lifetimes() {
+        use crate::db::{
+            chat_admission::{reconciliation::BrowserInspection, runtime::ChatAdmissionRuntime},
+            tool_invocations::{
+                RecordToolInvocationInput, ToolEffectClass, ToolInvocationIdentity,
+            },
+        };
+        use crate::{ai::AiState, core::db_state::DbPool};
+        // No simulated shell or process owner. Detached descriptors, normal
+        // exit, failure and timeout all exercise the actual admitted executor.
+        for (command, timeout, cancel_running) in [
+            (
+                "sleep 30 </dev/null >/dev/null 2>&1 & printf '%s' $! > child.pid; printf kept",
+                2000,
+                false,
+            ),
+            ("printf kept", 2000, false),
+            ("printf kept; exit 7", 2000, false),
+            ("printf kept; sleep 30", 100, false),
+            ("printf kept; touch started; sleep 30", 5000, true),
+        ] {
+            let temp = TempDir::new().unwrap();
+            let pool = crate::db::create_pool(&temp.path().join("test.db"))
+                .await
+                .unwrap();
+            sqlx::query("INSERT INTO conversations(id,title,scope_mode,created_at,updated_at) VALUES('chat','Synthetic','Chat','t','t')").execute(&pool).await.unwrap();
+            let owner = DbPool::default();
+            owner.set_ready(pool.clone()).await.unwrap();
+            let runtime = ChatAdmissionRuntime::default();
+            let context = runtime
+                .begin(owner.clone(), "window", "browser", "chat", "turn")
+                .await
+                .unwrap();
+            let parent = runtime.parent("window", &context, "chat").await.unwrap();
+            sqlx::query("INSERT INTO messages(id,conversation_id,role,content,turn_id,created_at) VALUES('assistant','chat','assistant','','turn','t')").execute(&pool).await.unwrap();
+            let copy = crate::db::chat_admission::intents::reserve_response(
+                &parent,
+                "window",
+                "assistant",
+            )
+            .await
+            .unwrap();
+            assert_eq!(
+                crate::db::chat_admission::intents::reserve_response(
+                    &parent,
+                    "window",
+                    "assistant"
+                )
+                .await
+                .unwrap()
+                .operation_id,
+                copy.operation_id
+            );
+            let identity = ToolInvocationIdentity {
+                conversation_id: "chat".into(),
+                turn_id: "turn".into(),
+                message_id: "assistant".into(),
+                call_id: "call".into(),
+            };
+            let record = || RecordToolInvocationInput {
+                identity: identity.clone(),
+                tool_name: "terminal_run".into(),
+                effect_class: ToolEffectClass::ExternalEffect,
+                arguments: serde_json::json!({"command":command}),
+                remote_execution_id: None,
+            };
+            assert!(parent.record_tool(record()).await.unwrap().is_new);
+            assert!(!parent.record_tool(record()).await.unwrap().is_new);
+            let marker = parent.tool_permit(&identity).await.unwrap();
+            let tool = Arc::new(
+                marker
+                    .child(crate::db::chat_admission::WorkKind::Tool, Some("shell"))
+                    .await
+                    .unwrap(),
+            );
+            let state = AiState::default();
+            let store = TerminalSessionStore::default();
+            store
+                .legacy_sessions
+                .lock()
+                .await
+                .insert("terminal-test".into(), legacy_test_session(temp.path()));
+            let executor = tool.clone();
+            let retained_store = store.clone();
+            let delivery = state
+                .reserve_stream("shell".into())
+                .unwrap()
+                .spawn_tool_outcome(tool, move |cancel| async move {
+                    run_admitted_legacy_session(
+                        retained_store,
+                        "terminal-test".into(),
+                        command.into(),
+                        Some(timeout),
+                        "execution".into(),
+                        cancel,
+                        executor,
+                    )
+                    .await
+                })
+                .unwrap();
+            if cancel_running {
+                for _ in 0..200 {
+                    if temp.path().join("started").exists() {
+                        break;
+                    }
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+                assert!(temp.path().join("started").exists());
+                let _ = state.cancel_stream_task("shell").await;
+            }
+            let observed = delivery.await.unwrap().unwrap();
+            let phase: (String, Option<String>) = sqlx::query_as("SELECT phase,local_closed_at FROM chat_admission_operations WHERE request_id='shell'").fetch_one(&pool).await.unwrap();
+            assert_eq!(phase, ("completed".into(), None));
+            let saved = read_legacy_session_internal(store, "terminal-test".into())
+                .await
+                .unwrap();
+            assert_eq!(observed.output, saved.output);
+            assert_eq!(observed.exit_code, saved.exit_code);
+            assert_eq!(observed.status, saved.status);
+            if timeout >= 2000 {
+                assert!(
+                    saved.output.contains("kept"),
+                    "{}: {}",
+                    command,
+                    saved.output
+                );
+            } else {
+                assert!(saved.timed_out);
+            }
+            if command.contains("exit 7") {
+                assert_eq!(observed.exit_code, Some(7));
+            }
+            if cancel_running {
+                assert_eq!(observed.status, "killed");
+            }
+            parent
+                .finish_tool(identity.clone(), Some("observed-result".into()), None)
+                .await
+                .unwrap();
+            parent
+                .finish_tool(identity.clone(), Some("observed-result".into()), None)
+                .await
+                .unwrap(); // lost completion ACK
+            assert!(!parent.record_tool(record()).await.unwrap().is_new);
+            let write = || crate::db::repository::UpdateMessageContentInput {
+                id: "assistant",
+                content: &observed.output,
+                token_count: None,
+                tool_traces_json: None,
+                hidden_context: None,
+                provider_input_items_json: None,
+                provider_turn_state_json: None,
+                context_refs_json: None,
+                completion_reason: None,
+                generation_attempts_json: None,
+                turn_id: Some("turn".into()),
+            };
+            runtime
+                .finish_response("window", &context, "chat", write())
+                .await
+                .unwrap();
+            runtime
+                .finish_response("window", &context, "chat", write())
+                .await
+                .unwrap();
+            runtime
+                .acknowledge_completion(&owner, "window", &context, "chat")
+                .await
+                .unwrap();
+            runtime
+                .acknowledge_completion(&owner, "window", &context, "chat")
+                .await
+                .unwrap();
+            // The browser removes its copy before this intent ACK. These calls
+            // prove the native barrier; real browser removal is tested in TS.
+            assert!(runtime
+                .begin(owner.clone(), "window", "browser", "chat", "next")
+                .await
+                .is_err());
+            runtime
+                .finish_intent(&owner, "window", &copy)
+                .await
+                .unwrap();
+            runtime
+                .finish_intent(&owner, "window", &copy)
+                .await
+                .unwrap();
+            let next = runtime
+                .begin(owner.clone(), "window", "browser", "chat", "next")
+                .await
+                .unwrap();
+            runtime
+                .parent("window", &next, "chat")
+                .await
+                .unwrap()
+                .finish_preparation()
+                .await
+                .unwrap();
+            let empty = BrowserInspection {
+                queue: vec![],
+                unsaved: vec![],
+                approvals: vec![],
+                questions: vec![],
+                drafts: vec![],
+                steers: vec![],
+            };
+            let inspection = runtime
+                .begin_reconciliation(&owner, "window", "browser", "chat")
+                .await
+                .unwrap();
+            assert!(runtime
+                .complete_reconciliation(&owner, "window", "browser", &inspection, &empty)
+                .await
+                .unwrap_err()
+                .to_string()
+                .contains("local_lifetime_unreconciled"));
+            assert!(runtime
+                .reserve_reconciled_source(&owner, "window", "browser", &inspection)
+                .await
+                .is_err());
+            drop(marker);
+            drop(parent);
+            runtime
+                .close_browser(
+                    &owner,
+                    &state,
+                    &crate::ai::admitted_http::AdmittedHttp::default(),
+                    "window",
+                    "browser",
+                )
+                .await
+                .unwrap();
+            let reopened = crate::db::create_pool(&temp.path().join("test.db"))
+                .await
+                .unwrap();
+            let restarted = DbPool::default();
+            restarted.set_ready(reopened.clone()).await.unwrap();
+            let reloaded = ChatAdmissionRuntime::default();
+            let next = reloaded
+                .begin(
+                    restarted.clone(),
+                    "window",
+                    "reload",
+                    "chat",
+                    "after-restart",
+                )
+                .await
+                .unwrap();
+            reloaded
+                .parent("window", &next, "chat")
+                .await
+                .unwrap()
+                .finish_preparation()
+                .await
+                .unwrap();
+            let inspection = reloaded
+                .begin_reconciliation(&restarted, "window", "reload", "chat")
+                .await
+                .unwrap();
+            assert!(reloaded
+                .complete_reconciliation(&restarted, "window", "reload", &inspection, &empty)
+                .await
+                .unwrap_err()
+                .to_string()
+                .contains("local_lifetime_unreconciled"));
+            assert!(reloaded
+                .reserve_reconciled_source(&restarted, "window", "reload", &inspection)
+                .await
+                .is_err());
+            let retained:(String,Option<String>)=sqlx::query_as("SELECT phase,local_closed_at FROM chat_admission_operations WHERE request_id='shell'").fetch_one(&reopened).await.unwrap();
+            assert_eq!(retained, ("completed".into(), None));
+            assert_eq!(
+                sqlx::query_scalar::<_, String>(
+                    "SELECT status FROM tool_invocations WHERE call_id='call'"
+                )
+                .fetch_one(&reopened)
+                .await
+                .unwrap(),
+                "completed"
+            );
+            // Explicit cleanup of the known probe child is not a closure proof.
+            if let Ok(pid) = std::fs::read_to_string(temp.path().join("child.pid")) {
+                let _ = background_command("kill")
+                    .args(["-KILL", pid.trim()])
+                    .status();
+            }
+        }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn native_cancellation_while_waiting_for_registration_never_launches() {
+        let temp = TempDir::new().unwrap();
+        let store = TerminalSessionStore::default();
+        let mut sessions = store.legacy_sessions.lock().await;
+        sessions.insert("terminal-test".into(), legacy_test_session(temp.path()));
+        let cancel = tokio_util::sync::CancellationToken::new();
+        let run = run_legacy_session_owned(
+            store.clone(),
+            "terminal-test".into(),
+            "printf launched > should-not-exist".into(),
+            Some(1_000),
+            Some("native-pre-registration".into()),
+            Some(cancel.clone()),
+        );
+        tokio::pin!(run);
+        // The real session mutex is the rendezvous, before execution registration.
+        assert!(futures::poll!(&mut run).is_pending());
+        cancel.cancel();
+        drop(sessions);
+        let result = run.await.unwrap();
+        assert_eq!(result.status, "killed");
+        assert!(!temp.path().join("should-not-exist").exists());
+        let sessions = store.legacy_sessions.lock().await;
+        let session = sessions.get("terminal-test").unwrap();
+        assert_eq!(session.execution_generation, 0);
+        assert!(session.pid.is_none());
+        assert!(!session.run_in_progress);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
     async fn killing_an_active_legacy_session_completes_the_pending_run() {
         let temp = TempDir::new().expect("temp dir");
         let terminal_store = TerminalSessionStore::default();
@@ -5168,6 +5811,34 @@ mod tests {
         }
     }
 
+    fn init_terminal_test_repo(path: &Path, branch_name: &str) -> Repository {
+        fs::create_dir_all(path).expect("repository path");
+        let repo = Repository::init(path).expect("repository");
+        fs::write(path.join("README.md"), "ready\n").expect("readme");
+        let mut index = repo.index().expect("index");
+        index.add_path(Path::new("README.md")).expect("add readme");
+        let tree_id = index.write_tree().expect("write tree");
+        let tree = repo.find_tree(tree_id).expect("tree");
+        let signature = Signature::now("Macro Test", "macro@example.test").expect("signature");
+        let commit_id = repo
+            .commit(
+                Some("HEAD"),
+                &signature,
+                &signature,
+                "Initial commit",
+                &tree,
+                &[],
+            )
+            .expect("initial commit");
+        let commit = repo.find_commit(commit_id).expect("commit");
+        repo.branch(branch_name, &commit, false).expect("branch");
+        repo.set_head(&format!("refs/heads/{branch_name}"))
+            .expect("checkout branch");
+        drop(commit);
+        drop(tree);
+        repo
+    }
+
     #[tokio::test]
     async fn resolve_project_target_accepts_standalone_project() {
         let temp = TempDir::new().expect("temp dir");
@@ -5202,12 +5873,155 @@ mod tests {
         )
         .expect("write workspace state");
 
-        let target = resolve_project_target(temp.path(), temp.path(), "project-sample-sales")
-            .await
-            .expect("standalone project target");
+        let target =
+            resolve_project_target(temp.path(), temp.path(), "project-sample-sales", false)
+                .await
+                .expect("standalone project target");
 
         assert_eq!(target.project_name, "project-sample-sales");
         assert_eq!(target.workspace_path, project_dir.canonicalize().unwrap());
+    }
+
+    #[tokio::test]
+    async fn existing_metadata_root_does_not_create_or_migrate_metadata() {
+        let temp = TempDir::new().expect("temp dir");
+        let metadata_root = temp.path().join(".macro");
+        let legacy_root = metadata_root.join("legacy");
+        fs::create_dir_all(&legacy_root).expect("metadata root");
+        fs::write(legacy_root.join("workspace.json"), b"legacy").expect("legacy state");
+        let before = fs::read(legacy_root.join("workspace.json")).expect("read legacy state");
+
+        let resolved = resolve_existing_metadata_root(temp.path().to_path_buf())
+            .await
+            .expect("existing metadata root");
+
+        assert_eq!(resolved, metadata_root);
+        assert_eq!(
+            fs::read(legacy_root.join("workspace.json")).unwrap(),
+            before
+        );
+        assert!(metadata_root.join("legacy").is_dir());
+        assert!(!temp.path().join("macro-metadata-worktree").exists());
+    }
+
+    #[tokio::test]
+    async fn pilot_project_target_uses_the_linked_project_from_primary_state() {
+        let temp = TempDir::new().expect("temp dir");
+        let metadata_root = temp.path().join(".macro");
+        let project_a_path = temp.path().join("project-a");
+        let project_b_path = temp.path().join("project-b");
+        fs::create_dir_all(&metadata_root).expect("metadata root");
+        fs::create_dir_all(&project_a_path).expect("project a");
+        fs::create_dir_all(&project_b_path).expect("project b");
+        let state = WorkspaceState {
+            standalone_projects: vec![
+                terminal_test_project("project-a", "project-a"),
+                terminal_test_project("project-b", "project-b"),
+            ],
+            ..WorkspaceState::default()
+        };
+        fs::write(
+            metadata_root.join("workspace.json"),
+            serde_json::to_vec_pretty(&state).expect("serialize state"),
+        )
+        .expect("write primary state");
+
+        let target = resolve_project_target(temp.path(), &metadata_root, "project-b", true)
+            .await
+            .expect("pilot project target");
+
+        assert_eq!(target.project_name, "project-b");
+        assert_eq!(
+            target.workspace_path,
+            project_b_path.canonicalize().unwrap()
+        );
+    }
+
+    #[tokio::test]
+    async fn existing_metadata_root_refuses_to_initialize_missing_metadata() {
+        let temp = TempDir::new().expect("temp dir");
+
+        let error = resolve_existing_metadata_root(temp.path().to_path_buf())
+            .await
+            .expect_err("missing metadata must fail");
+
+        assert!(error.message.contains("existing Macro metadata root"));
+        assert!(!temp.path().join(".macro").exists());
+    }
+
+    #[test]
+    fn pilot_cwd_accepts_nested_macro_worktree_on_expected_branch() {
+        let temp = TempDir::new().expect("temp dir");
+        let project_root = temp.path().join("project");
+        let repo = init_terminal_test_repo(&project_root, "develop");
+        let develop_commit = repo
+            .head()
+            .expect("head")
+            .peel_to_commit()
+            .expect("develop commit");
+        repo.branch("feature", &develop_commit, false)
+            .expect("feature branch");
+        let worktree_path = project_root.join(".macro/worktrees/feature");
+        fs::create_dir_all(worktree_path.parent().unwrap()).expect("worktree parent");
+        let reference = repo
+            .find_reference("refs/heads/feature")
+            .expect("feature reference");
+        let mut options = git2::WorktreeAddOptions::new();
+        options.reference(Some(&reference));
+        repo.worktree("feature-worktree", &worktree_path, Some(&options))
+            .expect("feature worktree");
+
+        let resolved = resolve_pilot_session_cwd(
+            &project_root,
+            Some(worktree_path.to_str().unwrap()),
+            Some("feature"),
+        )
+        .expect("nested feature worktree");
+
+        assert_eq!(resolved, worktree_path.canonicalize().unwrap());
+    }
+
+    #[test]
+    fn pilot_cwd_rejects_wrong_branch_at_project_root() {
+        let temp = TempDir::new().expect("temp dir");
+        let project_root = temp.path().join("project");
+        init_terminal_test_repo(&project_root, "develop");
+
+        let error = resolve_pilot_session_cwd(
+            &project_root,
+            Some(project_root.to_str().unwrap()),
+            Some("feature"),
+        )
+        .expect_err("wrong project branch must fail");
+
+        assert!(error.message.contains("expected feature"));
+    }
+
+    #[test]
+    fn pilot_cwd_rejects_nested_repository_and_direct_nested_cwd() {
+        let temp = TempDir::new().expect("temp dir");
+        let project_root = temp.path().join("project");
+        init_terminal_test_repo(&project_root, "feature");
+        let nested_repo_path = project_root.join(".macro/worktrees/third-party");
+        init_terminal_test_repo(&nested_repo_path, "feature");
+
+        let error = resolve_pilot_session_cwd(
+            &project_root,
+            Some(nested_repo_path.to_str().unwrap()),
+            Some("feature"),
+        )
+        .expect_err("nested third-party repository must fail");
+        assert!(
+            error.message.contains("worktree") || error.message.contains("different repository")
+        );
+
+        let error = resolve_pilot_session_cwd(
+            &project_root,
+            Some(nested_repo_path.to_str().unwrap()),
+            None,
+        )
+        .expect_err("direct nested cwd must fail");
+        assert!(error.message.contains("selected project root"));
     }
 
     #[test]

@@ -1,0 +1,112 @@
+{
+  "contract": "agsdl-0.2.0",
+  "id": "macro-chantier",
+  "bindings": {
+    "engine": {
+      "contract": {
+        "identity": "macro/agent-engine",
+        "version": "1"
+      },
+      "implementation": {
+        "identity": "macro/desktop",
+        "version": "1"
+      }
+    }
+  },
+  "configurations": {
+    "standard": {
+      "engine": "engine",
+      "model": {
+        "identity": "claude-sonnet-5-5",
+        "version": "1"
+      }
+    },
+    "approfondi": {
+      "engine": "engine",
+      "model": {
+        "identity": "claude-opus-5-5",
+        "version": "1"
+      }
+    }
+  },
+  "agents": {
+    "agent1": {
+      "configuration": "standard",
+      "prompt": [
+        {
+          "value": "Définir les étapes et répartir le travail."
+        }
+      ],
+      "interface": {
+        "results": {
+          "report": {
+            "mediaTypes": [
+              "text/plain"
+            ],
+            "required": true
+          }
+        }
+      }
+    },
+    "agent2": {
+      "configuration": "standard",
+      "prompt": [
+        {
+          "value": "Réaliser le travail confié et transmettre les résultats."
+        }
+      ],
+      "interface": {
+        "results": {
+          "report": {
+            "mediaTypes": [
+              "text/plain"
+            ],
+            "required": true
+          }
+        }
+      }
+    },
+    "agent3": {
+      "configuration": "approfondi",
+      "prompt": [
+        {
+          "value": "Relire les changements et vérifier le résultat global."
+        }
+      ],
+      "interface": {
+        "results": {
+          "report": {
+            "mediaTypes": [
+              "text/plain"
+            ],
+            "required": true
+          }
+        }
+      }
+    }
+  },
+  "flow": {
+    "entry": "agent1",
+    "steps": {
+      "agent1": {
+        "type": "agent",
+        "agent": "agent1",
+        "next": [
+          "agent2"
+        ]
+      },
+      "agent2": {
+        "type": "agent",
+        "agent": "agent2",
+        "next": [
+          "agent3"
+        ]
+      },
+      "agent3": {
+        "type": "agent",
+        "agent": "agent3",
+        "next": []
+      }
+    }
+  }
+}

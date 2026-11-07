@@ -1,0 +1,449 @@
+{
+  "contract": "agsdl-0.2.0",
+  "id": "demo-delivery",
+  "content": {
+    "criteria": {
+      "value": {
+        "required": [
+          "signature",
+          "version",
+          "smoke-tests"
+        ],
+        "targets": [
+          "web",
+          "mobile"
+        ]
+      },
+      "mediaType": "application/json"
+    },
+    "reviewInstructions": {
+      "value": "Évaluer chaque critère et joindre une preuve à chaque conclusion."
+    }
+  },
+  "bindings": {
+    "engine": {
+      "contract": {
+        "identity": "macro/agent-engine",
+        "version": "1"
+      },
+      "implementation": {
+        "identity": "macro/desktop",
+        "version": "1"
+      }
+    },
+    "releaseApproval": {
+      "contract": {
+        "identity": "macro/human-approval",
+        "version": "1"
+      },
+      "implementation": {
+        "identity": "macro/desktop",
+        "version": "1"
+      },
+      "effects": "none"
+    },
+    "releases": {
+      "contract": {
+        "identity": "macro/app-release",
+        "version": "1"
+      },
+      "implementation": {
+        "identity": "fastlane/cli",
+        "version": "1"
+      },
+      "effects": "external"
+    },
+    "storeConsoles": {
+      "contract": {
+        "identity": "macro/store-console",
+        "version": "1"
+      },
+      "implementation": {
+        "identity": "fastlane/cli",
+        "version": "1"
+      },
+      "effects": "external"
+    },
+    "webTesting": {
+      "contract": {
+        "identity": "macro/browser-testing",
+        "version": "1"
+      },
+      "implementation": {
+        "identity": "playwright/local",
+        "version": "1"
+      },
+      "effects": "none"
+    },
+    "lumaRepository": {
+      "contract": {
+        "identity": "macro/git-repository",
+        "version": "1"
+      },
+      "implementation": {
+        "identity": "github/rest",
+        "version": "1"
+      },
+      "effects": "external"
+    }
+  },
+  "configurations": {
+    "standard": {
+      "engine": "engine",
+      "model": {
+        "identity": "claude-sonnet-5-5",
+        "version": "1"
+      },
+      "tools": {
+        "repository": "lumaRepository"
+      }
+    },
+    "web": {
+      "engine": "engine",
+      "model": {
+        "identity": "claude-sonnet-5-5",
+        "version": "1"
+      },
+      "tools": {
+        "browser": "webTesting"
+      }
+    },
+    "mobile": {
+      "engine": "engine",
+      "model": {
+        "identity": "claude-sonnet-5-5",
+        "version": "1"
+      },
+      "tools": {
+        "stores": "storeConsoles"
+      }
+    },
+    "approfondi": {
+      "engine": "engine",
+      "model": {
+        "identity": "claude-opus-5-5",
+        "version": "1"
+      }
+    },
+    "code": {
+      "engine": "engine",
+      "model": {
+        "identity": "claude-sonnet-5-5",
+        "version": "1"
+      },
+      "tools": {
+        "repository": "lumaRepository"
+      }
+    }
+  },
+  "agents": {
+    "coordinator": {
+      "configuration": "standard",
+      "prompt": [
+        {
+          "value": "Identifier les versions web et mobile et leurs critères de validation."
+        }
+      ],
+      "interface": {
+        "results": {
+          "report": {
+            "mediaTypes": [
+              "text/plain"
+            ],
+            "required": true
+          }
+        }
+      }
+    },
+    "webReviewer": {
+      "configuration": "web",
+      "prompt": [
+        {
+          "value": "Vérifier le paquet web et produire un rapport structuré avec les preuves."
+        }
+      ],
+      "interface": {
+        "results": {
+          "report": {
+            "mediaTypes": [
+              "application/json"
+            ],
+            "required": true
+          }
+        }
+      }
+    },
+    "mobileReviewer": {
+      "configuration": "mobile",
+      "prompt": [
+        {
+          "value": "Vérifier les paquets mobiles et les contraintes de distribution."
+        }
+      ],
+      "interface": {
+        "results": {
+          "report": {
+            "mediaTypes": [
+              "application/json"
+            ],
+            "required": true
+          }
+        }
+      }
+    },
+    "coordinatorReview": {
+      "configuration": "approfondi",
+      "prompt": [
+        {
+          "value": "Comparer les rapports web et mobile avant de demander l’accord de publication."
+        }
+      ],
+      "interface": {
+        "results": {
+          "report": {
+            "mediaTypes": [
+              "application/json"
+            ],
+            "required": true
+          }
+        }
+      }
+    },
+    "repair": {
+      "configuration": "code",
+      "prompt": [
+        {
+          "value": "Rassembler les constats qui empêchent la livraison. Préparer une nouvelle proposition."
+        }
+      ],
+      "interface": {
+        "results": {
+          "report": {
+            "mediaTypes": [
+              "text/plain"
+            ],
+            "required": true
+          }
+        }
+      }
+    }
+  },
+  "flow": {
+    "entry": "coordinator",
+    "steps": {
+      "coordinator": {
+        "type": "agent",
+        "agent": "coordinator",
+        "next": [
+          "web"
+        ]
+      },
+      "web": {
+        "type": "compose",
+        "composition": "packageReview",
+        "agents": {
+          "specialist": "webReviewer"
+        },
+        "next": {
+          "ready": [
+            "mobile"
+          ],
+          "blocked": [
+            "repair"
+          ]
+        }
+      },
+      "mobile": {
+        "type": "compose",
+        "composition": "packageReview",
+        "agents": {
+          "specialist": "mobileReviewer"
+        },
+        "next": {
+          "ready": [
+            "coordinatorReview"
+          ],
+          "blocked": [
+            "repair"
+          ]
+        }
+      },
+      "coordinatorReview": {
+        "type": "compose",
+        "composition": "evidenceReview",
+        "agents": {
+          "reviewer": "coordinatorReview"
+        },
+        "next": {
+          "pass": [
+            "approval"
+          ],
+          "fail": [
+            "repair"
+          ]
+        }
+      },
+      "approval": {
+        "type": "approval",
+        "binding": "releaseApproval",
+        "call": "publish",
+        "timeoutMs": 3600000,
+        "validForMs": 300000,
+        "next": {
+          "approved": [
+            "publish"
+          ],
+          "denied": [
+            "repair"
+          ]
+        }
+      },
+      "publish": {
+        "type": "call",
+        "binding": "releases",
+        "scope": {
+          "action": "publish",
+          "resources": [
+            "release:luma-mobile/1.8.0"
+          ],
+          "context": {
+            "value": {
+              "release": "1.8.0",
+              "targets": [
+                "web",
+                "mobile"
+              ]
+            }
+          }
+        }
+      },
+      "repair": {
+        "type": "agent",
+        "agent": "repair",
+        "next": []
+      }
+    }
+  },
+  "compositions": {
+    "evidenceReview": {
+      "agentParameters": [
+        "reviewer"
+      ],
+      "entry": "review",
+      "outputs": [
+        "pass",
+        "fail"
+      ],
+      "steps": {
+        "review": {
+          "type": "agent",
+          "agent": {
+            "parameter": "reviewer"
+          },
+          "next": [
+            "check"
+          ]
+        },
+        "check": {
+          "type": "condition",
+          "test": {
+            "equals": [
+              {
+                "path": [
+                  "results",
+                  "report",
+                  "value",
+                  "approved"
+                ]
+              },
+              {
+                "value": true
+              }
+            ]
+          },
+          "next": {
+            "true": [
+              {
+                "output": "pass"
+              }
+            ],
+            "false": [
+              {
+                "output": "fail"
+              }
+            ]
+          }
+        }
+      }
+    },
+    "packageReview": {
+      "agentParameters": [
+        "specialist"
+      ],
+      "entry": "prepare",
+      "outputs": [
+        "ready",
+        "blocked"
+      ],
+      "steps": {
+        "prepare": {
+          "type": "prepare",
+          "message": {
+            "prompt": [
+              {
+                "ref": "reviewInstructions"
+              }
+            ],
+            "resources": {
+              "criteria": {
+                "ref": "criteria"
+              }
+            }
+          },
+          "next": [
+            "audit"
+          ]
+        },
+        "audit": {
+          "type": "agent",
+          "agent": {
+            "parameter": "specialist"
+          },
+          "next": [
+            "check"
+          ]
+        },
+        "check": {
+          "type": "condition",
+          "test": {
+            "equals": [
+              {
+                "path": [
+                  "results",
+                  "report",
+                  "value",
+                  "approved"
+                ]
+              },
+              {
+                "value": true
+              }
+            ]
+          },
+          "next": {
+            "true": [
+              {
+                "output": "ready"
+              }
+            ],
+            "false": [
+              {
+                "output": "blocked"
+              }
+            ]
+          }
+        }
+      }
+    }
+  }
+}

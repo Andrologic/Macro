@@ -1,0 +1,129 @@
+{
+  "title": "Correctif piloté par les tests",
+  "description": "Qualifier un ticket, corriger jusqu’à ce que les tests passent, faire relire le correctif puis le publier après accord. Les échecs de tests et les reprises de relecture reviennent au même développeur.",
+  "projectId": "demo-atlas",
+  "planKind": "feature",
+  "icon": "git-merge",
+  "design": {
+    "version": 1,
+    "kind": "blueprint",
+    "purpose": "Qualifier un ticket, corriger jusqu’à ce que les tests passent, faire relire le correctif puis le publier après accord. Les échecs de tests et les reprises de relecture reviennent au même développeur.",
+    "context": "Projet fictif : les services, données et résultats sont simulés.",
+    "rules": [],
+    "requirements": [
+      {
+        "id": "model",
+        "label": "Modèle des agents",
+        "description": "Choix pour cette utilisation simulée",
+        "value": "Macro AI · Démo"
+      }
+    ]
+  },
+  "display": {
+    "title": "Correctif piloté par les tests",
+    "cards": {
+      "/agents/triage": {
+        "title": "Responsable support"
+      },
+      "/agents/designer": {
+        "title": "Concepteur"
+      },
+      "/agents/developer": {
+        "title": "Développeur"
+      },
+      "/agents/reviewer": {
+        "title": "Relecteur"
+      },
+      "/agents/releaser": {
+        "title": "Intégrateur"
+      },
+      "/agents/support": {
+        "title": "Conseiller support"
+      },
+      "/agents/duplicate": {
+        "title": "Gestionnaire des tickets"
+      },
+      "/agents/recovery": {
+        "title": "Analyste technique"
+      },
+      "/flow/steps/triage": {
+        "title": "Qualifier le ticket"
+      },
+      "/flow/steps/design": {
+        "title": "Cadrer l’évolution"
+      },
+      "/compositions/testedChange/steps/develop": {
+        "title": "Développer le correctif"
+      },
+      "/flow/steps/change": {
+        "title": "Livrer un correctif testé"
+      },
+      "/compositions/testedChange/steps/tests": {
+        "title": "Exécuter les tests"
+      },
+      "/compositions/testedChange/steps/passed": {
+        "title": "Tests réussis ?"
+      },
+      "/compositions/testedChange/steps/failures": {
+        "title": "Transmettre les échecs"
+      },
+      "/flow/steps/review": {
+        "title": "Relire le correctif"
+      },
+      "/flow/steps/remarks": {
+        "title": "Transmettre les remarques"
+      },
+      "/flow/steps/releaseApproval": {
+        "title": "Autoriser la publication"
+      },
+      "/flow/steps/release": {
+        "title": "Publier le correctif"
+      },
+      "/flow/steps/answer": {
+        "title": "Répondre au demandeur"
+      },
+      "/flow/steps/link": {
+        "title": "Rattacher au ticket existant"
+      },
+      "/flow/steps/recovery": {
+        "title": "Diagnostiquer l’environnement"
+      },
+      "/bindings/testSuite": {
+        "title": "Suite de tests du portail"
+      },
+      "/bindings/releaseApproval": {
+        "title": "Responsable de publication"
+      },
+      "/flow": {
+        "title": "Correctif piloté par les tests"
+      },
+      "/bindings/engine": {
+        "title": "Macro"
+      },
+      "/configurations/rapide": {
+        "title": "Rapide"
+      },
+      "/configurations/standard": {
+        "title": "Standard"
+      },
+      "/configurations/code": {
+        "title": "Développement"
+      },
+      "/configurations/approfondi": {
+        "title": "Approfondi"
+      },
+      "/configurations/conseil": {
+        "title": "Relation client"
+      },
+      "/bindings/ticketTracker": {
+        "title": "Suivi des tickets"
+      },
+      "/bindings/atlasRepository": {
+        "title": "Dépôt du portail client"
+      },
+      "/compositions/testedChange": {
+        "title": "Développement vérifié"
+      }
+    }
+  }
+}
