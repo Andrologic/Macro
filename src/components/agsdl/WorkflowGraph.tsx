@@ -43,10 +43,10 @@ type GraphNode = Node<{
 function WorkflowNode({ data }: NodeProps<GraphNode>) {
   const { card } = data;
   const { t } = useAgsdlTranslation();
-  const Icon = data.members ? Layers : card.kind === "System" ? Boxes : card.kind === "condition" ? GitBranch : card.kind === "approval" ? Hand : card.kind === "join" ? card.details.mode === "first" ? Trophy : GitMerge : card.kind === "compose" ? Boxes : card.kind === "call" ? Plug : card.kind === "prepare" ? ArrowRightLeft : ["Agent", "invoke", "agent"].includes(card.kind) ? Bot : Box;
+  const Icon = data.members ? Layers : card.kind === "System" ? Boxes : card.kind === "condition" ? GitBranch : card.kind === "approval" ? Hand : card.kind === "join" ? (card.details.mode === "first" || !!card.details.quorum) ? Trophy : GitMerge : card.kind === "compose" ? Boxes : card.kind === "call" ? Plug : card.kind === "prepare" ? ArrowRightLeft : ["Agent", "invoke", "agent"].includes(card.kind) ? Bot : Box;
   const warning = Boolean(card.issueCount) || card.unresolved || card.branches.some(branch => branch.reference.unresolved) || card.dependencies?.some(ref => ref.unresolved);
   const control = !data.members && ["prepare", "condition", "join"].includes(card.kind);
-  const maxVisits = typeof card.details.maxVisits === "number" ? card.details.maxVisits : undefined;
+  const maxVisits = card.edition030 ? card.edition030.maxVisitsJson : typeof card.details.maxVisits === "number" ? card.details.maxVisits : undefined;
   const label = [data.kindLabel, data.title !== data.kindLabel ? data.title : "", data.subtitle, warning ? t("agsdl.viewer.unresolved") : ""].filter(Boolean).join(" · ");
   return (
     <>
@@ -81,7 +81,7 @@ function WorkflowNode({ data }: NodeProps<GraphNode>) {
             {card.capabilities.skills.length > 0 && <span title={`${t("agsdl.graphHints.skills")}: ${card.capabilities.skills.join(", ")}`} aria-label={`${t("agsdl.graphHints.skills")}: ${card.capabilities.skills.join(", ")}`}><Sparkles size={11} aria-hidden="true" /><span className="agsdl-node-skill-name">{card.capabilities.skills.at(-1)}</span></span>}
             {card.capabilities.structuredResults && <span title={t("agsdl.graphHints.structured")} aria-label={t("agsdl.graphHints.structured")}><Braces size={12} aria-hidden="true" /></span>}
             {card.capabilities.dynamicConfiguration && <span title={t("agsdl.graphHints.dynamic")} aria-label={t("agsdl.graphHints.dynamic")}><Shuffle size={12} aria-hidden="true" /></span>}
-            {maxVisits !== undefined && <span title={t("agsdl.graphHints.maxVisits", { count: maxVisits })} aria-label={t("agsdl.graphHints.maxVisits", { count: maxVisits })}><RotateCcw size={11} aria-hidden="true" /><span>{maxVisits}</span></span>}
+            {maxVisits !== undefined && <span title={t("agsdl.graphHints.maxVisits", { count: typeof maxVisits === "number" ? maxVisits : undefined, defaultValue: `${t("agsdl.edition030.visitLimit")}: ${maxVisits}` })} aria-label={t("agsdl.graphHints.maxVisits", { count: typeof maxVisits === "number" ? maxVisits : undefined, defaultValue: `${t("agsdl.edition030.visitLimit")}: ${maxVisits}` })}><RotateCcw size={11} aria-hidden="true" /><span>{maxVisits}</span></span>}
             {card.capabilities.externalEffects && <span title={t("agsdl.graphHints.external")} aria-label={t("agsdl.graphHints.external")}><Zap size={12} aria-hidden="true" /><span>{t("agsdl.graphHints.externalShort")}</span></span>}
           </span>}
 
@@ -162,7 +162,7 @@ function Canvas({ cards, edges: connections, selected, select, title, changedPat
       measured: heights[card.path] === undefined ? undefined : { width: 210, height: heights[card.path] },
       style: { width: 210 },
       data: { card, title: displayTitle(card), kindLabel: group ? t("agsdl.designGraph.group", { defaultValue: "Group" }) : t(`agsdl.kind.${card.kind === "agent" ? "Agent" : card.kind}`, { defaultValue: card.kind }), active: active === card.path,
-        subtitle: group ? t("agsdl.designGraph.members", { count: group.members.length, defaultValue: "{{count}} components" }) : card.kind === "join" ? t(card.details.mode === "first" ? "agsdl.graphHints.first" : "agsdl.graphHints.all") : card.kind === "compose" ? card.composition?.label ?? "" : card.kind === "agent" && card.details.delivery === "steering" ? t("agsdl.graphHints.steering") : card.kind === "approval" ? card.approvalBinding ? card.approvalBinding.label : card.approvers?.length ? card.approvers.map(ref => ref.label).join(" · ") : t("agsdl.viewer.approverMissing") : "",
+        subtitle: group ? t("agsdl.designGraph.members", { count: group.members.length, defaultValue: "{{count}} components" }) : card.kind === "join" ? t(card.edition030 && card.details.quorum ? "agsdl.edition030.quorum" : card.details.mode === "first" ? "agsdl.graphHints.first" : "agsdl.graphHints.all") : card.kind === "compose" ? card.composition?.label ?? "" : card.kind === "agent" && ["steering", "steer"].includes(String(card.details.delivery)) ? t("agsdl.graphHints.steering") : card.kind === "approval" ? card.edition030 ? t("agsdl.edition030.humanChoice") : card.approvalBinding ? card.approvalBinding.label : card.approvers?.length ? card.approvers.map(ref => ref.label).join(" · ") : t("agsdl.viewer.approverMissing") : "",
         select: path => { setHighlighted(path); if (selectionMode === "select") select(path); }, inspect: path => { setHighlighted(path); (onInspect ?? select)(path); }, expand: group ? () => expandGroup(group.id) : undefined, focus: setHovered,
         incoming: [...new Set(presentation.edges.filter(edge => edge.target === card.path).map(edge => displayTitle(presentation.cards.find(item => item.path === edge.source)!)))],
         outgoing: [...new Set(presentation.edges.filter(edge => edge.source === card.path).map(edge => displayTitle(presentation.cards.find(item => item.path === edge.target)!)))],
@@ -173,7 +173,7 @@ function Canvas({ cards, edges: connections, selected, select, title, changedPat
         dismissSignal,
         members: group?.members.map(title),
         changed: changedPaths.some(path => path === card.path || (group?.members.some(member => member.path === path))),
-        pending: card.details.contract !== "agsdl-0.2.0" && (card.kind === "Agent" || card.kind === "invoke") && !card.mission.trim(),
+        pending: !["agsdl-0.2.0", "agsdl-0.3.0"].includes(String(card.details.contract)) && (card.kind === "Agent" || card.kind === "invoke") && !card.mission.trim(),
         native: group ? groupNativeState(group.members.flatMap(member => nativeActivations[member.path] ? [nativeActivations[member.path]] : []), group.members.length) : nativeActivations[card.path],
         task: group ? groupTaskState(group.members.flatMap(member => trackedTasks[member.path] ? [trackedTasks[member.path]] : []), group.members.length) : trackedTasks[card.path],
       },

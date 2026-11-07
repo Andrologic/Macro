@@ -33,7 +33,7 @@ export interface ViewerFlowInput {
   projection: string;
 }
 export interface ViewerCard {
-  edition030?: { ownerPath?: string; sourceJson: string; definitionJson?: string; agentPath?: string; routes: ViewerRoute030[] };
+  edition030?: { maxVisitsJson?: string; ownerPath?: string; sourceJson: string; definitionJson?: string; agentPath?: string; routes: ViewerRoute030[] };
   path: string;
   id: string;
   title: string;

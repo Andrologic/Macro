@@ -48,7 +48,7 @@ export function projectViewer030(source: string, metadata?: AgsdlEnvelopeMetadat
     const item = object(value);
     return { path, id, title: text(item.title) || id, kind, mission: text(item.description), unresolved: false,
       inputs: [], outputs: [], branches: [], details: { ...item, contract: "agsdl-0.3.0" },
-      edition030: { sourceJson: raw(path) ?? "{}", routes: [] } };
+      edition030: { sourceJson: raw(path) ?? "{}", maxVisitsJson: raw(`${path}/maxVisits`), routes: [] } };
   };
   const configureAgent = (card: ViewerCard, name: string) => {
     const agent = object(object(doc.agents)[name]);

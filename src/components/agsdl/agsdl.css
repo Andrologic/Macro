@@ -174,3 +174,6 @@ details[open] > .agsdl-disclosure-summary > .agsdl-disclosure-chevron { transfor
 .agsdl-action-button:hover:not(:disabled) { background: rgb(var(--muted)); }
 .agsdl-action-button.is-primary { background: rgb(var(--primary)); color: rgb(var(--primary-foreground)); border-color: transparent; }
 .agsdl-detail-modal > header > strong { flex: 1; }
+
+.agsdl-exact-form .agsdl-edit-field textarea { min-height: 52px; }
+.agsdl-exact-form .agsdl-edit-field small { overflow-wrap: anywhere; }

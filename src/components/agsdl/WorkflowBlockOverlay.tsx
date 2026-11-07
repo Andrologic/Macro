@@ -12,6 +12,8 @@ export function WorkflowBlockSummary({ card, incoming = [], outgoing = [] }: { c
   const prompt = card.promptSources?.find(source => source.kind === 'text' && !source.reference && source.text?.trim())?.text || card.mission;
   const tools = [...new Set(card.tools?.map(tool => tool.label).filter(Boolean))];
   return <>
+    {card.edition030 && prompt && <small>{t("agsdl.instructions")}</small>}
+    {card.edition030 && typeof card.details.prompt === "string" && <p className="agsdl-block-prompt">{t("agsdl.edition030.mission")}: {card.details.prompt}</p>}
     {prompt && <p className="agsdl-block-prompt">{prompt}</p>}
     {incoming.length > 0 && <div className="agsdl-block-relation"><ArrowDownToLine size={13} aria-hidden="true" /><span><small>{t('agsdl.graphInteraction.from')}</small>{incoming.join(' · ')}</span></div>}
     {outgoing.length > 0 && <div className="agsdl-block-relation"><ArrowUpFromLine size={13} aria-hidden="true" /><span><small>{t('agsdl.graphInteraction.to')}</small>{outgoing.join(' · ')}</span></div>}

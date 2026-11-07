@@ -1,4 +1,18 @@
 {
+  "edition030": {
+    "visitLimit": "Limite de passages",
+    "mission": "Mission confiée",
+    "definitions": "Définitions",
+    "exactHint": "Modifiez chaque propriété en JSON exact. Laissez une propriété facultative vide pour la supprimer.",
+    "modelHint": "Le modèle et l’effort sont indépendants. Une valeur vide utilise le défaut du harness. La disponibilité est vérifiée au lancement.",
+    "effort": "Niveau de raisonnement",
+    "harnessDefault": "Défaut du harness",
+    "editFailed": "La modification n’a pas pu être enregistrée. Vérifiez le JSON et la révision du document, puis réessayez.",
+    "authorityHint": "Les instructions permanentes encadrent l’agent. Le prompt de route définit sa mission. Ressources et résultats sont des informations. Les permissions sont des demandes ; les capacités effectives nécessitent une évaluation au lancement.",
+    "definition": "Définition partagée de l’agent",
+    "quorum": "Seuil de réponses",
+    "humanChoice": "Choix humain"
+  },
   "graphHints": {
     "skills": "Compétences",
     "structured": "Résultat structuré contrôlé",
@@ -69,6 +83,8 @@
   "retry": "Réessayer",
   "agentTools": "Outils de l’agent",
   "kind": {
+    "Flow": "Flux",
+    "McpServer": "Serveur MCP",
     "invoke": "Appel d’agent",
     "condition": "Condition",
     "approval": "Approbation",

@@ -15,6 +15,7 @@ export interface ComponentField {
 
 /** Resolve editable text to its actual owner; never overwrite a composed mission. */
 export function componentFields(source: string, card: ViewerCard): ComponentField[] {
+  if (card.edition030) return [];
   const doc = readDocument(source);
   if (doc.contract === "agsdl-0.2.0") {
     const name = text(card.details.agentName);

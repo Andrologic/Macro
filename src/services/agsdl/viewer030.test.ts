@@ -12,7 +12,7 @@ const source = `{
  "flow":{"entry":"start","onError":{"step":"recover","message":{}},"steps":{
  "start":{"type":"agent","agent":"writer","next":{"next":{"step":"judge","message":{},"each":["results","items"],"concurrency":9007199254740993,"max":1e9999},"failure":"recover","stop":[]},"onError":"recover"},
  "judge":{"type":"approval","next":{"accept":["recover",{"step":"finish"}],"deny":[]}},
- "recover":{"type":"call","command":["echo","ok"],"next":"finish"},"finish":{"type":"join","next":{"done":[]}}}},
+ "recover":{"type":"call","command":"echo ok","next":"finish"},"finish":{"type":"join","next":{"done":[]}}}},
  "compositions":{"template":{"parameters":["reviewer"],"entry":"body","steps":{"body":{"type":"agent","agent":{"parameter":"reviewer"},"next":{"output":"done"}}},"outputs":["done"]}}
 }`;
 
