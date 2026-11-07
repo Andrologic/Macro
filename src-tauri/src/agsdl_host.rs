@@ -15,12 +15,55 @@ struct Incarnation {
     compiler: crate::agsdl_host_compiler::CompileBroker,
     work_protocol: crate::agsdl_host_work::WorkBroker030,
     lifecycle: Arc<tokio::sync::RwLock<()>>,
+    handoff: Mutex<()>,
     live: AtomicBool,
     ready: AtomicBool,
     retired: tokio_util::sync::CancellationToken,
     loads: AtomicUsize,
     owners: Mutex<BTreeMap<String, EngineOwner>>,
     qa_request: Mutex<Option<(String, String)>>,
+}
+impl Incarnation {
+    // This gate covers only synchronous ownership transfer. Work admitted here
+    // stays owned after revocation and must be cancelled and joined by retirement.
+    fn admit_owned<F>(
+        &self,
+        owner: &EngineOwner,
+        tasks: &crate::ai::stream_tasks::StreamTasks,
+        request_id: String,
+        work: F,
+    ) -> Result<()>
+    where
+        F: std::future::Future<Output = ()> + Send + 'static,
+    {
+        let _handoff = self
+            .handoff
+            .lock()
+            .map_err(|_| failure("RUNTIME_UNAVAILABLE", "", "Host admission is unavailable"))?;
+        if !self.live.load(Ordering::SeqCst) || !self.ready.load(Ordering::SeqCst) {
+            return Err(failure("RUNTIME_UNAVAILABLE", "", "Host was revoked"));
+        }
+        let owns = self
+            .owners
+            .lock()
+            .map_err(|_| failure("RUNTIME_UNAVAILABLE", "", "Host ownership unavailable"))?
+            .get(&owner.system_start_id)
+            == Some(owner);
+        if !owns {
+            return Err(failure(
+                "PERMISSION",
+                "owner",
+                "Execution is not owned by this host",
+            ));
+        }
+        tasks.start(request_id, work).map_err(|_| {
+            failure(
+                "CORRELATION",
+                "request",
+                "Native attempt was already admitted or cancelled",
+            )
+        })
+    }
 }
 struct HostResource(Arc<Incarnation>);
 impl tauri::Resource for HostResource {}
@@ -122,6 +165,22 @@ impl HostState {
         };
         lease.ensure_live()?;
         Ok(lease)
+    }
+    /// Caller holds the async admission gate through the durable claim and
+    /// this synchronous handoff. The work is owned before it can be polled.
+    pub(crate) fn admit_owned_stream<F>(
+        &self,
+        caller: &Webview,
+        owner: &EngineOwner,
+        tasks: &crate::ai::stream_tasks::StreamTasks,
+        request_id: String,
+        work: F,
+    ) -> Result<()>
+    where
+        F: std::future::Future<Output = ()> + Send + 'static,
+    {
+        self.authenticate(caller)?
+            .admit_owned(owner, tasks, request_id, work)
     }
     pub(crate) async fn compile(
         &self,
@@ -446,9 +505,15 @@ impl HostState {
 }
 
 fn revoke_now(host: &Arc<Incarnation>) -> bool {
+    // A poisoned handoff must still revoke; no later admission may succeed.
+    let _handoff = host
+        .handoff
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     if !host.live.swap(false, Ordering::SeqCst) {
         return false;
     }
+    drop(_handoff);
     host.ready.store(false, Ordering::SeqCst);
     host.retired.cancel();
     host.compiler.close();
@@ -594,6 +659,7 @@ pub(crate) fn install(app: &tauri::AppHandle) -> tauri::Result<()> {
         compiler: Default::default(),
         work_protocol: Default::default(),
         lifecycle: Arc::new(tokio::sync::RwLock::new(())),
+        handoff: Mutex::new(()),
         live: AtomicBool::new(true),
         ready: AtomicBool::new(false),
         retired: Default::default(),
@@ -701,6 +767,7 @@ mod tests {
             compiler: Default::default(),
             work_protocol: Default::default(),
             lifecycle: Arc::new(tokio::sync::RwLock::new(())),
+            handoff: Mutex::new(()),
             live: AtomicBool::new(true),
             ready: AtomicBool::new(true),
             retired: Default::default(),
@@ -728,6 +795,47 @@ mod tests {
         );
     }
 
+    #[tokio::test(flavor = "current_thread")]
+    async fn owned_stream_handoff_is_ordered_with_revocation_before_first_poll() {
+        let host = Arc::new(Incarnation {
+            generation: "generation".into(),
+            compiler: Default::default(),
+            work_protocol: Default::default(),
+            lifecycle: Arc::new(tokio::sync::RwLock::new(())),
+            handoff: Mutex::new(()),
+            live: AtomicBool::new(true),
+            ready: AtomicBool::new(true),
+            retired: Default::default(),
+            loads: AtomicUsize::new(0),
+            owners: Mutex::new(BTreeMap::new()),
+            qa_request: Mutex::new(None),
+        });
+        let owner = EngineOwner {
+            system_start_id: "system".into(),
+            owner_epoch: "0".into(),
+        };
+        host.owners
+            .lock()
+            .unwrap()
+            .insert(owner.system_start_id.clone(), owner.clone());
+        let tasks = crate::ai::stream_tasks::StreamTasks::default();
+        let polled = Arc::new(AtomicBool::new(false));
+        let observed = polled.clone();
+        host.admit_owned(&owner, &tasks, "first".into(), async move {
+            observed.store(true, Ordering::SeqCst);
+            std::future::pending::<()>().await;
+        })
+        .unwrap();
+        // No yield has occurred: revocation precedes the future's first poll.
+        assert!(revoke_now(&host));
+        assert!(host
+            .admit_owned(&owner, &tasks, "late".into(), async {})
+            .is_err());
+        assert!(tasks.cancel_owned("first").await.unwrap());
+        assert!(!polled.load(Ordering::SeqCst));
+        assert!(!tasks.cancel_owned("late").await.unwrap());
+    }
+
     #[test]
     fn physical_resource_cannot_be_replaced_by_a_matching_generation_string() {
         let first = Arc::new(Incarnation {
@@ -735,6 +843,7 @@ mod tests {
             compiler: Default::default(),
             work_protocol: Default::default(),
             lifecycle: Arc::new(tokio::sync::RwLock::new(())),
+            handoff: Mutex::new(()),
             live: AtomicBool::new(true),
             ready: AtomicBool::new(false),
             retired: Default::default(),
@@ -747,6 +856,7 @@ mod tests {
             compiler: Default::default(),
             work_protocol: Default::default(),
             lifecycle: Arc::new(tokio::sync::RwLock::new(())),
+            handoff: Mutex::new(()),
             live: AtomicBool::new(true),
             ready: AtomicBool::new(false),
             retired: Default::default(),

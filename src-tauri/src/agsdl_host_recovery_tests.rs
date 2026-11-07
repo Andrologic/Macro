@@ -9,6 +9,7 @@ fn host() -> Arc<Incarnation> {
         compiler: Default::default(),
         work_protocol: Default::default(),
         lifecycle: Arc::new(tokio::sync::RwLock::new(())),
+        handoff: Mutex::new(()),
         live: AtomicBool::new(true),
         ready: AtomicBool::new(true),
         retired: Default::default(),
