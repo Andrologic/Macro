@@ -18,6 +18,9 @@ export function fail(code: string, pointer: string, message: string): never {
 }
 export function decode(text: string): ExactValue {
   try {
+    // Encoding an isolated UTF-16 surrogate would silently replace it with U+FFFD.
+    // With the Unicode flag, valid surrogate pairs are single code points here.
+    if (/[\uD800-\uDFFF]/u.test(text)) return fail('PARSE', '', 'Invalid or unsupported exact JSON.');
     const parsed = parse(new TextEncoder().encode(text));
     if (parsed.error) return fail('PARSE', '', 'Invalid or unsupported exact JSON.');
     return parsed.tree as ExactValue;
