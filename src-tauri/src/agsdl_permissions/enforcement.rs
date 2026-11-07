@@ -188,6 +188,42 @@ pub fn check_enforcement(
             required.insert((action, Effect::Deny));
         }
     }
+    // Identical deny scopes shadow an ask even across separate ceilings.
+    // Do not infer coverage between different glob patterns.
+    for action in ACTIONS {
+        let asks: Vec<_> = policy
+            .policies()
+            .flat_map(|layer| layer.rules.iter())
+            .filter(|rule| rule.action == action && rule.effect == Effect::Ask)
+            .collect();
+        if !asks.is_empty()
+            && asks.iter().all(|ask| {
+                policy
+                    .policies()
+                    .flat_map(|layer| layer.rules.iter())
+                    .any(|deny| deny.effect == Effect::Deny && deny.same_scope(ask))
+            })
+        {
+            required.remove(&(action, Effect::Ask));
+        }
+    }
+    // Unavailable is an observation of absence of the whole action, not a
+    // missing catalogue entry. Shell can bypass tool-level FS/network absence.
+    let unavailable = |action| {
+        !(shell && matches!(action, Action::Read | Action::Write | Action::Network))
+            && observed.guarantees.iter().any(|g| {
+                g.action == action
+                    && g.effect == Effect::Deny
+                    && g.mechanism == EnforcementMechanism::Unavailable
+                    && !g.evidence.trim().is_empty()
+            })
+    };
+    for action in [Action::Read, Action::Write] {
+        if unavailable(action) {
+            required.remove(&(action, Effect::Ask));
+            required.insert((action, Effect::Deny));
+        }
+    }
     if present(&observed.mcp_absent_evidence) {
         required.retain(|(action, _)| *action != Action::Mcp);
     }
@@ -241,21 +277,23 @@ pub fn check_enforcement(
     let filesystem_restricted = required
         .iter()
         .any(|(a, _)| matches!(a, Action::Read | Action::Write));
-    if filesystem_restricted {
+    if filesystem_restricted && !(unavailable(Action::Read) && unavailable(Action::Write)) {
         need(
             &observed.path_race_evidence,
             "race-safe filesystem confinement",
             &mut evidence,
         )?;
     }
-    if policy.policies().any(|p| {
-        p.preset.is_some()
-            && p.outside == Outside::Deny
-            && !p
-                .rules
-                .iter()
-                .any(|r| r.action == Action::Read && r.covers_all())
-    }) {
+    if !unavailable(Action::Read)
+        && policy.policies().any(|p| {
+            p.preset.is_some()
+                && p.outside == Outside::Deny
+                && !p
+                    .rules
+                    .iter()
+                    .any(|r| r.action == Action::Read && r.covers_all())
+        })
+    {
         need(
             &observed.outside_read_evidence,
             "outside-read confinement",
