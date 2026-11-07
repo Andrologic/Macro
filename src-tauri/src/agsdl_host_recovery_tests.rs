@@ -7,6 +7,7 @@ fn host() -> Arc<Incarnation> {
     Arc::new(Incarnation {
         generation: "generation".into(),
         compiler: Default::default(),
+        work_protocol: Default::default(),
         lifecycle: Arc::new(tokio::sync::RwLock::new(())),
         live: AtomicBool::new(true),
         ready: AtomicBool::new(true),
@@ -116,6 +117,266 @@ async fn wait_owners(host: &Incarnation, count: usize) {
     })
     .await
     .unwrap();
+}
+
+async fn initialize_work_admission(pool: &sqlx::SqlitePool, context: &EngineContext) {
+    let state = repository::work_protocol030::read(pool, &context.work)
+        .await
+        .unwrap();
+    repository::work_protocol030::initialize_admitted(
+        pool,
+        context,
+        &state.contract_json,
+        &state.state_json,
+        &repository::work_protocol030::WorkAdmission030 {
+            options_json: r#"{"checkTimeoutMs":"1000","enforcedPlanLock":true}"#.into(),
+            evidence_json: r#"{"nativeLockReceipt":"fixture"}"#.into(),
+        },
+    )
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
+async fn work030_db_commit_replays_without_a_second_mailbox_or_check() {
+    use repository::work_protocol030::{self as protocol, ProtocolEvent030};
+    let (_temp, pool, context) = repository::work_protocol030_tests::setup().await;
+    initialize_work_admission(&pool, &context).await;
+    let incarnation = host();
+    incarnation
+        .owners
+        .lock()
+        .unwrap()
+        .insert(context.owner.system_start_id.clone(), context.owner.clone());
+    let state = Arc::new(HostState::default());
+    *state.0.lock().unwrap() = Some(OwnedHost {
+        incarnation: incarnation.clone(),
+        resource: 0,
+    });
+    let event = ProtocolEvent030 {
+        context: context.clone(),
+        event_id: "event".into(),
+        expected_revision: "0".into(),
+        event_json: "{}".into(),
+        native_call: None,
+        control: false,
+    };
+    let worker = state.clone();
+    let worker_pool = pool.clone();
+    let worker_event = event.clone();
+    let task = tokio::spawn(async move {
+        worker
+            .transition_work030(
+                &worker_pool,
+                &worker_event,
+                &tokio_util::sync::CancellationToken::new(),
+            )
+            .await
+    });
+    let job = incarnation.work_protocol.next().await.unwrap();
+    assert_eq!(
+        job.input.options_json,
+        r#"{"checkTimeoutMs":"1000","enforcedPlanLock":true}"#
+    );
+    let receipt = r#"{"receiptId":"work:1","owner":{"systemStartId":"system","activationId":"work","agentInstanceId":"agent","ownerEpoch":"1"},"revision":"1","decision":{"kind":"checkRequested","check":{"checkId":"check","owner":{"systemStartId":"system","activationId":"work","agentInstanceId":"agent","ownerEpoch":"1"},"command":"example"}}}"#;
+    incarnation
+        .work_protocol
+        .complete(
+            &incarnation.generation,
+            crate::agsdl_host_work::HostWorkCompletion030 {
+                ticket: job.ticket,
+                generation: job.generation,
+                input_digest: job.input_digest,
+                output: crate::agsdl_host_work::HostWorkOutput030 {
+                    state_json: "{}".into(),
+                    receipt_json: receipt.into(),
+                },
+            },
+        )
+        .unwrap();
+    let decision = task.await.unwrap().unwrap();
+    assert_eq!(decision.check.as_ref().unwrap().check_id, "check");
+    let replay = state
+        .transition_work030(&pool, &event, &tokio_util::sync::CancellationToken::new())
+        .await
+        .unwrap();
+    assert_eq!(decision, replay);
+    let checks = protocol::read_checks(&pool, &context.work).await.unwrap();
+    assert_eq!(checks.len(), 1);
+    assert!(!checks[0].claimed);
+    assert!(
+        tokio::time::timeout(Duration::from_millis(25), incarnation.work_protocol.next())
+            .await
+            .is_err()
+    );
+}
+
+#[tokio::test]
+async fn work030_stop_before_commit_rejects_the_late_mailbox_decision() {
+    use repository::work_protocol030::{self as protocol, ProtocolEvent030};
+    let (_temp, pool, context) = repository::work_protocol030_tests::setup().await;
+    initialize_work_admission(&pool, &context).await;
+    let incarnation = host();
+    incarnation
+        .owners
+        .lock()
+        .unwrap()
+        .insert(context.owner.system_start_id.clone(), context.owner.clone());
+    let state = Arc::new(HostState::default());
+    *state.0.lock().unwrap() = Some(OwnedHost {
+        incarnation: incarnation.clone(),
+        resource: 0,
+    });
+    let event = ProtocolEvent030 {
+        context: context.clone(),
+        event_id: "event".into(),
+        expected_revision: "0".into(),
+        event_json: "{}".into(),
+        native_call: None,
+        control: false,
+    };
+    let worker = state.clone();
+    let worker_pool = pool.clone();
+    let task = tokio::spawn(async move {
+        worker
+            .transition_work030(
+                &worker_pool,
+                &event,
+                &tokio_util::sync::CancellationToken::new(),
+            )
+            .await
+    });
+    let job = incarnation.work_protocol.next().await.unwrap();
+    repository::stop(
+        &pool,
+        EngineStopRequest {
+            system_start_id: context.work.system_start_id.clone(),
+            request_id: "stop".into(),
+            activation_id: Some(context.work.activation_id.clone()),
+        },
+    )
+    .await
+    .unwrap();
+    let receipt = r#"{"receiptId":"work:1","owner":{"systemStartId":"system","activationId":"work","agentInstanceId":"agent","ownerEpoch":"1"},"revision":"1","decision":{"kind":"checkRequested","check":{"checkId":"check","owner":{"systemStartId":"system","activationId":"work","agentInstanceId":"agent","ownerEpoch":"1"}}}}"#;
+    incarnation
+        .work_protocol
+        .complete(
+            &incarnation.generation,
+            crate::agsdl_host_work::HostWorkCompletion030 {
+                ticket: job.ticket,
+                generation: job.generation,
+                input_digest: job.input_digest,
+                output: crate::agsdl_host_work::HostWorkOutput030 {
+                    state_json: "{}".into(),
+                    receipt_json: receipt.into(),
+                },
+            },
+        )
+        .unwrap();
+    assert!(task.await.unwrap().is_err());
+    assert!(protocol::read_checks(&pool, &context.work)
+        .await
+        .unwrap()
+        .is_empty());
+    assert_eq!(
+        protocol::read(&pool, &context.work).await.unwrap().revision,
+        "0"
+    );
+}
+
+#[tokio::test]
+async fn work030_host_revocation_after_evaluation_blocks_commit_before_sql_revocation() {
+    use repository::work_protocol030::{
+        self as protocol, EventReservation030, ProtocolDecision030, ProtocolEvent030,
+    };
+    let (_temp, pool, context) = repository::work_protocol030_tests::setup().await;
+    initialize_work_admission(&pool, &context).await;
+    let incarnation = host();
+    incarnation
+        .owners
+        .lock()
+        .unwrap()
+        .insert(context.owner.system_start_id.clone(), context.owner.clone());
+    let state = Arc::new(HostState::default());
+    *state.0.lock().unwrap() = Some(OwnedHost {
+        incarnation: incarnation.clone(),
+        resource: 0,
+    });
+    let event = ProtocolEvent030 {
+        context: context.clone(),
+        event_id: "event".into(),
+        expected_revision: "0".into(),
+        event_json: "{}".into(),
+        native_call: None,
+        control: false,
+    };
+    let ticket = match protocol::reserve_event(&pool, &event).await.unwrap() {
+        EventReservation030::Pending { ticket } => ticket,
+        _ => panic!("unexpected replay"),
+    };
+    let worker = state.clone();
+    let work_input = crate::agsdl_host_work::HostWorkInput030 {
+        context: context.clone(),
+        event_id: event.event_id.clone(),
+        expected_revision: event.expected_revision.clone(),
+        contract_json: ticket.contract_json.clone(),
+        state_json: ticket.state_json.clone(),
+        event_json: event.event_json.clone(),
+        options_json: "{}".into(),
+    };
+    let task = tokio::spawn(async move {
+        worker
+            .evaluate_work030(work_input, &tokio_util::sync::CancellationToken::new())
+            .await
+    });
+    let job = incarnation.work_protocol.next().await.unwrap();
+    let receipt = r#"{"receiptId":"work:1","owner":{"systemStartId":"system","activationId":"work","agentInstanceId":"agent","ownerEpoch":"1"},"revision":"1","decision":{"kind":"checkRequested","check":{"checkId":"check","owner":{"systemStartId":"system","activationId":"work","agentInstanceId":"agent","ownerEpoch":"1"}}}}"#;
+    incarnation
+        .work_protocol
+        .complete(
+            &incarnation.generation,
+            crate::agsdl_host_work::HostWorkCompletion030 {
+                ticket: job.ticket,
+                generation: job.generation,
+                input_digest: job.input_digest,
+                output: crate::agsdl_host_work::HostWorkOutput030 {
+                    state_json: "{}".into(),
+                    receipt_json: receipt.into(),
+                },
+            },
+        )
+        .unwrap();
+    let (output, evaluated_host) = task.await.unwrap().unwrap();
+    let decision = ProtocolDecision030 {
+        check: crate::agsdl_host_work::reserved_check030(&context, &output.receipt_json).unwrap(),
+        state_json: output.state_json,
+        receipt_json: output.receipt_json,
+    };
+    // Revoke the very same incarnation after evaluate's final live check, but
+    // deliberately do not run the asynchronous DB epoch revocation yet.
+    assert!(revoke_now(&incarnation));
+    assert!(state
+        .commit_work030(
+            &pool,
+            &evaluated_host,
+            &ticket,
+            &decision,
+            &tokio_util::sync::CancellationToken::new()
+        )
+        .await
+        .is_err());
+    assert_eq!(
+        protocol::read(&pool, &context.work).await.unwrap().revision,
+        "0"
+    );
+    assert!(protocol::read_checks(&pool, &context.work)
+        .await
+        .unwrap()
+        .is_empty());
+    assert!(state
+        .transition_work030(&pool, &event, &tokio_util::sync::CancellationToken::new())
+        .await
+        .is_err());
 }
 fn close(host: &Incarnation) {
     host.live.store(false, Ordering::SeqCst);

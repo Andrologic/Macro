@@ -25,3 +25,12 @@ describe('durable execution intent IPC', () => {
     expect(await ipc.readExecutionIntent(key)).toBeNull();
   });
 });
+
+it('passes private work mailbox identity and exact JSON without rewriting them', async () => {
+  const completion = { ticket: 'ticket', generation: 'generation', inputDigest: 'digest',
+    output: { stateJson: '{"n":9007199254740993}', receiptJson: '{"n":1.0}' } };
+  await ipc.executionHostNextWork030();
+  expect(invoke).toHaveBeenLastCalledWith('execution_host_next_work030');
+  await ipc.executionHostCompleteWork030(completion);
+  expect(invoke).toHaveBeenLastCalledWith('execution_host_complete_work030', { completion });
+});

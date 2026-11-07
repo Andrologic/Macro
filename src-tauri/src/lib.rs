@@ -100,7 +100,9 @@ mod agsdl_host_compiler;
 mod agsdl_host_provider;
 mod agsdl_host_tasks;
 mod agsdl_host_tools;
+mod agsdl_host_work;
 mod agsdl_intent_coordinator;
+pub(crate) mod agsdl_permissions;
 mod app_quit_state;
 mod app_updates;
 pub mod commands;
@@ -836,6 +838,8 @@ pub fn run() {
             agsdl_host::execution_host_failed,
             agsdl_host::execution_host_next_compile,
             agsdl_host::execution_host_complete_compile,
+            agsdl_host::execution_host_next_work030,
+            agsdl_host::execution_host_complete_work030,
             commands::agsdl_execution::execution_model_choices,
             commands::agsdl_execution::execution_preflight,
             commands::agsdl_execution::execution_list_runs,

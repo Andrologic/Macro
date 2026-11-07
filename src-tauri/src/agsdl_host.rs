@@ -13,6 +13,7 @@ const ENTRY: &str = "agsdl-runtime-host.html";
 struct Incarnation {
     generation: String,
     compiler: crate::agsdl_host_compiler::CompileBroker,
+    work_protocol: crate::agsdl_host_work::WorkBroker030,
     lifecycle: Arc<tokio::sync::RwLock<()>>,
     live: AtomicBool,
     ready: AtomicBool,
@@ -155,6 +156,146 @@ impl HostState {
         }
         Ok(receipt)
     }
+    /// The caller first reserves the durable work event. The result still needs
+    /// the repository CAS and native proof checks before it can cause an effect.
+    async fn evaluate_work030(
+        &self,
+        input: crate::agsdl_host_work::HostWorkInput030,
+        cancelled: &tokio_util::sync::CancellationToken,
+    ) -> Result<(crate::agsdl_host_work::HostWorkOutput030, Arc<Incarnation>)> {
+        let host = self
+            .0
+            .lock()
+            .map_err(|_| failure("RUNTIME_UNAVAILABLE", "work", "Host state unavailable"))?
+            .as_ref()
+            .map(|host| host.incarnation.clone())
+            .ok_or_else(|| failure("RUNTIME_UNAVAILABLE", "work", "Host not installed"))?;
+        let owns_work = host
+            .owners
+            .lock()
+            .map_err(|_| failure("RUNTIME_UNAVAILABLE", "work", "Host ownership unavailable"))?
+            .get(&input.context.owner.system_start_id)
+            == Some(&input.context.owner);
+        if !host.live.load(Ordering::SeqCst) || !host.ready.load(Ordering::SeqCst) || !owns_work {
+            return Err(failure(
+                "PERMISSION",
+                "work",
+                "Work is not owned by this host incarnation",
+            ));
+        }
+        let output = host
+            .work_protocol
+            .evaluate(&host.generation, input, cancelled)
+            .await?;
+        if !host.live.load(Ordering::SeqCst) {
+            return Err(failure(
+                "RUNTIME_UNAVAILABLE",
+                "work",
+                "Work protocol host was revoked",
+            ));
+        }
+        Ok((output, host))
+    }
+    /// Reserve before asking the pure controller, then commit through DB017's
+    /// epoch/stop/revision guard. A committed replay never invokes the mailbox.
+    /// This reserves checks only; physical execution requires a separate
+    /// native admission and one durable claim under the Stop gate.
+    pub(crate) async fn transition_work030(
+        &self,
+        pool: &sqlx::SqlitePool,
+        input: &repository::work_protocol030::ProtocolEvent030,
+        cancelled: &tokio_util::sync::CancellationToken,
+    ) -> Result<repository::work_protocol030::ProtocolDecision030> {
+        use repository::work_protocol030::{
+            self as protocol, EventReservation030, ProtocolDecision030,
+        };
+
+        let admission = protocol::read_admission(pool, &input.context, input.control).await?;
+        let reservation = {
+            let lease = self.start_lease().await?;
+            if lease.owner(&input.context.owner.system_start_id)? != input.context.owner {
+                return Err(failure(
+                    "PERMISSION",
+                    "work",
+                    "Work belongs to another host epoch",
+                ));
+            }
+            let reservation = protocol::reserve_event(pool, input).await?;
+            lease.ensure_live()?;
+            reservation
+        };
+        let ticket = match reservation {
+            EventReservation030::Committed { decision } => return Ok(decision),
+            EventReservation030::Pending { ticket } => ticket,
+        };
+        let (output, host) = self
+            .evaluate_work030(
+                crate::agsdl_host_work::HostWorkInput030 {
+                    context: input.context.clone(),
+                    event_id: input.event_id.clone(),
+                    expected_revision: input.expected_revision.clone(),
+                    contract_json: ticket.contract_json.clone(),
+                    state_json: ticket.state_json.clone(),
+                    event_json: input.event_json.clone(),
+                    options_json: admission.options_json,
+                },
+                cancelled,
+            )
+            .await?;
+        if cancelled.is_cancelled() {
+            return Err(failure(
+                "INTERRUPTED",
+                "work",
+                "Work transition was cancelled",
+            ));
+        }
+        let check =
+            crate::agsdl_host_work::reserved_check030(&input.context, &output.receipt_json)?;
+        let decision = ProtocolDecision030 {
+            state_json: output.state_json,
+            receipt_json: output.receipt_json,
+            check,
+        };
+        self.commit_work030(pool, &host, &ticket, &decision, cancelled)
+            .await?;
+        Ok(decision)
+    }
+    /// Only the short SQL commit holds the lifecycle lease. Cancellation or
+    /// retirement can leave the commit outcome unknown; it never authorizes IO.
+    async fn commit_work030(
+        &self,
+        pool: &sqlx::SqlitePool,
+        host: &Arc<Incarnation>,
+        ticket: &repository::work_protocol030::TransitionTicket030,
+        decision: &repository::work_protocol030::ProtocolDecision030,
+        cancelled: &tokio_util::sync::CancellationToken,
+    ) -> Result<()> {
+        let _lease = host.lifecycle.clone().read_owned().await;
+        if !host.live.load(Ordering::SeqCst)
+            || !host.ready.load(Ordering::SeqCst)
+            || cancelled.is_cancelled()
+        {
+            return Err(failure(
+                "INTERRUPTED",
+                "work",
+                "Work host was revoked before commit",
+            ));
+        }
+        tokio::select! {
+            biased;
+            _ = host.retired.cancelled() => return Err(failure("UNCERTAIN", "work", "Host retired during commit; inspect durable state")),
+            _ = cancelled.cancelled() => return Err(failure("UNCERTAIN", "work", "Work cancelled during commit; inspect durable state")),
+            result = repository::work_protocol030::commit_event(pool, ticket, decision) => { result?; }
+        }
+        if !host.live.load(Ordering::SeqCst) || cancelled.is_cancelled() {
+            return Err(failure(
+                "UNCERTAIN",
+                "work",
+                "Work host retired after commit; inspect durable state",
+            ));
+        }
+        Ok(())
+    }
     /// Called only by native capture after the durable start receipt. There is no
     /// IPC that lets a caller claim an arbitrary system or choose its epoch.
     pub(crate) fn attach_owner(&self, caller: &Webview, owner: EngineOwner) -> Result<()> {
@@ -230,14 +371,22 @@ impl HostState {
     }
 }
 
-fn retire(host: &Arc<Incarnation>, database: &DbPool, app: &tauri::AppHandle) {
-    let app = app.clone();
+fn revoke_now(host: &Arc<Incarnation>) -> bool {
     if !host.live.swap(false, Ordering::SeqCst) {
-        return;
+        return false;
     }
     host.ready.store(false, Ordering::SeqCst);
     host.retired.cancel();
     host.compiler.close();
+    host.work_protocol.close();
+    true
+}
+
+fn retire(host: &Arc<Incarnation>, database: &DbPool, app: &tauri::AppHandle) {
+    let app = app.clone();
+    if !revoke_now(host) {
+        return;
+    }
     let database = database.clone();
     let host = host.clone();
     tauri::async_runtime::spawn(async move {
@@ -369,6 +518,7 @@ pub(crate) fn install(app: &tauri::AppHandle) -> tauri::Result<()> {
     let incarnation = Arc::new(Incarnation {
         generation: uuid::Uuid::new_v4().to_string(),
         compiler: Default::default(),
+        work_protocol: Default::default(),
         lifecycle: Arc::new(tokio::sync::RwLock::new(())),
         live: AtomicBool::new(true),
         ready: AtomicBool::new(false),
@@ -475,6 +625,7 @@ mod tests {
         let host = Arc::new(Incarnation {
             generation: "native-generation".into(),
             compiler: Default::default(),
+            work_protocol: Default::default(),
             lifecycle: Arc::new(tokio::sync::RwLock::new(())),
             live: AtomicBool::new(true),
             ready: AtomicBool::new(true),
@@ -508,6 +659,7 @@ mod tests {
         let first = Arc::new(Incarnation {
             generation: "same".into(),
             compiler: Default::default(),
+            work_protocol: Default::default(),
             lifecycle: Arc::new(tokio::sync::RwLock::new(())),
             live: AtomicBool::new(true),
             ready: AtomicBool::new(false),
@@ -519,6 +671,7 @@ mod tests {
         let forged = Arc::new(Incarnation {
             generation: "same".into(),
             compiler: Default::default(),
+            work_protocol: Default::default(),
             lifecycle: Arc::new(tokio::sync::RwLock::new(())),
             live: AtomicBool::new(true),
             ready: AtomicBool::new(false),
@@ -560,6 +713,27 @@ pub(crate) fn execution_host_complete_compile(
     let host = state.authenticate(&webview)?;
     host.compiler
         .complete(&host.generation, &ticket, result_json)
+}
+
+#[tauri::command]
+pub(crate) async fn execution_host_next_work030(
+    webview: Webview,
+    state: tauri::State<'_, HostState>,
+) -> Result<crate::agsdl_host_work::HostWorkJob030> {
+    let host = state.authenticate(&webview)?;
+    let job = host.work_protocol.next().await?;
+    state.authenticate(&webview)?;
+    Ok(job)
+}
+
+#[tauri::command]
+pub(crate) fn execution_host_complete_work030(
+    webview: Webview,
+    state: tauri::State<'_, HostState>,
+    completion: crate::agsdl_host_work::HostWorkCompletion030,
+) -> Result<()> {
+    let host = state.authenticate(&webview)?;
+    host.work_protocol.complete(&host.generation, completion)
 }
 
 #[tauri::command]

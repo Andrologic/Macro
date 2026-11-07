@@ -1573,6 +1573,38 @@
     },
     {
       "families": [
+        "execution"
+      ],
+      "name": "HostWorkCompletion030",
+      "origin": "macro_lib::agsdl_host_work::HostWorkCompletion030",
+      "path": "HostWorkCompletion030.ts"
+    },
+    {
+      "families": [
+        "execution"
+      ],
+      "name": "HostWorkInput030",
+      "origin": "macro_lib::agsdl_host_work::HostWorkInput030",
+      "path": "HostWorkInput030.ts"
+    },
+    {
+      "families": [
+        "execution"
+      ],
+      "name": "HostWorkJob030",
+      "origin": "macro_lib::agsdl_host_work::HostWorkJob030",
+      "path": "HostWorkJob030.ts"
+    },
+    {
+      "families": [
+        "execution"
+      ],
+      "name": "HostWorkOutput030",
+      "origin": "macro_lib::agsdl_host_work::HostWorkOutput030",
+      "path": "HostWorkOutput030.ts"
+    },
+    {
+      "families": [
         "workspace"
       ],
       "name": "ImportGitRepoRequest",

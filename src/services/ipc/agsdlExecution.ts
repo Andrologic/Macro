@@ -3,7 +3,7 @@ import { toNativeAiChatRequest, type AiStreamChatInput } from './ai';
 import type {
   PublicSnapshot as PublicSnapshotWire, PublicStartReceipt as PublicStartReceiptWire, PublicProjection as PublicProjectionWire, PublicEventPage as PublicEventPageWire, PublicStopState as PublicStopStateWire,
   ApprovalScope, ApprovalPage, ApprovalDecision, PublicApproval, HostToolInvocation, HostToolReceipt, EngineOwner, EngineContext, EngineWork, EngineTerminalCommit, HostInspection, HostAdmission, Prepare, Emission, Closure,
-  ExecutionPreflightRequest, ExecutionPreflight, HostCompileJob, RunListRequest, RunPage, DiagnosticRequest, PublicExecutionDiagnostic, NativeModelCatalogue,
+  ExecutionPreflightRequest, ExecutionPreflight, HostCompileJob, HostWorkJob030, HostWorkCompletion030, RunListRequest, RunPage, DiagnosticRequest, PublicExecutionDiagnostic, NativeModelCatalogue,
 } from '../../types/generated/ipc';
 import type {
   AcceptedDelivery, ExternalDeliveryRequest, SourceOwner, SystemStartId, Sequence, StartRequest, StopRequest, PublicStartReceipt, PublicSnapshot,
@@ -64,6 +64,14 @@ export function executionHostNextCompile(): Promise<HostCompileJob> {
 }
 export function executionHostCompleteCompile(ticket: string, resultJson: string): Promise<void> {
   return invoke<void>('execution_host_complete_compile', { ticket, resultJson });
+}
+
+/** The native mailbox authenticates the resident webview and correlates each ticket. */
+export function executionHostNextWork030(): Promise<HostWorkJob030> {
+  return invoke<HostWorkJob030>('execution_host_next_work030');
+}
+export function executionHostCompleteWork030(completion: HostWorkCompletion030): Promise<void> {
+  return invoke<void>('execution_host_complete_work030', { completion });
 }
 
 export function executionHostFailed(): Promise<void> {

@@ -13,6 +13,9 @@ pub mod execution {
     pub use crate::agsdl_host_compiler::HostCompileJob;
     pub use crate::agsdl_host_tasks::{PublicTaskTarget, ResolveCardTask, ResolvedCardTask};
     pub use crate::agsdl_host_tools::{HostToolInvocation, HostToolReceipt};
+    pub use crate::agsdl_host_work::{
+        HostWorkCompletion030, HostWorkInput030, HostWorkJob030, HostWorkOutput030,
+    };
     pub use crate::db::agsdl_execution::approvals::{
         ApprovalDecision, ApprovalPage, ApprovalScope, PublicApproval,
     };
