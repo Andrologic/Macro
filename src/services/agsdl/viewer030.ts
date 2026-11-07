@@ -58,7 +58,7 @@ export function projectViewer030(source: string, metadata?: AgsdlEnvelopeMetadat
     card.edition030!.agentPath = path;
     card.edition030!.definitionJson = raw(path);
     card.promptSources = prompts(agent.instructions, `${path}/instructions`);
-    card.mission = card.promptSources.filter(item => item.kind === "text").map(item => item.text).join("\n\n");
+    card.mission = card.promptSources.filter(item => item.kind === "text").map(item => item.text).join("\n\n") || text(card.details.description) || text(agent.description);
     card.resources = list(agent.skills).map(name => named("skills", name));
     card.tools = list(agent.mcpServers).map(name => named("mcpServers", name));
     card.capabilities = { skills: list(agent.skills).map(text), structuredResults: Object.values(object(agent.results)).some(rule => Object.hasOwn(object(rule), "schema")), dynamicConfiguration: false, externalEffects: false };

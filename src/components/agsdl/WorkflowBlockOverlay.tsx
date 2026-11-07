@@ -9,13 +9,22 @@ import { useAgsdlTranslation } from './useAgsdlTranslation';
 
 export function WorkflowBlockSummary({ card, incoming = [], outgoing = [] }: { card: ViewerCard; incoming?: string[]; outgoing?: string[] }) {
   const { t } = useAgsdlTranslation();
-  const standing = card.promptSources?.find(source => source.kind === 'text' && !source.reference && source.text?.trim())?.text;
+  const sources = card.promptSources ?? [];
+  const standing = sources.find(source => source.kind === 'text' && !source.reference && source.text?.trim())?.text;
   const prompt = standing || card.mission;
+  const agent030 = !!card.edition030 && ['Agent', 'agent', 'invoke'].includes(card.kind);
+  const description = typeof card.details.description === 'string' ? card.details.description :
+    typeof (card.details.agentDefinition as { description?: unknown } | undefined)?.description === 'string'
+      ? (card.details.agentDefinition as { description: string }).description : '';
   const tools = [...new Set(card.tools?.map(tool => tool.label).filter(Boolean))];
   return <>
-    {card.edition030 && standing && <small>{t("agsdl.instructions")}</small>}
-    {card.edition030 && typeof card.details.prompt === "string" && <p className="agsdl-block-prompt">{t("agsdl.edition030.mission")}: {card.details.prompt}</p>}
-    {prompt && <p className="agsdl-block-prompt">{prompt}</p>}
+    {agent030 && description && <p className="agsdl-block-prompt">{description}</p>}
+    {agent030 && sources.length > 0 && <section><small>{t("agsdl.instructions")}</small>{sources.map((source, index) => <p className="agsdl-block-prompt" key={index}>
+      {source.kind === 'text' ? source.text : source.kind === 'uri' ? source.uri : source.kind === 'structured' ? t('agsdl.viewer.detail.structuredSource') : t('agsdl.viewer.detail.unspecifiedSource')}
+      {source.reference && <small> · {source.reference.label}</small>}
+    </p>)}</section>}
+    {agent030 && typeof card.details.prompt === "string" && <p className="agsdl-block-prompt">{t("agsdl.edition030.mission")}: {card.details.prompt}</p>}
+    {!agent030 && prompt && <p className="agsdl-block-prompt">{prompt}</p>}
     {incoming.length > 0 && <div className="agsdl-block-relation"><ArrowDownToLine size={13} aria-hidden="true" /><span><small>{t('agsdl.graphInteraction.from')}</small>{incoming.join(' · ')}</span></div>}
     {outgoing.length > 0 && <div className="agsdl-block-relation"><ArrowUpFromLine size={13} aria-hidden="true" /><span><small>{t('agsdl.graphInteraction.to')}</small>{outgoing.join(' · ')}</span></div>}
     {card.capabilities?.skills.length ? <div className="agsdl-block-relation"><Sparkles size={13} aria-hidden="true" /><span>{card.capabilities.skills.join(' · ')}</span></div> : null}

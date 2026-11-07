@@ -136,3 +136,25 @@ it('does not present a call description as agent instructions', async () => {
   expect(host.textContent).toContain('Runs a check');
   expect(host.textContent).not.toContain('Instructions');
 });
+
+it('labels every direct and referenced 0.3 instruction without dropping the agent description', async () => {
+  const source = JSON.stringify({ contract: 'agsdl-0.3.0', id: 'x', content: { shared: { value: 'Referenced instruction' } }, agents: {
+    a: { harness: 'codex', permissions: 'read-only', description: 'Agent description', instructions: [{ value: 'Direct instruction' }, { ref: 'shared' }] },
+  } });
+  const agent = projectViewer(source).declarations.find(item => item.path === '/agents/a')!;
+  await mount();
+  await act(async () => root!.render(<WorkflowBlockSummary card={agent} />));
+  expect(host.textContent).toContain('Agent description');
+  expect(host.textContent).toContain('Instructions');
+  expect(host.textContent).toContain('Direct instruction');
+  expect(host.textContent).toContain('Referenced instruction');
+  expect(host.textContent).toContain('shared');
+  const referenceOnly = { ...agent, promptSources: agent.promptSources!.slice(1) };
+  await act(async () => root!.render(<WorkflowBlockSummary card={referenceOnly} />));
+  expect(host.textContent).toContain('Instructions');
+  expect(host.textContent).toContain('Referenced instruction');
+  const noInstructions = { ...agent, promptSources: [], mission: 'Agent description' };
+  await act(async () => root!.render(<WorkflowBlockSummary card={noInstructions} />));
+  expect(host.textContent).toContain('Agent description');
+  expect(host.textContent).not.toContain('Instructions');
+});

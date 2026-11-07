@@ -10,7 +10,7 @@ const source='{"contract":"agsdl-0.3.0","id":"x","agents":{},"flow":{"entry":"a"
 let root:Root|undefined, host:HTMLDivElement;
 const original={load:useAgsdlStore.getState().load,validate:useAgsdlStore.getState().validate,edit:useAgsdlStore.getState().edit,save:useAgsdlStore.getState().save};
 afterEach(()=>{act(()=>root?.unmount());host?.remove();mock.restore();useAgsdlStore.setState({...original,sessions:{}});});
-async function mount(){
+async function mount(edit = true){
  const session={source,annexes:{},version:"initial",persistedRevision:1,dirty:false,saving:false,status:"draft" as const,history:[],future:[],reports:[],error:null};
  useAgsdlStore.setState({sessions:{[key]:session},load:async()=>session,validate:async()=>{}});
  host=document.createElement("div");document.body.appendChild(host);root=createRoot(host);
@@ -19,7 +19,7 @@ async function mount(){
  expect(document.body.querySelector(".agsdl-edge-summary")?.textContent).toContain("a");
  expect(document.body.querySelector(".agsdl-edge-summary")?.textContent).toContain("b");
  expect(document.body.querySelectorAll(".agsdl-edge-endpoints button")).toHaveLength(2);
- act(()=>Array.from(document.body.querySelectorAll<HTMLButtonElement>("button")).find(b=>b.textContent==="Edit component")!.click());
+ if (edit) act(()=>Array.from(document.body.querySelectorAll<HTMLButtonElement>("button")).find(b=>b.textContent==="Edit component")!.click());
 }
 function value(text:string){act(()=>{const input=document.body.querySelector("textarea")!;Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype,"value")!.set!.call(input,text);input.dispatchEvent(new Event("input",{bubbles:true}));});}
 function terminal(){useAgsdlStore.setState(state=>({sessions:{...state.sessions,[key]:{...state.sessions[key],version:"updated",source:source.replace('"next":"b"','"next":[]')}}}));}
@@ -39,4 +39,20 @@ it("keeps retry after an applied terminal route loses its edge and persistence f
  expect(document.body.querySelector('[role="alert"]')).not.toBeNull();
  await act(async()=>document.body.querySelector("form")!.dispatchEvent(new Event("submit",{bubbles:true,cancelable:true})));
  expect(edits).toHaveLength(1);
+});
+
+it("navigates both endpoints and returns to the route, then guards a draft on close", async () => {
+ await mount(false);
+ for (const label of ['a', 'b']) {
+  const endpoint = Array.from(document.body.querySelectorAll<HTMLButtonElement>('.agsdl-edge-endpoints button')).find(button => button.textContent === label)!;
+  act(() => endpoint.click());
+  expect(document.body.querySelector('.agsdl-inspector')?.textContent).toContain('echo');
+  act(() => Array.from(document.body.querySelectorAll<HTMLButtonElement>('button')).find(button => button.textContent === 'Back to previous details')!.click());
+  expect(document.body.querySelectorAll('.agsdl-edge-endpoints button')).toHaveLength(2);
+ }
+ act(()=>Array.from(document.body.querySelectorAll<HTMLButtonElement>('button')).find(button=>button.textContent==='Edit component')!.click());
+ value('"private-target"');
+ act(()=>Array.from(document.body.querySelectorAll<HTMLButtonElement>('button')).find(button=>button.textContent==='Close')!.click());
+ expect(document.body.querySelectorAll('[role="dialog"]')).toHaveLength(2);
+ expect(document.body.querySelector('textarea')?.value).toBe('"private-target"');
 });
