@@ -326,6 +326,94 @@ pub(crate) async fn reserve_event(
     Ok(EventReservation030::Pending { ticket })
 }
 
+fn visible_event(input: &ProtocolEvent030) -> Result<bool> {
+    let event: serde_json::Value = serde_json::from_str(&input.event_json)?;
+    Ok(event
+        .get("event")
+        .and_then(|v| v.get("kind"))
+        .and_then(|v| v.as_str())
+        == Some("visibleText"))
+}
+
+pub(crate) fn reject_visible_without_response(input: &ProtocolEvent030) -> Result<()> {
+    require(
+        !visible_event(input)?,
+        "Visible event requires its response",
+    )
+}
+
+fn bind_visible(ticket: &TransitionTicket030, emission: &responses::Emission) -> Result<()> {
+    let input = &ticket.input;
+    let call = input.native_call.as_ref().ok_or_else(|| {
+        failure(
+            "CORRELATION",
+            "nativeCall",
+            "Visible response requires a native call",
+        )
+    })?;
+    let event: serde_json::Value = serde_json::from_str(&input.event_json)?;
+    let body: serde_json::Value = serde_json::from_str(&emission.body_json)?;
+    let parts = body.get("textParts").and_then(|v| v.as_array());
+    require(
+        !input.control
+            && visible_event(input)?
+            && event.get("eventId").and_then(|v| v.as_str()) == Some(input.event_id.as_str())
+            && event["event"].get("messageId").and_then(|v| v.as_str())
+                == Some(input.event_id.as_str())
+            && event["event"].get("textParts") == body.get("textParts")
+            && body.as_object().map(|v| v.len()) == Some(1)
+            && parts.is_some_and(|v| v.iter().all(|part| part.is_string()))
+            && emission.context == input.context
+            && emission.provider_attempt_id == call.provider_attempt_id
+            && emission.identity == input.event_id
+            && emission.kind == "message"
+            && emission.sequence.is_empty(),
+        "Visible response does not match its native event",
+    )
+}
+
+/// Read-only verification for an already committed retransmission.
+pub(crate) async fn verify_visible_commit(
+    pool: &SqlitePool,
+    input: &ProtocolEvent030,
+    decision: &ProtocolDecision030,
+    emission: &responses::Emission,
+) -> Result<()> {
+    let mut db = pool.acquire().await?;
+    let mut tx = durable(&mut db).await?;
+    let stored = load(&mut tx, &input.context.work.system_start_id).await?;
+    guard(&stored, &input.context, false)?;
+    let row = event_row(&mut tx, input)
+        .await?
+        .ok_or_else(|| failure("CORRELATION", "ticket", "Transition was not reserved"))?;
+    let ticket: TransitionTicket030 = serde_json::from_str(row.get("ticket_json"))?;
+    require(
+        ticket.input == *input,
+        "Event identity reused with different bytes",
+    )?;
+    bind_visible(&ticket, emission)?;
+    let saved: ProtocolDecision030 = serde_json::from_str(
+        row.get::<Option<&str>, _>("decision_json")
+            .ok_or_else(|| failure("CORRELATION", "ticket", "Transition is not committed"))?,
+    )?;
+    require(
+        saved == *decision && row.get::<Option<&str>, _>("committed_state_json").is_some(),
+        "Committed decision differs",
+    )?;
+    let raw: String = sqlx::query_scalar("SELECT payload_json FROM engine_responses WHERE system_id=? AND activation_id=? AND identity=?")
+        .bind(&input.context.work.system_start_id).bind(&input.context.work.activation_id).bind(&emission.identity)
+        .fetch_optional(&mut *tx).await?.ok_or_else(|| failure("CORRELATION", "responses", "Committed visible response is absent"))?;
+    let previous: responses::Emission = serde_json::from_str(&raw)?;
+    let mut expected = emission.clone();
+    expected.sequence = previous.sequence.clone();
+    require(
+        previous.body_json == expected.body_json && record_equal(&previous, &expected)?,
+        "Conflicting response retransmission",
+    )?;
+    tx.commit().await?;
+    Ok(())
+}
+
 /// Called only after the broker authenticated the TS response and matched its
 /// job. Native check metadata is supplied by that broker, never by the model.
 pub(crate) async fn commit_event(
@@ -333,6 +421,31 @@ pub(crate) async fn commit_event(
     ticket: &TransitionTicket030,
     decision: &ProtocolDecision030,
 ) -> Result<ProtocolState030> {
+    commit_event_inner(pool, ticket, decision, None).await
+}
+
+pub(crate) async fn commit_visible_event(
+    pool: &SqlitePool,
+    ticket: &TransitionTicket030,
+    decision: &ProtocolDecision030,
+    emission: &responses::Emission,
+) -> Result<ProtocolState030> {
+    commit_event_inner(pool, ticket, decision, Some(emission)).await
+}
+
+async fn commit_event_inner(
+    pool: &SqlitePool,
+    ticket: &TransitionTicket030,
+    decision: &ProtocolDecision030,
+    emission: Option<&responses::Emission>,
+) -> Result<ProtocolState030> {
+    match emission {
+        Some(value) => bind_visible(ticket, value)?,
+        None => require(
+            !visible_event(&ticket.input)?,
+            "Visible event requires its response",
+        )?,
+    }
     validate_json(&decision.state_json)?;
     validate_json(&decision.receipt_json)?;
     let input = &ticket.input;
@@ -353,6 +466,10 @@ pub(crate) async fn commit_event(
             serde_json::from_str::<ProtocolDecision030>(raw)? == *decision,
             "Committed decision has different bytes",
         )?;
+        if let Some(emission) = emission {
+            let (_, inserted) = responses::append_on(&mut tx, emission.clone(), true).await?;
+            require(!inserted, "Committed visible response is absent")?;
+        }
         let state = serde_json::from_str(row.get("committed_state_json"))?;
         tx.commit().await?;
         return Ok(state);
@@ -398,6 +515,13 @@ pub(crate) async fn commit_event(
             .bind(effect_key(&effect.effect)?)
             .execute(&mut *tx)
             .await?;
+    }
+    if let Some(emission) = emission {
+        let (_, inserted) = responses::append_on(&mut tx, emission.clone(), true).await?;
+        require(
+            inserted,
+            "Visible response already belongs to another commit",
+        )?;
     }
     state.revision = next(&state.revision);
     state.state_json = decision.state_json.clone();

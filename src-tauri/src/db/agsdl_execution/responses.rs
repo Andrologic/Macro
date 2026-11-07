@@ -34,6 +34,18 @@ pub(crate) async fn append_next(pool: &SqlitePool, emission: Emission) -> Result
 
 async fn append_inner(
     pool: &SqlitePool,
+    emission: Emission,
+    allocate: bool,
+) -> Result<(Emission, bool)> {
+    let mut connection = pool.acquire().await?;
+    let mut tx = durable(&mut connection).await?;
+    let result = append_on(&mut tx, emission, allocate).await?;
+    tx.commit().await?;
+    Ok(result)
+}
+
+pub(super) async fn append_on(
+    db: &mut SqliteConnection,
     mut emission: Emission,
     allocate: bool,
 ) -> Result<(Emission, bool)> {
@@ -51,9 +63,7 @@ async fn append_inner(
         "Unknown response kind",
     )?;
     validate_json(&emission.body_json)?;
-    let mut connection = pool.acquire().await?;
-    let mut tx = durable(&mut connection).await?;
-    let stored = load(&mut tx, &emission.context.work.system_start_id).await?;
+    let stored = load(db, &emission.context.work.system_start_id).await?;
     context(&stored, &emission.context)?;
     let work = &emission.context.work;
     let closed: i64 = sqlx::query_scalar(
@@ -61,13 +71,13 @@ async fn append_inner(
     )
     .bind(&work.system_start_id)
     .bind(&work.activation_id)
-    .fetch_one(&mut *tx)
+    .fetch_one(&mut *db)
     .await?;
     require(closed == 0, "Response collection is closed")?;
     let key = effect_key(&EngineEffectIdentity::Provider {
         provider_attempt_id: emission.provider_attempt_id.clone(),
     })?;
-    let registered:String=sqlx::query_scalar("SELECT record_json FROM engine_effects WHERE system_id=? AND activation_id=? AND effect_key=?").bind(&work.system_start_id).bind(&work.activation_id).bind(key).fetch_optional(&mut *tx).await?.ok_or_else(||failure("CORRELATION","providerAttemptId","Unregistered response attempt"))?;
+    let registered:String=sqlx::query_scalar("SELECT record_json FROM engine_effects WHERE system_id=? AND activation_id=? AND effect_key=?").bind(&work.system_start_id).bind(&work.activation_id).bind(key).fetch_optional(&mut *db).await?.ok_or_else(||failure("CORRELATION","providerAttemptId","Unregistered response attempt"))?;
     let effect: EngineEffect = serde_json::from_str(&registered)?;
     require(
         record_equal(&effect.context, &emission.context)?,
@@ -76,23 +86,21 @@ async fn append_inner(
     if allocate {
         if let Some(previous) = sqlx::query_scalar::<_, String>("SELECT payload_json FROM engine_responses WHERE system_id=? AND activation_id=? AND identity=?")
             .bind(&work.system_start_id).bind(&work.activation_id).bind(&emission.identity)
-            .fetch_optional(&mut *tx).await?
+            .fetch_optional(&mut *db).await?
         {
             let previous: Emission = serde_json::from_str(&previous)?;
             emission.sequence = previous.sequence.clone();
             require(previous.body_json == emission.body_json && record_equal(&previous, &emission)?, "Conflicting response retransmission")?;
-            tx.commit().await?;
             return Ok((emission, false));
         }
-    } else if let Some(previous)=sqlx::query_scalar::<_,String>("SELECT payload_json FROM engine_responses WHERE system_id=? AND activation_id=? AND (sequence=? OR identity=?)").bind(&work.system_start_id).bind(&work.activation_id).bind(&emission.sequence).bind(&emission.identity).fetch_optional(&mut *tx).await? {
+    } else if let Some(previous)=sqlx::query_scalar::<_,String>("SELECT payload_json FROM engine_responses WHERE system_id=? AND activation_id=? AND (sequence=? OR identity=?)").bind(&work.system_start_id).bind(&work.activation_id).bind(&emission.sequence).bind(&emission.identity).fetch_optional(&mut *db).await? {
         require(record_equal(&serde_json::from_str::<Emission>(&previous)?,&emission)?,"Conflicting response retransmission")?;
-        tx.commit().await?;
         return Ok((emission, false));
     }
-    let (count,bytes):(i64,i64)=sqlx::query_as("SELECT count(*),coalesce(sum(length(CAST(payload_json AS BLOB))),0) FROM engine_responses WHERE system_id=? AND activation_id=?").bind(&work.system_start_id).bind(&work.activation_id).fetch_one(&mut *tx).await?;
+    let (count,bytes):(i64,i64)=sqlx::query_as("SELECT count(*),coalesce(sum(length(CAST(payload_json AS BLOB))),0) FROM engine_responses WHERE system_id=? AND activation_id=?").bind(&work.system_start_id).bind(&work.activation_id).fetch_one(&mut *db).await?;
     if allocate {
         let last: Option<String> = sqlx::query_scalar("SELECT sequence FROM engine_responses WHERE system_id=? AND activation_id=? ORDER BY length(sequence) DESC, sequence DESC LIMIT 1")
-            .bind(&work.system_start_id).bind(&work.activation_id).fetch_optional(&mut *tx).await?;
+            .bind(&work.system_start_id).bind(&work.activation_id).fetch_optional(&mut *db).await?;
         require(
             last.as_deref().unwrap_or("0") == count.to_string(),
             "Response transport has a hole",
@@ -110,9 +118,8 @@ async fn append_inner(
         .bind(&emission.sequence)
         .bind(&emission.identity)
         .bind(raw)
-        .execute(&mut *tx)
+        .execute(&mut *db)
         .await?;
-    tx.commit().await?;
     Ok((emission, true))
 }
 async fn retained(db: &mut SqliteConnection, work: &EngineWork) -> Result<Vec<Emission>> {

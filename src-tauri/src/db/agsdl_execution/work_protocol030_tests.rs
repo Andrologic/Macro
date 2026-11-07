@@ -1404,3 +1404,169 @@ async fn unclaimed_check_stop_can_settle_without_a_success_or_dispatch() {
     };
     assert!(commit_terminal(&pool, terminal, &NoRoutes).await.unwrap());
 }
+
+async fn visible_fixture(
+    pool: &SqlitePool,
+    context: &EngineContext,
+    id: &str,
+) -> (TransitionTicket030, responses::Emission) {
+    let mut event = input(context, id, "0");
+    event.event_json = serde_json::json!({"eventId": id, "event": {"kind":"visibleText", "messageId":id, "textParts":["hello"]}}).to_string();
+    event.native_call = Some(NativeCall030 {
+        provider_attempt_id: "provider".into(),
+        native_call_id: format!("message:{id}"),
+    });
+    let emission = responses::Emission {
+        context: context.clone(),
+        provider_attempt_id: "provider".into(),
+        sequence: String::new(),
+        identity: id.into(),
+        kind: "message".into(),
+        body_json: "{ \"textParts\": [\"hello\"] }".into(),
+    };
+    (ticket(pool, &event).await, emission)
+}
+
+async fn visible_provider(pool: &SqlitePool, context: &EngineContext) {
+    register_effect(
+        pool,
+        EngineEffect {
+            context: context.clone(),
+            effect: EngineEffectIdentity::Provider {
+                provider_attempt_id: "provider".into(),
+            },
+            invocation_json: "{}".into(),
+        },
+    )
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
+async fn visible_commit_rolls_back_with_state_and_survives_lost_return() {
+    let (temp, pool, context) = setup().await;
+    visible_provider(&pool, &context).await;
+    let (t, emission) = visible_fixture(&pool, &context, "message").await;
+    let decision = decision(false);
+    assert!(commit_event(&pool, &t, &decision).await.is_err());
+    let mut forged = t.clone();
+    forged.ticket_id.push('x');
+    assert!(commit_visible_event(&pool, &forged, &decision, &emission)
+        .await
+        .is_err());
+    let mut changed = emission.clone();
+    changed.provider_attempt_id = "other".into();
+    assert!(commit_visible_event(&pool, &t, &decision, &changed)
+        .await
+        .is_err());
+    let mut changed = emission.clone();
+    changed.body_json = "{\"textParts\":[\"different\"]}".into();
+    assert!(commit_visible_event(&pool, &t, &decision, &changed)
+        .await
+        .is_err());
+    let mut reused = t.input.clone();
+    reused.event_id = "another".into();
+    assert!(reserve_event(&pool, &reused).await.is_err());
+    sqlx::raw_sql("CREATE TRIGGER fail_visible_state BEFORE UPDATE ON engine_work_protocol030 BEGIN SELECT RAISE(ABORT,'synthetic'); END;").execute(&pool).await.unwrap();
+    assert!(commit_visible_event(&pool, &t, &decision, &emission)
+        .await
+        .is_err());
+    assert_eq!(
+        responses::read(&pool, &context.owner, &context.work)
+            .await
+            .unwrap()
+            .0
+            .len(),
+        0
+    );
+    assert_eq!(read(&pool, &context.work).await.unwrap().revision, "0");
+    pool.close().await;
+    let pool = crate::db::create_pool(&temp.path().join("protocol.db"))
+        .await
+        .unwrap();
+    assert_eq!(read(&pool, &context.work).await.unwrap().revision, "0");
+    assert!(responses::read(&pool, &context.owner, &context.work)
+        .await
+        .unwrap()
+        .0
+        .is_empty());
+    sqlx::raw_sql("DROP TRIGGER fail_visible_state;")
+        .execute(&pool)
+        .await
+        .unwrap();
+    commit_visible_event(&pool, &t, &decision, &emission)
+        .await
+        .unwrap();
+    pool.close().await;
+    let pool = crate::db::create_pool(&temp.path().join("protocol.db"))
+        .await
+        .unwrap();
+    verify_visible_commit(&pool, &t.input, &decision, &emission)
+        .await
+        .unwrap();
+    assert_eq!(
+        responses::read(&pool, &context.owner, &context.work)
+            .await
+            .unwrap()
+            .0[0]
+            .sequence,
+        "1"
+    );
+    let mut changed = emission.clone();
+    changed.body_json = "{\"textParts\":[\"hello\"]}".into();
+    assert!(verify_visible_commit(&pool, &t.input, &decision, &changed)
+        .await
+        .is_err());
+    assert!(commit_visible_event(&pool, &t, &decision, &changed)
+        .await
+        .is_err());
+}
+
+#[tokio::test]
+async fn visible_concurrency_and_stop_keep_one_atomic_result() {
+    let (_temp, pool, context) = setup().await;
+    visible_provider(&pool, &context).await;
+    let (a, ea) = visible_fixture(&pool, &context, "a").await;
+    let (b, eb) = visible_fixture(&pool, &context, "b").await;
+    let decision = decision(false);
+    let (ra, rb) = tokio::join!(
+        commit_visible_event(&pool, &a, &decision, &ea),
+        commit_visible_event(&pool, &b, &decision, &eb)
+    );
+    assert_ne!(ra.is_ok(), rb.is_ok());
+    let (winner, emission) = if ra.is_ok() { (&a, &ea) } else { (&b, &eb) };
+    let (one, two) = tokio::join!(
+        commit_visible_event(&pool, winner, &decision, emission),
+        commit_visible_event(&pool, winner, &decision, emission)
+    );
+    assert!(one.is_ok() && two.is_ok());
+    let events = responses::read(&pool, &context.owner, &context.work)
+        .await
+        .unwrap()
+        .0;
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0].sequence, "1");
+    stop_work(&pool, &context).await;
+    assert!(commit_visible_event(&pool, winner, &decision, emission)
+        .await
+        .is_err());
+}
+
+#[tokio::test]
+async fn stopped_pending_visible_event_cannot_commit() {
+    let (_temp, pool, context) = setup().await;
+    visible_provider(&pool, &context).await;
+    let (ticket, emission) = visible_fixture(&pool, &context, "pending").await;
+    stop_work(&pool, &context).await;
+    assert!(
+        commit_visible_event(&pool, &ticket, &decision(false), &emission)
+            .await
+            .is_err()
+    );
+    let count: i64 = sqlx::query_scalar("SELECT count(*) FROM engine_responses")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(count, 0);
+    assert_eq!(read(&pool, &context.work).await.unwrap().revision, "0");
+}

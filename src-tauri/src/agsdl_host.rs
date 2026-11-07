@@ -206,10 +206,35 @@ impl HostState {
         input: &repository::work_protocol030::ProtocolEvent030,
         cancelled: &tokio_util::sync::CancellationToken,
     ) -> Result<repository::work_protocol030::ProtocolDecision030> {
+        self.transition_work030_inner(pool, input, None, cancelled)
+            .await
+    }
+
+    pub(crate) async fn transition_visible_work030(
+        &self,
+        pool: &sqlx::SqlitePool,
+        input: &repository::work_protocol030::ProtocolEvent030,
+        emission: &repository::responses::Emission,
+        cancelled: &tokio_util::sync::CancellationToken,
+    ) -> Result<repository::work_protocol030::ProtocolDecision030> {
+        self.transition_work030_inner(pool, input, Some(emission), cancelled)
+            .await
+    }
+
+    async fn transition_work030_inner(
+        &self,
+        pool: &sqlx::SqlitePool,
+        input: &repository::work_protocol030::ProtocolEvent030,
+        emission: Option<&repository::responses::Emission>,
+        cancelled: &tokio_util::sync::CancellationToken,
+    ) -> Result<repository::work_protocol030::ProtocolDecision030> {
         use repository::work_protocol030::{
             self as protocol, EventReservation030, ProtocolDecision030,
         };
 
+        if emission.is_none() {
+            protocol::reject_visible_without_response(input)?;
+        }
         let admission = protocol::read_admission(pool, &input.context, input.control).await?;
         let reservation = {
             let lease = self.start_lease().await?;
@@ -225,7 +250,14 @@ impl HostState {
             reservation
         };
         let ticket = match reservation {
-            EventReservation030::Committed { decision } => return Ok(decision),
+            EventReservation030::Committed { decision } => {
+                if let Some(emission) = emission {
+                    protocol::verify_visible_commit(pool, input, &decision, emission).await?;
+                } else {
+                    protocol::reject_visible_without_response(input)?;
+                }
+                return Ok(decision);
+            }
             EventReservation030::Pending { ticket } => ticket,
         };
         let (output, host) = self
@@ -257,7 +289,7 @@ impl HostState {
             check,
         };
         if let Err(error) = self
-            .commit_work030(pool, &host, &ticket, &decision, cancelled)
+            .commit_work030_inner(pool, &host, &ticket, &decision, emission, cancelled)
             .await
         {
             if error.code == "UNCERTAIN" {
@@ -285,12 +317,26 @@ impl HostState {
     }
     /// Only the short SQL commit holds the lifecycle lease. Cancellation or
     /// retirement can leave the commit outcome unknown; it never authorizes IO.
+    #[cfg(test)]
     async fn commit_work030(
         &self,
         pool: &sqlx::SqlitePool,
         host: &Arc<Incarnation>,
         ticket: &repository::work_protocol030::TransitionTicket030,
         decision: &repository::work_protocol030::ProtocolDecision030,
+        cancelled: &tokio_util::sync::CancellationToken,
+    ) -> Result<()> {
+        self.commit_work030_inner(pool, host, ticket, decision, None, cancelled)
+            .await
+    }
+
+    async fn commit_work030_inner(
+        &self,
+        pool: &sqlx::SqlitePool,
+        host: &Arc<Incarnation>,
+        ticket: &repository::work_protocol030::TransitionTicket030,
+        decision: &repository::work_protocol030::ProtocolDecision030,
+        emission: Option<&repository::responses::Emission>,
         cancelled: &tokio_util::sync::CancellationToken,
     ) -> Result<()> {
         let _lease = host.lifecycle.clone().read_owned().await;
@@ -308,7 +354,12 @@ impl HostState {
             biased;
             _ = host.retired.cancelled() => return Err(failure("UNCERTAIN", "work", "Host retired during commit; inspect durable state")),
             _ = cancelled.cancelled() => return Err(failure("UNCERTAIN", "work", "Work cancelled during commit; inspect durable state")),
-            result = repository::work_protocol030::commit_event(pool, ticket, decision) => { result?; }
+            result = async {
+                match emission {
+                    Some(value) => repository::work_protocol030::commit_visible_event(pool, ticket, decision, value).await,
+                    None => repository::work_protocol030::commit_event(pool, ticket, decision).await,
+                }
+            } => { result?; }
         }
         if !host.live.load(Ordering::SeqCst) || cancelled.is_cancelled() {
             return Err(failure(
