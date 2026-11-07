@@ -17,21 +17,25 @@ interface Journal030 {
 export const EMPTY_WORK_JOURNAL030 = '{"format":"macro-agsdl-work-journal/1","events":[]}';
 
 /** The event envelope is native-authenticated; authored JSON values inside an
- * event remain strings. A changed controller or corrupted receipt fails closed
- * instead of silently reconstructing different state after host recovery. */
+ * event remain strings. expectedNativeRevision is the DB017 CAS revision: it
+ * counts committed journal entries. The controller's receipt revision is a
+ * separate counter and can stay unchanged on a duplicate operation. DB must
+ * deduplicate a repeated event/call before evaluating it, or reserve a distinct
+ * native entry; only an atomically claimed native effect may actually run.
+ * A changed controller or corrupted receipt fails closed on recovery. */
 export function evaluateWorkJournal030<Event, Receipt>(
   stateJson: string,
-  expectedRevision: string,
+  expectedNativeRevision: string,
   eventJson: string,
   createController: () => PureWorkController030<Event, Receipt>,
 ): { readonly stateJson: string; readonly receiptJson: string } {
-  if (!/^(0|[1-9][0-9]*)$/.test(expectedRevision)) throw new Error('Invalid work journal revision.');
+  if (!/^(0|[1-9][0-9]*)$/.test(expectedNativeRevision)) throw new Error('Invalid work journal revision.');
   const parsed: unknown = JSON.parse(stateJson);
   if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('Invalid work journal.');
   const state = parsed as Record<string, unknown>;
   if (state.format !== 'macro-agsdl-work-journal/1' || !Array.isArray(state.events)
     || Object.keys(state).some(key => key !== 'format' && key !== 'events')
-    || BigInt(expectedRevision) !== BigInt(state.events.length)) throw new Error('Work journal and native revision differ.');
+    || BigInt(expectedNativeRevision) !== BigInt(state.events.length)) throw new Error('Work journal and native revision differ.');
   const entries: JournalEntry030[] = [];
   const controller = createController();
   for (const raw of state.events) {

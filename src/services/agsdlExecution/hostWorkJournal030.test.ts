@@ -28,3 +28,23 @@ it('refuses stale revisions, altered receipts and unknown journal fields', () =>
   corrupt.unexpected = true;
   expect(() => evaluateWorkJournal030(JSON.stringify(corrupt), '1', '{"raw":"y"}', controller)).toThrow();
 });
+
+it('counts committed native entries independently of an idempotent controller receipt', () => {
+  const factory = () => {
+    let sequence = 0;
+    const calls = new Map<string, { revision: string }>();
+    return { dispatch(event: { callId: string }) {
+      const prior = calls.get(event.callId);
+      if (prior) return prior;
+      const receipt = { revision: String(++sequence) };
+      calls.set(event.callId, receipt);
+      return receipt;
+    } };
+  };
+  const first = evaluateWorkJournal030(EMPTY_WORK_JOURNAL030, '0', '{"callId":"a"}', factory);
+  const repeated = evaluateWorkJournal030(first.stateJson, '1', '{"callId":"a"}', factory);
+  expect(repeated.receiptJson).toBe(first.receiptJson);
+  const next = evaluateWorkJournal030(repeated.stateJson, '2', '{"callId":"b"}', factory);
+  expect(JSON.parse(next.receiptJson).revision).toBe('2');
+  expect(JSON.parse(next.stateJson).events).toHaveLength(3);
+});
