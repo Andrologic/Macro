@@ -5,11 +5,10 @@ pub(crate) mod capture;
 pub(crate) mod card_associations;
 pub(crate) mod diagnostics;
 pub(crate) mod discovery;
+pub mod dto;
 #[path = "v030/flow.rs"]
 pub(crate) mod flow030;
-#[cfg(test)]
 mod flow_store030;
-pub mod dto;
 pub(crate) mod inspection;
 pub(crate) mod intents;
 pub(crate) mod json_lexemes030;
@@ -19,7 +18,6 @@ pub(crate) mod process_recovery;
 pub(crate) mod public;
 pub(crate) mod public030;
 pub(crate) mod responses;
-#[cfg(test)]
 mod start030;
 pub(crate) mod work_protocol030;
 #[cfg(test)]
