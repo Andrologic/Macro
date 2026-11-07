@@ -118,6 +118,11 @@ describe('instructions required by the selected route only', () => {
     const loop: { steps: Scope030['steps']; outputs: string[]; outputRoutes: Record<string, { routeJson: ExactJsonText; scope: Scope030 }> } = { steps: [], outputs: ['again'], outputRoutes: {} };
     loop.outputRoutes.again = { routeJson: j('{"output":"again"}'), scope: loop };
     code(() => instructionsExpectation030(yes, j('{"output":"again"}'), loop), 'ROUTES');
+    for (const agent of [j('{}'), j('{"instructs":false}')]) {
+      code(() => instructionsExpectation030(agent, j('{"output":"done"}'), { steps: [], outputs: ['done'] }), 'ROUTES');
+      code(() => instructionsExpectation030(agent, j('{"output":"again"}'), loop), 'ROUTES');
+      expect(instructionsExpectation030(agent, j('{"output":"done"}'), inner)).toBe('none');
+    }
   });
   it('refuses a list of missions also used as a single default or explicit prompt', () => {
     for (const other of ['"review"', '{"step":"review","message":{"prompt":{"from":["instructions"]}}}']) code(() => instructionsExpectation030(yes, j(`[{"step":"worker","each":["instructions"]},${other}]`), scope), 'MESSAGE_PATH');

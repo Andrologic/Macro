@@ -152,7 +152,7 @@ export function preflightExpansion030(targets: readonly RouteTarget030[], source
 /** Resolve destination types from the captured scope before requiring a mission. */
 export function instructionsExpectation030(sourceAgentJson: ExactJsonText, chosenRouteJson: ExactJsonText, scope: Scope030): 'none' | 'string' | 'list' {
   if (!scope) return fail('ROUTES', '', 'A captured route scope is required to classify destinations.');
-  if (record(decode(sourceAgentJson)).instructs !== true) return 'none';
+  const instructs = record(decode(sourceAgentJson)).instructs === true;
   const targets: ReturnType<typeof record>[] = [];
   const active = new Set<Scope030>();
   const collect = (routeJson: ExactJsonText, current: Scope030): void => {
@@ -171,6 +171,7 @@ export function instructionsExpectation030(sourceAgentJson: ExactJsonText, chose
     active.delete(current);
   };
   collect(chosenRouteJson, scope);
+  if (!instructs) return 'none';
   let expects = false, fanout = false, single = false;
   for (const target of targets) {
     const eachInstructions = has(target, 'each') && equal(target.each, ['instructions']);
