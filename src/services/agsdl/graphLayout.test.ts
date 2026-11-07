@@ -1,4 +1,5 @@
 import { describe, expect, it } from "bun:test";
+import { getViewportForBounds } from "@xyflow/react";
 import { layoutViewer, routeViewerEdge, viewerEdgePath, viewerLayoutBounds, VIEWER_CARD_WIDTH, VIEWER_FRAME, type ViewerEdge, type ViewerLayoutNode } from "./graphLayout";
 import { presentGraph } from "./graphPresentation";
 import type { ViewerCard } from "./viewer";
@@ -81,6 +82,29 @@ describe("AgSDL reading layout", () => {
       for (const route of routes) for (const step of route.steps) {
         if (step.x !== undefined) expect(step.x >= bounds.x && step.x <= bounds.x + bounds.width).toBe(true);
         expect(step.y >= bounds.y && step.y <= bounds.y + bounds.height).toBe(true);
+      }
+    }
+  });
+  it("keeps unrelated rows compact when a long graph has many loop or forward choices", () => {
+    const cards = Array.from({ length: 20 }, (_, i) => card(`n${i}`));
+    const backbone = cards.slice(0, -1).map((_, i) => edge(`n${i}`, `n${i + 1}`));
+    const choices = (from: string, to: string, count: number) => Array.from({ length: count }, (_, i) => ({ ...edge(from, to, `c${i}`), route030: {
+      path: `/flow/steps/${from}/next/c${i}`, sourcePath: `/flow/steps/${from}`, role: "normal" as const, key: `c${i}`, targetKind: "step" as const,
+    } }));
+    const base = layoutViewer(cards, backbone);
+    const loops = layoutViewer(cards, [...backbone, ...choices("n0", "n0", 40)]);
+    const forward = layoutViewer(cards, [...backbone, ...choices("n10", "n11", 9)]);
+    expect(viewerLayoutBounds(loops).height).toBeLessThan(viewerLayoutBounds(base).height + 100);
+    expect(viewerLayoutBounds(forward).height).toBeLessThan(viewerLayoutBounds(base).height + 600);
+    expect(at(forward, "n9").position.y).toBe(at(base, "n9").position.y);
+    expect(at(forward, "n19").position.y - at(forward, "n12").position.y).toBe(at(base, "n19").position.y - at(base, "n12").position.y);
+    for (const graph of [loops, forward]) {
+      const bounds = viewerLayoutBounds(graph);
+      for (const [width, height] of [[1366, 768], [1440, 900], [400, 300]]) {
+        const minZoom = Math.min(0.1, width / (bounds.width * 4), height / (bounds.height * 4));
+        const viewport = getViewportForBounds(bounds, width, height, minZoom, 1, 0.16);
+        expect(bounds.width * viewport.zoom).toBeLessThanOrEqual(width);
+        expect(bounds.height * viewport.zoom).toBeLessThanOrEqual(height);
       }
     }
   });

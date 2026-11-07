@@ -206,14 +206,16 @@ function Canvas({ cards: declaredCards, edges: declaredEdges, entry: declaredEnt
   const overview = useMemo(() => presentGraph(cards, connections, collapsed, "overview"), [cards, connections, collapsed]);
   const framed = useMemo(() => expansion.frames.map(frame => frame.members), [expansion.frames]);
   const layout = useMemo(() => layoutViewer(overview.cards, overview.edges, heights, framed), [overview.cards, overview.edges, heights, framed]);
+  const bounds = useMemo(() => layout.nodes.length ? viewerLayoutBounds(layout) : undefined, [layout]);
+  const minZoom = bounds && width && height ? Math.min(fitOptions.minZoom, width / (bounds.width * 4), height / (bounds.height * 4)) : fitOptions.minZoom;
   const focus = inspectedEdge || active || hovered;
   const neighborhood = graphNeighborhood(focus, presentation.edges);
   const hasFocus = Boolean(focus) && (presentation.cards.some(card => card.path === focus) || presentation.edges.some(edge => edge.id === focus));
   // Fit the blocks and their side rails, within the same zoom limits as the initial view.
   const fit = useCallback(() => {
     if (!width || !height || !layout.nodes.length) return;
-    void flow.setViewport(getViewportForBounds(viewerLayoutBounds(layout), width, height, fitOptions.minZoom, fitOptions.maxZoom, fitOptions.padding));
-  }, [flow, layout, width, height]);
+    if (bounds) void flow.setViewport(getViewportForBounds(bounds, width, height, minZoom, fitOptions.maxZoom, fitOptions.padding));
+  }, [flow, layout.nodes.length, bounds, width, height, minZoom]);
   const fitted = useRef(false);
   useEffect(() => {
     if (!width || !height || !layout.nodes.length || fitted.current || layout.nodes.some(node => heights[node.card.path] === undefined)) return;
@@ -354,8 +356,8 @@ function Canvas({ cards: declaredCards, edges: declaredEdges, entry: declaredEnt
         onEdgeMouseEnter={(_, edge) => setHovered(edge.id)} onEdgeMouseLeave={() => setHovered("")}
         onPaneContextMenu={event => { event.preventDefault(); setDismissSignal(value => value + 1); setPaneMenu({ left: event.clientX, top: event.clientY }); }}
         onMoveStart={() => { setDismissSignal(value => value + 1); setPaneMenu(undefined); }}
-        onPaneClick={() => { setPaneMenu(undefined); clearSelection(); }} fitView fitViewOptions={fitOptions}
-        minZoom={fitOptions.minZoom} maxZoom={1.8} zoomOnDoubleClick={false}
+        onPaneClick={() => { setPaneMenu(undefined); clearSelection(); }} fitView fitViewOptions={{ ...fitOptions, minZoom }}
+        minZoom={minZoom} maxZoom={1.8} zoomOnDoubleClick={false}
       >
         <Panel position="top-left" className="agsdl-reading-tools">
           {presentation.groups.length > 0 && <details ref={groupMenu} className="agsdl-reading-groups">

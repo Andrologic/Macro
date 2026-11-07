@@ -90,10 +90,6 @@ export function layoutViewer(cards: ViewerCard[], edges: ViewerEdge[], heights: 
     const key = JSON.stringify([edge.source, edge.target]);
     parallelCounts.set(key, (parallelCounts.get(key) ?? 0) + 1);
   }
-  // Aligned routes need a clear vertical segment between distinct horizontal
-  // corridors, not merely distinct SVG path strings.
-  const maxParallel = Math.max(1, ...parallelCounts.values());
-  const rowGap = maxParallel > 1 ? Math.max(ROW_GAP, (maxParallel - 1) * PARALLEL_GAP * 2 + 90) : ROW_GAP;
   const outgoing = new Map(cards.map(card => [card.path, [] as ViewerEdge[]]));
   const incoming = new Map(cards.map(card => [card.path, 0]));
   for (const edge of flow) {
@@ -303,6 +299,19 @@ export function layoutViewer(cards: ViewerCard[], edges: ViewerEdge[], heights: 
     before[Math.min(...ranks)] = VIEWER_FRAME.top + VIEWER_FRAME.heading;
     after[Math.max(...ranks)] = VIEWER_FRAME.padding;
   }
+  // Only forward routes in a corridor need extra vertical tracks. Rails and
+  // returns already have lateral lanes and must not expand unrelated rows.
+  const rowGaps = new Array<number>(layerCount).fill(ROW_GAP);
+  for (const [edge, chain] of chains) {
+    if (edge.route030?.role !== "normal") continue;
+    const count = parallelCounts.get(JSON.stringify([edge.source, edge.target])) ?? 1;
+    if (count < 2) continue;
+    const required = (count - 1) * PARALLEL_GAP * 2 + 90;
+    for (const id of chain.slice(0, -1)) {
+      const layer = nodes.get(id)!.layer;
+      rowGaps[layer] = Math.max(rowGaps[layer], required);
+    }
+  }
   const rowTop: number[] = [], rowBottom: number[] = [];
   let y = 0;
   layers.forEach((layer, index) => {
@@ -310,9 +319,9 @@ export function layoutViewer(cards: ViewerCard[], edges: ViewerEdge[], heights: 
     rowTop.push(y);
     const height = Math.max(0, ...layer.flatMap(node => node.card ? [cardHeight(node.card)] : []));
     rowBottom.push(y + height);
-    y += height + after[index] + rowGap;
+    y += height + after[index] + rowGaps[index];
   });
-  const channel = (layer: number) => rowBottom[layer] + after[layer] + rowGap / 2;
+  const channel = (layer: number) => rowBottom[layer] + after[layer] + rowGaps[layer] / 2;
 
   // Horizontal runs sharing a corridor get separate tracks unless they share an end.
   const routes = new Map<string, ViewerEdgeRoute>();
