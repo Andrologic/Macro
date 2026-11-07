@@ -112,3 +112,14 @@ it('dismisses pinned previews on graph movement and only closes its popup on Esc
   expect(document.querySelector('[role="tooltip"]')).toBeNull();
   expect(edge.isConnected).toBe(true);
 });
+
+it('announces a normal 0.3 choice called onError without treating it as an error route', async () => {
+  const edge = await mount(data({ connection: {
+    id: '/flow/steps/a/next/onError', source: 'a', target: 'b', label: 'onError', dependency: false,
+    route030: { path: '/flow/steps/a/next/onError', sourcePath: '/flow/steps/a', role: 'normal', key: 'onError', targetKind: 'step', target: 'b' },
+  } }));
+  expect(edge.getAttribute('aria-label')).toContain('onError');
+  expect(edge.getAttribute('aria-label')).not.toContain('On error');
+  expect(edge.getAttribute('aria-label')).toContain('Check quality');
+  expect(edge.getAttribute('aria-label')).toContain('Publish');
+});
