@@ -1109,7 +1109,7 @@ mod tests {
         );
         cancel.cancel();
         let error = execution.await.unwrap_err();
-        assert!(error.message.contains("annulée"));
+        assert!(error.message.contains("was cancelled"));
         let registry = WEB_OPERATION_CANCELLATIONS.get().unwrap().lock().unwrap();
         assert!(!registry.active.contains_key("native-cancel-before-web"));
     }
