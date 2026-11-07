@@ -39,6 +39,39 @@ describe('AgSDL 0.3 document boundary', () => {
     expect(sourceAt(edited, '/content/opaque/value/new')).toBe('1.00e-999999999999999999999');
     expect(() => applyChanges(raw, [{ op: 'set', path: '/contract', valueJson: '"agsdl-0.2.0"' }])).toThrow('edition change');
   });
+  it('structured 030 edits valid agent names that also name JavaScript members', () => {
+    for (const name of ['constructor', 'prototype']) {
+      const raw = JSON.stringify({ contract: AGSDL_CONTRACT, id: 'named-agent', agents: { [name]: { harness: 'example', permissions: 'read-only' } } });
+      expect(validateDocumentBytes(bytes(raw)).valid).toBe(true);
+      const edited = applyChanges(raw, [{ op: 'set', path: `/agents/${name}/maxCorrections`, valueJson: '0' }]);
+      expect(sourceAt(edited, `/agents/${name}/maxCorrections`)).toBe('0');
+      expect(validateDocumentBytes(bytes(edited)).valid).toBe(true);
+    }
+  });
+  it('structured 030 treats prototype-named JSON keys as data without traversing runtime prototypes', () => {
+    const raw = source(',"content":{"payload":{"value":{"__proto__":{"untouched":true},"constructor":{"prototype":{"own":1}},"huge":9007199254740993}},"items":{"value":[]}}');
+    const before = Object.getOwnPropertyDescriptor(Object.prototype, 'agsdl030PrototypeGuardProbe');
+    const edited = applyChanges(raw, [
+      { op: 'set', path: '/content/payload/value/__proto__/agsdl030PrototypeGuardProbe', valueJson: 'true' },
+      { op: 'set', path: '/content/payload/value/constructor/prototype/added', valueJson: '"ok"' },
+      { op: 'remove', path: '/content/payload/value/__proto__/untouched' },
+    ]);
+    expect(sourceAt(edited, '/content/payload/value/__proto__/agsdl030PrototypeGuardProbe')).toBe('true');
+    expect(sourceAt(edited, '/content/payload/value/constructor/prototype/added')).toBe('"ok"');
+    expect(sourceAt(edited, '/content/payload/value/huge')).toBe('9007199254740993');
+    expect(Object.getOwnPropertyDescriptor(Object.prototype, 'agsdl030PrototypeGuardProbe')).toEqual(before);
+    const value = object(object(object(readExactDocument(edited).content).payload).value);
+    expect(Object.getPrototypeOf(value)).toBeNull();
+    expect(() => applyChanges(raw, [{ op: 'set', path: '/content/items/value/constructor', valueJson: '{}' }])).toThrow('Array index');
+    expect(() => applyChanges(raw, [{ op: 'set', path: '/content/payload/value/huge/raw', valueJson: '"0"' }])).toThrow('Edit parent');
+    expect(() => applyChanges(raw, [{ op: 'set', path: '/content/payload/value/absent/constructor/x', valueJson: 'true' }])).toThrow('does not exist');
+  });
+  it('structured 030 changes keep the historical pointer guards in older editions', () => {
+    for (const contract of [LEGACY_AGSDL_CONTRACT, AGSDL_020_CONTRACT]) {
+      const raw = JSON.stringify({ contract, constructor: { prototype: {} } });
+      expect(() => applyChanges(raw, [{ op: 'set', path: '/constructor/prototype/agsdl030PrototypeGuardProbe', valueJson: 'true' }])).toThrow('not editable');
+    }
+  });
   it('shares token identity with execution helpers and encodes every published example losslessly', () => {
     expect(NumberToken).toBe(ExecutionToken);
     const exact = readExactDocument(source(',"content":{"n":{"value":[900719925474099312345,1.00e999999999999999999999,1.00000000000000000001]}}'));

@@ -135,7 +135,7 @@ export function sourceAt(source: string, path: string): string {
   return decoder.decode(parsed.bytes.subarray(span.start, span.end));
 }
 
-function decodePointer(path: string): string[] {
+function decodePointer(path: string, contract: unknown): string[] {
   if (path === "") return [];
   if (!path.startsWith("/") || /~(?![01])/u.test(path))
     throw new Error("Invalid JSON pointer.");
@@ -143,7 +143,10 @@ function decodePointer(path: string): string[] {
     .slice(1)
     .split("/")
     .map((part) => part.replaceAll("~1", "/").replaceAll("~0", "~"));
+  // The 0.3 scanner creates null-prototype JSON objects. Member names are data;
+  // applyChanges still checks own properties, JSON parents and array indices.
   if (
+    contract !== AGSDL_CONTRACT &&
     parts.some((part) =>
       ["__proto__", "constructor", "prototype"].includes(part),
     )
@@ -165,7 +168,7 @@ export function applyChanges(source: string, changes: AgsdlChange[]): string {
   for (const change of changes) {
     if (change.op !== "set" && change.op !== "remove")
       throw new Error("Unknown AgSDL edit operation.");
-    const parts = decodePointer(change.path);
+    const parts = decodePointer(change.path, contract);
     const parsed = scanSource(candidate);
     const replacement =
       change.op === "set" ? scanSource(change.valueJson ?? "").tree : undefined;
