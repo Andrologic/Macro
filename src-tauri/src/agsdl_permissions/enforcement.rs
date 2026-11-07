@@ -191,6 +191,9 @@ pub fn check_enforcement(
     if present(&observed.mcp_absent_evidence) {
         required.retain(|(action, _)| *action != Action::Mcp);
     }
+    if present(&observed.shell_absent_evidence) {
+        required.retain(|(action, _)| *action != Action::Shell);
+    }
     let mut evidence = Vec::new();
     if let Some(absent) = &observed.mcp_absent_evidence {
         if !absent.trim().is_empty() {

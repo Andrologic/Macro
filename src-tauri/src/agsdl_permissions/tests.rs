@@ -701,3 +701,63 @@ fn shell_prefix_matcher_can_enforce_a_universal_default_deny() {
     o.shell_matching = ShellMatching::Prefix;
     assert!(check_enforcement(&p, &o, ExecutionPurpose::Agent).is_ok());
 }
+
+#[test]
+fn ipv6_wildcard_rules_cover_equivalent_representations_and_mapped_addresses() {
+    let f = Fixture::new();
+    for decision in ["deny", "ask"] {
+        let expected = if decision == "deny" {
+            Effect::Deny
+        } else {
+            Effect::Ask
+        };
+        for (pattern, subject) in [
+            ("2001:0db8:*", "2001:db8::1"),
+            ("2001:0db8:*", "2001:0db8:0:0:0:0:0:1"),
+            ("2001:0:0:*", "2001::1"),
+            ("2001:db8::0*1", "2001:db8::1"),
+            ("2001:db8::192.0.2.*", "2001:db8::c000:201"),
+            ("::ffff:192.0.2.*", "192.0.2.1"),
+            ("192.0.2.*", "::ffff:192.0.2.1"),
+        ] {
+            let p = f.policy(json!({"preset":"full", "rules":[{"action":"network","match":pattern,"effect":decision}]}));
+            assert_eq!(
+                effect(
+                    &p,
+                    ActionRequest::Network {
+                        host: subject.into()
+                    }
+                ),
+                expected,
+                "{pattern} -> {subject}"
+            );
+        }
+    }
+    let p = f.policy(json!({"preset":"full", "rules":[{"action":"network","match":"2001:0db8:*","effect":"deny"}]}));
+    assert_eq!(
+        effect(
+            &p,
+            ActionRequest::Network {
+                host: "2001:db9::1".into()
+            }
+        ),
+        Effect::Allow
+    );
+}
+
+#[test]
+fn absent_shell_needs_native_evidence_not_an_unreachable_ask_mediation() {
+    let f = Fixture::new();
+    let p = f.effective(json!({"preset":"read-only","rules":[{"action":"shell","match":"git push *","effect":"ask"}]}));
+    let mut o = observed(&p);
+    o.guarantees.retain(|g| g.action != Action::Shell);
+    o.person_reviewer_evidence = None;
+    assert!(check_enforcement(&p, &o, ExecutionPurpose::Agent).is_err());
+    o.shell_absent_evidence = Some("observed-no-shell-entry-points".into());
+    let plan = check_enforcement(&p, &o, ExecutionPurpose::Agent).unwrap();
+    assert!(plan
+        .evidence
+        .iter()
+        .any(|e| e == "observed-no-shell-entry-points"));
+    assert!(!plan.requirements.iter().any(|r| r.action == Action::Shell));
+}

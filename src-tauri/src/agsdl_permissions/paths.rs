@@ -205,6 +205,11 @@ impl NormalizedRule {
                 a || b
             });
         }
+        if action == Action::Network {
+            if let Ok(ip) = subject.logical.parse::<std::net::IpAddr>() {
+                return network_ip_matches(pattern, ip);
+            }
+        }
         let subject = if action == Action::Mcp && !pattern.contains('/') {
             &subject.server
         } else {
@@ -316,4 +321,126 @@ pub(super) fn glob(pattern: &str, subject: &str, paths: bool, command: bool) -> 
     regex::Regex::new(&expression)
         .map(|r| r.is_match(subject))
         .map_err(|_| invalid("Permission pattern exceeds matcher limits"))
+}
+
+/// Match every legal textual spelling of an IP. An IPv6 address has optional
+/// hextet zero padding, one optional compressed zero run, and possibly a dotted
+/// IPv4 tail. Using a set of glob states avoids generating all padded strings.
+/// This ensures a restrictive authored pattern cannot be evaded by spelling.
+fn network_ip_matches(pattern: &str, ip: std::net::IpAddr) -> Result<bool> {
+    use std::net::IpAddr;
+    let matches_v6 = |ip: std::net::Ipv6Addr| ipv6_glob(pattern.as_bytes(), ip);
+    match ip {
+        IpAddr::V4(ip) => {
+            Ok(glob(pattern, &ip.to_string(), false, false)? || matches_v6(ip.to_ipv6_mapped()))
+        }
+        IpAddr::V6(ip) => {
+            let v4_match = if let Some(mapped) = ip.to_ipv4_mapped() {
+                glob(pattern, &mapped.to_string(), false, false)?
+            } else {
+                false
+            };
+            Ok(v4_match || matches_v6(ip))
+        }
+    }
+}
+
+fn glob_advance(pattern: &[u8], states: &[usize], value: &[u8]) -> Vec<usize> {
+    fn closure(pattern: &[u8], states: &mut Vec<usize>) {
+        let mut cursor = 0;
+        while cursor < states.len() {
+            let state = states[cursor];
+            if pattern.get(state) == Some(&b'*') && !states.contains(&(state + 1)) {
+                states.push(state + 1);
+            }
+            cursor += 1;
+        }
+    }
+    let mut states = states.to_vec();
+    closure(pattern, &mut states);
+    for &byte in value {
+        let mut next = Vec::new();
+        for &state in &states {
+            match pattern.get(state) {
+                Some(b'*') => next.push(state),
+                Some(&literal) if literal == byte => next.push(state + 1),
+                _ => {}
+            }
+        }
+        next.sort_unstable();
+        next.dedup();
+        closure(pattern, &mut next);
+        states = next;
+        if states.is_empty() {
+            break;
+        }
+    }
+    states
+}
+
+fn ipv6_form_matches(
+    pattern: &[u8],
+    groups: &[u16],
+    compressed: Option<(usize, usize)>,
+    dotted: Option<&str>,
+) -> bool {
+    let mut states = glob_advance(pattern, &[0], b"");
+    let mut group = 0;
+    let mut previous_compressed = false;
+    while group < groups.len() {
+        if let Some((start, end)) = compressed {
+            if group == start {
+                states = glob_advance(pattern, &states, b"::");
+                group = end;
+                previous_compressed = true;
+                continue;
+            }
+        }
+        if group > 0 && !previous_compressed {
+            states = glob_advance(pattern, &states, b":");
+        }
+        previous_compressed = false;
+        let width = format!("{:x}", groups[group]).len();
+        let mut combined = Vec::new();
+        for width in width..=4 {
+            let text = format!("{:0width$x}", groups[group], width = width);
+            combined.extend(glob_advance(pattern, &states, text.as_bytes()));
+        }
+        combined.sort_unstable();
+        combined.dedup();
+        states = combined;
+        group += 1;
+    }
+    if let Some(dotted) = dotted {
+        if !previous_compressed {
+            states = glob_advance(pattern, &states, b":");
+        }
+        states = glob_advance(pattern, &states, dotted.as_bytes());
+    }
+    states.contains(&pattern.len())
+}
+
+fn ipv6_glob(pattern: &[u8], ip: std::net::Ipv6Addr) -> bool {
+    let groups = ip.segments();
+    let octets = ip.octets();
+    let dotted = format!(
+        "{}.{}.{}.{}",
+        octets[12], octets[13], octets[14], octets[15]
+    );
+    for (groups, tail) in [(&groups[..], None), (&groups[..6], Some(dotted.as_str()))] {
+        if ipv6_form_matches(pattern, groups, None, tail) {
+            return true;
+        }
+        for start in 0..groups.len() {
+            for end in start + 1..=groups.len() {
+                if groups[end - 1] != 0 {
+                    break;
+                }
+                if ipv6_form_matches(pattern, groups, Some((start, end)), tail) {
+                    return true;
+                }
+            }
+        }
+    }
+    false
 }
