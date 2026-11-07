@@ -4,6 +4,7 @@ import type { NumberToken } from '../v0.2/values.mjs';
 export { NumberToken } from '../v0.2/values.mjs';
 export class ParseError extends Error { constructor(byte: number); byte: number; }
 export type ExactValue = null | boolean | string | NumberToken | ExactValue[] | ExactObject;
+/** Null-prototype ordered records; snapshot with the exact serializer. */
 export interface ExactObject { [key: string]: ExactValue; }
 export interface ParsedExactJson {
   tree: ExactValue;

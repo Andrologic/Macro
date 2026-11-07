@@ -2,11 +2,29 @@
 // Adapted from AgSDL v0.3.0 tooling/agsdl/jsoninput.py and the AgSDL JS scanner.
 // Upstream: https://github.com/Andrologic/AgSDL, see the adjacent LICENSE.
 // Browser adaptation: iterative container traversal; shared 0.2 execution token identity.
-import { rememberKeyOrder } from './values.mjs';
 import { NumberToken } from '../v0.2/json.mjs';
 import { ParseError, pointer } from '../experimental/readers/javascript/json.mjs';
 export { NumberToken, ParseError, pointer };
 export { stringify } from './values.mjs';
+
+// JSON objects retain insertion order even for numeric-looking property names.
+// The property hooks also observe direct mutations of returned exact records.
+function jsonObject() {
+  const keys = new Set();
+  return new Proxy(Object.create(null), {
+    ownKeys: () => [...keys],
+    defineProperty(target, key, descriptor) {
+      const defined = Reflect.defineProperty(target, key, descriptor);
+      if (defined) keys.add(key);
+      return defined;
+    },
+    deleteProperty(target, key) {
+      const deleted = Reflect.deleteProperty(target, key);
+      if (deleted) keys.delete(key);
+      return deleted;
+    },
+  });
+}
 
 export function parse(bytes) {
   const b = new Uint8Array(bytes), spans = new Map();
@@ -63,10 +81,8 @@ export function parse(bytes) {
     let v;
     if (b[i] === 123 || b[i] === 91) {
       const object = b[i++] === 123;
-      v = object ? Object.create(null) : [];
-      const keys = [];
-      if (object) rememberKeyOrder(v, keys);
-      frames.push({ v, path, start, object, keys, state: 'first' });
+      v = object ? jsonObject() : [];
+      frames.push({ v, path, start, object, state: 'first' });
     } else {
       if (b[i] === 34) v = string();
       else if ([116, 102, 110].includes(b[i])) {
@@ -107,7 +123,6 @@ export function parse(bytes) {
         const keyAt = i;
         key = string();
         if (Object.hasOwn(f.v, key)) bad(keyAt);
-        f.keys.push(key);
         ws();
         if (b[i++] !== 58) bad(i - 1);
       }

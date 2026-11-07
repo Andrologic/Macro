@@ -107,6 +107,17 @@ describe('AgSDL 0.3 worker', () => {
     expect(expected).toContain("module registry key 'wrong'");
     await expect(validateDocument(source, {}, ordered)).rejects.toThrow(expected);
   });
+  it('keeps mutable module property order across the worker serialization boundary', async () => {
+    const module = loadHarnessModule(fixture('conformance/modules/example/module.json'));
+    const source = '{"contract":"agsdl-0.3.0","id":"order","agents":{}}';
+    Object.assign(module, { '2': false }); Object.assign(module, { '1': true });
+    const options = { modules: new Map([['example', module]]) };
+    expect(() => validateDocumentBytes(bytes(source), options)).toThrow('/2:');
+    await expect(validateDocument(source, {}, options)).rejects.toThrow('/2:');
+    Reflect.deleteProperty(module, '2'); Object.assign(module, { '2': false });
+    expect(() => validateDocumentBytes(bytes(source), options)).toThrow('/1:');
+    await expect(validateDocument(source, {}, options)).rejects.toThrow('/1:');
+  });
   it('keeps parallel responses separate', async () => {
     const a = '{"contract":"agsdl-0.3.0","id":"a","agents":{}}';
     const b = '{"contract":"agsdl-0.3.0","id":"b","agents":{"a":{"harness":"unknown","permissions":"full"}}}';

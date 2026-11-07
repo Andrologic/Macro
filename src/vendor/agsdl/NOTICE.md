@@ -58,9 +58,10 @@ values remain compatible with Macro's execution helpers. Parsing and validation
 rules remain edition-specific. The 0.1 report adapter keeps its historical
 serializer.
 
-The 0.3 browser parser records source member order outside its plain JSON
-objects so numeric-looking property names keep their source order during
-schema checks and exact serialization. Iterative value-schema checks retain
+The 0.3 browser parser returns null-prototype exact records with property
+hooks that retain insertion order for numeric-looking names, including direct
+deletion and reinsertion. These records use JavaScript property proxies and are not structured-cloneable.
+Exact snapshots use the lossless serializer and parser, retaining numeric tokens. Iterative value-schema checks retain
 the reference order of child and bound diagnostics. The parity gate compares
 ordered diagnostic codes, severities, locations and joins; human-readable
 messages may use JavaScript JSON formatting instead of Python repr.

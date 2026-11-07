@@ -22,6 +22,32 @@ describe('AgSDL 0.3 diagnostic traversal order', () => {
     Object.assign(valid, { settings: tree('{"type":"object","properties":{"2":{"type":"string","items":{"type":"string"}},"1":{"type":"string","items":{"type":"string"}}}}') });
     expect(() => read(new TextEncoder().encode('{"contract":"agsdl-0.3.0","id":"order"}'), { modules: new Map([['codex', valid]]) })).toThrow('/settings/properties/2/items');
   });
+  test('mutable exact records track deletions, reinsertions and new numeric keys', () => {
+    const value = tree('{"2":0,"1":0,"x":9007199254740993}') as Record<string, unknown>;
+    delete value['2']; value['2'] = false;
+    expect(stringify(value)).toBe('{"1":0,"x":9007199254740993,"2":false}');
+    const schema = new SchemaChecker({ type: 'object', additionalProperties: false });
+    expect(schema.check(value).map(([path]) => path)).toEqual(['/1', '/x', '/2']);
+    const added = tree('{"x":9007199254740993}') as Record<string, unknown>;
+    added['2'] = false; added['1'] = true;
+    expect(stringify(added)).toBe('{"x":9007199254740993,"2":false,"1":true}');
+    Object.defineProperty(added, '3', { value: null, enumerable: true, configurable: true });
+    expect(Object.keys(added)).toEqual(['x', '2', '1', '3']);
+    Object.freeze(added);
+    expect(Object.keys(added)).toEqual(['x', '2', '1', '3']);
+    expect(Object.getPrototypeOf(added)).toBeNull();
+    expect(Reflect.defineProperty(added, 'later', { value: true })).toBe(false);
+    expect(Reflect.deleteProperty(added, '1')).toBe(false);
+    expect(Object.keys(added)).toEqual(['x', '2', '1', '3']);
+  });
+  test('module snapshots preserve mutation order through exact serialization', () => {
+    const bytes = new TextEncoder().encode('{"contract":"agsdl-0.3.0","id":"order"}');
+    const module = loadHarnessModule(readFileSync(new URL('./harnesses/codex/module.json', import.meta.url)));
+    Object.assign(module, { '2': false }); Object.assign(module, { '1': true });
+    expect(() => read(bytes, { modules: new Map([['codex', module]]) })).toThrow('/2:');
+    Reflect.deleteProperty(module, '2'); Object.assign(module, { '2': false });
+    expect(() => read(bytes, { modules: new Map([['codex', module]]) })).toThrow('/1:');
+  });
   test('checks object schema children before the parent bound and array items after their bound', () => {
     const schema = tree('{"type":"object","properties":{"child":{"type":"string","items":{"type":"string"}}},"minItems":2,"maxItems":1}');
     expect(consistency(schema).map(([path]) => path)).toEqual(['/minItems', '/maxItems', '/properties/child/items', '/minItems']);

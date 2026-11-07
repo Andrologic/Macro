@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Port of AgSDL v0.3.0 tooling/agsdl/valueschema.py. See LICENSE.
-import { equal, compareNumbers, isInteger, json_type_matches, stringify, orderedEntries } from './values.mjs';
+import { equal, compareNumbers, isInteger, json_type_matches, stringify } from './values.mjs';
 import { pointer } from './schemacheck.mjs';
 
 const ARRAY_ONLY = ['items', 'minItems', 'maxItems'];
@@ -41,7 +41,7 @@ export function consistency(schema, path = []) {
         if (!Object.hasOwn(declared, name))
           problems.push([pointer([...here, 'required', i]), `${stringify(name)} is not a declared property`]);
       }
-      for (const [name, child] of orderedEntries(declared).reverse())
+      for (const [name, child] of Object.entries(declared).reverse())
         pending.push([child, [...here, 'properties', name]]);
     }
   }
@@ -72,7 +72,7 @@ export function validate(value, schema, path = []) {
         if (!Object.hasOwn(item, name)) problems.push([at, `missing ${stringify(name)}`]);
       }
       // Schedule unknown fields too, preserving the published traversal order.
-      for (const [name, child] of orderedEntries(item).reverse()) {
+      for (const [name, child] of Object.entries(item).reverse()) {
         if (Object.hasOwn(declared, name)) pending.push([child, declared[name], [...here, name]]);
         else if (node.additionalProperties === false)
           pending.push([child, null, [...here, name], `unknown ${stringify(name)}`]);
