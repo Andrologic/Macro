@@ -1,9 +1,11 @@
 import { run, stringify as stringifyLegacy } from "../../vendor/agsdl/browser-reader.mjs";
-import { parse, read as read030, NumberToken, stringify } from "../../vendor/agsdl/v0.3/reader.mjs";
+import { parse, read as read030, NumberToken, stringify, ModuleError } from "../../vendor/agsdl/v0.3/reader.mjs";
 import type { ExactObject, ReaderOptions030, Report030 } from "../../vendor/agsdl/v0.3/reader.mjs";
 import { read as read020 } from "../../vendor/agsdl/v0.2/reader.mjs";
 import { stringify as stringify020 } from "../../vendor/agsdl/v0.2/values.mjs";
 import type { AgsdlChange, AgsdlReport } from "../../types/agsdl";
+import { workerRequest } from "./reader030WorkerProtocol";
+import type { WorkerResponse } from "./reader030WorkerProtocol";
 
 export const AGSDL_CONTRACT = "agsdl-0.3.0";
 export const AGSDL_020_CONTRACT = "agsdl-0.2.0";
@@ -204,20 +206,26 @@ export async function validateDocument(
     // The official 0.2 parser supplies a scoped report for malformed byte input.
   }
   if (contract === AGSDL_CONTRACT) {
-    const report = read030(primary, options);
-    return [{
-      operation: "readDocument", contract: report.contract,
-      scope: "document-and-harness-declarations", executionSupport: "not-assessed",
-      documentReportJson: stringify(report), annexesAssessment: "not-used-by-contract",
-      results: [{ input: "primary", unit: "document", verdict: report.valid ? "pass" : "fail",
-        findings: report.diagnostics.map(diagnostic => ({
-          rule: diagnostic.code, outcome: diagnostic.severity === "warning" ? "warning" : "fail",
-          severity: diagnostic.severity, details: diagnostic.message,
-          location: { pointer: diagnostic.path },
-          ...(diagnostic.step === undefined ? {} : { step: diagnostic.step }),
-        })),
-      }],
-    }];
+    const request = workerRequest(primary, options);
+    if (typeof Worker === "undefined") throw new Error("AgSDL 0.3 validation requires Web Worker support in this host.");
+    return new Promise<AgsdlReport[]>((resolve, reject) => {
+      let worker: Worker;
+      try { worker = new Worker(new URL("./reader030.worker.ts", import.meta.url), { type: "module" }); }
+      catch (error) { reject(new Error("AgSDL 0.3 validation could not start a Web Worker.", { cause: error })); return; }
+      const finish = () => { worker.onmessage = null; worker.onerror = null; worker.onmessageerror = null; worker.terminate(); };
+      worker.onmessage = (event: MessageEvent<WorkerResponse>) => {
+        finish();
+        if (!event.data || typeof event.data !== "object" || !("error" in event.data || "report" in event.data)) {
+          reject(new Error("AgSDL 0.3 Web Worker returned an invalid message."));
+        } else if ("error" in event.data) {
+          const { name, message } = event.data.error;
+          reject(name === "ModuleError" ? new ModuleError(message) : Object.assign(new Error(message), { name }));
+        } else resolve([event.data.report]);
+      };
+      worker.onerror = (event) => { finish(); reject(new Error(`AgSDL 0.3 Web Worker failed: ${event.message}`)); };
+      worker.onmessageerror = () => { finish(); reject(new Error("AgSDL 0.3 Web Worker returned an unreadable message.")); };
+      try { worker.postMessage(request); } catch (error) { finish(); reject(error); }
+    });
   }
   if (contract === AGSDL_020_CONTRACT || contract === undefined) {
     const report = read020(primary);
