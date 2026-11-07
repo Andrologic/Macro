@@ -63,13 +63,19 @@ export async function compilePlan030(authoredSource: string, source: SourceRevis
     for (const agent of agents) {
       const definition = record(record(document.agents)[agent.agentName]);
       const observation = registry.harnesses.find(harness => harness.harness === agent.harness)!;
-      for (const [name, pointer] of usedProperties030(document, agent.agentName, definition, at('/agents', agent.agentName))) {
+      const uses = usedProperties030(document, agent.agentName, definition, at('/agents', agent.agentName));
+      const concrete = new Set(uses.filter(([, , step]) => step).map(([name, pointer]) => `${name}\0${pointer}`));
+      for (const [name, pointer, step] of uses) {
+        // A composition declaration may be traversed both as an abstract body
+        // and as a concrete flow use. Report the concrete occurrences only.
+        if (!step && concrete.has(`${name}\0${pointer}`)) continue;
         const capability = observation.capabilities.find(candidate => candidate.name === name);
         const alreadyReported = assessment.diagnostics.some(diagnostic =>
-          diagnostic.code === 'HARNESS_APPROXIMATE' && diagnostic.severity === 'warning' && diagnostic.pointer === pointer);
+          diagnostic.code === 'HARNESS_APPROXIMATE' && diagnostic.severity === 'warning' && diagnostic.pointer === pointer
+          && (!step || diagnostic.step?.join('/') === step.join('/')));
         if (capability?.support === 'approximate' && !alreadyReported) {
           runtimeWarnings.push({ code: 'HARNESS_APPROXIMATE', pointer, severity: 'warning',
-            message: `The observed ${agent.harness} adapter approximates ${name}.` });
+            message: `The observed ${agent.harness} adapter approximates ${name}.`, ...(step ? { step } : {}) });
         }
       }
     }

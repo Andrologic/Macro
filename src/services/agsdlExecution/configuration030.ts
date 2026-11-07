@@ -1,7 +1,7 @@
 import { Graph, analyse_joins } from '../../vendor/agsdl/v0.3/graph.mjs';
 import { equal, loadHarnessModule, validateExact, type HarnessModule030 } from '../../vendor/agsdl/v0.3/reader.mjs';
 import { validate as validateValue } from '../../vendor/agsdl/v0.3/valueschema.mjs';
-import type { ExactJsonText } from './contracts';
+import type { ExactJsonText, StepAddress } from './contracts';
 import type { AgentObservation030, CapabilityObservation030, CapturedRegistry030, FrozenAgentConfiguration030, HarnessObservation030 } from './contracts030';
 import { at, decode, fail, has, NumberToken, record, text, type ExactObject, type ExactValue } from './exact';
 import { metadataArray, metadataIdentity, metadataJson, metadataObject } from './metadata';
@@ -200,20 +200,24 @@ function flowResourceReceivers(document: ExactObject): Set<string> {
   return receivers;
 }
 
-export function usedProperties030(document: ExactObject, agentName: string, agent: ExactObject, pointer: string): Map<string, string> {
-  const used = new Map<string, string>();
+export function usedProperties030(document: ExactObject, agentName: string, agent: ExactObject, pointer: string): readonly (readonly [string, string, StepAddress | undefined])[] {
+  const used = new Map<string, Map<string, readonly [string, StepAddress | undefined]>>();
+  const add = (name: string, where: string, step?: StepAddress) => {
+    if (!used.has(name)) used.set(name, new Map());
+    used.get(name)!.set(`${where}\0${step?.join('/') ?? ''}`, [where, step]);
+  };
   for (const key of ['resources', 'skills', 'mcpServers']) {
     const value = agent[key];
-    if (value !== undefined && value !== null && typeof value === 'object' && Object.keys(value).length) used.set(key, at(pointer, key));
+    if (value !== undefined && value !== null && typeof value === 'object' && Object.keys(value).length) add(key, at(pointer, key));
   }
   const model = record(agent.model ?? {}, at(pointer, 'model'));
-  for (const key of ['name', 'effort']) if (has(model, key)) used.set(`model.${key}`, `${pointer}/model/${key}`);
-  if (agent.plan === true) used.set('plan', `${pointer}/plan`);
-  if (has(agent, 'planFirst')) used.set(`planFirst.${text(agent.planFirst)}`, `${pointer}/planFirst`);
+  for (const key of ['name', 'effort']) if (has(model, key)) add(`model.${key}`, `${pointer}/model/${key}`);
+  if (agent.plan === true) add('plan', `${pointer}/plan`);
+  if (has(agent, 'planFirst')) add(`planFirst.${text(agent.planFirst)}`, `${pointer}/planFirst`);
   if (typeof agent.permissions === 'object') {
     const permissions = record(agent.permissions, `${pointer}/permissions`);
-    if (has(permissions, 'reviewer')) used.set(`reviewer.${text(permissions.reviewer)}`, `${pointer}/permissions/reviewer`);
-    if (Object.keys(record(permissions.directories ?? {})).length) used.set('directories', `${pointer}/permissions/directories`);
+    if (has(permissions, 'reviewer')) add(`reviewer.${text(permissions.reviewer)}`, `${pointer}/permissions/reviewer`);
+    if (Object.keys(record(permissions.directories ?? {})).length) add('directories', `${pointer}/permissions/directories`);
   }
   // The vendor graph resolves parameter bindings through nested compositions.
   // Abstract unbound parameters carry no concrete definition to qualify.
@@ -223,14 +227,15 @@ export function usedProperties030(document: ExactObject, agentName: string, agen
   for (const graph of graphs) for (const node of graph.nodes.values()) {
     if (node.agent !== agentName || node.decl === null) continue;
     const where = node.pointer.reduce<string>((path, part) => at(path, String(part)), '');
-    if (node.decl.instance === 'new') used.set('instance.new', `${where}/instance`);
-    else if (node.decl.delivery !== 'steer') used.set('delivery.queue', `${where}/delivery`);
-    if (node.decl.delivery === 'steer') used.set('delivery.steer', `${where}/delivery`);
+    const step = graph === graphs[0] && has(document, 'flow') ? node.addr.split('/') as [string, ...string[]] : undefined;
+    if (node.decl.instance === 'new') add('instance.new', `${where}/instance`, step);
+    else if (node.decl.delivery !== 'steer') add('delivery.queue', `${where}/delivery`, step);
+    if (node.decl.delivery === 'steer') add('delivery.steer', `${where}/delivery`, step);
     if (graph === graphs[0] && has(document, 'flow') && receivers.has(node.addr)) {
-      used.set('resources', where);
+      add('resources', where, step);
     }
   }
-  return used;
+  return [...used].flatMap(([name, paths]) => [...paths.values()].map(([where, step]) => [name, where, step] as const));
 }
 
 /** Freezes one definition against a detached authenticated observation. No launch,

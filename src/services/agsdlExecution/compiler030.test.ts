@@ -224,5 +224,26 @@ describe('0.3 compiler wire plan', () => {
     expect(declaredApproximate.static.valid).toBe(true);
     expect(declaredApproximate.static.diagnostics.some(diagnostic => diagnostic.code === 'HARNESS_APPROXIMATE')).toBe(false);
     expect(declaredApproximate.runtime.diagnostics).toContainEqual(expect.objectContaining({ code: 'HARNESS_APPROXIMATE', severity: 'warning', pointer: '/flow/steps/work' }));
+    const shared = clone(doc);
+    const steps = record(record(shared.flow).steps);
+    record(steps.work).next = 'more';
+    steps.more = { type: 'agent', agent: 'worker' };
+    const sharedResult = await compile(shared, { ...registry030(shared), modules: [{ harness: 'synthetic', moduleJson: encode(module) }],
+      harnesses: approximate.harnesses });
+    expect(sharedResult.runtime.diagnostics).toContainEqual(expect.objectContaining({ code: 'HARNESS_APPROXIMATE', pointer: '/flow/steps/work' }));
+    expect(sharedResult.runtime.diagnostics).toContainEqual(expect.objectContaining({ code: 'HARNESS_APPROXIMATE', pointer: '/flow/steps/more' }));
+    const reused = document030();
+    reused.compositions = { fragment: { entry: 'worker', outputs: ['done'], steps: {
+      worker: { type: 'agent', agent: 'worker', next: { output: 'done' } },
+    } } };
+    reused.flow = { entry: 'start', steps: {
+      start: { type: 'call', command: 'true', next: ['first', 'second'] },
+      first: { type: 'compose', composition: 'fragment', next: { done: [] } },
+      second: { type: 'compose', composition: 'fragment', next: { done: [] } },
+    } };
+    const reusedResult = await compile(reused, { ...registry030(reused), modules: [{ harness: 'synthetic', moduleJson: encode(module) }],
+      harnesses: approximate.harnesses });
+    expect(reusedResult.runtime.diagnostics).toContainEqual(expect.objectContaining({ code: 'HARNESS_APPROXIMATE', pointer: '/compositions/fragment/steps/worker', step: ['first', 'worker'] }));
+    expect(reusedResult.runtime.diagnostics).toContainEqual(expect.objectContaining({ code: 'HARNESS_APPROXIMATE', pointer: '/compositions/fragment/steps/worker', step: ['second', 'worker'] }));
   });
 });
