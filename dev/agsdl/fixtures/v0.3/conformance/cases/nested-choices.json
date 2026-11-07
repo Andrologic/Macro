@@ -1,0 +1,83 @@
+{
+  "contract": "agsdl-0.3.0",
+  "id": "nested-choices",
+  "agents": {
+    "a": {
+      "harness": "example",
+      "permissions": "full",
+      "completionCheck": {
+        "command": "true",
+        "choices": [
+          "zzz"
+        ]
+      }
+    }
+  },
+  "compositions": {
+    "inner": {
+      "parameters": [
+        "p"
+      ],
+      "entry": "s",
+      "outputs": [
+        "done"
+      ],
+      "steps": {
+        "s": {
+          "type": "agent",
+          "agent": {
+            "parameter": "p"
+          },
+          "next": {
+            "ok": {
+              "output": "done"
+            },
+            "no": {
+              "output": "done"
+            }
+          }
+        }
+      }
+    },
+    "outer": {
+      "parameters": [
+        "q"
+      ],
+      "entry": "c",
+      "outputs": [
+        "fin"
+      ],
+      "steps": {
+        "c": {
+          "type": "compose",
+          "composition": "inner",
+          "agents": {
+            "p": {
+              "parameter": "q"
+            }
+          },
+          "next": {
+            "done": {
+              "output": "fin"
+            }
+          }
+        }
+      }
+    }
+  },
+  "flow": {
+    "entry": "go",
+    "steps": {
+      "go": {
+        "type": "compose",
+        "composition": "outer",
+        "agents": {
+          "q": "a"
+        },
+        "next": {
+          "fin": []
+        }
+      }
+    }
+  }
+}

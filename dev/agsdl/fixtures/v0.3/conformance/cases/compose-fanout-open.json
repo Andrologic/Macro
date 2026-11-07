@@ -1,0 +1,70 @@
+{
+  "contract": "agsdl-0.3.0",
+  "id": "compose-fanout-open",
+  "agents": {
+    "lead": {
+      "harness": "example",
+      "permissions": "read-only",
+      "results": {
+        "files": {
+          "schema": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "summary": {
+          "mediaType": "text/plain"
+        }
+      }
+    },
+    "worker": {
+      "harness": "example",
+      "permissions": "workspace"
+    }
+  },
+  "compositions": {
+    "c": {
+      "parameters": [],
+      "entry": "plan",
+      "outputs": [
+        "done"
+      ],
+      "steps": {
+        "plan": {
+          "type": "agent",
+          "agent": "lead",
+          "next": {
+            "step": "fix",
+            "each": [
+              "results",
+              "files"
+            ]
+          }
+        },
+        "fix": {
+          "type": "agent",
+          "agent": "worker",
+          "instance": "new",
+          "next": {
+            "output": "done"
+          }
+        }
+      }
+    }
+  },
+  "flow": {
+    "entry": "plan",
+    "steps": {
+      "plan": {
+        "type": "compose",
+        "composition": "c",
+        "agents": {},
+        "next": {
+          "done": []
+        }
+      }
+    }
+  }
+}

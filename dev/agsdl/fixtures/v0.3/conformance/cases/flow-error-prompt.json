@@ -1,0 +1,33 @@
+{
+  "contract": "agsdl-0.3.0",
+  "id": "flow-error-prompt",
+  "agents": {
+    "a": {
+      "harness": "example",
+      "permissions": "full"
+    }
+  },
+  "flow": {
+    "entry": "s",
+    "onError": {
+      "step": "h",
+      "message": {
+        "prompt": {
+          "from": [
+            "instructions"
+          ]
+        }
+      }
+    },
+    "steps": {
+      "s": {
+        "type": "agent",
+        "agent": "a"
+      },
+      "h": {
+        "type": "agent",
+        "agent": "a"
+      }
+    }
+  }
+}

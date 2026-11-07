@@ -1,0 +1,37 @@
+{
+  "contract": "agsdl-0.3.0",
+  "id": "join-direct-branch",
+  "agents": {
+    "a": {
+      "harness": "example",
+      "permissions": "read-only"
+    }
+  },
+  "flow": {
+    "entry": "one",
+    "steps": {
+      "one": {
+        "type": "agent",
+        "agent": "a",
+        "next": [
+          "two",
+          "merge"
+        ]
+      },
+      "two": {
+        "type": "agent",
+        "agent": "a",
+        "instance": "second",
+        "next": "merge"
+      },
+      "merge": {
+        "type": "join",
+        "next": "three"
+      },
+      "three": {
+        "type": "agent",
+        "agent": "a"
+      }
+    }
+  }
+}

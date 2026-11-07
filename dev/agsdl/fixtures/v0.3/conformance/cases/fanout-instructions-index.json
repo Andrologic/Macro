@@ -1,0 +1,45 @@
+{
+  "contract": "agsdl-0.3.0",
+  "id": "fanout-instructions-index",
+  "agents": {
+    "a": {
+      "harness": "example",
+      "permissions": "full",
+      "instructs": true
+    }
+  },
+  "flow": {
+    "entry": "s",
+    "steps": {
+      "s": {
+        "type": "agent",
+        "agent": "a",
+        "next": {
+          "step": "t",
+          "each": [
+            "instructions"
+          ],
+          "message": {
+            "resources": {
+              "first": {
+                "from": [
+                  "instructions",
+                  0
+                ]
+              }
+            }
+          }
+        }
+      },
+      "t": {
+        "type": "agent",
+        "agent": "a",
+        "instance": "new",
+        "next": "j"
+      },
+      "j": {
+        "type": "join"
+      }
+    }
+  }
+}

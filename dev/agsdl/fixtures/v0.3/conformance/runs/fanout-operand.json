@@ -1,0 +1,106 @@
+{
+  "description": "A fan-out over a value that is not a list fails before anything starts: the closing join fails with OPERAND and handles it like any step.",
+  "document": {
+    "contract": "agsdl-0.3.0",
+    "id": "fanout-operand",
+    "agents": {
+      "worker": {
+        "harness": "example",
+        "permissions": "workspace"
+      },
+      "lead": {
+        "harness": "example",
+        "permissions": "workspace"
+      }
+    },
+    "flow": {
+      "entry": "list",
+      "steps": {
+        "list": {
+          "type": "call",
+          "command": "./changed-files.sh",
+          "parse": "json",
+          "next": {
+            "passed": {
+              "step": "fix",
+              "each": [
+                "data",
+                "value"
+              ]
+            },
+            "failed": []
+          }
+        },
+        "fix": {
+          "type": "agent",
+          "agent": "worker",
+          "instance": "new",
+          "next": "gather"
+        },
+        "gather": {
+          "type": "join",
+          "next": "summary",
+          "onError": "triage"
+        },
+        "summary": {
+          "type": "agent",
+          "agent": "lead",
+          "prompt": "Summarize."
+        },
+        "triage": {
+          "type": "agent",
+          "agent": "lead",
+          "prompt": "Find out what the script returned."
+        }
+      }
+    }
+  },
+  "entry": {
+    "prompt": "Start."
+  },
+  "timeline": [
+    {
+      "work": "list",
+      "command": {
+        "exitCode": 0,
+        "stdout": "{\"files\": [\"a.ts\"]}"
+      }
+    },
+    {
+      "running": [
+        {
+          "step": "triage"
+        }
+      ]
+    },
+    {
+      "work": "triage",
+      "returns": {
+        "text": "The script returns an object."
+      }
+    }
+  ],
+  "expect": {
+    "run": "succeeded",
+    "starts": {
+      "list": 1,
+      "triage": 1
+    },
+    "messages": [
+      {
+        "to": "triage",
+        "resources": {
+          "error": {
+            "code": "OPERAND"
+          }
+        }
+      }
+    ],
+    "failures": [
+      {
+        "step": "gather",
+        "code": "OPERAND"
+      }
+    ]
+  }
+}

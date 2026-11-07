@@ -1,0 +1,15 @@
+{
+  "contract": "agsdl-0.3.0",
+  "id": "read-only-write-directory",
+  "agents": {
+    "a": {
+      "harness": "example",
+      "permissions": {
+        "preset": "read-only",
+        "directories": {
+          "/tmp/out": "write"
+        }
+      }
+    }
+  }
+}

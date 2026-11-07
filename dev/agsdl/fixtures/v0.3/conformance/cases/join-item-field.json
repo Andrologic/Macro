@@ -1,0 +1,81 @@
+{
+  "contract": "agsdl-0.3.0",
+  "id": "join-item-field",
+  "agents": {
+    "lead": {
+      "harness": "example",
+      "permissions": "read-only",
+      "results": {
+        "files": {
+          "schema": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "minItems": 1,
+            "maxItems": 50
+          }
+        },
+        "summary": {
+          "mediaType": "text/plain"
+        }
+      }
+    },
+    "worker": {
+      "harness": "example",
+      "permissions": "workspace"
+    }
+  },
+  "flow": {
+    "entry": "plan",
+    "steps": {
+      "plan": {
+        "type": "agent",
+        "agent": "lead",
+        "maxVisits": 3,
+        "next": {
+          "split": {
+            "step": "fix",
+            "each": [
+              "results",
+              "files"
+            ],
+            "concurrency": 4,
+            "max": 50
+          },
+          "none": []
+        }
+      },
+      "fix": {
+        "type": "agent",
+        "agent": "worker",
+        "instance": "new",
+        "next": "gather"
+      },
+      "gather": {
+        "type": "join",
+        "failures": "keep",
+        "next": {
+          "step": "summary",
+          "message": {
+            "resources": {
+              "x": {
+                "from": [
+                  "branches",
+                  "fix",
+                  0,
+                  "item",
+                  "bad"
+                ]
+              }
+            }
+          }
+        }
+      },
+      "summary": {
+        "type": "agent",
+        "agent": "lead"
+      }
+    }
+  }
+}

@@ -1,0 +1,140 @@
+{
+  "contract": "agsdl-0.3.0",
+  "id": "nested-compositions",
+  "agents": {
+    "writer": {
+      "harness": "example",
+      "permissions": "workspace"
+    },
+    "reviewer": {
+      "harness": "example",
+      "permissions": "read-only"
+    }
+  },
+  "flow": {
+    "entry": "write",
+    "steps": {
+      "write": {
+        "type": "agent",
+        "agent": "writer",
+        "next": "review"
+      },
+      "review": {
+        "type": "compose",
+        "composition": "publication",
+        "agents": {
+          "reviewer": "reviewer"
+        },
+        "next": {
+          "approved": [],
+          "rejected": "write"
+        }
+      }
+    }
+  },
+  "compositions": {
+    "triple-review": {
+      "parameters": [
+        "reviewer"
+      ],
+      "entry": "spread",
+      "outputs": [
+        "approved",
+        "rejected"
+      ],
+      "steps": {
+        "spread": {
+          "type": "agent",
+          "agent": {
+            "parameter": "reviewer"
+          },
+          "instance": "dispatcher",
+          "next": [
+            "r1",
+            "r2",
+            "r3"
+          ]
+        },
+        "r1": {
+          "type": "agent",
+          "agent": {
+            "parameter": "reviewer"
+          },
+          "instance": "new",
+          "next": {
+            "approve": "vote",
+            "reject": "vote"
+          }
+        },
+        "r2": {
+          "type": "agent",
+          "agent": {
+            "parameter": "reviewer"
+          },
+          "instance": "new",
+          "next": {
+            "approve": "vote",
+            "reject": "vote"
+          }
+        },
+        "r3": {
+          "type": "agent",
+          "agent": {
+            "parameter": "reviewer"
+          },
+          "instance": "new",
+          "next": {
+            "approve": "vote",
+            "reject": "vote"
+          }
+        },
+        "vote": {
+          "type": "join",
+          "quorum": {
+            "count": 2,
+            "accept": [
+              "approve"
+            ]
+          },
+          "next": {
+            "reached": {
+              "output": "approved"
+            },
+            "missed": {
+              "output": "rejected"
+            }
+          }
+        }
+      }
+    },
+    "publication": {
+      "parameters": [
+        "reviewer"
+      ],
+      "entry": "check",
+      "outputs": [
+        "approved",
+        "rejected"
+      ],
+      "steps": {
+        "check": {
+          "type": "compose",
+          "composition": "triple-review",
+          "agents": {
+            "reviewer": {
+              "parameter": "reviewer"
+            }
+          },
+          "next": {
+            "approved": {
+              "output": "approved"
+            },
+            "rejected": {
+              "output": "rejected"
+            }
+          }
+        }
+      }
+    }
+  }
+}

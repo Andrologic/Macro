@@ -1,0 +1,53 @@
+{
+  "contract": "agsdl-0.3.0",
+  "id": "flow-error-join",
+  "agents": {
+    "a": {
+      "harness": "example",
+      "permissions": "full"
+    }
+  },
+  "flow": {
+    "entry": "s",
+    "onError": "h",
+    "steps": {
+      "s": {
+        "type": "agent",
+        "agent": "a"
+      },
+      "h": {
+        "type": "agent",
+        "agent": "a",
+        "next": [
+          "b1",
+          "b2"
+        ]
+      },
+      "b1": {
+        "type": "agent",
+        "agent": "a",
+        "instance": "new",
+        "next": "j"
+      },
+      "b2": {
+        "type": "agent",
+        "agent": "a",
+        "instance": "new",
+        "next": "j"
+      },
+      "j": {
+        "type": "join",
+        "quorum": {
+          "count": 5,
+          "accept": [
+            "ok"
+          ]
+        },
+        "next": {
+          "reached": [],
+          "missed": []
+        }
+      }
+    }
+  }
+}

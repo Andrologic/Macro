@@ -1,0 +1,11 @@
+{
+  "contract": "agsdl-0.3.0",
+  "id": "shape-unknown-field",
+  "agents": {
+    "a": {
+      "harness": "example",
+      "permissions": "read-only"
+    }
+  },
+  "extra": true
+}

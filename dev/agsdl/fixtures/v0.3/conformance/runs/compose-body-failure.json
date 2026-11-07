@@ -1,0 +1,115 @@
+{
+  "description": "A body failure that nothing in the body handles fails the compose step with the same error; without its own onError, the compose step follows the flow's.",
+  "document": {
+    "contract": "agsdl-0.3.0",
+    "id": "compose-body-failure",
+    "agents": {
+      "writer": {
+        "harness": "example",
+        "permissions": "workspace"
+      },
+      "lead": {
+        "harness": "example",
+        "permissions": "workspace"
+      }
+    },
+    "compositions": {
+      "sign-off": {
+        "entry": "check",
+        "outputs": [
+          "ok"
+        ],
+        "steps": {
+          "check": {
+            "type": "approval",
+            "title": "Sign off?",
+            "timeoutMs": 3600000,
+            "next": {
+              "ok": {
+                "output": "ok"
+              }
+            }
+          }
+        }
+      }
+    },
+    "flow": {
+      "entry": "write",
+      "steps": {
+        "write": {
+          "type": "agent",
+          "agent": "writer",
+          "next": "review"
+        },
+        "review": {
+          "type": "compose",
+          "composition": "sign-off",
+          "next": {
+            "ok": []
+          }
+        },
+        "triage": {
+          "type": "agent",
+          "agent": "lead",
+          "prompt": "Find out what failed."
+        }
+      },
+      "onError": "triage"
+    }
+  },
+  "entry": {
+    "prompt": "Start."
+  },
+  "timeline": [
+    {
+      "work": "write",
+      "returns": {
+        "text": "Draft."
+      }
+    },
+    {
+      "elapse": 3600001
+    },
+    {
+      "running": [
+        {
+          "step": "triage"
+        }
+      ]
+    },
+    {
+      "work": "triage",
+      "returns": {
+        "text": "Nobody signed off."
+      }
+    }
+  ],
+  "expect": {
+    "run": "succeeded",
+    "starts": {
+      "write": 1,
+      "review/check": 1,
+      "triage": 1
+    },
+    "messages": [
+      {
+        "to": "triage",
+        "resources": {
+          "error": {
+            "code": "APPROVAL_TIMEOUT"
+          }
+        }
+      }
+    ],
+    "failures": [
+      {
+        "step": "review/check",
+        "code": "APPROVAL_TIMEOUT"
+      },
+      {
+        "step": "review",
+        "code": "APPROVAL_TIMEOUT"
+      }
+    ]
+  }
+}

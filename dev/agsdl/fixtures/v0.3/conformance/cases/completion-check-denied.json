@@ -1,0 +1,13 @@
+{
+  "contract": "agsdl-0.3.0",
+  "id": "completion-check-denied",
+  "agents": {
+    "a": {
+      "harness": "example",
+      "permissions": "read-only",
+      "completionCheck": {
+        "command": "npm test"
+      }
+    }
+  }
+}

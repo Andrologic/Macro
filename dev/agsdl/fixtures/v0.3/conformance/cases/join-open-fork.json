@@ -1,0 +1,53 @@
+{
+  "contract": "agsdl-0.3.0",
+  "id": "join-open-fork",
+  "agents": {
+    "a": {
+      "harness": "example",
+      "permissions": "read-only"
+    }
+  },
+  "flow": {
+    "entry": "s",
+    "steps": {
+      "s": {
+        "type": "agent",
+        "agent": "a",
+        "next": [
+          "x",
+          "y"
+        ]
+      },
+      "x": {
+        "type": "agent",
+        "agent": "a",
+        "instance": "new",
+        "next": [
+          "x1",
+          "x2"
+        ]
+      },
+      "x1": {
+        "type": "agent",
+        "agent": "a",
+        "instance": "new",
+        "next": "j"
+      },
+      "x2": {
+        "type": "agent",
+        "agent": "a",
+        "instance": "new",
+        "next": "j"
+      },
+      "y": {
+        "type": "agent",
+        "agent": "a",
+        "instance": "new",
+        "next": "j"
+      },
+      "j": {
+        "type": "join"
+      }
+    }
+  }
+}

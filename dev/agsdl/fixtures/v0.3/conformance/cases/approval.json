@@ -1,0 +1,59 @@
+{
+  "contract": "agsdl-0.3.0",
+  "id": "approval",
+  "mcpServers": {
+    "releases": {
+      "url": "https://mcp.example.com/releases"
+    }
+  },
+  "agents": {
+    "dev": {
+      "harness": "example",
+      "permissions": "workspace"
+    }
+  },
+  "flow": {
+    "entry": "prepare",
+    "steps": {
+      "prepare": {
+        "type": "agent",
+        "agent": "dev",
+        "next": "approve"
+      },
+      "approve": {
+        "type": "approval",
+        "title": "Publish?",
+        "timeoutMs": 3600000,
+        "next": {
+          "publish": "publish",
+          "abandon": [],
+          "revise": {
+            "step": "prepare",
+            "message": {
+              "prompt": "Revise the change.",
+              "resources": {
+                "comment": {
+                  "from": [
+                    "comment"
+                  ]
+                }
+              }
+            }
+          }
+        }
+      },
+      "publish": {
+        "type": "call",
+        "mcp": {
+          "server": "releases",
+          "tool": "publish"
+        },
+        "arguments": {
+          "channel": {
+            "value": "stable"
+          }
+        }
+      }
+    }
+  }
+}

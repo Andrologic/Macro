@@ -1,0 +1,58 @@
+{
+  "contract": "agsdl-0.3.0",
+  "id": "steer-in-branch",
+  "agents": {
+    "dev": {
+      "harness": "example",
+      "permissions": "workspace"
+    },
+    "watcher": {
+      "harness": "example",
+      "permissions": "read-only"
+    }
+  },
+  "flow": {
+    "entry": "start",
+    "steps": {
+      "start": {
+        "type": "agent",
+        "agent": "watcher",
+        "instance": "lead",
+        "next": [
+          "code",
+          "watch"
+        ]
+      },
+      "code": {
+        "type": "agent",
+        "agent": "dev",
+        "delivery": "queue",
+        "next": "merge"
+      },
+      "watch": {
+        "type": "agent",
+        "agent": "watcher",
+        "next": "signal"
+      },
+      "signal": {
+        "type": "agent",
+        "agent": "dev",
+        "delivery": "steer",
+        "next": "merge"
+      },
+      "merge": {
+        "type": "join",
+        "next": "review"
+      },
+      "review": {
+        "type": "agent",
+        "agent": "watcher",
+        "instance": "reviewer",
+        "next": {
+          "revise": "start",
+          "done": []
+        }
+      }
+    }
+  }
+}

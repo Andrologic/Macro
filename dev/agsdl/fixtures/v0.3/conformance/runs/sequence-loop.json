@@ -1,0 +1,110 @@
+{
+  "description": "Steps follow routes one after the other; a choice loops back with the agent's default message.",
+  "document": {
+    "contract": "agsdl-0.3.0",
+    "id": "sequence-loop",
+    "agents": {
+      "writer": {
+        "harness": "example",
+        "permissions": "workspace"
+      },
+      "reviewer": {
+        "harness": "example",
+        "permissions": "read-only"
+      }
+    },
+    "flow": {
+      "entry": "write",
+      "steps": {
+        "write": {
+          "type": "agent",
+          "agent": "writer",
+          "next": "review"
+        },
+        "review": {
+          "type": "agent",
+          "agent": "reviewer",
+          "instance": "new",
+          "next": {
+            "revise": "write",
+            "ready": "publish"
+          }
+        },
+        "publish": {
+          "type": "call",
+          "command": "make publish"
+        }
+      }
+    }
+  },
+  "entry": {
+    "prompt": "Start."
+  },
+  "timeline": [
+    {
+      "work": "write",
+      "returns": {
+        "text": "Draft 1"
+      }
+    },
+    {
+      "work": "review",
+      "returns": {
+        "text": "Section 2 is wrong.",
+        "choice": "revise"
+      }
+    },
+    {
+      "work": "write",
+      "returns": {
+        "text": "Draft 2"
+      }
+    },
+    {
+      "work": "review",
+      "returns": {
+        "text": "Good.",
+        "choice": "ready"
+      }
+    },
+    {
+      "work": "publish",
+      "command": {
+        "exitCode": 0,
+        "stdout": "published\n"
+      }
+    }
+  ],
+  "expect": {
+    "run": "succeeded",
+    "starts": {
+      "write": 2,
+      "review": 2,
+      "publish": 1
+    },
+    "messages": [
+      {
+        "to": "write",
+        "nth": 1,
+        "prompt": "Start."
+      },
+      {
+        "to": "review",
+        "nth": 1,
+        "prompt": null,
+        "resources": {
+          "text": "Draft 1"
+        }
+      },
+      {
+        "to": "write",
+        "nth": 2,
+        "prompt": null,
+        "resources": {
+          "text": "Section 2 is wrong."
+        }
+      }
+    ],
+    "failures": []
+  }
+}

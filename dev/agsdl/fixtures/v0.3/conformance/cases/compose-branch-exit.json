@@ -1,0 +1,65 @@
+{
+  "contract": "agsdl-0.3.0",
+  "id": "compose-branch-exit",
+  "agents": {
+    "a": {
+      "harness": "example",
+      "permissions": "full"
+    }
+  },
+  "compositions": {
+    "c": {
+      "entry": "s",
+      "outputs": [
+        "ok",
+        "aborted"
+      ],
+      "steps": {
+        "s": {
+          "type": "agent",
+          "agent": "a",
+          "next": [
+            "r1",
+            "r2"
+          ]
+        },
+        "r1": {
+          "type": "agent",
+          "agent": "a",
+          "instance": "new",
+          "next": {
+            "done": "j",
+            "abort": {
+              "output": "aborted"
+            }
+          }
+        },
+        "r2": {
+          "type": "agent",
+          "agent": "a",
+          "instance": "new",
+          "next": "j"
+        },
+        "j": {
+          "type": "join",
+          "next": {
+            "output": "ok"
+          }
+        }
+      }
+    }
+  },
+  "flow": {
+    "entry": "go",
+    "steps": {
+      "go": {
+        "type": "compose",
+        "composition": "c",
+        "next": {
+          "ok": [],
+          "aborted": []
+        }
+      }
+    }
+  }
+}

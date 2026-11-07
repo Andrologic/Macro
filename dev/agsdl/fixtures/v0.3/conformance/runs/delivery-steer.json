@@ -1,0 +1,99 @@
+{
+  "description": "A steer message for a working instance joins its current work and has no work of its own.",
+  "document": {
+    "contract": "agsdl-0.3.0",
+    "id": "delivery-steer",
+    "agents": {
+      "lead": {
+        "harness": "example",
+        "permissions": "workspace"
+      },
+      "dev": {
+        "harness": "example",
+        "permissions": "workspace"
+      }
+    },
+    "flow": {
+      "entry": "start",
+      "steps": {
+        "start": {
+          "type": "agent",
+          "agent": "lead",
+          "next": [
+            "work",
+            "ping"
+          ]
+        },
+        "work": {
+          "type": "agent",
+          "agent": "dev",
+          "next": []
+        },
+        "ping": {
+          "type": "call",
+          "command": "./check-release-notes.sh",
+          "next": {
+            "step": "nudge",
+            "message": {
+              "prompt": "Also update the changelog."
+            }
+          }
+        },
+        "nudge": {
+          "type": "agent",
+          "agent": "dev",
+          "delivery": "steer",
+          "next": []
+        }
+      }
+    }
+  },
+  "entry": {
+    "prompt": "Start."
+  },
+  "timeline": [
+    {
+      "work": "start",
+      "returns": {
+        "text": "Release 2.0."
+      }
+    },
+    {
+      "work": "ping",
+      "command": {
+        "exitCode": 0
+      }
+    },
+    {
+      "running": [
+        {
+          "step": "work"
+        }
+      ]
+    },
+    {
+      "work": "work",
+      "returns": {
+        "text": "Released, changelog updated."
+      }
+    },
+    {
+      "running": []
+    }
+  ],
+  "expect": {
+    "run": "succeeded",
+    "starts": {
+      "start": 1,
+      "work": 1,
+      "ping": 1
+    },
+    "messages": [
+      {
+        "to": "nudge",
+        "prompt": "Also update the changelog."
+      }
+    ],
+    "failures": []
+  }
+}

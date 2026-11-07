@@ -1,0 +1,72 @@
+{
+  "contract": "agsdl-0.3.0",
+  "id": "join-branch-path",
+  "agents": {
+    "lead": {
+      "harness": "example",
+      "permissions": "read-only"
+    },
+    "reviewer": {
+      "harness": "example",
+      "permissions": "read-only",
+      "results": {
+        "findings": {
+          "required": true,
+          "schema": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      }
+    }
+  },
+  "flow": {
+    "entry": "analyze",
+    "steps": {
+      "analyze": {
+        "type": "agent",
+        "agent": "lead",
+        "next": [
+          "security",
+          "performance"
+        ]
+      },
+      "security": {
+        "type": "agent",
+        "agent": "reviewer",
+        "instance": "new",
+        "next": "merge"
+      },
+      "performance": {
+        "type": "agent",
+        "agent": "reviewer",
+        "instance": "new",
+        "next": "merge"
+      },
+      "merge": {
+        "type": "join",
+        "next": {
+          "step": "report",
+          "message": {
+            "resources": {
+              "bad": {
+                "from": [
+                  "branches",
+                  "security",
+                  "results",
+                  "notDeclared"
+                ]
+              }
+            }
+          }
+        }
+      },
+      "report": {
+        "type": "agent",
+        "agent": "lead"
+      }
+    }
+  }
+}

@@ -1,0 +1,24 @@
+{
+  "contract": "agsdl-0.3.0",
+  "id": "shell-star-closed",
+  "agents": {
+    "a": {
+      "harness": "limited",
+      "permissions": {
+        "preset": "full",
+        "rules": [
+          {
+            "action": "write",
+            "match": ".env*",
+            "effect": "deny"
+          },
+          {
+            "action": "shell",
+            "effect": "deny",
+            "match": "*"
+          }
+        ]
+      }
+    }
+  }
+}

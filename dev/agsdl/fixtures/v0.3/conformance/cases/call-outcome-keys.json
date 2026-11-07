@@ -1,0 +1,28 @@
+{
+  "contract": "agsdl-0.3.0",
+  "id": "call-outcome-keys",
+  "agents": {
+    "a": {
+      "harness": "example",
+      "permissions": "read-only"
+    }
+  },
+  "flow": {
+    "entry": "s",
+    "steps": {
+      "s": {
+        "type": "agent",
+        "agent": "a",
+        "next": "t"
+      },
+      "t": {
+        "type": "call",
+        "command": "make test",
+        "next": {
+          "ok": [],
+          "failed": []
+        }
+      }
+    }
+  }
+}

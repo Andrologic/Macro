@@ -1,0 +1,62 @@
+{
+  "contract": "agsdl-0.3.0",
+  "id": "join-compose-origin",
+  "agents": {},
+  "compositions": {
+    "inner": {
+      "parameters": [],
+      "entry": "s",
+      "outputs": [
+        "o"
+      ],
+      "steps": {
+        "s": {
+          "type": "call",
+          "command": "true",
+          "next": {
+            "passed": {
+              "output": "o"
+            },
+            "failed": "t"
+          }
+        },
+        "t": {
+          "type": "call",
+          "command": "true",
+          "next": {
+            "output": "o"
+          }
+        }
+      }
+    }
+  },
+  "flow": {
+    "entry": "x",
+    "steps": {
+      "x": {
+        "type": "compose",
+        "composition": "inner",
+        "agents": {},
+        "next": {
+          "o": [
+            "a",
+            "b"
+          ]
+        }
+      },
+      "a": {
+        "type": "call",
+        "command": "true",
+        "next": "j"
+      },
+      "b": {
+        "type": "call",
+        "command": "true",
+        "next": "j"
+      },
+      "j": {
+        "type": "join"
+      }
+    }
+  }
+}

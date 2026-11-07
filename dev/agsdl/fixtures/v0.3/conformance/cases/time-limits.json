@@ -1,0 +1,35 @@
+{
+  "contract": "agsdl-0.3.0",
+  "id": "time-limits",
+  "agents": {
+    "dev": {
+      "harness": "example",
+      "permissions": {
+        "preset": "workspace",
+        "reviewer": "person"
+      },
+      "planFirst": "ask",
+      "answerTimeoutMs": 3600000
+    }
+  },
+  "flow": {
+    "entry": "build",
+    "steps": {
+      "build": {
+        "type": "agent",
+        "agent": "dev",
+        "timeoutMs": 600000,
+        "next": "tests"
+      },
+      "tests": {
+        "type": "call",
+        "command": "npm test",
+        "timeoutMs": 300000,
+        "next": {
+          "passed": [],
+          "failed": "build"
+        }
+      }
+    }
+  }
+}

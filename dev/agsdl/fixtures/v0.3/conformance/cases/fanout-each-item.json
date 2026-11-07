@@ -1,0 +1,30 @@
+{
+  "contract": "agsdl-0.3.0",
+  "id": "fanout-each-item",
+  "agents": {
+    "reviewer": {
+      "harness": "example",
+      "permissions": "read-only"
+    }
+  },
+  "flow": {
+    "entry": "plan",
+    "steps": {
+      "plan": {
+        "type": "agent",
+        "agent": "reviewer",
+        "next": {
+          "step": "check",
+          "each": [
+            "item"
+          ]
+        }
+      },
+      "check": {
+        "type": "agent",
+        "agent": "reviewer",
+        "instance": "new"
+      }
+    }
+  }
+}

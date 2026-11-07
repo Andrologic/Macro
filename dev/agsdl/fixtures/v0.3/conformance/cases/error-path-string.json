@@ -1,0 +1,38 @@
+{
+  "contract": "agsdl-0.3.0",
+  "id": "error-path-string",
+  "agents": {
+    "reviewer": {
+      "harness": "example",
+      "permissions": "read-only"
+    }
+  },
+  "flow": {
+    "entry": "build",
+    "steps": {
+      "build": {
+        "type": "agent",
+        "agent": "reviewer",
+        "onError": {
+          "step": "report",
+          "message": {
+            "resources": {
+              "code": {
+                "from": [
+                  "error",
+                  "code",
+                  "name"
+                ]
+              }
+            }
+          }
+        }
+      },
+      "report": {
+        "type": "agent",
+        "agent": "reviewer",
+        "instance": "new"
+      }
+    }
+  }
+}

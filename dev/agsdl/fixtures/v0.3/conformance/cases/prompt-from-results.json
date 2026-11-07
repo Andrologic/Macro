@@ -1,0 +1,35 @@
+{
+  "contract": "agsdl-0.3.0",
+  "id": "prompt-from-results",
+  "agents": {
+    "a": {
+      "harness": "example",
+      "permissions": "full",
+      "instructs": true
+    }
+  },
+  "flow": {
+    "entry": "s",
+    "steps": {
+      "s": {
+        "type": "agent",
+        "agent": "a",
+        "next": {
+          "step": "t",
+          "message": {
+            "prompt": {
+              "from": [
+                "text"
+              ]
+            }
+          }
+        }
+      },
+      "t": {
+        "type": "agent",
+        "agent": "a",
+        "instance": "t"
+      }
+    }
+  }
+}

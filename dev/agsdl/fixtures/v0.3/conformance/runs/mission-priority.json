@@ -1,0 +1,107 @@
+{
+  "description": "An instructing agent's instructions are the next step's prompt, unless the route's explicit message gives one.",
+  "document": {
+    "contract": "agsdl-0.3.0",
+    "id": "mission-priority",
+    "agents": {
+      "lead": {
+        "harness": "example",
+        "permissions": "workspace",
+        "instructs": true
+      },
+      "coder": {
+        "harness": "example",
+        "permissions": "workspace"
+      }
+    },
+    "flow": {
+      "entry": "lead",
+      "steps": {
+        "lead": {
+          "type": "agent",
+          "agent": "lead",
+          "maxVisits": 3,
+          "next": {
+            "build": "code",
+            "explain": {
+              "step": "code",
+              "message": {
+                "prompt": "Explain the design."
+              }
+            },
+            "done": []
+          }
+        },
+        "code": {
+          "type": "agent",
+          "agent": "coder",
+          "next": "lead"
+        }
+      }
+    }
+  },
+  "entry": {
+    "prompt": "Start."
+  },
+  "timeline": [
+    {
+      "work": "lead",
+      "returns": {
+        "choice": "build",
+        "instructions": "Add the cache layer."
+      }
+    },
+    {
+      "work": "code",
+      "returns": {
+        "text": "Cache added."
+      }
+    },
+    {
+      "work": "lead",
+      "returns": {
+        "choice": "explain"
+      }
+    },
+    {
+      "work": "code",
+      "returns": {
+        "text": "It caches reads."
+      }
+    },
+    {
+      "work": "lead",
+      "returns": {
+        "choice": "done"
+      }
+    }
+  ],
+  "expect": {
+    "run": "succeeded",
+    "starts": {
+      "lead": 3,
+      "code": 2
+    },
+    "messages": [
+      {
+        "to": "code",
+        "nth": 1,
+        "prompt": "Add the cache layer."
+      },
+      {
+        "to": "code",
+        "nth": 2,
+        "prompt": "Explain the design."
+      },
+      {
+        "to": "lead",
+        "nth": 2,
+        "prompt": null,
+        "resources": {
+          "text": "Cache added."
+        }
+      }
+    ],
+    "failures": []
+  }
+}

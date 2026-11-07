@@ -1,0 +1,9 @@
+{
+  "contract": "agsdl-0.3.0",
+  "id": "permissions-missing",
+  "agents": {
+    "a": {
+      "harness": "example"
+    }
+  }
+}

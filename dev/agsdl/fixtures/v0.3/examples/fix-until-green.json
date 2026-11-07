@@ -1,0 +1,50 @@
+{
+  "contract": "agsdl-0.3.0",
+  "id": "fix-until-green",
+  "title": "Fix until the tests pass",
+  "description": "The tests run outside the agent; failures go back to the same developer, who keeps its conversation.",
+  "agents": {
+    "developer": {
+      "harness": "pi",
+      "description": "Fixes failing tests.",
+      "model": {
+        "name": "example/small",
+        "effort": "medium"
+      },
+      "instructions": "Fix the code so that the tests pass. Do not change the tests.",
+      "permissions": "full"
+    }
+  },
+  "flow": {
+    "entry": "fix",
+    "steps": {
+      "fix": {
+        "type": "agent",
+        "agent": "developer",
+        "maxVisits": 5,
+        "next": "tests"
+      },
+      "tests": {
+        "type": "call",
+        "command": "npm test",
+        "next": {
+          "passed": [],
+          "failed": {
+            "step": "fix",
+            "message": {
+              "prompt": "The tests still fail. Here is their output.",
+              "resources": {
+                "output": {
+                  "from": [
+                    "data",
+                    "output"
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}
