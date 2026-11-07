@@ -61,6 +61,7 @@ pub(crate) fn metadata_root(workspace: &Path) -> Result<PathBuf> {
 pub(crate) struct CompilationCapture {
     pub source: EngineSourceRevision,
     pub authored_source: String,
+    pub native_registry_json: String,
     pub display_cards_json: String,
     pub native_catalogue: ModelCapture,
     pub result: Value,
@@ -233,14 +234,16 @@ async fn observation(
     let scope = execution_scope(workspace, source, task)?;
     let project = &source.project;
     let document = exact_json::value(&source.source).unwrap_or(Value::Null);
-    let has_codex = document
-        .get("bindings")
-        .and_then(Value::as_object)
-        .is_some_and(|bindings| {
-            bindings
-                .values()
-                .any(|binding| binding["implementation"]["identity"] == "openai/codex")
-        });
+    let is_030 = document.get("contract").and_then(Value::as_str) == Some("agsdl-0.3.0");
+    let has_codex = !is_030
+        && document
+            .get("bindings")
+            .and_then(Value::as_object)
+            .is_some_and(|bindings| {
+                bindings
+                    .values()
+                    .any(|binding| binding["implementation"]["identity"] == "openai/codex")
+            });
     let codex = if has_codex {
         crate::agsdl_host_codex::observe(
             manager,
@@ -251,14 +254,15 @@ async fn observation(
     } else {
         None
     };
-    let has_claude = document
-        .get("bindings")
-        .and_then(Value::as_object)
-        .is_some_and(|bindings| {
-            bindings.values().any(|binding| {
-                binding["implementation"]["identity"] == "anthropic/claude-agent-sdk"
-            })
-        });
+    let has_claude = !is_030
+        && document
+            .get("bindings")
+            .and_then(Value::as_object)
+            .is_some_and(|bindings| {
+                bindings.values().any(|binding| {
+                    binding["implementation"]["identity"] == "anthropic/claude-agent-sdk"
+                })
+            });
     let claude = if has_claude {
         crate::agsdl_host_claude::observe(manager, &scope).await?
     } else {
@@ -393,6 +397,62 @@ async fn observation(
     };
     let version = format!("sha256:{:x}", Sha256::digest(version_bytes));
     observation["version"] = Value::String(version);
+    if is_030 {
+        let uses_codex = document
+            .get("agents")
+            .and_then(Value::as_object)
+            .is_some_and(|agents| {
+                agents
+                    .values()
+                    .any(|agent| agent.get("harness").and_then(Value::as_str) == Some("codex"))
+            });
+        let codex_version = if uses_codex {
+            crate::agsdl_host_codex::profile_status(manager)
+                .await
+                .version
+        } else {
+            None
+        };
+        let mut harnesses: Vec<Value> = codex_version.into_iter().map(|version| json!({
+            "harness":"codex", "version":version, "installation":"available",
+            "adapterId":null, "qualified":false, "capabilities":[], "models":[], "defaultModel":null
+        })).collect();
+        for name in ["opencode", "pi"] {
+            let used = document
+                .get("agents")
+                .and_then(Value::as_object)
+                .is_some_and(|agents| {
+                    agents
+                        .values()
+                        .any(|agent| agent.get("harness").and_then(Value::as_str) == Some(name))
+                });
+            if used {
+                if let Some(observation) = crate::agsdl_host_harness030::observe(name).await {
+                    harnesses.push(observation);
+                }
+            }
+        }
+        // Bundled modules describe the language; they do not qualify an adapter.
+        // Retain the native observation hash, but publish no agent or capability
+        // evidence until the 0.3 native authorities can provide it.
+        let registry = json!({
+            "format":"macro-agsdl-registry/030",
+            "modules":[
+                {"harness":"codex", "moduleJson":include_str!("../../src/vendor/agsdl/v0.3/harnesses/codex/module.json")},
+                {"harness":"claude-code", "moduleJson":include_str!("../../src/vendor/agsdl/v0.3/harnesses/claude-code/module.json")},
+                {"harness":"opencode", "moduleJson":include_str!("../../src/vendor/agsdl/v0.3/harnesses/opencode/module.json")},
+                {"harness":"pi", "moduleJson":include_str!("../../src/vendor/agsdl/v0.3/harnesses/pi/module.json")}
+            ],
+            "harnesses":harnesses, "agents":[], "hostCapabilities":[]
+        });
+        let digest = Sha256::digest(serde_json::to_vec(&(&observation, &registry))?);
+        let mut registry = registry;
+        registry["version"] = json!(format!("sha256:{digest:x}"));
+        // These are transport-only inputs, not part of the captured registry.
+        registry["callPermissions"] = observation["callPermissions"].clone();
+        registry["callScope"] = observation["callScope"].clone();
+        return Ok((registry, account, claude_account));
+    }
     Ok((observation, account, claude_account))
 }
 
@@ -451,11 +511,16 @@ pub(crate) async fn compile_input(
     drop(policy);
     drop(locked);
     let receipt = host
-        .compile(source.clone(), authored_source.clone(), registry_json)
+        .compile(
+            source.clone(),
+            authored_source.clone(),
+            registry_json.clone(),
+        )
         .await?;
     Ok(CompilationCapture {
         source,
         authored_source,
+        native_registry_json: registry_json,
         display_cards_json,
         native_catalogue,
         result: serde_json::from_str(&receipt.result_json)?,
@@ -463,6 +528,297 @@ pub(crate) async fn compile_input(
         call_permissions_json,
         call_scope_json,
     })
+}
+
+/// Correlated material for 09 to turn into StartCapture030 after it creates
+/// native identity, private capture and authorization. No field is a grant.
+pub(crate) struct StartCaptureMaterial030 {
+    pub source: EngineSourceRevision,
+    pub versions: EngineVersions,
+    pub authored_source: String,
+    pub compiled_plan_json: String,
+    pub registry_json: String,
+    pub native_catalogue_json: String,
+    pub call_permissions_json: String,
+    pub call_scope_json: String,
+    pub display_cards_json: String,
+    pub entry_unassessed: Vec<String>,
+    pub generation: String,
+}
+
+impl CompilationCapture {
+    /// Called only under the fresh metadata lock.
+    /// This prepares data; the host still authenticates content and authority.
+    pub(crate) fn start_material030(
+        &self,
+        locked: &LockedExecutionSource,
+        request: &EngineStartRequest,
+        generation: &str,
+    ) -> Result<StartCaptureMaterial030> {
+        self.start_material030_checked(
+            &locked.revision,
+            &locked.source,
+            &locked.display_cards_json,
+            request,
+            generation,
+        )
+    }
+
+    fn start_material030_checked(
+        &self,
+        locked_revision: &EngineSourceRevision,
+        locked_source: &str,
+        locked_cards: &str,
+        request: &EngineStartRequest,
+        generation: &str,
+    ) -> Result<StartCaptureMaterial030> {
+        let refuse = || {
+            failure(
+                "CORRELATION",
+                "capture",
+                "Start 0.3 capture is not correlated",
+            )
+        };
+        if generation.is_empty()
+            || self.generation != generation
+            || request.profile != "macro-agsdl-030-v1"
+            || request.source != self.source
+            || locked_revision != &self.source
+            || locked_source != self.authored_source
+            || locked_cards != self.display_cards_json
+            || format!("{:x}", Sha256::digest(self.authored_source.as_bytes()))
+                != self.source.source_sha256
+            || self
+                .result
+                .pointer("/static/valid")
+                .and_then(Value::as_bool)
+                != Some(true)
+            || self
+                .result
+                .pointer("/runtime/supported")
+                .and_then(Value::as_bool)
+                != Some(true)
+            || self
+                .result
+                .pointer("/runtime/profile")
+                .and_then(Value::as_str)
+                != Some("macro-agsdl-030-v1")
+            || self.result.pointer("/runtime/source") != Some(&serde_json::to_value(&self.source)?)
+        {
+            return Err(refuse());
+        }
+        let mut ticket = exact_json::value(&self.native_registry_json)?;
+        let expected_entry = serde_json::to_value(&request.entry)?;
+        if ticket.get("startEntry") != Some(&expected_entry)
+            || self.result.pointer("/entryValidation/messageJson")
+                != Some(expected_entry.get("messageJson").unwrap_or(&Value::Null))
+            || self
+                .result
+                .pointer("/entryValidation/shapeValid")
+                .and_then(Value::as_bool)
+                != Some(true)
+        {
+            return Err(refuse());
+        }
+        for (field, captured) in [
+            ("callPermissions", &self.call_permissions_json),
+            ("callScope", &self.call_scope_json),
+        ] {
+            let observed = ticket.get(field).ok_or_else(refuse)?.to_string();
+            if !crate::db::agsdl_execution::json_lexemes030::document_tokens_equal(
+                &observed, captured,
+            )? {
+                return Err(refuse());
+            }
+        }
+        let unassessed = self
+            .result
+            .pointer("/entryValidation/unassessed")
+            .and_then(Value::as_array)
+            .ok_or_else(refuse)?
+            .iter()
+            .map(|item| item.as_str().map(str::to_owned).ok_or_else(refuse))
+            .collect::<Result<Vec<_>>>()?;
+        let entry_valid = self
+            .result
+            .pointer("/entryValidation/valid")
+            .and_then(Value::as_bool)
+            .ok_or_else(refuse)?;
+        if entry_valid != unassessed.is_empty()
+            || unassessed.iter().any(|item| item.trim().is_empty())
+        {
+            return Err(refuse());
+        }
+        for field in [
+            "startEntry",
+            "deliveryInput",
+            "callInput",
+            "toolPolicyInput",
+            "callPermissions",
+            "callScope",
+        ] {
+            ticket.as_object_mut().ok_or_else(refuse)?.remove(field);
+        }
+        let registry_json = self
+            .result
+            .get("capturedRegistryJson")
+            .and_then(Value::as_str)
+            .ok_or_else(refuse)?;
+        if !crate::db::agsdl_execution::json_lexemes030::document_tokens_equal(
+            registry_json,
+            &ticket.to_string(),
+        )? {
+            return Err(refuse());
+        }
+        let registry = exact_json::value(registry_json)?;
+        let plan_json = self
+            .result
+            .get("compiledPlanJson")
+            .and_then(Value::as_str)
+            .ok_or_else(refuse)?;
+        let plan = exact_json::value(plan_json)?;
+        let versions: EngineVersions =
+            serde_json::from_value(plan.get("versions").cloned().ok_or_else(refuse)?)?;
+        let document = plan
+            .get("documentJson")
+            .and_then(Value::as_str)
+            .ok_or_else(refuse)?;
+        let authored = exact_json::value(&self.authored_source)?;
+        if registry.get("format").and_then(Value::as_str) != Some("macro-agsdl-registry/030")
+            || registry.get("version").and_then(Value::as_str) != Some(versions.registry.as_str())
+            || self
+                .result
+                .pointer("/runtime/registryVersion")
+                .and_then(Value::as_str)
+                != Some(versions.registry.as_str())
+            || plan.get("format").and_then(Value::as_str) != Some("macro-agsdl-compiled-plan/2")
+            || versions.snapshot != "2"
+            || versions.contract != "agsdl-0.3.0"
+            || versions.profile != request.profile
+            || authored.get("contract").and_then(Value::as_str) != Some("agsdl-0.3.0")
+            || plan
+                .get("entry")
+                .is_none_or(|entry| entry.is_null() != request.entry.is_none())
+            || plan.get("source") != Some(&serde_json::to_value(&self.source)?)
+            || !crate::db::agsdl_execution::json_lexemes030::document_tokens_equal(
+                document,
+                &self.authored_source,
+            )?
+        {
+            return Err(refuse());
+        }
+        Ok(StartCaptureMaterial030 {
+            source: self.source.clone(),
+            versions,
+            authored_source: self.authored_source.clone(),
+            compiled_plan_json: plan_json.to_owned(),
+            registry_json: registry_json.to_owned(),
+            native_catalogue_json: serde_json::to_string(&self.native_catalogue)?,
+            call_permissions_json: self.call_permissions_json.clone(),
+            call_scope_json: self.call_scope_json.clone(),
+            display_cards_json: self.display_cards_json.clone(),
+            entry_unassessed: unassessed,
+            generation: self.generation.clone(),
+        })
+    }
+}
+
+/// Use only the native observation retained before crossing the compiler host.
+/// A module declares version coverage; it never proves installation or a grant.
+fn local_harness_diagnostics030(authored: &str, registry_json: &str) -> Vec<PreflightDiagnostic> {
+    let Ok(document) = exact_json::value(authored) else {
+        return vec![];
+    };
+    let Ok(registry) = exact_json::value(registry_json) else {
+        return vec![];
+    };
+    if document.get("contract").and_then(Value::as_str) != Some("agsdl-0.3.0") {
+        return vec![];
+    }
+    let Some(agents) = document.get("agents").and_then(Value::as_object) else {
+        return vec![];
+    };
+    agents
+        .iter()
+        .filter_map(|(agent_name, agent)| {
+            let name = agent.get("harness").and_then(Value::as_str)?;
+            if !matches!(name, "opencode" | "pi") {
+                return None;
+            }
+            let observed = registry
+                .get("harnesses")
+                .and_then(Value::as_array)
+                .and_then(|entries| {
+                    entries
+                        .iter()
+                        .find(|entry| entry.get("harness").and_then(Value::as_str) == Some(name))
+                });
+            let (code, message) = match observed {
+                None => (
+                    "HARNESS_INSTALLATION_UNASSESSED",
+                    "The local harness installation could not be assessed.",
+                ),
+                Some(entry)
+                    if entry.get("installation").and_then(Value::as_str) == Some("missing") =>
+                {
+                    (
+                        "HARNESS_NOT_INSTALLED",
+                        "The named harness executable was not found in PATH.",
+                    )
+                }
+                Some(entry) => {
+                    let version = entry
+                        .get("version")
+                        .and_then(Value::as_str)
+                        .and_then(|s| semver::Version::parse(s).ok());
+                    let requirement = registry
+                        .get("modules")
+                        .and_then(Value::as_array)
+                        .and_then(|modules| {
+                            modules.iter().find(|module| {
+                                module.get("harness").and_then(Value::as_str) == Some(name)
+                            })
+                        })
+                        .and_then(|module| module.get("moduleJson").and_then(Value::as_str))
+                        .and_then(|module| exact_json::value(module).ok())
+                        .and_then(|module| {
+                            module
+                                .get("harnessVersions")
+                                .and_then(Value::as_str)
+                                .map(str::to_owned)
+                        })
+                        .and_then(|range| {
+                            semver::VersionReq::parse(
+                                &range.replace(" <", ", <").replace(" >", ", >"),
+                            )
+                            .ok()
+                        });
+                    match (version, requirement) {
+                        (Some(version), Some(range)) if !range.matches(&version) => (
+                            "HARNESS_VERSION_UNSUPPORTED",
+                            "The installed harness version is outside the bundled module range.",
+                        ),
+                        (Some(_), Some(_)) => (
+                            "HARNESS_ADAPTER_UNAVAILABLE",
+                            "No qualified native adapter is registered for this harness.",
+                        ),
+                        _ => (
+                            "HARNESS_VERSION_UNASSESSED",
+                            "The harness version or its supported range could not be assessed.",
+                        ),
+                    }
+                }
+            };
+            Some(PreflightDiagnostic {
+                code: code.into(),
+                pointer: format!(
+                    "/agents/{}/harness",
+                    agent_name.replace('~', "~0").replace('/', "~1")
+                ),
+                message: message.into(),
+            })
+        })
+        .collect()
 }
 
 impl CompilationCapture {
@@ -477,7 +833,7 @@ impl CompilationCapture {
                     .flatten()
             })
             .collect();
-        let diagnostics = findings
+        let diagnostics: Vec<PreflightDiagnostic> = findings
             .iter()
             .take(64)
             .map(|finding| {
@@ -508,11 +864,35 @@ impl CompilationCapture {
                         .chars()
                         .take(2048)
                         .collect(),
-                    message: "The captured document cannot execute in the native inline profile."
-                        .into(),
+                    message: if self
+                        .result
+                        .pointer("/runtime/profile")
+                        .and_then(Value::as_str)
+                        == Some("macro-agsdl-030-v1")
+                        && finding.get("message").and_then(Value::as_str)
+                            == Some("No native observation matches the complete agent declaration.")
+                    {
+                        "No qualified native 0.3 agent capture is available.".into()
+                    } else if self
+                        .result
+                        .pointer("/runtime/profile")
+                        .and_then(Value::as_str)
+                        == Some("macro-agsdl-030-v1")
+                    {
+                        "AgSDL 0.3 validation or native qualification failed.".into()
+                    } else {
+                        "The captured document cannot execute in the native inline profile.".into()
+                    },
                 }
             })
             .collect();
+        let native_diagnostics =
+            local_harness_diagnostics030(&self.authored_source, &self.native_registry_json);
+        let incomplete = findings.len().saturating_add(native_diagnostics.len()) > 64;
+        let mut combined: Vec<_> = native_diagnostics.into_iter().take(64).collect();
+        let remaining = 64usize.saturating_sub(combined.len());
+        combined.extend(diagnostics.into_iter().take(remaining));
+        let diagnostics = combined;
         ExecutionPreflight {
             source: self.source.clone(),
             authored_source: self.authored_source.clone(),
@@ -533,7 +913,7 @@ impl CompilationCapture {
                 .unwrap_or("")
                 .into(),
             diagnostics,
-            incomplete: findings.len() > 64,
+            incomplete,
             product_runtime_available: self
                 .result
                 .get("productRuntimeAvailable")
@@ -599,6 +979,12 @@ impl crate::db::agsdl_execution::CaptureAuthority for StartAuthority<'_> {
         .await?;
         if captured.generation != self.lease.generation()
             || !captured.public().runtime_supported
+            || (captured
+                .result
+                .pointer("/runtime/profile")
+                .and_then(Value::as_str)
+                == Some("macro-agsdl-030-v1")
+                && !captured.public().product_runtime_available)
             || captured
                 .result
                 .pointer("/entryValidation/valid")
@@ -846,8 +1232,7 @@ pub struct ExecutionExternalDelivery {
 }
 
 /// The registry is loaded from the native capture, never supplied by the message.
-/// An approximate resource channel remains permitted but must be surfaced as a
-/// warning by the 0.3 projection when that projection is connected.
+/// Approximate support requires a durable warning in the delivery transaction.
 fn graphless_resource_support030(
     registry: &Value,
     agent_name: &str,
@@ -974,12 +1359,9 @@ pub(crate) async fn deliver_linked(
         super::db::agsdl_execution::read_snapshot(pool, &request.system_start_id).await?;
     let capture = super::db::agsdl_execution::capture::read(pool, &owner).await?;
     let mut registry = exact_json::value(&capture.registry_json)?;
-    if snapshot.versions.contract == "agsdl-0.3.0"
+    let resources_approximate = snapshot.versions.contract == "agsdl-0.3.0"
         && graphless_resource_support030(&registry, &request.agent_name, &request.message_json)?
-            == Some("approximate")
-    {
-        tracing::warn!("Graphless resource delivery uses an approximate harness channel");
-    }
+            == Some("approximate");
     registry["deliveryInput"] =
         json!({"agentName":request.agent_name,"messageJson":request.message_json});
     let receipt = host
@@ -1032,13 +1414,14 @@ pub(crate) async fn deliver_linked(
     } else {
         None
     };
-    super::db::agsdl_execution::accept_external_delivery_linked(
+    super::db::agsdl_execution::accept_external_delivery_with_warning(
         pool,
         &owner,
         &request.delivery_id,
         &request.agent_name,
         &request.message_json,
         intent.map(|(link, _)| link),
+        resources_approximate,
     )
     .await
 }
@@ -1048,6 +1431,32 @@ mod exact_capture_tests {
     use super::*;
     use crate::agsdl_host_catalogue::NativeModelCatalogue;
     use crate::workspace::metadata::{ProjectDto, WorkspaceState};
+
+    #[test]
+    fn local_harness_diagnostics_distinguish_missing_version_and_adapter() {
+        let document = r#"{"contract":"agsdl-0.3.0","agents":{"a/b":{"harness":"opencode"},"other":{"harness":"pi"}}}"#;
+        let registry = json!({"modules":[
+            {"harness":"opencode","moduleJson":include_str!("../../src/vendor/agsdl/v0.3/harnesses/opencode/module.json")},
+            {"harness":"pi","moduleJson":include_str!("../../src/vendor/agsdl/v0.3/harnesses/pi/module.json")}
+        ],"harnesses":[
+            {"harness":"opencode","installation":"available","version":"1.19.5"},
+            {"harness":"pi","installation":"missing","version":null}
+        ]}).to_string();
+        let findings = local_harness_diagnostics030(document, &registry);
+        assert_eq!(findings.len(), 2);
+        assert_eq!(findings[0].code, "HARNESS_VERSION_UNSUPPORTED");
+        assert_eq!(findings[0].pointer, "/agents/a~1b/harness");
+        assert_eq!(findings[1].code, "HARNESS_NOT_INSTALLED");
+        let unassessed = local_harness_diagnostics030(document, r#"{"modules":[],"harnesses":[]}"#);
+        assert!(unassessed
+            .iter()
+            .all(|d| d.code == "HARNESS_INSTALLATION_UNASSESSED"));
+        let compatible = registry.replace("1.19.5", "2.0.28");
+        assert_eq!(
+            local_harness_diagnostics030(document, &compatible)[0].code,
+            "HARNESS_ADAPTER_UNAVAILABLE"
+        );
+    }
 
     #[test]
     fn graphless_resources_require_the_captured_qualified_harness() {
@@ -1181,5 +1590,130 @@ mod exact_capture_tests {
             assert_eq!(locked.source, source);
             assert!(codex.is_none() && claude.is_none());
         }
+    }
+}
+
+#[cfg(test)]
+mod start_material030_tests {
+    use super::*;
+    use crate::agsdl_host_catalogue::{ModelCapture, NativeModelCatalogue};
+
+    fn fixture() -> (CompilationCapture, EngineStartRequest) {
+        let authored =
+            r#"{"contract":"agsdl-0.3.0","id":"fixture","agents":{},"n":9007199254740993}"#;
+        let source = EngineSourceRevision {
+            owner: EngineSourceOwner {
+                project_id: "p".into(),
+                plan_id: "plan".into(),
+                branch: "feature/test".into(),
+            },
+            revision: "1".into(),
+            source_sha256: format!("{:x}", Sha256::digest(authored.as_bytes())),
+        };
+        let request = EngineStartRequest {
+            source: source.clone(),
+            profile: "macro-agsdl-030-v1".into(),
+            associations: Default::default(),
+            request_id: "request".into(),
+            entry: None,
+        };
+        let registry = json!({"format":"macro-agsdl-registry/030","version":"registry","modules":[],"harnesses":[],"agents":[]});
+        let mut ticket = registry.clone();
+        ticket["startEntry"] = Value::Null;
+        ticket["callPermissions"] = json!({"mode":"Implement"});
+        ticket["callScope"] = json!({"root":"/synthetic"});
+        let versions = json!({"snapshot":"2","contract":"agsdl-0.3.0","compiler":"compiler","runtime":"runtime","registry":"registry","profile":"macro-agsdl-030-v1"});
+        let plan = json!({"format":"macro-agsdl-compiled-plan/2","source":source,"versions":versions,"documentJson":authored,"entry":null});
+        let result = json!({"static":{"valid":true},"runtime":{"supported":true,"profile":"macro-agsdl-030-v1","source":source,"registryVersion":"registry"},
+            "entryValidation":{"messageJson":null,"shapeValid":true,"valid":false,"unassessed":["native proof"]},
+            "capturedRegistryJson":registry.to_string(),"compiledPlanJson":plan.to_string(),"productRuntimeAvailable":false});
+        (
+            CompilationCapture {
+                source,
+                authored_source: authored.into(),
+                display_cards_json: "[]".into(),
+                native_catalogue: ModelCapture {
+                    catalogue: NativeModelCatalogue {
+                        revision: "catalogue".into(),
+                        models: vec![],
+                        unavailable_providers: vec![],
+                    },
+                    providers: vec![],
+                    codex_account_digest: None,
+                    claude_account_digest: None,
+                },
+                result,
+                generation: "generation".into(),
+                call_permissions_json: json!({"mode":"Implement"}).to_string(),
+                call_scope_json: json!({"root":"/synthetic"}).to_string(),
+                native_registry_json: ticket.to_string(),
+            },
+            request,
+        )
+    }
+    fn prepare(
+        capture: &CompilationCapture,
+        request: &EngineStartRequest,
+    ) -> Result<StartCaptureMaterial030> {
+        capture.start_material030_checked(
+            &capture.source,
+            &capture.authored_source,
+            &capture.display_cards_json,
+            request,
+            "generation",
+        )
+    }
+    #[test]
+    fn preserves_native_material_without_promoting_missing_proof() {
+        let (capture, request) = fixture();
+        let material = prepare(&capture, &request).unwrap();
+        assert_eq!(material.source, capture.source);
+        assert_eq!(material.authored_source, capture.authored_source);
+        assert_eq!(material.entry_unassessed, vec!["native proof"]);
+        assert_eq!(
+            material.registry_json,
+            capture.result["capturedRegistryJson"].as_str().unwrap()
+        );
+        assert_eq!(material.generation, "generation");
+        assert_eq!(material.versions.contract, "agsdl-0.3.0");
+        assert_eq!(
+            material.call_permissions_json,
+            capture.call_permissions_json
+        );
+        assert_eq!(material.call_scope_json, capture.call_scope_json);
+        assert_eq!(material.display_cards_json, capture.display_cards_json);
+        assert!(material.native_catalogue_json.contains("catalogue"));
+    }
+    #[test]
+    fn rejects_stale_source_generation_ticket_and_substituted_plan() {
+        let (mut capture, request) = fixture();
+        assert!(capture
+            .start_material030_checked(&capture.source, "changed", "[]", &request, "generation",)
+            .is_err());
+        assert!(capture
+            .start_material030_checked(
+                &capture.source,
+                &capture.authored_source,
+                "[]",
+                &request,
+                "old-generation",
+            )
+            .is_err());
+        let original = capture.result.clone();
+        capture.result["capturedRegistryJson"] =
+            r#"{"format":"macro-agsdl-registry/030","version":"other"}"#.into();
+        assert!(prepare(&capture, &request).is_err());
+        capture.result = original.clone();
+        let mut plan: Value =
+            serde_json::from_str(original["compiledPlanJson"].as_str().unwrap()).unwrap();
+        plan["documentJson"] = capture
+            .authored_source
+            .replace("9007199254740993", "9007199254740993.0")
+            .into();
+        capture.result["compiledPlanJson"] = plan.to_string().into();
+        assert!(prepare(&capture, &request).is_err());
+        capture.result = original;
+        capture.result["entryValidation"]["shapeValid"] = false.into();
+        assert!(prepare(&capture, &request).is_err());
     }
 }

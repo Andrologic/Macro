@@ -97,6 +97,7 @@ mod agsdl_host_catalogue;
 mod agsdl_host_claude;
 mod agsdl_host_codex;
 mod agsdl_host_compiler;
+mod agsdl_host_harness030;
 mod agsdl_host_provider;
 mod agsdl_host_tasks;
 mod agsdl_host_tools;
