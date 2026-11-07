@@ -78,6 +78,23 @@ describe('default and explicit messages', () => {
     expect(seen).toEqual([['{"uri":"guide.txt","mediaType":"text/plain"}', { usage: 'prompt', pointer: '/message/prompt/0' }]]);
     code(() => resolve(input, '{"resources":{"x":{"ref":"unknown"}}}'), 'REFERENCE');
   });
+  it('captures prompt URIs while resource URIs bypass capture unchanged, including refs and entry', () => {
+    const document = j('{"content":{"image":{"uri":"image.png","mediaType":"image/png"}}}');
+    const payload = '{"prompt":[{"uri":"guide.txt","mediaType":"text/plain"}],"resources":{"direct":{"uri":"direct.png","mediaType":"image/png"},"ref":{"ref":"image"}}}';
+    for (const entry of [false, true]) {
+      const calls: string[] = [];
+      const result = resolveRouteMessage030(document, target(entry ? undefined : payload), entry ? source('entry', payload) : source('call', '{"data":null}'), absent, {
+        resolveSource: (_raw, context) => {
+          calls.push(context.usage);
+          if (context.usage === 'resource') throw new Error('Resource URI must remain a reference');
+          return j('{"value":"Captured guide","mediaType":"text/plain"}');
+        },
+      });
+      expect(calls).toEqual(['prompt']);
+      expect(record(decode(result.messageJson)).resources).toEqual({ direct: { uri: 'direct.png', mediaType: 'image/png' }, ref: { uri: 'image.png', mediaType: 'image/png' } });
+      expect(record(decode(result.messageJson)).prompt).toEqual([{ value: 'Captured guide', mediaType: 'text/plain' }]);
+    }
+  });
   it('retains informational instruction selections and restricts prompt provenance', () => {
     const input = source('agent', '{"instructions":"Mission","results":{"instructions":"Fake"},"text":"Fake"}', true);
     expect(resolve(input, '{"prompt":{"from":["instructions"]}}').promptProvenance).toEqual({ kind: 'agent', authority });
