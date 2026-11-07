@@ -3050,4 +3050,57 @@ mod tests {
         pool.close().await;
         check_database(&path).await.unwrap();
     }
+
+    #[tokio::test]
+    async fn admission018_filled_options_survive_export_and_restore() {
+        let (temp, data, config) = profile().await;
+        let mut db = connection(&data.join("macro.db")).await.unwrap();
+        sqlx::query("INSERT INTO engine_systems VALUES ('run','request','{}','{}','[]','{}')")
+            .execute(&mut db)
+            .await
+            .unwrap();
+        sqlx::query(
+            "INSERT INTO engine_work_protocol030 VALUES ('run','work','{}','{}','{}','{}','0')",
+        )
+        .execute(&mut db)
+        .await
+        .unwrap();
+        let options = r#"{ "budget":9007199254740993, "limit":1.0 }"#;
+        let evidence = r#"{ "lock":"synthetic" }"#;
+        sqlx::query("INSERT INTO engine_work_admission030 VALUES ('run','work',?,?)")
+            .bind(options)
+            .bind(evidence)
+            .execute(&mut db)
+            .await
+            .unwrap();
+        db.close().await.unwrap();
+        let dir = data.join("local-backup");
+        fs::create_dir_all(&dir).unwrap();
+        let path = temp.path().join("admission-export.json");
+        atomic(
+            &dir.join("request.json"),
+            &serde_json::to_vec(&Request {
+                operation: "export".into(),
+                path: path.to_string_lossy().into(),
+                browser: BTreeMap::new(),
+            })
+            .unwrap(),
+        )
+        .unwrap();
+        process_startup(&data, &config).await.unwrap();
+        let archive = load_archive(&path).unwrap();
+        validate(&archive).await.unwrap();
+        let mut db = connection(&data.join("macro.db")).await.unwrap();
+        sqlx::query("UPDATE engine_work_admission030 SET options_json='{}', evidence_json='{}'")
+            .execute(&mut db)
+            .await
+            .unwrap();
+        db.close().await.unwrap();
+        queue_restore(&data, &archive);
+        process_startup(&data, &config).await.unwrap();
+        let mut restored = connection(&data.join("macro.db")).await.unwrap();
+        let row: (String, String) = sqlx::query_as("SELECT options_json,evidence_json FROM engine_work_admission030 WHERE system_id='run' AND activation_id='work'")
+            .fetch_one(&mut restored).await.unwrap();
+        assert_eq!(row, (options.to_owned(), evidence.to_owned()));
+    }
 }

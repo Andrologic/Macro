@@ -245,6 +245,355 @@ async fn admission_cannot_be_added_after_an_uncommitted_reservation() {
     .is_err());
     assert!(read_admission(&pool, &context, false).await.is_err());
 }
+
+#[tokio::test]
+async fn admission_initializes_atomically_and_rolls_back_failed_insert() {
+    let (temp, pool, context) = setup().await;
+    let initial = read(&pool, &context.work).await.unwrap();
+    sqlx::query("DELETE FROM engine_work_protocol030 WHERE system_id=? AND activation_id=?")
+        .bind(&context.work.system_start_id)
+        .bind(&context.work.activation_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("CREATE TRIGGER fail_admission_insert BEFORE INSERT ON engine_work_admission030 BEGIN SELECT RAISE(ABORT,'synthetic'); END")
+        .execute(&pool).await.unwrap();
+    let admission = WorkAdmission030 {
+        options_json: r#"{ "n":9007199254740993 }"#.into(),
+        evidence_json: r#"{ "lock":"synthetic" }"#.into(),
+    };
+    assert!(initialize_admitted(
+        &pool,
+        &context,
+        &initial.contract_json,
+        &initial.state_json,
+        &admission
+    )
+    .await
+    .is_err());
+    for table in ["engine_work_protocol030", "engine_work_admission030"] {
+        let count: i64 =
+            sqlx::query_scalar(sqlx::AssertSqlSafe(format!("SELECT count(*) FROM {table}")))
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(count, 0);
+    }
+    sqlx::query("DROP TRIGGER fail_admission_insert")
+        .execute(&pool)
+        .await
+        .unwrap();
+    initialize_admitted(
+        &pool,
+        &context,
+        &initial.contract_json,
+        &initial.state_json,
+        &admission,
+    )
+    .await
+    .unwrap();
+    assert!(matches!(
+        reserve_event(&pool, &input(&context, "after-admission", "0"))
+            .await
+            .unwrap(),
+        EventReservation030::Pending { .. }
+    ));
+    pool.close().await;
+    let reopened = crate::db::create_pool(&temp.path().join("protocol.db"))
+        .await
+        .unwrap();
+    assert_eq!(
+        read_admission(&reopened, &context, false).await.unwrap(),
+        admission
+    );
+    assert_eq!(read(&reopened, &context.work).await.unwrap(), initial);
+}
+
+#[tokio::test]
+async fn admission_rejects_invalid_exact_json_without_partial_writes() {
+    let (_temp, pool, context) = setup().await;
+    let initial = read(&pool, &context.work).await.unwrap();
+    sqlx::query("DELETE FROM engine_work_protocol030 WHERE system_id=? AND activation_id=?")
+        .bind(&context.work.system_start_id)
+        .bind(&context.work.activation_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let deep = format!("{}0{}", "[".repeat(130), "]".repeat(130));
+    for invalid in [
+        "{".to_owned(),
+        r#"{"outer":{"x":1,"x":2}}"#.to_owned(),
+        deep,
+    ] {
+        for options_invalid in [true, false] {
+            let admission = WorkAdmission030 {
+                options_json: if options_invalid {
+                    invalid.clone()
+                } else {
+                    "{}".into()
+                },
+                evidence_json: if options_invalid {
+                    "{}".into()
+                } else {
+                    invalid.clone()
+                },
+            };
+            assert!(initialize_admitted(
+                &pool,
+                &context,
+                &initial.contract_json,
+                &initial.state_json,
+                &admission
+            )
+            .await
+            .is_err());
+            assert_eq!(
+                sqlx::query_scalar::<_, i64>("SELECT count(*) FROM engine_work_protocol030")
+                    .fetch_one(&pool)
+                    .await
+                    .unwrap(),
+                0
+            );
+            assert_eq!(
+                sqlx::query_scalar::<_, i64>("SELECT count(*) FROM engine_work_admission030")
+                    .fetch_one(&pool)
+                    .await
+                    .unwrap(),
+                0
+            );
+        }
+    }
+    let accepted = WorkAdmission030 {
+        options_json: r#"{"n":9007199254740993,"v":1}"#.into(),
+        evidence_json: r#"{"proof":true}"#.into(),
+    };
+    initialize_admitted(
+        &pool,
+        &context,
+        &initial.contract_json,
+        &initial.state_json,
+        &accepted,
+    )
+    .await
+    .unwrap();
+    let mut equivalent = accepted.clone();
+    equivalent.options_json = r#"{ "n":9007199254740993, "v":1.0 }"#.into();
+    assert!(initialize_admitted(
+        &pool,
+        &context,
+        &initial.contract_json,
+        &initial.state_json,
+        &equivalent
+    )
+    .await
+    .is_err());
+    assert_eq!(
+        read_admission(&pool, &context, false).await.unwrap(),
+        accepted
+    );
+}
+
+#[tokio::test]
+async fn admission_and_reservation_serialize_without_a_late_admission() {
+    let (_temp, pool, context) = setup().await;
+    let initial = read(&pool, &context.work).await.unwrap();
+    let admission = WorkAdmission030 {
+        options_json: r#"{"budget":"1000"}"#.into(),
+        evidence_json: r#"{"proof":"native"}"#.into(),
+    };
+    let event = input(&context, "concurrent", "0");
+    let (admitted, reserved) = tokio::join!(
+        initialize_admitted(
+            &pool,
+            &context,
+            &initial.contract_json,
+            &initial.state_json,
+            &admission
+        ),
+        reserve_event(&pool, &event),
+    );
+    assert!(matches!(
+        reserved.unwrap(),
+        EventReservation030::Pending { .. }
+    ));
+    let count: i64 = sqlx::query_scalar("SELECT count(*) FROM engine_work_admission030")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(count, if admitted.is_ok() { 1 } else { 0 });
+    if admitted.is_ok() {
+        assert_eq!(
+            read_admission(&pool, &context, false).await.unwrap(),
+            admission
+        );
+    } else {
+        assert!(read_admission(&pool, &context, false).await.is_err());
+        assert!(initialize_admitted(
+            &pool,
+            &context,
+            &initial.contract_json,
+            &initial.state_json,
+            &admission
+        )
+        .await
+        .is_err());
+    }
+}
+
+#[tokio::test]
+async fn admission_stop_and_epoch_races_preserve_only_authorized_reads() {
+    for revoke in [false, true] {
+        let (_temp, pool, context) = setup().await;
+        let initial = read(&pool, &context.work).await.unwrap();
+        let admission = WorkAdmission030 {
+            options_json: r#"{"budget":"1000"}"#.into(),
+            evidence_json: r#"{"proof":"native"}"#.into(),
+        };
+        let (admitted, ()) = tokio::join!(
+            initialize_admitted(
+                &pool,
+                &context,
+                &initial.contract_json,
+                &initial.state_json,
+                &admission
+            ),
+            async {
+                if revoke {
+                    revoke_host_owners(&pool, &[context.owner.clone()])
+                        .await
+                        .unwrap();
+                } else {
+                    stop_work(&pool, &context).await;
+                }
+            },
+        );
+        assert!(read_admission(&pool, &context, false).await.is_err());
+        let control = read_admission(&pool, &context, true).await;
+        if !revoke && admitted.is_ok() {
+            assert_eq!(control.unwrap(), admission);
+        } else {
+            assert!(control.is_err());
+        }
+        let count: i64 = sqlx::query_scalar("SELECT count(*) FROM engine_work_admission030")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(count, if admitted.is_ok() { 1 } else { 0 });
+        assert!(initialize_admitted(
+            &pool,
+            &context,
+            &initial.contract_json,
+            &initial.state_json,
+            &admission
+        )
+        .await
+        .is_err());
+        let mut replacement = context.clone();
+        replacement.owner.owner_epoch = "2".into();
+        assert!(read_admission(&pool, &replacement, false).await.is_err());
+        assert!(read_admission(&pool, &replacement, true).await.is_err());
+    }
+}
+
+#[tokio::test]
+async fn admission_stop_and_epoch_obey_both_serial_orders() {
+    for revoke in [false, true] {
+        for admit_first in [false, true] {
+            let (_temp, pool, context) = setup().await;
+            let initial = read(&pool, &context.work).await.unwrap();
+            let admission = WorkAdmission030 {
+                options_json: "{}".into(),
+                evidence_json: "{}".into(),
+            };
+            if admit_first {
+                initialize_admitted(
+                    &pool,
+                    &context,
+                    &initial.contract_json,
+                    &initial.state_json,
+                    &admission,
+                )
+                .await
+                .unwrap();
+            }
+            if revoke {
+                revoke_host_owners(&pool, &[context.owner.clone()])
+                    .await
+                    .unwrap();
+            } else {
+                stop_work(&pool, &context).await;
+            }
+            if !admit_first {
+                assert!(initialize_admitted(
+                    &pool,
+                    &context,
+                    &initial.contract_json,
+                    &initial.state_json,
+                    &admission
+                )
+                .await
+                .is_err());
+            }
+            assert!(read_admission(&pool, &context, false).await.is_err());
+            let control = read_admission(&pool, &context, true).await;
+            if admit_first && !revoke {
+                assert_eq!(control.unwrap(), admission);
+            } else {
+                assert!(control.is_err());
+            }
+            let count: i64 = sqlx::query_scalar("SELECT count(*) FROM engine_work_admission030")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+            assert_eq!(count, if admit_first { 1 } else { 0 });
+        }
+    }
+}
+
+#[tokio::test]
+async fn admission_read_racing_stop_or_epoch_never_changes_evidence() {
+    for revoke in [false, true] {
+        for control in [false, true] {
+            let (_temp, pool, context) = setup().await;
+            let initial = read(&pool, &context.work).await.unwrap();
+            let admission = WorkAdmission030 {
+                options_json: r#"{ "budget":9007199254740993 }"#.into(),
+                evidence_json: r#"{ "proof":"native" }"#.into(),
+            };
+            initialize_admitted(
+                &pool,
+                &context,
+                &initial.contract_json,
+                &initial.state_json,
+                &admission,
+            )
+            .await
+            .unwrap();
+            let (observed, ()) = tokio::join!(read_admission(&pool, &context, control), async {
+                if revoke {
+                    revoke_host_owners(&pool, &[context.owner.clone()])
+                        .await
+                        .unwrap();
+                } else {
+                    stop_work(&pool, &context).await;
+                }
+            },);
+            if let Ok(record) = observed {
+                assert_eq!(record, admission);
+            }
+            assert!(read_admission(&pool, &context, false).await.is_err());
+            let after = read_admission(&pool, &context, true).await;
+            if revoke {
+                assert!(after.is_err());
+            } else {
+                assert_eq!(after.unwrap(), admission);
+            }
+            let stored: (String, String) = sqlx::query_as("SELECT options_json,evidence_json FROM engine_work_admission030 WHERE system_id=? AND activation_id=?")
+                .bind(&context.work.system_start_id).bind(&context.work.activation_id).fetch_one(&pool).await.unwrap();
+            assert_eq!(stored, (admission.options_json, admission.evidence_json));
+        }
+    }
+}
 async fn stop_work(pool: &SqlitePool, context: &EngineContext) {
     stop(
         pool,
