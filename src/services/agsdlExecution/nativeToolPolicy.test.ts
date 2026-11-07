@@ -72,7 +72,16 @@ it('composes 0.3 native admission without widening Macro policy or changing 0.2'
   expect(assessNativeToolPolicy({ ...native, permissionProjection: undefined }, registry).decision).toBe('deny');
   const allow = { ...native, permissionProjection: { ...native.permissionProjection!, decision: { ...native.permissionProjection!.decision, effect: 'allow' as const } } };
   expect(assessNativeToolPolicy(allow, registry).decision).toBe('allow');
+  expect(assessNativeToolPolicy({ ...allow, writeDenied: true }, registry).decision).toBe('deny');
   expect(assessNativeToolPolicy({ ...allow, riskLevel: 'strict' }, registry).decision).toBe('ask');
   expect(assessNativeToolPolicy({ ...allow, argumentsJson: json('{"path":"file.txt","content":"changed"}') }, registry).decision).toBe('deny');
   expect(assessNativeToolPolicy(input, registry).decision).toBe('allow');
+});
+
+
+it.each(['balanced', 'strict', 'yolo'] as const)('keeps native frozen path denials under %s', riskLevel => {
+  const { input, registry } = fixture('write', '{"path":".env","content":"synthetic"}');
+  const result = assessNativeToolPolicy({ ...input, riskLevel, writeDenied: true }, registry);
+  expect(result.decision).toBe('deny');
+  expect(result.code).toBe('PERMISSION');
 });
