@@ -35,3 +35,11 @@ export async function readExecutionSnapshot030(systemStartId: string): Promise<P
   if (snapshot.systemStartId !== systemStartId) throw new Error('Native snapshot differs from the requested run.');
   return snapshot;
 }
+
+/** Lists only requests explicitly attested for a human by the native host. */
+export function readExecutionHumans030(
+  scope: import('../../types/generated/ipc').HumanScope030,
+  continuation?: import('../../types/generated/ipc').HumanContinuation030,
+): Promise<import('../../types/generated/ipc').HumanPage030> {
+  return invoke('execution_read_humans030', { scope, continuation: continuation ?? null });
+}

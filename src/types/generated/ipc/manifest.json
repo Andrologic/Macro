@@ -1774,6 +1774,54 @@
     },
     {
       "families": [
+        "execution"
+      ],
+      "name": "HumanAnswer030",
+      "origin": "macro_lib::db::agsdl_execution::public030::HumanAnswer030",
+      "path": "HumanAnswer030.ts"
+    },
+    {
+      "families": [
+        "execution"
+      ],
+      "name": "HumanContent030",
+      "origin": "macro_lib::db::agsdl_execution::public030::HumanContent030",
+      "path": "HumanContent030.ts"
+    },
+    {
+      "families": [
+        "execution"
+      ],
+      "name": "HumanContinuation030",
+      "origin": "macro_lib::db::agsdl_execution::public030::HumanContinuation030",
+      "path": "HumanContinuation030.ts"
+    },
+    {
+      "families": [
+        "execution"
+      ],
+      "name": "HumanDecision030",
+      "origin": "macro_lib::db::agsdl_execution::public030::HumanDecision030",
+      "path": "HumanDecision030.ts"
+    },
+    {
+      "families": [
+        "execution"
+      ],
+      "name": "HumanPage030",
+      "origin": "macro_lib::db::agsdl_execution::public030::HumanPage030",
+      "path": "HumanPage030.ts"
+    },
+    {
+      "families": [
+        "execution"
+      ],
+      "name": "HumanScope030",
+      "origin": "macro_lib::db::agsdl_execution::public030::HumanScope030",
+      "path": "HumanScope030.ts"
+    },
+    {
+      "families": [
         "workspace"
       ],
       "name": "ImportGitRepoRequest",
@@ -2603,6 +2651,14 @@
       "name": "PublicExecutionIntent",
       "origin": "macro_lib::db::agsdl_execution::intents::PublicExecutionIntent",
       "path": "PublicExecutionIntent.ts"
+    },
+    {
+      "families": [
+        "execution"
+      ],
+      "name": "PublicHumanRequest030",
+      "origin": "macro_lib::db::agsdl_execution::public030::PublicHumanRequest030",
+      "path": "PublicHumanRequest030.ts"
     },
     {
       "families": [

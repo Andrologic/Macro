@@ -11,6 +11,13 @@ pub fn register(registry: &mut Registry) -> Result<(), String> {
     registry.add::<ipc_contracts::execution::ExecutionEnsureStopRequest>("execution")?;
     registry.add::<ipc_contracts::execution::ExecutionIntentError>("execution")?;
     registry.add::<ipc_contracts::execution::ApprovalScope>("execution")?;
+    registry.add::<ipc_contracts::execution::HumanAnswer030>("execution")?;
+    registry.add::<ipc_contracts::execution::HumanContent030>("execution")?;
+    registry.add::<ipc_contracts::execution::HumanContinuation030>("execution")?;
+    registry.add::<ipc_contracts::execution::HumanDecision030>("execution")?;
+    registry.add::<ipc_contracts::execution::HumanPage030>("execution")?;
+    registry.add::<ipc_contracts::execution::HumanScope030>("execution")?;
+    registry.add::<ipc_contracts::execution::PublicHumanRequest030>("execution")?;
     registry.add::<ipc_contracts::execution::ApprovalDecision>("execution")?;
     registry.add::<ipc_contracts::execution::ApprovalPage>("execution")?;
     registry.add::<ipc_contracts::execution::DiagnosticRequest>("execution")?;

@@ -28,6 +28,11 @@ pub mod execution {
     pub use crate::db::agsdl_execution::intents::*;
     pub use crate::db::agsdl_execution::prepared::{Prepare, Validation};
     pub use crate::db::agsdl_execution::public::*;
+    pub use crate::db::agsdl_execution::public030::{
+        HumanAnswer030, HumanContent030, HumanContinuation030, HumanDecision030, HumanPage030,
+        HumanScope030, PublicHumanRequest030,
+    };
+
     pub use crate::db::agsdl_execution::responses::{Closure, Emission};
 }
 

@@ -1728,6 +1728,61 @@ async fn external_graphless_delivery_uses_native_ids_and_keeps_its_exact_receipt
             .await
             .is_err()
     );
+    let approximate = accept_external_delivery_with_warning(
+        &pool,
+        &runtime,
+        "approximate",
+        "a",
+        message,
+        None,
+        true,
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        accept_external_delivery_with_warning(
+            &pool,
+            &runtime,
+            "approximate",
+            "a",
+            message,
+            None,
+            true,
+        )
+        .await
+        .unwrap(),
+        approximate
+    );
+    let page = read_events(&pool, &runtime.system_start_id, None, 500)
+        .await
+        .unwrap();
+    let warnings: Vec<_> = page
+        .events
+        .iter()
+        .filter(|event| {
+            event.kind == "diagnostic" && event.payload_json.contains("HARNESS_APPROXIMATE")
+        })
+        .collect();
+    assert_eq!(warnings.len(), 1);
+    assert_eq!(warnings[0].work.as_ref(), Some(&approximate.delivery.work));
+    let public = diagnostics::read(
+        &pool,
+        diagnostics::DiagnosticRequest {
+            system_start_id: runtime.system_start_id.clone(),
+            source: receipt.snapshot.source.clone(),
+            activation_id: Some(approximate.delivery.work.activation_id.clone()),
+            through: page.next_cursor.clone(),
+            selected: None,
+            before: None,
+            recent: true,
+        },
+    )
+    .await
+    .unwrap();
+    assert!(public
+        .diagnostics
+        .iter()
+        .any(|diagnostic| diagnostic.code == "HARNESS_APPROXIMATE"));
     stop(
         &pool,
         EngineStopRequest {

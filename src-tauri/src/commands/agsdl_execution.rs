@@ -272,6 +272,17 @@ pub async fn execution_resolve_card_task(
     crate::agsdl_host_tasks::resolve(&pool(&state).await?, &workspace, &git, request).await
 }
 
+/// Read only the native-attested public view. A page cursor is scoped to the
+/// complete captured source and is invalidated when its requests change.
+#[tauri::command]
+pub async fn execution_read_humans030(
+    state: State<'_, DbPool>,
+    scope: repository::public030::HumanScope030,
+    continuation: Option<repository::public030::HumanContinuation030>,
+) -> repository::Result<repository::public030::HumanPage030> {
+    repository::public030::human_page(&pool(&state).await?, scope, continuation).await
+}
+
 #[tauri::command]
 pub async fn execution_pending_approvals(
     state: State<'_, DbPool>,

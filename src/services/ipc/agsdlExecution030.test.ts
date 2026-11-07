@@ -27,3 +27,14 @@ it('rejects a historical or foreign native snapshot', async () => {
     source: { ...source, revision: '2' } } };
   await expect(ipc.startExecution030(request)).rejects.toThrow('differs from the requested source');
 });
+
+
+it('reads native human pages with the complete scope and opaque continuation', async () => {
+  const scope = { systemStartId: 'run', source };
+  const continuation = { scope, cursor: 'opaque-native-cursor', offset: 64 };
+  response = { scope, cursor: continuation.cursor, total: '65', requests: [], nextPage: null };
+  expect(await ipc.readExecutionHumans030(scope, continuation)).toMatchObject({ scope, cursor: continuation.cursor, total: '65' });
+  expect(invoke).toHaveBeenLastCalledWith('execution_read_humans030', { scope, continuation });
+  await ipc.readExecutionHumans030(scope);
+  expect(invoke).toHaveBeenLastCalledWith('execution_read_humans030', { scope, continuation: null });
+});

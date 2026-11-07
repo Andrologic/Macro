@@ -896,6 +896,7 @@ pub fn run() {
             commands::agsdl_execution::execution_list_runs,
             commands::agsdl_execution::execution_find_start,
             commands::agsdl_execution::execution_read_diagnostic,
+            commands::agsdl_execution::execution_read_humans030,
             commands::agsdl_execution::execution_pending_approvals,
             commands::agsdl_execution::execution_decide_approval,
             crate::agsdl_host_tools::execution_host_invoke_tool,

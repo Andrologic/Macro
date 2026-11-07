@@ -12,6 +12,7 @@ pub(crate) mod native_operations;
 pub(crate) mod prepared;
 pub(crate) mod process_recovery;
 pub(crate) mod public;
+pub(crate) mod public030;
 pub(crate) mod responses;
 pub(crate) mod work_protocol030;
 #[cfg(test)]
@@ -649,6 +650,29 @@ pub(crate) async fn accept_external_delivery_linked(
     message_json: &str,
     link: Option<&intents::IntentAdmissionLink>,
 ) -> Result<EngineAcceptedDelivery> {
+    accept_external_delivery_with_warning(
+        pool,
+        runtime,
+        delivery_id,
+        agent_name,
+        message_json,
+        link,
+        false,
+    )
+    .await
+}
+
+/// `resources_approximate` is a native observation, never an IPC/model claim.
+/// Commit its public diagnostic in the same transaction as the delivery.
+pub(crate) async fn accept_external_delivery_with_warning(
+    pool: &SqlitePool,
+    runtime: &EngineOwner,
+    delivery_id: &str,
+    agent_name: &str,
+    message_json: &str,
+    link: Option<&intents::IntentAdmissionLink>,
+    resources_approximate: bool,
+) -> Result<EngineAcceptedDelivery> {
     opaque(delivery_id)?;
     opaque(agent_name)?;
     validate_json(message_json)?;
@@ -705,6 +729,17 @@ pub(crate) async fn accept_external_delivery_linked(
         return Ok(retained);
     }
     let receipt = accept(&mut tx, &mut stored, delivery, link).await?;
+    if resources_approximate {
+        event(
+            &mut tx,
+            &mut stored.state,
+            &runtime.system_start_id,
+            Some(receipt.delivery.work.clone()),
+            "diagnostic",
+            r#"{"code":"HARNESS_APPROXIMATE"}"#.into(),
+        )
+        .await?;
+    }
     save(&mut tx, &runtime.system_start_id, &stored.state).await?;
     if let Some(link) = link {
         intents::attach(&mut tx, link, &runtime.system_start_id).await?;

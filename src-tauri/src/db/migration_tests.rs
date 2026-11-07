@@ -58,6 +58,7 @@ async fn accepts_develop_v9_with_historical_pilot_v5_stamp() {
             (26, "026_execution_native_operations".into()),
             (27, "027_execution_work_protocol".into()),
             (28, "028_execution_work_admission".into()),
+            (29, "029_execution_human_public".into()),
         ]
     );
 }
@@ -144,7 +145,7 @@ async fn rehearses_upgrade_on_external_database_copy() {
             .unwrap()
             .iter()
             .max(),
-        Some(&28)
+        Some(&29)
     );
 }
 
@@ -266,6 +267,16 @@ pub(crate) async fn drop_develop_after9(c: &mut SqliteConnection) {
     }
 }
 
+pub(crate) async fn drop_human_public(c: &mut SqliteConnection) {
+    migration_history::remove_reference_schema(c, &[20, 21, 22, 23, 24, 25, 26, 27, 28])
+        .await
+        .unwrap();
+    sqlx::query("DELETE FROM schema_migrations WHERE version=29")
+        .execute(c)
+        .await
+        .unwrap();
+}
+
 pub(crate) async fn drop_agsdl(c: &mut SqliteConnection) {
     migration_history::remove_reference_schema(c, &[])
         .await
@@ -277,6 +288,7 @@ pub(crate) async fn drop_agsdl(c: &mut SqliteConnection) {
 }
 
 async fn drop_visible_search(connection: &mut SqliteConnection) {
+    drop_human_public(connection).await;
     sqlx::raw_sql(
         "DROP TRIGGER messages_search_insert;
          DROP TRIGGER messages_search_delete;
@@ -1067,6 +1079,7 @@ pub(crate) async fn published_branch_database(
         .await
         .unwrap();
     } else {
+        drop_human_public(&mut connection).await;
         sqlx::raw_sql(
             "DROP TABLE engine_work_admission030;
         DROP TABLE engine_human_link_events030;
@@ -1133,8 +1146,36 @@ async fn legacy_protocol_identities_are_normalized_without_losing_admission_data
         INSERT INTO engine_work_protocol030 VALUES ('run','work','{}','{}','{}','{}','0');
         INSERT INTO engine_work_admission030 VALUES ('run','work','{ \"limit\":9007199254740993 }','{ \"proof\":true }');")
         .execute(&mut old).await.unwrap();
+    let ticket = r#"{ "ticket":9007199254740993 }"#;
+    let effect = r#"{ "command":"synthetic" }"#;
+    sqlx::query(
+        "INSERT INTO engine_work_events030 VALUES ('run','work','event',NULL,NULL,?,NULL,NULL)",
+    )
+    .bind(ticket)
+    .execute(&mut old)
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO engine_effects VALUES ('run','work','check:one',?,'pending',NULL,NULL)",
+    )
+    .bind(effect)
+    .execute(&mut old)
+    .await
+    .unwrap();
+    sqlx::query("INSERT INTO engine_work_checks030 VALUES ('run','check','work','event','check:one',1,NULL,NULL)")
+        .execute(&mut old).await.unwrap();
     old.close().await.unwrap();
     let upgraded = create_pool(&path).await.unwrap();
+    let event_ticket: String = sqlx::query_scalar(
+        "SELECT ticket_json FROM engine_work_events030 WHERE system_id='run' AND event_id='event'",
+    )
+    .fetch_one(&upgraded)
+    .await
+    .unwrap();
+    assert_eq!(event_ticket, ticket);
+    let check: (i64, String) = sqlx::query_as("SELECT c.claimed,e.record_json FROM engine_work_checks030 c JOIN engine_effects e ON e.system_id=c.system_id AND e.effect_key=c.effect_key WHERE c.system_id='run' AND c.check_id='check'")
+        .fetch_one(&upgraded).await.unwrap();
+    assert_eq!(check, (1, effect.into()));
     let names: Vec<(i64, String)> = sqlx::query_as("SELECT version,name FROM schema_migrations WHERE version IN (17,18,27,28) ORDER BY version")
         .fetch_all(&upgraded).await.unwrap();
     assert_eq!(
@@ -1155,9 +1196,10 @@ async fn legacy_protocol_identities_are_normalized_without_losing_admission_data
             (18, "018_execution_work_admission".into())
         ]
     );
-    let options: String = sqlx::query_scalar("SELECT options_json FROM engine_work_admission030 WHERE system_id='run' AND activation_id='work'")
+    let admission: (String, String) = sqlx::query_as("SELECT options_json,evidence_json FROM engine_work_admission030 WHERE system_id='run' AND activation_id='work'")
         .fetch_one(&upgraded).await.unwrap();
-    assert_eq!(options, r#"{ "limit":9007199254740993 }"#);
+    assert_eq!(admission.0, r#"{ "limit":9007199254740993 }"#);
+    assert_eq!(admission.1, r#"{ "proof":true }"#);
     upgraded.close().await;
     create_pool(&path).await.unwrap().close().await;
 }
@@ -1210,7 +1252,7 @@ async fn joins_both_published_v10_histories_without_replacing_stamps_or_data() {
                 .fetch_one(&upgraded)
                 .await
                 .unwrap(),
-            28
+            29
         );
         assert_eq!(
             sqlx::query_scalar::<_, String>(
@@ -1333,6 +1375,7 @@ async fn protocol017_upgrades_v16_without_rewriting_snapshots_and_rolls_back_fai
     let temp = TempDir::new().unwrap();
     let path = temp.path().join("protocol-upgrade.db");
     let pool = create_pool(&path).await.unwrap();
+    drop_human_public(&mut *pool.acquire().await.unwrap()).await;
     sqlx::raw_sql("DROP TABLE engine_work_admission030;
         DROP TABLE engine_human_link_events030;
         DROP TABLE engine_human_works030;
@@ -1402,7 +1445,7 @@ async fn protocol017_upgrades_v16_without_rewriting_snapshots_and_rolls_back_fai
             .fetch_one(&upgraded)
             .await
             .unwrap(),
-        28
+        29
     );
     assert_eq!(
         sqlx::query("PRAGMA foreign_key_check")
@@ -1421,6 +1464,7 @@ async fn admission018_upgrades_v17_and_rolls_back_failed_stamp() {
     let temp = TempDir::new().unwrap();
     let path = temp.path().join("admission-upgrade.db");
     let pool = create_pool(&path).await.unwrap();
+    drop_human_public(&mut *pool.acquire().await.unwrap()).await;
     sqlx::raw_sql("DROP TABLE engine_work_admission030;
         DELETE FROM schema_migrations WHERE version=28;
         INSERT INTO engine_systems VALUES ('historical18','request18','{}','{\"exact\":9007199254740993}','[]','{}');
@@ -1470,7 +1514,7 @@ async fn admission018_upgrades_v17_and_rolls_back_failed_stamp() {
             .fetch_one(&upgraded)
             .await
             .unwrap(),
-        28
+        29
     );
     assert!(sqlx::query("PRAGMA foreign_key_check")
         .fetch_all(&upgraded)

@@ -48,6 +48,7 @@ pub(crate) const NAMES: &[&str] = &[
     "026_execution_native_operations",
     "027_execution_work_protocol",
     "028_execution_work_admission",
+    "029_execution_human_public",
 ];
 
 pub(crate) fn destinations(version: i64, name: &str) -> DbResult<Vec<i64>> {
@@ -98,6 +99,7 @@ pub(crate) async fn canonical_versions(c: &mut SqliteConnection) -> DbResult<Vec
         || versions.contains(&26) && !(versions.contains(&24) && versions.contains(&25))
         || versions.contains(&27) && !versions.contains(&26)
         || versions.contains(&28) && !versions.contains(&27)
+        || versions.contains(&29) && !versions.contains(&28)
     {
         return Err(DbError::Migration(
             "Inconsistent AgSDL migration history".into(),
@@ -170,6 +172,33 @@ pub(crate) async fn remove_reference_schema(
     c: &mut SqliteConnection,
     versions: &[i64],
 ) -> DbResult<()> {
+    if !versions.contains(&29) {
+        for table in [
+            "engine_human_requests030",
+            "engine_human_works030",
+            "engine_human_public030",
+            "engine_human_public_works030",
+            "engine_human_submissions030",
+        ] {
+            for operation in ["insert", "update", "delete"] {
+                sqlx::query(sqlx::AssertSqlSafe(format!(
+                    "DROP TRIGGER {table}_projection_{operation}"
+                )))
+                .execute(&mut *c)
+                .await?;
+            }
+        }
+        for table in [
+            "engine_human_submissions030",
+            "engine_human_public_works030",
+            "engine_human_public030",
+            "engine_human_projection030",
+        ] {
+            sqlx::query(sqlx::AssertSqlSafe(format!("DROP TABLE {table}")))
+                .execute(&mut *c)
+                .await?;
+        }
+    }
     if !versions.contains(&25) {
         sqlx::raw_sql(
             "DROP TRIGGER messages_search_insert;

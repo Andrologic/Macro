@@ -1864,7 +1864,7 @@ mod tests {
                 .fetch_one(&mut restored)
                 .await
                 .unwrap(),
-            28
+            29
         );
         restored.close().await.unwrap();
 
@@ -1875,7 +1875,7 @@ mod tests {
                 .fetch_one(&pool)
                 .await
                 .unwrap(),
-            28
+            29
         );
         assert_eq!(
             sqlx::query_scalar::<_, String>(
@@ -1974,7 +1974,7 @@ mod tests {
             .fetch_one(&mut db)
             .await
             .unwrap();
-        assert_eq!(version, 28);
+        assert_eq!(version, 29);
         sqlx::query("INSERT INTO schema_migrations VALUES (99, 'future', 'synthetic')")
             .execute(&mut db)
             .await
@@ -3498,7 +3498,7 @@ mod content_backup_tests {
                 .fetch_one(&mut db)
                 .await
                 .unwrap(),
-            28
+            29
         );
         assert_eq!(
             sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM conversation_content_versions")
@@ -3693,7 +3693,7 @@ mod content_legacy_backup_tests {
                     .fetch_one(&pool)
                     .await
                     .unwrap(),
-                28
+                29
             );
             assert_eq!(
                 sqlx::query_scalar::<_, String>(
@@ -3878,7 +3878,7 @@ mod catalog_backup_tests {
                 .fetch_one(&mut connection(&copy).await.unwrap())
                 .await
                 .unwrap(),
-            28
+            29
         );
         assert_eq!(fs::read(&original).unwrap(), before);
     }
@@ -3969,7 +3969,7 @@ mod catalog_backup_tests {
                 .fetch_one(&pool)
                 .await
                 .unwrap(),
-            28
+            29
         );
         sqlx::query("DROP TRIGGER connect_preparation_metadata")
             .execute(&pool)
@@ -4027,6 +4027,7 @@ mod catalog_backup_tests {
         pool.close().await;
         check_database(&path).await.unwrap();
         let mut db = connection(&path).await.unwrap();
+        crate::db::migration_tests::drop_human_public(&mut db).await;
         sqlx::query("DROP TABLE engine_human_works030")
             .execute(&mut db)
             .await
@@ -4061,6 +4062,7 @@ mod catalog_backup_tests {
         pool.close().await;
         check_database(&path).await.unwrap();
         let mut db = connection(&path).await.unwrap();
+        crate::db::migration_tests::drop_human_public(&mut db).await;
         sqlx::query("DROP TABLE engine_work_admission030")
             .execute(&mut db)
             .await
@@ -4130,5 +4132,64 @@ mod catalog_backup_tests {
         let row: (String, String) = sqlx::query_as("SELECT options_json,evidence_json FROM engine_work_admission030 WHERE system_id='run' AND activation_id='work'")
             .fetch_one(&mut restored).await.unwrap();
         assert_eq!(row, (options.to_owned(), evidence.to_owned()));
+    }
+
+    #[tokio::test]
+    async fn legacy_030_admission_survives_real_archive_restore_and_normalization() {
+        let (temp, target_data, config) = tests::profile().await;
+        let old_data = temp.path().join("old-data");
+        fs::create_dir_all(&old_data).unwrap();
+        let mut old = crate::db::migration_tests::published_branch_database(
+            &old_data.join("macro.db"),
+            false,
+        )
+        .await;
+        sqlx::raw_sql(include_str!(
+            "db/migrations/017_execution_work_protocol.sql"
+        ))
+        .execute(&mut old)
+        .await
+        .unwrap();
+        sqlx::raw_sql(include_str!(
+            "db/migrations/018_execution_work_admission.sql"
+        ))
+        .execute(&mut old)
+        .await
+        .unwrap();
+        sqlx::raw_sql("INSERT INTO schema_migrations VALUES (17,'017_execution_work_protocol','date'),(18,'018_execution_work_admission','date');
+            INSERT INTO engine_systems VALUES ('run','request','{}','{}','[]','{}');
+            INSERT INTO engine_work_protocol030 VALUES ('run','work','{}','{}','{}','{}','0');
+            INSERT INTO engine_work_admission030 VALUES ('run','work','{ \"limit\":9007199254740993 }','{ \"proof\":true }');")
+            .execute(&mut old).await.unwrap();
+        old.close().await.unwrap();
+        let archive = capture(&old_data, &config, BTreeMap::new(), false)
+            .await
+            .unwrap();
+        validate(&archive).await.unwrap();
+        tests::queue_restore(&target_data, &archive);
+        process_startup(&target_data, &config).await.unwrap();
+        let pool = crate::db::create_pool(&target_data.join("macro.db"))
+            .await
+            .unwrap();
+        let admission: (String, String) = sqlx::query_as("SELECT options_json,evidence_json FROM engine_work_admission030 WHERE system_id='run' AND activation_id='work'")
+            .fetch_one(&pool).await.unwrap();
+        assert_eq!(
+            admission,
+            (
+                r#"{ "limit":9007199254740993 }"#.into(),
+                r#"{ "proof":true }"#.into()
+            )
+        );
+        let stamps: Vec<(i64, String)> = sqlx::query_as("SELECT version,name FROM schema_migrations WHERE version IN (17,18,27,28) ORDER BY version")
+            .fetch_all(&pool).await.unwrap();
+        assert_eq!(
+            stamps,
+            vec![
+                (17, "017_chat_admission".into()),
+                (18, "018_connect_transfer".into()),
+                (27, "027_execution_work_protocol".into()),
+                (28, "028_execution_work_admission".into())
+            ]
+        );
     }
 }
