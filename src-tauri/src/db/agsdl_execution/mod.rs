@@ -18,6 +18,8 @@ pub(crate) mod process_recovery;
 pub(crate) mod public;
 pub(crate) mod public030;
 pub(crate) mod responses;
+#[cfg(test)]
+mod start030;
 pub(crate) mod work_protocol030;
 #[cfg(test)]
 pub(crate) mod work_protocol030_tests;
