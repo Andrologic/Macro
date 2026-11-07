@@ -334,6 +334,7 @@ export type { PublicRunCounts } from './PublicRunCounts';
 export type { PublicRunSummary } from './PublicRunSummary';
 export type { PublicSnapshot } from './PublicSnapshot';
 export type { PublicStartReceipt } from './PublicStartReceipt';
+export type { PublicStartReceipt030 } from './PublicStartReceipt030';
 export type { PublicStopState } from './PublicStopState';
 export type { PublicTaskTarget } from './PublicTaskTarget';
 export type { ReconcileProjectRegistryInput } from './ReconcileProjectRegistryInput';

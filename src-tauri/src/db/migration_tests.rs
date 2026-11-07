@@ -61,6 +61,7 @@ async fn accepts_develop_v9_with_historical_pilot_v5_stamp() {
             (29, "029_execution_human_public".into()),
             (30, "030_execution_flow".into()),
             (31, "031_execution_start_entry".into()),
+            (32, "032_execution_ui_intent_start030".into()),
         ]
     );
 }
@@ -147,7 +148,7 @@ async fn rehearses_upgrade_on_external_database_copy() {
             .unwrap()
             .iter()
             .max(),
-        Some(&31)
+        Some(&32)
     );
 }
 
@@ -1254,7 +1255,7 @@ async fn joins_both_published_v10_histories_without_replacing_stamps_or_data() {
                 .fetch_one(&upgraded)
                 .await
                 .unwrap(),
-            31
+            32
         );
         assert_eq!(
             sqlx::query_scalar::<_, String>(
@@ -1447,7 +1448,7 @@ async fn protocol017_upgrades_v16_without_rewriting_snapshots_and_rolls_back_fai
             .fetch_one(&upgraded)
             .await
             .unwrap(),
-        31
+        32
     );
     assert_eq!(
         sqlx::query("PRAGMA foreign_key_check")
@@ -1516,7 +1517,7 @@ async fn admission018_upgrades_v17_and_rolls_back_failed_stamp() {
             .fetch_one(&upgraded)
             .await
             .unwrap(),
-        31
+        32
     );
     assert!(sqlx::query("PRAGMA foreign_key_check")
         .fetch_all(&upgraded)
@@ -1691,4 +1692,69 @@ async fn start030_entry_reservation_conflicts_with_both_execution_versions() {
     .is_err());
     assert!(sqlx::query(r#"INSERT INTO engine_start030_requests VALUES ('other-request','{"entry":{"deliveryId":"new-delivery"}}','other','flow','snapshot','epoch','{}','{}')"#).execute(&pool).await.is_err());
     pool.close().await;
+}
+
+#[tokio::test]
+async fn intent032_rebuild_rolls_back_and_refuses_case_variant_inbound_foreign_keys() {
+    let mut db = SqliteConnection::connect("sqlite::memory:").await.unwrap();
+    sqlx::raw_sql("PRAGMA foreign_keys=ON; CREATE TABLE engine_systems(system_id TEXT PRIMARY KEY,request_id TEXT UNIQUE); CREATE TABLE engine_deliveries(delivery_id TEXT PRIMARY KEY);")
+        .execute(&mut db).await.unwrap();
+    for sql in [
+        include_str!("migrations/013_execution_ui_intents.sql"),
+        include_str!("migrations/030_execution_flow.sql"),
+        include_str!("migrations/031_execution_start_entry.sql"),
+    ] {
+        sqlx::raw_sql(sql).execute(&mut db).await.unwrap();
+    }
+    sqlx::raw_sql("INSERT INTO engine_systems VALUES('old','request'); INSERT INTO engine_ui_intents(intent_id,format_version,project_id,plan_id,branch,conversation_id,kind,request_id,payload_json,status,revision,admission_system_id) VALUES('i','1','p','plan','feature/test','c','start','request','{}','admitted','1','old');").execute(&mut db).await.unwrap();
+    let old_schema: String =
+        sqlx::query_scalar("SELECT sql FROM sqlite_schema WHERE name='engine_ui_intents'")
+            .fetch_one(&mut db)
+            .await
+            .unwrap();
+    sqlx::query("BEGIN IMMEDIATE")
+        .execute(&mut db)
+        .await
+        .unwrap();
+    sqlx::raw_sql(include_str!(
+        "migrations/032_execution_ui_intent_start030.sql"
+    ))
+    .execute(&mut db)
+    .await
+    .unwrap();
+    sqlx::query("ROLLBACK").execute(&mut db).await.unwrap();
+    let schema: String =
+        sqlx::query_scalar("SELECT sql FROM sqlite_schema WHERE name='engine_ui_intents'")
+            .fetch_one(&mut db)
+            .await
+            .unwrap();
+    assert_eq!(schema, old_schema);
+    let old: (String, String) = sqlx::query_as(
+        "SELECT status,admission_system_id FROM engine_ui_intents WHERE intent_id='i'",
+    )
+    .fetch_one(&mut db)
+    .await
+    .unwrap();
+    assert_eq!(old, ("admitted".into(), "old".into()));
+    sqlx::query("CREATE TABLE dependent_intent(id TEXT REFERENCES ENGINE_UI_INTENTS(intent_id))")
+        .execute(&mut db)
+        .await
+        .unwrap();
+    sqlx::query("BEGIN IMMEDIATE")
+        .execute(&mut db)
+        .await
+        .unwrap();
+    assert!(sqlx::raw_sql(include_str!(
+        "migrations/032_execution_ui_intent_start030.sql"
+    ))
+    .execute(&mut db)
+    .await
+    .is_err());
+    sqlx::query("ROLLBACK").execute(&mut db).await.unwrap();
+    let schema: String =
+        sqlx::query_scalar("SELECT sql FROM sqlite_schema WHERE name='engine_ui_intents'")
+            .fetch_one(&mut db)
+            .await
+            .unwrap();
+    assert_eq!(schema, old_schema);
 }

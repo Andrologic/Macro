@@ -152,8 +152,9 @@ async fn lookup_tx<A: StartAuthority030>(
     db: &mut SqliteConnection,
     request: &EngineStartRequest,
     authority: &A,
+    link: Option<&super::intents::IntentAdmissionLink>,
 ) -> Result<Option<RetainedStart030>> {
-    super::intents::reserve_start(db, request, None).await?;
+    super::intents::reserve_start(db, request, link).await?;
     let historical: bool =
         sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM engine_systems WHERE request_id=?)")
             .bind(&request.request_id)
@@ -166,7 +167,7 @@ async fn lookup_tx<A: StartAuthority030>(
             "Start request is already used by another execution version",
         ));
     }
-    let Some(row) = sqlx::query("SELECT request_json,capture_json,receipt_json FROM engine_start030_requests WHERE request_id=?")
+    let Some(row) = sqlx::query("SELECT request_json,capture_json,receipt_json,system_id,invocation_id,snapshot_id,capture_epoch FROM engine_start030_requests WHERE request_id=?")
         .bind(&request.request_id).fetch_optional(&mut *db).await? else { return Ok(None); };
     let prior: EngineStartRequest = serde_json::from_str(row.get("request_json"))?;
     if prior != *request {
@@ -178,17 +179,26 @@ async fn lookup_tx<A: StartAuthority030>(
     }
     let capture: StartCapture030 = serde_json::from_str(row.get("capture_json"))?;
     let receipt: StartReceipt030 = serde_json::from_str(row.get("receipt_json"))?;
-    if capture.identity != receipt.identity {
+    if capture.identity != receipt.identity
+        || row.get::<&str, _>("system_id") != capture.identity.system_start_id
+        || row.get::<&str, _>("invocation_id") != capture.identity.flow_invocation_id
+        || row.get::<&str, _>("snapshot_id") != capture.identity.snapshot_id
+        || row.get::<&str, _>("capture_epoch") != capture.identity.epoch
+    {
         return Err(failure(
             "CORRELATION",
             "capture",
             "Stored capture and receipt differ",
         ));
     }
+    validate_capture(request, &capture)?;
     authority
         .owner(db, &receipt.identity)
         .await
         .map_err(store_error)?;
+    if let Some(link) = link {
+        super::intents::verify_attached030(db, link, &receipt.identity.system_start_id).await?;
+    }
     Ok(Some(RetainedStart030 { receipt, capture }))
 }
 
@@ -200,10 +210,19 @@ pub(super) async fn inspect<A: StartAuthority030>(
     request: &EngineStartRequest,
     authority: &A,
 ) -> Result<StartInspection030> {
+    inspect_linked(pool, request, authority, None).await
+}
+
+pub(super) async fn inspect_linked<A: StartAuthority030>(
+    pool: &SqlitePool,
+    request: &EngineStartRequest,
+    authority: &A,
+    link: Option<&super::intents::IntentAdmissionLink>,
+) -> Result<StartInspection030> {
     opaque(&request.request_id)?;
     let mut connection = pool.acquire().await?;
     let mut tx = connection.begin().await?;
-    let result = match lookup_tx(&mut tx, request, authority).await? {
+    let result = match lookup_tx(&mut tx, request, authority, link).await? {
         Some(retained) => StartInspection030::Committed(retained),
         None => StartInspection030::AbsentUnresolved,
     };
@@ -217,6 +236,15 @@ pub(super) async fn start<A: StartAuthority030>(
     request: &EngineStartRequest,
     authority: &A,
 ) -> Result<RetainedStart030> {
+    start_linked(pool, request, authority, None).await
+}
+
+pub(super) async fn start_linked<A: StartAuthority030>(
+    pool: &SqlitePool,
+    request: &EngineStartRequest,
+    authority: &A,
+    link: Option<&super::intents::IntentAdmissionLink>,
+) -> Result<RetainedStart030> {
     opaque(&request.request_id)?;
     authority.require_clear(request)?;
     // This lookup is before compilation or metadata locking. Every decision,
@@ -227,7 +255,7 @@ pub(super) async fn start<A: StartAuthority030>(
         .await?;
     let mut tx = connection.begin_with("BEGIN IMMEDIATE").await?;
     authority.require_clear(request)?;
-    if let Some(retained) = lookup_tx(&mut tx, request, authority).await? {
+    if let Some(retained) = lookup_tx(&mut tx, request, authority, link).await? {
         tx.commit().await?;
         return Ok(retained);
     }
@@ -243,7 +271,7 @@ pub(super) async fn start<A: StartAuthority030>(
     let mut tx = connection.begin_with("BEGIN IMMEDIATE").await?;
     authority.require_clear(request)?;
     let request_json = serde_json::to_string(request)?;
-    if let Some(retained) = lookup_tx(&mut tx, request, authority).await? {
+    if let Some(retained) = lookup_tx(&mut tx, request, authority, link).await? {
         tx.commit().await?;
         return Ok(retained);
     }
@@ -303,6 +331,9 @@ pub(super) async fn start<A: StartAuthority030>(
         .bind(&capture.identity.flow_invocation_id).bind(&capture.identity.snapshot_id).bind(&capture.identity.epoch)
         .bind(serde_json::to_string(&capture)?).bind(serde_json::to_string(&receipt)?)
         .execute(&mut *tx).await?;
+    if let Some(link) = link {
+        super::intents::attach030(&mut tx, link, &capture.identity.system_start_id).await?;
+    }
     authority
         .owner(&mut tx, &capture.identity)
         .await

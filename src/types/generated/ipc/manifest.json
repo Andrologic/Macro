@@ -2704,6 +2704,14 @@
       "families": [
         "execution"
       ],
+      "name": "PublicStartReceipt030",
+      "origin": "macro_lib::db::agsdl_execution::intents::PublicStartReceipt030",
+      "path": "PublicStartReceipt030.ts"
+    },
+    {
+      "families": [
+        "execution"
+      ],
       "name": "PublicStopState",
       "origin": "macro_lib::db::agsdl_execution::public::PublicStopState",
       "path": "PublicStopState.ts"

@@ -553,3 +553,163 @@ async fn rejects_mismatched_source_hash_plan_version_and_capture_epoch() {
         .await
         .is_err());
 }
+
+#[tokio::test]
+async fn linked_start_and_intent_commit_together_and_replay_without_capture() {
+    use super::super::intents::{
+        self, ExecutionIntentAdmission, ExecutionIntentKey, ExecutionIntentPayload,
+        ExecutionIntentScope, ExecutionIntentState, ExecutionStageIntentRequest, Submission,
+    };
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("linked030.db");
+    let pool = crate::db::create_pool(&path).await.unwrap();
+    sqlx::raw_sql("CREATE TABLE test_owner(system_id TEXT PRIMARY KEY,epoch TEXT NOT NULL,capture_epoch TEXT NOT NULL); INSERT INTO conversations(id,title,project_id,created_at,updated_at) VALUES('conversation','Synthetic','p','0','0');").execute(&pool).await.unwrap();
+    let (request, capture) = fixture("call");
+    let staged = ExecutionStageIntentRequest {
+        scope: ExecutionIntentScope {
+            owner: request.source.owner.clone(),
+            conversation_id: "conversation".into(),
+        },
+        intent_id: "intent030".into(),
+        payload: ExecutionIntentPayload::Start {
+            request: request.clone(),
+        },
+    };
+    let intent = intents::stage(&pool, staged, &request.source)
+        .await
+        .unwrap();
+    let link = match intents::begin_submission(&pool, &intent.key, &request.source)
+        .await
+        .unwrap()
+    {
+        Submission::Dispatch(link) => link,
+        _ => panic!("expected link"),
+    };
+    let base = authority();
+    let owner = Authority {
+        capture: Some(capture),
+        ..base
+    };
+    let first = start_linked(&pool, &request, &owner, Some(&link))
+        .await
+        .unwrap();
+    let read = intents::read(&pool, &intent.key).await.unwrap().unwrap();
+    match read.state {
+        ExecutionIntentState::Admitted {
+            admission: ExecutionIntentAdmission::Start030 { receipt },
+        } => {
+            assert_eq!(
+                receipt.system_start_id,
+                first.receipt.identity.system_start_id
+            );
+            assert_eq!(receipt.entry_delivery_id.as_deref(), Some("delivery"));
+        }
+        _ => panic!("expected versioned admission"),
+    }
+    let old_calls = owner.calls.load(std::sync::atomic::Ordering::SeqCst);
+    let mut later_revision = request.source.clone();
+    later_revision.revision = "2".into();
+    assert!(matches!(
+        intents::begin_submission(&pool, &intent.key, &later_revision)
+            .await
+            .unwrap(),
+        Submission::Retained(_)
+    ));
+    let changed_source = Authority {
+        epoch: owner.epoch,
+        reject_after_register: false,
+        lock_ok: false,
+        capture: None,
+        calls: owner.calls.clone(),
+        barrier: owner.barrier.clone(),
+    };
+    let replay = start_linked(&pool, &request, &changed_source, Some(&link))
+        .await
+        .unwrap();
+    assert_eq!(replay.receipt, first.receipt);
+    assert_eq!(
+        owner.calls.load(std::sync::atomic::Ordering::SeqCst),
+        old_calls
+    );
+    let mut wrong = ExecutionIntentKey {
+        scope: link.key.scope.clone(),
+        intent_id: link.key.intent_id.clone(),
+    };
+    wrong.scope.conversation_id = "wrong".into();
+    let forged = intents::IntentAdmissionLink {
+        key: wrong,
+        payload: link.payload.clone(),
+    };
+    assert!(start_linked(&pool, &request, &owner, Some(&forged))
+        .await
+        .is_err());
+    pool.close().await;
+    let reopened = crate::db::create_pool(&path).await.unwrap();
+    let replay = start_linked(&reopened, &request, &changed_source, Some(&link))
+        .await
+        .unwrap();
+    assert_eq!(replay.receipt, first.receipt);
+    assert_eq!(
+        owner.calls.load(std::sync::atomic::Ordering::SeqCst),
+        old_calls
+    );
+    reopened.close().await;
+}
+
+#[tokio::test]
+async fn failed_intent_attachment_rolls_back_start_and_entry() {
+    use super::super::intents::{
+        self, ExecutionIntentPayload, ExecutionIntentScope, ExecutionIntentState,
+        ExecutionStageIntentRequest, Submission,
+    };
+    let temp = tempfile::tempdir().unwrap();
+    let pool = crate::db::create_pool(&temp.path().join("rollback030.db"))
+        .await
+        .unwrap();
+    sqlx::raw_sql("CREATE TABLE test_owner(system_id TEXT PRIMARY KEY,epoch TEXT NOT NULL,capture_epoch TEXT NOT NULL); INSERT INTO conversations(id,title,project_id,created_at,updated_at) VALUES('conversation','Synthetic','p','0','0');").execute(&pool).await.unwrap();
+    let (request, capture) = fixture("call");
+    let staged = ExecutionStageIntentRequest {
+        scope: ExecutionIntentScope {
+            owner: request.source.owner.clone(),
+            conversation_id: "conversation".into(),
+        },
+        intent_id: "intent030".into(),
+        payload: ExecutionIntentPayload::Start {
+            request: request.clone(),
+        },
+    };
+    let intent = intents::stage(&pool, staged, &request.source)
+        .await
+        .unwrap();
+    let link = match intents::begin_submission(&pool, &intent.key, &request.source)
+        .await
+        .unwrap()
+    {
+        Submission::Dispatch(link) => link,
+        _ => panic!("expected link"),
+    };
+    sqlx::query("CREATE TRIGGER refuse_030_link BEFORE UPDATE OF admission_system030_id ON engine_ui_intents BEGIN SELECT RAISE(ABORT, 'injected failure'); END")
+        .execute(&pool).await.unwrap();
+    let owner = Authority {
+        capture: Some(capture),
+        ..authority()
+    };
+    assert!(start_linked(&pool, &request, &owner, Some(&link))
+        .await
+        .is_err());
+    for query in [
+        "SELECT count(*) FROM engine_start030_requests",
+        "SELECT count(*) FROM engine_flow030_runs",
+        "SELECT count(*) FROM engine_start030_entries",
+        "SELECT count(*) FROM test_owner",
+    ] {
+        let count: i64 = sqlx::query_scalar(query).fetch_one(&pool).await.unwrap();
+        assert_eq!(count, 0);
+    }
+    let current = intents::read(&pool, &intent.key).await.unwrap().unwrap();
+    assert!(matches!(
+        current.state,
+        ExecutionIntentState::SubmissionPending { .. }
+    ));
+    pool.close().await;
+}

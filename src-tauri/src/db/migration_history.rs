@@ -51,6 +51,7 @@ pub(crate) const NAMES: &[&str] = &[
     "029_execution_human_public",
     "030_execution_flow",
     "031_execution_start_entry",
+    "032_execution_ui_intent_start030",
 ];
 
 pub(crate) fn destinations(version: i64, name: &str) -> DbResult<Vec<i64>> {
@@ -104,6 +105,7 @@ pub(crate) async fn canonical_versions(c: &mut SqliteConnection) -> DbResult<Vec
         || versions.contains(&29) && !versions.contains(&28)
         || versions.contains(&30) && !versions.contains(&29)
         || versions.contains(&31) && !versions.contains(&30)
+        || versions.contains(&32) && !versions.contains(&31)
     {
         return Err(DbError::Migration(
             "Inconsistent AgSDL migration history".into(),
@@ -176,6 +178,16 @@ pub(crate) async fn remove_reference_schema(
     c: &mut SqliteConnection,
     versions: &[i64],
 ) -> DbResult<()> {
+    // This connection is a disposable, empty reference. Reconstruct the
+    // historical definition before removing the new foreign-key parent.
+    if !versions.contains(&32) {
+        sqlx::query("DROP TABLE engine_ui_intents")
+            .execute(&mut *c)
+            .await?;
+        sqlx::raw_sql(include_str!("migrations/013_execution_ui_intents.sql"))
+            .execute(&mut *c)
+            .await?;
+    }
     if !versions.contains(&31) {
         sqlx::query("DROP TRIGGER IF EXISTS engine_delivery020_reject_030")
             .execute(&mut *c)
