@@ -603,29 +603,28 @@ pub(crate) async fn execution_host_run_codex(
     let ai = ai.inner().clone();
     let context = request.context.clone();
     let id = request.request_id.clone();
-    tasks
-        .start(id.clone(), async move {
-            let result = tokio::time::timeout(
-                std::time::Duration::from_secs(600),
-                run(pool, ai, profile, configuration, request, admission),
-            )
-            .await
-            .unwrap_or_else(|_| {
-                Err(failure(
-                    "NATIVE_UNCERTAIN",
-                    "turn",
-                    "Codex turn timed out; inspect retained native references",
-                ))
-            });
-            let _ = sender.send(result);
-        })
-        .map_err(|_| {
-            failure(
+    host.admit_owned_stream(&webview, &context.owner, &tasks, id.clone(), async move {
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(600),
+            run(pool, ai, profile, configuration, request, admission),
+        )
+        .await
+        .unwrap_or_else(|_| {
+            Err(failure(
                 "NATIVE_UNCERTAIN",
-                "operation",
-                "Codex native admission is already owned or cancelled",
-            )
-        })?;
+                "turn",
+                "Codex turn timed out; inspect retained native references",
+            ))
+        });
+        let _ = sender.send(result);
+    })
+    .map_err(|_| {
+        failure(
+            "NATIVE_UNCERTAIN",
+            "operation",
+            "Codex native admission is already owned or cancelled",
+        )
+    })?;
     drop(_gate);
     drop(_scope);
     tokio::spawn(async move {
