@@ -67,14 +67,14 @@ describe('authored design changes', () => {
 
 describe('AgSDL 0.2 review', () => {
   it('attributes source prompt and flow changes to their authored participant', () => {
-    const before = createExample020('release');
+    const before = createExample020('release', 'agsdl-0.2.0');
     const changed = edit(before, doc => { doc.agents.checklist.prompt[0].value = 'Check each prerequisite and cite evidence.'; doc.flow.steps.review.next = []; });
     const result = reviewDesignChanges(before, changed);
     expect(result.changes.map(change => [change.title, change.aspects])).toEqual([['checklist', ['instructions']], ['review', ['connections']]]);
     expect(result.other).toBe(false);
   });
   it('attributes composition instructions to the edited composition step', () => {
-    const before = edit(createExample020('release'), doc => {
+    const before = edit(createExample020('release', 'agsdl-0.2.0'), doc => {
       doc.compositions = { audit: { agentParameters: [], entry: 'brief', outputs: ['done'], steps: { brief: { type: 'prepare', message: { prompt: [{ value: 'Check evidence.' }] }, next: [{ output: 'done' }] } } } };
     });
     const after = edit(before, doc => { doc.compositions.audit.steps.brief.message.prompt[0].value = 'Check evidence against the request.'; });
@@ -85,7 +85,7 @@ describe('AgSDL 0.2 review', () => {
     expect(result.other).toBe(false);
   });
   it('compares design metadata even when the source has identical bytes', () => {
-    const source = createExample020('release'), design = readDesign(source);
+    const source = createExample020('release', 'agsdl-0.2.0'), design = readDesign(source);
     const result = reviewDesignChanges(source, source, { design }, { design: { ...design, purpose: 'Check release evidence' } });
     expect(result.designDetails).toEqual([{ label: 'agsdl.design.purpose', before: '', after: 'Check release evidence' }]);
     expect(result.changes).toEqual([]);
@@ -95,7 +95,7 @@ describe('AgSDL 0.2 review', () => {
 
 describe('exact AgSDL 0.2 review ownership', () => {
   it('attributes shared prompt and skill edits to their consumers without a residual warning', () => {
-    const before = edit(createExample020('release'), doc => {
+    const before = edit(createExample020('release', 'agsdl-0.2.0'), doc => {
       doc.content = { instruction: { value: 'BEFORE' } };
       doc.skills = { inspection: { prompt: [{ ref: 'instruction' }] } };
       doc.agents.checklist.prompt = [{ ref: 'instruction' }];
@@ -114,7 +114,7 @@ describe('exact AgSDL 0.2 review ownership', () => {
     expect(reviewDesignChanges(before, changedSkill).other).toBe(false);
   });
   it('keeps unused content changes visible and attributes shared prepared prompts', () => {
-    const before = edit(createExample020('release'), doc => {
+    const before = edit(createExample020('release', 'agsdl-0.2.0'), doc => {
       doc.content = { instruction: { value: 'BEFORE' }, unused: { value: 'unused' } };
       doc.flow.steps.brief = { type: 'prepare', message: { prompt: [{ ref: 'instruction' }] } };
     });
@@ -124,7 +124,7 @@ describe('exact AgSDL 0.2 review ownership', () => {
     expect(reviewDesignChanges(before, unused)).toMatchObject({ changes: [], other: true });
   });
   it('compares exact configuration integers, decimals and unowned values', () => {
-    const before = edit(createExample020('release'), doc => { doc.configurations.project.settings = { budget: 0 }; doc.content = { unused: { value: 0 } }; });
+    const before = edit(createExample020('release', 'agsdl-0.2.0'), doc => { doc.configurations.project.settings = { budget: 0 }; doc.content = { unused: { value: 0 } }; });
     const numeric = (path: string, value: string) => applyChanges(before, [{ op: 'set', path, valueJson: value }]);
     expect(reviewDesignChanges(numeric('/configurations/project/settings/budget', '9007199254740992'), numeric('/configurations/project/settings/budget', '9007199254740993'))).toMatchObject({ configuration: true, other: false });
     expect(reviewDesignChanges(numeric('/configurations/project/settings/budget', '0.123456789012345678901'), numeric('/configurations/project/settings/budget', '0.123456789012345678902'))).toMatchObject({ configuration: true });
@@ -133,13 +133,13 @@ describe('exact AgSDL 0.2 review ownership', () => {
     expect(reviewDesignChanges(numeric('/configurations/project/settings/budget', '123'), numeric('/configurations/project/settings/budget', '{"raw":"123"}'))).toMatchObject({ configuration: true });
   });
   it('detects exact structured prompt changes as instructions', () => {
-    const before = edit(createExample020('release'), doc => { doc.agents.checklist.prompt = [{ value: { limit: 0 } }]; });
+    const before = edit(createExample020('release', 'agsdl-0.2.0'), doc => { doc.agents.checklist.prompt = [{ value: { limit: 0 } }]; });
     const first = applyChanges(before, [{ op: 'set', path: '/agents/checklist/prompt/0/value/limit', valueJson: '9007199254740992' }]);
     const second = applyChanges(first, [{ op: 'set', path: '/agents/checklist/prompt/0/value/limit', valueJson: '9007199254740993' }]);
     expect(reviewDesignChanges(first, second)).toMatchObject({ changes: [{ path: '/agents/checklist', aspects: ['instructions'] }], other: false });
   });
   it('keeps display changes for nonparticipant declarations visible', () => {
-    const source = createExample020('release');
+    const source = createExample020('release', 'agsdl-0.2.0');
     for (const path of ['/configurations/project', '/content/instruction', '/bindings/engine']) {
       expect(reviewDesignChanges(source, source, { display: { cards: { [path]: { title: 'Before' } } } }, { display: { cards: { [path]: { title: 'After' } } } })).toMatchObject({ changes: [], other: true });
     }
@@ -149,7 +149,7 @@ describe('exact AgSDL 0.2 review ownership', () => {
 
 it('retains an independent catalog edit when its last consumer is removed', () => {
   for (const skill of [false, true]) {
-    const before = edit(createExample020('release'), doc => {
+    const before = edit(createExample020('release', 'agsdl-0.2.0'), doc => {
       doc.content = { shared: { value: 'BEFORE' } };
       if (skill) { doc.skills = { inspection: { prompt: [{ ref: 'shared' }] } }; doc.agents.checklist.skills = ['inspection']; doc.agents.checklist.prompt = []; }
       else doc.agents.checklist.prompt = [{ ref: 'shared' }];
@@ -164,7 +164,7 @@ it('retains an independent catalog edit when its last consumer is removed', () =
   }
 });
 it('attributes prepared resources to connections without treating literal data as content references', () => {
-  const before = edit(createExample020('release'), doc => {
+  const before = edit(createExample020('release', 'agsdl-0.2.0'), doc => {
     doc.content = { shared: { value: 'BEFORE' } };
     doc.agents.checklist.prompt = [{ ref: 'shared' }];
     doc.flow.steps.prepared = { type: 'prepare', message: { resources: {
@@ -179,7 +179,7 @@ it('attributes prepared resources to connections without treating literal data a
 });
 
 it('removes instruction-only skills without reporting nonexistent resource connections', () => {
-  const before = edit(createExample020('release'), doc => {
+  const before = edit(createExample020('release', 'agsdl-0.2.0'), doc => {
     doc.content = { shared: { value: 'BEFORE' } };
     doc.skills = { inspection: { prompt: [{ ref: 'shared' }] } };
     doc.agents.checklist.prompt = [];
@@ -197,7 +197,7 @@ it('keeps a legacy rename attributable even when an opaque number exceeds binary
   expect(reviewDesignChanges(before, after)).toMatchObject({ changes: [{ title: 'Final checklist', aspects: ['identity'] }], other: false });
 });
 it('ignores object-key ordering while keeping distinct Unicode keys separate', () => {
-  const before = edit(createExample020('release'), doc => { doc.configurations.project.settings = { 'é': 1, 'e\u0301': 2 }; });
+  const before = edit(createExample020('release', 'agsdl-0.2.0'), doc => { doc.configurations.project.settings = { 'é': 1, 'e\u0301': 2 }; });
   const reordered = edit(before, doc => { doc.configurations.project.settings = { 'e\u0301': 2, 'é': 1 }; });
   expect(reviewDesignChanges(before, reordered)).toEqual({ changes: [], configuration: false, design: false, other: false });
   const changed = edit(before, doc => { doc.configurations.project.settings['e\u0301'] = 3; });

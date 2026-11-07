@@ -151,9 +151,10 @@ révision. Les valeurs opaques et les jetons numériques sont conservés par le
 sérialiseur sans perte. Les diagnostics structurels ne certifient pas la capacité
 à exécuter le système.
 
-Les nouveaux documents utilisent AgSDL `v0.2.0`. Le lecteur `v0.1.0` reste
-disponible pour les sources historiques. Le [contrat 0.2.0](agsdl-020.md) décrit
-les nouvelles déclarations et les limites de cette adaptation. La provenance,
+Les nouveaux documents et blueprints inclus utilisent [AgSDL 0.3](agsdl-030.md).
+Les sources 0.1 et 0.2 conservent explicitement leur édition et leurs guides.
+Le [contrat historique 0.2.0](agsdl-020.md) reste documenté. Le guide chargé par
+`agsdl_get` suit la source ; le guide d’un document vide est celui de 0.3. La provenance,
 la licence et les adaptations des lecteurs sont décrites dans
 [`src/vendor/agsdl/NOTICE.md`](../src/vendor/agsdl/NOTICE.md).
 
@@ -169,7 +170,7 @@ statut n’est déduit du titre du bloc ou du statut enregistré dans la migrati
 
 Pour les cartes legacy, le lien utilise l’identifiant original du nœud. Pour
 un document natif, `macroTaskId` doit référencer l’identifiant exact de la tâche
-dans `agsdl.display.cards[path]` pour les documents 0.2.0.
+dans `agsdl.display.cards[path]` pour les documents 0.2.0 et 0.3.0.
 Pour un document historique 0.1.0, le lien reste dans les annotations de la
 déclaration ou dans `ControlFlow.annotations.macroSteps[stepId]` pour une étape. Le lien est limité
 au même plan et à la même branche ; les tâches archivées et les liens ambigus

@@ -1,3 +1,5 @@
+import { guide03 } from "../../services/agsdl/guide030";
+import { unassessedHarnessCatalogue, type ReadAgsdlHarnessCatalogue } from "../../services/agsdl/harnessCatalogue";
 import { getArchitectPlan } from "../../services/architectPlanService";
 import { agsdlSessionKey, useAgsdlStore } from "../useAgsdlStore";
 import { list, object, readDocument, sourceAt, text, pointerPart, scanSource } from "../../services/agsdl/document";
@@ -16,7 +18,7 @@ export class AgsdlAuthoringRefusal extends Error {
 class AgsdlReadArgumentError extends Error {}
 
 export const AGSDL_AUTHORING_INSTRUCTION =
-  "For AgSDL process design or editing, read agsdl_get with the plan_id and target_branch (storageTargetBranch) from this conversation. Read section: guide for the contract before structural changes; it is available even when a scoped source read omits the overview. Follow its authoring guide, edit through agsdl_update using the returned revision, and report scoped diagnostics. The right panel visualizes this document; focused manual edits share the same versioned session. Handle structural changes through the authoring tools. Explain changed missions, data transfers and routes in plain language. Document authoring does not execute agents.";
+  "For AgSDL process design or editing, read agsdl_get with the plan_id and target_branch (storageTargetBranch) from this conversation. Read section: guide for the source contract before structural changes; empty sources default to AgSDL 0.3; it is available even when a scoped source read omits the overview. Follow its authoring guide, edit through agsdl_update using the returned revision, and report scoped diagnostics. The right panel visualizes this document; focused manual edits share the same versioned session. Handle structural changes through the authoring tools. Explain changed missions, data transfers and routes in plain language. Document authoring does not execute agents.";
 
 const legacyGuide = {
   contract: "agsdl-0.1.0",
@@ -54,10 +56,11 @@ const guide02 = {
   scope: "Plan document authoring and scoped static declaration checks only. No described Agents are executed, dependency code or URI payloads are not fetched, and external evidence is not verified. Retain original edition markers, reports, annexes and migration provenance. A draft may contain diagnostics while its design is refined.",
 };
 
-/** Edition-specific instructions prevent a 0.1 graph vocabulary leaking into 0.2 authoring. */
+/** Imported editions retain their vocabulary; only new intentions default to 0.3. */
 export function agsdlAuthoringGuide(contract: unknown, empty = false) {
   if (contract === "agsdl-0.1.0") return legacyGuide;
-  if (contract === "agsdl-0.2.0" || empty) return guide02;
+  if (contract === "agsdl-0.2.0") return guide02;
+  if (contract === "agsdl-0.3.0" || empty) return guide03;
   return { contract: typeof contract === "string" && bytes(contract) < 256 ? contract : null, ...(typeof contract === "string" && bytes(contract) >= 256 ? { contract_omitted: true } : {}), supported: false,
     workflow: "Preserve this source and its marker. Read diagnostics and repair the explicit edition or malformed JSON through a deliberate source replacement. Select a supported authoring guide only after reading the resulting document. Unknown editions have no inferred AgSDL semantics or execution support." };
 }
@@ -68,11 +71,17 @@ const bytes = (value: unknown): number => new TextEncoder().encode(JSON.stringif
 const sections = ["outline", "outline_entry", "source", "guide", "report", "design", "display", "models", "annex_ids", "error"] as const;
 type ReadSection = typeof sections[number];
 interface InventoryEntry { catalog: string; path: string; name?: string; type?: unknown; key?: unknown; kind?: unknown }
+const catalogNames = (contract: unknown) => contract === "agsdl-0.3.0"
+  ? ["agents", "content", "skills", "mcpServers", "compositions"]
+  : ["agents", "configurations", "bindings", "content", "skills", "compositions"];
 function inventory(doc: Record<string, unknown>, path: string): InventoryEntry[] {
   const entries: InventoryEntry[] = [];
-  if (doc.contract === "agsdl-0.2.0") {
-    for (const catalog of ["agents", "configurations", "bindings", "content", "skills", "compositions"]) {
+  if (doc.contract === "agsdl-0.2.0" || doc.contract === "agsdl-0.3.0") {
+    for (const catalog of catalogNames(doc.contract)) {
       for (const name of Object.keys(object(doc[catalog]))) entries.push({ catalog, name, path: `/${catalog}/${pointerPart(name)}` });
+    }
+    if (doc.contract === "agsdl-0.3.0") for (const [name, value] of Object.entries(object(doc.compositions))) {
+      list(object(value).parameters).forEach((parameter, index) => entries.push({ catalog: "parameters", name: text(parameter), path: `/compositions/${pointerPart(name)}/parameters/${index}` }));
     }
     const flows: Array<[string, unknown]> = [["/flow", doc.flow], ...Object.entries(object(doc.compositions)).map(([name, value]): [string, unknown] => [`/compositions/${pointerPart(name)}`, value])];
     for (const [base, flow] of flows) for (const [name, value] of Object.entries(object(object(flow).steps))) {
@@ -91,7 +100,7 @@ function integerArg(args: Record<string, unknown>, key: string, fallback: number
   return value;
 }
 function inventoryPage(doc: Record<string, unknown>, entries: InventoryEntry[], args: Record<string, unknown>) {
-  if (!["agsdl-0.1.0", "agsdl-0.2.0"].includes(text(doc.contract))) {
+  if (!["agsdl-0.1.0", "agsdl-0.2.0", "agsdl-0.3.0"].includes(text(doc.contract))) {
     return { contract: bytes(doc.contract ?? null) < 256 ? doc.contract : undefined, supported: false };
   }
   const offset = integerArg(args, "offset", 0), limit = Math.min(integerArg(args, "limit", 100), 200);
@@ -113,7 +122,7 @@ function inventoryPage(doc: Record<string, unknown>, entries: InventoryEntry[], 
       const { key, ...entry } = item as InventoryEntry; return { ...entry, definition: key };
     }),
   } : {
-    ...Object.fromEntries(["agents", "configurations", "bindings", "content", "skills", "compositions"].map(catalog => [catalog, items.filter(item => "catalog" in item && item.catalog === catalog)])),
+    ...Object.fromEntries(catalogNames(doc.contract).map(catalog => [catalog, items.filter(item => "catalog" in item && item.catalog === catalog)])),
     ...(doc.flow ? { flow: {
       ...(bytes(object(doc.flow).entry ?? null) < 256 ? { entry: object(doc.flow).entry } : { entry_omitted: true }),
       steps: items.filter(item => "catalog" in item && item.catalog === "steps" && item.path.startsWith("/flow/steps/")),
@@ -147,7 +156,7 @@ function addBounded(response: Record<string, unknown>, key: string, value: unkno
 
 /** Merge supplied display fields without changing source identities or discarding unknown metadata. */
 export function updateAgsdlDisplayMetadata(source: string, previous: AgsdlDisplayMetadata | undefined, update: unknown): AgsdlDisplayMetadata {
-  if (readDocument(source).contract !== "agsdl-0.2.0") throw new Error("display_json requires AgSDL 0.2.0.");
+  if (!["agsdl-0.2.0", "agsdl-0.3.0"].includes(text(readDocument(source).contract))) throw new Error("display_json requires AgSDL 0.2.0 or 0.3.0.");
   if (!validDisplayMetadata(update) || (previous !== undefined && !validDisplayMetadata(previous))) throw new Error("The display metadata is malformed. Its original contents have been preserved.");
   const next = { ...structuredClone(previous), ...structuredClone(update) };
   if (update.cards !== undefined) {
@@ -162,11 +171,13 @@ export function updateAgsdlDisplayMetadata(source: string, previous: AgsdlDispla
   return next;
 }
 
-type AgsdlToolCall = {
+export type AgsdlToolCall = {
   toolName: string;
   args: Record<string, unknown>;
   conversationId: string;
   isCurrent: () => boolean;
+  /** Runtime-owned qualification. Omission reports not-assessed, never infers native models. */
+  readHarnessCatalogue?: ReadAgsdlHarnessCatalogue;
 };
 
 export async function handleAgsdlToolCall(params: AgsdlToolCall): Promise<string> {
@@ -303,11 +314,23 @@ async function handleAgsdlToolRequest(params: AgsdlToolCall): Promise<string> {
   let designContext: unknown;
   try { if (session.source) designContext = readDesign(session.source, session.design); }
   catch (error) { designContext = { error: String(error) }; }
-  const providerState = useProviderStore.getState();
-  const models = providerState.providers.filter(provider => provider.isEnabled !== false).map(provider => ({
-    providerId: provider.id, name: provider.name,
-    models: (providerState.modelsByProvider[provider.id] ?? []).filter(model => model.isEnabled !== false).map(model => ({ modelId: model.id, name: model.name, edition: macroNativeModelEdition(provider.id, model.id) })),
-  }));
+  const usesHarnessCatalogue = doc.contract === "agsdl-0.3.0" || !session.source;
+  const needsModels = section === 'models' || (!section && !pointer);
+  let models: unknown;
+  if (needsModels && usesHarnessCatalogue) models = params.readHarnessCatalogue ? await params.readHarnessCatalogue() : unassessedHarnessCatalogue();
+  else if (needsModels) {
+    const providerState = useProviderStore.getState();
+    models = providerState.providers.filter(provider => provider.isEnabled !== false).map(provider => ({
+      providerId: provider.id, name: provider.name,
+      models: (providerState.modelsByProvider[provider.id] ?? []).filter(model => model.isEnabled !== false).map(model => ({ modelId: model.id, name: model.name, edition: macroNativeModelEdition(provider.id, model.id) })),
+    }));
+  }
+  if (!params.isCurrent()) throw new Error("The authoring turn has ended.");
+  if (current()?.version !== session.version) {
+    const message = "The document changed during the catalogue read. Read agsdl_get again.";
+    if (params.toolName === "agsdl_get") throw new AgsdlAuthoringRefusal(message);
+    throw new Error(message);
+  }
   if ((integerArg(args, "offset", 0) > 0 || args.cursor !== undefined) && args.expected_revision === undefined) throw new AgsdlReadArgumentError("expected_revision is required after the first page.");
   if (args.cursor !== undefined && (!section || section === "outline")) throw new AgsdlReadArgumentError("cursor is only available for text sections.");
   if (section === "outline") {
@@ -351,8 +374,8 @@ async function handleAgsdlToolRequest(params: AgsdlToolCall): Promise<string> {
     }
     addBounded(response, "annex_ids", Object.keys(session.annexes), "annex_ids", AGSDL_TOOL_RESPONSE_BYTES - PAGE_BYTES);
     addBounded(response, "design_context", designContext, "design", AGSDL_TOOL_RESPONSE_BYTES - PAGE_BYTES);
-    if (doc.contract === "agsdl-0.2.0") addBounded(response, "display_context", session.display ?? {}, "display", AGSDL_TOOL_RESPONSE_BYTES - PAGE_BYTES);
-    addBounded(response, "macro_models", models, "models", AGSDL_TOOL_RESPONSE_BYTES - PAGE_BYTES);
+    if (doc.contract === "agsdl-0.2.0" || doc.contract === "agsdl-0.3.0") addBounded(response, "display_context", session.display ?? {}, "display", AGSDL_TOOL_RESPONSE_BYTES - PAGE_BYTES);
+    addBounded(response, usesHarnessCatalogue ? "harness_catalogue" : "macro_models", models, "models", AGSDL_TOOL_RESPONSE_BYTES - PAGE_BYTES);
     if (!session.source) response.examples = AGSDL_EXAMPLES;
   }
   addBounded(response, "error", session.error, "error");
