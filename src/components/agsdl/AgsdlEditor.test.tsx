@@ -40,6 +40,31 @@ describe("AgSDL viewer", () => {
     await act(async () => root!.render(<AgsdlEditor target={target} />));
   };
 
+  it("returns from definitions to the previously selected graph", async () => {
+    const source = JSON.stringify({ contract: "agsdl-0.3.0", id: "x", agents: { a: { harness: "codex", permissions: "read-only" } },
+      flow: { entry: "one", steps: { one: { type: "agent", agent: "a", title: "Flow step" } } },
+      compositions: { fragment: { title: "Fragment", entry: "two", steps: { two: { type: "agent", agent: "a", title: "Template step" } }, outputs: [] } } });
+    await mount(source);
+    const graphSelect = container!.querySelector<HTMLSelectElement>('select[aria-label="Graph"]')!;
+    act(() => { graphSelect.value = '1'; graphSelect.dispatchEvent(new Event('change', { bubbles: true })); });
+    expect(container!.textContent).toContain('Template step');
+    act(() => { graphSelect.value = '-1'; graphSelect.dispatchEvent(new Event('change', { bubbles: true })); });
+    expect(container!.querySelector('.agsdl-graph-caption')?.textContent).toContain('without a workflow graph');
+    act(() => Array.from(container!.querySelectorAll<HTMLButtonElement>('button')).find(button => button.textContent === 'Definitions')!.click());
+    expect(container!.textContent).toContain('Template step');
+    expect(container!.querySelector('.agsdl-graph-caption')).toBeNull();
+  });
+
+  it("opens a composition from definitions when no main flow exists", async () => {
+    const source = JSON.stringify({ contract: "agsdl-0.3.0", id: "x", agents: {},
+      compositions: { fragment: { title: "Fragment", entry: "only", steps: { only: { type: "call", command: "echo", title: "Template step" } }, outputs: [] } } });
+    await mount(source);
+    expect(container!.querySelector('.agsdl-graph-caption')).not.toBeNull();
+    act(() => Array.from(container!.querySelectorAll<HTMLButtonElement>('button')).find(button => button.textContent === 'Definitions')!.click());
+    expect(container!.textContent).toContain('Template step');
+    expect(container!.querySelector('.agsdl-graph-caption')).toBeNull();
+  });
+
   it("reads 0.2 metadata and opens the persistent participant without creating a task from its prompt", async () => {
     const source = createExample("feature", "agsdl-0.2.0");
     await mount(source);

@@ -92,7 +92,7 @@ export const AgsdlEditor: React.FC<{
     }
   }, [source, displayMetadata, migrationMetadata]);
   const document = parsed.document;
-  const visibleGraphIndex = Math.min(graphIndex, Math.max(0, (document?.graphs.length ?? 0) - 1));
+  const visibleGraphIndex = Math.max(0, Math.min(graphIndex, Math.max(0, (document?.graphs.length ?? 0) - 1)));
   const edition030 = document?.contract === "agsdl-0.3.0";
   const graph = edition030 && (definitions030 || (!Object.hasOwn(document.systemDetails, "flow") && !graphChosen030)) ? undefined : document?.graphs[visibleGraphIndex];
   const selected = selection?.key === key ? selection.path : "";
@@ -122,7 +122,7 @@ export const AgsdlEditor: React.FC<{
   const goBack = () => {
     if (!previousSelection) return;
     const index = document?.graphs.findIndex(graph => graph.cards.some(card => card.path === previousSelection.path)) ?? -1;
-    if (index >= 0) setGraphIndex(index);
+    if (index >= 0) { setGraphIndex(index); setDefinitions030(false); setGraphChosen030(true); }
     setSelection({ ...previousSelection, trail: selection?.trail?.slice(0, -1) });
     setDiagnosticError("");
   };
@@ -276,15 +276,20 @@ export const AgsdlEditor: React.FC<{
             {expanded ? <X size={14} /> : <Maximize2 size={14} />}
           </button>}
         </div>
-        {edition030 && <button onClick={() => setDefinitions030(value => !value)}>{t("agsdl.edition030.definitions")}</button>}
+        {edition030 && <button onClick={() => {
+          if (graph) setDefinitions030(true);
+          else { setDefinitions030(false); setGraphChosen030(true); }
+          setSelection(undefined);
+        }}>{t("agsdl.edition030.definitions")}</button>}
         {document && (document.graphs.length > 1 || (edition030 && document.graphs.length > 0)) && (
           <select
             aria-label={t("agsdl.graph")}
             value={edition030 && !graph ? -1 : visibleGraphIndex}
             onChange={(event) => {
+              const nextIndex = Number(event.target.value);
               setGraphChosen030(true);
-              setDefinitions030(Number(event.target.value) === -1);
-              setGraphIndex(Number(event.target.value));
+              setDefinitions030(nextIndex === -1);
+              if (nextIndex >= 0) setGraphIndex(nextIndex);
               setSelection(undefined);
             }}
           >
