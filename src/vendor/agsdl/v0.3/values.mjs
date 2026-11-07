@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Port of AgSDL v0.3.0 schemacheck.py JSON value helpers. See LICENSE.
-import { NumberToken } from '../experimental/readers/javascript/json.mjs';
+import { NumberToken } from '../v0.2/json.mjs';
 
 export const isNumber = (value) => value instanceof NumberToken ||
   (typeof value === 'number' && Number.isFinite(value));

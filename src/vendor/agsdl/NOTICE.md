@@ -52,3 +52,8 @@ JavaScript. Schemas and harness modules retain the published bytes. The
 conformance corpus, examples, specification and development-only Python oracle
 are pinned under `dev/agsdl/fixtures/v0.3/`, with file hashes in provenance.json.
 Python is used only by development parity checks, never by the product reader.
+
+The 0.3 parser shares only the NumberToken class with the 0.2 scanner so exact
+values remain compatible with Macro's execution helpers. Parsing and validation
+rules remain edition-specific. The 0.1 report adapter keeps its historical
+serializer.

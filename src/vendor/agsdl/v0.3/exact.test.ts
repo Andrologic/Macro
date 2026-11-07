@@ -1,7 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 import { parse, NumberToken, stringify } from './json.mjs';
-// @ts-expect-error Historical scanner has no declaration file.
-import { NumberToken as HistoricalToken } from '../experimental/readers/javascript/json.mjs';
+import { NumberToken as ExecutionToken } from '../v0.2/values.mjs';
 import { equal, compareNumbers, isInteger, isNumber, isObject, json_type_matches } from './values.mjs';
 import { SchemaChecker, pointer } from './schemacheck.mjs';
 import { consistency, validate, descend, kind_at, is_index } from './valueschema.mjs';
@@ -16,7 +15,7 @@ const n = (raw: string) => new NumberToken(raw);
 
 describe('strict exact JSON input', () => {
   test('shares token identity and preserves raw lexemes and byte spans', () => {
-    expect(NumberToken).toBe(HistoricalToken);
+    expect(NumberToken).toBe(ExecutionToken);
     const source = ' {"é/~":[9007199254740993,1.00e+9999999999999999999999,-0]} ';
     const parsed = parse(bytes(source));
     expect(parsed.error).toBeUndefined();

@@ -1,4 +1,4 @@
-import { run } from "../../vendor/agsdl/browser-reader.mjs";
+import { run, stringify as stringifyLegacy } from "../../vendor/agsdl/browser-reader.mjs";
 import { parse, read as read030, NumberToken, stringify } from "../../vendor/agsdl/v0.3/reader.mjs";
 import type { ExactObject, ReaderOptions030, Report030 } from "../../vendor/agsdl/v0.3/reader.mjs";
 import { read as read020 } from "../../vendor/agsdl/v0.2/reader.mjs";
@@ -255,7 +255,7 @@ export async function validateDocument(
     operations.map(async (operation) => {
       const result = await run({ operation, primary, annexes: annexBytes });
       // This is the vendored reader's report boundary, not a user-supplied object.
-      return JSON.parse(stringify(result.report)) as AgsdlReport;
+      return JSON.parse(stringifyLegacy(result.report)) as AgsdlReport;
     }),
   );
 }

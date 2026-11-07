@@ -1,4 +1,7 @@
 import { describe, expect, it } from 'bun:test';
+import { readFileSync, readdirSync } from 'node:fs';
+import { encode as encodeExecution, decode as decodeExecution, record as executionRecord, NumberToken as ExecutionToken } from '../agsdlExecution/exact';
+import { equal } from '../../vendor/agsdl/v0.3/reader.mjs';
 import { AGSDL_CONTRACT, AGSDL_020_CONTRACT, LEGACY_AGSDL_CONTRACT, readDocument, readExactDocument, validateDocument, validateDocumentBytes, applyChanges, sourceAt, object, MAX_AGSDL_BYTES } from './document';
 import { NumberToken, parse, stringify, loadHarnessModule } from '../../vendor/agsdl/v0.3/reader.mjs';
 import { localizeDiagnostics } from './diagnostics';
@@ -34,6 +37,26 @@ describe('AgSDL 0.3 document boundary', () => {
     expect(sourceAt(edited, '/content/opaque/value/huge')).toBe('1e999999999999999999999');
     expect(sourceAt(edited, '/content/opaque/value/new')).toBe('1.00e-999999999999999999999');
     expect(() => applyChanges(raw, [{ op: 'set', path: '/contract', valueJson: '"agsdl-0.2.0"' }])).toThrow('edition change');
+  });
+  it('shares token identity with execution helpers and encodes every published example losslessly', () => {
+    expect(NumberToken).toBe(ExecutionToken);
+    const exact = readExactDocument(source(',"content":{"n":{"value":[900719925474099312345,1.00e999999999999999999999,1.00000000000000000001]}}'));
+    const encoded = encodeExecution(exact);
+    expect(encoded).toContain('1.00e999999999999999999999');
+    expect(encoded).not.toContain('"raw"');
+    expect(equal(decodeExecution(encoded), exact)).toBe(true);
+    const numeric = object(object(exact.content).n).value as NumberToken[];
+    expect(numeric[0]).toBeInstanceOf(ExecutionToken);
+    expect(() => executionRecord(numeric[0])).toThrow('Expected an object');
+    const folder = new URL('../../../dev/agsdl/fixtures/v0.3/examples/', import.meta.url);
+    const names = readdirSync(folder).filter(name => name.endsWith('.json'));
+    expect(names).toHaveLength(10);
+    for (const name of names) {
+      const document = readExactDocument(readFileSync(new URL(name, folder)));
+      const encodedDocument = encodeExecution(document);
+      expect(equal(decodeExecution(encodedDocument), document)).toBe(true);
+      expect(validateDocumentBytes(bytes(encodedDocument))).toEqual(validateDocumentBytes(bytes(stringify(document))));
+    }
   });
   it('rejects malformed UTF-16 before encoding and distinguishes replacement characters', async () => {
     for (const broken of ['\ud800', '\udc00', '\ud800x']) {
