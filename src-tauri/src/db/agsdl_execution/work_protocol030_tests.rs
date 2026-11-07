@@ -4,7 +4,7 @@ use tempfile::TempDir;
 
 // This sub-lot cannot change the parent's capture-version gate. Seed the exact
 // admitted native records so tests exercise the DB API, not a pretend compiler.
-async fn setup() -> (TempDir, SqlitePool, EngineContext) {
+pub(crate) async fn setup() -> (TempDir, SqlitePool, EngineContext) {
     setup_contract("agsdl-0.3.0").await
 }
 async fn setup_contract(contract: &str) -> (TempDir, SqlitePool, EngineContext) {
@@ -140,6 +140,110 @@ fn decision(check: bool) -> ProtocolDecision030 {
             invocation_json: "{\"command\":\"synthetic\"}".into(),
         }),
     }
+}
+
+#[tokio::test]
+async fn admission_options_and_evidence_are_immutable_across_reopen() {
+    let (temp, pool, context) = setup().await;
+    let initial = read(&pool, &context.work).await.unwrap();
+    assert!(read_admission(&pool, &context, false).await.is_err());
+    let admission = WorkAdmission030 {
+        options_json: r#"{"checkTimeoutMs":"1000","enforcedPlanLock":true}"#.into(),
+        evidence_json: r#"{"nativeLockReceipt":"receipt"}"#.into(),
+    };
+    initialize_admitted(
+        &pool,
+        &context,
+        &initial.contract_json,
+        &initial.state_json,
+        &admission,
+    )
+    .await
+    .unwrap();
+    initialize_admitted(
+        &pool,
+        &context,
+        &initial.contract_json,
+        &initial.state_json,
+        &admission,
+    )
+    .await
+    .unwrap();
+    let mut changed = admission.clone();
+    changed.options_json = r#"{"checkTimeoutMs":"2000","enforcedPlanLock":true}"#.into();
+    assert!(initialize_admitted(
+        &pool,
+        &context,
+        &initial.contract_json,
+        &initial.state_json,
+        &changed
+    )
+    .await
+    .is_err());
+    changed = admission.clone();
+    changed.evidence_json = r#"{"nativeLockReceipt":"different"}"#.into();
+    assert!(initialize_admitted(
+        &pool,
+        &context,
+        &initial.contract_json,
+        &initial.state_json,
+        &changed
+    )
+    .await
+    .is_err());
+    pool.close().await;
+    let reopened = crate::db::create_pool(&temp.path().join("protocol.db"))
+        .await
+        .unwrap();
+    assert_eq!(
+        read_admission(&reopened, &context, false).await.unwrap(),
+        admission
+    );
+}
+
+#[tokio::test]
+async fn admission_cannot_be_added_after_an_existing_transition() {
+    let (_temp, pool, context) = setup().await;
+    let initial = read(&pool, &context.work).await.unwrap();
+    let reserved = ticket(&pool, &input(&context, "event", "0")).await;
+    commit_event(&pool, &reserved, &decision(false))
+        .await
+        .unwrap();
+    let admission = WorkAdmission030 {
+        options_json: "{}".into(),
+        evidence_json: "{}".into(),
+    };
+    assert!(initialize_admitted(
+        &pool,
+        &context,
+        &initial.contract_json,
+        &initial.state_json,
+        &admission
+    )
+    .await
+    .is_err());
+    assert!(read_admission(&pool, &context, false).await.is_err());
+}
+
+#[tokio::test]
+async fn admission_cannot_be_added_after_an_uncommitted_reservation() {
+    let (_temp, pool, context) = setup().await;
+    let initial = read(&pool, &context.work).await.unwrap();
+    let _pending = ticket(&pool, &input(&context, "pending", "0")).await;
+    let admission = WorkAdmission030 {
+        options_json: "{}".into(),
+        evidence_json: "{}".into(),
+    };
+    assert!(initialize_admitted(
+        &pool,
+        &context,
+        &initial.contract_json,
+        &initial.state_json,
+        &admission
+    )
+    .await
+    .is_err());
+    assert!(read_admission(&pool, &context, false).await.is_err());
 }
 async fn stop_work(pool: &SqlitePool, context: &EngineContext) {
     stop(

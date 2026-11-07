@@ -320,6 +320,7 @@ async fn check_database(path: &Path) -> Result<()> {
             .map_err(|e| e.to_string())?;
     }
     for (version, table) in [
+        (18, "engine_work_admission030"),
         (17, "engine_human_link_events030"),
         (17, "engine_human_works030"),
         (17, "engine_human_requests030"),
@@ -1330,6 +1331,7 @@ mod tests {
             .unwrap();
 
         for statement in [
+            "DROP TABLE engine_work_admission030",
             "DROP TABLE engine_human_link_events030",
             "DROP TABLE engine_human_works030",
             "DROP TABLE engine_human_requests030",
@@ -1535,7 +1537,7 @@ mod tests {
                 .fetch_one(&pool)
                 .await
                 .unwrap(),
-            17
+            18
         );
         assert_eq!(
             sqlx::query_scalar::<_, String>(
@@ -1600,7 +1602,7 @@ mod tests {
             .fetch_one(&mut db)
             .await
             .unwrap();
-        assert_eq!(version, 17);
+        assert_eq!(version, 18);
         sqlx::query("INSERT INTO schema_migrations VALUES (99, 'future', 'synthetic')")
             .execute(&mut db)
             .await
@@ -3005,16 +3007,43 @@ mod tests {
         assert!(check_database(&path).await.is_err());
         let mut db = connection(&path).await.unwrap();
         sqlx::raw_sql(
-            "DROP TABLE engine_human_link_events030;
+            "DROP TABLE engine_work_admission030;
+            DROP TABLE engine_human_link_events030;
             DROP TABLE engine_human_requests030;
             DROP TABLE engine_work_checks030;
             DROP TABLE engine_work_events030;
             DROP TABLE engine_work_protocol030;
-            DELETE FROM schema_migrations WHERE version=17;",
+            DELETE FROM schema_migrations WHERE version IN (17,18);",
         )
         .execute(&mut db)
         .await
         .unwrap();
+        db.close().await.unwrap();
+        check_database(&path).await.unwrap();
+        let pool = crate::db::create_pool(&path).await.unwrap();
+        pool.close().await;
+        check_database(&path).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn admission018_backup_rejects_missing_current_table_and_accepts_v17() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("admission-backup.db");
+        let pool = crate::db::create_pool(&path).await.unwrap();
+        pool.close().await;
+        check_database(&path).await.unwrap();
+        let mut db = connection(&path).await.unwrap();
+        sqlx::query("DROP TABLE engine_work_admission030")
+            .execute(&mut db)
+            .await
+            .unwrap();
+        db.close().await.unwrap();
+        assert!(check_database(&path).await.is_err());
+        let mut db = connection(&path).await.unwrap();
+        sqlx::query("DELETE FROM schema_migrations WHERE version=18")
+            .execute(&mut db)
+            .await
+            .unwrap();
         db.close().await.unwrap();
         check_database(&path).await.unwrap();
         let pool = crate::db::create_pool(&path).await.unwrap();

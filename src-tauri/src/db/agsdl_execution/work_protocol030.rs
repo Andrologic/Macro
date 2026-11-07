@@ -16,6 +16,10 @@ record!(ProtocolState030 {
     state_json: String,
     revision: String,
 });
+record!(WorkAdmission030 {
+    options_json: String,
+    evidence_json: String,
+});
 record!(NativeCall030 {
     provider_attempt_id: String,
     native_call_id: String
@@ -106,22 +110,16 @@ pub(crate) async fn read(pool: &SqlitePool, work: &EngineWork) -> Result<Protoco
     let mut db = pool.acquire().await?;
     read_on(&mut db, work).await
 }
-pub(crate) async fn initialize(
-    pool: &SqlitePool,
+async fn initialize_on(
+    db: &mut SqliteConnection,
     supplied: &EngineContext,
     contract_json: &str,
     state_json: &str,
 ) -> Result<ProtocolState030> {
-    validate_json(contract_json)?;
-    validate_json(state_json)?;
-    let mut db = pool.acquire().await?;
-    let mut tx = durable(&mut db).await?;
-    let stored = load(&mut tx, &supplied.work.system_start_id).await?;
-    guard(&stored, supplied, false)?;
     let previous: Option<String> = sqlx::query_scalar("SELECT initial_state_json FROM engine_work_protocol030 WHERE system_id=? AND activation_id=?")
-        .bind(&supplied.work.system_start_id).bind(&supplied.work.activation_id).fetch_optional(&mut *tx).await?;
+        .bind(&supplied.work.system_start_id).bind(&supplied.work.activation_id).fetch_optional(&mut *db).await?;
     if let Some(previous) = previous {
-        let state = read_on(&mut tx, &supplied.work).await?;
+        let state = read_on(db, &supplied.work).await?;
         require(
             state.context == *supplied
                 && state.contract_json == contract_json
@@ -136,12 +134,108 @@ pub(crate) async fn initialize(
             .bind(contract_json)
             .bind(state_json)
             .bind(state_json)
+            .execute(&mut *db)
+            .await?;
+    }
+    read_on(db, &supplied.work).await
+}
+pub(crate) async fn initialize(
+    pool: &SqlitePool,
+    supplied: &EngineContext,
+    contract_json: &str,
+    state_json: &str,
+) -> Result<ProtocolState030> {
+    validate_json(contract_json)?;
+    validate_json(state_json)?;
+    let mut db = pool.acquire().await?;
+    let mut tx = durable(&mut db).await?;
+    let stored = load(&mut tx, &supplied.work.system_start_id).await?;
+    guard(&stored, supplied, false)?;
+    let state = initialize_on(&mut tx, supplied, contract_json, state_json).await?;
+    tx.commit().await?;
+    Ok(state)
+}
+
+/// Called by native admission only, after authenticating the captured contract,
+/// options and plan-lock evidence. SQL never derives a grant from this record.
+pub(crate) async fn initialize_admitted(
+    pool: &SqlitePool,
+    supplied: &EngineContext,
+    contract_json: &str,
+    state_json: &str,
+    admission: &WorkAdmission030,
+) -> Result<ProtocolState030> {
+    for raw in [
+        contract_json,
+        state_json,
+        &admission.options_json,
+        &admission.evidence_json,
+    ] {
+        validate_json(raw)?;
+    }
+    let mut db = pool.acquire().await?;
+    let mut tx = durable(&mut db).await?;
+    let stored = load(&mut tx, &supplied.work.system_start_id).await?;
+    guard(&stored, supplied, false)?;
+    let state = initialize_on(&mut tx, supplied, contract_json, state_json).await?;
+    let prior = sqlx::query("SELECT options_json,evidence_json FROM engine_work_admission030 WHERE system_id=? AND activation_id=?")
+        .bind(&supplied.work.system_start_id).bind(&supplied.work.activation_id)
+        .fetch_optional(&mut *tx).await?;
+    if let Some(row) = prior {
+        require(
+            row.get::<&str, _>("options_json") == admission.options_json
+                && row.get::<&str, _>("evidence_json") == admission.evidence_json,
+            "Conflicting work admission",
+        )?;
+    } else {
+        require(
+            state.revision == "0",
+            "Cannot add admission to a work with prior transitions",
+        )?;
+        let reserved: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM engine_work_events030 WHERE system_id=? AND activation_id=?",
+        )
+        .bind(&supplied.work.system_start_id)
+        .bind(&supplied.work.activation_id)
+        .fetch_one(&mut *tx)
+        .await?;
+        require(
+            reserved == 0,
+            "Cannot add admission after an event reservation",
+        )?;
+        sqlx::query("INSERT INTO engine_work_admission030 VALUES (?,?,?,?)")
+            .bind(&supplied.work.system_start_id)
+            .bind(&supplied.work.activation_id)
+            .bind(&admission.options_json)
+            .bind(&admission.evidence_json)
             .execute(&mut *tx)
             .await?;
     }
-    let state = read_on(&mut tx, &supplied.work).await?;
     tx.commit().await?;
     Ok(state)
+}
+
+pub(crate) async fn read_admission(
+    pool: &SqlitePool,
+    supplied: &EngineContext,
+    control: bool,
+) -> Result<WorkAdmission030> {
+    let mut db = pool.acquire().await?;
+    let mut tx = durable(&mut db).await?;
+    let stored = load(&mut tx, &supplied.work.system_start_id).await?;
+    guard(&stored, supplied, control)?;
+    let state = read_on(&mut tx, &supplied.work).await?;
+    require(state.context == *supplied, "Protocol context differs")?;
+    let row = sqlx::query("SELECT options_json,evidence_json FROM engine_work_admission030 WHERE system_id=? AND activation_id=?")
+        .bind(&supplied.work.system_start_id).bind(&supplied.work.activation_id)
+        .fetch_optional(&mut *tx).await?
+        .ok_or_else(|| failure("NOT_FOUND", "admission", "Work admission is not initialized"))?;
+    let admission = WorkAdmission030 {
+        options_json: row.get("options_json"),
+        evidence_json: row.get("evidence_json"),
+    };
+    tx.commit().await?;
+    Ok(admission)
 }
 async fn event_row(
     db: &mut SqliteConnection,

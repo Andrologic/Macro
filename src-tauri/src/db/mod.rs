@@ -49,8 +49,9 @@ const MIGRATION_003_SQL: &str = include_str!("migrations/002_agent_runs.sql");
 const MIGRATION_004_VERSION: i64 = 4;
 const MIGRATION_004_NAME: &str = "004_message_search";
 const MIGRATION_004_SQL: &str = include_str!("migrations/004_message_search.sql");
-pub(crate) const SUPPORTED_MIGRATION_VERSIONS: &[i64] =
-    &[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17];
+pub(crate) const SUPPORTED_MIGRATION_VERSIONS: &[i64] = &[
+    1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18,
+];
 const MIGRATION_005_VERSION: i64 = 5;
 const MIGRATION_005_NAME: &str = "005_runtime_schema";
 const MIGRATION_005_CHECK_SQL: &str = include_str!("migrations/005_runtime_schema_check.sql");
@@ -328,6 +329,11 @@ async fn run_migrations_on_connection(connection: &mut SqliteConnection) -> DbRe
             "017_execution_work_protocol",
             include_str!("migrations/017_execution_work_protocol.sql"),
         ),
+        (
+            18,
+            "018_execution_work_admission",
+            include_str!("migrations/018_execution_work_admission.sql"),
+        ),
     ] {
         if !list_applied_migrations(connection)
             .await?
@@ -373,6 +379,7 @@ fn validate_migration_history(applied: &HashSet<i64>) -> DbResult<()> {
         || (applied.contains(&15) && !applied.contains(&14))
         || (applied.contains(&16) && !applied.contains(&15))
         || (applied.contains(&17) && !applied.contains(&16))
+        || (applied.contains(&18) && !applied.contains(&17))
     {
         return Err(DbError::Migration(
             "Unsupported or inconsistent migration history; database left unchanged".to_string(),
@@ -2450,6 +2457,7 @@ mod tests {
         let db_path = temp_dir.path().join("macro.db");
         let pool = create_pool(&db_path).await.expect("initial pool");
         for statement in [
+            "DROP TABLE engine_work_admission030",
             "DROP TABLE engine_human_link_events030",
             "DROP TABLE engine_human_works030",
             "DROP TABLE engine_human_requests030",
