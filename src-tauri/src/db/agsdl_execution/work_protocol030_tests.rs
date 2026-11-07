@@ -441,6 +441,7 @@ async fn check_collision_rolls_back_state_receipt_and_effect_registration() {
 
 fn human(context: &EngineContext, id: &str) -> HumanRequest030 {
     HumanRequest030 {
+        owner: context.owner.clone(),
         request_id: id.into(),
         contexts: vec![context.clone()],
         kind: "plan".into(),
@@ -491,19 +492,27 @@ async fn human_requests_are_linked_durable_and_resolve_once() {
         ]
     );
     stop_work(&pool, &context).await;
-    assert!(
+    assert_eq!(
         resolve_human(&pool, &human(&context, "still-open"), "0", "true")
             .await
-            .is_err()
+            .unwrap()
+            .answer_json
+            .as_deref(),
+        Some("true")
     );
+    assert!(reserve_event(&pool, &input(&context, "late-human", "0"))
+        .await
+        .is_err());
 }
 
 #[tokio::test]
-async fn human_associations_reject_empty_duplicate_foreign_or_retired_works() {
+async fn human_associations_allow_empty_and_reject_duplicate_foreign_or_retired_works() {
     let (_temp, pool, context) = setup().await;
     let mut request = human(&context, "request");
     request.contexts.clear();
-    assert!(open_human(&pool, &request).await.is_err());
+    request.request_id = "empty".into();
+    assert!(open_human(&pool, &request).await.is_ok());
+    request.request_id = "other".into();
     request.contexts = vec![context.clone(), context.clone()];
     assert!(open_human(&pool, &request).await.is_err());
     request.contexts[1].work.system_start_id = "foreign".into();
@@ -720,4 +729,225 @@ async fn pending_check_uses_existing_terminal_effect_barrier() {
     .unwrap();
     assert!(commit_terminal(&pool, terminal, &NoRoutes).await.unwrap());
     assert!(claim_check(&pool, &context, "check").await.is_err());
+}
+
+async fn second_work(pool: &SqlitePool, first: &EngineContext) -> EngineContext {
+    let mut second = first.clone();
+    second.work.activation_id = "second".into();
+    let mut db = pool.acquire().await.unwrap();
+    let mut stored = load(&mut db, "system").await.unwrap();
+    let mut activation = stored.state.activations["work"].clone();
+    activation.delivery.delivery.work = second.work.clone();
+    activation.delivery.delivery.delivery_id = "second-delivery".into();
+    stored.state.activations.insert("second".into(), activation);
+    save(&mut db, "system", &stored.state).await.unwrap();
+    drop(db);
+    initialize(pool, &second, "{}", "{}").await.unwrap();
+    second
+}
+
+#[tokio::test]
+async fn shared_answer_survives_targeted_stop_and_never_resumes_stopped_work() {
+    let (_temp, pool, first) = setup().await;
+    let second = second_work(&pool, &first).await;
+    let mut request = human(&first, "shared-stop");
+    request.contexts.push(second.clone());
+    open_human(&pool, &request).await.unwrap();
+    stop_work(&pool, &first).await;
+    assert_eq!(open_human(&pool, &request).await.unwrap().revision, "0");
+    let answer = resolve_human(&pool, &request, "0", "true").await.unwrap();
+    assert_eq!(answer.answer_json.as_deref(), Some("true"));
+    assert_eq!(
+        resolve_human(&pool, &request, "0", "true").await.unwrap(),
+        answer
+    );
+    assert!(resolve_human(&pool, &request, "0", "false").await.is_err());
+    assert!(reserve_event(&pool, &input(&first, "stopped-answer", "0"))
+        .await
+        .is_err());
+    assert!(reserve_event(&pool, &input(&second, "active-answer", "0"))
+        .await
+        .is_ok());
+}
+
+#[tokio::test]
+async fn human_links_follow_calls_and_retries_cannot_restore_detached_works() {
+    let (temp, pool, first) = setup().await;
+    let second = second_work(&pool, &first).await;
+    let mut request = human(&first, "dynamic");
+    request.contexts.clear();
+    open_human(&pool, &request).await.unwrap();
+    let add_first = HumanLink030 {
+        operation_id: "add-first".into(),
+        context: first.clone(),
+        attached: true,
+    };
+    let remove_first = HumanLink030 {
+        operation_id: "remove-first".into(),
+        context: first.clone(),
+        attached: false,
+    };
+    let add_second = HumanLink030 {
+        operation_id: "add-second".into(),
+        context: second.clone(),
+        attached: true,
+    };
+    set_human_link(&pool, &request, &add_first).await.unwrap();
+    set_human_link(&pool, &request, &add_second).await.unwrap();
+    assert_eq!(
+        read_human_links(&pool, "system", "dynamic").await.unwrap(),
+        vec![first.clone(), second.clone()]
+    );
+    stop_work(&pool, &first).await;
+    set_human_link(&pool, &request, &remove_first)
+        .await
+        .unwrap();
+    set_human_link(&pool, &request, &remove_first)
+        .await
+        .unwrap();
+    set_human_link(&pool, &request, &add_first).await.unwrap(); // retry, not a reattach
+    assert!(read_humans(&pool, &first.work).await.unwrap().is_empty());
+    assert_eq!(read_humans(&pool, &second.work).await.unwrap().len(), 1);
+    let mut conflict = remove_first.clone();
+    conflict.attached = true;
+    assert!(set_human_link(&pool, &request, &conflict).await.is_err());
+    pool.close().await;
+    let pool = crate::db::create_pool(&temp.path().join("protocol.db"))
+        .await
+        .unwrap();
+    set_human_link(&pool, &request, &add_first).await.unwrap();
+    assert!(read_humans(&pool, &first.work).await.unwrap().is_empty());
+    let answer = resolve_human(&pool, &request, "0", "false").await.unwrap();
+    assert_eq!(
+        read_humans(&pool, &second.work).await.unwrap(),
+        vec![answer]
+    );
+    let mut after = add_second.clone();
+    after.operation_id = "after-resolution".into();
+    assert!(set_human_link(&pool, &request, &after).await.is_err());
+    revoke_host_owners(&pool, &[first.owner.clone()])
+        .await
+        .unwrap();
+    assert!(set_human_link(&pool, &request, &remove_first)
+        .await
+        .is_err());
+}
+
+#[tokio::test]
+async fn shared_answer_survives_finished_member_and_all_calls_ending() {
+    let (_temp, pool, first) = setup().await;
+    let second = second_work(&pool, &first).await;
+    let mut request = human(&first, "shared-finished");
+    request.contexts.push(second.clone());
+    open_human(&pool, &request).await.unwrap();
+    let mut db = pool.acquire().await.unwrap();
+    let mut stored = load(&mut db, "system").await.unwrap();
+    stored
+        .state
+        .activations
+        .get_mut(&first.work.activation_id)
+        .unwrap()
+        .work_state = "terminal".into();
+    save(&mut db, "system", &stored.state).await.unwrap();
+    drop(db);
+    let detach = HumanLink030 {
+        operation_id: "call-ended".into(),
+        context: first.clone(),
+        attached: false,
+    };
+    set_human_link(&pool, &request, &detach).await.unwrap();
+    assert!(read_humans(&pool, &first.work).await.unwrap().is_empty());
+    assert_eq!(read_humans(&pool, &second.work).await.unwrap().len(), 1);
+    let detach_second = HumanLink030 {
+        operation_id: "last-call-ended".into(),
+        context: second.clone(),
+        attached: false,
+    };
+    set_human_link(&pool, &request, &detach_second)
+        .await
+        .unwrap();
+    assert!(read_humans(&pool, &second.work).await.unwrap().is_empty());
+    assert!(read_human_links(&pool, "system", "shared-finished")
+        .await
+        .unwrap()
+        .is_empty());
+    assert_eq!(
+        pending_humans(&pool, "system").await.unwrap()[0].request,
+        request
+    );
+    let answer = resolve_human(&pool, &request, "0", "false").await.unwrap();
+    assert_eq!(answer.answer_json.as_deref(), Some("false"));
+    assert!(pending_humans(&pool, "system").await.unwrap().is_empty());
+    assert!(reserve_event(&pool, &input(&first, "ended-answer", "0"))
+        .await
+        .is_err());
+}
+
+#[tokio::test]
+async fn unclaimed_check_stop_can_settle_without_a_success_or_dispatch() {
+    struct NoRoutes;
+    impl RouteAuthority for NoRoutes {
+        fn outgoing(
+            &self,
+            _: &EngineSnapshot,
+            _: &EngineWork,
+            _: &EngineOutcome,
+        ) -> Result<Vec<EngineDelivery>> {
+            Ok(vec![])
+        }
+    }
+    let (_temp, pool, context) = setup().await;
+    let t = ticket(&pool, &input(&context, "submit", "0")).await;
+    commit_event(&pool, &t, &decision(true)).await.unwrap();
+    let effect = read_checks(&pool, &context.work).await.unwrap()[0]
+        .effect
+        .clone();
+    stop_work(&pool, &context).await;
+    assert!(claim_check(&pool, &context, "check").await.is_err());
+    settle_owned_effect(
+        &pool,
+        EngineSettlement {
+            context: context.clone(),
+            effect: effect.effect,
+            status: "ended".into(),
+            evidence_json: "{\"neverDispatched\":true}".into(),
+        },
+        Some("{\"cancelled\":true}".into()),
+    )
+    .await
+    .unwrap();
+    let check = &read_checks(&pool, &context.work).await.unwrap()[0];
+    assert_eq!(check.status, "ended");
+    assert!(!check.claimed);
+    assert_eq!(check.result_json, None);
+    let settled = read_effects(&pool, &context.work).await.unwrap();
+    assert_eq!(
+        settled[0].result_json.as_deref(),
+        Some("{\"cancelled\":true}")
+    );
+    assert_eq!(
+        settled[0].settlement.as_ref().unwrap().evidence_json,
+        "{\"neverDispatched\":true}"
+    );
+    assert!(claim_check(&pool, &context, "check").await.is_err());
+    seal_responses(&pool, &context.owner, &context.work, "0")
+        .await
+        .unwrap();
+    let terminal = EngineTerminalCommit {
+        owner: context.owner.clone(),
+        work: context.work.clone(),
+        outcome: EngineOutcome::Stopped {
+            evidence_json: "{\"neverDispatched\":true}".into(),
+        },
+        termination_evidence_json: "{\"neverDispatched\":true}".into(),
+        response_cursor: "0".into(),
+        memory: Some(EngineMemory {
+            agent_instance_id: "agent".into(),
+            revision: "1".into(),
+            format_version: "synthetic".into(),
+            state_json: "{}".into(),
+        }),
+        outgoing: vec![],
+    };
+    assert!(commit_terminal(&pool, terminal, &NoRoutes).await.unwrap());
 }

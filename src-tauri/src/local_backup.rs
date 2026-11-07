@@ -320,6 +320,7 @@ async fn check_database(path: &Path) -> Result<()> {
             .map_err(|e| e.to_string())?;
     }
     for (version, table) in [
+        (17, "engine_human_link_events030"),
         (17, "engine_human_works030"),
         (17, "engine_human_requests030"),
         (17, "engine_work_checks030"),
@@ -1329,6 +1330,7 @@ mod tests {
             .unwrap();
 
         for statement in [
+            "DROP TABLE engine_human_link_events030",
             "DROP TABLE engine_human_works030",
             "DROP TABLE engine_human_requests030",
             "DROP TABLE engine_work_checks030",
@@ -3003,7 +3005,8 @@ mod tests {
         assert!(check_database(&path).await.is_err());
         let mut db = connection(&path).await.unwrap();
         sqlx::raw_sql(
-            "DROP TABLE engine_human_requests030;
+            "DROP TABLE engine_human_link_events030;
+            DROP TABLE engine_human_requests030;
             DROP TABLE engine_work_checks030;
             DROP TABLE engine_work_events030;
             DROP TABLE engine_work_protocol030;

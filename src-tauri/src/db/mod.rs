@@ -2450,6 +2450,7 @@ mod tests {
         let db_path = temp_dir.path().join("macro.db");
         let pool = create_pool(&db_path).await.expect("initial pool");
         for statement in [
+            "DROP TABLE engine_human_link_events030",
             "DROP TABLE engine_human_works030",
             "DROP TABLE engine_human_requests030",
             "DROP TABLE engine_work_checks030",

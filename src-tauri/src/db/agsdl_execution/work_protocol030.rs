@@ -55,8 +55,14 @@ record!(CheckRecord030 {
     status: String, evidence_json: Option<String>, result_json: Option<String>,
 });
 record!(HumanRequest030 {
+    owner: EngineOwner,
     request_id: String, contexts: Vec<EngineContext>, kind: String,
     payload_json: String, deadline_ms: Option<String>,
+});
+record!(HumanLink030 {
+    operation_id: String,
+    context: EngineContext,
+    attached: bool,
 });
 record!(HumanRecord030 {
     request: HumanRequest030, revision: String, answer_json: Option<String>,
@@ -430,22 +436,30 @@ fn human_system(request: &HumanRequest030) -> Result<&str> {
     if let Some(deadline) = &request.deadline_ms {
         decimal(deadline)?;
     }
-    let first = request
-        .contexts
-        .first()
-        .ok_or_else(|| failure("CORRELATION", "contexts", "Human request has no work"))?;
+    opaque(&request.owner.system_start_id)?;
+    decimal(&request.owner.owner_epoch)?;
     let mut works = BTreeSet::new();
     for supplied in &request.contexts {
         require(
-            supplied.work.system_start_id == first.work.system_start_id
+            supplied.owner == request.owner
+                && supplied.work.system_start_id == request.owner.system_start_id
                 && works.insert(&supplied.work.activation_id),
             "Human request has foreign or repeated works",
         )?;
     }
-    Ok(&first.work.system_start_id)
+    Ok(&request.owner.system_start_id)
 }
 async fn human_guard(db: &mut SqliteConnection, request: &HumanRequest030) -> Result<()> {
     let stored = load(db, human_system(request)?).await?;
+    owner(
+        &stored.state,
+        &request.owner,
+        &request.owner.system_start_id,
+    )?;
+    require(
+        stored.snapshot.versions.contract == "agsdl-0.3.0",
+        "Human request requires a 0.3 capture",
+    )?;
     for supplied in &request.contexts {
         guard(&stored, supplied, false)?;
         require(
@@ -478,7 +492,8 @@ pub(crate) async fn open_human(
     let system = human_system(request)?;
     let mut db = pool.acquire().await?;
     let mut tx = durable(&mut db).await?;
-    human_guard(&mut tx, request).await?;
+    let stored = load(&mut tx, system).await?;
+    owner(&stored.state, &request.owner, system)?;
     if let Some(previous) = human_row(&mut tx, system, &request.request_id).await? {
         require(
             previous.request == *request,
@@ -487,6 +502,7 @@ pub(crate) async fn open_human(
         tx.commit().await?;
         return Ok(previous);
     }
+    human_guard(&mut tx, request).await?;
     sqlx::query("INSERT INTO engine_human_requests030 VALUES (?,?,?,'0',NULL)")
         .bind(system)
         .bind(&request.request_id)
@@ -519,7 +535,8 @@ pub(crate) async fn resolve_human(
     validate_json(answer_json)?;
     let mut db = pool.acquire().await?;
     let mut tx = durable(&mut db).await?;
-    human_guard(&mut tx, request).await?;
+    let stored = load(&mut tx, system).await?;
+    owner(&stored.state, &request.owner, system)?;
     let mut previous = human_row(&mut tx, system, &request.request_id)
         .await?
         .ok_or_else(|| failure("NOT_FOUND", "request", "Human request is not open"))?;
@@ -542,6 +559,118 @@ pub(crate) async fn resolve_human(
     tx.commit().await?;
     Ok(previous)
 }
+/// Update which works are currently waiting. Operation IDs are durable and
+/// single-use, including after a detach followed by a later reattachment.
+pub(crate) async fn set_human_link(
+    pool: &SqlitePool,
+    request: &HumanRequest030,
+    update: &HumanLink030,
+) -> Result<()> {
+    let system = human_system(request)?;
+    opaque(&update.operation_id)?;
+    require(
+        update.context.owner == request.owner && update.context.work.system_start_id == system,
+        "Human link belongs to another owner",
+    )?;
+    let mut db = pool.acquire().await?;
+    let mut tx = durable(&mut db).await?;
+    let stored = load(&mut tx, system).await?;
+    owner(&stored.state, &request.owner, system)?;
+    let previous = human_row(&mut tx, system, &request.request_id)
+        .await?
+        .ok_or_else(|| failure("NOT_FOUND", "request", "Human request is not open"))?;
+    require(
+        previous.request == *request,
+        "Human request identity differs",
+    )?;
+    let existing: Option<(String, String)> = sqlx::query_as("SELECT request_id,operation_json FROM engine_human_link_events030 WHERE system_id=? AND operation_id=?")
+        .bind(system).bind(&update.operation_id).fetch_optional(&mut *tx).await?;
+    let raw = encode(update)?;
+    if let Some((request_id, operation)) = existing {
+        require(
+            request_id == request.request_id && operation == raw,
+            "Human link operation identity reused",
+        )?;
+        tx.commit().await?;
+        return Ok(());
+    }
+    require(
+        previous.answer_json.is_none(),
+        "Resolved human request cannot change its works",
+    )?;
+    require(
+        read_on(&mut tx, &update.context.work).await?.context == update.context,
+        "Human link attribution differs",
+    )?;
+    // Attaching requires active work. Detaching an ended or stopped work is a
+    // factual observation, not authority to restart that work.
+    if update.attached {
+        guard(&stored, &update.context, false)?;
+    }
+    if update.attached {
+        sqlx::query("INSERT OR IGNORE INTO engine_human_works030 VALUES (?,?,?)")
+            .bind(system)
+            .bind(&request.request_id)
+            .bind(&update.context.work.activation_id)
+            .execute(&mut *tx)
+            .await?;
+    } else {
+        sqlx::query("DELETE FROM engine_human_works030 WHERE system_id=? AND request_id=? AND activation_id=?")
+            .bind(system).bind(&request.request_id).bind(&update.context.work.activation_id).execute(&mut *tx).await?;
+    }
+    sqlx::query("INSERT INTO engine_human_link_events030 VALUES (?,?,?,?)")
+        .bind(system)
+        .bind(&update.operation_id)
+        .bind(&request.request_id)
+        .bind(raw)
+        .execute(&mut *tx)
+        .await?;
+    tx.commit().await?;
+    Ok(())
+}
+
+/// Private broker recovery also includes requests with no currently linked work.
+pub(crate) async fn pending_humans(pool: &SqlitePool, system: &str) -> Result<Vec<HumanRecord030>> {
+    opaque(system)?;
+    let mut tx = pool.begin().await?;
+    load(&mut tx, system).await?;
+    let ids: Vec<String> = sqlx::query_scalar("SELECT request_id FROM engine_human_requests030 WHERE system_id=? AND revision='0' ORDER BY rowid")
+        .bind(system).fetch_all(&mut *tx).await?;
+    let mut requests = Vec::new();
+    for id in ids {
+        requests.push(
+            human_row(&mut tx, system, &id)
+                .await?
+                .ok_or_else(|| failure("STORAGE", "request", "Human request disappeared"))?,
+        );
+    }
+    tx.commit().await?;
+    Ok(requests)
+}
+
+/// The broker uses these current links to determine whose clock is paused.
+pub(crate) async fn read_human_links(
+    pool: &SqlitePool,
+    system: &str,
+    request_id: &str,
+) -> Result<Vec<EngineContext>> {
+    opaque(system)?;
+    opaque(request_id)?;
+    let mut tx = pool.begin().await?;
+    require(
+        human_row(&mut tx, system, request_id).await?.is_some(),
+        "Human request does not exist",
+    )?;
+    let rows: Vec<String> = sqlx::query_scalar("SELECT p.context_json FROM engine_human_works030 w JOIN engine_work_protocol030 p ON p.system_id=w.system_id AND p.activation_id=w.activation_id WHERE w.system_id=? AND w.request_id=? ORDER BY w.rowid")
+        .bind(system).bind(request_id).fetch_all(&mut *tx).await?;
+    let contexts = rows
+        .into_iter()
+        .map(|row| serde_json::from_str(&row).map_err(Into::into))
+        .collect::<Result<Vec<_>>>()?;
+    tx.commit().await?;
+    Ok(contexts)
+}
+
 pub(crate) async fn read_humans(
     pool: &SqlitePool,
     work: &EngineWork,

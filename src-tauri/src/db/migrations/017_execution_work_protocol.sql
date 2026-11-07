@@ -58,3 +58,13 @@ CREATE TABLE engine_human_works030 (
     FOREIGN KEY (system_id, activation_id) REFERENCES engine_work_protocol030(system_id, activation_id) ON DELETE CASCADE
 );
 CREATE INDEX engine_human_works030_work ON engine_human_works030(system_id, activation_id);
+
+-- Association operations are idempotent even across detach/reattach and restart.
+CREATE TABLE engine_human_link_events030 (
+    system_id TEXT NOT NULL,
+    operation_id TEXT NOT NULL,
+    request_id TEXT NOT NULL,
+    operation_json TEXT NOT NULL CHECK (json_valid(operation_json)),
+    PRIMARY KEY (system_id, operation_id),
+    FOREIGN KEY (system_id, request_id) REFERENCES engine_human_requests030(system_id, request_id) ON DELETE CASCADE
+);

@@ -56,6 +56,7 @@ async fn drop_visible_search(connection: &mut SqliteConnection) {
          DROP TRIGGER messages_search_update_insert;
          DROP TABLE message_search;
          DROP VIEW message_search_content;
+         DROP TABLE engine_human_link_events030;
          DROP TABLE engine_human_works030;
          DROP TABLE engine_human_requests030;
          DROP TABLE engine_work_checks030;
@@ -985,7 +986,8 @@ async fn protocol017_upgrades_v16_without_rewriting_snapshots_and_rolls_back_fai
     let temp = TempDir::new().unwrap();
     let path = temp.path().join("protocol-upgrade.db");
     let pool = create_pool(&path).await.unwrap();
-    sqlx::raw_sql("DROP TABLE engine_human_works030;
+    sqlx::raw_sql("DROP TABLE engine_human_link_events030;
+        DROP TABLE engine_human_works030;
         DROP TABLE engine_human_requests030;
         DROP TABLE engine_work_checks030;
         DROP TABLE engine_work_events030;
