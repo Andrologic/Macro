@@ -34,6 +34,15 @@ describe('test file selection', () => {
     ]);
     expect(selected).toEqual(['src/a.test.ts', 'src/b.test.tsx']);
   });
+
+  test('excludes local temporary archives while keeping source directories named tmp', () => {
+    expect(selectTestFiles([
+      './tmp/review/src/agent.test.ts',
+      'tmp\\assembly\\dev\\run-tests.test.ts',
+      'src/tmp/cache.test.ts',
+      'dev/run-tests.test.ts',
+    ])).toEqual(['dev/run-tests.test.ts', 'src/tmp/cache.test.ts']);
+  });
 });
 
 describe('per-file spawn arguments', () => {

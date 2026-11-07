@@ -20,6 +20,7 @@ export const IGNORED_PREFIXES = Object.freeze([
   '.worktrees/',
   '.git/',
   'coverage/',
+  'tmp/',
 ]);
 
 const productionConditionTestFiles = new Set([
