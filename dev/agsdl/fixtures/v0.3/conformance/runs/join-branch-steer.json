@@ -1,0 +1,134 @@
+{
+  "description": "A steer message from one branch joins the current work of another branch: its branch ends absorbed, and the join decides once the other branch delivers.",
+  "document": {
+    "contract": "agsdl-0.3.0",
+    "id": "join-branch-steer",
+    "agents": {
+      "lead": {
+        "harness": "example",
+        "permissions": "workspace"
+      },
+      "dev": {
+        "harness": "example",
+        "permissions": "workspace"
+      }
+    },
+    "flow": {
+      "entry": "start",
+      "steps": {
+        "start": {
+          "type": "agent",
+          "agent": "lead",
+          "next": [
+            "work",
+            "ping"
+          ]
+        },
+        "work": {
+          "type": "agent",
+          "agent": "dev",
+          "next": "gather"
+        },
+        "ping": {
+          "type": "call",
+          "command": "./check-release-notes.sh",
+          "next": {
+            "step": "nudge",
+            "message": {
+              "prompt": "Also update the changelog."
+            }
+          }
+        },
+        "nudge": {
+          "type": "agent",
+          "agent": "dev",
+          "delivery": "steer",
+          "next": "gather"
+        },
+        "gather": {
+          "type": "join",
+          "next": "summary"
+        },
+        "summary": {
+          "type": "agent",
+          "agent": "lead",
+          "prompt": "Summarize."
+        }
+      }
+    }
+  },
+  "entry": {
+    "prompt": "Start."
+  },
+  "timeline": [
+    {
+      "work": "start",
+      "returns": {
+        "text": "Release 2.0."
+      }
+    },
+    {
+      "work": "ping",
+      "command": {
+        "exitCode": 0
+      }
+    },
+    {
+      "running": [
+        {
+          "step": "work"
+        }
+      ]
+    },
+    {
+      "work": "work",
+      "returns": {
+        "text": "Released, changelog updated."
+      }
+    },
+    {
+      "running": [
+        {
+          "step": "summary"
+        }
+      ]
+    },
+    {
+      "work": "summary",
+      "returns": {
+        "text": "Done."
+      }
+    }
+  ],
+  "expect": {
+    "run": "succeeded",
+    "starts": {
+      "start": 1,
+      "work": 1,
+      "ping": 1,
+      "summary": 1
+    },
+    "messages": [
+      {
+        "to": "nudge",
+        "prompt": "Also update the changelog."
+      }
+    ],
+    "joins": [
+      {
+        "join": "gather",
+        "outcome": "done",
+        "branches": {
+          "work": {
+            "text": "Released, changelog updated."
+          },
+          "ping": {
+            "ended": "absorbed",
+            "by": "work"
+          }
+        }
+      }
+    ],
+    "failures": []
+  }
+}

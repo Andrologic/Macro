@@ -1,0 +1,194 @@
+{
+  "description": "A compose step runs its body, delivers its message to the body's entry, and leaves once, through the output its join reaches.",
+  "document": {
+    "contract": "agsdl-0.3.0",
+    "id": "composition",
+    "agents": {
+      "writer": {
+        "harness": "example",
+        "permissions": "workspace"
+      },
+      "code-reviewer": {
+        "harness": "example",
+        "permissions": "read-only"
+      }
+    },
+    "compositions": {
+      "triple-review": {
+        "parameters": [
+          "reviewer"
+        ],
+        "entry": "spread",
+        "outputs": [
+          "approved",
+          "rejected"
+        ],
+        "steps": {
+          "spread": {
+            "type": "agent",
+            "agent": {
+              "parameter": "reviewer"
+            },
+            "next": [
+              "r1",
+              "r2",
+              "r3"
+            ]
+          },
+          "r1": {
+            "type": "agent",
+            "agent": {
+              "parameter": "reviewer"
+            },
+            "instance": "new",
+            "next": {
+              "approve": "vote",
+              "reject": "vote"
+            }
+          },
+          "r2": {
+            "type": "agent",
+            "agent": {
+              "parameter": "reviewer"
+            },
+            "instance": "new",
+            "next": {
+              "approve": "vote",
+              "reject": "vote"
+            }
+          },
+          "r3": {
+            "type": "agent",
+            "agent": {
+              "parameter": "reviewer"
+            },
+            "instance": "new",
+            "next": {
+              "approve": "vote",
+              "reject": "vote"
+            }
+          },
+          "vote": {
+            "type": "join",
+            "quorum": {
+              "count": 2,
+              "accept": [
+                "approve"
+              ]
+            },
+            "next": {
+              "reached": {
+                "output": "approved"
+              },
+              "missed": {
+                "output": "rejected"
+              }
+            }
+          }
+        }
+      }
+    },
+    "flow": {
+      "entry": "write",
+      "steps": {
+        "write": {
+          "type": "agent",
+          "agent": "writer",
+          "next": {
+            "step": "review",
+            "message": {
+              "prompt": "Review the change."
+            }
+          }
+        },
+        "review": {
+          "type": "compose",
+          "composition": "triple-review",
+          "agents": {
+            "reviewer": "code-reviewer"
+          },
+          "next": {
+            "approved": "publish",
+            "rejected": "write"
+          }
+        },
+        "publish": {
+          "type": "call",
+          "command": "make publish"
+        }
+      }
+    }
+  },
+  "entry": {
+    "prompt": "Start."
+  },
+  "timeline": [
+    {
+      "work": "write",
+      "returns": {
+        "text": "Change 1"
+      }
+    },
+    {
+      "work": "review/spread",
+      "returns": {
+        "text": "Three reviews."
+      }
+    },
+    {
+      "work": "review/r1",
+      "returns": {
+        "choice": "approve"
+      }
+    },
+    {
+      "work": "review/r3",
+      "returns": {
+        "choice": "approve"
+      }
+    },
+    {
+      "running": [
+        {
+          "step": "publish"
+        }
+      ]
+    },
+    {
+      "work": "publish",
+      "command": {
+        "exitCode": 0
+      }
+    }
+  ],
+  "expect": {
+    "run": "succeeded",
+    "starts": {
+      "write": 1,
+      "review": 1,
+      "review/spread": 1,
+      "review/r1": 1,
+      "review/r2": 1,
+      "review/r3": 1,
+      "publish": 1
+    },
+    "messages": [
+      {
+        "to": "review/spread",
+        "prompt": "Review the change."
+      }
+    ],
+    "joins": [
+      {
+        "join": "review/vote",
+        "outcome": "reached"
+      }
+    ],
+    "cancelled": [
+      {
+        "step": "review/r2"
+      }
+    ],
+    "failures": []
+  }
+}

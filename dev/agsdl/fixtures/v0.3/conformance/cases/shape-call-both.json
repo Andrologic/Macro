@@ -1,0 +1,35 @@
+{
+  "contract": "agsdl-0.3.0",
+  "id": "shape-call-both",
+  "mcpServers": {
+    "m": {
+      "command": [
+        "m"
+      ]
+    }
+  },
+  "agents": {
+    "a": {
+      "harness": "example",
+      "permissions": "read-only"
+    }
+  },
+  "flow": {
+    "entry": "s",
+    "steps": {
+      "s": {
+        "type": "agent",
+        "agent": "a",
+        "next": "c"
+      },
+      "c": {
+        "type": "call",
+        "command": "x",
+        "mcp": {
+          "server": "m",
+          "tool": "t"
+        }
+      }
+    }
+  }
+}

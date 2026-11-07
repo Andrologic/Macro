@@ -1,0 +1,73 @@
+{
+  "contract": "agsdl-0.3.0",
+  "id": "approval-composition-entry-resource",
+  "mcpServers": {
+    "releases": {
+      "url": "https://mcp.example.com/releases"
+    }
+  },
+  "agents": {
+    "dev": {
+      "harness": "example",
+      "permissions": "workspace",
+      "results": {
+        "summary": {
+          "mediaType": "text/plain"
+        }
+      }
+    }
+  },
+  "compositions": {
+    "gate": {
+      "entry": "approve",
+      "outputs": [
+        "ok"
+      ],
+      "steps": {
+        "approve": {
+          "type": "approval",
+          "title": "Publish?",
+          "next": {
+            "publish": "publish"
+          }
+        },
+        "publish": {
+          "type": "call",
+          "mcp": {
+            "server": "releases",
+            "tool": "publish"
+          },
+          "arguments": {
+            "notes": {
+              "path": [
+                "message",
+                "resources",
+                "notes"
+              ]
+            }
+          },
+          "next": {
+            "output": "ok"
+          }
+        }
+      }
+    }
+  },
+  "flow": {
+    "entry": "prepare",
+    "steps": {
+      "prepare": {
+        "type": "agent",
+        "agent": "dev",
+        "next": "g"
+      },
+      "g": {
+        "type": "compose",
+        "composition": "gate",
+        "next": {
+          "ok": []
+        }
+      }
+    }
+  }
+}

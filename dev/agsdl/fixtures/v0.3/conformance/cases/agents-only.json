@@ -1,0 +1,12 @@
+{
+  "contract": "agsdl-0.3.0",
+  "id": "agents-only",
+  "agents": {
+    "helper": {
+      "harness": "example",
+      "permissions": "read-only",
+      "description": "Answers questions.",
+      "instructions": "Answer briefly."
+    }
+  }
+}

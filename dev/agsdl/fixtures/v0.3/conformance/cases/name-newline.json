@@ -1,0 +1,10 @@
+{
+  "contract": "agsdl-0.3.0",
+  "id": "name-newline",
+  "agents": {
+    "a\n": {
+      "harness": "example",
+      "permissions": "full"
+    }
+  }
+}

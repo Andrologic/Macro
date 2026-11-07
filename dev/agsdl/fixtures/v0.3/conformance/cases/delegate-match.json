@@ -1,0 +1,19 @@
+{
+  "contract": "agsdl-0.3.0",
+  "id": "delegate-match",
+  "agents": {
+    "a": {
+      "harness": "example",
+      "permissions": {
+        "preset": "full",
+        "rules": [
+          {
+            "action": "delegate",
+            "match": "bob",
+            "effect": "deny"
+          }
+        ]
+      }
+    }
+  }
+}

@@ -1,0 +1,76 @@
+{
+  "contract": "agsdl-0.3.0",
+  "id": "compose-nested-fork",
+  "agents": {},
+  "compositions": {
+    "inner": {
+      "parameters": [],
+      "entry": "s",
+      "outputs": [
+        "o"
+      ],
+      "steps": {
+        "s": {
+          "type": "call",
+          "command": "true",
+          "next": {
+            "output": "o"
+          }
+        }
+      }
+    },
+    "outer": {
+      "parameters": [],
+      "entry": "x",
+      "outputs": [
+        "p",
+        "q"
+      ],
+      "steps": {
+        "x": {
+          "type": "compose",
+          "composition": "inner",
+          "agents": {},
+          "next": {
+            "o": [
+              "a",
+              "b"
+            ]
+          }
+        },
+        "a": {
+          "type": "call",
+          "command": "true",
+          "next": {
+            "output": "p"
+          }
+        },
+        "b": {
+          "type": "call",
+          "command": "true",
+          "next": {
+            "output": "q"
+          }
+        }
+      }
+    }
+  },
+  "flow": {
+    "entry": "go",
+    "steps": {
+      "go": {
+        "type": "compose",
+        "composition": "outer",
+        "agents": {},
+        "next": {
+          "p": "end",
+          "q": "end"
+        }
+      },
+      "end": {
+        "type": "call",
+        "command": "true"
+      }
+    }
+  }
+}

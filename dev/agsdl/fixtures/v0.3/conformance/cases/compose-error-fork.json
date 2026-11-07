@@ -1,0 +1,58 @@
+{
+  "contract": "agsdl-0.3.0",
+  "id": "compose-error-fork",
+  "agents": {},
+  "compositions": {
+    "c": {
+      "parameters": [],
+      "entry": "s",
+      "outputs": [
+        "p",
+        "q"
+      ],
+      "steps": {
+        "s": {
+          "type": "call",
+          "command": "true",
+          "next": "a",
+          "onError": [
+            "a",
+            "b"
+          ]
+        },
+        "a": {
+          "type": "call",
+          "command": "true",
+          "next": {
+            "output": "p"
+          }
+        },
+        "b": {
+          "type": "call",
+          "command": "true",
+          "next": {
+            "output": "q"
+          }
+        }
+      }
+    }
+  },
+  "flow": {
+    "entry": "go",
+    "steps": {
+      "go": {
+        "type": "compose",
+        "composition": "c",
+        "agents": {},
+        "next": {
+          "p": "end",
+          "q": "end"
+        }
+      },
+      "end": {
+        "type": "call",
+        "command": "true"
+      }
+    }
+  }
+}

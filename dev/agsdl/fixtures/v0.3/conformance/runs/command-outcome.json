@@ -1,0 +1,79 @@
+{
+  "description": "A command routes passed on exit status 0 and failed otherwise; failed is a normal outcome, and data.value is read even then.",
+  "document": {
+    "contract": "agsdl-0.3.0",
+    "id": "command-outcome",
+    "agents": {
+      "dev": {
+        "harness": "example",
+        "permissions": "workspace"
+      }
+    },
+    "flow": {
+      "entry": "tests",
+      "steps": {
+        "tests": {
+          "type": "call",
+          "command": "npm test -- --json",
+          "parse": "json",
+          "next": {
+            "passed": [],
+            "failed": "fix"
+          }
+        },
+        "fix": {
+          "type": "agent",
+          "agent": "dev",
+          "prompt": "Fix the failing tests.",
+          "next": "tests"
+        }
+      }
+    }
+  },
+  "entry": {
+    "prompt": "Start."
+  },
+  "timeline": [
+    {
+      "work": "tests",
+      "command": {
+        "exitCode": 1,
+        "stdout": "{\"failed\": 2}"
+      }
+    },
+    {
+      "work": "fix",
+      "returns": {
+        "text": "Fixed."
+      }
+    },
+    {
+      "work": "tests",
+      "command": {
+        "exitCode": 0,
+        "stdout": "{\"failed\": 0}"
+      }
+    }
+  ],
+  "expect": {
+    "run": "succeeded",
+    "starts": {
+      "tests": 2,
+      "fix": 1
+    },
+    "messages": [
+      {
+        "to": "fix",
+        "resources": {
+          "result": {
+            "exitCode": 1,
+            "value": {
+              "failed": 2
+            }
+          }
+        }
+      }
+    ],
+    "failures": []
+  }
+}

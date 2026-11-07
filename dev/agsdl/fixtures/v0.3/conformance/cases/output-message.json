@@ -1,0 +1,42 @@
+{
+  "contract": "agsdl-0.3.0",
+  "id": "output-message",
+  "agents": {
+    "a": {
+      "harness": "example",
+      "permissions": "full"
+    }
+  },
+  "compositions": {
+    "c": {
+      "entry": "s",
+      "outputs": [
+        "done"
+      ],
+      "steps": {
+        "s": {
+          "type": "agent",
+          "agent": "a",
+          "next": {
+            "output": "done",
+            "message": {
+              "prompt": "Go on."
+            }
+          }
+        }
+      }
+    }
+  },
+  "flow": {
+    "entry": "go",
+    "steps": {
+      "go": {
+        "type": "compose",
+        "composition": "c",
+        "next": {
+          "done": []
+        }
+      }
+    }
+  }
+}

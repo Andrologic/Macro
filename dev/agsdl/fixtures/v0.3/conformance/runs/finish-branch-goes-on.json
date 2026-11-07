@@ -1,0 +1,150 @@
+{
+  "description": "With remaining finish, an unfinished branch goes on inside itself after the join has decided: its next step still starts, and it ends where it would reach the join.",
+  "document": {
+    "contract": "agsdl-0.3.0",
+    "id": "finish-branch-goes-on",
+    "agents": {
+      "lead": {
+        "harness": "example",
+        "permissions": "workspace"
+      },
+      "reviewer": {
+        "harness": "example",
+        "permissions": "read-only"
+      }
+    },
+    "flow": {
+      "entry": "spread",
+      "steps": {
+        "spread": {
+          "type": "agent",
+          "agent": "lead",
+          "next": [
+            "draft",
+            "check"
+          ]
+        },
+        "draft": {
+          "type": "agent",
+          "agent": "reviewer",
+          "instance": "new",
+          "next": "polish"
+        },
+        "polish": {
+          "type": "agent",
+          "agent": "reviewer",
+          "instance": "new",
+          "prompt": "Polish the draft.",
+          "next": {
+            "approve": "vote",
+            "reject": "vote"
+          }
+        },
+        "check": {
+          "type": "agent",
+          "agent": "reviewer",
+          "instance": "new",
+          "next": {
+            "approve": "vote",
+            "reject": "vote"
+          }
+        },
+        "vote": {
+          "type": "join",
+          "quorum": {
+            "count": 1,
+            "accept": [
+              "approve"
+            ]
+          },
+          "remaining": "finish",
+          "next": {
+            "reached": "publish",
+            "missed": "revise"
+          }
+        },
+        "publish": {
+          "type": "call",
+          "command": "make publish"
+        },
+        "revise": {
+          "type": "agent",
+          "agent": "lead",
+          "prompt": "Revise."
+        }
+      }
+    }
+  },
+  "timeline": [
+    {
+      "work": "spread",
+      "returns": {
+        "text": "Two ways."
+      }
+    },
+    {
+      "work": "check",
+      "returns": {
+        "choice": "approve"
+      }
+    },
+    {
+      "running": [
+        {
+          "step": "draft"
+        },
+        {
+          "step": "publish"
+        }
+      ]
+    },
+    {
+      "work": "publish",
+      "command": {
+        "exitCode": 0
+      }
+    },
+    {
+      "work": "draft",
+      "returns": {
+        "text": "Draft."
+      }
+    },
+    {
+      "running": [
+        {
+          "step": "polish"
+        }
+      ]
+    },
+    {
+      "work": "polish",
+      "returns": {
+        "choice": "approve"
+      }
+    }
+  ],
+  "expect": {
+    "run": "succeeded",
+    "starts": {
+      "spread": 1,
+      "draft": 1,
+      "polish": 1,
+      "check": 1,
+      "publish": 1
+    },
+    "joins": [
+      {
+        "join": "vote",
+        "outcome": "reached",
+        "branches": {
+          "check": {
+            "choice": "approve"
+          }
+        }
+      }
+    ],
+    "cancelled": [],
+    "failures": []
+  }
+}

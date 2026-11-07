@@ -1,0 +1,23 @@
+{
+  "contract": "agsdl-0.3.0",
+  "id": "shape-reserved-choice",
+  "agents": {
+    "a": {
+      "harness": "example",
+      "permissions": "read-only"
+    }
+  },
+  "flow": {
+    "entry": "s",
+    "steps": {
+      "s": {
+        "type": "agent",
+        "agent": "a",
+        "next": {
+          "message": [],
+          "ok": []
+        }
+      }
+    }
+  }
+}

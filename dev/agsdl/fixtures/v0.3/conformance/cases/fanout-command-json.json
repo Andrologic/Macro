@@ -1,0 +1,84 @@
+{
+  "contract": "agsdl-0.3.0",
+  "id": "fanout-command-json",
+  "agents": {
+    "reviewer": {
+      "harness": "example",
+      "permissions": "read-only"
+    }
+  },
+  "flow": {
+    "entry": "changed",
+    "steps": {
+      "changed": {
+        "type": "call",
+        "command": "jest --listTests --json | jq '[.[] | {path: .}]'",
+        "parse": "json",
+        "next": {
+          "passed": {
+            "step": "review",
+            "each": [
+              "data",
+              "value"
+            ],
+            "max": 100,
+            "message": {
+              "prompt": "Review this changed file.",
+              "resources": {
+                "file": {
+                  "from": [
+                    "item",
+                    "path"
+                  ]
+                }
+              }
+            }
+          },
+          "failed": {
+            "step": "summary",
+            "message": {
+              "prompt": "Report the test list failure.",
+              "resources": {
+                "report": {
+                  "from": [
+                    "data",
+                    "value"
+                  ]
+                }
+              }
+            }
+          }
+        }
+      },
+      "review": {
+        "type": "agent",
+        "agent": "reviewer",
+        "instance": "new",
+        "next": "gather"
+      },
+      "gather": {
+        "type": "join",
+        "next": {
+          "step": "summary",
+          "message": {
+            "prompt": "Summarize the reviews.",
+            "resources": {
+              "first": {
+                "from": [
+                  "branches",
+                  "review",
+                  0,
+                  "item"
+                ]
+              }
+            }
+          }
+        }
+      },
+      "summary": {
+        "type": "agent",
+        "agent": "reviewer"
+      }
+    }
+  }
+}

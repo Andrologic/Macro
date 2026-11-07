@@ -1,0 +1,52 @@
+{
+  "contract": "agsdl-0.3.0",
+  "id": "join-quorum-count",
+  "agents": {
+    "a": {
+      "harness": "example",
+      "permissions": "read-only"
+    }
+  },
+  "flow": {
+    "entry": "s",
+    "steps": {
+      "s": {
+        "type": "agent",
+        "agent": "a",
+        "next": [
+          "x",
+          "y"
+        ]
+      },
+      "x": {
+        "type": "agent",
+        "agent": "a",
+        "instance": "new",
+        "next": {
+          "ok": "j"
+        }
+      },
+      "y": {
+        "type": "agent",
+        "agent": "a",
+        "instance": "new",
+        "next": {
+          "ok": "j"
+        }
+      },
+      "j": {
+        "type": "join",
+        "quorum": {
+          "count": 3,
+          "accept": [
+            "ok"
+          ]
+        },
+        "next": {
+          "reached": [],
+          "missed": []
+        }
+      }
+    }
+  }
+}

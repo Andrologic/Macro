@@ -1,0 +1,46 @@
+{
+  "contract": "agsdl-0.3.0",
+  "id": "call-outcome",
+  "agents": {
+    "dev": {
+      "harness": "example",
+      "permissions": "workspace"
+    }
+  },
+  "flow": {
+    "entry": "code",
+    "steps": {
+      "code": {
+        "type": "agent",
+        "agent": "dev",
+        "next": "tests"
+      },
+      "tests": {
+        "type": "call",
+        "command": "npm test",
+        "next": {
+          "passed": [],
+          "failed": {
+            "step": "code",
+            "message": {
+              "prompt": "Fix the failing tests.",
+              "resources": {
+                "output": {
+                  "from": [
+                    "data",
+                    "output"
+                  ]
+                },
+                "outcome": {
+                  "from": [
+                    "outcome"
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

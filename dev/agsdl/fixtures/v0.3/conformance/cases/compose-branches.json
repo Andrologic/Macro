@@ -1,0 +1,58 @@
+{
+  "contract": "agsdl-0.3.0",
+  "id": "compose-branches",
+  "agents": {
+    "a": {
+      "harness": "example",
+      "permissions": "full"
+    }
+  },
+  "compositions": {
+    "c": {
+      "entry": "s",
+      "outputs": [
+        "done"
+      ],
+      "steps": {
+        "s": {
+          "type": "agent",
+          "agent": "a",
+          "instance": "new",
+          "next": {
+            "output": "done"
+          }
+        }
+      }
+    }
+  },
+  "flow": {
+    "entry": "start",
+    "steps": {
+      "start": {
+        "type": "agent",
+        "agent": "a",
+        "next": [
+          "c1",
+          "c2"
+        ]
+      },
+      "c1": {
+        "type": "compose",
+        "composition": "c",
+        "next": {
+          "done": "j"
+        }
+      },
+      "c2": {
+        "type": "compose",
+        "composition": "c",
+        "next": {
+          "done": "j"
+        }
+      },
+      "j": {
+        "type": "join"
+      }
+    }
+  }
+}

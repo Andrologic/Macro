@@ -1,0 +1,64 @@
+{
+  "contract": "agsdl-0.3.0",
+  "id": "fanout-to-call",
+  "agents": {
+    "lead": {
+      "harness": "example",
+      "permissions": "read-only",
+      "results": {
+        "files": {
+          "schema": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "summary": {
+          "mediaType": "text/plain"
+        }
+      }
+    },
+    "worker": {
+      "harness": "example",
+      "permissions": "workspace"
+    }
+  },
+  "flow": {
+    "entry": "plan",
+    "steps": {
+      "plan": {
+        "type": "agent",
+        "agent": "lead",
+        "maxVisits": 3,
+        "next": {
+          "split": {
+            "step": "fix",
+            "each": [
+              "results",
+              "files"
+            ]
+          },
+          "none": []
+        }
+      },
+      "fix": {
+        "type": "call",
+        "command": "true",
+        "next": "gather"
+      },
+      "gather": {
+        "type": "join",
+        "failures": "keep",
+        "next": {
+          "done": "summary",
+          "incomplete": "plan"
+        }
+      },
+      "summary": {
+        "type": "agent",
+        "agent": "lead"
+      }
+    }
+  }
+}

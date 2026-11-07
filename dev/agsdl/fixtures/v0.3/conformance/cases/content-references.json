@@ -1,0 +1,52 @@
+{
+  "contract": "agsdl-0.3.0",
+  "id": "content-references",
+  "content": {
+    "style": {
+      "value": "Follow the project style guide."
+    }
+  },
+  "agents": {
+    "dev": {
+      "harness": "example",
+      "permissions": "read-only",
+      "instructions": [
+        {
+          "ref": "style"
+        },
+        {
+          "value": "Be brief."
+        }
+      ],
+      "resources": {
+        "spec": {
+          "uri": "https://example.com/spec.md",
+          "mediaType": "text/markdown"
+        }
+      }
+    }
+  },
+  "flow": {
+    "entry": "go",
+    "steps": {
+      "go": {
+        "type": "agent",
+        "agent": "dev",
+        "next": {
+          "step": "go2",
+          "message": {
+            "prompt": [
+              {
+                "ref": "style"
+              }
+            ]
+          }
+        }
+      },
+      "go2": {
+        "type": "agent",
+        "agent": "dev"
+      }
+    }
+  }
+}

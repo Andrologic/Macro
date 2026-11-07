@@ -1,0 +1,48 @@
+{
+  "contract": "agsdl-0.3.0",
+  "id": "join-max-failures-alone",
+  "agents": {
+    "lead": {
+      "harness": "example",
+      "permissions": "read-only"
+    },
+    "worker": {
+      "harness": "example",
+      "permissions": "workspace"
+    }
+  },
+  "flow": {
+    "entry": "lead",
+    "steps": {
+      "lead": {
+        "type": "agent",
+        "agent": "lead",
+        "next": [
+          "w1",
+          "w2"
+        ]
+      },
+      "w1": {
+        "type": "agent",
+        "agent": "worker",
+        "instance": "new",
+        "next": "gather"
+      },
+      "w2": {
+        "type": "agent",
+        "agent": "worker",
+        "instance": "new",
+        "next": "gather"
+      },
+      "gather": {
+        "type": "join",
+        "maxFailures": 2,
+        "next": "summary"
+      },
+      "summary": {
+        "type": "agent",
+        "agent": "lead"
+      }
+    }
+  }
+}

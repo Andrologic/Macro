@@ -1,0 +1,40 @@
+{
+  "contract": "agsdl-0.3.0",
+  "id": "join-foreign-input",
+  "agents": {
+    "a": {
+      "harness": "example",
+      "permissions": "full"
+    }
+  },
+  "flow": {
+    "entry": "o",
+    "steps": {
+      "o": {
+        "type": "agent",
+        "agent": "a",
+        "next": [
+          "b1",
+          "b2"
+        ]
+      },
+      "b1": {
+        "type": "agent",
+        "agent": "a",
+        "instance": "new",
+        "next": "j",
+        "onError": "j"
+      },
+      "b2": {
+        "type": "agent",
+        "agent": "a",
+        "instance": "new",
+        "next": "j"
+      },
+      "j": {
+        "type": "join",
+        "next": []
+      }
+    }
+  }
+}

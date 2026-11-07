@@ -1,0 +1,166 @@
+{
+  "description": "The failure that exceeds maxFailures fails the group: unfinished paths are cancelled and the join fails with BRANCH_FAILED.",
+  "document": {
+    "contract": "agsdl-0.3.0",
+    "id": "fanout-max-failures",
+    "agents": {
+      "lead": {
+        "harness": "example",
+        "permissions": "workspace",
+        "results": {
+          "files": {
+            "schema": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          }
+        }
+      },
+      "worker": {
+        "harness": "example",
+        "permissions": "workspace"
+      }
+    },
+    "flow": {
+      "entry": "plan",
+      "steps": {
+        "plan": {
+          "type": "agent",
+          "agent": "lead",
+          "maxVisits": 3,
+          "next": {
+            "split": {
+              "step": "fix",
+              "each": [
+                "results",
+                "files"
+              ]
+            },
+            "none": []
+          }
+        },
+        "fix": {
+          "type": "agent",
+          "agent": "worker",
+          "instance": "new",
+          "next": "gather"
+        },
+        "gather": {
+          "type": "join",
+          "failures": "keep",
+          "maxFailures": 1,
+          "next": {
+            "done": "summary",
+            "incomplete": "summary"
+          },
+          "onError": "triage"
+        },
+        "summary": {
+          "type": "agent",
+          "agent": "lead",
+          "prompt": "Summarize."
+        },
+        "triage": {
+          "type": "agent",
+          "agent": "lead",
+          "prompt": "Find out what failed."
+        }
+      }
+    }
+  },
+  "entry": {
+    "prompt": "Start."
+  },
+  "timeline": [
+    {
+      "work": "plan",
+      "returns": {
+        "choice": "split",
+        "results": {
+          "files": [
+            "a.ts",
+            "b.ts",
+            "c.ts"
+          ]
+        }
+      }
+    },
+    {
+      "work": "fix",
+      "item": 0,
+      "fails": "AGENT_FAILED"
+    },
+    {
+      "running": [
+        {
+          "step": "fix",
+          "item": 1
+        },
+        {
+          "step": "fix",
+          "item": 2
+        }
+      ]
+    },
+    {
+      "work": "fix",
+      "item": 2,
+      "fails": "AGENT_FAILED"
+    },
+    {
+      "running": [
+        {
+          "step": "triage"
+        }
+      ]
+    },
+    {
+      "work": "triage",
+      "returns": {
+        "text": "Two files failed."
+      }
+    }
+  ],
+  "expect": {
+    "run": "succeeded",
+    "starts": {
+      "plan": 1,
+      "fix": 3,
+      "triage": 1
+    },
+    "cancelled": [
+      {
+        "step": "fix",
+        "item": 1
+      }
+    ],
+    "messages": [
+      {
+        "to": "triage",
+        "resources": {
+          "error": {
+            "code": "BRANCH_FAILED"
+          }
+        }
+      }
+    ],
+    "failures": [
+      {
+        "step": "fix",
+        "item": 0,
+        "code": "AGENT_FAILED"
+      },
+      {
+        "step": "fix",
+        "item": 2,
+        "code": "AGENT_FAILED"
+      },
+      {
+        "step": "gather",
+        "code": "BRANCH_FAILED"
+      }
+    ]
+  }
+}

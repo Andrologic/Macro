@@ -46,6 +46,9 @@ export interface AgsdlFinding {
   outcome: string;
   details: string;
   location: { pointer?: string; byte?: number };
+  severity?: "error" | "warning";
+  /** Expanded composition-use address, separate from the authored JSON Pointer. */
+  step?: string[];
   /** Source pointer of the composition use associated with this finding. */
   invocation?: string;
 }

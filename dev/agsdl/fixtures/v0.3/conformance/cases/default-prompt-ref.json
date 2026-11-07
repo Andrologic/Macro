@@ -1,0 +1,24 @@
+{
+  "contract": "agsdl-0.3.0",
+  "id": "default-prompt-ref",
+  "agents": {
+    "a": {
+      "harness": "example",
+      "permissions": "full"
+    }
+  },
+  "flow": {
+    "entry": "s",
+    "steps": {
+      "s": {
+        "type": "agent",
+        "agent": "a",
+        "prompt": [
+          {
+            "ref": "missing"
+          }
+        ]
+      }
+    }
+  }
+}

@@ -1,0 +1,57 @@
+{
+  "description": "A planFirst ask plan left unanswered for answerTimeoutMs is refused without comment: the work fails with PLAN_REJECTED.",
+  "document": {
+    "contract": "agsdl-0.3.0",
+    "id": "answer-timeout-plan",
+    "agents": {
+      "dev": {
+        "harness": "example",
+        "permissions": "workspace",
+        "planFirst": "ask",
+        "answerTimeoutMs": 600000
+      }
+    },
+    "flow": {
+      "entry": "migrate",
+      "steps": {
+        "migrate": {
+          "type": "agent",
+          "agent": "dev"
+        }
+      }
+    }
+  },
+  "entry": {
+    "prompt": "Start."
+  },
+  "timeline": [
+    {
+      "work": "migrate",
+      "request": "plan"
+    },
+    {
+      "elapse": 600001
+    },
+    {
+      "running": []
+    }
+  ],
+  "expect": {
+    "run": "failed",
+    "starts": {
+      "migrate": 1
+    },
+    "answers": [
+      {
+        "work": "migrate",
+        "answer": "no"
+      }
+    ],
+    "failures": [
+      {
+        "step": "migrate",
+        "code": "PLAN_REJECTED"
+      }
+    ]
+  }
+}

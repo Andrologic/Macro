@@ -1,0 +1,118 @@
+{
+  "description": "An instructing agent submits its instructions as a list; each element is the prompt of one path.",
+  "document": {
+    "contract": "agsdl-0.3.0",
+    "id": "fanout-missions",
+    "agents": {
+      "lead": {
+        "harness": "example",
+        "permissions": "workspace",
+        "instructs": true
+      },
+      "worker": {
+        "harness": "example",
+        "permissions": "workspace"
+      }
+    },
+    "flow": {
+      "entry": "plan",
+      "steps": {
+        "plan": {
+          "type": "agent",
+          "agent": "lead",
+          "next": {
+            "split": {
+              "step": "build",
+              "each": [
+                "instructions"
+              ]
+            },
+            "none": []
+          }
+        },
+        "build": {
+          "type": "agent",
+          "agent": "worker",
+          "instance": "new",
+          "next": "gather"
+        },
+        "gather": {
+          "type": "join",
+          "next": "check"
+        },
+        "check": {
+          "type": "agent",
+          "agent": "lead",
+          "prompt": "Check the work."
+        }
+      }
+    }
+  },
+  "entry": {
+    "prompt": "Start."
+  },
+  "timeline": [
+    {
+      "work": "plan",
+      "returns": {
+        "choice": "split",
+        "instructions": [
+          "Add the orders table.",
+          "Write the POST /orders endpoint."
+        ]
+      }
+    },
+    {
+      "work": "build",
+      "item": 0,
+      "returns": {
+        "text": "Table added."
+      }
+    },
+    {
+      "work": "build",
+      "item": 1,
+      "returns": {
+        "text": "Endpoint written."
+      }
+    },
+    {
+      "work": "check",
+      "returns": {
+        "text": "Fine."
+      }
+    }
+  ],
+  "expect": {
+    "run": "succeeded",
+    "starts": {
+      "plan": 1,
+      "build": 2,
+      "check": 1
+    },
+    "messages": [
+      {
+        "to": "build",
+        "item": 0,
+        "prompt": "Add the orders table.",
+        "element": "Add the orders table."
+      },
+      {
+        "to": "build",
+        "item": 1,
+        "prompt": "Write the POST /orders endpoint."
+      },
+      {
+        "to": "check",
+        "prompt": "Check the work."
+      }
+    ],
+    "joins": [
+      {
+        "join": "gather",
+        "outcome": "done"
+      }
+    ],
+    "failures": []
+  }
+}

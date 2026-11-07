@@ -39,3 +39,29 @@ Macro's inline conformance modules `src/services/agsdlExecution/content.ts` and
 Attribution is retained in those modules. They deliberately reject URI and
 non-inline media for Macro's initial execution profile. The vendor reader's
 semantics are unchanged; only TypeScript declarations are extended.
+
+## AgSDL 0.3.0
+
+Source: https://github.com/Andrologic/AgSDL/tree/v0.3.0
+Annotated tag object: 4dd9b647cd9d477e5d07e089f23f3a1e7728ea39.
+Commit: bd9f8a5b16923476fd20ac2650bd1729ee151917.
+License: Apache-2.0, copied from that commit into `v0.3/LICENSE`.
+
+The modules under `v0.3/` port the reference Python validator to browser
+JavaScript. Schemas and harness modules retain the published bytes. The
+conformance corpus, examples, specification and development-only Python oracle
+are pinned under `dev/agsdl/fixtures/v0.3/`, with file hashes in provenance.json.
+Python is used only by development parity checks, never by the product reader.
+
+The 0.3 parser shares only the NumberToken class with the 0.2 scanner so exact
+values remain compatible with Macro's execution helpers. Parsing and validation
+rules remain edition-specific. The 0.1 report adapter keeps its historical
+serializer.
+
+The 0.3 browser parser returns null-prototype exact records with property
+hooks that retain insertion order for numeric-looking names, including direct
+deletion and reinsertion. These records use JavaScript property proxies and are not structured-cloneable.
+Exact snapshots use the lossless serializer and parser, retaining numeric tokens. Iterative value-schema checks retain
+the reference order of child and bound diagnostics. The parity gate compares
+ordered diagnostic codes, severities, locations and joins; human-readable
+messages may use JavaScript JSON formatting instead of Python repr.
