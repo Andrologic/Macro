@@ -826,13 +826,23 @@ mod tests {
             std::future::pending::<()>().await;
         })
         .unwrap();
-        // No yield has occurred: revocation precedes the future's first poll.
+        let (started, observed_start) = tokio::sync::oneshot::channel();
+        host.admit_owned(&owner, &tasks, "second".into(), async move {
+            let _ = started.send(());
+            std::future::pending::<()>().await;
+        })
+        .unwrap();
+        // No yield has occurred: revocation precedes both futures' first poll.
         assert!(revoke_now(&host));
         assert!(host
             .admit_owned(&owner, &tasks, "late".into(), async {})
             .is_err());
         assert!(tasks.cancel_owned("first").await.unwrap());
         assert!(!polled.load(Ordering::SeqCst));
+        // The other already-owned operation may start after revocation. It is
+        // still known to the supervisor and is joined before reporting end.
+        observed_start.await.unwrap();
+        assert!(tasks.cancel_owned("second").await.unwrap());
         assert!(!tasks.cancel_owned("late").await.unwrap());
     }
 
