@@ -7,6 +7,8 @@ pub(crate) mod diagnostics;
 pub(crate) mod discovery;
 #[path = "v030/flow.rs"]
 pub(crate) mod flow030;
+#[cfg(test)]
+mod flow_store030;
 pub mod dto;
 pub(crate) mod inspection;
 pub(crate) mod intents;
