@@ -308,6 +308,11 @@ function validateComposerDrafts(
   }
 
   const entries = Object.entries(value);
+  if (entries.length > MAX_COMPOSER_DRAFTS) {
+    throw new ComposerDraftValidationError(
+      `Too many composer drafts. The limit is ${MAX_COMPOSER_DRAFTS}. Original data preserved.`,
+    );
+  }
   for (const [contextKey, draft] of entries) {
     if (contextKey.length > MAX_SHORT_FIELD_LENGTH ||
         !['conversation:', 'context:'].some(prefix => contextKey.startsWith(prefix) && contextKey.slice(prefix.length).trim())) {

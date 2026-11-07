@@ -611,18 +611,32 @@ describe("chatLocalSessionState", () => {
     });
   }
 
-  it("bounds draft recovery without silently deleting stored contexts", async () => {
-    const drafts = Object.fromEntries(Array.from({ length: 51 }, (_, index) => [
-      `context:${index}`, { text: `draft-${index}`, images: [], contextRefs: [] },
-    ]));
-    expect(await saveComposerDraftsToStorage(drafts)).toBe(true);
-    expect(JSON.parse(window.localStorage.getItem(COMPOSER_DRAFTS_STORAGE_KEY)!)).toEqual(drafts);
-    const restored = loadComposerDraftsFromStorage();
-    expect(Object.keys(restored)).toHaveLength(50);
-    expect(restored["context:0"]).toBeUndefined();
-    expect(restored["context:50"]).toEqual(drafts["context:50"]);
-    expect(Object.keys(drafts)).toHaveLength(51);
-  });
+  for (const scope of ['context', 'conversation']) {
+    it(`preserves all ${scope} drafts when a partial restoration is automatically saved`, async () => {
+      const drafts = Object.fromEntries(Array.from({ length: 51 }, (_, index) => [
+        `${scope}:${index}`, { text: `draft-${index}`, images: [], contextRefs: [] },
+      ]));
+      expect(await saveComposerDraftsToStorage(drafts)).toBe(false);
+      expect(window.localStorage.getItem(COMPOSER_DRAFTS_STORAGE_KEY)).toBeNull();
+      // An older or external writer may have left more entries than the UI restores.
+      const original = JSON.stringify(drafts);
+      window.localStorage.setItem(COMPOSER_DRAFTS_STORAGE_KEY, original);
+      let admissions = 0;
+      admitDraft = async () => { admissions++; };
+      const restored = loadComposerDraftsFromStorage();
+      expect(Object.keys(restored)).toHaveLength(50);
+      expect(restored[`${scope}:0`]).toBeUndefined();
+      // This is the restorePersistedComposerDrafts store cycle, with no user edit.
+      expect(await saveComposerDraftsToStorage(restored)).toBe(false);
+      expect(window.localStorage.getItem(COMPOSER_DRAFTS_STORAGE_KEY)).toBe(original);
+      restored[`${scope}:50`].text = 'edited';
+      expect(await saveComposerDraftsToStorage(restored)).toBe(false);
+      expect(window.localStorage.getItem(COMPOSER_DRAFTS_STORAGE_KEY)).toBe(original);
+      expect(admissions).toBe(0);
+      expect(finishDraft).not.toHaveBeenCalled();
+      expect(usePersistenceHealth.getState().issues[COMPOSER_DRAFTS_STORAGE_KEY]).toContain('Original data preserved');
+    });
+  }
 
   it("evicts oldest message entries at the count and serialized size limits", () => {
     const images = Object.fromEntries(Array.from({ length: 2001 }, (_, index) => [`message:${index}`, []]));

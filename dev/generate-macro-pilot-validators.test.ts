@@ -173,5 +173,7 @@ describe('A1 transitive profile identity', () => {
       writeFileSync(join(root, path), original);
     }
     await checkMacroPilotValidators(root);
-  });
+    // This integration case launches six generator subprocesses and validates
+    // the standalone schemas repeatedly, beyond Bun's five-second unit budget.
+  }, 30_000);
 });
