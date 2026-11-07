@@ -48,6 +48,16 @@ describe('AgSDL 0.3 diagnostic traversal order', () => {
     Reflect.deleteProperty(module, '2'); Object.assign(module, { '2': false });
     expect(() => read(bytes, { modules: new Map([['codex', module]]) })).toThrow('/1:');
   });
+  test('keeps directory permission errors in the declared source order', () => {
+    const source = '{"contract":"agsdl-0.3.0","id":"order","agents":{"a":{"harness":"unknown","permissions":{"preset":"read-only","directories":{"2":"write","1":"write"}}}}}';
+    const report = read(new TextEncoder().encode(source), { modules: new Map() });
+    expect(report.valid).toBe(false);
+    expect(report.diagnostics.map(({ code, path }) => [code, path])).toEqual([
+      ['PERMISSIONS', '/agents/a/permissions/directories/2'],
+      ['PERMISSIONS', '/agents/a/permissions/directories/1'],
+      ['HARNESS_UNVERIFIED', '/agents/a/harness'],
+    ]);
+  });
   test('checks object schema children before the parent bound and array items after their bound', () => {
     const schema = tree('{"type":"object","properties":{"child":{"type":"string","items":{"type":"string"}}},"minItems":2,"maxItems":1}');
     expect(consistency(schema).map(([path]) => path)).toEqual(['/minItems', '/maxItems', '/properties/child/items', '/minItems']);

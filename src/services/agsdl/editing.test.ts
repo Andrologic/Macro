@@ -5,6 +5,15 @@ import { createExample, createLegacyExample } from './examples';
 import { createEmptySystem } from './design';
 
 describe('AgSDL editing by contract', () => {
+  it('keeps sample agent declarations editable across repeated operations', () => {
+    const source = createExample('release');
+    const changes = addAgent(source);
+    expect(changes.some(change => change.path.startsWith('/agents/'))).toBe(true);
+    expect(() => applyChanges(source, changes)).not.toThrow();
+    expect(addAgent(source)).toEqual(changes);
+    expect(createExample('release')).toBe(source);
+  });
+
   it('adds a complete persistent Agent and explicit engine binding to an empty 0.2 draft', async () => {
     const draft = createEmptySystem('Test');
     const source = applyChanges(draft, addAgent(draft, 0));
