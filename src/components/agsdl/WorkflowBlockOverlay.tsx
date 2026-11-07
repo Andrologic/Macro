@@ -13,12 +13,14 @@ export function WorkflowBlockSummary({ card, incoming = [], outgoing = [] }: { c
   const standing = sources.find(source => source.kind === 'text' && !source.reference && source.text?.trim())?.text;
   const prompt = standing || card.mission;
   const agent030 = !!card.edition030 && ['Agent', 'agent', 'invoke'].includes(card.kind);
-  const description = typeof card.details.description === 'string' ? card.details.description :
-    typeof (card.details.agentDefinition as { description?: unknown } | undefined)?.description === 'string'
-      ? (card.details.agentDefinition as { description: string }).description : '';
+  const definition = card.details.agentDefinition as { description?: unknown } | undefined;
+  const ownDescription = typeof card.details.description === 'string' ? card.details.description : '';
+  const agentDescription = typeof definition?.description === 'string' ? definition.description : '';
+  const invocation = card.path !== card.edition030?.agentPath;
   const tools = [...new Set(card.tools?.map(tool => tool.label).filter(Boolean))];
   return <>
-    {agent030 && description && <p className="agsdl-block-prompt">{description}</p>}
+    {agent030 && invocation && ownDescription && <p className="agsdl-block-prompt">{t('agsdl.viewer.property.description')}: {ownDescription}</p>}
+    {agent030 && (agentDescription || (!invocation && ownDescription)) && <p className="agsdl-block-prompt">{t('agsdl.edition030.definition')}: {agentDescription || ownDescription}</p>}
     {agent030 && sources.length > 0 && <section><small>{t("agsdl.instructions")}</small>{sources.map((source, index) => <p className="agsdl-block-prompt" key={index}>
       {source.kind === 'text' ? source.text : source.kind === 'uri' ? source.uri : source.kind === 'structured' ? t('agsdl.viewer.detail.structuredSource') : t('agsdl.viewer.detail.unspecifiedSource')}
       {source.reference && <small> · {source.reference.label}</small>}

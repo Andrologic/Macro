@@ -158,3 +158,16 @@ it('labels every direct and referenced 0.3 instruction without dropping the agen
   expect(host.textContent).toContain('Agent description');
   expect(host.textContent).not.toContain('Instructions');
 });
+
+
+it('keeps the descriptions of an agent definition and its step distinct', async () => {
+  const source = JSON.stringify({ contract: 'agsdl-0.3.0', id: 'x', agents: {
+    reviewer: { harness: 'codex', permissions: 'read-only', description: 'Definition description' },
+  }, flow: { entry: 'review', steps: { review: { type: 'agent', agent: 'reviewer', description: 'Step description' } } } });
+  const step = projectViewer(source).graphs[0].cards[0];
+  await mount();
+  await act(async () => root!.render(<WorkflowBlockSummary card={step} />));
+  expect(host.textContent).toContain('Step description');
+  expect(host.textContent).toContain('Definition description');
+  expect(host.textContent).toContain('Shared agent definition');
+});
