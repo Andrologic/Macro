@@ -348,7 +348,8 @@ function addPersistentAgent(source: string, graphIndex?: number): AgsdlChange[] 
   const configuration = nextId(`${id}-configuration`, Object.keys(object(doc.configurations)));
   const binding = nextId(`${id}-engine`, Object.keys(object(doc.bindings)));
   const sample = readDocument(createExample('release', 'agsdl-0.2.0'));
-  const agent = structuredClone(object(object(sample.agents).checklist));
+  // The sample is freshly parsed for each operation and needs no clone.
+  const agent = object(object(sample.agents).checklist);
   agent.configuration = configuration;
   agent.prompt = [{ value: 'Describe this agent’s responsibility, expected evidence, and completion criteria.' }];
   agent.resources = {};
