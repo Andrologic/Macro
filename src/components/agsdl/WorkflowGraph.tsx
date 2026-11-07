@@ -156,7 +156,7 @@ function LegendSample({ children }: { children: ReactNode }) {
 }
 const nodeTypes = { workflow: WorkflowNode, frame: CompositionFrame, frameHeading: CompositionFrameHeading };
 const edgeTypes = { workflow: WorkflowEdge };
-const fitOptions = { padding: 0.16, minZoom: 0.5, maxZoom: 1 };
+const fitOptions = { padding: 0.16, minZoom: 0.1, maxZoom: 1 };
 
 function Canvas({ cards: declaredCards, edges: declaredEdges, entry: declaredEntry, compositions = [], declarations = [], selected, select, title, changedPaths = [], trackedTasks = {}, nativeActivations = {}, selectionMode = "inspect", onAttach, onOpenTask, onInspect }: {
   cards: ViewerCard[];
@@ -355,7 +355,7 @@ function Canvas({ cards: declaredCards, edges: declaredEdges, entry: declaredEnt
         onPaneContextMenu={event => { event.preventDefault(); setDismissSignal(value => value + 1); setPaneMenu({ left: event.clientX, top: event.clientY }); }}
         onMoveStart={() => { setDismissSignal(value => value + 1); setPaneMenu(undefined); }}
         onPaneClick={() => { setPaneMenu(undefined); clearSelection(); }} fitView fitViewOptions={fitOptions}
-        minZoom={0.3} maxZoom={1.8} zoomOnDoubleClick={false}
+        minZoom={fitOptions.minZoom} maxZoom={1.8} zoomOnDoubleClick={false}
       >
         <Panel position="top-left" className="agsdl-reading-tools">
           {presentation.groups.length > 0 && <details ref={groupMenu} className="agsdl-reading-groups">

@@ -90,7 +90,10 @@ export function layoutViewer(cards: ViewerCard[], edges: ViewerEdge[], heights: 
     const key = JSON.stringify([edge.source, edge.target]);
     parallelCounts.set(key, (parallelCounts.get(key) ?? 0) + 1);
   }
-  const rowGap = Math.max(ROW_GAP, (Math.max(1, ...parallelCounts.values()) - 1) * PARALLEL_GAP + 40);
+  // Aligned routes need a clear vertical segment between distinct horizontal
+  // corridors, not merely distinct SVG path strings.
+  const maxParallel = Math.max(1, ...parallelCounts.values());
+  const rowGap = maxParallel > 1 ? Math.max(ROW_GAP, (maxParallel - 1) * PARALLEL_GAP * 2 + 90) : ROW_GAP;
   const outgoing = new Map(cards.map(card => [card.path, [] as ViewerEdge[]]));
   const incoming = new Map(cards.map(card => [card.path, 0]));
   for (const edge of flow) {
@@ -358,8 +361,9 @@ export function layoutViewer(cards: ViewerCard[], edges: ViewerEdge[], heights: 
     const horizontal = steps.findIndex(({ run }) => run.x2 - run.x1 > 0.5);
     if (horizontal >= 0) route.steps[horizontal].y = channel(steps[horizontal].run.layer) + offset;
     else {
-      const y = channel(steps[0].run.layer);
-      route.steps.splice(0, 1, { y: y - 7, x: steps[0].run.x1 + offset }, { y: y + 7, x: steps[0].run.x1 });
+      const y = rowBottom[steps[0].run.layer] + after[steps[0].run.layer] + 20 + index * PARALLEL_GAP * 2;
+      const sideways = (index % 2 === 0 ? -1 : 1) * (Math.floor(index / 2) + 1) * PARALLEL_GAP;
+      route.steps.splice(0, 1, { y, x: steps[0].run.x1 + sideways }, { y: y + 32, x: steps[0].run.x1 });
     }
   });
 
@@ -381,8 +385,8 @@ export function layoutViewer(cards: ViewerCard[], edges: ViewerEdge[], heights: 
     const { side, from, to } = group;
     const spanned = layers.slice(from, to + 1).flat();
     let x = side > 0 ? Math.max(...spanned.map(node => node.x + width(node) / 2)) + SIDE_MARGIN : Math.min(...spanned.map(node => node.x - width(node) / 2)) - SIDE_MARGIN;
-    for (const other of placed) if (other.side === side && other.from <= to && from <= other.to) x = side > 0 ? Math.max(x, other.x + SIDE_LANE) : Math.min(x, other.x - SIDE_LANE);
-    const count = Math.max(1, ...group.edges.map(edge => edge.route030?.role === "normal" ? parallelCounts.get(JSON.stringify([edge.source, edge.target])) ?? 1 : 1));
+    for (const other of placed) if (other.side === side && other.from <= to && from <= other.to) x = side > 0 ? Math.max(x, other.x + Math.max(SIDE_LANE, PARALLEL_GAP)) : Math.min(x, other.x - Math.max(SIDE_LANE, PARALLEL_GAP));
+    const count = group.edges.filter(edge => edge.route030).length + Number(group.edges.some(edge => !edge.route030));
     placed.push({ side, from, to, x: x + side * (count - 1) * PARALLEL_GAP });
     group.x = x;
   }
@@ -410,8 +414,9 @@ export function layoutViewer(cards: ViewerCard[], edges: ViewerEdge[], heights: 
   const enclosed = (edge: ViewerEdge) => frameOf.has(edge.source) && frameOf.get(edge.source) === frameOf.get(edge.target);
   for (const group of groups.values()) for (const edge of group.edges) {
     const source = nodes.get(edge.source)!;
-    const peers = edge.route030?.role === "normal" ? group.edges.filter(other => other.route030?.role === "normal" && other.source === edge.source && other.target === edge.target) : [];
-    const railX = group.x + group.side * Math.max(0, peers.indexOf(edge)) * PARALLEL_GAP;
+    const peers = group.edges.filter(other => other.route030);
+    const legacyLane = Number(group.edges.some(other => !other.route030));
+    const railX = group.x + group.side * (edge.route030 ? peers.indexOf(edge) + legacyLane : 0) * PARALLEL_GAP;
     const row = exitRow(source, railX);
     // A failure leaving toward a rail with nothing beside it goes straight across instead of dropping below its row.
     const level = isFailureEdge(edge) && group.side > 0 && !layers[source.layer].some(node => node.x > source.x);
@@ -433,9 +438,14 @@ export function layoutViewer(cards: ViewerCard[], edges: ViewerEdge[], heights: 
 export function viewerLayoutBounds(layout: { nodes: ViewerLayoutNode[]; routes: Map<string, ViewerEdgeRoute> }) {
   const xs = layout.nodes.flatMap(node => [node.position.x, node.position.x + VIEWER_CARD_WIDTH]);
   const ys = layout.nodes.flatMap(node => [node.position.y, node.position.y + node.height]);
-  for (const route of layout.routes.values()) for (const step of route.steps) if (step.x !== undefined) xs.push(step.x);
-  const x = Math.min(...xs), y = Math.min(...ys);
-  return { x, y, width: Math.max(...xs) - x, height: Math.max(...ys) - y };
+  for (const route of layout.routes.values()) for (const step of route.steps) {
+    if (step.x !== undefined) xs.push(step.x);
+    ys.push(step.y);
+  }
+  // Include marker tips and composition frames/headings around the geometry.
+  const margin = VIEWER_FRAME.top + VIEWER_FRAME.heading;
+  const x = Math.min(...xs) - margin, y = Math.min(...ys) - margin;
+  return { x, y, width: Math.max(...xs) - x + margin, height: Math.max(...ys) - y + margin };
 }
 
 /** Fallback for connections outside the reading layout, such as revealed exchanges. */
