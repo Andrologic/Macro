@@ -50,9 +50,26 @@ export function read(bytes, options) {
     report.error('PARSE', '', parsed.error.message);
     return report.as_json();
   }
-  return validateExact(parsed.tree, options);
+  return validate_document(parsed.tree, registry(options)).as_json();
 }
 
 export function validateExact(document, options) {
-  return validate_document(document, registry(options)).as_json();
+  // Snapshot only after the module registry is detached. This also makes a
+  // mutable caller-provided tree obey the same JSON boundary as read(bytes).
+  const modules = registry(options);
+  let source;
+  try { source = stringify(document); }
+  catch (error) {
+    if (!(error instanceof TypeError)) throw error;
+    const report = new Report();
+    report.error('PARSE', '', error.message);
+    return report.as_json();
+  }
+  const parsed = parse(new TextEncoder().encode(source));
+  if (parsed.error) {
+    const report = new Report();
+    report.error('PARSE', '', parsed.error.message);
+    return report.as_json();
+  }
+  return validate_document(parsed.tree, modules).as_json();
 }

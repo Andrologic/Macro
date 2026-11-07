@@ -7,6 +7,18 @@ export const isNumber = (value) => value instanceof NumberToken ||
 export const isObject = (value) => value !== null && typeof value === 'object' &&
   !Array.isArray(value) && !(value instanceof NumberToken);
 
+// JavaScript strings may contain unpaired UTF-16 surrogates, which AgSDL JSON forbids.
+function hasUnpairedSurrogate(text) {
+  for (let i = 0; i < text.length; i++) {
+    const unit = text.charCodeAt(i);
+    if (unit >= 0xd800 && unit <= 0xdbff) {
+      const low = text.charCodeAt(++i);
+      if (!(low >= 0xdc00 && low <= 0xdfff)) return true;
+    } else if (unit >= 0xdc00 && unit <= 0xdfff) return true;
+  }
+  return false;
+}
+
 // Only internal JS numbers are stringified here. Author lexemes stay decimal.
 function decimal(value) {
   const raw = value instanceof NumberToken ? value.raw :
@@ -88,7 +100,10 @@ export function stringify(value) {
     if ('leave' in task) { active.delete(task.leave); continue; }
     const v = task.value;
     if (v instanceof NumberToken) { decimal(v); output.push(v.raw); }
-    else if (v === null || typeof v === 'boolean' || typeof v === 'string' ||
+    else if (typeof v === 'string') {
+      if (hasUnpairedSurrogate(v)) throw new TypeError('Invalid JSON: unpaired UTF-16 surrogate');
+      output.push(JSON.stringify(v));
+    } else if (v === null || typeof v === 'boolean' ||
       (typeof v === 'number' && Number.isFinite(v))) output.push(JSON.stringify(v));
     else if (Array.isArray(v) || isObject(v)) {
       if (active.has(v)) throw new TypeError('Cannot stringify cyclic JSON');
@@ -101,7 +116,10 @@ export function stringify(value) {
       for (let i = keys.length - 1; i >= 0; i--) {
         const key = keys[i];
         pending.push({ value: v[key] });
-        if (!array) pending.push({ text: `${JSON.stringify(key)}:` });
+        if (!array) {
+          if (hasUnpairedSurrogate(key)) throw new TypeError('Invalid JSON: unpaired UTF-16 surrogate');
+          pending.push({ text: `${JSON.stringify(key)}:` });
+        }
         if (i) pending.push({ text: ',' });
       }
     } else throw new TypeError('Expected a JSON value');

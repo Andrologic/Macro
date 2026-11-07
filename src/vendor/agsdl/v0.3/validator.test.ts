@@ -180,6 +180,26 @@ describe('exact authored numbers and reader boundaries', () => {
     object(steps.fix).maxVisits = new NumberToken('1e999999');
     expect(validateExact(document, { modules }).valid).toBe(true);
   });
+  it('rejects unpaired UTF-16 surrogates in mutated exact values and keys', () => {
+    for (const raw of ['\ud800', '\udc00', 'x\ud800y']) {
+      const document = object(exact('{"contract":"agsdl-0.3.0","id":"test","agents":{},"content":{"item":{"value":"ok"}}}'));
+      object(object(document.content).item).value = raw;
+      const report = validateExact(document);
+      expect(report.valid).toBe(false);
+      expect(codes(report, 'error')).toEqual(['PARSE']);
+      expect(() => stringify(document)).toThrow('surrogate');
+      const keyDocument = object(exact('{"contract":"agsdl-0.3.0","id":"test","agents":{},"content":{"item":{"value":{}}}}'));
+      object(object(object(keyDocument.content).item).value)[raw] = 'literal';
+      expect(codes(validateExact(keyDocument), 'error')).toEqual(['PARSE']);
+      expect(() => stringify(keyDocument)).toThrow('surrogate');
+    }
+    for (const raw of ['😀', '\ufffd']) {
+      const document = object(exact('{"contract":"agsdl-0.3.0","id":"test","agents":{},"content":{"item":{"value":"ok"}}}'));
+      object(object(document.content).item).value = raw;
+      expect(validateExact(document).valid).toBe(true);
+      expect(read(bytes(stringify(document))).valid).toBe(true);
+    }
+  });
   it('rejects invalid bytes, duplicate escaped keys, BOM and isolated surrogates', () => {
     const invalid = [
       new Uint8Array([0xff]), new Uint8Array([0xef, 0xbb, 0xbf, 123, 125]),
