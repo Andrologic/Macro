@@ -218,8 +218,14 @@ export async function validateDocument(
         if (!event.data || typeof event.data !== "object" || !("error" in event.data || "report" in event.data)) {
           reject(new Error("AgSDL 0.3 Web Worker returned an invalid message."));
         } else if ("error" in event.data) {
-          const { name, message } = event.data.error;
-          reject(name === "ModuleError" ? new ModuleError(message) : Object.assign(new Error(message), { name }));
+          const error = event.data.error;
+          if (!error || typeof error !== "object" || typeof error.name !== "string" || typeof error.message !== "string") {
+            reject(new Error("AgSDL 0.3 Web Worker returned an invalid error."));
+          } else {
+            reject(error.name === "ModuleError" ? new ModuleError(error.message) : Object.assign(new Error(error.message), { name: error.name }));
+          }
+        } else if (!event.data.report || typeof event.data.report !== "object" || !Array.isArray(event.data.report.results)) {
+          reject(new Error("AgSDL 0.3 Web Worker returned an invalid report."));
         } else resolve([event.data.report]);
       };
       worker.onerror = (event) => { finish(); reject(new Error(`AgSDL 0.3 Web Worker failed: ${event.message}`)); };

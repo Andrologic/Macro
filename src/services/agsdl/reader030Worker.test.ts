@@ -51,9 +51,10 @@ describe('AgSDL 0.3 worker', () => {
     expect(count).toBe(191);
   }, 60000);
   it('preserves numeric modules, empty and default registries, and module errors', async () => {
-    const json = '{"name":"custom","version":"1.0.0","contract":"agsdl-0.3.0","harnessVersions":"*","properties":{},"permissions":{},"settings":{"type":"number","enum":[900719925474099312345,1.00000000000000000001]}}';
+    const json = '{"name":"custom","version":"1.0.0","contract":"agsdl-0.3.0","harnessVersions":"*","properties":{},"permissions":{},"settings":{"type":"object","properties":{"limit":{"type":"number","enum":[900719925474099312345,1.00000000000000000001]}}}}';
     const custom = loadHarnessModule(bytes(json));
-    const source = '{"contract":"agsdl-0.3.0","id":"test","agents":{"a":{"harness":"custom","permissions":"full","settings":900719925474099312345}},"content":{"n":{"value":1e999999999999999999}}}';
+    const source = '{"contract":"agsdl-0.3.0","id":"test","agents":{"a":{"harness":"custom","permissions":"full","harnessSettings":{"limit":900719925474099312345}}},"content":{"n":{"value":1e999999999999999999}}}';
+    expect(validateDocumentBytes(bytes(source), { modules: new Map([['custom', custom]]) }).valid).toBe(true);
     await compare(source, { modules: new Map([['custom', custom]]) });
     await compare(source, { modules: new Map() });
     await compare(source);
@@ -72,7 +73,7 @@ describe('AgSDL 0.3 worker', () => {
     const original = globalThis.Worker;
     const source = '{"contract":"agsdl-0.3.0","id":"a","agents":{}}';
     try {
-      for (const mode of ['error', 'messageerror', 'post', 'invalid', 'success'] as const) {
+      for (const mode of ['error', 'messageerror', 'post', 'invalid', 'malformed-error', 'success'] as const) {
         let terminated = false;
         class FakeWorker {
           onmessage: ((e: MessageEvent) => void) | null = null;
@@ -83,6 +84,7 @@ describe('AgSDL 0.3 worker', () => {
             queueMicrotask(() => {
               if (mode === 'error') this.onerror?.({ message: 'broken' } as ErrorEvent);
               else if (mode === 'messageerror') this.onmessageerror?.();
+              else if (mode === 'malformed-error') this.onmessage?.({ data: { error: null } } as MessageEvent);
               else if (mode === 'success') this.onmessage?.({ data: { report: { operation: 'readDocument', results: [] } } } as MessageEvent);
               else this.onmessage?.({ data: null } as MessageEvent);
             });
