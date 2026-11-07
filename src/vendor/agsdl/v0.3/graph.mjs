@@ -11,7 +11,7 @@ const own = (value, key) => Object.hasOwn(value, key);
 const object = value => value !== null && typeof value === 'object' && !Array.isArray(value);
 const address = (prefix, name) => prefix ? `${prefix}/${name}` : name;
 export const addressParts = addr => addr === '' ? [] : addr.split('/');
-const last = addr => addressParts(addr).at(-1);
+const last = addr => addr === '' ? undefined : addr.slice(addr.lastIndexOf('/') + 1);
 const intersection = (a, b) => new Set([...a].filter(value => b.has(value)));
 const sameSet = (a, b) => a.size === b.size && [...a].every(value => b.has(value));
 const groupKey = edge => JSON.stringify([edge.kind, edge.key]);
@@ -156,7 +156,17 @@ export class Graph {
   }
 
   _add_scope(scope, stack) {
-    for (const [name, decl] of Object.entries(scope.steps)) {
+    const active = new Set(stack);
+    const frames = [{ scope, entries: Object.entries(scope.steps), index: 0, target: null }];
+    while (frames.length) {
+      const frame = frames[frames.length - 1];
+      if (frame.index === frame.entries.length) {
+        if (frame.target !== null) active.delete(frame.target);
+        frames.pop();
+        continue;
+      }
+      scope = frame.scope;
+      const [name, decl] = frame.entries[frame.index++];
       const addr = address(scope.prefix, name);
       if (decl.type !== 'compose') {
         this.nodes.set(addr, new Node(addr, decl, scope, name));
@@ -164,44 +174,53 @@ export class Graph {
       }
       const target = decl.composition;
       const composition = own(this.compositions, target) ? this.compositions[target] : null;
-      if (composition === null || stack.includes(target)) {
+      if (composition === null || active.has(target)) {
         this.composes.set(addr, [decl, null, scope]);
         continue;
       }
       const bindings = Object.fromEntries(Object.entries(decl.agents ?? {}).map(([parameter, value]) =>
         [parameter, typeof value === 'string' ? value : (own(scope.bindings, value.parameter) ? scope.bindings[value.parameter] : null)]));
       const child = new Scope(composition.steps, ['compositions', target, 'steps'], addr, target, bindings, addr, scope);
+      child.composeName = name || scope.prefix ? name.slice(name.lastIndexOf('/') + 1) : undefined;
       this.composes.set(addr, [decl, child, scope]);
-      this._add_scope(child, [...stack, target]);
+      active.add(target);
+      frames.push({ scope: child, entries: Object.entries(child.steps), index: 0, target });
     }
   }
 
   resolve(scope, name) {
-    const addr = address(scope.prefix, name);
-    if (this.composes.has(addr)) {
+    let addr = address(scope.prefix, name);
+    while (this.composes.has(addr)) {
       const [decl, child] = this.composes.get(addr);
-      return child === null ? null : this.resolve(child, this.compositions[decl.composition].entry);
+      if (child === null) return null;
+      scope = child;
+      addr = address(scope.prefix, this.compositions[decl.composition].entry);
     }
     return this.nodes.has(addr) ? addr : null;
   }
 
   _targets(scope, kind, name, message, pointer, fanout) {
-    if (kind === 'step') {
-      const addr = this.resolve(scope, name);
-      return addr === null ? [] : [[addr, message, pointer, fanout]];
-    }
-    if (scope.compose === null) {
-      if (scope.composition === null) return [];
-      const addr = `#exit/${name}`;
-      if (!this.nodes.has(addr)) this.nodes.set(addr, new Node(addr, null, scope, name));
-      return [[addr, message, pointer, fanout]];
-    }
-    const [decl, , parent] = this.composes.get(scope.compose);
-    const route = own(decl.next ?? {}, name) ? decl.next[name] : null;
-    if (route === null) return [];
-    const found = [], outer = [...parent.pointer, last(scope.compose), 'next', name];
-    for (const [kind2, name2, message2, where2, fanout2] of route_items(route, outer)) {
-      found.push(...this._targets(parent, kind2, name2, message2, where2, fanout2));
+    const found = [], pending = [[scope, kind, name, message, pointer, fanout]];
+    while (pending.length) {
+      [scope, kind, name, message, pointer, fanout] = pending.pop();
+      if (kind === 'step') {
+        const addr = this.resolve(scope, name);
+        if (addr !== null) found.push([addr, message, pointer, fanout]);
+        continue;
+      }
+      if (scope.compose === null) {
+        if (scope.composition === null) continue;
+        const addr = `#exit/${name}`;
+        if (!this.nodes.has(addr)) this.nodes.set(addr, new Node(addr, null, scope, name));
+        found.push([addr, message, pointer, fanout]);
+        continue;
+      }
+      const [decl, , parent] = this.composes.get(scope.compose);
+      const route = own(decl.next ?? {}, name) ? decl.next[name] : null;
+      if (route === null) continue;
+      const outer = [...parent.pointer, scope.composeName ?? last(scope.compose), 'next', name];
+      const items = [...route_items(route, outer)];
+      for (let i = items.length - 1; i >= 0; i--) pending.push([parent, ...items[i]]);
     }
     return found;
   }
@@ -211,7 +230,7 @@ export class Graph {
       if (this.in_branch.get(scope.composition)?.has(name)) return null;
       const [decl, , parent] = this.composes.get(scope.compose);
       if (own(decl, 'onError')) return [parent, decl.onError, [...parent.pointer, last(scope.compose), 'onError']];
-      name = last(scope.compose);
+      name = scope.composeName ?? last(scope.compose);
       scope = parent;
     }
     if (scope.composition === null && this.covered.has(name)) return [scope, this.document.flow.onError, ['flow', 'onError']];

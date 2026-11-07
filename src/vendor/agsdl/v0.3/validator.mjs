@@ -330,17 +330,19 @@ class Checker {
       for (const info of found.values()) for (const branch of info.branches.values()) for (const member of branch) members.add(member);
       inBranch.set(key, members);
     }
-    const graphs = [];
-    if (scopes.has(null)) {
-      graphs.push(Graph.for_flow(this.doc, inBranch, covered));
-      for (const use of sortedAddresses(graphs[0].composes.keys())) {
-        const [decl, child] = graphs[0].composes.get(use);
-        if (child === null) continue;
-        for (const [name, info] of joins.get(decl.composition) ?? []) this.report.joins[`${use}/${name}`] = { origin: `${use}/${info.origin}`, branches: [...info.branches.keys()] };
+    const graphs = function* (checker) {
+      if (scopes.has(null)) yield Graph.for_flow(checker.doc, inBranch, covered);
+      for (const name of keys(checker.compositions)) if (scopes.has(name)) yield Graph.for_composition(checker.doc, name, inBranch);
+    };
+    let index = 0;
+    for (const graph of graphs(this)) {
+      if (index === 0 && scopes.has(null)) {
+        for (const use of sortedAddresses(graph.composes.keys())) {
+          const [decl, child] = graph.composes.get(use);
+          if (child === null) continue;
+          for (const [name, info] of joins.get(decl.composition) ?? []) this.report.joins[`${use}/${name}`] = { origin: `${use}/${info.origin}`, branches: [...info.branches.keys()] };
+        }
       }
-    }
-    for (const name of keys(this.compositions)) if (scopes.has(name)) graphs.push(Graph.for_composition(this.doc, name, inBranch));
-    for (const [index, graph] of graphs.entries()) {
       const infos = new Map();
       for (const [addr, node] of graph.nodes) {
         const info = node.type === 'join' ? joins.get(node.scope.composition)?.get(node.name) : null;
@@ -351,6 +353,7 @@ class Checker {
       this.check_selections(graph, infos);
       this.check_missions(graph);
       this.check_shared_instances(graph, infos);
+      index++;
     }
   }
   record_uses(graph) {

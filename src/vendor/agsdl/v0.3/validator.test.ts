@@ -60,6 +60,61 @@ describe('AgSDL 0.3 complete static corpus', () => {
 });
 
 describe('native reports and expanded addresses', () => {
+  it('validates a deep chain without a fixed composition limit', () => {
+    const compositions: Record<string, unknown> = {};
+    const depth = 300;
+    for (let i = 0; i < depth; i++) {
+      compositions[`c${i}`] = { entry: 's', outputs: ['done'], steps: { s: i === depth - 1
+        ? { type: 'agent', agent: 'a', next: { output: 'done' } }
+        : { type: 'compose', composition: `c${i + 1}`, next: { done: { output: 'done' } } } } };
+    }
+    const document = { contract: 'agsdl-0.3.0', id: 'deep', agents: { a: { harness: 'unknown', permissions: 'full' } },
+      flow: { entry: 's', steps: { s: { type: 'compose', composition: 'c0', next: { done: [] } } } }, compositions };
+    const report = read(bytes(JSON.stringify(document)), { modules: new Map() });
+    expect(report.valid).toBe(true);
+    expect(report.joins).toEqual({});
+  });
+  it('analyzes each binding and preserves distinct expanded diagnostics', () => {
+    const document = JSON.parse(new TextDecoder().decode(fixture('conformance/cases/compose-parameter-prompt.json')));
+    document.agents.b = { harness: 'example', permissions: 'full' };
+    document.flow.steps.c.next.done = 'c2';
+    document.flow.steps.c2 = structuredClone(document.flow.steps.c);
+    document.flow.steps.c2.agents.p = 'b';
+    document.flow.steps.c2.next.done = [];
+    const errors = () => read(bytes(JSON.stringify(document)), { modules }).diagnostics.filter((item) => item.severity === 'error');
+    expect(errors().map(({ code, path, step }) => ({ code, path, step }))).toEqual([
+      { code: 'PROMPT', path: '/compositions/c/steps/z', step: ['c2', 'z'] },
+    ]);
+    document.flow.steps.c.agents.p = 'b';
+    expect(errors().map(({ code, path, step }) => ({ code, path, step }))).toEqual([
+      { code: 'PROMPT', path: '/compositions/c/steps/z', step: ['c', 'z'] },
+      { code: 'PROMPT', path: '/compositions/c/steps/z', step: ['c2', 'z'] },
+    ]);
+    delete document.flow;
+    document.compositions.unused = { entry: 'use', outputs: ['done'], steps: {
+      use: { type: 'compose', composition: 'c', agents: { p: 'b' }, next: { done: { output: 'done' } } },
+    } };
+    expect(errors().map(({ code, path, step }) => ({ code, path, step }))).toEqual([
+      { code: 'PROMPT', path: '/compositions/c/steps/z', step: undefined },
+    ]);
+  });
+  it('checks shared instances against the agent bound in each branch', () => {
+    const document = JSON.parse(new TextDecoder().decode(fixture('conformance/cases/compose-branches.json')));
+    document.agents.b = { harness: 'example', permissions: 'full' };
+    document.compositions.c.parameters = ['p'];
+    document.compositions.c.steps.s.agent = { parameter: 'p' };
+    delete document.compositions.c.steps.s.instance;
+    document.flow.steps.c1.agents = { p: 'a' };
+    document.flow.steps.c2.agents = { p: 'b' };
+    const check = () => read(bytes(JSON.stringify(document)), { modules });
+    expect(codes(check(), 'warning')).not.toContain('SHARED_INSTANCE_PARALLEL');
+    document.flow.steps.c2.agents.p = 'a';
+    const report = check();
+    expect(report.joins).toEqual({ j: { origin: 'start', branches: ['c1', 'c2'] } });
+    expect(report.diagnostics.filter((item) => item.code === 'SHARED_INSTANCE_PARALLEL')).toMatchObject([
+      { severity: 'warning', path: '/compositions/c/steps/s', step: ['c2', 's'] },
+    ]);
+  });
   it('preserves warning severity and native fields only', () => {
     const report = read(bytes(basic()), { modules: new Map() });
     expect(report.valid).toBe(true);
