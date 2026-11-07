@@ -2,6 +2,7 @@ import type { ExactJsonText, SourceRevision, StaticAssessment, StepAddress } fro
 
 export const COMPILED_PLAN_FORMAT030 = 'macro-agsdl-compiled-plan/2' as const;
 export const EXECUTION_PROFILE030 = 'macro-agsdl-030-v1' as const;
+export type ExecutionProfile030 = typeof EXECUTION_PROFILE030;
 /** Empty at the flow root; otherwise the address of the owning compose step. */
 export type ScopeAddress030 = readonly string[];
 export interface Diagnostic030 {
@@ -122,6 +123,8 @@ export interface CapturedRegistry030 {
   readonly version: string;
   /** Exact, validated modules. An empty list means no modules, not bundled defaults. */
   readonly modules: readonly { readonly harness: string; readonly moduleJson: ExactJsonText }[];
+  /** Native host qualification for command, MCP and human approval effects. */
+  readonly hostCapabilities?: readonly CapabilityObservation030[];
   readonly harnesses: readonly HarnessObservation030[];
   readonly agents: readonly AgentObservation030[];
 }

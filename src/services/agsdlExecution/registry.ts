@@ -9,6 +9,8 @@ import { NumberToken, clone, decimal, decode, encode, equal, fail, has, list, re
 
 import { captureNativeJson, metadataArray, metadataIdentity, metadataJson, metadataObject, metadataText } from './metadata';
 
+export type { CapturedRegistry030, HarnessObservation030, AgentObservation030 } from './contracts030';
+
 export const PUBLICATION_PROTOCOL = 'macro-agsdl-publication/1' as const;
 export const ENGINE_CAPABILITIES = ['agent-continuity', 'prompt-instructions', 'resources-information', 'inline-text-json', 'tool-admission', 'response-attribution'] as const;
 export const INVOCATION_CAPABILITIES = ['actual-permission-scope', 'termination-evidence'] as const;
