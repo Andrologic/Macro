@@ -12,6 +12,9 @@ export interface ViewerEdge {
   exchangeOnly?: boolean;
 }
 
+/** The 0.3 route role is authoritative; older projections identify errors by label. */
+export const isFailureEdge = (edge: ViewerEdge) => edge.route030 ? edge.route030.role === "error" : edge.label === "onError";
+
 export interface ViewerLayoutNode {
   card: ViewerCard;
   position: { x: number; y: number };
@@ -38,7 +41,7 @@ export const VIEWER_FRAME = { padding: 14, top: 30, heading: 18 };
 
 const minimumHeight = (card: ViewerCard) => ["prepare", "condition", "join"].includes(card.kind) ? 28 : 50;
 // Main continuations keep their source's column; alternatives and failures move aside.
-const routeRank = (label: string) => label === "onError" ? 2 : ["next", "success", "true", "approved", ""].includes(label) ? 0 : 1;
+const routeRank = (edge: ViewerEdge) => isFailureEdge(edge) ? 2 : edge.route030 ? edge.route030.key === undefined ? 0 : 1 : ["next", "success", "true", "approved", ""].includes(edge.label) ? 0 : 1;
 
 interface LayerNode { id: string; layer: number; card?: ViewerCard; order: number; x: number }
 interface LayerLink { from: string; to: string; weight: number }
@@ -86,7 +89,7 @@ export function layoutViewer(cards: ViewerCard[], edges: ViewerEdge[], heights: 
     outgoing.get(edge.source)!.push(edge);
     if (edge.source !== edge.target) incoming.set(edge.target, incoming.get(edge.target)! + 1);
   }
-  for (const list of outgoing.values()) list.sort((a, b) => routeRank(a.label) - routeRank(b.label));
+  for (const list of outgoing.values()) list.sort((a, b) => routeRank(a) - routeRank(b));
 
   // Depth-first from the roots: an edge to a block still being visited closes a loop.
   const state = new Map<string, "open" | "done">();
@@ -139,9 +142,9 @@ export function layoutViewer(cards: ViewerCard[], edges: ViewerEdge[], heights: 
   const leads = new Map<string, string>();
   for (const list of outgoing.values()) {
     const open = list.filter(edge => !returns.has(edge));
-    const main = open.filter(edge => routeRank(edge.label) === 0);
+    const main = open.filter(edge => routeRank(edge) === 0);
     // Plain fan-outs stay symmetric; among named alternatives the first one leads.
-    const lead = main.length ? main.length === 1 ? main[0] : undefined : open.find(edge => routeRank(edge.label) === 1);
+    const lead = main.length ? main.length === 1 ? main[0] : undefined : open.find(edge => routeRank(edge) === 1);
     if (lead && list.length > 1) {
       primary.add(lead);
       if (rank.get(lead.target)! - rank.get(lead.source)! === 1) leads.set(lead.source, lead.target);
@@ -320,7 +323,9 @@ export function layoutViewer(cards: ViewerCard[], edges: ViewerEdge[], heights: 
   for (let layer = 0; layer < layerCount; layer++) {
     const local = runs.filter(run => run.layer === layer && run.x2 - run.x1 > 0.5).sort((a, b) => (b.x2 - b.x1) - (a.x2 - a.x1));
     for (const run of local) {
-      const used = new Set(local.slice(0, local.indexOf(run)).filter(other => other.from !== run.from && other.to !== run.to && other.x1 < run.x2 - 0.5 && run.x1 < other.x2 - 0.5).map(other => other.track));
+      const used = new Set(local.slice(0, local.indexOf(run)).filter(other =>
+        ((other.from !== run.from && other.to !== run.to) || (other.from === run.from && other.to === run.to && other.edge.route030 && run.edge.route030 && other.edge.id !== run.edge.id))
+        && other.x1 < run.x2 - 0.5 && run.x1 < other.x2 - 0.5).map(other => other.track));
       while (used.has(run.track)) run.track++;
     }
     const tracks = Math.max(0, ...local.map(run => run.track)) + 1;
@@ -329,6 +334,21 @@ export function layoutViewer(cards: ViewerCard[], edges: ViewerEdge[], heights: 
   for (const [edge, steps] of runSteps) {
     routes.set(edge.id, { kind: "orthogonal", steps: steps.map(({ run, x }) => ({ y: channel(run.layer) + run.track, ...(x === undefined ? {} : { x }) })) });
   }
+
+  // Distinct authored choices can share both endpoints. Keep aligned forward
+  // connections separately selectable instead of stacking them on one line.
+  const aligned = new Map<string, ViewerEdge[]>();
+  for (const [edge, steps] of runSteps) {
+    if (!edge.route030 || isFailureEdge(edge) || steps.length !== 1 || steps[0].run.x2 - steps[0].run.x1 > 0.5) continue;
+    const key = JSON.stringify([edge.source, edge.target]);
+    aligned.set(key, [...(aligned.get(key) ?? []), edge]);
+  }
+  for (const edges of aligned.values()) if (edges.length > 1) edges.forEach((edge, index) => {
+    const step = runSteps.get(edge)![0];
+    const y = channel(step.run.layer);
+    const offset = (index - (edges.length - 1) / 2) * TRACK_GAP * 2;
+    routes.set(edge.id, { kind: "orthogonal", steps: [{ y: y - 7, x: step.run.x1 + offset }, { y: y + 7 }] });
+  });
 
   // Rails run outside the rows they span; enclosing rails stay outside the rails they contain.
   const groups = new Map<string, { side: number; target: LayerNode; edges: ViewerEdge[]; from: number; to: number; x: number }>();
@@ -378,7 +398,7 @@ export function layoutViewer(cards: ViewerCard[], edges: ViewerEdge[], heights: 
     const source = nodes.get(edge.source)!;
     const row = exitRow(source, group.x);
     // A failure leaving toward a rail with nothing beside it goes straight across instead of dropping below its row.
-    const level = edge.label === "onError" && group.side > 0 && !layers[source.layer].some(node => node.x > source.x);
+    const level = isFailureEdge(edge) && group.side > 0 && !layers[source.layer].some(node => node.x > source.x);
     routes.set(edge.id, { kind: "orthogonal", ...(returns.has(edge) ? { loop: true } : {}), steps: [
       level ? { y: rowTop[source.layer], x: group.x, level: true }
         : { y: rowBottom[row] + (enclosed(edge) ? 0 : after[row]) + LOOP_OFFSET + slot(exits, `${row}:${group.side}`, edge.source) * 4, x: group.x },

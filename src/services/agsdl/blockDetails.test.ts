@@ -1,6 +1,7 @@
 import { describe, expect, it } from "bun:test";
 import { blockDetails, durationText, edgeDetails, predicateText } from "./blockDetails";
 import type { ViewerCard } from "./viewer";
+import { isFailureEdge } from "./graphLayout";
 
 const card = (kind: string, details: Record<string, unknown>, extra: Partial<ViewerCard> = {}): ViewerCard => ({
   path: `/flow/steps/${kind}`, id: kind, title: kind, kind, mission: "", unresolved: false, inputs: [], outputs: [], branches: [], details, ...extra,
@@ -100,5 +101,22 @@ describe("block details read from AgSDL", () => {
     expect(edgeDetails({ ...base, label: "onError" }).route).toBe("error");
     expect(edgeDetails({ ...base, label: "approved" }).route).toBe("approved");
     expect(edgeDetails({ ...base, label: "next" }).route).toBe("next");
+    for (const key of ["onError", "next", "success", "true", "false", "approved", "denied"]) {
+      const edge = { ...base, label: key, route030: { role: "normal" as const, path: `/next/${key}`, sourcePath: "/a", key, targetKind: "step" as const } };
+      expect(edgeDetails(edge)).toEqual({ route: "choice", choice: key, transmits: [] });
+      expect(isFailureEdge(edge)).toBe(false);
+    }
+    const failure = { ...base, label: "onError", route030: { role: "error" as const, path: "/onError", sourcePath: "/a", targetKind: "step" as const } };
+    expect(edgeDetails(failure).route).toBe("error");
+    expect(isFailureEdge(failure)).toBe(true);
+    expect(isFailureEdge({ ...base, label: "onError" })).toBe(true);
+  });
+
+  it("preserves the exact 0.3 visit limit and describes quorum without claiming all results", () => {
+    const join = card("join", { quorum: { count: 2 }, maxVisits: 9007199254740992 }, {
+      edition030: { sourceJson: "{}", maxVisitsJson: "9007199254740993", routes: [] },
+    });
+    expect(blockDetails(join, declarations)).toContainEqual({ key: "mode", values: ["quorum"] });
+    expect(blockDetails(join, declarations)).toContainEqual({ key: "limit", values: ["9007199254740993"] });
   });
 });

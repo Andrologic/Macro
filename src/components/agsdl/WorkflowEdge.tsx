@@ -2,7 +2,7 @@ import { useEffect, useId, useRef, useState } from 'react';
 import { BaseEdge, EdgeLabelRenderer, getSmoothStepPath, type Edge, type EdgeProps } from '@xyflow/react';
 import { ArrowDown, ArrowDownToLine, ArrowRightLeft, Check, CornerUpLeft, GitBranch, Info, Link2, X } from 'lucide-react';
 import type { ViewerEdge, ViewerEdgeRoute } from '../../services/agsdl/graphLayout';
-import { viewerEdgePath } from '../../services/agsdl/graphLayout';
+import { isFailureEdge, viewerEdgePath } from '../../services/agsdl/graphLayout';
 import { WorkflowGraphPopup } from './WorkflowGraphPopup';
 import { WorkflowEdgePreview } from './WorkflowPreviews';
 import { useAgsdlTranslation } from './useAgsdlTranslation';
@@ -69,7 +69,7 @@ export function WorkflowEdge(props: EdgeProps<GraphEdge>) {
   const { t } = useAgsdlTranslation();
   const data = props.data!;
   const route = data.route;
-  const failure = data.connection.label === 'onError';
+  const failure = isFailureEdge(data.connection);
   // A queued arrival stops short of the block, leaving room for its queue notch.
   const handles = data.queued ? { ...props, targetY: props.targetY - QUEUE_GAP } : props;
   const path = route ? viewerEdgePath(route, handles, failure) : getSmoothStepPath(handles)[0];

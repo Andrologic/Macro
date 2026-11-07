@@ -16,6 +16,17 @@ const overlaps = (nodes: ViewerLayoutNode[]) => nodes.some((a, index) => nodes.s
   && a.position.y < b.position.y + b.height && b.position.y < a.position.y + a.height));
 
 describe("AgSDL reading layout", () => {
+  it("keeps 0.3 choices with identical endpoints separately selectable", () => {
+    const cards = [card("a"), card("b")];
+    const choices = ["onError", "next"].map(key => ({ ...edge("a", "b", key), route030: {
+      path: `/flow/steps/a/next/${key}`, sourcePath: "/flow/steps/a", role: "normal" as const, key, targetKind: "step" as const,
+    } }));
+    const graph = layoutViewer(cards, choices);
+    const source = at(graph, "a"), target = at(graph, "b");
+    const handles = { sourceX: center(source), sourceY: source.position.y + source.height, targetX: center(target), targetY: target.position.y };
+    const paths = choices.map(item => viewerEdgePath(graph.routes.get(item.id)!, handles));
+    expect(paths[0]).not.toBe(paths[1]);
+  });
   it("keeps the main path in one straight column below the tallest card of each row", () => {
     const cards = ["a", "b", "c"].map(id => card(id));
     const graph = layoutViewer(cards, [edge("a", "b"), edge("b", "c")], { [cards[0].path]: 180 });
