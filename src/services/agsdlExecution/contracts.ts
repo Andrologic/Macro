@@ -3,6 +3,10 @@ import type { Identity, SourceOwner, SystemStartId, FlowInvocationId, AgentInsta
 export type { Identity, SystemStartId, FlowInvocationId, AgentInstanceId, ActivationId, DeliveryId, ProviderAttemptId, ToolInvocationId, ResponseMessageId, Sequence, OwnerEpoch, ExactJsonText, Sha256, SourceOwner, SourceRevision } from "../../types/agsdlExecution";
 export type StepAddress = readonly [string, ...string[]];
 export type ExecutionProfile = 'macro-serial-inline-v1';
+/** Historical declarations above remain 0.2-only; versioned consumers opt in. */
+export type VersionedExecutionProfile = ExecutionProfile | import('./contracts030').ExecutionProfile030;
+export type { CompiledPlan030, CompilationResult030, CapturedRegistry030, FrozenAgentConfiguration030, EngineVersions030, ExecutionProfile030 } from './contracts030';
+export type VersionedEngineVersions = EngineVersions | import('./contracts030').EngineVersions030;
 
 export interface Associations {
   readonly taskId?: string;
