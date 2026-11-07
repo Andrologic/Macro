@@ -63,11 +63,11 @@ export async function compilePlan030(authoredSource: string, source: SourceRevis
     for (const agent of agents) {
       const definition = record(record(document.agents)[agent.agentName]);
       const observation = registry.harnesses.find(harness => harness.harness === agent.harness)!;
-      const module = modules.get(agent.harness);
       for (const [name, pointer] of usedProperties030(document, agent.agentName, definition, at('/agents', agent.agentName))) {
         const capability = observation.capabilities.find(candidate => candidate.name === name);
-        const staticSupport = module?.properties[name as keyof typeof module.properties];
-        if (capability?.support === 'approximate' && staticSupport?.support !== 'approximate') {
+        const alreadyReported = assessment.diagnostics.some(diagnostic =>
+          diagnostic.code === 'HARNESS_APPROXIMATE' && diagnostic.severity === 'warning' && diagnostic.pointer === pointer);
+        if (capability?.support === 'approximate' && !alreadyReported) {
           runtimeWarnings.push({ code: 'HARNESS_APPROXIMATE', pointer, severity: 'warning',
             message: `The observed ${agent.harness} adapter approximates ${name}.` });
         }

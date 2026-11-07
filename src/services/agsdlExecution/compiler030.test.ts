@@ -216,5 +216,13 @@ describe('0.3 compiler wire plan', () => {
     expect(result.runtime.supported).toBe(true);
     expect(result.runtime.diagnostics).toContainEqual(expect.objectContaining({ code: 'HARNESS_APPROXIMATE', severity: 'warning' }));
     expect(result.runtime.unassessed).toContain('Native admission of resources in later graphless messages');
+    const module = { name: 'synthetic', version: '1.0.0', contract: 'agsdl-0.3.0', harnessVersions: '>=1.0.0',
+      properties: { resources: { support: 'approximate', note: 'Synthetic resource approximation.' } },
+      permissions: { read: { deny: 'sandbox', outside: 'sandbox' }, write: { deny: 'sandbox' }, shell: { deny: 'sandbox' },
+        network: { deny: 'sandbox' }, mcp: { deny: 'sandbox' }, delegate: { deny: 'sandbox' } } };
+    const declaredApproximate = await compile(doc, { ...approximate, modules: [{ harness: 'synthetic', moduleJson: encode(module) }] });
+    expect(declaredApproximate.static.valid).toBe(true);
+    expect(declaredApproximate.static.diagnostics.some(diagnostic => diagnostic.code === 'HARNESS_APPROXIMATE')).toBe(false);
+    expect(declaredApproximate.runtime.diagnostics).toContainEqual(expect.objectContaining({ code: 'HARNESS_APPROXIMATE', severity: 'warning', pointer: '/flow/steps/work' }));
   });
 });
