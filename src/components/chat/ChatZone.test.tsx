@@ -1,4 +1,4 @@
-import { afterAll, afterEach, beforeEach, describe, expect, it, jest, mock } from 'bun:test';
+import { afterAll, afterEach, beforeEach, describe, expect, it, jest, mock, spyOn } from 'bun:test';
 import React from 'react';
 import { act } from 'react';
 import { flushSync } from 'react-dom';
@@ -23,6 +23,7 @@ import { useConversationArchiveStore } from '../../stores/useConversationArchive
 import { useCitationsStore } from '../../stores/useCitationsStore';
 import type { PendingToolApproval } from '../../types';
 import type { ComposerDraft } from '../../stores/useChatStore';
+import type { QueuedSubmissionPreview } from '../../stores/chat/chatQueuedSubmissionRuntime';
 import { useChatStore as draftLifecycleStore } from '../../stores/useChatStore';
 import { clearConflictAssistantContext, registerConflictAssistantContext } from '../../services/conflictAssistantContext';
 import {
@@ -77,6 +78,7 @@ export type MockMessage = {
     }>;
   };
   completion_reason?: import('../../types').ChatCompletionReason;
+  generation_attempts?: import('../../types').ChatMessage['generation_attempts'];
   persistence_state?: 'failed' | 'retrying';
   persistence_error?: string;
 };
@@ -85,6 +87,8 @@ export type MockChatState = {
   composerDraftConversationAliases?: Record<string, string>;
   dismissArchitectPlanNamingRecovery?: () => void;
   resolveComposerDraftConversationId?: (conversationId: string) => string;
+  queuedSubmissionPreviews?: QueuedSubmissionPreview[];
+  removeQueuedSubmission?: (id: string) => Promise<void>;
   conversations: MockConversation[];
   messages: MockMessage[];
   selectedConversationId: string | null;
@@ -736,6 +740,7 @@ const loadChatZoneModule = async (
 
 const preloadChatZoneLazyComponents = async () => {
   await Promise.all([
+    import('./QueuedMessagesPanel'),
     import('./ConversationGoalBanner'),
     import('./QuestionnaireFooter'),
     import('./ToolApprovalFooter'),
@@ -1374,6 +1379,39 @@ describe('ChatZone', () => {
     expect(message?.querySelector('button')).toBeNull();
   });
 
+  it('reveals the selected queue on queue-only publication and removes it reactively', async () => {
+    const runtime = getMockConversationRuntime(chatState, 'conv-1');
+    const realChatStore = create<MockChatState>(() => ({
+      ...chatState,
+      queuedSubmissionPreviews: [],
+      messagesByConversationId: {},
+      getConversationRuntime: () => runtime,
+      removeQueuedSubmission: async id => {
+        realChatStore.setState(state => ({ queuedSubmissionPreviews: state.queuedSubmissionPreviews?.filter(entry => entry.id !== id) }));
+      },
+    }));
+    await loadChatZoneModule(false, realChatStore);
+    await preloadChatZoneLazyComponents();
+    await act(async () => { requireRoot().render(<ChatZone />); });
+    expect(requireContainer().querySelector('section[aria-label="Queued messages"]')).toBeNull();
+    await act(async () => {
+      realChatStore.setState({ queuedSubmissionPreviews: [
+        { id: 'selected', conversationId: 'conv-1', content: 'Selected queued instruction', state: 'waiting' },
+        { id: 'foreign', conversationId: 'conv-2', content: 'Foreign queued instruction', state: 'waiting' },
+      ] });
+      await Promise.resolve();
+    });
+    const panel = requireContainer().querySelector('section[aria-label="Queued messages"]');
+    expect(panel?.textContent).toContain('Selected queued instruction');
+    expect(panel?.textContent).not.toContain('Foreign queued instruction');
+    await act(async () => {
+      panel?.querySelector('button')?.click();
+      await Promise.resolve();
+    });
+    expect(requireContainer().querySelector('section[aria-label="Queued messages"]')).toBeNull();
+    expect(realChatStore.getState().queuedSubmissionPreviews?.map(entry => entry.id)).toEqual(['foreign']);
+  });
+
   it('reacts to approval-only publication and removal with a real Zustand subscription', async () => {
     const runtime = getMockConversationRuntime(chatState, 'conv-1');
     const realChatStore = create<MockChatState>(() => ({
@@ -1778,12 +1816,17 @@ describe('ChatZone', () => {
       const acceptanceDeferred = createDeferred<'queued'>();
       const originalSave = chatState.saveComposerDraftForContext;
       const originalClear = chatState.clearComposerDraftForContext;
+      // This component test uses a non-global admission port; SQLite authority
+      // and the Global Chat writer are verified by the store/native suites.
+      spyOn(await import('../../services/chatAdmission'), 'beginChatIntent').mockResolvedValue({ kind: 'conversation' });
+      const { activateComposerDraftWriter, drainComposerDraftWrites } = await import('../../stores/chat/chatLocalSessionState');
+      activateComposerDraftWriter();
       const persistTextDrafts = () => {
-        expect(saveComposerDraftsToStorage(Object.fromEntries(
+        void saveComposerDraftsToStorage(Object.fromEntries(
           Object.entries(composerDraftsByContextKey).map(([key, draft]) => [key, {
             text: draft.text, images: [], contextRefs: [],
           }]),
-        ))).toBe(true);
+        ));
       };
       window.localStorage.removeItem(COMPOSER_DRAFTS_STORAGE_KEY);
       chatState = {
@@ -1814,7 +1857,8 @@ describe('ChatZone', () => {
         await acceptanceDeferred.promise;
       });
       expect(getComposerEditor().value).toBe(edited ? 'Nouvelle édition non envoyée.' : '');
-      // Observe durable state before pagehide or the 250 ms draft timer can repair it.
+      // Join admitted persistence before pagehide or the 250 ms timer can repair it.
+      await drainComposerDraftWrites();
       if (!edited) {
         expect(loadComposerDraftsFromStorage()['conversation:conv-1']).toBeUndefined();
       }
@@ -1822,6 +1866,7 @@ describe('ChatZone', () => {
         window.dispatchEvent(new window.Event('pagehide'));
         requireRoot().unmount();
       });
+      await drainComposerDraftWrites();
       const restored = loadComposerDraftsFromStorage();
       composerDraftsByContextKey = Object.fromEntries(Object.entries(restored).map(
         ([key, draft]) => [key, { text: draft.text, images: [], contextRefs: [] }],
@@ -4294,14 +4339,27 @@ describe('ChatZone', () => {
     });
   });
 
+  it('renders a completed response without generation attempt diagnostics', async () => {
+    chatState = { ...chatState, messages: [buildMessage({
+      id: 'assistant-completed', role: 'assistant', content: 'Answer', completion_reason: 'completed',
+      generation_attempts: [{ id: 'attempt-completed', status: 'completed', rawText: 'Answer', acceptedText: 'Answer', costUsd: null }],
+    })] };
+    await act(async () => { requireRoot().render(<ChatZone />); });
+    expect(requireContainer().textContent).toContain('Answer');
+    expect(requireContainer().textContent).not.toContain('generation attempt');
+    expect(requireContainer().querySelector('[data-chat-completion-notice]')).toBeNull();
+  });
+
   it.each(['content_filter', 'safety', 'unknown_terminal'])('renders a persisted provider termination notice for %s', async (reason) => {
     chatState = { ...chatState, messages: [buildMessage({
       id: 'assistant-filtered', role: 'assistant', content: 'Partial response', completion_reason: reason,
+      generation_attempts: [{ id: 'attempt-partial', status: 'partial', rawText: 'Partial response', acceptedText: 'Partial response', costUsd: null }],
     })] };
     await act(async () => { requireRoot().render(<ChatZone />); });
     const notice = requireContainer().querySelector(`[data-chat-completion-notice="${reason}"]`);
     expect(notice).not.toBeNull();
     expect(notice?.textContent).toContain('Response interrupted');
+    expect(requireContainer().textContent).not.toContain('generation attempt');
   });
 
   it('renders a dedicated notice when the assistant hit the tool turn limit', async () => {

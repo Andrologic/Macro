@@ -1,0 +1,410 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.macro.andrologic.ai/macro-pilot/v2/portable-chat-history/provider.schema.json",
+  "type": "array",
+  "items": {
+    "oneOf": [
+      {
+        "$ref": "#/$defs/message"
+      },
+      {
+        "$ref": "#/$defs/reasoning"
+      },
+      {
+        "$ref": "#/$defs/call"
+      },
+      {
+        "$ref": "#/$defs/result"
+      },
+      {
+        "$ref": "#/$defs/macroAssistant"
+      },
+      {
+        "$ref": "#/$defs/macroTool"
+      }
+    ]
+  },
+  "$defs": {
+    "text": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "enum": [
+            "input_text",
+            "output_text"
+          ]
+        },
+        "text": {
+          "type": "string"
+        },
+        "annotations": {
+          "type": "array",
+          "maxItems": 0
+        },
+        "logprobs": {
+          "type": "array",
+          "maxItems": 0
+        }
+      },
+      "required": [
+        "type",
+        "text"
+      ]
+    },
+    "image": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "const": "input_image"
+        },
+        "image_url": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "type",
+        "image_url"
+      ]
+    },
+    "typedResult": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "version": {
+          "const": 1
+        },
+        "isError": {
+          "type": "boolean"
+        },
+        "blocks": {
+          "type": "array",
+          "maxItems": 64,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "type": {
+                "const": "text"
+              },
+              "text": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "text"
+            ]
+          }
+        }
+      },
+      "required": [
+        "version",
+        "isError",
+        "blocks"
+      ]
+    },
+    "function": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "arguments": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "arguments"
+      ]
+    },
+    "macroCall": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "type": {
+          "const": "function"
+        },
+        "function": {
+          "$ref": "#/$defs/function"
+        }
+      },
+      "required": [
+        "id",
+        "type",
+        "function"
+      ]
+    },
+    "message": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "const": "message"
+        },
+        "id": {
+          "type": "string"
+        },
+        "status": {
+          "const": "completed"
+        },
+        "role": {
+          "enum": [
+            "user",
+            "assistant"
+          ]
+        },
+        "content": {
+          "type": "array",
+          "items": {
+            "oneOf": [
+              {
+                "$ref": "#/$defs/text"
+              },
+              {
+                "$ref": "#/$defs/image"
+              }
+            ]
+          }
+        },
+        "channel": {
+          "const": "final"
+        }
+      },
+      "required": [
+        "type",
+        "role",
+        "content"
+      ],
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "role": {
+                "const": "assistant"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "content": {
+                "type": "array",
+                "items": {
+                  "allOf": [
+                    {
+                      "$ref": "#/$defs/text"
+                    },
+                    {
+                      "properties": {
+                        "type": {
+                          "const": "output_text"
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "else": {
+            "properties": {
+              "content": {
+                "type": "array",
+                "items": {
+                  "oneOf": [
+                    {
+                      "$ref": "#/$defs/image"
+                    },
+                    {
+                      "allOf": [
+                        {
+                          "$ref": "#/$defs/text"
+                        },
+                        {
+                          "properties": {
+                            "type": {
+                              "const": "input_text"
+                            }
+                          }
+                        }
+                      ]
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+    "reasoning": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "const": "reasoning"
+        },
+        "id": {
+          "type": "string"
+        },
+        "status": {
+          "const": "completed"
+        },
+        "summary": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "type": {
+                "const": "summary_text"
+              },
+              "text": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "text"
+            ]
+          }
+        },
+        "encrypted_content": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "type",
+        "summary"
+      ]
+    },
+    "call": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "const": "function_call"
+        },
+        "id": {
+          "type": "string"
+        },
+        "status": {
+          "const": "completed"
+        },
+        "call_id": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "arguments": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "type",
+        "call_id",
+        "name",
+        "arguments"
+      ]
+    },
+    "result": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "const": "function_call_output"
+        },
+        "call_id": {
+          "type": "string"
+        },
+        "output": {
+          "type": "string"
+        },
+        "macro_tool_result": {
+          "$ref": "#/$defs/typedResult"
+        }
+      },
+      "required": [
+        "type",
+        "call_id",
+        "output"
+      ]
+    },
+    "macroAssistant": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "const": "chat_completion_message"
+        },
+        "role": {
+          "const": "assistant"
+        },
+        "content": {
+          "type": "string"
+        },
+        "visible_content": {
+          "type": "string"
+        },
+        "reasoning_content": {
+          "type": "string"
+        },
+        "reasoning_details": {
+          "type": "array",
+          "maxItems": 0
+        },
+        "tool_calls": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/macroCall"
+          }
+        },
+        "tool_name": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "type",
+        "role",
+        "content"
+      ]
+    },
+    "macroTool": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "const": "chat_completion_message"
+        },
+        "role": {
+          "const": "tool"
+        },
+        "content": {
+          "type": "string"
+        },
+        "tool_call_id": {
+          "type": "string"
+        },
+        "tool_name": {
+          "type": "string"
+        },
+        "macro_tool_result": {
+          "$ref": "#/$defs/typedResult"
+        }
+      },
+      "required": [
+        "type",
+        "role",
+        "content",
+        "tool_call_id"
+      ]
+    }
+  }
+}

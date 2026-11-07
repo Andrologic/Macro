@@ -1,0 +1,8 @@
+{
+  "contract_version": "1.0",
+  "type": "resume_request",
+  "stream_id": "stream:workspace:macro-suite",
+  "after_cursor": "cursor:42:01J8T",
+  "after_sequence": 42,
+  "limit": 100
+}

@@ -115,7 +115,7 @@ export class ResidentAgent {
     };
     const options: StreamingChatOptions = {
       executionPolicy: 'native-serial', providerType: this.request.providerType as 'openai' | 'ollama' | 'lmstudio',
-      providerId: configuration.providerId, modelId: configuration.modelId, baseUrl: '', mode: mode as AppMode,
+      providerAdmission: { kind: 'utility' }, providerId: configuration.providerId, modelId: configuration.modelId, baseUrl: '', mode: mode as AppMode,
       messages: this.memory.messages(), signal: this.abort.signal,
       maxTurns: maxTurns as number | undefined, reasoningEffort: reasoning as string | null | undefined,
       allowedToolIds: aliases.map(alias => alias.toolId),

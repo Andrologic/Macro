@@ -19,8 +19,8 @@ describe('authored demo execution scenes', () => {
         expect(demoTasks.find(task => task.id === taskId)?.title).toBe(cards.find(card => card.path === path)?.title);
       }
     }
-    const current = demoExecutionGraphs.find(graph => Object.values(graph.taskPaths).includes('demo-copy'))!;
-    const archived = demoExecutionGraphs.find(graph => Object.values(graph.taskPaths).includes('demo-archived-guide'))!;
+    const current = demoExecutionGraphs.find(graph => Object.values(graph.taskPaths).includes('demo-summary'))!;
+    const archived = demoExecutionGraphs.find(graph => Object.values(graph.taskPaths).includes('demo-archived-summary'))!;
     expect(archived.title).toContain('Édition précédente');
     expect(Object.values(current.taskPaths).some(id => Object.values(archived.taskPaths).includes(id))).toBe(false);
   });
@@ -35,7 +35,7 @@ describe('authored demo execution scenes', () => {
   });
 
   test('declares writes as external effects with distinct approval and documentation bindings', () => {
-    for (const [id, step, approval] of [['demo-quality', 'deliver', 'approval'], ['demo-refund', 'refund', 'approval'], ['demo-delivery', 'publish', 'approval'], ['demo-approvals', 'publish', 'legal'], ['demo-crisis', 'deploy', 'securityApproval']]) {
+    for (const [id, step, approval] of [['demo-quality', 'deliver', 'approval'], ['demo-refund', 'refund', 'approval'], ['demo-delivery', 'publish', 'approval'], ['demo-crisis', 'deploy', 'securityApproval']]) {
       const source = JSON.parse(demoPlans.find(plan => plan.id === id)!.agsdl.source);
       const write = source.flow.steps[step];
       const gate = source.flow.steps[approval];
@@ -64,7 +64,7 @@ describe('authored demo execution scenes', () => {
       } else expect(remaining).toEqual([]);
     }
     expect(demoTasks.find(task => task.id === 'demo-order-mail')?.status).toBe('Blocked');
-    expect(demoTasks.find(task => task.id === 'demo-publication-legal')?.status).toBe('AwaitingResponse');
+    expect(demoTasks.find(task => task.id === 'demo-fix-recovery')?.status).toBe('AwaitingResponse');
     const crisis = demoExecutionGraphs.find(graph => Object.values(graph.taskPaths).includes('demo-crisis-security'))!;
     expect(crisis.activity?.['/flow/steps/deploy']).toBeUndefined();
     expect(demoTasks.find(task => task.id === 'demo-crisis-technical')?.status).toBe('Blocked');

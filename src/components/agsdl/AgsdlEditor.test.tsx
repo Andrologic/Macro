@@ -40,17 +40,19 @@ describe("AgSDL viewer", () => {
     await act(async () => root!.render(<AgsdlEditor target={target} />));
   };
 
-  it("shows exact visit limits accessibly on agent, call and unresolved agent steps", async () => {
-    const source = `{"contract":"agsdl-0.3.0","id":"limits","agents":{"a":{"harness":"codex","permissions":"read-only"}},"flow":{"entry":"agent","steps":{"agent":{"type":"agent","agent":"a","title":"Agent step","maxVisits":9007199254740993,"next":"call"},"call":{"type":"call","title":"Call step","command":"echo","maxVisits":7,"next":"unresolved"},"unresolved":{"type":"agent","agent":"missing","title":"Unknown agent","maxVisits":3}}}}`;
+  it("shows exact visit limits accessibly on all 0.3 step types", async () => {
+    const source = `{"contract":"agsdl-0.3.0","id":"limits","agents":{"a":{"harness":"codex","permissions":"read-only"}},"flow":{"entry":"agent","steps":{"agent":{"type":"agent","agent":"a","title":"Agent step","maxVisits":9007199254740993,"next":"call"},"call":{"type":"call","title":"Call step","command":"echo","maxVisits":7,"next":"unresolved"},"unresolved":{"type":"agent","agent":"missing","title":"Unknown agent","maxVisits":3,"next":"approval"},"approval":{"type":"approval","title":"Approval step","maxVisits":4,"next":"join"},"join":{"type":"join","title":"Join step","quorum":{"count":2},"maxVisits":5,"next":"compose"},"compose":{"type":"compose","title":"Compose step","composition":"missing","maxVisits":12345678901234567890123456789012345678901234567890}}}}`;
     await mount(source);
     const node = (title: string) => Array.from(container!.querySelectorAll<HTMLButtonElement>('.agsdl-graph-node')).find(item => item.textContent?.includes(title))!;
-    for (const [title, limit] of [['Agent step', '9007199254740993'], ['Call step', '7'], ['Unknown agent', '3']]) {
+    for (const [title, limit] of [['Agent step', '9007199254740993'], ['Call step', '7'], ['Unknown agent', '3'], ['Approval step', '4'], ['Join step', '5'], ['Compose step', '12345678901234567890123456789012345678901234567890']]) {
       const item = node(title);
       expect(item).toBeDefined();
       expect(item.textContent).toContain(limit);
       expect(item.getAttribute('aria-label')).toContain(`Visit limit: ${limit}`);
       expect(item.querySelector(`[title="Visit limit: ${limit}"]`)).not.toBeNull();
     }
+    expect(node('Join step').textContent).toContain('Quorum');
+    expect(node('Join step').getAttribute('aria-label')).toContain('Quorum');
   });
 
   it("returns from definitions to the previously selected graph", async () => {

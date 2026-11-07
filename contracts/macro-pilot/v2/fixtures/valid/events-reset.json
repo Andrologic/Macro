@@ -1,0 +1,11 @@
+{
+  "contract_version": "2.0",
+  "type": "events.page",
+  "request_id": "request-demo",
+  "account_id": "account-demo",
+  "stream_id": "stream-demo",
+  "after_sequence": 0,
+  "next_sequence": 0,
+  "reset": true,
+  "events": []
+}

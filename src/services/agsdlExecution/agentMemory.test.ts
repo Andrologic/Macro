@@ -42,7 +42,7 @@ describe('Macro Agent memory', () => {
   it('checkpoints the actual shared loop and retains unconfirmed executor ownership if the checkpoint fails', async () => {
     const memory = await MacroAgentMemory.prepare(id('agent'), await configuration(), null);
     await memory.acceptInput(() => json('{"prompt":[{"value":"Run"}]}'));
-    const options: StreamingChatOptions = { providerId: 'synthetic', providerType: 'openai', baseUrl: '', modelId: 'synthetic', messages: memory.messages(), executionPolicy: 'native-serial', allowedToolIds: [], onToken: () => {}, onComplete: () => {}, onError: () => {}, onExecutionMessages: messages => memory.retain(messages) };
+    const options: StreamingChatOptions = { providerAdmission: { kind: 'utility' }, providerId: 'synthetic', providerType: 'openai', baseUrl: '', modelId: 'synthetic', messages: memory.messages(), executionPolicy: 'native-serial', allowedToolIds: [], onToken: () => {}, onComplete: () => {}, onError: () => {}, onExecutionMessages: messages => memory.retain(messages) };
     await runToolCallingLoop(options, { kind: 'native', streamTurn: async () => ({ result: { content: 'Actual response', toolCalls: [] }, projectAssistant: () => ({ items: [] }) }), projectTool: () => null, afterToolResults: () => {} }, createStreamAccumulator(options));
     expect(memory.messages().at(-1)).toEqual({ role: 'assistant', content: 'Actual response' });
     const owner = new StreamStopUnconfirmedError('Still active');

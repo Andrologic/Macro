@@ -1,0 +1,18 @@
+{
+  "contract_version": "2.0",
+  "type": "response",
+  "request_id": "request-demo",
+  "account_id": "account-demo",
+  "operation": "instance.telemetry",
+  "result": {
+    "instance_id": "instance-demo",
+    "sample_id": "sample-demo",
+    "observed_at": "2026-10-10T12:00:00.000Z",
+    "expires_at": "2026-10-10T12:00:05.000Z",
+    "availability": "available",
+    "reason": null,
+    "cpu_percent": 32.5,
+    "memory_used_bytes": 1024,
+    "memory_total_bytes": 4096
+  }
+}

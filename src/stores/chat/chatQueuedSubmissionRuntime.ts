@@ -1,13 +1,16 @@
 import i18n from '../../i18n';
 import { isSuccessfulCompletionReason } from '../../services/ai/completionRecovery';
+import type { ChatIntentAdmission } from '../../services/ipc/chatAdmission';
 import type { ChatMessage } from '../../types';
 import type { ChatSendResult, SendImage } from '../../services/chatSend/contracts';
 import { toServiceError } from '../../services/contracts/errors';
 import { captureQueuedSubmission, loadQueuedSubmissions, saveQueuedSubmissions, type QueuedSubmission, type QueuedSendIntent } from './chatQueuedSubmissions';
 
 export type QueuedSubmissionRecoveries = Record<string, { count: number; error?: string }>;
-export type QueuedSubmissionPreview = { id: string; conversationId: string; content: string };
+export type QueuedSubmissionPreview = { id: string; conversationId: string; content: string; state: 'waiting' | 'sending' | 'paused' };
 interface QueuePorts {
+  admit(entry: QueuedSubmission, mutation: 'retain' | 'remove'): Promise<ChatIntentAdmission>;
+  finish(admission: ChatIntentAdmission): Promise<void>;
   blocked(id: string): boolean;
   cancelled(id: string): boolean;
   read(id: string): Promise<ChatMessage[]>;
@@ -23,9 +26,12 @@ interface QueuePorts {
 /** Owns deferred submissions only; the chat runtime still owns active turns. */
 export function createQueuedSubmissionRuntime(ports: QueuePorts) {
   let entries = loadQueuedSubmissions();
+  let retired = false;
+  const jobs = new Set<Promise<void>>();
   const paused = new Set(entries.map(entry => entry.input.conversationId));
   const draining = new Set<string>();
   const attempted = new Map<string, string>();
+  const claimed = new Set<string>();
   // IO ownership outlives presentation/confirmation removal of its queue entry.
   const directionWrites = new Map<string, { entry: QueuedSubmission; pending: Promise<unknown> }>();
   const assertNoDirectionWrite = (id: string) => {
@@ -55,18 +61,21 @@ export function createQueuedSubmissionRuntime(ports: QueuePorts) {
     count: entries.filter(entry => entry.input.conversationId === id).length,
   }]));
   const publishRecovery = () => {
+    if (retired) return;
     ports.recovery(recoveries);
     ports.pending(entries.map(entry => ({ id: entry.id, conversationId: entry.input.conversationId })));
     ports.attempted(Array.from(attempted, ([id, conversationId]) => ({ id, conversationId })));
-    ports.previews(entries.filter(entry => paused.has(entry.input.conversationId)).map(entry => ({
+    ports.previews(entries.map(entry => ({
       id: entry.id, conversationId: entry.input.conversationId, content: entry.input.content,
+      state: claimed.has(entry.id) ? 'sending' : paused.has(entry.input.conversationId) ? 'paused' : 'waiting',
     })));
   };
   publishRecovery();
   const mutating = new Set<string>();
   const pendingEntry = async (id: string, allowSaved = false): Promise<QueuedSubmission> => {
     const entry = entries.find(candidate => candidate.id === id);
-    if (!entry || !paused.has(entry.input.conversationId) || draining.has(entry.input.conversationId) || mutating.has(id)) {
+    if (!entry || claimed.has(id) || mutating.has(id) ||
+      (!allowSaved && (!paused.has(entry.input.conversationId) || draining.has(entry.input.conversationId)))) {
       throw new Error(i18n.t('chat.queueNoLongerEditable', 'This queued message is no longer available to edit.'));
     }
     if (entry.direction?.deletionRequested && !allowSaved) throw new Error("This direction was invalidated by deletion. Remove its recovery entry.");
@@ -78,13 +87,15 @@ export function createQueuedSubmissionRuntime(ports: QueuePorts) {
         (entry.direction ? message.id === entry.direction.userMessageId : message.turn_id === id))) {
         throw new Error(i18n.t('chat.queueAlreadySent', 'This message was already saved. Retry recovery instead.'));
       }
-      if (!entries.includes(entry) || !paused.has(entry.input.conversationId) || draining.has(entry.input.conversationId)) {
+      if (!entries.includes(entry) || claimed.has(id) ||
+        (!allowSaved && (!paused.has(entry.input.conversationId) || draining.has(entry.input.conversationId)))) {
         throw new Error(i18n.t('chat.queueNoLongerEditable', 'This queued message is no longer available to edit.'));
       }
       assertNoDirectionWrite(id);
       return entry;
     } catch (error) {
       mutating.delete(id);
+      queueMicrotask(() => void drain(entry.input.conversationId));
       throw error;
     }
   };
@@ -95,12 +106,33 @@ export function createQueuedSubmissionRuntime(ports: QueuePorts) {
     }));
     publishRecovery();
   };
-  const persist = (next: QueuedSubmission[]) => {
-    if (!saveQueuedSubmissions(next)) throw new Error(i18n.t(
-      'chat.queueSaveFailed', 'Queued messages could not be saved. Keep this session open and try again.',
-    ));
-    entries = next;
-    refreshRecovery();
+  const admissions = new Map<string, ChatIntentAdmission>();
+  let writes: Promise<void> = Promise.resolve();
+  const persist = (update: (current: QueuedSubmission[]) => QueuedSubmission[]) => {
+    const write = writes.catch(() => undefined).then(async () => {
+      if (retired) throw new Error('Queued submission owner has retired.');
+      const next = update(entries);
+      const removed = entries.filter(entry => !next.some(candidate => candidate.id === entry.id));
+      for (const entry of [...next.filter(entry => !entries.includes(entry)), ...removed]) {
+        admissions.set(entry.id, await ports.admit(entry, removed.includes(entry) ? 'remove' : 'retain'));
+      }
+      if (retired) throw new Error('Queued submission owner has retired.');
+      if (!saveQueuedSubmissions(next)) throw new Error(i18n.t(
+        'chat.queueSaveFailed', 'Queued messages could not be saved. Keep this session open and try again.',
+      ));
+      // Keep later serialized mutations based on what was actually saved,
+      // even when the following native ACK is lost. Never reinsert a removed copy.
+      entries = next;
+      for (const entry of removed) {
+        const admission = admissions.get(entry.id);
+        if (!admission) throw new Error('Queued submission admission is missing.');
+        await ports.finish(admission);
+        admissions.delete(entry.id);
+      }
+      refreshRecovery();
+    });
+    writes = write;
+    return write;
   };
   const pause = (id: string, error?: string) => {
     const count = entries.filter(entry => entry.input.conversationId === id).length;
@@ -115,11 +147,10 @@ export function createQueuedSubmissionRuntime(ports: QueuePorts) {
       throw new Error(i18n.t('chat.queueImagesSaveFailed', 'The message is saved, but its images still need saving. Retry the queued submission.'));
     }
   };
-  const complete = (entry: QueuedSubmission) => persist(entries.filter(candidate => candidate.id !== entry.id));
-  const retireConfirmed = (confirmed: (entry: QueuedSubmission) => boolean) => {
+  const retireConfirmed = async (confirmed: (entry: QueuedSubmission) => boolean) => {
     const selected = entries.filter(entry => !entry.direction?.deletionRequested && confirmed(entry));
     if (!selected.length) return;
-    persist(entries.filter(entry => !selected.includes(entry)));
+    await persist(current => current.filter(entry => entry.direction?.deletionRequested || !confirmed(entry)));
     for (const id of new Set(selected.map(entry => entry.input.conversationId))) {
       if (!entries.some(entry => entry.input.conversationId === id && entry.direction) && !recoveries[id]?.error) paused.delete(id);
     }
@@ -130,26 +161,37 @@ export function createQueuedSubmissionRuntime(ports: QueuePorts) {
     (savedNow || assistant.completion_reason !== undefined) && isSuccessfulCompletionReason(assistant.completion_reason) && (
       (entry.direction.delivery?.assistantMessageId === assistant.id && entry.direction.delivery.requestEnded) ||
       (entry.direction.recoveryAssistantMessageId === assistant.id && entry.direction.recoveryRequestEnded));
-  const beforeAssistantStart = (entry: QueuedSubmission, assistant?: ChatMessage) => {
-    if (!entries.some(candidate => candidate.id === entry.id && !candidate.direction?.deletionRequested)) throw new Error('The queued submission is no longer available.');
-    persist(entries.map(candidate => candidate.id === entry.id ? {
-      ...candidate, assistantStartAttempted: true,
-      ...(candidate.direction ? { direction: { ...candidate.direction, recoveryAssistantMessageId: assistant?.id } } : {}),
-    } : candidate));
+  const complete = (entry: QueuedSubmission) => persist(current => current.filter(candidate => candidate.id !== entry.id));
+  const assertCanDispatch = (entry: QueuedSubmission) => {
+    const id = entry.input.conversationId;
+    if (!claimed.has(entry.id) || paused.has(id) || ports.cancelled(id) ||
+      !entries.some(candidate => candidate.id === entry.id)) {
+      throw new Error(i18n.t('chat.queueInterrupted', 'The queued send was interrupted. Its content is retained.'));
+    }
   };
-  const drain = async (id: string, explicit = false): Promise<void> => {
-    if (draining.has(id) || paused.has(id) || ports.blocked(id)) return;
+  const beforeAssistantStart = (entry: QueuedSubmission, assistant?: ChatMessage) => {
+    assertCanDispatch(entry);
+    return persist(current => {
+      assertCanDispatch(entry);
+      return current.map(candidate => candidate.id === entry.id ? { ...candidate, assistantStartAttempted: true, ...(candidate.direction ? { direction: { ...candidate.direction, recoveryAssistantMessageId: assistant?.id } } : {}) } : candidate);
+    });
+  };
+  const drainInner = async (id: string, explicit = false): Promise<void> => {
+    if (retired || draining.has(id) || paused.has(id) || ports.blocked(id)) return;
     const next = entries.find(entry => entry.input.conversationId === id);
-    if (!next || ports.cancelled(id) || (next.direction && !explicit)) return;
+    if (!next || mutating.has(next.id) || ports.cancelled(id) || (next.direction && !explicit)) return;
     draining.add(id);
+    claimed.add(next.id);
+    publishRecovery();
     let continueQueue = false;
     try {
       if (next.direction?.deletionRequested) {
         throw new Error(i18n.t('chat.queueDirectionDeleted',
           'This direction was invalidated by deletion or replay. Remove this recovery entry before continuing manually.'));
       }
+      admissions.set(next.id, await ports.admit(next, 'retain'));
       const persisted = await ports.read(id);
-      if (ports.cancelled(id) || !entries.some(entry => entry.id === next.id && !entry.direction?.deletionRequested)) return;
+      if (retired || paused.has(id) || ports.cancelled(id) || !entries.some(entry => entry.id === next.id && !entry.direction?.deletionRequested)) return;
       const saved = persisted.find(message => message.role === 'user' &&
         (next.direction ? message.id === next.direction.userMessageId : message.turn_id === next.id));
       if (saved && (saved.conversation_id !== id || (next.direction && saved.turn_id !== next.direction.target.turnId))) {
@@ -162,9 +204,9 @@ export function createQueuedSubmissionRuntime(ports: QueuePorts) {
       const assistant = persisted.find(message => message.role === 'assistant' &&
         (next.direction ? message.id === (next.direction.delivery?.assistantMessageId ?? next.direction.recoveryAssistantMessageId) : message.turn_id === next.id));
       if (saved && assistant && confirmedBy(next, assistant)) {
-        retireConfirmed(entry => entry.id === next.id);
+        await retireConfirmed(entry => entry.id === next.id);
       } else if (!next.direction && assistant?.completion_reason === 'completed') {
-        complete(next);
+        await complete(next);
       } else if (next.assistantStartAttempted || next.direction?.delivery || assistant) {
         throw new Error(i18n.t('chat.queueAssistantInterrupted',
           'This saved instruction may have started executing. Review the response and tool effects, then remove this recovery entry before continuing manually.'));
@@ -179,22 +221,36 @@ export function createQueuedSubmissionRuntime(ports: QueuePorts) {
       pause(id, toServiceError(error).message);
     } finally {
       attempted.delete(next.id);
-      publishRecovery();
+      claimed.delete(next.id);
       draining.delete(id);
-      if (continueQueue) queueMicrotask(() => void drain(id));
+      publishRecovery();
+      if (continueQueue && !retired) queueMicrotask(() => void drain(id));
     }
   };
+  const drain = (id: string, explicit = false): Promise<void> => {
+    const job = drainInner(id, explicit);
+    jobs.add(job);
+    return job.finally(() => jobs.delete(job));
+  };
   return {
+    async joinWrites() {
+      let pending: Promise<void>;
+      do { pending = writes; await pending.catch(() => undefined); } while (pending !== writes);
+    },
+    async retire() {
+      retired = true;
+      await Promise.allSettled([writes, ...jobs]);
+    },
     capture: captureQueuedSubmission,
     excludedDirectionMessageIds(conversationId: string, resumedMessageId?: string) {
       return new Set(entries.filter(entry => entry.input.conversationId === conversationId && entry.direction &&
         (entry.direction.deletionRequested || !entry.direction.delivery?.requestEnded) && entry.direction.userMessageId !== resumedMessageId)
         .map(entry => entry.direction!.userMessageId));
     },
-    bindDirectionIntent(conversationId: string, sessionId: string, turnId: string, intent: QueuedSendIntent) {
+    async bindDirectionIntent(conversationId: string, sessionId: string, turnId: string, intent: QueuedSendIntent) {
       const belongs = (entry: QueuedSubmission) => entry.input.conversationId === conversationId &&
         entry.direction?.target.sessionId === sessionId && entry.direction.target.turnId === turnId && !entry.direction.delivery && !entry.direction.deletionRequested;
-      if (entries.some(belongs)) persist(entries.map(entry => belongs(entry) ? {
+      if (entries.some(belongs)) await persist(current => current.map(entry => belongs(entry) ? {
         ...entry, intent: { ...intent, composerContextRefs: entry.input.contextRefs ?? [] },
       } : entry));
     },
@@ -213,57 +269,59 @@ export function createQueuedSubmissionRuntime(ports: QueuePorts) {
       // Reattach an active owner only as an invalidated record, never as a replayable direction.
       const retained = [...entries, ...[...selected.values()].filter(entry => !entries.some(current => current.id === entry.id))];
       // Refusal happens before DB deletion. A later cleanup refusal retains this marker on disk.
-      persist(retained.map(entry => ids.includes(entry.id) && entry.direction ? {
+      await persist(current => [...current, ...retained.filter(item => !current.some(entry => entry.id === item.id))].map(entry => ids.includes(entry.id) && entry.direction ? {
         ...entry, direction: { ...entry.direction, deletionRequested: true },
       } : entry));
       await Promise.allSettled(ids.flatMap(id => directionWrites.has(id) ? [directionWrites.get(id)!.pending] : []));
       return ids;
     },
-    finishDirectionDeletion(ids: readonly string[]) {
+    async finishDirectionDeletion(ids: readonly string[]) {
       if (!ids.length) return;
-      const remaining = entries.filter(entry => !ids.includes(entry.id));
-      saveQueuedSubmissions(remaining);
+      await persist(current => current.filter(entry => !ids.includes(entry.id)));
       // DB deletion is authoritative; a refused write leaves only invalidated entries on disk.
-      entries = remaining;
       refreshRecovery();
     },
-    markDirectionDelivery(ids: string[], identity: { conversationId: string; sessionId: string; turnId: string | null; assistantMessageId: string }, requestId: string) {
-      for (const id of ids) {
-        const entry = entries.find(candidate => candidate.id === id);
-        const target = entry?.direction?.target;
-        if (!target || entry?.input.conversationId !== identity.conversationId || target.sessionId !== identity.sessionId ||
-          target.turnId !== identity.turnId || (target.assistantMessageId !== null && target.assistantMessageId !== identity.assistantMessageId) || entry.direction?.delivery || entry.direction?.deletionRequested) {
-          throw new Error('The direction no longer belongs to this request.');
+    async markDirectionDelivery(ids: string[], identity: { conversationId: string; sessionId: string; turnId: string | null; assistantMessageId: string }, requestId: string) {
+      await persist(current => {
+        for (const id of ids) {
+          const entry = current.find(candidate => candidate.id === id);
+          const target = entry?.direction?.target;
+          if (!target || entry?.input.conversationId !== identity.conversationId || target.sessionId !== identity.sessionId ||
+            target.turnId !== identity.turnId || (target.assistantMessageId !== null && target.assistantMessageId !== identity.assistantMessageId) || entry.direction?.delivery || entry.direction?.deletionRequested) {
+            throw new Error('The direction no longer belongs to this request.');
+          }
         }
-      }
-      persist(entries.map(entry => ids.includes(entry.id) && entry.direction ? { ...entry, direction: {
-        ...entry.direction, delivery: { requestId, assistantMessageId: identity.assistantMessageId, requestEnded: false },
-      } } : entry));
+        return current.map(entry => ids.includes(entry.id) && entry.direction ? { ...entry, direction: {
+          ...entry.direction, delivery: { requestId, assistantMessageId: identity.assistantMessageId, requestEnded: false },
+        } } : entry);
+      });
     },
-    directionRequestEnded(ids: string[], requestId: string) {
+    async directionRequestEnded(ids: string[], requestId: string) {
       if (!ids.length) return;
-      persist(entries.map(entry => ids.includes(entry.id) && entry.direction?.delivery?.requestId === requestId ? {
+      await persist(current => current.map(entry => ids.includes(entry.id) && entry.direction?.delivery?.requestId === requestId ? {
         ...entry, direction: { ...entry.direction, delivery: { ...entry.direction.delivery, requestEnded: true } },
       } : entry));
     },
     confirmDirections(ids: string[], assistantMessageId: string) {
-      retireConfirmed(entry => ids.includes(entry.id) && entry.direction?.delivery?.requestEnded === true &&
+      return retireConfirmed(entry => ids.includes(entry.id) && entry.direction?.delivery?.requestEnded === true &&
         entry.direction.delivery.assistantMessageId === assistantMessageId);
     },
-    directionRecoveryRequestEnded(assistantMessageId: string) {
+    async directionRecoveryRequestEnded(assistantMessageId: string) {
       const affected = entries.some(entry => entry.direction?.recoveryAssistantMessageId === assistantMessageId);
-      if (affected) persist(entries.map(entry => entry.direction?.recoveryAssistantMessageId === assistantMessageId ? {
+      if (affected) await persist(current => current.map(entry => entry.direction?.recoveryAssistantMessageId === assistantMessageId ? {
         ...entry, direction: { ...entry.direction, recoveryRequestEnded: true },
       } : entry));
     },
     confirmDirectionRecovery(assistantMessageId: string) {
-      retireConfirmed(entry => entry.direction?.recoveryAssistantMessageId === assistantMessageId && entry.direction.recoveryRequestEnded === true);
+      return retireConfirmed(entry => entry.direction?.recoveryAssistantMessageId === assistantMessageId && entry.direction.recoveryRequestEnded === true);
     },
-    confirmPersistedAssistant(assistant: ChatMessage) { retireConfirmed(entry => Boolean(confirmedBy(entry, assistant, true))); },
-    accept(entry: QueuedSubmission) {
-      persist([...entries, entry]);
+    confirmPersistedAssistant(assistant: ChatMessage) { return retireConfirmed(entry => Boolean(confirmedBy(entry, assistant, true))); },
+    async accept(entry: QueuedSubmission, pausedOnAccept = false) {
+      await persist(current => [...current, entry]);
+      if (pausedOnAccept) pause(entry.input.conversationId);
       queueMicrotask(() => void drain(entry.input.conversationId));
     },
+    assertCanDispatch,
     acknowledge,
     beforeAssistantStart,
     complete,
@@ -273,7 +331,8 @@ export function createQueuedSubmissionRuntime(ports: QueuePorts) {
       if (entries.some(entry => entry.input.conversationId === id && mutating.has(entry.id))) {
         throw new Error(i18n.t('chat.queueEditInProgress', 'Wait for the queued message change to finish.'));
       }
-      if (ports.blocked(id) || ports.cancelled(id)) return;
+      // A retry cannot revive a dispatch whose asynchronous preparation was stopped.
+      if (draining.has(id) || ports.blocked(id) || ports.cancelled(id)) return;
       paused.delete(id);
       if (recoveries[id]?.error) {
         recoveries = { ...recoveries, [id]: { count: recoveries[id].count } };
@@ -285,30 +344,31 @@ export function createQueuedSubmissionRuntime(ports: QueuePorts) {
       await pendingEntry(id);
       try {
         if (!content.trim()) throw new Error(i18n.t('chat.queueEmptyMessage', 'The queued message cannot be empty.'));
-        persist(entries.map(candidate => candidate.id === id ? { ...candidate, input: { ...candidate.input, content } } : candidate));
+        await persist(current => current.map(candidate => candidate.id === id ? { ...candidate, input: { ...candidate.input, content } } : candidate));
       } finally { mutating.delete(id); }
     },
     async removeEntry(id: string) {
       const entry = await pendingEntry(id, true);
       try {
-        persist(entries.filter(candidate => candidate.id !== id));
+        await persist(current => current.filter(candidate => candidate.id !== id));
         if (!entries.some(candidate => candidate.input.conversationId === entry.input.conversationId)) {
           paused.delete(entry.input.conversationId);
         }
       }
-      finally { mutating.delete(id); }
+      finally {
+        mutating.delete(id);
+        queueMicrotask(() => void drain(entry.input.conversationId));
+      }
     },
-    remove(ids: readonly string[]) {
-      const remaining = entries.filter(entry => !ids.includes(entry.input.conversationId));
-      if (remaining.length !== entries.length) saveQueuedSubmissions(remaining);
-      // Deletion is authoritative even if local cleanup fails; storage reports the failure.
-      entries = remaining;
+    async remove(ids: readonly string[]) {
+      await persist(current => current.filter(entry => !ids.includes(entry.input.conversationId)));
       ids.forEach(id => paused.delete(id));
       refreshRecovery();
     },
-    restore(conversationIds: readonly string[]) {
-      const retained = entries.filter(entry => conversationIds.includes(entry.input.conversationId));
-      if (retained.length !== entries.length && saveQueuedSubmissions(retained)) entries = retained;
+    async restore(conversationIds: readonly string[]) {
+      if (entries.some(entry => !conversationIds.includes(entry.input.conversationId))) {
+        await persist(current => current.filter(entry => conversationIds.includes(entry.input.conversationId)));
+      }
       for (const id of paused) pause(id);
     },
   };

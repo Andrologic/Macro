@@ -11,6 +11,7 @@ const accumulator = (): ToolBatchAccumulator => ({
   appendSystemChunk: mock(() => undefined),
 });
 const options = (onToolCall: StreamingChatOptions['onToolCall']): StreamingChatOptions => ({
+  providerAdmission: { kind: 'utility' },
   providerId: 'fixture', providerType: 'openai', baseUrl: 'https://example.invalid', modelId: 'fixture', messages: [],
   onToken: () => undefined, onComplete: () => undefined, onError: () => undefined, onToolCall,
 });
@@ -435,6 +436,7 @@ describe('resident exact arguments', () => {
   it('delivers raw integer and decimal lexemes before parsing or fallback', async () => {
     const seen: string[] = [];
     const options = {
+      providerAdmission: { kind: 'utility' as const },
       providerId: 'synthetic', providerType: 'openai', baseUrl: '', modelId: 'synthetic', messages: [],
       onToken: () => {}, onComplete: () => {}, onError: () => {}, executionPolicy: 'native-serial' as const,
       onRawToolCall: async (invocation: ToolCall) => { seen.push(invocation.function.arguments); return { kind: 'result' as const, result: 'refused before effect', isError: true, errorKind: 'validation' as const }; },

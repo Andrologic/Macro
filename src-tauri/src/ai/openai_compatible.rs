@@ -3,7 +3,7 @@ use super::types::{
     AiToolCall, AiToolCallFunction,
 };
 use crate::ai::provider_capabilities::resolve_provider_capabilities;
-use crate::ai::{emit_timeline, AiState, ProviderTimeline};
+use crate::ai::{emit_timeline, ProviderTimeline};
 use crate::db::models::ProviderConfig;
 use crate::db::repository;
 use crate::secrets;
@@ -26,7 +26,29 @@ const MAX_SSE_BUFFER_BYTES: usize = 1_048_576;
 const MAX_ERROR_BODY_BYTES: usize = 16 * 1024;
 const MAX_ERROR_MESSAGE_CHARS: usize = 2_048;
 
-#[derive(Debug)]
+#[cfg(test)]
+pub(crate) fn portable_history_proof_request(request: &AiChatRequest) -> Result<Value, String> {
+    let provider = ProviderConfig {
+        id: "macro-ai".into(),
+        name: "Synthetic Macro AI".into(),
+        provider_type: "openai".into(),
+        base_url: "https://provider.invalid".into(),
+        api_key: None,
+        has_stored_api_key: false,
+        is_enabled: true,
+        is_local: false,
+        auth_status: None,
+        auth_source: None,
+        plan_type: None,
+        account_label: None,
+        token_expires_at: None,
+        created_at: String::new(),
+        updated_at: String::new(),
+    };
+    build_chat_completions_request(request, &provider)
+}
+
+#[derive(Debug, Clone)]
 struct ChatCompletionError {
     message: String,
     status: Option<u16>,
@@ -74,17 +96,41 @@ struct ChatCompletionAccumulator {
     completion_reason: Option<String>,
 }
 
-pub async fn stream_chat(
+pub(crate) async fn stream_chat(
     app_handle: AppHandle,
     pool: SqlitePool,
-    _ai_state: AiState,
     request: AiChatRequest,
+    reservation: crate::ai::stream_tasks::StreamReservation,
+    work: std::sync::Arc<crate::ai::provider_work::ProviderWork>,
 ) -> Result<(), String> {
-    stream_chat_with_provider(app_handle, pool, request, None).await
+    let task_request_id = request.request_id.clone();
+    let task_provider_id = request.provider_id.clone();
+    let app_for_task = app_handle.clone();
+    let task_started_at = Instant::now();
+
+    reservation.spawn_with_work(work.clone(), move |cancel| async move {
+        let result = tokio::select! {
+            biased;
+            _ = cancel.cancelled() => Err(ChatCompletionError::from("AI stream cancelled.".to_string())),
+            result = stream_chat_inner(app_for_task.clone(), pool, request, None, &work) => result,
+        };
+        if let Err(error) = &result {
+            emit_timeline(
+                &app_for_task,
+                &task_request_id,
+                &task_provider_id,
+                "openai_compatible",
+                task_started_at,
+                "error",
+            );
+            let _ = app_for_task.emit("ai:error", error.clone().into_event(task_request_id.clone()));
+        }
+
+        result.map_err(|error| error.message)
+    })
 }
 
-/// Native execution supplies its revalidated descriptor to prevent a mutable
-/// provider row from changing the endpoint between admission and request build.
+/// Use the provider descriptor revalidated by the execution host.
 pub(crate) async fn stream_chat_with_provider(
     app_handle: AppHandle,
     pool: SqlitePool,
@@ -94,7 +140,15 @@ pub(crate) async fn stream_chat_with_provider(
     let request_id = request.request_id.clone();
     let provider_id = request.provider_id.clone();
     let started_at = Instant::now();
-    if let Err(error) = stream_chat_inner(app_handle.clone(), pool, request, provider).await {
+    if let Err(error) = stream_chat_inner(
+        app_handle.clone(),
+        pool,
+        request,
+        provider,
+        &crate::ai::provider_work::ProviderWork::Other,
+    )
+    .await
+    {
         emit_timeline(
             &app_handle,
             &request_id,
@@ -113,6 +167,7 @@ async fn stream_chat_inner(
     pool: SqlitePool,
     request: AiChatRequest,
     provider: Option<ProviderConfig>,
+    work: &crate::ai::provider_work::ProviderWork,
 ) -> Result<(), ChatCompletionError> {
     let started_at = Instant::now();
     let provider = match provider {
@@ -153,25 +208,28 @@ async fn stream_chat_inner(
     );
     timeline.emit("backend_task_started");
     let secret_started_at = Instant::now();
-    let api_key = secrets::get_api_key(&request.provider_id)
+    let api_key = secrets::get_api_key_async(&request.provider_id)
+        .await
         .map_err(|error| format!("Failed to read provider API key: {}", error))?
         .unwrap_or_default();
     if secret_started_at.elapsed().as_millis() > 50 {
         timeline.emit("auth_ready");
     }
     let request_body = build_chat_completions_request(&request, &provider)?;
-    let client = reqwest::Client::builder()
+    let client = work
+        .configure_http_client(reqwest::Client::builder())
         .connect_timeout(CONNECT_TIMEOUT)
         .redirect(reqwest::redirect::Policy::none())
         .build()
         .map_err(|error| error.to_string())?;
     timeline.emit("provider_request_sent");
-    let response =
-        send_chat_completions_request(&client, &provider, &request, &api_key, &request_body)
+    let (response, attempt) =
+        send_chat_completions_request(&client, &provider, &request, &api_key, &request_body, work)
             .await?;
 
     if !response.status().is_success() {
         let status = response.status();
+        attempt.http_rejection(status).await?;
         let error_body = await_http_operation(
             read_provider_error_body(response),
             ERROR_BODY_TIMEOUT,
@@ -254,6 +312,7 @@ async fn stream_chat_inner(
     }
 
     if !saw_completion {
+        attempt.uncertain().await?;
         accumulator.completion_reason = Some("incomplete".to_string());
     }
     ensure_terminal_completion_reason(&mut accumulator.completion_reason, &accumulator.tool_calls);
@@ -628,13 +687,18 @@ async fn send_chat_completions_request(
     request: &AiChatRequest,
     api_key: &str,
     body: &Value,
-) -> Result<reqwest::Response, String> {
+    work: &crate::ai::provider_work::ProviderWork,
+) -> Result<(reqwest::Response, crate::ai::provider_work::ProviderAttempt), String> {
     let url = format!(
         "{}/chat/completions",
         provider.base_url.trim_end_matches('/')
     );
+    let url = reqwest::Url::parse(&url).map_err(|error| error.to_string())?;
+    let attempt = work
+        .independent_request_attempt(&provider.id, url.as_str())
+        .await?;
     let mut builder = client
-        .post(&url)
+        .post(url)
         .header(CONTENT_TYPE, "application/json")
         .header(ACCEPT, "text/event-stream")
         .header("x-client-request-id", request.request_id.clone())
@@ -659,8 +723,25 @@ async fn send_chat_completions_request(
             .header("X-Title", "Macro");
     }
 
+    if matches!(
+        work,
+        crate::ai::provider_work::ProviderWork::GlobalChat { .. }
+    ) {
+        // A timeout or transport error after send does not prove rejection.
+        // The owning task records uncertainty; no automatic second send follows.
+        let request = builder.build().map_err(|error| error.to_string())?;
+        attempt.dispatched().await?;
+        return await_http_operation(
+            client.execute(request),
+            RESPONSE_HEADERS_TIMEOUT,
+            "Provider response headers",
+        )
+        .await
+        .map(|response| (response, attempt));
+    }
+
     let mut last_error = None;
-    for attempt in 0..REQUEST_RETRY_ATTEMPTS {
+    for retry in 0..REQUEST_RETRY_ATTEMPTS {
         let Some(cloned_builder) = builder.try_clone() else {
             break;
         };
@@ -671,10 +752,10 @@ async fn send_chat_completions_request(
         )
         .await
         {
-            Ok(response) => return Ok(response),
+            Ok(response) => return Ok((response, attempt)),
             Err(error) => {
                 last_error = Some(error);
-                if attempt + 1 < REQUEST_RETRY_ATTEMPTS {
+                if retry + 1 < REQUEST_RETRY_ATTEMPTS {
                     sleep(Duration::from_millis(250)).await;
                 }
             }
@@ -687,6 +768,7 @@ async fn send_chat_completions_request(
         "Provider response headers",
     )
     .await
+    .map(|response| (response, attempt))
     .map_err(|error| {
         let previous = last_error
             .map(|message| format!(" Last retryable error: {}", message))
@@ -1417,6 +1499,27 @@ mod tests {
     }
 
     #[test]
+    fn native_messages_preserve_structured_user_input_text() {
+        let mut user = message("user", "Display fallback");
+        user.provider_input_items = Some(vec![serde_json::json!({
+            "type": "message", "role": "user",
+            "content": [
+                { "type": "input_text", "text": "Question from mobile" },
+                { "type": "input_text", "text": " — with context" }
+            ]
+        })]);
+        let mut request = request(None);
+        request.messages = vec![user];
+        let messages = serialize_messages(&request).expect("messages");
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0]["role"], "user");
+        assert_eq!(
+            messages[0]["content"],
+            "Question from mobile — with context"
+        );
+    }
+
+    #[test]
     fn native_messages_restore_persisted_tool_calls_and_results_in_order() {
         let mut historical = message("assistant", "Read complete.");
         historical.provider_input_items = Some(vec![
@@ -1787,5 +1890,378 @@ mod tests {
         let mut reason = None;
         ensure_terminal_completion_reason(&mut reason, &[call("")]);
         assert_eq!(reason.as_deref(), Some("completed"));
+    }
+    #[tokio::test]
+    async fn admitted_request_is_not_repeated_after_lost_headers_or_timeout() {
+        use crate::ai::provider_work::tests::{fixture, HttpServer};
+        for response in [None, Some("")] {
+            let server = HttpServer::start(vec![response]).await;
+            let (_dir, pool, _runtime, work) = fixture("native-request").await;
+            let mut provider = provider("openai");
+            provider.base_url = server.url.clone();
+            let client = reqwest::Client::builder()
+                .no_proxy()
+                .timeout(Duration::from_millis(100))
+                .build()
+                .unwrap();
+            let mut request = request(None);
+            request.request_id = "native-request".into();
+            request.conversation_id = Some("chat".into());
+            let error = send_chat_completions_request(
+                &client,
+                &provider,
+                &request,
+                "",
+                &serde_json::json!({"messages": []}),
+                &work,
+            )
+            .await
+            .err()
+            .expect("lost headers must not be successful");
+            work.settle(&Err(error)).await.unwrap();
+            let count = server.stop().await;
+            assert_eq!(count, 1);
+            let phases: Vec<String> = sqlx::query_scalar("SELECT phase FROM chat_admission_operations WHERE kind='provider' ORDER BY operation_id")
+                .fetch_all(&pool).await.unwrap();
+            assert_eq!(phases, vec!["unknown", "unknown"]);
+        }
+    }
+
+    #[tokio::test]
+    async fn native_cancel_joins_the_request_and_retains_unknown_after_emission() {
+        use crate::ai::provider_work::tests::{fixture, HttpServer};
+        let server = HttpServer::start(vec![Some("")]).await;
+        let (_dir, pool, _runtime, work) = fixture("native-request").await;
+        let mut provider = provider("openai");
+        provider.base_url = server.url.clone();
+        let state = crate::ai::AiState::default();
+        let task_work = work.clone();
+        state.reserve_stream("native-request".into()).unwrap()
+            .spawn_with_work(work, move |cancel| async move {
+                let client = reqwest::Client::builder().no_proxy().build().unwrap();
+                let mut request = request(None);
+                request.request_id = "native-request".into();
+                request.conversation_id = Some("chat".into());
+                let body = serde_json::json!({"messages": []});
+                tokio::select! {
+                    biased;
+                    _ = cancel.cancelled() => Err("Synthetic cancellation".into()),
+                    result = send_chat_completions_request(&client, &provider, &request, "", &body, &task_work) => result.map(|_| ()),
+                }
+            }).unwrap();
+        tokio::time::timeout(Duration::from_secs(5), server.received.notified())
+            .await
+            .unwrap();
+        let cancelled = tokio::time::timeout(
+            Duration::from_secs(5),
+            state.cancel_stream_task("native-request"),
+        )
+        .await
+        .unwrap();
+        assert!(cancelled.is_err());
+        assert_eq!(server.stop().await, 1);
+        let phases: Vec<String> = sqlx::query_scalar("SELECT phase FROM chat_admission_operations WHERE kind='provider' ORDER BY operation_id")
+            .fetch_all(&pool).await.unwrap();
+        assert_eq!(phases, vec!["unknown", "unknown"]);
+    }
+    #[tokio::test]
+    async fn independent_user_request_after_local_closure_keeps_old_unknown_and_refuses_cession() {
+        use crate::ai::{
+            admitted_http::AdmittedHttp,
+            provider_work::{
+                tests::{fixture_with_owner, HttpServer},
+                ProviderAdmission, ProviderWork,
+            },
+            AiState,
+        };
+        use crate::db::chat_admission::reconciliation::BrowserInspection;
+        use std::sync::Arc;
+        let server=HttpServer::start(vec![Some("HTTP/1.1 200 OK\r\nContent-Length: 53\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\ndata: {\"choices\":[{\"delta\":{\"content\":\"partial\"}}]}\n\n"),Some("HTTP/1.1 200 OK\r\nContent-Length: 14\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\ndata: [DONE]\n\n")]).await;
+        let (_dir, pool, owner, runtime, first) = fixture_with_owner("first-request").await;
+        let root: String = sqlx::query_scalar("SELECT operation_id FROM chat_admission_operations WHERE parent_id IS NULL AND kind='turn'").fetch_one(&pool).await.unwrap();
+        let original = crate::db::chat_admission::runtime::ChatAdmissionContext {
+            handle: root.clone(),
+            runtime: "browser".into(),
+        };
+        let original_parent = runtime.parent("window", &original, "chat").await.unwrap();
+        sqlx::query("INSERT INTO messages(id,conversation_id,role,content,turn_id,created_at) VALUES('assistant','chat','assistant','','turn','t')").execute(&pool).await.unwrap();
+        let copy = crate::db::chat_admission::intents::reserve_response(
+            &original_parent,
+            "window",
+            "assistant",
+        )
+        .await
+        .unwrap();
+        // A lost reservation ACK must retrieve the exact same copy owner.
+        assert_eq!(
+            crate::db::chat_admission::intents::reserve_response(
+                &original_parent,
+                "window",
+                "assistant"
+            )
+            .await
+            .unwrap()
+            .operation_id,
+            copy.operation_id
+        );
+        let state = AiState::default();
+        let http = AdmittedHttp::default();
+        for (id, work) in [("first-request", first)] {
+            let mut provider = provider("openai");
+            provider.base_url = server.url.clone();
+            let task_work = work.clone();
+            state
+                .reserve_stream(id.into())
+                .unwrap()
+                .spawn_with_work(work, move |_| async move {
+                    let mut request = request(None);
+                    request.request_id = id.into();
+                    request.conversation_id = Some("chat".into());
+                    let body = build_chat_completions_request(&request, &provider)?;
+                    let client = task_work
+                        .configure_http_client(reqwest::Client::builder())
+                        .no_proxy()
+                        .build()
+                        .unwrap();
+                    let (response, _) = send_chat_completions_request(
+                        &client, &provider, &request, "", &body, &task_work,
+                    )
+                    .await?;
+                    let bytes = response.bytes().await.map_err(|e| e.to_string())?;
+                    let events = SseParser::default().push(&bytes)?;
+                    assert!(events.iter().any(|event| event.contains("partial")));
+                    assert!(!events.iter().any(|event| event.contains("[DONE]")));
+                    Err("EOF without a protocol terminal".into())
+                })
+                .unwrap();
+            assert!(state.join_stream_task(id).await.unwrap().is_err());
+        }
+        // Ordinary visible persistence does not certify the provider outcome.
+        let write = || crate::db::repository::UpdateMessageContentInput {
+            id: "assistant",
+            turn_id: Some("turn".into()),
+            content: "partial",
+            token_count: None,
+            tool_traces_json: None,
+            hidden_context: None,
+            provider_input_items_json: None,
+            provider_turn_state_json: None,
+            context_refs_json: None,
+            completion_reason: Some("incomplete".into()),
+            generation_attempts_json: None,
+        };
+        crate::db::repository::update_message_content(&pool, write())
+            .await
+            .unwrap();
+        assert!(runtime
+            .finish_response("window", &original, "chat", write())
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("response_outcome_unknown"));
+        assert!(runtime
+            .begin(owner.clone(), "window", "browser", "chat", "before-join")
+            .await
+            .is_err());
+        let before:i64=sqlx::query_scalar("SELECT count(*) FROM chat_admission_operations WHERE phase='unknown' AND kind IN ('provider','tool')").fetch_one(&pool).await.unwrap();
+        assert!(before > 0);
+        runtime
+            .retire_previous_unknown_turns(
+                &owner,
+                &state,
+                &http,
+                "window",
+                "browser",
+                "chat",
+                "new-user-turn",
+            )
+            .await
+            .unwrap();
+        assert!(runtime
+            .begin(owner.clone(), "window", "browser", "chat", "turn")
+            .await
+            .is_err());
+        assert!(runtime
+            .begin_root(
+                owner.clone(),
+                "window",
+                "browser",
+                "chat",
+                "new-compaction",
+                "new-compaction",
+                crate::db::chat_admission::RootWorkKind::Compaction
+            )
+            .await
+            .is_err());
+        let context = runtime
+            .begin(owner.clone(), "window", "browser", "chat", "new-user-turn")
+            .await
+            .unwrap();
+        let parent = runtime.parent("window", &context, "chat").await.unwrap();
+        let next = Arc::new(
+            ProviderWork::admit(
+                &pool,
+                &runtime,
+                "window",
+                ProviderAdmission::GlobalChat { context },
+                Some("chat"),
+                "next-request",
+            )
+            .await
+            .unwrap(),
+        );
+        let mut provider = provider("openai");
+        provider.base_url = server.url.clone();
+        let task_work = next.clone();
+        state
+            .reserve_stream("next-request".into())
+            .unwrap()
+            .spawn_with_work(next, move |_| async move {
+                let mut request = request(None);
+                request.request_id = "next-request".into();
+                request.conversation_id = Some("chat".into());
+                request.messages = vec![message("user", "A distinct user request")];
+                let body = build_chat_completions_request(&request, &provider)?;
+                assert_eq!(body["messages"][0]["content"], "A distinct user request");
+                assert!(body.get("previous_response_id").is_none());
+                let client = task_work
+                    .configure_http_client(reqwest::Client::builder())
+                    .no_proxy()
+                    .build()
+                    .unwrap();
+                let (response, _) = send_chat_completions_request(
+                    &client, &provider, &request, "", &body, &task_work,
+                )
+                .await?;
+                let bytes = response.bytes().await.map_err(|e| e.to_string())?;
+                let events = SseParser::default().push(&bytes)?;
+                assert_eq!(
+                    events
+                        .iter()
+                        .filter_map(|s| extract_sse_data(s))
+                        .collect::<Vec<_>>(),
+                    ["[DONE]"]
+                );
+                Ok(())
+            })
+            .unwrap();
+        state
+            .join_stream_task("next-request")
+            .await
+            .unwrap()
+            .unwrap();
+        parent.finish_preparation().await.unwrap();
+        assert_eq!(sqlx::query_scalar::<_,i64>("SELECT count(*) FROM chat_admission_operations WHERE phase='unknown' AND kind IN ('provider','tool')").fetch_one(&pool).await.unwrap(),before);
+        let handle = runtime
+            .begin_reconciliation(&owner, "window", "browser", "chat")
+            .await
+            .unwrap();
+        let empty = BrowserInspection {
+            queue: vec![],
+            unsaved: vec![],
+            approvals: vec![],
+            questions: vec![],
+            drafts: vec![],
+            steers: vec![],
+        };
+        assert!(runtime
+            .complete_reconciliation(&owner, "window", "browser", &handle, &empty)
+            .await
+            .is_err());
+        assert!(runtime
+            .reserve_reconciled_source(&owner, "window", "browser", &handle)
+            .await
+            .is_err());
+        assert_eq!(
+            sqlx::query_scalar::<_, String>(
+                "SELECT phase FROM chat_admission_operations WHERE operation_id=?"
+            )
+            .bind(&copy.operation_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap(),
+            "prepared"
+        );
+        assert_eq!(
+            sqlx::query_scalar::<_, String>("SELECT content FROM messages WHERE id='assistant'")
+                .fetch_one(&pool)
+                .await
+                .unwrap(),
+            "partial"
+        );
+        assert!(runtime
+            .finish_response("window", &original, "chat", write())
+            .await
+            .is_err());
+        runtime
+            .close_browser(&owner, &state, &http, "window", "browser")
+            .await
+            .unwrap();
+        // Reopen the actual file through official startup reconciliation.
+        let reopened = crate::db::create_pool(&_dir.path().join("synthetic.db"))
+            .await
+            .unwrap();
+        let restarted = crate::core::db_state::DbPool::default();
+        restarted.set_ready(reopened.clone()).await.unwrap();
+        let reloaded = crate::db::chat_admission::runtime::ChatAdmissionRuntime::default();
+        assert!(reloaded
+            .begin(restarted.clone(), "window", "reload", "chat", "turn")
+            .await
+            .is_err());
+        let independent = reloaded
+            .begin(
+                restarted.clone(),
+                "window",
+                "reload",
+                "chat",
+                "after-restart",
+            )
+            .await
+            .unwrap();
+        reloaded
+            .parent("window", &independent, "chat")
+            .await
+            .unwrap()
+            .finish_preparation()
+            .await
+            .unwrap();
+        assert_eq!(sqlx::query_scalar::<_,i64>("SELECT count(*) FROM chat_admission_operations WHERE phase='unknown' AND kind IN ('provider','tool')").fetch_one(&pool).await.unwrap(),before);
+        let identity = crate::db::chat_admission::intents::response_recovery_identity(
+            &restarted,
+            "chat",
+            "assistant",
+        )
+        .await
+        .unwrap();
+        let receipt = reloaded
+            .begin_intent(
+                &restarted,
+                "window",
+                "reload",
+                identity,
+                crate::db::chat_admission::intents::IntentMutation::Retain,
+            )
+            .await
+            .unwrap();
+        for _ in 0..2 {
+            assert!(crate::db::chat_admission::intents::recover_response(
+                &restarted,
+                "window",
+                &receipt,
+                write()
+            )
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("response_outcome_unknown"));
+        }
+        assert_eq!(
+            sqlx::query_scalar::<_, String>("SELECT content FROM messages WHERE id='assistant'")
+                .fetch_one(&reopened)
+                .await
+                .unwrap(),
+            "partial"
+        );
+        assert_eq!(server.stop().await, 2); // One partial old send, one independent user send.
     }
 }

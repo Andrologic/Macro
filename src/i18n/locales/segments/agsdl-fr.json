@@ -246,7 +246,16 @@
       "engineUnset": "Moteur non configuré",
       "selected": "Sélectionnée"
     },
-    "backToComponent": "Revenir à la fiche précédente"
+    "backToComponent": "Revenir à la fiche précédente",
+    "legend": "Légende",
+    "legendFlow": "Enchaînement",
+    "legendError": "Sortie en cas d’erreur",
+    "legendQueue": "File d’attente d’un agent partagé",
+    "legendEntry": "Point d’entrée du flux",
+    "joinAll": "Tous",
+    "joinFirst": "Premier",
+    "joinAllHint": "Attend tous les résultats",
+    "joinFirstHint": "Retient le premier résultat acceptable"
   },
   "attachToChat": "Joindre au chat",
   "chatSelection": "Sélection AgSDL",
@@ -543,7 +552,9 @@
     "to": "Suite",
     "expand": "Déplier le groupe",
     "openTask": "Ouvrir la tâche",
-    "canvasMenu": "Actions du graphe"
+    "canvasMenu": "Actions du graphe",
+    "unfold": "Déplier la composition",
+    "fold": "Replier la composition"
   },
   "link": {
     "true": "Si oui",
@@ -598,5 +609,51 @@
     "installation": "Instructions officielles d’installation du SDK",
     "apiKey": "Clé API Anthropic",
     "keySaveFailed": "La clé n’a pas pu être enregistrée ou son profil n’a pas pu être qualifié."
+  },
+  "preview": {
+    "steers": "Consigne pour",
+    "model": "Modèle",
+    "uses": "Utilise",
+    "receives": "Reçoit",
+    "produces": "Produit",
+    "limit": "Passages",
+    "after": "Lancés par",
+    "arguments": "Arguments",
+    "effect": "Effet",
+    "action": "Action",
+    "targets": "Cibles",
+    "context": "Contexte",
+    "timeout": "Délai",
+    "validity": "Validité",
+    "test": "Teste",
+    "mode": "Attend",
+    "accept": "Accepte si",
+    "agents": "Agents",
+    "transmits": "Transmet",
+    "whenLabel": "Prise si",
+    "limitValue_one": "{{count}} au plus",
+    "limitValue_other": "{{count}} au plus",
+    "effects": {
+      "none": "aucun",
+      "external": "externe",
+      "unknown": "non déclaré"
+    },
+    "join": {
+      "all": "tous les membres",
+      "first": "le premier accepté",
+      "remaining-finish": "les autres terminent",
+      "remaining-stop-and-wait": "les autres s’arrêtent"
+    },
+    "when": {
+      "choice": "{{who}} choisit « {{name}} »",
+      "error": "{{source}} échoue",
+      "next": "Toujours",
+      "true": "La condition est vraie",
+      "false": "La condition est fausse",
+      "approved": "L’accord est donné",
+      "denied": "L’accord est refusé",
+      "exchange": "Lors d’un échange de données",
+      "dependency": "Après le bloc précédent"
+    }
   }
 }

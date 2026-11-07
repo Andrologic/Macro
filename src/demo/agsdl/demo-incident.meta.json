@@ -1,0 +1,90 @@
+{
+  "title": "Diagnostic d’incident",
+  "description": "Rechercher la cause d’une latence anormale, puis vérifier une hypothèse avant de conclure.",
+  "projectId": "demo-helio",
+  "planKind": "feature",
+  "icon": "zap",
+  "design": {
+    "version": 1,
+    "kind": "blueprint",
+    "purpose": "Rechercher la cause d’une latence anormale, puis vérifier une hypothèse avant de conclure.",
+    "context": "Projet fictif : les services, données et résultats sont simulés.",
+    "rules": [],
+    "requirements": [
+      {
+        "id": "model",
+        "label": "Modèle des agents",
+        "description": "Choix pour cette utilisation simulée",
+        "value": "Macro AI · Démo"
+      }
+    ]
+  },
+  "display": {
+    "title": "Diagnostic d’incident",
+    "cards": {
+      "/agents/triage": {
+        "title": "Responsable d’astreinte"
+      },
+      "/agents/investigate": {
+        "title": "Analyste des traces"
+      },
+      "/agents/verify": {
+        "title": "Vérificateur"
+      },
+      "/agents/conclude": {
+        "title": "Rédacteur du post-mortem"
+      },
+      "/flow/steps/triage": {
+        "title": "Qualifier l’incident"
+      },
+      "/flow/steps/collect": {
+        "title": "Collecter les métriques"
+      },
+      "/flow/steps/investigate": {
+        "title": "Examiner les traces"
+      },
+      "/flow/steps/handoff": {
+        "title": "Transmettre l’hypothèse"
+      },
+      "/flow/steps/verify": {
+        "title": "Tester l’hypothèse"
+      },
+      "/flow/steps/confirmed": {
+        "title": "Hypothèse confirmée ?"
+      },
+      "/flow/steps/conclude": {
+        "title": "Rédiger le post-mortem"
+      },
+      "/bindings/telemetry": {
+        "title": "Métriques du catalogue"
+      },
+      "/flow": {
+        "title": "Diagnostic d’incident"
+      },
+      "/bindings/engine": {
+        "title": "Macro"
+      },
+      "/configurations/rapide": {
+        "title": "Rapide"
+      },
+      "/configurations/analyse": {
+        "title": "Analyse"
+      },
+      "/configurations/analyseApprofondie": {
+        "title": "Analyse approfondie"
+      },
+      "/configurations/redaction": {
+        "title": "Rédaction"
+      },
+      "/content/severity": {
+        "title": "Gravité de l’incident"
+      },
+      "/flow/steps/metrics": {
+        "title": "Préparer les métriques"
+      },
+      "/flow/steps/refocus": {
+        "title": "Recentrer l’analyse"
+      }
+    }
+  }
+}

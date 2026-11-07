@@ -7,6 +7,7 @@ import { mapDbMessageToChatMessage } from '../services/chatDbMappers';
 import { getArchitectPlanPrimaryName } from '../services/architectPlanPresentation';
 import { normalizePlanIcon } from '../services/planIcon';
 import { createDemoRuntime } from './runtime';
+import { expandedStepPath } from '../services/agsdl/compositionExpansion';
 import { missingBlueprintFields, type DemoBlueprintUse } from './blueprintLaunch';
 import { buildQuestionnaireResponseArtifacts } from '../services/chatQuestionnaires';
 
@@ -86,6 +87,6 @@ describe('interface examples', () => {
     expect(denied.title).toContain('1049');
     expect(Object.values(denied.taskPaths).some(id => Object.values(original.taskPaths).includes(id))).toBe(false);
     expect(denied.activity?.['/flow/steps/refund']).toBeUndefined();
-    expect(demoExecutionGraphs.find(graph => Object.values(graph.taskPaths).includes('demo-publication-recovery'))?.activity?.['/flow/steps/publish'].state).toBe('failed');
+    expect(demoExecutionGraphs.find(graph => Object.values(graph.taskPaths).includes('demo-fix-recovery'))?.activity?.[expandedStepPath('/flow/steps/change', '/compositions/testedChange/steps/tests')].state).toBe('failed');
   });
 });

@@ -1,5 +1,7 @@
 mod api_keys;
+pub(crate) mod blocking;
 mod chatgpt;
+pub(crate) mod policy;
 mod store;
 
 #[cfg(test)]
@@ -59,28 +61,28 @@ fn metadata_for_api_key(id: String) -> SecretMetadata {
 }
 
 pub fn list_secret_metadata() -> Result<Vec<SecretMetadata>, SecretError> {
-    let mut entries = store::list_provider_secret_ids()?
-        .into_iter()
-        .map(metadata_for_api_key)
-        .collect::<Vec<_>>();
-    entries.extend(
-        store::list_chatgpt_secret_ids()?
-            .into_iter()
-            .map(|id| SecretMetadata {
-                secret_ref: format!("macro-secret://chatgpt/{id}"),
-                id,
-                namespace: "providers".to_string(),
-                secret_type: "chatgptSession".to_string(),
-            }),
-    );
-    entries.sort_by(|left, right| {
-        (&left.namespace, &left.id, &left.secret_type).cmp(&(
-            &right.namespace,
-            &right.id,
-            &right.secret_type,
-        ))
-    });
-    Ok(entries)
+    policy::POLICY.read(|data| {
+        let mut entries = data
+            .api_keys
+            .keys()
+            .cloned()
+            .map(metadata_for_api_key)
+            .collect::<Vec<_>>();
+        entries.extend(data.chatgpt_sessions.keys().map(|id| SecretMetadata {
+            secret_ref: format!("macro-secret://chatgpt/{id}"),
+            id: id.clone(),
+            namespace: "providers".to_string(),
+            secret_type: "chatgptSession".to_string(),
+        }));
+        entries.sort_by(|left, right| {
+            (&left.namespace, &left.id, &left.secret_type).cmp(&(
+                &right.namespace,
+                &right.id,
+                &right.secret_type,
+            ))
+        });
+        Ok(entries)
+    })
 }
 
 pub fn delete_secret_metadata(id: &str, secret_type: &str) -> Result<(), SecretError> {
@@ -92,10 +94,12 @@ pub fn delete_secret_metadata(id: &str, secret_type: &str) -> Result<(), SecretE
 }
 
 pub fn init(app_data_dir: &Path) -> Result<(), SecretError> {
-    store::init_store(app_data_dir)?;
+    policy::POLICY.initialize(app_data_dir)
+}
+
+fn clear_caches() {
     api_keys::clear_cache();
     chatgpt::clear_cache();
-    Ok(())
 }
 
 pub(crate) fn chatgpt_auth_lock_path(provider_id: &str) -> Result<std::path::PathBuf, SecretError> {
@@ -105,4 +109,48 @@ pub(crate) fn chatgpt_auth_lock_path(provider_id: &str) -> Result<std::path::Pat
 pub(crate) fn harden_private_file(path: &Path) -> Result<(), SecretError> {
     store::set_private_file_permissions(path)?;
     Ok(())
+}
+
+pub(crate) async fn get_api_key_async(provider_id: &str) -> Result<Option<String>, SecretError> {
+    let provider_id = provider_id.to_owned();
+    blocking::run(move || get_api_key(&provider_id)).await?
+}
+
+pub(crate) async fn set_api_key_async(id: &str, value: &str) -> Result<(), SecretError> {
+    let (id, value) = (id.to_owned(), value.to_owned());
+    blocking::run(move || set_api_key(&id, &value)).await?
+}
+pub(crate) async fn delete_api_key_async(id: &str) -> Result<(), SecretError> {
+    let id = id.to_owned();
+    blocking::run(move || delete_api_key(&id)).await?
+}
+pub(crate) async fn get_chatgpt_secret_async(
+    id: &str,
+) -> Result<Option<ChatGptSecret>, SecretError> {
+    let id = id.to_owned();
+    blocking::run(move || get_chatgpt_secret(&id)).await?
+}
+pub(crate) async fn reload_chatgpt_secret_async(
+    id: &str,
+) -> Result<Option<ChatGptSecret>, SecretError> {
+    let id = id.to_owned();
+    blocking::run(move || reload_chatgpt_secret(&id)).await?
+}
+pub(crate) async fn set_chatgpt_secret_async(
+    id: &str,
+    value: &ChatGptSecret,
+) -> Result<(), SecretError> {
+    let (id, value) = (id.to_owned(), value.clone());
+    blocking::run(move || set_chatgpt_secret(&id, &value)).await?
+}
+pub(crate) async fn delete_provider_secret_async(id: &str) -> Result<(), SecretError> {
+    let id = id.to_owned();
+    blocking::run(move || delete_provider_secret(&id)).await?
+}
+pub(crate) async fn list_secret_metadata_async() -> Result<Vec<SecretMetadata>, SecretError> {
+    blocking::run(list_secret_metadata).await?
+}
+pub(crate) async fn delete_secret_metadata_async(id: &str, kind: &str) -> Result<(), SecretError> {
+    let (id, kind) = (id.to_owned(), kind.to_owned());
+    blocking::run(move || delete_secret_metadata(&id, &kind)).await?
 }

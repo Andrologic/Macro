@@ -1,16 +1,20 @@
 import { useEffect, useId, useRef, useState } from 'react';
-import { BaseEdge, getSmoothStepPath, type Edge, type EdgeProps } from '@xyflow/react';
+import { BaseEdge, EdgeLabelRenderer, getSmoothStepPath, type Edge, type EdgeProps } from '@xyflow/react';
 import { ArrowDown, ArrowDownToLine, ArrowRightLeft, Check, CornerUpLeft, GitBranch, Info, Link2, X } from 'lucide-react';
 import type { ViewerEdge, ViewerEdgeRoute } from '../../services/agsdl/graphLayout';
 import { viewerEdgePath } from '../../services/agsdl/graphLayout';
 import { WorkflowGraphPopup } from './WorkflowGraphPopup';
+import { WorkflowEdgePreview } from './WorkflowPreviews';
 import { useAgsdlTranslation } from './useAgsdlTranslation';
 
 export type WorkflowEdgeData = {
   route?: ViewerEdgeRoute;
+  /** The target's agent is shared by several steps, so the message may wait in its queue. */
+  queued?: boolean;
   connection: ViewerEdge;
   sourceTitle: string;
   targetTitle: string;
+  sourcePerformer?: string;
   dismissSignal: number;
   focusEdge?: (id: string, open: boolean) => void;
   inspect?: () => void;
@@ -18,6 +22,7 @@ export type WorkflowEdgeData = {
   inspectTarget: () => void;
 };
 export type GraphEdge = Edge<WorkflowEdgeData, 'workflow'>;
+const QUEUE_GAP = 8;
 
 const namedRouteKey = (route: string) => ['true', 'false', 'approved', 'denied', 'onError'].includes(route) ? `agsdl.link.${route}` : 'agsdl.link.branch';
 const routeKey = (edge: ViewerEdge) => edge.route030 ? edge.route030.role === 'error' ? 'onError' : edge.route030.key : !['next', 'success', 'exchange', 'dependency', ''].includes(edge.label) ? edge.label : undefined;
@@ -64,7 +69,11 @@ export function WorkflowEdge(props: EdgeProps<GraphEdge>) {
   const { t } = useAgsdlTranslation();
   const data = props.data!;
   const route = data.route;
-  const path = route ? viewerEdgePath(route, props) : getSmoothStepPath(props)[0];
+  const failure = data.connection.label === 'onError';
+  // A queued arrival stops short of the block, leaving room for its queue notch.
+  const handles = data.queued ? { ...props, targetY: props.targetY - QUEUE_GAP } : props;
+  const path = route ? viewerEdgePath(route, handles, failure) : getSmoothStepPath(handles)[0];
+  const stroke = props.style?.stroke as string | undefined;
   const [anchor, setAnchor] = useState<SVGGElement | null>(null);
   const pointerPosition = useRef<{ left: number; top: number } | undefined>(undefined);
   const [preview, setPreview] = useState(false);
@@ -104,10 +113,16 @@ export function WorkflowEdge(props: EdgeProps<GraphEdge>) {
         }
       }}>
       <BaseEdge id={props.id} path={path} markerStart={props.markerStart} markerEnd={props.markerEnd} style={props.style} interactionWidth={18} />
+      {data.queued && <path className="agsdl-edge-queue" d={`M${props.targetX - 6} ${props.targetY - 5.5}H${props.targetX + 6}M${props.targetX - 6} ${props.targetY - 2.5}H${props.targetX + 6}`} style={{ stroke, opacity: props.style?.opacity }} />}
     </g>
+    {/* Drawn above the blocks: the exit sits on the block's border. */}
+    {failure && <EdgeLabelRenderer><svg className="agsdl-edge-exit" width="18" height="18" viewBox="-9 -9 18 18" aria-hidden="true"
+      style={{ transform: `translate(-50%, -50%) translate(${props.sourceX}px, ${props.sourceY}px)`, opacity: props.style?.opacity }}>
+      <circle r="8" /><path d="M0 -3.5v4M0 3.4v.1" />
+    </svg></EdgeLabelRenderer>}
     {preview && !menu && anchor && <WorkflowGraphPopup anchor={anchor} position={position} id={id} label={t('agsdl.viewer.connection')} onClose={close}
       onMouseEnter={() => clearTimeout(timer.current)} onMouseLeave={leave}>
-      <WorkflowEdgeSummary {...data} />
+      <WorkflowEdgePreview connection={data.connection} sourceTitle={data.sourceTitle} sourcePerformer={data.sourcePerformer} />
     </WorkflowGraphPopup>}
     {menu && anchor && <WorkflowGraphPopup anchor={anchor} position={menu} label={t('agsdl.viewer.connection')} onClose={close} actions={[
       { label: t('agsdl.link.source'), icon: <Info size={14} />, run: data.inspectSource },

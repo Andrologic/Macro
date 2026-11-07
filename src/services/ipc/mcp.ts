@@ -84,6 +84,7 @@ export async function mcpRuntimeRefreshCatalog(
 }
 
 export async function mcpRuntimeCallTool(params: {
+  chatAdmission?: import('./chatAdmission').ChatToolAdmission;
   key: MCPRuntimeKey;
   toolName: string;
   arguments: Record<string, unknown>;
@@ -94,6 +95,7 @@ export async function mcpRuntimeCallTool(params: {
     toolName: params.toolName,
     arguments: params.arguments,
     operationId: params.operationId,
+    ...(params.chatAdmission ? { chatAdmission: { ...params.chatAdmission, requestId: params.operationId } } : {}),
   });
 }
 

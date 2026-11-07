@@ -4,6 +4,7 @@ import type { TaskExecutionGraph } from '../services/taskExecutionGraph';
 import type { DemoWorkflowStep } from './blueprintLaunch';
 import { projectViewer } from '../services/agsdl/viewer';
 import { object, text } from '../services/agsdl/document';
+import { expandedStepPath } from '../services/agsdl/compositionExpansion';
 
 interface Plan { id: string; projectId: string; title: string; agsdl: AgsdlEditorDocument }
 interface SceneTask {
@@ -18,7 +19,10 @@ interface SceneTask {
   finishAfter?: string[];
 }
 interface Scene { label?: string; failedSteps?: string[]; id: string; planId: string; projectId?: string; archived?: boolean; tasks: SceneTask[]; completedSteps?: string[] }
-const step = (id: string, path: string, status: TaskStatus, description: string, reply: string, after: string[] = [], extra: Pick<SceneTask, 'interaction' | 'reviewAfter' | 'finishAfter'> = {}): SceneTask => ({ id, path: path.startsWith('/') ? path : `/flow/steps/${path}`, status, description, reply, after, ...extra });
+/** A step inside a composition use, as the graph shows it once that use is unfolded. */
+const inside = (use: string, composition: string, name: string) => expandedStepPath(`/flow/steps/${use}`, `/compositions/${composition}/steps/${name}`);
+const stepPath = (name: string) => name.startsWith('/') ? name : `/flow/steps/${name}`;
+const step = (id: string, path: string, status: TaskStatus, description: string, reply: string, after: string[] = [], extra: Pick<SceneTask, 'interaction' | 'reviewAfter' | 'finishAfter'> = {}): SceneTask => ({ id, path: stepPath(path), status, description, reply, after, ...extra });
 
 /** Chosen, authored demo routes. These scenes are examples, not an AgSDL interpreter. */
 export const demoExecutionScenes: Scene[] = [
@@ -53,28 +57,22 @@ export const demoExecutionScenes: Scene[] = [
   ], completedSteps: ['fork'] },
   { id: 'ingestion', planId: 'demo-ingestion', tasks: [
     step('demo-catalog-inspect', 'inspect', 'Completed', 'Le fichier contient 240 références fournisseur.', 'Les colonnes et l’encodage sont reconnus. Douze lignes demandent une correction.'),
-    step('demo-catalog-normalize', 'normalize', 'Completed', 'Les montants et les unités sont normalisés.', 'Les valeurs d’origine sont conservées dans le rapport de contrôle.', ['demo-catalog-inspect']),
+    step('demo-catalog-normalize', 'normalization', 'Completed', 'Les prix et les devises sont normalisés.', 'Une première sortie a été rejetée : price était une chaîne. Les erreurs ont été renvoyées au même agent, qui a corrigé le format.', ['demo-catalog-inspect']),
     step('demo-catalog', 'repair', 'Failed', 'Fournir les références SKU manquantes.', 'La correction ne peut pas inventer les SKU de douze lignes. Joignez un fichier corrigé pour reprendre ; rien n’a été enregistré dans le catalogue.', ['demo-catalog-normalize']),
     step('demo-catalog-report', 'report', 'Blocked', 'Présenter le bilan après la correction.', 'Le bilan attend la résolution des lignes invalides.', ['demo-catalog']),
-  ], completedSteps: ['prepare', 'validate', 'valid'] },
+  ], completedSteps: ['prepare', ...['correctable', 'feedback', 'validate', 'valid'].map(name => inside('normalization', 'checkedNormalization', name))] },
   { id: 'incident', planId: 'demo-incident', tasks: [
     step('demo-incident-triage', 'triage', 'Completed', 'La latence concerne l’import du catalogue.', 'La période 10:00–10:15 est retenue. Le p95 est passé de 220 à 840 ms.'),
-    step('demo-latency', 'investigate', 'InProgress', 'Comparer le cache aux accès base de données.', 'Les traces sont examinées. L’expiration simultanée du cache reste une hypothèse à vérifier.', ['demo-incident-triage']),
+    step('demo-latency', 'investigate', 'InProgress', 'Comparer le cache aux accès base de données.', 'Les métriques reçues en cours d’analyse placent le pic à 10:07. L’expiration simultanée du cache reste une hypothèse à vérifier.', ['demo-incident-triage']),
     step('demo-incident-verify', 'verify', 'Blocked', 'Vérifier l’hypothèse contre les traces.', 'Aucune cause n’est considérée comme confirmée avant ce contrôle.', ['demo-latency']),
     step('demo-postmortem', 'conclude', 'Blocked', 'Documenter la cause et les mesures préventives.', 'Le compte rendu attend la confirmation de l’hypothèse.', ['demo-incident-verify']),
-  ], completedSteps: ['collect'] },
+  ], completedSteps: ['collect', 'metrics', 'refocus'] },
   { id: 'refund', planId: 'demo-refund', tasks: [
     step('demo-refund-understand', 'understand', 'Completed', 'La demande porte sur la commande 1042.', 'Le client demande le remboursement d’un article livré, pour un montant de 89 €.'),
     step('demo-refund-eligibility', 'eligibility', 'Completed', 'La commande respecte les critères de remboursement.', 'Le délai est respecté et le motif correspond à la politique commerciale.', ['demo-refund-understand']),
     step('demo-refund-review', 'approval', 'AwaitingResponse', 'Autoriser le remboursement de 89 €.', 'La commande est éligible. L’accord du responsable est requis avant tout remboursement ; aucune action n’a encore été effectuée.', ['demo-refund-eligibility'], { interaction: 'approval' }),
     step('demo-order-mail', 'notify', 'Blocked', 'Préparer la réponse après la décision.', 'La réponse finale attend la décision et le résultat de l’action autorisée.', ['demo-refund-review']),
   ], completedSteps: ['lookup', 'eligible'] },
-  { id: 'editorial', planId: 'demo-editorial', tasks: [
-    step('demo-editorial-research', 'research', 'Completed', 'Les sources du dossier sont réunies.', 'Quatre sources vérifiables couvrent le sujet et ses limites.'),
-    step('demo-editorial-technical', 'technical', 'Completed', 'L’angle technique est rédigé.', 'Le texte explique les choix techniques et leurs limites.', ['demo-editorial-research']),
-    step('demo-editorial-practical', 'practical', 'Completed', 'Le guide pratique est rédigé.', 'Le guide décrit les étapes et les questions courantes.', ['demo-editorial-research']),
-    step('demo-copy', 'edit', 'Pending', 'Harmoniser les deux contributions.', 'Les deux textes sont disponibles. Vous pouvez lancer la relecture finale.', ['demo-editorial-technical', 'demo-editorial-practical']),
-  ], completedSteps: ['fork', 'join'] },
   { id: 'delivery', planId: 'demo-delivery', tasks: [
     step('demo-delivery-scope', 'coordinator', 'Completed', 'Vérifier la même version sur deux plateformes.', 'Les paquets web et mobile sont associés à la version 1.8.0.'),
     step('demo-delivery-web', 'web', 'Completed', 'Les preuves de la version web sont réunies.', 'Le spécialiste web a contrôlé le paquet et transmis ses preuves.', ['demo-delivery-scope']),
@@ -93,27 +91,12 @@ export const demoExecutionScenes: Scene[] = [
     step('demo-support-orders', '/agents/orders', 'Completed', 'Le suivi de la commande 1038 est disponible.', 'La commande 1038 a été expédiée. Aucun remboursement n’a été déclenché.'),
     step('demo-support-policy', '/agents/policy', 'Pending', 'Poser une question sur la politique commerciale.', 'Le référent peut expliquer une règle sans démarrer les autres agents.', [], { interaction: 'question' }),
   ] },
-  { id: 'competition', planId: 'demo-competition', tasks: [
-    step('demo-race-metrics', 'metrics', 'Completed', 'La piste des métriques manque de preuves.', 'Le rapport indique approved: false. Cette piste n’a pas été retenue.'),
-    step('demo-race-traces', 'traces', 'Completed', 'Les traces étayent une première hypothèse.', 'Le rapport indique approved: true. La piste du cache est retenue après la fin des recherches concurrentes.'),
-    step('demo-race-result', 'summarize', 'InReview', 'Relire la piste retenue et ses preuves.', 'La synthèse distingue l’hypothèse étayée d’une cause définitivement confirmée.', ['demo-race-metrics', 'demo-race-traces'], { reviewAfter: true }),
-  ], completedSteps: ['fork', 'winner'] },
-  { id: 'structured', planId: 'demo-structured', tasks: [
-    step('demo-product-extract', 'extract', 'InProgress', 'Corriger le type du prix dans le résultat JSON.', 'Première sortie rejetée : price était une chaîne. Les erreurs ont été renvoyées au même agent ; la seconde tentative est en cours.'),
-    step('demo-product-result', 'publish', 'Blocked', 'Présenter uniquement la fiche au format validé.', 'La fiche ne sera présentée qu’après validation du schéma.', ['demo-product-extract']),
-  ], completedSteps: ['correctable', 'feedback'] },
-  { id: 'approvals', planId: 'demo-approvals', tasks: [
-    step('demo-publication-prepare', 'prepare', 'Completed', 'Le dossier et sa version sont prêts.', 'Les deux accords porteront sur le même dossier, sans changement de version entre les validations.'),
-    step('demo-publication-editorial', 'editorial', 'Completed', 'L’accord éditorial est obtenu.', 'L’équipe éditoriale a validé cette version du dossier.', ['demo-publication-prepare'], { interaction: 'approval' }),
-    step('demo-publication-legal', 'legal', 'AwaitingResponse', 'Donner le second accord avant la publication.', 'L’accord éditorial est acquis. L’accord juridique est encore attendu ; le dossier n’a pas été publié.', ['demo-publication-editorial'], { interaction: 'approval' }),
-    step('demo-publication-result', 'confirm', 'Blocked', 'Présenter le résultat de publication.', 'La confirmation attend les deux accords puis le résultat de publication.', ['demo-publication-legal']),
-  ] },
   { id: 'crisis', planId: 'demo-crisis', tasks: [
     step('demo-crisis-metrics', 'metrics', 'Completed', 'Les métriques identifient le pic de latence.', 'Le p95 à 840 ms est confirmé sur le service catalogue.'),
     step('demo-crisis-traces', 'traces', 'Completed', 'Les traces étayent la piste du cache.', 'Cette piste a été retenue ; les autres recherches sont terminées.'),
     step('demo-crisis-customer', 'customer', 'Completed', 'L’impact métier est documenté.', 'Dix-sept commandes ont rencontré un échec pendant la période observée.'),
     step('demo-crisis-decision', 'decide', 'Completed', 'Une intervention ciblée est retenue.', 'Le responsable choisit de préparer une intervention plutôt que de poursuivre la surveillance.', ['demo-crisis-metrics', 'demo-crisis-traces', 'demo-crisis-customer']),
-    step('demo-crisis-plan', 'intervention', 'Completed', 'Le spécialiste a évalué l’intervention.', 'Le plan d’intervention et les critères de retour arrière sont prêts.', ['demo-crisis-decision']),
+    step('demo-crisis-plan', 'intervention', 'Completed', 'Le contre-expert a validé le plan d’intervention.', 'Le plan et ses critères de retour arrière ont été vérifiés par un second agent.', ['demo-crisis-decision']),
     step('demo-crisis-operations', 'operationsApproval', 'Completed', 'L’équipe opérations a donné son accord.', 'L’accord couvre cette intervention précise sur le service catalogue.', ['demo-crisis-plan'], { interaction: 'approval' }),
     step('demo-crisis-security', 'securityApproval', 'AwaitingResponse', 'Donner l’accord sécurité avant l’intervention.', 'L’accord opérations est acquis. Le déploiement reste interdit tant que l’accord sécurité manque.', ['demo-crisis-operations'], { interaction: 'approval' }),
     step('demo-crisis-technical', 'technical', 'Blocked', 'Contrôler les indicateurs après l’intervention.', 'Le contrôle attend l’intervention autorisée.', ['demo-crisis-security']),
@@ -123,11 +106,11 @@ export const demoExecutionScenes: Scene[] = [
   ], completedSteps: ['launch', 'first'] },
   { id: 'fix', planId: 'demo-fix', tasks: [
     step('demo-fix-triage', 'triage', 'Completed', 'Le ticket est un correctif.', 'Le formulaire de contact perd la pièce jointe après une erreur de validation. Le ticket est qualifié comme correctif.'),
-    step('demo-fix-develop', 'develop', 'Completed', 'Les tests du formulaire passent à la deuxième tentative.', 'Première exécution : deux tests en échec sur la conservation du fichier. Le développeur a repris le correctif avec ces échecs ; la suite du portail passe désormais.', ['demo-fix-triage']),
+    step('demo-fix-develop', 'change', 'Completed', 'Les tests du formulaire passent à la deuxième tentative.', 'Première exécution : deux tests en échec sur la conservation du fichier. Le développeur a repris le correctif avec ces échecs ; la suite du portail passe désormais.', ['demo-fix-triage']),
     step('demo-fix-review', 'review', 'InReview', 'Relire le correctif et ses tests.', 'Le changement conserve la pièce jointe dans l’état du formulaire. Choisissez accepter ou reprendre ; une reprise renverra vos remarques au même développeur.', ['demo-fix-develop'], { reviewAfter: true }),
     step('demo-fix-approval', 'releaseApproval', 'Blocked', 'Autoriser la publication du correctif.', 'L’accord sera demandé après une relecture acceptée. Rien n’a été publié.', ['demo-fix-review'], { interaction: 'approval' }),
     step('demo-fix-release', 'release', 'Blocked', 'Publier le correctif autorisé.', 'La publication attend l’accord du responsable.', ['demo-fix-approval']),
-  ], completedSteps: ['tests', 'passed', 'failures'] },
+  ], completedSteps: ['tests', 'passed', 'failures'].map(name => inside('change', 'testedChange', name)) },
   { id: 'shared-assistant', planId: 'macro-assistant', projectId: 'demo-meridian', tasks: [
     step('demo-shared-assistant', 'agent1', 'AwaitingResponse', 'Donner une consigne à l’assistant.', 'Que souhaitez-vous réaliser ? Vous pouvez joindre vos documents dans cette tâche.', [], { interaction: 'question' }),
   ] },
@@ -146,27 +129,23 @@ demoExecutionScenes.push(
     step('demo-refund-alternative', 'alternative', 'InReview', 'Relire la proposition d’échange avant de répondre.', 'Un échange sans frais est proposé. Vérifiez le délai et les conditions avant l’envoi au client.', ['demo-refund-denied-decision'], { reviewAfter: true }),
     step('demo-refund-denied-notify', 'notify', 'Blocked', 'Informer le client après relecture de l’alternative.', 'La réponse attend votre relecture de la proposition d’échange.', ['demo-refund-alternative']),
   ], completedSteps: ['lookup', 'eligible'] },
-  { id: 'publication-failed', label: 'Publication à double accord · Service indisponible', planId: 'demo-approvals', tasks: [
-    step('demo-publication-failed-prepare', 'prepare', 'Completed', 'Le dossier de février est prêt.', 'Les deux équipes examinent la même version du dossier de février.'),
-    step('demo-publication-failed-editorial', 'editorial', 'Completed', 'L’équipe éditoriale a donné son accord.', 'L’accord porte sur le dossier de février.', ['demo-publication-failed-prepare'], { interaction: 'approval' }),
-    step('demo-publication-failed-legal', 'legal', 'Completed', 'L’équipe juridique a donné son accord.', 'Le second accord est obtenu pour la même publication.', ['demo-publication-failed-editorial'], { interaction: 'approval' }),
-    step('demo-publication-recovery', 'recover', 'AwaitingResponse', 'Choisir la suite après le refus du service de publication.', 'Le service a refusé la requête avant publication. Le dossier n’est pas publié. Souhaitez-vous différer la livraison ou préparer une nouvelle tentative ?', ['demo-publication-failed-legal'], { interaction: 'question' }),
-  ], failedSteps: ['publish'] },
+  { id: 'fix-tests-down', label: 'Correctif piloté par les tests · Suite indisponible', planId: 'demo-fix', tasks: [
+    step('demo-fix-down-triage', 'triage', 'Completed', 'Le ticket est un correctif.', 'L’export CSV des factures ignore le filtre de période. Le ticket est qualifié comme correctif.'),
+    step('demo-fix-down-design', 'design', 'Completed', 'Le correctif est cadré.', 'Le filtre de période doit être transmis à la requête d’export.', ['demo-fix-down-triage']),
+    step('demo-fix-down-develop', 'change', 'Completed', 'Le correctif de l’export est prêt.', 'La requête d’export reçoit désormais la période sélectionnée.', ['demo-fix-down-design']),
+    step('demo-fix-recovery', 'recovery', 'AwaitingResponse', 'Choisir la suite après l’échec du lancement des tests.', 'La suite de tests n’a pas pu démarrer : le service a refusé la connexion. Aucun test n’a été exécuté. Souhaitez-vous relancer plus tard ou faire relire le correctif sans résultat de tests ?', ['demo-fix-down-develop'], { interaction: 'question' }),
+  ], failedSteps: [inside('change', 'testedChange', 'tests')] },
 );
 
 export const demoDesignNotes: Record<string, string> = {
   'demo-voice': 'Le contrôle de confiance dirige les passages incertains vers une clarification humaine. Le compte rendu et sa vérification attendent cette réponse.',
   'demo-quality': 'Trois spécialistes contrôlent le même périmètre en parallèle. Leurs rapports sont réunis avant la synthèse et l’accord de livraison.',
-  'demo-ingestion': 'Le contrôle du schéma sépare le catalogue conforme des lignes à corriger. L’enregistrement intervient seulement après un résultat valide ; les erreurs ont leur propre parcours.',
+  'demo-ingestion': 'Les lignes normalisées respectent un schéma JSON : une sortie non conforme revient au même agent avec ses erreurs. Le contrôle sépare ensuite le catalogue conforme des lignes à corriger. L’enregistrement intervient seulement après un résultat valide ; les erreurs ont leur propre parcours.',
   'demo-incident': 'Le triage choisit entre investigation et escalade. Une hypothèse non confirmée repart en diagnostic, avec une limite de trois passages.',
   'demo-refund': 'Le système vérifie la commande et son éligibilité. Le remboursement nécessite l’accord du responsable ; la réponse au client vient après la décision.',
-  'demo-editorial': 'La recherche alimente deux rédacteurs indépendants. La relecture finale attend les deux contributions, sans imposer leur ordre de réalisation.',
   'demo-delivery': 'Le même modèle de contrôle est utilisé pour le web et le mobile, avec des spécialistes et des paramètres différents. Les graphes de détail montrent ce qui est réutilisé.',
   'demo-persistent': 'Le rédacteur garde son contexte pendant que l’observateur vous interroge. La consigne lui est transmise en cours de rédaction, puis la revue peut demander une nouvelle passe au même agent.',
   'demo-resident': 'Cette équipe n’impose aucun ordre d’exécution. L’accueil, le suivi des commandes et le référent commercial restent disponibles séparément.',
-  'demo-competition': 'Deux chercheurs proposent des pistes concurrentes. Le premier résultat acceptable est retenu après confirmation de l’arrêt des autres travaux ; la synthèse conserve ses preuves.',
-  'demo-structured': 'Le résultat doit respecter un schéma JSON. Une erreur de format retourne au même agent pour correction ; une erreur technique suit un autre chemin.',
-  'demo-approvals': 'Les accords éditorial et juridique portent sur la même publication. Ils se succèdent avant l’action externe, et un refus empêche la publication.',
   'demo-crisis': 'Trois investigations alimentent une décision entre intervention, surveillance et escalade. L’intervention exige deux accords ; sa clôture attend ensuite les preuves techniques et métier.',
   'demo-fix': 'Le ticket est qualifié parmi quatre issues. Un échec de tests repart chez le développeur avec les erreurs, tout comme une relecture à reprendre ; la publication attend un accord explicite.',
   'demo-audio-feature': 'Le besoin précède la modification du lecteur, puis les tests vérifient les cas de pause et de chargement. Le résultat de chaque agent est transmis au suivant.',
@@ -174,10 +153,11 @@ export const demoDesignNotes: Record<string, string> = {
   'macro-chantier': 'Le chantier passe du cadrage à la réalisation puis à la vérification. Chaque étape possède sa propre tâche dans le projet choisi.',
 };
 
-const archivedEditorial = demoExecutionScenes.find(scene => scene.id === 'editorial')!;
-const archiveIds = new Map(archivedEditorial.tasks.map(task => [task.id, task.path.endsWith('/practical') ? 'demo-archived-guide' : `${task.id}-archive`]));
-demoExecutionScenes.push({ ...archivedEditorial, id: 'editorial-archive', archived: true,
-  tasks: archivedEditorial.tasks.map(task => ({ ...task, id: archiveIds.get(task.id)!, status: 'Completed', after: task.after.map(id => archiveIds.get(id)!), description: 'Édition précédente du dossier, conservée dans les archives.', reply: 'Cette contribution appartient à la précédente édition terminée du dossier.' })),
+// A previous meeting of the same blueprint, finished and archived.
+const previousMeeting = demoExecutionScenes.find(scene => scene.id === 'voice')!;
+const archiveIds = new Map(previousMeeting.tasks.map(task => [task.id, task.path.endsWith('/summarize') ? 'demo-archived-summary' : `${task.id}-archive`]));
+demoExecutionScenes.push({ ...previousMeeting, id: 'voice-archive', archived: true,
+  tasks: previousMeeting.tasks.map(task => ({ ...task, id: archiveIds.get(task.id)!, status: 'Completed', after: task.after.map(id => archiveIds.get(id)!), description: 'Compte rendu de la réunion précédente, conservé dans les archives.', reply: 'Cette étape appartient au compte rendu précédent, déjà terminé.' })),
 });
 
 function sceneCard(plan: Plan, path: string) {
@@ -220,7 +200,7 @@ export function buildDemoExecutions(plans: Plan[], date: string) {
       replies.set(entry.id, entry.reply);
     }
     executions.push({ title: scene.label ?? (scene.archived ? `${plan.title} · Édition précédente` : plan.title), source: plan.agsdl.source, display: structuredClone(plan.agsdl.display), migration: structuredClone(plan.agsdl.migration), taskPaths, selectedPath: '', simulated: true,
-      activity: Object.fromEntries([...(scene.completedSteps ?? []).map(name => [`/flow/steps/${name}`, { state: 'completed' as const, activations: [] }]), ...(scene.failedSteps ?? []).map(name => [`/flow/steps/${name}`, { state: 'failed' as const, activations: [] }])]) });
+      activity: Object.fromEntries([...(scene.completedSteps ?? []).map(name => [stepPath(name), { state: 'completed' as const, activations: [] }]), ...(scene.failedSteps ?? []).map(name => [stepPath(name), { state: 'failed' as const, activations: [] }])]) });
   }
   return { tasks, executions, replies };
 }

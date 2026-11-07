@@ -1,0 +1,555 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.macro.andrologic.ai/macro-pilot/v1/protocol.schema.json",
+  "title": "Macro Pilot transport messages 1.0",
+  "x-semantic-rules": [
+    "event.resource MUST equal event.snapshot.ref",
+    "event.revision MUST equal event.snapshot.revision",
+    "event_batch.events MUST use its stream_id and contiguous sequence values after after_sequence",
+    "event_batch.next_cursor and next_sequence MUST equal its last event, or the after values when empty",
+    "session.revoke issued_by.account_id MUST equal target.account_id",
+    "instance-scoped operations MUST use an active session with granted instance access and the permission defined by the authorization matrix",
+    "decision.resolve answers MUST use distinct step_id values",
+    "tool_approval.resolve grant_scope MUST be allowed by the current target resource",
+    "decision and tool approval event names MUST match snapshot state",
+    "page.item_type MUST equal the type of every item",
+    "command_result.resulting_revision MUST NOT be lower than previous_revision"
+  ],
+  "oneOf": [
+    { "$ref": "#/$defs/command" },
+    { "$ref": "#/$defs/commandResult" },
+    { "$ref": "#/$defs/event" },
+    { "$ref": "#/$defs/eventBatch" },
+    { "$ref": "#/$defs/pageRequest" },
+    { "$ref": "#/$defs/page" },
+    { "$ref": "#/$defs/resumeRequest" },
+    { "$ref": "#/$defs/error" }
+  ],
+  "$defs": {
+    "conversationSendCommand": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "contract_version",
+        "type",
+        "kind",
+        "command_id",
+        "idempotency_key",
+        "expected_revision",
+        "target",
+        "issued_by",
+        "issued_at",
+        "payload"
+      ],
+      "properties": {
+        "contract_version": {
+          "$ref": "common.schema.json#/$defs/contractVersion"
+        },
+        "type": {
+          "const": "command"
+        },
+        "kind": {
+          "const": "conversation.send"
+        },
+        "command_id": {
+          "$ref": "common.schema.json#/$defs/opaqueId"
+        },
+        "idempotency_key": {
+          "type": "string",
+          "minLength": 16,
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9._:-]+$"
+        },
+        "expected_revision": {
+          "$ref": "common.schema.json#/$defs/revision"
+        },
+        "target": {
+          "$ref": "common.schema.json#/$defs/chatConversationRef"
+        },
+        "issued_by": {
+          "$ref": "common.schema.json#/$defs/actorRef"
+        },
+        "issued_at": {
+          "$ref": "common.schema.json#/$defs/timestamp"
+        },
+        "payload": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "content"
+          ],
+          "properties": {
+            "content": {
+              "$ref": "common.schema.json#/$defs/safeText",
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 4000
+            }
+          }
+        }
+      }
+    },
+    "taskReplyCommand": {
+      "type": "object", "additionalProperties": false,
+      "required": ["contract_version", "type", "kind", "command_id", "idempotency_key", "expected_revision", "target", "issued_by", "issued_at", "payload"],
+      "properties": {
+        "contract_version": { "$ref": "common.schema.json#/$defs/contractVersion" },
+        "type": { "const": "command" },
+        "kind": { "const": "task.reply" },
+        "command_id": { "$ref": "common.schema.json#/$defs/opaqueId" },
+        "idempotency_key": { "type": "string", "minLength": 16, "maxLength": 128, "pattern": "^[A-Za-z0-9._:-]+$" },
+        "expected_revision": { "$ref": "common.schema.json#/$defs/revision" },
+        "target": { "$ref": "common.schema.json#/$defs/taskRef" },
+        "issued_by": { "$ref": "common.schema.json#/$defs/actorRef" },
+        "issued_at": { "$ref": "common.schema.json#/$defs/timestamp" },
+        "payload": {
+          "type": "object", "additionalProperties": false,
+          "required": ["conversation_id", "answer"],
+          "properties": {
+            "conversation_id": { "$ref": "common.schema.json#/$defs/sourceId" },
+            "answer": { "$ref": "common.schema.json#/$defs/safeText", "type": "string", "minLength": 1, "maxLength": 4000 }
+          }
+        }
+      }
+    },
+    "runStartCommand": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["contract_version", "type", "kind", "command_id", "idempotency_key", "expected_revision", "target", "issued_by", "issued_at", "payload"],
+      "properties": {
+        "contract_version": { "$ref": "common.schema.json#/$defs/contractVersion" },
+        "type": { "const": "command" },
+        "kind": { "const": "run.start" },
+        "command_id": { "$ref": "common.schema.json#/$defs/opaqueId" },
+        "idempotency_key": { "type": "string", "minLength": 16, "maxLength": 128, "pattern": "^[A-Za-z0-9._:-]+$" },
+        "expected_revision": { "$ref": "common.schema.json#/$defs/revision" },
+        "target": { "$ref": "common.schema.json#/$defs/taskRef" },
+        "issued_by": { "$ref": "common.schema.json#/$defs/actorRef" },
+        "issued_at": { "$ref": "common.schema.json#/$defs/timestamp" },
+        "payload": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["run_id"],
+          "properties": {
+            "run_id": { "$ref": "common.schema.json#/$defs/opaqueId" }
+          }
+        }
+      }
+    },
+    "sessionRevokeCommand": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["contract_version", "type", "kind", "command_id", "idempotency_key", "expected_revision", "target", "issued_by", "issued_at", "payload"],
+      "properties": {
+        "contract_version": { "$ref": "common.schema.json#/$defs/contractVersion" },
+        "type": { "const": "command" },
+        "kind": { "const": "session.revoke" },
+        "command_id": { "$ref": "common.schema.json#/$defs/opaqueId" },
+        "idempotency_key": { "type": "string", "minLength": 16, "maxLength": 128, "pattern": "^[A-Za-z0-9._:-]+$" },
+        "expected_revision": { "$ref": "common.schema.json#/$defs/revision" },
+        "target": { "$ref": "common.schema.json#/$defs/sessionRef" },
+        "issued_by": { "$ref": "common.schema.json#/$defs/actorRef" },
+        "issued_at": { "$ref": "common.schema.json#/$defs/timestamp" },
+        "payload": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "reason": { "$ref": "common.schema.json#/$defs/safeText", "type": "string", "minLength": 1, "maxLength": 500 }
+          }
+        }
+      }
+    },
+    "runCancelCommand": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["contract_version", "type", "kind", "command_id", "idempotency_key", "expected_revision", "target", "issued_by", "issued_at", "payload"],
+      "properties": {
+        "contract_version": { "$ref": "common.schema.json#/$defs/contractVersion" },
+        "type": { "const": "command" },
+        "kind": { "const": "run.cancel" },
+        "command_id": { "$ref": "common.schema.json#/$defs/opaqueId" },
+        "idempotency_key": { "type": "string", "minLength": 16, "maxLength": 128, "pattern": "^[A-Za-z0-9._:-]+$" },
+        "expected_revision": { "$ref": "common.schema.json#/$defs/revision" },
+        "target": { "$ref": "common.schema.json#/$defs/runRef" },
+        "issued_by": { "$ref": "common.schema.json#/$defs/actorRef" },
+        "issued_at": { "$ref": "common.schema.json#/$defs/timestamp" },
+        "payload": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "reason": { "$ref": "common.schema.json#/$defs/safeText", "type": "string", "minLength": 1, "maxLength": 500 }
+          }
+        }
+      }
+    },
+    "decisionResolveCommand": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["contract_version", "type", "kind", "command_id", "idempotency_key", "expected_revision", "target", "issued_by", "issued_at", "payload"],
+      "properties": {
+        "contract_version": { "$ref": "common.schema.json#/$defs/contractVersion" },
+        "type": { "const": "command" },
+        "kind": { "const": "decision.resolve" },
+        "command_id": { "$ref": "common.schema.json#/$defs/opaqueId" },
+        "idempotency_key": { "type": "string", "minLength": 16, "maxLength": 128, "pattern": "^[A-Za-z0-9._:-]+$" },
+        "expected_revision": { "$ref": "common.schema.json#/$defs/revision" },
+        "target": { "$ref": "common.schema.json#/$defs/decisionRef" },
+        "issued_by": { "$ref": "common.schema.json#/$defs/actorRef" },
+        "issued_at": { "$ref": "common.schema.json#/$defs/timestamp" },
+        "payload": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["answers"],
+          "properties": {
+            "answers": {
+              "type": "array",
+              "minItems": 1,
+              "maxItems": 20,
+              "items": { "$ref": "supervision.schema.json#/$defs/decisionAnswer" }
+            }
+          }
+        }
+      }
+    },
+    "toolApprovalResponse": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["verdict"],
+      "properties": {
+        "verdict": { "enum": ["approve", "deny"] },
+        "grant_scope": { "enum": ["once", "conversation"] },
+        "reason": { "$ref": "common.schema.json#/$defs/safeText", "type": "string", "minLength": 1, "maxLength": 500 }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "verdict": { "const": "approve" } } },
+          "then": {
+            "properties": { "grant_scope": true, "reason": false },
+            "required": ["grant_scope"]
+          },
+          "else": { "properties": { "grant_scope": false } }
+        }
+      ]
+    },
+    "toolApprovalResolveCommand": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["contract_version", "type", "kind", "command_id", "idempotency_key", "expected_revision", "target", "issued_by", "issued_at", "payload"],
+      "properties": {
+        "contract_version": { "$ref": "common.schema.json#/$defs/contractVersion" },
+        "type": { "const": "command" },
+        "kind": { "const": "tool_approval.resolve" },
+        "command_id": { "$ref": "common.schema.json#/$defs/opaqueId" },
+        "idempotency_key": { "type": "string", "minLength": 16, "maxLength": 128, "pattern": "^[A-Za-z0-9._:-]+$" },
+        "expected_revision": { "$ref": "common.schema.json#/$defs/revision" },
+        "target": { "$ref": "common.schema.json#/$defs/toolApprovalRef" },
+        "issued_by": { "$ref": "common.schema.json#/$defs/actorRef" },
+        "issued_at": { "$ref": "common.schema.json#/$defs/timestamp" },
+        "payload": { "$ref": "#/$defs/toolApprovalResponse" }
+      }
+    },
+    "reviewSubmitCommand": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["contract_version", "type", "kind", "command_id", "idempotency_key", "expected_revision", "target", "issued_by", "issued_at", "payload"],
+      "properties": {
+        "contract_version": { "$ref": "common.schema.json#/$defs/contractVersion" },
+        "type": { "const": "command" },
+        "kind": { "const": "review.submit" },
+        "command_id": { "$ref": "common.schema.json#/$defs/opaqueId" },
+        "idempotency_key": { "type": "string", "minLength": 16, "maxLength": 128, "pattern": "^[A-Za-z0-9._:-]+$" },
+        "expected_revision": { "$ref": "common.schema.json#/$defs/revision" },
+        "target": { "$ref": "common.schema.json#/$defs/reviewRef" },
+        "issued_by": { "$ref": "common.schema.json#/$defs/actorRef" },
+        "issued_at": { "$ref": "common.schema.json#/$defs/timestamp" },
+        "payload": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["verdict"],
+          "properties": {
+            "verdict": { "enum": ["approve", "request_changes"] },
+            "note": { "$ref": "common.schema.json#/$defs/safeText", "type": "string", "minLength": 1, "maxLength": 4000 }
+          }
+        }
+      }
+    },
+    "command": {
+      "oneOf": [
+        { "$ref": "#/$defs/conversationSendCommand" },
+        { "$ref": "#/$defs/taskReplyCommand" },
+        { "$ref": "#/$defs/sessionRevokeCommand" },
+        { "$ref": "#/$defs/runStartCommand" },
+        { "$ref": "#/$defs/runCancelCommand" },
+        { "$ref": "#/$defs/decisionResolveCommand" },
+        { "$ref": "#/$defs/toolApprovalResolveCommand" },
+        { "$ref": "#/$defs/reviewSubmitCommand" }
+      ]
+    },
+    "errorPayload": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["code", "message", "retryable"],
+      "properties": {
+        "code": {
+          "enum": [
+            "unauthorized", "forbidden", "not_found", "validation_failed",
+            "unsupported_version", "unknown_type", "session_revoked",
+            "stale_revision", "invalid_reference", "conflict", "cursor_expired",
+            "unavailable"
+          ]
+        },
+        "message": { "$ref": "common.schema.json#/$defs/safeText", "type": "string", "minLength": 1, "maxLength": 1000 },
+        "retryable": { "type": "boolean" },
+        "resource": { "$ref": "common.schema.json#/$defs/resourceRef" },
+        "violations": {
+          "type": "array",
+          "maxItems": 50,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["field", "rule"],
+            "properties": {
+              "field": { "$ref": "common.schema.json#/$defs/safeText", "type": "string", "minLength": 1, "maxLength": 300 },
+              "rule": { "$ref": "common.schema.json#/$defs/safeText", "type": "string", "minLength": 1, "maxLength": 300 }
+            }
+          }
+        }
+      }
+    },
+    "commandResult": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["contract_version", "type", "command_id", "idempotency_key", "outcome", "target", "previous_revision"],
+      "properties": {
+        "contract_version": { "$ref": "common.schema.json#/$defs/contractVersion" },
+        "type": { "const": "command_result" },
+        "command_id": { "$ref": "common.schema.json#/$defs/opaqueId" },
+        "idempotency_key": { "type": "string", "minLength": 16, "maxLength": 128, "pattern": "^[A-Za-z0-9._:-]+$" },
+        "outcome": { "enum": ["accepted", "duplicate", "rejected"] },
+        "target": { "$ref": "common.schema.json#/$defs/resourceRef" },
+        "previous_revision": { "$ref": "common.schema.json#/$defs/revision" },
+        "resulting_revision": { "$ref": "common.schema.json#/$defs/revision" },
+        "error": { "$ref": "#/$defs/errorPayload" }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "outcome": { "const": "rejected" } } },
+          "then": {
+            "properties": { "error": true, "resulting_revision": false },
+            "required": ["error"]
+          },
+          "else": {
+            "properties": { "resulting_revision": true },
+            "required": ["resulting_revision"]
+          }
+        }
+      ]
+    },
+    "taskEvent": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["contract_version", "type", "event_type", "stream_id", "sequence", "resume_cursor", "emitted_at", "resource", "revision", "snapshot"],
+      "properties": {
+        "contract_version": { "$ref": "common.schema.json#/$defs/contractVersion" },
+        "type": { "const": "event" },
+        "event_type": { "const": "task.updated" },
+        "stream_id": { "$ref": "common.schema.json#/$defs/opaqueId" },
+        "sequence": { "type": "integer", "minimum": 1 },
+        "resume_cursor": { "type": "string", "minLength": 1, "maxLength": 1024 },
+        "emitted_at": { "$ref": "common.schema.json#/$defs/timestamp" },
+        "resource": { "$ref": "common.schema.json#/$defs/taskRef" },
+        "revision": { "$ref": "common.schema.json#/$defs/revision" },
+        "snapshot": { "$ref": "supervision.schema.json#/$defs/task" }
+      }
+    },
+    "runEvent": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["contract_version", "type", "event_type", "stream_id", "sequence", "resume_cursor", "emitted_at", "resource", "revision", "snapshot"],
+      "properties": {
+        "contract_version": { "$ref": "common.schema.json#/$defs/contractVersion" },
+        "type": { "const": "event" },
+        "event_type": { "const": "run.updated" },
+        "stream_id": { "$ref": "common.schema.json#/$defs/opaqueId" },
+        "sequence": { "type": "integer", "minimum": 1 },
+        "resume_cursor": { "type": "string", "minLength": 1, "maxLength": 1024 },
+        "emitted_at": { "$ref": "common.schema.json#/$defs/timestamp" },
+        "resource": { "$ref": "common.schema.json#/$defs/runRef" },
+        "revision": { "$ref": "common.schema.json#/$defs/revision" },
+        "snapshot": { "$ref": "supervision.schema.json#/$defs/run" }
+      }
+    },
+    "decisionEvent": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["contract_version", "type", "event_type", "stream_id", "sequence", "resume_cursor", "emitted_at", "resource", "revision", "snapshot"],
+      "properties": {
+        "contract_version": { "$ref": "common.schema.json#/$defs/contractVersion" },
+        "type": { "const": "event" },
+        "event_type": { "enum": ["decision.requested", "decision.resolved"] },
+        "stream_id": { "$ref": "common.schema.json#/$defs/opaqueId" },
+        "sequence": { "type": "integer", "minimum": 1 },
+        "resume_cursor": { "type": "string", "minLength": 1, "maxLength": 1024 },
+        "emitted_at": { "$ref": "common.schema.json#/$defs/timestamp" },
+        "resource": { "$ref": "common.schema.json#/$defs/decisionRef" },
+        "revision": { "$ref": "common.schema.json#/$defs/revision" },
+        "snapshot": { "$ref": "supervision.schema.json#/$defs/decision" }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "event_type": { "const": "decision.requested" } } },
+          "then": { "properties": { "snapshot": { "type": "object", "properties": { "state": { "const": "pending" } } } } },
+          "else": { "properties": { "snapshot": { "type": "object", "properties": { "state": { "const": "resolved" } } } } }
+        }
+      ]
+    },
+    "toolApprovalEvent": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["contract_version", "type", "event_type", "stream_id", "sequence", "resume_cursor", "emitted_at", "resource", "revision", "snapshot"],
+      "properties": {
+        "contract_version": { "$ref": "common.schema.json#/$defs/contractVersion" },
+        "type": { "const": "event" },
+        "event_type": { "enum": ["tool_approval.requested", "tool_approval.resolved", "tool_approval.expired", "tool_approval.interrupted"] },
+        "stream_id": { "$ref": "common.schema.json#/$defs/opaqueId" },
+        "sequence": { "type": "integer", "minimum": 1 },
+        "resume_cursor": { "type": "string", "minLength": 1, "maxLength": 1024 },
+        "emitted_at": { "$ref": "common.schema.json#/$defs/timestamp" },
+        "resource": { "$ref": "common.schema.json#/$defs/toolApprovalRef" },
+        "revision": { "$ref": "common.schema.json#/$defs/revision" },
+        "snapshot": { "$ref": "supervision.schema.json#/$defs/toolApproval" }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "event_type": { "const": "tool_approval.requested" } } },
+          "then": { "properties": { "snapshot": { "type": "object", "properties": { "state": { "const": "pending" } } } } }
+        },
+        {
+          "if": { "properties": { "event_type": { "const": "tool_approval.resolved" } } },
+          "then": { "properties": { "snapshot": { "type": "object", "properties": { "state": { "const": "resolved" } } } } }
+        },
+        {
+          "if": { "properties": { "event_type": { "const": "tool_approval.expired" } } },
+          "then": { "properties": { "snapshot": { "type": "object", "properties": { "state": { "const": "expired" } } } } }
+        },
+        {
+          "if": { "properties": { "event_type": { "const": "tool_approval.interrupted" } } },
+          "then": { "properties": { "snapshot": { "type": "object", "properties": { "state": { "const": "interrupted" } } } } }
+        }
+      ]
+    },
+    "reviewEvent": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["contract_version", "type", "event_type", "stream_id", "sequence", "resume_cursor", "emitted_at", "resource", "revision", "snapshot"],
+      "properties": {
+        "contract_version": { "$ref": "common.schema.json#/$defs/contractVersion" },
+        "type": { "const": "event" },
+        "event_type": { "const": "review.updated" },
+        "stream_id": { "$ref": "common.schema.json#/$defs/opaqueId" },
+        "sequence": { "type": "integer", "minimum": 1 },
+        "resume_cursor": { "type": "string", "minLength": 1, "maxLength": 1024 },
+        "emitted_at": { "$ref": "common.schema.json#/$defs/timestamp" },
+        "resource": { "$ref": "common.schema.json#/$defs/reviewRef" },
+        "revision": { "$ref": "common.schema.json#/$defs/revision" },
+        "snapshot": { "$ref": "supervision.schema.json#/$defs/review" }
+      }
+    },
+    "event": {
+      "oneOf": [
+        { "$ref": "#/$defs/taskEvent" },
+        { "$ref": "#/$defs/runEvent" },
+        { "$ref": "#/$defs/decisionEvent" },
+        { "$ref": "#/$defs/toolApprovalEvent" },
+        { "$ref": "#/$defs/reviewEvent" }
+      ]
+    },
+    "eventBatch": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["contract_version", "type", "stream_id", "after_cursor", "after_sequence", "events", "next_cursor", "next_sequence"],
+      "properties": {
+        "contract_version": { "$ref": "common.schema.json#/$defs/contractVersion" },
+        "type": { "const": "event_batch" },
+        "stream_id": { "$ref": "common.schema.json#/$defs/opaqueId" },
+        "after_cursor": { "type": "string", "minLength": 1, "maxLength": 1024 },
+        "after_sequence": { "type": "integer", "minimum": 0 },
+        "events": {
+          "type": "array",
+          "maxItems": 1000,
+          "items": { "$ref": "#/$defs/event" }
+        },
+        "next_cursor": { "type": "string", "minLength": 1, "maxLength": 1024 },
+        "next_sequence": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "pageRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["contract_version", "type", "item_type", "limit"],
+      "properties": {
+        "contract_version": { "$ref": "common.schema.json#/$defs/contractVersion" },
+        "type": { "const": "page_request" },
+        "item_type": { "enum": ["account", "device_session", "instance_access", "instance", "workspace", "project", "task", "run", "decision", "tool_approval", "review"] },
+        "scope": { "$ref": "common.schema.json#/$defs/resourceRef" },
+        "cursor": { "type": "string", "minLength": 1, "maxLength": 1024 },
+        "limit": { "type": "integer", "minimum": 1, "maximum": 200 }
+      }
+    },
+    "page": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["contract_version", "type", "item_type", "items", "has_more"],
+      "properties": {
+        "contract_version": { "$ref": "common.schema.json#/$defs/contractVersion" },
+        "type": { "const": "page" },
+        "item_type": { "enum": ["account", "device_session", "instance_access", "instance", "workspace", "project", "task", "run", "decision", "tool_approval", "review"] },
+        "items": {
+          "type": "array",
+          "maxItems": 200,
+          "items": {
+            "oneOf": [
+              { "$ref": "identity.schema.json" },
+              { "$ref": "supervision.schema.json" }
+            ]
+          }
+        },
+        "next_cursor": { "type": "string", "minLength": 1, "maxLength": 1024 },
+        "has_more": { "type": "boolean" }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "has_more": { "const": true } } },
+          "then": {
+            "properties": { "next_cursor": true },
+            "required": ["next_cursor"]
+          }
+        }
+      ]
+    },
+    "resumeRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["contract_version", "type", "stream_id", "after_cursor", "after_sequence", "limit"],
+      "properties": {
+        "contract_version": { "$ref": "common.schema.json#/$defs/contractVersion" },
+        "type": { "const": "resume_request" },
+        "stream_id": { "$ref": "common.schema.json#/$defs/opaqueId" },
+        "after_cursor": { "type": "string", "minLength": 1, "maxLength": 1024 },
+        "after_sequence": { "type": "integer", "minimum": 0 },
+        "limit": { "type": "integer", "minimum": 1, "maximum": 1000 }
+      }
+    },
+    "error": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["contract_version", "type", "request_id", "error"],
+      "properties": {
+        "contract_version": { "$ref": "common.schema.json#/$defs/contractVersion" },
+        "type": { "const": "error" },
+        "request_id": { "$ref": "common.schema.json#/$defs/opaqueId" },
+        "error": { "$ref": "#/$defs/errorPayload" }
+      }
+    }
+  }
+}

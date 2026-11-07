@@ -509,6 +509,10 @@ const parseApplyPatchTargets = (
       targets.push(line.slice("*** Update File: ".length).trim());
       continue;
     }
+    if (line.startsWith("*** Move to: ")) {
+      targets.push(line.slice("*** Move to: ".length).trim());
+      continue;
+    }
     if (line.startsWith("*** Delete File: ")) {
       hasDelete = true;
       targets.push(line.slice("*** Delete File: ".length).trim());

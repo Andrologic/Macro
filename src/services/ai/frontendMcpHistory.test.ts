@@ -78,6 +78,7 @@ for (const transport of ['responses', 'chat-completions'] as const) for (const s
     const live: LiveStreamContextSnapshot[] = [];
     let steerSent = false;
     const options: StreamingChatOptions = {
+    providerAdmission: { kind: 'utility' },
       providerId: transport, providerType: transport === 'responses' ? 'chatgpt' : 'openai', baseUrl: 'https://example.invalid', modelId: 'fixture', messages: [], signal: controller.signal,
       allowedToolIds: [mcp, 'read_file', 'question'],
       ...(mode.startsWith('guided') ? { guidedToolRetry: { requiredToolNames: [mode === 'guided' ? 'question' : 'read_file'], retrySystemPrompt: 'Use the required tool.', maxRetries: 1 } } : {}),

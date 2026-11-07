@@ -305,7 +305,7 @@ async fn database_diagnostic(pool: &DbPool, app: &AppHandle) -> DatabaseDiagnost
         .map(|status| recovery_status(&status.message).to_string())
         .unwrap_or_else(|_| "unavailable".to_string());
     let database = match pool.current() {
-        DbInitializationState::Ready(database) => database,
+        DbInitializationState::Ready(database) => database.pool,
         state => {
             let status = match state {
                 DbInitializationState::Initializing => "initializing",

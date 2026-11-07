@@ -1,0 +1,229 @@
+{
+  "contract": "agsdl-0.2.0",
+  "id": "demo-voice",
+  "bindings": {
+    "engine": {
+      "contract": {
+        "identity": "macro/agent-engine",
+        "version": "1"
+      },
+      "implementation": {
+        "identity": "macro/desktop",
+        "version": "1"
+      }
+    },
+    "speechService": {
+      "contract": {
+        "identity": "macro/speech-to-text",
+        "version": "1"
+      },
+      "implementation": {
+        "identity": "whisper/local",
+        "version": "1"
+      },
+      "effects": "none"
+    }
+  },
+  "configurations": {
+    "transcription": {
+      "engine": "engine",
+      "model": {
+        "identity": "claude-haiku-5-5",
+        "version": "1"
+      },
+      "tools": {
+        "speech": "speechService"
+      }
+    },
+    "standard": {
+      "engine": "engine",
+      "model": {
+        "identity": "claude-sonnet-5-5",
+        "version": "1"
+      }
+    },
+    "approfondi": {
+      "engine": "engine",
+      "model": {
+        "identity": "claude-opus-5-5",
+        "version": "1"
+      }
+    }
+  },
+  "agents": {
+    "transcribe": {
+      "configuration": "transcription",
+      "prompt": [
+        {
+          "value": "Transcrire l’enregistrement. Marquer les passages incertains et identifier les interlocuteurs."
+        }
+      ],
+      "interface": {
+        "results": {
+          "report": {
+            "mediaTypes": [
+              "text/plain"
+            ],
+            "required": true
+          }
+        }
+      }
+    },
+    "clarify": {
+      "configuration": "standard",
+      "prompt": [
+        {
+          "value": "Demander à la personne qui a fourni l’audio de préciser les passages ambigus. Conserver les incertitudes non résolues."
+        }
+      ],
+      "interface": {
+        "results": {
+          "report": {
+            "mediaTypes": [
+              "text/plain"
+            ],
+            "required": true
+          }
+        }
+      }
+    },
+    "summarize": {
+      "configuration": "standard",
+      "prompt": [
+        {
+          "value": "Produire un résumé structuré : décisions, responsables et échéances. Ne pas inventer de décisions."
+        }
+      ],
+      "interface": {
+        "results": {
+          "report": {
+            "mediaTypes": [
+              "text/plain"
+            ],
+            "required": true
+          }
+        }
+      },
+      "skills": [
+        "meetingNotes"
+      ]
+    },
+    "review": {
+      "configuration": "approfondi",
+      "prompt": [
+        {
+          "value": "Comparer le compte rendu à la transcription et signaler les omissions."
+        }
+      ],
+      "interface": {
+        "results": {
+          "report": {
+            "mediaTypes": [
+              "text/plain"
+            ],
+            "required": true
+          }
+        }
+      }
+    }
+  },
+  "flow": {
+    "entry": "transcribe",
+    "steps": {
+      "transcribe": {
+        "type": "agent",
+        "agent": "transcribe",
+        "next": [
+          "confidence"
+        ]
+      },
+      "confidence": {
+        "type": "condition",
+        "test": {
+          "equals": [
+            {
+              "path": [
+                "text"
+              ]
+            },
+            {
+              "value": "À clarifier"
+            }
+          ]
+        },
+        "next": {
+          "true": [
+            "clarify"
+          ],
+          "false": [
+            "prepare"
+          ]
+        }
+      },
+      "clarify": {
+        "type": "agent",
+        "agent": "clarify",
+        "next": [
+          "prepare"
+        ]
+      },
+      "prepare": {
+        "type": "prepare",
+        "message": {
+          "resources": {
+            "report": {
+              "source": {
+                "path": [
+                  "results",
+                  "report"
+                ]
+              }
+            }
+          }
+        },
+        "next": [
+          "summarize"
+        ]
+      },
+      "summarize": {
+        "type": "agent",
+        "agent": "summarize",
+        "next": [
+          "handoff"
+        ]
+      },
+      "handoff": {
+        "type": "prepare",
+        "message": {
+          "resources": {
+            "report": {
+              "source": {
+                "path": [
+                  "results",
+                  "report"
+                ]
+              }
+            }
+          }
+        },
+        "next": [
+          "review"
+        ]
+      },
+      "review": {
+        "type": "agent",
+        "agent": "review",
+        "next": []
+      }
+    }
+  },
+  "skills": {
+    "meetingNotes": {
+      "prompt": [
+        {
+          "value": "Structurer en décisions, responsables et échéances. Citer l’horodatage de chaque décision."
+        }
+      ]
+    }
+  }
+}

@@ -39,6 +39,16 @@
         }
       ]
     },
+    "connectTransferResources": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/ConnectTransferResources"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
     "extensions": {
       "type": [
         "object",
@@ -173,6 +183,41 @@
             "string",
             "null"
           ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "ConnectTransferResources": {
+      "description": "Native transfer budgets. This is an allocation policy, not a transcript limit.",
+      "type": "object",
+      "properties": {
+        "diskFloorMiB": {
+          "default": 2048,
+          "type": "integer",
+          "format": "uint32",
+          "maximum": 65536.0,
+          "minimum": 512.0
+        },
+        "retainedCeilingMiB": {
+          "default": 8192,
+          "type": "integer",
+          "format": "uint32",
+          "maximum": 65536.0,
+          "minimum": 256.0
+        },
+        "version": {
+          "default": 1,
+          "type": "integer",
+          "format": "uint32",
+          "maximum": 1.0,
+          "minimum": 1.0
+        },
+        "workingCeilingMiB": {
+          "default": 512,
+          "type": "integer",
+          "format": "uint32",
+          "maximum": 4096.0,
+          "minimum": 64.0
         }
       },
       "additionalProperties": false

@@ -856,3 +856,246 @@ That sentence is corrected here and in future runner output.
 deletes an empty pool, and `#startExecution` decrements its active count and
 pumps again in `finally`. This correction changes no timings, numeric resource
 counts or memory readings; it removes an unsupported attribution of retention.
+### Local Pilot integration compatibility build
+
+The production build combining the current desktop with the Pilot transport
+measures 1,525,486 bytes for the entry, 821,607 bytes for the native client and
+643,898 bytes for the desktop composition. The latter two deferred transport
+chunks now have dedicated budgets with approximately 1% headroom. Other lazy
+chunks retain their 600,000-byte cap. The largest ordinary locale fragment is
+153,341 bytes and Japanese is 169,841 bytes; their caps are 155,000 and 172,000
+bytes. These measurements describe the combined scope, not a performance gain.
+
+
+## Native SQLite stage diagnostics on the current schema
+
+The native example now has a separate `--diagnostics` mode. Keep the ordinary
+mode for timing the uninstrumented repository. The diagnostic mode replays the
+current literal statements, extracted from the compiled repository source, on
+fresh file-backed fixtures. It does not install production instrumentation.
+
+```sh
+bun --no-install dev/performance/native-sqlite.ts --self-test
+bun --no-install dev/performance/native-sqlite.ts
+bun --no-install dev/performance/native-sqlite.ts --diagnostics
+```
+
+Use the same explicit `PATH`, `RUSTC` and compatible `CARGO_TARGET_DIR` for every
+compared revision. The reduced dev/test overrides, one Cargo job, offline/locked
+resolution, compiled source/nonce handshake and private binary staging above
+still apply. Build before measuring; never time an operation during a Cargo job.
+The first build after a toolchain change can recompile dependencies. Its duration
+is excluded from the series. Keep three successive fresh processes per mode and
+revision, clean sources and the source/binary/lock fingerprints. Aggregate with
+the median of process-level p50 and p95, not a percentile over pooled samples.
+
+The fixture remains 100, 1,000 or 10,000 messages with 256 ASCII content bytes,
+identical seed timestamps and ordered distinct IDs. Seeding is outside timing.
+Both modes perform 10 warmups and 100 retained samples. Every append commits,
+so final row counts are 210, 1,110 and 10,110. The example now requires the exact
+current migration set `[1,3,4,5,6,7,8,9,10,11,12]`, with WAL, synchronous NORMAL,
+foreign keys and the production pool configuration. No migration was added.
+
+Read diagnostics report pool acquisition, `fetch_all` and conversion of the
+complete 14-column projection into `Message`. Fetch includes SQLite execution,
+SQLx worker dispatch, value copies, row-channel transfer and row allocation.
+Conversion includes field decoding, strings, model allocation and destruction
+of fetched SQLx rows. Every diagnostic output is compared field for field and
+in order against the real repository outside timing. These phase percentiles
+cannot be added or subtracted to reconstruct an operation percentile.
+
+A separate engine diagnostic locks the actual SQLx SQLite handle, prepares and
+binds the same SELECT, steps all rows and finalizes the statement. It records
+exact returned rows and VM steps. This uses the same locked SQLite library and
+file, with no SQLx row objects or Rust text/model copies. Pool/handle acquisition
+is excluded; statement preparation is included, unlike a warmed SQLx statement
+cache. It is an executed diagnostic with a different boundary, not an estimate
+of the SQLite contribution inside an asynchronous repository call. The pinned
+`libsqlite3-sys` dev dependency only exposes this existing library to the example.
+It is not a second SQLite engine or a production dependency change.
+
+Write diagnostics replay acquisition, `BEGIN IMMEDIATE`, the insert with FTS,
+COUNT, latest-row query, preview conversion, metadata update, commit and result
+construction. Statements come from the current source. Execution phases include
+SQLx dispatch/scheduling and returned rows, so they are not pure engine timers.
+The ordinary mode remains the measurement of actual `create_message`, including
+metadata refresh and commit acknowledgement. Diagnostic replay maintenance is
+required when the repository control flow changes; a source fingerprint does
+not automatically instrument new branches.
+
+The diagnostic also compares reads through a disposable second pool with the
+same cloned connection options and only its bounded row channel changed to 512.
+This is an exploratory throughput experiment. It does not change the production
+pool's default capacity of 50 and cannot justify that global change without
+assessing memory/backpressure on other queries and large payloads. Its series
+runs after the default pool; order and shared-machine effects remain possible.
+
+`--self-test` separately checks empty/missing histories, all 14 fields with null
+and non-null values, reverse insertion with timestamp ties, a future latest
+message, Unicode previews, duplicate/FK errors, rollback of the message and FTS
+after a metadata failure, and a WAL reader while an append waits for a writer.
+It closes and reopens the owned file and compares exact content, order, metadata
+and FTS results. Contract checks stay outside comparison runs. Every measured
+fixture also checks path ownership, final counts/content/metadata, committed
+append IDs, integrity and reopening, then closes and removes its own directory.
+Commit-to-file plus reopening is the tested durability boundary; process kill,
+power failure and physical-storage guarantees are untested.
+
+
+### Executed ordinal-decoding comparison
+
+Product base `3ed3a91981ae6d8a5e9811469fe89582c878c1db` was compared with
+`c08df292ba7a2db04f40de1e871676640b5c43c5` on clean sources. An intermediate
+benchmark-only revision `f55d5558f67971f3a777c5eaa2427bfada4a60f3` supplied the
+before-stage diagnostics and an unchanged-product control. All groups used
+Rust/Cargo 1.97.1, native SQLite 3.46.0, the reduced debug settings above,
+one offline locked Cargo job, and the same cache. Each series ran in three
+successive fresh processes from a verified private binary, after Cargo exited.
+Values are milliseconds, median of the three process-level p50 / p95 values.
+
+| Seed messages | Base read | Candidate read | Base create + metadata + commit | Candidate create + metadata + commit | Final rows |
+| ---: | ---: | ---: | ---: | ---: | ---: |
+| 100 | 1.356 / 1.451 | 0.934 / 0.984 | 0.436 / 0.587 | 0.433 / 0.575 | 210 |
+| 1,000 | 12.992 / 13.194 | 8.679 / 8.914 | 0.510 / 1.163 | 0.503 / 1.135 | 1,110 |
+| 10,000 | 129.175 / 135.728 | 87.173 / 88.383 | 1.223 / 1.734 | 1.217 / 1.741 | 10,110 |
+
+| Diagnostic, 10,000 rows | Before p50 / p95 | After p50 / p95 |
+| --- | ---: | ---: |
+| Direct SQLite prepare/bind/step/finalize | 5.969 / 6.184 | 6.126 / 6.261 |
+| Pool acquisition | 0.088 / 0.125 | 0.091 / 0.119 |
+| SQLx fetch_all | 61.505 / 63.254 | 61.390 / 62.514 |
+| SQLx rows to Message | 67.850 / 68.550 | 25.826 / 26.735 |
+
+The 10,000-row actual repository read decreased by 32.5% at p50 and
+34.9% at p95 in this debug fixture. The conversion diagnostic decreased
+by 61.9% at p50. The only product change decodes the existing explicit
+14-column projection by ordinal rather than looking up every column name. The
+diagnostic now calls that actual mapper. An independent named-decode test with
+distinct field values, nullable fields, Unicode and timestamp/ID ties protects
+the projection contract. Statement contents, ordering, result volume, pool,
+transactions, metadata refresh and migrations are unchanged. Source comparison
+confirmed the complete create/metadata functions were identical. No write gain
+is established.
+
+Query plans used `idx_messages_conversation_created_at_id` for ordered reads
+and latest-row selection, and the covering `idx_messages_conversation` for
+COUNT, with no temporary sorting tree. The schema fingerprint was
+`a0719d4aeb484b4293317cfe6b95a8d6c15b72a9be12f0fdd5af6cc1315df283` in all diagnostic processes, and VM-step counts matched
+before/after. The exploratory 512-row channel did not yield a stable fetch gain;
+the default remains 50. COUNT cost scales with history size, but replacing it
+with a cached increment would change the metadata recomputation contract and
+was not justified by these observations.
+
+All 29 repository tests, native self-tests and the two staging/provenance tests
+passed. Every measured fixture passed its count, content, metadata, integrity,
+reopen and cleanup checks. Shared-machine load and OS caches were uncontrolled,
+outliers were retained, and no cold-disk, release-profile, large optional-payload,
+JavaScript, transport, production or UI speedup is established. The old Bun
+in-memory and historical 128 ms values are separate references. Full aggregate
+reports, process timestamps/load, manifests, source/binary fingerprints and
+superseded build failures remain outside Git.
+
+### Historical content protocol 4 after native admission
+
+This section records the schema13 runner. New executions use protocol 5 below;
+its earlier observations and source hashes remain schema13 evidence.
+
+`bun --no-install dev/performance/native-sqlite.ts --content-baseline --pilot`
+runs the current SQLite content pilot with one warmup and three retained samples
+at 100, 1,000 and 10,000 messages. It is not reference eligible. After independent
+adapter review, the same command without `--pilot` uses ten warmups and 100
+samples. A reference requires three fresh sequential processes on clean committed
+sources, with each process verified before starting the next.
+
+Protocol 4 requires exact migrations `[1,3,4,5,6,7,8,9,10,11,12,13]` and the
+production WAL/NORMAL/FK pool. Its distinct `content-v3-native` fixture retains
+the mixed-256 inputs, fourteen-field assistant, provenance v2 receipt,
+stream update schedule and batch/tail100 inputs of content-v2. Its definition
+and complete Rust content module produce a new SHA-256; content-v2 reports and
+hashes remain historical schema-12 evidence. The validator still reads protocol
+3 with its original runtime/cell checks, but a current run must publish protocol
+4 and the hash of its current fixture source. The older ordinary/diagnostic
+modes retain their schema-12 runtime guard and refuse the current bootstrap.
+
+The 38 existing content cells retain their boundaries and admission outcomes.
+Four additional cells at each size call the real native repository ports:
+
+| Cell | Timed work | Untimed input and result checks |
+| --- | --- | --- |
+| `native_version` | Content token transaction and commit | Exact incarnation and decimal revision against the stamp table |
+| `native_metadata_open100` | First metadata page, opening, descriptors and commit | First 100 ordered descriptors, exact totals/opening and next anchor |
+| `native_metadata_after50` | Continuation from descriptor 49, limit 100 | 50 rows at N=100, otherwise 100; opening absent and next anchor exact |
+| `native_window50` | Admission and joined body/receipt/revision fetch for the final 50 IDs, mapping and commit | Exact projected fields, requested order, consumed count and decimal revisions |
+
+These 50 cells retain 150 observations in the pilot or 5,000 per reference
+process. Native JSON byte counts are computed outside timing and checked against
+the existing 4 MiB admission estimate. They are not IPC or memory measurements.
+No new serialization timing cells are added. The N=10,000 bounded full-read
+refusal remains a refusal; the successful 50-body window has a different result
+volume and cannot be compared as the same operation.
+
+Fixture-derived fields and positions, independent legacy/SQL observations,
+FTS, metadata and row counts are checked before mutation resets. Each write and
+reset advances the native token without assuming an increment of one, and the
+final token and projected fields survive reopen. Native public controls cover a
+large receipt refusal, exact admitted prefix, invalid suffix and stale token.
+Existing native database tests provide the audited pre-fetch trace witnesses;
+the benchmark adds no trace instrumentation. The original legacy payload/fetch
+controls remain in place.
+
+The new fixture is a fresh file bootstrapped with migration 13. It does not time
+migration of an existing file. DML timings include the production triggers,
+metadata/FTS and commit, without isolating the causal cost of triggers. Validation
+and reset work stay outside timers but can affect cache and WAL state. Keep
+machine sharing, debug profile and OS cache limits in each report. No threshold
+or resource limit is raised for this protocol. Source/nonce handshake, private
+binary staging, complete stdout/stderr, cleanup and source stability checks stay
+required.
+
+This runner measures in-process Rust/SQLx/SQLite on disk. Capture construction,
+Tauri IPC, transport, displayed UI, RSS and heap remain unmeasured. A2 SQLite
+percentiles and A4 memory-port percentiles cannot be added to claim a complete
+path or global gain. This section defines the protocol; it does not announce a
+new accepted reference or a performance improvement.
+
+### Current content protocol 5 with catalogue migration14
+
+The same `--content-baseline` and `--pilot` commands now require exact migrations
+`[1,3,4,5,6,7,8,9,10,11,12,13,14]`, WAL/NORMAL and foreign keys. Protocol 5 has a
+distinct `content-v4-native-catalog` fixture identity and a new hash of that
+identity plus the complete Rust content module. Protocols 3 and 4 remain readable
+as historical evidence with their own fixture/runtime guards; the current runner
+refuses to publish either as a new execution. No historical report is relabelled.
+
+The 50 cells, message inputs, write/reset schedule, sample counts, validation and
+source/nonce checks remain unchanged. This profile measures those existing cells
+on a fresh database with migration14's catalogue triggers installed. It does not
+time an existing database migration, isolate trigger overhead, exercise the new
+catalogue IPC/page ports or prove a capture/network/UI/heap improvement. Those
+need separate measurements after their consumers are connected. The schema13
+reference cannot be pooled with this profile. No new accepted reference is
+announced by this tooling change, and no thresholds or resource limits change.
+
+The AgSDL and Macro Connect integration was measured with the production Vite
+build after combining both branches. These are emitted bytes, not a runtime
+latency or memory measurement.
+
+| Chunk | Emitted bytes | Budget bytes |
+| --- | ---: | ---: |
+| Application entry | 1,497,142 | 1,505,000 |
+| Native content validation | 797,869 | 830,000 |
+| Pilot desktop | 180,629 | 651,000 |
+| Chat zone | 202,935 | 204,000 |
+| Task queue | 58,429 | 63,200 |
+| Rich Markdown | 12,710 | 70,000 |
+| Spanish locale | 154,460 | 156,100 |
+| German locale | 157,917 | 159,500 |
+| French locale | 160,977 | 163,700 |
+| Korean locale | 162,042 | 163,700 |
+| Japanese locale | 179,689 | 181,500 |
+
+The application entry ceiling is tightened from develop's 1,542,000 bytes to
+1,505,000 bytes. The locale ceilings
+cover the combined translation catalogs with approximately 1% headroom. Other
+ceilings remain unchanged. Vite still reports its large-chunk warning; no runtime
+performance improvement is inferred from this build.

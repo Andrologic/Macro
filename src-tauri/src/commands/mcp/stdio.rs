@@ -14,6 +14,21 @@ fn server_enabled(server: &McpServerDto) -> bool {
         == Some(true)
 }
 
+pub(crate) async fn resolve_stdio_transport_async(
+    server: &McpServerDto,
+) -> CommandResult<(String, Vec<String>, HashMap<String, String>)> {
+    let server = server.clone();
+    secrets_blocking(move || resolve_stdio_transport(&server)).await
+}
+
+async fn secrets_blocking<T: Send + 'static>(
+    operation: impl FnOnce() -> CommandResult<T> + Send + 'static,
+) -> CommandResult<T> {
+    crate::secrets::blocking::run(operation)
+        .await
+        .map_err(|error| command_error(error.to_string()))?
+}
+
 pub(crate) fn resolve_stdio_transport(
     server: &McpServerDto,
 ) -> CommandResult<(String, Vec<String>, HashMap<String, String>)> {

@@ -7,6 +7,7 @@ import { StreamStopUnconfirmedError } from "./ai/streamCancellation";
 import type { StreamingChatOptions } from "./streamingChat";
 
 const minimalStreamOptions = {
+  providerAdmission: { kind: 'utility' as const },
   providerId: "provider",
   providerType: "openai",
   baseUrl: "https://example.test",

@@ -1,0 +1,25 @@
+{
+  "contract_version": "1.0",
+  "type": "command",
+  "kind": "tool_approval.resolve",
+  "command_id": "command:tool-approval:03",
+  "idempotency_key": "phone01-toolapproval-0003",
+  "expected_revision": 1,
+  "target": {
+    "type": "tool_approval",
+    "instance_id": "instance:studio-mac",
+    "conversation_id": "conv-1",
+    "assistant_message_id": "msg-1",
+    "tool_call_id": "call-1"
+  },
+  "issued_by": {
+    "account_id": "account:github:583231",
+    "session_id": "session:phone:01J8T",
+    "device_id": "device:iphone:01J8T"
+  },
+  "issued_at": "2026-09-06T12:01:00Z",
+  "payload": {
+    "verdict": "deny",
+    "grant_scope": "once"
+  }
+}

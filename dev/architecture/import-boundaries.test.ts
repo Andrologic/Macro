@@ -373,6 +373,8 @@ describe('installed Vite resolution contract', () => {
       { request: 'store.js', targets: ['store.tsx', 'store.js.ts'], expected: 'store.tsx' },
       { request: 'store.jsx', targets: ['store.ts', 'store.tsx'], expected: 'store.tsx' },
       { request: 'store.js', targets: ['store.js.ts'], expected: 'store.js.ts' },
+      { request: 'store.js', targets: ['store.ts', 'store.js'], expected: 'store.js' },
+      { request: 'store.mjs', targets: ['store.ts', 'store.mjs'], expected: 'store.mjs' },
       { request: 'store.mjs', targets: ['store.ts', 'store.mjs.ts'], expected: 'store.mjs.ts' },
       { request: 'store.cjs', targets: ['store.ts', 'store.cjs.ts'], expected: 'store.cjs.ts' },
       { request: 'store', targets: ['store/index.ts', 'store/index.tsx'], expected: 'store/index.ts' },
@@ -392,8 +394,53 @@ describe('installed Vite resolution contract', () => {
     }
   });
 
+  it('keeps Node-only test recipes outside the production graph and rejects production imports of them', () => {
+    const sources = {
+      'src/test-utils/recipe.ts': 'import { validate } from "../../contracts/validate.mjs"; export { validate };',
+      'src/services/entry.ts': 'export const value = 1;',
+    };
+    expect(analyzeSources(sources).diagnostics).toEqual([]);
+    const report = analyzeSources({ ...sources, 'src/services/entry.ts': 'import { validate } from "../test-utils/recipe"; export { validate };' });
+    expect(report.diagnostics).toEqual([expect.objectContaining({ message: expect.stringContaining('cannot import test utilities') })]);
+  });
+
+  it('rejects production imports of excluded scenario and test modules', () => {
+    for (const suffix of ['scenarios.ts', 'scenarios.tsx', 'test.ts', 'test.tsx']) {
+      const report = analyzeSources({
+        'src/services/chatTurnRuntime.ts': `import "./bridge.${suffix}";`,
+        [`src/services/bridge.${suffix}`]: 'import { create } from "zustand"; export { create };',
+      });
+      expect(report.diagnostics).toEqual([expect.objectContaining({ message: expect.stringContaining('cannot import test modules') })]);
+      expect(compareReports(analyzeSources({}), report).passed).toBe(false);
+    }
+  });
+
+  it('treats JSON contract imports outside src as data', () => {
+    const report = analyzeSources({
+      'src/services/entry.ts': 'import schema from "../../../contracts/macro-pilot/v1/schema.json"; export const id = schema.$id;',
+    });
+    expect(report.diagnostics).toEqual([]);
+    expect(report.unresolved).toEqual([]);
+  });
+
+  it('follows executable Pilot contracts and resolves type-only contract declarations', () => {
+    const report = analyzeSources({
+      'src/services/entry.ts': 'import { validate } from "../../contracts/macro-pilot/v2/validate.mjs"; import type { Receipt } from "../../contracts/macro-pilot/v2/receipt.js"; export { validate }; export type { Receipt };',
+      'contracts/macro-pilot/v2/receipt.d.ts': 'export interface Receipt { id: string }',
+      'contracts/macro-pilot/v2/validate.mjs': 'export { validate } from "./impl.mjs";',
+      'contracts/macro-pilot/v2/impl.mjs': 'import "../../../src/services/entry"; export const validate = () => true;',
+      'src/stores/__tests__/queue.scenarios.ts': 'import "../../../test-utils/recipe";',
+      'src/components/chat/__tests__/queue.scenarios.tsx': 'import "../ChatZone.test";',
+    });
+    expect(report.diagnostics).toEqual([]);
+    expect(report.unresolved).toEqual([]);
+    edge(report, 'src/services/entry.ts', 'contracts/macro-pilot/v2/validate.mjs');
+    edge(report, 'contracts/macro-pilot/v2/validate.mjs', 'contracts/macro-pilot/v2/impl.mjs');
+    expect(report.sccs).toContainEqual(['contracts/macro-pilot/v2/impl.mjs', 'contracts/macro-pilot/v2/validate.mjs', 'src/services/entry.ts']);
+  });
+
   it('blocks unsupported targets that would otherwise shadow an analyzed source file', async () => {
-    for (const [request, target] of [['store', 'store.js'], ['store', 'store.mts'], ['store.js', 'store.js'], ['store.mjs', 'store.mts'], ['store.cjs', 'store.cts']]) {
+    for (const [request, target] of [['store', 'store.mts'], ['store.mjs', 'store.mts'], ['store.cjs', 'store.cts']]) {
       const files = {
         'src/services/entry.ts': `import "../stores/${request}";`,
         'src/stores/store.ts': 'export {};',

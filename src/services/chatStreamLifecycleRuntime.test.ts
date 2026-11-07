@@ -420,17 +420,31 @@ describe("createChatStreamLifecycleRuntime", () => {
     expect(events).not.toContain("remove-placeholder");
   });
 
-  test("abort flushes and persists already received assistant progress", async () => {
+  test("abort persists interrupted display text through the provenance boundary", async () => {
     const controls = makeControls();
-    const { runtime, events } = makeRuntime({
-      message: makeMessage({ content: "partial" }),
+    const persist = mock(async () => undefined);
+    const { runtime, events, getMessage } = makeRuntime({
+      message: makeMessage({ content: "partial", hidden_context: "private reasoning" }),
+      overrides: { persistAssistantStreamResult: persist, getInterruptedProviderText: () => "partial" },
     });
 
-    await runtime.onAbort?.(controls);
+    await runtime.onAbort(controls);
 
     expect(controls.flushNow).toHaveBeenCalledTimes(1);
     expect(controls.dispose).toHaveBeenCalledTimes(1);
-    expect(events).toContain("persist-partial");
+    expect(persist).toHaveBeenCalledWith("conversation-1", "assistant-1", {
+      visibleContent: "partial",
+      toolTraces: [],
+      hiddenContext: "private reasoning",
+      providerInputItems: undefined,
+      providerTurnState: undefined,
+      completionReason: "incomplete",
+      interruptedProviderText: "partial",
+    });
+    expect(getMessage().completion_reason).toBe("incomplete");
+    expect(events).not.toContain("persist-partial");
+    expect(events).not.toContain("provider");
+    expect(events).not.toContain("awaiting");
     expect(events).not.toContain("remove-placeholder");
   });
 
@@ -520,7 +534,7 @@ test("a real replay rollback failure after a lost terminal receipt retains Chat 
   const terminal = { cachedSession: () => session, createSession: async () => session, readSession: async () => session,
     runCommand: async () => { throw new Error("Run receipt lost"); }, killSession: async () => session };
   let receipt: StreamStopUnconfirmedError | undefined;
-  const stream = runAssistantStream({
+  const stream = runAssistantStream({ providerAdmission: { kind: 'utility' },
     sessionId: "session-1", providerId: "provider", providerType: "copilot", modelId: "fixture", baseUrl: "https://example.invalid", messages: [], signal: controller.signal, lifecycle,
     streamChatImpl: async options => {
       try {

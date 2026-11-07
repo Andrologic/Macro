@@ -6,11 +6,14 @@ import { WorkflowGraphPopup, type GraphPopupAction } from './WorkflowGraphPopup'
 import { Dialog } from '../ui/Dialog';
 import { projectViewer } from '../../services/agsdl/viewer';
 import { createExample } from '../../services/agsdl/examples';
+import { blockDetails } from '../../services/agsdl/blockDetails';
 
 let root: Root | undefined;
 let host: HTMLDivElement;
 afterEach(() => { act(() => root?.unmount()); host?.remove(); });
-const card = projectViewer(createExample('release', 'agsdl-0.2.0')).graphs[0].cards[0];
+const projected = projectViewer(createExample('release', 'agsdl-0.2.0'));
+const card = projected.graphs[0].cards[0];
+const details = blockDetails(card, projected.declarations);
 const actions = (run = () => {}): GraphPopupAction[] => [
   { label: 'Details', icon: null, run }, { label: 'Open task', icon: null, run },
 ];
@@ -19,7 +22,7 @@ async function mount({ insideDialog = false, run = () => {}, dismissSignal = 0 }
     host = document.createElement('div'); document.body.append(host); root = createRoot(host);
   }
   const block = <WorkflowBlockOverlay card={card} title="Release checklist" kindLabel="Agent"
-    incoming={['Initial brief']} outgoing={['PR review']} actions={actions(run)} dismissSignal={dismissSignal}
+    incoming={['Initial brief']} outgoing={['PR review']} details={details} actions={actions(run)} dismissSignal={dismissSignal}
     task={{ taskId: 'checklist', title: 'Release checklist', state: 'awaiting_response' }}>
     <button>Release checklist</button>
   </WorkflowBlockOverlay>;
@@ -36,14 +39,16 @@ const hover = async (target: HTMLElement) => act(async () => {
   await new Promise(resolve => setTimeout(resolve, 480));
 });
 
-it('shows a delayed summary with its state and neighboring blocks, then dismisses on Escape', async () => {
+it('shows a delayed configuration preview without repeating the block, then dismisses on Escape', async () => {
   const { block } = await mount();
   await hover(block);
   const preview = document.querySelector('[role="tooltip"]');
-  expect(preview?.textContent).toContain('Release checklist');
-  expect(preview?.textContent).toContain('Initial brief');
-  expect(preview?.textContent).toContain('PR review');
-  expect(preview?.querySelector('[data-task-status-indicator-state="awaiting_response"]')).not.toBeNull();
+  const instructions = details.find(detail => detail.key === 'instructions')!.values[0];
+  expect(preview?.textContent).toContain(instructions);
+  // Title, neighbours and state are already on the canvas.
+  expect(preview?.textContent).not.toContain('Release checklist');
+  expect(preview?.textContent).not.toContain('Initial brief');
+  expect(preview?.querySelector('[data-task-status-indicator-state]')).toBeNull();
   expect(block.getAttribute('aria-describedby')).toBe(preview?.id ?? null);
   expect(preview?.textContent).not.toContain('/flow/steps');
   await act(async () => block.focus());

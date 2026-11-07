@@ -69,6 +69,7 @@ export interface ResolveScopedMcpRuntimeOptions {
 }
 
 export interface CallScopedMcpToolOptions {
+  chatAdmission?: import('./ipc/chatAdmission').ChatToolAdmission;
   projectIds?: readonly string[];
   /** Aborting cancels the backend operation via `mcpRuntimeCancelOperation`. */
   signal?: AbortSignal;
@@ -293,8 +294,9 @@ export const callScopedMcpTool = async (
         toolName: tool.name,
         arguments: args,
         operationId,
+        chatAdmission: options.chatAdmission,
       });
-      const response = options.signal
+      const response = options.signal && !options.chatAdmission
         ? await Promise.race([
             call,
             new Promise<never>((_resolve, reject) => {
@@ -302,6 +304,7 @@ export const callScopedMcpTool = async (
             }),
           ])
         : await call;
+      if (options.signal?.aborted) throw abortError();
       if (response.blocks?.length) {
         const blocks = normalizeToolResultBlocks(response.blocks);
         return { kind: 'result', result: `${response.isError ? '[MCP tool reported an error]\n' : ''}${projectToolResultText(blocks)}`, blocks,

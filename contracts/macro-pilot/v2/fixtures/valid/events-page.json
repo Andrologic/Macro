@@ -1,0 +1,29 @@
+{
+  "contract_version": "2.0",
+  "type": "events.page",
+  "request_id": "request-demo",
+  "account_id": "account-demo",
+  "stream_id": "stream-demo",
+  "after_sequence": 0,
+  "next_sequence": 1,
+  "reset": false,
+  "events": [
+    {
+      "contract_version": "2.0",
+      "type": "event",
+      "account_id": "account-demo",
+      "stream_id": "stream-demo",
+      "sequence": 1,
+      "occurred_at": "2026-01-01T00:00:00Z",
+      "change": {
+        "kind": "conversation.changed",
+        "scope": {
+          "instance_id": "instance-demo",
+          "kind": "conversation",
+          "conversation_id": "conversation-demo"
+        },
+        "revision": 2
+      }
+    }
+  ]
+}

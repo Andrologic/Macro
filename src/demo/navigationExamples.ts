@@ -26,10 +26,10 @@ export function demoNavigationPreferences() {
     [DEMO_MACRO_LIBRARY_ID, 'macro-chantier', 'common-patterns'],
     ['demo-luma', 'demo-audio-feature', 'mobile-audio'], ['demo-luma', 'demo-voice', 'mobile-audio'],
     ['demo-luma', 'demo-release', 'mobile-checks'], ['demo-luma', 'demo-delivery', 'mobile-delivery'],
-    ['demo-atlas', 'demo-editorial', 'atlas-content'], ['demo-atlas', 'demo-persistent', 'atlas-content'],
-    ['demo-atlas', 'demo-approvals', 'atlas-checks'], ['demo-atlas', 'demo-fix', 'atlas-portal'], ['demo-atlas', 'demo-quality', 'atlas-checks'],
+    ['demo-atlas', 'demo-persistent', 'atlas-content'],
+    ['demo-atlas', 'demo-fix', 'atlas-portal'], ['demo-atlas', 'demo-quality', 'atlas-checks'],
     ['demo-helio', 'demo-crisis', 'helio-incidents'], ['demo-helio', 'demo-incident', 'helio-incidents'],
-    ['demo-helio', 'demo-competition', 'helio-incidents'], ['demo-helio', 'demo-ingestion', 'helio-checks'], ['demo-helio', 'demo-structured', 'helio-checks'],
+    ['demo-helio', 'demo-ingestion', 'helio-checks'],
     ['demo-meridian', 'demo-refund', 'commerce-support'], ['demo-meridian', 'demo-resident', 'commerce-support'],
   ];
   for (const [projectId, planId, folderId] of placements) organization = moveBlueprintToFolder(organization, `project:${projectId}`, toPlanLocatorKey({ branchName: 'main', planId }), folderId);

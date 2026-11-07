@@ -1,3 +1,5 @@
+mod policy_file;
+
 use fs2::FileExt;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -32,6 +34,8 @@ struct SecretMigrationJournal {
 pub enum SecretError {
     #[error("Secret store has not been initialized.")]
     StoreUnavailable,
+    #[error("Secret policy is unavailable; explicit recovery is required.")]
+    PolicyUnavailable,
     #[error("Secret storage error: {0}")]
     Io(#[from] std::io::Error),
     #[error("Secret serialization error: {0}")]
@@ -68,6 +72,14 @@ pub(super) struct SecretEnvelope<T> {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub(super) struct ProviderSecretsFile {
     pub(super) version: u8,
+    #[serde(
+        default,
+        rename = "policyEpoch",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub(super) policy_epoch: Option<uuid::Uuid>,
+    #[serde(skip)]
+    raw_chatgpt_sessions: BTreeMap<String, serde_json::Value>,
     #[serde(skip)]
     pub(super) api_keys: BTreeMap<String, String>,
     #[serde(default)]
@@ -94,6 +106,8 @@ struct SecretNamespaces {
 struct RawProviderSecretsFile {
     #[serde(default, rename = "version")]
     _version: u8,
+    #[serde(default, rename = "policyEpoch")]
+    policy_epoch: Option<uuid::Uuid>,
     #[serde(default)]
     api_keys: BTreeMap<String, String>,
     #[serde(default)]
@@ -106,6 +120,8 @@ impl Default for ProviderSecretsFile {
     fn default() -> Self {
         Self {
             version: SECRET_FILE_VERSION,
+            policy_epoch: None,
+            raw_chatgpt_sessions: BTreeMap::new(),
             api_keys: BTreeMap::new(),
             namespaces: SecretNamespaces::default(),
             chatgpt_sessions: BTreeMap::new(),
@@ -169,6 +185,13 @@ impl LocalSecretStore {
             uuid::Uuid::new_v4().simple()
         ));
         std::fs::rename(&self.path, &quarantined_path)?;
+        #[cfg(test)]
+        repair_checkpoint(&self.path, "quarantine-rename")?;
+        #[cfg(test)]
+        repair_checkpoint(&self.path, "quarantine-sync-error")?;
+        sync_parent_directory(&self.path)?;
+        #[cfg(test)]
+        repair_checkpoint(&self.path, "quarantine-synced")?;
         warn!(
             path = %self.path.display(),
             quarantined_path = %quarantined_path.display(),
@@ -294,6 +317,8 @@ impl LocalSecretStore {
         };
         let journal_bytes = serde_json::to_vec_pretty(&journal)?;
         write_private_file_atomically(&self.migration_journal_path(), &journal_bytes, || Ok(()))?;
+        #[cfg(test)]
+        repair_checkpoint(&self.path, "migration-journal")?;
         write_private_file_atomically(&self.path, &target, || {
             fail_migration_after_replace(&self.path)
         })?;
@@ -336,7 +361,19 @@ fn serialize_provider_secrets(data: &ProviderSecretsFile) -> Result<Vec<u8>, Sec
     let mut persisted = data.clone();
     persisted.version = SECRET_FILE_VERSION;
     persisted.namespaces = SecretNamespaces::from_flat(&persisted.api_keys);
-    Ok(serde_json::to_vec_pretty(&persisted)?)
+    let mut value = serde_json::to_value(&persisted)?;
+    // Retain recognized legacy credentials, including id_token, until that
+    // specific session is replaced or removed by its ordinary writer.
+    for (id, raw) in &data.raw_chatgpt_sessions {
+        if data
+            .chatgpt_sessions
+            .get(id)
+            .is_some_and(|current| parse_chatgpt_secret_value(raw).as_ref() == Some(current))
+        {
+            value["chatgpt_sessions"][id] = raw.clone();
+        }
+    }
+    Ok(serde_json::to_vec_pretty(&value)?)
 }
 
 fn secret_digest(bytes: &[u8]) -> String {
@@ -368,6 +405,8 @@ fn write_private_file_atomically(
         set_private_file_permissions(&temporary)?;
         replace_file(&temporary, path)?;
         after_replace()?;
+        #[cfg(test)]
+        repair_checkpoint(path, "canonical-replaced")?;
         set_private_file_permissions(path)?;
         sync_parent_directory(path)
     })();
@@ -375,6 +414,29 @@ fn write_private_file_atomically(
         let _ = std::fs::remove_file(&temporary);
     }
     result
+}
+
+// Armed only by the synthetic crash test child, never by production settings.
+#[cfg(test)]
+static REPAIR_CHECKPOINT: LazyLock<Mutex<Option<(PathBuf, String)>>> =
+    LazyLock::new(|| Mutex::new(None));
+
+#[cfg(test)]
+fn repair_checkpoint(path: &Path, point: &str) -> Result<(), std::io::Error> {
+    let mut hook = REPAIR_CHECKPOINT.lock().unwrap();
+    if hook
+        .as_ref()
+        .is_some_and(|(target, selected)| target == path && selected == point)
+    {
+        hook.take();
+        if point == "quarantine-sync-error" {
+            return Err(std::io::Error::other(
+                "synthetic parent synchronization failure",
+            ));
+        }
+        std::process::exit(73);
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -443,6 +505,7 @@ fn parse_provider_secrets_file(contents: &str) -> Result<ProviderSecretsFile, se
     let mut api_keys = raw.namespaces.into_flat();
     api_keys.extend(raw.api_keys);
     let mut chatgpt_sessions = BTreeMap::new();
+    let raw_chatgpt_sessions = raw.chatgpt_sessions.clone();
 
     for (provider_id, value) in raw.chatgpt_sessions {
         if let Some(secret) = parse_chatgpt_secret_value(&value) {
@@ -457,6 +520,8 @@ fn parse_provider_secrets_file(contents: &str) -> Result<ProviderSecretsFile, se
 
     Ok(ProviderSecretsFile {
         version,
+        policy_epoch: raw.policy_epoch,
+        raw_chatgpt_sessions,
         api_keys,
         namespaces: SecretNamespaces::default(),
         chatgpt_sessions,
@@ -665,22 +730,11 @@ pub(crate) fn set_private_file_permissions(_path: &Path) -> Result<(), std::io::
     Ok(())
 }
 
-pub(super) fn init_store(app_data_dir: &Path) -> Result<(), SecretError> {
+pub(super) fn install_store_path(app_data_dir: &Path) -> Result<LocalSecretStore, SecretError> {
     std::fs::create_dir_all(app_data_dir)?;
     let path = app_data_dir.join(SECRET_FILE_NAME);
     *SECRET_STORE_PATH.lock().expect("secret store path lock") = Some(path.clone());
-    let store = LocalSecretStore::new(path);
-    let _guard = STORE_MUTEX.lock().expect("secret store lock");
-    let file_guard = lock_store_file(&store)?;
-    store.recover_pending_migration()?;
-    let data = store.read_file()?;
-    if data.version < SECRET_FILE_VERSION && store.path.exists() {
-        store.migrate_versioned_file(&data)?;
-    } else if !store.path.exists() {
-        store.write_file(&data)?;
-    }
-    FileExt::unlock(&file_guard)?;
-    Ok(())
+    Ok(LocalSecretStore::new(path))
 }
 
 pub(super) fn default_store() -> Result<LocalSecretStore, SecretError> {
@@ -704,81 +758,38 @@ pub(super) fn chatgpt_auth_lock_path(provider_id: &str) -> Result<PathBuf, Secre
     Ok(parent.join(format!("chatgpt-auth-{}.lock", &digest[..24])))
 }
 
-pub(super) fn with_store_lock<T>(
+pub(super) fn with_specific_store_lock<T>(
+    store: &LocalSecretStore,
     operation: impl FnOnce(&LocalSecretStore) -> Result<T, SecretError>,
 ) -> Result<T, SecretError> {
-    let store = default_store()?;
-    let _guard = STORE_MUTEX.lock().expect("secret store lock");
-    let file_guard = lock_store_file(&store)?;
-    let result = operation(&store);
+    with_store_lock_mode(store, false, operation)
+}
+
+pub(super) fn with_specific_store_recovery_lock<T>(
+    store: &LocalSecretStore,
+    operation: impl FnOnce(&LocalSecretStore) -> Result<T, SecretError>,
+) -> Result<T, SecretError> {
+    with_store_lock_mode(store, true, operation)
+}
+
+fn with_store_lock_mode<T>(
+    store: &LocalSecretStore,
+    recovery: bool,
+    operation: impl FnOnce(&LocalSecretStore) -> Result<T, SecretError>,
+) -> Result<T, SecretError> {
+    let _guard = match STORE_MUTEX.lock() {
+        Ok(guard) => guard,
+        Err(poisoned) if recovery => poisoned.into_inner(),
+        Err(_) => return Err(SecretError::PolicyUnavailable),
+    };
+    let file_guard = lock_store_file(store)?;
+    let result = operation(store);
     let unlock_result = FileExt::unlock(&file_guard);
-    result.and_then(|value| unlock_result.map(|()| value).map_err(SecretError::from))
-}
-
-pub(super) fn read_provider_secret(provider_id: &str) -> Result<Option<String>, SecretError> {
-    with_store_lock(|store| Ok(store.read_file()?.api_keys.get(provider_id).cloned()))
-}
-
-pub(super) fn write_provider_secret(provider_id: &str, value: &str) -> Result<(), SecretError> {
-    with_store_lock(|store| {
-        store.update_file(|data| {
-            data.api_keys
-                .insert(provider_id.to_string(), value.to_string());
-        })
-    })
-}
-
-pub(super) fn delete_provider_secret_entry(provider_id: &str) -> Result<(), SecretError> {
-    with_store_lock(|store| {
-        store.update_file(|data| {
-            data.api_keys.remove(provider_id);
-        })
-    })
-}
-
-pub(super) fn list_provider_secret_ids() -> Result<Vec<String>, SecretError> {
-    with_store_lock(|store| Ok(store.read_file()?.api_keys.keys().cloned().collect()))
-}
-
-pub(super) fn list_chatgpt_secret_ids() -> Result<Vec<String>, SecretError> {
-    with_store_lock(|store| {
-        Ok(store
-            .read_file()?
-            .chatgpt_sessions
-            .keys()
-            .cloned()
-            .collect())
-    })
-}
-
-pub(super) fn read_chatgpt_secret(provider_id: &str) -> Result<Option<ChatGptSecret>, SecretError> {
-    with_store_lock(|store| {
-        Ok(store
-            .read_file()?
-            .chatgpt_sessions
-            .get(provider_id)
-            .cloned())
-    })
-}
-
-pub(super) fn write_chatgpt_secret(
-    provider_id: &str,
-    secret: &ChatGptSecret,
-) -> Result<(), SecretError> {
-    with_store_lock(|store| {
-        store.update_file(|data| {
-            data.chatgpt_sessions
-                .insert(provider_id.to_string(), secret.clone());
-        })
-    })
-}
-
-pub(super) fn delete_chatgpt_secret(provider_id: &str) -> Result<(), SecretError> {
-    with_store_lock(|store| {
-        store.update_file(|data| {
-            data.chatgpt_sessions.remove(provider_id);
-        })
-    })
+    let result = result.and_then(|value| unlock_result.map(|()| value).map_err(SecretError::from));
+    if recovery && result.is_ok() {
+        STORE_MUTEX.clear_poison();
+    }
+    result
 }
 
 pub(super) fn parse_chatgpt_secret(serialized: &str) -> Result<Option<ChatGptSecret>, SecretError> {

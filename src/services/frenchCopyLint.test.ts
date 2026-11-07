@@ -48,6 +48,10 @@ const ENGLISH_PROTOCOL_PREFIXES = [
 // A kind comparison uses a tagged union identifier rather than user-facing copy.
 const isKindComparison = (prefix: string): boolean => /\.kind\s*(?:===|!==)\s*$/.test(prefix);
 
+const isPropertyName = (prefix: string, suffix: string): boolean =>
+  (/[\w$.)\]]\s*\[\s*$/.test(prefix) && /^\s*\]/.test(suffix)) ||
+  (/(?:^|[,{;])\s*$/.test(prefix) && /^\s*\??\s*:/.test(suffix));
+
 const isTechnicalCssLiteral = (literal: string): boolean => {
   if (!literal.trim()) {
     return false;
@@ -100,6 +104,15 @@ describe('french hardcoded copy', () => {
     expect(isKindComparison('notify.info(')).toBe(false);
   });
 
+  it('ignores property keys and indices while checking displayed copy', () => {
+    expect(isPropertyName('type Model = { ', '?: string }')).toBe(true);
+    expect(isPropertyName('ContentModelCatalog[', ']')).toBe(true);
+    expect(isPropertyName('notify.info(', ')')).toBe(false);
+    expect(isPropertyName('const label = ', ';')).toBe(false);
+    expect(isPropertyName('const labels = [', ']')).toBe(false);
+    expect(isPropertyName('condition ? ', ' : other')).toBe(false);
+  });
+
   it('does not contain common French accent omissions in user-facing strings', () => {
     const files = collectSourceFiles(SRC_ROOT);
     const findings: string[] = [];
@@ -125,7 +138,7 @@ describe('french hardcoded copy', () => {
 
         for (const match of line.matchAll(STRING_LITERAL_PATTERN)) {
           const literal = match[2];
-          if (isKindComparison(line.slice(0, match.index))) {
+          if (isKindComparison(line.slice(0, match.index)) || isPropertyName(line.slice(0, match.index), line.slice(match.index! + match[0].length))) {
             continue;
           }
           if (!literal || !/[A-Za-z]/.test(literal)) {

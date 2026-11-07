@@ -1153,7 +1153,15 @@ export type ConversationExecutionPhase =
   | 'persisting'
   | 'error';
 
+/** Safe provider diagnosis for remote supervision. No provider-authored text. */
+export interface ProviderFailure {
+  category: 'authentication' | 'quota' | 'rate_limit' | 'unavailable' | 'context_limit' | 'invalid_request' | 'unknown';
+  message: 'provider_authentication_required' | 'provider_quota_exceeded' | 'provider_rate_limited' | 'provider_unavailable' | 'provider_context_limit' | 'provider_invalid_request' | 'provider_failed';
+  recovery: 'desktop_action' | 'retry_later' | 'review_before_retry';
+}
+
 export interface ConversationRuntimeState {
+  providerFailure?: ProviderFailure | null;
   phase: ConversationExecutionPhase;
   sessionId: string | null;
   turnId?: string | null;
@@ -1296,6 +1304,8 @@ export interface RecordConversationGoalAuditInput {
 }
 
 export interface ChatMessage {
+  /** Internal inactive-archive provenance. Lowers authority; never F admission. */
+  portable_history?: { version: 1; importKey: string; manifest: string };
   id: string;
   turn_id?: string | null;
   task_id: string;

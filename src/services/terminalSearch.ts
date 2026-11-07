@@ -24,11 +24,17 @@ interface SearchableTerminalBuffer {
 
 interface CaseFoldedText {
   text: string;
-  originalStarts: number[];
-  originalEnds: number[];
+  originalStarts: number[] | null;
+  originalEnds: number[] | null;
 }
 
 const foldCaseWithOriginalIndices = (value: string): CaseFoldedText => {
+  // ASCII lowercasing preserves UTF-16 offsets, so no per-character maps are needed.
+  // Keep the Unicode path for expanding case folds and surrogate pairs.
+  if (!/[\u0080-\uffff]/.test(value)) {
+    return { text: value.toLowerCase(), originalStarts: null, originalEnds: null };
+  }
+
   const originalStarts: number[] = [];
   const originalEnds: number[] = [];
   let originalIndex = 0;
@@ -81,8 +87,12 @@ export const findTerminalSearchMatches = (
       }
 
       const foldedEnd = foldedColumn + normalizedQuery.length - 1;
-      const column = foldedText.originalStarts[foldedColumn];
-      const originalEnd = foldedText.originalEnds[foldedEnd];
+      const column = foldedText.originalStarts === null
+        ? foldedColumn
+        : foldedText.originalStarts[foldedColumn];
+      const originalEnd = foldedText.originalEnds === null
+        ? foldedEnd + 1
+        : foldedText.originalEnds[foldedEnd];
       if (column === undefined || originalEnd === undefined) {
         break;
       }

@@ -1,3 +1,4 @@
+import { persistConversationArchives } from '../../services/conversationManagementService';
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { splitSearchHighlights } from './searchHighlights';
 import { useTranslation } from 'react-i18next';
@@ -38,7 +39,7 @@ import {
   getConversationExportBaseName,
 } from '../../services/conversationExport';
 import {
-  searchMessages,
+  searchMessages, isTauriAvailable,
   type MessageSearchResult,
 } from '../../services/tauriIpc';
 
@@ -918,10 +919,14 @@ export const ConversationArchive: React.FC<ConversationArchiveProps> = ({ classN
       try {
         return await commitArchivedConversationMutation({
           write: async () => {
-            if (!(await persistArchivedConversationIds(nextArchivedIds))) {
-              throw new Error('archive preference write failed');
+            if (isTauriAvailable()) {
+              await persistConversationArchives(normalizedIds, shouldArchive);
+              archiveWriteCommitted = true;
+              await useChatStore.getState().refreshConversationMetadata();
+            } else {
+              if (!(await persistArchivedConversationIds(nextArchivedIds))) throw new Error('archive preference write failed');
+              archiveWriteCommitted = true;
             }
-            archiveWriteCommitted = true;
           },
           onCommitted: async () => {
             // Every committed archive owns its draft cleanup, even when a newer

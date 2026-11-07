@@ -63,6 +63,12 @@ settingsRegistry.register({
   load: () => import('../../components/settings/views/ai/SpeechSettings').then((module) => ({ default: module.SpeechSettings })),
 });
 settingsRegistry.register({
+  id: 'pilot', owner: 'shell.settings', order: 5.5, icon: 'cloud',
+  labelKey: 'settings.pilot.label', label: 'Macro Connect',
+  descriptionKey: 'settings.pilot.description',
+  load: () => import('../../components/settings/views/PilotView').then((module) => ({ default: module.PilotView })),
+});
+settingsRegistry.register({
   id: 'tools', owner: 'shell.settings', order: 6, icon: 'tool',
   labelKey: 'settings.tools', label: 'Tools & MCP',
   descriptionKey: 'settings.desc.tools',
