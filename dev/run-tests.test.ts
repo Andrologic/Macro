@@ -1,4 +1,7 @@
 import { describe, expect, test } from 'bun:test';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import {
   IGNORED_PREFIXES,
   coverageDirectoryFor,
@@ -43,6 +46,33 @@ describe('test file selection', () => {
       'dev/run-tests.test.ts',
     ])).toEqual(['dev/run-tests.test.ts', 'src/tmp/cache.test.ts']);
   });
+
+  test('the CLI executes the source file without running its archived copy', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'macro-test-selection-'));
+    try {
+      await mkdir(join(directory, 'src'), { recursive: true });
+      await mkdir(join(directory, 'tmp/review/src'), { recursive: true });
+      await writeFile(join(directory, 'src/probe.test.ts'),
+        'import { test, expect } from "bun:test"; test("source", () => expect(true).toBe(true));\n');
+      await writeFile(join(directory, 'tmp/review/src/probe.test.ts'),
+        'import { test } from "bun:test"; test("archive", () => { throw new Error("ARCHIVE_EXECUTED"); });\n');
+      const child = Bun.spawn([process.execPath, join(import.meta.dir, 'run-tests.mjs'), '--concurrency=1'], {
+        cwd: directory,
+        stdout: 'pipe',
+        stderr: 'pipe',
+      });
+      const [stdout, stderr, exitCode] = await Promise.all([
+        new Response(child.stdout).text(),
+        new Response(child.stderr).text(),
+        child.exited,
+      ]);
+      expect({ exitCode, stderr }).toEqual({ exitCode: 0, stderr: '' });
+      expect(stdout).toContain('All 1 test file(s) passed');
+      expect(stdout).not.toContain('ARCHIVE_EXECUTED');
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
 });
 
 describe('per-file spawn arguments', () => {
@@ -55,7 +85,7 @@ describe('per-file spawn arguments', () => {
       '--conditions=production',
       'test',
       '--timeout=30000',
-      file,
+      `./${file}`,
     ]);
   });
 
@@ -63,7 +93,7 @@ describe('per-file spawn arguments', () => {
     expect(spawnArgsForFile('src/stores/workspace.test.ts')).toEqual([
       'test',
       '--timeout=30000',
-      'src/stores/workspace.test.ts',
+      './src/stores/workspace.test.ts',
     ]);
   });
 
@@ -75,7 +105,7 @@ describe('per-file spawn arguments', () => {
       '--coverage',
       '--coverage-reporter=lcov',
       '--coverage-dir=coverage/tests/src_services_git_review-5d3694dd',
-      'src/services/git/review.test.ts',
+      './src/services/git/review.test.ts',
     ]);
     expect(coverageDirectoryFor('coverage/tests/', 'src/a/b.test.tsx')).toMatch(
       /^coverage\/tests\/src_a_b-[a-f0-9]{8}$/,

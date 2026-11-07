@@ -93,7 +93,7 @@ export function spawnArgsForFile(file, options = {}) {
     args.push('--coverage', '--coverage-reporter=lcov');
     args.push(`--coverage-dir=${coverageDirectoryFor(options.coverageDirectory || 'coverage/tests', file)}`);
   }
-  args.push(normalizePath(file));
+  args.push(`./${normalizePath(file)}`);
   return args;
 }
 
