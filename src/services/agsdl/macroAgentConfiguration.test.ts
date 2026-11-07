@@ -6,7 +6,7 @@ import { macroNativeModelEdition, readMacroNativeModel } from "./nativeModelEdit
 import { macroAgentConfiguration, macroConfigurationChanges, MACRO_ENGINE_CONTRACT, MACRO_ENGINE_IMPLEMENTATION } from "./macroAgentConfiguration";
 
 const setup = () => {
-  const doc = JSON.parse(createExample("release", "agsdl-0.2.0"));
+  const doc = JSON.parse(createExample("release"));
   const source = () => JSON.stringify(doc);
   const card = () => projectViewer(source()).graphs[0].cards[0];
   return { doc, source, card };
@@ -27,7 +27,7 @@ describe("Macro model configuration", () => {
     expect(result.runtime.configurations[0].agents.slice(1)).toEqual(doc.runtime.configurations[0].agents.slice(1));
   });
   it("produces a binding accepted by the AgSDL reader", async () => {
-    const source = createExample("release", "agsdl-0.2.0");
+    const source = createExample("release");
     const card = projectViewer(source).graphs[0].cards[0];
     const configured = applyChanges(source, macroConfigurationChanges(source, card, "provider-a", "model-a"));
     const reports = await validateDocument(configured);

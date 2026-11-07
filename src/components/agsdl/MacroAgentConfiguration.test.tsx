@@ -24,7 +24,7 @@ afterEach(() => {
   useAgsdlModelCatalogue.setState(originalCatalogue);
   useProviderStore.setState({ providers: originalProviders.providers, modelsByProvider: originalProviders.modelsByProvider });
 });
-async function mount(source = createExample("release", "agsdl-0.2.0"), catalogue = nativeCatalogue) {
+async function mount(source = createExample("release"), catalogue = nativeCatalogue) {
   useAgsdlModelCatalogue.setState({ catalogue, loading: false, error: undefined, load: async () => useAgsdlModelCatalogue.getState().catalogue ?? catalogue });
   useProviderStore.setState({
     providers: [{ id: "demo-provider", name: "Demo provider", status: "online" }],
@@ -68,7 +68,7 @@ it("rejects a model selection if the agent has changed the document while the fo
 
 it("shows Macro provider and model names while keeping opaque parameters collapsed", async () => {
   await mount();
-  const doc = JSON.parse(createExample("release", "agsdl-0.2.0"));
+  const doc = JSON.parse(createExample("release"));
   doc.runtime.configurations[0].agents[0].engine = { identity: "macro/desktop", version: "1" };
   doc.runtime.configurations[0].agents[0].parameters = { providerId: "demo-provider", modelId: "demo-model", temperature: 0.5 };
   const source = JSON.stringify(doc);
@@ -89,7 +89,7 @@ it("shows Macro provider and model names while keeping opaque parameters collaps
 
 
 it("saves an explicit 0.2 Edition and settings atomically without rewriting Engine or Tool bindings", async () => {
-  const source = createExample020("release");
+  const source = createExample020("release", "agsdl-0.2.0");
   const before = JSON.parse(source);
   await mount(source);
   choose(0, "demo-provider"); choose(1, "demo-model");
@@ -109,7 +109,7 @@ it("saves an explicit 0.2 Edition and settings atomically without rewriting Engi
 
 
 it("edits a native 0.2 Edition and shows its declared identities when settings omit them", async () => {
-  const doc = JSON.parse(createExample020("release"));
+  const doc = JSON.parse(createExample020("release", "agsdl-0.2.0"));
   doc.configurations.project.model = macroNativeModelEdition("demo-provider", "demo-model");
   delete doc.configurations.project.settings;
   await mount(JSON.stringify(doc));
@@ -130,7 +130,7 @@ it("edits a native 0.2 Edition and shows its declared identities when settings o
 });
 
 it("does not create a Model Edition while editing only the prompt", async () => {
-  await mount(createExample020("release"));
+  await mount(createExample020("release", "agsdl-0.2.0"));
   const textarea = document.body.querySelector<HTMLTextAreaElement>("form textarea")!;
   act(() => {
     Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(textarea, textarea.value + " Explicit prompt change.");
@@ -144,7 +144,7 @@ it("does not create a Model Edition while editing only the prompt", async () => 
 });
 
 it("revalidates qualification at save and keeps the draft when the native model is no longer available", async () => {
-  await mount(createExample020("release")); choose(0, "demo-provider"); choose(1, "demo-model");
+  await mount(createExample020("release", "agsdl-0.2.0")); choose(0, "demo-provider"); choose(1, "demo-model");
   const original = useAgsdlStore.getState().sessions[key].source;
   useAgsdlModelCatalogue.setState({ load: async () => ({ ...nativeCatalogue, models: [] }) });
   await submit();
@@ -154,7 +154,7 @@ it("revalidates qualification at save and keeps the draft when the native model 
 });
 
 it("refuses duplicate native catalogue identities without substituting a global model", async () => {
-  await mount(createExample020("release")); choose(0, "demo-provider"); choose(1, "demo-model");
+  await mount(createExample020("release", "agsdl-0.2.0")); choose(0, "demo-provider"); choose(1, "demo-model");
   const original = useAgsdlStore.getState().sessions[key].source;
   useAgsdlModelCatalogue.setState({ load: async () => ({ ...nativeCatalogue, models: [nativeCatalogue.models[0], nativeCatalogue.models[0]] }) });
   await submit();
@@ -163,7 +163,7 @@ it("refuses duplicate native catalogue identities without substituting a global 
 });
 
 it("selects only observed Codex models and saves the native Edition without replacing its engine", async () => {
-  const doc=JSON.parse(createExample020("release"));
+  const doc=JSON.parse(createExample020("release", "agsdl-0.2.0"));
   doc.bindings[doc.configurations.project.engine].implementation={identity:"openai/codex",version:"1"};
   const before=structuredClone(doc.bindings);
   const choice={providerId:"codex-native",modelId:"synthetic-codex-model",providerName:"Codex",modelName:"Synthetic Codex model",edition:macroNativeModelEdition("codex-native","synthetic-codex-model")};
@@ -180,7 +180,7 @@ it("selects only observed Codex models and saves the native Edition without repl
 });
 
 it("selects only controlled Claude models and preserves captured Macro tool bindings", async () => {
-  const doc = JSON.parse(createExample020("release"));
+  const doc = JSON.parse(createExample020("release", "agsdl-0.2.0"));
   doc.bindings[doc.configurations.project.engine].implementation = { identity: "anthropic/claude-agent-sdk", version: "1" };
   const before = structuredClone(doc.bindings);
   const tools = structuredClone(doc.configurations.project.tools);
