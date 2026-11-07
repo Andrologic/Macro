@@ -420,8 +420,8 @@ async fn public(db: &mut SqliteConnection, row: Retained) -> IntentResult<Public
 }
 async fn absence(db: &mut SqliteConnection, payload: &ExecutionIntentPayload) -> IntentResult<()> {
     let (request_id, delivery_id) = keys(payload);
-    let admitted: i64 = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM engine_systems WHERE request_id = ?) OR EXISTS(SELECT 1 FROM engine_start030_requests WHERE request_id = ?) OR EXISTS(SELECT 1 FROM engine_deliveries WHERE delivery_id = ?)")
-        .bind(request_id).bind(request_id).bind(delivery_id).fetch_one(db).await?;
+    let admitted: i64 = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM engine_systems WHERE request_id = ?) OR EXISTS(SELECT 1 FROM engine_start030_requests WHERE request_id = ?) OR EXISTS(SELECT 1 FROM engine_deliveries WHERE delivery_id = ?) OR EXISTS(SELECT 1 FROM engine_start030_entries WHERE delivery_id = ?)")
+        .bind(request_id).bind(request_id).bind(delivery_id).bind(delivery_id).fetch_one(db).await?;
     if admitted != 0 {
         return Err(error(ExecutionIntentErrorCode::IdentityConflict));
     }
@@ -959,12 +959,24 @@ mod tests {
             .execute(&mut db)
             .await
             .unwrap();
+        sqlx::raw_sql(include_str!("../migrations/031_execution_start_entry.sql"))
+            .execute(&mut db)
+            .await
+            .unwrap();
         let payload = staged().payload;
         assert!(absence(&mut db, &payload).await.is_ok());
-        sqlx::raw_sql("INSERT INTO engine_flow030_runs VALUES ('s','f','snapshot','epoch','{}','{}','{}'); INSERT INTO engine_start030_requests VALUES ('start','{}','s','f','snapshot','epoch','{}','{}');")
+        sqlx::raw_sql(r#"INSERT INTO engine_flow030_runs VALUES ('s','f','snapshot','epoch','{}','{}','{}'); INSERT INTO engine_start030_requests VALUES ('start','{"entry":{"deliveryId":"delivery"}}','s','f','snapshot','epoch','{}','{}');"#)
             .execute(&mut db).await.unwrap();
         assert_eq!(
             absence(&mut db, &payload).await.unwrap_err().code,
+            ExecutionIntentErrorCode::IdentityConflict
+        );
+        let mut other = staged().payload;
+        if let ExecutionIntentPayload::Start { request } = &mut other {
+            request.request_id = "another-request".into();
+        }
+        assert_eq!(
+            absence(&mut db, &other).await.unwrap_err().code,
             ExecutionIntentErrorCode::IdentityConflict
         );
     }

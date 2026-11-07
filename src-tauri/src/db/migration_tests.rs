@@ -60,6 +60,7 @@ async fn accepts_develop_v9_with_historical_pilot_v5_stamp() {
             (28, "028_execution_work_admission".into()),
             (29, "029_execution_human_public".into()),
             (30, "030_execution_flow".into()),
+            (31, "031_execution_start_entry".into()),
         ]
     );
 }
@@ -146,7 +147,7 @@ async fn rehearses_upgrade_on_external_database_copy() {
             .unwrap()
             .iter()
             .max(),
-        Some(&30)
+        Some(&31)
     );
 }
 
@@ -1253,7 +1254,7 @@ async fn joins_both_published_v10_histories_without_replacing_stamps_or_data() {
                 .fetch_one(&upgraded)
                 .await
                 .unwrap(),
-            30
+            31
         );
         assert_eq!(
             sqlx::query_scalar::<_, String>(
@@ -1446,7 +1447,7 @@ async fn protocol017_upgrades_v16_without_rewriting_snapshots_and_rolls_back_fai
             .fetch_one(&upgraded)
             .await
             .unwrap(),
-        30
+        31
     );
     assert_eq!(
         sqlx::query("PRAGMA foreign_key_check")
@@ -1515,7 +1516,7 @@ async fn admission018_upgrades_v17_and_rolls_back_failed_stamp() {
             .fetch_one(&upgraded)
             .await
             .unwrap(),
-        30
+        31
     );
     assert!(sqlx::query("PRAGMA foreign_key_check")
         .fetch_all(&upgraded)
@@ -1648,4 +1649,46 @@ async fn flow030_migration_preserves_capture_and_rejects_cross_version_request_r
     .unwrap();
     assert_eq!(status, "pending");
     reopened.close().await;
+}
+
+#[tokio::test]
+async fn start030_entry_reservation_conflicts_with_both_execution_versions() {
+    let temp = TempDir::new().unwrap();
+    let pool = create_pool(&temp.path().join("flow-entries.db"))
+        .await
+        .unwrap();
+    sqlx::raw_sql(
+        r#"
+        INSERT INTO engine_systems VALUES ('old','old-request','{}','{}','[]','{}');
+        INSERT INTO engine_deliveries VALUES ('old-delivery','old-work','old','{}');
+        INSERT INTO engine_flow030_runs VALUES ('new','flow','snapshot','epoch','{}','{}','{}');
+        INSERT INTO engine_flow030_runs VALUES ('other','flow','snapshot','epoch','{}','{}','{}');
+    "#,
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    let conflicting = r#"INSERT INTO engine_start030_requests VALUES ('bad','{"entry":{"deliveryId":"old-delivery"}}','new','flow','snapshot','epoch','{}','{}')"#;
+    assert!(sqlx::query(conflicting).execute(&pool).await.is_err());
+    let count: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM engine_start030_requests WHERE request_id='bad'")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(count, 0);
+    sqlx::query(r#"INSERT INTO engine_start030_requests VALUES ('new-request','{"entry":{"deliveryId":"new-delivery"}}','new','flow','snapshot','epoch','{}','{}')"#).execute(&pool).await.unwrap();
+    assert!(
+        sqlx::query("DELETE FROM engine_start030_entries WHERE delivery_id='new-delivery'")
+            .execute(&pool)
+            .await
+            .is_err()
+    );
+    assert!(sqlx::query(
+        "INSERT INTO engine_deliveries VALUES ('new-delivery','another-work','old','{}')"
+    )
+    .execute(&pool)
+    .await
+    .is_err());
+    assert!(sqlx::query(r#"INSERT INTO engine_start030_requests VALUES ('other-request','{"entry":{"deliveryId":"new-delivery"}}','other','flow','snapshot','epoch','{}','{}')"#).execute(&pool).await.is_err());
+    pool.close().await;
 }
