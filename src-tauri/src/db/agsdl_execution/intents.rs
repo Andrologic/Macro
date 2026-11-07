@@ -420,8 +420,8 @@ async fn public(db: &mut SqliteConnection, row: Retained) -> IntentResult<Public
 }
 async fn absence(db: &mut SqliteConnection, payload: &ExecutionIntentPayload) -> IntentResult<()> {
     let (request_id, delivery_id) = keys(payload);
-    let admitted: i64 = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM engine_systems WHERE request_id = ?) OR EXISTS(SELECT 1 FROM engine_deliveries WHERE delivery_id = ?)")
-        .bind(request_id).bind(delivery_id).fetch_one(db).await?;
+    let admitted: i64 = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM engine_systems WHERE request_id = ?) OR EXISTS(SELECT 1 FROM engine_start030_requests WHERE request_id = ?) OR EXISTS(SELECT 1 FROM engine_deliveries WHERE delivery_id = ?)")
+        .bind(request_id).bind(request_id).bind(delivery_id).fetch_one(db).await?;
     if admitted != 0 {
         return Err(error(ExecutionIntentErrorCode::IdentityConflict));
     }
@@ -950,6 +950,25 @@ mod tests {
             },
         }
     }
+    #[tokio::test]
+    async fn admitted_030_start_is_not_reported_absent() {
+        let mut db = SqliteConnection::connect("sqlite::memory:").await.unwrap();
+        sqlx::raw_sql("PRAGMA foreign_keys=ON; CREATE TABLE engine_systems(system_id TEXT PRIMARY KEY, request_id TEXT UNIQUE); CREATE TABLE engine_deliveries(delivery_id TEXT PRIMARY KEY);")
+            .execute(&mut db).await.unwrap();
+        sqlx::raw_sql(include_str!("../migrations/030_execution_flow.sql"))
+            .execute(&mut db)
+            .await
+            .unwrap();
+        let payload = staged().payload;
+        assert!(absence(&mut db, &payload).await.is_ok());
+        sqlx::raw_sql("INSERT INTO engine_flow030_runs VALUES ('s','f','snapshot','epoch','{}','{}','{}'); INSERT INTO engine_start030_requests VALUES ('start','{}','s','f','snapshot','epoch','{}','{}');")
+            .execute(&mut db).await.unwrap();
+        assert_eq!(
+            absence(&mut db, &payload).await.unwrap_err().code,
+            ExecutionIntentErrorCode::IdentityConflict
+        );
+    }
+
     #[test]
     fn intent_validation_bounds_exact_json_and_canonical_path_identities() {
         let initial = staged();
