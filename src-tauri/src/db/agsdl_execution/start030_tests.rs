@@ -8,16 +8,11 @@ const CALL_PLAN: &str = r##"{"format":"macro-agsdl-compiled-plan/2","versions":{
 const APPROVAL_PLAN: &str = r##"{"format":"macro-agsdl-compiled-plan/2","versions":{"snapshot":"2","contract":"agsdl-0.3.0","compiler":"macro-agsdl-compiler/030","runtime":"macro-agsdl-runtime/030","registry":"registry","profile":"macro-agsdl-030-v1"},"source":{"owner":{"projectId":"p","planId":"plan","branch":"feature/test"},"revision":"1","sourceSha256":"fa6a5278c40d78d14e70913dd943253dc64541f8d44367132acea6bff555b59a"},"documentJson":"{\"contract\":\"agsdl-0.3.0\",\"id\":\"test\",\"agents\":{},\"flow\":{\"entry\":\"work\",\"steps\":{\"work\":{\"type\":\"approval\",\"next\":{\"yes\":[]}}}}}","agents":[],"entry":["work"],"scopes":[{"address":[],"parent":null,"composition":null,"entry":["work"],"outputs":[],"agents":{}}],"steps":[{"address":["work"],"scope":[],"type":"approval","declarationJson":"{\"type\":\"approval\",\"next\":{\"yes\":[]}}","agent":null,"instance":null,"delivery":null,"maxVisitsJson":null,"timeoutMsJson":null,"submissionContractJson":null}],"routes":[{"source":["work"],"kind":"normal","key":"yes","declarationJson":"[]","targets":[],"inherited":false}],"joins":[],"handlers":[{"address":["work"],"scope":[],"local":false,"flow":false,"joins":[]}],"graphlessSubmissionContracts":{}}"##;
 
 const SCHEMA: &str = r#"
+PRAGMA foreign_keys=ON;
 CREATE TABLE test_owner(system_id TEXT PRIMARY KEY, epoch TEXT NOT NULL, capture_epoch TEXT NOT NULL);
 CREATE TABLE test_metadata(source_sha256 TEXT NOT NULL);
-CREATE TABLE engine_systems(request_id TEXT UNIQUE NOT NULL);
+CREATE TABLE engine_systems(system_id TEXT, request_id TEXT UNIQUE NOT NULL);
 CREATE TABLE engine_ui_intents(request_id TEXT, delivery_id TEXT);
-CREATE TABLE engine_flow030_runs(system_id TEXT NOT NULL,invocation_id TEXT NOT NULL,snapshot_id TEXT NOT NULL,epoch TEXT NOT NULL,source_json TEXT NOT NULL,plan_json TEXT NOT NULL,state_json TEXT NOT NULL,PRIMARY KEY(system_id,invocation_id));
-CREATE TABLE engine_flow030_events(system_id TEXT NOT NULL,invocation_id TEXT NOT NULL,event_id TEXT NOT NULL,event_json TEXT NOT NULL,receipt_json TEXT,diagnostic_json TEXT,PRIMARY KEY(system_id,invocation_id,event_id));
-CREATE TABLE engine_flow030_outbox(system_id TEXT NOT NULL,invocation_id TEXT NOT NULL,effect_id TEXT NOT NULL,event_id TEXT NOT NULL,effect_json TEXT NOT NULL,owner_epoch TEXT NOT NULL,status TEXT NOT NULL,settlement_json TEXT,PRIMARY KEY(system_id,invocation_id,effect_id));
-CREATE TABLE engine_start030_requests(request_id TEXT PRIMARY KEY,request_json TEXT NOT NULL,system_id TEXT NOT NULL UNIQUE,invocation_id TEXT NOT NULL,snapshot_id TEXT NOT NULL,capture_epoch TEXT NOT NULL,capture_json TEXT NOT NULL,receipt_json TEXT NOT NULL);
-CREATE TRIGGER reject_020_collision BEFORE INSERT ON engine_systems WHEN EXISTS(SELECT 1 FROM engine_start030_requests WHERE request_id=NEW.request_id) BEGIN SELECT RAISE(ABORT,'request identity conflict'); END;
-CREATE TRIGGER reject_030_collision BEFORE INSERT ON engine_start030_requests WHEN EXISTS(SELECT 1 FROM engine_systems WHERE request_id=NEW.request_id) BEGIN SELECT RAISE(ABORT,'request identity conflict'); END;
 "#;
 
 // A fake authority exercises the transaction; it proves no native qualification.
@@ -160,6 +155,10 @@ async fn pool() -> SqlitePool {
         .await
         .unwrap();
     sqlx::raw_sql(SCHEMA).execute(&pool).await.unwrap();
+    sqlx::raw_sql(include_str!("../migrations/030_execution_flow.sql"))
+        .execute(&pool)
+        .await
+        .unwrap();
     pool
 }
 fn fixture(kind: &str) -> (EngineStartRequest, StartCapture030) {
@@ -332,7 +331,7 @@ async fn replay_uses_retained_capture_after_source_changes_without_new_work() {
 async fn cross_version_request_identity_is_rejected_in_both_orders() {
     let pool = pool().await;
     let (request, capture) = fixture("call");
-    sqlx::query("INSERT INTO engine_systems VALUES(?)")
+    sqlx::query("INSERT INTO engine_systems(request_id) VALUES(?)")
         .bind(&request.request_id)
         .execute(&pool)
         .await
@@ -347,11 +346,13 @@ async fn cross_version_request_identity_is_rejected_in_both_orders() {
     start_fixture(&pool, &request, &capture, &authority())
         .await
         .unwrap();
-    assert!(sqlx::query("INSERT INTO engine_systems VALUES(?)")
-        .bind(&request.request_id)
-        .execute(&pool)
-        .await
-        .is_err());
+    assert!(
+        sqlx::query("INSERT INTO engine_systems(request_id) VALUES(?)")
+            .bind(&request.request_id)
+            .execute(&pool)
+            .await
+            .is_err()
+    );
 }
 
 #[tokio::test]

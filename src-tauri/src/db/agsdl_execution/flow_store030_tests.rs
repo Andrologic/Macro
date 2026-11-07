@@ -61,9 +61,7 @@ const SCHEMA: &str = r#"
 PRAGMA foreign_keys=ON;
 CREATE TABLE test_flow_owner(system_id TEXT PRIMARY KEY,epoch TEXT NOT NULL);
 INSERT INTO test_flow_owner VALUES('system','owner-1');
-CREATE TABLE engine_flow030_runs(system_id TEXT NOT NULL,invocation_id TEXT NOT NULL,snapshot_id TEXT NOT NULL,epoch TEXT NOT NULL,source_json TEXT NOT NULL,plan_json TEXT NOT NULL,state_json TEXT NOT NULL,PRIMARY KEY(system_id,invocation_id));
-CREATE TABLE engine_flow030_events(system_id TEXT NOT NULL,invocation_id TEXT NOT NULL,event_id TEXT NOT NULL,event_json TEXT NOT NULL,receipt_json TEXT,diagnostic_json TEXT,PRIMARY KEY(system_id,invocation_id,event_id),FOREIGN KEY(system_id,invocation_id) REFERENCES engine_flow030_runs(system_id,invocation_id),CHECK((receipt_json IS NULL) <> (diagnostic_json IS NULL)));
-CREATE TABLE engine_flow030_outbox(system_id TEXT NOT NULL,invocation_id TEXT NOT NULL,effect_id TEXT NOT NULL,event_id TEXT NOT NULL,effect_json TEXT NOT NULL,owner_epoch TEXT NOT NULL,status TEXT NOT NULL,settlement_json TEXT,PRIMARY KEY(system_id,invocation_id,effect_id),FOREIGN KEY(system_id,invocation_id,event_id) REFERENCES engine_flow030_events(system_id,invocation_id,event_id),CHECK((status='settled')=(settlement_json IS NOT NULL)));
+CREATE TABLE engine_systems(system_id TEXT PRIMARY KEY,request_id TEXT UNIQUE NOT NULL);
 "#;
 fn identity() -> FlowIdentity030 {
     FlowIdentity030 {
@@ -82,6 +80,10 @@ fn owner() -> Owner {
 async fn db() -> SqliteConnection {
     let mut db = SqliteConnection::connect("sqlite::memory:").await.unwrap();
     sqlx::raw_sql(SCHEMA).execute(&mut db).await.unwrap();
+    sqlx::raw_sql(include_str!("../migrations/030_execution_flow.sql"))
+        .execute(&mut db)
+        .await
+        .unwrap();
     db
 }
 async fn initialize(db: &mut SqliteConnection) {
@@ -300,6 +302,10 @@ async fn concurrent_claimers_cannot_both_receive_the_same_effect() {
         .busy_timeout(Duration::from_secs(5));
     let mut first = SqliteConnection::connect_with(&options).await.unwrap();
     sqlx::raw_sql(SCHEMA).execute(&mut first).await.unwrap();
+    sqlx::raw_sql(include_str!("../migrations/030_execution_flow.sql"))
+        .execute(&mut first)
+        .await
+        .unwrap();
     begin(&mut first).await;
     initialize(&mut first).await;
     let receipt = match apply_tx(&mut first, &owner(), &enter()).await.unwrap() {
