@@ -72,6 +72,9 @@ async fn probe(policy: &SandboxPolicy, cwd: &Path, script: &str) -> (i32, String
         )
         .unwrap();
     let mut out = child.take_stdout().unwrap();
+    super::attest(&mut out)
+        .await
+        .expect("sandbox startup attestation");
     let mut err = child.take_stderr().unwrap();
     let stdout = tokio::spawn(async move {
         let mut s = String::new();
@@ -188,5 +191,18 @@ async fn darwin_read_write_outside_symlink_network_and_descendant_probes() {
     eprintln!(
         "Darwin read/write/outside/symlink/network/descendant-denial probes passed; profile {}",
         policy.profile_digest()
+    );
+}
+
+#[tokio::test]
+async fn startup_attestation_rejects_eof_and_unexpected_output() {
+    assert!(attest(&mut b"".as_slice()).await.is_err());
+    assert!(attest(&mut b"not-a-sandbox-start-marker".as_slice())
+        .await
+        .is_err());
+    assert!(
+        attest(&mut b"MACRO_SEATBELT_STARTED_V1\nactual-output".as_slice())
+            .await
+            .is_ok()
     );
 }

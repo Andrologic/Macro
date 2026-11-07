@@ -329,15 +329,10 @@ async fn execute_owned(host: Arc<dyn HostPort>, request: CallRequest) -> Result<
                 "Command grant for a non-command invocation",
             )),
         },
-        Ok(LaunchGrant::Mcp(server)) => match &request.invocation {
-            Invocation::Mcp { server: name, .. } if name == server.name() => {
-                raw_mcp::start(server).map(Started::Mcp)
-            }
-            _ => Err(CallError::new(
-                "CORRELATION",
-                "MCP grant does not match the captured document server",
-            )),
-        },
+        Ok(LaunchGrant::Mcp(_)) => Err(CallError::new(
+            "HOST_CAPABILITY",
+            "MCP dispatch is closed until the native delivery fence is connected",
+        )),
         Err(error) => Err(error),
     };
     drop(guard);
@@ -363,34 +358,6 @@ async fn execute_owned(host: Arc<dyn HostPort>, request: CallRequest) -> Result<
                 }
             });
         }
-        Ok(Started::Mcp(mut session)) => {
-            let Invocation::Mcp {
-                tool,
-                arguments_json,
-                ..
-            } = &request.invocation
-            else {
-                unreachable!()
-            };
-            let result = session
-                .call(
-                    tool,
-                    arguments_json,
-                    host.as_ref(),
-                    &request.identity,
-                    &claimed.control,
-                )
-                .await;
-            let (evidence, cleanup_error) = session.shutdown(result.is_ok()).await;
-            completion.evidence = evidence;
-            match result {
-                Ok(receipt) => completion.receipt = Some(RawReceipt::Mcp { receipt }),
-                Err(error) => completion.failure = Some(error),
-            }
-            if let Some(error) = cleanup_error {
-                completion.failure = Some(error);
-            }
-        }
         Err(error) => completion.failure = Some(error),
     }
     // The parent still revalidates under its transactional commit gate.
@@ -403,7 +370,6 @@ async fn execute_owned(host: Arc<dyn HostPort>, request: CallRequest) -> Result<
 
 enum Started {
     Command(ContainedBackgroundProcess, CommandGrant),
-    Mcp(raw_mcp::Session),
 }
 
 struct StreamOutput {
@@ -414,6 +380,7 @@ async fn collect(
     mut pipe: impl tokio::io::AsyncRead + Unpin,
     limit: Option<usize>,
 ) -> std::io::Result<StreamOutput> {
+    const MAX_CALL_STREAM_BYTES: usize = 64 * 1024 * 1024;
     let mut bytes = Vec::new();
     let mut total = 0u64;
     let mut buf = [0u8; 16384];
@@ -425,6 +392,11 @@ async fn collect(
         total = total
             .checked_add(n as u64)
             .ok_or_else(|| std::io::Error::other("Output size overflow"))?;
+        if limit.is_none() && total > MAX_CALL_STREAM_BYTES as u64 {
+            return Err(std::io::Error::other(
+                "Call stream exceeds 64 MiB; complete output unavailable",
+            ));
+        }
         let retain = limit.map_or(n, |limit| n.min(limit.saturating_sub(bytes.len())));
         bytes
             .try_reserve(retain)
@@ -440,13 +412,18 @@ async fn run_command(
     control: &Control,
     limits: Option<(usize, Duration)>,
 ) -> (Option<CommandReceipt>, Option<CallError>, PhysicalEvidence) {
-    let out = child.take_stdout().expect("piped stdout");
+    let mut out = child.take_stdout().expect("piped stdout");
     let err = child.take_stderr().expect("piped stderr");
     // Draining concurrently avoids deadlock on a full stderr or stdout pipe.
     let (stream_failure_tx, mut stream_failure_rx) = tokio::sync::mpsc::unbounded_channel();
     let stdout_failure_tx = stream_failure_tx.clone();
     let mut stdout = tokio::spawn(async move {
-        let result = collect(out, limits.map(|v| v.0)).await;
+        let result = match crate::agsdl_host_confinement::attest(&mut out).await {
+            Ok(()) => collect(out, limits.map(|v| v.0)).await,
+            Err(error) => Err(std::io::Error::other(format!(
+                "Sandbox startup not attested: {error}"
+            ))),
+        };
         if let Err(error) = &result {
             let _ = stdout_failure_tx.send(error.to_string());
         }

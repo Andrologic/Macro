@@ -7,6 +7,22 @@ use sha2::{Digest, Sha256};
 
 use crate::core::process::{background_tokio_command, ContainedBackgroundProcess};
 
+/// Emitted by the trusted wrapper only after Seatbelt has installed its profile.
+const START_ATTESTATION: &[u8] = b"MACRO_SEATBELT_STARTED_V1\n";
+pub(crate) async fn attest(
+    reader: &mut (impl tokio::io::AsyncRead + Unpin),
+) -> std::io::Result<()> {
+    use tokio::io::AsyncReadExt;
+    let mut actual = vec![0; START_ATTESTATION.len()];
+    reader.read_exact(&mut actual).await?;
+    if actual != START_ATTESTATION {
+        return Err(std::io::Error::other(
+            "Seatbelt startup attestation mismatch",
+        ));
+    }
+    Ok(())
+}
+
 #[derive(Debug, Clone)]
 pub(crate) enum PathScope {
     Literal(PathBuf),
@@ -159,7 +175,16 @@ impl SandboxPolicy {
             return Err("Sandbox program and workspace must be absolute".into());
         }
         let mut command = background_tokio_command("/usr/bin/sandbox-exec");
-        command.args(["-p", &self.profile]).arg(program).args(args);
+        command
+            .args(["-p", &self.profile])
+            .arg("/bin/sh")
+            .args([
+                "-c",
+                "printf 'MACRO_SEATBELT_STARTED_V1\\n'; exec \"$@\"",
+                "macro-sandbox-start",
+            ])
+            .arg(program)
+            .args(args);
         command.current_dir(cwd).env_clear().envs(env);
         command
             .stdin(Stdio::null())

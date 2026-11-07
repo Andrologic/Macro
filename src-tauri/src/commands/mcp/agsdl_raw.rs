@@ -1,6 +1,8 @@
 //! Dedicated captured-server transport for AgSDL030. Existing UI clients keep
 //! their formatting, connection selection and timeout behavior unchanged.
 //! Raw JSON tokens never pass through a floating-point representation.
+const MAX_MCP_MESSAGE_BYTES: usize = 16 * 1024 * 1024;
+
 use std::{
     collections::{BTreeMap, VecDeque},
     net::SocketAddr,
@@ -31,6 +33,8 @@ pub(crate) struct HttpServer {
     pub url: url::Url,
     pub addresses: Vec<SocketAddr>,
     pub headers: reqwest::header::HeaderMap,
+    /// Captured tools/list schema, bound by the native host to this exact tool.
+    pub tool_schema: Option<(String, String)>,
 }
 pub(crate) struct StdioServer {
     pub program: PathBuf,
@@ -136,6 +140,130 @@ pub(crate) fn receipt(raw: String) -> Result<McpReceipt> {
     })
 }
 
+fn header_value(value: &str) -> String {
+    let bytes = value.as_bytes();
+    let wrap = bytes.first().is_some_and(|b| matches!(b, b' ' | b'\t'))
+        || bytes.last().is_some_and(|b| matches!(b, b' ' | b'\t'))
+        || bytes.iter().any(|b| *b < 0x20 || *b > 0x7e)
+        || (value.starts_with("=?base64?") && value.ends_with("?="));
+    if wrap {
+        use base64::Engine;
+        format!(
+            "=?base64?{}?=",
+            base64::engine::general_purpose::STANDARD.encode(value)
+        )
+    } else {
+        value.to_owned()
+    }
+}
+
+fn parameter_headers(schema: &str, arguments: &str) -> Result<reqwest::header::HeaderMap> {
+    use serde_json::Value;
+    fn visit(
+        value: &Value,
+        allowed: bool,
+        path: &mut Vec<String>,
+        found: &mut Vec<(Vec<String>, String, String)>,
+        seen: &mut std::collections::HashSet<String>,
+    ) -> Result<()> {
+        match value {
+            Value::Object(map) => {
+                if let Some(annotation) = map.get("x-mcp-header") {
+                    let name = annotation
+                        .as_str()
+                        .filter(|s| !s.is_empty())
+                        .ok_or_else(|| CallError::transport("Invalid MCP header annotation"))?;
+                    if !allowed || path.is_empty() || !seen.insert(name.to_ascii_lowercase()) {
+                        return Err(CallError::transport(
+                            "Invalid or duplicate MCP header annotation",
+                        ));
+                    }
+                    let header = format!("mcp-param-{name}");
+                    reqwest::header::HeaderName::from_bytes(header.as_bytes())
+                        .map_err(|_| CallError::transport("Invalid MCP header name"))?;
+                    let kind = map
+                        .get("type")
+                        .and_then(Value::as_str)
+                        .filter(|s| matches!(*s, "string" | "integer" | "boolean"))
+                        .ok_or_else(|| {
+                            CallError::transport(
+                                "MCP header annotation must target a primitive type",
+                            )
+                        })?;
+                    found.push((path.clone(), header, kind.into()));
+                }
+                for (key, child) in map {
+                    if key == "properties" && allowed {
+                        let properties = child.as_object().ok_or_else(|| {
+                            CallError::transport("MCP schema properties must be an object")
+                        })?;
+                        for (name, schema) in properties {
+                            path.push(name.clone());
+                            visit(schema, true, path, found, seen)?;
+                            path.pop();
+                        }
+                    } else if key != "x-mcp-header" {
+                        visit(child, false, path, found, seen)?;
+                    }
+                }
+            }
+            Value::Array(items) => {
+                for child in items {
+                    visit(child, false, path, found, seen)?;
+                }
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+    let schema: Value =
+        serde_json::from_str(schema).map_err(|e| CallError::transport(e.to_string()))?;
+    let args: Value =
+        serde_json::from_str(arguments).map_err(|e| CallError::transport(e.to_string()))?;
+    let mut found = Vec::new();
+    visit(
+        &schema,
+        true,
+        &mut Vec::new(),
+        &mut found,
+        &mut std::collections::HashSet::new(),
+    )?;
+    let mut headers = reqwest::header::HeaderMap::new();
+    for (path, name, kind) in found {
+        let mut value = &args;
+        for key in path {
+            match value.get(&key) {
+                Some(next) => value = next,
+                None => {
+                    value = &Value::Null;
+                    break;
+                }
+            }
+        }
+        if value.is_null() {
+            continue;
+        }
+        let text = match kind.as_str() {
+            "string" => value.as_str().map(str::to_owned),
+            "boolean" => value.as_bool().map(|v| v.to_string()),
+            "integer" => value
+                .as_i64()
+                .filter(|n| n.unsigned_abs() <= 9_007_199_254_740_991)
+                .map(|n| n.to_string()),
+            _ => None,
+        }
+        .ok_or_else(|| {
+            CallError::transport("MCP annotated argument is not a supported safe primitive")
+        })?;
+        let name = reqwest::header::HeaderName::from_bytes(name.as_bytes())
+            .map_err(|_| CallError::transport("Invalid MCP header name"))?;
+        let value = reqwest::header::HeaderValue::from_str(&header_value(&text))
+            .map_err(|_| CallError::transport("Invalid MCP header value"))?;
+        headers.insert(name, value);
+    }
+    Ok(headers)
+}
+
 pub(crate) struct Session {
     server: String,
     protocol: Protocol,
@@ -160,12 +288,16 @@ struct HttpWire {
     session: Option<String>,
     version: &'static str,
     responses: VecDeque<Body>,
+    tool_schema: Option<(String, String)>,
+    parameter_headers: reqwest::header::HeaderMap,
 }
 struct Body {
     response: reqwest::Response,
     buffer: Vec<u8>,
     sse: bool,
     eof: bool,
+    last_event_id: Option<String>,
+    retry_ms: u64,
 }
 
 pub(crate) fn start(server: CapturedServer) -> Result<Session> {
@@ -300,6 +432,8 @@ pub(crate) fn start(server: CapturedServer) -> Result<Session> {
                     Protocol::Modern => "2026-07-28",
                 },
                 responses: VecDeque::new(),
+                tool_schema: config.tool_schema,
+                parameter_headers: Default::default(),
             })
         }
     };
@@ -321,6 +455,13 @@ impl Session {
         control: &Control,
     ) -> Result<McpReceipt> {
         object(args)?;
+        if let Wire::Stdio { stdout, .. } = &mut self.wire {
+            tokio::select! {
+                biased;
+                error = control.cancelled() => return Err(error),
+                result = crate::agsdl_host_confinement::attest(stdout) => result.map_err(|error| CallError::transport(format!("Sandbox startup not attested: {error}")))?,
+            }
+        }
         let startup = match self.protocol {
             Protocol::Legacy => self.rpc("initialize", r#"{"protocolVersion":"2025-11-25","capabilities":{"elicitation":{"form":{}}},"clientInfo":{"name":"Macro AgSDL","version":"0.3.0"}}"#, host, identity, control).await?,
             Protocol::Modern => self.rpc("server/discover", "{}", host, identity, control).await?,
@@ -388,6 +529,23 @@ impl Session {
                 control,
             )
             .await?;
+        }
+        if matches!(self.protocol, Protocol::Modern) {
+            if let Wire::Http(http) = &mut self.wire {
+                let (captured_tool, schema) = http.tool_schema.as_ref().ok_or_else(|| {
+                    CallError::new(
+                        "CORRELATION",
+                        "Modern MCP HTTP requires the captured tool schema",
+                    )
+                })?;
+                if captured_tool != tool {
+                    return Err(CallError::new(
+                        "CORRELATION",
+                        "MCP schema belongs to a different tool",
+                    ));
+                }
+                http.parameter_headers = parameter_headers(schema, args)?;
+            }
         }
         let base = format!("\"name\":{},\"arguments\":{args}", encode(&tool)?);
         let mut params = format!("{{{base}}}");
@@ -498,6 +656,11 @@ impl Session {
             if let Some(method) = fields.get("method") {
                 let method = string(method)?;
                 if let Some(request_id) = fields.get("id") {
+                    if matches!(self.protocol, Protocol::Modern) {
+                        return Err(CallError::transport(
+                            "Modern MCP forbids server-initiated requests",
+                        ));
+                    }
                     let response = if method == "elicitation/create" {
                         let answer =
                             wait_human(host, identity, &self.server, &raw, control).await?;
@@ -635,6 +798,7 @@ impl Wire {
                         let method = string(method)?;
                         request = request.header("mcp-method", &method);
                         if method == "tools/call" {
+                            request = request.headers(http.parameter_headers.clone());
                             let params = object(
                                 message_fields
                                     .get("params")
@@ -673,7 +837,11 @@ impl Wire {
                         response.status()
                     )));
                 }
-                if let Some(session) = response.headers().get("mcp-session-id") {
+                if let Some(session) = response
+                    .headers()
+                    .get("mcp-session-id")
+                    .filter(|_| http.version != "2026-07-28")
+                {
                     let session = session
                         .to_str()
                         .map_err(|_| CallError::transport("Invalid MCP session header"))?;
@@ -713,6 +881,8 @@ impl Wire {
                     buffer: Vec::new(),
                     sse,
                     eof: false,
+                    last_event_id: None,
+                    retry_ms: 1000,
                 });
                 Ok(())
             }
@@ -723,9 +893,16 @@ impl Wire {
             Wire::Stdio { stdout, .. } => {
                 let mut bytes = Vec::new();
                 let count = stdout
+                    .take((MAX_MCP_MESSAGE_BYTES + 1) as u64)
                     .read_until(b'\n', &mut bytes)
                     .await
                     .map_err(|e| CallError::transport(e.to_string()))?;
+                if count > MAX_MCP_MESSAGE_BYTES {
+                    return Err(CallError::new(
+                        "OUTPUT_INVALID",
+                        "MCP stdio frame exceeds 16 MiB",
+                    ));
+                }
                 if count == 0 || bytes.last() != Some(&b'\n') {
                     return Err(CallError::transport(
                         "MCP stdio ended without a complete frame",
@@ -743,7 +920,50 @@ impl Wire {
                 if let Some(value) = body.next().await? {
                     return Ok(value);
                 }
-                http.responses.pop_front();
+                let body = http.responses.pop_front().expect("response exists");
+                if body.sse && http.version != "2026-07-28" {
+                    if let Some(id) = body.last_event_id {
+                        // Resume only the response stream. The original POST is never replayed.
+                        tokio::time::sleep(Duration::from_millis(body.retry_ms)).await;
+                        let mut request = http
+                            .client
+                            .get(http.url.clone())
+                            .headers(http.headers.clone())
+                            .header("accept", "text/event-stream")
+                            .header("mcp-protocol-version", http.version)
+                            .header("last-event-id", id.clone());
+                        if let Some(session) = &http.session {
+                            request = request.header("mcp-session-id", session);
+                        }
+                        let response = request
+                            .send()
+                            .await
+                            .map_err(|e| CallError::transport(e.to_string()))?;
+                        let kind = response
+                            .headers()
+                            .get("content-type")
+                            .and_then(|v| v.to_str().ok())
+                            .unwrap_or("")
+                            .split(';')
+                            .next()
+                            .unwrap_or("")
+                            .trim();
+                        if !response.status().is_success() || kind != "text/event-stream" {
+                            return Err(CallError::new(
+                                "UNCERTAIN",
+                                "MCP SSE resumption failed; effect was not replayed",
+                            ));
+                        }
+                        http.responses.push_front(Body {
+                            response,
+                            buffer: Vec::new(),
+                            sse: true,
+                            eof: false,
+                            last_event_id: Some(id),
+                            retry_ms: body.retry_ms,
+                        });
+                    }
+                }
             },
         }
     }
@@ -770,6 +990,25 @@ impl Body {
                 if let Some((end, separator)) = end {
                     let event = String::from_utf8(self.buffer.drain(..end + separator).collect())
                         .map_err(|_| CallError::transport("MCP SSE is not UTF-8"))?;
+                    for line in event.lines() {
+                        if let Some(value) = line.strip_prefix("id:") {
+                            let value = value.strip_prefix(' ').unwrap_or(value);
+                            if !value.contains('\0') {
+                                self.last_event_id = if value.is_empty() {
+                                    None
+                                } else {
+                                    Some(value.to_owned())
+                                };
+                            }
+                        } else if let Some(value) = line.strip_prefix("retry:") {
+                            let value = value.strip_prefix(' ').unwrap_or(value);
+                            if !value.is_empty() && value.bytes().all(|b| b.is_ascii_digit()) {
+                                if let Ok(ms) = value.parse::<u64>() {
+                                    self.retry_ms = ms;
+                                }
+                            }
+                        }
+                    }
                     let data: Vec<_> = event
                         .lines()
                         .filter_map(|line| {
@@ -778,7 +1017,10 @@ impl Body {
                         })
                         .collect();
                     if !data.is_empty() {
-                        return Ok(Some(data.join("\n")));
+                        let data = data.join("\n");
+                        if !data.is_empty() {
+                            return Ok(Some(data));
+                        }
                     }
                     continue;
                 }
@@ -796,14 +1038,20 @@ impl Body {
                     .map(Some)
                     .map_err(|_| CallError::transport("MCP HTTP JSON is not UTF-8"));
             }
-            match self
-                .response
-                .chunk()
-                .await
-                .map_err(|e| CallError::transport(e.to_string()))?
-            {
-                None => self.eof = true,
-                Some(chunk) => {
+            match self.response.chunk().await {
+                Err(_) if self.sse && self.last_event_id.is_some() => {
+                    self.buffer.clear();
+                    self.eof = true;
+                }
+                Err(error) => return Err(CallError::transport(error.to_string())),
+                Ok(None) => self.eof = true,
+                Ok(Some(chunk)) => {
+                    if self.buffer.len().saturating_add(chunk.len()) > MAX_MCP_MESSAGE_BYTES {
+                        return Err(CallError::new(
+                            "OUTPUT_INVALID",
+                            "MCP HTTP message or SSE event exceeds 16 MiB",
+                        ));
+                    }
                     self.buffer.try_reserve(chunk.len()).map_err(|_| {
                         CallError::transport("Could not retain complete MCP result")
                     })?;

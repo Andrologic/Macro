@@ -2,7 +2,7 @@ use super::*;
 use crate::agsdl_host_calls::{
     execute,
     tests::{grant, identity, TestHost},
-    CallRequest, Invocation, LaunchGrant, RawReceipt,
+    CallRequest, Invocation, LaunchGrant,
 };
 use std::sync::{
     atomic::{AtomicUsize, Ordering},
@@ -60,6 +60,11 @@ async fn http_handler(
         "tools/call" => {
             let call = state.calls.fetch_add(1, Ordering::SeqCst);
             assert!(body.contains("9007199254740993"));
+            if state.mode == "modern-push" {
+                let raw = format!("data: {{\"jsonrpc\":\"2.0\",\"id\":\"server-human\",\"method\":\"elicitation/create\",\"params\":{{\"message\":\"Continue?\",\"requestedSchema\":{{\"type\":\"object\"}}}}}}\n\ndata: {{\"jsonrpc\":\"2.0\",\"id\":{id},\"result\":{{\"resultType\":\"complete\",\"content\":[]}}}}\n\n");
+                return ([("content-type", "text/event-stream")], raw).into_response();
+            }
+            if state.mode == "resume" { return ([("content-type", "text/event-stream"), ("mcp-session-id", "captured")], "id: cursor-1\nretry: 0\ndata:\n\n").into_response(); }
             if state.mode == "redirect" { return (axum::http::StatusCode::TEMPORARY_REDIRECT, [("location", "/other")]).into_response(); }
             if state.mode == "lost" { return axum::http::StatusCode::SERVICE_UNAVAILABLE.into_response(); }
             if state.mode == "modern" || state.mode == "modern-bad-state" {
@@ -90,6 +95,17 @@ async fn http_handler(
         .into_response()
 }
 
+async fn resume_handler(
+    axum::extract::State(state): axum::extract::State<Arc<HttpFixture>>,
+    headers: axum::http::HeaderMap,
+) -> axum::response::Response {
+    use axum::response::IntoResponse;
+    assert_eq!(headers.get("last-event-id").unwrap(), "cursor-1");
+    assert_eq!(headers.get("mcp-session-id").unwrap(), "captured");
+    state.requests.lock().await.push("GET resume".into());
+    ([("content-type", "text/event-stream")], "id: cursor-2\ndata: {\"jsonrpc\":\"2.0\",\"id\":\"2\",\"result\":{\"content\":[{\"type\":\"text\",\"text\":\"resumed\"}]}}\n\n").into_response()
+}
+
 async fn http_fixture(
     mode: &'static str,
 ) -> (
@@ -105,7 +121,10 @@ async fn http_fixture(
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
     let app = axum::Router::new()
-        .route("/mcp", axum::routing::post(http_handler))
+        .route(
+            "/mcp",
+            axum::routing::post(http_handler).get(resume_handler),
+        )
         .with_state(state.clone());
     let task = tokio::spawn(async move {
         axum::serve(listener, app).await.unwrap();
@@ -125,6 +144,7 @@ async fn http_fixture(
                     .unwrap(),
                 addresses: vec![address],
                 headers: Default::default(),
+                tool_schema: Some(("synthetic".into(), "{}".into())),
             }),
         },
         state,
@@ -142,31 +162,66 @@ fn request() -> CallRequest {
     }
 }
 
+fn dummy_host() -> Arc<TestHost> {
+    Arc::new(TestHost::new(LaunchGrant::Mcp(CapturedServer {
+        document_name: "unused".into(),
+        capture_digest: "unused".into(),
+        protocol: Protocol::Legacy,
+        transport: ServerTransport::Http(HttpServer {
+            url: "http://127.0.0.1:1/mcp".parse().unwrap(),
+            addresses: vec!["127.0.0.1:1".parse().unwrap()],
+            headers: Default::default(),
+            tool_schema: None,
+        }),
+    })))
+}
+
+// Exercises transport only. Product dispatch remains closed pending the parent fence.
+async fn isolated(
+    host: &Arc<TestHost>,
+    server: CapturedServer,
+) -> (Result<McpReceipt>, PhysicalEvidence) {
+    let mut session = start(server).unwrap();
+    let result = session
+        .call(
+            "synthetic",
+            "{\"n\":9007199254740993}",
+            host.as_ref(),
+            &identity(),
+            &host.control,
+        )
+        .await;
+    let (evidence, cleanup) = session.shutdown(result.is_ok()).await;
+    assert!(cleanup.is_none(), "{cleanup:?}");
+    (result, evidence)
+}
+
 #[tokio::test]
 async fn http_exact_receipts_human_waits_modern_continuation_and_no_replay() {
     for mode in [
         "json",
         "sse",
+        "resume",
         "modern",
         "modern-bad-state",
         "redirect",
         "lost",
     ] {
         let (server, fixture, task) = http_fixture(mode).await;
-        let host = Arc::new(TestHost::new(LaunchGrant::Mcp(server)));
-        let result = execute(host.clone(), request()).await.unwrap();
+        let host = dummy_host();
+        let (result, evidence) = isolated(&host, server).await;
         match mode {
             "redirect" | "lost" | "modern-bad-state" => {
-                assert!(result.failure.is_some());
+                assert!(result.is_err());
                 assert_eq!(fixture.calls.load(Ordering::SeqCst), 1);
             }
             _ => {
-                assert!(result.failure.is_none(), "{mode}: {:?}", result.failure);
-                let RawReceipt::Mcp { receipt } = result.receipt.unwrap() else {
-                    panic!()
-                };
-                if mode == "sse" {
-                    assert_eq!(receipt.text, "done");
+                let receipt = result.unwrap_or_else(|error| panic!("{mode}: {error:?}"));
+                if mode == "sse" || mode == "resume" {
+                    assert_eq!(
+                        receipt.text,
+                        if mode == "resume" { "resumed" } else { "done" }
+                    );
                 } else {
                     assert!(receipt
                         .structured_content_json
@@ -174,20 +229,28 @@ async fn http_exact_receipts_human_waits_modern_continuation_and_no_replay() {
                         .contains("9007199254740993"));
                 }
                 assert_eq!(receipt.is_error, mode == "modern");
-                if mode != "json" {
+                if mode == "sse" || mode == "modern" {
                     assert_eq!(host.human_open.load(Ordering::SeqCst), 1);
                     assert_eq!(host.human_closed.load(Ordering::SeqCst), 1);
                 }
             }
         }
+        if mode == "resume" {
+            assert_eq!(fixture.calls.load(Ordering::SeqCst), 1);
+            assert!(fixture
+                .requests
+                .lock()
+                .await
+                .iter()
+                .any(|r| r == "GET resume"));
+        }
         assert!(matches!(
-            result.evidence,
+            evidence,
             PhysicalEvidence::Remote {
                 termination_proven: false,
                 ..
             }
         ));
-        assert!(execute(host, request()).await.is_err());
         task.abort();
         let _ = task.await;
     }
@@ -219,12 +282,9 @@ printf '%s\n' '{"jsonrpc":"2.0","id":"2","result":{"structuredContent":{"n":9007
             grant: grant(root.path()),
         }),
     };
-    let host = Arc::new(TestHost::new(LaunchGrant::Mcp(server)));
-    let result = execute(host.clone(), request()).await.unwrap();
-    assert!(result.failure.is_none(), "{:?}", result.failure);
-    let RawReceipt::Mcp { receipt } = result.receipt.unwrap() else {
-        panic!()
-    };
+    let host = dummy_host();
+    let (result, _) = isolated(&host, server).await;
+    let receipt = result.unwrap();
     assert!(receipt.is_error);
     assert_eq!(
         receipt.structured_content_json.unwrap(),
@@ -247,6 +307,7 @@ async fn literal_endpoint_must_match_every_captured_address_and_port() {
                     .map(|address| address.parse().unwrap())
                     .collect(),
                 headers: Default::default(),
+                tool_schema: Some(("synthetic".into(), "{}".into())),
             }),
         }
     }
@@ -259,4 +320,52 @@ async fn literal_endpoint_must_match_every_captured_address_and_port() {
     ))
     .is_err());
     assert!(start(server("http://[::1]:3000/mcp", &["[::1]:3000"])).is_ok());
+}
+
+#[test]
+fn annotated_parameter_headers_are_bound_to_schema_and_exact_nested_path() {
+    let schema = r#"{"type":"object","properties":{"nested":{"type":"object","properties":{"region":{"type":"string","x-mcp-header":"Region"}}},"flag":{"type":"boolean","x-mcp-header":"Flag"},"number":{"type":"integer","x-mcp-header":"Count"}}}"#;
+    let headers = parameter_headers(
+        schema,
+        r#"{"nested":{"region":"été"},"flag":true,"number":9007199254740991}"#,
+    )
+    .unwrap();
+    assert_eq!(headers["mcp-param-region"], "=?base64?w6l0w6k=?=");
+    assert_eq!(headers["mcp-param-flag"], "true");
+    assert_eq!(headers["mcp-param-count"], "9007199254740991");
+    assert!(parameter_headers(schema, r#"{"number":9007199254740992}"#).is_err());
+    assert!(parameter_headers(r#"{"properties":{"a":{"type":"string","x-mcp-header":"A"},"b":{"type":"string","x-mcp-header":"a"}}}"#, "{}").is_err());
+    assert!(parameter_headers(r#"{"items":{"type":"string","x-mcp-header":"A"}}"#, "{}").is_err());
+}
+
+#[tokio::test]
+async fn product_mcp_dispatch_stays_closed_before_fence() {
+    let (server, fixture, task) = http_fixture("json").await;
+    let host = Arc::new(TestHost::new(LaunchGrant::Mcp(server)));
+    let completion = execute(host, request()).await.unwrap();
+    assert_eq!(completion.failure.unwrap().code, "HOST_CAPABILITY");
+    assert!(matches!(completion.evidence, PhysicalEvidence::NotStarted));
+    assert!(fixture.requests.lock().await.is_empty());
+    task.abort();
+}
+
+#[tokio::test]
+async fn modern_push_is_rejected_before_human_or_response_post() {
+    let (server, fixture, task) = http_fixture("modern-push").await;
+    let host = dummy_host();
+    let (result, evidence) = isolated(&host, server).await;
+    assert!(result.is_err());
+    assert_eq!(host.human_open.load(Ordering::SeqCst), 0);
+    assert_eq!(host.human_closed.load(Ordering::SeqCst), 0);
+    assert_eq!(fixture.calls.load(Ordering::SeqCst), 1);
+    assert_eq!(fixture.requests.lock().await.len(), 2);
+    assert!(matches!(
+        evidence,
+        PhysicalEvidence::Remote {
+            termination_proven: false,
+            ..
+        }
+    ));
+    task.abort();
+    let _ = task.await;
 }

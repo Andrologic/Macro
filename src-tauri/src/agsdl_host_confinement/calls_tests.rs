@@ -311,3 +311,12 @@ async fn service_reports_failed_durable_finish_after_caller_has_gone() {
         "UNCERTAIN"
     );
 }
+
+#[tokio::test]
+async fn oversized_call_output_fails_without_a_partial_receipt() {
+    use tokio::io::AsyncReadExt;
+    let stream = tokio::io::repeat(b'x').take(64 * 1024 * 1024 + 1);
+    assert!(
+        matches!(collect(stream, None).await, Err(error) if error.to_string().contains("64 MiB"))
+    );
+}
