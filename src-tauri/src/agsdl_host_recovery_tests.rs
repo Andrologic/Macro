@@ -378,6 +378,83 @@ async fn work030_host_revocation_after_evaluation_blocks_commit_before_sql_revoc
         .await
         .is_err());
 }
+
+#[tokio::test]
+async fn work030_revocation_while_sql_commit_is_blocked_is_uncertain_without_effect() {
+    use repository::work_protocol030::{
+        self as protocol, EventReservation030, ProtocolDecision030, ProtocolEvent030,
+    };
+    let (_temp, pool, context) = repository::work_protocol030_tests::setup().await;
+    initialize_work_admission(&pool, &context).await;
+    let event = ProtocolEvent030 {
+        context: context.clone(),
+        event_id: "event".into(),
+        expected_revision: "0".into(),
+        event_json: "{}".into(),
+        native_call: None,
+        control: false,
+    };
+    let ticket = match protocol::reserve_event(&pool, &event).await.unwrap() {
+        EventReservation030::Pending { ticket } => ticket,
+        _ => panic!("unexpected replay"),
+    };
+    let decision = ProtocolDecision030 {
+        state_json: "{}".into(),
+        receipt_json: "{}".into(),
+        check: None,
+    };
+    let incarnation = host();
+    let state = Arc::new(HostState::default());
+    let mut blocker = pool.acquire().await.unwrap();
+    sqlx::query("BEGIN IMMEDIATE")
+        .execute(&mut *blocker)
+        .await
+        .unwrap();
+    let worker = state.clone();
+    let worker_pool = pool.clone();
+    let worker_host = incarnation.clone();
+    let task = tokio::spawn(async move {
+        worker
+            .commit_work030(
+                &worker_pool,
+                &worker_host,
+                &ticket,
+                &decision,
+                &tokio_util::sync::CancellationToken::new(),
+            )
+            .await
+    });
+    tokio::time::timeout(Duration::from_secs(3), async {
+        loop {
+            if incarnation.lifecycle.try_write().is_err() {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("commit should acquire the lifecycle lease");
+    assert!(revoke_now(&incarnation));
+    let result = tokio::time::timeout(Duration::from_secs(3), task)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap_err();
+    assert_eq!(result.code, "UNCERTAIN");
+    sqlx::query("ROLLBACK")
+        .execute(&mut *blocker)
+        .await
+        .unwrap();
+    drop(blocker);
+    assert_eq!(
+        protocol::read(&pool, &context.work).await.unwrap().revision,
+        "0"
+    );
+    assert!(protocol::read_checks(&pool, &context.work)
+        .await
+        .unwrap()
+        .is_empty());
+}
 fn close(host: &Incarnation) {
     host.live.store(false, Ordering::SeqCst);
     host.retired.cancel();
