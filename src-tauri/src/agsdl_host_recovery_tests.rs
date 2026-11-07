@@ -842,3 +842,160 @@ async fn recovery_survives_a_real_compile_timeout_and_late_reply_before_resuming
     }
     close(&host);
 }
+
+#[tokio::test]
+async fn work030_durable_readback_never_replays_or_treats_pending_as_rolled_back() {
+    use crate::agsdl_host_work::{observe_commit030, DurableCommitObservation030};
+    use repository::work_protocol030::{
+        self as protocol, EventReservation030, ProtocolDecision030, ProtocolEvent030,
+    };
+    let (_temp, pool, context) = repository::work_protocol030_tests::setup().await;
+    initialize_work_admission(&pool, &context).await;
+    let input = ProtocolEvent030 {
+        context: context.clone(),
+        event_id: "readback".into(),
+        expected_revision: "0".into(),
+        event_json: "{}".into(),
+        native_call: None,
+        control: false,
+    };
+    let ticket = match protocol::reserve_event(&pool, &input).await.unwrap() {
+        EventReservation030::Pending { ticket } => ticket,
+        _ => panic!("unexpected prior decision"),
+    };
+    let decision = ProtocolDecision030 {
+        state_json: "{}".into(),
+        receipt_json: "{}".into(),
+        check: None,
+    };
+    assert_eq!(
+        observe_commit030(&pool, &ticket, &decision).await.unwrap(),
+        DurableCommitObservation030::Unresolved
+    );
+    protocol::commit_event(&pool, &ticket, &decision)
+        .await
+        .unwrap();
+    assert_eq!(
+        observe_commit030(&pool, &ticket, &decision).await.unwrap(),
+        DurableCommitObservation030::Committed
+    );
+    let mut forged = decision.clone();
+    forged.receipt_json = "{ }".into();
+    assert!(observe_commit030(&pool, &ticket, &forged).await.is_err());
+    assert!(protocol::read_checks(&pool, &context.work)
+        .await
+        .unwrap()
+        .is_empty());
+}
+
+/// The SQLite commit hook runs inside sqlite3_step(COMMIT), after SQLx's worker
+/// has received COMMIT. It gives the test a deterministic cancellation boundary.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn work030_revocation_after_commit_submission_reads_both_durable_outcomes_without_replay() {
+    use crate::agsdl_host_work::{observe_commit030, DurableCommitObservation030};
+    use repository::work_protocol030::{
+        self as protocol, CheckRequest030, EventReservation030, ProtocolDecision030,
+        ProtocolEvent030,
+    };
+    for allow_commit in [true, false] {
+        let (temp, original_pool, context) = repository::work_protocol030_tests::setup().await;
+        initialize_work_admission(&original_pool, &context).await;
+        let input = ProtocolEvent030 {
+            context: context.clone(),
+            event_id: "commit-boundary".into(),
+            expected_revision: "0".into(),
+            event_json: "{}".into(),
+            native_call: None,
+            control: false,
+        };
+        let ticket = match protocol::reserve_event(&original_pool, &input)
+            .await
+            .unwrap()
+        {
+            EventReservation030::Pending { ticket } => ticket,
+            _ => panic!("unexpected prior decision"),
+        };
+        original_pool.close().await;
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(
+                sqlx::sqlite::SqliteConnectOptions::new()
+                    .filename(temp.path().join("protocol.db"))
+                    .foreign_keys(true)
+                    .journal_mode(sqlx::sqlite::SqliteJournalMode::Wal)
+                    .synchronous(sqlx::sqlite::SqliteSynchronous::Normal),
+            )
+            .await
+            .unwrap();
+        let decision = ProtocolDecision030 {
+            state_json: "{}".into(),
+            receipt_json: "{}".into(),
+            check: Some(CheckRequest030 {
+                check_id: "boundary-check".into(),
+                invocation_json: "{}".into(),
+            }),
+        };
+        let (arrived_tx, arrived_rx) = tokio::sync::oneshot::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+        {
+            let mut connection = pool.acquire().await.unwrap();
+            let mut handle = connection.lock_handle().await.unwrap();
+            let mut arrived = Some(arrived_tx);
+            handle.set_commit_hook(move || {
+                if let Some(sender) = arrived.take() {
+                    let _ = sender.send(());
+                }
+                release_rx.recv_timeout(Duration::from_secs(15)).is_ok() && allow_commit
+            });
+        }
+        let state = Arc::new(HostState::default());
+        let incarnation = host();
+        let cancellation = tokio_util::sync::CancellationToken::new();
+        let worker = state.clone();
+        let worker_pool = pool.clone();
+        let worker_host = incarnation.clone();
+        let worker_ticket = ticket.clone();
+        let worker_decision = decision.clone();
+        let worker_cancellation = cancellation.clone();
+        let task = tokio::spawn(async move {
+            worker
+                .commit_work030(
+                    &worker_pool,
+                    &worker_host,
+                    &worker_ticket,
+                    &worker_decision,
+                    &worker_cancellation,
+                )
+                .await
+        });
+        tokio::time::timeout(Duration::from_secs(10), arrived_rx)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(revoke_now(&incarnation));
+        release_tx.send(()).unwrap();
+        let result = tokio::time::timeout(Duration::from_secs(15), task)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap_err();
+        assert_eq!(result.code, "UNCERTAIN");
+        {
+            let mut connection = pool.acquire().await.unwrap();
+            let mut handle = connection.lock_handle().await.unwrap();
+            handle.remove_commit_hook();
+        }
+        let observation = observe_commit030(&pool, &ticket, &decision).await.unwrap();
+        let checks = protocol::read_checks(&pool, &context.work).await.unwrap();
+        if allow_commit {
+            assert_eq!(observation, DurableCommitObservation030::Committed);
+            assert_eq!(checks.len(), 1);
+            assert!(!checks[0].claimed);
+        } else {
+            // The read is deliberately inconclusive: it never grants replay.
+            assert_eq!(observation, DurableCommitObservation030::Unresolved);
+            assert!(checks.is_empty());
+        }
+        pool.close().await;
+    }
+}

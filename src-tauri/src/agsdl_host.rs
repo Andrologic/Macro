@@ -256,8 +256,31 @@ impl HostState {
             receipt_json: output.receipt_json,
             check,
         };
-        self.commit_work030(pool, &host, &ticket, &decision, cancelled)
-            .await?;
+        if let Err(error) = self
+            .commit_work030(pool, &host, &ticket, &decision, cancelled)
+            .await
+        {
+            if error.code == "UNCERTAIN" {
+                // Read only: a durable result does not renew a revoked lease and
+                // cannot authorize a second physical dispatch.
+                let observation = tokio::time::timeout(
+                    std::time::Duration::from_secs(1),
+                    crate::agsdl_host_work::observe_commit030(pool, &ticket, &decision),
+                )
+                .await;
+                let message = match observation {
+                    Ok(Ok(crate::agsdl_host_work::DurableCommitObservation030::Committed)) => {
+                        "Work decision is durable; no effect may be replayed"
+                    }
+                    Ok(Ok(crate::agsdl_host_work::DurableCommitObservation030::Unresolved)) => {
+                        "Work decision remains uncertain; no effect may be replayed"
+                    }
+                    _ => "Work decision could not be inspected; no effect may be replayed",
+                };
+                return Err(failure("UNCERTAIN", "work", message));
+            }
+            return Err(error);
+        }
         Ok(decision)
     }
     /// Only the short SQL commit holds the lifecycle lease. Cancellation or
