@@ -49,6 +49,7 @@ pub(crate) const NAMES: &[&str] = &[
     "027_execution_work_protocol",
     "028_execution_work_admission",
     "029_execution_human_public",
+    "030_execution_flow",
 ];
 
 pub(crate) fn destinations(version: i64, name: &str) -> DbResult<Vec<i64>> {
@@ -100,6 +101,7 @@ pub(crate) async fn canonical_versions(c: &mut SqliteConnection) -> DbResult<Vec
         || versions.contains(&27) && !versions.contains(&26)
         || versions.contains(&28) && !versions.contains(&27)
         || versions.contains(&29) && !versions.contains(&28)
+        || versions.contains(&30) && !versions.contains(&29)
     {
         return Err(DbError::Migration(
             "Inconsistent AgSDL migration history".into(),
@@ -172,6 +174,21 @@ pub(crate) async fn remove_reference_schema(
     c: &mut SqliteConnection,
     versions: &[i64],
 ) -> DbResult<()> {
+    if !versions.contains(&30) {
+        sqlx::query("DROP TRIGGER IF EXISTS engine_start020_reject_030")
+            .execute(&mut *c)
+            .await?;
+        for table in [
+            "engine_start030_requests",
+            "engine_flow030_outbox",
+            "engine_flow030_events",
+            "engine_flow030_runs",
+        ] {
+            sqlx::query(sqlx::AssertSqlSafe(format!("DROP TABLE IF EXISTS {table}")))
+                .execute(&mut *c)
+                .await?;
+        }
+    }
     if !versions.contains(&29) {
         for table in [
             "engine_human_requests030",

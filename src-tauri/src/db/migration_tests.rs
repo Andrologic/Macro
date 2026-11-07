@@ -59,6 +59,7 @@ async fn accepts_develop_v9_with_historical_pilot_v5_stamp() {
             (27, "027_execution_work_protocol".into()),
             (28, "028_execution_work_admission".into()),
             (29, "029_execution_human_public".into()),
+            (30, "030_execution_flow".into()),
         ]
     );
 }
@@ -145,7 +146,7 @@ async fn rehearses_upgrade_on_external_database_copy() {
             .unwrap()
             .iter()
             .max(),
-        Some(&29)
+        Some(&30)
     );
 }
 
@@ -271,7 +272,7 @@ pub(crate) async fn drop_human_public(c: &mut SqliteConnection) {
     migration_history::remove_reference_schema(c, &[20, 21, 22, 23, 24, 25, 26, 27, 28])
         .await
         .unwrap();
-    sqlx::query("DELETE FROM schema_migrations WHERE version=29")
+    sqlx::query("DELETE FROM schema_migrations WHERE version>=29")
         .execute(c)
         .await
         .unwrap();
@@ -1252,7 +1253,7 @@ async fn joins_both_published_v10_histories_without_replacing_stamps_or_data() {
                 .fetch_one(&upgraded)
                 .await
                 .unwrap(),
-            29
+            30
         );
         assert_eq!(
             sqlx::query_scalar::<_, String>(
@@ -1445,7 +1446,7 @@ async fn protocol017_upgrades_v16_without_rewriting_snapshots_and_rolls_back_fai
             .fetch_one(&upgraded)
             .await
             .unwrap(),
-        29
+        30
     );
     assert_eq!(
         sqlx::query("PRAGMA foreign_key_check")
@@ -1514,7 +1515,7 @@ async fn admission018_upgrades_v17_and_rolls_back_failed_stamp() {
             .fetch_one(&upgraded)
             .await
             .unwrap(),
-        29
+        30
     );
     assert!(sqlx::query("PRAGMA foreign_key_check")
         .fetch_all(&upgraded)
@@ -1610,4 +1611,41 @@ pub(crate) async fn historical_database(path: &Path, variant: usize) -> SqliteCo
         sqlx::raw_sql("DROP TABLE engine_native_operations; DROP TRIGGER tool_result_requires_completion_insert; DROP TRIGGER tool_result_requires_completion_update; ALTER TABLE tool_invocations DROP COLUMN result_json; DELETE FROM schema_migrations WHERE version>=15;").execute(&mut c).await.unwrap();
     }
     c
+}
+
+#[tokio::test]
+async fn flow030_migration_preserves_capture_and_rejects_cross_version_request_reuse() {
+    let temp = TempDir::new().unwrap();
+    let path = temp.path().join("flow030.db");
+    let pool = create_pool(&path).await.unwrap();
+    sqlx::raw_sql("INSERT INTO engine_systems VALUES ('old','old-request','{}','{}','[]','{}');
+        INSERT INTO engine_flow030_runs VALUES ('new','flow','snapshot','capture-epoch','{}','{}','{}');
+        INSERT INTO engine_flow030_events VALUES ('new','flow','enter','{}','{}',NULL);
+        INSERT INTO engine_flow030_outbox VALUES ('new','flow','effect','enter','{}','owner-epoch','pending',NULL);
+        INSERT INTO engine_start030_requests VALUES ('new-request','{}','new','flow','snapshot','capture-epoch','{}','{}');")
+        .execute(&pool).await.unwrap();
+    for statement in [
+        "UPDATE engine_flow030_runs SET plan_json='[]' WHERE system_id='new'",
+        "UPDATE engine_start030_requests SET receipt_json='[]' WHERE request_id='new-request'",
+        "INSERT INTO engine_systems VALUES ('collision','new-request','{}','{}','[]','{}')",
+        "INSERT INTO engine_systems VALUES ('new','other-request','{}','{}','[]','{}')",
+        "INSERT INTO engine_start030_requests VALUES ('old-request','{}','another','flow','snapshot','capture-epoch','{}','{}')",
+        "INSERT INTO engine_start030_requests VALUES ('another-request','{}','old','flow','snapshot','capture-epoch','{}','{}')",
+        "UPDATE engine_flow030_outbox SET status='settled' WHERE effect_id='effect'",
+    ] {
+        assert!(sqlx::query(statement).execute(&pool).await.is_err(), "{statement}");
+    }
+    pool.close().await;
+    let reopened = create_pool(&path).await.unwrap();
+    let persisted: (String, String) = sqlx::query_as("SELECT capture_epoch,receipt_json FROM engine_start030_requests WHERE request_id='new-request'")
+        .fetch_one(&reopened).await.unwrap();
+    assert_eq!(persisted, ("capture-epoch".into(), "{}".into()));
+    let status: String = sqlx::query_scalar(
+        "SELECT status FROM engine_flow030_outbox WHERE system_id='new' AND effect_id='effect'",
+    )
+    .fetch_one(&reopened)
+    .await
+    .unwrap();
+    assert_eq!(status, "pending");
+    reopened.close().await;
 }
