@@ -8,11 +8,19 @@ use std::sync::Mutex;
 use tokio::sync::{oneshot, Notify};
 use tokio_util::sync::CancellationToken;
 
-/// Select only the exact 04 contract from an authenticated 02 snapshot. The
-/// native caller must first bind `agent_name` to the admitted instance and must
-/// commit initialization under the same epoch/Stop guard as the work.
+/// Borrowed native 0.3 capture fields. The host authenticates the capture,
+/// admitted instance and epoch before selecting a contract.
+pub(crate) struct CapturedWorkPlan030<'a> {
+    pub system_start_id: &'a str,
+    pub source: &'a crate::db::agsdl_execution::dto::EngineSourceRevision,
+    pub versions: &'a crate::db::agsdl_execution::dto::EngineVersions,
+    pub compiled_plan_json: &'a str,
+}
+
+/// Select only the exact 04 contract from an authenticated 02 plan.
+/// This function does not authenticate the caller or grant work admission.
 pub(crate) fn captured_work_contract030(
-    snapshot: &crate::db::agsdl_execution::dto::EngineSnapshot,
+    snapshot: &CapturedWorkPlan030<'_>,
     work: &crate::db::agsdl_execution::dto::EngineWork,
     agent_name: &str,
 ) -> Result<String> {
@@ -24,8 +32,8 @@ pub(crate) fn captured_work_contract030(
         || snapshot.versions.snapshot != "2"
         || snapshot.versions.contract != "agsdl-0.3.0"
         || snapshot.versions.profile != "macro-agsdl-030-v1"
-        || plan.get("versions") != Some(&serde_json::to_value(&snapshot.versions)?)
-        || plan.get("source") != Some(&serde_json::to_value(&snapshot.source)?)
+        || plan.get("versions") != Some(&serde_json::to_value(snapshot.versions)?)
+        || plan.get("source") != Some(&serde_json::to_value(snapshot.source)?)
         || agent_name.trim().is_empty()
     {
         return Err(failure(
@@ -519,43 +527,47 @@ mod tests {
     }
     #[test]
     fn captured_contract_is_bound_to_snapshot_step_agent_and_exact_bytes() {
-        use crate::db::agsdl_execution::dto::EngineSnapshot;
-        let mut snapshot: EngineSnapshot = serde_json::from_value(serde_json::json!({
-            "systemStartId":"run",
-            "source":{"owner":{"projectId":"project","planId":"plan","branch":"feature/test"},"revision":"1","sourceSha256":"digest"},
-            "authoredSource":"{}",
-            "versions":{"snapshot":"2","contract":"agsdl-0.3.0","compiler":"compiler","runtime":"runtime","registry":"registry","profile":"macro-agsdl-030-v1"},
-            "agents":[],"compiledPlanJson":"{}","associations":{}
+        use crate::db::agsdl_execution::dto::{EngineSourceRevision, EngineVersions};
+        let source: EngineSourceRevision = serde_json::from_value(serde_json::json!({
+            "owner":{"projectId":"project","planId":"plan","branch":"feature/test"},"revision":"1","sourceSha256":"digest"
+        })).unwrap();
+        let versions: EngineVersions = serde_json::from_value(serde_json::json!({
+            "snapshot":"2","contract":"agsdl-0.3.0","compiler":"compiler","runtime":"runtime","registry":"registry","profile":"macro-agsdl-030-v1"
         })).unwrap();
         let exact = "{ \"limit\":9007199254740993 }";
         let mut plan = serde_json::json!({
-            "format":"macro-agsdl-compiled-plan/2", "source":snapshot.source,
-            "versions":snapshot.versions, "entry":["task"],
+            "format":"macro-agsdl-compiled-plan/2", "source":source,
+            "versions":versions, "entry":["task"],
             "steps":[{"address":["task"],"type":"agent","agent":"agent","submissionContractJson":exact}],
             "graphlessSubmissionContracts":{"agent":exact}
         });
-        snapshot.compiled_plan_json = plan.to_string();
+        let check = |plan: &serde_json::Value,
+                     work: &crate::db::agsdl_execution::dto::EngineWork,
+                     agent: &str| {
+            let json = plan.to_string();
+            captured_work_contract030(
+                &CapturedWorkPlan030 {
+                    system_start_id: "run",
+                    source: &source,
+                    versions: &versions,
+                    compiled_plan_json: &json,
+                },
+                work,
+                agent,
+            )
+        };
         let mut work = input().context.work;
-        assert_eq!(
-            captured_work_contract030(&snapshot, &work, "agent").unwrap(),
-            exact
-        );
-        assert!(captured_work_contract030(&snapshot, &work, "other").is_err());
+        assert_eq!(check(&plan, &work, "agent").unwrap(), exact);
+        assert!(check(&plan, &work, "other").is_err());
         let duplicate = plan["steps"][0].clone();
         plan["steps"].as_array_mut().unwrap().push(duplicate);
-        snapshot.compiled_plan_json = plan.to_string();
-        assert!(captured_work_contract030(&snapshot, &work, "agent").is_err());
+        assert!(check(&plan, &work, "agent").is_err());
         plan["entry"] = serde_json::Value::Null;
-        snapshot.compiled_plan_json = plan.to_string();
         work.step = None;
-        assert_eq!(
-            captured_work_contract030(&snapshot, &work, "agent").unwrap(),
-            exact
-        );
-        assert!(captured_work_contract030(&snapshot, &work, "other").is_err());
+        assert_eq!(check(&plan, &work, "agent").unwrap(), exact);
+        assert!(check(&plan, &work, "other").is_err());
         plan["versions"]["profile"] = "macro-serial-inline-v1".into();
-        snapshot.compiled_plan_json = plan.to_string();
-        assert!(captured_work_contract030(&snapshot, &work, "agent").is_err());
+        assert!(check(&plan, &work, "agent").is_err());
     }
     #[test]
     fn check_reservation_preserves_exact_json_and_rejects_foreign_owner() {
