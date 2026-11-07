@@ -6,13 +6,12 @@ use super::{
     failure,
     flow030::{FlowEvent030, FlowEventKind030, FlowIdentity030, FlowPlan030, FlowReceipt030},
     flow_store030::{self, Apply030, Authority030, StoreError030},
+    json_lexemes030::document_tokens_equal,
     opaque, validate_json, Result,
 };
 use serde::{Deserialize, Serialize};
-use serde_json::value::RawValue;
 use sha2::{Digest, Sha256};
 use sqlx::{Connection, Row, SqliteConnection, SqlitePool};
-use std::collections::BTreeMap;
 
 /// Built exclusively by the native capture owner. The host must exclude secrets.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -78,54 +77,6 @@ fn store_error(error: StoreError030) -> super::dto::EngineFailure {
             "Flow 0.3 capture or transition was refused",
         ),
     }
-}
-
-/// Compare decoded structure and string values while retaining each number's
-/// original token. Both inputs are first checked for duplicate keys and depth.
-fn document_tokens_equal(a: &str, b: &str) -> Result<bool> {
-    fn compare(a: &str, b: &str) -> serde_json::Result<bool> {
-        let a: Box<RawValue> = serde_json::from_str(a)?;
-        let b: Box<RawValue> = serde_json::from_str(b)?;
-        let (a, b) = (a.get(), b.get());
-        match (a.as_bytes()[0], b.as_bytes()[0]) {
-            (b'{', b'{') => {
-                let a: BTreeMap<String, Box<RawValue>> = serde_json::from_str(a)?;
-                let b: BTreeMap<String, Box<RawValue>> = serde_json::from_str(b)?;
-                if a.len() != b.len() {
-                    return Ok(false);
-                }
-                for (key, value) in &a {
-                    let Some(other) = b.get(key) else {
-                        return Ok(false);
-                    };
-                    if !compare(value.get(), other.get())? {
-                        return Ok(false);
-                    }
-                }
-                Ok(true)
-            }
-            (b'[', b'[') => {
-                let a: Vec<Box<RawValue>> = serde_json::from_str(a)?;
-                let b: Vec<Box<RawValue>> = serde_json::from_str(b)?;
-                if a.len() != b.len() {
-                    return Ok(false);
-                }
-                for (left, right) in a.iter().zip(&b) {
-                    if !compare(left.get(), right.get())? {
-                        return Ok(false);
-                    }
-                }
-                Ok(true)
-            }
-            (b'"', b'"') => {
-                Ok(serde_json::from_str::<String>(a)? == serde_json::from_str::<String>(b)?)
-            }
-            _ => Ok(a == b),
-        }
-    }
-    validate_json(a)?;
-    validate_json(b)?;
-    Ok(compare(a, b)?)
 }
 
 fn validate_capture(

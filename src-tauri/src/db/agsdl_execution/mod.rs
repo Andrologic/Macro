@@ -12,6 +12,7 @@ mod flow_store030;
 pub mod dto;
 pub(crate) mod inspection;
 pub(crate) mod intents;
+pub(crate) mod json_lexemes030;
 pub(crate) mod native_operations;
 pub(crate) mod prepared;
 pub(crate) mod process_recovery;
