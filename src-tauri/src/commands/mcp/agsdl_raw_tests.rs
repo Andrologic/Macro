@@ -36,6 +36,7 @@ struct HttpFixture {
     requests: tokio::sync::Mutex<Vec<String>>,
     calls: AtomicUsize,
     mode: &'static str,
+    answer_seen: tokio::sync::Notify,
 }
 async fn http_handler(
     axum::extract::State(state): axum::extract::State<Arc<HttpFixture>>,
@@ -48,6 +49,9 @@ async fn http_handler(
     let id = value.get("id").cloned().unwrap_or(serde_json::Value::Null);
     let method = value.get("method").and_then(|v| v.as_str()).unwrap_or("");
     if method.is_empty() || method == "notifications/initialized" {
+        if method.is_empty() {
+            state.answer_seen.notify_one();
+        }
         return axum::http::StatusCode::ACCEPTED.into_response();
     }
     let result: String = match method {
@@ -60,6 +64,11 @@ async fn http_handler(
         "tools/call" => {
             let call = state.calls.fetch_add(1, Ordering::SeqCst);
             assert!(body.contains("9007199254740993"));
+            if state.mode == "get-blocking" {
+                if tokio::time::timeout(std::time::Duration::from_secs(2), state.answer_seen.notified()).await.is_err() {
+                    return axum::http::StatusCode::GATEWAY_TIMEOUT.into_response();
+                }
+            }
             if state.mode == "modern-push" {
                 let raw = format!("data: {{\"jsonrpc\":\"2.0\",\"id\":\"server-human\",\"method\":\"elicitation/create\",\"params\":{{\"message\":\"Continue?\",\"requestedSchema\":{{\"type\":\"object\"}}}}}}\n\ndata: {{\"jsonrpc\":\"2.0\",\"id\":{id},\"result\":{{\"resultType\":\"complete\",\"content\":[]}}}}\n\n");
                 return ([("content-type", "text/event-stream")], raw).into_response();
@@ -100,6 +109,12 @@ async fn resume_handler(
     headers: axum::http::HeaderMap,
 ) -> axum::response::Response {
     use axum::response::IntoResponse;
+    if !headers.contains_key("last-event-id") {
+        if state.mode == "get-blocking" {
+            return ([("content-type", "text/event-stream")], "data: {\"jsonrpc\":\"2.0\",\"id\":\"push-human\",\"method\":\"elicitation/create\",\"params\":{\"message\":\"continue?\",\"requestedSchema\":{\"type\":\"object\"}}}\n\n").into_response();
+        }
+        return axum::http::StatusCode::METHOD_NOT_ALLOWED.into_response();
+    }
     assert_eq!(headers.get("last-event-id").unwrap(), "cursor-1");
     assert_eq!(headers.get("mcp-session-id").unwrap(), "captured");
     state.requests.lock().await.push("GET resume".into());
@@ -117,6 +132,7 @@ async fn http_fixture(
         requests: tokio::sync::Mutex::new(vec![]),
         calls: AtomicUsize::new(0),
         mode,
+        answer_seen: tokio::sync::Notify::new(),
     });
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
@@ -186,7 +202,7 @@ async fn isolated(
         .call(
             "synthetic",
             "{\"n\":9007199254740993}",
-            host.as_ref(),
+            host.clone(),
             &identity(),
             &host.control,
         )
@@ -359,6 +375,76 @@ async fn modern_push_is_rejected_before_human_or_response_post() {
     assert_eq!(host.human_closed.load(Ordering::SeqCst), 0);
     assert_eq!(fixture.calls.load(Ordering::SeqCst), 1);
     assert_eq!(fixture.requests.lock().await.len(), 2);
+    assert!(matches!(
+        evidence,
+        PhysicalEvidence::Remote {
+            termination_proven: false,
+            ..
+        }
+    ));
+    task.abort();
+    let _ = task.await;
+}
+
+#[tokio::test]
+async fn legacy_get_request_is_answered_before_post_response_headers() {
+    let (server, fixture, task) = http_fixture("get-blocking").await;
+    let host = dummy_host();
+    let (result, evidence) =
+        tokio::time::timeout(std::time::Duration::from_secs(5), isolated(&host, server))
+            .await
+            .unwrap();
+    assert!(result.is_ok(), "{result:?}");
+    assert_eq!(fixture.calls.load(Ordering::SeqCst), 1);
+    assert_eq!(host.human_open.load(Ordering::SeqCst), 1);
+    assert_eq!(host.human_closed.load(Ordering::SeqCst), 1);
+    assert!(matches!(
+        evidence,
+        PhysicalEvidence::Remote {
+            termination_proven: false,
+            ..
+        }
+    ));
+    task.abort();
+    let _ = task.await;
+}
+
+#[tokio::test]
+async fn stop_during_legacy_get_human_closes_request_without_call_replay() {
+    let (server, fixture, task) = http_fixture("get-blocking").await;
+    let dummy = CapturedServer {
+        document_name: "unused".into(),
+        capture_digest: "unused".into(),
+        protocol: Protocol::Legacy,
+        transport: ServerTransport::Http(HttpServer {
+            url: "http://127.0.0.1:1/mcp".parse().unwrap(),
+            addresses: vec!["127.0.0.1:1".parse().unwrap()],
+            headers: Default::default(),
+            tool_schema: None,
+        }),
+    };
+    let mut host = TestHost::new(LaunchGrant::Mcp(dummy));
+    host.human_delay = std::time::Duration::from_secs(30);
+    let host = Arc::new(host);
+    let running = {
+        let host = host.clone();
+        tokio::spawn(async move { isolated(&host, server).await })
+    };
+    tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        while host.human_open.load(Ordering::SeqCst) == 0 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    host.control.stop.cancel();
+    let (result, evidence) = tokio::time::timeout(std::time::Duration::from_secs(5), running)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(result.is_err());
+    assert_eq!(host.human_closed.load(Ordering::SeqCst), 1);
+    assert_eq!(fixture.calls.load(Ordering::SeqCst), 1);
     assert!(matches!(
         evidence,
         PhysicalEvidence::Remote {

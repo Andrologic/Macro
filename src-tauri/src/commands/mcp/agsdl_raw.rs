@@ -290,6 +290,10 @@ struct HttpWire {
     responses: VecDeque<Body>,
     tool_schema: Option<(String, String)>,
     parameter_headers: reqwest::header::HeaderMap,
+    unsolicited: Option<tokio::sync::mpsc::UnboundedReceiver<Result<String>>>,
+    listener: Option<tokio::task::JoinHandle<()>>,
+    listener_stop: Option<tokio_util::sync::CancellationToken>,
+    listener_failed: tokio_util::sync::CancellationToken,
 }
 struct Body {
     response: reqwest::Response,
@@ -434,6 +438,10 @@ pub(crate) fn start(server: CapturedServer) -> Result<Session> {
                 responses: VecDeque::new(),
                 tool_schema: config.tool_schema,
                 parameter_headers: Default::default(),
+                unsolicited: None,
+                listener: None,
+                listener_stop: None,
+                listener_failed: tokio_util::sync::CancellationToken::new(),
             })
         }
     };
@@ -450,7 +458,7 @@ impl Session {
         &mut self,
         tool: &str,
         args: &str,
-        host: &dyn HostPort,
+        host: std::sync::Arc<dyn HostPort>,
         identity: &CallIdentity,
         control: &Control,
     ) -> Result<McpReceipt> {
@@ -463,8 +471,8 @@ impl Session {
             }
         }
         let startup = match self.protocol {
-            Protocol::Legacy => self.rpc("initialize", r#"{"protocolVersion":"2025-11-25","capabilities":{"elicitation":{"form":{}}},"clientInfo":{"name":"Macro AgSDL","version":"0.3.0"}}"#, host, identity, control).await?,
-            Protocol::Modern => self.rpc("server/discover", "{}", host, identity, control).await?,
+            Protocol::Legacy => self.rpc("initialize", r#"{"protocolVersion":"2025-11-25","capabilities":{"elicitation":{"form":{}}},"clientInfo":{"name":"Macro AgSDL","version":"0.3.0"}}"#, host.as_ref(), identity, control).await?,
+            Protocol::Modern => self.rpc("server/discover", "{}", host.as_ref(), identity, control).await?,
         };
         let startup = object(&startup)?;
         let version = match self.protocol {
@@ -547,12 +555,22 @@ impl Session {
                 http.parameter_headers = parameter_headers(schema, args)?;
             }
         }
+        if matches!(self.protocol, Protocol::Legacy) {
+            if let Wire::Http(http) = &mut self.wire {
+                http.start_listener(
+                    host.clone(),
+                    identity.clone(),
+                    control.clone(),
+                    self.server.clone(),
+                );
+            }
+        }
         let base = format!("\"name\":{},\"arguments\":{args}", encode(&tool)?);
         let mut params = format!("{{{base}}}");
         let mut continuations = 0;
         loop {
             let raw = self
-                .rpc("tools/call", &params, host, identity, control)
+                .rpc("tools/call", &params, host.as_ref(), identity, control)
                 .await?;
             let fields = object(&raw)?;
             match fields.get("resultType").map(|v| string(v)).transpose()?.as_deref() {
@@ -584,7 +602,7 @@ impl Session {
                                 return Err(CallError::transport("Only MCP form elicitation is supported"));
                             }
                         }
-                        let answers = wait_human(host, identity, &self.server, &raw, control).await?;
+                        let answers = wait_human(host.as_ref(), identity, &self.server, &raw, control).await?;
                         let answers_map = object(&answers)?;
                         if answers_map.len() != requests.len() || requests.keys().any(|id| !answers_map.contains_key(id)) {
                             return Err(CallError::new("CORRELATION", "MCP form answers do not match requests"));
@@ -602,9 +620,14 @@ impl Session {
 
     async fn send(&mut self, message: &str, control: &Control) -> Result<()> {
         control.check()?;
+        let listener_failed = match &self.wire {
+            Wire::Http(http) => Some(http.listener_failed.clone()),
+            _ => None,
+        };
         tokio::select! {
             biased;
             error = control.cancelled() => Err(error),
+            _ = async { match listener_failed { Some(token) => token.cancelled().await, None => std::future::pending().await } } => Err(CallError::new("UNCERTAIN", "MCP listener failed during delivery")),
             sent = self.wire.send(message) => sent,
         }
     }
@@ -700,13 +723,29 @@ impl Session {
 
     pub(crate) async fn shutdown(self, received: bool) -> (PhysicalEvidence, Option<CallError>) {
         match self.wire {
-            Wire::Http(_) => (
-                PhysicalEvidence::Remote {
-                    response_received: received,
-                    termination_proven: false,
-                },
-                None,
-            ),
+            Wire::Http(mut http) => {
+                if let Some(stop) = &http.listener_stop {
+                    stop.cancel();
+                }
+                let mut failure = None;
+                if let Some(mut listener) = http.listener.take() {
+                    if !matches!(
+                        tokio::time::timeout(Duration::from_secs(5), &mut listener).await,
+                        Ok(Ok(()))
+                    ) {
+                        listener.abort();
+                        let _ = listener.await;
+                        failure = Some(CallError::new("UNCERTAIN", "MCP listener did not close"));
+                    }
+                }
+                (
+                    PhysicalEvidence::Remote {
+                        response_received: received,
+                        termination_proven: false,
+                    },
+                    failure,
+                )
+            }
             Wire::Stdio {
                 mut process,
                 stdin,
@@ -761,6 +800,193 @@ async fn wait_human(
     };
     host.human_close(&ticket, &answer).await?;
     answer
+}
+
+impl Drop for HttpWire {
+    fn drop(&mut self) {
+        if let Some(listener) = self.listener.take() {
+            listener.abort();
+        }
+    }
+}
+impl HttpWire {
+    fn start_listener(
+        &mut self,
+        host: std::sync::Arc<dyn HostPort>,
+        identity: CallIdentity,
+        control: Control,
+        server: String,
+    ) {
+        if self.listener.is_some() {
+            return;
+        }
+        let client = self.client.clone();
+        let url = self.url.clone();
+        let headers = self.headers.clone();
+        let session = self.session.clone();
+        let version = self.version;
+        let stop = control.stop.child_token();
+        self.listener_stop = Some(stop.clone());
+        let control = Control {
+            stop,
+            machine_timeout: control.machine_timeout,
+        };
+        let failed = self.listener_failed.clone();
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        self.unsolicited = Some(rx);
+        self.listener = Some(tokio::spawn(async move {
+            let mut cursor: Option<String> = None;
+            let mut delay = 1000u64;
+            loop {
+                let mut request = client
+                    .get(url.clone())
+                    .headers(headers.clone())
+                    .header("accept", "text/event-stream")
+                    .header("mcp-protocol-version", version);
+                if let Some(session) = &session {
+                    request = request.header("mcp-session-id", session);
+                }
+                if let Some(id) = &cursor {
+                    request = request.header("last-event-id", id);
+                }
+                let response = tokio::select! {
+                    biased;
+                    _ = control.cancelled() => break,
+                    response = request.send() => match response { Ok(response) => response, Err(_) => break },
+                };
+                if response.status() == reqwest::StatusCode::METHOD_NOT_ALLOWED {
+                    break;
+                }
+                let content_type = response
+                    .headers()
+                    .get("content-type")
+                    .and_then(|v| v.to_str().ok())
+                    .unwrap_or("")
+                    .split(';')
+                    .next()
+                    .unwrap_or("")
+                    .trim();
+                if !response.status().is_success() || content_type != "text/event-stream" {
+                    break;
+                }
+                let mut body = Body {
+                    response,
+                    buffer: Vec::new(),
+                    sse: true,
+                    eof: false,
+                    last_event_id: cursor.clone(),
+                    retry_ms: delay,
+                };
+                loop {
+                    let message = tokio::select! {
+                        biased;
+                        _ = control.cancelled() => return,
+                        message = body.next() => message,
+                    };
+                    match message {
+                        Ok(Some(message)) => {
+                            let result = process_listener_message(
+                                &client,
+                                &url,
+                                &headers,
+                                session.as_deref(),
+                                version,
+                                host.as_ref(),
+                                &identity,
+                                &server,
+                                &message,
+                                &control,
+                            )
+                            .await;
+                            if let Err(error) = result {
+                                let _ = tx.send(Err(error));
+                                failed.cancel();
+                                return;
+                            }
+                        }
+                        Ok(None) => break,
+                        Err(error) => {
+                            let _ = tx.send(Err(error));
+                            failed.cancel();
+                            return;
+                        }
+                    }
+                }
+                cursor = body.last_event_id;
+                delay = body.retry_ms;
+                if cursor.is_none() {
+                    break;
+                }
+                tokio::select! {
+                    biased;
+                    _ = control.cancelled() => return,
+                    _ = tokio::time::sleep(Duration::from_millis(delay)) => {},
+                }
+            }
+        }));
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn process_listener_message(
+    client: &reqwest::Client,
+    url: &url::Url,
+    headers: &reqwest::header::HeaderMap,
+    session: Option<&str>,
+    version: &str,
+    host: &dyn HostPort,
+    identity: &CallIdentity,
+    server: &str,
+    raw: &str,
+    control: &Control,
+) -> Result<()> {
+    let fields = object(raw)?;
+    if fields
+        .get("jsonrpc")
+        .map(|v| string(v))
+        .transpose()?
+        .as_deref()
+        != Some("2.0")
+    {
+        return Err(CallError::transport(
+            "Invalid unsolicited MCP JSON-RPC version",
+        ));
+    }
+    let method = fields
+        .get("method")
+        .map(|v| string(v))
+        .transpose()?
+        .ok_or_else(|| CallError::new("CORRELATION", "Unsolicited GET carried a response"))?;
+    let Some(id) = fields.get("id") else {
+        return Ok(());
+    };
+    let response = if method == "elicitation/create" {
+        let answer = wait_human(host, identity, server, raw, control).await?;
+        object(&answer)?;
+        format!("\"result\":{answer}")
+    } else if method == "ping" {
+        "\"result\":{}".into()
+    } else {
+        "\"error\":{\"code\":-32601,\"message\":\"Method not supported\"}".into()
+    };
+    let body = format!("{{\"jsonrpc\":\"2.0\",\"id\":{},{response}}}", id.get());
+    let mut request = client
+        .post(url.clone())
+        .headers(headers.clone())
+        .header("accept", "application/json, text/event-stream")
+        .header("content-type", "application/json")
+        .header("mcp-protocol-version", version)
+        .body(body);
+    if let Some(session) = session {
+        request = request.header("mcp-session-id", session);
+    }
+    let response = tokio::select! { biased; error = control.cancelled() => return Err(error), response = request.send() => response.map_err(|e| CallError::transport(e.to_string()))? };
+    if response.status() != reqwest::StatusCode::ACCEPTED {
+        return Err(CallError::transport(
+            "MCP GET request response was not accepted",
+        ));
+    }
+    Ok(())
 }
 
 impl Wire {
@@ -917,7 +1143,15 @@ impl Wire {
                         "MCP HTTP has no response stream; effect will not be retried",
                     )
                 })?;
-                if let Some(value) = body.next().await? {
+                let unsolicited = &mut http.unsolicited;
+                let received = tokio::select! {
+                    biased;
+                    Some(message) = async {
+                        match unsolicited { Some(rx) => rx.recv().await, None => std::future::pending().await }
+                    } => return message,
+                    message = body.next() => message?,
+                };
+                if let Some(value) = received {
                     return Ok(value);
                 }
                 let body = http.responses.pop_front().expect("response exists");

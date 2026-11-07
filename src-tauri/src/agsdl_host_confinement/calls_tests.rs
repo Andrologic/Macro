@@ -11,6 +11,7 @@ pub(crate) struct TestHost {
     pub(crate) fail_finish: bool,
     pub(crate) human_open: AtomicUsize,
     pub(crate) human_closed: AtomicUsize,
+    pub(crate) human_delay: Duration,
 }
 impl TestHost {
     pub(crate) fn new(grant: LaunchGrant) -> Self {
@@ -24,6 +25,7 @@ impl TestHost {
             fail_finish: false,
             human_open: AtomicUsize::new(0),
             human_closed: AtomicUsize::new(0),
+            human_delay: Duration::from_millis(30),
         }
     }
 }
@@ -66,7 +68,7 @@ impl HostPort for TestHost {
         .into())
     }
     async fn human_answer(&self, ticket: &str) -> Result<String> {
-        tokio::time::sleep(Duration::from_millis(30)).await;
+        tokio::time::sleep(self.human_delay).await;
         Ok(if ticket == "modern" {
             r#"{"ask":{"action":"decline"}}"#
         } else {
