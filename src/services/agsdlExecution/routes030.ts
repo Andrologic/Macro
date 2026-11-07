@@ -40,6 +40,8 @@ export interface Scope030 {
   readonly steps: readonly { readonly address: StepAddress; readonly declarationJson: ExactJsonText }[];
   /** Present only for a composition body. */
   readonly outputs?: readonly string[];
+  /** Selected outer continuation for each body output, including [] for a terminal route. */
+  readonly outputRoutes?: Readonly<Record<string, { readonly routeJson: ExactJsonText; readonly scope: Scope030 }>>;
 }
 export type RouteTarget030 =
   | { readonly kind: 'step'; readonly address: StepAddress; readonly stepJson: ExactJsonText;
@@ -151,13 +153,26 @@ export function preflightExpansion030(targets: readonly RouteTarget030[], source
 export function instructionsExpectation030(sourceAgentJson: ExactJsonText, chosenRouteJson: ExactJsonText, scope: Scope030): 'none' | 'string' | 'list' {
   if (!scope) return fail('ROUTES', '', 'A captured route scope is required to classify destinations.');
   if (record(decode(sourceAgentJson)).instructs !== true) return 'none';
-  const targets = normalizeRoute030(chosenRouteJson, scope).map(target => {
-    if (target.kind === 'output' || !['agent', 'approval', 'compose'].includes(text(record(decode(target.stepJson)).type))) return null;
-    return typeof decode(target.declarationJson) === 'string' ? { step: '' } : record(decode(target.declarationJson));
-  });
+  const targets: ReturnType<typeof record>[] = [];
+  const active = new Set<Scope030>();
+  const collect = (routeJson: ExactJsonText, current: Scope030): void => {
+    if (active.has(current)) return fail('ROUTES', '', 'Composition output continuations contain a cycle.');
+    active.add(current);
+    for (const target of normalizeRoute030(routeJson, current)) {
+      if (target.kind === 'output') {
+        if (!current.outputRoutes || !Object.hasOwn(current.outputRoutes, target.name)) return fail('ROUTES', '', 'Composition output requires its captured outer route and scope.');
+        const continuation = current.outputRoutes[target.name];
+        collect(continuation.routeJson, continuation.scope);
+      } else if (['agent', 'approval', 'compose'].includes(text(record(decode(target.stepJson)).type))) {
+        const declaration = decode(target.declarationJson);
+        targets.push(typeof declaration === 'string' ? { step: declaration } : record(declaration));
+      }
+    }
+    active.delete(current);
+  };
+  collect(chosenRouteJson, scope);
   let expects = false, fanout = false, single = false;
   for (const target of targets) {
-    if (!target || has(target, 'output')) continue;
     const eachInstructions = has(target, 'each') && equal(target.each, ['instructions']);
     fanout ||= eachInstructions;
     if (eachInstructions) expects = true;

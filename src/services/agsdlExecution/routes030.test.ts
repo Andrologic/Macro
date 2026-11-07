@@ -85,8 +85,39 @@ describe('instructions required by the selected route only', () => {
       expect(instructionsExpectation030(yes, j(`["worker",${target}]`), scope)).toBe('string');
       expect(instructionsExpectation030(yes, j(`[{"step":"worker","each":["instructions"]},${target}]`), scope)).toBe('list');
     }
-    const bodyScope: Scope030 = { ...scope, outputs: ['done'] };
-    expect(instructionsExpectation030(yes, j('{"output":"done"}'), bodyScope)).toBe('none');
+  });
+  it('follows selected composition outputs into the effective outer route', () => {
+    const body = (outerRoute: string): Scope030 => ({
+      prefix: ['compose'], steps: [], outputs: ['done'],
+      outputRoutes: { done: { routeJson: j(outerRoute), scope } },
+    });
+    const output = j('{"output":"done"}');
+    for (const [route, expected] of [
+      ['[]', 'none'], ['"run"', 'none'],
+      ['"worker"', 'string'],
+      ['{"step":"worker","message":{}}', 'none'],
+      ['{"step":"worker","message":{"prompt":{"from":["instructions"]}}}', 'string'],
+      ['[{"step":"worker","each":["instructions"]},"run"]', 'list'],
+    ] as const) expect(instructionsExpectation030(yes, output, body(route))).toBe(expected);
+    code(() => instructionsExpectation030(yes, output, { prefix: ['compose'], steps: [], outputs: ['done'] }), 'ROUTES');
+    expect(instructionsExpectation030(no, output, body('"worker"'))).toBe('none');
+  });
+  it('follows nested outputs and combines their effective targets with sibling targets', () => {
+    const middle: Scope030 = {
+      prefix: ['outer'], steps: [{ address: ['outer', 'review'], declarationJson: j('{"type":"approval"}') }], outputs: ['out'],
+      outputRoutes: { out: { routeJson: j('{"step":"worker","each":["instructions"]}'), scope } },
+    };
+    const inner: Scope030 = {
+      prefix: ['outer', 'inner'], steps: [], outputs: ['done'],
+      outputRoutes: { done: { routeJson: j('{"output":"out"}'), scope: middle } },
+    };
+    expect(instructionsExpectation030(yes, j('{"output":"done"}'), inner)).toBe('list');
+    const middleWithSibling: Scope030 = { ...middle, outputRoutes: middle.outputRoutes };
+    const conflict: Scope030 = { ...inner, outputRoutes: { done: { routeJson: j('[{"output":"out"},"review"]'), scope: middleWithSibling } } };
+    code(() => instructionsExpectation030(yes, j('{"output":"done"}'), conflict), 'MESSAGE_PATH');
+    const loop: { steps: Scope030['steps']; outputs: string[]; outputRoutes: Record<string, { routeJson: ExactJsonText; scope: Scope030 }> } = { steps: [], outputs: ['again'], outputRoutes: {} };
+    loop.outputRoutes.again = { routeJson: j('{"output":"again"}'), scope: loop };
+    code(() => instructionsExpectation030(yes, j('{"output":"again"}'), loop), 'ROUTES');
   });
   it('refuses a list of missions also used as a single default or explicit prompt', () => {
     for (const other of ['"review"', '{"step":"review","message":{"prompt":{"from":["instructions"]}}}']) code(() => instructionsExpectation030(yes, j(`[{"step":"worker","each":["instructions"]},${other}]`), scope), 'MESSAGE_PATH');
