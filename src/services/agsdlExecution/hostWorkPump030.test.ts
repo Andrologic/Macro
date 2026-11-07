@@ -119,3 +119,37 @@ it('revokes only once when two evaluations fail together', async () => {
   await pump;
   expect(revocations).toBe(1);
 });
+
+it('discards only a stale completion and continues processing', async () => {
+  const pending = deferred<number>();
+  const completed = deferred<void>();
+  let calls = 0;
+  let revoked = false;
+  const pump = runHostWorkPump030<number, string>({
+    next: () => ++calls === 1 ? Promise.resolve(1) : calls === 2 ? Promise.resolve(2) : pending.promise,
+    evaluate: async () => 'ok',
+    complete: async job => { if (job === 1) throw { code: 'STALE_TICKET' }; completed.resolve(); },
+    isStaleCompletion: error => typeof error === 'object' && error !== null && 'code' in error && error.code === 'STALE_TICKET',
+    fail: async () => { revoked = true; },
+  });
+  await completed.promise;
+  expect(revoked).toBe(false);
+  pending.reject(new Error('retired'));
+  await pump;
+  expect(revoked).toBe(true);
+});
+
+it('does not discard an evaluation error that resembles a stale completion', async () => {
+  const error = { code: 'STALE_TICKET' };
+  const pending = deferred<number>();
+  let calls = 0;
+  const failures: unknown[] = [];
+  await runHostWorkPump030<number, string>({
+    next: () => ++calls === 1 ? Promise.resolve(1) : pending.promise,
+    evaluate: async () => { throw error; },
+    complete: async () => {},
+    isStaleCompletion: () => true,
+    fail: async reason => { failures.push(reason); },
+  });
+  expect(failures).toEqual([error]);
+});

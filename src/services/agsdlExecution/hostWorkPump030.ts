@@ -4,6 +4,8 @@ export interface HostWorkPumpPort030<Job, Output> {
   next(): Promise<Job>;
   evaluate(job: Job): Promise<Output>;
   complete(job: Job, output: Output): Promise<void>;
+  /** Only the native mailbox's stale-ticket error is safe to discard. */
+  isStaleCompletion?(error: unknown): boolean;
   /** Revoke the resident host. Failure is surfaced to the caller; it is not
    * evidence that native ownership or physical effects have ended. */
   fail(error: unknown): Promise<void>;
@@ -46,7 +48,11 @@ export async function runHostWorkPump030<Job, Output>(port: HostWorkPumpPort030<
     // Evaluation is pure. Once revoked, detach it and refuse a late completion.
     // An already-started completion still requires native epoch/SQL fencing.
     void Promise.resolve().then(() => port.evaluate(outcome.job))
-      .then(output => { if (!failed) return port.complete(outcome.job, output); })
+      .then(async output => {
+        if (failed) return;
+        try { await port.complete(outcome.job, output); }
+        catch (error) { if (!port.isStaleCompletion?.(error)) throw error; }
+      })
       .catch(revoke);
   }
   // Do not join detached pure work: one promise may never settle. In particular,
