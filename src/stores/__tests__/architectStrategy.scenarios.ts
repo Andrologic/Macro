@@ -23,9 +23,9 @@ export const registerArchitectStrategyScenarios = (
   } = context;
 
   describe('useChatStore Architect AgSDL and policy', () => {
-    it('routes revisioned AgSDL reads and updates to the calling draft without changing plan metadata', async () => {
-      const originalSource = createExample('feature');
-      const nextSource = createExample('hotfix');
+    it.each(['agsdl-0.2.0', 'agsdl-0.3.0'] as const)('routes revisioned AgSDL %s reads and updates to the calling draft without changing plan metadata', async (contract) => {
+      const originalSource = createExample('feature', contract);
+      const nextSource = createExample('hotfix', contract);
       const plan = createPlan({
         id: 'agsdl-draft',
         conversationId: 'plan-conv',
@@ -56,9 +56,14 @@ export const registerArchitectStrategyScenarios = (
       const target = { plan_id: plan.id, target_branch: 'develop' };
       const read = JSON.parse(String(await onToolCall('agsdl_get', target)));
       expect(read.source).toBe(originalSource);
-      expect(read.macro_models).toEqual([
-        { providerId: 'provider-1', name: 'Test provider', models: [{ modelId: 'model-1', name: 'Model 1', edition: { identity: 'macro/native-model/p/cHJvdmlkZXItMQ/m/bW9kZWwtMQ', version: '1' } }] },
-      ]);
+      if (contract === 'agsdl-0.2.0') {
+        expect(read.macro_models).toEqual([
+          { providerId: 'provider-1', name: 'Test provider', models: [{ modelId: 'model-1', name: 'Model 1', edition: { identity: 'macro/native-model/p/cHJvdmlkZXItMQ/m/bW9kZWwtMQ', version: '1' } }] },
+        ]);
+      } else {
+        expect(read.harness_catalogue).toMatchObject({ contract, assessment: 'not-assessed', harnesses: [] });
+        expect(read).not.toHaveProperty('macro_models');
+      }
       const result = JSON.parse(String(await onToolCall('agsdl_update', {
         ...target,
         expected_revision: read.revision,

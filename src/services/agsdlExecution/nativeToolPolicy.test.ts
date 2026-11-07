@@ -62,6 +62,23 @@ it.each([
   expect(JSON.stringify(args)).toBe(authored);
 });
 
+it('composes 0.3 native admission without widening Macro policy or changing 0.2', () => {
+  const { input, registry } = fixture('write', '{"path":"file.txt","content":"synthetic"}');
+  const permissionPolicyDigest = 'a'.repeat(64);
+  const native: NativeToolPolicyInput = { ...input, permissionContract: 'agsdl-0.3.0', permissionPolicyDigest, permissionPurpose: 'agent',
+    permissionProjection: { invocationIdentity: input.invocationIdentity, toolId: input.toolId, bindingJson: input.bindingJson, argumentsJson: input.argumentsJson,
+      decision: { policyDigest: permissionPolicyDigest, request: { action: 'write', path: 'file.txt' }, purpose: 'agent', effect: 'deny', reviewer: null, resolvedPath: '/synthetic/project/file.txt' } } };
+  expect(assessNativeToolPolicy(native, registry).decision).toBe('deny');
+  expect(assessNativeToolPolicy({ ...native, permissionProjection: undefined }, registry).decision).toBe('deny');
+  const allow = { ...native, permissionProjection: { ...native.permissionProjection!, decision: { ...native.permissionProjection!.decision, effect: 'allow' as const } } };
+  expect(assessNativeToolPolicy(allow, registry).decision).toBe('allow');
+  expect(assessNativeToolPolicy({ ...allow, writeDenied: true }, registry).decision).toBe('deny');
+  expect(assessNativeToolPolicy({ ...allow, riskLevel: 'strict' }, registry).decision).toBe('ask');
+  expect(assessNativeToolPolicy({ ...allow, argumentsJson: json('{"path":"file.txt","content":"changed"}') }, registry).decision).toBe('deny');
+  expect(assessNativeToolPolicy(input, registry).decision).toBe('allow');
+});
+
+
 it.each(['balanced', 'strict', 'yolo'] as const)('keeps native frozen path denials under %s', riskLevel => {
   const { input, registry } = fixture('write', '{"path":".env","content":"synthetic"}');
   const result = assessNativeToolPolicy({ ...input, riskLevel, writeDenied: true }, registry);

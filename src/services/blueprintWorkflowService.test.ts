@@ -6,6 +6,7 @@ import { compilePlan, sourceDigest } from './agsdlExecution/compiler';
 import { documentFixture, id, registryFixture } from './agsdlExecution/conformanceFixtures';
 import { encode, record } from './agsdlExecution/exact';
 import { defaultDesign } from './agsdl/design';
+import { createExample } from './agsdl/examples';
 import type { DbConversation } from './tauriIpc';
 
 /** The real compiler checks capability/configuration and exact source here.
@@ -91,6 +92,27 @@ async function harness(shared = false) {
 }
 
 describe('production blueprint workflow launch', () => {
+  it('copies a 0.3 blueprint without sending it through the historical 0.2 Start ports', async () => {
+    const h = await harness();
+    const source = createExample('feature', 'agsdl-0.3.0');
+    h.plans.get(JSON.stringify(['develop', 'template']))!.agsdl!.source = source;
+    h.ports.preflight = async input => {
+      h.calls.push('preflight');
+      const plan = h.plans.get(JSON.stringify([input.owner.branch, input.owner.planId]))!;
+      return { source: { owner: input.owner, revision: String(plan.revision), sourceSha256: id(await sourceDigest(source)) },
+        authoredSource: source, staticValid: true, runtimeSupported: true, productRuntimeAvailable: true,
+        registryVersion: 'synthetic-030', diagnostics: [], incomplete: false };
+    };
+    await expect(h.service.launch(h.request)).rejects.toMatchObject({ code: 'RUNTIME_UNAVAILABLE' });
+    const copy = h.plans.get(JSON.stringify(['develop', 'workflow-one']))!;
+    expect(copy.agsdl!.source).toBe(source);
+    expect(copy.agsdl!.design?.kind).toBe('system');
+    expect(copy.agsdl!.design?.origin?.planId).toBe('template');
+    expect(h.calls).toContain('preflight');
+    expect(h.calls).not.toContain('stage');
+    expect(h.admissions()).toBe(0);
+  });
+
   it('rejects normalized destination IDs before writes and accepts canonical dotted blueprint IDs', async () => {
     const h = await harness();
     h.request.scope = { ...h.request.scope, owner: { ...h.request.scope.owner, planId: 'WORKFLOW_ONE' } };
@@ -320,5 +342,17 @@ describe('production blueprint workflow launch', () => {
       } else await expect(h.service.launch(h.request)).rejects.toMatchObject({ code: 'RECEIPT_INVALID' });
       expect(h.calls).not.toContain('close');
     }
+  });
+
+  it('does not acknowledge a snapshot whose captured versions differ from the admission receipt', async () => {
+    const h = await harness();
+    const read = h.ports.snapshot;
+    h.ports.snapshot = async run => {
+      const snapshot = await read(run);
+      return { ...snapshot, versions: { ...snapshot.versions, compiler: 'different-compiler' } };
+    };
+    await expect(h.service.launch(h.request)).rejects.toMatchObject({ code: 'RECEIPT_INVALID' });
+    expect(h.intent()!.state.kind).toBe('admitted');
+    expect(h.calls).not.toContain('close');
   });
 });

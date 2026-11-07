@@ -13,6 +13,8 @@ import { useViewFilterStore } from '../../stores/useViewFilterStore';
 import { dispatchArchitectPlanSelectorRequest } from './planSelectorEvents';
 import { nameBlueprintFolder, moveBlueprintToFolder, emptyBlueprintFolders } from '../../services/blueprintFolders';
 import { PREF_KEYS, savePreference, loadPreference } from '../../services/preferences';
+import { readDesign } from '../../services/agsdl/design';
+import { AGSDL_CONTRACT, readDocument } from '../../services/agsdl/document';
 
 const flushRender = async () => {
   await Promise.resolve();
@@ -242,7 +244,7 @@ describe('ArchitectProjectNavigator search', () => {
     expect(folder('mobile').querySelector('[data-blueprint-locator]')?.textContent).toContain('Nested blueprint');
   });
 
-  it.each(['project', 'library'] as const)('creates independent blueprints directly inside the folder selected by right click in %s', async (scopeKind) => {
+  it.each([['project', 'folder'], ['library', 'folder'], ['project', 'root'], ['library', 'root']] as const)('creates independent blueprints in %s at the selected %s', async (scopeKind, placement) => {
     const existing = plan('existing', 'Existing empty plan');
     let organization = nameBlueprintFolder(emptyBlueprintFolders(), 'project:project-1', 'delivery', 'Delivery');
     organization = nameBlueprintFolder(organization, 'project:project-1', 'mobile', 'Mobile', 'delivery');
@@ -265,13 +267,19 @@ describe('ArchitectProjectNavigator search', () => {
     await act(async () => { root?.render(<ArchitectProjectNavigator macroBlueprintProjectId={scopeKind === 'library' ? 'project-1' : undefined} catalogLoader={catalogLoader} planCreator={planCreator} />); await flushRender(); });
     for (let count = 1; count <= 2; count++) {
       await act(async () => {
-        container!.querySelector<HTMLElement>('[data-blueprint-folder="mobile"] [data-blueprint-folder-header]')!.dispatchEvent(new window.MouseEvent('contextmenu', { bubbles: true, cancelable: true })); await flushRender();
+        const selected = placement === 'folder'
+          ? container!.querySelector<HTMLElement>('[data-blueprint-folder="mobile"] [data-blueprint-folder-header]')!
+          : container!.querySelector<HTMLElement>('[data-architect-scope-id="project:project-1"]')!;
+        selected.dispatchEvent(new window.MouseEvent('contextmenu', { bubbles: true, cancelable: true })); await flushRender();
       });
       const create = [...document.querySelectorAll<HTMLButtonElement>('[role="menuitem"]')].find(button => button.textContent?.includes('New blueprint'))!;
       expect(create.disabled).toBe(false);
       await act(async () => { create.click(); await flushRender(); });
       expect(planCreator).toHaveBeenCalledTimes(count);
-      expect(container!.querySelectorAll('[data-blueprint-folder="mobile"] [data-blueprint-locator]')).toHaveLength(count);
+      const createdDocument = planCreator.mock.calls[count - 1][0].agsdl!;
+      expect(readDocument(createdDocument.source).contract).toBe(AGSDL_CONTRACT);
+      expect(readDesign(createdDocument.source, createdDocument.design).kind).toBe('blueprint');
+      expect(container!.querySelectorAll('[data-blueprint-folder="mobile"] [data-blueprint-locator]')).toHaveLength(placement === 'folder' ? count : 0);
       expect(activate).toHaveBeenLastCalledWith(`fresh-${count}`, expect.objectContaining({ targetBranch: 'develop', scopedProjectIdsHint: ['project-1'] }));
     }
     expect(planCreator).toHaveBeenCalledWith(expect.objectContaining({ projectId: 'project-1', projectIds: ['project-1'], planKind: 'feature', agsdl: expect.objectContaining({ source: expect.any(String) }) }));

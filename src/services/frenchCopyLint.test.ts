@@ -35,6 +35,14 @@ const TECHNICAL_LITERAL_ALLOWLIST = new Set([
   'Only one AgSDL selection may be sent.',
   'Invalid runtime selection',
   'Runtime selection destination differs',
+  'Selection path must be a list.',
+  'Missing selection property.',
+  'Selection container does not match its path.',
+  'Prompt selection requires authorized instructions.',
+  'Invalid selection segment.',
+  'Invalid selection index.',
+  'Invalid prompt selection.',
+  'Invalid resource selection.',
   '${selectionBlocks().source}' + String.raw`(?:\\r?\\n(?:Use agsdl_get|This AgSDL selection)[^\\r\\n]*)?`,
 ]);
 // These English protocol instructions contain words shared with French.
@@ -43,6 +51,9 @@ const ENGLISH_PROTOCOL_PREFIXES = [
   'A Join requires an existing direct fork',
   'An Approval requires an existing protected Call',
   'This AgSDL selection is an immutable historical runtime capture.',
+  'Only an agent with instructs:true may submit instructions',
+  'compositions maps names to',
+  'message:{prompt?,resources?} separates mission and information.',
 ];
 
 // A kind comparison uses a tagged union identifier rather than user-facing copy.

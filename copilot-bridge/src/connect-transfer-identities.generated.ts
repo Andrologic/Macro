@@ -78,7 +78,11 @@ export const TRANSFER_RESOURCES = [
   },
   {
     "path": "src/services/agsdl/document.ts",
-    "sha256": "455e96f4383e3ccc67d300e31f7561b1ce78f1c438c2c8b8d371948c0ab9bc30"
+    "sha256": "dbda660949cc76dd164703afa01e3b453d5427c89ebf5546d0c636f67c06c671"
+  },
+  {
+    "path": "src/services/agsdl/reader030WorkerProtocol.ts",
+    "sha256": "1c5c6eb66ff51281f0d8e225827d23396114dc2e38e1620982b0478b989fac3b"
   },
   {
     "path": "src/services/agsdl/runtimeSelection.ts",
@@ -322,7 +326,7 @@ export const TRANSFER_RESOURCES = [
   },
   {
     "path": "src/shared/macroToolRegistry.ts",
-    "sha256": "5e9733998b463a4bc94afd22c5e56b5b8275e277a1cc3f853922a243e5a43fb2"
+    "sha256": "e50a9cfa809da201fe609a19a8e27d18bdb02e07205e391f20de5dafbbc871e2"
   },
   {
     "path": "src/shared/toolOutputLimits.ts",
@@ -411,10 +415,66 @@ export const TRANSFER_RESOURCES = [
   {
     "path": "src/vendor/agsdl/v0.2/values.mjs",
     "sha256": "2a6ad9123813ab33c75e227fa23db4cd8fcc5a4318d718668d99db9b50e2f8c2"
+  },
+  {
+    "path": "src/vendor/agsdl/v0.3/graph.mjs",
+    "sha256": "b08b5b2825dc7e8eb0cb4dc10a66a3210ec570d8fa6c75ffa4b0b2f650f4a81e"
+  },
+  {
+    "path": "src/vendor/agsdl/v0.3/harnesses/claude-code/module.json",
+    "sha256": "834263af6e664191e65e028e9edff83712f1393b6fd92dd833d2885eb4d46513"
+  },
+  {
+    "path": "src/vendor/agsdl/v0.3/harnesses/codex/module.json",
+    "sha256": "06f86882fd7ee47cd9df8f266f24a501f5efa012319ea48d68364357f772db40"
+  },
+  {
+    "path": "src/vendor/agsdl/v0.3/harnesses/opencode/module.json",
+    "sha256": "2d2a750ffb0565e9d1435e3e9ba250e37465558f679622565e20ed76dfbd5fa7"
+  },
+  {
+    "path": "src/vendor/agsdl/v0.3/harnesses/pi/module.json",
+    "sha256": "d80157681ade6afea4aa662587d7c0c9d3eb2ff9710b3526b6b642a563c2715d"
+  },
+  {
+    "path": "src/vendor/agsdl/v0.3/json.mjs",
+    "sha256": "ca992b357c2de75c63e52ac2a3fa7dd14c8f86b26d0797f1365fc02efd5c7e34"
+  },
+  {
+    "path": "src/vendor/agsdl/v0.3/permissions.mjs",
+    "sha256": "fcfd91bcaa4a3c8d8d84b7c6f04d02a92cdd1391c8cadad4705f6d0a4f7c6833"
+  },
+  {
+    "path": "src/vendor/agsdl/v0.3/reader.mjs",
+    "sha256": "582f5a573d160ba008f977c24b04a57d46af5d5042e55293636749347693cbc8"
+  },
+  {
+    "path": "src/vendor/agsdl/v0.3/schema/agsdl.schema.json",
+    "sha256": "6d7531303a1240254f6e8274ec43d31b8de40cc554d3149a14ec6542682939b9"
+  },
+  {
+    "path": "src/vendor/agsdl/v0.3/schema/harness-module.schema.json",
+    "sha256": "aba2b843f98c0fa9bc92f4d616c44ed9a3192ff4b23201ad44a1d2f0a3b69eb7"
+  },
+  {
+    "path": "src/vendor/agsdl/v0.3/schemacheck.mjs",
+    "sha256": "bcb2f22d5de725b5d54a4f198c4eff36d0f1572d55d235fa3dd933f68e6db49d"
+  },
+  {
+    "path": "src/vendor/agsdl/v0.3/validator.mjs",
+    "sha256": "cb6f820484ab17291cabfcf016ac961918cb26492e2ffb9e749f82a22fccf47b"
+  },
+  {
+    "path": "src/vendor/agsdl/v0.3/values.mjs",
+    "sha256": "5a179b850d2cc6247dda0bf7a1385dc263ff77a3aa9927a232b9001db1fb37b9"
+  },
+  {
+    "path": "src/vendor/agsdl/v0.3/valueschema.mjs",
+    "sha256": "eb7b211ef6f506cef483c705537e3c875306f3cd9a7218b229ee3f83fff3c721"
   }
 ] as const;
 export const TRANSFER_HELLO = {
   "version": "macro-connect-transfer-1",
   "portable_contract_sha256": "c6ae7440ed0fb4d0bdccdfb936c4bf6ac5c441c96b642c1d9ccbd270b62bdcc6",
-  "preparation_set_sha256": "4e3f00e5c3e36d25fcbdb99b0416a23f609bb0efd495220b4f8783eb9a80bfc4"
+  "preparation_set_sha256": "b94fbf7c902977f0cfab1623a3d226d5f37cb450ba47ed5e8f4d1a104f8b052c"
 } as const;
