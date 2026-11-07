@@ -320,7 +320,6 @@ impl CompileBroker {
             let plan: Value = serde_json::from_str(plan_json)?;
             if plan.get("source") != Some(&serde_json::to_value(&job.source)?)
                 || plan.pointer("/versions/registry") != registry.get("version")
-                || plan.get("format").and_then(Value::as_str) != Some("macro-agsdl-compiled-plan/1")
             {
                 return Err(failure(
                     "CORRELATION",
@@ -338,6 +337,56 @@ impl CompileBroker {
                     "compiler",
                     "Compiled document differs from captured source",
                 ));
+            }
+            match plan.get("format").and_then(Value::as_str) {
+                Some("macro-agsdl-compiled-plan/1") => {
+                    let authored: Value = serde_json::from_str(&job.authored_source)?;
+                    if authored.get("contract").and_then(Value::as_str) == Some("agsdl-0.3.0")
+                        || registry.get("format").and_then(Value::as_str)
+                            == Some("macro-agsdl-registry/030")
+                    {
+                        return Err(failure(
+                            "CORRELATION",
+                            "compiler",
+                            "A 0.3 capture cannot use the historical compiled plan",
+                        ));
+                    }
+                }
+                Some("macro-agsdl-compiled-plan/2") => {
+                    let authored: Value = serde_json::from_str(&job.authored_source)?;
+                    let captured = result
+                        .get("capturedRegistryJson")
+                        .and_then(Value::as_str)
+                        .ok_or_else(|| {
+                            failure("CORRELATION", "registry", "Compiled registry is absent")
+                        })?;
+                    validate_json(captured)?;
+                    if authored.get("contract").and_then(Value::as_str) != Some("agsdl-0.3.0")
+                        || registry.get("format").and_then(Value::as_str)
+                            != Some("macro-agsdl-registry/030")
+                        || plan.pointer("/versions/snapshot").and_then(Value::as_str) != Some("2")
+                        || plan.pointer("/versions/contract").and_then(Value::as_str)
+                            != Some("agsdl-0.3.0")
+                        || plan.pointer("/versions/profile").and_then(Value::as_str)
+                            != Some("macro-agsdl-030-v1")
+                        || result.pointer("/runtime/profile").and_then(Value::as_str)
+                            != Some("macro-agsdl-030-v1")
+                        || !crate::db::exact_json::equal(captured, &job.registry_json)?
+                    {
+                        return Err(failure(
+                            "CORRELATION",
+                            "compiler",
+                            "Compiled 0.3 plan or native observations contradict their ticket",
+                        ));
+                    }
+                }
+                _ => {
+                    return Err(failure(
+                        "CORRELATION",
+                        "compiler",
+                        "Unknown compiled plan format",
+                    ))
+                }
             }
         } else if result
             .pointer("/runtime/supported")
@@ -381,6 +430,63 @@ mod tests {
     }
     fn result(job: &HostCompileJob) -> String {
         serde_json::json!({"runtime":{"registryVersion":"registry","source":job.source,"supported":false},"compiledPlanJson":null}).to_string()
+    }
+    #[tokio::test]
+    async fn compiled_030_plan_keeps_source_profile_and_native_observations_bound_to_ticket() {
+        let authored = r#"{"contract":"agsdl-0.3.0","id":"fixture","n":9007199254740993}"#;
+        let registry = r#"{"format":"macro-agsdl-registry/030","version":"registry","harnesses":[],"hostCapabilities":[{"name":"approval","support":"native","evidenceJson":"{\"proof\":true}"}]}"#;
+        let mut source = source();
+        source.source_sha256 = format!("{:x}", Sha256::digest(authored.as_bytes()));
+        let broker = Arc::new(CompileBroker::default());
+        let worker = broker.clone();
+        let captured_source = source.clone();
+        let pending = tokio::spawn(async move {
+            worker
+                .compile(
+                    "generation",
+                    captured_source,
+                    authored.into(),
+                    registry.into(),
+                )
+                .await
+        });
+        let job = broker.next().await.unwrap();
+        let plan = serde_json::json!({
+            "format":"macro-agsdl-compiled-plan/2",
+            "source":source,
+            "versions":{"snapshot":"2","contract":"agsdl-0.3.0","registry":"registry","profile":"macro-agsdl-030-v1"},
+            "documentJson":authored,
+        });
+        let mut response = serde_json::json!({
+            "runtime":{"registryVersion":"registry","source":job.source,"supported":true,"profile":"macro-agsdl-030-v1"},
+            "capturedRegistryJson":registry,
+            "compiledPlanJson":plan.to_string(),
+        });
+        let mut wrong = plan.clone();
+        wrong["format"] = "macro-agsdl-compiled-plan/1".into();
+        response["compiledPlanJson"] = wrong.to_string().into();
+        assert!(broker
+            .complete("generation", &job.ticket, response.to_string())
+            .is_err());
+        wrong = plan.clone();
+        wrong["versions"]["contract"] = "agsdl-0.2.0".into();
+        response["compiledPlanJson"] = wrong.to_string().into();
+        assert!(broker
+            .complete("generation", &job.ticket, response.to_string())
+            .is_err());
+        response["compiledPlanJson"] = plan.to_string().into();
+        response["capturedRegistryJson"] = registry.replace("native", "absent").into();
+        assert!(broker
+            .complete("generation", &job.ticket, response.to_string())
+            .is_err());
+        response["capturedRegistryJson"] = registry.into();
+        broker
+            .complete("generation", &job.ticket, response.to_string())
+            .unwrap();
+        assert_eq!(
+            pending.await.unwrap().unwrap().result_json,
+            response.to_string()
+        );
     }
     #[tokio::test]
     async fn compiler_ticket_correlates_native_source_generation_and_registry() {
