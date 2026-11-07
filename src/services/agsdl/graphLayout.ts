@@ -30,6 +30,8 @@ const ROW_GAP = 60;
 const CARD_GAP = 40;
 const LANE_GAP = 14;
 const TRACK_GAP = 8;
+// Wider than the edge's 18px pointer hit area.
+const PARALLEL_GAP = 24;
 const SIDE_MARGIN = 24;
 const SIDE_LANE = 14;
 const LOOP_OFFSET = 8;
@@ -83,6 +85,12 @@ export function layoutViewer(cards: ViewerCard[], edges: ViewerEdge[], heights: 
   const byPath = new Map(cards.map(card => [card.path, card]));
   const cardIndex = new Map(cards.map((card, index) => [card.path, index]));
   const flow = edges.filter(edge => !edge.exchangeOnly && byPath.has(edge.source) && byPath.has(edge.target));
+  const parallelCounts = new Map<string, number>();
+  for (const edge of flow) if (edge.route030?.role === "normal") {
+    const key = JSON.stringify([edge.source, edge.target]);
+    parallelCounts.set(key, (parallelCounts.get(key) ?? 0) + 1);
+  }
+  const rowGap = Math.max(ROW_GAP, (Math.max(1, ...parallelCounts.values()) - 1) * PARALLEL_GAP + 40);
   const outgoing = new Map(cards.map(card => [card.path, [] as ViewerEdge[]]));
   const incoming = new Map(cards.map(card => [card.path, 0]));
   for (const edge of flow) {
@@ -299,9 +307,9 @@ export function layoutViewer(cards: ViewerCard[], edges: ViewerEdge[], heights: 
     rowTop.push(y);
     const height = Math.max(0, ...layer.flatMap(node => node.card ? [cardHeight(node.card)] : []));
     rowBottom.push(y + height);
-    y += height + after[index] + ROW_GAP;
+    y += height + after[index] + rowGap;
   });
-  const channel = (layer: number) => rowBottom[layer] + after[layer] + ROW_GAP / 2;
+  const channel = (layer: number) => rowBottom[layer] + after[layer] + rowGap / 2;
 
   // Horizontal runs sharing a corridor get separate tracks unless they share an end.
   const routes = new Map<string, ViewerEdgeRoute>();
@@ -335,19 +343,24 @@ export function layoutViewer(cards: ViewerCard[], edges: ViewerEdge[], heights: 
     routes.set(edge.id, { kind: "orthogonal", steps: steps.map(({ run, x }) => ({ y: channel(run.layer) + run.track, ...(x === undefined ? {} : { x }) })) });
   }
 
-  // Distinct authored choices can share both endpoints. Keep aligned forward
-  // connections separately selectable instead of stacking them on one line.
-  const aligned = new Map<string, ViewerEdge[]>();
+  // Distinct authored choices can share both endpoints. Give each a separate
+  // pointer-sized track, even when many choices exceed the ordinary track cap.
+  const parallel = new Map<string, ViewerEdge[]>();
   for (const [edge, steps] of runSteps) {
-    if (!edge.route030 || isFailureEdge(edge) || steps.length !== 1 || steps[0].run.x2 - steps[0].run.x1 > 0.5) continue;
+    if (edge.route030?.role !== "normal" || !steps.length) continue;
     const key = JSON.stringify([edge.source, edge.target]);
-    aligned.set(key, [...(aligned.get(key) ?? []), edge]);
+    parallel.set(key, [...(parallel.get(key) ?? []), edge]);
   }
-  for (const edges of aligned.values()) if (edges.length > 1) edges.forEach((edge, index) => {
-    const step = runSteps.get(edge)![0];
-    const y = channel(step.run.layer);
-    const offset = (index - (edges.length - 1) / 2) * TRACK_GAP * 2;
-    routes.set(edge.id, { kind: "orthogonal", steps: [{ y: y - 7, x: step.run.x1 + offset }, { y: y + 7 }] });
+  for (const edges of parallel.values()) if (edges.length > 1) edges.forEach((edge, index) => {
+    const steps = runSteps.get(edge)!;
+    const route = routes.get(edge.id)!;
+    const offset = (index - (edges.length - 1) / 2) * PARALLEL_GAP;
+    const horizontal = steps.findIndex(({ run }) => run.x2 - run.x1 > 0.5);
+    if (horizontal >= 0) route.steps[horizontal].y = channel(steps[horizontal].run.layer) + offset;
+    else {
+      const y = channel(steps[0].run.layer);
+      route.steps.splice(0, 1, { y: y - 7, x: steps[0].run.x1 + offset }, { y: y + 7, x: steps[0].run.x1 });
+    }
   });
 
   // Rails run outside the rows they span; enclosing rails stay outside the rails they contain.
@@ -369,7 +382,8 @@ export function layoutViewer(cards: ViewerCard[], edges: ViewerEdge[], heights: 
     const spanned = layers.slice(from, to + 1).flat();
     let x = side > 0 ? Math.max(...spanned.map(node => node.x + width(node) / 2)) + SIDE_MARGIN : Math.min(...spanned.map(node => node.x - width(node) / 2)) - SIDE_MARGIN;
     for (const other of placed) if (other.side === side && other.from <= to && from <= other.to) x = side > 0 ? Math.max(x, other.x + SIDE_LANE) : Math.min(x, other.x - SIDE_LANE);
-    placed.push({ side, from, to, x });
+    const count = Math.max(1, ...group.edges.map(edge => edge.route030?.role === "normal" ? parallelCounts.get(JSON.stringify([edge.source, edge.target])) ?? 1 : 1));
+    placed.push({ side, from, to, x: x + side * (count - 1) * PARALLEL_GAP });
     group.x = x;
   }
   const exits = new Map<string, number>(), entries = new Map<string, number>();
@@ -396,12 +410,14 @@ export function layoutViewer(cards: ViewerCard[], edges: ViewerEdge[], heights: 
   const enclosed = (edge: ViewerEdge) => frameOf.has(edge.source) && frameOf.get(edge.source) === frameOf.get(edge.target);
   for (const group of groups.values()) for (const edge of group.edges) {
     const source = nodes.get(edge.source)!;
-    const row = exitRow(source, group.x);
+    const peers = edge.route030?.role === "normal" ? group.edges.filter(other => other.route030?.role === "normal" && other.source === edge.source && other.target === edge.target) : [];
+    const railX = group.x + group.side * Math.max(0, peers.indexOf(edge)) * PARALLEL_GAP;
+    const row = exitRow(source, railX);
     // A failure leaving toward a rail with nothing beside it goes straight across instead of dropping below its row.
     const level = isFailureEdge(edge) && group.side > 0 && !layers[source.layer].some(node => node.x > source.x);
     routes.set(edge.id, { kind: "orthogonal", ...(returns.has(edge) ? { loop: true } : {}), steps: [
-      level ? { y: rowTop[source.layer], x: group.x, level: true }
-        : { y: rowBottom[row] + (enclosed(edge) ? 0 : after[row]) + LOOP_OFFSET + slot(exits, `${row}:${group.side}`, edge.source) * 4, x: group.x },
+      level ? { y: rowTop[source.layer], x: railX, level: true }
+        : { y: rowBottom[row] + (enclosed(edge) ? 0 : after[row]) + LOOP_OFFSET + slot(exits, `${row}:${group.side}`, edge.source) * 4, x: railX },
       { y: rowTop[group.target.layer] - LOOP_OFFSET - slot(entries, `${group.target.layer}`, group.target.id) * 4 },
     ] });
   }

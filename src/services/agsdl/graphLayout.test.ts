@@ -27,6 +27,32 @@ describe("AgSDL reading layout", () => {
     const paths = choices.map(item => viewerEdgePath(graph.routes.get(item.id)!, handles));
     expect(paths[0]).not.toBe(paths[1]);
   });
+  it("separates many parallel choices on forward tracks, long rails, returns and self-loops", () => {
+    const choices = (from: string, to: string) => Array.from({ length: 8 }, (_, index) => {
+      const key = `choice${index}`;
+      return { ...edge(from, to, key), route030: { path: `/flow/steps/${from}/next/${key}`,
+        sourcePath: `/flow/steps/${from}`, role: "normal" as const, key, targetKind: "step" as const } };
+    });
+    const check = (ids: string[], backbone: ViewerEdge[], from: string, to: string, rail: boolean) => {
+      const branches = choices(from, to), graph = layoutViewer(ids.map(id => card(id)), [...backbone, ...branches]);
+      const source = at(graph, from), target = at(graph, to);
+      const handles = { sourceX: center(source), sourceY: source.position.y + source.height, targetX: center(target), targetY: target.position.y };
+      const routes = branches.map(item => graph.routes.get(item.id)!);
+      expect(new Set(routes.map(route => viewerEdgePath(route, handles))).size).toBe(branches.length);
+      if (rail) {
+        const rails = routes.map(route => route.steps[0].x!).sort((a, b) => a - b);
+        expect(rails.every((x, i) => i === 0 || x - rails[i - 1] >= 18)).toBe(true);
+        const bounds = viewerLayoutBounds(graph);
+        expect(rails.every(x => x >= bounds.x && x <= bounds.x + bounds.width)).toBe(true);
+      }
+    };
+    check(["a", "b"], [], "a", "b", false);
+    check(["a", "b", "c"], [edge("a", "c")], "a", "b", false);
+    check(["a", "b", "c"], [edge("a", "b"), edge("b", "c")], "a", "c", false);
+    check(["a", "b", "c", "d"], [edge("a", "b"), edge("b", "c"), edge("c", "d")], "a", "d", true);
+    check(["a", "b"], [edge("a", "b")], "b", "a", true);
+    check(["a"], [], "a", "a", true);
+  });
   it("keeps the main path in one straight column below the tallest card of each row", () => {
     const cards = ["a", "b", "c"].map(id => card(id));
     const graph = layoutViewer(cards, [edge("a", "b"), edge("b", "c")], { [cards[0].path]: 180 });
