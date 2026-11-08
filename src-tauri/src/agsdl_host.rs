@@ -774,6 +774,10 @@ pub(crate) fn execution_host_ready(
 mod recovery_tests;
 
 #[cfg(test)]
+#[path = "agsdl_host_flow030_tests.rs"]
+mod flow030_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     #[tokio::test]
