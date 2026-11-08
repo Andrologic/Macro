@@ -129,10 +129,9 @@ pub enum PreparedResult030 {
 pub enum WorkResult030 {
     Completed {
         output_json: String,
-        /// For agents this must equal output_json.choice. The reducer checks
-        /// the correlation; full output validation belongs to controller 04.
-        /// Calls use their outcome; approvals use their own decision while
-        /// forwarding the received output, whose choice may be different.
+        /// For agents and approvals this must equal output_json.choice. The
+        /// reducer checks correlation; the native host authenticates the result.
+        /// Calls use their outcome independently of any choice in their payload.
         route_key: Option<String>,
     },
     Failed {

@@ -417,18 +417,20 @@ impl Engine<'_> {
                         if !output.is_object() {
                             return Err(invalid("Work output must be an object"));
                         }
-                        // Approval outputs forward their input choice and calls route by
-                        // outcome. Only an agent's own choice selects its normal route.
-                        let agent_output = self.state.activations[i]
+                        // Agents and approvals route by their own accepted choice.
+                        // Calls route by outcome, independently of a payload's choice.
+                        let choice_output = self.state.activations[i]
                             .step
                             .as_ref()
-                            .map(|step| self.step(step).r#type == "agent")
+                            .map(|step| {
+                                matches!(self.step(step).r#type.as_str(), "agent" | "approval")
+                            })
                             .unwrap_or(true);
-                        if agent_output {
+                        if choice_output {
                             let choice = match output.get("choice") {
                                 None => None,
                                 Some(Value::String(choice)) => Some(choice.as_str()),
-                                Some(_) => return Err(invalid("Agent choice must be a string")),
+                                Some(_) => return Err(invalid("Work choice must be a string")),
                             };
                             if choice != route_key.as_deref() {
                                 return Err(FlowInputError030::ResultRouteMismatch);
