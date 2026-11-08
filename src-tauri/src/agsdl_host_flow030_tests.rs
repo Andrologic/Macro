@@ -432,6 +432,16 @@ async fn work_barrier_refuses_empty_and_pending_effect_claims() {
     exercise_handoff(4).await;
 }
 
+#[tokio::test(flavor = "current_thread")]
+async fn revoked_after_handoff_commit_never_polls_owned_effect() {
+    exercise_handoff(5).await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn released_effect_remains_owned_until_cancelled_and_joined() {
+    exercise_handoff(6).await;
+}
+
 async fn exercise_handoff(mode: u8) {
     let temp = tempfile::TempDir::new().unwrap();
     let pool = crate::db::create_pool(&temp.path().join("flow.db"))
@@ -681,6 +691,46 @@ async fn exercise_handoff(mode: u8) {
     if fail_handoff {
         sqlx::query("CREATE TRIGGER reject_flow_handoff BEFORE INSERT ON engine_flow030_handoffs BEGIN SELECT RAISE(ABORT, 'test rejection'); END")
             .execute(&pool).await.unwrap();
+    }
+    if mode == 5 {
+        let hook = runtime.install_handoff_commit_hook(&identity, &effect_id);
+        let polled = Arc::new(AtomicBool::new(false));
+        let observed = polled.clone();
+        let operation = claim.handoff(&tasks, async move {
+            observed.store(true, Ordering::SeqCst);
+        });
+        let revoke = async {
+            hook.reached().await;
+            assert!(revoke_now(&incarnation));
+            hook.release();
+        };
+        let (result, ()) = tokio::join!(operation, revoke);
+        assert_eq!(result.unwrap_err().code, "UNCERTAIN");
+        tasks.cancel_owned(&request_id).await.unwrap();
+        assert!(!polled.load(Ordering::SeqCst));
+        let count: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM engine_flow030_handoffs WHERE system_id='system' AND effect_id=?",
+        )
+        .bind(&effect_id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(count, 1);
+        return;
+    }
+    if mode == 6 {
+        let (started, done) = tokio::sync::oneshot::channel();
+        claim
+            .handoff(&tasks, async move {
+                let _ = started.send(());
+                std::future::pending::<()>().await;
+            })
+            .await
+            .unwrap();
+        done.await.unwrap();
+        assert!(revoke_now(&incarnation));
+        assert!(tasks.cancel_owned(&request_id).await.unwrap());
+        return;
     }
     let (started, done) = tokio::sync::oneshot::channel();
     let result = claim

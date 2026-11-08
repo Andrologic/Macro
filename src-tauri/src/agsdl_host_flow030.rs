@@ -45,6 +45,8 @@ pub(crate) struct FlowHost030 {
     stop_commit_hooks: Mutex<BTreeMap<String, Arc<CommitTestHook030>>>,
     #[cfg(test)]
     work_commit_hooks: Mutex<BTreeMap<(String, String), Arc<CommitTestHook030>>>,
+    #[cfg(test)]
+    handoff_commit_hooks: Mutex<BTreeMap<(String, String), Arc<CommitTestHook030>>>,
 }
 
 /// Correlates an authenticated work decision's COMMIT, without authorizing any
@@ -196,6 +198,47 @@ impl FlowHost030 {
                 marker.identity.system_start_id.clone(),
                 marker.event_id.clone(),
             ));
+        if let Some(hook) = hook {
+            hook.reached.add_permits(1);
+            hook.proceed
+                .acquire()
+                .await
+                .expect("test hook closed")
+                .forget();
+        }
+    }
+    /// Pause after the durable handoff commit and before the synchronous
+    /// release/revocation boundary. No hook exists in production builds.
+    #[cfg(test)]
+    pub(crate) fn install_handoff_commit_hook(
+        &self,
+        identity: &FlowIdentity030,
+        effect_id: &str,
+    ) -> Arc<CommitTestHook030> {
+        let hook = Arc::new(CommitTestHook030 {
+            reached: tokio::sync::Semaphore::new(0),
+            proceed: tokio::sync::Semaphore::new(0),
+        });
+        assert!(
+            self.handoff_commit_hooks
+                .lock()
+                .expect("test hook registry")
+                .insert(
+                    (identity.system_start_id.clone(), effect_id.into()),
+                    hook.clone(),
+                )
+                .is_none(),
+            "duplicate test hook"
+        );
+        hook
+    }
+    #[cfg(test)]
+    async fn pause_after_handoff_commit(&self, effect: &FlowEffect030) {
+        let hook = self
+            .handoff_commit_hooks
+            .lock()
+            .expect("test hook registry")
+            .remove(&(effect.identity.system_start_id.clone(), effect.id.clone()));
         if let Some(hook) = hook {
             hook.reached.add_permits(1);
             hook.proceed
@@ -1735,11 +1778,16 @@ impl DispatchLease030<'_> {
         .await
         .map_err(|_| uncertain())?;
         tx.commit().await.map_err(|_| uncertain())?;
-        self.lease.ensure_live().map_err(|_| uncertain())?;
-        // Sending may let another worker poll immediately. Remove the proof
-        // before that synchronous boundary, conservatively even if send fails.
-        self.unadmitted.witness = None;
-        release.send(()).map_err(|_| uncertain())?;
+        #[cfg(test)]
+        self.runtime.pause_after_handoff_commit(&self.effect).await;
+        // Revocation and release share one synchronous boundary. The owner
+        // removes its no-admission witness only after life/ownership validation
+        // under that guard, before the future can perform any IO.
+        self.lease
+            .release_owned_stream030(&self.owner, release, || {
+                self.unadmitted.witness = None;
+            })
+            .map_err(|_| uncertain())?;
         Ok(())
     }
 }

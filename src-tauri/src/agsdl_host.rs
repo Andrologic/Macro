@@ -136,6 +136,44 @@ impl HostStartLease {
         self.host.admit_owned(owner, tasks, request_id, work)
     }
 
+    /// Release an already owned effect at the same boundary as revocation.
+    /// The callback must only update in-memory bookkeeping and must not block.
+    pub(crate) fn release_owned_stream030(
+        &self,
+        owner: &EngineOwner,
+        release: tokio::sync::oneshot::Sender<()>,
+        before_release: impl FnOnce(),
+    ) -> Result<()> {
+        let _handoff = self
+            .host
+            .handoff
+            .lock()
+            .map_err(|_| failure("RUNTIME_UNAVAILABLE", "", "Host admission is unavailable"))?;
+        self.ensure_live()?;
+        let owns = self
+            .host
+            .owners
+            .lock()
+            .map_err(|_| failure("RUNTIME_UNAVAILABLE", "", "Host ownership unavailable"))?
+            .get(&owner.system_start_id)
+            == Some(owner);
+        if !owns {
+            return Err(failure(
+                "PERMISSION",
+                "owner",
+                "Execution is not owned by this host",
+            ));
+        }
+        before_release();
+        release.send(()).map_err(|_| {
+            failure(
+                "UNCERTAIN",
+                "",
+                "Owned effect release could not be confirmed",
+            )
+        })
+    }
+
     pub(crate) fn generation(&self) -> &str {
         &self.host.generation
     }
@@ -1046,6 +1084,66 @@ mod tests {
         observed_start.await.unwrap();
         assert!(tasks.cancel_owned("second").await.unwrap());
         assert!(!tasks.cancel_owned("late").await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn owned_release_refuses_foreign_owner_closed_receiver_and_poisoned_gate() {
+        let host = Arc::new(Incarnation {
+            generation: "generation".into(),
+            compiler: Default::default(),
+            work_protocol: Default::default(),
+            route030: Default::default(),
+            lifecycle: Arc::new(tokio::sync::RwLock::new(())),
+            handoff: Mutex::new(()),
+            live: AtomicBool::new(true),
+            ready: AtomicBool::new(true),
+            retired: Default::default(),
+            loads: AtomicUsize::new(0),
+            owners: Mutex::new(BTreeMap::new()),
+            qa_request: Mutex::new(None),
+        });
+        let owner = EngineOwner {
+            system_start_id: "system".into(),
+            owner_epoch: "0".into(),
+        };
+        host.owners
+            .lock()
+            .unwrap()
+            .insert(owner.system_start_id.clone(), owner.clone());
+        let lease = HostStartLease {
+            host: host.clone(),
+            _guard: host.lifecycle.clone().read_owned().await,
+        };
+        let touched = AtomicBool::new(false);
+        let foreign = EngineOwner {
+            system_start_id: owner.system_start_id.clone(),
+            owner_epoch: "1".into(),
+        };
+        let (tx, _rx) = tokio::sync::oneshot::channel();
+        assert!(lease
+            .release_owned_stream030(&foreign, tx, || touched.store(true, Ordering::SeqCst))
+            .is_err());
+        assert!(!touched.load(Ordering::SeqCst));
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        drop(rx);
+        assert_eq!(
+            lease
+                .release_owned_stream030(&owner, tx, || {})
+                .unwrap_err()
+                .code,
+            "UNCERTAIN"
+        );
+        let poisoning = host.clone();
+        let _ = std::thread::spawn(move || {
+            let _guard = poisoning.handoff.lock().unwrap();
+            panic!("poison test gate");
+        })
+        .join();
+        let (tx, _rx) = tokio::sync::oneshot::channel();
+        assert!(lease
+            .release_owned_stream030(&owner, tx, || touched.store(true, Ordering::SeqCst))
+            .is_err());
+        assert!(!touched.load(Ordering::SeqCst));
     }
 
     #[test]
