@@ -223,7 +223,7 @@ pub(crate) fn execution_scope(
     Ok(scope)
 }
 
-async fn observation(
+pub(crate) async fn observation(
     manager: &ConfigManager,
     workspace: &Path,
     source: &LockedExecutionSource,

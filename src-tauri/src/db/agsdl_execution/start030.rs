@@ -16,7 +16,7 @@ use sqlx::{Connection, Row, SqliteConnection, SqlitePool};
 /// Built exclusively by the native capture owner. The host must exclude secrets.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub(super) struct StartCapture030 {
+pub(crate) struct StartCapture030 {
     pub identity: FlowIdentity030,
     pub source: EngineSourceRevision,
     pub versions: EngineVersions,
@@ -28,18 +28,18 @@ pub(super) struct StartCapture030 {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub(super) struct StartReceipt030 {
+pub(crate) struct StartReceipt030 {
     pub identity: FlowIdentity030,
     pub enter: Option<FlowReceipt030>,
 }
 
 #[derive(Debug, Clone)]
-pub(super) struct RetainedStart030 {
+pub(crate) struct RetainedStart030 {
     pub receipt: StartReceipt030,
     pub capture: StartCapture030,
 }
 
-pub(super) enum StartInspection030 {
+pub(crate) enum StartInspection030 {
     Committed(RetainedStart030),
     /// Absence alone cannot prove that the submitted commit has settled.
     AbsentUnresolved,
@@ -49,7 +49,7 @@ pub(super) enum StartInspection030 {
 /// `bind_capture_tx` authenticates the complete capture and entry, registers the
 /// 030 owner under the current epoch, and uses only this SQLite transaction.
 /// It must not perform provider, filesystem or other external IO.
-pub(super) trait StartAuthority030: Authority030 {
+pub(crate) trait StartAuthority030: Authority030 {
     type SourceGuard;
     /// The native barrier is shared with capture, claims, dispatch and fencing.
     fn require_clear(&self, request: &EngineStartRequest) -> Result<()>;
@@ -213,7 +213,7 @@ pub(super) async fn inspect<A: StartAuthority030>(
     inspect_linked(pool, request, authority, None).await
 }
 
-pub(super) async fn inspect_linked<A: StartAuthority030>(
+pub(crate) async fn inspect_linked<A: StartAuthority030>(
     pool: &SqlitePool,
     request: &EngineStartRequest,
     authority: &A,
@@ -239,7 +239,7 @@ pub(super) async fn start<A: StartAuthority030>(
     start_linked(pool, request, authority, None).await
 }
 
-pub(super) async fn start_linked<A: StartAuthority030>(
+pub(crate) async fn start_linked<A: StartAuthority030>(
     pool: &SqlitePool,
     request: &EngineStartRequest,
     authority: &A,

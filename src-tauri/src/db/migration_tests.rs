@@ -3,6 +3,64 @@ use sqlx::Connection;
 use tempfile::TempDir;
 
 #[tokio::test]
+async fn flow_owner_migration_defers_capture_reference_without_accepting_orphans() {
+    let temp = TempDir::new().unwrap();
+    let pool = create_pool(&temp.path().join("flow-owner.db"))
+        .await
+        .unwrap();
+    let mut tx = pool.begin().await.unwrap();
+    sqlx::query("INSERT INTO engine_flow030_owners VALUES (?,?,?,?,?,?,?,?)")
+        .bind("system")
+        .bind("flow")
+        .bind("snapshot")
+        .bind("capture")
+        .bind("owner")
+        .bind("generation")
+        .bind("live")
+        .bind("a".repeat(64))
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    sqlx::query("INSERT INTO engine_flow030_runs VALUES (?,?,?,?,?,?,?)")
+        .bind("system")
+        .bind("flow")
+        .bind("snapshot")
+        .bind("capture")
+        .bind("{}")
+        .bind("{}")
+        .bind("{}")
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    assert!(
+        sqlx::query("UPDATE engine_flow030_owners SET capture_epoch='other'")
+            .execute(&pool)
+            .await
+            .is_err()
+    );
+    let mut tx = pool.begin().await.unwrap();
+    sqlx::query("INSERT INTO engine_flow030_owners VALUES (?,?,?,?,?,?,?,?)")
+        .bind("orphan")
+        .bind("flow")
+        .bind("snapshot")
+        .bind("capture")
+        .bind("owner")
+        .bind("generation")
+        .bind("live")
+        .bind("a".repeat(64))
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    assert!(tx.commit().await.is_err());
+    let count: i64 = sqlx::query_scalar("SELECT count(*) FROM engine_flow030_owners")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(count, 1);
+}
+
+#[tokio::test]
 async fn accepts_develop_v9_with_historical_pilot_v5_stamp() {
     let temp = TempDir::new().unwrap();
     let path = temp.path().join("develop.db");
@@ -62,6 +120,7 @@ async fn accepts_develop_v9_with_historical_pilot_v5_stamp() {
             (30, "030_execution_flow".into()),
             (31, "031_execution_start_entry".into()),
             (32, "032_execution_ui_intent_start030".into()),
+            (33, "033_execution_flow_owner030".into()),
         ]
     );
 }

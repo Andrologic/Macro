@@ -8,7 +8,7 @@ pub(crate) mod discovery;
 pub mod dto;
 #[path = "v030/flow.rs"]
 pub(crate) mod flow030;
-mod flow_store030;
+pub(crate) mod flow_store030;
 pub(crate) mod inspection;
 pub(crate) mod intents;
 pub(crate) mod json_lexemes030;
@@ -18,7 +18,7 @@ pub(crate) mod process_recovery;
 pub(crate) mod public;
 pub(crate) mod public030;
 pub(crate) mod responses;
-mod start030;
+pub(crate) mod start030;
 pub(crate) mod work_protocol030;
 #[cfg(test)]
 pub(crate) mod work_protocol030_tests;

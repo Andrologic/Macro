@@ -85,6 +85,22 @@ pub(crate) struct HostStartLease {
     _guard: tokio::sync::OwnedRwLockReadGuard<()>,
 }
 impl HostStartLease {
+    /// Transfer an exact native effect to its cancellable owner while this
+    /// lease keeps the incarnation attached. The caller must also hold the
+    /// shared admission exclusion through the acknowledged claim commit.
+    pub(crate) fn admit_owned_stream<F>(
+        &self,
+        owner: &EngineOwner,
+        tasks: &crate::ai::stream_tasks::StreamTasks,
+        request_id: String,
+        work: F,
+    ) -> Result<()>
+    where
+        F: std::future::Future<Output = ()> + Send + 'static,
+    {
+        self.host.admit_owned(owner, tasks, request_id, work)
+    }
+
     pub(crate) fn generation(&self) -> &str {
         &self.host.generation
     }
@@ -818,24 +834,37 @@ mod tests {
             .lock()
             .unwrap()
             .insert(owner.system_start_id.clone(), owner.clone());
+        let lease = HostStartLease {
+            host: host.clone(),
+            _guard: host.lifecycle.clone().read_owned().await,
+        };
         let tasks = crate::ai::stream_tasks::StreamTasks::default();
         let polled = Arc::new(AtomicBool::new(false));
         let observed = polled.clone();
-        host.admit_owned(&owner, &tasks, "first".into(), async move {
-            observed.store(true, Ordering::SeqCst);
-            std::future::pending::<()>().await;
-        })
-        .unwrap();
+        lease
+            .admit_owned_stream(&owner, &tasks, "first".into(), async move {
+                observed.store(true, Ordering::SeqCst);
+                std::future::pending::<()>().await;
+            })
+            .unwrap();
         let (started, observed_start) = tokio::sync::oneshot::channel();
-        host.admit_owned(&owner, &tasks, "second".into(), async move {
-            let _ = started.send(());
-            std::future::pending::<()>().await;
-        })
-        .unwrap();
+        lease
+            .admit_owned_stream(&owner, &tasks, "second".into(), async move {
+                let _ = started.send(());
+                std::future::pending::<()>().await;
+            })
+            .unwrap();
+        let foreign = EngineOwner {
+            system_start_id: owner.system_start_id.clone(),
+            owner_epoch: "1".into(),
+        };
+        assert!(lease
+            .admit_owned_stream(&foreign, &tasks, "foreign".into(), async {})
+            .is_err());
         // No yield has occurred: revocation precedes both futures' first poll.
         assert!(revoke_now(&host));
-        assert!(host
-            .admit_owned(&owner, &tasks, "late".into(), async {})
+        assert!(lease
+            .admit_owned_stream(&owner, &tasks, "late".into(), async {})
             .is_err());
         assert!(tasks.cancel_owned("first").await.unwrap());
         assert!(!polled.load(Ordering::SeqCst));

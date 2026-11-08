@@ -8,11 +8,11 @@ use serde_json::{json, Value};
 use sqlx::{Row, SqliteConnection};
 use std::{future::Future, pin::Pin};
 
-pub(super) type StoreResult<T> = Result<T, StoreError030>;
-pub(super) type CheckFuture<'a> = Pin<Box<dyn Future<Output = StoreResult<()>> + Send + 'a>>;
+pub(crate) type StoreResult<T> = Result<T, StoreError030>;
+pub(crate) type CheckFuture<'a> = Pin<Box<dyn Future<Output = StoreResult<()>> + Send + 'a>>;
 
 #[derive(Debug)]
-pub(super) enum StoreError030 {
+pub(crate) enum StoreError030 {
     Sql(sqlx::Error),
     Json(serde_json::Error),
     Reducer(FlowInputError030),
@@ -36,7 +36,7 @@ impl From<serde_json::Error> for StoreError030 {
 /// Implemented by the 0.3 native owner, not by an IPC caller. Both checks must
 /// read their authoritative rows on `db`, in the caller's immediate transaction.
 /// `effect` verifies receipt, full occurrence, recipient, digest and provenance.
-pub(super) trait Authority030 {
+pub(crate) trait Authority030 {
     fn owner<'a>(
         &'a self,
         db: &'a mut SqliteConnection,
@@ -57,13 +57,13 @@ pub(super) trait Authority030 {
 }
 
 #[derive(Debug)]
-pub(super) enum Apply030 {
+pub(crate) enum Apply030 {
     Applied(FlowReceipt030),
     Replayed(FlowReceipt030),
     Diagnostic(Value),
 }
 #[derive(Debug)]
-pub(super) struct FlowView030 {
+pub(crate) struct FlowView030 {
     pub state: FlowState030,
     pub events: Vec<Value>,
     pub effects: Vec<Value>,
@@ -88,7 +88,7 @@ async fn load(
     Ok((row.get("plan_json"), state))
 }
 
-pub(super) async fn initialize_tx<A: Authority030>(
+pub(crate) async fn initialize_tx<A: Authority030>(
     db: &mut SqliteConnection,
     authority: &A,
     identity: &FlowIdentity030,
@@ -115,7 +115,7 @@ pub(super) async fn initialize_tx<A: Authority030>(
     Ok(())
 }
 
-pub(super) async fn apply_tx<A: Authority030>(
+pub(crate) async fn apply_tx<A: Authority030>(
     db: &mut SqliteConnection,
     authority: &A,
     event: &FlowEvent030,
@@ -224,7 +224,11 @@ fn eligible(state: &FlowState030, effect: &FlowEffect030) -> bool {
 /// Native host calls the verifier while holding the same immediate transaction.
 /// After this returns, the claim is durable only once the caller commits. It is
 /// deliberately recorded as uncertain before any external IO and never retried.
-pub(super) async fn claim_tx<A: Authority030>(
+/// The returned value is not authority to dispatch: the native owner must hold
+/// its admission exclusion across all eligibility changes, this transaction's
+/// acknowledged commit, and synchronous transfer to a cancellable, joinable
+/// owner. A failed or unknown commit must not result in any external IO.
+pub(crate) async fn claim_tx<A: Authority030>(
     db: &mut SqliteConnection,
     authority: &A,
     id: &FlowIdentity030,
@@ -262,7 +266,7 @@ pub(super) async fn claim_tx<A: Authority030>(
     Ok(effect)
 }
 
-pub(super) async fn settle_tx<A: Authority030>(
+pub(crate) async fn settle_tx<A: Authority030>(
     db: &mut SqliteConnection,
     authority: &A,
     id: &FlowIdentity030,
@@ -295,7 +299,7 @@ pub(super) async fn settle_tx<A: Authority030>(
     Ok(())
 }
 
-pub(super) async fn read_tx<A: Authority030>(
+pub(crate) async fn read_tx<A: Authority030>(
     db: &mut SqliteConnection,
     authority: &A,
     id: &FlowIdentity030,

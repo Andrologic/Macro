@@ -570,6 +570,11 @@ async fn run_migrations_on_connection(connection: &mut SqliteConnection) -> DbRe
             "032_execution_ui_intent_start030",
             include_str!("migrations/032_execution_ui_intent_start030.sql"),
         ),
+        (
+            33,
+            "033_execution_flow_owner030",
+            include_str!("migrations/033_execution_flow_owner030.sql"),
+        ),
     ] {
         if !list_applied_migrations(connection)
             .await?

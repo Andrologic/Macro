@@ -52,6 +52,7 @@ pub(crate) const NAMES: &[&str] = &[
     "030_execution_flow",
     "031_execution_start_entry",
     "032_execution_ui_intent_start030",
+    "033_execution_flow_owner030",
 ];
 
 pub(crate) fn destinations(version: i64, name: &str) -> DbResult<Vec<i64>> {
@@ -180,6 +181,14 @@ pub(crate) async fn remove_reference_schema(
 ) -> DbResult<()> {
     // This connection is a disposable, empty reference. Reconstruct the
     // historical definition before removing the new foreign-key parent.
+    if !versions.contains(&33) {
+        sqlx::query("DROP TABLE IF EXISTS engine_flow030_handoffs")
+            .execute(&mut *c)
+            .await?;
+        sqlx::query("DROP TABLE IF EXISTS engine_flow030_owners")
+            .execute(&mut *c)
+            .await?;
+    }
     if !versions.contains(&32) {
         sqlx::query("DROP TABLE engine_ui_intents")
             .execute(&mut *c)
