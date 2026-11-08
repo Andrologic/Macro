@@ -52,3 +52,10 @@ it('passes projection scope and revision-bound continuation without rewriting se
   await ipc.readExecutionRuntimeProjection030(initial);
   expect(invoke).toHaveBeenLastCalledWith('execution_read_runtime_projection030', { scope: initial, continuation: null });
 });
+
+it('lists 030 runs with the exact native owner and cursor', async () => {
+  const request = { owner: source.owner, after: 'opaque-030-cursor', limit: 10 };
+  response = { runs: [], nextCursor: null };
+  expect(await ipc.listExecutionRuns030(request)).toEqual({ runs: [], nextCursor: null });
+  expect(invoke).toHaveBeenLastCalledWith('execution_list_runs030', { request });
+});

@@ -2158,6 +2158,14 @@
     },
     {
       "families": [
+        "execution"
+      ],
+      "name": "PhaseCount030",
+      "origin": "macro_lib::db::agsdl_execution::discovery030::PhaseCount030",
+      "path": "PhaseCount030.ts"
+    },
+    {
+      "families": [
         "pilot_files"
       ],
       "name": "PilotAttachmentMetadata",
@@ -2712,6 +2720,14 @@
       "families": [
         "execution"
       ],
+      "name": "PublicRunSummary030",
+      "origin": "macro_lib::db::agsdl_execution::discovery030::PublicRunSummary030",
+      "path": "PublicRunSummary030.ts"
+    },
+    {
+      "families": [
+        "execution"
+      ],
       "name": "PublicSnapshot",
       "origin": "macro_lib::db::agsdl_execution::public::PublicSnapshot",
       "path": "PublicSnapshot.ts"
@@ -2864,9 +2880,25 @@
       "families": [
         "execution"
       ],
+      "name": "RunListRequest030",
+      "origin": "macro_lib::db::agsdl_execution::discovery030::RunListRequest030",
+      "path": "RunListRequest030.ts"
+    },
+    {
+      "families": [
+        "execution"
+      ],
       "name": "RunPage",
       "origin": "macro_lib::db::agsdl_execution::discovery::RunPage",
       "path": "RunPage.ts"
+    },
+    {
+      "families": [
+        "execution"
+      ],
+      "name": "RunPage030",
+      "origin": "macro_lib::db::agsdl_execution::discovery030::RunPage030",
+      "path": "RunPage030.ts"
     },
     {
       "families": [

@@ -190,6 +190,19 @@ process.stdout.write(await compileHost030(job.authoredSource,job.source,JSON.par
     .await
     .unwrap();
     worker.await.unwrap();
+    let state_json: String = sqlx::query_scalar(
+        "SELECT state_json FROM engine_flow030_runs WHERE system_id = ? AND invocation_id = ?",
+    )
+    .bind(&retained.receipt.identity.system_start_id)
+    .bind(&retained.receipt.identity.flow_invocation_id)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    let graphless_state: crate::db::agsdl_execution::flow030::FlowState030 =
+        serde_json::from_str(&state_json).unwrap();
+    assert!(graphless_state.plan_json.is_none());
+    assert!(graphless_state.events.is_empty());
+    assert!(!graphless_state.entered);
     let snapshot = crate::commands::agsdl_execution::read_public_snapshot(
         &pool,
         &retained.receipt.identity.system_start_id,
@@ -203,6 +216,30 @@ process.stdout.write(await compileHost030(job.authoredSource,job.source,JSON.par
     assert_eq!(snapshot.source, request.source);
     assert_eq!(snapshot.versions, retained.capture.versions);
     assert_eq!(snapshot.authored_source, retained.capture.authored_source);
+    let list_request = crate::db::agsdl_execution::discovery030::RunListRequest030 {
+        owner: request.source.owner.clone(),
+        after: None,
+        limit: Some(10),
+    };
+    let page = crate::commands::agsdl_execution::list_runs030_scoped(
+        &pool,
+        &workspace,
+        list_request.clone(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(page.runs.len(), 1);
+    assert_eq!(
+        page.runs[0].system_start_id,
+        retained.receipt.identity.system_start_id
+    );
+    let mut foreign = list_request;
+    foreign.owner.project_id = "unknown-project".into();
+    assert!(
+        crate::commands::agsdl_execution::list_runs030_scoped(&pool, &workspace, foreign)
+            .await
+            .is_err()
+    );
     let read = intents::read(&pool, &intent.key).await.unwrap().unwrap();
     match read.state {
         ExecutionIntentState::Admitted {
@@ -217,6 +254,17 @@ process.stdout.write(await compileHost030(job.authoredSource,job.source,JSON.par
         }
         _ => panic!("expected linked 0.3 admission"),
     }
+    // A lost acknowledgement must recover the committed capture, even after
+    // the author edits the source. No second compiler job is available here.
+    std::fs::write(
+        dir.join("plan.json"),
+        serde_json::to_vec(&serde_json::json!({
+            "id":"source", "projectIds":["project"], "revision":2, "updatedAt":"later",
+            "agsdl":{"source":"{\"contract\":\"agsdl-0.3.0\",\"id\":\"changed\",\"agents\":{}}"}
+        }))
+        .unwrap(),
+    )
+    .unwrap();
     let replay = flow::start_linked(
         runtime,
         &host,
@@ -230,6 +278,91 @@ process.stdout.write(await compileHost030(job.authoredSource,job.source,JSON.par
     .await
     .unwrap();
     assert_eq!(replay.receipt, retained.receipt);
+    assert_eq!(replay.capture.authored_source, authored);
+    std::fs::write(
+        dir.join("plan.json"),
+        serde_json::to_vec(&serde_json::json!({
+            "id":"source", "projectIds":["project"], "revision":3, "updatedAt":"later"
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    let history = crate::db::agsdl_execution::discovery030::RunListRequest030 {
+        owner: request.source.owner.clone(),
+        after: None,
+        limit: Some(10),
+    };
+    let page =
+        crate::commands::agsdl_execution::list_runs030_scoped(&pool, &workspace, history.clone())
+            .await
+            .unwrap();
+    assert_eq!(
+        page.runs[0].system_start_id,
+        retained.receipt.identity.system_start_id
+    );
+    assert!(crate::workspace::architect::lock_execution_source_owner(
+        &workspace,
+        &metadata,
+        &request.source.owner,
+        None,
+    )
+    .await
+    .is_err());
+    let mut foreign_plan = history;
+    foreign_plan.owner.plan_id = "not-this-plan".into();
+    assert!(
+        crate::commands::agsdl_execution::list_runs030_scoped(&pool, &workspace, foreign_plan)
+            .await
+            .is_err()
+    );
+    std::fs::write(
+        dir.join("plan.json"),
+        r#"{"id":"source","projectIds":["project"],"revision":3,"agsdl":{"source":"a","source":"b"}}"#,
+    )
+    .unwrap();
+    assert!(crate::workspace::architect::lock_execution_source_owner(
+        &workspace,
+        &metadata,
+        &request.source.owner,
+        None,
+    )
+    .await
+    .is_err());
+    let malformed = crate::db::agsdl_execution::discovery030::RunListRequest030 {
+        owner: request.source.owner.clone(),
+        after: None,
+        limit: Some(10),
+    };
+    assert_eq!(
+        crate::commands::agsdl_execution::list_runs030_scoped(&pool, &workspace, malformed)
+            .await
+            .unwrap()
+            .runs
+            .len(),
+        1
+    );
+    std::fs::write(
+        dir.join("plan.json"),
+        serde_json::to_vec(&serde_json::json!({
+            "id":"source", "projectIds":["project"], "revision":3,
+            "updatedAt":"later", "archivedAt":"2026-01-01"
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    let archived = crate::db::agsdl_execution::discovery030::RunListRequest030 {
+        owner: request.source.owner.clone(),
+        after: None,
+        limit: Some(10),
+    };
+    assert_eq!(
+        crate::commands::agsdl_execution::list_runs030_scoped(&pool, &workspace, archived)
+            .await
+            .unwrap()
+            .runs
+            .len(),
+        1
+    );
     let controls = runtime.retiring_controls("generation").unwrap();
     assert_eq!(controls.len(), 1);
     assert!(revoke_now(&incarnation));
@@ -254,6 +387,24 @@ process.stdout.write(await compileHost030(job.authoredSource,job.source,JSON.par
             .await
             .is_err()
     );
+    // Model on-disk corruption by bypassing the immutable-record trigger only
+    // in this disposable database; the public reader must fail closed.
+    sqlx::query("DROP TRIGGER engine_start030_immutable")
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("UPDATE engine_start030_requests SET capture_json=json_set(capture_json, '$.source.revision', '999') WHERE system_id=?")
+        .bind(&retained.receipt.identity.system_start_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let error = crate::commands::agsdl_execution::read_public_snapshot(
+        &pool,
+        &retained.receipt.identity.system_start_id,
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(error.code, "CORRELATION");
 }
 
 #[tokio::test(flavor = "current_thread")]

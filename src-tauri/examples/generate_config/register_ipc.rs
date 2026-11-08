@@ -42,6 +42,10 @@ pub fn register(registry: &mut Registry) -> Result<(), String> {
     registry.add::<ipc_contracts::execution::RuntimeProjectionContinuation030>("execution")?;
     registry.add::<ipc_contracts::execution::RuntimeProjectionItem030>("execution")?;
     registry.add::<ipc_contracts::execution::RuntimeProjectionPage030>("execution")?;
+    registry.add::<ipc_contracts::execution::RunListRequest030>("execution")?;
+    registry.add::<ipc_contracts::execution::RunPage030>("execution")?;
+    registry.add::<ipc_contracts::execution::PublicRunSummary030>("execution")?;
+    registry.add::<ipc_contracts::execution::PhaseCount030>("execution")?;
     registry.add::<ipc_contracts::execution::HostWorkJob030>("execution")?;
     registry.add::<ipc_contracts::execution::HostWorkCompletion030>("execution")?;
     registry.add::<ipc_contracts::execution::HostRouteJob030>("execution")?;

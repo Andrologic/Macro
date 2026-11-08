@@ -1,7 +1,7 @@
 import type { PublicSnapshot, PublicStartReceipt } from '../../types/generated/ipc';
 import type { StartRequest } from '../agsdlExecution/contracts';
 import type { EngineVersions030, ExecutionProfile030 } from '../agsdlExecution/contracts030';
-import type { RuntimeProjectionContinuation030, RuntimeProjectionPage030, RuntimeProjectionQuery030 } from '../../types/generated/ipc';
+import type { RunListRequest030, RunPage030, RuntimeProjectionContinuation030, RuntimeProjectionPage030, RuntimeProjectionQuery030 } from '../../types/generated/ipc';
 import { invoke } from '../tauriRuntimeBridge';
 
 /** This transport does not qualify Start 030. Native admission remains authoritative. */
@@ -51,4 +51,9 @@ export function readExecutionRuntimeProjection030(
   continuation?: RuntimeProjectionContinuation030,
 ): Promise<RuntimeProjectionPage030> {
   return invoke('execution_read_runtime_projection030', { scope, continuation: continuation ?? null });
+}
+
+/** Uses the distinct 030 cursor and never treats a historical run as 030. */
+export function listExecutionRuns030(request: RunListRequest030): Promise<RunPage030> {
+  return invoke('execution_list_runs030', { request });
 }

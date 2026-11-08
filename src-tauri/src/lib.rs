@@ -903,6 +903,7 @@ pub fn run() {
             commands::agsdl_execution::execution_model_choices,
             commands::agsdl_execution::execution_preflight,
             commands::agsdl_execution::execution_list_runs,
+            commands::agsdl_execution::execution_list_runs030,
             commands::agsdl_execution::execution_find_start,
             commands::agsdl_execution::execution_read_diagnostic,
             commands::agsdl_execution::execution_read_humans030,

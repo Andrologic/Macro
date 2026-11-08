@@ -30,6 +30,9 @@ pub mod execution {
         DiagnosticRequest, PublicExecutionDiagnostic,
     };
     pub use crate::db::agsdl_execution::discovery::{RunListRequest, RunPage};
+    pub use crate::db::agsdl_execution::discovery030::{
+        PhaseCount030, PublicRunSummary030, RunListRequest030, RunPage030,
+    };
     pub use crate::db::agsdl_execution::dto::*;
     pub use crate::db::agsdl_execution::inspection::{HostAdmission, HostInspection};
     pub use crate::db::agsdl_execution::intents::*;

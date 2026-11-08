@@ -294,6 +294,32 @@ pub async fn execution_list_runs(
 ) -> repository::Result<repository::discovery::RunPage> {
     repository::discovery::list_runs(&pool(&state).await?, request).await
 }
+
+#[tauri::command]
+pub async fn execution_list_runs030(
+    app: tauri::AppHandle,
+    state: State<'_, DbPool>,
+    request: repository::discovery030::RunListRequest030,
+) -> repository::Result<repository::discovery030::RunPage030> {
+    let workspace_state = app.state::<crate::WorkspaceMetadataRoot>();
+    let workspace = workspace_state.0.read().await.clone();
+    list_runs030_scoped(&pool(&state).await?, &workspace, request).await
+}
+
+pub(crate) async fn list_runs030_scoped(
+    pool: &sqlx::SqlitePool,
+    workspace: &std::path::Path,
+    request: repository::discovery030::RunListRequest030,
+) -> repository::Result<repository::discovery030::RunPage030> {
+    let metadata = crate::agsdl_host_capture::metadata_root(&workspace)?;
+    let _scope = crate::workspace::architect::lock_execution_history_owner(
+        workspace,
+        &metadata,
+        &request.owner,
+    )
+    .await?;
+    repository::discovery030::list_runs030(pool, request).await
+}
 #[tauri::command]
 pub async fn execution_find_start(
     state: State<'_, DbPool>,
