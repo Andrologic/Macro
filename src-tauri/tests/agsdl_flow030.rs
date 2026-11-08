@@ -2246,7 +2246,7 @@ fn contradictory_agent_choice_and_route_are_rejected_atomically() {
 }
 
 #[test]
-fn call_outcome_and_approval_decision_do_not_reuse_an_agent_choice() {
+fn call_outcome_and_approval_decision_use_their_own_routes() {
     for (kind, output, key) in [
         (
             "call",
@@ -2255,7 +2255,7 @@ fn call_outcome_and_approval_decision_do_not_reuse_an_agent_choice() {
         ),
         (
             "approval",
-            json!({"choice":"received-choice","results":{}}),
+            json!({"choice":"approve","comment":"","message":{}}),
             "approve",
         ),
     ] {
@@ -2265,6 +2265,38 @@ fn call_outcome_and_approval_decision_do_not_reuse_an_agent_choice() {
         route(&mut p, "start", Some(key), &["after"]);
         let mut t = Test::new(p);
         t.enter();
+        if kind == "approval" {
+            let before = t.s.clone();
+            let contradictory = FlowEvent030 {
+                identity: t.s.identity.clone(),
+                event_id: "contradictory-approval".into(),
+                expected_revision: t.s.revision.clone(),
+                kind: FlowEventKind030::WorkResult {
+                    work: t.work("start"),
+                    result: WorkResult030::Completed {
+                        output_json: json!({"choice":"reject","comment":"","message":{}})
+                            .to_string(),
+                        route_key: Some("approve".into()),
+                    },
+                    physical: Some(PhysicalEvidence030 {
+                        native_receipt_id: "approval-physical".into(),
+                        descendants_joined: true,
+                    }),
+                },
+            };
+            assert_eq!(
+                reduce(&t.p, &t.s, &contradictory).unwrap_err(),
+                FlowInputError030::ResultRouteMismatch
+            );
+            assert_eq!(t.s, before);
+            assert!(
+                t.s.activations
+                    .iter()
+                    .find(|a| a.id == t.work("start").activation_id)
+                    .unwrap()
+                    .physical
+            );
+        }
         t.finish("start", output, Some(key));
         t.prepare(None);
         assert_eq!(t.running("after"), 1);
