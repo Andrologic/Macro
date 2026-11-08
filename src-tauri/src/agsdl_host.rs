@@ -80,6 +80,37 @@ pub(crate) struct HostState(
     crate::agsdl_host_flow030::FlowHost030,
 );
 
+/// In-memory host fixture for native route-attestation tests. It creates no
+/// database authority and is never compiled into the application.
+#[cfg(test)]
+pub(crate) fn route_attestation_test_host030(owner: EngineOwner, generation: &str) -> HostState {
+    let mut owners = BTreeMap::new();
+    owners.insert(owner.system_start_id.clone(), owner);
+    let incarnation = Arc::new(Incarnation {
+        generation: generation.into(),
+        compiler: Default::default(),
+        work_protocol: Default::default(),
+        route030: Default::default(),
+        lifecycle: Arc::new(tokio::sync::RwLock::new(())),
+        handoff: Mutex::new(()),
+        live: AtomicBool::new(true),
+        ready: AtomicBool::new(true),
+        retired: Default::default(),
+        loads: AtomicUsize::new(0),
+        owners: Mutex::new(owners),
+        qa_request: Mutex::new(None),
+    });
+    HostState(
+        Mutex::new(Some(OwnedHost {
+            incarnation,
+            resource: 0,
+        })),
+        Arc::new(tokio::sync::Mutex::new(())),
+        Default::default(),
+        Default::default(),
+    )
+}
+
 /// Native Start holds this lease through the SQL commit and ownership attachment.
 /// Retirement marks the host unavailable immediately, then waits for these attachments.
 pub(crate) struct HostStartLease {

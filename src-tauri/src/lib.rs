@@ -91,6 +91,8 @@ mod native_quit_consent {
     }
 }
 
+#[cfg(feature = "agsdl-content-qa")]
+pub(crate) mod agsdl_content;
 mod agsdl_host;
 mod agsdl_host_calls;
 mod agsdl_host_capture;
@@ -101,9 +103,13 @@ mod agsdl_host_compiler;
 mod agsdl_host_confinement;
 mod agsdl_host_flow030;
 mod agsdl_host_harness030;
-mod agsdl_host_provider;
 mod agsdl_host_projection030;
+mod agsdl_host_provider;
 mod agsdl_host_route030;
+#[cfg(feature = "agsdl-content-qa")]
+mod agsdl_host_route_attestations030;
+#[cfg(feature = "agsdl-content-qa")]
+mod agsdl_host_route_verifier030;
 mod agsdl_host_stop030;
 mod agsdl_host_tasks;
 mod agsdl_host_tools;
@@ -510,6 +516,23 @@ async fn window_set_traffic_light_position(
         let _ = (window, x, y);
         Ok(())
     }
+}
+
+/// Dispatch the internal content helper before initializing Tauri.
+#[cfg(feature = "agsdl-content-qa")]
+pub fn initialize_agsdl_content_helper() -> std::io::Result<Option<i32>> {
+    agsdl_content::file_helper::initialize()
+}
+
+/// Dedicated local QA entry; never exposed through IPC or release builds.
+#[cfg(all(target_os = "macos", feature = "agsdl-content-qa", debug_assertions))]
+pub async fn run_agsdl_content_qa(root: &std::path::Path) -> Result<(), String> {
+    agsdl_content::qa::run(root).await
+}
+
+#[cfg(all(target_os = "macos", feature = "agsdl-content-qa", debug_assertions))]
+pub async fn run_agsdl_content_cases(selection: &str) -> Result<String, String> {
+    agsdl_content::qa::run_cases(selection).await
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]

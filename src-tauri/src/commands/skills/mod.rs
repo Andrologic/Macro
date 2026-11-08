@@ -715,6 +715,56 @@ fn validate_skill_name(name: &str, skill_dir: &Path, diagnostics: &mut Vec<Skill
 }
 
 fn parse_skill_file(skill_file: &Path) -> ParsedSkillFile {
+    match fs::read_to_string(skill_file) {
+        Ok(raw) => parse_skill_text(skill_file, &raw),
+        Err(error) => {
+            let fallback_name = skill_file
+                .parent()
+                .and_then(Path::file_name)
+                .and_then(OsStr::to_str)
+                .unwrap_or("skill")
+                .to_string();
+            ParsedSkillFile {
+                name: fallback_name,
+                description: String::new(),
+                license: None,
+                compatibility: None,
+                allowed_tools: None,
+                metadata: BTreeMap::new(),
+                body: String::new(),
+                diagnostics: vec![skill_diagnostic(
+                    "error",
+                    "skill_file_read_failed",
+                    format!("Failed to read SKILL.md: {}", error),
+                )],
+                spec_compliant: false,
+                is_valid: false,
+            }
+        }
+    }
+}
+
+/// Shared parser for bytes already read under native authority. No file access.
+pub(crate) fn parse_admitted_skill_text(
+    skill_file: &Path,
+    raw: &str,
+) -> CommandResult<(String, String, String)> {
+    let parsed = parse_skill_text(skill_file, raw);
+    if !parsed.is_valid {
+        return Err(command_error(
+            parsed
+                .diagnostics
+                .iter()
+                .filter(|d| d.severity == "error")
+                .map(|d| d.message.as_str())
+                .collect::<Vec<_>>()
+                .join("; "),
+        ));
+    }
+    Ok((parsed.name, parsed.description, parsed.body))
+}
+
+fn parse_skill_text(skill_file: &Path, raw: &str) -> ParsedSkillFile {
     let used_lowercase_file = skill_file
         .file_name()
         .and_then(OsStr::to_str)
@@ -727,29 +777,6 @@ fn parse_skill_file(skill_file: &Path) -> ParsedSkillFile {
         .unwrap_or("skill")
         .to_string();
     let mut diagnostics = Vec::new();
-    let raw = match fs::read_to_string(skill_file) {
-        Ok(value) => value,
-        Err(error) => {
-            diagnostics.push(skill_diagnostic(
-                "error",
-                "skill_file_read_failed",
-                format!("Failed to read SKILL.md: {}", error),
-            ));
-            return ParsedSkillFile {
-                name: fallback_name,
-                description: String::new(),
-                license: None,
-                compatibility: None,
-                allowed_tools: None,
-                metadata: BTreeMap::new(),
-                body: String::new(),
-                diagnostics,
-                spec_compliant: false,
-                is_valid: false,
-            };
-        }
-    };
-
     let mut name = String::new();
     let mut description = String::new();
     let mut license = None;

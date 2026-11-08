@@ -244,6 +244,8 @@ pub struct WebFetchResourceDto {
 enum WebFetchResourceKind {
     Page,
     Favicon,
+    // Native admitted content only; never selected by the public command parser.
+    Content,
 }
 
 impl WebFetchResourceKind {
@@ -261,6 +263,7 @@ impl WebFetchResourceKind {
         match self {
             Self::Page => WEB_FETCH_PAGE_MAX_BYTES,
             Self::Favicon => WEB_FETCH_FAVICON_MAX_BYTES,
+            Self::Content => 10 * 1024 * 1024,
         }
     }
 
@@ -268,12 +271,13 @@ impl WebFetchResourceKind {
         match self {
             Self::Page => "text/html,application/xhtml+xml,text/plain;q=0.9",
             Self::Favicon => "image/avif,image/webp,image/png,image/svg+xml,image/*;q=0.8",
+            Self::Content => "*/*",
         }
     }
 
     fn accepts_content_type(self, content_type: Option<&str>) -> bool {
         let Some(content_type) = content_type else {
-            return self == Self::Page;
+            return matches!(self, Self::Page | Self::Content);
         };
         let mime = content_type
             .split(';')
@@ -282,6 +286,7 @@ impl WebFetchResourceKind {
             .trim()
             .to_ascii_lowercase();
         match self {
+            Self::Content => true,
             Self::Page => {
                 mime == "text/html" || mime == "application/xhtml+xml" || mime == "text/plain"
             }
@@ -338,6 +343,17 @@ fn ip_is_public(address: IpAddr) -> bool {
     }
 }
 
+fn public_web_fetch_address(addresses: &[SocketAddr]) -> CommandResult<SocketAddr> {
+    let first = addresses
+        .first()
+        .copied()
+        .ok_or_else(|| command_error("The web_fetch host has no addresses."))?;
+    if addresses.iter().any(|address| !ip_is_public(address.ip())) {
+        return Err(command_error("Web fetch destination blocked: local, private, reserved and link-local addresses are not allowed."));
+    }
+    Ok(first)
+}
+
 fn validate_web_fetch_url(url: &reqwest::Url) -> CommandResult<()> {
     if url.scheme() != "http" && url.scheme() != "https" {
         return Err(command_error(
@@ -382,15 +398,7 @@ async fn resolve_public_web_fetch_target(
             .await?
             .map_err(|error| command_error(format!("Failed to resolve web_fetch host: {error}")))?
             .collect::<Vec<_>>();
-    if addresses.is_empty() {
-        return Err(command_error("The web_fetch host has no addresses."));
-    }
-    if addresses.iter().any(|address| !ip_is_public(address.ip())) {
-        return Err(command_error(
-            "Web fetch destination blocked: local, private, reserved and link-local addresses are not allowed.",
-        ));
-    }
-    Ok((host, addresses[0]))
+    Ok((host, public_web_fetch_address(&addresses)?))
 }
 
 async fn fetch_public_web_resource(
@@ -398,10 +406,70 @@ async fn fetch_public_web_resource(
     kind: WebFetchResourceKind,
     cancellation: Option<&WebOperationCancellation>,
 ) -> CommandResult<WebFetchResourceDto> {
+    fetch_admitted_web_resource(initial_url, kind, cancellation, &mut |_, _| async {
+        Ok(())
+    })
+    .await
+}
+
+/// Reuse the public web transport and its address protections. Native callers
+/// admit the URL before DNS and the pinned connection IP before every request.
+pub(crate) async fn fetch_content_with_admission<F, Fut>(
+    url: reqwest::Url,
+    cancel: &tokio_util::sync::CancellationToken,
+    admit: &mut F,
+) -> CommandResult<WebFetchResourceDto>
+where
+    F: FnMut(reqwest::Url, Option<IpAddr>) -> Fut + Send,
+    Fut: Future<Output = CommandResult<()>> + Send,
+{
+    tokio::select! {
+        biased;
+        _ = cancel.cancelled() => Err(command_error("Content read cancelled.")),
+        result = fetch_admitted_web_resource(url, WebFetchResourceKind::Content, None, admit) => result,
+    }
+}
+
+async fn fetch_admitted_web_resource<F, Fut>(
+    initial_url: reqwest::Url,
+    kind: WebFetchResourceKind,
+    cancellation: Option<&WebOperationCancellation>,
+    admit: &mut F,
+) -> CommandResult<WebFetchResourceDto>
+where
+    F: FnMut(reqwest::Url, Option<IpAddr>) -> Fut + Send,
+    Fut: Future<Output = CommandResult<()>> + Send,
+{
+    fetch_admitted_web_resource_with_resolver(
+        initial_url,
+        kind,
+        cancellation,
+        admit,
+        &mut |url| async move { resolve_public_web_fetch_target(&url, cancellation).await },
+    )
+    .await
+}
+
+async fn fetch_admitted_web_resource_with_resolver<F, Fut, R, RFut>(
+    initial_url: reqwest::Url,
+    kind: WebFetchResourceKind,
+    cancellation: Option<&WebOperationCancellation>,
+    admit: &mut F,
+    resolve: &mut R,
+) -> CommandResult<WebFetchResourceDto>
+where
+    F: FnMut(reqwest::Url, Option<IpAddr>) -> Fut + Send,
+    Fut: Future<Output = CommandResult<()>> + Send,
+    R: FnMut(reqwest::Url) -> RFut + Send,
+    RFut: Future<Output = CommandResult<(String, SocketAddr)>> + Send,
+{
     let mut url = initial_url;
     for redirect_count in 0..=WEB_FETCH_MAX_REDIRECTS {
         ensure_web_operation_active(cancellation)?;
-        let (host, address) = resolve_public_web_fetch_target(&url, cancellation).await?;
+        validate_web_fetch_url(&url)?;
+        admit(url.clone(), None).await?;
+        let (host, address) = resolve(url.clone()).await?;
+        admit(url.clone(), Some(address.ip())).await?;
         let client = reqwest::Client::builder()
             .no_proxy()
             .redirect(reqwest::redirect::Policy::none())
@@ -959,6 +1027,114 @@ fn format_http_error_detail(body: &[u8]) -> String {
 mod tests {
     use super::*;
 
+    async fn content_http_fixture(requests: usize) -> (SocketAddr, tokio::task::JoinHandle<()>) {
+        use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let task = tokio::spawn(async move {
+            for _ in 0..requests {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let mut request = String::new();
+                BufReader::new(&mut stream)
+                    .read_line(&mut request)
+                    .await
+                    .unwrap();
+                if request.starts_with("GET /start ") {
+                    let response = format!("HTTP/1.1 302 Found\r\nLocation: http://second.test:{}/image\r\nContent-Length: 0\r\nConnection: close\r\n\r\n", address.port());
+                    stream.write_all(response.as_bytes()).await.unwrap();
+                } else {
+                    stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Type: image/png\r\nContent-Length: 4\r\nConnection: close\r\n\r\n\x00\x01\x02\xff").await.unwrap();
+                }
+            }
+        });
+        (address, task)
+    }
+
+    #[tokio::test]
+    async fn content_http_reads_media_and_rechecks_each_redirect_destination() {
+        let (address, server) = content_http_fixture(2).await;
+        let attempts = Arc::new(Mutex::new(Vec::new()));
+        let observed = Arc::clone(&attempts);
+        let mut admit = move |url: reqwest::Url, ip: Option<IpAddr>| {
+            observed
+                .lock()
+                .unwrap()
+                .push((url.host_str().unwrap().to_owned(), ip));
+            async { Ok(()) }
+        };
+        // A test resolver pins the fixture socket; production always uses
+        // resolve_public_web_fetch_target, whose private-address guard is tested separately.
+        let mut resolve = move |url: reqwest::Url| async move {
+            Ok((url.host_str().unwrap().to_owned(), address))
+        };
+        let initial =
+            reqwest::Url::parse(&format!("http://first.test:{}/start", address.port())).unwrap();
+        let result = fetch_admitted_web_resource_with_resolver(
+            initial,
+            WebFetchResourceKind::Content,
+            None,
+            &mut admit,
+            &mut resolve,
+        )
+        .await
+        .unwrap();
+        assert_eq!(result.body_base64, "AAEC/w==");
+        assert_eq!(result.content_type.as_deref(), Some("image/png"));
+        assert!(result.url.contains("second.test"));
+        assert_eq!(
+            *attempts.lock().unwrap(),
+            vec![
+                ("first.test".into(), None),
+                ("first.test".into(), Some(address.ip())),
+                ("second.test".into(), None),
+                ("second.test".into(), Some(address.ip()))
+            ]
+        );
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn content_http_refuses_redirect_before_connecting_to_its_target() {
+        let (address, server) = content_http_fixture(1).await;
+        let attempts = Arc::new(Mutex::new(Vec::new()));
+        let observed = Arc::clone(&attempts);
+        let mut admit = move |url: reqwest::Url, ip: Option<IpAddr>| {
+            let host = url.host_str().unwrap().to_owned();
+            observed.lock().unwrap().push((host.clone(), ip));
+            async move {
+                if host == "second.test" {
+                    Err(command_error("Redirect denied by policy."))
+                } else {
+                    Ok(())
+                }
+            }
+        };
+        let mut resolve = move |url: reqwest::Url| async move {
+            Ok((url.host_str().unwrap().to_owned(), address))
+        };
+        let initial =
+            reqwest::Url::parse(&format!("http://first.test:{}/start", address.port())).unwrap();
+        let error = fetch_admitted_web_resource_with_resolver(
+            initial,
+            WebFetchResourceKind::Content,
+            None,
+            &mut admit,
+            &mut resolve,
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(error.message, "Redirect denied by policy.");
+        assert_eq!(
+            *attempts.lock().unwrap(),
+            vec![
+                ("first.test".into(), None),
+                ("first.test".into(), Some(address.ip())),
+                ("second.test".into(), None)
+            ]
+        );
+        server.await.unwrap();
+    }
+
     #[tokio::test]
     async fn web_search_client_does_not_forward_api_key_on_redirect() {
         use axum::{
@@ -1189,6 +1365,19 @@ mod tests {
         ] {
             let parsed: IpAddr = address.parse().expect("valid test address");
             assert!(!ip_is_public(parsed), "{address} must be rejected");
+        }
+    }
+
+    #[test]
+    fn web_fetch_rejects_mixed_public_and_private_dns_answers_in_either_order() {
+        let public: SocketAddr = "1.1.1.1:443".parse().unwrap();
+        let private: SocketAddr = "192.168.1.10:443".parse().unwrap();
+        let mapped: SocketAddr = "[::ffff:127.0.0.1]:443".parse().unwrap();
+        assert_eq!(public_web_fetch_address(&[public]).unwrap(), public);
+        assert!(public_web_fetch_address(&[]).is_err());
+        for answer in [[public, private], [private, public], [public, mapped]] {
+            let error = public_web_fetch_address(&answer).unwrap_err();
+            assert_eq!(error.code(), Some("WEB_FETCH_DESTINATION_BLOCKED"));
         }
     }
 
