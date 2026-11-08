@@ -5,14 +5,27 @@ pub(crate) mod capture;
 pub(crate) mod card_associations;
 pub(crate) mod diagnostics;
 pub(crate) mod discovery;
+pub(crate) mod discovery030;
 pub mod dto;
+#[path = "v030/flow.rs"]
+pub(crate) mod flow030;
+pub(crate) mod flow_store030;
+pub(crate) mod flow_work_protocol030;
 pub(crate) mod inspection;
 pub(crate) mod intents;
+pub(crate) mod json_lexemes030;
 pub(crate) mod native_operations;
 pub(crate) mod prepared;
 pub(crate) mod process_recovery;
 pub(crate) mod public;
+pub(crate) mod public030;
 pub(crate) mod responses;
+#[path = "v030/runtime_projection.rs"]
+pub(crate) mod runtime_projection030;
+pub(crate) mod start030;
+pub(crate) mod work_protocol030;
+#[cfg(test)]
+pub(crate) mod work_protocol030_tests;
 use super::exact_json::{equal_optional, record_equal};
 use dto::*;
 use serde::{Deserialize, Serialize};
@@ -646,6 +659,29 @@ pub(crate) async fn accept_external_delivery_linked(
     message_json: &str,
     link: Option<&intents::IntentAdmissionLink>,
 ) -> Result<EngineAcceptedDelivery> {
+    accept_external_delivery_with_warning(
+        pool,
+        runtime,
+        delivery_id,
+        agent_name,
+        message_json,
+        link,
+        false,
+    )
+    .await
+}
+
+/// `resources_approximate` is a native observation, never an IPC/model claim.
+/// Commit its public diagnostic in the same transaction as the delivery.
+pub(crate) async fn accept_external_delivery_with_warning(
+    pool: &SqlitePool,
+    runtime: &EngineOwner,
+    delivery_id: &str,
+    agent_name: &str,
+    message_json: &str,
+    link: Option<&intents::IntentAdmissionLink>,
+    resources_approximate: bool,
+) -> Result<EngineAcceptedDelivery> {
     opaque(delivery_id)?;
     opaque(agent_name)?;
     validate_json(message_json)?;
@@ -702,6 +738,17 @@ pub(crate) async fn accept_external_delivery_linked(
         return Ok(retained);
     }
     let receipt = accept(&mut tx, &mut stored, delivery, link).await?;
+    if resources_approximate {
+        event(
+            &mut tx,
+            &mut stored.state,
+            &runtime.system_start_id,
+            Some(receipt.delivery.work.clone()),
+            "diagnostic",
+            r#"{"code":"HARNESS_APPROXIMATE"}"#.into(),
+        )
+        .await?;
+    }
     save(&mut tx, &runtime.system_start_id, &stored.state).await?;
     if let Some(link) = link {
         intents::attach(&mut tx, link, &runtime.system_start_id).await?;
@@ -1965,6 +2012,16 @@ pub(crate) async fn revoke_host_owners(pool: &SqlitePool, owners: &[EngineOwner]
     let mut connection = pool.acquire().await?;
     let mut tx = durable(&mut connection).await?;
     for retired in owners {
+        // A host can also retain a 0.3 or not-yet-committed owner. Those do
+        // not have an engine_systems row and must not block legacy fencing.
+        let exists: bool =
+            sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM engine_systems WHERE system_id=?)")
+                .bind(&retired.system_start_id)
+                .fetch_one(&mut *tx)
+                .await?;
+        if !exists {
+            continue;
+        }
         let mut stored = load(&mut tx, &retired.system_start_id).await?;
         if stored.state.epoch != retired.owner_epoch {
             continue;

@@ -222,10 +222,13 @@ pub(crate) async fn execution_host_dispatch_provider(
     let provider = descriptor(&pool, &manager, &context, &request).await?;
     let _gate = host.admission_gate().await;
     repository::authorize_reserved_effect(&pool, &effect(context.clone(), &request)?).await?;
-    host.authenticate_owner(&webview, &context.owner)?;
-    // StreamTasks owns and deduplicates the physical attempt before it can poll.
-    ai.stream_tasks
-        .start(request.request_id.clone(), async move {
+    // The short synchronous handoff shares its barrier with host revocation.
+    host.admit_owned_stream(
+        &webview,
+        &context.owner,
+        &ai.stream_tasks,
+        request.request_id.clone(),
+        async move {
             let _ = crate::ai::openai_compatible::stream_chat_with_provider(
                 app,
                 pool,
@@ -233,14 +236,8 @@ pub(crate) async fn execution_host_dispatch_provider(
                 Some(provider),
             )
             .await;
-        })
-        .map_err(|_| {
-            failure(
-                "CORRELATION",
-                "request",
-                "Native attempt was already admitted or cancelled",
-            )
-        })
+        },
+    )
 }
 #[tauri::command]
 pub(crate) async fn execution_host_end_provider(

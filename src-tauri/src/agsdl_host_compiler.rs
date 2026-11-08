@@ -320,7 +320,6 @@ impl CompileBroker {
             let plan: Value = serde_json::from_str(plan_json)?;
             if plan.get("source") != Some(&serde_json::to_value(&job.source)?)
                 || plan.pointer("/versions/registry") != registry.get("version")
-                || plan.get("format").and_then(Value::as_str) != Some("macro-agsdl-compiled-plan/1")
             {
                 return Err(failure(
                     "CORRELATION",
@@ -332,12 +331,166 @@ impl CompileBroker {
                 .get("documentJson")
                 .and_then(Value::as_str)
                 .ok_or_else(|| failure("CORRELATION", "compiler", "Compiled document is absent"))?;
-            if !crate::db::exact_json::equal(document, &job.authored_source)? {
+            let same_document = if plan.get("format").and_then(Value::as_str)
+                == Some("macro-agsdl-compiled-plan/2")
+            {
+                crate::db::agsdl_execution::json_lexemes030::document_tokens_equal(
+                    document,
+                    &job.authored_source,
+                )?
+            } else {
+                crate::db::exact_json::equal(document, &job.authored_source)?
+            };
+            if !same_document {
                 return Err(failure(
                     "CORRELATION",
                     "compiler",
                     "Compiled document differs from captured source",
                 ));
+            }
+            match plan.get("format").and_then(Value::as_str) {
+                Some("macro-agsdl-compiled-plan/1") => {
+                    let authored: Value = serde_json::from_str(&job.authored_source)?;
+                    if authored.get("contract").and_then(Value::as_str) == Some("agsdl-0.3.0")
+                        || registry.get("format").and_then(Value::as_str)
+                            == Some("macro-agsdl-registry/030")
+                    {
+                        return Err(failure(
+                            "CORRELATION",
+                            "compiler",
+                            "A 0.3 capture cannot use the historical compiled plan",
+                        ));
+                    }
+                }
+                Some("macro-agsdl-compiled-plan/2") => {
+                    let authored: Value = serde_json::from_str(&job.authored_source)?;
+                    let captured = result
+                        .get("capturedRegistryJson")
+                        .and_then(Value::as_str)
+                        .ok_or_else(|| {
+                            failure("CORRELATION", "registry", "Compiled registry is absent")
+                        })?;
+                    validate_json(captured)?;
+                    let mut registry_capture = registry.clone();
+                    if let Some(object) = registry_capture.as_object_mut() {
+                        for field in [
+                            "startEntry",
+                            "deliveryInput",
+                            "callInput",
+                            "toolPolicyInput",
+                            "callPermissions",
+                            "callScope",
+                        ] {
+                            object.remove(field);
+                        }
+                    }
+                    if authored.get("contract").and_then(Value::as_str) != Some("agsdl-0.3.0")
+                        || registry.get("format").and_then(Value::as_str)
+                            != Some("macro-agsdl-registry/030")
+                        || plan.pointer("/versions/snapshot").and_then(Value::as_str) != Some("2")
+                        || plan.pointer("/versions/contract").and_then(Value::as_str)
+                            != Some("agsdl-0.3.0")
+                        || plan.pointer("/versions/profile").and_then(Value::as_str)
+                            != Some("macro-agsdl-030-v1")
+                        || result.pointer("/runtime/profile").and_then(Value::as_str)
+                            != Some("macro-agsdl-030-v1")
+                        || !crate::db::exact_json::equal(captured, &registry_capture.to_string())?
+                    {
+                        return Err(failure(
+                            "CORRELATION",
+                            "compiler",
+                            "Compiled 0.3 plan or native observations contradict their ticket",
+                        ));
+                    }
+                    let observed_agents = registry_capture
+                        .get("agents")
+                        .and_then(Value::as_array)
+                        .ok_or_else(|| {
+                            failure(
+                                "CORRELATION",
+                                "registry",
+                                "Native agent observations are absent",
+                            )
+                        })?;
+                    let compiled_agents =
+                        plan.get("agents")
+                            .and_then(Value::as_array)
+                            .ok_or_else(|| {
+                                failure("CORRELATION", "compiler", "Compiled agents are absent")
+                            })?;
+                    let authored_agents = authored
+                        .get("agents")
+                        .and_then(Value::as_object)
+                        .ok_or_else(|| {
+                            failure("CORRELATION", "compiler", "Authored agents are absent")
+                        })?;
+                    if compiled_agents.len() != observed_agents.len()
+                        || compiled_agents.len() != authored_agents.len()
+                        || compiled_agents.iter().any(|agent| {
+                            let name = agent.get("agentName");
+                            name.and_then(Value::as_str).is_none_or(str::is_empty)
+                                || name
+                                    .and_then(Value::as_str)
+                                    .is_none_or(|name| !authored_agents.contains_key(name))
+                                || observed_agents
+                                    .iter()
+                                    .filter(|observed| observed.get("agentName") == name)
+                                    .count()
+                                    != 1
+                                || compiled_agents
+                                    .iter()
+                                    .filter(|compiled| compiled.get("agentName") == name)
+                                    .count()
+                                    != 1
+                                || !observed_agents.iter().any(|observed| {
+                                    observed.get("agentName") == name
+                                        && [
+                                            "agentDeclarationJson",
+                                            "settingsJson",
+                                            "permissionsJson",
+                                            "scopeJson",
+                                            "evidenceJson",
+                                            "provenanceJson",
+                                        ]
+                                        .iter()
+                                        .all(|field| {
+                                            observed.get(*field).is_some()
+                                                && observed.get(*field) == agent.get(*field)
+                                        })
+                                })
+                        })
+                    {
+                        return Err(failure(
+                            "CORRELATION",
+                            "compiler",
+                            "Compiled agents changed native capture evidence",
+                        ));
+                    }
+                    for agent in compiled_agents {
+                        let name = agent["agentName"].as_str().expect("validated agent name");
+                        let declaration =
+                            agent["agentDeclarationJson"].as_str().ok_or_else(|| {
+                                failure("CORRELATION", "agent", "Agent declaration is absent")
+                            })?;
+                        if !crate::db::exact_json::equal(
+                            declaration,
+                            &authored_agents[name].to_string(),
+                        )? {
+                            return Err(failure(
+                                "CORRELATION",
+                                "agent",
+                                "Agent declaration differs from the authored source",
+                            ));
+                        }
+                    }
+                }
+                _ => {
+                    return Err(failure(
+                        "CORRELATION",
+                        "compiler",
+                        "Unknown compiled plan format",
+                    ))
+                }
             }
         } else if result
             .pointer("/runtime/supported")
@@ -381,6 +534,79 @@ mod tests {
     }
     fn result(job: &HostCompileJob) -> String {
         serde_json::json!({"runtime":{"registryVersion":"registry","source":job.source,"supported":false},"compiledPlanJson":null}).to_string()
+    }
+    #[tokio::test]
+    async fn compiled_030_plan_keeps_source_profile_and_native_observations_bound_to_ticket() {
+        let authored = r#"{"contract":"agsdl-0.3.0","id":"fixture","n":9007199254740993,"agents":{"worker":{}}}"#;
+        let captured_registry = r#"{"format":"macro-agsdl-registry/030","version":"registry","harnesses":[],"agents":[{"agentName":"worker","agentDeclarationJson":"{}","settingsJson":"{}","permissionsJson":"{\"p\":1}","scopeJson":"{\"s\":1}","evidenceJson":"{\"e\":1}","provenanceJson":"{\"c\":1}"}],"hostCapabilities":[{"name":"approval","support":"native","evidenceJson":"{\"proof\":true}"}]}"#;
+        let mut registry: Value = serde_json::from_str(captured_registry).unwrap();
+        registry["startEntry"] = Value::Null;
+        registry["callScope"] = serde_json::json!({"root":"/synthetic"});
+        let registry = registry.to_string();
+        let mut source = source();
+        source.source_sha256 = format!("{:x}", Sha256::digest(authored.as_bytes()));
+        let broker = Arc::new(CompileBroker::default());
+        let worker = broker.clone();
+        let captured_source = source.clone();
+        let pending = tokio::spawn(async move {
+            worker
+                .compile("generation", captured_source, authored.into(), registry)
+                .await
+        });
+        let job = broker.next().await.unwrap();
+        let plan = serde_json::json!({
+            "format":"macro-agsdl-compiled-plan/2",
+            "source":source,
+            "versions":{"snapshot":"2","contract":"agsdl-0.3.0","registry":"registry","profile":"macro-agsdl-030-v1"},
+            "documentJson":authored,
+            "agents":serde_json::from_str::<Value>(captured_registry).unwrap()["agents"],
+        });
+        let mut response = serde_json::json!({
+            "runtime":{"registryVersion":"registry","source":job.source,"supported":true,"profile":"macro-agsdl-030-v1"},
+            "capturedRegistryJson":captured_registry,
+            "entryValidation":{"messageJson":null,"valid":false},
+            "compiledPlanJson":plan.to_string(),
+        });
+        let mut wrong = plan.clone();
+        wrong["format"] = "macro-agsdl-compiled-plan/1".into();
+        response["compiledPlanJson"] = wrong.to_string().into();
+        assert!(broker
+            .complete("generation", &job.ticket, response.to_string())
+            .is_err());
+        wrong = plan.clone();
+        wrong["documentJson"] = authored
+            .replace("9007199254740993", "9007199254740993.0")
+            .into();
+        response["compiledPlanJson"] = wrong.to_string().into();
+        assert!(broker
+            .complete("generation", &job.ticket, response.to_string())
+            .is_err());
+        wrong = plan.clone();
+        wrong["versions"]["contract"] = "agsdl-0.2.0".into();
+        response["compiledPlanJson"] = wrong.to_string().into();
+        assert!(broker
+            .complete("generation", &job.ticket, response.to_string())
+            .is_err());
+        response["compiledPlanJson"] = plan.to_string().into();
+        wrong = plan.clone();
+        wrong["agents"][0]["provenanceJson"] = "{\"c\":2}".into();
+        response["compiledPlanJson"] = wrong.to_string().into();
+        assert!(broker
+            .complete("generation", &job.ticket, response.to_string())
+            .is_err());
+        response["compiledPlanJson"] = plan.to_string().into();
+        response["capturedRegistryJson"] = captured_registry.replace("native", "absent").into();
+        assert!(broker
+            .complete("generation", &job.ticket, response.to_string())
+            .is_err());
+        response["capturedRegistryJson"] = captured_registry.into();
+        broker
+            .complete("generation", &job.ticket, response.to_string())
+            .unwrap();
+        assert_eq!(
+            pending.await.unwrap().unwrap().result_json,
+            response.to_string()
+        );
     }
     #[tokio::test]
     async fn compiler_ticket_correlates_native_source_generation_and_registry() {

@@ -21,11 +21,41 @@ pub struct Closure {
     pub validation_json: String,
 }
 pub(crate) async fn append(pool: &SqlitePool, emission: Emission) -> Result<bool> {
-    decimal(&emission.sequence)?;
-    require(
-        emission.sequence != "0",
-        "Response sequence must be positive",
-    )?;
+    append_inner(pool, emission, false)
+        .await
+        .map(|(_, inserted)| inserted)
+}
+
+/// Allocates the next sequence in the same transaction as the insertion. A
+/// repeated identity returns its original sequence only for identical bytes.
+pub(crate) async fn append_next(pool: &SqlitePool, emission: Emission) -> Result<(Emission, bool)> {
+    append_inner(pool, emission, true).await
+}
+
+async fn append_inner(
+    pool: &SqlitePool,
+    emission: Emission,
+    allocate: bool,
+) -> Result<(Emission, bool)> {
+    let mut connection = pool.acquire().await?;
+    let mut tx = durable(&mut connection).await?;
+    let result = append_on(&mut tx, emission, allocate).await?;
+    tx.commit().await?;
+    Ok(result)
+}
+
+pub(super) async fn append_on(
+    db: &mut SqliteConnection,
+    mut emission: Emission,
+    allocate: bool,
+) -> Result<(Emission, bool)> {
+    if !allocate {
+        decimal(&emission.sequence)?;
+        require(
+            emission.sequence != "0",
+            "Response sequence must be positive",
+        )?;
+    }
     opaque(&emission.identity)?;
     opaque(&emission.provider_attempt_id)?;
     require(
@@ -33,9 +63,7 @@ pub(crate) async fn append(pool: &SqlitePool, emission: Emission) -> Result<bool
         "Unknown response kind",
     )?;
     validate_json(&emission.body_json)?;
-    let mut connection = pool.acquire().await?;
-    let mut tx = durable(&mut connection).await?;
-    let stored = load(&mut tx, &emission.context.work.system_start_id).await?;
+    let stored = load(db, &emission.context.work.system_start_id).await?;
     context(&stored, &emission.context)?;
     let work = &emission.context.work;
     let closed: i64 = sqlx::query_scalar(
@@ -43,23 +71,42 @@ pub(crate) async fn append(pool: &SqlitePool, emission: Emission) -> Result<bool
     )
     .bind(&work.system_start_id)
     .bind(&work.activation_id)
-    .fetch_one(&mut *tx)
+    .fetch_one(&mut *db)
     .await?;
     require(closed == 0, "Response collection is closed")?;
     let key = effect_key(&EngineEffectIdentity::Provider {
         provider_attempt_id: emission.provider_attempt_id.clone(),
     })?;
-    let registered:String=sqlx::query_scalar("SELECT record_json FROM engine_effects WHERE system_id=? AND activation_id=? AND effect_key=?").bind(&work.system_start_id).bind(&work.activation_id).bind(key).fetch_optional(&mut *tx).await?.ok_or_else(||failure("CORRELATION","providerAttemptId","Unregistered response attempt"))?;
+    let registered:String=sqlx::query_scalar("SELECT record_json FROM engine_effects WHERE system_id=? AND activation_id=? AND effect_key=?").bind(&work.system_start_id).bind(&work.activation_id).bind(key).fetch_optional(&mut *db).await?.ok_or_else(||failure("CORRELATION","providerAttemptId","Unregistered response attempt"))?;
     let effect: EngineEffect = serde_json::from_str(&registered)?;
     require(
         record_equal(&effect.context, &emission.context)?,
         "Response attempt attribution mismatch",
     )?;
-    if let Some(previous)=sqlx::query_scalar::<_,String>("SELECT payload_json FROM engine_responses WHERE system_id=? AND activation_id=? AND (sequence=? OR identity=?)").bind(&work.system_start_id).bind(&work.activation_id).bind(&emission.sequence).bind(&emission.identity).fetch_optional(&mut *tx).await? {
-   require(record_equal(&serde_json::from_str::<Emission>(&previous)?,&emission)?,"Conflicting response retransmission")?;
-   tx.commit().await?;return Ok(false);
- }
-    let (count,bytes):(i64,i64)=sqlx::query_as("SELECT count(*),coalesce(sum(length(CAST(payload_json AS BLOB))),0) FROM engine_responses WHERE system_id=? AND activation_id=?").bind(&work.system_start_id).bind(&work.activation_id).fetch_one(&mut *tx).await?;
+    if allocate {
+        if let Some(previous) = sqlx::query_scalar::<_, String>("SELECT payload_json FROM engine_responses WHERE system_id=? AND activation_id=? AND identity=?")
+            .bind(&work.system_start_id).bind(&work.activation_id).bind(&emission.identity)
+            .fetch_optional(&mut *db).await?
+        {
+            let previous: Emission = serde_json::from_str(&previous)?;
+            emission.sequence = previous.sequence.clone();
+            require(previous.body_json == emission.body_json && record_equal(&previous, &emission)?, "Conflicting response retransmission")?;
+            return Ok((emission, false));
+        }
+    } else if let Some(previous)=sqlx::query_scalar::<_,String>("SELECT payload_json FROM engine_responses WHERE system_id=? AND activation_id=? AND (sequence=? OR identity=?)").bind(&work.system_start_id).bind(&work.activation_id).bind(&emission.sequence).bind(&emission.identity).fetch_optional(&mut *db).await? {
+        require(record_equal(&serde_json::from_str::<Emission>(&previous)?,&emission)?,"Conflicting response retransmission")?;
+        return Ok((emission, false));
+    }
+    let (count,bytes):(i64,i64)=sqlx::query_as("SELECT count(*),coalesce(sum(length(CAST(payload_json AS BLOB))),0) FROM engine_responses WHERE system_id=? AND activation_id=?").bind(&work.system_start_id).bind(&work.activation_id).fetch_one(&mut *db).await?;
+    if allocate {
+        let last: Option<String> = sqlx::query_scalar("SELECT sequence FROM engine_responses WHERE system_id=? AND activation_id=? ORDER BY length(sequence) DESC, sequence DESC LIMIT 1")
+            .bind(&work.system_start_id).bind(&work.activation_id).fetch_optional(&mut *db).await?;
+        require(
+            last.as_deref().unwrap_or("0") == count.to_string(),
+            "Response transport has a hole",
+        )?;
+        emission.sequence = (count + 1).to_string();
+    }
     let raw = encode(&emission)?;
     require(
         count < 10000 && bytes + raw.len() as i64 <= 4_000_000,
@@ -71,10 +118,9 @@ pub(crate) async fn append(pool: &SqlitePool, emission: Emission) -> Result<bool
         .bind(&emission.sequence)
         .bind(&emission.identity)
         .bind(raw)
-        .execute(&mut *tx)
+        .execute(&mut *db)
         .await?;
-    tx.commit().await?;
-    Ok(true)
+    Ok((emission, true))
 }
 async fn retained(db: &mut SqliteConnection, work: &EngineWork) -> Result<Vec<Emission>> {
     let raw:Vec<String>=sqlx::query_scalar("SELECT payload_json FROM engine_responses WHERE system_id=? AND activation_id=? ORDER BY length(sequence),sequence").bind(&work.system_start_id).bind(&work.activation_id).fetch_all(db).await?;

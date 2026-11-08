@@ -66,6 +66,10 @@ fn known_message(code: &str) -> (&'static str, &'static str) {
             "CONTENT_UNAVAILABLE",
             "Required content is unavailable in the inline profile.",
         ),
+        "HARNESS_APPROXIMATE" => (
+            "HARNESS_APPROXIMATE",
+            "Resources are delivered using an approximate harness channel.",
+        ),
         "RESOURCE_COLLISION" => (
             "RESOURCE_COLLISION",
             "Content declares conflicting resource identities.",

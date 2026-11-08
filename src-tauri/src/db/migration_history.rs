@@ -46,6 +46,18 @@ pub(crate) const NAMES: &[&str] = &[
     "024_execution_process_receipts",
     "025_visible_message_search",
     "026_execution_native_operations",
+    "027_execution_work_protocol",
+    "028_execution_work_admission",
+    "029_execution_human_public",
+    "030_execution_flow",
+    "031_execution_start_entry",
+    "032_execution_ui_intent_start030",
+    "033_execution_flow_owner030",
+    "034_execution_flow_preparations030",
+    "035_execution_flow_no_admission030",
+    "036_execution_flow_work_protocol030",
+    "037_execution_route_attestations030",
+    "038_execution_system_stop030",
 ];
 
 pub(crate) fn destinations(version: i64, name: &str) -> DbResult<Vec<i64>> {
@@ -64,6 +76,8 @@ pub(crate) fn destinations(version: i64, name: &str) -> DbResult<Vec<i64>> {
         (14, "014_execution_process_receipts") => vec![24],
         (15, "015_parallel_v10_reconciliation") => vec![20, 25],
         (16, "016_execution_native_operations") => vec![26],
+        (17, "017_execution_work_protocol") => vec![27],
+        (18, "018_execution_work_admission") => vec![28],
         _ => {
             return Err(DbError::Migration(format!(
                 "Unknown migration identity {version}/{name}; database left unchanged"
@@ -92,6 +106,18 @@ pub(crate) async fn canonical_versions(c: &mut SqliteConnection) -> DbResult<Vec
         || versions.contains(&23) && !versions.contains(&22)
         || versions.contains(&24) && !versions.contains(&23)
         || versions.contains(&26) && !(versions.contains(&24) && versions.contains(&25))
+        || versions.contains(&27) && !versions.contains(&26)
+        || versions.contains(&28) && !versions.contains(&27)
+        || versions.contains(&29) && !versions.contains(&28)
+        || versions.contains(&30) && !versions.contains(&29)
+        || versions.contains(&31) && !versions.contains(&30)
+        || versions.contains(&32) && !versions.contains(&31)
+        || versions.contains(&33) && !versions.contains(&32)
+        || versions.contains(&34) && !versions.contains(&33)
+        || versions.contains(&35) && !versions.contains(&34)
+        || versions.contains(&36) && !versions.contains(&35)
+        || versions.contains(&37) && !versions.contains(&36)
+        || versions.contains(&38) && !versions.contains(&37)
     {
         return Err(DbError::Migration(
             "Inconsistent AgSDL migration history".into(),
@@ -164,6 +190,131 @@ pub(crate) async fn remove_reference_schema(
     c: &mut SqliteConnection,
     versions: &[i64],
 ) -> DbResult<()> {
+    // This connection is a disposable, empty reference. Reconstruct the
+    // historical definition before removing the new foreign-key parent.
+    if !versions.contains(&38) {
+        sqlx::query("DROP TABLE IF EXISTS engine_flow030_system_stop_requests")
+            .execute(&mut *c)
+            .await?;
+    }
+    if !versions.contains(&37) {
+        for table in [
+            "engine_flow030_route_content_receipts",
+            "engine_flow030_route_content_contexts",
+            "engine_flow030_route_source_attestations",
+        ] {
+            sqlx::query(sqlx::AssertSqlSafe(format!("DROP TABLE IF EXISTS {table}")))
+                .execute(&mut *c)
+                .await?;
+        }
+    }
+    if !versions.contains(&36) {
+        for table in [
+            "engine_flow030_work_checks",
+            "engine_flow030_work_events",
+            "engine_flow030_work_state",
+            "engine_flow030_work_authorizations",
+            "engine_flow030_work_admissions",
+        ] {
+            sqlx::query(sqlx::AssertSqlSafe(format!("DROP TABLE IF EXISTS {table}")))
+                .execute(&mut *c)
+                .await?;
+        }
+    }
+    if !versions.contains(&35) {
+        for trigger in [
+            "engine_flow030_handoff_reject_no_admission",
+            "engine_flow030_handoff_retained",
+            "engine_flow030_preparation_retained",
+            "engine_flow030_occurrence_provenance_retained",
+        ] {
+            sqlx::query(sqlx::AssertSqlSafe(format!(
+                "DROP TRIGGER IF EXISTS {trigger}"
+            )))
+            .execute(&mut *c)
+            .await?;
+        }
+        sqlx::query("DROP TABLE IF EXISTS engine_flow030_no_admissions")
+            .execute(&mut *c)
+            .await?;
+    }
+    if !versions.contains(&34) {
+        sqlx::query("DROP TABLE IF EXISTS engine_flow030_occurrence_provenance")
+            .execute(&mut *c)
+            .await?;
+        sqlx::query("DROP TABLE IF EXISTS engine_flow030_preparations")
+            .execute(&mut *c)
+            .await?;
+    }
+    if !versions.contains(&33) {
+        sqlx::query("DROP TABLE IF EXISTS engine_flow030_handoffs")
+            .execute(&mut *c)
+            .await?;
+        sqlx::query("DROP TABLE IF EXISTS engine_flow030_owners")
+            .execute(&mut *c)
+            .await?;
+    }
+    if !versions.contains(&32) {
+        sqlx::query("DROP TABLE engine_ui_intents")
+            .execute(&mut *c)
+            .await?;
+        sqlx::raw_sql(include_str!("migrations/013_execution_ui_intents.sql"))
+            .execute(&mut *c)
+            .await?;
+    }
+    if !versions.contains(&31) {
+        sqlx::query("DROP TRIGGER IF EXISTS engine_delivery020_reject_030")
+            .execute(&mut *c)
+            .await?;
+        sqlx::query("DROP TRIGGER IF EXISTS engine_start030_record_entry")
+            .execute(&mut *c)
+            .await?;
+        sqlx::query("DROP TABLE IF EXISTS engine_start030_entries")
+            .execute(&mut *c)
+            .await?;
+    }
+    if !versions.contains(&30) {
+        sqlx::query("DROP TRIGGER IF EXISTS engine_start020_reject_030")
+            .execute(&mut *c)
+            .await?;
+        for table in [
+            "engine_start030_requests",
+            "engine_flow030_outbox",
+            "engine_flow030_events",
+            "engine_flow030_runs",
+        ] {
+            sqlx::query(sqlx::AssertSqlSafe(format!("DROP TABLE IF EXISTS {table}")))
+                .execute(&mut *c)
+                .await?;
+        }
+    }
+    if !versions.contains(&29) {
+        for table in [
+            "engine_human_requests030",
+            "engine_human_works030",
+            "engine_human_public030",
+            "engine_human_public_works030",
+            "engine_human_submissions030",
+        ] {
+            for operation in ["insert", "update", "delete"] {
+                sqlx::query(sqlx::AssertSqlSafe(format!(
+                    "DROP TRIGGER {table}_projection_{operation}"
+                )))
+                .execute(&mut *c)
+                .await?;
+            }
+        }
+        for table in [
+            "engine_human_submissions030",
+            "engine_human_public_works030",
+            "engine_human_public030",
+            "engine_human_projection030",
+        ] {
+            sqlx::query(sqlx::AssertSqlSafe(format!("DROP TABLE {table}")))
+                .execute(&mut *c)
+                .await?;
+        }
+    }
     if !versions.contains(&25) {
         sqlx::raw_sql(
             "DROP TRIGGER messages_search_insert;
@@ -180,6 +331,13 @@ pub(crate) async fn remove_reference_schema(
             .await?;
     }
     for (version, table) in [
+        (28, "engine_work_admission030"),
+        (27, "engine_human_link_events030"),
+        (27, "engine_human_works030"),
+        (27, "engine_human_requests030"),
+        (27, "engine_work_checks030"),
+        (27, "engine_work_events030"),
+        (27, "engine_work_protocol030"),
         (26, "engine_native_operations"),
         (24, "engine_effect_processes"),
         (23, "engine_ui_intents"),

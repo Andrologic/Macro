@@ -3,12 +3,23 @@ use super::DbPool;
 use crate::db::agsdl_execution::{self as repository, dto::*};
 use repository::intents::{self, *};
 use repository::public::*;
+use sqlx::Row;
 use tauri::{Manager, State};
 async fn pool(state: &State<'_, DbPool>) -> repository::Result<sqlx::SqlitePool> {
     state
         .wait_until_ready()
         .await
         .map_err(|_| repository::failure("STORAGE", "", "Execution database unavailable"))
+}
+
+#[tauri::command]
+pub async fn execution_read_runtime_projection030(
+    state: State<'_, DbPool>,
+    host: State<'_, crate::agsdl_host::HostState>,
+    scope: crate::agsdl_host_projection030::RuntimeProjectionQuery030,
+    continuation: Option<crate::agsdl_host_projection030::RuntimeProjectionContinuation030>,
+) -> repository::Result<crate::agsdl_host_projection030::RuntimeProjectionPage030> {
+    crate::agsdl_host_projection030::read(&host, &pool(&state).await?, scope, continuation).await
 }
 #[tauri::command]
 pub async fn execution_start(
@@ -53,6 +64,23 @@ pub async fn execution_stop(
     request: EngineStopRequest,
 ) -> repository::Result<PublicStopState> {
     let pool = pool(&state).await?;
+    let is_flow030: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM engine_start030_requests WHERE system_id=?)",
+    )
+    .bind(&request.system_start_id)
+    .fetch_one(&pool)
+    .await?;
+    if is_flow030 {
+        // As with the legacy path, loss of the IPC observer must not abandon
+        // the native Stop or any join already in progress.
+        return owned_stop(async move {
+            let host = app.state::<crate::agsdl_host::HostState>();
+            let ai = app.state::<crate::ai::AiState>();
+            crate::agsdl_host_stop030::request(host.flow030(), &pool, &ai.stream_tasks, &request)
+                .await
+        })
+        .await;
+    }
     let gate = host.admission_gate().await;
     repository::stop(&pool, request.clone()).await?;
     stop_effects(
@@ -135,6 +163,29 @@ pub async fn execution_ensure_stop(
         let db = app.state::<DbPool>();
         let host = app.state::<crate::agsdl_host::HostState>();
         let pool = pool(&db).await?;
+        let is_flow030: bool = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM engine_start030_requests WHERE system_id=?)",
+        )
+        .bind(&request.system_start_id)
+        .fetch_one(&pool)
+        .await?;
+        if is_flow030 {
+            if request.activation_id.is_some() {
+                return Err(repository::failure(
+                    "PARTIAL_STOP_UNAVAILABLE",
+                    "activationId",
+                    "Native 0.3 activation Stop requires a separate scoped operation",
+                ));
+            }
+            let ai = app.state::<crate::ai::AiState>();
+            return crate::agsdl_host_stop030::ensure(
+                host.flow030(),
+                &pool,
+                &ai.stream_tasks,
+                &request.system_start_id,
+            )
+            .await;
+        }
         let gate = host.admission_gate().await;
         repository::ensure_stop(
             &pool,
@@ -159,7 +210,47 @@ pub async fn execution_read_snapshot(
     state: State<'_, DbPool>,
     system_start_id: String,
 ) -> repository::Result<PublicSnapshot> {
-    repository::read_snapshot(&pool(&state).await?, &system_start_id)
+    let pool = pool(&state).await?;
+    read_public_snapshot(&pool, &system_start_id).await
+}
+
+pub(crate) async fn read_public_snapshot(
+    pool: &sqlx::SqlitePool,
+    system_start_id: &str,
+) -> repository::Result<PublicSnapshot> {
+    let retained = sqlx::query("SELECT request_json,capture_json,receipt_json FROM engine_start030_requests WHERE system_id=?")
+        .bind(system_start_id)
+        .fetch_optional(pool)
+        .await?;
+    if let Some(row) = retained {
+        let request: EngineStartRequest = serde_json::from_str(row.get("request_json"))?;
+        let capture: repository::start030::StartCapture030 =
+            serde_json::from_str(row.get("capture_json"))?;
+        let receipt: repository::start030::StartReceipt030 =
+            serde_json::from_str(row.get("receipt_json"))?;
+        if request.profile != "macro-agsdl-030-v1"
+            || request.source != capture.source
+            || capture.identity != receipt.identity
+            || capture.identity.system_start_id != system_start_id
+            || capture.versions.profile != request.profile
+            || capture.versions.snapshot != "2"
+            || capture.versions.contract != "agsdl-0.3.0"
+        {
+            return Err(repository::failure(
+                "CORRELATION",
+                "snapshot",
+                "Stored capture differs from its request",
+            ));
+        }
+        return Ok(PublicSnapshot {
+            system_start_id: system_start_id.to_owned(),
+            source: capture.source,
+            authored_source: capture.authored_source,
+            versions: capture.versions,
+            associations: request.associations,
+        });
+    }
+    repository::read_snapshot(pool, system_start_id)
         .await
         .map(Into::into)
 }
@@ -202,6 +293,32 @@ pub async fn execution_list_runs(
     request: repository::discovery::RunListRequest,
 ) -> repository::Result<repository::discovery::RunPage> {
     repository::discovery::list_runs(&pool(&state).await?, request).await
+}
+
+#[tauri::command]
+pub async fn execution_list_runs030(
+    app: tauri::AppHandle,
+    state: State<'_, DbPool>,
+    request: repository::discovery030::RunListRequest030,
+) -> repository::Result<repository::discovery030::RunPage030> {
+    let workspace_state = app.state::<crate::WorkspaceMetadataRoot>();
+    let workspace = workspace_state.0.read().await.clone();
+    list_runs030_scoped(&pool(&state).await?, &workspace, request).await
+}
+
+pub(crate) async fn list_runs030_scoped(
+    pool: &sqlx::SqlitePool,
+    workspace: &std::path::Path,
+    request: repository::discovery030::RunListRequest030,
+) -> repository::Result<repository::discovery030::RunPage030> {
+    let metadata = crate::agsdl_host_capture::metadata_root(&workspace)?;
+    let _scope = crate::workspace::architect::lock_execution_history_owner(
+        workspace,
+        &metadata,
+        &request.owner,
+    )
+    .await?;
+    repository::discovery030::list_runs030(pool, request).await
 }
 #[tauri::command]
 pub async fn execution_find_start(
@@ -270,6 +387,17 @@ pub async fn execution_resolve_card_task(
 ) -> repository::Result<Option<crate::agsdl_host_tasks::ResolvedCardTask>> {
     let workspace = workspace.0.read().await.clone();
     crate::agsdl_host_tasks::resolve(&pool(&state).await?, &workspace, &git, request).await
+}
+
+/// Read only the native-attested public view. A page cursor is scoped to the
+/// complete captured source and is invalidated when its requests change.
+#[tauri::command]
+pub async fn execution_read_humans030(
+    state: State<'_, DbPool>,
+    scope: repository::public030::HumanScope030,
+    continuation: Option<repository::public030::HumanContinuation030>,
+) -> repository::Result<repository::public030::HumanPage030> {
+    repository::public030::human_page(&pool(&state).await?, scope, continuation).await
 }
 
 #[tauri::command]

@@ -649,12 +649,13 @@ export type {
   MCPRuntimeStatus,
 } from "./contracts/serviceProvider";
 
-export { readExecutionApprovals, decideExecutionApproval, resolveExecutionCardTask, deliverExecution, preflightExecution, executionHostFailed, executionHostNextCompile, executionHostCompleteCompile, listExecutionRuns, findExecutionStart, readExecutionDiagnostic, executionModelChoices, executionHostReady, startExecution, stopExecution, readExecutionSnapshot, readExecutionProjection, readExecutionEvents } from './ipc/agsdlExecution';
+export { readExecutionApprovals, decideExecutionApproval, resolveExecutionCardTask, deliverExecution, preflightExecution, executionHostFailed, executionHostNextCompile, executionHostCompleteCompile, executionHostNextWork030, executionHostCompleteWork030, listExecutionRuns, findExecutionStart, readExecutionDiagnostic, executionModelChoices, executionHostReady, startExecution, stopExecution, readExecutionSnapshot, readExecutionProjection, readExecutionEvents } from './ipc/agsdlExecution';
 export { httpReleaseWebviewResource } from "./ipc/httpResources";
 
 export { executionHostOwners, executionHostInspect, executionHostBegin, executionHostPrepareTerminal, executionHostCommitTerminal, executionHostAppendResponse, executionHostReadResponses, executionHostCloseResponses, executionHostRegisterProvider, executionHostDispatchProvider, executionHostEndProvider } from './ipc/agsdlExecution';
 
 export { stageExecutionIntent, readExecutionIntents, readExecutionIntent, submitExecutionIntent, closeExecutionIntent, ensureExecutionStop } from './ipc/agsdlExecution';
+export { stageExecutionIntentVersioned, readExecutionIntentsVersioned, readExecutionIntentVersioned, submitExecutionIntentVersioned, closeExecutionIntentVersioned } from './ipc/agsdlExecutionIntentVersioned';
 
 export * from "./ipc/pilot";
 
@@ -672,3 +673,8 @@ export * from './ipc/conversationContent';
 export * from './ipc/conversationCatalog';
 
 export * from './ipc/chatAdmission';
+
+// Versioned transport uses the same native Start/snapshot commands and rejects
+// a historical snapshot. Native qualification still gates 0.3 admission.
+export { startExecution030, readExecutionSnapshot030, readExecutionHumans030, readExecutionRuntimeProjection030, listExecutionRuns030 } from './ipc/agsdlExecution030';
+export type { StartRequest030, PublicSnapshot030, PublicStartReceipt030 } from './ipc/agsdlExecution030';

@@ -971,6 +971,70 @@ async fn native_recovery_can_confirm_stop_without_replaying_a_tool() {
 }
 
 #[tokio::test]
+async fn mixed_host_fencing_skips_rolled_back_start_and_revokes_both_versions() {
+    let (_temp, pool, receipt, owner) = setup().await;
+    sqlx::query("INSERT INTO engine_flow030_runs VALUES (?,?,?,?,?,?,?)")
+        .bind("new030")
+        .bind("flow")
+        .bind("snapshot")
+        .bind("capture")
+        .bind("{}")
+        .bind("{}")
+        .bind("{}")
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("INSERT INTO engine_flow030_owners VALUES (?,?,?,?,?,?,?,?)")
+        .bind("new030")
+        .bind("flow")
+        .bind("snapshot")
+        .bind("capture")
+        .bind("0")
+        .bind("generation")
+        .bind("live")
+        .bind("a".repeat(64))
+        .execute(&pool)
+        .await
+        .unwrap();
+    let owners = vec![
+        owner.clone(),
+        EngineOwner {
+            system_start_id: "new030".into(),
+            owner_epoch: "0".into(),
+        },
+        EngineOwner {
+            system_start_id: "rolled-back".into(),
+            owner_epoch: "0".into(),
+        },
+    ];
+    crate::agsdl_host::fence_generation(&pool, &owners, "generation")
+        .await
+        .unwrap();
+    let mut connection = pool.acquire().await.unwrap();
+    assert_ne!(
+        load(&mut connection, &receipt.system_start_id)
+            .await
+            .unwrap()
+            .state
+            .epoch,
+        owner.owner_epoch
+    );
+    let status: String =
+        sqlx::query_scalar("SELECT status FROM engine_flow030_owners WHERE system_id='new030'")
+            .fetch_one(&mut *connection)
+            .await
+            .unwrap();
+    assert_eq!(status, "revoked");
+    let fake: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM engine_systems WHERE system_id IN ('new030','rolled-back')",
+    )
+    .fetch_one(&mut *connection)
+    .await
+    .unwrap();
+    assert_eq!(fake, 0);
+}
+
+#[tokio::test]
 async fn host_revocation_is_scoped_and_cannot_rotate_a_replacement_epoch() {
     let (_temp, pool, receipt, owner) = setup().await;
     let mut other_request = request();
@@ -1011,6 +1075,48 @@ async fn host_revocation_is_scoped_and_cannot_rotate_a_replacement_epoch() {
             .epoch,
         replacement.owner_epoch
     );
+}
+
+#[tokio::test]
+async fn response_sequence_allocation_is_atomic_and_retransmission_keeps_exact_bytes() {
+    let (_temp, pool, _receipt, runtime) = setup().await;
+    let d = delivery(&pool, &runtime, "second", "response-atomic").await;
+    accept_delivery(&pool, &runtime, d.clone()).await.unwrap();
+    assert!(matches!(
+        begin(&pool, &runtime, &d.delivery_id).await.unwrap(),
+        Admission::Admitted(..)
+    ));
+    let provider = effect(&runtime, &d.work);
+    register_effect(&pool, provider.clone()).await.unwrap();
+    let first = responses::Emission {
+        context: provider.context,
+        provider_attempt_id: "provider-1".into(),
+        sequence: String::new(),
+        identity: "first".into(),
+        kind: "message".into(),
+        body_json: r#"{"text":"one"}"#.into(),
+    };
+    let mut second = first.clone();
+    second.identity = "second".into();
+    second.body_json = r#"{"text":"two"}"#.into();
+    let (a, b) = tokio::join!(
+        responses::append_next(&pool, first.clone()),
+        responses::append_next(&pool, second)
+    );
+    let (a, inserted_a) = a.unwrap();
+    let (b, inserted_b) = b.unwrap();
+    assert!(inserted_a && inserted_b);
+    let mut sequences = [a.sequence.clone(), b.sequence];
+    sequences.sort();
+    assert_eq!(sequences, ["1", "2"]);
+    let (retry, inserted) = responses::append_next(&pool, first.clone()).await.unwrap();
+    assert!(!inserted);
+    assert_eq!(retry.sequence, a.sequence);
+    let mut changed = first;
+    changed.body_json = r#"{ "text": "one" }"#.into();
+    assert!(responses::append_next(&pool, changed).await.is_err());
+    let (events, _) = responses::read(&pool, &runtime, &d.work).await.unwrap();
+    assert_eq!(events.len(), 2);
 }
 
 #[tokio::test]
@@ -1728,6 +1834,61 @@ async fn external_graphless_delivery_uses_native_ids_and_keeps_its_exact_receipt
             .await
             .is_err()
     );
+    let approximate = accept_external_delivery_with_warning(
+        &pool,
+        &runtime,
+        "approximate",
+        "a",
+        message,
+        None,
+        true,
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        accept_external_delivery_with_warning(
+            &pool,
+            &runtime,
+            "approximate",
+            "a",
+            message,
+            None,
+            true,
+        )
+        .await
+        .unwrap(),
+        approximate
+    );
+    let page = read_events(&pool, &runtime.system_start_id, None, 500)
+        .await
+        .unwrap();
+    let warnings: Vec<_> = page
+        .events
+        .iter()
+        .filter(|event| {
+            event.kind == "diagnostic" && event.payload_json.contains("HARNESS_APPROXIMATE")
+        })
+        .collect();
+    assert_eq!(warnings.len(), 1);
+    assert_eq!(warnings[0].work.as_ref(), Some(&approximate.delivery.work));
+    let public = diagnostics::read(
+        &pool,
+        diagnostics::DiagnosticRequest {
+            system_start_id: runtime.system_start_id.clone(),
+            source: receipt.snapshot.source.clone(),
+            activation_id: Some(approximate.delivery.work.activation_id.clone()),
+            through: page.next_cursor.clone(),
+            selected: None,
+            before: None,
+            recent: true,
+        },
+    )
+    .await
+    .unwrap();
+    assert!(public
+        .diagnostics
+        .iter()
+        .any(|diagnostic| diagnostic.code == "HARNESS_APPROXIMATE"));
     stop(
         &pool,
         EngineStopRequest {

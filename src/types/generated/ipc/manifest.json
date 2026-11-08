@@ -1702,6 +1702,30 @@
     },
     {
       "families": [
+        "execution"
+      ],
+      "name": "HostRouteCompletion030",
+      "origin": "macro_lib::agsdl_host_route030::HostRouteCompletion030",
+      "path": "HostRouteCompletion030.ts"
+    },
+    {
+      "families": [
+        "execution"
+      ],
+      "name": "HostRouteJob030",
+      "origin": "macro_lib::agsdl_host_route030::HostRouteJob030",
+      "path": "HostRouteJob030.ts"
+    },
+    {
+      "families": [
+        "execution"
+      ],
+      "name": "HostRouteOutput030",
+      "origin": "macro_lib::agsdl_host_route030::HostRouteOutput030",
+      "path": "HostRouteOutput030.ts"
+    },
+    {
+      "families": [
         "host_telemetry"
       ],
       "name": "HostTelemetryAvailability",
@@ -1739,6 +1763,86 @@
       "name": "HostToolReceipt",
       "origin": "macro_lib::agsdl_host_tools::HostToolReceipt",
       "path": "HostToolReceipt.ts"
+    },
+    {
+      "families": [
+        "execution"
+      ],
+      "name": "HostWorkCompletion030",
+      "origin": "macro_lib::agsdl_host_work::HostWorkCompletion030",
+      "path": "HostWorkCompletion030.ts"
+    },
+    {
+      "families": [
+        "execution"
+      ],
+      "name": "HostWorkInput030",
+      "origin": "macro_lib::agsdl_host_work::HostWorkInput030",
+      "path": "HostWorkInput030.ts"
+    },
+    {
+      "families": [
+        "execution"
+      ],
+      "name": "HostWorkJob030",
+      "origin": "macro_lib::agsdl_host_work::HostWorkJob030",
+      "path": "HostWorkJob030.ts"
+    },
+    {
+      "families": [
+        "execution"
+      ],
+      "name": "HostWorkOutput030",
+      "origin": "macro_lib::agsdl_host_work::HostWorkOutput030",
+      "path": "HostWorkOutput030.ts"
+    },
+    {
+      "families": [
+        "execution"
+      ],
+      "name": "HumanAnswer030",
+      "origin": "macro_lib::db::agsdl_execution::public030::HumanAnswer030",
+      "path": "HumanAnswer030.ts"
+    },
+    {
+      "families": [
+        "execution"
+      ],
+      "name": "HumanContent030",
+      "origin": "macro_lib::db::agsdl_execution::public030::HumanContent030",
+      "path": "HumanContent030.ts"
+    },
+    {
+      "families": [
+        "execution"
+      ],
+      "name": "HumanContinuation030",
+      "origin": "macro_lib::db::agsdl_execution::public030::HumanContinuation030",
+      "path": "HumanContinuation030.ts"
+    },
+    {
+      "families": [
+        "execution"
+      ],
+      "name": "HumanDecision030",
+      "origin": "macro_lib::db::agsdl_execution::public030::HumanDecision030",
+      "path": "HumanDecision030.ts"
+    },
+    {
+      "families": [
+        "execution"
+      ],
+      "name": "HumanPage030",
+      "origin": "macro_lib::db::agsdl_execution::public030::HumanPage030",
+      "path": "HumanPage030.ts"
+    },
+    {
+      "families": [
+        "execution"
+      ],
+      "name": "HumanScope030",
+      "origin": "macro_lib::db::agsdl_execution::public030::HumanScope030",
+      "path": "HumanScope030.ts"
     },
     {
       "families": [
@@ -2051,6 +2155,14 @@
       "name": "PersistedEffect",
       "origin": "macro_lib::db::agsdl_execution::PersistedEffect",
       "path": "PersistedEffect.ts"
+    },
+    {
+      "families": [
+        "execution"
+      ],
+      "name": "PhaseCount030",
+      "origin": "macro_lib::db::agsdl_execution::discovery030::PhaseCount030",
+      "path": "PhaseCount030.ts"
     },
     {
       "families": [
@@ -2576,6 +2688,14 @@
       "families": [
         "execution"
       ],
+      "name": "PublicHumanRequest030",
+      "origin": "macro_lib::db::agsdl_execution::public030::PublicHumanRequest030",
+      "path": "PublicHumanRequest030.ts"
+    },
+    {
+      "families": [
+        "execution"
+      ],
       "name": "PublicProjection",
       "origin": "macro_lib::db::agsdl_execution::public::PublicProjection",
       "path": "PublicProjection.ts"
@@ -2600,6 +2720,14 @@
       "families": [
         "execution"
       ],
+      "name": "PublicRunSummary030",
+      "origin": "macro_lib::db::agsdl_execution::discovery030::PublicRunSummary030",
+      "path": "PublicRunSummary030.ts"
+    },
+    {
+      "families": [
+        "execution"
+      ],
       "name": "PublicSnapshot",
       "origin": "macro_lib::db::agsdl_execution::public::PublicSnapshot",
       "path": "PublicSnapshot.ts"
@@ -2611,6 +2739,14 @@
       "name": "PublicStartReceipt",
       "origin": "macro_lib::db::agsdl_execution::public::PublicStartReceipt",
       "path": "PublicStartReceipt.ts"
+    },
+    {
+      "families": [
+        "execution"
+      ],
+      "name": "PublicStartReceipt030",
+      "origin": "macro_lib::db::agsdl_execution::intents::PublicStartReceipt030",
+      "path": "PublicStartReceipt030.ts"
     },
     {
       "families": [
@@ -2744,9 +2880,121 @@
       "families": [
         "execution"
       ],
+      "name": "RunListRequest030",
+      "origin": "macro_lib::db::agsdl_execution::discovery030::RunListRequest030",
+      "path": "RunListRequest030.ts"
+    },
+    {
+      "families": [
+        "execution"
+      ],
       "name": "RunPage",
       "origin": "macro_lib::db::agsdl_execution::discovery::RunPage",
       "path": "RunPage.ts"
+    },
+    {
+      "families": [
+        "execution"
+      ],
+      "name": "RunPage030",
+      "origin": "macro_lib::db::agsdl_execution::discovery030::RunPage030",
+      "path": "RunPage030.ts"
+    },
+    {
+      "families": [
+        "execution"
+      ],
+      "name": "RuntimeActivation030",
+      "origin": "macro_lib::db::agsdl_execution::runtime_projection030::RuntimeActivation030",
+      "path": "RuntimeActivation030.ts"
+    },
+    {
+      "families": [
+        "execution"
+      ],
+      "name": "RuntimeBranch030",
+      "origin": "macro_lib::db::agsdl_execution::runtime_projection030::RuntimeBranch030",
+      "path": "RuntimeBranch030.ts"
+    },
+    {
+      "families": [
+        "execution"
+      ],
+      "name": "RuntimeFrame030",
+      "origin": "macro_lib::db::agsdl_execution::runtime_projection030::RuntimeFrame030",
+      "path": "RuntimeFrame030.ts"
+    },
+    {
+      "families": [
+        "execution"
+      ],
+      "name": "RuntimeGroup030",
+      "origin": "macro_lib::db::agsdl_execution::runtime_projection030::RuntimeGroup030",
+      "path": "RuntimeGroup030.ts"
+    },
+    {
+      "families": [
+        "execution"
+      ],
+      "name": "RuntimeInstance030",
+      "origin": "macro_lib::db::agsdl_execution::runtime_projection030::RuntimeInstance030",
+      "path": "RuntimeInstance030.ts"
+    },
+    {
+      "families": [
+        "execution"
+      ],
+      "name": "RuntimeMembership030",
+      "origin": "macro_lib::db::agsdl_execution::runtime_projection030::RuntimeMembership030",
+      "path": "RuntimeMembership030.ts"
+    },
+    {
+      "families": [
+        "execution"
+      ],
+      "name": "RuntimePath030",
+      "origin": "macro_lib::db::agsdl_execution::runtime_projection030::RuntimePath030",
+      "path": "RuntimePath030.ts"
+    },
+    {
+      "families": [
+        "execution"
+      ],
+      "name": "RuntimeProjectionContinuation030",
+      "origin": "macro_lib::agsdl_host_projection030::RuntimeProjectionContinuation030",
+      "path": "RuntimeProjectionContinuation030.ts"
+    },
+    {
+      "families": [
+        "execution"
+      ],
+      "name": "RuntimeProjectionItem030",
+      "origin": "macro_lib::agsdl_host_projection030::RuntimeProjectionItem030",
+      "path": "RuntimeProjectionItem030.ts"
+    },
+    {
+      "families": [
+        "execution"
+      ],
+      "name": "RuntimeProjectionPage030",
+      "origin": "macro_lib::agsdl_host_projection030::RuntimeProjectionPage030",
+      "path": "RuntimeProjectionPage030.ts"
+    },
+    {
+      "families": [
+        "execution"
+      ],
+      "name": "RuntimeProjectionQuery030",
+      "origin": "macro_lib::agsdl_host_projection030::RuntimeProjectionQuery030",
+      "path": "RuntimeProjectionQuery030.ts"
+    },
+    {
+      "families": [
+        "execution"
+      ],
+      "name": "RuntimeProjectionScope030",
+      "origin": "macro_lib::agsdl_host_projection030::RuntimeProjectionScope030",
+      "path": "RuntimeProjectionScope030.ts"
     },
     {
       "families": [

@@ -116,6 +116,7 @@ const MIGRATION_004_NAME: &str = "004_message_search";
 const MIGRATION_004_SQL: &str = include_str!("migrations/004_message_search.sql");
 pub(crate) const SUPPORTED_MIGRATION_VERSIONS: &[i64] = &[
     1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26,
+    27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38,
 ];
 const MIGRATION_005_VERSION: i64 = 5;
 const MIGRATION_005_NAME: &str = "005_runtime_schema";
@@ -537,6 +538,75 @@ async fn run_migrations_on_connection(connection: &mut SqliteConnection) -> DbRe
             include_str!("migrations/016_execution_native_operations.sql").into(),
         )
         .await?;
+    }
+    for (version, name, sql) in [
+        (
+            27,
+            "027_execution_work_protocol",
+            include_str!("migrations/017_execution_work_protocol.sql"),
+        ),
+        (
+            28,
+            "028_execution_work_admission",
+            include_str!("migrations/018_execution_work_admission.sql"),
+        ),
+        (
+            29,
+            "029_execution_human_public",
+            include_str!("migrations/029_execution_human_public.sql"),
+        ),
+        (
+            30,
+            "030_execution_flow",
+            include_str!("migrations/030_execution_flow.sql"),
+        ),
+        (
+            31,
+            "031_execution_start_entry",
+            include_str!("migrations/031_execution_start_entry.sql"),
+        ),
+        (
+            32,
+            "032_execution_ui_intent_start030",
+            include_str!("migrations/032_execution_ui_intent_start030.sql"),
+        ),
+        (
+            33,
+            "033_execution_flow_owner030",
+            include_str!("migrations/033_execution_flow_owner030.sql"),
+        ),
+        (
+            34,
+            "034_execution_flow_preparations030",
+            include_str!("migrations/034_execution_flow_preparations030.sql"),
+        ),
+        (
+            35,
+            "035_execution_flow_no_admission030",
+            include_str!("migrations/035_execution_flow_no_admission030.sql"),
+        ),
+        (
+            36,
+            "036_execution_flow_work_protocol030",
+            include_str!("migrations/036_execution_flow_work_protocol030.sql"),
+        ),
+        (
+            37,
+            "037_execution_route_attestations030",
+            include_str!("migrations/037_execution_route_attestations030.sql"),
+        ),
+        (
+            38,
+            "038_execution_system_stop030",
+            include_str!("migrations/038_execution_system_stop030.sql"),
+        ),
+    ] {
+        if !list_applied_migrations(connection)
+            .await?
+            .contains(&version)
+        {
+            apply_migration(connection, version, name.to_string(), sql.to_string()).await?;
+        }
     }
     conversation_content::validate_schema(connection).await?;
     conversation_catalog::validate_schema(connection).await?;

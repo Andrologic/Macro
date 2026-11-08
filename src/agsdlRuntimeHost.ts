@@ -11,6 +11,11 @@ import { buildNativeRegistry, type NativeRegistryObservation } from './services/
 import { normalizeMessage } from './services/agsdlExecution/content';
 import { ConformanceError, decode, record } from './services/agsdlExecution/exact';
 import { captureRegistry } from './services/agsdlExecution/registry';
+import { createHostWorkPort030 } from './services/agsdlExecution/hostWorkPort030';
+import { runHostWorkPump030 } from './services/agsdlExecution/hostWorkPump030';
+import { connectValueSchemaValidator030 } from './services/agsdlExecution/valueSchemaPort030';
+import { NumberToken, parse } from './vendor/agsdl/v0.3/json.mjs';
+import { validate } from './vendor/agsdl/v0.3/valueschema.mjs';
 
 // This entry never mounts App or a product view. Native ownership survives main reload.
 async function handshake(): Promise<string> {
@@ -32,6 +37,12 @@ async function start(): Promise<void> {
     void executionHostQaTake().then(request => flow.wake(request?.[0])).catch(() => undefined);
   });
   flow.start();
+  // The native mailbox owns each work ticket and its epoch. Its controller
+  // runs independently of compilation and of the historical flow pump.
+  const validator = connectValueSchemaValidator030({ NumberToken, parse, validate });
+  void runHostWorkPump030(createHostWorkPort030(generation, validator)).catch(async () => {
+    await executionHostFailed().catch(() => undefined);
+  });
   try {
     for (;;) {
       const job = await executionHostNextCompile();

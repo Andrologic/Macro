@@ -92,15 +92,24 @@ mod native_quit_consent {
 }
 
 mod agsdl_host;
+mod agsdl_host_calls;
 mod agsdl_host_capture;
 mod agsdl_host_catalogue;
 mod agsdl_host_claude;
 mod agsdl_host_codex;
 mod agsdl_host_compiler;
+mod agsdl_host_confinement;
+mod agsdl_host_flow030;
+mod agsdl_host_harness030;
 mod agsdl_host_provider;
+mod agsdl_host_projection030;
+mod agsdl_host_route030;
+mod agsdl_host_stop030;
 mod agsdl_host_tasks;
 mod agsdl_host_tools;
+mod agsdl_host_work;
 mod agsdl_intent_coordinator;
+pub(crate) mod agsdl_permissions;
 mod app_quit_state;
 mod app_updates;
 pub mod commands;
@@ -887,15 +896,22 @@ pub fn run() {
             agsdl_host::execution_host_failed,
             agsdl_host::execution_host_next_compile,
             agsdl_host::execution_host_complete_compile,
+            agsdl_host::execution_host_next_work030,
+            agsdl_host::execution_host_complete_work030,
+            agsdl_host::execution_host_next_route030,
+            agsdl_host::execution_host_complete_route030,
             commands::agsdl_execution::execution_model_choices,
             commands::agsdl_execution::execution_preflight,
             commands::agsdl_execution::execution_list_runs,
+            commands::agsdl_execution::execution_list_runs030,
             commands::agsdl_execution::execution_find_start,
             commands::agsdl_execution::execution_read_diagnostic,
+            commands::agsdl_execution::execution_read_humans030,
             commands::agsdl_execution::execution_pending_approvals,
             commands::agsdl_execution::execution_decide_approval,
             crate::agsdl_host_tools::execution_host_invoke_tool,
             commands::agsdl_execution::execution_start,
+            commands::agsdl_execution::execution_read_runtime_projection030,
             commands::agsdl_execution::execution_stage_intent,
             commands::agsdl_execution::execution_read_intents,
             commands::agsdl_execution::execution_read_intent,

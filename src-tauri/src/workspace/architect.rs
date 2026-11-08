@@ -2738,15 +2738,17 @@ mod tests {
         state
             .standalone_projects
             .push(project("project", "/synthetic/project"));
-        assert!(execution_project(&state, "project").is_ok());
-        assert!(execution_project(&state, " project").is_err());
+        assert!(execution_project(&state, "project", false).is_ok());
+        assert!(execution_project(&state, " project", false).is_err());
         state.standalone_projects[0].archived_at = Some("2026-01-01".into());
-        assert!(execution_project(&state, "project").is_err());
+        assert!(execution_project(&state, "project", false).is_err());
+        assert!(execution_project(&state, "project", true).is_ok());
         state.standalone_projects[0].archived_at = None;
         state
             .standalone_projects
             .push(state.standalone_projects[0].clone());
-        assert!(execution_project(&state, "project").is_err());
+        assert!(execution_project(&state, "project", false).is_err());
+        assert!(execution_project(&state, "project", true).is_err());
     }
 
     #[tokio::test]
@@ -3090,6 +3092,7 @@ async fn read_execution_registry(
 fn execution_project<'a>(
     state: &'a super::WorkspaceState,
     project_id: &str,
+    allow_archived: bool,
 ) -> crate::db::agsdl_execution::Result<&'a super::metadata::ProjectDto> {
     use crate::db::agsdl_execution::failure;
     let matches: Vec<_> = state
@@ -3103,7 +3106,10 @@ fn execution_project<'a>(
         )
         .filter(|project| project.id == project_id)
         .collect();
-    if matches.len() != 1 || matches[0].archived_at.is_some() || matches[0].status == "archived" {
+    if matches.len() != 1
+        || (!allow_archived
+            && (matches[0].archived_at.is_some() || matches[0].status == "archived"))
+    {
         return Err(failure(
             "SOURCE_UNAVAILABLE",
             "source.owner.projectId",
@@ -3119,7 +3125,23 @@ pub(crate) async fn lock_execution_source_owner(
     owner: &crate::db::agsdl_execution::dto::EngineSourceOwner,
     expected: Option<&crate::db::agsdl_execution::dto::EngineSourceRevision>,
 ) -> crate::db::agsdl_execution::Result<LockedExecutionSource> {
-    lock_execution_owner(workspace_path, metadata_root, owner, expected, None).await
+    match lock_execution_owner(workspace_path, metadata_root, owner, expected, None, false).await? {
+        LockedExecutionOwnerResult::Source(source) => Ok(source),
+        LockedExecutionOwnerResult::Owner(_) => unreachable!("source lock returned owner only"),
+    }
+}
+
+/// Authenticate and hold the canonical plan owner for historical reads. This
+/// never invents a current AgSDL source or grants permission to execute.
+pub(crate) async fn lock_execution_history_owner(
+    workspace_path: &Path,
+    metadata_root: &Path,
+    owner: &crate::db::agsdl_execution::dto::EngineSourceOwner,
+) -> crate::db::agsdl_execution::Result<LockedExecutionHistoryOwner> {
+    match lock_execution_owner(workspace_path, metadata_root, owner, None, None, true).await? {
+        LockedExecutionOwnerResult::Owner(owner) => Ok(owner),
+        LockedExecutionOwnerResult::Source(_) => unreachable!("history lock returned source"),
+    }
 }
 
 /// Read canonical owner/conversation without requiring executable source or cards.
@@ -3135,8 +3157,13 @@ pub(crate) async fn lock_execution_intent_scope(
         &scope.owner,
         expected,
         Some(&scope.conversation_id),
+        false,
     )
     .await
+    .and_then(|locked| match locked {
+        LockedExecutionOwnerResult::Source(source) => Ok(source),
+        LockedExecutionOwnerResult::Owner(_) => unreachable!("intent lock returned owner only"),
+    })
     .map_err(|mut error| {
         error.code = match error.code.as_str() {
             "INTENT_SOURCE_CHANGED" => "INTENT_SOURCE_CHANGED",
@@ -3155,7 +3182,8 @@ async fn lock_execution_owner(
     owner: &crate::db::agsdl_execution::dto::EngineSourceOwner,
     expected: Option<&crate::db::agsdl_execution::dto::EngineSourceRevision>,
     conversation_id: Option<&str>,
-) -> crate::db::agsdl_execution::Result<LockedExecutionSource> {
+    owner_only: bool,
+) -> crate::db::agsdl_execution::Result<LockedExecutionOwnerResult> {
     use crate::db::agsdl_execution::failure;
     use sha2::{Digest, Sha256};
     #[derive(Deserialize)]
@@ -3174,7 +3202,8 @@ async fn lock_execution_owner(
         revision: Option<i64>,
         archived_at: Option<String>,
         deleted_at: Option<String>,
-        agsdl: SourceEnvelope,
+        #[serde(default)]
+        agsdl: Option<Box<serde_json::value::RawValue>>,
         conversation_id: Option<String>,
         updated_at: Option<String>,
     }
@@ -3205,12 +3234,13 @@ async fn lock_execution_owner(
     // Project identity comes from the native workspace registry, not the
     // caller's hint that resolve_project_scopes may attach to workspace roots.
     let state = read_execution_registry(metadata_root).await?;
-    let initial_project = execution_project(&state, &owner.project_id).map_err(|mut error| {
-        if conversation_id.is_some() {
-            error.code = "INTENT_SCOPE_INVALID".into();
-        }
-        error
-    })?;
+    let initial_project =
+        execution_project(&state, &owner.project_id, owner_only).map_err(|mut error| {
+            if conversation_id.is_some() {
+                error.code = "INTENT_SCOPE_INVALID".into();
+            }
+            error
+        })?;
     let requested_projects = HashSet::from([owner.project_id.clone()]);
     let initial_projects = collect_workspace_state_project_paths(&state, Some(&requested_projects));
     if initial_projects.is_empty() {
@@ -3321,12 +3351,13 @@ async fn lock_execution_owner(
                 )
             })?;
     let current = read_execution_registry(metadata_root).await?;
-    let current_project = execution_project(&current, &owner.project_id).map_err(|mut error| {
-        if conversation_id.is_some() {
-            error.code = "INTENT_SCOPE_INVALID".into();
-        }
-        error
-    })?;
+    let current_project =
+        execution_project(&current, &owner.project_id, owner_only).map_err(|mut error| {
+            if conversation_id.is_some() {
+                error.code = "INTENT_SCOPE_INVALID".into();
+            }
+            error
+        })?;
     if serde_json::to_value(current_project)? != serde_json::to_value(initial_project)? {
         return Err(failure(
             "CORRELATION",
@@ -3344,6 +3375,7 @@ async fn lock_execution_owner(
         ));
     }
     let mut sources = Vec::new();
+    let mut owner_matches = 0usize;
     for scope in scopes {
         let path = architect_plan_dir(&scope.metadata_root, &owner.branch, &owner.plan_id)
             .join("plan.json");
@@ -3390,7 +3422,7 @@ async fn lock_execution_owner(
         if members.is_empty() && !registered_namespace {
             continue;
         }
-        if plan.archived_at.is_some() || plan.deleted_at.is_some() {
+        if (!owner_only && plan.archived_at.is_some()) || plan.deleted_at.is_some() {
             return Err(failure(
                 if conversation_id.is_some() {
                     "INTENT_SCOPE_INVALID"
@@ -3401,6 +3433,22 @@ async fn lock_execution_owner(
                 "Canonical plan is archived or deleted",
             ));
         }
+        if plan.id != owner.plan_id || plan.revision.unwrap_or(1) < 0 {
+            return Err(failure(
+                "CORRELATION",
+                "source",
+                "Canonical plan revision or identity changed",
+            ));
+        }
+        if owner_only {
+            owner_matches += 1;
+            continue;
+        }
+        let agsdl_raw = plan
+            .agsdl
+            .ok_or_else(|| failure("CORRELATION", "source", "Canonical source is absent"))?;
+        let agsdl: SourceEnvelope = serde_json::from_str(agsdl_raw.get())
+            .map_err(|_| failure("CORRELATION", "source", "Invalid canonical source envelope"))?;
         if let Some(conversation_id) = conversation_id {
             let manifest_path = path
                 .parent()
@@ -3450,15 +3498,8 @@ async fn lock_execution_owner(
         let revision = crate::db::agsdl_execution::dto::EngineSourceRevision {
             owner: owner.clone(),
             revision: plan.revision.unwrap_or(1).to_string(),
-            source_sha256: format!("{:x}", Sha256::digest(plan.agsdl.source.as_bytes())),
+            source_sha256: format!("{:x}", Sha256::digest(agsdl.source.as_bytes())),
         };
-        if plan.id != owner.plan_id || plan.revision.unwrap_or(1) < 0 {
-            return Err(failure(
-                "CORRELATION",
-                "source",
-                "Canonical plan revision or source changed",
-            ));
-        }
         if expected.is_some_and(|expected| expected != &revision) {
             return Err(failure(
                 if conversation_id.is_some() {
@@ -3470,8 +3511,7 @@ async fn lock_execution_owner(
                 "Canonical source changed",
             ));
         }
-        let cards = plan
-            .agsdl
+        let cards = agsdl
             .display
             .get("cards")
             .cloned()
@@ -3484,7 +3524,7 @@ async fn lock_execution_owner(
             ));
         }
         sources.push((
-            plan.agsdl.source,
+            agsdl.source,
             revision,
             serde_json::to_string(if conversation_id.is_some() && !cards.is_object() {
                 &serde_json::Value::Null
@@ -3492,6 +3532,23 @@ async fn lock_execution_owner(
                 &cards
             })
             .map_err(|_| failure("CORRELATION", "display.cards", "Invalid card annotations"))?,
+        ));
+    }
+    if owner_only {
+        if owner_matches == 0 {
+            return Err(failure(
+                "CORRELATION",
+                "source.owner",
+                "Canonical plan owner is absent",
+            ));
+        }
+        return Ok(LockedExecutionOwnerResult::Owner(
+            LockedExecutionHistoryOwner {
+                _guards: guards,
+                _content_guards: content_guards,
+                _state_guard: state_guard,
+                _file_guard: file_guard,
+            },
         ));
     }
     if sources.is_empty()
@@ -3505,7 +3562,7 @@ async fn lock_execution_owner(
     }
     let current_source_consistent = sources.iter().all(|source| source.1 == sources[0].1);
     let (source, revision, display_cards_json) = sources.remove(0);
-    Ok(LockedExecutionSource {
+    Ok(LockedExecutionOwnerResult::Source(LockedExecutionSource {
         source,
         revision,
         display_cards_json,
@@ -3516,7 +3573,21 @@ async fn lock_execution_owner(
         _content_guards: content_guards,
         _state_guard: state_guard,
         _file_guard: file_guard,
-    })
+    }))
+}
+
+enum LockedExecutionOwnerResult {
+    Source(LockedExecutionSource),
+    Owner(LockedExecutionHistoryOwner),
+}
+
+/// Holds the same lifecycle, content, registry and file locks as Start, but
+/// carries no authored source, revision, policy, or execution authority.
+pub(crate) struct LockedExecutionHistoryOwner {
+    _guards: Vec<super::PlanLifecycleGuard>,
+    _content_guards: Vec<tokio::sync::OwnedMutexGuard<()>>,
+    _state_guard: tokio::sync::OwnedMutexGuard<()>,
+    _file_guard: super::WorkspaceFileLock,
 }
 
 /// Held by CaptureAuthority::CommitGuard through the repository commit.

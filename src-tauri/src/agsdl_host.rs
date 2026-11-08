@@ -13,13 +13,58 @@ const ENTRY: &str = "agsdl-runtime-host.html";
 struct Incarnation {
     generation: String,
     compiler: crate::agsdl_host_compiler::CompileBroker,
+    work_protocol: crate::agsdl_host_work::WorkBroker030,
+    route030: crate::agsdl_host_route030::RouteBroker030,
     lifecycle: Arc<tokio::sync::RwLock<()>>,
+    handoff: Mutex<()>,
     live: AtomicBool,
     ready: AtomicBool,
     retired: tokio_util::sync::CancellationToken,
     loads: AtomicUsize,
     owners: Mutex<BTreeMap<String, EngineOwner>>,
     qa_request: Mutex<Option<(String, String)>>,
+}
+impl Incarnation {
+    // This gate covers only synchronous ownership transfer. Work admitted here
+    // stays owned after revocation and must be cancelled and joined by retirement.
+    fn admit_owned<F>(
+        &self,
+        owner: &EngineOwner,
+        tasks: &crate::ai::stream_tasks::StreamTasks,
+        request_id: String,
+        work: F,
+    ) -> Result<()>
+    where
+        F: std::future::Future<Output = ()> + Send + 'static,
+    {
+        let _handoff = self
+            .handoff
+            .lock()
+            .map_err(|_| failure("RUNTIME_UNAVAILABLE", "", "Host admission is unavailable"))?;
+        if !self.live.load(Ordering::SeqCst) || !self.ready.load(Ordering::SeqCst) {
+            return Err(failure("RUNTIME_UNAVAILABLE", "", "Host was revoked"));
+        }
+        let owns = self
+            .owners
+            .lock()
+            .map_err(|_| failure("RUNTIME_UNAVAILABLE", "", "Host ownership unavailable"))?
+            .get(&owner.system_start_id)
+            == Some(owner);
+        if !owns {
+            return Err(failure(
+                "PERMISSION",
+                "owner",
+                "Execution is not owned by this host",
+            ));
+        }
+        tasks.start(request_id, work).map_err(|_| {
+            failure(
+                "CORRELATION",
+                "request",
+                "Native attempt was already admitted or cancelled",
+            )
+        })
+    }
 }
 struct HostResource(Arc<Incarnation>);
 impl tauri::Resource for HostResource {}
@@ -32,6 +77,7 @@ pub(crate) struct HostState(
     Mutex<Option<OwnedHost>>,
     Arc<tokio::sync::Mutex<()>>,
     crate::agsdl_host_tools::ToolExecutors,
+    crate::agsdl_host_flow030::FlowHost030,
 );
 
 /// Native Start holds this lease through the SQL commit and ownership attachment.
@@ -41,6 +87,93 @@ pub(crate) struct HostStartLease {
     _guard: tokio::sync::OwnedRwLockReadGuard<()>,
 }
 impl HostStartLease {
+    /// Clear a reconciled work barrier at the same synchronous boundary used
+    /// by revocation. No IO or await occurs while this guard is held.
+    pub(crate) fn acknowledge_work_commit(
+        &self,
+        runtime: &crate::agsdl_host_flow030::FlowHost030,
+        marker: &crate::agsdl_host_flow030::FlowWorkCommitMarker030,
+    ) -> Result<()> {
+        let _handoff = self.host.handoff.lock().map_err(|_| {
+            failure(
+                "RUNTIME_UNAVAILABLE",
+                "work",
+                "Host admission is unavailable",
+            )
+        })?;
+        self.ensure_live()?;
+        runtime.acknowledge_work_commit(marker)
+    }
+    /// Pure route preparation is still untrusted data until the native owner
+    /// verifies and commits its receipt against the current flow transaction.
+    pub(crate) async fn prepare_route030(
+        &self,
+        input_json: String,
+        cancel: &tokio_util::sync::CancellationToken,
+    ) -> Result<String> {
+        self.ensure_live()?;
+        let result = self
+            .host
+            .route030
+            .evaluate(&self.host.generation, input_json, cancel)
+            .await?;
+        self.ensure_live()?;
+        Ok(result)
+    }
+    /// Transfer an exact native effect to its cancellable owner while this
+    /// lease keeps the incarnation attached. The caller must also hold the
+    /// shared admission exclusion through the acknowledged claim commit.
+    pub(crate) fn admit_owned_stream<F>(
+        &self,
+        owner: &EngineOwner,
+        tasks: &crate::ai::stream_tasks::StreamTasks,
+        request_id: String,
+        work: F,
+    ) -> Result<()>
+    where
+        F: std::future::Future<Output = ()> + Send + 'static,
+    {
+        self.host.admit_owned(owner, tasks, request_id, work)
+    }
+
+    /// Release an already owned effect at the same boundary as revocation.
+    /// The callback must only update in-memory bookkeeping and must not block.
+    pub(crate) fn release_owned_stream030(
+        &self,
+        owner: &EngineOwner,
+        release: tokio::sync::oneshot::Sender<()>,
+        before_release: impl FnOnce(),
+    ) -> Result<()> {
+        let _handoff = self
+            .host
+            .handoff
+            .lock()
+            .map_err(|_| failure("RUNTIME_UNAVAILABLE", "", "Host admission is unavailable"))?;
+        self.ensure_live()?;
+        let owns = self
+            .host
+            .owners
+            .lock()
+            .map_err(|_| failure("RUNTIME_UNAVAILABLE", "", "Host ownership unavailable"))?
+            .get(&owner.system_start_id)
+            == Some(owner);
+        if !owns {
+            return Err(failure(
+                "PERMISSION",
+                "owner",
+                "Execution is not owned by this host",
+            ));
+        }
+        before_release();
+        release.send(()).map_err(|_| {
+            failure(
+                "UNCERTAIN",
+                "",
+                "Owned effect release could not be confirmed",
+            )
+        })
+    }
+
     pub(crate) fn generation(&self) -> &str {
         &self.host.generation
     }
@@ -94,6 +227,9 @@ impl HostStartLease {
 }
 
 impl HostState {
+    pub(crate) fn flow030(&self) -> &crate::agsdl_host_flow030::FlowHost030 {
+        &self.3
+    }
     pub(crate) fn admission_lock(&self) -> Arc<tokio::sync::Mutex<()>> {
         self.1.clone()
     }
@@ -121,6 +257,22 @@ impl HostState {
         };
         lease.ensure_live()?;
         Ok(lease)
+    }
+    /// Caller holds the async admission gate through the durable claim and
+    /// this synchronous handoff. The work is owned before it can be polled.
+    pub(crate) fn admit_owned_stream<F>(
+        &self,
+        caller: &Webview,
+        owner: &EngineOwner,
+        tasks: &crate::ai::stream_tasks::StreamTasks,
+        request_id: String,
+        work: F,
+    ) -> Result<()>
+    where
+        F: std::future::Future<Output = ()> + Send + 'static,
+    {
+        self.authenticate(caller)?
+            .admit_owned(owner, tasks, request_id, work)
     }
     pub(crate) async fn compile(
         &self,
@@ -154,6 +306,271 @@ impl HostState {
             ));
         }
         Ok(receipt)
+    }
+    /// The caller first reserves the durable work event. The result still needs
+    /// the repository CAS and native proof checks before it can cause an effect.
+    async fn evaluate_work030(
+        &self,
+        input: crate::agsdl_host_work::HostWorkInput030,
+        cancelled: &tokio_util::sync::CancellationToken,
+    ) -> Result<(crate::agsdl_host_work::HostWorkOutput030, Arc<Incarnation>)> {
+        let host = self
+            .0
+            .lock()
+            .map_err(|_| failure("RUNTIME_UNAVAILABLE", "work", "Host state unavailable"))?
+            .as_ref()
+            .map(|host| host.incarnation.clone())
+            .ok_or_else(|| failure("RUNTIME_UNAVAILABLE", "work", "Host not installed"))?;
+        let owns_work = host
+            .owners
+            .lock()
+            .map_err(|_| failure("RUNTIME_UNAVAILABLE", "work", "Host ownership unavailable"))?
+            .get(&input.context.owner.system_start_id)
+            == Some(&input.context.owner);
+        if !host.live.load(Ordering::SeqCst) || !host.ready.load(Ordering::SeqCst) || !owns_work {
+            return Err(failure(
+                "PERMISSION",
+                "work",
+                "Work is not owned by this host incarnation",
+            ));
+        }
+        let output = host
+            .work_protocol
+            .evaluate(&host.generation, input, cancelled)
+            .await?;
+        if !host.live.load(Ordering::SeqCst) {
+            return Err(failure(
+                "RUNTIME_UNAVAILABLE",
+                "work",
+                "Work protocol host was revoked",
+            ));
+        }
+        Ok((output, host))
+    }
+
+    /// Evaluates a previously reserved Flow030 event without keeping a SQL or
+    /// admission guard across the mailbox wait. The caller must revalidate
+    /// the flow and commit its decision in a fresh guarded transaction.
+    pub(crate) async fn evaluate_flow_work030(
+        &self,
+        input: crate::agsdl_host_work::HostWorkInput030,
+        generation: &str,
+        cancelled: &tokio_util::sync::CancellationToken,
+    ) -> Result<crate::agsdl_host_work::HostWorkOutput030> {
+        let owner = input.context.owner.clone();
+        let expected = self
+            .0
+            .lock()
+            .map_err(|_| failure("RUNTIME_UNAVAILABLE", "work", "Host state unavailable"))?
+            .as_ref()
+            .map(|host| host.incarnation.clone())
+            .ok_or_else(|| failure("RUNTIME_UNAVAILABLE", "work", "Host not installed"))?;
+        if expected.generation != generation {
+            return Err(failure(
+                "CORRELATION",
+                "work",
+                "Work host generation differs",
+            ));
+        }
+        let (output, evaluated) = self.evaluate_work030(input, cancelled).await?;
+        let current = self
+            .0
+            .lock()
+            .map_err(|_| failure("RUNTIME_UNAVAILABLE", "work", "Host state unavailable"))?
+            .as_ref()
+            .map(|host| host.incarnation.clone())
+            .ok_or_else(|| failure("RUNTIME_UNAVAILABLE", "work", "Host not installed"))?;
+        if !Arc::ptr_eq(&expected, &evaluated)
+            || !Arc::ptr_eq(&expected, &current)
+            || !expected.live.load(Ordering::SeqCst)
+            || expected
+                .owners
+                .lock()
+                .map_err(|_| failure("RUNTIME_UNAVAILABLE", "work", "Host ownership unavailable"))?
+                .get(&owner.system_start_id)
+                != Some(&owner)
+        {
+            return Err(failure(
+                "RUNTIME_UNAVAILABLE",
+                "work",
+                "Work host ownership changed",
+            ));
+        }
+        Ok(output)
+    }
+    /// Reserve before asking the pure controller, then commit through DB017's
+    /// epoch/stop/revision guard. A committed replay never invokes the mailbox.
+    /// This reserves checks only; physical execution requires a separate
+    /// native admission and one durable claim under the Stop gate.
+    pub(crate) async fn transition_work030(
+        &self,
+        pool: &sqlx::SqlitePool,
+        input: &repository::work_protocol030::ProtocolEvent030,
+        cancelled: &tokio_util::sync::CancellationToken,
+    ) -> Result<repository::work_protocol030::ProtocolDecision030> {
+        self.transition_work030_inner(pool, input, None, cancelled)
+            .await
+    }
+
+    pub(crate) async fn transition_visible_work030(
+        &self,
+        pool: &sqlx::SqlitePool,
+        input: &repository::work_protocol030::ProtocolEvent030,
+        emission: &repository::responses::Emission,
+        cancelled: &tokio_util::sync::CancellationToken,
+    ) -> Result<repository::work_protocol030::ProtocolDecision030> {
+        self.transition_work030_inner(pool, input, Some(emission), cancelled)
+            .await
+    }
+
+    async fn transition_work030_inner(
+        &self,
+        pool: &sqlx::SqlitePool,
+        input: &repository::work_protocol030::ProtocolEvent030,
+        emission: Option<&repository::responses::Emission>,
+        cancelled: &tokio_util::sync::CancellationToken,
+    ) -> Result<repository::work_protocol030::ProtocolDecision030> {
+        use repository::work_protocol030::{
+            self as protocol, EventReservation030, ProtocolDecision030,
+        };
+
+        if emission.is_none() {
+            protocol::reject_visible_without_response(input)?;
+        }
+        let admission = protocol::read_admission(pool, &input.context, input.control).await?;
+        let reservation = {
+            let lease = self.start_lease().await?;
+            if lease.owner(&input.context.owner.system_start_id)? != input.context.owner {
+                return Err(failure(
+                    "PERMISSION",
+                    "work",
+                    "Work belongs to another host epoch",
+                ));
+            }
+            let reservation = protocol::reserve_event(pool, input).await?;
+            lease.ensure_live()?;
+            reservation
+        };
+        let ticket = match reservation {
+            EventReservation030::Committed { decision } => {
+                if let Some(emission) = emission {
+                    protocol::verify_visible_commit(pool, input, &decision, emission).await?;
+                } else {
+                    protocol::reject_visible_without_response(input)?;
+                }
+                return Ok(decision);
+            }
+            EventReservation030::Pending { ticket } => ticket,
+        };
+        let (output, host) = self
+            .evaluate_work030(
+                crate::agsdl_host_work::HostWorkInput030 {
+                    context: input.context.clone(),
+                    event_id: input.event_id.clone(),
+                    expected_revision: input.expected_revision.clone(),
+                    contract_json: ticket.contract_json.clone(),
+                    state_json: ticket.state_json.clone(),
+                    event_json: input.event_json.clone(),
+                    options_json: admission.options_json,
+                },
+                cancelled,
+            )
+            .await?;
+        if cancelled.is_cancelled() {
+            return Err(failure(
+                "INTERRUPTED",
+                "work",
+                "Work transition was cancelled",
+            ));
+        }
+        let check =
+            crate::agsdl_host_work::reserved_check030(&input.context, &output.receipt_json)?;
+        let decision = ProtocolDecision030 {
+            state_json: output.state_json,
+            receipt_json: output.receipt_json,
+            check,
+        };
+        if let Err(error) = self
+            .commit_work030_inner(pool, &host, &ticket, &decision, emission, cancelled)
+            .await
+        {
+            if error.code == "UNCERTAIN" {
+                // Read only: a durable result does not renew a revoked lease and
+                // cannot authorize a second physical dispatch.
+                let observation = tokio::time::timeout(
+                    std::time::Duration::from_secs(1),
+                    crate::agsdl_host_work::observe_commit030(pool, &ticket, &decision),
+                )
+                .await;
+                let message = match observation {
+                    Ok(Ok(crate::agsdl_host_work::DurableCommitObservation030::Committed)) => {
+                        "Work decision is durable; no effect may be replayed"
+                    }
+                    Ok(Ok(crate::agsdl_host_work::DurableCommitObservation030::Unresolved)) => {
+                        "Work decision remains uncertain; no effect may be replayed"
+                    }
+                    _ => "Work decision could not be inspected; no effect may be replayed",
+                };
+                return Err(failure("UNCERTAIN", "work", message));
+            }
+            return Err(error);
+        }
+        Ok(decision)
+    }
+    /// Only the short SQL commit holds the lifecycle lease. Cancellation or
+    /// retirement can leave the commit outcome unknown; it never authorizes IO.
+    #[cfg(test)]
+    async fn commit_work030(
+        &self,
+        pool: &sqlx::SqlitePool,
+        host: &Arc<Incarnation>,
+        ticket: &repository::work_protocol030::TransitionTicket030,
+        decision: &repository::work_protocol030::ProtocolDecision030,
+        cancelled: &tokio_util::sync::CancellationToken,
+    ) -> Result<()> {
+        self.commit_work030_inner(pool, host, ticket, decision, None, cancelled)
+            .await
+    }
+
+    async fn commit_work030_inner(
+        &self,
+        pool: &sqlx::SqlitePool,
+        host: &Arc<Incarnation>,
+        ticket: &repository::work_protocol030::TransitionTicket030,
+        decision: &repository::work_protocol030::ProtocolDecision030,
+        emission: Option<&repository::responses::Emission>,
+        cancelled: &tokio_util::sync::CancellationToken,
+    ) -> Result<()> {
+        let _lease = host.lifecycle.clone().read_owned().await;
+        if !host.live.load(Ordering::SeqCst)
+            || !host.ready.load(Ordering::SeqCst)
+            || cancelled.is_cancelled()
+        {
+            return Err(failure(
+                "INTERRUPTED",
+                "work",
+                "Work host was revoked before commit",
+            ));
+        }
+        tokio::select! {
+            biased;
+            _ = host.retired.cancelled() => return Err(failure("UNCERTAIN", "work", "Host retired during commit; inspect durable state")),
+            _ = cancelled.cancelled() => return Err(failure("UNCERTAIN", "work", "Work cancelled during commit; inspect durable state")),
+            result = async {
+                match emission {
+                    Some(value) => repository::work_protocol030::commit_visible_event(pool, ticket, decision, value).await,
+                    None => repository::work_protocol030::commit_event(pool, ticket, decision).await,
+                }
+            } => { result?; }
+        }
+        if !host.live.load(Ordering::SeqCst) || cancelled.is_cancelled() {
+            return Err(failure(
+                "UNCERTAIN",
+                "work",
+                "Work host retired after commit; inspect durable state",
+            ));
+        }
+        Ok(())
     }
     /// Called only by native capture after the durable start receipt. There is no
     /// IPC that lets a caller claim an arbitrary system or choose its epoch.
@@ -230,14 +647,88 @@ impl HostState {
     }
 }
 
-fn retire(host: &Arc<Incarnation>, database: &DbPool, app: &tauri::AppHandle) {
-    let app = app.clone();
+fn revoke_now(host: &Arc<Incarnation>) -> bool {
+    // A poisoned handoff must still revoke; no later admission may succeed.
+    let _handoff = host
+        .handoff
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     if !host.live.swap(false, Ordering::SeqCst) {
-        return;
+        return false;
     }
+    drop(_handoff);
     host.ready.store(false, Ordering::SeqCst);
     host.retired.cancel();
     host.compiler.close();
+    host.work_protocol.close();
+    host.route030.close();
+    true
+}
+
+pub(crate) async fn fence_generation(
+    pool: &sqlx::SqlitePool,
+    owners: &[EngineOwner],
+    generation: &str,
+) -> Result<()> {
+    repository::revoke_host_owners(pool, owners).await?;
+    crate::agsdl_host_flow030::revoke_generation(pool, generation).await
+}
+
+/// Stop through the pre-commit native controls, after releasing admission.
+/// Joining a stream alone is not proof that independently owned provider or
+/// call descendants ended; those still require their physical receipts.
+async fn stop_retired_flows(
+    runtime: &crate::agsdl_host_flow030::FlowHost030,
+    pool: &sqlx::SqlitePool,
+    tasks: &crate::ai::stream_tasks::StreamTasks,
+    generation: &str,
+) -> Result<()> {
+    use repository::flow030::{FlowEvent030, FlowEventKind030};
+    let mut pending = false;
+    for control in runtime.retiring_controls(generation)? {
+        let identity = control.identity();
+        let exists: bool = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM engine_flow030_owners WHERE system_id=? AND invocation_id=?)",
+        )
+        .bind(&identity.system_start_id)
+        .bind(&identity.flow_invocation_id)
+        .fetch_one(pool)
+        .await?;
+        // Start may have retained its in-memory owner before rolling back.
+        if !exists {
+            continue;
+        }
+        let view = control.read(pool).await?;
+        if !view.state.stopping && view.state.verdict.is_none() {
+            control
+                .apply(
+                    pool,
+                    &FlowEvent030 {
+                        identity: identity.clone(),
+                        event_id: format!("retire:{}", uuid::Uuid::new_v4()),
+                        expected_revision: view.state.revision,
+                        kind: FlowEventKind030::Stop,
+                    },
+                )
+                .await?;
+        }
+        pending |= crate::agsdl_host_stop030::reconcile(runtime, pool, tasks, &control).await?;
+    }
+    if pending {
+        return Err(failure(
+            "STOP_PENDING",
+            "",
+            "Native flow is awaiting physical termination evidence",
+        ));
+    }
+    Ok(())
+}
+
+fn retire(host: &Arc<Incarnation>, database: &DbPool, app: &tauri::AppHandle) {
+    let app = app.clone();
+    if !revoke_now(host) {
+        return;
+    }
     let database = database.clone();
     let host = host.clone();
     tauri::async_runtime::spawn(async move {
@@ -252,10 +743,13 @@ fn retire(host: &Arc<Incarnation>, database: &DbPool, app: &tauri::AppHandle) {
 
         // Authority is already revoked in memory. Retain the retirement until the
         // native journal acknowledges it; shutdown recovery handles process loss.
-        while !owners.is_empty() {
+        loop {
             if let Ok(pool) = database.wait_until_ready().await {
                 let _gate = app.state::<HostState>().admission_lock().lock_owned().await;
-                if repository::revoke_host_owners(&pool, &owners).await.is_ok() {
+                if fence_generation(&pool, &owners, &host.generation)
+                    .await
+                    .is_ok()
+                {
                     break;
                 }
             }
@@ -265,6 +759,16 @@ fn retire(host: &Arc<Incarnation>, database: &DbPool, app: &tauri::AppHandle) {
         // Native engines may own descendants outside Macro's process. Revoking
         // their epoch also requests physical stop; reload never leaves them running.
         if let Ok(pool) = database.wait_until_ready().await {
+            if let Err(error) = stop_retired_flows(
+                app.state::<HostState>().flow030(),
+                &pool,
+                &app.state::<crate::ai::AiState>().stream_tasks,
+                &host.generation,
+            )
+            .await
+            {
+                tracing::warn!(code = %error.code, "Native flow retirement remains pending");
+            }
             for owner in &owners {
                 if let Ok(projection) =
                     repository::read_projection(&pool, &owner.system_start_id).await
@@ -369,7 +873,10 @@ pub(crate) fn install(app: &tauri::AppHandle) -> tauri::Result<()> {
     let incarnation = Arc::new(Incarnation {
         generation: uuid::Uuid::new_v4().to_string(),
         compiler: Default::default(),
+        work_protocol: Default::default(),
+        route030: Default::default(),
         lifecycle: Arc::new(tokio::sync::RwLock::new(())),
+        handoff: Mutex::new(()),
         live: AtomicBool::new(true),
         ready: AtomicBool::new(false),
         retired: Default::default(),
@@ -468,6 +975,14 @@ pub(crate) fn execution_host_ready(
 mod recovery_tests;
 
 #[cfg(test)]
+#[path = "agsdl_host_flow030_tests.rs"]
+mod flow030_tests;
+
+#[cfg(test)]
+#[path = "agsdl_host_flow_work030_tests.rs"]
+mod flow_work030_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     #[tokio::test]
@@ -475,7 +990,10 @@ mod tests {
         let host = Arc::new(Incarnation {
             generation: "native-generation".into(),
             compiler: Default::default(),
+            work_protocol: Default::default(),
+            route030: Default::default(),
             lifecycle: Arc::new(tokio::sync::RwLock::new(())),
+            handoff: Mutex::new(()),
             live: AtomicBool::new(true),
             ready: AtomicBool::new(true),
             retired: Default::default(),
@@ -503,12 +1021,140 @@ mod tests {
         );
     }
 
+    #[tokio::test(flavor = "current_thread")]
+    async fn owned_stream_handoff_is_ordered_with_revocation_before_first_poll() {
+        let host = Arc::new(Incarnation {
+            generation: "generation".into(),
+            compiler: Default::default(),
+            work_protocol: Default::default(),
+            route030: Default::default(),
+            lifecycle: Arc::new(tokio::sync::RwLock::new(())),
+            handoff: Mutex::new(()),
+            live: AtomicBool::new(true),
+            ready: AtomicBool::new(true),
+            retired: Default::default(),
+            loads: AtomicUsize::new(0),
+            owners: Mutex::new(BTreeMap::new()),
+            qa_request: Mutex::new(None),
+        });
+        let owner = EngineOwner {
+            system_start_id: "system".into(),
+            owner_epoch: "0".into(),
+        };
+        host.owners
+            .lock()
+            .unwrap()
+            .insert(owner.system_start_id.clone(), owner.clone());
+        let lease = HostStartLease {
+            host: host.clone(),
+            _guard: host.lifecycle.clone().read_owned().await,
+        };
+        let tasks = crate::ai::stream_tasks::StreamTasks::default();
+        let polled = Arc::new(AtomicBool::new(false));
+        let observed = polled.clone();
+        lease
+            .admit_owned_stream(&owner, &tasks, "first".into(), async move {
+                observed.store(true, Ordering::SeqCst);
+                std::future::pending::<()>().await;
+            })
+            .unwrap();
+        let (started, observed_start) = tokio::sync::oneshot::channel();
+        lease
+            .admit_owned_stream(&owner, &tasks, "second".into(), async move {
+                let _ = started.send(());
+                std::future::pending::<()>().await;
+            })
+            .unwrap();
+        let foreign = EngineOwner {
+            system_start_id: owner.system_start_id.clone(),
+            owner_epoch: "1".into(),
+        };
+        assert!(lease
+            .admit_owned_stream(&foreign, &tasks, "foreign".into(), async {})
+            .is_err());
+        // No yield has occurred: revocation precedes both futures' first poll.
+        assert!(revoke_now(&host));
+        assert!(lease
+            .admit_owned_stream(&owner, &tasks, "late".into(), async {})
+            .is_err());
+        assert!(tasks.cancel_owned("first").await.unwrap());
+        assert!(!polled.load(Ordering::SeqCst));
+        // The other already-owned operation may start after revocation. It is
+        // still known to the supervisor and is joined before reporting end.
+        observed_start.await.unwrap();
+        assert!(tasks.cancel_owned("second").await.unwrap());
+        assert!(!tasks.cancel_owned("late").await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn owned_release_refuses_foreign_owner_closed_receiver_and_poisoned_gate() {
+        let host = Arc::new(Incarnation {
+            generation: "generation".into(),
+            compiler: Default::default(),
+            work_protocol: Default::default(),
+            route030: Default::default(),
+            lifecycle: Arc::new(tokio::sync::RwLock::new(())),
+            handoff: Mutex::new(()),
+            live: AtomicBool::new(true),
+            ready: AtomicBool::new(true),
+            retired: Default::default(),
+            loads: AtomicUsize::new(0),
+            owners: Mutex::new(BTreeMap::new()),
+            qa_request: Mutex::new(None),
+        });
+        let owner = EngineOwner {
+            system_start_id: "system".into(),
+            owner_epoch: "0".into(),
+        };
+        host.owners
+            .lock()
+            .unwrap()
+            .insert(owner.system_start_id.clone(), owner.clone());
+        let lease = HostStartLease {
+            host: host.clone(),
+            _guard: host.lifecycle.clone().read_owned().await,
+        };
+        let touched = AtomicBool::new(false);
+        let foreign = EngineOwner {
+            system_start_id: owner.system_start_id.clone(),
+            owner_epoch: "1".into(),
+        };
+        let (tx, _rx) = tokio::sync::oneshot::channel();
+        assert!(lease
+            .release_owned_stream030(&foreign, tx, || touched.store(true, Ordering::SeqCst))
+            .is_err());
+        assert!(!touched.load(Ordering::SeqCst));
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        drop(rx);
+        assert_eq!(
+            lease
+                .release_owned_stream030(&owner, tx, || {})
+                .unwrap_err()
+                .code,
+            "UNCERTAIN"
+        );
+        let poisoning = host.clone();
+        let _ = std::thread::spawn(move || {
+            let _guard = poisoning.handoff.lock().unwrap();
+            panic!("poison test gate");
+        })
+        .join();
+        let (tx, _rx) = tokio::sync::oneshot::channel();
+        assert!(lease
+            .release_owned_stream030(&owner, tx, || touched.store(true, Ordering::SeqCst))
+            .is_err());
+        assert!(!touched.load(Ordering::SeqCst));
+    }
+
     #[test]
     fn physical_resource_cannot_be_replaced_by_a_matching_generation_string() {
         let first = Arc::new(Incarnation {
             generation: "same".into(),
             compiler: Default::default(),
+            work_protocol: Default::default(),
+            route030: Default::default(),
             lifecycle: Arc::new(tokio::sync::RwLock::new(())),
+            handoff: Mutex::new(()),
             live: AtomicBool::new(true),
             ready: AtomicBool::new(false),
             retired: Default::default(),
@@ -519,7 +1165,10 @@ mod tests {
         let forged = Arc::new(Incarnation {
             generation: "same".into(),
             compiler: Default::default(),
+            work_protocol: Default::default(),
+            route030: Default::default(),
             lifecycle: Arc::new(tokio::sync::RwLock::new(())),
+            handoff: Mutex::new(()),
             live: AtomicBool::new(true),
             ready: AtomicBool::new(false),
             retired: Default::default(),
@@ -560,6 +1209,48 @@ pub(crate) fn execution_host_complete_compile(
     let host = state.authenticate(&webview)?;
     host.compiler
         .complete(&host.generation, &ticket, result_json)
+}
+
+#[tauri::command]
+pub(crate) async fn execution_host_next_work030(
+    webview: Webview,
+    state: tauri::State<'_, HostState>,
+) -> Result<crate::agsdl_host_work::HostWorkJob030> {
+    let host = state.authenticate(&webview)?;
+    let job = host.work_protocol.next().await?;
+    state.authenticate(&webview)?;
+    Ok(job)
+}
+
+#[tauri::command]
+pub(crate) fn execution_host_complete_work030(
+    webview: Webview,
+    state: tauri::State<'_, HostState>,
+    completion: crate::agsdl_host_work::HostWorkCompletion030,
+) -> Result<()> {
+    let host = state.authenticate(&webview)?;
+    host.work_protocol.complete(&host.generation, completion)
+}
+
+#[tauri::command]
+pub(crate) async fn execution_host_next_route030(
+    webview: Webview,
+    state: tauri::State<'_, HostState>,
+) -> Result<crate::agsdl_host_route030::HostRouteJob030> {
+    let host = state.authenticate(&webview)?;
+    let job = host.route030.next().await?;
+    state.authenticate(&webview)?;
+    Ok(job)
+}
+
+#[tauri::command]
+pub(crate) fn execution_host_complete_route030(
+    webview: Webview,
+    state: tauri::State<'_, HostState>,
+    completion: crate::agsdl_host_route030::HostRouteCompletion030,
+) -> Result<()> {
+    let host = state.authenticate(&webview)?;
+    host.route030.complete(&host.generation, completion)
 }
 
 #[tauri::command]
