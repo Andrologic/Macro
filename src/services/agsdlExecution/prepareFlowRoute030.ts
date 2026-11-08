@@ -20,7 +20,7 @@ export interface PrepareFlowRouteInput030 {
   readonly producer: NativeProducer030; readonly source: RouteSource030; readonly nativeReceiptId: string;
   readonly content?: CapturedContent030;
   /** Native content authority is scoped to this destination occurrence. */
-  readonly contentForOccurrence?: (targetOrdinal: number, itemIndex: string, target: CompiledTarget030) => CapturedContent030;
+  readonly contentForOccurrence?: (targetOrdinal: number, itemIndex: string, target: CompiledTarget030) => CapturedContent030 | undefined;
 }
 export type PrepareFlowRouteResult030 =
   | { readonly kind: 'ready'; readonly batches: readonly PreparedBatch030[]; readonly provenance: readonly OccurrenceProvenance030[] }
