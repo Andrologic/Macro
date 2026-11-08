@@ -248,6 +248,13 @@ impl StreamTasks {
                     .get_mut(&request_id)
                     .map(|entry| {
                         entry.abort = None;
+                        // Only the request tombstone and completion receipt survive
+                        // the parent. Release request bodies and attribution after
+                        // its future has been destroyed, before joining resources.
+                        entry.operations030 = HashMap::new();
+                        entry.operations030_bytes = 0;
+                        entry.owner030 = None;
+                        entry.work030 = None;
                         std::mem::take(&mut entry.cleanups)
                     })
                     .unwrap_or_default(),
@@ -610,6 +617,83 @@ mod tests {
         assert!(registry
             .attach_operation030("parent", operation030())
             .is_err());
+    }
+
+    async fn finished_parent_releases_operation_data(cancel: bool) {
+        let registry = StreamTasks::default();
+        let inside = registry.clone();
+        let (attached, observed) = oneshot::channel();
+        let (finish, finishing) = oneshot::channel();
+        registry
+            .start_work_fixture030(
+                "parent".into(),
+                operation030().identity,
+                operation030().context,
+                "generation".into(),
+                "worker".into(),
+                "attempt".into(),
+                async move {
+                    let mut operation = operation030();
+                    operation.request_json = format!(r#"{{"content":"{}"}}"#, "x".repeat(65_536));
+                    for id in ["first", "second"] {
+                        operation.operation_id = id.into();
+                        inside
+                            .attach_operation030("parent", operation.clone())
+                            .unwrap()
+                            .into_operation()
+                            .unwrap();
+                    }
+                    attached.send(()).unwrap();
+                    let _ = finishing.await;
+                },
+            )
+            .unwrap();
+        observed.await.unwrap();
+        let mut completion = {
+            let entries = registry.entries.lock().unwrap();
+            let active = &entries["parent"];
+            assert_eq!(active.operations030.len(), 2);
+            assert!(active.operations030_bytes > 131_072);
+            assert!(active.owner030.is_some() && active.work030.is_some());
+            active.finished.clone()
+        };
+        if cancel {
+            registry.cancel("parent").await.unwrap();
+        } else {
+            finish.send(()).unwrap();
+        }
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while completion.borrow_and_update().is_none() {
+                completion.changed().await.unwrap();
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(completion.borrow().as_ref(), Some(&Ok(())));
+        {
+            let entries = registry.entries.lock().unwrap();
+            let tombstone = &entries["parent"];
+            assert!(tombstone.admitted && tombstone.abort.is_none());
+            assert!(tombstone.operations030.is_empty());
+            assert_eq!(tombstone.operations030.capacity(), 0);
+            assert_eq!(tombstone.operations030_bytes, 0);
+            assert!(tombstone.owner030.is_none() && tombstone.work030.is_none());
+        }
+        assert!(registry.start("parent".into(), async {}).is_err());
+        registry.cancel("parent").await.unwrap();
+        assert!(registry
+            .attach_operation030("parent", operation030())
+            .is_err());
+    }
+
+    #[tokio::test]
+    async fn completed_parent_releases_request_data_but_keeps_its_tombstone() {
+        finished_parent_releases_operation_data(false).await;
+    }
+
+    #[tokio::test]
+    async fn cancelled_parent_releases_request_data_but_keeps_its_tombstone() {
+        finished_parent_releases_operation_data(true).await;
     }
 
     #[tokio::test]
