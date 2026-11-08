@@ -46,7 +46,6 @@ async fn simulated_codex_resumes_two_activations_keeps_instances_separate_and_jo
     let executable = directory.join("fake-codex");
     let profile = Profile {
         executable: executable.clone(),
-        version: "0.163.0".into(),
         directory: directory.clone(),
         home: directory.join("home"),
         bootstrap: temp.path().join("bootstrap"),
