@@ -23,7 +23,7 @@ export function capturedContentForOccurrence030(cache: NativeContentCache030): N
     const contexts = new Set<string>();
     for (const occurrence of cache.occurrences) {
       if (!Number.isSafeInteger(occurrence.targetOrdinal) || occurrence.targetOrdinal < 0 ||
-          !/^(0|[1-9][0-9]*)$/.test(occurrence.itemIndex) || typeof occurrence.contextId !== 'string' || !occurrence.contextId ||
+          typeof occurrence.itemIndex !== 'string' || !/^(0|[1-9][0-9]*)$/.test(occurrence.itemIndex) || typeof occurrence.contextId !== 'string' || !occurrence.contextId ||
           !occurrence.identity || !['captureId', 'sourceDigest', 'agent', 'policyDigest'].every(key =>
             typeof occurrence.identity[key as keyof ContentCaptureIdentity030] === 'string' && occurrence.identity[key as keyof ContentCaptureIdentity030].length > 0) ||
           !Array.isArray(occurrence.receipts)) throw new Error('Invalid content occurrence.');

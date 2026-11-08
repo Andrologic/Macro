@@ -25,6 +25,10 @@ it('keeps native content caches distinct for equal fan-out items and rejects dup
   expect(factory(1, '1', target)?.resolveSource?.(source, use)).toContain('"B"');
   expect(factory(1, '2', target)).toEqual({});
   expect(() => capturedContentForOccurrence030({ format: 'macro-agsdl-route-content/1', occurrences: [first, first] })).toThrow();
+  for (const itemIndex of [0, ['0']]) {
+    const invalid = { ...first, itemIndex } as unknown as typeof first;
+    expect(() => capturedContentForOccurrence030({ format: 'macro-agsdl-route-content/1', occurrences: [invalid] })).toThrow();
+  }
   expect(() => capturedContentForOccurrence030({ identity, receipts: [receipt('A')] })).toThrow();
   expect(capturedContentForOccurrence030({ identity, receipts: [] })(1, '0', target)).toEqual({});
 });
