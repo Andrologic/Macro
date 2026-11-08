@@ -76,6 +76,7 @@ pub(crate) struct HostState(
     Mutex<Option<OwnedHost>>,
     Arc<tokio::sync::Mutex<()>>,
     crate::agsdl_host_tools::ToolExecutors,
+    crate::agsdl_host_flow030::FlowHost030,
 );
 
 /// Native Start holds this lease through the SQL commit and ownership attachment.
@@ -154,6 +155,9 @@ impl HostStartLease {
 }
 
 impl HostState {
+    pub(crate) fn flow030(&self) -> &crate::agsdl_host_flow030::FlowHost030 {
+        &self.3
+    }
     pub(crate) fn admission_lock(&self) -> Arc<tokio::sync::Mutex<()>> {
         self.1.clone()
     }
@@ -537,6 +541,81 @@ fn revoke_now(host: &Arc<Incarnation>) -> bool {
     true
 }
 
+pub(crate) async fn fence_generation(
+    pool: &sqlx::SqlitePool,
+    owners: &[EngineOwner],
+    generation: &str,
+) -> Result<()> {
+    repository::revoke_host_owners(pool, owners).await?;
+    crate::agsdl_host_flow030::revoke_generation(pool, generation).await
+}
+
+/// Stop through the pre-commit native controls, after releasing admission.
+/// Joining a stream alone is not proof that independently owned provider or
+/// call descendants ended; those still require their physical receipts.
+async fn stop_retired_flows(
+    runtime: &crate::agsdl_host_flow030::FlowHost030,
+    pool: &sqlx::SqlitePool,
+    tasks: &crate::ai::stream_tasks::StreamTasks,
+    generation: &str,
+) -> Result<()> {
+    use repository::flow030::{FlowEffect030, FlowEvent030, FlowEventKind030};
+    let mut pending = false;
+    for control in runtime.retiring_controls(generation)? {
+        let identity = control.identity();
+        let exists: bool = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM engine_flow030_owners WHERE system_id=? AND invocation_id=?)",
+        )
+        .bind(&identity.system_start_id)
+        .bind(&identity.flow_invocation_id)
+        .fetch_one(pool)
+        .await?;
+        // Start may have retained its in-memory owner before rolling back.
+        if !exists {
+            continue;
+        }
+        let view = control.read(pool).await?;
+        if !view.state.stopping && view.state.verdict.is_none() {
+            control
+                .apply(
+                    pool,
+                    &FlowEvent030 {
+                        identity: identity.clone(),
+                        event_id: format!("retire:{}", uuid::Uuid::new_v4()),
+                        expected_revision: view.state.revision,
+                        kind: FlowEventKind030::Stop,
+                    },
+                )
+                .await?;
+        }
+        let view = control.read(pool).await?;
+        let physical_pending = view.state.activations.iter().any(|work| work.physical);
+        for row in view.effects {
+            if !matches!(
+                row.get("status").and_then(serde_json::Value::as_str),
+                Some("uncertain" | "settled")
+            ) {
+                continue;
+            }
+            let effect: FlowEffect030 = serde_json::from_value(row["effect"].clone())?;
+            let request_id = format!("flow030:{}:{}", identity.system_start_id, effect.id);
+            tasks
+                .cancel_owned(&request_id)
+                .await
+                .map_err(|_| failure("STOP_PENDING", "", "Native flow task did not join"))?;
+        }
+        pending |= physical_pending;
+    }
+    if pending {
+        return Err(failure(
+            "STOP_PENDING",
+            "",
+            "Native flow is awaiting physical termination evidence",
+        ));
+    }
+    Ok(())
+}
+
 fn retire(host: &Arc<Incarnation>, database: &DbPool, app: &tauri::AppHandle) {
     let app = app.clone();
     if !revoke_now(host) {
@@ -556,10 +635,13 @@ fn retire(host: &Arc<Incarnation>, database: &DbPool, app: &tauri::AppHandle) {
 
         // Authority is already revoked in memory. Retain the retirement until the
         // native journal acknowledges it; shutdown recovery handles process loss.
-        while !owners.is_empty() {
+        loop {
             if let Ok(pool) = database.wait_until_ready().await {
                 let _gate = app.state::<HostState>().admission_lock().lock_owned().await;
-                if repository::revoke_host_owners(&pool, &owners).await.is_ok() {
+                if fence_generation(&pool, &owners, &host.generation)
+                    .await
+                    .is_ok()
+                {
                     break;
                 }
             }
@@ -569,6 +651,16 @@ fn retire(host: &Arc<Incarnation>, database: &DbPool, app: &tauri::AppHandle) {
         // Native engines may own descendants outside Macro's process. Revoking
         // their epoch also requests physical stop; reload never leaves them running.
         if let Ok(pool) = database.wait_until_ready().await {
+            if let Err(error) = stop_retired_flows(
+                app.state::<HostState>().flow030(),
+                &pool,
+                &app.state::<crate::ai::AiState>().stream_tasks,
+                &host.generation,
+            )
+            .await
+            {
+                tracing::warn!(code = %error.code, "Native flow retirement remains pending");
+            }
             for owner in &owners {
                 if let Ok(projection) =
                     repository::read_projection(&pool, &owner.system_start_id).await

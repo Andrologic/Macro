@@ -8,6 +8,240 @@ use crate::db::agsdl_execution::{
 };
 use sha2::{Digest, Sha256};
 
+#[tokio::test]
+async fn linked_graphless_start_uses_real_compiler_job_and_durable_intent() {
+    use crate::db::agsdl_execution::{
+        dto::*,
+        intents::{
+            self, ExecutionIntentAdmission, ExecutionIntentPayload, ExecutionIntentScope,
+            ExecutionIntentState, ExecutionStageIntentRequest, Submission,
+        },
+    };
+    use crate::workspace::metadata::{ProjectDto, WorkspaceState};
+    use tokio::io::AsyncWriteExt;
+
+    let _secret_guard = crate::secrets::lock_test_store();
+    let temp = tempfile::TempDir::new().unwrap();
+    crate::secrets::init(&temp.path().join("secrets")).unwrap();
+    let workspace = temp.path().join("workspace");
+    let metadata = workspace.join(".macro");
+    let project = workspace.join("project");
+    let dir = project.join(".macro/branches/develop/plans/source");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::create_dir_all(&metadata).unwrap();
+    let registered: ProjectDto = serde_json::from_value(serde_json::json!({
+        "id":"project", "name":"Synthetic", "path":project, "created_at":"2026-01-01", "status":"active",
+        "directEdit":true, "gitSetupState":"not_git",
+        "metadata":{"description":"", "tags":[], "team_members":[], "api_contracts":[], "dependencies":[]}
+    })).unwrap();
+    let mut state = WorkspaceState::default();
+    state.standalone_projects.push(registered);
+    std::fs::write(
+        metadata.join("workspace.json"),
+        serde_json::to_vec(&state).unwrap(),
+    )
+    .unwrap();
+    let authored = r#"{"contract":"agsdl-0.3.0","id":"empty","agents":{}}"#;
+    std::fs::write(
+        dir.join("plan.json"),
+        serde_json::to_vec(&serde_json::json!({
+            "id":"source", "projectIds":["project"], "revision":1, "updatedAt":"time",
+            "agsdl":{"source":authored}
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("manifest.json"),
+        serde_json::to_vec(&serde_json::json!({
+            "planId":"source", "targetBranch":"develop", "revision":1, "updatedAt":"time",
+            "conversation":{"conversationId":"conversation"}
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    let scope = ExecutionIntentScope {
+        owner: EngineSourceOwner {
+            project_id: "project".into(),
+            plan_id: "source".into(),
+            branch: "develop".into(),
+        },
+        conversation_id: "conversation".into(),
+    };
+    let locked = crate::workspace::architect::lock_execution_intent_scope(
+        &workspace, &metadata, &scope, None,
+    )
+    .await
+    .unwrap();
+    let request = EngineStartRequest {
+        source: locked.revision.clone(),
+        profile: "macro-agsdl-030-v1".into(),
+        associations: EngineAssociations::default(),
+        request_id: "request".into(),
+        entry: None,
+    };
+    drop(locked);
+    let pool = crate::db::create_pool(&temp.path().join("linked.db"))
+        .await
+        .unwrap();
+    sqlx::query("INSERT INTO conversations(id,title,project_id,created_at,updated_at) VALUES('conversation','Synthetic','project','0','0')")
+        .execute(&pool).await.unwrap();
+    let intent = intents::stage(
+        &pool,
+        ExecutionStageIntentRequest {
+            scope,
+            intent_id: "intent".into(),
+            payload: ExecutionIntentPayload::Start {
+                request: request.clone(),
+            },
+        },
+        &request.source,
+    )
+    .await
+    .unwrap();
+    let link = match intents::begin_submission(&pool, &intent.key, &request.source)
+        .await
+        .unwrap()
+    {
+        Submission::Dispatch(link) => link,
+        _ => panic!("expected pending intent"),
+    };
+    let manager = crate::config::ConfigManager::initialize(temp.path().join("config"))
+        .await
+        .unwrap();
+    manager
+        .register_project_root("project", metadata.clone())
+        .await
+        .unwrap();
+    let incarnation = Arc::new(Incarnation {
+        generation: "generation".into(),
+        compiler: Default::default(),
+        work_protocol: Default::default(),
+        lifecycle: Arc::new(tokio::sync::RwLock::new(())),
+        handoff: Mutex::new(()),
+        live: AtomicBool::new(true),
+        ready: AtomicBool::new(true),
+        retired: Default::default(),
+        loads: AtomicUsize::new(0),
+        owners: Mutex::new(BTreeMap::new()),
+        qa_request: Mutex::new(None),
+    });
+    let host = HostState(
+        Mutex::new(Some(OwnedHost {
+            incarnation: incarnation.clone(),
+            resource: 0,
+        })),
+        Arc::new(tokio::sync::Mutex::new(())),
+        Default::default(),
+        Default::default(),
+    );
+    let compiler = incarnation.clone();
+    let worker = tokio::spawn(async move {
+        let job = compiler.compiler.next().await.unwrap();
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap();
+        let script = r#"import {compileHost030} from './src/services/agsdlExecution/hostCompilation';
+const job=JSON.parse(await Bun.stdin.text());
+process.stdout.write(await compileHost030(job.authoredSource,job.source,JSON.parse(job.registryJson)));"#;
+        let mut child = tokio::process::Command::new("bun")
+            .args(["-e", script])
+            .current_dir(root)
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        child
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(&serde_json::to_vec(&job).unwrap())
+            .await
+            .unwrap();
+        let output = child.wait_with_output().await.unwrap();
+        assert!(
+            output.status.success(),
+            "compiler: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        compiler
+            .compiler
+            .complete(
+                &job.generation,
+                &job.ticket,
+                String::from_utf8(output.stdout).unwrap(),
+            )
+            .unwrap();
+    });
+    let runtime = host.flow030();
+    let git = crate::git::GitState::new();
+    let retained = flow::start_linked(
+        runtime,
+        &host,
+        &manager,
+        &pool,
+        &workspace,
+        &git,
+        &request,
+        Some(&link),
+    )
+    .await
+    .unwrap();
+    worker.await.unwrap();
+    let read = intents::read(&pool, &intent.key).await.unwrap().unwrap();
+    match read.state {
+        ExecutionIntentState::Admitted {
+            admission: ExecutionIntentAdmission::Start030 { receipt },
+        } => {
+            assert_eq!(
+                receipt.system_start_id,
+                retained.receipt.identity.system_start_id
+            );
+            assert_eq!(receipt.versions, retained.capture.versions);
+            assert_eq!(receipt.entry_delivery_id, None);
+        }
+        _ => panic!("expected linked 0.3 admission"),
+    }
+    let replay = flow::start_linked(
+        runtime,
+        &host,
+        &manager,
+        &pool,
+        &workspace,
+        &git,
+        &request,
+        Some(&link),
+    )
+    .await
+    .unwrap();
+    assert_eq!(replay.receipt, retained.receipt);
+    let controls = runtime.retiring_controls("generation").unwrap();
+    assert_eq!(controls.len(), 1);
+    assert!(revoke_now(&incarnation));
+    fence_generation(
+        &pool,
+        &[EngineOwner {
+            system_start_id: retained.receipt.identity.system_start_id.clone(),
+            owner_epoch: "0".into(),
+        }],
+        "generation",
+    )
+    .await
+    .unwrap();
+    let tasks = crate::ai::stream_tasks::StreamTasks::default();
+    stop_retired_flows(runtime, &pool, &tasks, "generation")
+        .await
+        .unwrap();
+    let view = controls[0].read(&pool).await.unwrap();
+    assert!(view.state.stopping || view.state.verdict.is_some());
+    assert!(
+        flow::claim_next(runtime, &host, &pool, &retained.receipt.identity)
+            .await
+            .is_err()
+    );
+}
+
 #[tokio::test(flavor = "current_thread")]
 async fn flow_handoff_is_owned_once_and_revocation_rejects_later_claims() {
     exercise_handoff(0).await;
@@ -108,6 +342,7 @@ async fn exercise_handoff(mode: u8) {
             resource: 0,
         })),
         Arc::new(tokio::sync::Mutex::new(())),
+        Default::default(),
         Default::default(),
     );
     let runtime = flow::FlowHost030::default();

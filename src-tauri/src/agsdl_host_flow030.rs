@@ -145,12 +145,27 @@ async fn check_owner(
     .await?;
     let capture: StartCapture030 = match retained {
         Some(raw) => {
-            if lease
-                .owner(&identity.system_start_id)
-                .map_err(|_| StoreError030::Authority)?
-                != owner
-            {
-                return Err(StoreError030::Authority);
+            // The final Start check runs after INSERT but before begin_commit
+            // retains its owner in memory. Only this exact native capture may
+            // bridge that interval. Replays have no matching creating capture.
+            let current_start = match creating {
+                Some(expected) if expected.identity == *identity && owner.owner_epoch == "0" => {
+                    serde_json::to_string(expected)? == raw
+                }
+                _ => false,
+            };
+            if !current_start {
+                if lease
+                    .owner(&identity.system_start_id)
+                    .map_err(|_| StoreError030::Authority)?
+                    != owner
+                {
+                    return Err(StoreError030::Authority);
+                }
+            } else if let Ok(existing) = lease.owner(&identity.system_start_id) {
+                if existing != owner {
+                    return Err(StoreError030::Authority);
+                }
             }
             serde_json::from_str(&raw)?
         }

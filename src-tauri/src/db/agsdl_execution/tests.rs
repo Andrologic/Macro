@@ -971,6 +971,70 @@ async fn native_recovery_can_confirm_stop_without_replaying_a_tool() {
 }
 
 #[tokio::test]
+async fn mixed_host_fencing_skips_rolled_back_start_and_revokes_both_versions() {
+    let (_temp, pool, receipt, owner) = setup().await;
+    sqlx::query("INSERT INTO engine_flow030_runs VALUES (?,?,?,?,?,?,?)")
+        .bind("new030")
+        .bind("flow")
+        .bind("snapshot")
+        .bind("capture")
+        .bind("{}")
+        .bind("{}")
+        .bind("{}")
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("INSERT INTO engine_flow030_owners VALUES (?,?,?,?,?,?,?,?)")
+        .bind("new030")
+        .bind("flow")
+        .bind("snapshot")
+        .bind("capture")
+        .bind("0")
+        .bind("generation")
+        .bind("live")
+        .bind("a".repeat(64))
+        .execute(&pool)
+        .await
+        .unwrap();
+    let owners = vec![
+        owner.clone(),
+        EngineOwner {
+            system_start_id: "new030".into(),
+            owner_epoch: "0".into(),
+        },
+        EngineOwner {
+            system_start_id: "rolled-back".into(),
+            owner_epoch: "0".into(),
+        },
+    ];
+    crate::agsdl_host::fence_generation(&pool, &owners, "generation")
+        .await
+        .unwrap();
+    let mut connection = pool.acquire().await.unwrap();
+    assert_ne!(
+        load(&mut connection, &receipt.system_start_id)
+            .await
+            .unwrap()
+            .state
+            .epoch,
+        owner.owner_epoch
+    );
+    let status: String =
+        sqlx::query_scalar("SELECT status FROM engine_flow030_owners WHERE system_id='new030'")
+            .fetch_one(&mut *connection)
+            .await
+            .unwrap();
+    assert_eq!(status, "revoked");
+    let fake: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM engine_systems WHERE system_id IN ('new030','rolled-back')",
+    )
+    .fetch_one(&mut *connection)
+    .await
+    .unwrap();
+    assert_eq!(fake, 0);
+}
+
+#[tokio::test]
 async fn host_revocation_is_scoped_and_cannot_rotate_a_replacement_epoch() {
     let (_temp, pool, receipt, owner) = setup().await;
     let mut other_request = request();

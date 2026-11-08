@@ -2008,6 +2008,16 @@ pub(crate) async fn revoke_host_owners(pool: &SqlitePool, owners: &[EngineOwner]
     let mut connection = pool.acquire().await?;
     let mut tx = durable(&mut connection).await?;
     for retired in owners {
+        // A host can also retain a 0.3 or not-yet-committed owner. Those do
+        // not have an engine_systems row and must not block legacy fencing.
+        let exists: bool =
+            sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM engine_systems WHERE system_id=?)")
+                .bind(&retired.system_start_id)
+                .fetch_one(&mut *tx)
+                .await?;
+        if !exists {
+            continue;
+        }
         let mut stored = load(&mut tx, &retired.system_start_id).await?;
         if stored.state.epoch != retired.owner_epoch {
             continue;
