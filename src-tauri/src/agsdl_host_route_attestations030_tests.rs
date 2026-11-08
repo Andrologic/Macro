@@ -378,6 +378,41 @@ async fn sql_fixture_with_fault(
     let host = crate::agsdl_host::route_attestation_test_host030(owner, "generation");
     (temp, pool, host, capture, reference)
 }
+// Paired positive control: the unmodified fixture must reach attestation,
+// independently of the negative case's expected error code.
+async fn assert_valid_source_fixture(
+    pool: &sqlx::SqlitePool,
+    host: &HostState,
+    capture: &StartCapture030,
+    reference: &PrepareRef030,
+) {
+    let owner = EngineOwner {
+        system_start_id: capture.identity.system_start_id.clone(),
+        owner_epoch: "owner".into(),
+    };
+    let writer = RouteAttestor030::capture(host, &owner).await.unwrap();
+    let lease = host.start_lease().await.unwrap();
+    let _admission = host.admission_lock().lock_owned().await;
+    let mut tx = pool.begin().await.unwrap();
+    writer
+        .attest_agent_source_tx(
+            &mut tx,
+            &lease,
+            host.flow030(),
+            capture,
+            reference,
+            "accepted",
+        )
+        .await
+        .unwrap();
+    let count: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM engine_flow030_route_source_attestations")
+            .fetch_one(&mut *tx)
+            .await
+            .unwrap();
+    assert_eq!(count, 1);
+    tx.rollback().await.unwrap();
+}
 struct SyntheticPolicy {
     deny_index: Option<&'static str>,
 }
@@ -503,6 +538,37 @@ async fn sql_occurrence_failure_rolls_back_all_rows_then_distinct_equal_items_pe
             .unwrap();
     assert_eq!(contexts, 0);
     assert_eq!(receipts, 0);
+    sqlx::query("CREATE TEMP TRIGGER writer_test_second_receipt BEFORE INSERT ON engine_flow030_route_content_receipts WHEN (SELECT count(*) FROM engine_flow030_route_content_receipts)=1 BEGIN SELECT RAISE(ABORT,'synthetic second receipt failure'); END")
+        .execute(&mut *tx).await.unwrap();
+    let error = writer
+        .attest_occurrences_tx(
+            &mut tx,
+            &lease,
+            host.flow030(),
+            &source,
+            &occurrences,
+            &SyntheticPolicy { deny_index: None },
+        )
+        .await
+        .err()
+        .expect("second receipt insertion should fail");
+    assert_eq!(error.code, "STORAGE");
+    assert_eq!(error.pointer, "");
+    let contexts: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM engine_flow030_route_content_contexts")
+            .fetch_one(&mut *tx)
+            .await
+            .unwrap();
+    let receipts: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM engine_flow030_route_content_receipts")
+            .fetch_one(&mut *tx)
+            .await
+            .unwrap();
+    assert_eq!((contexts, receipts), (0, 0));
+    sqlx::query("DROP TRIGGER writer_test_second_receipt")
+        .execute(&mut *tx)
+        .await
+        .unwrap();
     let material = writer
         .attest_occurrences_tx(
             &mut tx,
@@ -600,6 +666,10 @@ async fn sql_source_rejects_foreign_ticket_and_receipt_fields_before_publishing(
         "receipt-output-type",
         "unauthorized-instructions",
     ] {
+        let (_valid_temp, valid_pool, valid_host, valid_capture, valid_reference) =
+            sql_fixture("ok").await;
+        assert_valid_source_fixture(&valid_pool, &valid_host, &valid_capture, &valid_reference)
+            .await;
         let (_temp, pool, host, capture, reference) =
             sql_fixture_with_fault("ok", Some(fault)).await;
         let owner = EngineOwner {
@@ -610,20 +680,25 @@ async fn sql_source_rejects_foreign_ticket_and_receipt_fields_before_publishing(
         let lease = host.start_lease().await.unwrap();
         let _admission = host.admission_lock().lock_owned().await;
         let mut tx = pool.begin().await.unwrap();
-        assert!(
-            writer
-                .attest_agent_source_tx(
-                    &mut tx,
-                    &lease,
-                    host.flow030(),
-                    &capture,
-                    &reference,
-                    "accepted"
-                )
-                .await
-                .is_err(),
-            "{fault}"
-        );
+        let error = writer
+            .attest_agent_source_tx(
+                &mut tx,
+                &lease,
+                host.flow030(),
+                &capture,
+                &reference,
+                "accepted",
+            )
+            .await
+            .err()
+            .expect("mutated source was accepted");
+        let expected = if fault == "receipt-kind" {
+            "CORRELATION"
+        } else {
+            "AUTHORITY"
+        };
+        assert_eq!(error.code, expected, "{fault}: {}", error.message);
+        assert_eq!(error.pointer, "route", "{fault}");
         let count: i64 =
             sqlx::query_scalar("SELECT count(*) FROM engine_flow030_route_source_attestations")
                 .fetch_one(&mut *tx)
@@ -646,6 +721,7 @@ async fn sql_source_rejects_fenced_capture_stale_preparation_and_ambiguous_outbo
         "duplicate-effect",
     ] {
         let (_temp, pool, host, mut capture, reference) = sql_fixture("ok").await;
+        assert_valid_source_fixture(&pool, &host, &capture, &reference).await;
         let owner = EngineOwner {
             system_start_id: "system".into(),
             owner_epoch: "owner".into(),
@@ -710,20 +786,25 @@ async fn sql_source_rejects_fenced_capture_stale_preparation_and_ambiguous_outbo
         let lease = host.start_lease().await.unwrap();
         let _admission = host.admission_lock().lock_owned().await;
         let mut tx = pool.begin().await.unwrap();
-        assert!(
-            writer
-                .attest_agent_source_tx(
-                    &mut tx,
-                    &lease,
-                    host.flow030(),
-                    &capture,
-                    &reference,
-                    "accepted"
-                )
-                .await
-                .is_err(),
-            "{fault}"
-        );
+        let error = writer
+            .attest_agent_source_tx(
+                &mut tx,
+                &lease,
+                host.flow030(),
+                &capture,
+                &reference,
+                "accepted",
+            )
+            .await
+            .err()
+            .expect("mutated source was accepted");
+        let expected = if fault == "preparation" {
+            "STALE_REFERENCE"
+        } else {
+            "CORRELATION"
+        };
+        assert_eq!(error.code, expected, "{fault}: {}", error.message);
+        assert_eq!(error.pointer, "route", "{fault}");
         let count: i64 =
             sqlx::query_scalar("SELECT count(*) FROM engine_flow030_route_source_attestations")
                 .fetch_one(&mut *tx)
