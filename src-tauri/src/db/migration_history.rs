@@ -107,6 +107,7 @@ pub(crate) async fn canonical_versions(c: &mut SqliteConnection) -> DbResult<Vec
         || versions.contains(&30) && !versions.contains(&29)
         || versions.contains(&31) && !versions.contains(&30)
         || versions.contains(&32) && !versions.contains(&31)
+        || versions.contains(&33) && !versions.contains(&32)
     {
         return Err(DbError::Migration(
             "Inconsistent AgSDL migration history".into(),

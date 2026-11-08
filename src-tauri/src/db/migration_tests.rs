@@ -207,7 +207,7 @@ async fn rehearses_upgrade_on_external_database_copy() {
             .unwrap()
             .iter()
             .max(),
-        Some(&32)
+        Some(&33)
     );
 }
 
@@ -1314,7 +1314,7 @@ async fn joins_both_published_v10_histories_without_replacing_stamps_or_data() {
                 .fetch_one(&upgraded)
                 .await
                 .unwrap(),
-            32
+            33
         );
         assert_eq!(
             sqlx::query_scalar::<_, String>(
@@ -1507,7 +1507,7 @@ async fn protocol017_upgrades_v16_without_rewriting_snapshots_and_rolls_back_fai
             .fetch_one(&upgraded)
             .await
             .unwrap(),
-        32
+        33
     );
     assert_eq!(
         sqlx::query("PRAGMA foreign_key_check")
@@ -1576,7 +1576,7 @@ async fn admission018_upgrades_v17_and_rolls_back_failed_stamp() {
             .fetch_one(&upgraded)
             .await
             .unwrap(),
-        32
+        33
     );
     assert!(sqlx::query("PRAGMA foreign_key_check")
         .fetch_all(&upgraded)
