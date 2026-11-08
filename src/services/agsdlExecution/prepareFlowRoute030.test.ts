@@ -155,6 +155,86 @@ describe('preparing a reducer-selected route from a compiled plan', () => {
       expect(result.provenance[0].producer).toEqual(producer);
     }
   });
+  it('isolates the same URI and pointer across destination caches and policies', async () => {
+    const raw = `{"contract":"agsdl-0.3.0","id":"occurrence-targets",${definition},"content":{"guide":{"uri":"guide.txt","mediaType":"text/plain"}},"flow":{"entry":"plan","steps":{"plan":{"type":"agent","agent":"lead","next":[{"step":"alpha","message":{"prompt":[{"ref":"guide"}],"resources":{"n":{"from":["results","n"]}}}},{"step":"beta","message":{"prompt":[{"ref":"guide"}],"resources":{"n":{"from":["results","n"]}}}}]},"alpha":{"type":"agent","agent":"worker"},"beta":{"type":"agent","agent":"worker"}}}}`;
+    const plan = await compile(raw);
+    const input = fixture(plan, { source: ['plan'], kind: 'normal', key: null }, '{"text":"","results":{"n":9007199254740993}}', false);
+    const seen: unknown[] = [];
+    let globalCalls = 0;
+    const result = prepareFlowRoute030({ ...input, content: { resolveSource: () => { globalCalls++; return j('{"value":"global"}'); } },
+      contentForOccurrence: (ordinal, index, target) => {
+        seen.push([ordinal, index, target]);
+        return { resolveSource: (rawSource, context) => {
+          expect(rawSource).toBe(j('{"uri":"guide.txt","mediaType":"text/plain"}'));
+          expect(context).toEqual({ usage: 'prompt', pointer: '/message/prompt/0' });
+          return j(ordinal === 0 ? '{"value":"Policy A"}' : '{"value":"Policy B"}');
+        } };
+      } });
+    expect(result.kind).toBe('ready');
+    if (result.kind !== 'ready') throw new Error('expected ready route');
+    expect(result.batches.map(batch => batch.items[0].messageJson)).toEqual([
+      j('{"prompt":[{"value":"Policy A"}],"resources":{"n":{"value":9007199254740993,"mediaType":"application/json"}}}'),
+      j('{"prompt":[{"value":"Policy B"}],"resources":{"n":{"value":9007199254740993,"mediaType":"application/json"}}}'),
+    ]);
+    expect(seen.map(entry => { const [ordinal, index, target] = entry as [number, string, { address: string[] }]; return [ordinal, index, target.address]; })).toEqual([[0, '0', ['alpha']], [1, '0', ['beta']]]);
+    expect(result.provenance.map(entry => [entry.occurrence.targetOrdinal, entry.occurrence.itemIndex, entry.prompt.kind])).toEqual([[0, '0', 'author'], [1, '0', 'author']]);
+    expect(globalCalls).toBe(0);
+  });
+  it('uses occurrence indices for equal fan-out values, without reusing content', async () => {
+    const raw = `{"contract":"agsdl-0.3.0","id":"occurrence-fanout",${definition},"content":{"guide":{"uri":"guide.txt"}},"flow":{"entry":"plan","steps":{"plan":{"type":"agent","agent":"lead","next":["run",{"step":"worker","each":["results","xs"],"message":{"prompt":[{"ref":"guide"}]}}]},"run":{"type":"call","command":"true"},"worker":{"type":"agent","agent":"worker"}}}}`;
+    const parsed = record(decode(raw));
+    record(record(record(parsed.agents).lead).results).xs = { schema: { type: 'array', items: { type: 'number' } } };
+    const plan = await compile(encode(parsed));
+    const input = fixture(plan, { source: ['plan'], kind: 'normal', key: null }, '{"text":"","results":{"xs":[9007199254740993,9007199254740993]}}', false);
+    const seen: unknown[] = [];
+    const result = prepareFlowRoute030({ ...input, contentForOccurrence: (ordinal, index, target) => {
+      seen.push([ordinal, index, target.kind === 'step' ? target.address : null]);
+      return { resolveSource: () => j(index === '0' ? '{"value":"First cache"}' : '{"value":"Second cache"}') };
+    } });
+    expect(result.kind).toBe('ready');
+    if (result.kind !== 'ready') throw new Error('expected ready route');
+    expect(seen).toEqual([[1, '0', ['worker']], [1, '1', ['worker']]]);
+    expect(result.batches[0].items[0]).toMatchObject({ messageJson: null, itemJson: null, occurrence: { targetOrdinal: 0, itemIndex: '0' } });
+    expect(result.batches[1].items.map(item => item.itemJson)).toEqual([j('9007199254740993'), j('9007199254740993')]);
+    expect(result.batches[1].items.map(item => item.occurrence.itemIndex)).toEqual(['0', '1']);
+    expect(result.batches[1].items[0].messageJson).toContain('First cache');
+    expect(result.batches[1].items[1].messageJson).toContain('Second cache');
+    expect(result.provenance.map(value => [value.occurrence.targetOrdinal, value.occurrence.itemIndex])).toEqual([[0, '0'], [1, '0'], [1, '1']]);
+  });
+  it('fails closed when an occurrence cache is undefined or empty even with a global cache', async () => {
+    const raw = `{"contract":"agsdl-0.3.0","id":"occurrence-missing",${definition},"content":{"guide":{"uri":"guide.txt"}},"flow":{"entry":"plan","steps":{"plan":{"type":"agent","agent":"lead","next":[{"step":"alpha","message":{"prompt":[{"ref":"guide"}]}},{"step":"beta","message":{"prompt":[{"ref":"guide"}]}}]},"alpha":{"type":"agent","agent":"worker"},"beta":{"type":"agent","agent":"worker"}}}}`;
+    const plan = await compile(raw);
+    const input = fixture(plan, { source: ['plan'], kind: 'normal', key: null }, '{"text":"","results":{}}', false);
+    for (const missing of [undefined, {}]) {
+      let globalCalls = 0;
+      const seen: number[] = [];
+      const result = prepareFlowRoute030({ ...input,
+        content: { resolveSource: () => { globalCalls++; return j('{"value":"Wrong global cache"}'); } },
+        contentForOccurrence: ordinal => { seen.push(ordinal); return ordinal === 0 ? { resolveSource: () => j('{"value":"Allowed"}') } : missing; },
+      });
+      expect(result).toMatchObject({ kind: 'failed', targetOrdinal: 1, error: { code: 'CONTENT_UNAVAILABLE' } });
+      expect('batches' in result).toBe(false);
+      expect('provenance' in result).toBe(false);
+      expect(seen).toEqual([0, 1]);
+      expect(globalCalls).toBe(0);
+    }
+    const legacy = prepareFlowRoute030({ ...input, content: { resolveSource: () => j('{"value":"Legacy"}') } });
+    expect(legacy.kind).toBe('ready');
+    if (legacy.kind === 'ready') expect(legacy.batches.map(batch => batch.items[0].messageJson)).toEqual([j('{"prompt":[{"value":"Legacy"}]}'), j('{"prompt":[{"value":"Legacy"}]}')]);
+  });
+  it('never asks for a content cache for call or join targets', async () => {
+    const raw = `{"contract":"agsdl-0.3.0","id":"occurrence-nonreceivers",${definition},"flow":{"entry":"fork","steps":{"fork":{"type":"call","command":"true","next":["run","gather"]},"run":{"type":"call","command":"true","next":"gather"},"gather":{"type":"join","next":"worker"},"worker":{"type":"agent","agent":"worker"}}}}`;
+    const plan = await compile(raw);
+    const outputJson = j('{"outcome":"passed","data":{"n":9007199254740993}}');
+    const producer: NativeProducer030 = { activationId: 'call-terminal', step: ['fork'], kind: 'call', inputJson: j('{}'), messageJson: null, itemJson: null, outputJson };
+    const source: RouteSource030 = { kind: 'call', terminalId: producer.activationId, producerStep: ['fork'], outputJson, provenance: { instructions: [] } };
+    let calls = 0;
+    const result = prepareFlowRoute030({ planJson: plan, producer, source, nativeReceiptId: 'receipt', reference: { route: { source: ['fork'], kind: 'normal', key: null } },
+      contentForOccurrence: () => { calls++; throw new Error('No cache for call or join'); } });
+    expect(result.kind).toBe('ready');
+    if (result.kind === 'ready') expect(result.batches.map(batch => batch.items[0].messageJson)).toEqual([null, null]);
+    expect(calls).toBe(0);
+  });
   it('keeps the real body producer when the reducer selects a composition output route', async () => {
     const composed = `{"contract":"agsdl-0.3.0","id":"compose-test",${definition},"compositions":{"inner":{"parameters":["who"],"entry":"body","outputs":["done"],"steps":{"body":{"type":"agent","agent":{"parameter":"who"},"next":{"output":"done"}}}}},"flow":{"entry":"compose","steps":{"compose":{"type":"compose","composition":"inner","agents":{"who":"lead"},"next":{"done":"worker"}},"worker":{"type":"agent","agent":"worker","prompt":"Fallback"}}}}`;
     const plan = await compile(composed);

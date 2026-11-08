@@ -19,6 +19,8 @@ export interface PrepareFlowRouteInput030 {
   readonly planJson: ExactJsonText; readonly reference: { readonly route: NativeRouteRef030 };
   readonly producer: NativeProducer030; readonly source: RouteSource030; readonly nativeReceiptId: string;
   readonly content?: CapturedContent030;
+  /** Native content authority is scoped to this destination occurrence. */
+  readonly contentForOccurrence?: (targetOrdinal: number, itemIndex: string, target: CompiledTarget030) => CapturedContent030 | undefined;
 }
 export type PrepareFlowRouteResult030 =
   | { readonly kind: 'ready'; readonly batches: readonly PreparedBatch030[]; readonly provenance: readonly OccurrenceProvenance030[] }
@@ -102,7 +104,11 @@ function prepareCapturedRoute030(input: PrepareFlowRouteInput030): PrepareFlowRo
         : { kind: 'absent' };
       try {
         const receivesMessage = ['agent', 'approval', 'compose'].includes(text(record(decode(target.stepJson)).type));
-        const resolved = receivesMessage ? resolveRouteMessage030(documentJson, target, source, item, input.content) : null;
+        const capturedTarget = captured[targetOrdinal] as unknown as CompiledTarget030;
+        const content = !receivesMessage ? undefined : input.contentForOccurrence
+          ? input.contentForOccurrence(targetOrdinal, String(index), capturedTarget) ?? {}
+          : input.content;
+        const resolved = receivesMessage ? resolveRouteMessage030(documentJson, target, source, item, content) : null;
         items.push({ messageJson: resolved?.messageJson ?? null, itemJson: item.kind === 'element' ? item.valueJson : null, occurrence });
         provenance.push({ occurrence, prompt: clone(resolved?.promptProvenance ?? { kind: 'none' }), source: clone(source), producer: clone(producer) });
       } catch (error) {
