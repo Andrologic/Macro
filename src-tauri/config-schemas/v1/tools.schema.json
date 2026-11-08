@@ -9,6 +9,14 @@
         "null"
       ]
     },
+    "agsdlHostPermissions": {
+      "default": "read-only",
+      "allOf": [
+        {
+          "$ref": "#/definitions/RequestedPermissions"
+        }
+      ]
+    },
     "builtIn": {
       "type": [
         "object",
@@ -109,6 +117,17 @@
   },
   "additionalProperties": false,
   "definitions": {
+    "Action": {
+      "type": "string",
+      "enum": [
+        "read",
+        "write",
+        "shell",
+        "network",
+        "mcp",
+        "delegate"
+      ]
+    },
     "ContentApproval": {
       "type": "object",
       "required": [
@@ -128,6 +147,22 @@
         }
       },
       "additionalProperties": false
+    },
+    "DirectoryAccess": {
+      "type": "string",
+      "enum": [
+        "read",
+        "write"
+      ]
+    },
+    "Effect": {
+      "description": "Declaration order is the restriction order. Intersections use max.",
+      "type": "string",
+      "enum": [
+        "allow",
+        "ask",
+        "deny"
+      ]
     },
     "ExternalCommandDefinition": {
       "type": "object",
@@ -492,6 +527,111 @@
             }
           }
         }
+      ]
+    },
+    "Outside": {
+      "type": "string",
+      "enum": [
+        "read",
+        "deny"
+      ]
+    },
+    "PermissionObject": {
+      "type": "object",
+      "properties": {
+        "directories": {
+          "default": {},
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/definitions/DirectoryAccess"
+          }
+        },
+        "outside": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/Outside"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "preset": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/Preset"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "reviewer": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/Reviewer"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "rules": {
+          "default": [],
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/PermissionRule"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "PermissionRule": {
+      "type": "object",
+      "required": [
+        "action",
+        "effect"
+      ],
+      "properties": {
+        "action": {
+          "$ref": "#/definitions/Action"
+        },
+        "effect": {
+          "$ref": "#/definitions/Effect"
+        },
+        "match": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "Preset": {
+      "type": "string",
+      "enum": [
+        "read-only",
+        "workspace",
+        "full"
+      ]
+    },
+    "RequestedPermissions": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/Preset"
+        },
+        {
+          "$ref": "#/definitions/PermissionObject"
+        }
+      ]
+    },
+    "Reviewer": {
+      "type": "string",
+      "enum": [
+        "model",
+        "person"
       ]
     },
     "ToolRiskLevel": {

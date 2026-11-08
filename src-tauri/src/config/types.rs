@@ -585,6 +585,12 @@ impl ToolRiskLevel {
     }
 }
 
+fn default_agsdl_host_permissions() -> Option<crate::agsdl_permissions::RequestedPermissions> {
+    Some(crate::agsdl_permissions::RequestedPermissions::Preset(
+        crate::agsdl_permissions::Preset::ReadOnly,
+    ))
+}
+
 #[derive(Clone, Debug, Deserialize, JsonSchema, Serialize, TS)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct ToolsDocument {
@@ -596,6 +602,12 @@ pub struct ToolsDocument {
     pub schema_version: u32,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub risk_level: Option<ToolRiskLevel>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(
+        with = "crate::agsdl_permissions::RequestedPermissions",
+        default = "default_agsdl_host_permissions"
+    )]
+    pub agsdl_host_permissions: Option<crate::agsdl_permissions::RequestedPermissions>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub built_in: Option<BTreeMap<String, bool>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

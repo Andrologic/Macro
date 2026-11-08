@@ -170,6 +170,25 @@ pub(crate) struct ExecutionToolsLease {
     _state: tokio::sync::OwnedRwLockReadGuard<ConfigState>,
 }
 
+/// Native approved user ceiling held stable across admission. This is not a
+/// provider qualification or an authorization to perform any effect.
+pub(crate) struct AgsdlHostPermissionsLease {
+    permissions: crate::agsdl_permissions::RequestedPermissions,
+    fingerprint: String,
+    _file: DocumentFileLock,
+    _configuration: tokio::sync::OwnedRwLockReadGuard<()>,
+}
+
+impl AgsdlHostPermissionsLease {
+    pub(crate) fn permissions(&self) -> &crate::agsdl_permissions::RequestedPermissions {
+        &self.permissions
+    }
+
+    pub(crate) fn fingerprint(&self) -> &str {
+        &self.fingerprint
+    }
+}
+
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ConfigApiError {
@@ -1994,6 +2013,59 @@ impl ConfigManager {
         .await
     }
 
+    /// Holds the last approved user Tools policy and its native default stable.
+    /// Callers must release this lease before awaiting a configuration mutation.
+    pub(crate) async fn lock_agsdl_host_permissions(
+        &self,
+    ) -> Result<AgsdlHostPermissionsLease, ConfigApiError> {
+        // Tools writers acquire this authority before the state lock and before
+        // publishing their approved on-disk copy.
+        let configuration = self.lock_mcp_runtime_configuration().await;
+        let key = DocumentKey {
+            kind: ConfigDocumentKind::Tools,
+            scope: ConfigScope::User,
+        };
+        let path = {
+            let state = self.state.read().await;
+            state
+                .documents
+                .get(&key)
+                .ok_or_else(|| {
+                    ConfigApiError::new(
+                        "config.document.not_found",
+                        "Approved user Tools are unavailable",
+                    )
+                })?
+                .path
+                .clone()
+        };
+        // All cooperating managers lock the canonical document while publishing
+        // the approved copy. Read disk under this lock to avoid stale instances.
+        let file = lock_document_file_async(path).await?;
+        let (approved, _) = read_runtime_state(self.root(), &key, None)?;
+        let mut effective = default_document(ConfigDocumentKind::Tools);
+        super::registry::merge_values(&mut effective, &approved);
+        let value = effective.get("agsdlHostPermissions").ok_or_else(|| {
+            ConfigApiError::new(
+                "config.agsdl_host_permissions.missing",
+                "The native AgSDL host permission default is unavailable",
+            )
+        })?;
+        let permissions = serde_json::from_value(value.clone()).map_err(|_| {
+            ConfigApiError::new(
+                "config.agsdl_host_permissions.invalid",
+                "The approved AgSDL host permissions are invalid",
+            )
+        })?;
+        let fingerprint = etag(value);
+        Ok(AgsdlHostPermissionsLease {
+            permissions,
+            fingerprint,
+            _file: file,
+            _configuration: configuration,
+        })
+    }
+
     pub async fn effective_user_document(&self, kind: ConfigDocumentKind) -> Value {
         let state = self.state.read().await;
         let mut effective = default_document(kind);
@@ -3720,6 +3792,143 @@ mod tests {
                 policy
             );
         }
+    }
+
+    #[tokio::test]
+    async fn agsdl_host_permissions_lease_tracks_approved_external_change() {
+        let (_temp, manager) = manager().await;
+        let other_manager = ConfigManager::initialize(manager.root().to_path_buf())
+            .await
+            .unwrap();
+        let lease = manager.lock_agsdl_host_permissions().await.unwrap();
+        assert_eq!(
+            serde_json::to_value(lease.permissions()).unwrap(),
+            json!("read-only")
+        );
+        let initial_fingerprint = lease.fingerprint().to_owned();
+        drop(lease);
+
+        let document = manager
+            .get_document(ConfigDocumentKind::Tools, ConfigScope::User)
+            .await
+            .unwrap();
+        let mut edited = document.value;
+        edited["agsdlHostPermissions"] = json!({"preset":"full", "rules":[{"action":"network", "effect":"ask"}], "reviewer":"person"});
+        fs::write(&document.file_path, serde_json::to_vec(&edited).unwrap()).unwrap();
+        let pending = manager
+            .reload(
+                ConfigDocumentKind::Tools,
+                ConfigScope::User,
+                ConfigChangeSource::ExternalEditor,
+            )
+            .await
+            .unwrap()
+            .pending
+            .unwrap();
+        let lease = manager.lock_agsdl_host_permissions().await.unwrap();
+        assert_eq!(
+            serde_json::to_value(lease.permissions()).unwrap(),
+            json!("read-only")
+        );
+        assert_eq!(lease.fingerprint(), initial_fingerprint);
+
+        let approving_manager = manager.clone();
+        let mut approval =
+            tokio::spawn(async move { approving_manager.accept_pending_change(&pending.id).await });
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(100), &mut approval)
+                .await
+                .is_err()
+        );
+        let key = DocumentKey {
+            kind: ConfigDocumentKind::Tools,
+            scope: ConfigScope::User,
+        };
+        let approved = read_json_value(&approved_document_path(manager.root(), &key)).unwrap();
+        assert!(approved.get("agsdlHostPermissions").is_none());
+        drop(lease);
+        approval.await.unwrap().unwrap();
+        let next = manager.lock_agsdl_host_permissions().await.unwrap();
+        assert_eq!(
+            serde_json::to_value(next.permissions()).unwrap()["preset"],
+            json!("full")
+        );
+        assert_ne!(next.fingerprint(), initial_fingerprint);
+        drop(next);
+        let other = other_manager.lock_agsdl_host_permissions().await.unwrap();
+        assert_eq!(
+            serde_json::to_value(other.permissions()).unwrap()["preset"],
+            json!("full")
+        );
+    }
+
+    #[tokio::test]
+    async fn agsdl_host_permissions_lease_allows_project_tools_discovery() {
+        let (_temp, manager) = manager().await;
+        let metadata = tempfile::tempdir().unwrap();
+        let project_root = manager
+            .register_project_root("project-123", metadata.path().to_path_buf())
+            .await
+            .unwrap();
+        let lease = manager.lock_agsdl_host_permissions().await.unwrap();
+        let mut tools = sparse_document(ConfigDocumentKind::Tools);
+        tools["builtIn"] = json!({"read":false});
+        atomic_write_json(&project_root.join("tools.json"), &tools).unwrap();
+        // Discovery publishes the separate project proposal. Holding the global
+        // user ceiling must not block that state write and deadlock this caller.
+        let project_tools = tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            manager.lock_execution_tools("project-123"),
+        )
+        .await
+        .expect("project discovery must not wait on the ceiling's state read lock")
+        .unwrap();
+        assert!(project_tools.tools["builtIn"]["read"].is_null());
+        assert_eq!(
+            serde_json::to_value(lease.permissions()).unwrap(),
+            json!("read-only")
+        );
+        drop(project_tools);
+        drop(lease);
+        assert!(manager
+            .list_pending_changes()
+            .await
+            .iter()
+            .any(|change| change.document == ConfigDocumentKind::Tools
+                && change.scope
+                    == (ConfigScope::Project {
+                        project_id: "project-123".into()
+                    })
+                && change
+                    .changed_paths
+                    .iter()
+                    .any(|path| path == "/builtIn/read")));
+    }
+
+    #[tokio::test]
+    async fn agsdl_host_permissions_invalid_external_value_keeps_approved_value() {
+        let (_temp, manager) = manager().await;
+        let document = manager
+            .get_document(ConfigDocumentKind::Tools, ConfigScope::User)
+            .await
+            .unwrap();
+        let mut edited = document.value;
+        edited["agsdlHostPermissions"] = json!({"preset":"full", "unknown":true});
+        fs::write(&document.file_path, serde_json::to_vec(&edited).unwrap()).unwrap();
+        let result = manager
+            .reload(
+                ConfigDocumentKind::Tools,
+                ConfigScope::User,
+                ConfigChangeSource::ExternalEditor,
+            )
+            .await
+            .unwrap();
+        assert!(result.invalid);
+        let lease = manager.lock_agsdl_host_permissions().await.unwrap();
+        assert_eq!(
+            serde_json::to_value(lease.permissions()).unwrap(),
+            json!("read-only")
+        );
     }
 
     #[tokio::test]

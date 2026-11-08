@@ -7,11 +7,24 @@ mod tests;
 
 pub use enforcement::*;
 pub use paths::{DirectoryGrant, NormalizedRule, PathContext};
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, ts_rs::TS)]
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Serialize,
+    Deserialize,
+    ts_rs::TS,
+    JsonSchema,
+)]
 #[serde(rename_all = "kebab-case")]
 pub enum Action {
     Read,
@@ -31,40 +44,52 @@ pub const ACTIONS: [Action; 6] = [
 ];
 
 /// Declaration order is the restriction order. Intersections use max.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, ts_rs::TS)]
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Serialize,
+    Deserialize,
+    ts_rs::TS,
+    JsonSchema,
+)]
 #[serde(rename_all = "kebab-case")]
 pub enum Effect {
     Allow,
     Ask,
     Deny,
 }
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ts_rs::TS)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ts_rs::TS, JsonSchema)]
 #[serde(rename_all = "kebab-case")]
 pub enum Preset {
     ReadOnly,
     Workspace,
     Full,
 }
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ts_rs::TS)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ts_rs::TS, JsonSchema)]
 #[serde(rename_all = "kebab-case")]
 pub enum DirectoryAccess {
     Read,
     Write,
 }
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ts_rs::TS)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ts_rs::TS, JsonSchema)]
 #[serde(rename_all = "kebab-case")]
 pub enum Outside {
     Read,
     Deny,
 }
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ts_rs::TS)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ts_rs::TS, JsonSchema)]
 #[serde(rename_all = "kebab-case")]
 pub enum Reviewer {
     Model,
     Person,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, ts_rs::TS)]
+#[derive(Debug, Clone, Serialize, Deserialize, ts_rs::TS, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct PermissionRule {
     pub action: Action,
@@ -72,7 +97,7 @@ pub struct PermissionRule {
     pub pattern: Option<String>,
     pub effect: Effect,
 }
-#[derive(Debug, Clone, Default, Serialize, Deserialize, ts_rs::TS)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, ts_rs::TS, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct PermissionObject {
     pub preset: Option<Preset>,
@@ -83,7 +108,7 @@ pub struct PermissionObject {
     pub rules: Vec<PermissionRule>,
     pub reviewer: Option<Reviewer>,
 }
-#[derive(Debug, Clone, Serialize, Deserialize, ts_rs::TS)]
+#[derive(Debug, Clone, Serialize, Deserialize, ts_rs::TS, JsonSchema)]
 #[serde(untagged)]
 pub enum RequestedPermissions {
     Preset(Preset),
@@ -129,6 +154,8 @@ pub enum ExecutionPurpose {
     Agent,
     PlanLocked,
     CompletionCheck,
+    /// Content for host-owned flow steps uses captured policy, without an agent.
+    HostFlowContent,
 }
 #[derive(Debug, Clone, Serialize, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
@@ -398,8 +425,11 @@ pub fn evaluate_effective(
             _ => None,
         };
     }
-    // Opaque shell/MCP/network/delegate can mutate despite a read-looking name.
-    if purpose == ExecutionPurpose::PlanLocked && request.action() != Action::Read {
+    // The purpose can only narrow the intersection; it never grants a right.
+    if (purpose == ExecutionPurpose::PlanLocked && request.action() != Action::Read)
+        || (purpose == ExecutionPurpose::HostFlowContent
+            && !matches!(request.action(), Action::Read | Action::Network))
+    {
         effect = Effect::Deny;
     }
     if effect != Effect::Ask {

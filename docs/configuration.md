@@ -137,6 +137,15 @@ projet de focus est sans ambiguïté. Un serveur MCP n’est actif dans l’agr�
 multi-projet que si sa définition effective est activée et identique dans tous
 les projets concernés.
 
+`tools.agsdlHostPermissions` est un plafond global réservé à la configuration
+utilisateur. Sa valeur par défaut native est `"read-only"`. Le champ accepte les
+permissions AgSDL 0.3 sous forme de preset ou d’objet et les modifications
+externes sensibles attendent une approbation. Il ne dépend pas de `riskLevel`
+ou du mode, et ne qualifie aucun processus ni effet. Une exécution devra encore
+intersecter ce plafond avec la demande de l’agent, les restrictions du projet et
+la politique courante, puis vérifier les garanties natives nécessaires. Les
+surcharges projet et session ne peuvent pas lui accorder de droits.
+
 Les entrées de `agents.models` utilisent une sélection `{ "providerId",
 "modelId", "reasoningEffort" }`. Les clés reconnues pour les tours sont
 `chat`, `architect`, `implement`, `implementPlan`, `implementBuild`,

@@ -149,6 +149,7 @@ pub fn default_document(kind: ConfigDocumentKind) -> Value {
         ConfigDocumentKind::Tools => json!({
             "schemaVersion": CURRENT_SCHEMA_VERSION,
             "riskLevel": "balanced",
+            "agsdlHostPermissions": "read-only",
             "builtIn": {},
             "modes": {},
             "webSearch": { "enabled": false, "fetchEnabled": true, "provider": "tavily", "secretRef": null, "maxResults": 5 },
@@ -777,6 +778,15 @@ pub fn validate_document(
                 "La confiance et les permissions des skills sont locales à l’utilisateur.",
             ));
         }
+        if kind == ConfigDocumentKind::Tools && value.get("agsdlHostPermissions").is_some() {
+            diagnostics.push(diagnostic(
+                kind,
+                scope,
+                Some("/agsdlHostPermissions".to_string()),
+                "config.project.agsdl_host_permissions_forbidden",
+                "Les permissions AgSDL de l’hôte sont réservées à l’utilisateur.",
+            ));
+        }
         if kind == ConfigDocumentKind::Tools && value.get("projectMcpApprovals").is_some() {
             diagnostics.push(diagnostic(
                 kind,
@@ -801,6 +811,18 @@ pub fn validate_document(
     }));
 
     if kind == ConfigDocumentKind::Tools {
+        if value
+            .get("agsdlHostPermissions")
+            .is_some_and(Value::is_null)
+        {
+            diagnostics.push(diagnostic(
+                kind,
+                scope,
+                Some("/agsdlHostPermissions".to_string()),
+                "config.tools.agsdl_host_permissions_invalid",
+                "Les permissions AgSDL de l’hôte ne peuvent pas être nulles.",
+            ));
+        }
         if let Some(server) = value.get("languageServer") {
             if matches!(scope, ConfigScope::Project { .. }) {
                 diagnostics.push(diagnostic(
@@ -1085,6 +1107,14 @@ pub fn descriptors() -> Vec<ConfigDescriptor> {
         descriptor(
             Tools,
             "/languageServer",
+            &["user"],
+            Replace,
+            ApprovalRequired,
+            Live,
+        ),
+        descriptor(
+            Tools,
+            "/agsdlHostPermissions",
             &["user"],
             Replace,
             ApprovalRequired,
@@ -1701,8 +1731,14 @@ pub fn effective_documents(
 
         for (project_id, project_documents) in project_documents {
             if let Some(project) = project_documents.get(&kind) {
-                merge_values(&mut value, project);
-                for pointer in collect_leaf_pointers(project) {
+                let mut restricted_project = project.clone();
+                if kind == ConfigDocumentKind::Tools {
+                    if let Some(map) = restricted_project.as_object_mut() {
+                        map.remove("agsdlHostPermissions");
+                    }
+                }
+                merge_values(&mut value, &restricted_project);
+                for pointer in collect_leaf_pointers(&restricted_project) {
                     provenance.insert(
                         (kind, pointer.clone()),
                         ConfigProvenance {
@@ -1723,8 +1759,14 @@ pub fn effective_documents(
         );
 
         if let Some(session) = session_documents.get(&kind) {
-            merge_values(&mut value, session);
-            for pointer in collect_leaf_pointers(session) {
+            let mut restricted_session = session.clone();
+            if kind == ConfigDocumentKind::Tools {
+                if let Some(map) = restricted_session.as_object_mut() {
+                    map.remove("agsdlHostPermissions");
+                }
+            }
+            merge_values(&mut value, &restricted_session);
+            for pointer in collect_leaf_pointers(&restricted_session) {
                 provenance.insert(
                     (kind, pointer.clone()),
                     ConfigProvenance {
@@ -1787,6 +1829,63 @@ pub fn strip_default_values(document: &mut Value, defaults: &Value) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn agsdl_host_permissions_are_user_only_and_typed() {
+        let kind = ConfigDocumentKind::Tools;
+        let user = ConfigScope::User;
+        let project = ConfigScope::Project {
+            project_id: "project".into(),
+        };
+        let doc = |permissions: Value| json!({"$schema":"./schemas/v1/tools.schema.json", "schemaVersion":1, "agsdlHostPermissions":permissions});
+        assert_eq!(
+            default_document(kind)["agsdlHostPermissions"],
+            json!("read-only")
+        );
+        let schema = serde_json::to_value(schema_for_kind(kind)).unwrap();
+        assert_eq!(
+            schema.pointer("/properties/agsdlHostPermissions/default"),
+            Some(&json!("read-only"))
+        );
+        assert!(validate_document(kind, &user, &doc(json!({"preset":"workspace", "rules":[{"action":"network", "effect":"ask"}], "reviewer":"person"}))).valid);
+        assert!(!validate_document(kind, &project, &doc(json!("read-only"))).valid);
+        for invalid in [
+            json!(null),
+            json!("unknown"),
+            json!({"preset":"full", "unknown":true}),
+            json!({"rules":[{"action":"bogus", "effect":"allow"}]}),
+        ] {
+            assert!(!validate_document(kind, &user, &doc(invalid)).valid);
+        }
+        let descriptor = descriptors()
+            .into_iter()
+            .find(|d| d.document == kind && d.json_pointer == "/agsdlHostPermissions")
+            .unwrap();
+        assert_eq!(descriptor.scopes, vec!["user"]);
+        assert_eq!(descriptor.merge_strategy, ConfigMergeStrategy::Replace);
+        assert_eq!(descriptor.sensitivity, ConfigSensitivity::ApprovalRequired);
+        assert_eq!(descriptor.apply_mode, ConfigApplyMode::Live);
+        assert!(
+            !classify_sensitive_paths(kind, &["/agsdlHostPermissions/rules/0/effect".into()])
+                .0
+                .is_empty()
+        );
+
+        // Session currently has no setter; projection must reject this field
+        // defensively if a future producer puts it in an overlay.
+        let mut user_docs = BTreeMap::new();
+        user_docs.insert(kind, doc(json!({"preset":"workspace", "outside":"deny"})));
+        let mut project_docs = BTreeMap::new();
+        project_docs.insert(kind, doc(json!("full")));
+        let mut session = BTreeMap::new();
+        session.insert(kind, doc(json!("full")));
+        let (effective, _) =
+            effective_documents(&user_docs, &[("project", &project_docs)], &session);
+        assert_eq!(
+            effective["tools"]["agsdlHostPermissions"],
+            json!({"preset":"workspace", "outside":"deny"})
+        );
+    }
 
     #[test]
     fn every_default_document_validates_when_persisted() {

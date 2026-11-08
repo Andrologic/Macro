@@ -1007,3 +1007,179 @@ fn unavailable_filesystem_tools_do_not_suppress_sandbox_proofs_when_shell_is_pos
         .any(|proof| proof.starts_with("tool-only-")));
     assert!(plan.evidence.iter().any(|proof| proof == "outside-sandbox"));
 }
+
+#[test]
+fn host_flow_content_limits_actions_without_granting_permissions() {
+    let f = Fixture::new();
+    let p = f.effective(json!("full"));
+    let requests = [
+        (f.read("file"), Effect::Allow),
+        (f.write("file"), Effect::Deny),
+        (
+            ActionRequest::Shell {
+                command: "true".into(),
+            },
+            Effect::Deny,
+        ),
+        (
+            ActionRequest::Network {
+                host: "example.test".into(),
+            },
+            Effect::Allow,
+        ),
+        (
+            ActionRequest::Mcp {
+                server: "docs".into(),
+                tool: Some("read".into()),
+            },
+            Effect::Deny,
+        ),
+        (ActionRequest::Delegate {}, Effect::Deny),
+    ];
+    for (request, expected) in requests {
+        let decision = evaluate_effective(&p, &request, ExecutionPurpose::HostFlowContent).unwrap();
+        assert_eq!(decision.effect, expected, "{request:?}");
+        assert_eq!(decision.purpose, ExecutionPurpose::HostFlowContent);
+        assert_eq!(decision.policy_digest, p.fingerprint());
+    }
+
+    let read_only = f.effective(json!("read-only"));
+    assert_eq!(
+        evaluate_effective(
+            &read_only,
+            &f.read("file"),
+            ExecutionPurpose::HostFlowContent
+        )
+        .unwrap()
+        .effect,
+        Effect::Allow
+    );
+    let network = ActionRequest::Network {
+        host: "example.test".into(),
+    };
+    assert_eq!(
+        evaluate_effective(&read_only, &network, ExecutionPurpose::HostFlowContent)
+            .unwrap()
+            .effect,
+        Effect::Deny
+    );
+    let no_permissions = f.effective(json!({}));
+    assert_eq!(
+        evaluate_effective(
+            &no_permissions,
+            &f.read("file"),
+            ExecutionPurpose::HostFlowContent
+        )
+        .unwrap()
+        .effect,
+        Effect::Deny
+    );
+}
+
+#[test]
+fn host_flow_content_preserves_ask_reviewer_and_stricter_current_policy() {
+    let f = Fixture::new();
+    let p = f.effective(json!({"preset":"full", "reviewer":"person", "rules":[
+        {"action":"read", "match":"secret", "effect":"ask"},
+        {"action":"network", "match":"example.test", "effect":"ask"}
+    ]}));
+    let read = f.read("secret");
+    let network = ActionRequest::Network {
+        host: "example.test".into(),
+    };
+    for request in [&read, &network] {
+        let decision = evaluate_effective(&p, request, ExecutionPurpose::HostFlowContent).unwrap();
+        assert_eq!(decision.effect, Effect::Ask);
+        assert_eq!(decision.reviewer, Some(Reviewer::Person));
+    }
+    let blocked = f.effective(json!({"preset":"full", "reviewer":"person", "rules":[
+        {"action":"write", "effect":"ask"},
+        {"action":"shell", "effect":"ask"},
+        {"action":"mcp", "effect":"ask"},
+        {"action":"delegate", "effect":"ask"}
+    ]}));
+    for request in [
+        f.write("file"),
+        ActionRequest::Shell {
+            command: "true".into(),
+        },
+        ActionRequest::Mcp {
+            server: "docs".into(),
+            tool: None,
+        },
+        ActionRequest::Delegate {},
+    ] {
+        let decision =
+            evaluate_effective(&blocked, &request, ExecutionPurpose::HostFlowContent).unwrap();
+        assert_eq!(decision.effect, Effect::Deny);
+        assert_eq!(decision.reviewer, None);
+    }
+    let narrower = p.with_current(f.policy(json!({"preset":"read-only", "rules":[
+        {"action":"read", "match":"secret", "effect":"deny"}
+    ]})));
+    for request in [&read, &network] {
+        let decision =
+            evaluate_effective(&narrower, request, ExecutionPurpose::HostFlowContent).unwrap();
+        assert_eq!(decision.effect, Effect::Deny);
+        assert_eq!(decision.reviewer, None);
+    }
+}
+
+#[test]
+fn host_flow_content_uses_exact_camel_case_purpose_serialization() {
+    let encoded = serde_json::to_string(&ExecutionPurpose::HostFlowContent).unwrap();
+    assert_eq!(encoded, "\"hostFlowContent\"");
+    assert_eq!(
+        serde_json::from_str::<ExecutionPurpose>(&encoded).unwrap(),
+        ExecutionPurpose::HostFlowContent
+    );
+    assert!(serde_json::from_str::<ExecutionPurpose>("\"host_flow_content\"").is_err());
+
+    let f = Fixture::new();
+    let p = f.effective(json!("full"));
+    let decision =
+        evaluate_effective(&p, &f.read("file"), ExecutionPurpose::HostFlowContent).unwrap();
+    assert_eq!(
+        serde_json::to_value(&decision).unwrap()["purpose"],
+        json!("hostFlowContent")
+    );
+    let plan = check_enforcement(&p, &observed(&p), ExecutionPurpose::HostFlowContent).unwrap();
+    assert_eq!(
+        serde_json::to_value(&plan).unwrap()["purpose"],
+        json!("hostFlowContent")
+    );
+}
+
+#[test]
+fn host_flow_content_does_not_change_existing_purposes() {
+    let f = Fixture::new();
+    let p = f.effective(json!("full"));
+    let network = ActionRequest::Network {
+        host: "example.test".into(),
+    };
+    let shell = ActionRequest::Shell {
+        command: "true".into(),
+    };
+    for purpose in [ExecutionPurpose::Agent, ExecutionPurpose::CompletionCheck] {
+        assert_eq!(
+            evaluate_effective(&p, &network, purpose).unwrap().effect,
+            Effect::Allow
+        );
+        assert_eq!(
+            evaluate_effective(&p, &shell, purpose).unwrap().effect,
+            Effect::Allow
+        );
+    }
+    assert_eq!(
+        evaluate_effective(&p, &network, ExecutionPurpose::PlanLocked)
+            .unwrap()
+            .effect,
+        Effect::Deny
+    );
+    assert_eq!(
+        evaluate_effective(&p, &shell, ExecutionPurpose::PlanLocked)
+            .unwrap()
+            .effect,
+        Effect::Deny
+    );
+}
