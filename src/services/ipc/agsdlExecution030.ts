@@ -1,6 +1,7 @@
 import type { PublicSnapshot, PublicStartReceipt } from '../../types/generated/ipc';
 import type { StartRequest } from '../agsdlExecution/contracts';
 import type { EngineVersions030, ExecutionProfile030 } from '../agsdlExecution/contracts030';
+import type { RuntimeProjectionContinuation030, RuntimeProjectionPage030, RuntimeProjectionQuery030 } from '../../types/generated/ipc';
 import { invoke } from '../tauriRuntimeBridge';
 
 /** This transport does not qualify Start 030. Native admission remains authoritative. */
@@ -42,4 +43,12 @@ export function readExecutionHumans030(
   continuation?: import('../../types/generated/ipc').HumanContinuation030,
 ): Promise<import('../../types/generated/ipc').HumanPage030> {
   return invoke('execution_read_humans030', { scope, continuation: continuation ?? null });
+}
+
+/** Pages are invalidated by any flow revision or scope change. */
+export function readExecutionRuntimeProjection030(
+  scope: RuntimeProjectionQuery030,
+  continuation?: RuntimeProjectionContinuation030,
+): Promise<RuntimeProjectionPage030> {
+  return invoke('execution_read_runtime_projection030', { scope, continuation: continuation ?? null });
 }

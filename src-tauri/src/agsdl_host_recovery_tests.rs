@@ -8,6 +8,7 @@ fn host() -> Arc<Incarnation> {
         generation: "generation".into(),
         compiler: Default::default(),
         work_protocol: Default::default(),
+        route030: Default::default(),
         lifecycle: Arc::new(tokio::sync::RwLock::new(())),
         handoff: Mutex::new(()),
         live: AtomicBool::new(true),

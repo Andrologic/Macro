@@ -37,8 +37,16 @@ pub fn register(registry: &mut Registry) -> Result<(), String> {
     registry.add::<ipc_contracts::execution::Closure>("execution")?;
     registry.add::<ipc_contracts::execution::EngineTerminalCommit>("execution")?;
     registry.add::<ipc_contracts::execution::HostCompileJob>("execution")?;
+    registry.add::<ipc_contracts::execution::RuntimeProjectionScope030>("execution")?;
+    registry.add::<ipc_contracts::execution::RuntimeProjectionQuery030>("execution")?;
+    registry.add::<ipc_contracts::execution::RuntimeProjectionContinuation030>("execution")?;
+    registry.add::<ipc_contracts::execution::RuntimeProjectionItem030>("execution")?;
+    registry.add::<ipc_contracts::execution::RuntimeProjectionPage030>("execution")?;
     registry.add::<ipc_contracts::execution::HostWorkJob030>("execution")?;
     registry.add::<ipc_contracts::execution::HostWorkCompletion030>("execution")?;
+    registry.add::<ipc_contracts::execution::HostRouteJob030>("execution")?;
+    registry.add::<ipc_contracts::execution::HostRouteCompletion030>("execution")?;
+    registry.add::<ipc_contracts::execution::HostRouteOutput030>("execution")?;
     registry.add::<ipc_contracts::execution::ClaudeStatus>("execution")?;
     registry.add::<ipc_contracts::execution::HostClaudeRequest>("execution")?;
     registry.add::<ipc_contracts::execution::HostClaudeReceipt>("execution")?;

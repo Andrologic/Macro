@@ -8,7 +8,10 @@ pub(crate) mod discovery;
 pub mod dto;
 #[path = "v030/flow.rs"]
 pub(crate) mod flow030;
+#[path = "v030/runtime_projection.rs"]
+pub(crate) mod runtime_projection030;
 pub(crate) mod flow_store030;
+pub(crate) mod flow_work_protocol030;
 pub(crate) mod inspection;
 pub(crate) mod intents;
 pub(crate) mod json_lexemes030;

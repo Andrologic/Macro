@@ -117,6 +117,7 @@ async fn linked_graphless_start_uses_real_compiler_job_and_durable_intent() {
         generation: "generation".into(),
         compiler: Default::default(),
         work_protocol: Default::default(),
+        route030: Default::default(),
         lifecycle: Arc::new(tokio::sync::RwLock::new(())),
         handoff: Mutex::new(()),
         live: AtomicBool::new(true),
@@ -327,6 +328,7 @@ async fn exercise_handoff(mode: u8) {
         generation: "generation".into(),
         compiler: Default::default(),
         work_protocol: Default::default(),
+        route030: Default::default(),
         lifecycle: Arc::new(tokio::sync::RwLock::new(())),
         handoff: Mutex::new(()),
         live: AtomicBool::new(true),
@@ -345,7 +347,7 @@ async fn exercise_handoff(mode: u8) {
         Default::default(),
         Default::default(),
     );
-    let runtime = flow::FlowHost030::default();
+    let runtime = host.flow030();
     let event = FlowEvent030 {
         identity: identity.clone(),
         event_id: "enter".into(),
@@ -354,10 +356,28 @@ async fn exercise_handoff(mode: u8) {
             message_json: "{}".into(),
         },
     };
-    flow::apply_native_event(&runtime, &host, &pool, &event)
+    flow::apply_native_event(runtime, &host, &pool, &event)
         .await
         .unwrap();
-    let claim = flow::claim_next(&runtime, &host, &pool, &identity)
+    let scope = crate::agsdl_host_projection030::RuntimeProjectionQuery030 {
+        system_start_id: identity.system_start_id.clone(),
+        source: capture.source.clone(),
+        snapshot_id: None,
+    };
+    let projected = crate::agsdl_host_projection030::read(&host, &pool, scope.clone(), None)
+        .await
+        .unwrap();
+    assert_eq!(projected.revision, "1");
+    assert_eq!(projected.scope.snapshot_id, identity.snapshot_id);
+    assert!(!projected.items.is_empty());
+    let mut wrong_scope = scope;
+    wrong_scope.snapshot_id = Some("other".into());
+    assert!(
+        crate::agsdl_host_projection030::read(&host, &pool, wrong_scope, None)
+            .await
+            .is_err()
+    );
+    let claim = flow::claim_next(runtime, &host, &pool, &identity)
         .await
         .unwrap()
         .unwrap();
@@ -370,7 +390,7 @@ async fn exercise_handoff(mode: u8) {
         let status: String = sqlx::query_scalar("SELECT status FROM engine_flow030_outbox WHERE system_id='system' AND invocation_id='flow' AND effect_id=?")
             .bind(&effect_id).fetch_one(&pool).await.unwrap();
         assert_eq!(status, "uncertain");
-        assert!(flow::claim_next(&runtime, &host, &pool, &identity)
+        assert!(flow::claim_next(runtime, &host, &pool, &identity)
             .await
             .unwrap()
             .is_none());
@@ -409,12 +429,12 @@ async fn exercise_handoff(mode: u8) {
     .await
     .unwrap();
     assert_eq!(count, i64::from(!fail_handoff));
-    assert!(flow::claim_next(&runtime, &host, &pool, &identity)
+    assert!(flow::claim_next(runtime, &host, &pool, &identity)
         .await
         .unwrap()
         .is_none());
     assert!(revoke_now(&incarnation));
-    assert!(flow::claim_next(&runtime, &host, &pool, &identity)
+    assert!(flow::claim_next(runtime, &host, &pool, &identity)
         .await
         .is_err());
 }

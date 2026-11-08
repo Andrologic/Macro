@@ -38,3 +38,17 @@ it('reads native human pages with the complete scope and opaque continuation', a
   await ipc.readExecutionHumans030(scope);
   expect(invoke).toHaveBeenLastCalledWith('execution_read_humans030', { scope, continuation: null });
 });
+
+it('passes projection scope and revision-bound continuation without rewriting section data', async () => {
+  const scope = { systemStartId: 'run', source, snapshotId: 'snapshot' };
+  const continuation = { scope, revision: '9007199254740993', offset: 100 };
+  response = { scope, flowInvocationId: 'flow', revision: continuation.revision, stopping: false,
+    verdict: null, total: '101', items: [{ kind: 'path', value: { id: 'path' } }], nextPage: null };
+  expect(response).toBe(await ipc.readExecutionRuntimeProjection030(scope, continuation));
+  expect(invoke).toHaveBeenLastCalledWith('execution_read_runtime_projection030', { scope, continuation });
+  await ipc.readExecutionRuntimeProjection030(scope);
+  expect(invoke).toHaveBeenLastCalledWith('execution_read_runtime_projection030', { scope, continuation: null });
+  const initial = { ...scope, snapshotId: null };
+  await ipc.readExecutionRuntimeProjection030(initial);
+  expect(invoke).toHaveBeenLastCalledWith('execution_read_runtime_projection030', { scope: initial, continuation: null });
+});

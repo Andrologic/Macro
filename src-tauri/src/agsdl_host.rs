@@ -14,6 +14,7 @@ struct Incarnation {
     generation: String,
     compiler: crate::agsdl_host_compiler::CompileBroker,
     work_protocol: crate::agsdl_host_work::WorkBroker030,
+    route030: crate::agsdl_host_route030::RouteBroker030,
     lifecycle: Arc<tokio::sync::RwLock<()>>,
     handoff: Mutex<()>,
     live: AtomicBool,
@@ -86,6 +87,22 @@ pub(crate) struct HostStartLease {
     _guard: tokio::sync::OwnedRwLockReadGuard<()>,
 }
 impl HostStartLease {
+    /// Pure route preparation is still untrusted data until the native owner
+    /// verifies and commits its receipt against the current flow transaction.
+    pub(crate) async fn prepare_route030(
+        &self,
+        input_json: String,
+        cancel: &tokio_util::sync::CancellationToken,
+    ) -> Result<String> {
+        self.ensure_live()?;
+        let result = self
+            .host
+            .route030
+            .evaluate(&self.host.generation, input_json, cancel)
+            .await?;
+        self.ensure_live()?;
+        Ok(result)
+    }
     /// Transfer an exact native effect to its cancellable owner while this
     /// lease keeps the incarnation attached. The caller must also hold the
     /// shared admission exclusion through the acknowledged claim commit.
@@ -274,6 +291,38 @@ impl HostState {
             ));
         }
         Ok((output, host))
+    }
+
+    /// Evaluates a previously reserved Flow030 event without keeping a SQL or
+    /// admission guard across the mailbox wait. The caller must revalidate
+    /// the flow and commit its decision in a fresh guarded transaction.
+    pub(crate) async fn evaluate_flow_work030(
+        &self,
+        input: crate::agsdl_host_work::HostWorkInput030,
+        generation: &str,
+        cancelled: &tokio_util::sync::CancellationToken,
+    ) -> Result<crate::agsdl_host_work::HostWorkOutput030> {
+        let owner = input.context.owner.clone();
+        let expected = self.0.lock()
+            .map_err(|_| failure("RUNTIME_UNAVAILABLE", "work", "Host state unavailable"))?
+            .as_ref().map(|host| host.incarnation.clone())
+            .ok_or_else(|| failure("RUNTIME_UNAVAILABLE", "work", "Host not installed"))?;
+        if expected.generation != generation {
+            return Err(failure("CORRELATION", "work", "Work host generation differs"));
+        }
+        let (output, evaluated) = self.evaluate_work030(input, cancelled).await?;
+        let current = self.0.lock()
+            .map_err(|_| failure("RUNTIME_UNAVAILABLE", "work", "Host state unavailable"))?
+            .as_ref().map(|host| host.incarnation.clone())
+            .ok_or_else(|| failure("RUNTIME_UNAVAILABLE", "work", "Host not installed"))?;
+        if !Arc::ptr_eq(&expected, &evaluated) || !Arc::ptr_eq(&expected, &current)
+            || !expected.live.load(Ordering::SeqCst)
+            || expected.owners.lock().map_err(|_| failure("RUNTIME_UNAVAILABLE", "work", "Host ownership unavailable"))?
+                .get(&owner.system_start_id) != Some(&owner)
+        {
+            return Err(failure("RUNTIME_UNAVAILABLE", "work", "Work host ownership changed"));
+        }
+        Ok(output)
     }
     /// Reserve before asking the pure controller, then commit through DB017's
     /// epoch/stop/revision guard. A committed replay never invokes the mailbox.
@@ -538,6 +587,7 @@ fn revoke_now(host: &Arc<Incarnation>) -> bool {
     host.retired.cancel();
     host.compiler.close();
     host.work_protocol.close();
+    host.route030.close();
     true
 }
 
@@ -559,7 +609,7 @@ async fn stop_retired_flows(
     tasks: &crate::ai::stream_tasks::StreamTasks,
     generation: &str,
 ) -> Result<()> {
-    use repository::flow030::{FlowEffect030, FlowEvent030, FlowEventKind030};
+    use repository::flow030::{FlowEffect030, FlowEvent030, FlowEventKind030, WorkRef030};
     let mut pending = false;
     for control in runtime.retiring_controls(generation)? {
         let identity = control.identity();
@@ -587,6 +637,20 @@ async fn stop_retired_flows(
                     },
                 )
                 .await?;
+        }
+        let view = control.read(pool).await?;
+        for activation in view.state.activations.iter().filter(|work| work.physical) {
+            if let Some(start_effect_id) = &activation.start_effect_id {
+                let work = WorkRef030 {
+                    activation_id: activation.id.clone(),
+                    start_effect_id: start_effect_id.clone(),
+                    agent_instance_id: activation.instance_id.clone(),
+                };
+                // This method needs the opaque control and either a durable
+                // unclaimed fact or the current incarnation's retained witness.
+                // `None` is deliberately not physical termination evidence.
+                let _ = control.settle_unadmitted(runtime, pool, &work).await?;
+            }
         }
         let view = control.read(pool).await?;
         let physical_pending = view.state.activations.iter().any(|work| work.physical);
@@ -766,6 +830,7 @@ pub(crate) fn install(app: &tauri::AppHandle) -> tauri::Result<()> {
         generation: uuid::Uuid::new_v4().to_string(),
         compiler: Default::default(),
         work_protocol: Default::default(),
+        route030: Default::default(),
         lifecycle: Arc::new(tokio::sync::RwLock::new(())),
         handoff: Mutex::new(()),
         live: AtomicBool::new(true),
@@ -878,6 +943,7 @@ mod tests {
             generation: "native-generation".into(),
             compiler: Default::default(),
             work_protocol: Default::default(),
+            route030: Default::default(),
             lifecycle: Arc::new(tokio::sync::RwLock::new(())),
             handoff: Mutex::new(()),
             live: AtomicBool::new(true),
@@ -913,6 +979,7 @@ mod tests {
             generation: "generation".into(),
             compiler: Default::default(),
             work_protocol: Default::default(),
+            route030: Default::default(),
             lifecycle: Arc::new(tokio::sync::RwLock::new(())),
             handoff: Mutex::new(()),
             live: AtomicBool::new(true),
@@ -977,6 +1044,7 @@ mod tests {
             generation: "same".into(),
             compiler: Default::default(),
             work_protocol: Default::default(),
+            route030: Default::default(),
             lifecycle: Arc::new(tokio::sync::RwLock::new(())),
             handoff: Mutex::new(()),
             live: AtomicBool::new(true),
@@ -990,6 +1058,7 @@ mod tests {
             generation: "same".into(),
             compiler: Default::default(),
             work_protocol: Default::default(),
+            route030: Default::default(),
             lifecycle: Arc::new(tokio::sync::RwLock::new(())),
             handoff: Mutex::new(()),
             live: AtomicBool::new(true),
@@ -1053,6 +1122,27 @@ pub(crate) fn execution_host_complete_work030(
 ) -> Result<()> {
     let host = state.authenticate(&webview)?;
     host.work_protocol.complete(&host.generation, completion)
+}
+
+#[tauri::command]
+pub(crate) async fn execution_host_next_route030(
+    webview: Webview,
+    state: tauri::State<'_, HostState>,
+) -> Result<crate::agsdl_host_route030::HostRouteJob030> {
+    let host = state.authenticate(&webview)?;
+    let job = host.route030.next().await?;
+    state.authenticate(&webview)?;
+    Ok(job)
+}
+
+#[tauri::command]
+pub(crate) fn execution_host_complete_route030(
+    webview: Webview,
+    state: tauri::State<'_, HostState>,
+    completion: crate::agsdl_host_route030::HostRouteCompletion030,
+) -> Result<()> {
+    let host = state.authenticate(&webview)?;
+    host.route030.complete(&host.generation, completion)
 }
 
 #[tauri::command]

@@ -8,8 +8,9 @@ use crate::db::agsdl_execution::{
     dto::{EngineOwner, EngineStartRequest},
     failure,
     flow030::{
-        DeliveryOccurrence030, FlowEffect030, FlowEffectKind030, FlowEvent030, FlowEventKind030,
-        FlowIdentity030, FlowState030, PreparedBatch030, Producer030,
+        DeliveryOccurrence030, Failure030, FlowEffect030, FlowEffectKind030, FlowEvent030,
+        FlowEventKind030, FlowIdentity030, FlowReceipt030, FlowState030, PhysicalEvidence030,
+        PrepareRef030, PreparedBatch030, PreparedResult030, Producer030, WorkRef030,
     },
     flow_store030::{self, Apply030, Authority030, CheckFuture, FlowView030, StoreError030},
     intents::{ExecutionIntentScope, IntentAdmissionLink},
@@ -19,6 +20,7 @@ use crate::db::agsdl_execution::{
 use crate::workspace::architect::{
     lock_execution_intent_scope, lock_execution_source_owner, LockedExecutionSource,
 };
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use sqlx::{Connection, Row, SqliteConnection, SqlitePool};
@@ -35,6 +37,8 @@ use tokio::sync::OwnedMutexGuard;
 #[derive(Default)]
 pub(crate) struct FlowHost030 {
     committing: Mutex<BTreeMap<String, FlowIdentity030>>,
+    event_committing: Mutex<BTreeMap<(String, String), FlowEvent030>>,
+    unadmitted: Mutex<BTreeMap<(String, String), Unadmitted030>>,
     controls: Mutex<BTreeMap<String, Arc<FlowControl030>>>,
 }
 
@@ -74,7 +78,7 @@ fn digest<T: serde::Serialize>(value: &T) -> Result<String> {
     Ok(format!("{:x}", Sha256::digest(serde_json::to_vec(value)?)))
 }
 impl FlowHost030 {
-    fn available(&self, identity: &FlowIdentity030) -> Result<()> {
+    pub(crate) fn available(&self, identity: &FlowIdentity030) -> Result<()> {
         let pending = self.committing.lock().map_err(|_| unavailable())?;
         if pending
             .values()
@@ -82,7 +86,39 @@ impl FlowHost030 {
         {
             return Err(uncertain());
         }
+        if self
+            .event_committing
+            .lock()
+            .map_err(|_| unavailable())?
+            .values()
+            .any(|event| event.identity.system_start_id == identity.system_start_id)
+        {
+            return Err(uncertain());
+        }
         Ok(())
+    }
+    fn begin_event_commit(&self, event: &FlowEvent030) -> Result<()> {
+        let mut pending = self.event_committing.lock().map_err(|_| unavailable())?;
+        let key = (
+            event.identity.system_start_id.clone(),
+            event.event_id.clone(),
+        );
+        if pending.contains_key(&key) {
+            return Err(uncertain());
+        }
+        pending.insert(key, event.clone());
+        Ok(())
+    }
+    fn acknowledge_event_commit(&self, event: &FlowEvent030) {
+        if let Ok(mut pending) = self.event_committing.lock() {
+            let key = (
+                event.identity.system_start_id.clone(),
+                event.event_id.clone(),
+            );
+            if pending.get(&key) == Some(event) {
+                pending.remove(&key);
+            }
+        }
     }
     fn begin(&self, request: &EngineStartRequest, identity: &FlowIdentity030) -> Result<()> {
         let mut pending = self.committing.lock().map_err(|_| unavailable())?;
@@ -319,6 +355,15 @@ impl Authority030 for Authority<'_> {
                     }
                     if let Some(occurrence) = occurrence {
                         check_occurrence(&state, occurrence, message_json, item_json, sender)?;
+                        check_persisted_occurrence(
+                            db,
+                            &effect.identity,
+                            occurrence,
+                            sender,
+                            &self.owner.owner_epoch,
+                            self.lease.generation(),
+                        )
+                        .await?;
                     }
                 }
                 FlowEffectKind030::Steer {
@@ -356,6 +401,15 @@ impl Authority030 for Authority<'_> {
                             &delivery.item_json,
                             sender,
                         )?;
+                        check_persisted_occurrence(
+                            db,
+                            &effect.identity,
+                            occurrence,
+                            sender,
+                            &self.owner.owner_epoch,
+                            self.lease.generation(),
+                        )
+                        .await?;
                     }
                 }
                 FlowEffectKind030::PrepareRoute {
@@ -406,6 +460,10 @@ impl Authority030 for Authority<'_> {
         &self.owner.owner_epoch
     }
 }
+
+#[cfg(test)]
+#[path = "agsdl_host_no_admission030_tests.rs"]
+mod no_admission_tests;
 
 struct StartGuard {
     _source: LockedExecutionSource,
@@ -778,6 +836,10 @@ pub(crate) async fn apply_native_event(
     pool: &SqlitePool,
     event: &FlowEvent030,
 ) -> Result<Apply030> {
+    // Prepared has a dedicated atomic path with its occurrence witnesses.
+    if matches!(&event.kind, FlowEventKind030::Prepared { .. }) {
+        return Err(refused());
+    }
     let lease = host.start_lease().await?;
     let _admission = host.admission_lock().lock_owned().await;
     if !matches!(
@@ -800,14 +862,605 @@ pub(crate) async fn apply_native_event(
         .await
         .map_err(store_error)?;
     lease.ensure_live()?;
+    runtime.begin_event_commit(event)?;
     tx.commit().await.map_err(|_| uncertain())?;
     lease.ensure_live().map_err(|_| uncertain())?;
+    runtime.acknowledge_event_commit(event);
     Ok(result)
+}
+
+/// Readback only: never reapply an absent event or infer rollback from absence.
+/// A matching durable event can resolve a cancelled/unknown COMMIT barrier.
+pub(crate) async fn inspect_native_event_commit(
+    runtime: &FlowHost030,
+    host: &HostState,
+    pool: &SqlitePool,
+    event: &FlowEvent030,
+) -> Result<Option<Apply030>> {
+    let lease = host.start_lease().await?;
+    let _admission = host.admission_lock().lock_owned().await;
+    let authority = Authority {
+        runtime,
+        lease: &lease,
+        owner: lease.owner(&event.identity.system_start_id)?,
+    };
+    let mut db = pool.acquire().await?;
+    let mut tx = db.begin().await?;
+    authority
+        .owner(&mut tx, &event.identity)
+        .await
+        .map_err(store_error)?;
+    let row = sqlx::query("SELECT event_json,receipt_json,diagnostic_json FROM engine_flow030_events WHERE system_id=? AND invocation_id=? AND event_id=?")
+        .bind(&event.identity.system_start_id).bind(&event.identity.flow_invocation_id).bind(&event.event_id).fetch_optional(&mut *tx).await?;
+    let result = match row {
+        None => None,
+        Some(row) => {
+            if row.get::<String, _>("event_json") != serde_json::to_string(event)? {
+                return Err(refused());
+            }
+            Some(
+                if let Some(raw) = row.get::<Option<String>, _>("receipt_json") {
+                    Apply030::Replayed(serde_json::from_str::<FlowReceipt030>(&raw)?)
+                } else {
+                    Apply030::Diagnostic(serde_json::from_str(
+                        row.get::<&str, _>("diagnostic_json"),
+                    )?)
+                },
+            )
+        }
+    };
+    tx.commit().await?;
+    lease.ensure_live()?;
+    if result.is_some() {
+        runtime.acknowledge_event_commit(event);
+    }
+    Ok(result)
+}
+
+/// Supplied only by the native receipt resolver. JSON fields are data, never grants.
+pub(crate) struct NativeRouteMaterial030 {
+    pub source_json: String,
+    pub content_receipts_json: String,
+}
+
+/// The receipt resolver must re-read immutable work/content receipts and effective
+/// permissions on this transaction. No I/O or caller-provided permission flag.
+pub(crate) trait RouteMaterialVerifier030: Sync {
+    fn attest_tx<'a>(
+        &'a self,
+        db: &'a mut SqliteConnection,
+        capture: &'a StartCapture030,
+        reference: &'a PrepareRef030,
+        producer: &'a Producer030,
+        material: &'a NativeRouteMaterial030,
+    ) -> CheckFuture<'a>;
+}
+
+/// Private native capability, not Clone/Deserialize/IPC. The broker may serialize
+/// its input, but cannot create another capture by returning those bytes.
+pub(crate) struct CapturedRoutePreparation030 {
+    owner: EngineOwner,
+    generation: String,
+    capture: StartCapture030,
+    reference: PrepareRef030,
+    producer: Producer030,
+    material: NativeRouteMaterial030,
+    receipt_id: String,
+}
+impl CapturedRoutePreparation030 {
+    pub(crate) fn receipt_id(&self) -> &str {
+        &self.receipt_id
+    }
+    pub(crate) fn input_json(&self) -> Result<String> {
+        Ok(serde_json::to_string(&json!({
+            "planJson": self.capture.compiled_plan_json,
+            "reference": self.reference,
+            "producer": self.producer,
+            "source": serde_json::from_str::<Value>(&self.material.source_json)?,
+            "nativeReceiptId": self.receipt_id,
+            "contentReceipts": serde_json::from_str::<Value>(&self.material.content_receipts_json)?,
+        }))?)
+    }
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct OccurrenceProvenance030 {
+    occurrence: DeliveryOccurrence030,
+    prompt: Value,
+    source: Value,
+    producer: Producer030,
+}
+
+async fn check_persisted_occurrence(
+    db: &mut SqliteConnection,
+    id: &FlowIdentity030,
+    occurrence: &DeliveryOccurrence030,
+    sender: &Option<Producer030>,
+    owner_epoch: &str,
+    generation: &str,
+) -> std::result::Result<String, StoreError030> {
+    let ordinal = i64::try_from(occurrence.target_ordinal).map_err(|_| StoreError030::Authority)?;
+    let row = sqlx::query("SELECT p.provenance_json,r.source_json,r.producer_json,r.owner_epoch,r.generation FROM engine_flow030_occurrence_provenance p JOIN engine_flow030_preparations r USING(system_id,invocation_id,native_receipt_id) WHERE p.system_id=? AND p.invocation_id=? AND p.native_receipt_id=? AND p.target_ordinal=? AND p.item_index=?")
+        .bind(&id.system_start_id).bind(&id.flow_invocation_id).bind(&occurrence.native_receipt_id).bind(ordinal).bind(&occurrence.item_index).fetch_optional(&mut *db).await?.ok_or(StoreError030::Authority)?;
+    let raw: String = row.get("provenance_json");
+    let proof: OccurrenceProvenance030 = serde_json::from_str(&raw)?;
+    let producer: Producer030 = serde_json::from_str(row.get::<&str, _>("producer_json"))?;
+    let source: Value = serde_json::from_str(row.get::<&str, _>("source_json"))?;
+    if row.get::<String, _>("owner_epoch") != owner_epoch
+        || row.get::<String, _>("generation") != generation
+        || proof.occurrence != *occurrence
+        || proof.producer != producer
+        || sender.as_ref() != Some(&producer)
+        || proof.source != source
+    {
+        return Err(StoreError030::Authority);
+    }
+    Ok(raw)
+}
+
+/// Private host lookup for delivery construction, never an IPC grant. Admission
+/// rechecks the same witness inside its immediate claim transaction.
+pub(crate) async fn occurrence_provenance(
+    runtime: &FlowHost030,
+    host: &HostState,
+    pool: &SqlitePool,
+    owner: &EngineOwner,
+    occurrence: &DeliveryOccurrence030,
+    producer: &Producer030,
+) -> Result<String> {
+    let lease = host.start_lease().await?;
+    if lease.owner(&owner.system_start_id)? != *owner {
+        return Err(refused());
+    }
+    let authority = Authority {
+        runtime,
+        lease: &lease,
+        owner: owner.clone(),
+    };
+    let mut db = pool.acquire().await?;
+    let mut tx = db.begin().await?;
+    let capture: String =
+        sqlx::query_scalar("SELECT capture_json FROM engine_start030_requests WHERE system_id=?")
+            .bind(&owner.system_start_id)
+            .fetch_one(&mut *tx)
+            .await?;
+    let capture: StartCapture030 = serde_json::from_str(&capture)?;
+    authority
+        .owner(&mut tx, &capture.identity)
+        .await
+        .map_err(store_error)?;
+    let raw = check_persisted_occurrence(
+        &mut tx,
+        &capture.identity,
+        occurrence,
+        &Some(producer.clone()),
+        &owner.owner_epoch,
+        lease.generation(),
+    )
+    .await
+    .map_err(store_error)?;
+    tx.commit().await?;
+    lease.ensure_live()?;
+    Ok(raw)
+}
+
+#[derive(Deserialize)]
+#[serde(
+    tag = "kind",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase",
+    deny_unknown_fields
+)]
+enum RoutePreparationOutput030 {
+    Ready {
+        batches: Vec<PreparedBatch030>,
+        provenance: Vec<OccurrenceProvenance030>,
+    },
+    Failed {
+        target_ordinal: usize,
+        error: Failure030,
+    },
+}
+
+fn route_material_source(
+    material: &NativeRouteMaterial030,
+    producer: &Producer030,
+) -> Result<Value> {
+    for raw in [&material.source_json, &material.content_receipts_json] {
+        if raw.len() > 8_000_000 {
+            return Err(failure(
+                "INPUT_LIMIT",
+                "route",
+                "Route capture exceeds the transport limit",
+            ));
+        }
+        repository::validate_json(raw)?;
+    }
+    let source: Value = serde_json::from_str(&material.source_json)?;
+    if !source.is_object()
+        || source.get("terminalId").and_then(Value::as_str) != Some(producer.activation_id.as_str())
+        || source.get("producerStep") != Some(&serde_json::to_value(&producer.step)?)
+        || source.get("outputJson").and_then(Value::as_str) != Some(producer.output_json.as_str())
+    {
+        return Err(refused());
+    }
+    let content: Value = serde_json::from_str(&material.content_receipts_json)?;
+    if !content.is_object()
+        || !content.get("identity").is_some_and(Value::is_object)
+        || !content.get("receipts").is_some_and(Value::is_array)
+        || content.as_object().is_some_and(|fields| {
+            fields
+                .keys()
+                .any(|key| !matches!(key.as_str(), "identity" | "receipts"))
+        })
+    {
+        return Err(refused());
+    }
+    Ok(source)
+}
+
+async fn route_capture_tx(
+    db: &mut SqliteConnection,
+    authority: &Authority<'_>,
+    identity: &FlowIdentity030,
+) -> Result<StartCapture030> {
+    authority.owner(db, identity).await.map_err(store_error)?;
+    let raw: String = sqlx::query_scalar(
+        "SELECT capture_json FROM engine_start030_requests WHERE system_id=? AND invocation_id=?",
+    )
+    .bind(&identity.system_start_id)
+    .bind(&identity.flow_invocation_id)
+    .fetch_one(&mut *db)
+    .await?;
+    let capture: StartCapture030 = serde_json::from_str(&raw)?;
+    if capture.identity != *identity {
+        return Err(refused());
+    }
+    Ok(capture)
+}
+
+pub(crate) async fn capture_route_preparation<V: RouteMaterialVerifier030>(
+    runtime: &FlowHost030,
+    host: &HostState,
+    pool: &SqlitePool,
+    owner: &EngineOwner,
+    reference: &PrepareRef030,
+    material: NativeRouteMaterial030,
+    verifier: &V,
+) -> Result<CapturedRoutePreparation030> {
+    let lease = host.start_lease().await?;
+    let _admission = host.admission_lock().lock_owned().await;
+    if lease.owner(&owner.system_start_id)? != *owner
+        || reference.identity.system_start_id != owner.system_start_id
+    {
+        return Err(refused());
+    }
+    runtime.available(&reference.identity)?;
+    let authority = Authority {
+        runtime,
+        lease: &lease,
+        owner: owner.clone(),
+    };
+    let mut db = pool.acquire().await?;
+    let mut tx = db.begin().await?;
+    let capture = route_capture_tx(&mut tx, &authority, &reference.identity).await?;
+    let view = flow_store030::read_tx(&mut tx, &authority, &reference.identity)
+        .await
+        .map_err(store_error)?;
+    if view.state.stopping || view.state.verdict.is_some() {
+        return Err(refused());
+    }
+    let preparation = view
+        .state
+        .preparations
+        .iter()
+        .find(|p| p.reference == *reference && p.status == "pending")
+        .ok_or_else(refused)?;
+    let producer = preparation.producer.clone();
+    route_material_source(&material, &producer)?;
+    verifier
+        .attest_tx(&mut tx, &capture, reference, &producer, &material)
+        .await
+        .map_err(store_error)?;
+    tx.commit().await?;
+    lease.ensure_live()?;
+    Ok(CapturedRoutePreparation030 {
+        owner: owner.clone(),
+        generation: lease.generation().into(),
+        capture,
+        reference: reference.clone(),
+        producer,
+        material,
+        receipt_id: uuid::Uuid::new_v4().to_string(),
+    })
+}
+
+/// Native end-to-end path through the resident pure helper. This evaluates no
+/// model and performs no content I/O; material contains previously attested receipts.
+pub(crate) async fn prepare_route<V: RouteMaterialVerifier030>(
+    runtime: &FlowHost030,
+    host: &HostState,
+    pool: &SqlitePool,
+    owner: &EngineOwner,
+    reference: &PrepareRef030,
+    material: NativeRouteMaterial030,
+    verifier: &V,
+    cancelled: &tokio_util::sync::CancellationToken,
+) -> Result<Apply030> {
+    let job = capture_route_preparation(runtime, host, pool, owner, reference, material, verifier)
+        .await?;
+    let lease = host.start_lease().await?;
+    if lease.generation() != job.generation {
+        return Err(refused());
+    }
+    let result = lease.prepare_route030(job.input_json()?, cancelled).await?;
+    lease.ensure_live()?;
+    // Do not recursively acquire a lifecycle read lease behind a queued writer.
+    drop(lease);
+    if cancelled.is_cancelled() {
+        return Err(failure(
+            "INTERRUPTED",
+            "route",
+            "Route preparation was cancelled",
+        ));
+    }
+    apply_route_preparation(runtime, host, pool, &job, &result, verifier).await
+}
+
+fn route_prepared_result(
+    job: &CapturedRoutePreparation030,
+    result_json: &str,
+) -> Result<(PreparedResult030, Vec<OccurrenceProvenance030>)> {
+    if result_json.len() > 8_000_000 {
+        return Err(failure(
+            "INPUT_LIMIT",
+            "route",
+            "Route preparation exceeds the transport limit",
+        ));
+    }
+    repository::validate_json(result_json)?;
+    match serde_json::from_str::<RoutePreparationOutput030>(result_json)? {
+        RoutePreparationOutput030::Failed {
+            target_ordinal,
+            error,
+        } => Ok((
+            PreparedResult030::Failed {
+                target_ordinal,
+                error,
+            },
+            vec![],
+        )),
+        RoutePreparationOutput030::Ready {
+            batches,
+            provenance,
+        } => {
+            let source = route_material_source(&job.material, &job.producer)?;
+            let mut expected = BTreeMap::new();
+            for (ordinal, batch) in batches.iter().enumerate() {
+                if batch.target_ordinal != ordinal {
+                    return Err(refused());
+                }
+                for (index, item) in batch.items.iter().enumerate() {
+                    let occurrence = &item.occurrence;
+                    if occurrence.native_receipt_id != job.receipt_id
+                        || occurrence.target_ordinal != ordinal
+                        || occurrence.item_index != index.to_string()
+                    {
+                        return Err(refused());
+                    }
+                    expected.insert((ordinal, index.to_string()), false);
+                }
+            }
+            if provenance.len() != expected.len() {
+                return Err(refused());
+            }
+            for proof in &provenance {
+                let occurrence = &proof.occurrence;
+                let seen = expected
+                    .get_mut(&(occurrence.target_ordinal, occurrence.item_index.clone()))
+                    .ok_or_else(refused)?;
+                if *seen
+                    || occurrence.native_receipt_id != job.receipt_id
+                    || proof.producer != job.producer
+                    || proof.source != source
+                    || !proof.prompt.is_object()
+                {
+                    return Err(refused());
+                }
+                *seen = true;
+            }
+            Ok((PreparedResult030::Ready { batches }, provenance))
+        }
+    }
+}
+
+/// The pure broker result, its native source proof and every occurrence commit
+/// atomically with the reducer transition. A stale preparation leaves no rows.
+pub(crate) async fn apply_route_preparation<V: RouteMaterialVerifier030>(
+    runtime: &FlowHost030,
+    host: &HostState,
+    pool: &SqlitePool,
+    job: &CapturedRoutePreparation030,
+    result_json: &str,
+    verifier: &V,
+) -> Result<Apply030> {
+    let (prepared, provenance) = route_prepared_result(job, result_json)?;
+    let lease = host.start_lease().await?;
+    let _admission = host.admission_lock().lock_owned().await;
+    if lease.generation() != job.generation || lease.owner(&job.owner.system_start_id)? != job.owner
+    {
+        return Err(refused());
+    }
+    runtime.available(&job.reference.identity)?;
+    let authority = Authority {
+        runtime,
+        lease: &lease,
+        owner: job.owner.clone(),
+    };
+    let mut db = pool.acquire().await?;
+    sqlx::query("PRAGMA synchronous=FULL")
+        .execute(&mut *db)
+        .await?;
+    let mut tx = db.begin_with("BEGIN IMMEDIATE").await?;
+    let capture = route_capture_tx(&mut tx, &authority, &job.reference.identity).await?;
+    if digest(&capture)? != digest(&job.capture)? {
+        return Err(refused());
+    }
+    let id = &job.reference.identity;
+    let event_id = format!("prepared:{}", job.receipt_id);
+    let existing = sqlx::query("SELECT native_receipt_id,owner_epoch,generation,reference_json,producer_json,source_json,content_receipts_json,result_json FROM engine_flow030_preparations WHERE system_id=? AND invocation_id=? AND prepare_id=?")
+        .bind(&id.system_start_id).bind(&id.flow_invocation_id).bind(&job.reference.prepare_id).fetch_optional(&mut *tx).await?;
+    let expected_revision;
+    if let Some(row) = existing.as_ref() {
+        let expected = [
+            job.receipt_id.clone(),
+            job.owner.owner_epoch.clone(),
+            job.generation.clone(),
+            serde_json::to_string(&job.reference)?,
+            serde_json::to_string(&job.producer)?,
+            job.material.source_json.clone(),
+            job.material.content_receipts_json.clone(),
+            result_json.to_owned(),
+        ];
+        for (field, value) in [
+            "native_receipt_id",
+            "owner_epoch",
+            "generation",
+            "reference_json",
+            "producer_json",
+            "source_json",
+            "content_receipts_json",
+            "result_json",
+        ]
+        .iter()
+        .zip(expected)
+        {
+            if row.get::<String, _>(*field) != value {
+                return Err(refused());
+            }
+        }
+        let encoded: String = sqlx::query_scalar("SELECT event_json FROM engine_flow030_events WHERE system_id=? AND invocation_id=? AND event_id=?")
+            .bind(&id.system_start_id).bind(&id.flow_invocation_id).bind(&event_id).fetch_one(&mut *tx).await?;
+        expected_revision = serde_json::from_str::<Value>(&encoded)?
+            .get("expectedRevision")
+            .and_then(Value::as_str)
+            .ok_or_else(refused)?
+            .to_owned();
+    } else {
+        let view = flow_store030::read_tx(&mut tx, &authority, id)
+            .await
+            .map_err(store_error)?;
+        if view.state.stopping
+            || view.state.verdict.is_some()
+            || !view.state.preparations.iter().any(|p| {
+                p.reference == job.reference && p.producer == job.producer && p.status == "pending"
+            })
+        {
+            return Err(refused());
+        }
+        verifier
+            .attest_tx(
+                &mut tx,
+                &capture,
+                &job.reference,
+                &job.producer,
+                &job.material,
+            )
+            .await
+            .map_err(store_error)?;
+        expected_revision = view.state.revision;
+        sqlx::query("INSERT INTO engine_flow030_preparations(system_id,invocation_id,prepare_id,native_receipt_id,owner_epoch,generation,reference_json,producer_json,source_json,content_receipts_json,result_json) VALUES(?,?,?,?,?,?,?,?,?,?,?)")
+            .bind(&id.system_start_id).bind(&id.flow_invocation_id).bind(&job.reference.prepare_id).bind(&job.receipt_id).bind(&job.owner.owner_epoch).bind(&job.generation)
+            .bind(serde_json::to_string(&job.reference)?).bind(serde_json::to_string(&job.producer)?).bind(&job.material.source_json).bind(&job.material.content_receipts_json).bind(result_json).execute(&mut *tx).await?;
+        for proof in &provenance {
+            let ordinal = i64::try_from(proof.occurrence.target_ordinal).map_err(|_| refused())?;
+            sqlx::query("INSERT INTO engine_flow030_occurrence_provenance(system_id,invocation_id,native_receipt_id,target_ordinal,item_index,provenance_json) VALUES(?,?,?,?,?,?)")
+                .bind(&id.system_start_id).bind(&id.flow_invocation_id).bind(&job.receipt_id).bind(ordinal).bind(&proof.occurrence.item_index).bind(serde_json::to_string(proof)?).execute(&mut *tx).await?;
+        }
+    }
+    let event = FlowEvent030 {
+        identity: id.clone(),
+        event_id,
+        expected_revision,
+        kind: FlowEventKind030::Prepared {
+            reference: job.reference.clone(),
+            native_receipt_id: job.receipt_id.clone(),
+            result: prepared,
+        },
+    };
+    let result = flow_store030::apply_tx(&mut tx, &authority, &event)
+        .await
+        .map_err(store_error)?;
+    lease.ensure_live()?;
+    runtime.begin_event_commit(&event)?;
+    tx.commit().await.map_err(|_| uncertain())?;
+    lease.ensure_live().map_err(|_| uncertain())?;
+    runtime.acknowledge_event_commit(&event);
+    Ok(result)
+}
+
+/// Resolve this process's pending preparation COMMIT by its sealed native job.
+/// Absence leaves the barrier untouched and never authorizes another effect.
+pub(crate) async fn inspect_route_preparation_commit(
+    runtime: &FlowHost030,
+    host: &HostState,
+    pool: &SqlitePool,
+    job: &CapturedRoutePreparation030,
+) -> Result<Option<Apply030>> {
+    let key = (
+        job.reference.identity.system_start_id.clone(),
+        format!("prepared:{}", job.receipt_id),
+    );
+    let event = runtime
+        .event_committing
+        .lock()
+        .map_err(|_| unavailable())?
+        .get(&key)
+        .cloned();
+    match event {
+        Some(event) if event.identity == job.reference.identity => {
+            inspect_native_event_commit(runtime, host, pool, &event).await
+        }
+        Some(_) => Err(refused()),
+        None => Ok(None),
+    }
+}
+
+struct Unadmitted030 {
+    owner: EngineOwner,
+    generation: String,
+    effect: FlowEffect030,
+}
+
+/// Lives from before claim COMMIT until the owned executor is released. Drop
+/// records positive process-local knowledge, not an absence from a task list.
+struct UnadmittedClaimGuard030<'a> {
+    runtime: &'a FlowHost030,
+    witness: Option<Unadmitted030>,
+}
+impl Drop for UnadmittedClaimGuard030<'_> {
+    fn drop(&mut self) {
+        if let Some(witness) = self.witness.take() {
+            if matches!(&witness.effect.kind, FlowEffectKind030::Start { .. }) {
+                if let Ok(mut pending) = self.runtime.unadmitted.lock() {
+                    pending
+                        .entry((
+                            witness.effect.identity.system_start_id.clone(),
+                            witness.effect.id.clone(),
+                        ))
+                        .or_insert(witness);
+                }
+            }
+        }
+    }
 }
 
 /// Not Clone/Deserialize. Dropping it after COMMIT leaves the claim uncertain;
 /// it never becomes a fresh pending effect. The gate spans COMMIT to handoff.
 pub(crate) struct DispatchLease030<'a> {
+    // Drop this witness before releasing the admission exclusion or lifecycle lease.
+    unadmitted: UnadmittedClaimGuard030<'a>,
     runtime: &'a FlowHost030,
     lease: HostStartLease,
     _admission: OwnedMutexGuard<()>,
@@ -825,8 +1478,10 @@ impl DispatchLease030<'_> {
             self.effect.identity.system_start_id, self.effect.id
         )
     }
+    /// The future must perform no physical work until polled. A constructor
+    /// which already spawned a process cannot use this admission boundary.
     pub(crate) async fn handoff<F>(
-        self,
+        mut self,
         tasks: &crate::ai::stream_tasks::StreamTasks,
         work: F,
     ) -> Result<()>
@@ -884,6 +1539,9 @@ impl DispatchLease030<'_> {
         .map_err(|_| uncertain())?;
         tx.commit().await.map_err(|_| uncertain())?;
         self.lease.ensure_live().map_err(|_| uncertain())?;
+        // Sending may let another worker poll immediately. Remove the proof
+        // before that synchronous boundary, conservatively even if send fails.
+        self.unadmitted.witness = None;
         release.send(()).map_err(|_| uncertain())?;
         Ok(())
     }
@@ -914,10 +1572,19 @@ pub(crate) async fn claim_next<'a>(
     for effect_id in effects {
         match flow_store030::claim_tx(&mut tx, &authority, id, &effect_id).await {
             Ok(effect) => {
+                let unadmitted = UnadmittedClaimGuard030 {
+                    runtime,
+                    witness: Some(Unadmitted030 {
+                        owner: owner.clone(),
+                        generation: lease.generation().into(),
+                        effect: effect.clone(),
+                    }),
+                };
                 lease.ensure_live()?;
                 tx.commit().await.map_err(|_| uncertain())?;
                 lease.ensure_live().map_err(|_| uncertain())?;
                 return Ok(Some(DispatchLease030 {
+                    unadmitted,
                     runtime,
                     lease,
                     _admission: admission,
@@ -957,9 +1624,173 @@ pub(crate) struct FlowControl030 {
     generation: String,
     admission: Arc<tokio::sync::Mutex<()>>,
 }
+
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct NoAdmissionReceipt030 {
+    identity: FlowIdentity030,
+    work: WorkRef030,
+    owner_epoch: String,
+    generation: String,
+    native_receipt_id: String,
+    reason: String,
+}
+
 impl FlowControl030 {
     pub(crate) fn identity(&self) -> &FlowIdentity030 {
         &self.identity
+    }
+
+    /// Prove that this exact Start never crossed the owned executor's release
+    /// boundary. None means unproven: an ordinary supervisor proof is required.
+    /// A persisted handoff always excludes this path, even if it was unreleased.
+    pub(crate) async fn settle_unadmitted(
+        &self,
+        runtime: &FlowHost030,
+        pool: &SqlitePool,
+        work: &WorkRef030,
+    ) -> Result<Option<Apply030>> {
+        if !runtime
+            .controls
+            .lock()
+            .map_err(|_| unavailable())?
+            .get(&self.identity.system_start_id)
+            .is_some_and(|control| std::ptr::eq(control.as_ref(), self))
+        {
+            return Err(refused());
+        }
+        let _admission = self.admission.clone().lock_owned().await;
+        let mut db = pool.acquire().await?;
+        sqlx::query("PRAGMA synchronous=FULL")
+            .execute(&mut *db)
+            .await?;
+        let mut tx = db.begin_with("BEGIN IMMEDIATE").await?;
+        let view = flow_store030::read_tx(&mut tx, self, &self.identity)
+            .await
+            .map_err(store_error)?;
+        let activation = view
+            .state
+            .activations
+            .iter()
+            .find(|a| a.id == work.activation_id)
+            .ok_or_else(refused)?;
+        if activation.start_effect_id.as_deref() != Some(work.start_effect_id.as_str())
+            || activation.instance_id != work.agent_instance_id
+            || !view.state.stopping
+        {
+            return Err(refused());
+        }
+        let row = sqlx::query("SELECT effect_json,status,owner_epoch FROM engine_flow030_outbox WHERE system_id=? AND invocation_id=? AND effect_id=?")
+            .bind(&self.identity.system_start_id).bind(&self.identity.flow_invocation_id).bind(&work.start_effect_id).fetch_one(&mut *tx).await?;
+        let effect: FlowEffect030 = serde_json::from_str(row.get::<&str, _>("effect_json"))?;
+        if effect.identity != self.identity
+            || effect.id != work.start_effect_id
+            || row.get::<String, _>("owner_epoch") != self.owner.owner_epoch
+            || !matches!(&effect.kind, FlowEffectKind030::Start { work: started, .. } if started == work)
+        {
+            return Err(refused());
+        }
+        let handoff: i64 = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM engine_flow030_handoffs WHERE system_id=? AND invocation_id=? AND effect_id=?)")
+            .bind(&self.identity.system_start_id).bind(&self.identity.flow_invocation_id).bind(&work.start_effect_id).fetch_one(&mut *tx).await?;
+        if handoff != 0 {
+            return Ok(None);
+        }
+        let stored = sqlx::query("SELECT owner_epoch,generation,proof_json FROM engine_flow030_no_admissions WHERE system_id=? AND invocation_id=? AND start_effect_id=?")
+            .bind(&self.identity.system_start_id).bind(&self.identity.flow_invocation_id).bind(&work.start_effect_id).fetch_optional(&mut *tx).await?;
+        let event_id = format!("no-admission:{}", work.start_effect_id);
+        let proof;
+        let expected_revision;
+        if let Some(stored) = stored {
+            proof = serde_json::from_str::<NoAdmissionReceipt030>(stored.get("proof_json"))?;
+            if stored.get::<String, _>("owner_epoch") != self.owner.owner_epoch
+                || stored.get::<String, _>("generation") != self.generation
+                || proof.identity != self.identity
+                || proof.work != *work
+                || proof.owner_epoch != self.owner.owner_epoch
+                || proof.generation != self.generation
+                || proof.native_receipt_id.is_empty()
+                || !matches!(proof.reason.as_str(), "unclaimed" | "unreleasedNativeClaim")
+            {
+                return Err(refused());
+            }
+            let original = view.state.events.get(&event_id).ok_or_else(refused)?;
+            expected_revision = serde_json::from_str::<Value>(&original.event_json)?
+                .get("expectedRevision")
+                .and_then(Value::as_str)
+                .ok_or_else(refused)?
+                .to_owned();
+        } else {
+            if !activation.physical || activation.stop_effect_id.is_none() {
+                return Ok(None);
+            }
+            let status: &str = row.get("status");
+            let reason = match status {
+                "pending" => "unclaimed",
+                "uncertain" => {
+                    let retained = runtime.unadmitted.lock().map_err(|_| unavailable())?;
+                    if !retained
+                        .get(&(
+                            self.identity.system_start_id.clone(),
+                            work.start_effect_id.clone(),
+                        ))
+                        .is_some_and(|p| {
+                            p.owner == self.owner
+                                && p.generation == self.generation
+                                && p.effect == effect
+                        })
+                    {
+                        return Ok(None);
+                    }
+                    "unreleasedNativeClaim"
+                }
+                _ => return Ok(None),
+            };
+            proof = NoAdmissionReceipt030 {
+                identity: self.identity.clone(),
+                work: work.clone(),
+                owner_epoch: self.owner.owner_epoch.clone(),
+                generation: self.generation.clone(),
+                native_receipt_id: format!("no-admission:{}", uuid::Uuid::new_v4()),
+                reason: reason.into(),
+            };
+            let raw = serde_json::to_string(&proof)?;
+            sqlx::query("INSERT INTO engine_flow030_no_admissions(system_id,invocation_id,start_effect_id,owner_epoch,generation,proof_json) VALUES(?,?,?,?,?,?)")
+                .bind(&self.identity.system_start_id).bind(&self.identity.flow_invocation_id).bind(&work.start_effect_id).bind(&self.owner.owner_epoch).bind(&self.generation).bind(&raw).execute(&mut *tx).await?;
+            let changed = sqlx::query("UPDATE engine_flow030_outbox SET status='settled',settlement_json=? WHERE system_id=? AND invocation_id=? AND effect_id=? AND status=? AND owner_epoch=?")
+                .bind(&raw).bind(&self.identity.system_start_id).bind(&self.identity.flow_invocation_id).bind(&work.start_effect_id).bind(status).bind(&self.owner.owner_epoch).execute(&mut *tx).await?.rows_affected();
+            if changed != 1 {
+                return Err(refused());
+            }
+            expected_revision = view.state.revision;
+        }
+        let event = FlowEvent030 {
+            identity: self.identity.clone(),
+            event_id,
+            expected_revision,
+            kind: FlowEventKind030::PhysicalEnded {
+                work: work.clone(),
+                stop_effect_id: activation.stop_effect_id.clone(),
+                evidence: PhysicalEvidence030 {
+                    native_receipt_id: proof.native_receipt_id,
+                    descendants_joined: true,
+                },
+            },
+        };
+        let result = flow_store030::apply_tx(&mut tx, self, &event)
+            .await
+            .map_err(store_error)?;
+        if matches!(result, Apply030::Diagnostic(_)) {
+            return Err(refused());
+        }
+        tx.commit().await.map_err(|_| uncertain())?;
+        // Keep the positive witness through cancellation or unknown COMMIT.
+        if let Ok(mut retained) = runtime.unadmitted.lock() {
+            retained.remove(&(
+                self.identity.system_start_id.clone(),
+                work.start_effect_id.clone(),
+            ));
+        }
+        Ok(Some(result))
     }
 
     /// Cleanup is allowed after live=false; re-admission is not. The caller

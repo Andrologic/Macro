@@ -3,6 +3,43 @@ use sqlx::Connection;
 use tempfile::TempDir;
 
 #[tokio::test]
+async fn flow_no_admission_and_handoff_cannot_contradict_each_other() {
+    let temp = TempDir::new().unwrap();
+    let pool = create_pool(&temp.path().join("flow-no-admission.db"))
+        .await
+        .unwrap();
+    sqlx::raw_sql("INSERT INTO engine_flow030_runs VALUES ('s','f','snapshot','capture','{}','{}','{}');\
+        INSERT INTO engine_flow030_events VALUES ('s','f','event','{}','{}',NULL);\
+        INSERT INTO engine_flow030_outbox VALUES ('s','f','never','event','{}','owner','pending',NULL);\
+        INSERT INTO engine_flow030_outbox VALUES ('s','f','handed','event','{}','owner','uncertain',NULL);\
+        INSERT INTO engine_flow030_no_admissions VALUES ('s','f','never','owner','generation','{}');\
+        INSERT INTO engine_flow030_handoffs VALUES ('s','f','handed','owner','generation','{}');")
+        .execute(&pool).await.unwrap();
+    assert!(sqlx::query(
+        "INSERT INTO engine_flow030_handoffs VALUES ('s','f','never','owner','generation','{}')"
+    )
+    .execute(&pool)
+    .await
+    .is_err());
+    assert!(sqlx::query("INSERT INTO engine_flow030_no_admissions VALUES ('s','f','handed','owner','generation','{}')")
+        .execute(&pool).await.is_err());
+    assert!(
+        sqlx::query("UPDATE engine_flow030_no_admissions SET proof_json='null'")
+            .execute(&pool)
+            .await
+            .is_err()
+    );
+    assert!(sqlx::query("DELETE FROM engine_flow030_no_admissions")
+        .execute(&pool)
+        .await
+        .is_err());
+    assert!(sqlx::query("DELETE FROM engine_flow030_handoffs")
+        .execute(&pool)
+        .await
+        .is_err());
+}
+
+#[tokio::test]
 async fn flow_owner_migration_defers_capture_reference_without_accepting_orphans() {
     let temp = TempDir::new().unwrap();
     let pool = create_pool(&temp.path().join("flow-owner.db"))
@@ -121,6 +158,9 @@ async fn accepts_develop_v9_with_historical_pilot_v5_stamp() {
             (31, "031_execution_start_entry".into()),
             (32, "032_execution_ui_intent_start030".into()),
             (33, "033_execution_flow_owner030".into()),
+            (34, "034_execution_flow_preparations030".into()),
+            (35, "035_execution_flow_no_admission030".into()),
+            (36, "036_execution_flow_work_protocol030".into()),
         ]
     );
 }
@@ -207,7 +247,7 @@ async fn rehearses_upgrade_on_external_database_copy() {
             .unwrap()
             .iter()
             .max(),
-        Some(&33)
+        Some(&36)
     );
 }
 
@@ -1314,7 +1354,7 @@ async fn joins_both_published_v10_histories_without_replacing_stamps_or_data() {
                 .fetch_one(&upgraded)
                 .await
                 .unwrap(),
-            33
+            36
         );
         assert_eq!(
             sqlx::query_scalar::<_, String>(
@@ -1507,7 +1547,7 @@ async fn protocol017_upgrades_v16_without_rewriting_snapshots_and_rolls_back_fai
             .fetch_one(&upgraded)
             .await
             .unwrap(),
-        33
+        36
     );
     assert_eq!(
         sqlx::query("PRAGMA foreign_key_check")
@@ -1576,7 +1616,7 @@ async fn admission018_upgrades_v17_and_rolls_back_failed_stamp() {
             .fetch_one(&upgraded)
             .await
             .unwrap(),
-        33
+        36
     );
     assert!(sqlx::query("PRAGMA foreign_key_check")
         .fetch_all(&upgraded)

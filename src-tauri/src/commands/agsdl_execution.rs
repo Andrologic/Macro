@@ -10,6 +10,16 @@ async fn pool(state: &State<'_, DbPool>) -> repository::Result<sqlx::SqlitePool>
         .await
         .map_err(|_| repository::failure("STORAGE", "", "Execution database unavailable"))
 }
+
+#[tauri::command]
+pub async fn execution_read_runtime_projection030(
+    state: State<'_, DbPool>,
+    host: State<'_, crate::agsdl_host::HostState>,
+    scope: crate::agsdl_host_projection030::RuntimeProjectionQuery030,
+    continuation: Option<crate::agsdl_host_projection030::RuntimeProjectionContinuation030>,
+) -> repository::Result<crate::agsdl_host_projection030::RuntimeProjectionPage030> {
+    crate::agsdl_host_projection030::read(&host, &pool(&state).await?, scope, continuation).await
+}
 #[tauri::command]
 pub async fn execution_start(
     app: tauri::AppHandle,

@@ -56,6 +56,7 @@ async fn simulated_claude_resumes_exactly_retains_preterminal_refs_and_refuses_a
         digest: "synthetic-profile".into(),
         workspace: None,
         qa_endpoint: None,
+        protocol030: false,
     };
     for p in [&profile.home, &profile.config] {
         std::fs::create_dir(p).unwrap();

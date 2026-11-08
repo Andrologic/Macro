@@ -102,6 +102,8 @@ mod agsdl_host_confinement;
 mod agsdl_host_flow030;
 mod agsdl_host_harness030;
 mod agsdl_host_provider;
+mod agsdl_host_projection030;
+mod agsdl_host_route030;
 mod agsdl_host_tasks;
 mod agsdl_host_tools;
 mod agsdl_host_work;
@@ -895,6 +897,8 @@ pub fn run() {
             agsdl_host::execution_host_complete_compile,
             agsdl_host::execution_host_next_work030,
             agsdl_host::execution_host_complete_work030,
+            agsdl_host::execution_host_next_route030,
+            agsdl_host::execution_host_complete_route030,
             commands::agsdl_execution::execution_model_choices,
             commands::agsdl_execution::execution_preflight,
             commands::agsdl_execution::execution_list_runs,
@@ -905,6 +909,7 @@ pub fn run() {
             commands::agsdl_execution::execution_decide_approval,
             crate::agsdl_host_tools::execution_host_invoke_tool,
             commands::agsdl_execution::execution_start,
+            commands::agsdl_execution::execution_read_runtime_projection030,
             commands::agsdl_execution::execution_stage_intent,
             commands::agsdl_execution::execution_read_intents,
             commands::agsdl_execution::execution_read_intent,
