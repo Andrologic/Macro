@@ -442,6 +442,26 @@ async fn released_effect_remains_owned_until_cancelled_and_joined() {
     exercise_handoff(6).await;
 }
 
+#[tokio::test(flavor = "current_thread")]
+async fn agent_handoff_commits_the_exact_attempt_before_first_poll() {
+    exercise_handoff(7).await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn failed_agent_handoff_never_polls_the_attempt() {
+    exercise_handoff(8).await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn agent_revocation_after_commit_refuses_first_poll() {
+    exercise_handoff(9).await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn non_agent_start_cannot_mint_an_agent_attempt() {
+    exercise_handoff(10).await;
+}
+
 async fn exercise_handoff(mode: u8) {
     let temp = tempfile::TempDir::new().unwrap();
     let pool = crate::db::create_pool(&temp.path().join("flow.db"))
@@ -453,7 +473,18 @@ async fn exercise_handoff(mode: u8) {
         snapshot_id: "snapshot".into(),
         epoch: "capture".into(),
     };
-    let plan_json = include_str!("../tests/fixtures/agsdl030_compiled_plan.json");
+    let original_plan = include_str!("../tests/fixtures/agsdl030_compiled_plan.json");
+    // Explicit fixture: retain the compiled plan shape but select the agent
+    // entry to exercise native ownership without invoking a provider.
+    let agent_plan = if matches!(mode, 7..=9) {
+        let mut value: serde_json::Value = serde_json::from_str(original_plan).unwrap();
+        value["entry"] = serde_json::json!(["left"]);
+        value["scopes"][0]["entry"] = serde_json::json!(["left"]);
+        Some(serde_json::to_string(&value).unwrap())
+    } else {
+        None
+    };
+    let plan_json = agent_plan.as_deref().unwrap_or(original_plan);
     let plan: FlowPlan030 = serde_json::from_str(plan_json).unwrap();
     let capture = StartCapture030 {
         identity: identity.clone(),
@@ -675,6 +706,20 @@ async fn exercise_handoff(mode: u8) {
     let effect_id = claim.effect().id.clone();
     let tasks = crate::ai::stream_tasks::StreamTasks::default();
     let request_id = claim.request_id();
+    if mode == 10 {
+        let constructed = Arc::new(AtomicBool::new(false));
+        let observed = constructed.clone();
+        let result = claim
+            .handoff_agent(&tasks, move |_| {
+                observed.store(true, Ordering::SeqCst);
+                async {}
+            })
+            .await;
+        assert!(result.is_err());
+        assert!(!constructed.load(Ordering::SeqCst));
+        assert!(!tasks.cancel_owned(&request_id).await.unwrap());
+        return;
+    }
     if mode == 2 {
         drop(claim);
         assert!(!tasks.cancel_owned(&request_id).await.unwrap());
@@ -687,18 +732,30 @@ async fn exercise_handoff(mode: u8) {
             .is_none());
         return;
     }
-    let fail_handoff = mode == 1;
+    let fail_handoff = mode == 1 || mode == 8;
     if fail_handoff {
         sqlx::query("CREATE TRIGGER reject_flow_handoff BEFORE INSERT ON engine_flow030_handoffs BEGIN SELECT RAISE(ABORT, 'test rejection'); END")
             .execute(&pool).await.unwrap();
     }
-    if mode == 5 {
+    if mode == 5 || mode == 9 {
         let hook = runtime.install_handoff_commit_hook(&identity, &effect_id);
         let polled = Arc::new(AtomicBool::new(false));
         let observed = polled.clone();
-        let operation = claim.handoff(&tasks, async move {
-            observed.store(true, Ordering::SeqCst);
-        });
+        let operation = async {
+            if mode == 9 {
+                claim
+                    .handoff_agent(&tasks, |_| async move {
+                        observed.store(true, Ordering::SeqCst);
+                    })
+                    .await
+            } else {
+                claim
+                    .handoff(&tasks, async move {
+                        observed.store(true, Ordering::SeqCst);
+                    })
+                    .await
+            }
+        };
         let revoke = async {
             hook.reached().await;
             assert!(revoke_now(&incarnation));
@@ -732,12 +789,84 @@ async fn exercise_handoff(mode: u8) {
         assert!(tasks.cancel_owned(&request_id).await.unwrap());
         return;
     }
+    if mode == 7 {
+        let pool_for_work = pool.clone();
+        let id_for_work = effect_id.clone();
+        let host_for_work = incarnation.clone();
+        let tasks_for_work = tasks.clone();
+        let request_for_work = request_id.clone();
+        let gate_for_work = host.admission_lock();
+        let (first_poll, receipt) = tokio::sync::oneshot::channel();
+        claim.handoff_agent(&tasks, move |attempt| async move {
+            let raw: String = sqlx::query_scalar(
+                "SELECT receipt_json FROM engine_flow030_handoffs WHERE system_id='system' AND effect_id=?",
+            )
+            .bind(&id_for_work)
+            .fetch_one(&pool_for_work)
+            .await
+            .unwrap();
+            let retained: serde_json::Value = serde_json::from_str(&raw).unwrap();
+            assert_eq!(retained["workAttempt"], serde_json::to_value(&attempt).unwrap());
+            // Explicit fixture only: this tests ownership attribution, not a
+            // durable operation claim or authorization to call a provider.
+            let lease = HostStartLease {
+                host: host_for_work.clone(),
+                _guard: host_for_work.lifecycle.clone().read_owned().await,
+            };
+            let admission = gate_for_work.lock_owned().await;
+            let operation = crate::ai::stream_tasks::OwnedOperation030 {
+                identity: attempt.identity().clone(),
+                context: crate::db::agsdl_execution::dto::EngineContext {
+                    owner: attempt.owner().clone(),
+                    work: attempt.work().clone(),
+                    permissions_json: "{}".into(),
+                    scope_json: "{}".into(),
+                    registry_version: "fixture".into(),
+                },
+                generation: attempt.generation().into(),
+                agent: attempt.agent().into(),
+                provider_attempt_id: attempt.provider_attempt_id().into(),
+                operation_id: "fixture-operation".into(),
+                method: "turn/start".into(),
+                request_json: r#"{"value":1e0}"#.into(),
+            };
+            let mut foreign = operation.clone();
+            foreign.context.work.activation_id = "foreign".into();
+            assert!(lease.attach_owned_operation030(&tasks_for_work, &request_for_work, foreign).is_err());
+            let permit = lease.attach_owned_operation030(&tasks_for_work, &request_for_work, operation.clone()).unwrap();
+            assert_eq!(permit.into_operation().unwrap(), operation);
+            drop(admission);
+            drop(lease);
+            let _ = first_poll.send(attempt);
+            std::future::pending::<()>().await;
+        }).await.unwrap();
+        let attempt = receipt.await.unwrap();
+        assert_eq!(attempt.start_effect_id(), effect_id);
+        assert_eq!(attempt.identity(), &identity);
+        assert_eq!(attempt.agent(), "worker");
+        assert_eq!(
+            attempt.work().step.as_deref(),
+            Some(["left".to_string()].as_slice())
+        );
+        assert!(!attempt.provider_attempt_id().is_empty());
+        assert!(revoke_now(&incarnation));
+        assert!(tasks.cancel_owned(&request_id).await.unwrap());
+        return;
+    }
     let (started, done) = tokio::sync::oneshot::channel();
-    let result = claim
-        .handoff(&tasks, async move {
-            let _ = started.send(());
-        })
-        .await;
+    let result = if mode == 8 {
+        claim
+            .handoff_agent(&tasks, |_| async move {
+                let _ = started.send(());
+            })
+            .await
+    } else {
+        claim
+            .handoff(&tasks, async move {
+                let _ = started.send(());
+            })
+            .await
+    };
     if fail_handoff {
         assert!(result.is_err());
         assert!(
