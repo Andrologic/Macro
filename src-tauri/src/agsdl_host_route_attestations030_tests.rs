@@ -170,6 +170,18 @@ async fn sql_fixture(
     StartCapture030,
     PrepareRef030,
 ) {
+    sql_fixture_with_fault(accepted_text, None).await
+}
+async fn sql_fixture_with_fault(
+    accepted_text: &str,
+    fault: Option<&str>,
+) -> (
+    tempfile::TempDir,
+    sqlx::SqlitePool,
+    HostState,
+    StartCapture030,
+    PrepareRef030,
+) {
     use crate::db::agsdl_execution::{
         dto::{EngineContext, EngineWork},
         flow030::{FlowEvent030, FlowEventKind030, Preparation030},
@@ -185,7 +197,7 @@ async fn sql_fixture(
         system_start_id: id.system_start_id.clone(),
         owner_epoch: "owner".into(),
     };
-    let producer = Producer030 {
+    let mut producer = Producer030 {
         activation_id: "producer".into(),
         step: Some(vec!["origin".into()]),
         kind: "agent".into(),
@@ -194,6 +206,9 @@ async fn sql_fixture(
         item_json: None,
         output_json: r#"{"text":"ok","results":{}}"#.into(),
     };
+    if fault == Some("unauthorized-instructions") {
+        producer.output_json = r#"{"text":"ok","results":{},"instructions":["mission"]}"#.into();
+    }
     let mut state = FlowState030::new(id.clone());
     state.entered = true;
     state.revision = "1".into();
@@ -225,8 +240,24 @@ async fn sql_fixture(
         scope_json: "{}".into(),
         registry_version: capture.versions.registry.clone(),
     };
-    let ticket = json!({"identity":id,"generation":"generation","input":{"eventId":"accepted","context":context}});
-    let receipt = json!({"owner":{"systemStartId":id.system_start_id,"activationId":"producer","agentInstanceId":"instance","ownerEpoch":"owner"},"decision":{"kind":"accepted","output":{"text":accepted_text,"resultsJson":"{}"}}});
+    let mut ticket = json!({"identity":id,"generation":"generation","input":{"eventId":"accepted","context":context}});
+    let mut receipt = json!({"owner":{"systemStartId":id.system_start_id,"activationId":"producer","agentInstanceId":"instance","ownerEpoch":"owner"},"decision":{"kind":"accepted","output":{"text":accepted_text,"resultsJson":"{}"}}});
+    match fault {
+        None => {}
+        Some("ticket-generation") => ticket["generation"] = json!("foreign-generation"),
+        Some("ticket-identity") => ticket["identity"]["snapshotId"] = json!("foreign-snapshot"),
+        Some("ticket-context") => {
+            ticket["input"]["context"]["work"]["activationId"] = json!("foreign-work")
+        }
+        Some("ticket-event") => ticket["input"]["eventId"] = json!("foreign-event"),
+        Some("receipt-owner") => receipt["owner"]["ownerEpoch"] = json!("foreign-epoch"),
+        Some("receipt-kind") => receipt["decision"]["kind"] = json!("rejected"),
+        Some("receipt-output-type") => receipt["decision"]["output"]["resultsJson"] = json!(5),
+        Some("unauthorized-instructions") => {
+            receipt["decision"]["output"]["instructions"] = json!(["mission"])
+        }
+        _ => panic!("unknown synthetic SQL fault"),
+    }
     let decision = json!({"receiptJson":receipt.to_string()});
     let event = FlowEvent030 {
         identity: id.clone(),
@@ -554,5 +585,255 @@ async fn sql_revocation_after_resolution_cannot_publish_a_context_or_receipt() {
             .await
             .unwrap();
     assert_eq!(count, 0);
+    tx.rollback().await.unwrap();
+}
+
+#[tokio::test]
+async fn sql_source_rejects_foreign_ticket_and_receipt_fields_before_publishing() {
+    for fault in [
+        "ticket-generation",
+        "ticket-identity",
+        "ticket-context",
+        "ticket-event",
+        "receipt-owner",
+        "receipt-kind",
+        "receipt-output-type",
+        "unauthorized-instructions",
+    ] {
+        let (_temp, pool, host, capture, reference) =
+            sql_fixture_with_fault("ok", Some(fault)).await;
+        let owner = EngineOwner {
+            system_start_id: "system".into(),
+            owner_epoch: "owner".into(),
+        };
+        let writer = RouteAttestor030::capture(&host, &owner).await.unwrap();
+        let lease = host.start_lease().await.unwrap();
+        let _admission = host.admission_lock().lock_owned().await;
+        let mut tx = pool.begin().await.unwrap();
+        assert!(
+            writer
+                .attest_agent_source_tx(
+                    &mut tx,
+                    &lease,
+                    host.flow030(),
+                    &capture,
+                    &reference,
+                    "accepted"
+                )
+                .await
+                .is_err(),
+            "{fault}"
+        );
+        let count: i64 =
+            sqlx::query_scalar("SELECT count(*) FROM engine_flow030_route_source_attestations")
+                .fetch_one(&mut *tx)
+                .await
+                .unwrap();
+        assert_eq!(count, 0, "{fault}");
+        tx.rollback().await.unwrap();
+    }
+}
+#[tokio::test]
+async fn sql_source_rejects_fenced_capture_stale_preparation_and_ambiguous_outbox() {
+    for fault in [
+        "owner-epoch",
+        "generation",
+        "revoked",
+        "capture",
+        "preparation",
+        "producer",
+        "effect-identity",
+        "duplicate-effect",
+    ] {
+        let (_temp, pool, host, mut capture, reference) = sql_fixture("ok").await;
+        let owner = EngineOwner {
+            system_start_id: "system".into(),
+            owner_epoch: "owner".into(),
+        };
+        let writer = RouteAttestor030::capture(&host, &owner).await.unwrap();
+        let mut mutation = pool.begin().await.unwrap();
+        match fault {
+            "owner-epoch" => {
+                sqlx::query("UPDATE engine_flow030_owners SET owner_epoch='foreign'")
+                    .execute(&mut *mutation)
+                    .await
+                    .unwrap();
+            }
+            "generation" => {
+                sqlx::query("UPDATE engine_flow030_owners SET generation='foreign'")
+                    .execute(&mut *mutation)
+                    .await
+                    .unwrap();
+            }
+            "revoked" => {
+                sqlx::query("UPDATE engine_flow030_owners SET status='revoked'")
+                    .execute(&mut *mutation)
+                    .await
+                    .unwrap();
+            }
+            "capture" => capture.private_capture_json = r#"{"substituted":true}"#.into(),
+            "preparation" => {
+                let raw: String = sqlx::query_scalar("SELECT state_json FROM engine_flow030_runs")
+                    .fetch_one(&mut *mutation)
+                    .await
+                    .unwrap();
+                let mut state: FlowState030 = serde_json::from_str(&raw).unwrap();
+                state.preparations[0].status = "ready".into();
+                sqlx::query("UPDATE engine_flow030_runs SET state_json=?")
+                    .bind(serde_json::to_string(&state).unwrap())
+                    .execute(&mut *mutation)
+                    .await
+                    .unwrap();
+            }
+            "producer" | "effect-identity" | "duplicate-effect" => {
+                let raw:String=sqlx::query_scalar("SELECT effect_json FROM engine_flow030_outbox WHERE effect_id='prepare-effect'").fetch_one(&mut *mutation).await.unwrap();
+                let mut effect: FlowEffect030 = serde_json::from_str(&raw).unwrap();
+                if fault == "producer" {
+                    let FlowEffectKind030::PrepareRoute { producer, .. } = &mut effect.kind else {
+                        panic!("prepare fixture")
+                    };
+                    producer.output_json = r#"{"text":"substituted","results":{}}"#.into();
+                }
+                if fault == "effect-identity" {
+                    effect.identity.epoch = "foreign".into();
+                }
+                if fault == "duplicate-effect" {
+                    effect.id = "second-effect".into();
+                    sqlx::query("INSERT INTO engine_flow030_outbox VALUES ('system','run','second-effect','seed',?,'owner','pending',NULL)").bind(serde_json::to_string(&effect).unwrap()).execute(&mut *mutation).await.unwrap();
+                } else {
+                    sqlx::query("UPDATE engine_flow030_outbox SET effect_json=? WHERE effect_id='prepare-effect'").bind(serde_json::to_string(&effect).unwrap()).execute(&mut *mutation).await.unwrap();
+                }
+            }
+            _ => unreachable!(),
+        }
+        mutation.commit().await.unwrap();
+        let lease = host.start_lease().await.unwrap();
+        let _admission = host.admission_lock().lock_owned().await;
+        let mut tx = pool.begin().await.unwrap();
+        assert!(
+            writer
+                .attest_agent_source_tx(
+                    &mut tx,
+                    &lease,
+                    host.flow030(),
+                    &capture,
+                    &reference,
+                    "accepted"
+                )
+                .await
+                .is_err(),
+            "{fault}"
+        );
+        let count: i64 =
+            sqlx::query_scalar("SELECT count(*) FROM engine_flow030_route_source_attestations")
+                .fetch_one(&mut *tx)
+                .await
+                .unwrap();
+        assert_eq!(count, 0, "{fault}");
+        tx.rollback().await.unwrap();
+    }
+}
+#[tokio::test]
+async fn sql_verifier_rejects_cache_substitution_and_revoked_native_context() {
+    let (_temp, pool, host, capture, reference) = sql_fixture("ok").await;
+    let owner = EngineOwner {
+        system_start_id: "system".into(),
+        owner_epoch: "owner".into(),
+    };
+    let writer = RouteAttestor030::capture(&host, &owner).await.unwrap();
+    let source = {
+        let lease = host.start_lease().await.unwrap();
+        let _admission = host.admission_lock().lock_owned().await;
+        let mut tx = pool.begin().await.unwrap();
+        let source = writer
+            .attest_agent_source_tx(
+                &mut tx,
+                &lease,
+                host.flow030(),
+                &capture,
+                &reference,
+                "accepted",
+            )
+            .await
+            .unwrap();
+        tx.commit().await.unwrap();
+        source
+    };
+    let (_temp, context) = context(CancellationToken::new(), "worker");
+    let occurrence = writer
+        .resolve_occurrence(&source, 0, "0".into(), context, vec![resource_use()])
+        .await
+        .unwrap();
+    let lease = host.start_lease().await.unwrap();
+    let _admission = host.admission_lock().lock_owned().await;
+    let mut tx = pool.begin().await.unwrap();
+    let material = writer
+        .attest_occurrences_tx(
+            &mut tx,
+            &lease,
+            host.flow030(),
+            &source,
+            &[occurrence],
+            &SyntheticPolicy { deny_index: None },
+        )
+        .await
+        .unwrap();
+    writer
+        .verifier
+        .attest_tx(&mut tx, &capture, &reference, &source.producer, &material)
+        .await
+        .unwrap();
+    for fault in [
+        "context",
+        "ordinal",
+        "index",
+        "agent",
+        "policy",
+        "source-lexeme",
+        "payload",
+    ] {
+        let mut wire: Value = serde_json::from_str(&material.content_receipts_json).unwrap();
+        let occurrence = &mut wire["occurrences"][0];
+        match fault {
+            "context" => occurrence["contextId"] = json!("unattested-context"),
+            "ordinal" => occurrence["targetOrdinal"] = json!(1),
+            "index" => occurrence["itemIndex"] = json!("1"),
+            "agent" => occurrence["identity"]["agent"] = json!("other"),
+            "policy" => occurrence["identity"]["policyDigest"] = json!("foreign-policy"),
+            "source-lexeme" => {
+                occurrence["receipts"][0]["sourceJson"] =
+                    json!(r#"{"value":{"n":9007199254740993,"e":1.0}}"#)
+            }
+            "payload" => occurrence["receipts"][0]["payload"]["json"] = json!("{}"),
+            _ => unreachable!(),
+        }
+        let substituted = NativeRouteMaterial030 {
+            source_json: material.source_json.clone(),
+            content_receipts_json: wire.to_string(),
+        };
+        assert!(
+            writer
+                .verifier
+                .attest_tx(
+                    &mut tx,
+                    &capture,
+                    &reference,
+                    &source.producer,
+                    &substituted
+                )
+                .await
+                .is_err(),
+            "{fault}"
+        );
+    }
+    sqlx::query("UPDATE engine_flow030_route_content_contexts SET status='revoked'")
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    assert!(writer
+        .verifier
+        .attest_tx(&mut tx, &capture, &reference, &source.producer, &material)
+        .await
+        .is_err());
     tx.rollback().await.unwrap();
 }
