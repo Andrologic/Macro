@@ -17,14 +17,20 @@ fn main() {
     let deployment = std::env::var("MACOSX_DEPLOYMENT_TARGET").unwrap_or_else(|_| "14.4".into());
     let target = format!("{arch}-apple-macosx{deployment}");
     let object = out.join("agsdl_content_launcher.o");
-    let status = std::process::Command::new("swiftc")
-        .args([
-            "-target",
-            &target,
-            "-parse-as-library",
-            "-emit-object",
-            source,
-        ])
+    let mut compiler = std::process::Command::new("swiftc");
+    compiler.args([
+        "-target",
+        &target,
+        "-parse-as-library",
+        "-emit-object",
+        source,
+    ]);
+    // This hook exists only in the explicit macOS debug QA build. If a QA
+    // configuration omits it, linking the QA-only FFI must fail closed.
+    if std::env::var("PROFILE").as_deref() == Ok("debug") {
+        compiler.args(["-D", "AGSDL_CONTENT_TESTING"]);
+    }
+    let status = compiler
         .arg("-module-cache-path")
         .arg(out.join("swift-module-cache"))
         .arg("-o")

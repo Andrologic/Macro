@@ -10,6 +10,36 @@ private let helperArgument = "--macro-internal-agsdl-content-read"
 #if AGSDL_CONTENT_TESTING
 // The harness uses this boundary to race an unrelated exec before fcntl.
 var controlPipeCreatedHook: ((Int32, Int32) -> Void)?
+
+private let qaSwapLock = NSLock()
+private var qaPendingSwap: (target: String, replacement: String)?
+
+// Arms one swap for the dedicated QA image. The replacement is applied only
+// after launchRequirement is assigned and immediately before Process.run().
+@_cdecl("agsdl_content_macos_qa_arm_swap")
+public func agsdlContentMacosQaArmSwap(
+    _ target: UnsafePointer<CChar>?, _ replacement: UnsafePointer<CChar>?
+) -> Int32 {
+    guard let target, let replacement,
+          let targetPath = String(validatingUTF8: target),
+          let replacementPath = String(validatingUTF8: replacement),
+          targetPath.hasPrefix("/"), replacementPath.hasPrefix("/") else { return 1 }
+    qaSwapLock.lock()
+    defer { qaSwapLock.unlock() }
+    guard qaPendingSwap == nil else { return 1 }
+    qaPendingSwap = (targetPath, replacementPath)
+    return 0
+}
+
+private func applyQaSwap(_ executablePath: String) -> Bool {
+    qaSwapLock.lock()
+    let swap = qaPendingSwap
+    qaPendingSwap = nil
+    qaSwapLock.unlock()
+    guard let swap else { return true }
+    guard swap.target == executablePath else { return false }
+    return rename(swap.replacement, swap.target) == 0
+}
 #endif
 
 // O_CLOEXEC is applied by openat atomically, including on macOS before pipe2.
@@ -158,6 +188,12 @@ public func agsdlContentMacosLaunch(
     process.standardError = FileHandle(fileDescriptor: controlRead, closeOnDealloc: false)
     process.launchRequirement = requirement
     let launch = ContentLaunch(process: process, output: output)
+    #if AGSDL_CONTENT_TESTING
+    guard applyQaSwap(executablePath) else {
+        close(readFD)
+        return 6
+    }
+    #endif
     do { try process.run() }
     catch {
         close(readFD)

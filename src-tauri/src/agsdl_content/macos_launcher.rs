@@ -47,6 +47,23 @@ unsafe extern "C" {
     ) -> i32;
 }
 
+#[cfg(all(feature = "agsdl-content-qa", debug_assertions))]
+unsafe extern "C" {
+    fn agsdl_content_macos_qa_arm_swap(target: *const c_char, replacement: *const c_char) -> i32;
+}
+
+#[cfg(all(feature = "agsdl-content-qa", debug_assertions))]
+pub(super) fn arm_image_swap(target: &Path, replacement: &Path) -> io::Result<()> {
+    let target = CString::new(target.as_os_str().as_bytes())
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "Invalid QA target"))?;
+    let replacement = CString::new(replacement.as_os_str().as_bytes())
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "Invalid QA replacement"))?;
+    if unsafe { agsdl_content_macos_qa_arm_swap(target.as_ptr(), replacement.as_ptr()) } != 0 {
+        return Err(io::Error::other("Cannot arm QA image substitution"));
+    }
+    Ok(())
+}
+
 pub(super) struct Launch {
     handle: Option<NonNull<c_void>>,
     pub(super) output: OwnedFd,
@@ -63,6 +80,16 @@ pub(super) struct Exit {
 }
 
 impl Launch {
+    #[cfg(all(feature = "agsdl-content-qa", debug_assertions))]
+    pub(super) fn qa_handle_identity(&self) -> Option<usize> {
+        self.handle.map(|handle| handle.as_ptr() as usize)
+    }
+
+    #[cfg(all(feature = "agsdl-content-qa", debug_assertions))]
+    pub(super) fn qa_control_open(&self) -> bool {
+        self.control.is_some()
+    }
+
     pub(super) fn start(executable: &Path, name: &Path, parent_fd: RawFd) -> io::Result<Self> {
         let executable = CString::new(executable.as_os_str().as_bytes()).map_err(|_| {
             io::Error::new(io::ErrorKind::InvalidInput, "Invalid helper executable")

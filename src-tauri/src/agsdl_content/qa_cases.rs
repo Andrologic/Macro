@@ -3,6 +3,7 @@ use super::*;
 use crate::agsdl_permissions::{normalize_requested, PathContext, RequestedPermissions};
 use serde_json::json;
 use std::fs;
+use std::path::Path;
 use tempfile::TempDir;
 use url::Url;
 
@@ -516,6 +517,163 @@ async fn substituted_fifo_must_not_be_opened_after_type_check() {
     );
 }
 
+// These cases exercise the same Swift/Rust bridge and the same image that is
+// currently executing the dedicated QA binary, not a standalone fixture.
+fn qa_reap_without_abandoning_owner(
+    launch: &mut super::macos_launcher::Launch,
+) -> Result<super::macos_launcher::Exit, String> {
+    use std::time::Duration;
+    let mut late = false;
+    loop {
+        match launch.wait(Duration::from_secs(5)) {
+            Ok(Some(status)) if !late => return Ok(status),
+            Ok(Some(_)) => return Err("Helper reaped only after the QA deadline".into()),
+            Ok(None) => {
+                if !late {
+                    eprintln!("content QA: helper termination remains uncertain; retaining handle");
+                    late = true;
+                }
+            }
+            Err(error) => {
+                if !late {
+                    eprintln!("content QA: wait failed; retaining handle: {error}");
+                    late = true;
+                }
+                std::thread::sleep(Duration::from_millis(100));
+            }
+        }
+    }
+}
+
+async fn authenticated_image_substitution_is_rejected_at_launch() {
+    use std::io::Read;
+    use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+    use std::os::unix::fs::PermissionsExt;
+
+    let temp = TempDir::new().unwrap();
+    let root = temp.path();
+    let image = root.join("image");
+    let attacker = root.join("attacker");
+    let marker = root.join("attacker-marker");
+    fs::write(root.join("data.txt"), b"authenticated").unwrap();
+    fs::copy(std::env::current_exe().unwrap(), &image).unwrap();
+    fs::set_permissions(&image, fs::Permissions::from_mode(0o700)).unwrap();
+    let directory = fs::File::open(root).unwrap();
+    let mut positive =
+        super::macos_launcher::Launch::start(&image, Path::new("data.txt"), directory.as_raw_fd())
+            .unwrap();
+    let duplicated = unsafe { libc::fcntl(positive.output.as_raw_fd(), libc::F_DUPFD_CLOEXEC, 3) };
+    assert!(
+        duplicated >= 0,
+        "cannot duplicate authenticated helper output"
+    );
+    let mut output = fs::File::from(unsafe { OwnedFd::from_raw_fd(duplicated) });
+    let mut bytes = Vec::new();
+    output.read_to_end(&mut bytes).unwrap();
+    let status = qa_reap_without_abandoning_owner(&mut positive)
+        .expect("authenticated helper termination was uncertain");
+    assert!(
+        !status.signal && status.status == 0,
+        "authenticated image was refused"
+    );
+    assert_eq!(bytes, b"authenticated");
+
+    let quoted = marker.to_str().unwrap().replace('\'', "'\\''");
+    let script = format!("#!/bin/sh\nprintf attacked > '{quoted}'\n");
+    fs::write(&attacker, script.as_bytes()).unwrap();
+    fs::set_permissions(&attacker, fs::Permissions::from_mode(0o700)).unwrap();
+    // Negative control: this exact replacement is capable of writing the marker
+    // if launched without the identity requirement.
+    let baseline = std::process::Command::new(&attacker)
+        .args(["--macro-internal-agsdl-content-read", "0", "data.txt"])
+        .status()
+        .unwrap();
+    assert!(
+        baseline.success() && marker.is_file(),
+        "attacker negative control did not execute"
+    );
+    fs::remove_file(&marker).unwrap();
+    super::macos_launcher::arm_image_swap(&image, &attacker).unwrap();
+    let attempt =
+        super::macos_launcher::Launch::start(&image, Path::new("data.txt"), directory.as_raw_fd());
+    assert!(!attacker.exists(), "QA swap did not occur");
+    assert_eq!(
+        fs::read(&image).unwrap(),
+        script.as_bytes(),
+        "wrong replacement image"
+    );
+    match attempt {
+        Err(error) => assert_eq!(
+            error.to_string(),
+            "Content helper launch failed (4)",
+            "launch did not fail at the intended boundary"
+        ),
+        Ok(mut launch) => {
+            let status = qa_reap_without_abandoning_owner(&mut launch)
+                .expect("substituted helper termination was uncertain");
+            assert!(
+                status.signal && status.status == libc::SIGKILL,
+                "substituted image was not killed by launch requirement"
+            );
+        }
+    }
+    assert!(
+        !marker.exists(),
+        "substituted image wrote its attacker marker"
+    );
+}
+
+async fn native_wait_timeout_retains_handle_until_real_reap() {
+    use std::os::fd::AsRawFd;
+    use std::time::Duration;
+
+    let temp = TempDir::new().unwrap();
+    fs::write(temp.path().join("bulk.bin"), vec![9u8; 10 * 1024 * 1024]).unwrap();
+    let directory = fs::File::open(temp.path()).unwrap();
+    let mut launch = super::macos_launcher::Launch::start(
+        &std::env::current_exe().unwrap(),
+        Path::new("bulk.bin"),
+        directory.as_raw_fd(),
+    )
+    .unwrap();
+    let mut poll = libc::pollfd {
+        fd: launch.output.as_raw_fd(),
+        events: libc::POLLIN,
+        revents: 0,
+    };
+    let readable = unsafe { libc::poll(&mut poll, 1, 10_000) };
+    let before = launch.qa_handle_identity();
+    let writer_open = launch.qa_control_open();
+    let pending = launch.wait(Duration::ZERO);
+    let after = launch.qa_handle_identity();
+    // Release the real helper before making assertions, so failed assertions
+    // cannot strand a child merely because the test observed an unexpected state.
+    launch.cancel();
+    if matches!(&pending, Ok(Some(_))) {
+        panic!("helper exited before zero-duration wait could observe it alive");
+    }
+    let final_status = qa_reap_without_abandoning_owner(&mut launch);
+    assert!(readable > 0, "real helper never reached blocked stdout");
+    assert!(
+        writer_open && before.is_some() && before == after,
+        "owner or control changed before timeout"
+    );
+    assert!(
+        matches!(pending, Ok(None)),
+        "zero-duration wait did not time out on the living helper"
+    );
+    let status = final_status.expect("cancelled helper termination was uncertain");
+    assert!(
+        !status.signal && status.status == 125,
+        "helper did not exit through its control monitor"
+    );
+    let second = match launch.wait(Duration::ZERO) {
+        Err(error) => error,
+        Ok(_) => panic!("reaped handle was consumed twice"),
+    };
+    assert_eq!(second.to_string(), "Helper already reaped");
+}
+
 pub(super) const CASE_NAMES: &[&str] = &[
     "file_reads_preserve_bytes_json_and_literal_data",
     "skill_metadata_activation_resources_and_denials_use_real_files",
@@ -526,6 +684,8 @@ pub(super) const CASE_NAMES: &[&str] = &[
     "activated_skill_root_cannot_be_replaced_during_file_open",
     "activated_skill_root_cannot_be_replaced_during_approval",
     "substituted_fifo_must_not_be_opened_after_type_check",
+    "authenticated_image_substitution_is_rejected_at_launch",
+    "native_wait_timeout_retains_handle_until_real_reap",
 ];
 
 async fn execute(name: &str) -> Result<(), String> {
@@ -556,6 +716,12 @@ async fn execute(name: &str) -> Result<(), String> {
         }
         "substituted_fifo_must_not_be_opened_after_type_check" => {
             substituted_fifo_must_not_be_opened_after_type_check().await
+        }
+        "authenticated_image_substitution_is_rejected_at_launch" => {
+            authenticated_image_substitution_is_rejected_at_launch().await
+        }
+        "native_wait_timeout_retains_handle_until_real_reap" => {
+            native_wait_timeout_retains_handle_until_real_reap().await
         }
         _ => return Err("Unknown native content QA case".into()),
     }
