@@ -1040,12 +1040,9 @@ pub(crate) async fn apply_native_event(
     }
     let lease = host.start_lease().await?;
     let _admission = host.admission_lock().lock_owned().await;
-    if !matches!(
-        &event.kind,
-        FlowEventKind030::Stop | FlowEventKind030::PhysicalEnded { .. }
-    ) {
-        runtime.available(&event.identity)?;
-    }
+    // Cleanup under an unknown commit requires the retained opaque FlowControl.
+    // A generic event cannot turn its variant into retirement authority.
+    runtime.available(&event.identity)?;
     let authority = Authority {
         runtime,
         owner: lease.owner(&event.identity.system_start_id)?,

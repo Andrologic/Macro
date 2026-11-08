@@ -418,6 +418,39 @@ async fn exercise_handoff(mode: u8) {
         let marker = runtime
             .begin_work_commit(&identity, "blocked-work", "{}", "{}")
             .unwrap();
+        let generic_stop = FlowEvent030 {
+            identity: identity.clone(),
+            event_id: "blocked-generic-stop".into(),
+            expected_revision: "1".into(),
+            kind: FlowEventKind030::Stop,
+        };
+        assert_eq!(
+            flow::apply_native_event(runtime, &host, &pool, &generic_stop)
+                .await
+                .unwrap_err()
+                .code,
+            "UNCERTAIN"
+        );
+        let generic_end = FlowEvent030 {
+            identity: identity.clone(),
+            event_id: "blocked-generic-end".into(),
+            expected_revision: "1".into(),
+            kind: FlowEventKind030::PhysicalEnded {
+                work: work.clone(),
+                stop_effect_id: None,
+                evidence: crate::db::agsdl_execution::flow030::PhysicalEvidence030 {
+                    native_receipt_id: "fixture-only".into(),
+                    descendants_joined: true,
+                },
+            },
+        };
+        assert_eq!(
+            flow::apply_native_event(runtime, &host, &pool, &generic_end)
+                .await
+                .unwrap_err()
+                .code,
+            "UNCERTAIN"
+        );
         assert!(flow::claim_next(runtime, &host, &pool, &identity)
             .await
             .is_err());
