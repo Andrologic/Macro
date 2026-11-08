@@ -23,6 +23,21 @@ async fn dropped_claim_guard_supplies_a_single_use_tombstone() {
     exercise(3).await;
 }
 
+#[tokio::test]
+async fn system_stop_request_is_durable_idempotent_and_rejects_partial_scope() {
+    exercise(4).await;
+}
+
+#[tokio::test]
+async fn committed_stop_survives_lost_ack_and_requires_exact_readback() {
+    exercise(5).await;
+}
+
+#[tokio::test]
+async fn failed_stop_commit_keeps_the_barrier_when_no_row_exists() {
+    exercise(6).await;
+}
+
 async fn exercise(mode: u8) {
     let temp = tempfile::TempDir::new().unwrap();
     let pool = crate::db::create_pool(&temp.path().join("unadmitted.db"))
@@ -123,7 +138,7 @@ async fn exercise(mode: u8) {
             .unwrap();
     }
     tx.commit().await.unwrap();
-    let runtime = FlowHost030::default();
+    let runtime = Arc::new(FlowHost030::default());
     let control = Arc::new(FlowControl030 {
         owner: EngineOwner {
             system_start_id: "system".into(),
@@ -138,6 +153,205 @@ async fn exercise(mode: u8) {
         .lock()
         .unwrap()
         .insert("system".into(), control.clone());
+    if mode == 5 {
+        let request = crate::db::agsdl_execution::dto::EngineStopRequest {
+            system_start_id: "system".into(),
+            request_id: "lost-ack".into(),
+            activation_id: None,
+        };
+        let hook = runtime.install_system_stop_commit_hook(&request.request_id);
+        let runtime_task = runtime.clone();
+        let pool_task = pool.clone();
+        let request_task = request.clone();
+        let task = tokio::spawn(async move {
+            request_system_stop030(&runtime_task, &pool_task, &request_task).await
+        });
+        hook.reached().await;
+        task.abort();
+        assert!(matches!(task.await, Err(error) if error.is_cancelled()));
+        assert!(runtime.available(&identity).is_err());
+        let mut alias = request.clone();
+        alias.request_id = "blocked-after-commit".into();
+        assert!(request_system_stop030(&runtime, &pool, &alias)
+            .await
+            .is_err());
+        let stored = inspect_system_stop_request030(&runtime, &pool, &request)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(stored.receipt().stopping);
+        assert!(runtime.available(&identity).is_ok());
+        return;
+    }
+    if mode == 6 {
+        sqlx::raw_sql("CREATE TABLE test_stop_parent(id INTEGER PRIMARY KEY);\
+            CREATE TABLE test_stop_child(id INTEGER REFERENCES test_stop_parent(id) DEFERRABLE INITIALLY DEFERRED);\
+            CREATE TRIGGER test_stop_reject_commit AFTER INSERT ON engine_flow030_system_stop_requests BEGIN INSERT INTO test_stop_child VALUES (1); END;")
+            .execute(&pool).await.unwrap();
+        let request = crate::db::agsdl_execution::dto::EngineStopRequest {
+            system_start_id: "system".into(),
+            request_id: "commit-rejected".into(),
+            activation_id: None,
+        };
+        assert!(request_system_stop030(&runtime, &pool, &request)
+            .await
+            .is_err());
+        assert!(inspect_system_stop_request030(&runtime, &pool, &request)
+            .await
+            .unwrap()
+            .is_none());
+        assert!(runtime.available(&identity).is_err());
+        let count: i64 =
+            sqlx::query_scalar("SELECT count(*) FROM engine_flow030_system_stop_requests")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(count, 0);
+        return;
+    }
+    if mode == 4 {
+        let tasks = crate::ai::stream_tasks::StreamTasks::default();
+        assert_eq!(
+            crate::agsdl_host_stop030::ensure(&runtime, &pool, &tasks, "system")
+                .await
+                .unwrap_err()
+                .code,
+            "UNCERTAIN"
+        );
+        let mut request = crate::db::agsdl_execution::dto::EngineStopRequest {
+            system_start_id: "system".into(),
+            request_id: "stop-request".into(),
+            activation_id: Some(start.activation_id.clone()),
+        };
+        let error = crate::agsdl_host_stop030::request(&runtime, &pool, &tasks, &request)
+            .await
+            .unwrap_err();
+        assert_eq!(error.code, "PARTIAL_STOP_UNAVAILABLE");
+        let count: i64 =
+            sqlx::query_scalar("SELECT count(*) FROM engine_flow030_system_stop_requests")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(count, 0);
+        request.activation_id = None;
+        let first = request_system_stop030(&runtime, &pool, &request)
+            .await
+            .unwrap();
+        let first_revision = first.receipt().revision.clone();
+        assert!(first.receipt().stopping);
+        assert!(
+            !crate::agsdl_host_stop030::reconcile(&runtime, &pool, &tasks, first.control())
+                .await
+                .unwrap()
+        );
+        let replay = request_system_stop030(&runtime, &pool, &request)
+            .await
+            .unwrap();
+        assert_eq!(replay.receipt().revision, first_revision);
+        assert!(matches!(
+            crate::agsdl_host_stop030::ensure(&runtime, &pool, &tasks, "system")
+                .await
+                .unwrap(),
+            crate::db::agsdl_execution::public::PublicStopState::Requested { .. }
+        ));
+        let marker = stop_marker(first.receipt());
+        runtime.begin_event_commit(&marker).unwrap();
+        assert!(runtime.available(&identity).is_err());
+        assert!(inspect_system_stop_request030(&runtime, &pool, &request)
+            .await
+            .unwrap()
+            .is_some());
+        assert!(runtime.available(&identity).is_ok());
+        let mut absent_request = request.clone();
+        absent_request.request_id = "absent".into();
+        let mut absent_receipt = first.receipt().clone();
+        absent_receipt.request_id = absent_request.request_id.clone();
+        let absent_marker = stop_marker(&absent_receipt);
+        runtime.begin_event_commit(&absent_marker).unwrap();
+        assert!(
+            inspect_system_stop_request030(&runtime, &pool, &absent_request)
+                .await
+                .unwrap()
+                .is_none()
+        );
+        assert!(runtime.available(&identity).is_err());
+        assert!(request_system_stop030(&runtime, &pool, &absent_request)
+            .await
+            .is_err());
+        let mut blocked_alias = absent_request.clone();
+        blocked_alias.request_id = "blocked-alias".into();
+        assert!(request_system_stop030(&runtime, &pool, &blocked_alias)
+            .await
+            .is_err());
+        let count: i64 =
+            sqlx::query_scalar("SELECT count(*) FROM engine_flow030_system_stop_requests")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(count, 1);
+        runtime.acknowledge_event_commit(&absent_marker);
+
+        let other_identity = FlowIdentity030 {
+            system_start_id: "other-system".into(),
+            flow_invocation_id: "other-flow".into(),
+            snapshot_id: "other-snapshot".into(),
+            epoch: "other-capture".into(),
+        };
+        sqlx::query("INSERT INTO engine_flow030_runs VALUES (?,?,?,?,?,?,?)")
+            .bind(&other_identity.system_start_id)
+            .bind(&other_identity.flow_invocation_id)
+            .bind(&other_identity.snapshot_id)
+            .bind(&other_identity.epoch)
+            .bind("{}")
+            .bind("{}")
+            .bind("{}")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO engine_flow030_owners VALUES (?,?,?,?,?,?,?,?)")
+            .bind(&other_identity.system_start_id)
+            .bind(&other_identity.flow_invocation_id)
+            .bind(&other_identity.snapshot_id)
+            .bind(&other_identity.epoch)
+            .bind("other-owner")
+            .bind("generation")
+            .bind("live")
+            .bind("b".repeat(64))
+            .execute(&pool)
+            .await
+            .unwrap();
+        let other_control = Arc::new(FlowControl030 {
+            owner: EngineOwner {
+                system_start_id: other_identity.system_start_id.clone(),
+                owner_epoch: "other-owner".into(),
+            },
+            identity: other_identity.clone(),
+            generation: "generation".into(),
+            admission: Arc::new(tokio::sync::Mutex::new(())),
+        });
+        runtime
+            .controls
+            .lock()
+            .unwrap()
+            .insert(other_identity.system_start_id.clone(), other_control);
+        let mut foreign = request.clone();
+        foreign.system_start_id = other_identity.system_start_id;
+        assert!(request_system_stop030(&runtime, &pool, &foreign)
+            .await
+            .is_err());
+        request.request_id = "stop-alias".into();
+        let alias = request_system_stop030(&runtime, &pool, &request)
+            .await
+            .unwrap();
+        assert!(alias.receipt().flow_event_id.is_none());
+        let count: i64 =
+            sqlx::query_scalar("SELECT count(*) FROM engine_flow030_system_stop_requests")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(count, 2);
+        return;
+    }
     if mode == 3 {
         let effect = transition
             .effects
@@ -189,6 +403,40 @@ async fn exercise(mode: u8) {
             .await
             .unwrap();
         assert_eq!(count, 0);
+        let tasks = crate::ai::stream_tasks::StreamTasks::default();
+        let mut dropped = None;
+        if mode == 2 {
+            struct OnDrop(Option<tokio::sync::oneshot::Sender<()>>);
+            impl Drop for OnDrop {
+                fn drop(&mut self) {
+                    if let Some(done) = self.0.take() {
+                        let _ = done.send(());
+                    }
+                }
+            }
+            let (started, ready) = tokio::sync::oneshot::channel();
+            let (finished, confirmed) = tokio::sync::oneshot::channel();
+            tasks
+                .start(
+                    format!("flow030:system:{}", start.start_effect_id),
+                    async move {
+                        let _guard = OnDrop(Some(finished));
+                        let _ = started.send(());
+                        std::future::pending::<()>().await;
+                    },
+                )
+                .unwrap();
+            ready.await.unwrap();
+            dropped = Some(confirmed);
+        }
+        assert!(
+            crate::agsdl_host_stop030::reconcile(&runtime, &pool, &tasks, &control)
+                .await
+                .unwrap()
+        );
+        if let Some(confirmed) = dropped {
+            confirmed.await.unwrap();
+        }
         return;
     }
     sqlx::query("CREATE TRIGGER reject_proof BEFORE INSERT ON engine_flow030_no_admissions BEGIN SELECT RAISE(ABORT,'test rollback'); END")
@@ -246,6 +494,14 @@ async fn exercise(mode: u8) {
         .await
         .unwrap()
         .is_some());
+    assert!(!crate::agsdl_host_stop030::reconcile(
+        &runtime,
+        &pool,
+        &crate::ai::stream_tasks::StreamTasks::default(),
+        &control,
+    )
+    .await
+    .unwrap());
     let mut foreign: WorkRef030 = start;
     foreign.start_effect_id = "other".into();
     assert!(control

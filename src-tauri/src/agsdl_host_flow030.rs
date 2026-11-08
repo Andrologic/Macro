@@ -5,7 +5,7 @@ use crate::agsdl_host_capture::{self as capture, CompilationCapture};
 use crate::config::ConfigManager;
 use crate::db::agsdl_execution::{
     self as repository,
-    dto::{EngineOwner, EngineStartRequest},
+    dto::{EngineOwner, EngineStartRequest, EngineStopRequest},
     failure,
     flow030::{
         DeliveryOccurrence030, Failure030, FlowEffect030, FlowEffectKind030, FlowEvent030,
@@ -40,6 +40,28 @@ pub(crate) struct FlowHost030 {
     event_committing: Mutex<BTreeMap<(String, String), FlowEvent030>>,
     unadmitted: Mutex<BTreeMap<(String, String), Unadmitted030>>,
     controls: Mutex<BTreeMap<String, Arc<FlowControl030>>>,
+    #[cfg(test)]
+    stop_commit_hooks: Mutex<BTreeMap<String, Arc<SystemStopCommitTestHook030>>>,
+}
+
+/// Per-runtime, per-request interleaving, absent from production builds.
+#[cfg(test)]
+pub(crate) struct SystemStopCommitTestHook030 {
+    reached: tokio::sync::Semaphore,
+    proceed: tokio::sync::Semaphore,
+}
+#[cfg(test)]
+impl SystemStopCommitTestHook030 {
+    pub(crate) async fn reached(&self) {
+        self.reached
+            .acquire()
+            .await
+            .expect("test hook closed")
+            .forget();
+    }
+    pub(crate) fn release(&self) {
+        self.proceed.add_permits(1);
+    }
 }
 
 fn unavailable() -> repository::dto::EngineFailure {
@@ -78,6 +100,41 @@ fn digest<T: serde::Serialize>(value: &T) -> Result<String> {
     Ok(format!("{:x}", Sha256::digest(serde_json::to_vec(value)?)))
 }
 impl FlowHost030 {
+    #[cfg(test)]
+    pub(crate) fn install_system_stop_commit_hook(
+        &self,
+        request_id: &str,
+    ) -> Arc<SystemStopCommitTestHook030> {
+        let hook = Arc::new(SystemStopCommitTestHook030 {
+            reached: tokio::sync::Semaphore::new(0),
+            proceed: tokio::sync::Semaphore::new(0),
+        });
+        assert!(
+            self.stop_commit_hooks
+                .lock()
+                .expect("test hook registry")
+                .insert(request_id.into(), hook.clone())
+                .is_none(),
+            "duplicate test hook"
+        );
+        hook
+    }
+    #[cfg(test)]
+    async fn pause_after_system_stop_commit(&self, request_id: &str) {
+        let hook = self
+            .stop_commit_hooks
+            .lock()
+            .expect("test hook registry")
+            .remove(request_id);
+        if let Some(hook) = hook {
+            hook.reached.add_permits(1);
+            hook.proceed
+                .acquire()
+                .await
+                .expect("test hook closed")
+                .forget();
+        }
+    }
     pub(crate) fn available(&self, identity: &FlowIdentity030) -> Result<()> {
         let pending = self.committing.lock().map_err(|_| unavailable())?;
         if pending
@@ -1086,15 +1143,22 @@ fn route_material_source(
         return Err(refused());
     }
     let content: Value = serde_json::from_str(&material.content_receipts_json)?;
-    if !content.is_object()
-        || !content.get("identity").is_some_and(Value::is_object)
-        || !content.get("receipts").is_some_and(Value::is_array)
-        || content.as_object().is_some_and(|fields| {
-            fields
-                .keys()
-                .any(|key| !matches!(key.as_str(), "identity" | "receipts"))
-        })
-    {
+    let valid_content = match content.get("format").and_then(Value::as_str) {
+        Some("macro-agsdl-route-content/1") => {
+            content.get("occurrences").is_some_and(Value::is_array)
+                && content.as_object().is_some_and(|fields| fields.len() == 2)
+        }
+        None => {
+            content.get("identity").is_some_and(Value::is_object)
+                && content
+                    .get("receipts")
+                    .and_then(Value::as_array)
+                    .is_some_and(Vec::is_empty)
+                && content.as_object().is_some_and(|fields| fields.len() == 2)
+        }
+        _ => false,
+    };
+    if !valid_content {
         return Err(refused());
     }
     Ok(source)
@@ -1614,6 +1678,207 @@ pub(crate) async fn revoke_generation(pool: &SqlitePool, generation: &str) -> Re
     .await?;
     tx.commit().await?;
     Ok(())
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct NativeSystemStopReceipt030 {
+    pub request_id: String,
+    pub identity: FlowIdentity030,
+    pub owner_epoch: String,
+    pub generation: String,
+    pub before_revision: String,
+    pub revision: String,
+    pub stopping: bool,
+    pub verdict: Option<String>,
+    pub flow_event_id: Option<String>,
+}
+
+/// Logical acknowledgement plus a genuine cleanup capability. This wrapper is
+/// not serializable and its receipt alone is not a physical termination proof.
+pub(crate) struct NativeSystemStop030 {
+    receipt: NativeSystemStopReceipt030,
+    control: Arc<FlowControl030>,
+}
+impl NativeSystemStop030 {
+    pub(crate) fn receipt(&self) -> &NativeSystemStopReceipt030 {
+        &self.receipt
+    }
+    pub(crate) fn control(&self) -> &Arc<FlowControl030> {
+        &self.control
+    }
+}
+
+fn stop_marker(receipt: &NativeSystemStopReceipt030) -> FlowEvent030 {
+    FlowEvent030 {
+        identity: receipt.identity.clone(),
+        event_id: format!("system-stop:{}", receipt.request_id),
+        expected_revision: receipt.before_revision.clone(),
+        kind: FlowEventKind030::Stop,
+    }
+}
+
+fn system_stop_control(
+    runtime: &FlowHost030,
+    request: &EngineStopRequest,
+) -> Result<Arc<FlowControl030>> {
+    // A legacy activation-specific request must never acquire a broader scope.
+    if request.activation_id.is_some() {
+        return Err(failure(
+            "PARTIAL_STOP_UNAVAILABLE",
+            "activationId",
+            "Native 0.3 activation Stop requires a separate scoped operation",
+        ));
+    }
+    if request.request_id.trim().is_empty()
+        || request.request_id.len() > 512
+        || request.request_id.chars().any(char::is_control)
+    {
+        return Err(refused());
+    }
+    runtime
+        .controls
+        .lock()
+        .map_err(|_| unavailable())?
+        .get(&request.system_start_id)
+        .cloned()
+        .ok_or_else(|| {
+            failure(
+                "RUNTIME_UNAVAILABLE",
+                "systemStartId",
+                "Native 0.3 cleanup capability is unavailable",
+            )
+        })
+}
+
+async fn stored_system_stop(
+    db: &mut SqliteConnection,
+    control: &FlowControl030,
+    request: &EngineStopRequest,
+) -> Result<Option<NativeSystemStopReceipt030>> {
+    control
+        .owner(db, &control.identity)
+        .await
+        .map_err(store_error)?;
+    let row = sqlx::query("SELECT system_id,invocation_id,owner_epoch,generation,request_json,receipt_json,event_id FROM engine_flow030_system_stop_requests WHERE request_id=?")
+        .bind(&request.request_id).fetch_optional(&mut *db).await?;
+    let Some(row) = row else {
+        return Ok(None);
+    };
+    let receipt: NativeSystemStopReceipt030 = serde_json::from_str(row.get("receipt_json"))?;
+    if row.get::<&str, _>("system_id") != request.system_start_id
+        || row.get::<&str, _>("invocation_id") != control.identity.flow_invocation_id
+        || row.get::<&str, _>("owner_epoch") != control.owner.owner_epoch
+        || row.get::<&str, _>("generation") != control.generation
+        || row.get::<String, _>("request_json") != serde_json::to_string(request)?
+        || receipt.request_id != request.request_id
+        || receipt.identity != control.identity
+        || receipt.owner_epoch != control.owner.owner_epoch
+        || receipt.generation != control.generation
+        || receipt.flow_event_id != row.get::<Option<String>, _>("event_id")
+    {
+        return Err(refused());
+    }
+    if let Some(event_id) = &receipt.flow_event_id {
+        let marker = stop_marker(&receipt);
+        let raw: String = sqlx::query_scalar("SELECT event_json FROM engine_flow030_events WHERE system_id=? AND invocation_id=? AND event_id=?")
+            .bind(&control.identity.system_start_id).bind(&control.identity.flow_invocation_id).bind(event_id).fetch_one(&mut *db).await?;
+        if *event_id != marker.event_id || raw != serde_json::to_string(&marker)? {
+            return Err(refused());
+        }
+    }
+    Ok(Some(receipt))
+}
+
+/// Product request identity is durable and idempotent. A second request on an
+/// already-stopping/terminal run records an alias without reapplying Stop.
+/// This method releases the exclusion before the caller cancels/joins tasks.
+pub(crate) async fn request_system_stop030(
+    runtime: &FlowHost030,
+    pool: &SqlitePool,
+    request: &EngineStopRequest,
+) -> Result<NativeSystemStop030> {
+    let control = system_stop_control(runtime, request)?;
+    let _admission = control.admission.clone().lock_owned().await;
+    let mut db = pool.acquire().await?;
+    sqlx::query("PRAGMA synchronous=FULL")
+        .execute(&mut *db)
+        .await?;
+    let mut tx = db.begin_with("BEGIN IMMEDIATE").await?;
+    if let Some(receipt) = stored_system_stop(&mut tx, &control, request).await? {
+        tx.commit().await?;
+        runtime.acknowledge_event_commit(&stop_marker(&receipt));
+        return Ok(NativeSystemStop030 { receipt, control });
+    }
+    // An absent receipt never establishes rollback. Reconcile an existing
+    // uncertain commit before attempting any new Stop or alias mutation.
+    runtime.available(&control.identity)?;
+    let view = flow_store030::read_tx(&mut tx, control.as_ref(), &control.identity)
+        .await
+        .map_err(store_error)?;
+    let mut receipt = NativeSystemStopReceipt030 {
+        request_id: request.request_id.clone(),
+        identity: control.identity.clone(),
+        owner_epoch: control.owner.owner_epoch.clone(),
+        generation: control.generation.clone(),
+        before_revision: view.state.revision.clone(),
+        revision: view.state.revision,
+        stopping: view.state.stopping,
+        verdict: view.state.verdict,
+        flow_event_id: None,
+    };
+    let marker = stop_marker(&receipt);
+    if !receipt.stopping && receipt.verdict.is_none() {
+        let outcome = flow_store030::apply_tx(&mut tx, control.as_ref(), &marker)
+            .await
+            .map_err(store_error)?;
+        match outcome {
+            Apply030::Applied(value) | Apply030::Replayed(value) => {
+                receipt.revision = value.revision
+            }
+            Apply030::Diagnostic(_) => return Err(refused()),
+        }
+        let after = flow_store030::read_tx(&mut tx, control.as_ref(), &control.identity)
+            .await
+            .map_err(store_error)?
+            .state;
+        if after.revision != receipt.revision {
+            return Err(refused());
+        }
+        receipt.stopping = after.stopping;
+        receipt.verdict = after.verdict;
+        receipt.flow_event_id = Some(marker.event_id.clone());
+    }
+    sqlx::query("INSERT INTO engine_flow030_system_stop_requests(request_id,system_id,invocation_id,owner_epoch,generation,request_json,receipt_json,event_id) VALUES(?,?,?,?,?,?,?,?)")
+        .bind(&request.request_id).bind(&control.identity.system_start_id).bind(&control.identity.flow_invocation_id).bind(&control.owner.owner_epoch).bind(&control.generation)
+        .bind(serde_json::to_string(request)?).bind(serde_json::to_string(&receipt)?).bind(&receipt.flow_event_id).execute(&mut *tx).await?;
+    runtime.begin_event_commit(&marker)?;
+    tx.commit().await.map_err(|_| uncertain())?;
+    #[cfg(test)]
+    runtime
+        .pause_after_system_stop_commit(&request.request_id)
+        .await;
+    runtime.acknowledge_event_commit(&marker);
+    Ok(NativeSystemStop030 { receipt, control })
+}
+
+/// Only a matching committed request resolves an unknown Stop COMMIT. None
+/// leaves its barrier in place; this read never requests or retries a Stop.
+pub(crate) async fn inspect_system_stop_request030(
+    runtime: &FlowHost030,
+    pool: &SqlitePool,
+    request: &EngineStopRequest,
+) -> Result<Option<NativeSystemStop030>> {
+    let control = system_stop_control(runtime, request)?;
+    let _admission = control.admission.clone().lock_owned().await;
+    let mut db = pool.acquire().await?;
+    let mut tx = db.begin().await?;
+    let receipt = stored_system_stop(&mut tx, &control, request).await?;
+    tx.commit().await?;
+    Ok(receipt.map(|receipt| {
+        runtime.acknowledge_event_commit(&stop_marker(&receipt));
+        NativeSystemStop030 { receipt, control }
+    }))
 }
 
 /// Native cleanup capability, retained before Start can commit. It has neither

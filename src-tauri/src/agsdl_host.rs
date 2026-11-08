@@ -303,24 +303,43 @@ impl HostState {
         cancelled: &tokio_util::sync::CancellationToken,
     ) -> Result<crate::agsdl_host_work::HostWorkOutput030> {
         let owner = input.context.owner.clone();
-        let expected = self.0.lock()
+        let expected = self
+            .0
+            .lock()
             .map_err(|_| failure("RUNTIME_UNAVAILABLE", "work", "Host state unavailable"))?
-            .as_ref().map(|host| host.incarnation.clone())
+            .as_ref()
+            .map(|host| host.incarnation.clone())
             .ok_or_else(|| failure("RUNTIME_UNAVAILABLE", "work", "Host not installed"))?;
         if expected.generation != generation {
-            return Err(failure("CORRELATION", "work", "Work host generation differs"));
+            return Err(failure(
+                "CORRELATION",
+                "work",
+                "Work host generation differs",
+            ));
         }
         let (output, evaluated) = self.evaluate_work030(input, cancelled).await?;
-        let current = self.0.lock()
+        let current = self
+            .0
+            .lock()
             .map_err(|_| failure("RUNTIME_UNAVAILABLE", "work", "Host state unavailable"))?
-            .as_ref().map(|host| host.incarnation.clone())
+            .as_ref()
+            .map(|host| host.incarnation.clone())
             .ok_or_else(|| failure("RUNTIME_UNAVAILABLE", "work", "Host not installed"))?;
-        if !Arc::ptr_eq(&expected, &evaluated) || !Arc::ptr_eq(&expected, &current)
+        if !Arc::ptr_eq(&expected, &evaluated)
+            || !Arc::ptr_eq(&expected, &current)
             || !expected.live.load(Ordering::SeqCst)
-            || expected.owners.lock().map_err(|_| failure("RUNTIME_UNAVAILABLE", "work", "Host ownership unavailable"))?
-                .get(&owner.system_start_id) != Some(&owner)
+            || expected
+                .owners
+                .lock()
+                .map_err(|_| failure("RUNTIME_UNAVAILABLE", "work", "Host ownership unavailable"))?
+                .get(&owner.system_start_id)
+                != Some(&owner)
         {
-            return Err(failure("RUNTIME_UNAVAILABLE", "work", "Work host ownership changed"));
+            return Err(failure(
+                "RUNTIME_UNAVAILABLE",
+                "work",
+                "Work host ownership changed",
+            ));
         }
         Ok(output)
     }
@@ -609,7 +628,7 @@ async fn stop_retired_flows(
     tasks: &crate::ai::stream_tasks::StreamTasks,
     generation: &str,
 ) -> Result<()> {
-    use repository::flow030::{FlowEffect030, FlowEvent030, FlowEventKind030, WorkRef030};
+    use repository::flow030::{FlowEvent030, FlowEventKind030};
     let mut pending = false;
     for control in runtime.retiring_controls(generation)? {
         let identity = control.identity();
@@ -638,37 +657,7 @@ async fn stop_retired_flows(
                 )
                 .await?;
         }
-        let view = control.read(pool).await?;
-        for activation in view.state.activations.iter().filter(|work| work.physical) {
-            if let Some(start_effect_id) = &activation.start_effect_id {
-                let work = WorkRef030 {
-                    activation_id: activation.id.clone(),
-                    start_effect_id: start_effect_id.clone(),
-                    agent_instance_id: activation.instance_id.clone(),
-                };
-                // This method needs the opaque control and either a durable
-                // unclaimed fact or the current incarnation's retained witness.
-                // `None` is deliberately not physical termination evidence.
-                let _ = control.settle_unadmitted(runtime, pool, &work).await?;
-            }
-        }
-        let view = control.read(pool).await?;
-        let physical_pending = view.state.activations.iter().any(|work| work.physical);
-        for row in view.effects {
-            if !matches!(
-                row.get("status").and_then(serde_json::Value::as_str),
-                Some("uncertain" | "settled")
-            ) {
-                continue;
-            }
-            let effect: FlowEffect030 = serde_json::from_value(row["effect"].clone())?;
-            let request_id = format!("flow030:{}:{}", identity.system_start_id, effect.id);
-            tasks
-                .cancel_owned(&request_id)
-                .await
-                .map_err(|_| failure("STOP_PENDING", "", "Native flow task did not join"))?;
-        }
-        pending |= physical_pending;
+        pending |= crate::agsdl_host_stop030::reconcile(runtime, pool, tasks, &control).await?;
     }
     if pending {
         return Err(failure(

@@ -56,6 +56,8 @@ pub(crate) const NAMES: &[&str] = &[
     "034_execution_flow_preparations030",
     "035_execution_flow_no_admission030",
     "036_execution_flow_work_protocol030",
+    "037_execution_route_attestations030",
+    "038_execution_system_stop030",
 ];
 
 pub(crate) fn destinations(version: i64, name: &str) -> DbResult<Vec<i64>> {
@@ -114,6 +116,8 @@ pub(crate) async fn canonical_versions(c: &mut SqliteConnection) -> DbResult<Vec
         || versions.contains(&34) && !versions.contains(&33)
         || versions.contains(&35) && !versions.contains(&34)
         || versions.contains(&36) && !versions.contains(&35)
+        || versions.contains(&37) && !versions.contains(&36)
+        || versions.contains(&38) && !versions.contains(&37)
     {
         return Err(DbError::Migration(
             "Inconsistent AgSDL migration history".into(),
@@ -188,6 +192,22 @@ pub(crate) async fn remove_reference_schema(
 ) -> DbResult<()> {
     // This connection is a disposable, empty reference. Reconstruct the
     // historical definition before removing the new foreign-key parent.
+    if !versions.contains(&38) {
+        sqlx::query("DROP TABLE IF EXISTS engine_flow030_system_stop_requests")
+            .execute(&mut *c)
+            .await?;
+    }
+    if !versions.contains(&37) {
+        for table in [
+            "engine_flow030_route_content_receipts",
+            "engine_flow030_route_content_contexts",
+            "engine_flow030_route_source_attestations",
+        ] {
+            sqlx::query(sqlx::AssertSqlSafe(format!("DROP TABLE IF EXISTS {table}")))
+                .execute(&mut *c)
+                .await?;
+        }
+    }
     if !versions.contains(&36) {
         for table in [
             "engine_flow030_work_checks",

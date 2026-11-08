@@ -104,6 +104,7 @@ mod agsdl_host_harness030;
 mod agsdl_host_provider;
 mod agsdl_host_projection030;
 mod agsdl_host_route030;
+mod agsdl_host_stop030;
 mod agsdl_host_tasks;
 mod agsdl_host_tools;
 mod agsdl_host_work;

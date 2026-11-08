@@ -64,6 +64,23 @@ pub async fn execution_stop(
     request: EngineStopRequest,
 ) -> repository::Result<PublicStopState> {
     let pool = pool(&state).await?;
+    let is_flow030: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM engine_start030_requests WHERE system_id=?)",
+    )
+    .bind(&request.system_start_id)
+    .fetch_one(&pool)
+    .await?;
+    if is_flow030 {
+        // As with the legacy path, loss of the IPC observer must not abandon
+        // the native Stop or any join already in progress.
+        return owned_stop(async move {
+            let host = app.state::<crate::agsdl_host::HostState>();
+            let ai = app.state::<crate::ai::AiState>();
+            crate::agsdl_host_stop030::request(host.flow030(), &pool, &ai.stream_tasks, &request)
+                .await
+        })
+        .await;
+    }
     let gate = host.admission_gate().await;
     repository::stop(&pool, request.clone()).await?;
     stop_effects(
@@ -146,6 +163,29 @@ pub async fn execution_ensure_stop(
         let db = app.state::<DbPool>();
         let host = app.state::<crate::agsdl_host::HostState>();
         let pool = pool(&db).await?;
+        let is_flow030: bool = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM engine_start030_requests WHERE system_id=?)",
+        )
+        .bind(&request.system_start_id)
+        .fetch_one(&pool)
+        .await?;
+        if is_flow030 {
+            if request.activation_id.is_some() {
+                return Err(repository::failure(
+                    "PARTIAL_STOP_UNAVAILABLE",
+                    "activationId",
+                    "Native 0.3 activation Stop requires a separate scoped operation",
+                ));
+            }
+            let ai = app.state::<crate::ai::AiState>();
+            return crate::agsdl_host_stop030::ensure(
+                host.flow030(),
+                &pool,
+                &ai.stream_tasks,
+                &request.system_start_id,
+            )
+            .await;
+        }
         let gate = host.admission_gate().await;
         repository::ensure_stop(
             &pool,
@@ -193,6 +233,8 @@ pub(crate) async fn read_public_snapshot(
             || capture.identity != receipt.identity
             || capture.identity.system_start_id != system_start_id
             || capture.versions.profile != request.profile
+            || capture.versions.snapshot != "2"
+            || capture.versions.contract != "agsdl-0.3.0"
         {
             return Err(repository::failure(
                 "CORRELATION",
