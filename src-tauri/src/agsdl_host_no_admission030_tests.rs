@@ -38,6 +38,11 @@ async fn failed_stop_commit_keeps_the_barrier_when_no_row_exists() {
     exercise(6).await;
 }
 
+#[tokio::test]
+async fn opaque_control_can_clean_up_while_work_commit_is_frozen() {
+    exercise(7).await;
+}
+
 async fn exercise(mode: u8) {
     let temp = tempfile::TempDir::new().unwrap();
     let pool = crate::db::create_pool(&temp.path().join("unadmitted.db"))
@@ -153,6 +158,15 @@ async fn exercise(mode: u8) {
         .lock()
         .unwrap()
         .insert("system".into(), control.clone());
+    let frozen_work = if mode == 7 {
+        Some(
+            runtime
+                .begin_work_commit(&identity, "uncertain-work", "{}", "{}")
+                .unwrap(),
+        )
+    } else {
+        None
+    };
     if mode == 5 {
         let request = crate::db::agsdl_execution::dto::EngineStopRequest {
             system_start_id: "system".into(),
@@ -508,4 +522,8 @@ async fn exercise(mode: u8) {
         .settle_unadmitted(&runtime, &pool, &foreign)
         .await
         .is_err());
+    if let Some(marker) = frozen_work {
+        assert!(runtime.available(&identity).is_err());
+        runtime.acknowledge_work_commit(&marker).unwrap(); // Fixture cleanup only.
+    }
 }

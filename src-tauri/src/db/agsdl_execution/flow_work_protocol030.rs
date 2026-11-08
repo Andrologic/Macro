@@ -514,9 +514,111 @@ pub(crate) async fn transition(
     let mut tx = db.begin_with("BEGIN IMMEDIATE").await?;
     commit_tx(&mut tx, &lease, &ticket, &decision).await?;
     lease.ensure_live()?;
+    // Hash the exact bytes actually stored, not a reconstructed ticket or
+    // decision. The shared admission gate prevents other run mutations until
+    // the commit is acknowledged or an exact readback reconciles it.
+    let row = sqlx::query("SELECT ticket_json,decision_json FROM engine_flow030_work_events WHERE system_id=? AND invocation_id=? AND event_id=?")
+        .bind(&id.system_start_id).bind(&id.flow_invocation_id).bind(&ticket.input.event_id)
+        .fetch_one(&mut *tx).await?;
+    let ticket_raw: &str = row.get("ticket_json");
+    let decision_raw: &str = row
+        .get::<Option<&str>, _>("decision_json")
+        .ok_or_else(|| denied("Committed work decision missing"))?;
+    let marker =
+        host.flow030()
+            .begin_work_commit(id, &ticket.input.event_id, ticket_raw, decision_raw)?;
     tx.commit().await.map_err(|_| uncertain())?;
-    lease.ensure_live().map_err(|_| uncertain())?;
+    #[cfg(test)]
+    host.flow030().pause_after_work_commit(&marker).await;
+    lease
+        .acknowledge_work_commit(host.flow030(), &marker)
+        .map_err(|_| uncertain())?;
     Ok(decision)
+}
+
+/// Reconcile an unknown decision commit from a single SQL snapshot. This does
+/// not replay the controller, claim a check, or grant authority to dispatch.
+pub(crate) async fn inspect_work_commit(
+    host: &HostState,
+    pool: &SqlitePool,
+    id: &FlowIdentity030,
+    event_id: &str,
+) -> Result<Option<()>> {
+    let lease = host.start_lease().await?;
+    let _gate = host.admission_lock().lock_owned().await;
+    let Some(marker) = host.flow030().pending_work_commit(id, event_id)? else {
+        return Ok(None);
+    };
+    let mut tx = pool.begin().await?;
+    let owner = lease.owner(&id.system_start_id)?;
+    let owner_row = sqlx::query("SELECT snapshot_id,capture_epoch,owner_epoch,generation,status,capture_sha256 FROM engine_flow030_owners WHERE system_id=? AND invocation_id=?")
+        .bind(&id.system_start_id).bind(&id.flow_invocation_id).fetch_optional(&mut *tx).await?
+        .ok_or_else(|| denied("Work owner missing"))?;
+    let capture_raw: String = sqlx::query_scalar(
+        "SELECT capture_json FROM engine_start030_requests WHERE system_id=? AND invocation_id=?",
+    )
+    .bind(&id.system_start_id)
+    .bind(&id.flow_invocation_id)
+    .fetch_optional(&mut *tx)
+    .await?
+    .ok_or_else(|| denied("Work capture missing"))?;
+    let capture: super::start030::StartCapture030 = serde_json::from_str(&capture_raw)?;
+    require(
+        capture.identity == *id
+            && owner_row.get::<&str, _>("snapshot_id") == id.snapshot_id
+            && owner_row.get::<&str, _>("capture_epoch") == id.epoch
+            && owner_row.get::<&str, _>("owner_epoch") == owner.owner_epoch
+            && owner_row.get::<&str, _>("generation") == lease.generation()
+            && owner_row.get::<&str, _>("status") == "live"
+            && owner_row.get::<&str, _>("capture_sha256")
+                == format!("{:x}", Sha256::digest(serde_json::to_vec(&capture)?)),
+        "Work owner or capture differs",
+    )?;
+    let row = sqlx::query("SELECT ticket_json,decision_json FROM engine_flow030_work_events WHERE system_id=? AND invocation_id=? AND event_id=?")
+        .bind(&id.system_start_id).bind(&id.flow_invocation_id).bind(event_id)
+        .fetch_optional(&mut *tx).await?;
+    let Some(row) = row else { return Ok(None) };
+    let ticket_raw: &str = row.get("ticket_json");
+    let Some(decision_raw) = row.get::<Option<&str>, _>("decision_json") else {
+        return Ok(None);
+    };
+    require(
+        format!("{:x}", Sha256::digest(ticket_raw.as_bytes())) == marker.ticket_sha256()
+            && format!("{:x}", Sha256::digest(decision_raw.as_bytes())) == marker.decision_sha256(),
+        "Work marker differs",
+    )?;
+    let ticket: FlowWorkTicket030 = serde_json::from_str(ticket_raw)?;
+    let decision: ProtocolDecision030 = serde_json::from_str(decision_raw)?;
+    require(
+        ticket.identity == *marker.identity()
+            && ticket.input.event_id == marker.event_id()
+            && ticket.generation == lease.generation()
+            && owner == ticket.input.context.owner,
+        "Work attribution differs",
+    )?;
+    let expected =
+        crate::agsdl_host_work::reserved_check030(&ticket.input.context, &decision.receipt_json)?;
+    require(
+        expected == decision.check,
+        "Work check differs from receipt",
+    )?;
+    let rows = sqlx::query("SELECT check_id,activation_id,request_json,status FROM engine_flow030_work_checks WHERE system_id=? AND invocation_id=? AND event_id=?")
+        .bind(&id.system_start_id).bind(&id.flow_invocation_id).bind(event_id).fetch_all(&mut *tx).await?;
+    match expected {
+        None => require(rows.is_empty(), "Unexpected work check")?,
+        Some(check) => require(
+            rows.len() == 1
+                && rows[0].get::<&str, _>("check_id") == check.check_id
+                && rows[0].get::<&str, _>("activation_id")
+                    == ticket.input.context.work.activation_id
+                && rows[0].get::<&str, _>("request_json") == check.invocation_json
+                && rows[0].get::<&str, _>("status") == "reserved",
+            "Work check differs",
+        )?,
+    }
+    tx.commit().await?;
+    lease.acknowledge_work_commit(host.flow030(), &marker)?;
+    Ok(Some(()))
 }
 
 #[cfg(test)]

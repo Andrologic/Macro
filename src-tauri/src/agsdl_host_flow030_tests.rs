@@ -271,6 +271,16 @@ async fn dropped_dispatch_lease_never_reissues_claim() {
     exercise_handoff(2).await;
 }
 
+#[tokio::test(flavor = "current_thread")]
+async fn work_commit_readback_requires_exact_sql_receipt() {
+    exercise_handoff(3).await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn work_barrier_refuses_empty_and_pending_effect_claims() {
+    exercise_handoff(4).await;
+}
+
 async fn exercise_handoff(mode: u8) {
     let temp = tempfile::TempDir::new().unwrap();
     let pool = crate::db::create_pool(&temp.path().join("flow.db"))
@@ -390,6 +400,80 @@ async fn exercise_handoff(mode: u8) {
             .await
             .is_err()
     );
+    if mode == 4 {
+        use crate::db::agsdl_execution::flow030::{FlowEffect030, FlowEffectKind030};
+        let raw: String = sqlx::query_scalar("SELECT effect_json FROM engine_flow030_outbox WHERE system_id='system' AND invocation_id='flow' LIMIT 1")
+            .fetch_one(&pool).await.unwrap();
+        let original: FlowEffect030 = serde_json::from_str(&raw).unwrap();
+        let work = match &original.kind {
+            FlowEffectKind030::Start { work, .. } => work.clone(),
+            _ => panic!("fixture must start a work"),
+        };
+        sqlx::query(
+            "DELETE FROM engine_flow030_outbox WHERE system_id='system' AND invocation_id='flow'",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        let marker = runtime
+            .begin_work_commit(&identity, "blocked-work", "{}", "{}")
+            .unwrap();
+        assert!(flow::claim_next(runtime, &host, &pool, &identity)
+            .await
+            .is_err());
+        for effect in [
+            original.clone(),
+            FlowEffect030 {
+                id: "stop-effect".into(),
+                identity: identity.clone(),
+                revision: "1".into(),
+                kind: FlowEffectKind030::StopWork {
+                    work,
+                    include_descendants: true,
+                },
+            },
+            FlowEffect030 {
+                id: "ended-effect".into(),
+                identity: identity.clone(),
+                revision: "1".into(),
+                kind: FlowEffectKind030::RunEnded {
+                    verdict: "success".into(),
+                },
+            },
+        ] {
+            sqlx::query("INSERT INTO engine_flow030_outbox VALUES (?,?,?,?,?,?,?,NULL)")
+                .bind("system")
+                .bind("flow")
+                .bind(&effect.id)
+                .bind("enter")
+                .bind(serde_json::to_string(&effect).unwrap())
+                .bind("owner")
+                .bind("pending")
+                .execute(&pool)
+                .await
+                .unwrap();
+            assert!(flow::claim_next(runtime, &host, &pool, &identity)
+                .await
+                .is_err());
+            let status: String = sqlx::query_scalar(
+                "SELECT status FROM engine_flow030_outbox WHERE system_id='system' AND effect_id=?",
+            )
+            .bind(&effect.id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+            assert_eq!(status, "pending");
+            sqlx::query(
+                "DELETE FROM engine_flow030_outbox WHERE system_id='system' AND effect_id=?",
+            )
+            .bind(&effect.id)
+            .execute(&pool)
+            .await
+            .unwrap();
+        }
+        runtime.acknowledge_work_commit(&marker).unwrap(); // Fixture cleanup only.
+        return;
+    }
     let claim = flow::claim_next(runtime, &host, &pool, &identity)
         .await
         .unwrap()
@@ -442,11 +526,176 @@ async fn exercise_handoff(mode: u8) {
     .await
     .unwrap();
     assert_eq!(count, i64::from(!fail_handoff));
-    assert!(flow::claim_next(runtime, &host, &pool, &identity)
+    if mode == 3 {
+        // The event is synthetic: this tests durable readback, not a real 04
+        // producer or provider. The Start effect itself used native handoff.
+        use crate::db::agsdl_execution::{
+            dto::{EngineContext, EngineWork},
+            flow_work_protocol030::{self, FlowWorkTicket030},
+            work_protocol030::{ProtocolDecision030, ProtocolEvent030},
+        };
+        let owner = EngineOwner {
+            system_start_id: "system".into(),
+            owner_epoch: "owner".into(),
+        };
+        let context = EngineContext {
+            owner: owner.clone(),
+            work: EngineWork {
+                system_start_id: "system".into(),
+                flow_invocation_id: "flow".into(),
+                activation_id: "fixture-work".into(),
+                step: None,
+                agent_instance_id: Some("fixture-instance".into()),
+            },
+            permissions_json: "[]".into(),
+            scope_json: "{}".into(),
+            registry_version: "registry".into(),
+        };
+        let input = ProtocolEvent030 {
+            context: context.clone(),
+            event_id: "fixture-event".into(),
+            expected_revision: "0".into(),
+            event_json: "{}".into(),
+            native_call: None,
+            control: false,
+        };
+        let ticket = FlowWorkTicket030 {
+            identity: identity.clone(),
+            input: input.clone(),
+            ticket_id: "ticket".into(),
+            generation: "generation".into(),
+            flow_revision: "1".into(),
+            state_json: "{}".into(),
+            contract_json: "{}".into(),
+            options_json: "{}".into(),
+        };
+        let decision = ProtocolDecision030 { state_json: "{}".into(), receipt_json: r#"{"receiptId":"fixture-work:1","owner":{"systemStartId":"system","activationId":"fixture-work","agentInstanceId":"fixture-instance","ownerEpoch":"owner"},"revision":"1","decision":{"kind":"waiting"}}"#.into(), check: None };
+        let ticket_raw = serde_json::to_string(&ticket).unwrap();
+        let decision_raw = serde_json::to_string(&decision).unwrap();
+        sqlx::query("INSERT INTO engine_flow030_work_admissions VALUES (?,?,?,?,?,?,?,?,?,?,?)")
+            .bind("system")
+            .bind("flow")
+            .bind("fixture-work")
+            .bind(&effect_id)
+            .bind("owner")
+            .bind("generation")
+            .bind("a".repeat(64))
+            .bind(serde_json::to_string(&context).unwrap())
+            .bind("{}")
+            .bind("{}")
+            .bind("{}")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO engine_flow030_work_authorizations VALUES (?,?,?,?,?,?,?)")
+            .bind("system")
+            .bind("flow")
+            .bind("fixture-event")
+            .bind("fixture-work")
+            .bind(serde_json::to_string(&input).unwrap())
+            .bind(None::<String>)
+            .bind(None::<String>)
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO engine_flow030_work_events VALUES (?,?,?,?,?,?)")
+            .bind("system")
+            .bind("flow")
+            .bind("fixture-event")
+            .bind("fixture-work")
+            .bind(&ticket_raw)
+            .bind(&decision_raw)
+            .execute(&pool)
+            .await
+            .unwrap();
+        let wrong = runtime
+            .begin_work_commit(&identity, "fixture-event", &ticket_raw, "{}")
+            .unwrap();
+        assert!(flow_work_protocol030::inspect_work_commit(
+            &host,
+            &pool,
+            &identity,
+            "fixture-event"
+        )
+        .await
+        .is_err());
+        assert!(runtime.available(&identity).is_err());
+        runtime.acknowledge_work_commit(&wrong).unwrap(); // Fixture cleanup only.
+        let marker = runtime
+            .begin_work_commit(&identity, "fixture-event", &ticket_raw, &decision_raw)
+            .unwrap();
+        assert!(runtime.available(&identity).is_err());
+        sqlx::query("UPDATE engine_flow030_owners SET status='revoked' WHERE system_id='system'")
+            .execute(&pool)
+            .await
+            .unwrap();
+        assert!(flow_work_protocol030::inspect_work_commit(
+            &host,
+            &pool,
+            &identity,
+            "fixture-event"
+        )
+        .await
+        .is_err());
+        assert!(runtime
+            .pending_work_commit(&identity, "fixture-event")
+            .unwrap()
+            .is_some());
+        // Restoring this disposable fixture is not a production resume path.
+        sqlx::query("UPDATE engine_flow030_owners SET status='live' WHERE system_id='system'")
+            .execute(&pool)
+            .await
+            .unwrap();
+        assert!(flow_work_protocol030::inspect_work_commit(
+            &host,
+            &pool,
+            &identity,
+            "fixture-event"
+        )
         .await
         .unwrap()
-        .is_none());
+        .is_some());
+        assert!(runtime.available(&identity).is_ok());
+        assert!(runtime
+            .pending_work_commit(&identity, marker.event_id())
+            .unwrap()
+            .is_none());
+        let checks: i64 = sqlx::query_scalar("SELECT count(*) FROM engine_flow030_work_checks")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(checks, 0);
+        runtime
+            .begin_work_commit(&identity, "fixture-event", &ticket_raw, &decision_raw)
+            .unwrap();
+    }
+    if mode == 3 {
+        assert!(flow::claim_next(runtime, &host, &pool, &identity)
+            .await
+            .is_err());
+    } else {
+        assert!(flow::claim_next(runtime, &host, &pool, &identity)
+            .await
+            .unwrap()
+            .is_none());
+    }
     assert!(revoke_now(&incarnation));
+    if mode == 3 {
+        assert!(
+            crate::db::agsdl_execution::flow_work_protocol030::inspect_work_commit(
+                &host,
+                &pool,
+                &identity,
+                "fixture-event"
+            )
+            .await
+            .is_err()
+        );
+        assert!(runtime
+            .pending_work_commit(&identity, "fixture-event")
+            .unwrap()
+            .is_some());
+    }
     assert!(flow::claim_next(runtime, &host, &pool, &identity)
         .await
         .is_err());

@@ -87,6 +87,23 @@ pub(crate) struct HostStartLease {
     _guard: tokio::sync::OwnedRwLockReadGuard<()>,
 }
 impl HostStartLease {
+    /// Clear a reconciled work barrier at the same synchronous boundary used
+    /// by revocation. No IO or await occurs while this guard is held.
+    pub(crate) fn acknowledge_work_commit(
+        &self,
+        runtime: &crate::agsdl_host_flow030::FlowHost030,
+        marker: &crate::agsdl_host_flow030::FlowWorkCommitMarker030,
+    ) -> Result<()> {
+        let _handoff = self.host.handoff.lock().map_err(|_| {
+            failure(
+                "RUNTIME_UNAVAILABLE",
+                "work",
+                "Host admission is unavailable",
+            )
+        })?;
+        self.ensure_live()?;
+        runtime.acknowledge_work_commit(marker)
+    }
     /// Pure route preparation is still untrusted data until the native owner
     /// verifies and commits its receipt against the current flow transaction.
     pub(crate) async fn prepare_route030(
@@ -922,6 +939,10 @@ mod recovery_tests;
 #[cfg(test)]
 #[path = "agsdl_host_flow030_tests.rs"]
 mod flow030_tests;
+
+#[cfg(test)]
+#[path = "agsdl_host_flow_work030_tests.rs"]
+mod flow_work030_tests;
 
 #[cfg(test)]
 mod tests {

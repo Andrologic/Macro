@@ -38,20 +38,47 @@ use tokio::sync::OwnedMutexGuard;
 pub(crate) struct FlowHost030 {
     committing: Mutex<BTreeMap<String, FlowIdentity030>>,
     event_committing: Mutex<BTreeMap<(String, String), FlowEvent030>>,
+    work_committing: Mutex<BTreeMap<(String, String), FlowWorkCommitMarker030>>,
     unadmitted: Mutex<BTreeMap<(String, String), Unadmitted030>>,
     controls: Mutex<BTreeMap<String, Arc<FlowControl030>>>,
     #[cfg(test)]
-    stop_commit_hooks: Mutex<BTreeMap<String, Arc<SystemStopCommitTestHook030>>>,
+    stop_commit_hooks: Mutex<BTreeMap<String, Arc<CommitTestHook030>>>,
+    #[cfg(test)]
+    work_commit_hooks: Mutex<BTreeMap<(String, String), Arc<CommitTestHook030>>>,
+}
+
+/// Correlates an authenticated work decision's COMMIT, without authorizing any
+/// effect. Only native persistence constructs it; it is never an IPC payload.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct FlowWorkCommitMarker030 {
+    identity: FlowIdentity030,
+    event_id: String,
+    ticket_sha256: String,
+    decision_sha256: String,
+}
+impl FlowWorkCommitMarker030 {
+    pub(crate) fn identity(&self) -> &FlowIdentity030 {
+        &self.identity
+    }
+    pub(crate) fn event_id(&self) -> &str {
+        &self.event_id
+    }
+    pub(crate) fn ticket_sha256(&self) -> &str {
+        &self.ticket_sha256
+    }
+    pub(crate) fn decision_sha256(&self) -> &str {
+        &self.decision_sha256
+    }
 }
 
 /// Per-runtime, per-request interleaving, absent from production builds.
 #[cfg(test)]
-pub(crate) struct SystemStopCommitTestHook030 {
+pub(crate) struct CommitTestHook030 {
     reached: tokio::sync::Semaphore,
     proceed: tokio::sync::Semaphore,
 }
 #[cfg(test)]
-impl SystemStopCommitTestHook030 {
+impl CommitTestHook030 {
     pub(crate) async fn reached(&self) {
         self.reached
             .acquire()
@@ -104,8 +131,8 @@ impl FlowHost030 {
     pub(crate) fn install_system_stop_commit_hook(
         &self,
         request_id: &str,
-    ) -> Arc<SystemStopCommitTestHook030> {
-        let hook = Arc::new(SystemStopCommitTestHook030 {
+    ) -> Arc<CommitTestHook030> {
+        let hook = Arc::new(CommitTestHook030 {
             reached: tokio::sync::Semaphore::new(0),
             proceed: tokio::sync::Semaphore::new(0),
         });
@@ -135,6 +162,49 @@ impl FlowHost030 {
                 .forget();
         }
     }
+    #[cfg(test)]
+    pub(crate) fn install_work_commit_hook(
+        &self,
+        identity: &FlowIdentity030,
+        event_id: &str,
+    ) -> Arc<CommitTestHook030> {
+        let hook = Arc::new(CommitTestHook030 {
+            reached: tokio::sync::Semaphore::new(0),
+            proceed: tokio::sync::Semaphore::new(0),
+        });
+        assert!(
+            self.work_commit_hooks
+                .lock()
+                .expect("test hook registry")
+                .insert(
+                    (identity.system_start_id.clone(), event_id.into()),
+                    hook.clone()
+                )
+                .is_none(),
+            "duplicate test hook"
+        );
+        hook
+    }
+    /// The persistence owner calls this after successful COMMIT, before ack.
+    #[cfg(test)]
+    pub(crate) async fn pause_after_work_commit(&self, marker: &FlowWorkCommitMarker030) {
+        let hook = self
+            .work_commit_hooks
+            .lock()
+            .expect("test hook registry")
+            .remove(&(
+                marker.identity.system_start_id.clone(),
+                marker.event_id.clone(),
+            ));
+        if let Some(hook) = hook {
+            hook.reached.add_permits(1);
+            hook.proceed
+                .acquire()
+                .await
+                .expect("test hook closed")
+                .forget();
+        }
+    }
     pub(crate) fn available(&self, identity: &FlowIdentity030) -> Result<()> {
         let pending = self.committing.lock().map_err(|_| unavailable())?;
         if pending
@@ -152,7 +222,83 @@ impl FlowHost030 {
         {
             return Err(uncertain());
         }
+        if self
+            .work_committing
+            .lock()
+            .map_err(|_| unavailable())?
+            .values()
+            .any(|marker| marker.identity.system_start_id == identity.system_start_id)
+        {
+            return Err(uncertain());
+        }
         Ok(())
+    }
+    /// Called under the common admission gate after native SQL validation and
+    /// before submitting the decision/check transaction's COMMIT. Cancellation
+    /// never drops this barrier; only an exact native readback may resolve it.
+    pub(crate) fn begin_work_commit(
+        &self,
+        identity: &FlowIdentity030,
+        event_id: &str,
+        ticket_json: &str,
+        decision_json: &str,
+    ) -> Result<FlowWorkCommitMarker030> {
+        self.available(identity)?;
+        if event_id.is_empty()
+            || [
+                &identity.system_start_id,
+                &identity.flow_invocation_id,
+                &identity.snapshot_id,
+                &identity.epoch,
+            ]
+            .iter()
+            .any(|part| part.is_empty())
+        {
+            return Err(refused());
+        }
+        crate::db::exact_json::validate(ticket_json)?;
+        crate::db::exact_json::validate(decision_json)?;
+        let marker = FlowWorkCommitMarker030 {
+            identity: identity.clone(),
+            event_id: event_id.into(),
+            ticket_sha256: format!("{:x}", Sha256::digest(ticket_json.as_bytes())),
+            decision_sha256: format!("{:x}", Sha256::digest(decision_json.as_bytes())),
+        };
+        let mut pending = self.work_committing.lock().map_err(|_| unavailable())?;
+        let key = (identity.system_start_id.clone(), event_id.into());
+        if pending.contains_key(&key) {
+            return Err(uncertain());
+        }
+        pending.insert(key, marker.clone());
+        Ok(marker)
+    }
+    /// Retrieving a marker grants no authority and does not release the gate.
+    pub(crate) fn pending_work_commit(
+        &self,
+        identity: &FlowIdentity030,
+        event_id: &str,
+    ) -> Result<Option<FlowWorkCommitMarker030>> {
+        let pending = self.work_committing.lock().map_err(|_| unavailable())?;
+        match pending.get(&(identity.system_start_id.clone(), event_id.into())) {
+            Some(marker) if marker.identity != *identity => Err(refused()),
+            value => Ok(value.cloned()),
+        }
+    }
+    /// Native persistence first confirms the exact ticket, decision and check
+    /// rows. This removes only that marker, without re-emitting any effect.
+    pub(crate) fn acknowledge_work_commit(&self, marker: &FlowWorkCommitMarker030) -> Result<()> {
+        let mut pending = self.work_committing.lock().map_err(|_| unavailable())?;
+        let key = (
+            marker.identity.system_start_id.clone(),
+            marker.event_id.clone(),
+        );
+        match pending.get(&key) {
+            Some(stored) if stored != marker => Err(refused()),
+            _ => {
+                pending.remove(&key);
+                Ok(())
+            }
+        }
     }
     fn begin_event_commit(&self, event: &FlowEvent030) -> Result<()> {
         let mut pending = self.event_committing.lock().map_err(|_| unavailable())?;
@@ -365,14 +511,9 @@ impl Authority030 for Authority<'_> {
     ) -> CheckFuture<'a> {
         Box::pin(async move {
             self.owner(db, &effect.identity).await?;
-            if !matches!(
-                &effect.kind,
-                FlowEffectKind030::StopWork { .. } | FlowEffectKind030::RunEnded { .. }
-            ) {
-                self.runtime
-                    .available(&effect.identity)
-                    .map_err(|_| StoreError030::Blocked)?;
-            }
+            self.runtime
+                .available(&effect.identity)
+                .map_err(|_| StoreError030::Blocked)?;
             let raw: String = sqlx::query_scalar(
                 "SELECT state_json FROM engine_flow030_runs WHERE system_id=? AND invocation_id=?",
             )
@@ -1552,12 +1693,7 @@ impl DispatchLease030<'_> {
     where
         F: Future<Output = ()> + Send + 'static,
     {
-        if !matches!(
-            &self.effect.kind,
-            FlowEffectKind030::StopWork { .. } | FlowEffectKind030::RunEnded { .. }
-        ) {
-            self.runtime.available(&self.effect.identity)?;
-        }
+        self.runtime.available(&self.effect.identity)?;
         let request_id = self.request_id();
         let (release, ready) = tokio::sync::oneshot::channel();
         self.lease
@@ -1619,6 +1755,9 @@ pub(crate) async fn claim_next<'a>(
 ) -> Result<Option<DispatchLease030<'a>>> {
     let lease = host.start_lease().await?;
     let admission = host.admission_lock().lock_owned().await;
+    // Even an empty queue is not a successful claim while a commit is unknown.
+    // Retirement uses its separate opaque FlowControl, never this dispatcher.
+    runtime.available(id)?;
     let owner = lease.owner(&id.system_start_id)?;
     let authority = Authority {
         runtime,
