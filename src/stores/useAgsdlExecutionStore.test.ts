@@ -1,5 +1,13 @@
 import { beforeEach, expect, it, mock, spyOn } from "bun:test";
 import type { SystemStartId, Sequence, PublicSnapshot, PublicProjection, SourceRevision, PublicStopState, ActivationId, PublicExecutionIntent, ExecutionIntentKey, ExecutionStageIntentRequest, ExecutionCloseIntentRequest, ExecutionEnsureStopRequest, IntentRevision, FlowInvocationId } from "../services/agsdlExecution/contracts";
+import type { RunListRequest030, RunPage030 } from '../types/generated/ipc';
+import type { PublicSnapshot030 } from '../services/ipc/agsdlExecution030';
+import type { HumanScope030 } from '../types/generated/ipc/HumanScope030';
+import type { HumanPage030 } from '../types/generated/ipc/HumanPage030';
+import type { RuntimeProjectionQuery030 } from '../types/generated/ipc/RuntimeProjectionQuery030';
+import type { RuntimeProjectionPage030 } from '../types/generated/ipc/RuntimeProjectionPage030';
+import type { RuntimeProjectionContinuation030 } from '../types/generated/ipc/RuntimeProjectionContinuation030';
+import type { PublicExecutionIntent as VersionedIntent } from '../types/generated/ipc/PublicExecutionIntent';
 let selected = "conversation";
 let planConversation = "conversation";
 const owner = { projectId: "project", planId: "plan", branch: "feature/work" };
@@ -17,6 +25,11 @@ let seenDiagnostics: { through: string; before?: string | null }[] = [];
 let projectionChangesCursor = false;
 let taskResult: unknown = null;
 let snapshotOwner = owner;
+let readSnapshot030: (id: string) => Promise<PublicSnapshot030>;
+let readHumans030: (scope: HumanScope030) => Promise<HumanPage030>;
+let readRuntime030: (scope: RuntimeProjectionQuery030, next?: RuntimeProjectionContinuation030) => Promise<RuntimeProjectionPage030>;
+let wireIntent: VersionedIntent | undefined;
+let listRuns030: (request: RunListRequest030) => Promise<RunPage030>;
 mock.module("../services/architectPlanService", () => ({ getArchitectPlan: async () => ({ conversationId: planConversation, status: "draft" }), migrateArchitectPlanToAgsdl: async () => null, updateArchitectPlan: async () => {} }));
 mock.module("./useChatStore", () => ({ useChatStore: { getState: () => ({ selectedConversationId: selected, conversations: [{ id: "conversation", project_id: "project" }, { id: "other", project_id: "foreign" }] }) } }));
 mock.module("./useAppStore", () => ({ useAppStore: { getState: () => ({ setMode: () => {} }) } }));
@@ -40,6 +53,12 @@ mock.module("../services/tauriIpc", () => ({
   preflightExecution: async () => { preflightCalls++; return { source, authoredSource, staticValid: true, runtimeSupported: true, productRuntimeAvailable: available, incomplete: false }; },
   listExecutionRuns: async () => { listCalls++; return { runs: [...native.rows.values()].some(row => row.state.kind === "admitted" || row.state.kind === "closed" && row.state.admission) ? [{ systemStartId: 'started', source, counts: { completed: completedCount } }] : [], nextCursor: null }; },
   readExecutionSnapshot: async (id: string) => ({ ...snapshot(id), source: { ...source, owner: snapshotOwner } }),
+  listExecutionRuns030: (request: RunListRequest030) => listRuns030(request),
+  readExecutionSnapshot030: (id: string) => readSnapshot030(id),
+  readExecutionHumans030: (scope: HumanScope030) => readHumans030(scope),
+  readExecutionRuntimeProjection030: (scope: RuntimeProjectionQuery030, next?: RuntimeProjectionContinuation030) => readRuntime030(scope, next),
+  readExecutionIntentsVersioned: async () => wireIntent ? [structuredClone(wireIntent)] : native.open(),
+  readExecutionIntentVersioned: async () => wireIntent ? structuredClone(wireIntent) : null,
   readExecutionProjection: async (id: string, page?: unknown) => { seenPages.push(page); return readProjection(id, page); },
   readExecutionApprovals: async () => ({ approvals: [], incomplete: false }),
   readExecutionDiagnostic: async (request: { systemStartId: string; through: string; before?: string | null }) => { seenDiagnostics.push(request); return { source, systemStartId: request.systemStartId, activation: null, through: request.through, diagnostics: [], incomplete: !request.before, nextBefore: request.before ? null : '1' }; },
@@ -86,9 +105,10 @@ const { useAgsdlStore, agsdlSessionKey } = await import("./useAgsdlStore");
 const { useAgsdlExecutionStore: store } = await import("./useAgsdlExecutionStore");
 const target = { planId: owner.planId, branchName: owner.branch };
 /** A renderer reload: the store forgets everything, native rows remain. */
-const reload = () => store.setState({ owner: undefined, conversationId: undefined, snapshot: undefined, projection: undefined, approvals: undefined, diagnostic: undefined, preflight: undefined, intent: undefined, intentBusy: false, acceptedDelivery: undefined, stopping: false, busy: false, error: undefined, runs: [], nextRuns: null });
+const reload = () => store.setState({ owner: undefined, conversationId: undefined, snapshot: undefined, snapshot030: undefined, humans030: undefined, humans030Stale: false, runtime030: undefined, runtime030Stale: false, projection: undefined, approvals: undefined, diagnostic: undefined, preflight: undefined, intent: undefined, intent030: undefined, intentBusy: false, acceptedDelivery: undefined, stopping: false, busy: false, error: undefined, runs: [], nextRuns: null, runs030: [], nextRuns030: null, runs030Error: false });
 beforeEach(async () => {
-  selected = planConversation = "conversation"; snapshotOwner = owner; seenPages = []; seenDiagnostics = []; projectionChangesCursor = false; taskResult = null; available = false; authoredSource = '{}'; listCalls = preflightCalls = 0; native.reset(); completedCount = "0";
+  selected = planConversation = "conversation"; snapshotOwner = owner; seenPages = []; seenDiagnostics = []; projectionChangesCursor = false; taskResult = null; available = false; authoredSource = '{}'; listCalls = preflightCalls = 0; native.reset(); completedCount = "0"; wireIntent = undefined;
+  listRuns030 = async () => ({runs:[],nextCursor:null});
   readProjection = async id => projection(id);
   reload();
   useAgsdlStore.setState({ sessions: { [agsdlSessionKey(target)]: { source: '{}', annexes: {}, version: 'v1', persistedRevision: 1, status: 'draft', dirty: false, saving: false, history: [], future: [], reports: [], error: null } } });
@@ -114,6 +134,158 @@ it("ignores an old run result after a newer selection or destination switch", as
   const delayed = store.getState().select("old" as SystemStartId); while (!release) await Promise.resolve();
   selected = "other"; release(projection("old")); await delayed;
   expect(store.getState().snapshot?.systemStartId).not.toBe("old" as SystemStartId);
+});
+it('loads a 0.3 human projection separately and retains it as stale after a read conflict', async () => {
+  const authoredSource = '{"contract":"agsdl-0.3.0"}';
+  const { sourceDigest } = await import('../services/agsdlExecution/compiler');
+  const capturedSource = { owner, revision: '1', sourceSha256: await sourceDigest(authoredSource) };
+  readSnapshot030 = async id => ({ systemStartId: id, source: capturedSource, authoredSource, associations: {},
+    versions: { snapshot: '2', contract: 'agsdl-0.3.0', profile: 'macro-agsdl-030-v1', compiler: 'c', runtime: 'r', registry: 'g' } });
+  readHumans030 = async scope => ({ scope, cursor: '', total: '1', nextPage: null, requests: [{ id: 'request', revision: '0', status: 'open', workIds: [], content: { kind: 'question', question: 'Q', expectedResponse: 'unknown' } }] });
+  store.setState({ runs030: [{ systemStartId:'run-030', flowInvocationId:'flow', source:capturedSource, versions:{snapshot:'2',contract:'agsdl-0.3.0',profile:'macro-agsdl-030-v1',compiler:'c',runtime:'r',registry:'g'}, snapshotId:'capture',revision:'1',stopping:false,verdict:null,ownerStatus:'active',phaseCounts:[],physicalPending:'0' }] });
+  readRuntime030 = async scope => ({scope:{...scope,snapshotId:'capture'},flowInvocationId:'flow',revision:'1',stopping:false,verdict:null,total:'0',items:[],nextPage:null});
+  await store.getState().select030('run-030');
+  expect(store.getState().snapshot030?.systemStartId).toBe('run-030');
+  expect(store.getState().snapshot).toBeUndefined();
+  expect(store.getState().humans030?.requests[0].id).toBe('request');
+  expect(store.getState().runtime030?.scope.snapshotId).toBe('capture');
+  const previous = store.getState().runtime030;
+  readRuntime030 = async () => { throw { code:'CONFLICT' }; };
+  await store.getState().refreshRuntime030();
+  expect(store.getState().runtime030Stale).toBe(true);
+  expect(store.getState().runtime030).toBe(previous);
+  readHumans030 = async () => { throw { code: 'CONFLICT' }; };
+  await store.getState().refreshHumans030();
+  expect(store.getState().humans030Stale).toBe(true);
+  expect(store.getState().humans030?.requests[0].id).toBe('request');
+});
+it('does not install delayed 0.3 data after changing the selected run', async () => {
+  const authoredSource = '{"contract":"agsdl-0.3.0"}';
+  const { sourceDigest } = await import('../services/agsdlExecution/compiler');
+  const capturedSource = { owner, revision: '1', sourceSha256: await sourceDigest(authoredSource) };
+  readSnapshot030 = async id => ({ systemStartId: id, source: capturedSource, authoredSource, associations: {},
+    versions: { snapshot: '2', contract: 'agsdl-0.3.0', profile: 'macro-agsdl-030-v1', compiler: 'c', runtime: 'r', registry: 'g' } });
+  store.setState({ runs030: [{ systemStartId:'old-030', flowInvocationId:'flow', source:capturedSource, versions:{snapshot:'2',contract:'agsdl-0.3.0',profile:'macro-agsdl-030-v1',compiler:'c',runtime:'r',registry:'g'}, snapshotId:'capture',revision:'1',stopping:false,verdict:null,ownerStatus:'active',phaseCounts:[],physicalPending:'0' }] });
+  readRuntime030 = async scope => ({scope:{...scope,snapshotId:'capture'},flowInvocationId:'flow',revision:'1',stopping:false,verdict:null,total:'0',items:[],nextPage:null});
+  let release!: (page: HumanPage030) => void;
+  let requested!: HumanScope030;
+  let entered!: () => void;
+  const started = new Promise<void>(resolve => { entered = resolve; });
+  readHumans030 = scope => { requested = scope; return new Promise(resolve => { release = resolve; entered(); }); };
+  const first = store.getState().select030('old-030');
+  await started;
+  await store.getState().select('new' as SystemStartId);
+  release({ scope: requested, cursor: '', total: '0', requests: [], nextPage: null });
+  await first;
+  expect(store.getState().snapshot030).toBeUndefined();
+  expect(store.getState().snapshot?.systemStartId).toBe('new' as SystemStartId);
+});
+it('does not publish a partial 0.3 selection when a projection continuation conflicts', async () => {
+  const authoredSource = '{"contract":"agsdl-0.3.0"}';
+  const { sourceDigest } = await import('../services/agsdlExecution/compiler');
+  const capturedSource = { owner, revision:'1', sourceSha256:await sourceDigest(authoredSource) };
+  const versions = { snapshot:'2' as const, contract:'agsdl-0.3.0' as const, profile:'macro-agsdl-030-v1' as const, compiler:'c', runtime:'r', registry:'g' };
+  store.setState({runs030:[{systemStartId:'run-030',flowInvocationId:'flow',source:capturedSource,versions,snapshotId:'capture',revision:'1',stopping:false,verdict:null,ownerStatus:'active',phaseCounts:[],physicalPending:'0'}]});
+  readSnapshot030 = async id => ({systemStartId:id,source:capturedSource,authoredSource,versions,associations:{}});
+  readHumans030 = async scope => ({scope,cursor:'',total:'0',requests:[],nextPage:null});
+  readRuntime030 = async (query, next) => {
+    if (next) throw {code:'CONFLICT'};
+    const scope = { ...query, snapshotId:'capture' };
+    return {scope,flowInvocationId:'flow',revision:'1',stopping:false,verdict:null,total:'101',nextPage:{scope,revision:'1',offset:100},items:Array.from({length:100},(_,i)=>({kind:'instance' as const,value:{id:String(i).padStart(3,'0'),agent:'agent',selectorKind:'new',selectorName:null,currentActivationId:null,queueActivationIds:[],discarded:false}}))};
+  };
+  await store.getState().select030('run-030');
+  expect(store.getState().snapshot030).toBeUndefined();
+  expect(store.getState().runtime030).toBeUndefined();
+  expect(store.getState().humans030).toBeUndefined();
+});
+it('rejects a 0.3 run summary whose captured versions differ before reading its projection', async () => {
+  const authoredSource = '{"contract":"agsdl-0.3.0"}';
+  const { sourceDigest } = await import('../services/agsdlExecution/compiler');
+  const capturedSource = { owner, revision:'1', sourceSha256:await sourceDigest(authoredSource) };
+  const versions = { snapshot:'2' as const, contract:'agsdl-0.3.0' as const, profile:'macro-agsdl-030-v1' as const, compiler:'c', runtime:'r', registry:'g' };
+  store.setState({runs030:[{systemStartId:'run-030',flowInvocationId:'flow',source:capturedSource,versions:{...versions,runtime:'different'},snapshotId:'capture',revision:'1',stopping:false,verdict:null,ownerStatus:'active',phaseCounts:[],physicalPending:'0'}]});
+  readSnapshot030 = async id => ({systemStartId:id,source:capturedSource,authoredSource,versions,associations:{}});
+  let reads = 0;
+  readRuntime030 = async () => { reads++; throw new Error('Unexpected projection read'); };
+  await store.getState().select030('run-030');
+  expect(reads).toBe(0);
+  expect(store.getState().snapshot030).toBeUndefined();
+  expect(store.getState().runtime030).toBeUndefined();
+});
+it('observes a versioned 0.3 admission and verifies its capture without submitting or acknowledging it', async () => {
+  const text = '{"contract":"agsdl-0.3.0"}';
+  const { sourceDigest } = await import('../services/agsdlExecution/compiler');
+  const captured = { owner, revision: '2', sourceSha256: await sourceDigest(text) };
+  const versions = { snapshot: '2' as const, contract: 'agsdl-0.3.0' as const, profile: 'macro-agsdl-030-v1' as const, compiler: 'c', runtime: 'r', registry: 'g' };
+  const request = { source: captured, profile: versions.profile, associations: {}, requestId: 'intent', entry: { deliveryId: 'entry', messageJson: '{}' } };
+  wireIntent = { formatVersion: '1', key: { scope: { owner, conversationId: 'conversation' }, intentId: 'intent' }, revision: '1', payload: {kind:'start', request},
+    state: {kind:'admitted', admission: {kind:'start030', receipt: {systemStartId:'run-030', flowInvocationId:'flow', source:captured, versions, entryDeliveryId:'entry'}}} };
+  readSnapshot030 = async id => ({ systemStartId:id, source:captured, authoredSource:text, associations:{}, versions });
+  await reopen();
+  expect(store.getState().intent030?.state.kind).toBe('admitted');
+  expect(store.getState().snapshot030?.systemStartId).toBe('run-030');
+  expect(store.getState().snapshot).toBeUndefined();
+  expect(native.calls).not.toContain('submit');
+  expect(native.calls).not.toContain('close:acknowledged');
+  store.setState({ snapshot: snapshot('previous') });
+  await store.getState().resume();
+  expect(store.getState().snapshot).toBeUndefined();
+  expect(store.getState().snapshot030?.systemStartId).toBe('run-030');
+  if (wireIntent.state.kind !== 'admitted' || wireIntent.state.admission.kind !== 'start030') throw new Error('fixture');
+  wireIntent.state.admission.receipt.entryDeliveryId = 'other';
+  store.setState({ snapshot030: undefined });
+  await store.getState().resume();
+  expect(store.getState().snapshot030).toBeUndefined();
+  expect(store.getState().intent030?.state.kind).toBe('admitted');
+  expect(native.calls).not.toContain('close:acknowledged');
+});
+it('retains a prepared 0.3 intent without submitting it or using the historical reader', async () => {
+  wireIntent = { formatVersion:'1', key:{scope:{owner,conversationId:'conversation'},intentId:'i'}, revision:'1',
+    payload:{kind:'start',request:{source,profile:'macro-agsdl-030-v1',associations:{},requestId:'i',entry:null}}, state:{kind:'prepared'} };
+  native.calls = [];
+  await reopen();
+  expect(store.getState().intent030?.state.kind).toBe('prepared');
+  expect(native.calls).toEqual([]);
+  await store.getState().resume();
+  expect(store.getState().intent030?.state.kind).toBe('prepared');
+  expect(native.calls).toEqual([]);
+});
+it('rejects a 0.3 admission whose captured source belongs to another owner', async () => {
+  const foreign = { ...source, owner: { ...owner, projectId: 'foreign' } };
+  const versions = { snapshot:'2', contract:'agsdl-0.3.0', profile:'macro-agsdl-030-v1', compiler:'c', runtime:'r', registry:'g' };
+  wireIntent = { formatVersion:'1', key:{scope:{owner,conversationId:'conversation'},intentId:'i'}, revision:'1',
+    payload:{kind:'start',request:{source:foreign,profile:versions.profile,associations:{},requestId:'i',entry:null}},
+    state:{kind:'admitted',admission:{kind:'start030',receipt:{systemStartId:'foreign-run',flowInvocationId:'f',source:foreign,versions,entryDeliveryId:null}}} };
+  let reads = 0;
+  readSnapshot030 = async () => { reads++; throw new Error('Unexpected snapshot read'); };
+  native.calls = [];
+  await reopen();
+  expect(reads).toBe(0);
+  expect(store.getState().snapshot030).toBeUndefined();
+  expect(store.getState().error).toBe('agsdl.execution.error');
+  expect(native.calls).not.toContain('close:acknowledged');
+});
+it('does not install a retained 0.3 receipt after another run is selected', async () => {
+  const text = '{"contract":"agsdl-0.3.0"}';
+  const { sourceDigest } = await import('../services/agsdlExecution/compiler');
+  const captured = { owner, revision: '2', sourceSha256: await sourceDigest(text) };
+  const versions = { snapshot: '2' as const, contract: 'agsdl-0.3.0' as const, profile: 'macro-agsdl-030-v1' as const, compiler: 'c', runtime: 'r', registry: 'g' };
+  wireIntent = { formatVersion:'1', key:{scope:{owner,conversationId:'conversation'},intentId:'i'}, revision:'1',
+    payload:{kind:'start',request:{source:captured,profile:versions.profile,associations:{},requestId:'i',entry:null}},
+    state:{kind:'admitted',admission:{kind:'start030',receipt:{systemStartId:'old-030',flowInvocationId:'f',source:captured,versions,entryDeliveryId:null}}} };
+  store.setState({ intent030: wireIntent });
+  let release!: (snapshot: PublicSnapshot030) => void;
+  let entered!: () => void;
+  const started = new Promise<void>(resolve => { entered = resolve; });
+  readSnapshot030 = () => new Promise(resolve => { release = resolve; entered(); });
+  const resume = store.getState().resume();
+  await started;
+  await store.getState().select('new' as SystemStartId);
+  release({systemStartId:'old-030',source:captured,authoredSource:text,versions,associations:{}});
+  await resume;
+  expect(store.getState().snapshot030).toBeUndefined();
+  expect(store.getState().snapshot?.systemStartId).toBe('new' as SystemStartId);
+  expect(native.calls).not.toContain('close:acknowledged');
 });
 it("refuses an absent or foreign native Task resolution", async () => {
   await store.getState().select("run" as SystemStartId);
@@ -169,7 +341,7 @@ it("publishes a translation key instead of private transport or invariant text",
   expect(store.getState().error).toBe('agsdl.execution.ownerChanged');
 });
 
-const entrySource = '{"flow":{"entry":"start"},"agents":{"real":{}}}';
+const entrySource = '{"contract":"agsdl-0.2.0","flow":{"entry":"start"},"agents":{"real":{}}}';
 async function ready(authored = entrySource) {
   available = true; authoredSource = authored;
   useAgsdlStore.setState(state => ({ sessions: { [agsdlSessionKey(target)]: { ...state.sessions[agsdlSessionKey(target)], source: authored } } }));
@@ -177,10 +349,48 @@ async function ready(authored = entrySource) {
 }
 async function reopen() { reload(); await store.getState().open(target, selected); }
 
+it.each(['admitted', 'closed'] as const)("retains a %s 0.3 receipt until a versioned reader can install it", async kind => {
+  await ready(); native.loseSubmit = true;
+  await store.getState().start('Message');
+  native.loseSubmit = false;
+  const original = [...native.rows.values()][0];
+  // Wire fixture follows 09's generated PublicStartReceipt030; the historical
+  // frontend contract has not yet incorporated this native admission variant.
+  const row = JSON.parse(JSON.stringify(original));
+  const admission = { kind: 'start030', receipt: { systemStartId: 'run-030', flowInvocationId: 'flow', source,
+    versions: { snapshot: '2', contract: 'agsdl-0.3.0', compiler: 'c', runtime: 'r', registry: 'v', profile: 'macro-agsdl-030-v1' }, entryDeliveryId: null } };
+  row.state = kind === 'admitted' ? { kind, admission } : { kind, disposition: 'acknowledged', admission };
+  native.rows.set(row.key.intentId, row);
+  store.setState({ intent: row, snapshot: undefined, projection: undefined });
+  native.calls = []; seenPages = [];
+  await store.getState().resume();
+  expect(store.getState().intent?.state.kind).toBe(kind);
+  expect(store.getState().snapshot).toBeUndefined();
+  expect(store.getState().projection).toBeUndefined();
+  expect(store.getState().error).toBe('agsdl.execution.unavailable');
+  expect(native.calls).not.toContain('close:acknowledged');
+  expect(seenPages).toEqual([]);
+});
+
 it("opens with reads only and never stages, submits, closes or preflights", async () => {
   expect(native.calls).toEqual(["read"]); expect(preflightCalls).toBe(0);
   await store.getState().refresh(); await store.getState().start();
   expect(native.calls).not.toContain("stage"); expect(store.getState().error).toContain("unavailable");
+});
+it('never stages a 0.3 document through the historical start profile even if preflight reports availability', async () => {
+  await ready('{"contract":"agsdl-0.3.0","flow":{"entry":"work"},"agents":{}}');
+  native.calls = [];
+  await store.getState().start('Message');
+  expect(store.getState().error).toBe('agsdl.execution.unavailable');
+  expect(native.calls).not.toContain('stage');
+});
+it('refuses to stage when the source returned by the second preflight differs from the saved document', async () => {
+  await ready();
+  authoredSource = '{"contract":"agsdl-0.2.0","flow":{"entry":"different"}}';
+  native.calls = [];
+  await store.getState().start('Message');
+  expect(store.getState().error).toBe('agsdl.execution.unavailable');
+  expect(native.calls).not.toContain('stage');
 });
 it("shows the latest run read-only after an acknowledged request and a reload", async () => {
   await ready(); await store.getState().start("Message");
@@ -322,7 +532,7 @@ it("shows the request another observer holds instead of replacing it", async () 
   expect(native.rows.size).toBe(1);
 });
 it("sends Stop for the exact run while a submit is blocked and leaves the request running", async () => {
-  await ready('{"agents":{"real":{}}}');
+  await ready('{"contract":"agsdl-0.2.0","agents":{"real":{}}}');
   await store.getState().select("run" as SystemStartId);
   readProjection = async id => ({ ...projection(id), systemStop: native.stopState });
   let release!: () => void; native.submitGate = new Promise(resolve => { release = resolve; });
@@ -388,7 +598,7 @@ it("refreshes native totals after foreground Stop, before a poll can miss the ne
 
 
 it("publishes delivery acceptance only after Resume installs a retained receipt", async () => {
-  await ready('{"agents":{"real":{}}}');
+  await ready('{"contract":"agsdl-0.2.0","agents":{"real":{}}}');
   await store.getState().select("run" as SystemStartId);
   native.loseSubmit = true;
   await store.getState().deliver("real", "Retained message");
@@ -401,7 +611,7 @@ it("publishes delivery acceptance only after Resume installs a retained receipt"
 });
 
 it("delivers to a retained graphless run without preflighting the current document", async () => {
-  await ready('{"agents":{"real":{}}}');
+  await ready('{"contract":"agsdl-0.2.0","agents":{"real":{}}}');
   await store.getState().select("run" as SystemStartId);
   store.setState({ preflight: undefined });
   const checked = preflightCalls;
@@ -410,4 +620,263 @@ it("delivers to a retained graphless run without preflighting the current docume
   expect(store.getState().error).toBeUndefined();
   expect(store.getState().acceptedDelivery?.agentName).toBe("real");
   expect(store.getState().acceptedDelivery?.systemStartId).toBe("run" as SystemStartId);
+});
+
+it('keeps an explicitly selected runtime while observing another admitted intent on refresh', async () => {
+  const text = '{"contract":"agsdl-0.3.0"}';
+  const { sourceDigest } = await import('../services/agsdlExecution/compiler');
+  const captured = { owner, revision:'1', sourceSha256:await sourceDigest(text) };
+  const versions = {snapshot:'2' as const,contract:'agsdl-0.3.0' as const,profile:'macro-agsdl-030-v1' as const,compiler:'c',runtime:'r',registry:'g'};
+  const request = {source:captured,profile:versions.profile,associations:{},requestId:'intent',entry:null};
+  wireIntent = {formatVersion:'1',key:{scope:{owner,conversationId:'conversation'},intentId:'intent'},revision:'1',payload:{kind:'start',request},state:{kind:'admitted',admission:{kind:'start030',receipt:{systemStartId:'admitted',flowInvocationId:'flow',source:captured,versions,entryDeliveryId:null}}}};
+  readSnapshot030 = async id => ({systemStartId:id,source:captured,authoredSource:text,associations:{},versions});
+  readHumans030 = async scope => ({scope,cursor:'',total:'0',requests:[],nextPage:null});
+  readRuntime030 = async query => ({scope:{...query,snapshotId:'capture'},flowInvocationId:'flow',revision:'1',stopping:false,verdict:null,total:'0',items:[],nextPage:null});
+  store.setState({runs030:[{systemStartId:'selected',flowInvocationId:'flow',source:captured,versions,snapshotId:'capture',revision:'1',stopping:false,verdict:null,ownerStatus:'active',phaseCounts:[],physicalPending:'0'}]});
+  await store.getState().select030('selected');
+  expect(store.getState().runtime030).toBeDefined();
+  await store.getState().refresh();
+  expect(store.getState().snapshot030?.systemStartId).toBe('selected');
+  expect(store.getState().runtime030?.scope.systemStartId).toBe('selected');
+  expect(store.getState().intent030?.state.kind).toBe('admitted');
+});
+it('marks a retained runtime projection stale when its summary becomes incompatible', async () => {
+  const text = '{"contract":"agsdl-0.3.0"}';
+  const { sourceDigest } = await import('../services/agsdlExecution/compiler');
+  const captured = {owner,revision:'1',sourceSha256:await sourceDigest(text)};
+  const versions = {snapshot:'2' as const,contract:'agsdl-0.3.0' as const,profile:'macro-agsdl-030-v1' as const,compiler:'c',runtime:'r',registry:'g'};
+  const run = {systemStartId:'run',flowInvocationId:'flow',source:captured,versions,snapshotId:'capture',revision:'1',stopping:false,verdict:null,ownerStatus:'active',phaseCounts:[],physicalPending:'0'};
+  store.setState({runs030:[run]});
+  readSnapshot030 = async id => ({systemStartId:id,source:captured,authoredSource:text,associations:{},versions});
+  readHumans030 = async scope => ({scope,cursor:'',total:'0',requests:[],nextPage:null});
+  readRuntime030 = async query => ({scope:{...query,snapshotId:'capture'},flowInvocationId:'flow',revision:'1',stopping:false,verdict:null,total:'0',items:[],nextPage:null});
+  await store.getState().select030('run');
+  store.setState({runs030:[{...run,versions:{...versions,runtime:'incompatible'}}]});
+  await store.getState().refreshRuntime030();
+  expect(store.getState().error).toBe('agsdl.execution.error');
+  expect(store.getState().runtime030).toBeDefined();
+  expect(store.getState().runtime030Stale).toBe(true);
+});
+
+it('refreshes a retained native flow after its summary leaves the current list page', async () => {
+  const text = '{"contract":"agsdl-0.3.0"}';
+  const { sourceDigest } = await import('../services/agsdlExecution/compiler');
+  const captured = { owner, revision:'1', sourceSha256:await sourceDigest(text) };
+  const versions = {snapshot:'2' as const,contract:'agsdl-0.3.0' as const,profile:'macro-agsdl-030-v1' as const,compiler:'c',runtime:'r',registry:'g'};
+  const run = {systemStartId:'older',flowInvocationId:'flow',source:captured,versions,snapshotId:'capture',revision:'1',stopping:false,verdict:null,ownerStatus:'active',phaseCounts:[],physicalPending:'0'};
+  readSnapshot030 = async id => ({systemStartId:id,source:captured,authoredSource:text,associations:{},versions});
+  readHumans030 = async scope => ({scope,cursor:'',total:'0',requests:[],nextPage:null});
+  let reads = 0;
+  readRuntime030 = async query => { reads++; return {scope:{...query,snapshotId:'capture'},flowInvocationId:'flow',revision:'1',stopping:false,verdict:null,total:'0',items:[],nextPage:null}; };
+  store.setState({runs030:[run]});
+  await store.getState().select030('older');
+  expect(reads).toBe(1);
+  await store.getState().refreshRuns030();
+  expect(store.getState().snapshot030?.systemStartId).toBe('older');
+  expect(store.getState().runs030).toEqual([]);
+  await store.getState().refreshRuntime030();
+  expect(reads).toBe(2);
+  expect(store.getState().runtime030Stale).toBe(false);
+  expect(store.getState().error).toBeUndefined();
+  const retained = store.getState().runtime030!;
+  store.setState({runtime030:{...retained,scope:{...retained.scope,source:{...captured,revision:'foreign'}}}});
+  await store.getState().refreshRuntime030();
+  expect(reads).toBe(2);
+  expect(store.getState().runtime030Stale).toBe(true);
+});
+
+it('reads resumed admitted and closed native receipts before the run summary is loaded', async () => {
+  const text = '{"contract":"agsdl-0.3.0"}';
+  const { sourceDigest } = await import('../services/agsdlExecution/compiler');
+  const captured = {owner,revision:'1',sourceSha256:await sourceDigest(text)};
+  const versions = {snapshot:'2' as const,contract:'agsdl-0.3.0' as const,profile:'macro-agsdl-030-v1' as const,compiler:'c',runtime:'r',registry:'g'};
+  const admission = {kind:'start030' as const,receipt:{systemStartId:'older',flowInvocationId:'flow',source:captured,versions,entryDeliveryId:null}};
+  readSnapshot030 = async id => ({systemStartId:id,source:captured,authoredSource:text,associations:{},versions});
+  readHumans030 = async scope => ({scope,cursor:'',total:'0',requests:[],nextPage:null});
+  let reads = 0;
+  readRuntime030 = async query => { reads++; return {scope:{...query,snapshotId:'capture'},flowInvocationId:'flow',revision:'1',stopping:false,verdict:null,total:'0',items:[],nextPage:null}; };
+  for (const kind of ['admitted','closed'] as const) {
+    const state: VersionedIntent['state'] = kind === 'admitted' ? {kind,admission} : {kind,disposition:'acknowledged',admission};
+    wireIntent = {formatVersion:'1',key:{scope:{owner,conversationId:'conversation'},intentId:'i'},revision:'1',payload:{kind:'start',request:{source:captured,profile:versions.profile,associations:{},requestId:'i',entry:null}},state};
+    store.setState({intent030:wireIntent,runs030:[],snapshot030:undefined,runtime030:undefined});
+    const before = reads;
+    await store.getState().resume();
+    expect(store.getState().snapshot030?.systemStartId).toBe('older');
+    await store.getState().refreshRuntime030();
+    expect(reads).toBe(before + 1);
+    expect(store.getState().runtime030Stale).toBe(false);
+    expect(store.getState().error).toBeUndefined();
+    await store.getState().select030('older');
+    expect(reads).toBe(before + 2);
+    expect(store.getState().error).toBeUndefined();
+  }
+});
+
+it('never uses a rejected request receipt for a later runtime read and recovers with a valid receipt', async () => {
+  const text = '{"contract":"agsdl-0.3.0"}';
+  const { sourceDigest } = await import('../services/agsdlExecution/compiler');
+  const captured = {owner,revision:'1',sourceSha256:await sourceDigest(text)};
+  const versions = {snapshot:'2' as const,contract:'agsdl-0.3.0' as const,profile:'macro-agsdl-030-v1' as const,compiler:'c',runtime:'r',registry:'g'};
+  const receipt = {systemStartId:'older',flowInvocationId:'good',source:captured,versions,entryDeliveryId:null};
+  const request = {source:captured,profile:versions.profile,associations:{},requestId:'i',entry:null};
+  wireIntent = {formatVersion:'1',key:{scope:{owner,conversationId:'conversation'},intentId:'i'},revision:'1',payload:{kind:'start',request},state:{kind:'closed',disposition:'acknowledged',admission:{kind:'start030',receipt}}};
+  readSnapshot030 = async id => ({systemStartId:id,source:captured,authoredSource:text,associations:{},versions});
+  store.setState({intent030:wireIntent,runs030:[],runtime030:undefined});
+  await store.getState().resume();
+  expect(store.getState().snapshot030?.systemStartId).toBe('older');
+  wireIntent = {...wireIntent,payload:{kind:'start',request:{...request,source:{...captured,revision:'foreign'}}},state:{kind:'closed',disposition:'acknowledged',admission:{kind:'start030',receipt:{...receipt,flowInvocationId:'bad'}}}};
+  await store.getState().resume();
+  expect(store.getState().error).toBe('agsdl.execution.error');
+  let reads=0;
+  readRuntime030 = async query => { reads++; return {scope:{...query,snapshotId:'capture'},flowInvocationId:'bad',revision:'1',stopping:false,verdict:null,total:'0',items:[],nextPage:null}; };
+  await store.getState().refreshRuntime030();
+  expect(reads).toBe(0);
+  expect(store.getState().runtime030Stale).toBe(true);
+  await store.getState().select030('older');
+  expect(reads).toBe(0);
+  wireIntent = {...wireIntent,payload:{kind:'start',request},state:{kind:'closed',disposition:'acknowledged',admission:{kind:'start030',receipt}}};
+  readRuntime030 = async query => { reads++; return {scope:{...query,snapshotId:'capture'},flowInvocationId:'good',revision:'1',stopping:false,verdict:null,total:'0',items:[],nextPage:null}; };
+  await store.getState().resume();
+  await store.getState().refreshRuntime030();
+  expect(reads).toBe(1);
+  expect(store.getState().error).toBeUndefined();
+});
+
+it('does not reuse an observed receipt when its captured document failed verification', async () => {
+  const text = '{"contract":"agsdl-0.3.0"}';
+  const { sourceDigest } = await import('../services/agsdlExecution/compiler');
+  const captured = {owner,revision:'1',sourceSha256:await sourceDigest(text)};
+  const versions = {snapshot:'2' as const,contract:'agsdl-0.3.0' as const,profile:'macro-agsdl-030-v1' as const,compiler:'c',runtime:'r',registry:'g'};
+  const receipt = {systemStartId:'older',flowInvocationId:'good',source:captured,versions,entryDeliveryId:null};
+  const request = {source:captured,profile:versions.profile,associations:{},requestId:'i',entry:null};
+  const valid: VersionedIntent = {formatVersion:'1',key:{scope:{owner,conversationId:'conversation'},intentId:'i'},revision:'1',payload:{kind:'start',request},state:{kind:'closed',disposition:'acknowledged',admission:{kind:'start030',receipt}}};
+  wireIntent = valid;
+  readSnapshot030 = async id => ({systemStartId:id,source:captured,authoredSource:text,associations:{},versions});
+  store.setState({intent030:valid,runs030:[],runtime030:undefined});
+  await store.getState().resume();
+  wireIntent = {...valid,revision:'2',state:{kind:'closed',disposition:'acknowledged',admission:{kind:'start030',receipt:{...receipt,flowInvocationId:'bad'}}}};
+  readSnapshot030 = async id => ({systemStartId:id,source:captured,authoredSource:'{}',associations:{},versions});
+  await store.getState().resume();
+  expect(store.getState().error).toBe('agsdl.execution.error');
+  let reads = 0;
+  readRuntime030 = async query => { reads++; return {scope:{...query,snapshotId:'capture'},flowInvocationId:'bad',revision:'1',stopping:false,verdict:null,total:'0',items:[],nextPage:null}; };
+  await store.getState().refreshRuntime030();
+  expect(reads).toBe(0);
+  expect(store.getState().runtime030Stale).toBe(true);
+});
+
+it('pages 0.3 history independently, retaining the 0.2 list and rejecting a repeated cursor atomically', async () => {
+  const versions = {snapshot:'2',contract:'agsdl-0.3.0',profile:'macro-agsdl-030-v1',compiler:'c',runtime:'r',registry:'g'};
+  const run = (id: string) => ({systemStartId:id,flowInvocationId:`flow-${id}`,snapshotId:`snapshot-${id}`,source,versions,revision:'1',stopping:false,verdict:null,ownerStatus:'revoked',phaseCounts:[],physicalPending:'0'});
+  const calls: RunListRequest030[] = [];
+  listRuns030 = async request => { calls.push(request); return request.after === null ? {runs:[run('a')],nextCursor:'cursor030'} : {runs:[run('b')],nextCursor:'cursor030'}; };
+  const legacy = store.getState().runs;
+  store.setState({nextRuns:'cursor020'});
+  await store.getState().refreshRuns030();
+  expect(store.getState().runs030.map(item => item.systemStartId)).toEqual(['a']);
+  expect(store.getState().runs030[0].ownerStatus).toBe('revoked');
+  await store.getState().moreRuns030();
+  expect(calls.map(call => call.after)).toEqual([null,'cursor030']);
+  expect(calls.every(call => call.owner === owner || JSON.stringify(call.owner) === JSON.stringify(owner))).toBe(true);
+  expect(store.getState().runs030.map(item => item.systemStartId)).toEqual(['a']);
+  expect(store.getState().nextRuns030).toBe('cursor030');
+  expect(store.getState().runs030Error).toBe(true);
+  expect(store.getState().runs).toBe(legacy);
+  expect(store.getState().nextRuns).toBe('cursor020');
+  listRuns030 = async () => ({runs:[run('b')],nextCursor:null});
+  await store.getState().moreRuns030();
+  expect(store.getState().runs030.map(item => item.systemStartId)).toEqual(['a','b']);
+  expect(store.getState().runs030Error).toBe(false);
+});
+
+it('rejects a foreign 0.3 owner and duplicate page without publishing partial history', async () => {
+  const versions = {snapshot:'2',contract:'agsdl-0.3.0',profile:'macro-agsdl-030-v1',compiler:'c',runtime:'r',registry:'g'};
+  const run = {systemStartId:'a',flowInvocationId:'flow',snapshotId:'capture',source,versions,revision:'1',stopping:false,verdict:null,ownerStatus:'active',phaseCounts:[],physicalPending:'0'};
+  listRuns030 = async () => ({runs:[run],nextCursor:'next'});
+  await store.getState().refreshRuns030();
+  listRuns030 = async () => ({runs:[run],nextCursor:null});
+  await store.getState().moreRuns030();
+  expect(store.getState().runs030).toEqual([run]);
+  expect(store.getState().nextRuns030).toBe('next');
+  listRuns030 = async () => ({runs:[{...run,source:{...source,owner:{...owner,projectId:'foreign'}}}],nextCursor:null});
+  await store.getState().refreshRuns030();
+  expect(store.getState().runs030).toEqual([run]);
+  expect(store.getState().runs030Error).toBe(true);
+});
+
+it('does not publish a delayed 0.3 history page after the conversation changes', async () => {
+  let release!: (page: RunPage030) => void;
+  let started!: () => void;
+  const entered = new Promise<void>(resolve => { started = resolve; });
+  listRuns030 = async () => { started(); return new Promise(resolve => { release = resolve; }); };
+  const pending = store.getState().refreshRuns030();
+  await entered;
+  selected = 'other';
+  release({runs:[],nextCursor:'foreign-page'});
+  await pending;
+  expect(store.getState().nextRuns030).toBeNull();
+  expect(store.getState().runs030).toEqual([]);
+});
+
+it('marks retained runtime stale immediately when a history page contradicts its capture or revision', async () => {
+  const authoredSource = '{"contract":"agsdl-0.3.0"}';
+  const { sourceDigest } = await import('../services/agsdlExecution/compiler');
+  const source = {owner,revision:'1',sourceSha256:await sourceDigest(authoredSource)};
+  const versions = {snapshot:'2' as const,contract:'agsdl-0.3.0' as const,profile:'macro-agsdl-030-v1' as const,compiler:'c',runtime:'r',registry:'g'};
+  const run = {systemStartId:'retained',flowInvocationId:'flow',snapshotId:'capture',source,versions,revision:'1',stopping:false,verdict:null,ownerStatus:'revoked',phaseCounts:[],physicalPending:'0'};
+  readSnapshot030 = async id => ({systemStartId:id,source,versions,authoredSource,associations:{}});
+  readHumans030 = async scope => ({scope,cursor:'',total:'0',requests:[],nextPage:null});
+  readRuntime030 = async scope => ({scope:{...scope,snapshotId:'capture'},flowInvocationId:'flow',revision:'1',stopping:false,verdict:null,total:'0',items:[],nextPage:null});
+  const contradictory = [
+    {...run,snapshotId:'another-capture'}, {...run,flowInvocationId:'another-flow'},
+    {...run,source:{...source,revision:'2'}}, {...run,versions:{...versions,runtime:'another-runtime'}},
+    {...run,revision:'2'},
+  ];
+  for (const next of contradictory) {
+    for (const laterPage of [false,true]) {
+      store.setState({runs030:[run],runtime030Stale:false,nextRuns030:null});
+      await store.getState().select030('retained');
+      const projection = store.getState().runtime030;
+      expect(projection).toBeDefined();
+      if (laterPage) store.setState({runs030:[],nextRuns030:'next'});
+      listRuns030 = async () => ({runs:[next],nextCursor:null});
+      if (laterPage) await store.getState().moreRuns030();
+      else await store.getState().refreshRuns030();
+      expect(store.getState().snapshot030?.systemStartId).toBe('retained');
+      expect(store.getState().runtime030).toBe(projection);
+      expect(store.getState().runtime030Stale).toBe(true);
+    }
+  }
+});
+it('retains a failed history indicator after an unrelated successful operation until the list is read again', async () => {
+  const versions = {snapshot:'2' as const,contract:'agsdl-0.3.0' as const,profile:'macro-agsdl-030-v1' as const,compiler:'c',runtime:'r',registry:'g'};
+  const run = {systemStartId:'run',flowInvocationId:'flow',snapshotId:'capture',source,versions,revision:'1',stopping:false,verdict:null,ownerStatus:'revoked',phaseCounts:[],physicalPending:'0'};
+  store.setState({runs030:[run],snapshot030:{systemStartId:'run',source,versions,authoredSource:'{}',associations:{}}});
+  listRuns030 = async () => { throw new Error('Read failed'); };
+  await store.getState().refreshRuns030();
+  expect(store.getState().runs030Error).toBe(true);
+  expect(store.getState().runs030).toEqual([run]);
+  readHumans030 = async scope => ({scope,cursor:'',total:'0',requests:[],nextPage:null});
+  await store.getState().refreshHumans030();
+  expect(store.getState().error).toBeUndefined();
+  expect(store.getState().runs030Error).toBe(true);
+  expect(store.getState().runs030).toEqual([run]);
+  listRuns030 = async () => ({runs:[run],nextCursor:null});
+  await store.getState().refreshRuns030();
+  expect(store.getState().runs030Error).toBe(false);
+});
+it('does not overwrite a failed scope opening with a later history read', async () => {
+  let historyReads = 0;
+  listRuns030 = async () => { historyReads++; return {runs:[],nextCursor:null}; };
+  store.setState({loaded:false,error:undefined});
+  planConversation = 'another';
+  await store.getState().open030(target,selected);
+  expect(historyReads).toBe(0);
+  expect(store.getState().loaded).toBe(false);
+  expect(store.getState().error).toBe('agsdl.execution.ownerChanged');
+  planConversation = selected;
+  await store.getState().open030(target,selected);
+  expect(historyReads).toBe(1);
+  expect(store.getState().loaded).toBe(true);
+  expect(store.getState().error).toBeUndefined();
 });

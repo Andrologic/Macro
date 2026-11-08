@@ -8,16 +8,32 @@ import { useChatStore } from "./useChatStore";
 import { useAgsdlStore, agsdlSessionKey, type AgsdlTarget } from "./useAgsdlStore";
 import type { PublicSnapshot, PublicProjection, SourceOwner, SourceRevision, SystemStartId, StartRequest, PublicStartReceipt, ExternalDeliveryRequest, DeliveryId, ActivationId, PublicExecutionIntent, ExecutionIntentPayload, ExecutionIntentAdmission, ExecutionIntentScope, ExecutionIntentError, IntentId } from "../services/agsdlExecution/contracts";
 import type { ExecutionPreflight, PublicRunSummary, ApprovalPage, PublicExecutionDiagnostic, PublicApproval, ResolvedCardTask } from "../types/generated/ipc";
-import { assertProjection, appendProjection, assertDiagnosticPage, executionInput, executionPrompt } from "../services/agsdl/executionView";
+import { assertProjection, appendProjection, assertDiagnosticPage, executionInput, executionProfileForContract, executionPrompt } from "../services/agsdl/executionView";
 import { sameSource } from "../services/agsdl/runtimeSelection";
 import { PRODUCT_RUNTIME_AVAILABLE } from "../services/agsdlExecution/compiler";
+import { sourceDigest } from "../services/agsdlExecution/compiler";
+import { readDocument } from "../services/agsdl/document";
+import { loadHumanRequests030 } from "../services/agsdl/humanRequests030";
+import { loadRuntimeProjection030 } from "../services/agsdl/runtimeProjection030";
+import type { PublicSnapshot030 } from "../services/ipc/agsdlExecution030";
+import type { HumanPage030 } from "../types/generated/ipc/HumanPage030";
+import type { RuntimeProjectionPage030 } from "../types/generated/ipc/RuntimeProjectionPage030";
+import type { PublicExecutionIntent as VersionedIntent, EngineSourceRevision, EngineVersions as WireEngineVersions, PublicRunSummary030, RunPage030 } from "../types/generated/ipc";
 
 interface ExecutionView {
   owner?: SourceOwner;
   conversationId?: string;
   runs: PublicRunSummary[];
   nextRuns: string | null;
+  runs030: PublicRunSummary030[];
+  nextRuns030: string | null;
+  runs030Error: boolean;
   snapshot?: PublicSnapshot;
+  snapshot030?: PublicSnapshot030;
+  humans030?: HumanPage030;
+  humans030Stale: boolean;
+  runtime030?: RuntimeProjectionPage030;
+  runtime030Stale: boolean;
   projection?: PublicProjection;
   approvals?: ApprovalPage;
   diagnostic?: PublicExecutionDiagnostic;
@@ -31,6 +47,7 @@ interface ExecutionView {
   error?: string;
   /** Latest native intent of this scope. SQLite owns it; this is only its view. */
   intent?: PublicExecutionIntent;
+  intent030?: VersionedIntent;
   /** Start/Deliver/Resume/Discard in flight. Stop never waits for it. */
   intentBusy: boolean;
   /** Delivery admitted natively and installed in this view, including after Resume. */
@@ -39,11 +56,17 @@ interface ExecutionView {
   cardTask?: { run: SystemStartId; path: string; resolved: ResolvedCardTask | null };
   inspectTask: (path: string) => Promise<void>;
   open: (target: AgsdlTarget, conversationId: string) => Promise<void>;
+  open030: (target: AgsdlTarget, conversationId: string) => Promise<void>;
   refresh: () => Promise<void>;
   refreshRun: () => Promise<void>;
   watch: (owner: SourceOwner, conversationId: string, run: SystemStartId) => () => void;
   moreRuns: () => Promise<void>;
+  refreshRuns030: () => Promise<void>;
+  moreRuns030: () => Promise<void>;
   select: (id: SystemStartId | undefined) => Promise<void>;
+  select030: (id: string) => Promise<void>;
+  refreshHumans030: () => Promise<void>;
+  refreshRuntime030: () => Promise<void>;
   moreProjection: () => Promise<void>;
   moreDiagnostics: () => Promise<void>;
   showCaptured: (value: boolean) => void;
@@ -57,7 +80,49 @@ interface ExecutionView {
   task: (path: string) => Promise<ResolvedCardTask | null>;
 }
 const sameSourceOwner = (left: SourceOwner, right: SourceOwner) => left.projectId === right.projectId && left.planId === right.planId && left.branch === right.branch;
-const empty = { runs: [], nextRuns: null, captured: false, loaded: false, busy: false, stale: false, diagnosticPinned: false, intent: undefined, intentBusy: false, stopping: false, acceptedDelivery: undefined };
+const sameWireSource = (left: EngineSourceRevision, right: EngineSourceRevision) =>
+  sameSourceOwner(left.owner, right.owner) && left.revision === right.revision && left.sourceSha256 === right.sourceSha256;
+const sameWireVersions = (left: WireEngineVersions, right: WireEngineVersions) =>
+  (['snapshot', 'contract', 'compiler', 'runtime', 'registry', 'profile'] as const).every(key => left[key] === right[key]);
+/** A closed receipt retains its native identity after acknowledgement. */
+const retainedStartReceipt030 = (intent: VersionedIntent | undefined, owner: SourceOwner | undefined, conversationId: string | undefined) => {
+  const state = intent?.state;
+  const admission = state && (state.kind === 'admitted' || state.kind === 'closed') ? state.admission : null;
+  if (admission?.kind !== 'start030') return undefined;
+  if (!intent || !owner || intent.formatVersion !== '1' || intent.payload.kind !== 'start' ||
+      !sameSourceOwner(intent.key.scope.owner, owner) || intent.key.scope.conversationId !== conversationId) throw new Error('Invalid 0.3 admission');
+  const { receipt } = admission;
+  const request = intent.payload.request;
+  if (!receipt.systemStartId || !receipt.flowInvocationId || request.profile !== 'macro-agsdl-030-v1' ||
+      !sameSourceOwner(request.source.owner, owner) || !sameWireSource(receipt.source, request.source) || receipt.entryDeliveryId !== (request.entry?.deliveryId ?? null) ||
+      receipt.versions.snapshot !== '2' || receipt.versions.contract !== 'agsdl-0.3.0' || receipt.versions.profile !== request.profile) throw new Error('Invalid 0.3 receipt');
+  return receipt;
+};
+const runtimeFlowId030 = (view: ExecutionView, snapshot: PublicSnapshot030, validatedIntent: VersionedIntent | undefined) => {
+  const run = view.runs030.find(item => item.systemStartId === snapshot.systemStartId);
+  const admitted = retainedStartReceipt030(view.intent030, view.owner, view.conversationId);
+  const retained = view.runtime030;
+  const retainedFlow = retained?.scope.systemStartId === snapshot.systemStartId && sameWireSource(retained.scope.source, snapshot.source) ? retained.flowInvocationId : undefined;
+  const id = run?.flowInvocationId ?? (view.intent030 === validatedIntent && admitted?.systemStartId === snapshot.systemStartId ? admitted.flowInvocationId : retainedFlow);
+  if (!id || (run && (!sameWireSource(run.source, snapshot.source) || !sameWireVersions(run.versions, snapshot.versions))) ||
+      (run && retained?.scope.systemStartId === snapshot.systemStartId && sameWireSource(retained.scope.source, snapshot.source) && retained.scope.snapshotId !== run.snapshotId) ||
+      (admitted?.systemStartId === snapshot.systemStartId && (admitted.flowInvocationId !== id || !sameWireSource(admitted.source, snapshot.source) || !sameWireVersions(admitted.versions, snapshot.versions))) ||
+      (retainedFlow && retainedFlow !== id)) throw new Error('Run identity differs');
+  return id;
+};
+/** A new history page can invalidate the displayed capture or revision even
+ * before the user asks for another runtime read. Off-page captures stay valid. */
+const runtimeStaleAfterRuns030 = (view: ExecutionView, runs: readonly PublicRunSummary030[]) => {
+  if (view.runtime030Stale || !view.snapshot030 || !view.runtime030) return view.runtime030Stale;
+  const snapshot = view.snapshot030, runtime = view.runtime030;
+  const run = runs.find(item => item.systemStartId === snapshot.systemStartId);
+  return !!run && (!sameWireSource(run.source, snapshot.source) || !sameWireVersions(run.versions, snapshot.versions) ||
+    run.flowInvocationId !== runtime.flowInvocationId || run.snapshotId !== runtime.scope.snapshotId ||
+    !sameWireSource(run.source, runtime.scope.source) || run.revision !== runtime.revision);
+};
+const isIntent030 = (row: { readonly payload: { readonly kind: 'start'; readonly request: { readonly profile: string } } | { readonly kind: 'deliver' }; readonly state: { readonly kind: string; readonly admission?: { readonly kind: string } | null } }) => (row.payload.kind === 'start' && row.payload.request.profile === 'macro-agsdl-030-v1') ||
+  ((row.state.kind === 'admitted' || row.state.kind === 'closed') && row.state.admission?.kind === 'start030');
+const empty = { runs: [], nextRuns: null, runs030: [], nextRuns030: null, runs030Error: false, captured: false, loaded: false, busy: false, stale: false, humans030Stale: false, runtime030Stale: false, snapshot030: undefined, humans030: undefined, runtime030: undefined, diagnosticPinned: false, intent: undefined, intent030: undefined, intentBusy: false, stopping: false, acceptedDelivery: undefined };
 let generation = 0;
 /** Changes only when the view leaves its project/plan/branch/conversation scope. */
 let scopeGeneration = 0;
@@ -70,6 +135,12 @@ const intentFailure = (error: unknown): ExecutionIntentError | undefined => {
   return typeof code === "string" && "currentIntentKey" in (error as object) ? error as ExecutionIntentError : undefined;
 };
 const openIntent = (intent: PublicExecutionIntent | undefined) => !!intent && intent.state.kind !== "closed";
+/** Unknown native admission versions must be installed by a matching reader. */
+const admissionRunId = (admission: ExecutionIntentAdmission): SystemStartId | undefined => {
+  if (admission.kind === "start") return admission.receipt.systemStartId;
+  if (admission.kind === "deliver") return admission.receipt.work.systemStartId;
+  return undefined;
+};
 const executionError = (error: unknown) => {
   // Structured native intent errors are mapped by code, never by message text.
   const intent = intentFailure(error);
@@ -81,6 +152,18 @@ const executionError = (error: unknown) => {
 const source = (value: ExecutionPreflight["source"]): SourceRevision => value as SourceRevision;
 export const useAgsdlExecutionStore = create<ExecutionView>((set, get) => {
   let refreshingRun = false;
+  let cursors030 = new Set<string>();
+  const validatePage030 = (page: RunPage030, owner: SourceOwner, previous: PublicRunSummary030[], cursor: string | null) => {
+    if (page.nextCursor !== null && (typeof page.nextCursor !== 'string' || !page.nextCursor || page.nextCursor.length > 4096 || page.nextCursor === cursor || (cursor !== null && cursors030.has(page.nextCursor)))) throw new Error('Invalid run cursor');
+    const ids = new Set(previous.map(run => run.systemStartId));
+    for (const run of page.runs) {
+      if (!run.systemStartId || !run.flowInvocationId || !run.snapshotId || ids.has(run.systemStartId) || !sameSourceOwner(run.source.owner, owner) || run.versions.snapshot !== '2' || run.versions.contract !== 'agsdl-0.3.0' || run.versions.profile !== 'macro-agsdl-030-v1') throw new Error('Invalid 0.3 run');
+      ids.add(run.systemStartId);
+    }
+  };
+  // A retained intent is visible even when rejected; only a fully verified
+  // receipt/capture pair may supply identity in the absence of a run summary.
+  let validatedIntent030: VersionedIntent | undefined;
   const ownerMatches = (owner: SourceOwner | undefined, target: AgsdlTarget, projectId: string) => owner?.planId === target.planId && owner.branch === target.branchName && owner.projectId === projectId;
   const owns = async (expected = get()) => {
     if (!expected.owner || !expected.conversationId || get().owner !== expected.owner || get().conversationId !== expected.conversationId) throw new Error("agsdl.execution.ownerChanged");
@@ -122,6 +205,30 @@ export const useAgsdlExecutionStore = create<ExecutionView>((set, get) => {
     assertDiagnosticPage(diagnostic, snapshot, projection.cursor);
     return { snapshot, projection, approvals, diagnostic, stale: false, diagnosticPinned: false };
   };
+  /** Observation only: a 0.3 admission stays retained until its versioned
+   * projection and production admission are available. */
+  const observe030 = async (row: VersionedIntent, initial: ExecutionView, current: () => Promise<boolean>, preserveSelection = false) => {
+    const token = generation;
+    const sameSelection = async () => token === generation && await current() && token === generation;
+    if (!initial.owner || !sameSourceOwner(row.key.scope.owner, initial.owner) || row.key.scope.conversationId !== initial.conversationId || !isIntent030(row)) throw new Error('Intent scope differs');
+    if (!(await sameSelection())) return;
+    set({ intent030: row, intent: undefined });
+    const admission = row.state.kind === 'admitted' || row.state.kind === 'closed' ? row.state.admission : null;
+    if (!admission) return;
+    if (admission.kind !== 'start030' || row.payload.kind !== 'start') throw new Error('Invalid 0.3 admission');
+    const receipt = retainedStartReceipt030(row, initial.owner, initial.conversationId);
+    if (!receipt) throw new Error('Invalid 0.3 admission');
+    const snapshot = await ipc.readExecutionSnapshot030(receipt.systemStartId);
+    if (snapshot.systemStartId !== receipt.systemStartId || !sameWireSource(snapshot.source, receipt.source) ||
+        (snapshot.associations.conversationId !== undefined && snapshot.associations.conversationId !== initial.conversationId) ||
+        !sameWireVersions(snapshot.versions, receipt.versions) ||
+        await sourceDigest(snapshot.authoredSource) !== receipt.source.sourceSha256 || readDocument(snapshot.authoredSource).contract !== 'agsdl-0.3.0') throw new Error('Invalid 0.3 snapshot');
+    if (!(await sameSelection())) return;
+    validatedIntent030 = row;
+    if (preserveSelection && (initial.snapshot || initial.snapshot030)) return;
+    set({ snapshot030: snapshot, humans030: undefined, humans030Stale: false, runtime030: undefined, runtime030Stale: false,
+      snapshot: undefined, projection: undefined, approvals: undefined, diagnostic: undefined, cardTask: undefined, acceptedDelivery: undefined });
+  };
   const scopeOf = (view: ExecutionView): ExecutionIntentScope => ({ owner: view.owner!, conversationId: view.conversationId! });
   /** Install the admitted run in this exact view. Returns false when the view moved. */
   const install = async (admission: ExecutionIntentAdmission, payload: ExecutionIntentPayload, initial: ExecutionView, current: () => Promise<boolean>): Promise<boolean> => {
@@ -130,10 +237,10 @@ export const useAgsdlExecutionStore = create<ExecutionView>((set, get) => {
       const receipt: PublicStartReceipt = admission.receipt;
       if (payload.kind !== "start" || receipt.systemStartId !== receipt.snapshot.systemStartId || !sameSource(receipt.snapshot.source, payload.request.source)) throw new Error("Start receipt identity differs");
       snapshot = receipt.snapshot;
-    } else {
+    } else if (admission.kind === "deliver") {
       if (payload.kind !== "deliver" || admission.receipt.deliveryId !== payload.request.deliveryId || admission.receipt.work.systemStartId !== payload.request.systemStartId) throw new Error("Delivery receipt identity differs");
       snapshot = initial.snapshot?.systemStartId === payload.request.systemStartId ? initial.snapshot : await ipc.readExecutionSnapshot(payload.request.systemStartId);
-    }
+    } else throw new Error("agsdl.execution.unavailable");
     if (!sameSourceOwner(snapshot.source.owner, initial.owner!)) throw new Error("Run source owner differs");
     const result = await readRun(snapshot);
     const page = await ipc.listExecutionRuns({ owner: initial.owner!, after: null, limit: 20 });
@@ -164,8 +271,11 @@ export const useAgsdlExecutionStore = create<ExecutionView>((set, get) => {
         return;
       } else {
         // A lost close acknowledgement: the admission is still installed once.
-        if (state.admission && submit && get().snapshot?.systemStartId !== (state.admission.kind === "start" ? state.admission.receipt.systemStartId : state.admission.receipt.work.systemStartId)) {
-          if (!(await install(state.admission, row.payload, initial, current))) return;
+        if (state.admission && submit) {
+          const runId = admissionRunId(state.admission);
+          if (!runId || get().snapshot?.systemStartId !== runId) {
+            if (!(await install(state.admission, row.payload, initial, current))) return;
+          }
         }
         set({ intent: undefined });
         return;
@@ -207,8 +317,17 @@ export const useAgsdlExecutionStore = create<ExecutionView>((set, get) => {
         owner: { projectId: conversation.project_id, planId: target.planId, branch: target.branchName }, conversationId });
       // Open only reads: no Preflight, compilation, stage, submit or close.
       await operation(async (initial, current) => {
-        const [intents, page] = await Promise.all([ipc.readExecutionIntents({ scope: scopeOf(initial) }), ipc.listExecutionRuns({ owner: initial.owner!, after: null, limit: 20 })]);
-        if (intents.length > 1 || page.runs.some(run => !sameSourceOwner(run.source.owner, initial.owner!))) throw new Error("Native scope read differs");
+        const [versioned, page] = await Promise.all([ipc.readExecutionIntentsVersioned({ scope: scopeOf(initial) }), ipc.listExecutionRuns({ owner: initial.owner!, after: null, limit: 20 })]);
+        if (versioned.length > 1 || page.runs.some(run => !sameSourceOwner(run.source.owner, initial.owner!))) throw new Error("Native scope read differs");
+        if (!(await current())) return;
+        if (versioned[0] && isIntent030(versioned[0])) {
+          set({ runs: page.runs, nextRuns: page.nextCursor, loaded: true });
+          await observe030(versioned[0], initial, current);
+          return;
+        }
+        const intents = await ipc.readExecutionIntents({ scope: scopeOf(initial) });
+        if (intents.length > 1 || intents.length !== versioned.length ||
+            (intents[0] && (intents[0].key.intentId !== versioned[0].key.intentId || intents[0].revision !== versioned[0].revision || isIntent030(intents[0])))) throw new Error("Native scope read differs");
         if (!(await current())) return;
         set({ intent: intents[0], runs: page.runs, nextRuns: page.nextCursor, loaded: true });
         // An open intent keeps priority and is only shown; an admitted one shows its run.
@@ -220,18 +339,42 @@ export const useAgsdlExecutionStore = create<ExecutionView>((set, get) => {
         // Otherwise show the latest run of this exact owner; another one can be selected later.
         const latest = page.runs[0];
         if (!latest) return;
+        // A 0.3 run must be opened through the versioned reader, never the
+        // historical snapshot/projection path. The run list remains selectable.
+        if (latest.versions?.contract === 'agsdl-0.3.0') return;
         const snapshot = await ipc.readExecutionSnapshot(latest.systemStartId as SystemStartId);
         if (snapshot.systemStartId !== latest.systemStartId || !sameSourceOwner(snapshot.source.owner, initial.owner!)) throw new Error("Run source owner differs");
         const result = await readRun(snapshot);
         if (await current()) set(result);
       });
     },
+    async open030(target, conversationId) {
+      const opening = get().open(target, conversationId);
+      const token = generation;
+      await opening;
+      const view = get();
+      // open records errors in state; its resolved promise is not proof of a
+      // successful read. A second operation must not erase a failed open.
+      if (token !== generation || !view.loaded || view.error || view.busy ||
+          view.owner?.planId !== target.planId || view.owner.branch !== target.branchName || view.conversationId !== conversationId) return;
+      await get().refreshRuns030();
+    },
     refresh: () => operation(async (initial, current) => {
       const preflight = await ipc.preflightExecution({ owner: initial.owner!, expected: null });
       if (!ownerMatches(preflight.source.owner, { planId: initial.owner!.planId, branchName: initial.owner!.branch }, initial.owner!.projectId)) throw new Error("Preflight source owner differs");
       const page = await ipc.listExecutionRuns({ owner: initial.owner!, after: null, limit: 20 });
       if (page.runs.some(run => !ownerMatches(run.source.owner, { planId: initial.owner!.planId, branchName: initial.owner!.branch }, initial.owner!.projectId))) throw new Error("Run source owner differs");
+      const versioned = await ipc.readExecutionIntentsVersioned({ scope: scopeOf(initial) });
+      if (versioned.length > 1) throw new Error('Native scope read differs');
+      if (versioned[0] && isIntent030(versioned[0])) {
+        if (!(await current())) return;
+        set({ preflight, runs: page.runs, nextRuns: page.nextCursor, loaded: true });
+        await observe030(versioned[0], initial, current, true);
+        return;
+      }
       const intents = await ipc.readExecutionIntents({ scope: scopeOf(initial) });
+      if (intents.length > 1 || intents.length !== versioned.length ||
+          (intents[0] && (intents[0].key.intentId !== versioned[0].key.intentId || intents[0].revision !== versioned[0].revision || isIntent030(intents[0])))) throw new Error('Native scope read differs');
       const result = initial.snapshot ? await readRun(initial.snapshot) : {};
       if (await current()) set({ ...result, preflight, runs: page.runs, nextRuns: page.nextCursor, loaded: true, ...(get().intentBusy ? {} : { intent: intents[0] }) });
     }),
@@ -288,13 +431,79 @@ export const useAgsdlExecutionStore = create<ExecutionView>((set, get) => {
       if (page.runs.some(run => !ownerMatches(run.source.owner, { planId: initial.owner!.planId, branchName: initial.owner!.branch }, initial.owner!.projectId))) throw new Error("Run source owner differs");
       if (await current()) set({ runs: [...initial.runs, ...page.runs], nextRuns: page.nextCursor });
     }),
+    refreshRuns030: () => operation(async (initial, current) => {
+      try {
+        const page = await ipc.listExecutionRuns030({ owner: initial.owner!, after: null, limit: 20 });
+        if (!(await current())) return;
+        validatePage030(page, initial.owner!, [], null);
+        cursors030 = new Set();
+        set({ runs030: page.runs, nextRuns030: page.nextCursor, runs030Error: false, runtime030Stale: runtimeStaleAfterRuns030(initial, page.runs) });
+      } catch (error) {
+        if (await current()) set({ runs030Error: true });
+        throw error;
+      }
+    }),
+    moreRuns030: () => operation(async (initial, current) => {
+      if (!initial.nextRuns030) return;
+      try {
+        const page = await ipc.listExecutionRuns030({ owner: initial.owner!, after: initial.nextRuns030, limit: 20 });
+        if (!(await current())) return;
+        validatePage030(page, initial.owner!, initial.runs030, initial.nextRuns030);
+        cursors030.add(initial.nextRuns030);
+        set({ runs030: [...initial.runs030, ...page.runs], nextRuns030: page.nextCursor, runs030Error: false, runtime030Stale: runtimeStaleAfterRuns030(initial, page.runs) });
+      } catch (error) {
+        if (await current()) set({ runs030Error: true });
+        throw error;
+      }
+    }),
     select: id => operation(async (initial, current) => {
-      set({ snapshot: undefined, projection: undefined, approvals: undefined, diagnostic: undefined, cardTask: undefined, captured: false, stale: false });
+      set({ snapshot: undefined, snapshot030: undefined, humans030: undefined, humans030Stale: false, runtime030: undefined, runtime030Stale: false, projection: undefined, approvals: undefined, diagnostic: undefined, cardTask: undefined, captured: false, stale: false });
       if (!id) return;
       const snapshot = await ipc.readExecutionSnapshot(id);
       if (!ownerMatches(snapshot.source.owner, { planId: initial.owner!.planId, branchName: initial.owner!.branch }, initial.owner!.projectId)) throw new Error("Run source owner differs");
       const result = await readRun(snapshot);
       if (await current()) set(result);
+    }),
+    select030: id => operation(async (initial, current) => {
+      const token = generation;
+      set({ snapshot: undefined, snapshot030: undefined, humans030: undefined, humans030Stale: false, runtime030: undefined, runtime030Stale: false, projection: undefined, approvals: undefined, diagnostic: undefined, cardTask: undefined, captured: false, stale: false });
+      const snapshot = await ipc.readExecutionSnapshot030(id);
+      if (snapshot.systemStartId !== id || !sameSourceOwner(snapshot.source.owner, initial.owner!) ||
+          (snapshot.associations.conversationId !== undefined && snapshot.associations.conversationId !== initial.conversationId) ||
+          await sourceDigest(snapshot.authoredSource) !== snapshot.source.sourceSha256 || readDocument(snapshot.authoredSource).contract !== 'agsdl-0.3.0') throw new Error('Run source differs');
+      const flowInvocationId = runtimeFlowId030(initial, snapshot, validatedIntent030);
+      const [humans, runtime] = await Promise.all([
+        loadHumanRequests030({ systemStartId: id, source: snapshot.source }, ipc.readExecutionHumans030, () => token === generation),
+        loadRuntimeProjection030({ systemStartId: id, source: snapshot.source, snapshotId: initial.runs030.find(run => run.systemStartId === id)?.snapshotId ?? null }, flowInvocationId, ipc.readExecutionRuntimeProjection030, () => token === generation),
+      ]);
+      if (humans && runtime && await current()) set({ snapshot030: snapshot, humans030: humans, runtime030: runtime });
+    }),
+    refreshHumans030: () => operation(async (initial, current) => {
+      const snapshot = initial.snapshot030;
+      if (!snapshot) return;
+      const token = generation;
+      try {
+        const humans = await loadHumanRequests030({ systemStartId: snapshot.systemStartId, source: snapshot.source }, ipc.readExecutionHumans030, () => token === generation && get().snapshot030 === snapshot);
+        if (humans && await current() && get().snapshot030 === snapshot) set({ humans030: humans, humans030Stale: false });
+      } catch (error) {
+        if (await current() && get().snapshot030 === snapshot) set({ humans030Stale: true });
+        throw error;
+      }
+    }),
+    refreshRuntime030: () => operation(async (initial, current) => {
+      const snapshot = initial.snapshot030;
+      if (!snapshot) return;
+      const token = generation;
+      try {
+        const flowInvocationId = runtimeFlowId030(initial, snapshot, validatedIntent030);
+        const retained = initial.runtime030?.scope;
+        const snapshotId = retained?.systemStartId === snapshot.systemStartId && sameWireSource(retained.source, snapshot.source) ? retained.snapshotId : initial.runs030.find(run => run.systemStartId === snapshot.systemStartId)?.snapshotId ?? null;
+        const runtime = await loadRuntimeProjection030({ systemStartId: snapshot.systemStartId, source: snapshot.source, snapshotId }, flowInvocationId, ipc.readExecutionRuntimeProjection030, () => token === generation && get().snapshot030 === snapshot);
+        if (runtime && await current() && get().snapshot030 === snapshot) set({ runtime030: runtime, runtime030Stale: false });
+      } catch (error) {
+        if (await current() && get().snapshot030 === snapshot) set({ runtime030Stale: true });
+        throw error;
+      }
     }),
     moreProjection: () => operation(async (initial, current) => {
       if (!initial.snapshot || !initial.projection?.nextPage || initial.stale) return;
@@ -312,20 +521,22 @@ export const useAgsdlExecutionStore = create<ExecutionView>((set, get) => {
     }),
     showCaptured(captured) { set({ captured }); },
     start: (prompt = "") => intentOperation(async (initial, current) => {
-      if (openIntent(get().intent)) throw new Error("agsdl.execution.intentOpen");
+      if (openIntent(get().intent) || (get().intent030 && get().intent030!.state.kind !== 'closed')) throw new Error("agsdl.execution.intentOpen");
       const session = useAgsdlStore.getState().sessions[agsdlSessionKey({ planId: initial.owner!.planId, branchName: initial.owner!.branch })];
       if (!session || !Number.isSafeInteger(session.persistedRevision) || session.dirty || session.saving || !initial.preflight || initial.preflight.authoredSource !== session.source) throw new Error("agsdl.execution.saveBeforeStart");
       // Editor revisions count document saves; native revisions count plan mutations.
       // Exact source bytes and the native expected revision protect this capture.
       const preflight = await ipc.preflightExecution({ owner: initial.owner!, expected: initial.preflight.source });
       if (!preflight.productRuntimeAvailable || !preflight.staticValid || !preflight.runtimeSupported || preflight.incomplete) throw new Error("agsdl.execution.unavailable");
+      if (!sameSource(source(preflight.source), source(initial.preflight.source)) || preflight.authoredSource !== session.source ||
+          executionProfileForContract(readDocument(preflight.authoredSource).contract) !== 'macro-serial-inline-v1') throw new Error("agsdl.execution.unavailable");
       if (!(await current()) || useAgsdlStore.getState().sessions[agsdlSessionKey({ planId: initial.owner!.planId, branchName: initial.owner!.branch })]?.version !== session.version) return;
       const request: StartRequest = { source: source(preflight.source), profile: "macro-serial-inline-v1", associations: {}, requestId: crypto.randomUUID(), entry: executionInput(preflight.authoredSource).hasEntry
         ? { deliveryId: crypto.randomUUID() as DeliveryId, messageJson: executionPrompt(prompt) } : null };
       await stage({ kind: "start", request }, initial, current);
     }),
     deliver: (agentName, prompt) => intentOperation(async (initial, current) => {
-      if (openIntent(get().intent)) throw new Error("agsdl.execution.intentOpen");
+      if (openIntent(get().intent) || (get().intent030 && get().intent030!.state.kind !== 'closed')) throw new Error("agsdl.execution.intentOpen");
       // Deliver to the retained capture, independently of the current document preflight.
       // Native intent admission still validates runtime availability and the captured run.
       if (!initial.snapshot || !PRODUCT_RUNTIME_AVAILABLE) throw new Error("agsdl.execution.unavailable");
@@ -336,6 +547,14 @@ export const useAgsdlExecutionStore = create<ExecutionView>((set, get) => {
     }),
     resume: () => intentOperation(async (initial, current) => {
       // Always resume the native row by its retained key, never the current form.
+      if (initial.intent030) {
+        const token = generation;
+        const row = await ipc.readExecutionIntentVersioned(initial.intent030.key);
+        if (token !== generation) return;
+        if (!row || row.key.intentId !== initial.intent030.key.intentId) throw new Error('Intent identity differs');
+        await observe030(row, initial, current);
+        return;
+      }
       const row = initial.intent ? await ipc.readExecutionIntent(initial.intent.key) : (await ipc.readExecutionIntents({ scope: scopeOf(initial) }))[0] ?? null;
       await settle(row, initial, current, true);
     }),
