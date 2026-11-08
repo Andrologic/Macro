@@ -88,7 +88,7 @@ impl CodecLauncher {
             .source_ready(None)
             .await
             .map_err(|_| "database_unavailable")?;
-        let mut command = Command::new(&self.executable);
+        let mut command = crate::core::process::background_tokio_command(&self.executable);
         if let Some(entry) = &self.entry {
             command.arg(entry);
         }
@@ -648,7 +648,7 @@ mod tests {
         let root = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
         // Synthetic fixtures belong to the test driver, not to a product input
         // loader. This recipe checks native/Child transitions and equivalence.
-        let vectors = Command::new(bun()).current_dir(root).arg("-e").arg(
+        let vectors = crate::core::process::background_tokio_command(bun()).current_dir(root).arg("-e").arg(
             "import {codecVectors} from './copilot-bridge/src/connect-codec-vectors.testSupport.ts'; console.log(JSON.stringify(codecVectors(true)));"
         ).output().await.unwrap();
         assert!(vectors.status.success());

@@ -1522,7 +1522,7 @@ mod tests {
         )
         .unwrap();
         let mut child = Child(
-            std::process::Command::new(std::env::current_exe().unwrap())
+            crate::core::process::background_command(std::env::current_exe().unwrap())
                 .args([
                     "--exact",
                     "local_backup::tests::policy_restore_crash_child",
@@ -1864,7 +1864,7 @@ mod tests {
                 .fetch_one(&mut restored)
                 .await
                 .unwrap(),
-            29
+            i64::try_from(crate::db::migration_history::NAMES.len()).unwrap()
         );
         restored.close().await.unwrap();
 
@@ -1875,7 +1875,7 @@ mod tests {
                 .fetch_one(&pool)
                 .await
                 .unwrap(),
-            29
+            i64::try_from(crate::db::migration_history::NAMES.len()).unwrap()
         );
         assert_eq!(
             sqlx::query_scalar::<_, String>(
@@ -1974,7 +1974,10 @@ mod tests {
             .fetch_one(&mut db)
             .await
             .unwrap();
-        assert_eq!(version, 29);
+        assert_eq!(
+            version,
+            i64::try_from(crate::db::migration_history::NAMES.len()).unwrap()
+        );
         sqlx::query("INSERT INTO schema_migrations VALUES (99, 'future', 'synthetic')")
             .execute(&mut db)
             .await
@@ -3498,7 +3501,7 @@ mod content_backup_tests {
                 .fetch_one(&mut db)
                 .await
                 .unwrap(),
-            29
+            i64::try_from(crate::db::migration_history::NAMES.len()).unwrap()
         );
         assert_eq!(
             sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM conversation_content_versions")
@@ -3693,7 +3696,7 @@ mod content_legacy_backup_tests {
                     .fetch_one(&pool)
                     .await
                     .unwrap(),
-                29
+                i64::try_from(crate::db::migration_history::NAMES.len()).unwrap()
             );
             assert_eq!(
                 sqlx::query_scalar::<_, String>(
@@ -3878,7 +3881,7 @@ mod catalog_backup_tests {
                 .fetch_one(&mut connection(&copy).await.unwrap())
                 .await
                 .unwrap(),
-            29
+            i64::try_from(crate::db::migration_history::NAMES.len()).unwrap()
         );
         assert_eq!(fs::read(&original).unwrap(), before);
     }
@@ -3969,7 +3972,7 @@ mod catalog_backup_tests {
                 .fetch_one(&pool)
                 .await
                 .unwrap(),
-            29
+            i64::try_from(crate::db::migration_history::NAMES.len()).unwrap()
         );
         sqlx::query("DROP TRIGGER connect_preparation_metadata")
             .execute(&pool)

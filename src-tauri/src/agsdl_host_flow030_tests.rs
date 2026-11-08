@@ -145,7 +145,7 @@ async fn linked_graphless_start_uses_real_compiler_job_and_durable_intent() {
         let script = r#"import {compileHost030} from './src/services/agsdlExecution/hostCompilation';
 const job=JSON.parse(await Bun.stdin.text());
 process.stdout.write(await compileHost030(job.authoredSource,job.source,JSON.parse(job.registryJson)));"#;
-        let mut child = tokio::process::Command::new("bun")
+        let mut child = crate::core::process::background_tokio_command("bun")
             .args(["-e", script])
             .current_dir(root)
             .stdin(std::process::Stdio::piped())

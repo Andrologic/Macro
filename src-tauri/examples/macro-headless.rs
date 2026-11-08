@@ -6,7 +6,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
 
-use axum::extract::{Path, Query, State};
+use axum::extract::{MatchedPath, Path, Query, State};
 use axum::http::{header, HeaderMap, HeaderValue, Method, StatusCode};
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
@@ -442,6 +442,20 @@ async fn enforce_request_security(
 }
 
 fn request_security_error(security: &RequestSecurity, request: &Request) -> Option<StatusCode> {
+    let route = request
+        .extensions()
+        .get::<MatchedPath>()
+        .map(MatchedPath::as_str)
+        .unwrap_or_else(|| request.uri().path());
+    request_security_error_for_route(security, request, route)
+}
+
+// The route template comes from Axum, never from a request header or body.
+fn request_security_error_for_route(
+    security: &RequestSecurity,
+    request: &Request,
+    route: &str,
+) -> Option<StatusCode> {
     let headers = request.headers();
     let one_header = |name| {
         let mut values = headers.get_all(name).iter();
@@ -461,8 +475,11 @@ fn request_security_error(security: &RequestSecurity, request: &Request) -> Opti
     // an allowed Origin; all actual requests still require a bearer.
     if request.method() != Method::OPTIONS {
         let expected = if matches!(
-            request.uri().path(),
-            "/api/v1/config/pending/accept" | "/api/v1/config/pending/reject"
+            route,
+            "/api/v1/config/pending/accept"
+                | "/api/v1/config/pending/reject"
+                | "/api/v1/tools/executions/{execution_id}/resolve-indeterminate"
+                | "/v1/tools/executions/{execution_id}/resolve-indeterminate"
         ) {
             security.approval_token.as_ref()
         } else {
@@ -703,13 +720,30 @@ async fn resolve_scoped_workspace_state(
             "A non-empty workspace id is required".to_string(),
         )));
     }
-    let workspace_path = state
-        .registered_projects
-        .read()
-        .await
-        .get(workspace_id)
-        .map(|project| project.canonical_path.clone())
-        .ok_or_else(|| workspace_id_mismatch_response(workspace_id))?;
+    let registered = state.registered_projects.read().await;
+    let workspace_path = if workspace_id == state.workspace_id {
+        // The kernel's advertised identity also names its configured root.
+        // A project with the same id must not silently select a different root.
+        if registered
+            .get(workspace_id)
+            .is_some_and(|project| project.canonical_path != state.workspace_path)
+        {
+            return Err((
+                StatusCode::CONFLICT,
+                Json(json!({
+                    "code": "REMOTE_WORKSPACE_AMBIGUOUS",
+                    "message": "The kernel workspace id is also registered for a different project root.",
+                })),
+            ).into_response());
+        }
+        state.workspace_path.clone()
+    } else {
+        registered
+            .get(workspace_id)
+            .map(|project| project.canonical_path.clone())
+            .ok_or_else(|| workspace_id_mismatch_response(workspace_id))?
+    };
+    drop(registered);
 
     Ok(HeadlessState {
         workspace_path,
@@ -1138,6 +1172,25 @@ async fn load_project_tools_policy(
     if scoped_tools.invalid {
         return Err(format!(
             "The scoped tools policy for project '{project_id}' is invalid"
+        ));
+    }
+    // Headless has no file watcher. Validate availability and syntax on each
+    // request without promoting unapproved disk values into effective policy.
+    let raw = tokio::fs::read(&scoped_tools.file_path)
+        .await
+        .map_err(|error| format!("Project '{project_id}' tools file is unavailable: {error}"))?;
+    let live: Value = serde_json::from_slice(&raw)
+        .map_err(|error| format!("Project '{project_id}' tools file is malformed: {error}"))?;
+    let validation = state.config_manager.validate(
+        ConfigDocumentKind::Tools,
+        ConfigScope::Project {
+            project_id: project_id.into(),
+        },
+        &live,
+    );
+    if !validation.valid || validation.read_only {
+        return Err(format!(
+            "Project '{project_id}' tools file is invalid or unsupported"
         ));
     }
     project_tools_from_snapshot(&snapshot, project_id).cloned()
@@ -2048,10 +2101,11 @@ async fn perform_tool_execution(
         payload.virtual_root_enabled,
         payload.focused_project_id,
         payload.execution_id,
-        WorkspaceToolExecutionOptions {
-            capture_checkpoint_snapshots: checkpoint_required,
-            raw_checkpoint_snapshot: false,
-            expected_workspace_roots: Some(expected_workspace_roots),
+        {
+            let mut options = WorkspaceToolExecutionOptions::default();
+            options.capture_checkpoint_snapshots = checkpoint_required;
+            options.expected_workspace_roots = Some(expected_workspace_roots);
+            options
         },
     )
     .await
@@ -2562,15 +2616,16 @@ async fn checkpoint_snapshot(
         Some(false),
         Some(project_id),
         None,
-        WorkspaceToolExecutionOptions {
-            capture_checkpoint_snapshots: false,
-            raw_checkpoint_snapshot: true,
-            expected_workspace_roots: Some(Arc::new(
+        {
+            let mut options = WorkspaceToolExecutionOptions::default();
+            options.raw_checkpoint_snapshot = true;
+            options.expected_workspace_roots = Some(Arc::new(
                 registered_projects
                     .values()
                     .map(|project| (project.canonical_path.clone(), project.root_identity))
                     .collect::<BTreeMap<_, _>>(),
-            )),
+            ));
+            options
         },
     )
     .await
@@ -3269,6 +3324,127 @@ mod tests {
         assert_eq!(missing.status(), StatusCode::NOT_FOUND);
     }
 
+    #[tokio::test]
+    async fn scoped_bootstrap_routes_the_configured_kernel_workspace() {
+        let root = TempDir::new().expect("kernel workspace");
+        let mut state = test_headless_state(&root, &["registered-project"]).await;
+        state.workspace_id = "configured-kernel".into();
+        write_workspace_marker(&state.workspace_path, "kernel-marker");
+        let response = workspace_bootstrap_scoped(
+            State(Arc::new(state)),
+            bearer_headers("agent-secret"),
+            Path("configured-kernel".into()),
+        )
+        .await
+        .into_response();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let payload: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(payload["standaloneProjects"][0]["name"], "kernel-marker");
+    }
+
+    #[tokio::test]
+    async fn scoped_bootstrap_rejects_a_kernel_id_bound_to_another_project_root() {
+        let root = TempDir::new().expect("kernel workspace collision");
+        let mut state = test_headless_state(&root, &["registered-project"]).await;
+        state.workspace_id = "registered-project".into();
+        let response = workspace_bootstrap_scoped(
+            State(Arc::new(state)),
+            bearer_headers("agent-secret"),
+            Path("registered-project".into()),
+        )
+        .await
+        .into_response();
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let payload: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(payload["code"], "REMOTE_WORKSPACE_AMBIGUOUS");
+    }
+
+    async fn loaded_project_policy_fixture() -> (TempDir, HeadlessState, PathBuf) {
+        let root = TempDir::new().unwrap();
+        let state = test_headless_state(&root, &["project-policy"]).await;
+        let project_root = state.registered_projects.read().await["project-policy"]
+            .canonical_path
+            .clone();
+        let config_root = state
+            .config_manager
+            .register_project_root("project-policy", project_root.join(".macro"))
+            .await
+            .unwrap();
+        let minimal = br#"{"$schema":"./schemas/v1/tools.schema.json","schemaVersion":1}"#;
+        let path = config_root.join("tools.json");
+        fs::write(&path, minimal).unwrap();
+        fs::write(
+            config_root.join("agents.json"),
+            br#"{"$schema":"./schemas/v1/agents.schema.json","schemaVersion":1}"#,
+        )
+        .unwrap();
+        state
+            .config_manager
+            .get_snapshot(&["project-policy".into()])
+            .await
+            .unwrap();
+        assert!(load_project_tools_policy(&state, "project-policy")
+            .await
+            .is_ok());
+        (root, state, path)
+    }
+
+    #[tokio::test]
+    async fn headless_policy_rejects_invalid_live_tools_instead_of_cached_snapshot() {
+        let (_root, state, path) = loaded_project_policy_fixture().await;
+        for value in [
+            "{ invalid json",
+            r#"{"$schema":"./schemas/v1/tools.schema.json","schemaVersion":1,"builtIn":{"read":"yes"}}"#,
+            r#"{"$schema":"./schemas/v1/tools.schema.json","schemaVersion":99}"#,
+        ] {
+            fs::write(&path, value).unwrap();
+            assert!(
+                load_project_tools_policy(&state, "project-policy")
+                    .await
+                    .is_err(),
+                "accepted {value}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn headless_policy_rejects_deleted_tools_while_other_project_documents_remain() {
+        let (_root, state, path) = loaded_project_policy_fixture().await;
+        fs::remove_file(&path).unwrap();
+        assert!(path.parent().unwrap().join("agents.json").is_file());
+        assert!(load_project_tools_policy(&state, "project-policy")
+            .await
+            .is_err());
+        assert!(
+            !path.exists(),
+            "policy lookup must not recreate a missing document"
+        );
+    }
+
+    #[tokio::test]
+    async fn headless_policy_does_not_promote_a_valid_unapproved_live_edit() {
+        let (_root, state, path) = loaded_project_policy_fixture().await;
+        let approved = load_project_tools_policy(&state, "project-policy")
+            .await
+            .unwrap();
+        fs::write(
+            &path,
+            br#"{"$schema":"./schemas/v1/tools.schema.json","schemaVersion":1,"riskLevel":"yolo"}"#,
+        )
+        .unwrap();
+        let unchanged = load_project_tools_policy(&state, "project-policy")
+            .await
+            .unwrap();
+        assert_eq!(unchanged, approved);
+        assert_eq!(unchanged["riskLevel"], "balanced");
+    }
+
     #[test]
     fn configured_policy_denies_disabled_and_strict_tools() {
         let disabled = json!({
@@ -3821,6 +3997,83 @@ mod tests {
         let loopback = "127.0.0.1:8787".parse().unwrap();
         assert!(validate_listen_security(loopback, None).is_err());
         assert!(validate_listen_security(loopback, Some("agent-secret")).is_ok());
+    }
+
+    #[test]
+    fn request_gate_reserves_indeterminate_resolution_for_approval_bearer() {
+        let mut security = RequestSecurity {
+            allowed_hosts: vec![HeaderValue::from_static("127.0.0.1:8787")],
+            allowed_origins: vec![],
+            bearer_token: BearerTokenDigest::new("agent-secret"),
+            approval_token: Some(BearerTokenDigest::new("approval-secret")),
+        };
+        let request = |path: &str, token: &str| {
+            Request::builder()
+                .method(Method::POST)
+                .uri(path)
+                .header(header::HOST, "127.0.0.1:8787")
+                .header(header::AUTHORIZATION, format!("Bearer {token}"))
+                .body(axum::body::Body::empty())
+                .unwrap()
+        };
+        for (path, route) in [
+            (
+                "/api/v1/tools/executions/work-1/resolve-indeterminate",
+                "/api/v1/tools/executions/{execution_id}/resolve-indeterminate",
+            ),
+            (
+                "/v1/tools/executions/work-1/resolve-indeterminate",
+                "/v1/tools/executions/{execution_id}/resolve-indeterminate",
+            ),
+        ] {
+            assert_eq!(
+                request_security_error_for_route(&security, &request(path, "agent-secret"), route),
+                Some(StatusCode::UNAUTHORIZED)
+            );
+            assert_eq!(
+                request_security_error_for_route(
+                    &security,
+                    &request(path, "approval-secret"),
+                    route
+                ),
+                None
+            );
+        }
+        for route in [
+            "/api/v1/tools/executions/{execution_id}",
+            "/api/v1/tools/executions/{execution_id}/resolve-indeterminate/preview",
+        ] {
+            assert_eq!(
+                request_security_error_for_route(
+                    &security,
+                    &request("/api/v1/tools/executions/work-1", "agent-secret"),
+                    route
+                ),
+                None
+            );
+            assert_eq!(
+                request_security_error_for_route(
+                    &security,
+                    &request("/api/v1/tools/executions/work-1", "approval-secret"),
+                    route
+                ),
+                Some(StatusCode::UNAUTHORIZED)
+            );
+        }
+        security.approval_token = None;
+        for token in ["agent-secret", "approval-secret"] {
+            assert_eq!(
+                request_security_error_for_route(
+                    &security,
+                    &request(
+                        "/api/v1/tools/executions/work-1/resolve-indeterminate",
+                        token
+                    ),
+                    "/api/v1/tools/executions/{execution_id}/resolve-indeterminate"
+                ),
+                Some(StatusCode::UNAUTHORIZED)
+            );
+        }
     }
 
     #[test]

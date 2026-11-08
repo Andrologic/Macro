@@ -647,7 +647,7 @@ async fn authenticated_image_substitution_is_rejected_at_launch() {
     fs::set_permissions(&attacker, fs::Permissions::from_mode(0o700)).unwrap();
     // Negative control: this exact replacement is capable of writing the marker
     // if launched without the identity requirement.
-    let baseline = std::process::Command::new(&attacker)
+    let baseline = crate::core::process::background_command(&attacker)
         .args(["--macro-internal-agsdl-content-read", "0", "data.txt"])
         .status()
         .unwrap();

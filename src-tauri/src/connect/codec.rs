@@ -837,7 +837,8 @@ mod retirement_tests {
             let budget = TransitOwner::default()
                 .instance(uuid::Uuid::new_v4())
                 .unwrap();
-            let mut command = Command::new(super::super::runtime::test_bun());
+            let mut command =
+                crate::core::process::background_tokio_command(super::super::runtime::test_bun());
             command.arg("-e").arg("import {writeSync} from 'node:fs'; writeSync(2,new Uint8Array(4096)); setInterval(()=>{},1000)");
             let mut codec = Codec::spawn(
                 command,
@@ -901,7 +902,8 @@ mod retirement_tests {
         let budget = TransitOwner::default()
             .instance(uuid::Uuid::new_v4())
             .unwrap();
-        let mut command = Command::new(super::super::runtime::test_bun());
+        let mut command =
+            crate::core::process::background_tokio_command(super::super::runtime::test_bun());
         command.arg("-e").arg("setInterval(()=>{},1000)");
         let mut codec = Codec::spawn(
             command,

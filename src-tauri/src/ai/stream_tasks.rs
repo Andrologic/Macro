@@ -1341,7 +1341,7 @@ mod admitted {
             use std::process::Stdio;
             use tokio::io::{AsyncBufReadExt, BufReader};
             for panics in [false, true] {
-                let mut child = tokio::process::Command::new("sh")
+                let mut child = crate::core::process::background_tokio_command("sh")
                     .args(["-c", "printf 'synthetic-ready\\n' >&2; read ignored"])
                     .stdin(Stdio::piped())
                     .stdout(Stdio::null())

@@ -1777,7 +1777,22 @@ pub(crate) async fn historical_database(path: &Path, variant: usize) -> SqliteCo
         .unwrap();
     }
     if variant == 5 {
-        migration_history::remove_reference_schema(&mut c, &[20, 21, 22, 23, 24])
+        // published_branch_database already removed human/work/flow schemas.
+        // Remove only reconciliation and native operations, retaining v10-v14.
+        sqlx::raw_sql(
+            "DROP TABLE engine_native_operations;
+             DROP TRIGGER messages_search_insert;
+             DROP TRIGGER messages_search_delete;
+             DROP TRIGGER messages_search_update;
+             DROP TRIGGER messages_search_update_insert;
+             DROP TABLE message_search;
+             DROP VIEW message_search_content;",
+        )
+        .execute(&mut c)
+        .await
+        .unwrap();
+        sqlx::raw_sql(MIGRATION_004_SQL)
+            .execute(&mut c)
             .await
             .unwrap();
         sqlx::query("DELETE FROM schema_migrations WHERE version>=15")

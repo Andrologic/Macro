@@ -82,7 +82,7 @@ fn content_physical_cases_run_in_initialized_hash_pinned_image() {
     let expected = std::env::var("MACRO_AGSDL_CONTENT_QA_SHA256").ok();
     let binary = validate_binary(path.as_deref(), expected.as_deref())
         .expect("QA binary and trusted hash must be supplied");
-    let output = std::process::Command::new(binary)
+    let output = crate::core::process::background_command(binary)
         .arg("--run-agsdl-content-cases")
         .arg("all")
         .output()

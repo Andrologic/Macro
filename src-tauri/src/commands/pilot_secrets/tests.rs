@@ -1176,7 +1176,7 @@ fn cooperative_pilot_writer_process() {
 #[test]
 fn private_lease_excludes_a_cooperative_pilot_writer_in_another_process() {
     use std::io::{BufRead, BufReader, Write};
-    use std::process::{Command, Stdio};
+    use std::process::Stdio;
     struct OwnedChild(std::process::Child);
     impl Drop for OwnedChild {
         fn drop(&mut self) {
@@ -1188,7 +1188,7 @@ fn private_lease_excludes_a_cooperative_pilot_writer_in_another_process() {
     let owner = crate::secrets::policy::PolicyOwner::for_test(directory.path());
     owner.initialize(directory.path()).unwrap();
     let mut child = OwnedChild(
-        Command::new(std::env::current_exe().unwrap())
+        crate::core::process::background_command(std::env::current_exe().unwrap())
             .args([
                 "--exact",
                 "commands::pilot_secrets::tests::cooperative_pilot_writer_process",
@@ -1272,7 +1272,7 @@ async fn private_bootstrap_real_relay_correlates_scope_and_keeps_controller_righ
             .find(|path| path.is_file())
             .unwrap()
     };
-    let mut child = tokio::process::Command::new(executable("node"))
+    let mut child = crate::core::process::background_tokio_command(executable("node"))
         .arg("--import")
         .arg(std::env::var("MACRO_CONNECT_RELAY_LOADER").unwrap())
         .arg("--conditions=react-server")
@@ -1419,19 +1419,20 @@ async fn private_bootstrap_real_relay_correlates_scope_and_keeps_controller_righ
     .unwrap();
     verified.check().await.unwrap();
     let (_, policy_directory) = manager.policy_fixture();
-    let mut writer = tokio::process::Command::new(std::env::current_exe().unwrap())
-        .args([
-            "--exact",
-            "commands::pilot_secrets::tests::cooperative_pilot_writer_process",
-            "--ignored",
-            "--nocapture",
-        ])
-        .env("MACRO_SYNTHETIC_POLICY_DIRECTORY", policy_directory)
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::null())
-        .kill_on_drop(true)
-        .spawn()
-        .unwrap();
+    let mut writer =
+        crate::core::process::background_tokio_command(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "commands::pilot_secrets::tests::cooperative_pilot_writer_process",
+                "--ignored",
+                "--nocapture",
+            ])
+            .env("MACRO_SYNTHETIC_POLICY_DIRECTORY", policy_directory)
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::null())
+            .kill_on_drop(true)
+            .spawn()
+            .unwrap();
     let mut writer_input = writer.stdin.take().unwrap();
     writer_input.write_all(b"write\n").await.unwrap();
     drop(writer_input);

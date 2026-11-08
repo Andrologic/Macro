@@ -1939,7 +1939,7 @@ mod tests {
                 key_path.to_str().unwrap(),
             ],
         ] {
-            let output = std::process::Command::new("openssl")
+            let output = crate::core::process::background_command("openssl")
                 .args(args)
                 .env_clear()
                 .output()

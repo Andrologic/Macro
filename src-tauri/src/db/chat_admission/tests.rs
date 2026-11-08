@@ -981,7 +981,7 @@ async fn tool_task_owns_a_real_child_and_waits_for_cleanup_before_its_receipt() 
         .reserve_stream("physical-process".into())
         .unwrap()
         .spawn_tool(physical, move |cancel| async move {
-            let mut child = tokio::process::Command::new("/bin/sh")
+            let mut child = crate::core::process::background_tokio_command("/bin/sh")
                 .args(["-c", "printf 'synthetic-ready\n' >&2; exec sleep 30"])
                 .stderr(std::process::Stdio::piped())
                 .kill_on_drop(true)
@@ -2752,7 +2752,7 @@ async fn independent_turn_waits_for_real_descendant_cleanup_and_preserves_unknow
     let (release, cleanup) = tokio::sync::oneshot::channel();
     let result = reservation
         .spawn_tool(physical, move |cancel| async move {
-            let mut child = tokio::process::Command::new("/bin/sh")
+            let mut child = crate::core::process::background_tokio_command("/bin/sh")
                 .args(["-c", "printf 'synthetic-ready\n' >&2; exec sleep 30"])
                 .stderr(std::process::Stdio::piped())
                 .kill_on_drop(true)

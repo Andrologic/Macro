@@ -193,7 +193,7 @@ fn private(path: &Path) {
     }
 }
 pub(super) fn reopen(root: &Path, mode: &str, context: &str, other: &str) {
-    let output = std::process::Command::new(std::env::current_exe().unwrap())
+    let output = crate::core::process::background_command(std::env::current_exe().unwrap())
         .args([
             "--exact",
             "local_backup::secrets_qualification::secret_consumer_child",
