@@ -190,6 +190,19 @@ process.stdout.write(await compileHost030(job.authoredSource,job.source,JSON.par
     .await
     .unwrap();
     worker.await.unwrap();
+    let snapshot = crate::commands::agsdl_execution::read_public_snapshot(
+        &pool,
+        &retained.receipt.identity.system_start_id,
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        snapshot.system_start_id,
+        retained.receipt.identity.system_start_id
+    );
+    assert_eq!(snapshot.source, request.source);
+    assert_eq!(snapshot.versions, retained.capture.versions);
+    assert_eq!(snapshot.authored_source, retained.capture.authored_source);
     let read = intents::read(&pool, &intent.key).await.unwrap().unwrap();
     match read.state {
         ExecutionIntentState::Admitted {

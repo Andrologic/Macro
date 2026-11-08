@@ -3,6 +3,7 @@ use super::DbPool;
 use crate::db::agsdl_execution::{self as repository, dto::*};
 use repository::intents::{self, *};
 use repository::public::*;
+use sqlx::Row;
 use tauri::{Manager, State};
 async fn pool(state: &State<'_, DbPool>) -> repository::Result<sqlx::SqlitePool> {
     state
@@ -169,7 +170,45 @@ pub async fn execution_read_snapshot(
     state: State<'_, DbPool>,
     system_start_id: String,
 ) -> repository::Result<PublicSnapshot> {
-    repository::read_snapshot(&pool(&state).await?, &system_start_id)
+    let pool = pool(&state).await?;
+    read_public_snapshot(&pool, &system_start_id).await
+}
+
+pub(crate) async fn read_public_snapshot(
+    pool: &sqlx::SqlitePool,
+    system_start_id: &str,
+) -> repository::Result<PublicSnapshot> {
+    let retained = sqlx::query("SELECT request_json,capture_json,receipt_json FROM engine_start030_requests WHERE system_id=?")
+        .bind(system_start_id)
+        .fetch_optional(pool)
+        .await?;
+    if let Some(row) = retained {
+        let request: EngineStartRequest = serde_json::from_str(row.get("request_json"))?;
+        let capture: repository::start030::StartCapture030 =
+            serde_json::from_str(row.get("capture_json"))?;
+        let receipt: repository::start030::StartReceipt030 =
+            serde_json::from_str(row.get("receipt_json"))?;
+        if request.profile != "macro-agsdl-030-v1"
+            || request.source != capture.source
+            || capture.identity != receipt.identity
+            || capture.identity.system_start_id != system_start_id
+            || capture.versions.profile != request.profile
+        {
+            return Err(repository::failure(
+                "CORRELATION",
+                "snapshot",
+                "Stored capture differs from its request",
+            ));
+        }
+        return Ok(PublicSnapshot {
+            system_start_id: system_start_id.to_owned(),
+            source: capture.source,
+            authored_source: capture.authored_source,
+            versions: capture.versions,
+            associations: request.associations,
+        });
+    }
+    repository::read_snapshot(pool, system_start_id)
         .await
         .map(Into::into)
 }
