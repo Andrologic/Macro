@@ -249,7 +249,7 @@ async fn real_controller_commit_lost_ack_requires_exact_native_readback() {
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .parent()
             .unwrap();
-        let mut child = tokio::process::Command::new("bun")
+        let mut child = crate::core::process::background_tokio_command("bun")
             .args(["-e", script])
             .current_dir(root)
             .stdin(std::process::Stdio::piped())

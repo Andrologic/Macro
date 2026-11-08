@@ -57,13 +57,15 @@ impl Incarnation {
                 "Execution is not owned by this host",
             ));
         }
-        tasks.start(request_id, work).map_err(|_| {
-            failure(
-                "CORRELATION",
-                "request",
-                "Native attempt was already admitted or cancelled",
-            )
-        })
+        tasks
+            .start_owned030(request_id, owner.clone(), self.generation.clone(), work)
+            .map_err(|_| {
+                failure(
+                    "CORRELATION",
+                    "request",
+                    "Native attempt was already admitted or cancelled",
+                )
+            })
     }
 }
 struct HostResource(Arc<Incarnation>);
@@ -79,6 +81,37 @@ pub(crate) struct HostState(
     crate::agsdl_host_tools::ToolExecutors,
     crate::agsdl_host_flow030::FlowHost030,
 );
+
+/// In-memory host fixture for native route-attestation tests. It creates no
+/// database authority and is never compiled into the application.
+#[cfg(test)]
+pub(crate) fn route_attestation_test_host030(owner: EngineOwner, generation: &str) -> HostState {
+    let mut owners = BTreeMap::new();
+    owners.insert(owner.system_start_id.clone(), owner);
+    let incarnation = Arc::new(Incarnation {
+        generation: generation.into(),
+        compiler: Default::default(),
+        work_protocol: Default::default(),
+        route030: Default::default(),
+        lifecycle: Arc::new(tokio::sync::RwLock::new(())),
+        handoff: Mutex::new(()),
+        live: AtomicBool::new(true),
+        ready: AtomicBool::new(true),
+        retired: Default::default(),
+        loads: AtomicUsize::new(0),
+        owners: Mutex::new(owners),
+        qa_request: Mutex::new(None),
+    });
+    HostState(
+        Mutex::new(Some(OwnedHost {
+            incarnation,
+            resource: 0,
+        })),
+        Arc::new(tokio::sync::Mutex::new(())),
+        Default::default(),
+        Default::default(),
+    )
+}
 
 /// Native Start holds this lease through the SQL commit and ownership attachment.
 /// Retirement marks the host unavailable immediately, then waits for these attachments.
@@ -134,6 +167,107 @@ impl HostStartLease {
         F: std::future::Future<Output = ()> + Send + 'static,
     {
         self.host.admit_owned(owner, tasks, request_id, work)
+    }
+
+    /// Install a native agent parent before its first poll. The surrounding
+    /// handoff keeps IO gated until its durable receipt has committed.
+    pub(crate) fn admit_owned_agent_stream030<F>(
+        &self,
+        attempt: &crate::agsdl_host_flow030::FlowWorkAttempt030,
+        tasks: &crate::ai::stream_tasks::StreamTasks,
+        request_id: String,
+        work: F,
+    ) -> Result<()>
+    where
+        F: std::future::Future<Output = ()> + Send + 'static,
+    {
+        let _handoff = self
+            .host
+            .handoff
+            .lock()
+            .map_err(|_| failure("RUNTIME_UNAVAILABLE", "", "Host admission is unavailable"))?;
+        self.ensure_live()?;
+        if !self.host.ready.load(Ordering::SeqCst)
+            || attempt.generation() != self.host.generation
+            || attempt.owner().system_start_id != attempt.identity().system_start_id
+            || attempt.work().system_start_id != attempt.identity().system_start_id
+            || attempt.work().flow_invocation_id != attempt.identity().flow_invocation_id
+        {
+            return Err(failure(
+                "CORRELATION",
+                "attempt",
+                "Native work attribution differs",
+            ));
+        }
+        let owns = self
+            .host
+            .owners
+            .lock()
+            .map_err(|_| failure("RUNTIME_UNAVAILABLE", "", "Host ownership unavailable"))?
+            .get(&attempt.owner().system_start_id)
+            == Some(attempt.owner());
+        if !owns {
+            return Err(failure(
+                "PERMISSION",
+                "owner",
+                "Execution is not owned by this host",
+            ));
+        }
+        tasks
+            .start_agent030(request_id, attempt, work)
+            .map_err(|_| {
+                failure(
+                    "CORRELATION",
+                    "request",
+                    "Native attempt was already admitted or cancelled",
+                )
+            })
+    }
+
+    /// Attach an already claimed exact operation to the currently executing
+    /// owned parent. The caller must hold the admission gate and confirm the
+    /// durable claim before calling; this attachment does not grant authority.
+    pub(crate) fn attach_owned_operation030(
+        &self,
+        tasks: &crate::ai::stream_tasks::StreamTasks,
+        parent_request_id: &str,
+        operation: crate::ai::stream_tasks::OwnedOperation030,
+    ) -> Result<crate::ai::stream_tasks::OwnedOperationPermit030> {
+        let _handoff = self
+            .host
+            .handoff
+            .lock()
+            .map_err(|_| failure("RUNTIME_UNAVAILABLE", "", "Host admission is unavailable"))?;
+        self.ensure_live()?;
+        let owner = &operation.context.owner;
+        let owns = self
+            .host
+            .owners
+            .lock()
+            .map_err(|_| failure("RUNTIME_UNAVAILABLE", "", "Host ownership unavailable"))?
+            .get(&owner.system_start_id)
+            == Some(owner);
+        if !owns
+            || operation.generation != self.host.generation
+            || operation.context.work.system_start_id != owner.system_start_id
+            || operation.identity.system_start_id != owner.system_start_id
+            || operation.identity.flow_invocation_id != operation.context.work.flow_invocation_id
+        {
+            return Err(failure(
+                "CORRELATION",
+                "owner",
+                "Native operation ownership differs",
+            ));
+        }
+        tasks
+            .attach_operation030(parent_request_id, operation)
+            .map_err(|_| {
+                failure(
+                    "CORRELATION",
+                    "operation",
+                    "Native operation is not owned or was already attached",
+                )
+            })
     }
 
     /// Release an already owned effect at the same boundary as revocation.
@@ -985,6 +1119,98 @@ mod flow_work030_tests;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn test_operation030() -> crate::ai::stream_tasks::OwnedOperation030 {
+        crate::ai::stream_tasks::OwnedOperation030 {
+            identity: crate::db::agsdl_execution::flow030::FlowIdentity030 {
+                system_start_id: "system".into(),
+                flow_invocation_id: "flow".into(),
+                snapshot_id: "snapshot".into(),
+                epoch: "capture".into(),
+            },
+            context: serde_json::from_value(serde_json::json!({
+                "owner":{"systemStartId":"system","ownerEpoch":"0"},
+                "work":{"systemStartId":"system","flowInvocationId":"flow",
+                    "activationId":"activation","agentInstanceId":"agent","step":["work"]},
+                "permissionsJson":"{}","scopeJson":"{}","registryVersion":"registry"
+            }))
+            .unwrap(),
+            generation: "generation".into(),
+            agent: "worker".into(),
+            provider_attempt_id: "attempt".into(),
+            operation_id: "operation".into(),
+            method: "turn/start".into(),
+            request_json: r#"{"value":1e0}"#.into(),
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn operation_attachment_and_revocation_are_ordered_for_the_owned_parent() {
+        for revoke_first in [true, false] {
+            let owner = EngineOwner {
+                system_start_id: "system".into(),
+                owner_epoch: "0".into(),
+            };
+            let host_state = route_attestation_test_host030(owner, "generation");
+            let host = host_state
+                .0
+                .lock()
+                .unwrap()
+                .as_ref()
+                .unwrap()
+                .incarnation
+                .clone();
+            let lease = HostStartLease {
+                host: host.clone(),
+                _guard: host.lifecycle.clone().read_owned().await,
+            };
+            let tasks = crate::ai::stream_tasks::StreamTasks::default();
+            let inner = tasks.clone();
+            let (go, proceed) = tokio::sync::oneshot::channel();
+            let (done, observed) = tokio::sync::oneshot::channel();
+            tasks
+                .start_work_fixture030(
+                    "parent".into(),
+                    test_operation030().identity,
+                    test_operation030().context,
+                    "generation".into(),
+                    "worker".into(),
+                    "attempt".into(),
+                    async move {
+                        let _ = proceed.await;
+                        if !revoke_first {
+                            let mut foreign = test_operation030();
+                            foreign.context.owner.owner_epoch = "other".into();
+                            assert!(lease
+                                .attach_owned_operation030(&inner, "parent", foreign)
+                                .is_err());
+                            let mut wrong_generation = test_operation030();
+                            wrong_generation.generation = "other".into();
+                            assert!(lease
+                                .attach_owned_operation030(&inner, "parent", wrong_generation)
+                                .is_err());
+                        }
+                        let result =
+                            lease.attach_owned_operation030(&inner, "parent", test_operation030());
+                        let _ = done.send(result);
+                        std::future::pending::<()>().await;
+                    },
+                )
+                .unwrap();
+            if revoke_first {
+                assert!(revoke_now(&host));
+            }
+            go.send(()).unwrap();
+            let result = observed.await.unwrap();
+            if revoke_first {
+                assert!(result.is_err());
+            } else {
+                assert_eq!(result.unwrap().digest().len(), 64);
+                assert!(revoke_now(&host));
+            }
+            assert!(tasks.cancel_owned("parent").await.unwrap());
+        }
+    }
     #[tokio::test]
     async fn retirement_waits_for_owner_committed_during_start() {
         let host = Arc::new(Incarnation {

@@ -3811,6 +3811,18 @@ mod tests {
     // SELECT * evaluates this expression and fails. The size query must reject
     // oversized rows without reaching that fetch, even before row decoding.
     async fn install_admission_fetch_probe(pool: &SqlitePool) {
+        // This disposable fixture replaces messages with an overflow probe.
+        // Remove search dependencies before renaming its content table.
+        sqlx::raw_sql(
+            "DROP TRIGGER messages_search_insert;
+             DROP TRIGGER messages_search_delete;
+             DROP TRIGGER messages_search_update;
+             DROP TRIGGER messages_search_update_insert;
+             DROP VIEW message_search_content;",
+        )
+        .execute(pool)
+        .await
+        .unwrap();
         sqlx::query("ALTER TABLE messages RENAME TO admission_messages")
             .execute(pool)
             .await

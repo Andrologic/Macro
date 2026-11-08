@@ -861,12 +861,13 @@ async fn stop_probe(pool: &SqlitePool) {
 #[tokio::test]
 async fn migration_backfill_stamp_failure_rolls_back_and_schema_damage_is_rejected() {
     let (dir, pool) = fixture().await;
-    crate::db::inactive_storage::tests::remove_reference_schema_in(
-        &mut *pool.acquire().await.unwrap(),
-    )
-    .await;
     message(&pool, "old", "a", "assistant", "old content").await;
     sqlx::query("INSERT INTO app_settings VALUES ('chat:assistant-visible-provenance:v1:old','old receipt','now')").execute(&pool).await.unwrap();
+    // Seed real content before removing every schema added after this fixture.
+    let mut db = pool.acquire().await.unwrap();
+    crate::db::migration_tests::drop_agsdl(&mut db).await;
+    crate::db::inactive_storage::tests::remove_reference_schema_in(&mut db).await;
+    drop(db);
     crate::db::conversation_catalog::remove_reference_schema(&pool)
         .await
         .unwrap();
@@ -876,7 +877,11 @@ async fn migration_backfill_stamp_failure_rolls_back_and_schema_damage_is_reject
         .unwrap();
     remove_reference_schema(&pool).await.unwrap();
     sqlx::raw_sql("DELETE FROM schema_migrations WHERE version=13; CREATE TRIGGER reject_content_stamp BEFORE INSERT ON schema_migrations WHEN NEW.version=13 BEGIN SELECT RAISE(ABORT,'synthetic migration failure'); END;").execute(&pool).await.unwrap();
-    assert!(crate::db::run_migrations(&pool).await.is_err());
+    let error = crate::db::run_migrations(&pool).await.unwrap_err();
+    assert!(
+        error.to_string().contains("synthetic migration failure"),
+        "{error}"
+    );
     assert_eq!(sqlx::query_scalar::<_,i64>("SELECT COUNT(*) FROM sqlite_master WHERE name='conversation_content_versions' OR name GLOB 'content_versions_*'").fetch_one(&pool).await.unwrap(),0);
     sqlx::query("DROP TRIGGER reject_content_stamp")
         .execute(&pool)
@@ -1076,7 +1081,7 @@ async fn opening_keeps_i64_decimal_precision_and_handles_unreadable_numeric_fiel
 }
 
 #[tokio::test]
-async fn native_runtime_diagnostic_is_schema19_wal_normal_fk() {
+async fn native_runtime_diagnostic_is_current_schema_wal_normal_fk() {
     let (_dir, pool) = fixture().await;
     let sqlite: String = sqlx::query_scalar("SELECT sqlite_version()")
         .fetch_one(&pool)
@@ -1089,7 +1094,9 @@ async fn native_runtime_diagnostic_is_schema19_wal_normal_fk() {
             .unwrap();
     assert_eq!(
         migrations,
-        [1, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19]
+        (1..=i64::try_from(crate::db::migration_history::NAMES.len()).unwrap())
+            .filter(|version| *version != 2)
+            .collect::<Vec<_>>()
     );
     let mut db = pool.acquire().await.unwrap();
     let journal: String = sqlx::query_scalar("PRAGMA journal_mode")

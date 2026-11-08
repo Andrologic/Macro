@@ -28,11 +28,20 @@ use std::time::Duration;
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 
-#[cfg(test)]
+#[cfg(any(
+    test,
+    all(target_os = "macos", feature = "agsdl-content-qa", debug_assertions)
+))]
 use std::collections::HashMap;
-#[cfg(test)]
+#[cfg(any(
+    test,
+    all(target_os = "macos", feature = "agsdl-content-qa", debug_assertions)
+))]
 use std::sync::{LazyLock, Mutex};
-#[cfg(test)]
+#[cfg(any(
+    test,
+    all(target_os = "macos", feature = "agsdl-content-qa", debug_assertions)
+))]
 use tokio::sync::Barrier;
 
 #[cfg(windows)]
@@ -317,6 +326,58 @@ static WRITE_BEFORE_REVALIDATION_HOOKS: LazyLock<
 static WRITE_AFTER_REVALIDATION_HOOKS: LazyLock<
     Mutex<HashMap<PathBuf, (Arc<Barrier>, Arc<Barrier>)>>,
 > = LazyLock::new(|| Mutex::new(HashMap::new()));
+
+#[cfg(any(
+    test,
+    all(target_os = "macos", feature = "agsdl-content-qa", debug_assertions)
+))]
+static CONTENT_BEFORE_OPEN_HOOKS: LazyLock<Mutex<HashMap<PathBuf, (Arc<Barrier>, Arc<Barrier>)>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
+#[cfg(any(
+    test,
+    all(target_os = "macos", feature = "agsdl-content-qa", debug_assertions)
+))]
+pub(crate) fn install_content_before_open_hook(
+    path: PathBuf,
+    reached: Arc<Barrier>,
+    release: Arc<Barrier>,
+) {
+    CONTENT_BEFORE_OPEN_HOOKS
+        .lock()
+        .expect("content hook mutex")
+        .insert(path, (reached, release));
+}
+
+#[cfg(any(
+    test,
+    all(target_os = "macos", feature = "agsdl-content-qa", debug_assertions)
+))]
+pub(crate) fn content_before_open_hook_pending(path: &Path, remove: bool) -> bool {
+    let mut hooks = CONTENT_BEFORE_OPEN_HOOKS
+        .lock()
+        .expect("content hook mutex");
+    if remove {
+        hooks.remove(path).is_some()
+    } else {
+        hooks.contains_key(path)
+    }
+}
+
+#[cfg(any(
+    test,
+    all(target_os = "macos", feature = "agsdl-content-qa", debug_assertions)
+))]
+async fn pause_before_content_open(path: &Path) {
+    let hook = CONTENT_BEFORE_OPEN_HOOKS
+        .lock()
+        .expect("content hook mutex")
+        .remove(path);
+    if let Some((reached, release)) = hook {
+        reached.wait().await;
+        release.wait().await;
+    }
+}
 
 #[cfg(test)]
 static WSL_WRITE_TEMP_CLEANUP_HOOK: LazyLock<Mutex<Option<std::sync::mpsc::Sender<String>>>> =
@@ -1678,6 +1739,73 @@ fn read_open_file(
         return Err(too_large());
     }
     Ok((bytes, metadata_unix_mode(&metadata)))
+}
+
+/// Open and read a confined regular file only after native admission. The final
+/// component cannot become a symlink between policy evaluation and the read.
+/// This does not grant access: callers must evaluate the original and resolved
+/// paths in `admit`, including their captured and current policy ceilings.
+#[cfg(feature = "agsdl-content-qa")]
+pub(crate) async fn read_file_bytes_with_admission<F, Fut>(
+    path: &Path,
+    cancel: &tokio_util::sync::CancellationToken,
+    admit: F,
+) -> Result<(Vec<u8>, PathBuf, WorkspaceRootIdentity), BackendError>
+where
+    F: FnOnce(PathBuf) -> Fut,
+    Fut: Future<Output = Result<(), BackendError>>,
+{
+    if !path.is_absolute() {
+        return Err(BackendError::FilesystemInvalidPath {
+            message: "An admitted read requires an absolute path.".into(),
+        });
+    }
+    let resolved = path
+        .canonicalize()
+        .map_err(|e| io_error_to_backend_error(e, path))?;
+    let parent = resolved
+        .parent()
+        .ok_or_else(|| BackendError::FilesystemInvalidPath {
+            message: "A regular file target is required.".into(),
+        })?;
+    let identity = workspace_root_identity(parent)?;
+    admit(resolved.clone()).await?;
+    if workspace_root_identity(parent)? != identity
+        || path.canonicalize().ok().as_ref() != Some(&resolved)
+    {
+        return Err(BackendError::FilesystemInvalidPath {
+            message: "File location changed during admitted read.".into(),
+        });
+    }
+    let metadata = std::fs::symlink_metadata(&resolved)
+        .map_err(|e| io_error_to_backend_error(e, &resolved))?;
+    if !metadata.is_file() {
+        return Err(BackendError::FilesystemIsDirectory {
+            message: format!("The path '{}' is not a regular file.", resolved.display()),
+        });
+    }
+    #[cfg(any(
+        test,
+        all(target_os = "macos", feature = "agsdl-content-qa", debug_assertions)
+    ))]
+    pause_before_content_open(&resolved).await;
+    let (directory, relative) = open_workspace_capability(parent, &resolved, Some(identity))?;
+    let bytes = crate::agsdl_content::file_helper::read_confined(&directory, &relative, cancel)
+        .await
+        .map_err(|e| io_error_to_backend_error(e, &resolved))?;
+    if workspace_root_identity(parent)? != identity
+        || path.canonicalize().ok().as_ref() != Some(&resolved)
+    {
+        return Err(BackendError::FilesystemInvalidPath {
+            message: "File location changed before admitted read.".into(),
+        });
+    }
+    if cancel.is_cancelled() {
+        return Err(BackendError::Filesystem {
+            message: "Content read cancelled.".into(),
+        });
+    }
+    Ok((bytes, resolved, identity))
 }
 
 pub async fn read_file_internal(

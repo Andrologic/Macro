@@ -14,15 +14,9 @@ use std::{
     time::{Duration, Instant},
 };
 fn background_command(program: &str) -> std::process::Command {
-    #[allow(unused_mut)]
-    let mut command = std::process::Command::new(program);
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        command.creation_flags(0x08000000);
-    }
-    command
+    crate::core::process::background_command(program)
 }
+
 use serde::Deserialize;
 use std::collections::BTreeMap;
 
@@ -1271,7 +1265,7 @@ mod tests {
     use super::*;
     static TEST_LOCK: Mutex<()> = Mutex::new(());
     fn git(path: &Path, args: &[&str]) -> String {
-        let output = std::process::Command::new("git")
+        let output = crate::core::process::background_command("git")
             .current_dir(path)
             .args(args)
             .output()

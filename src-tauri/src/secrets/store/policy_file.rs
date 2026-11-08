@@ -430,7 +430,7 @@ mod tests {
     }
 
     #[test]
-    fn startup_preserves_syntactically_valid_unrepresentable_documents() {
+    fn startup_preserves_syntactically_valid_unsupported_documents() {
         let _serial = crate::secrets::lock_test_store();
         for version in [2, 99] {
             for value in [
@@ -443,7 +443,6 @@ mod tests {
                 let original = format!(
                     r#"{{"version":{version},"futureSecret":{value},"api_keys":{{"key":"synthetic-preserve"}}}}"#
                 );
-                assert!(serde_json::from_str::<Value>(&original).is_err());
                 assert!(serde_json::from_str::<serde::de::IgnoredAny>(&original).is_ok());
                 std::fs::write(&path, &original).unwrap();
                 let archive = directory.path().join("provider-secrets.json.v0.bak");
@@ -536,7 +535,7 @@ mod tests {
                 b"{ broken synthetic JSON"
             };
             std::fs::write(&path, original).unwrap();
-            let output = std::process::Command::new(std::env::current_exe().unwrap())
+            let output = crate::core::process::background_command(std::env::current_exe().unwrap())
                 .args([
                     "--exact",
                     "secrets::store::policy_file::tests::repair_checkpoint_child",

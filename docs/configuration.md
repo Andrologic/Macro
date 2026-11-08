@@ -318,6 +318,12 @@ fichiers autonome. Après une édition externe, un client doit appeler
 `/api/v1/config/reload` ; les écritures effectuées via l’API sont appliquées
 immédiatement. Le desktop conserve son watcher avec debounce et rescan coalescé.
 
+Chaque requête d’outil vérifie aussi que le fichier `tools.json` du projet reste
+présent, lisible et conforme à une version prise en charge. Sinon, le projet
+est exclu de cette exécution. Ce contrôle ne promeut pas les valeurs présentes
+sur disque : la politique approuvée reste effective jusqu’au rechargement et,
+pour une modification sensible, à la décision utilisateur.
+
 ## 11. Diagnostics courants
 
 | Code ou situation | Comportement |

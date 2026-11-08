@@ -501,7 +501,7 @@ async fn killed_subprocess_recovers_at_five_restore_boundaries() {
             .unwrap(),
         )
         .unwrap();
-        let mut child = std::process::Command::new(std::env::current_exe().unwrap())
+        let mut child = crate::core::process::background_command(std::env::current_exe().unwrap())
             .args([
                 "--exact",
                 "local_backup::qualification::interruption_child",
@@ -530,7 +530,7 @@ async fn killed_subprocess_recovers_at_five_restore_boundaries() {
         child.kill().unwrap();
         let exit = child.wait().unwrap();
         assert_eq!(exit.signal(), Some(9), "real SIGKILL at {phase}");
-        let restarted = std::process::Command::new(std::env::current_exe().unwrap())
+        let restarted = crate::core::process::background_command(std::env::current_exe().unwrap())
             .args([
                 "--exact",
                 "local_backup::qualification::interruption_child",

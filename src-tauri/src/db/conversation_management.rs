@@ -459,6 +459,7 @@ mod tests {
         acknowledge(&pool, &id, &[1], None).await.unwrap();
         let command = input(&id, "archive", Some(1));
         action(&pool, command.clone()).await.unwrap();
+        crate::db::migration_tests::drop_agsdl(&mut *pool.acquire().await.unwrap()).await;
         crate::db::inactive_storage::tests::remove_reference_schema_in(
             &mut *pool.acquire().await.unwrap(),
         )

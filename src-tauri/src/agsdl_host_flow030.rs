@@ -73,6 +73,44 @@ impl FlowWorkCommitMarker030 {
     }
 }
 
+/// Native attribution for one claimed agent Start and its owned parent. It
+/// carries no permission grant and cannot be reconstructed from wire JSON.
+/// Only DispatchLease030 mints it from the authenticated durable effect.
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct FlowWorkAttempt030 {
+    identity: FlowIdentity030,
+    owner: EngineOwner,
+    generation: String,
+    work: repository::dto::EngineWork,
+    start_effect_id: String,
+    agent: String,
+    provider_attempt_id: String,
+}
+impl FlowWorkAttempt030 {
+    pub(crate) fn identity(&self) -> &FlowIdentity030 {
+        &self.identity
+    }
+    pub(crate) fn owner(&self) -> &EngineOwner {
+        &self.owner
+    }
+    pub(crate) fn generation(&self) -> &str {
+        &self.generation
+    }
+    pub(crate) fn work(&self) -> &repository::dto::EngineWork {
+        &self.work
+    }
+    pub(crate) fn start_effect_id(&self) -> &str {
+        &self.start_effect_id
+    }
+    pub(crate) fn agent(&self) -> &str {
+        &self.agent
+    }
+    pub(crate) fn provider_attempt_id(&self) -> &str {
+        &self.provider_attempt_id
+    }
+}
+
 /// Per-runtime, per-request interleaving, absent from production builds.
 #[cfg(test)]
 pub(crate) struct CommitTestHook030 {
@@ -1726,9 +1764,73 @@ impl DispatchLease030<'_> {
     /// The future must perform no physical work until polled. A constructor
     /// which already spawned a process cannot use this admission boundary.
     pub(crate) async fn handoff<F>(
+        self,
+        tasks: &crate::ai::stream_tasks::StreamTasks,
+        work: F,
+    ) -> Result<()>
+    where
+        F: Future<Output = ()> + Send + 'static,
+    {
+        // Generic owners cannot attach provider operations: they have no
+        // authenticated agent-work/attempt binding in the stream registry.
+        self.handoff_inner(tasks, work, None).await
+    }
+
+    /// The factory must only build a future; no IO or spawn may occur until it
+    /// is polled after the acknowledged handoff commit. The native host must
+    /// separately authorize policy and each exact provider operation via 036.
+    pub(crate) async fn handoff_agent<C, F>(
+        self,
+        tasks: &crate::ai::stream_tasks::StreamTasks,
+        make_work: C,
+    ) -> Result<()>
+    where
+        C: FnOnce(FlowWorkAttempt030) -> F,
+        F: Future<Output = ()> + Send + 'static,
+    {
+        self.runtime.available(&self.effect.identity)?;
+        self.lease.ensure_live()?;
+        let FlowEffectKind030::Start {
+            work,
+            step,
+            agent: Some(agent),
+            ..
+        } = &self.effect.kind
+        else {
+            return Err(refused());
+        };
+        if work.start_effect_id != self.effect.id
+            || work.activation_id.is_empty()
+            || work.agent_instance_id.as_ref().is_none_or(String::is_empty)
+            || agent.is_empty()
+            || self.owner.system_start_id != self.effect.identity.system_start_id
+        {
+            return Err(refused());
+        }
+        let attempt = FlowWorkAttempt030 {
+            identity: self.effect.identity.clone(),
+            owner: self.owner.clone(),
+            generation: self.lease.generation().into(),
+            work: repository::dto::EngineWork {
+                system_start_id: self.effect.identity.system_start_id.clone(),
+                flow_invocation_id: self.effect.identity.flow_invocation_id.clone(),
+                activation_id: work.activation_id.clone(),
+                step: step.clone(),
+                agent_instance_id: work.agent_instance_id.clone(),
+            },
+            start_effect_id: self.effect.id.clone(),
+            agent: agent.clone(),
+            provider_attempt_id: uuid::Uuid::new_v4().to_string(),
+        };
+        let work = make_work(attempt.clone());
+        self.handoff_inner(tasks, work, Some(attempt)).await
+    }
+
+    async fn handoff_inner<F>(
         mut self,
         tasks: &crate::ai::stream_tasks::StreamTasks,
         work: F,
+        attempt: Option<FlowWorkAttempt030>,
     ) -> Result<()>
     where
         F: Future<Output = ()> + Send + 'static,
@@ -1736,17 +1838,26 @@ impl DispatchLease030<'_> {
         self.runtime.available(&self.effect.identity)?;
         let request_id = self.request_id();
         let (release, ready) = tokio::sync::oneshot::channel();
-        self.lease
-            .admit_owned_stream(&self.owner, tasks, request_id.clone(), async move {
-                // The registry owns the future before its first poll. Effect IO
-                // waits for an acknowledged commit of the handoff receipt.
-                if ready.await.is_ok() {
-                    work.await;
-                }
-            })?;
-        let receipt = json!({"kind":"nativeOwnedHandoff030", "identity":self.effect.identity,
+        let owned = async move {
+            // The registry owns the future before its first poll. Effect IO
+            // waits for an acknowledged commit of the handoff receipt.
+            if ready.await.is_ok() {
+                work.await;
+            }
+        };
+        if let Some(attempt) = &attempt {
+            self.lease
+                .admit_owned_agent_stream030(attempt, tasks, request_id.clone(), owned)?;
+        } else {
+            self.lease
+                .admit_owned_stream(&self.owner, tasks, request_id.clone(), owned)?;
+        }
+        let mut receipt = json!({"kind":"nativeOwnedHandoff030", "identity":self.effect.identity,
             "effectId":self.effect.id, "ownerEpoch":self.owner.owner_epoch,
             "generation":self.lease.generation(), "requestId":request_id});
+        if let Some(attempt) = &attempt {
+            receipt["workAttempt"] = serde_json::to_value(attempt)?;
+        }
         let authority = Authority {
             runtime: self.runtime,
             owner: self.owner.clone(),

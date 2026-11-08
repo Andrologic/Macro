@@ -1348,9 +1348,6 @@ impl ConfigManager {
                 project_id: project_id.to_string(),
             },
         };
-        if self.state.read().await.documents.contains_key(&key) {
-            return Ok(());
-        }
 
         let project_root = self
             .state
@@ -1366,6 +1363,12 @@ impl ConfigManager {
                 )
             })?;
         let path = project_root.join(kind.file_name());
+        // A loaded document can have been removed externally. Recreate its
+        // sparse proposal through the normal path, retaining the approved copy
+        // until the resulting sensitive change receives local consent.
+        if self.state.read().await.documents.contains_key(&key) && path.exists() {
+            return Ok(());
+        }
         if !path.exists() {
             let _creation_guard = lock_document_file_async(path.clone()).await?;
             self.require_current_project_root(project_id).await?;
@@ -7372,6 +7375,29 @@ mod tests {
         );
     }
 
+    async fn accept_project_tools_change(manager: &ConfigManager, path: &str) -> String {
+        let pending = manager.list_pending_changes().await;
+        let matching = pending
+            .iter()
+            .filter(|change| {
+                change.document == ConfigDocumentKind::Tools
+                    && change.scope
+                        == (ConfigScope::Project {
+                            project_id: "project-123".to_string(),
+                        })
+                    && change.source == ConfigChangeSource::ExternalEditor
+                    && change.changed_paths.iter().any(|changed| changed == path)
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(matching.len(), 1);
+        let id = matching[0].id.clone();
+        manager
+            .accept_pending_change(&id)
+            .await
+            .expect("accept project tools");
+        id
+    }
+
     #[tokio::test]
     async fn loaded_snapshot_refuses_external_project_documents_without_writing_runtime_state() {
         let (_temp, manager) = manager().await;
@@ -7400,16 +7426,28 @@ mod tests {
         assert!(!approved_path.exists());
         assert!(!pending_path.exists());
 
-        manager
+        let snapshot = manager
             .get_snapshot(&["project-123".to_string()])
             .await
             .expect("ordinary snapshot discovers the document");
         assert!(approved_path.exists());
-        assert!(!pending_path.exists());
-        manager
+        assert!(pending_path.exists());
+        assert!(snapshot.effective["tools"]["builtIn"]["terminal_execute"].is_null());
+        let loaded = manager
             .get_loaded_snapshot(&["project-123".to_string()])
             .await
             .expect("loaded snapshot uses the discovered document");
+        assert!(loaded.effective["tools"]["builtIn"]["terminal_execute"].is_null());
+        accept_project_tools_change(&manager, "/builtIn/terminal_execute").await;
+        assert!(!pending_path.exists());
+        let approved = manager
+            .get_loaded_snapshot(&["project-123".to_string()])
+            .await
+            .unwrap();
+        assert_eq!(
+            approved.effective["tools"]["builtIn"]["terminal_execute"],
+            json!(false)
+        );
     }
 
     #[tokio::test]
@@ -7436,6 +7474,12 @@ mod tests {
             .get_snapshot(&["project-123".to_string()])
             .await
             .expect("first snapshot");
+        assert!(first.project_effective["project-123"]["tools"]["builtIn"]["read"].is_null());
+        let first_id = accept_project_tools_change(&manager, "/builtIn/read").await;
+        let first = manager
+            .get_snapshot(&["project-123".to_string()])
+            .await
+            .unwrap();
         assert_eq!(
             first.project_effective["project-123"]["tools"]["builtIn"]["read"],
             json!(false)
@@ -7449,6 +7493,18 @@ mod tests {
             .get_snapshot(&["project-123".to_string()])
             .await
             .expect("second snapshot");
+        assert_eq!(
+            second.project_effective["project-123"]["tools"]["builtIn"]["read"],
+            json!(false)
+        );
+        assert!(second.project_effective["project-123"]["tools"]["builtIn"]["write"].is_null());
+        assert!(manager.accept_pending_change(&first_id).await.is_err());
+        let second_id = accept_project_tools_change(&manager, "/builtIn/write").await;
+        assert_ne!(first_id, second_id);
+        let second = manager
+            .get_snapshot(&["project-123".to_string()])
+            .await
+            .unwrap();
         assert!(second.project_effective["project-123"]["tools"]["builtIn"]
             .get("read")
             .is_none());
@@ -7459,7 +7515,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn re_registering_a_project_drops_a_deleted_document_overlay() {
+    async fn re_registering_a_project_retains_deleted_sensitive_overlay_until_consent() {
         let (_temp, manager) = manager().await;
         let metadata = tempfile::tempdir().expect("metadata");
         let config_root = metadata.path().join("projects/project-123/config");
@@ -7482,6 +7538,12 @@ mod tests {
             .get_snapshot(&["project-123".to_string()])
             .await
             .expect("first snapshot");
+        assert!(first.project_effective["project-123"]["tools"]["builtIn"]["read"].is_null());
+        accept_project_tools_change(&manager, "/builtIn/read").await;
+        let first = manager
+            .get_snapshot(&["project-123".to_string()])
+            .await
+            .unwrap();
         assert_eq!(
             first.project_effective["project-123"]["tools"]["builtIn"]["read"],
             json!(false)
@@ -7496,16 +7558,43 @@ mod tests {
             .get_snapshot(&["project-123".to_string()])
             .await
             .expect("second snapshot");
-        assert!(second.project_effective["project-123"]["tools"]["builtIn"]
-            .get("read")
-            .is_none());
-        assert!(!second.documents.iter().any(|document| {
+        // Removing an external file cannot silently relax its approved policy.
+        assert!(!tools_path.exists());
+        assert_eq!(
+            second.project_effective["project-123"]["tools"]["builtIn"]["read"],
+            json!(false)
+        );
+        assert!(second.documents.iter().any(|document| {
             document.kind == ConfigDocumentKind::Tools
                 && document.scope
                     == ConfigScope::Project {
                         project_id: "project-123".to_string(),
                     }
         }));
+        let reloaded = manager
+            .reload(
+                ConfigDocumentKind::Tools,
+                ConfigScope::Project {
+                    project_id: "project-123".into(),
+                },
+                ConfigChangeSource::ExternalEditor,
+            )
+            .await
+            .expect("reload deleted document as a minimal inheritance proposal");
+        assert!(reloaded.pending.is_some());
+        let pending = manager.get_snapshot(&["project-123".into()]).await.unwrap();
+        assert_eq!(
+            pending.project_effective["project-123"]["tools"]["builtIn"]["read"],
+            json!(false)
+        );
+        accept_project_tools_change(&manager, "/builtIn/read").await;
+        let approved = manager.get_snapshot(&["project-123".into()]).await.unwrap();
+        assert!(
+            approved.project_effective["project-123"]["tools"]["builtIn"]
+                .get("read")
+                .is_none()
+        );
+        assert!(manager.list_pending_changes().await.is_empty());
         assert!(second.documents.iter().any(|document| {
             document.kind == ConfigDocumentKind::Agents
                 && document.scope

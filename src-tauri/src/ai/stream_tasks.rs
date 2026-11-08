@@ -12,6 +12,67 @@ use tokio::task::{AbortHandle, JoinHandle};
 
 type ProcessResult = Result<(ExitStatus, String), String>;
 
+// Spawned tasks do not inherit this scope: a request ID alone cannot attest
+// that the caller is the owned parent future.
+tokio::task_local! {
+    static OWNED_STREAM_SCOPE: (std::sync::Weak<Mutex<HashMap<String, Entry>>>, String);
+}
+
+/// Attribution only: this value is neither an admission nor an SQL grant.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
+pub(crate) struct OwnedOperation030 {
+    pub identity: crate::db::agsdl_execution::flow030::FlowIdentity030,
+    pub context: crate::db::agsdl_execution::dto::EngineContext,
+    pub generation: String,
+    pub agent: String,
+    pub provider_attempt_id: String,
+    pub operation_id: String,
+    pub method: String,
+    pub request_json: String,
+}
+
+/// Single-use attachment, not a durable authorization. The transport must
+/// consume the attached operation itself rather than reconstructing its bytes.
+pub(crate) struct OwnedOperationPermit030 {
+    operation: OwnedOperation030,
+    digest: String,
+    registry: std::sync::Weak<Mutex<HashMap<String, Entry>>>,
+    parent_request_id: String,
+}
+impl OwnedOperationPermit030 {
+    pub(crate) fn digest(&self) -> &str {
+        &self.digest
+    }
+    pub(crate) fn into_operation(self) -> Result<OwnedOperation030, String> {
+        let entries = self.registry.upgrade().ok_or("Owned registry is gone.")?;
+        let in_parent = OWNED_STREAM_SCOPE
+            .try_with(|(registry, scoped_id)| {
+                scoped_id == &self.parent_request_id
+                    && registry
+                        .upgrade()
+                        .is_some_and(|scoped| Arc::ptr_eq(&scoped, &entries))
+            })
+            .unwrap_or(false);
+        if !in_parent {
+            return Err("Operation must be consumed by its owned parent.".into());
+        }
+        let guard = entries.lock().map_err(|_| "Stream registry poisoned")?;
+        let parent = guard
+            .get(&self.parent_request_id)
+            .ok_or("Owned parent is absent.")?;
+        if parent.cancelled
+            || parent
+                .abort
+                .as_ref()
+                .is_none_or(tokio::task::AbortHandle::is_finished)
+            || parent.operations030.get(&self.operation.operation_id) != Some(&self.operation)
+        {
+            return Err("Owned operation is no longer active.".into());
+        }
+        Ok(self.operation)
+    }
+}
+
 /// Dropping the stream requests tree termination; a separate supervisor owns
 /// the process until bounded reap and pipe draining provide a receipt.
 pub struct OwnedProcess {
@@ -44,12 +105,101 @@ struct Entry {
     finished: watch::Receiver<Option<Result<(), String>>>,
     cleanups: Vec<JoinHandle<Result<(), String>>>,
     admitted: bool,
+    cancelled: bool,
+    operations030: HashMap<String, OwnedOperation030>,
+    operations030_bytes: usize,
+    owner030: Option<(crate::db::agsdl_execution::dto::EngineOwner, String)>,
+    work030: Option<(
+        crate::db::agsdl_execution::flow030::FlowIdentity030,
+        crate::db::agsdl_execution::dto::EngineWork,
+        String,
+        String,
+    )>,
 }
 
 impl StreamTasks {
     /// Registration and cancellation share this synchronous lock. No provider
     /// work can be polled until its owner is installed in the registry.
     pub fn start<F>(&self, request_id: String, work: F) -> Result<(), String>
+    where
+        F: Future<Output = ()> + Send + 'static,
+    {
+        self.start_inner(request_id, None, None, work)
+    }
+
+    pub(crate) fn start_owned030<F>(
+        &self,
+        request_id: String,
+        owner: crate::db::agsdl_execution::dto::EngineOwner,
+        generation: String,
+        work: F,
+    ) -> Result<(), String>
+    where
+        F: Future<Output = ()> + Send + 'static,
+    {
+        self.start_inner(request_id, Some((owner, generation)), None, work)
+    }
+
+    /// The opaque attempt is minted from a claimed native Start. It binds the
+    /// parent to one exact work and provider attempt; it is not an SQL grant.
+    pub(crate) fn start_agent030<F>(
+        &self,
+        request_id: String,
+        attempt: &crate::agsdl_host_flow030::FlowWorkAttempt030,
+        work: F,
+    ) -> Result<(), String>
+    where
+        F: Future<Output = ()> + Send + 'static,
+    {
+        self.start_inner(
+            request_id,
+            Some((attempt.owner().clone(), attempt.generation().into())),
+            Some((
+                attempt.identity().clone(),
+                attempt.work().clone(),
+                attempt.agent().into(),
+                attempt.provider_attempt_id().into(),
+            )),
+            work,
+        )
+    }
+
+    // Production binding awaits native 036 admission; do not derive it from
+    // the first operation. This constructor is available only to fixtures.
+    #[cfg(test)]
+    pub(crate) fn start_work_fixture030<F>(
+        &self,
+        request_id: String,
+        identity: crate::db::agsdl_execution::flow030::FlowIdentity030,
+        context: crate::db::agsdl_execution::dto::EngineContext,
+        generation: String,
+        agent: String,
+        provider_attempt_id: String,
+        work: F,
+    ) -> Result<(), String>
+    where
+        F: Future<Output = ()> + Send + 'static,
+    {
+        self.start_inner(
+            request_id,
+            Some((context.owner, generation)),
+            Some((identity, context.work, agent, provider_attempt_id)),
+            work,
+        )
+    }
+
+    fn start_inner<F>(
+        &self,
+        request_id: String,
+        owner030: Option<(crate::db::agsdl_execution::dto::EngineOwner, String)>,
+        work030: Option<(
+            crate::db::agsdl_execution::flow030::FlowIdentity030,
+            crate::db::agsdl_execution::dto::EngineWork,
+            String,
+            String,
+        )>,
+        work: F,
+    ) -> Result<(), String>
     where
         F: Future<Output = ()> + Send + 'static,
     {
@@ -62,9 +212,10 @@ impl StreamTasks {
         }
         let (start, admitted) = oneshot::channel();
         let (finished, receiver) = watch::channel(None);
+        let scope = (Arc::downgrade(&self.entries), request_id.clone());
         let handle = tokio::spawn(async move {
             if admitted.await.is_ok() {
-                work.await;
+                OWNED_STREAM_SCOPE.scope(scope, work).await;
             }
         });
         entries.insert(
@@ -74,6 +225,11 @@ impl StreamTasks {
                 admitted: true,
                 finished: receiver,
                 cleanups: Vec::new(),
+                cancelled: false,
+                operations030: HashMap::new(),
+                operations030_bytes: 0,
+                owner030,
+                work030,
             },
         );
         let registry = self.clone();
@@ -92,6 +248,13 @@ impl StreamTasks {
                     .get_mut(&request_id)
                     .map(|entry| {
                         entry.abort = None;
+                        // Only the request tombstone and completion receipt survive
+                        // the parent. Release request bodies and attribution after
+                        // its future has been destroyed, before joining resources.
+                        entry.operations030 = HashMap::new();
+                        entry.operations030_bytes = 0;
+                        entry.owner030 = None;
+                        entry.work030 = None;
                         std::mem::take(&mut entry.cleanups)
                     })
                     .unwrap_or_default(),
@@ -112,6 +275,94 @@ impl StreamTasks {
         });
         let _ = start.send(());
         Ok(())
+    }
+
+    /// Called under the host handoff lock after durable claim. This attaches
+    /// the exact operation to its current parent; it never grants authority.
+    pub(crate) fn attach_operation030(
+        &self,
+        request_id: &str,
+        operation: OwnedOperation030,
+    ) -> Result<OwnedOperationPermit030, String> {
+        use sha2::{Digest, Sha256};
+        let in_parent = OWNED_STREAM_SCOPE
+            .try_with(|(registry, scoped_id)| {
+                scoped_id == request_id
+                    && registry
+                        .upgrade()
+                        .is_some_and(|entries| Arc::ptr_eq(&entries, &self.entries))
+            })
+            .unwrap_or(false);
+        if !in_parent {
+            return Err("Operation is not running in its owned parent.".into());
+        }
+        if operation.operation_id.is_empty()
+            || operation.agent.is_empty()
+            || operation.provider_attempt_id.is_empty()
+            || operation.generation.is_empty()
+            || operation.method.is_empty()
+            || operation.request_json.len() > 2_000_000
+        {
+            return Err("Native operation attribution is incomplete.".into());
+        }
+        let encoded = serde_json::to_vec(&operation)
+            .map_err(|_| "Native operation attribution cannot be encoded.")?;
+        let digest = format!("{:x}", Sha256::digest(&encoded));
+        let mut entries = self
+            .entries
+            .lock()
+            .map_err(|_| "Stream registry poisoned")?;
+        let parent = entries
+            .get_mut(request_id)
+            .ok_or("Owned parent is absent.")?;
+        if !parent.admitted
+            || parent.cancelled
+            || parent
+                .abort
+                .as_ref()
+                .is_none_or(tokio::task::AbortHandle::is_finished)
+        {
+            return Err("Owned parent has stopped or is stopping.".into());
+        }
+        if parent.owner030.as_ref()
+            != Some(&(
+                operation.context.owner.clone(),
+                operation.generation.clone(),
+            ))
+        {
+            return Err("Owned parent attribution differs.".into());
+        }
+        if parent.work030.as_ref()
+            != Some(&(
+                operation.identity.clone(),
+                operation.context.work.clone(),
+                operation.agent.clone(),
+                operation.provider_attempt_id.clone(),
+            ))
+        {
+            return Err("Owned parent work or provider attempt differs.".into());
+        }
+        if parent.operations030.contains_key(&operation.operation_id) {
+            return Err("Native operation was already attached.".into());
+        }
+        let total = parent
+            .operations030_bytes
+            .checked_add(encoded.len())
+            .filter(|total| *total <= 8_000_000)
+            .ok_or("Owned operation attribution exceeds its bound.")?;
+        if parent.operations030.len() >= 1000 {
+            return Err("Too many operations attached to the owned parent.".into());
+        }
+        parent
+            .operations030
+            .insert(operation.operation_id.clone(), operation.clone());
+        parent.operations030_bytes = total;
+        Ok(OwnedOperationPermit030 {
+            operation,
+            digest,
+            registry: Arc::downgrade(&self.entries),
+            parent_request_id: request_id.into(),
+        })
     }
 
     pub fn own_process(
@@ -215,8 +466,14 @@ impl StreamTasks {
                     admitted: false,
                     finished: receiver,
                     cleanups: Vec::new(),
+                    cancelled: true,
+                    operations030: HashMap::new(),
+                    operations030_bytes: 0,
+                    owner030: None,
+                    work030: None,
                 }
             });
+            entry.cancelled = true;
             if let Some(abort) = &entry.abort {
                 abort.abort();
             }
@@ -238,6 +495,252 @@ impl StreamTasks {
 mod tests {
     use super::*;
     use std::sync::atomic::{AtomicBool, Ordering};
+
+    fn operation030() -> OwnedOperation030 {
+        OwnedOperation030 {
+            identity: crate::db::agsdl_execution::flow030::FlowIdentity030 {
+                system_start_id: "system".into(),
+                flow_invocation_id: "flow".into(),
+                snapshot_id: "snapshot".into(),
+                epoch: "capture".into(),
+            },
+            context: serde_json::from_value(serde_json::json!({
+                "owner":{"systemStartId":"system","ownerEpoch":"3"},
+                "work":{"systemStartId":"system","flowInvocationId":"flow",
+                    "activationId":"activation","agentInstanceId":"agent","step":["work"]},
+                "permissionsJson":"{}","scopeJson":"{}","registryVersion":"registry"
+            }))
+            .unwrap(),
+            generation: "generation".into(),
+            agent: "worker".into(),
+            provider_attempt_id: "attempt".into(),
+            operation_id: "operation".into(),
+            method: "turn/start".into(),
+            request_json: r#"{"value":1e0}"#.into(),
+        }
+    }
+
+    #[tokio::test]
+    async fn operation_is_attached_once_only_by_its_running_parent() {
+        let registry = StreamTasks::default();
+        assert!(registry
+            .attach_operation030("parent", operation030())
+            .is_err());
+        let inside = registry.clone();
+        let (tx, rx) = oneshot::channel();
+        registry
+            .start_work_fixture030(
+                "parent".into(),
+                operation030().identity,
+                operation030().context,
+                "generation".into(),
+                "worker".into(),
+                "attempt".into(),
+                async move {
+                    let operation = operation030();
+                    let mut foreign_owner = operation.clone();
+                    foreign_owner.context.owner.owner_epoch = "different".into();
+                    assert!(inside.attach_operation030("parent", foreign_owner).is_err());
+                    let mut foreign_generation = operation.clone();
+                    foreign_generation.generation = "different".into();
+                    assert!(inside
+                        .attach_operation030("parent", foreign_generation)
+                        .is_err());
+                    let mut foreign_work = operation.clone();
+                    foreign_work.context.work.activation_id = "other-work".into();
+                    foreign_work.operation_id = "foreign-work".into();
+                    let work_refused = inside.attach_operation030("parent", foreign_work).is_err();
+                    let mut foreign_attempt = operation.clone();
+                    foreign_attempt.provider_attempt_id = "other-attempt".into();
+                    foreign_attempt.operation_id = "foreign-attempt".into();
+                    let attempt_refused = inside
+                        .attach_operation030("parent", foreign_attempt)
+                        .is_err();
+                    let mut foreign_step = operation.clone();
+                    foreign_step.context.work.step = Some(vec!["other-step".into()]);
+                    foreign_step.operation_id = "foreign-step".into();
+                    let step_refused = inside.attach_operation030("parent", foreign_step).is_err();
+                    let mut foreign_instance = operation.clone();
+                    foreign_instance.context.work.agent_instance_id = Some("other-instance".into());
+                    foreign_instance.operation_id = "foreign-instance".into();
+                    let instance_refused = inside.attach_operation030("parent", foreign_instance).is_err();
+                    let mut foreign_agent = operation.clone();
+                    foreign_agent.agent = "other-agent".into();
+                    foreign_agent.operation_id = "foreign-agent".into();
+                    let agent_refused = inside.attach_operation030("parent", foreign_agent).is_err();
+                    let mut foreign_snapshot = operation.clone();
+                    foreign_snapshot.identity.snapshot_id = "other-snapshot".into();
+                    foreign_snapshot.operation_id = "foreign-snapshot".into();
+                    let snapshot_refused = inside.attach_operation030("parent", foreign_snapshot).is_err();
+                    let mut foreign_epoch = operation.clone();
+                    foreign_epoch.identity.epoch = "other-epoch".into();
+                    foreign_epoch.operation_id = "foreign-epoch".into();
+                    let epoch_refused = inside.attach_operation030("parent", foreign_epoch).is_err();
+                    assert!(
+                        work_refused && attempt_refused && step_refused && instance_refused && agent_refused && snapshot_refused && epoch_refused,
+                        "work: {work_refused}; attempt: {attempt_refused}; step: {step_refused}; instance: {instance_refused}; agent: {agent_refused}; snapshot: {snapshot_refused}; epoch: {epoch_refused}"
+                    );
+                    let permit = inside
+                        .attach_operation030("parent", operation.clone())
+                        .unwrap();
+                    assert_eq!(permit.digest().len(), 64);
+                    assert_eq!(permit.into_operation().unwrap(), operation);
+                    let mut detached = operation.clone();
+                    detached.operation_id = "detached".into();
+                    let permit = inside.attach_operation030("parent", detached).unwrap();
+                    assert!(
+                        tokio::spawn(async move { permit.into_operation().is_err() })
+                            .await
+                            .unwrap()
+                    );
+                    assert!(inside
+                        .attach_operation030("parent", operation.clone())
+                        .is_err());
+                    assert!(inside
+                        .attach_operation030("other", operation.clone())
+                        .is_err());
+                    assert!(StreamTasks::default()
+                        .attach_operation030("parent", operation)
+                        .is_err());
+                    tx.send(()).unwrap();
+                    std::future::pending::<()>().await;
+                },
+            )
+            .unwrap();
+        rx.await.unwrap();
+        let entries = registry.entries.lock().unwrap();
+        let stored = &entries["parent"].operations030["operation"];
+        assert_eq!(stored.request_json, r#"{"value":1e0}"#);
+        assert_eq!(stored.provider_attempt_id, "attempt");
+        drop(entries);
+        assert!(registry.cancel_owned("parent").await.unwrap());
+        assert!(registry
+            .attach_operation030("parent", operation030())
+            .is_err());
+    }
+
+    async fn finished_parent_releases_operation_data(cancel: bool) {
+        let registry = StreamTasks::default();
+        let inside = registry.clone();
+        let (attached, observed) = oneshot::channel();
+        let (finish, finishing) = oneshot::channel();
+        registry
+            .start_work_fixture030(
+                "parent".into(),
+                operation030().identity,
+                operation030().context,
+                "generation".into(),
+                "worker".into(),
+                "attempt".into(),
+                async move {
+                    let mut operation = operation030();
+                    operation.request_json = format!(r#"{{"content":"{}"}}"#, "x".repeat(65_536));
+                    for id in ["first", "second"] {
+                        operation.operation_id = id.into();
+                        inside
+                            .attach_operation030("parent", operation.clone())
+                            .unwrap()
+                            .into_operation()
+                            .unwrap();
+                    }
+                    attached.send(()).unwrap();
+                    let _ = finishing.await;
+                },
+            )
+            .unwrap();
+        observed.await.unwrap();
+        let mut completion = {
+            let entries = registry.entries.lock().unwrap();
+            let active = &entries["parent"];
+            assert_eq!(active.operations030.len(), 2);
+            assert!(active.operations030_bytes > 131_072);
+            assert!(active.owner030.is_some() && active.work030.is_some());
+            active.finished.clone()
+        };
+        if cancel {
+            registry.cancel("parent").await.unwrap();
+        } else {
+            finish.send(()).unwrap();
+        }
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while completion.borrow_and_update().is_none() {
+                completion.changed().await.unwrap();
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(completion.borrow().as_ref(), Some(&Ok(())));
+        {
+            let entries = registry.entries.lock().unwrap();
+            let tombstone = &entries["parent"];
+            assert!(tombstone.admitted && tombstone.abort.is_none());
+            assert!(tombstone.operations030.is_empty());
+            assert_eq!(tombstone.operations030.capacity(), 0);
+            assert_eq!(tombstone.operations030_bytes, 0);
+            assert!(tombstone.owner030.is_none() && tombstone.work030.is_none());
+        }
+        assert!(registry.start("parent".into(), async {}).is_err());
+        registry.cancel("parent").await.unwrap();
+        assert!(registry
+            .attach_operation030("parent", operation030())
+            .is_err());
+    }
+
+    #[tokio::test]
+    async fn completed_parent_releases_request_data_but_keeps_its_tombstone() {
+        finished_parent_releases_operation_data(false).await;
+    }
+
+    #[tokio::test]
+    async fn cancelled_parent_releases_request_data_but_keeps_its_tombstone() {
+        finished_parent_releases_operation_data(true).await;
+    }
+
+    #[tokio::test]
+    async fn spawned_child_cannot_attach_using_its_parents_id() {
+        let registry = StreamTasks::default();
+        let inside = registry.clone();
+        let (tx, rx) = oneshot::channel();
+        registry
+            .start_work_fixture030(
+                "parent".into(),
+                operation030().identity,
+                operation030().context,
+                "generation".into(),
+                "worker".into(),
+                "attempt".into(),
+                async move {
+                    let child = tokio::spawn(async move {
+                        inside
+                            .attach_operation030("parent", operation030())
+                            .is_err()
+                    });
+                    tx.send(child.await.unwrap()).unwrap();
+                },
+            )
+            .unwrap();
+        assert!(rx.await.unwrap());
+        registry.cancel("parent").await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn owner_only_parent_cannot_choose_work_from_its_first_operation() {
+        let registry = StreamTasks::default();
+        let inner = registry.clone();
+        let (done, result) = oneshot::channel();
+        registry
+            .start_owned030(
+                "parent".into(),
+                operation030().context.owner,
+                "generation".into(),
+                async move {
+                    let _ = done.send(inner.attach_operation030("parent", operation030()).is_err());
+                },
+            )
+            .unwrap();
+        assert!(result.await.unwrap());
+        registry.cancel("parent").await.unwrap();
+    }
 
     #[tokio::test]
     async fn cancel_before_admission_and_duplicate_start_never_poll_work() {
@@ -838,7 +1341,7 @@ mod admitted {
             use std::process::Stdio;
             use tokio::io::{AsyncBufReadExt, BufReader};
             for panics in [false, true] {
-                let mut child = tokio::process::Command::new("sh")
+                let mut child = crate::core::process::background_tokio_command("sh")
                     .args(["-c", "printf 'synthetic-ready\\n' >&2; read ignored"])
                     .stdin(Stdio::piped())
                     .stdout(Stdio::null())

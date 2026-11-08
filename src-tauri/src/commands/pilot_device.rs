@@ -1,11 +1,9 @@
 //! The display name is a label, never an authentication or device identifier.
-#[cfg(not(target_os = "windows"))]
-use std::process::Command;
 
 #[tauri::command]
 pub fn pilot_device_name() -> String {
     #[cfg(target_os = "macos")]
-    let name = Command::new("/usr/sbin/scutil")
+    let name = crate::core::process::background_command("/usr/sbin/scutil")
         .args(["--get", "ComputerName"])
         .output()
         .ok()
@@ -14,7 +12,7 @@ pub fn pilot_device_name() -> String {
     #[cfg(target_os = "windows")]
     let name = std::env::var("COMPUTERNAME").ok();
     #[cfg(not(any(target_os = "macos", target_os = "windows")))]
-    let name = Command::new("hostname")
+    let name = crate::core::process::background_command("hostname")
         .output()
         .ok()
         .filter(|output| output.status.success())

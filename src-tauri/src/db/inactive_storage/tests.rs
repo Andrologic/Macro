@@ -1057,7 +1057,8 @@ async fn migration15_failure_rolls_back_and_does_not_change_existing_content_tok
             .unwrap();
     remove_reference_schema_in(&mut *pool.acquire().await.unwrap()).await;
     sqlx::raw_sql("CREATE TRIGGER synthetic_reject_15 BEFORE INSERT ON schema_migrations WHEN NEW.version=15 BEGIN SELECT RAISE(ABORT,'synthetic'); END").execute(&pool).await.unwrap();
-    assert!(crate::db::run_migrations(&pool).await.is_err());
+    let error = crate::db::run_migrations(&pool).await.unwrap_err();
+    assert!(error.to_string().contains("synthetic"), "{error}");
     assert_eq!(
         sqlx::query_scalar::<_, i64>(
             "SELECT COUNT(*) FROM sqlite_master WHERE name LIKE 'e_inactive_%'"
@@ -1068,11 +1069,11 @@ async fn migration15_failure_rolls_back_and_does_not_change_existing_content_tok
         0
     );
     assert_eq!(
-        sqlx::query_scalar::<_, i64>("SELECT MAX(version) FROM schema_migrations")
+        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM schema_migrations WHERE version=15")
             .fetch_one(&pool)
             .await
             .unwrap(),
-        14
+        0
     );
     sqlx::query("DROP TRIGGER synthetic_reject_15")
         .execute(&pool)

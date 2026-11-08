@@ -13,6 +13,11 @@ autobins = false
 name = "macro"
 path = "src/main.rs"
 
+[[bin]]
+name = "agsdl-content-helper-qa"
+path = "src/bin/agsdl_content_helper_qa.rs"
+required-features = ["agsdl-content-qa"]
+
 [[test]]
 name = "lsp_core"
 path = "tests/lsp_core.rs"
@@ -33,9 +38,11 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 
 [features]
 browser-runtime-debug = ["dep:tauri-remote-ui"]
+agsdl-content-qa = []
 
 [build-dependencies]
 tauri-build = { version = "=2.7.4", features = [] }
+serde_json = "1"
 
 [dependencies]
 # Same locked SQLite library as SQLx, for bounded native BLOB reads.

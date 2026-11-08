@@ -1797,45 +1797,25 @@ mod tests {
     use super::*;
     use std::sync::atomic::{AtomicI64, Ordering};
     const START: i64 = 1_800_000_000_000;
-    async fn fixture() -> (SqlitePool, PilotFileScope, AtomicI64) {
+    async fn fixture() -> (tempfile::TempDir, SqlitePool, PilotFileScope, AtomicI64) {
+        // Migrations use a dedicated runtime; retain the database across pool
+        // connection replacement and keep the fixture directory alive per test.
+        let directory = tempfile::tempdir().unwrap();
         let p = sqlx::sqlite::SqlitePoolOptions::new()
             .max_connections(1)
-            .connect("sqlite::memory:")
+            .connect_with(
+                sqlx::sqlite::SqliteConnectOptions::new()
+                    .filename(directory.path().join("pilot-files.db"))
+                    .create_if_missing(true)
+                    .foreign_keys(true),
+            )
             .await
             .unwrap();
         sqlx::query("PRAGMA foreign_keys=ON")
             .execute(&p)
             .await
             .unwrap();
-        sqlx::raw_sql(include_str!("migrations/001_initial.sql"))
-            .execute(&p)
-            .await
-            .unwrap();
-        sqlx::query("ALTER TABLE messages ADD COLUMN generation_attempts_json TEXT")
-            .execute(&p)
-            .await
-            .unwrap();
-        sqlx::raw_sql(include_str!("migrations/007_conversation_management.sql"))
-            .execute(&p)
-            .await
-            .unwrap();
-        sqlx::raw_sql(include_str!("migrations/012_pilot_files.sql"))
-            .execute(&p)
-            .await
-            .unwrap();
-        sqlx::raw_sql(include_str!("migrations/015_inactive_storage.sql"))
-            .execute(&p)
-            .await
-            .unwrap();
-        // This manual historical fixture needs the real missing runtime table
-        // before the source-version triggers and shared preparation domain.
-        crate::db::ensure_conversation_compactions(&mut *p.acquire().await.unwrap())
-            .await
-            .unwrap();
-        sqlx::raw_sql(include_str!("migrations/016_source_capture.sql"))
-            .execute(&p)
-            .await
-            .unwrap();
+        crate::db::run_migrations(&p).await.unwrap();
         sqlx::query("INSERT INTO conversations(id,title,scope_mode,created_at,updated_at) VALUES ('conversation','Synthetic','Chat','now','now')").execute(&p).await.unwrap();
         let s = PilotFileScope {
             account_id: "account".into(),
@@ -1852,7 +1832,7 @@ mod tests {
         };
         let time = AtomicI64::new(START);
         auth(&p, &s, true, &|| time.load(Ordering::SeqCst)).await;
-        (p, s, time)
+        (directory, p, s, time)
     }
     fn d() -> String {
         date(START + 60 * 60 * 1000).unwrap()
@@ -1932,7 +1912,7 @@ mod tests {
     }
     #[tokio::test]
     async fn intent_offsets_and_digest_are_immutable_and_replays_do_not_extend_idle() {
-        let (p, s, time) = fixture().await;
+        let (_directory, p, s, time) = fixture().await;
         let c = || time.load(Ordering::SeqCst);
         let input = b(&s, "intent", "batch", b"abc");
         let r = begin(&p, input.clone(), &c).await.unwrap();
@@ -1971,7 +1951,7 @@ mod tests {
     }
     #[tokio::test]
     async fn quotas_reserve_before_bytes_and_include_finalized_orphans() {
-        let (p, s, time) = fixture().await;
+        let (_directory, p, s, time) = fixture().await;
         let c = || time.load(Ordering::SeqCst);
         for n in 0..4 {
             let mut i = b(&s, &format!("file-{n}"), "batch", b"x");
@@ -1986,7 +1966,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(bytes, 0);
-        let (p, s, time) = fixture().await;
+        let (_directory, p, s, time) = fixture().await;
         let c = || time.load(Ordering::SeqCst);
         let r = upload(&p, &s, "orphan", "batch", b"abc", &c).await;
         for n in 0..15 {
@@ -2014,7 +1994,7 @@ mod tests {
     }
     #[tokio::test]
     async fn exact_scope_revocation_and_restoration_reject_old_transfers() {
-        let (p, s, time) = fixture().await;
+        let (_directory, p, s, time) = fixture().await;
         let c = || time.load(Ordering::SeqCst);
         let r = begin(&p, b(&s, "intent", "batch", b"abc"), &c)
             .await
@@ -2066,7 +2046,7 @@ mod tests {
     }
     #[tokio::test]
     async fn expired_commit_rolls_back_all_effects() {
-        let (p, s, _) = fixture().await;
+        let (_directory, p, s, _) = fixture().await;
         let calls = AtomicI64::new(0);
         let c = || {
             if calls.fetch_add(1, Ordering::SeqCst) > 12 {
@@ -2086,7 +2066,7 @@ mod tests {
     }
     #[tokio::test]
     async fn atomic_send_receipts_real_context_and_confirmed_assistant_cas() {
-        let (p, s, time) = fixture().await;
+        let (_directory, p, s, time) = fixture().await;
         let c = || time.load(Ordering::SeqCst);
         let r = upload(&p, &s, "upload", "batch", b"hello", &c).await;
         let i = prep(&s, r.attachment_id.as_ref().unwrap());
@@ -2208,7 +2188,7 @@ mod tests {
     }
     #[tokio::test]
     async fn abort_frees_bytes_and_never_removes_attached_data() {
-        let (p, s, time) = fixture().await;
+        let (_directory, p, s, time) = fixture().await;
         let c = || time.load(Ordering::SeqCst);
         let r = upload(&p, &s, "intent", "batch", b"abc", &c).await;
         let out = prepare_send(&p, prep(&s, r.attachment_id.as_ref().unwrap()), &c)
@@ -2240,7 +2220,7 @@ mod tests {
     }
     #[tokio::test]
     async fn opaque_catalog_provenance_digest_and_five_minute_expiry() {
-        let (p, s, time) = fixture().await;
+        let (_directory, p, s, time) = fixture().await;
         let c = || time.load(Ordering::SeqCst);
         let r = upload(&p, &s, "intent", "batch", b"hello", &c).await;
         prepare_send(&p, prep(&s, r.attachment_id.as_ref().unwrap()), &c)
@@ -2295,7 +2275,7 @@ mod tests {
     }
     #[tokio::test]
     async fn expired_local_revoke_preserves_new_binding_and_cleanup_needs_no_requests() {
-        let (p, s, time) = fixture().await;
+        let (_directory, p, s, time) = fixture().await;
         let c = || time.load(Ordering::SeqCst);
         let r = upload(&p, &s, "intent", "batch", b"abc", &c).await;
         let revoke = PilotFileAuthorizeInput {
@@ -2327,7 +2307,7 @@ mod tests {
     }
     #[tokio::test]
     async fn current_other_mobile_reads_attached_messages_but_cannot_read_old_uploads() {
-        let (p, s, time) = fixture().await;
+        let (_directory, p, s, time) = fixture().await;
         let c = || time.load(Ordering::SeqCst);
         let r = upload(&p, &s, "intent", "batch", b"local message context", &c).await;
         let sent = prepare_send(&p, prep(&s, r.attachment_id.as_ref().unwrap()), &c)
@@ -2376,7 +2356,7 @@ mod tests {
     }
     #[tokio::test]
     async fn toolbox_citations_use_conversation_authority_without_a_message() {
-        let (p, s, time) = fixture().await;
+        let (_directory, p, s, time) = fixture().await;
         let c = || time.load(Ordering::SeqCst);
         sqlx::query("INSERT INTO conversation_citations(id,conversation_id,message_id,type,scope,source,title,content,path,created_at,updated_at) VALUES ('toolbox','conversation','manual-synthetic','file','context','manual','Notes','Toolbox bytes','attachment://manual-synthetic/notes.txt','now','now')").execute(&p).await.unwrap();
         let entries = list(
@@ -2417,7 +2397,7 @@ mod tests {
     }
     #[tokio::test]
     async fn large_citations_are_metadata_only_and_changed_bytes_invalidate_attestation() {
-        let (p, s, time) = fixture().await;
+        let (_directory, p, s, time) = fixture().await;
         let c = || time.load(Ordering::SeqCst);
         sqlx::query("INSERT INTO messages(id,conversation_id,role,content,created_at) VALUES ('source-message','conversation','assistant','','now')").execute(&p).await.unwrap();
         for (id, content) in [
@@ -2476,7 +2456,7 @@ mod tests {
     }
     #[tokio::test]
     async fn instance_counts_and_session_bytes_are_reserved_before_allocation() {
-        let (p, s, time) = fixture().await;
+        let (_directory, p, s, time) = fixture().await;
         let c = || time.load(Ordering::SeqCst);
         for n in 0..8 {
             let mut i = b(&s, &format!("large-{n}"), &format!("batch-{n}"), b"x");
@@ -2489,7 +2469,7 @@ mod tests {
                 .unwrap_err(),
             "resource_limit"
         );
-        let (p, s, time) = fixture().await;
+        let (_directory, p, s, time) = fixture().await;
         let c = || time.load(Ordering::SeqCst);
         for session in 0..3 {
             let mut scope = s.clone();
@@ -2510,7 +2490,7 @@ mod tests {
     }
     #[tokio::test]
     async fn canonical_unicode_filenames_and_mixed_attachment_order_survive_restore() {
-        let (p, s, time) = fixture().await;
+        let (_directory, p, s, time) = fixture().await;
         let c = || time.load(Ordering::SeqCst);
         for name in ["", "a/b", "a\\b", "a\0b"] {
             let mut i = b(&s, "bad-name", "batch", b"x");
@@ -2616,7 +2596,7 @@ mod tests {
     }
     #[tokio::test]
     async fn empty_gif_cannot_be_finalized_or_associated() {
-        let (p, s, time) = fixture().await;
+        let (_directory, p, s, time) = fixture().await;
         let c = || time.load(Ordering::SeqCst);
         let bytes = b"GIF89a\x01\x00\x01\x00\x80\x00\x00\x00\x00\x00\xff\xff\xff,\x00\x00\x00\x00\x01\x00\x01\x00\x00\x02\x00;";
         let mut input = b(&s, "empty-gif", "batch", bytes);
@@ -2680,7 +2660,7 @@ mod tests {
     }
     #[tokio::test]
     async fn sqlite_image_bytes_restore_without_upload_authority_or_cache() {
-        let (p, s, time) = fixture().await;
+        let (_directory, p, s, time) = fixture().await;
         let c = || time.load(Ordering::SeqCst);
         let bytes = synthetic_png();
         assert!(validate_content("image/png", &bytes).is_ok());
@@ -2731,7 +2711,7 @@ mod tests {
     }
     #[tokio::test]
     async fn finalized_expiry_and_abort_clear_attachment_ids_in_canonical_receipts() {
-        let (p, s, time) = fixture().await;
+        let (_directory, p, s, time) = fixture().await;
         let c = || time.load(Ordering::SeqCst);
         let finalized = upload(&p, &s, "expires", "batch", b"abc", &c).await;
         let abortable = upload(&p, &s, "aborts", "batch", b"def", &c).await;
