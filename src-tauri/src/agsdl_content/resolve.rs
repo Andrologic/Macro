@@ -331,6 +331,9 @@ async fn read_uri(
                     return Err(error("CORRELATION", "Activated skill root was replaced."));
                 }
             }
+            // Keep the activated ancestor as well as the helper's immediate
+            // parent: that same parent can be moved below a replaced root.
+            let root_after_read = root_path.clone();
             let denial = Arc::new(Mutex::new(None));
             let admission_error = Arc::clone(&denial);
             let read = crate::fs::operations::read_file_bytes_with_admission(
@@ -393,6 +396,14 @@ async fn read_uri(
                     .take()
                     .unwrap_or_else(|| file_read_error(context.cancel.is_cancelled(), e))
             })?;
+            if let Some(root) = root_after_read {
+                if crate::fs::operations::workspace_root_identity(&root).ok() != root_identity {
+                    return Err(error(
+                        "CORRELATION",
+                        "Activated skill root changed during resource read.",
+                    ));
+                }
+            }
             let final_uri = Url::from_file_path(resolved)
                 .map_err(|_| error("CONTENT_URI", "Cannot form file URI."))?
                 .to_string();

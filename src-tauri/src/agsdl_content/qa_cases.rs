@@ -417,6 +417,69 @@ async fn activated_skill_root_cannot_be_replaced_during_file_open() {
     assert!(task.await.unwrap().is_err());
 }
 
+async fn nested_skill_resource_rejects_replaced_root_with_same_parent() {
+    let temp = TempDir::new().unwrap();
+    let skill = temp.path().join("skills/review");
+    let parent = skill.join("references");
+    fs::create_dir_all(&parent).unwrap();
+    fs::write(
+        skill.join("SKILL.md"),
+        "---\nname: review\ndescription: Review changes.\n---\nRead carefully.\n",
+    )
+    .unwrap();
+    fs::write(parent.join("note.md"), "original").unwrap();
+    let origin = Url::from_file_path(temp.path().join("document.json"))
+        .unwrap()
+        .to_string();
+    let document = r#"{"agents":{"worker":{"skills":["review"]}},"skills":{"review":{"uri":"skills/review/SKILL.md"}}}"#;
+    let ctx = context(temp.path(), document, Some(&origin), "full");
+    let descriptors = discover_skills(&ctx).await.unwrap();
+    let loaded = load_skill(&ctx, &descriptors[0].handle).await.unwrap();
+    let stable = read_skill_resource(&ctx, &loaded, "references/note.md", None)
+        .await
+        .unwrap();
+    assert!(matches!(stable.payload, ContentPayload::Text { text } if text == "original"));
+    let root_before = crate::fs::operations::workspace_root_identity(&skill).unwrap();
+    let parent_before = crate::fs::operations::workspace_root_identity(&parent).unwrap();
+    let target = fs::canonicalize(parent.join("note.md")).unwrap();
+    let reached = Arc::new(tokio::sync::Barrier::new(2));
+    let release = Arc::new(tokio::sync::Barrier::new(2));
+    crate::fs::operations::install_content_before_open_hook(
+        target.clone(),
+        reached.clone(),
+        release.clone(),
+    );
+    let task = tokio::spawn(async move {
+        read_skill_resource(&ctx, &loaded, "references/note.md", None).await
+    });
+    tokio::time::timeout(std::time::Duration::from_secs(5), reached.wait())
+        .await
+        .unwrap();
+    let old_root = temp.path().join("skills/original");
+    fs::rename(&skill, &old_root).unwrap();
+    fs::create_dir(&skill).unwrap();
+    fs::rename(old_root.join("references"), &parent).unwrap();
+    assert_ne!(
+        crate::fs::operations::workspace_root_identity(&skill).unwrap(),
+        root_before
+    );
+    assert_eq!(
+        crate::fs::operations::workspace_root_identity(&parent).unwrap(),
+        parent_before
+    );
+    assert_eq!(fs::canonicalize(parent.join("note.md")).unwrap(), target);
+    release.wait().await;
+    let result = task.await.unwrap();
+    let error = result
+        .err()
+        .expect("changed skill root was accepted through the unchanged parent");
+    assert_eq!(error.code, "CORRELATION");
+    assert_eq!(
+        error.message,
+        "Activated skill root changed during resource read."
+    );
+}
+
 async fn activated_skill_root_cannot_be_replaced_during_approval() {
     let temp = TempDir::new().unwrap();
     let skill = temp.path().join("skills/review");
@@ -683,6 +746,7 @@ pub(super) const CASE_NAMES: &[&str] = &[
     "activated_skill_root_cannot_be_replaced_before_resource_read",
     "activated_skill_root_cannot_be_replaced_during_file_open",
     "activated_skill_root_cannot_be_replaced_during_approval",
+    "nested_skill_resource_rejects_replaced_root_with_same_parent",
     "substituted_fifo_must_not_be_opened_after_type_check",
     "authenticated_image_substitution_is_rejected_at_launch",
     "native_wait_timeout_retains_handle_until_real_reap",
@@ -713,6 +777,9 @@ async fn execute(name: &str) -> Result<(), String> {
         }
         "activated_skill_root_cannot_be_replaced_during_approval" => {
             activated_skill_root_cannot_be_replaced_during_approval().await
+        }
+        "nested_skill_resource_rejects_replaced_root_with_same_parent" => {
+            nested_skill_resource_rejects_replaced_root_with_same_parent().await
         }
         "substituted_fifo_must_not_be_opened_after_type_check" => {
             substituted_fifo_must_not_be_opened_after_type_check().await
