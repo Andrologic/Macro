@@ -5,11 +5,10 @@ pub(crate) mod capture;
 pub(crate) mod card_associations;
 pub(crate) mod diagnostics;
 pub(crate) mod discovery;
+pub(crate) mod discovery030;
 pub mod dto;
 #[path = "v030/flow.rs"]
 pub(crate) mod flow030;
-#[path = "v030/runtime_projection.rs"]
-pub(crate) mod runtime_projection030;
 pub(crate) mod flow_store030;
 pub(crate) mod flow_work_protocol030;
 pub(crate) mod inspection;
@@ -21,6 +20,8 @@ pub(crate) mod process_recovery;
 pub(crate) mod public;
 pub(crate) mod public030;
 pub(crate) mod responses;
+#[path = "v030/runtime_projection.rs"]
+pub(crate) mod runtime_projection030;
 pub(crate) mod start030;
 pub(crate) mod work_protocol030;
 #[cfg(test)]
