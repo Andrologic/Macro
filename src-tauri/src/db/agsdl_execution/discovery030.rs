@@ -4,7 +4,7 @@ use super::{
     decimal,
     dto::{EngineSourceOwner, EngineSourceRevision, EngineStartRequest, EngineVersions},
     failure,
-    flow030::{FlowPlan030, FlowState030},
+    flow030::{FlowEvent030, FlowEventKind030, FlowPlan030, FlowState030},
     json_lexemes030::document_tokens_equal,
     opaque, require,
     start030::{StartCapture030, StartReceipt030},
@@ -93,6 +93,20 @@ fn validated_summary(
     let capture_hash = format!("{:x}", Sha256::digest(serde_json::to_vec(&capture)?));
     let authored_hash = format!("{:x}", Sha256::digest(capture.authored_source.as_bytes()));
     let canonical_plan = serde_json::to_string(&plan)?;
+    let expected_enter = request
+        .entry
+        .as_ref()
+        .map(|entry| {
+            serde_json::to_string(&FlowEvent030 {
+                identity: capture.identity.clone(),
+                event_id: "start:enter".into(),
+                expected_revision: "0".into(),
+                kind: FlowEventKind030::Enter {
+                    message_json: entry.message_json.clone(),
+                },
+            })
+        })
+        .transpose()?;
     let status = optional("owner_status")?;
     let same = capture.source.owner == *owner
         && request.source == capture.source
@@ -128,15 +142,15 @@ fn validated_summary(
         && receipt.enter.as_ref().is_none_or(|entry| {
             entry.event_id == "start:enter"
                 && state.entered
-                && state
-                    .events
-                    .get(&entry.event_id)
-                    .is_some_and(|event| event.receipt == *entry)
+                && state.events.get(&entry.event_id).is_some_and(|event| {
+                    event.receipt == *entry
+                        && expected_enter.as_deref() == Some(event.event_json.as_str())
+                })
         })
-        && state
-            .plan_json
-            .as_ref()
-            .is_none_or(|p| p == &canonical_plan)
+        && match state.plan_json.as_ref() {
+            Some(plan) => plan == &canonical_plan,
+            None => state.events.is_empty() && !state.entered,
+        }
         && document_tokens_equal(&plan.document_json, &capture.authored_source)?;
     require(same, "Flow 0.3 discovery capture is inconsistent")?;
     decimal(&state.revision)?;

@@ -315,3 +315,58 @@ async fn logical_completion_does_not_imply_physical_end_or_verdict() {
         .iter()
         .any(|p| p.phase == "done" && p.count == "1"));
 }
+
+#[tokio::test]
+async fn rejects_changed_initial_event_and_missing_recorded_plan() {
+    for variant in 0..5 {
+        let (_temp, pool) = database().await;
+        let scope = owner("project", "feature/entry");
+        seed(&pool, "entry", scope.clone(), "live", false).await;
+        let raw: String = sqlx::query_scalar(
+            "SELECT state_json FROM engine_flow030_runs WHERE system_id='system-entry'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        let mut state: FlowState030 = serde_json::from_str(&raw).unwrap();
+        if variant == 4 {
+            state.plan_json = None;
+        } else {
+            let raw: String = sqlx::query_scalar("SELECT request_json FROM engine_start030_requests WHERE request_id='request-entry'")
+                .fetch_one(&pool).await.unwrap();
+            let start: EngineStartRequest = serde_json::from_str(&raw).unwrap();
+            let mut identity = state.identity.clone();
+            if variant == 1 {
+                identity.epoch = "different-capture".into();
+            }
+            let event = FlowEvent030 {
+                identity,
+                event_id: if variant == 2 {
+                    "other-event"
+                } else {
+                    "start:enter"
+                }
+                .into(),
+                expected_revision: if variant == 3 { "9" } else { "0" }.into(),
+                kind: FlowEventKind030::Enter {
+                    message_json: if variant == 0 {
+                        "{\"changed\":true}".into()
+                    } else {
+                        start.entry.unwrap().message_json
+                    },
+                },
+            };
+            state.events.get_mut("start:enter").unwrap().event_json =
+                serde_json::to_string(&event).unwrap();
+        }
+        sqlx::query("UPDATE engine_flow030_runs SET state_json=? WHERE system_id='system-entry'")
+            .bind(serde_json::to_string(&state).unwrap())
+            .execute(&pool)
+            .await
+            .unwrap();
+        assert!(
+            list_runs030(&pool, request(scope, None, 20)).await.is_err(),
+            "variant {variant}"
+        );
+    }
+}
