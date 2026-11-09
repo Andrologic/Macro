@@ -18,7 +18,7 @@ it('retains an approval draft after a conflict and does not submit a removed cho
   const request: ExecutionHumanRequestView = { kind: 'approval', title: 'Review', message: 'Input', choices: [{ value: 'continue', label: 'Continue' }] };
   await render(request, answer);
   const select = host.querySelector('select')!;
-  await act(async () => { select.value = 'continue'; select.dispatchEvent(new Event('change', { bubbles: true })); });
+  await act(async () => { select.value = '0'; select.dispatchEvent(new Event('change', { bubbles: true })); });
   const textarea = host.querySelector('textarea')!;
   await act(async () => {
     Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')!.set!.call(textarea, 'Keep this draft');
@@ -52,4 +52,13 @@ it('submits a plan decision only once while a response is pending', async () => 
   await act(async () => { button.click(); button.click(); });
   expect(answers).toEqual([{ kind: 'plan', approve: true, comment: '' }]);
   await act(async () => { release(); await pending; });
+});
+
+it('requires an explicit selection even when an arbitrary flow choice is the empty string', async () => {
+  const answers: ExecutionHumanAnswer[] = [];
+  await render({ kind: 'approval', title: 'Choose', message: 'Exact message', choices: [{ value: '', label: '' }] }, async answer => { answers.push(answer); });
+  expect(host.querySelector<HTMLButtonElement>('button[type="submit"]')!.disabled).toBe(true);
+  await act(async () => { const select = host.querySelector('select')!; select.value = '0'; select.dispatchEvent(new Event('change', { bubbles: true })); });
+  await act(async () => { host.querySelector('form')!.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true })); });
+  expect(answers).toEqual([{ kind: 'approval', choice: '', comment: '' }]);
 });

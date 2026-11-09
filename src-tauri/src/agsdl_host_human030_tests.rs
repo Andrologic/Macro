@@ -25,6 +25,14 @@ struct Fixture {
     attempt: FlowWorkAttempt030,
 }
 async fn fixture(kind: &str, timeout: Option<u64>, answer_timeout: Option<u64>) -> Fixture {
+    fixture_with_second_work(kind, timeout, answer_timeout, None).await
+}
+async fn fixture_with_second_work(
+    kind: &str,
+    timeout: Option<u64>,
+    answer_timeout: Option<u64>,
+    second_timeout: Option<u64>,
+) -> Fixture {
     let tmp = tempfile::TempDir::new().unwrap();
     let pool = crate::db::create_pool(&tmp.path().join("human.db"))
         .await
@@ -79,6 +87,13 @@ async fn fixture(kind: &str, timeout: Option<u64>, answer_timeout: Option<u64>) 
         decl.as_object_mut().unwrap().remove("answerTimeoutMs");
         plan.steps[0].declaration_json = decl.to_string();
     }
+    if let Some(timeout) = second_timeout {
+        assert_eq!(kind, "call", "The second owned work is a native host Call");
+        let mut second = plan.steps[0].clone();
+        second.address = vec!["second-work".into()];
+        second.timeout_ms_json = Some(timeout.to_string());
+        plan.steps.push(second);
+    }
     let capture = StartCapture030 {
         identity: id.clone(),
         source: serde_json::from_value(plan.source.clone()).unwrap(),
@@ -117,6 +132,13 @@ async fn fixture(kind: &str, timeout: Option<u64>, answer_timeout: Option<u64>) 
         producer: None,
         result: None,
     });
+    if second_timeout.is_some() {
+        let mut second = state.activations[0].clone();
+        second.id = "second-activation".into();
+        second.step = Some(vec!["second-work".into()]);
+        second.start_effect_id = Some("second-start".into());
+        state.activations.push(second);
+    }
     let effect = FlowEffect030 {
         id: reference.start_effect_id.clone(),
         identity: id.clone(),
@@ -132,7 +154,18 @@ async fn fixture(kind: &str, timeout: Option<u64>, answer_timeout: Option<u64>) 
             sender: None,
         },
     };
-    let handoff = json!({"kind":"nativeOwnedHandoff030","requestId":format!("flow030:{}:{}",id.system_start_id,reference.start_effect_id),"identity":id,"effectId":reference.start_effect_id,"ownerEpoch":owner.owner_epoch,"generation":attempt.generation(),"workAttempt":if kind=="agent" {serde_json::to_value(&attempt).unwrap()} else {Value::Null}});
+    let mut effects = vec![effect.clone()];
+    if second_timeout.is_some() {
+        let mut second = effect.clone();
+        second.id = "second-start".into();
+        let FlowEffectKind030::Start { work, step, .. } = &mut second.kind else {
+            unreachable!()
+        };
+        work.activation_id = "second-activation".into();
+        work.start_effect_id = second.id.clone();
+        *step = Some(vec!["second-work".into()]);
+        effects.push(second);
+    }
     let clock = Arc::new(TestClock::default());
     let host =
         crate::agsdl_host::route_attestation_test_host030(owner.clone(), attempt.generation());
@@ -182,32 +215,40 @@ async fn fixture(kind: &str, timeout: Option<u64>, answer_timeout: Option<u64>) 
         .execute(&mut *tx)
         .await
         .unwrap();
-    sqlx::query("INSERT INTO engine_flow030_outbox VALUES(?,?,?,?,?,?,?,?)")
-        .bind(&id.system_start_id)
-        .bind(&id.flow_invocation_id)
-        .bind(&reference.start_effect_id)
-        .bind("seed")
-        .bind(serde_json::to_string(&effect).unwrap())
-        .bind(&owner.owner_epoch)
-        .bind("uncertain")
-        .bind(None::<String>)
-        .execute(&mut *tx)
-        .await
-        .unwrap();
-    sqlx::query("INSERT INTO engine_flow030_handoffs VALUES(?,?,?,?,?,?)")
-        .bind(&id.system_start_id)
-        .bind(&id.flow_invocation_id)
-        .bind(&reference.start_effect_id)
-        .bind(&owner.owner_epoch)
-        .bind(attempt.generation())
-        .bind(handoff.to_string())
-        .execute(&mut *tx)
-        .await
-        .unwrap();
     let lease = host.start_lease().await.unwrap();
-    crate::agsdl_host_clock030::record_handoff_clock_tx(&mut tx, &lease, &effect, clock.as_ref())
+    for effect in &effects {
+        let handoff = json!({"kind":"nativeOwnedHandoff030","requestId":format!("flow030:{}:{}",id.system_start_id,effect.id),"identity":id,"effectId":effect.id,"ownerEpoch":owner.owner_epoch,"generation":attempt.generation(),"workAttempt":if kind=="agent" {serde_json::to_value(&attempt).unwrap()} else {Value::Null}});
+        sqlx::query("INSERT INTO engine_flow030_outbox VALUES(?,?,?,?,?,?,?,?)")
+            .bind(&id.system_start_id)
+            .bind(&id.flow_invocation_id)
+            .bind(&effect.id)
+            .bind("seed")
+            .bind(serde_json::to_string(effect).unwrap())
+            .bind(&owner.owner_epoch)
+            .bind("uncertain")
+            .bind(None::<String>)
+            .execute(&mut *tx)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO engine_flow030_handoffs VALUES(?,?,?,?,?,?)")
+            .bind(&id.system_start_id)
+            .bind(&id.flow_invocation_id)
+            .bind(&effect.id)
+            .bind(&owner.owner_epoch)
+            .bind(attempt.generation())
+            .bind(handoff.to_string())
+            .execute(&mut *tx)
+            .await
+            .unwrap();
+        crate::agsdl_host_clock030::record_handoff_clock_tx(
+            &mut tx,
+            &lease,
+            effect,
+            clock.as_ref(),
+        )
         .await
         .unwrap();
+    }
     sqlx::query("UPDATE engine_flow030_outbox SET status='settled',settlement_json='{}'")
         .execute(&mut *tx)
         .await
@@ -1306,8 +1347,11 @@ async fn real_commit_failure_rolls_back_resolution_and_allows_exact_ticket_readb
 async fn combines_call_039_and_human_clock_040_without_schema_conflict() {
     assert!(std::env::var_os("MACRO_AGSDL030_CALL_MIGRATION_FIXTURE").is_some());
     let f = fixture("call", Some(60000), Some(100)).await;
-    let tables: i64 = sqlx::query_scalar("SELECT count(*) FROM sqlite_master WHERE type='table' AND name IN ('engine_flow030_calls','engine_flow030_clock','engine_flow030_handoff_clock')").fetch_one(&f.broker.pool).await.unwrap();
-    assert_eq!(tables, 3);
+    let tables: i64 = sqlx::query_scalar("SELECT count(*) FROM sqlite_master WHERE type='table' AND name IN ('engine_flow030_calls','engine_flow030_call_causes','engine_flow030_call_diagnostics','engine_flow030_clock','engine_flow030_handoff_clock')").fetch_one(&f.broker.pool).await.unwrap();
+    assert_eq!(
+        tables, 5,
+        "Use the current 039 fixture, including native causes and diagnostics"
+    );
     let work = f
         .broker
         .admit_host_work(&f.host, f.attempt.start_effect_id())
@@ -1551,4 +1595,100 @@ async fn unicode_comments_keep_the_native_plan_lock_and_ts_journal_consistent() 
             "{comment:?}"
         );
     }
+}
+
+#[tokio::test]
+async fn plan_text_uses_ecmascript_emptiness_before_opening_a_native_request() {
+    for (text, empty) in [("\u{feff}", true), ("\u{0085}", false)] {
+        let f = fixture("agent", None, None).await;
+        let work = f.broker.admit_agent(&f.host, &f.attempt).await.unwrap();
+        pump(&f).await;
+        let result = f
+            .broker
+            .open(
+                &f.host,
+                &work,
+                "plan",
+                json!({"planId":"unicode-plan","text":text}),
+            )
+            .await;
+        if empty {
+            assert_eq!(result.unwrap_err().message, "Plan content absent");
+            let count: i64 =
+                sqlx::query_scalar("SELECT count(*) FROM engine_flow030_human_requests")
+                    .fetch_one(&f.broker.pool)
+                    .await
+                    .unwrap();
+            assert_eq!(count, 0);
+            assert!(f
+                .broker
+                .pump(&f.host, &CancellationToken::new())
+                .await
+                .unwrap()
+                .is_none());
+        } else {
+            let request = result.unwrap();
+            pump(&f).await;
+            assert_eq!(
+                f.broker.oldest_open(&work).await.unwrap(),
+                Some(request.clone())
+            );
+            let raw: String = sqlx::query_scalar(
+                "SELECT payload_json FROM engine_flow030_human_requests WHERE request_id=?",
+            )
+            .bind(request)
+            .fetch_one(&f.broker.pool)
+            .await
+            .unwrap();
+            assert_eq!(serde_json::from_str::<Value>(&raw).unwrap()["text"], text);
+        }
+    }
+}
+
+#[tokio::test]
+async fn retiring_the_first_expired_work_preserves_the_second_work_deadline() {
+    let f = fixture_with_second_work("call", Some(60000), None, Some(90000)).await;
+    let first = f
+        .broker
+        .admit_host_work(&f.host, f.attempt.start_effect_id())
+        .await
+        .unwrap();
+    pump(&f).await;
+    let second = f
+        .broker
+        .admit_host_work(&f.host, "second-start")
+        .await
+        .unwrap();
+    pump(&f).await;
+    assert_eq!(f.broker.next_wake_ms().await.unwrap(), Some(60000));
+    f.clock.at(60000);
+    f.broker.tick(&f.host).await.unwrap();
+    assert_eq!(pump(&f).await["expiredWorkIds"], json!([first.work_id()]));
+    assert_eq!(f.broker.next_wake_ms().await.unwrap(), Some(0));
+    f.broker.retire(&f.host, &first).await.unwrap();
+    let retired = pump(&f).await;
+    assert_eq!(retired["retiredClocks"][0]["workId"], first.work_id());
+    assert_eq!(retired["clocks"][0]["workId"], second.work_id());
+    assert_eq!(f.broker.next_wake_ms().await.unwrap(), Some(30000));
+    f.clock.at(75000);
+    assert_eq!(f.broker.next_wake_ms().await.unwrap(), Some(15000));
+    f.clock.at(90000);
+    f.broker.tick(&f.host).await.unwrap();
+    assert_eq!(pump(&f).await["expiredWorkIds"], json!([second.work_id()]));
+}
+
+#[tokio::test]
+async fn wake_rejects_a_native_clock_behind_the_persisted_observation() {
+    let f = fixture("agent", Some(60000), None).await;
+    f.broker.admit_agent(&f.host, &f.attempt).await.unwrap();
+    pump(&f).await;
+    f.clock.at(10000);
+    f.broker.tick(&f.host).await.unwrap();
+    pump(&f).await;
+    f.clock.at(9999);
+    let error = f.broker.next_wake_ms().await.unwrap_err();
+    assert_eq!(error.code, "CORRELATION");
+    assert_eq!(error.message, "Native wake time moved backwards");
+    f.clock.at(10000);
+    assert_eq!(f.broker.next_wake_ms().await.unwrap(), Some(50000));
 }
