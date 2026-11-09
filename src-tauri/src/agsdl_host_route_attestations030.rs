@@ -83,6 +83,8 @@ pub(crate) struct RouteAttestor030 {
 }
 // Derived inside the native transaction, never supplied by a caller or IPC.
 enum SourceKind030 {
+    Human { error: bool },
+    ComposeError,
     Error,
     Call { error: bool },
     JoinError,
@@ -98,6 +100,8 @@ impl SourceKind030 {
             Self::Call { error: false } => "call",
             Self::AgentWork { .. } => "agentWork",
             Self::Join => "join",
+            Self::Human { error: false } => "human",
+            Self::Human { error: true } | Self::ComposeError => "error",
         }
     }
     fn work_event_id(&self) -> Option<&str> {
@@ -113,12 +117,15 @@ impl SourceKind030 {
             Self::Call { error: false } => "call",
             Self::AgentWork { .. } => "agent",
             Self::Join => "join",
+            Self::Human { error: false } => "approval",
+            Self::Human { error: true } | Self::ComposeError => "error",
         }
     }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum SourceOwnershipKind030 {
+    Host,
     Agent,
     Call,
     Join,
@@ -164,6 +171,9 @@ impl AttestedRouteSource030 {
     /// A native group decision needs no invented agent join witness.
     pub(crate) fn ownership_kind(&self) -> SourceOwnershipKind030 {
         match self.kind {
+            SourceKind030::Human { .. } | SourceKind030::ComposeError => {
+                SourceOwnershipKind030::Host
+            }
             SourceKind030::Call { .. } => SourceOwnershipKind030::Call,
             SourceKind030::Join | SourceKind030::JoinError | SourceKind030::FailedGroupError => {
                 SourceOwnershipKind030::Join
@@ -336,6 +346,18 @@ impl RouteAttestor030 {
     ) -> Result<SourceKind030> {
         if reference.route.kind == "error" {
             return match producer.kind.as_str() {
+                "approval" | "compose" => {
+                    crate::agsdl_host_route_verifier030::verify_human_compose_source_tx(
+                        db, capture, producer, owner, generation,
+                    )
+                    .await
+                    .map_err(verification_error)?;
+                    Ok(if producer.kind == "approval" {
+                        SourceKind030::Human { error: true }
+                    } else {
+                        SourceKind030::ComposeError
+                    })
+                }
                 "agent" => Ok(SourceKind030::Error),
                 "call" => {
                     crate::agsdl_host_route_verifier030::verify_call_source_tx(
@@ -370,6 +392,14 @@ impl RouteAttestor030 {
         }
         require(reference.route.kind == "normal")?;
         match producer.kind.as_str() {
+            "approval" => {
+                crate::agsdl_host_route_verifier030::verify_human_compose_source_tx(
+                    db, capture, producer, owner, generation,
+                )
+                .await
+                .map_err(verification_error)?;
+                Ok(SourceKind030::Human { error: false })
+            }
             "call" => {
                 crate::agsdl_host_route_verifier030::verify_call_source_tx(
                     db, capture, producer, owner, generation,

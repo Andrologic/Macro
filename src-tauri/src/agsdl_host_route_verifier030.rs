@@ -181,6 +181,7 @@ impl SqlRouteMaterialVerifier030 {
                 "agent" => "agentWork",
                 "call" => "call",
                 "join" => "join",
+                "approval" => "human",
                 _ => return Err(StoreError030::Authority),
             }
         };
@@ -213,7 +214,16 @@ impl SqlRouteMaterialVerifier030 {
                     && source.get("producerAgent") == Some(&Value::Null)
                     && source.pointer("/provenance/instructions") == Some(&json!([])),
             )?;
-            if kind == "join" {
+            if producer.kind == "approval" || producer.kind == "compose" {
+                verify_human_compose_source_tx(
+                    db,
+                    capture,
+                    producer,
+                    &self.owner,
+                    &self.generation,
+                )
+                .await?;
+            } else if kind == "join" {
                 verify_join_source(db, capture, producer).await?;
             } else if producer.kind == "call" {
                 verify_call_source_tx(db, capture, producer, &self.owner, &self.generation).await?;
@@ -1346,3 +1356,7 @@ fn verify_native_content(
 #[cfg(test)]
 #[path = "agsdl_host_route_verifier030_tests.rs"]
 mod tests;
+
+#[path = "agsdl_host_route_human030.rs"]
+mod human;
+pub(crate) use human::verify_human_compose_source_tx;

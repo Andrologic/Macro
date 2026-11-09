@@ -6,24 +6,39 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, VecDeque};
 use std::sync::Mutex;
-use std::time::Instant;
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use tokio::sync::{oneshot, Notify};
 use tokio_util::sync::CancellationToken;
 
-/// Milliseconds within one host incarnation. System suspension follows the OS
-/// monotonic clock; no elapsed time is inferred across host/process replacement.
+/// Durable epoch milliseconds. Persisted origins remain comparable after restart.
 pub(crate) trait Clock030: Send + Sync {
     fn now_ms(&self) -> u64;
 }
-pub(crate) struct MonotoneClock030(Instant);
+pub(crate) struct MonotoneClock030 {
+    origin: u64,
+    started: Instant,
+}
 impl Default for MonotoneClock030 {
     fn default() -> Self {
-        Self(Instant::now())
+        Self {
+            origin: SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("epoch clock")
+                .as_millis()
+                .try_into()
+                .expect("epoch milliseconds"),
+            started: Instant::now(),
+        }
     }
 }
 impl Clock030 for MonotoneClock030 {
     fn now_ms(&self) -> u64 {
-        u64::try_from(self.0.elapsed().as_millis()).expect("monotone milliseconds overflow")
+        self.origin
+            .checked_add(
+                u64::try_from(self.started.elapsed().as_millis())
+                    .expect("monotone milliseconds overflow"),
+            )
+            .expect("epoch milliseconds overflow")
     }
 }
 #[cfg(all(feature = "agsdl-engine-qa", debug_assertions))]
@@ -109,6 +124,7 @@ struct Queue {
 
 #[derive(Default)]
 pub(crate) struct ClockBroker030 {
+    route: Option<std::sync::Arc<crate::agsdl_host_route030::RouteBroker030>>,
     queue: Mutex<Queue>,
     available: Notify,
 }
@@ -139,6 +155,14 @@ impl Drop for TicketGuard<'_> {
 }
 
 impl ClockBroker030 {
+    pub(crate) fn from_route(
+        route: std::sync::Arc<crate::agsdl_host_route030::RouteBroker030>,
+    ) -> Self {
+        Self {
+            route: Some(route),
+            ..Self::default()
+        }
+    }
     pub(crate) fn close(&self) {
         let mut queue = self.queue.lock().expect("work mailbox");
         queue.closed = true;
@@ -189,6 +213,12 @@ impl ClockBroker030 {
                 "work",
                 "Invalid work transition identity",
             ));
+        }
+        if let Some(route) = &self.route {
+            let input_json =
+                serde_json::json!({"operation":"humanClock", "input":input}).to_string();
+            let raw = route.evaluate(generation, input_json, cancelled).await?;
+            return Ok(serde_json::from_str(&raw)?);
         }
         let ticket = uuid::Uuid::new_v4().to_string();
         let job = HostClockJob030 {
@@ -367,6 +397,15 @@ mod tests {
         broker.close();
         assert!(broker.next().await.is_err());
     }
+    #[test]
+    fn production_clock_keeps_a_durable_epoch_across_instances() {
+        let first = MonotoneClock030::default();
+        let at = first.now_ms();
+        assert!(at > 1_600_000_000_000);
+        let replacement = MonotoneClock030::default();
+        assert!(replacement.now_ms() >= at);
+    }
+
     #[test]
     fn production_clock_never_moves_backwards() {
         let clock = MonotoneClock030::default();

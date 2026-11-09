@@ -40,6 +40,7 @@ use tokio::sync::OwnedMutexGuard;
 /// A missing response never authorizes a second physical effect.
 #[derive(Default)]
 pub(crate) struct FlowHost030 {
+    pub(crate) humans: crate::agsdl_host_human030::HumanRuntime030,
     committing: Mutex<BTreeMap<String, FlowIdentity030>>,
     pub(crate) call_commits: crate::agsdl_host_calls030::CallCommitFence030,
     event_committing: Mutex<BTreeMap<(String, String), FlowEvent030>>,
@@ -1393,6 +1394,16 @@ pub(crate) async fn apply_work_terminal_tx(
             }),
         },
     };
+    let controls: i64 = sqlx::query_scalar("SELECT count(*) FROM engine_flow030_clock_controls WHERE system_id=? AND invocation_id=? AND activation_id=? AND joined=0")
+        .bind(&identity.system_start_id).bind(&identity.flow_invocation_id).bind(&work.activation_id).fetch_one(&mut *db).await?;
+    if controls > 0 {
+        if !matches!(terminal.result(), repository::flow030::WorkResult030::Failed {error} if error.code == "TIMEOUT")
+        {
+            return Err(refused());
+        }
+        sqlx::query("UPDATE engine_flow030_clock_controls SET joined=1 WHERE system_id=? AND invocation_id=? AND activation_id=?")
+            .bind(&identity.system_start_id).bind(&identity.flow_invocation_id).bind(&work.activation_id).execute(&mut *db).await?;
+    }
     // A diagnostic is persisted for the caller's transaction to commit. Its
     // later Stop cleanup still requires the native control path.
     let applied = flow_store030::apply_tx(db, &authority, &event)
@@ -2366,6 +2377,15 @@ impl DispatchLease030<'_> {
         sqlx::query("INSERT INTO engine_flow030_handoffs(system_id,invocation_id,effect_id,owner_epoch,generation,receipt_json) VALUES(?,?,?,?,?,?)")
             .bind(&self.effect.identity.system_start_id).bind(&self.effect.identity.flow_invocation_id).bind(&self.effect.id)
             .bind(&self.owner.owner_epoch).bind(self.lease.generation()).bind(receipt.to_string()).execute(&mut *tx).await.map_err(|_| uncertain())?;
+        if matches!(self.effect.kind, FlowEffectKind030::Start { .. }) {
+            crate::agsdl_host_clock030::record_handoff_clock_tx(
+                &mut tx,
+                &self.lease,
+                &self.effect,
+                self.runtime.humans.clock().as_ref(),
+            )
+            .await?;
+        }
         if let Handoff030::Agent { attempt, policy } = &handoff {
             work_admission::admit_agent_work_tx(&mut tx, &self.lease, attempt, policy)
                 .await

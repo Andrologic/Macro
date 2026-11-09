@@ -676,6 +676,6 @@ export * from './ipc/chatAdmission';
 
 // Versioned transport uses the same native Start/snapshot commands and rejects
 // a historical snapshot. Native qualification still gates 0.3 admission.
-export { startExecution030, readExecutionSnapshot030, readExecutionHumans030, readExecutionRuntimeProjection030, listExecutionRuns030, readExecutionRunCorrelation030 } from './ipc/agsdlExecution030';
+export { submitExecutionHuman030, startExecution030, readExecutionSnapshot030, readExecutionHumans030, readExecutionRuntimeProjection030, listExecutionRuns030, readExecutionRunCorrelation030 } from './ipc/agsdlExecution030';
 export type { StartRequest030, PublicSnapshot030, PublicStartReceipt030 } from './ipc/agsdlExecution030';
 export type { ExecutionRunCorrelation030 } from '../types/generated/ipc';

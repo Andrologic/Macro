@@ -181,6 +181,11 @@ impl HostStartLease {
         self.ensure_live()?;
         Ok(result)
     }
+    pub(crate) fn clock_jobs030(&self) -> Arc<crate::agsdl_host_clock030::ClockBroker030> {
+        Arc::new(crate::agsdl_host_clock030::ClockBroker030::from_route(
+            self.host.route030.clone(),
+        ))
+    }
     pub(crate) fn call_data030(&self) -> Result<crate::agsdl_host_calls030::CallDataBroker030> {
         self.ensure_live()?;
         Ok(

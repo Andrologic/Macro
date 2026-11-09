@@ -66,3 +66,15 @@ export function readExecutionRunCorrelation030(
 ): Promise<ExecutionRunCorrelation030> {
   return invoke('execution_read_run_correlation030', { scope, systemStartId });
 }
+
+/** Native receipt identifies durable arbitration, independently of UI lifetime. */
+export function submitExecutionHuman030(input: {
+  scope: import('../../types/generated/ipc').HumanScope030;
+  requestId: string;
+  expectedRevision: string;
+  answer: { kind: 'decision'; decision: 'yes' | 'no'; comment: string }
+    | { kind: 'approval'; choice: string; comment: string }
+    | { kind: 'question'; answerJson: string };
+}): Promise<string> {
+  return invoke('execution_submit_human030', { input });
+}

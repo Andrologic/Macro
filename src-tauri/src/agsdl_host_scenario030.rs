@@ -8,6 +8,36 @@ use std::collections::BTreeMap;
 
 const SCENARIOS: &[(&str, &str)] = &[
     (
+        "answer-timeout-ask",
+        include_str!("../../dev/agsdl/fixtures/v0.3/conformance/runs/answer-timeout-ask.json"),
+    ),
+    (
+        "answer-timeout-plan",
+        include_str!("../../dev/agsdl/fixtures/v0.3/conformance/runs/answer-timeout-plan.json"),
+    ),
+    (
+        "approval",
+        include_str!("../../dev/agsdl/fixtures/v0.3/conformance/runs/approval.json"),
+    ),
+    (
+        "approval-comments",
+        include_str!("../../dev/agsdl/fixtures/v0.3/conformance/runs/approval-comments.json"),
+    ),
+    (
+        "call-answer-timeout",
+        include_str!("../../dev/agsdl/fixtures/v0.3/conformance/runs/call-answer-timeout.json"),
+    ),
+    (
+        "compose-body-failure",
+        include_str!("../../dev/agsdl/fixtures/v0.3/conformance/runs/compose-body-failure.json"),
+    ),
+    (
+        "timeout-pauses-for-person",
+        include_str!(
+            "../../dev/agsdl/fixtures/v0.3/conformance/runs/timeout-pauses-for-person.json"
+        ),
+    ),
+    (
         "error-route",
         include_str!("../../dev/agsdl/fixtures/v0.3/conformance/runs/error-route.json"),
     ),
@@ -131,6 +161,34 @@ const SCENARIOS: &[(&str, &str)] = &[
 
 const SCENARIO_PINS: &[(&str, &str)] = &[
     (
+        "answer-timeout-ask",
+        "e64965fd480db2de6593b47661da7d4f12b8457b176b420a39503909e0a9ce77",
+    ),
+    (
+        "answer-timeout-plan",
+        "c9460d0675eecaa9edbc1eb9b82076ba35425522c69ac4a47f53ae2c42af802f",
+    ),
+    (
+        "approval",
+        "a5594faf1ec7552958091bdcf3af3b47d2e4562750513d68ce11659e48f2db2a",
+    ),
+    (
+        "approval-comments",
+        "bca5a84096e1c65545dfe358e3ad12695de75cd1b7187de47b9b63459a858d56",
+    ),
+    (
+        "call-answer-timeout",
+        "fa7726bbbc65df75eeaec7df5c94d2a5f2a71dfab492d6bb94911642076b512a",
+    ),
+    (
+        "compose-body-failure",
+        "343e688b307fa98144b2b19f7e418fbdc5f34c943f121401f1c933e761748a5c",
+    ),
+    (
+        "timeout-pauses-for-person",
+        "7b7ebdb7b021b230cbb7163050a60fe222b522d404541ccd8c77f4f0eaeaeab5",
+    ),
+    (
         "quorum-unreachable",
         "b01ed57ae25c2ebbbd1039ad45b682e47eecfa689bdb197dad4b9faf8c7c52fc",
     ),
@@ -223,6 +281,15 @@ pub(crate) struct WorkKey030 {
 
 #[derive(Debug, Clone)]
 pub(crate) enum TimelineEvent030 {
+    Elapse(u64),
+    Request {
+        key: WorkKey030,
+        kind: String,
+    },
+    Answer {
+        key: WorkKey030,
+        answer: String,
+    },
     Work {
         key: WorkKey030,
         outcome: ExampleResult030,
@@ -274,6 +341,14 @@ fn key(step: &str, item: Option<&RawValue>) -> Result<WorkKey030> {
 
 fn parse_timeline(raw: &RawValue) -> Result<TimelineEvent030> {
     let mut fields: BTreeMap<String, Box<RawValue>> = serde_json::from_str(raw.get())?;
+    if let Some(elapse) = fields.remove("elapse") {
+        if !fields.is_empty() {
+            return Err(bad());
+        }
+        return Ok(TimelineEvent030::Elapse(serde_json::from_str(
+            elapse.get(),
+        )?));
+    }
     if let Some(running) = fields.remove("running") {
         if !fields.is_empty() {
             return Err(bad());
@@ -297,6 +372,49 @@ fn parse_timeline(raw: &RawValue) -> Result<TimelineEvent030> {
     let step: String = serde_json::from_str(fields.remove("work").ok_or_else(bad)?.get())?;
     let item = fields.remove("item");
     let k = key(&step, item.as_deref())?;
+    for field in ["request", "answer"] {
+        if let Some(raw) = fields.remove(field) {
+            if !fields.is_empty() {
+                return Err(bad());
+            }
+            let value: String = serde_json::from_str(raw.get())?;
+            return match field {
+                "request" if ["ask", "plan", "question"].contains(&value.as_str()) => {
+                    Ok(TimelineEvent030::Request {
+                        key: k,
+                        kind: value,
+                    })
+                }
+                "answer" if ["yes", "no"].contains(&value.as_str()) => {
+                    Ok(TimelineEvent030::Answer {
+                        key: k,
+                        answer: value,
+                    })
+                }
+                _ => Err(bad()),
+            };
+        }
+    }
+    if let Some(raw) = fields.remove("tool") {
+        if !fields.is_empty() {
+            return Err(bad());
+        }
+        #[derive(Deserialize)]
+        #[serde(rename_all = "camelCase", deny_unknown_fields)]
+        struct Tool {
+            content: Box<RawValue>,
+            is_error: bool,
+        }
+        let tool: Tool = serde_json::from_str(raw.get())?;
+        return Ok(TimelineEvent030::Command {
+            key: k,
+            receipt: crate::agsdl_host_calls030::CallEvent030::ToolReturned {
+                is_error: tool.is_error,
+                text: String::new(),
+                structured_content_json: Some(tool.content.get().into()),
+            },
+        });
+    }
     let fails = fields.remove("fails");
     let returns = fields.remove("returns");
     let command = fields.remove("command");
@@ -336,10 +454,12 @@ fn parse_timeline(raw: &RawValue) -> Result<TimelineEvent030> {
         }
         (None, Some(value)) => {
             let mut result: BTreeMap<String, Box<RawValue>> = serde_json::from_str(value.get())?;
-            if result
-                .keys()
-                .any(|k| !matches!(k.as_str(), "text" | "results" | "choice" | "instructions"))
-            {
+            if result.keys().any(|k| {
+                !matches!(
+                    k.as_str(),
+                    "text" | "results" | "choice" | "instructions" | "comment"
+                )
+            }) {
                 return Err(bad());
             }
             let text = result
@@ -404,15 +524,15 @@ mod tests {
     use super::*;
     #[test]
     fn fixture_identity_and_timeline_are_bound_to_exact_document_and_entry() {
-        let f: Fixture030 = serde_json::from_str(SCENARIOS[1].1).unwrap();
+        let f: Fixture030 = serde_json::from_str(SCENARIOS[8].1).unwrap();
         let scenario = PinnedScenario030::from_capture(f.document.get(), f.entry.get()).unwrap();
         assert_eq!(scenario.name, "join-all");
         assert_eq!(scenario.timeline.len(), 5);
         assert!(PinnedScenario030::from_capture(f.document.get(), "{}").is_err());
     }
     #[test]
-    fn all_thirty_vendor_scenarios_bind_exact_document_entry_and_timeline() {
-        assert_eq!(SCENARIOS.len(), 30);
+    fn all_thirty_seven_vendor_scenarios_bind_exact_document_entry_and_timeline() {
+        assert_eq!(SCENARIOS.len(), 37);
         for &(name, raw) in SCENARIOS {
             let fixture: Fixture030 = serde_json::from_str(raw).unwrap();
             assert!(PinnedScenario030::recognizes_document(fixture.document.get()).unwrap());
@@ -430,13 +550,14 @@ mod tests {
         }
     }
     #[test]
-    fn unqualified_vendor_scenario_is_not_recognized_or_selected() {
+    fn unpinned_document_is_not_recognized_or_selected() {
         let raw = include_str!("../../dev/agsdl/fixtures/v0.3/conformance/runs/approval.json");
         let fixture: Fixture030 = serde_json::from_str(raw).unwrap();
-        assert!(!PinnedScenario030::recognizes_document(fixture.document.get()).unwrap());
-        assert!(
-            PinnedScenario030::from_capture(fixture.document.get(), fixture.entry.get()).is_err()
-        );
+        let mut document: serde_json::Value = serde_json::from_str(fixture.document.get()).unwrap();
+        document["id"] = "unqualified-approval".into();
+        let document = serde_json::to_string(&document).unwrap();
+        assert!(!PinnedScenario030::recognizes_document(&document).unwrap());
+        assert!(PinnedScenario030::from_capture(&document, fixture.entry.get()).is_err());
     }
 
     #[test]

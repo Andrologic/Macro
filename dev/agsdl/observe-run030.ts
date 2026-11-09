@@ -2,7 +2,6 @@ import { Database } from 'bun:sqlite';
 import { createHash } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import { evaluateHostWork030 } from '../../src/services/agsdlExecution/hostWorkTransition030';
-import { evaluateHostHumanClock030 } from '../../src/services/agsdlExecution/hostHumanClock030';
 import { connectValueSchemaValidator030 } from '../../src/services/agsdlExecution/valueSchemaPort030';
 import { validate as validateValueSchema030 } from '../../src/vendor/agsdl/v0.3/valueschema.mjs';
 import { commandOutput030, mcpOutput030, prepareCall030 } from '../../src/services/agsdlExecution/calls030';
@@ -26,6 +25,7 @@ export interface ReplayVerdict030 {
   ok: boolean;
   divergence?: { eventId?: string; field: string; expected: unknown; stored: unknown };
   outsideReplay?: string[];
+  humanProjection?: { answers: unknown[]; timeoutIds: string[] };
 }
 // The synchronous caller starts an asynchronous supervisor. Only spawn(), not
 // spawnSync(), creates the detached verifier group on Bun/macOS. The supervisor
@@ -361,7 +361,7 @@ function terminalNoAdmission030(journal: EventRow030[], proof: Obj): boolean {
 
 // Host evidence is outside reduce(). Never infer a missing native receipt from
 // expect or reproduce flow scheduling here. The flow state has passed N-REPLAY.
-function verifyHostTables030(db: Database, state: Obj, plan: Obj, effects: EffectRow030[], journal: EventRow030[]): HostProjection030 {
+function verifyHostTables030(db: Database, state: Obj, plan: Obj, effects: EffectRow030[], journal: EventRow030[], humanProjection?: ReplayVerdict030['humanProjection']): HostProjection030 {
   const identity = record(state.identity), system = string(identity.systemStartId), invocation = string(identity.flowInvocationId);
   const require: (ok: unknown, field: string) => asserts ok = (ok, field) => { if (!ok) throw new Error(`Host evidence differs: ${field}`); };
   const list = (value: ExactValue | undefined): Obj[] => { require(Array.isArray(value), 'array'); return value.map(record); };
@@ -599,8 +599,8 @@ function verifyHostTables030(db: Database, state: Obj, plan: Obj, effects: Effec
     const prepared = preparations.get(id);
     if (prepared) require(typeof row.native_receipt_id === 'string' && row.native_receipt_id.length > 0 && same(json(row, 'source_json'), json(prepared, 'source_json')), 'route source/preparation');
     const sourceKind = record(reference.route).kind === 'error' ? 'error' : producer.kind;
-    require(['agent', 'join', 'call', 'error'].includes(string(sourceKind)), 'unsupported native source producer kind');
-    const kind = sourceKind === 'agent' ? 'agentWork' : sourceKind;
+    require(['agent', 'join', 'call', 'approval', 'error'].includes(string(sourceKind)), 'unsupported native source producer kind');
+    const kind = sourceKind === 'agent' ? 'agentWork' : sourceKind === 'approval' ? 'human' : sourceKind;
     require(row.receipt_kind === kind, 'source receipt kind');
     let producerAgent: ExactValue = null, instructions: Obj[] = [];
     if (kind === 'agentWork') {
@@ -678,11 +678,11 @@ function verifyHostTables030(db: Database, state: Obj, plan: Obj, effects: Effec
   }
   require(usedContexts.size === contexts.size && usedContent.size === contentRows.length, 'orphan content proof');
   // 039/040 are verified below against the same replayed activations and effects.
-  return verifyNativeCallsAndClock030(db, state, plan, effects, journal, owner);
+  return verifyNativeCallsAndClock030(db, state, plan, effects, journal, owner, humanProjection);
 }
 
 // Exported for isolated adapter tests; observeRun030 always replays first.
-export function verifyNativeCallsAndClock030(db: Database, state: Obj, plan: Obj, effects: EffectRow030[], journal: EventRow030[], owner: HostRow030): HostProjection030 {
+export function verifyNativeCallsAndClock030(db: Database, state: Obj, plan: Obj, effects: EffectRow030[], journal: EventRow030[], owner: HostRow030, humanProjection?: ReplayVerdict030['humanProjection']): HostProjection030 {
   const require: (ok: unknown, field: string) => asserts ok = (ok, field) => { if (!ok) throw new Error(`Host evidence differs: ${field}`); };
   const list = (v: ExactValue | undefined): Obj[] => { require(Array.isArray(v), 'array'); return v.map(record); };
   const identity = record(state.identity), system = string(identity.systemStartId), invocation = string(identity.flowInvocationId), ownerValue = { systemStartId: system, ownerEpoch: string(owner.owner_epoch as string) };
@@ -696,130 +696,15 @@ export function verifyNativeCallsAndClock030(db: Database, state: Obj, plan: Obj
   const starts = new Map(effects.flatMap((row) => { const value = record(raw(row.effect_json)), kind = record(value.kind); return kind.kind === 'start' ? [[string(record(kind.work).activationId), { row, value, kind }] as const] : []; }));
   const events = new Map(journal.map((row) => [row.event_id, record(raw(row.event_json))]));
   const work = (id: string) => { const a = acts.get(id), start = starts.get(id); require(a && start, 'host activation/Start'); return { a, start, reference: record(start.kind.work), step: steps.get(address(a.step))! }; };
-  const ms = (v: string) => { require(/^(0|[1-9][0-9]*)$/.test(v) && BigInt(v) <= 18446744073709551615n, 'native milliseconds'); return BigInt(v); };
-  const handoffClocks = map(rows('engine_flow030_handoff_clock'), 'start_effect_id');
-  for (const [id, row] of handoffClocks) { metadata(row); ms(text(row, 'started_ms')); require([...starts.values()].some((s) => s.row.effect_id === id), 'handoff clock Start'); }
-  const clocks = rows('engine_flow030_clock'), clockEvents = map(rows('engine_flow030_clock_events'), 'event_id'), clockWorks = map(rows('engine_flow030_clock_works'), 'activation_id');
-  const requests = map(rows('engine_flow030_human_requests'), 'request_id'), submissions = map(rows('engine_flow030_human_submissions'), 'receipt_id'), proofs = map(rows('engine_flow030_human_resolution_proofs'), 'request_id'), controls = map(rows('engine_flow030_clock_controls'), 'activation_id');
-  require(clocks.length <= 1 && (clocks.length === 1 || !clockEvents.size && !clockWorks.size && !requests.size && !submissions.size && !proofs.size && !controls.size), 'clock parent');
-  const history: Array<{ id: string; event: Obj; receipt: Obj }> = [];
-  if (clocks.length) {
-    const clock = clocks[0]; metadata(clock); let previous = '', revision = '0', receipt: Obj = {}, observed: string | undefined;
-    for (const [id, row] of clockEvents) {
-      const input = record(json(row, 'ticket_json'));
-      require(same(input.identity, identity) && same(input.owner, ownerValue) && input.eventId === id && input.expectedRevision === revision && input.stateJson === previous, 'clock ticket');
-      const event = record(raw(string(input.eventJson))); require(event.eventId === id && same(event.owner, ownerValue), 'clock event identity');
-      const now = string(event.nowMs); require(observed === undefined || ms(now) >= ms(observed), 'clock monotonicity');
-      const evaluated = evaluateHostHumanClock030(ownerValue, id, revision, previous, string(input.eventJson), JSON.parse(string(input.optionsJson)));
-      const output = record(json(row, 'output_json'));
-      require(same(raw(evaluated.stateJson), raw(string(output.stateJson))) && same(raw(evaluated.receiptJson), raw(string(output.receiptJson))), 'clock output');
-      previous = string(output.stateJson); receipt = record(raw(string(output.receiptJson))); observed = now; revision = (BigInt(revision) + 1n).toString();
-      history.push({ id, event, receipt });
-    }
-    require(clock.revision === revision && clock.state_json === previous && same(json(clock, 'receipt_json'), receipt), 'clock final journal');
-    ms(text(clock, 'observed_ms')); if (observed !== undefined) require(clock.observed_ms === observed, 'clock final observation');
-  }
-  const bodies = history.map((h) => ({ ...h, body: record(h.event.event) }));
-  const latest = history.at(-1)?.receipt;
-  for (const [id, row] of clockWorks) {
-    metadata(row); const bound = work(id), binding = record(json(row, 'work_json')), origin = handoffClocks.get(text(row, 'start_effect_id'));
-    require(origin && row.start_effect_id === bound.reference.startEffectId && row.admitted_ms === origin.started_ms && row.kind === bound.step.type, 'clock work admission');
-    require(same(binding.identity, identity) && same(binding.owner, ownerValue) && binding.generation === owner.generation && same(binding.reference, bound.reference) && binding.kind === row.kind, 'clock work binding');
-    const attempt = record(raw(bound.start.row.settlement_json)).workAttempt;
-    require(binding.providerAttemptId === (row.kind === 'agent' ? record(attempt).providerAttemptId : null), 'clock provider attempt');
-    const agent = list(plan.agents).find((a) => a.agentName === bound.a.agent), declaration = record(raw(string(bound.step.declarationJson)));
-    const answerTimeout = row.kind === 'agent' && agent ? record(raw(string(agent.agentDeclarationJson))).answerTimeoutMs : declaration.answerTimeoutMs;
-    require(row.timeout_json === null ? bound.step.timeoutMsJson === null : same(json(row, 'timeout_json'), raw(string(bound.step.timeoutMsJson))), 'clock authored timeout');
-    require(row.answer_timeout_json === null ? answerTimeout === undefined : answerTimeout !== undefined && same(json(row, 'answer_timeout_json'), answerTimeout), 'clock authored answer timeout');
-    const admission = bodies.filter((h) => (h.body.kind === 'admit' || h.body.kind === 'approval') && h.body.workId === id);
-    require(admission.length === 1 && admission[0].body.startedAtMs === row.admitted_ms && admission[0].body.timeoutMs === row.timeout_json, 'clock admit event');
-    if (row.kind !== 'approval') require(admission[0].body.answerTimeoutMs === row.answer_timeout_json, 'clock answer duration');
-    require(row.retired === Number(bodies.some((h) => h.body.kind === 'retire' && h.body.workId === id)), 'clock retirement');
-    if (row.kind !== 'approval' && (bound.a.phase === 'done' || bound.a.physical === false || bound.a.result !== null || bound.a.stopEffectId !== null)) require(row.retired === 1, 'terminal replayed work has a live clock');
-    const snapshots = latest ? [...list(latest.clocks), ...list(latest.retiredClocks)].filter((c) => c.workId === id) : [];
-    require(row.kind === 'approval' ? same(json(row, 'snapshot_json'), {}) : snapshots.length === 1 && same(json(row, 'snapshot_json'), snapshots[0].snapshot), 'clock work snapshot');
-  }
-  for (const h of bodies) {
-    if (['admit', 'approval', 'retire'].includes(string(h.body.kind))) require(clockWorks.has(string(h.body.workId)), 'orphan clock work event');
-    if (h.body.kind === 'open' || h.body.kind === 'approval' || h.body.kind === 'associate' || h.body.kind === 'ack') require(requests.has(string(h.body.requestId)), 'orphan clock request event');
-    if (h.body.kind === 'open') {
-      require(h.body.reviewer === 'person', 'native human reviewer');
-      require(Array.isArray(h.body.workIds) && h.body.workIds.length === 1, 'human request initial work attribution');
-    }
-    if (h.body.kind === 'associate') require(requests.get(string(h.body.requestId))!.kind === 'question', 'native reassociation requires a question');
-    if (h.body.kind === 'open' || h.body.kind === 'associate') for (const id of h.body.workIds as ExactValue[]) require(clockWorks.has(string(id)), 'request work association');
-  }
-  const answers: Obj[] = [], timeoutIds = new Set<string>();
-  for (const [id, row] of requests) {
-    const opening = bodies.filter((h) => (h.body.kind === 'open' || h.body.kind === 'approval') && h.body.requestId === id);
-    require(opening.length === 1 && (opening[0].body.kind === 'approval' ? row.kind === 'approval' : opening[0].body.requestKind === row.kind), 'human request opening');
-    const snapshots = latest ? list(latest.requests).filter((r) => r.requestId === id) : []; require(snapshots.length === 1, 'human request snapshot');
-    const snapshot = snapshots[0], ids = json(row, 'work_ids_json');
-    require(same(ids, snapshot.workIds) && row.kind === snapshot.kind && row.opened_ms === snapshot.openedAtMs
-      && same(json(row, 'deadline_json'), { openedAtMs: snapshot.openedAtMs!, timeoutMs: snapshot.answerTimeoutMs! }), 'human request deadline/works');
-    require(Array.isArray(ids) && (row.kind === 'question' || ids.length > 0) && ids.every((workId) => clockWorks.has(string(workId))), 'human request work');
-    const payload = record(json(row, 'payload_json'));
-    const initialIds = opening[0].body.kind === 'approval' ? [string(opening[0].body.workId)] : (opening[0].body.workIds as ExactValue[]).map(string);
-    if (row.kind === 'plan') require(initialIds.length === 1 && work(initialIds[0]).step.type === 'agent' && typeof payload.planId === 'string' && payload.planId.length > 0 && typeof payload.text === 'string' && payload.text.trim().length > 0, 'native plan payload');
-    if (row.kind === 'approval') {
-      require(initialIds.length === 1, 'approval work'); const bound = work(initialIds[0]), declaration = record(raw(string(bound.step.declarationJson)));
-      require(bound.step.type === 'approval' && same(payload.work, bound.reference) && same(payload.step, bound.a.step)
-        && same(payload.message, bound.start.kind.messageJson === null ? {} : raw(string(bound.start.kind.messageJson)))
-        && same(payload.choices, Object.keys(record(declaration.next)).sort()) && same(payload.choices, opening[0].body.choices), 'approval payload');
-    }
-    if (row.resolution_json === null) {
-      require(row.revision === '0' && !proofs.has(id) && row.delivery === 'pending'
-        && !history.some((h) => list(h.receipt.pendingResolutions).some((r) => r.requestId === id)) && !bodies.some((h) => h.body.kind === 'ack' && h.body.requestId === id)
-        && initialIds.every((workId) => work(workId).a.result === null && work(workId).a.stopEffectId !== null), 'unresolved human request');
-      continue;
-    }
-    const resolution = record(json(row, 'resolution_json')), proof = proofs.get(id), proofEvent = proof && history.find((h) => h.id === proof.event_id);
-    require(proof && proofEvent && row.revision === '1' && same(json(proof, 'resolution_json'), resolution), 'human resolution proof');
-    const candidates = list(proofEvent.receipt.pendingResolutions).filter((r) => r.requestId === id);
-    require(candidates.length === 1, 'human resolution event'); const candidate = candidates[0];
-    const reason = candidate.expired !== true ? 'answer' : candidate.failure === 'APPROVAL_TIMEOUT' ? 'approvalTimeout' : 'answerTimeout';
-    require(same(resolution, { ...candidate, reason }) && row.delivery === 'acknowledged' && bodies.some((h) => h.body.kind === 'ack' && h.body.requestId === id), 'human resolution/delivery');
-    for (const action of list(resolution.workActions)) {
-      require(clockWorks.has(string(action.workId)), 'human work action');
-      if (action.action === 'PLAN_REJECTED') {
-        const a = work(string(action.workId)).a;
-        require(row.kind === 'plan' && (object(a.result) && a.result.kind === 'failed' && record(a.result.error).code === 'PLAN_REJECTED'
-          || a.result === null && a.stopEffectId !== null), 'plan resolution contradicts replayed terminal');
-      }
-    }
-    if (row.kind === 'plan') {
-      const protocol = rows('engine_flow030_work_events').filter((r) => r.activation_id === initialIds[0]).map((r) => {
-        const ticket = record(json(r, 'ticket_json')), input = record(ticket.input);
-        return { event: record(record(raw(string(input.eventJson))).event), decision: record(record(raw(string(record(json(r, 'decision_json')).receiptJson))).decision) };
-      });
-      require(protocol.some((p) => p.event.kind === 'planPresented' && p.event.planId === payload.planId && p.event.text === payload.text && p.decision.kind === 'planWaiting'), 'plan payload differs from native work protocol');
-      const answer = record(resolution.answer);
-      require(protocol.some((p) => p.event.kind === 'planResolved' && p.event.planId === payload.planId && p.event.decision === (answer.decision === 'yes' ? 'accept' : 'reject') && (p.event.comment ?? '') === (answer.comment ?? '')), 'plan delivery differs from native work protocol');
-    }
-    if (row.kind === 'approval') {
-      const bound = work(initialIds[0]), result = record(bound.a.result);
-      if (reason === 'approvalTimeout') require(result.kind === 'failed' && record(result.error).code === 'APPROVAL_TIMEOUT', 'approval timeout terminal');
-      else { const answer = record(resolution.answer); require(result.kind === 'completed' && result.routeKey === answer.choice && same(raw(string(result.outputJson)), { choice: answer.choice!, comment: answer.comment!, message: payload.message! }), 'approval answer terminal'); }
-    } else if (reason === 'answerTimeout') for (const action of list(resolution.workActions)) { const bound = work(string(action.workId)), item = optionalItem(bound.a); answers.push({ work: address(bound.a.step), ...(item.item === undefined ? {} : { item: item.item }), answer: 'no' }); }
-  }
-  require([...proofs.keys()].every((id) => requests.has(id)), 'orphan human proof');
-  const nativeAnswers = latest ? list(latest.nativeAnswers) : [];
-  for (const [id, row] of submissions) {
-    const projected = nativeAnswers.filter((a) => a.nativeReceiptId === id && a.requestId === row.request_id), request = requests.get(text(row, 'request_id'));
-    const submitted = bodies.filter((h) => (h.body.kind === 'answer' || h.body.kind === 'approvalAnswer') && h.body.nativeReceiptId === id && h.body.requestId === row.request_id);
-    require(request && projected.length === 1 && submitted.length === 1 && ['person', 'synthetic-person'].includes(text(row, 'origin')) && row.received_ms === submitted[0].event.nowMs
-      && row.accepted === Number(projected[0].accepted), 'human submission arbitration');
-    const answer = record(json(row, 'answer_json')), body = submitted[0].body;
-    if (request.kind === 'approval') require(answer.kind === 'approval' && answer.choice === body.choice && answer.comment === body.comment, 'approval submission');
-    else if (request.kind === 'question') { require(answer.kind === 'question' && body.answer === null, 'question submission'); raw(string(answer.answerJson)); }
-    else require(answer.kind === 'decision' && same(body.answer, { decision: answer.decision!, comment: answer.comment! }), 'decision submission');
-  }
-  require(nativeAnswers.length === submissions.size, 'missing human submission');
-  for (const [id, row] of controls) {
-    const bound = work(id), clock = clockWorks.get(id); require(clock && row.reason === 'TIMEOUT' && row.joined === 1 && typeof row.receipt_id === 'string' && row.receipt_id.length > 0, 'timeout control');
-    require(bodies.some((h) => h.event.nowMs === row.observed_ms && (h.receipt.expiredWorkIds as ExactValue[]).includes(id)), 'timeout clock decision');
-    require(object(bound.a.result) && bound.a.result.kind === 'failed' && record(bound.a.result.error).code === 'TIMEOUT', 'timeout terminal'); timeoutIds.add(id);
-  }
+  // Native readback owns the 040 serde contract, deadlines and pause arithmetic.
+  // TS consumes only the observer projection returned with the replay verdict.
+  const clockWorks = map(rows('engine_flow030_clock_works'), 'activation_id');
+  const requests = map(rows('engine_flow030_human_requests'), 'request_id');
+  const controls = map(rows('engine_flow030_clock_controls'), 'activation_id');
+  require(humanProjection || clockWorks.size === 0 && requests.size === 0 && controls.size === 0, 'native human readback projection absent');
+  require(!humanProjection || Array.isArray(humanProjection.answers) && Array.isArray(humanProjection.timeoutIds) && humanProjection.timeoutIds.every(id => typeof id === 'string'), 'native human projection shape');
+  const answers = (humanProjection?.answers ?? []).map(value => record(raw(JSON.stringify(value))));
+  const timeoutIds = new Set(humanProjection?.timeoutIds ?? []);
   // Call rows are retained even when normalization fails or work is cancelled.
   const calls = map(rows('engine_flow030_calls'), 'call_id'), seenCallActivations = new Set<string>();
   const callCauses: HostRow030[] = has('engine_flow030_call_causes') ? db.query('SELECT x.* FROM engine_flow030_call_causes x LEFT JOIN engine_flow030_calls c USING(call_id) WHERE (c.system_id=? AND c.invocation_id=?) OR c.call_id IS NULL').all(system, invocation) as HostRow030[] : [];
@@ -1362,7 +1247,7 @@ function verifySecondaryReducerEvidence030(state: Obj, plan: Obj, rows: EffectRo
 }
 
 export function observeRun030(databasePath: string, systemId: string, invocationId: string, options: ObserveOptions030 = {}): string {
-  if (!options.syntheticUnitTestOnly) verifyNativeReplay030(databasePath, systemId, invocationId, options);
+  const replay = options.syntheticUnitTestOnly ? undefined : verifyNativeReplay030(databasePath, systemId, invocationId, options);
   const db = new Database(databasePath, { readonly: true });
   try {
     db.exec('BEGIN');
@@ -1393,7 +1278,7 @@ export function observeRun030(databasePath: string, systemId: string, invocation
     if (byId.size !== activations.length) throw new Error('Duplicate activation');
     const rows = db.query('SELECT effect_id,event_id,effect_json,owner_epoch,status,settlement_json FROM engine_flow030_outbox WHERE system_id=? AND invocation_id=? ORDER BY rowid').all(systemId, invocationId) as EffectRow030[];
     const journal = db.query('SELECT event_id,event_json,receipt_json FROM engine_flow030_events WHERE system_id=? AND invocation_id=? ORDER BY rowid').all(systemId, invocationId) as EventRow030[];
-    const host = synthetic ? null : verifyHostTables030(db, state, plan, rows, journal);
+    const host = synthetic ? null : verifyHostTables030(db, state, plan, rows, journal, replay?.humanProjection);
     const starts: Record<string, number> = Object.create(null);
     const messages: Obj[] = [], failures: Obj[] = [], cancelled: Obj[] = [], answers: Obj[] = [];
     const startsByActivation = new Map<string, Obj>();

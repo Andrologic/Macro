@@ -70,3 +70,11 @@ it('reads durable run correlation using the exact intent scope and run id', asyn
   expect(await ipc.readExecutionRunCorrelation030(scope, 'run')).toBe(correlation);
   expect(invoke).toHaveBeenLastCalledWith('execution_read_run_correlation030', { scope, systemStartId: 'run' });
 });
+
+it('submits exact human answers with public scope and native revision only', async () => {
+  response = 'native-receipt';
+  const input = { scope: { systemStartId: 'run', source }, requestId: 'request', expectedRevision: '9007199254740993',
+    answer: { kind: 'question' as const, answerJson: '{"n":9007199254740993}' } };
+  expect(await ipc.submitExecutionHuman030(input)).toBe('native-receipt');
+  expect(invoke).toHaveBeenLastCalledWith('execution_submit_human030', { input });
+});
