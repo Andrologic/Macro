@@ -86,7 +86,17 @@ pub(crate) async fn reconcile(
                     start_effect_id: start_effect_id.clone(),
                     agent_instance_id: activation.instance_id.clone(),
                 };
-                let _ = control.settle_unadmitted(runtime, pool, &work).await?;
+                if control
+                    .settle_unadmitted(runtime, pool, &work)
+                    .await?
+                    .is_none()
+                {
+                    if let Some(joined) = runtime.diagnostic_join(identity, &work.activation_id)? {
+                        control
+                            .settle_joined_diagnostic(runtime, pool, &joined)
+                            .await?;
+                    }
+                }
             }
         }
     }

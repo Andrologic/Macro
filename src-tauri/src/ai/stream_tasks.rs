@@ -42,6 +42,7 @@ pub(crate) struct OwnedOperationPermit030 {
 
 /// Issued only by this registry after the matching parent and its cleanups
 /// have completed. Its fields cannot be constructed by a caller.
+#[derive(Clone)]
 pub(crate) struct JoinedOwnedAgent030 {
     attempt: crate::agsdl_host_flow030::FlowWorkAttempt030,
     request_id: String,
