@@ -1162,3 +1162,295 @@ async fn sql_verifier_rejects_cache_substitution_and_revoked_native_context() {
         .is_err());
     tx.rollback().await.unwrap();
 }
+
+// Synthetic SQL fixture copied from the shape of a failed opening. It is not
+// a provider admission or proof that a physical agent was joined.
+async fn failed_join_fixture(
+    fault: Option<&str>,
+) -> (
+    tempfile::TempDir,
+    sqlx::SqlitePool,
+    HostState,
+    StartCapture030,
+    PrepareRef030,
+    EngineOwner,
+    String,
+) {
+    let data: Value =
+        serde_json::from_str(include_str!("agsdl_host_join_error030_fixture.json")).unwrap();
+    let mut state: FlowState030 = serde_json::from_str(data["state"].as_str().unwrap()).unwrap();
+    let (mut capture, _) = fixture();
+    capture.identity = state.identity.clone();
+    capture.compiled_plan_json = state.plan_json.clone().unwrap();
+    if matches!(fault, Some("reordered" | "different-plan")) {
+        let mut reordered: Value = serde_json::from_str(&capture.compiled_plan_json).unwrap();
+        if fault == Some("different-plan") {
+            reordered["format"] = json!("different-plan");
+        }
+        state.plan_json = Some(serde_json::to_string(&reordered).unwrap());
+        assert_ne!(
+            capture.compiled_plan_json,
+            *state.plan_json.as_ref().unwrap()
+        );
+    }
+    let index = state
+        .preparations
+        .iter()
+        .position(|p| p.status == "pending" && p.producer.kind == "join")
+        .unwrap();
+    let reference = state.preparations[index].reference.clone();
+    let mut producer = state.preparations[index].producer.clone();
+    match fault {
+        None => (),
+        Some("error") => producer.output_json = r#"{"error":{"code":"FORGED","message":"Fan-out exceeds max.","details":[]}}"#.into(),
+        Some("step") => producer.step = Some(vec!["foreign".into()]),
+        Some("group") => state.groups.push(serde_json::from_value(json!({"id":"forged", "join":producer.step, "originActivationId":"source", "activationId":producer.activation_id, "context":[], "branches":[], "decision":"done", "outputJson":"{}", "error":null, "continuation":{"kind":"join"}, "released":true})).unwrap()),
+        Some("agent") => producer.kind = "agent".into(),
+        Some("ordinal" | "duplicate" | "reordered" | "different-plan") => (),
+        _ => panic!("unknown fixture fault"),
+    }
+    state.preparations[index].producer = producer.clone();
+    let mut effects = data["effects"].as_array().unwrap().clone();
+    for row in &mut effects {
+        let mut effect: FlowEffect030 =
+            serde_json::from_str(row["effect_json"].as_str().unwrap()).unwrap();
+        if let FlowEffectKind030::PrepareRoute {
+            reference: r,
+            producer: p,
+        } = &mut effect.kind
+        {
+            *r = reference.clone();
+            *p = producer.clone();
+            row["effect_json"] = json!(serde_json::to_string(&effect).unwrap());
+        }
+    }
+    let temp = tempfile::tempdir().unwrap();
+    let pool = crate::db::create_pool(&temp.path().join("join-error.db"))
+        .await
+        .unwrap();
+    let id = &capture.identity;
+    let owner = EngineOwner {
+        system_start_id: id.system_start_id.clone(),
+        owner_epoch: data["preparation"]["owner_epoch"].as_str().unwrap().into(),
+    };
+    let generation = data["preparation"]["generation"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let mut tx = pool.begin().await.unwrap();
+    sqlx::query("INSERT INTO engine_flow030_runs VALUES (?,?,?,?,?,?,?)")
+        .bind(&id.system_start_id)
+        .bind(&id.flow_invocation_id)
+        .bind(&id.snapshot_id)
+        .bind(&id.epoch)
+        .bind(serde_json::to_string(&capture.source).unwrap())
+        .bind(&capture.compiled_plan_json)
+        .bind(serde_json::to_string(&state).unwrap())
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    sqlx::query("INSERT INTO engine_start030_requests VALUES (?,?,?,?,?,?,?,?)")
+        .bind("synthetic-request")
+        .bind("{}")
+        .bind(&id.system_start_id)
+        .bind(&id.flow_invocation_id)
+        .bind(&id.snapshot_id)
+        .bind(&id.epoch)
+        .bind(serde_json::to_string(&capture).unwrap())
+        .bind("{}")
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    sqlx::query("INSERT INTO engine_flow030_owners VALUES (?,?,?,?,?,?,?,?)")
+        .bind(&id.system_start_id)
+        .bind(&id.flow_invocation_id)
+        .bind(&id.snapshot_id)
+        .bind(&id.epoch)
+        .bind(&owner.owner_epoch)
+        .bind(&generation)
+        .bind("live")
+        .bind(sha(&serde_json::to_vec(&capture).unwrap()))
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    let e = &data["event"];
+    sqlx::query("INSERT INTO engine_flow030_events VALUES (?,?,?,?,?,NULL)")
+        .bind(&id.system_start_id)
+        .bind(&id.flow_invocation_id)
+        .bind(e["event_id"].as_str().unwrap())
+        .bind(e["event_json"].as_str().unwrap())
+        .bind(e["receipt_json"].as_str().unwrap())
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    for row in &effects {
+        sqlx::query("INSERT INTO engine_flow030_outbox VALUES (?,?,?,?,?,?,?,?)")
+            .bind(&id.system_start_id)
+            .bind(&id.flow_invocation_id)
+            .bind(row["effect_id"].as_str().unwrap())
+            .bind(row["event_id"].as_str().unwrap())
+            .bind(row["effect_json"].as_str().unwrap())
+            .bind(&owner.owner_epoch)
+            .bind(row["status"].as_str().unwrap())
+            .bind(row["settlement_json"].as_str())
+            .execute(&mut *tx)
+            .await
+            .unwrap();
+    }
+    let row = &data["preparation"];
+    let mut result_json: Value =
+        serde_json::from_str(row["result_json"].as_str().unwrap()).unwrap();
+    if fault == Some("ordinal") {
+        result_json["targetOrdinal"] = json!(1);
+    }
+    let result_json = result_json.to_string();
+    if fault == Some("duplicate") {
+        sqlx::query("INSERT INTO engine_flow030_events VALUES (?,?,?,?,?,NULL)")
+            .bind(&id.system_start_id)
+            .bind(&id.flow_invocation_id)
+            .bind("duplicate-prepared")
+            .bind(e["event_json"].as_str().unwrap())
+            .bind(e["receipt_json"].as_str().unwrap())
+            .execute(&mut *tx)
+            .await
+            .unwrap();
+    }
+    sqlx::query("INSERT INTO engine_flow030_preparations VALUES (?,?,?,?,?,?,?,?,?,?,?)")
+        .bind(&id.system_start_id)
+        .bind(&id.flow_invocation_id)
+        .bind(row["prepare_id"].as_str().unwrap())
+        .bind(row["native_receipt_id"].as_str().unwrap())
+        .bind(&owner.owner_epoch)
+        .bind(&generation)
+        .bind(row["reference_json"].as_str().unwrap())
+        .bind(row["producer_json"].as_str().unwrap())
+        .bind(row["source_json"].as_str().unwrap())
+        .bind(row["content_receipts_json"].as_str().unwrap())
+        .bind(&result_json)
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    let host = crate::agsdl_host::route_attestation_test_host030(owner.clone(), &generation);
+    (temp, pool, host, capture, reference, owner, generation)
+}
+
+#[tokio::test]
+async fn failed_join_source_requires_native_prepared_failure_and_reads_back_after_restart() {
+    for fault in [
+        None,
+        Some("reordered"),
+        Some("different-plan"),
+        Some("error"),
+        Some("step"),
+        Some("group"),
+        Some("ordinal"),
+        Some("duplicate"),
+    ] {
+        let (_temp, pool, host, capture, reference, owner, generation) =
+            failed_join_fixture(fault).await;
+        let writer = RouteAttestor030::capture(&host, &owner).await.unwrap();
+        let lease = host.start_lease().await.unwrap();
+        let _guard = host.admission_lock().lock_owned().await;
+        let mut tx = pool.begin().await.unwrap();
+        let result = writer
+            .attest_source_tx(&mut tx, &lease, host.flow030(), &capture, &reference)
+            .await;
+        if let Some(fault) = fault.filter(|f| *f != "reordered") {
+            assert!(result.is_err(), "{fault} accepted");
+            let count: i64 =
+                sqlx::query_scalar("SELECT count(*) FROM engine_flow030_route_source_attestations")
+                    .fetch_one(&mut *tx)
+                    .await
+                    .unwrap();
+            assert_eq!(count, 0);
+            tx.rollback().await.unwrap();
+            continue;
+        }
+        let source = result.unwrap();
+        assert!(source.is_join_source());
+        let original = source.source_only_material().source_json;
+        let kind: (String, Option<String>) = sqlx::query_as(
+            "SELECT receipt_kind,work_event_id FROM engine_flow030_route_source_attestations",
+        )
+        .fetch_one(&mut *tx)
+        .await
+        .unwrap();
+        assert_eq!(kind, ("error".into(), None));
+        tx.commit().await.unwrap();
+        drop(_guard);
+        drop(lease);
+        drop(writer);
+        drop(host);
+        let restarted =
+            crate::agsdl_host::route_attestation_test_host030(owner.clone(), &generation);
+        let writer = RouteAttestor030::capture(&restarted, &owner).await.unwrap();
+        let lease = restarted.start_lease().await.unwrap();
+        let _guard = restarted.admission_lock().lock_owned().await;
+        let mut tx = pool.begin().await.unwrap();
+        let again = writer
+            .inspect_source_tx(&mut tx, &lease, restarted.flow030(), &capture, &reference)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(again.is_join_source());
+        assert_eq!(again.source_only_material().source_json, original);
+        tx.rollback().await.unwrap();
+        // Re-run the SQL verifier independently after a contradictory group is
+        // inserted into the mutable reducer snapshot. The attestation already
+        // exists, so the writer cannot mask a missing read-side recheck.
+        let raw: String = sqlx::query_scalar("SELECT state_json FROM engine_flow030_runs")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        let mut state: FlowState030 = serde_json::from_str(&raw).unwrap();
+        state.groups.push(serde_json::from_value(json!({"id":"forged", "join":source.producer.step, "originActivationId":"source", "activationId":source.producer.activation_id, "context":[], "branches":[], "decision":"done", "outputJson":"{}", "error":null, "continuation":{"kind":"join"}, "released":true})).unwrap());
+        sqlx::query("UPDATE engine_flow030_runs SET state_json=?")
+            .bind(serde_json::to_string(&state).unwrap())
+            .execute(&pool)
+            .await
+            .unwrap();
+        let verifier = SqlRouteMaterialVerifier030::capture(&restarted, &owner)
+            .await
+            .unwrap();
+        let mut tx = pool.begin().await.unwrap();
+        assert!(verifier
+            .attest_tx(
+                &mut tx,
+                &capture,
+                &reference,
+                &source.producer,
+                &source.source_only_material()
+            )
+            .await
+            .is_err());
+        tx.rollback().await.unwrap();
+    }
+}
+
+#[tokio::test]
+async fn agent_error_without_joined_witness_is_rejected_before_commit() {
+    let (_temp, pool, host, capture, reference, owner, _) =
+        failed_join_fixture(Some("agent")).await;
+    let result = crate::agsdl_host_dispatch030::dispatch_source_route030(
+        &host,
+        &pool,
+        &owner,
+        &reference,
+        None,
+        &CancellationToken::new(),
+    )
+    .await;
+    let error = result
+        .err()
+        .expect("agent error without ownership was accepted");
+    assert_eq!(error.code, "CORRELATION");
+    assert_eq!(error.message, "Agent source requires joined ownership");
+    let count: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM engine_flow030_route_source_attestations")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(count, 0);
+    assert_eq!(capture.identity, reference.identity);
+}

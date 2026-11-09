@@ -112,6 +112,17 @@ describe('durable scenario observation', () => {
       expect(() => observeRun030(path, 's', 'i')).toThrow('Answers are not projectable');
     }
   });
+  test('accepts each additional native scenario pin without claiming a matching run', async () => {
+    const path = database(), resultPath = `${path}.result.json`;
+    for (const name of ['flow-error', 'mission-priority', 'parallel-no-join', 'visit-limit', 'fanout-empty', 'fanout-keep', 'fanout-limit', 'fanout-missions']) {
+      const bytes = readFileSync(join(import.meta.dir, 'fixtures/v0.3/conformance/runs', `${name}.json`));
+      const fixtureSha256 = createHash('sha256').update(bytes).digest('hex');
+      writeFileSync(resultPath, JSON.stringify({ ok: true, result: { scenario: { name, fixtureSha256 }, receipt: { systemStartId: 's', flowInvocationId: 'i' } } }));
+      const compared = await compareObserved030(resultPath, path);
+      expect(compared.scenario).toEqual({ name, fixtureSha256 });
+      expect(compared.diagnostics.length).toBeGreaterThan(0);
+    }
+  });
   test('refuses cancelled runs rather than treating them as succeeded', () => {
     const path = database();
     const db = new Database(path);

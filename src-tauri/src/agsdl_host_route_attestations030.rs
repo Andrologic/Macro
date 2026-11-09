@@ -9,7 +9,8 @@ use crate::agsdl_content::{
 use crate::agsdl_host::{HostStartLease, HostState};
 use crate::agsdl_host_flow030::{FlowHost030, NativeRouteMaterial030, RouteMaterialVerifier030};
 use crate::agsdl_host_route_verifier030::{
-    content_receipt_fingerprint030, unique_agent_work_event_tx, SqlRouteMaterialVerifier030,
+    content_receipt_fingerprint030, same_flow_plan030, unique_agent_work_event_tx,
+    verify_join_error_source_tx, SqlRouteMaterialVerifier030,
 };
 use crate::db::agsdl_execution::{
     dto::EngineOwner,
@@ -83,13 +84,14 @@ pub(crate) struct RouteAttestor030 {
 // Derived inside the native transaction, never supplied by a caller or IPC.
 enum SourceKind030 {
     Error,
+    JoinError,
     AgentWork { work_event_id: String },
     Join,
 }
 impl SourceKind030 {
     fn receipt_kind(&self) -> &'static str {
         match self {
-            Self::Error => "error",
+            Self::Error | Self::JoinError => "error",
             Self::AgentWork { .. } => "agentWork",
             Self::Join => "join",
         }
@@ -102,7 +104,7 @@ impl SourceKind030 {
     }
     fn producer_kind(&self) -> &'static str {
         match self {
-            Self::Error => "error",
+            Self::Error | Self::JoinError => "error",
             Self::AgentWork { .. } => "agent",
             Self::Join => "join",
         }
@@ -148,7 +150,7 @@ impl RouteSourceCommitMarker030 {
 impl AttestedRouteSource030 {
     /// A native group decision needs no invented agent join witness.
     pub(crate) fn is_join_source(&self) -> bool {
-        matches!(self.kind, SourceKind030::Join)
+        matches!(self.kind, SourceKind030::Join | SourceKind030::JoinError)
     }
     pub(crate) fn commit_marker(&self) -> Result<RouteSourceCommitMarker030> {
         require(!self.native_receipt_id.is_empty())?;
@@ -258,15 +260,14 @@ impl RouteAttestor030 {
         )?;
         let state: FlowState030 = serde_json::from_str(row.get("state_json"))?;
         require(state.identity == *id && state.entered && !state.stopping)?;
-        let retained_plan: FlowPlan030 = serde_json::from_str(
-            state
-                .plan_json
-                .as_deref()
-                .ok_or_else(|| failure("CORRELATION", "route", "Entered flow plan is absent"))?,
-        )?;
-        require(
-            retained_plan == serde_json::from_str::<FlowPlan030>(&capture.compiled_plan_json)?,
-        )?;
+        let retained_plan = state
+            .plan_json
+            .as_deref()
+            .ok_or_else(|| failure("CORRELATION", "route", "Entered flow plan is absent"))?;
+        require(same_flow_plan030(
+            retained_plan,
+            &capture.compiled_plan_json,
+        )?)?;
         let preparation = state
             .preparations
             .iter()
@@ -302,10 +303,26 @@ impl RouteAttestor030 {
         state: &FlowState030,
         reference: &PrepareRef030,
         producer: &Producer030,
+        owner: &EngineOwner,
+        generation: &str,
     ) -> Result<SourceKind030> {
         if reference.route.kind == "error" {
-            require(matches!(producer.kind.as_str(), "agent" | "join"))?;
-            return Ok(SourceKind030::Error);
+            return match producer.kind.as_str() {
+                "agent" => Ok(SourceKind030::Error),
+                "join" => {
+                    verify_join_error_source_tx(
+                        db, capture, reference, producer, owner, generation,
+                    )
+                    .await
+                    .map_err(verification_error)?;
+                    Ok(SourceKind030::JoinError)
+                }
+                _ => Err(failure(
+                    "AUTHORITY",
+                    "route",
+                    "Native error producer is not implemented",
+                )),
+            };
         }
         require(reference.route.kind == "normal")?;
         match producer.kind.as_str() {
@@ -423,7 +440,16 @@ impl RouteAttestor030 {
         let (producer, effect_id, state) = self
             .current_tx(&mut save, lease, runtime, capture, reference)
             .await?;
-        let kind = Self::source_kind_tx(&mut save, capture, &state, reference, &producer).await?;
+        let kind = Self::source_kind_tx(
+            &mut save,
+            capture,
+            &state,
+            reference,
+            &producer,
+            &self.owner,
+            &self.generation,
+        )
+        .await?;
         let source_json = Self::source_json_tx(&mut save, capture, &producer, &kind).await?;
         let native_receipt_id = uuid::Uuid::new_v4().to_string();
         sqlx::query("INSERT INTO engine_flow030_route_source_attestations(system_id,invocation_id,prepare_id,preparation_effect_id,owner_epoch,generation,capture_sha256,native_receipt_id,receipt_kind,work_event_id,producer_json,source_json) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)")
@@ -484,7 +510,16 @@ impl RouteAttestor030 {
             runtime.available_for_route_source_readback(reference)?;
             return Ok(None);
         };
-        let kind = Self::source_kind_tx(tx, capture, &state, reference, &producer).await?;
+        let kind = Self::source_kind_tx(
+            tx,
+            capture,
+            &state,
+            reference,
+            &producer,
+            &self.owner,
+            &self.generation,
+        )
+        .await?;
         let source_json = Self::source_json_tx(tx, capture, &producer, &kind).await?;
         let native_receipt_id: String = row.get("native_receipt_id");
         require(

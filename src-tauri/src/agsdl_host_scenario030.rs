@@ -15,6 +15,38 @@ const SCENARIOS: &[(&str, &str)] = &[
         "join-all",
         include_str!("../../dev/agsdl/fixtures/v0.3/conformance/runs/join-all.json"),
     ),
+    (
+        "flow-error",
+        include_str!("../../dev/agsdl/fixtures/v0.3/conformance/runs/flow-error.json"),
+    ),
+    (
+        "mission-priority",
+        include_str!("../../dev/agsdl/fixtures/v0.3/conformance/runs/mission-priority.json"),
+    ),
+    (
+        "parallel-no-join",
+        include_str!("../../dev/agsdl/fixtures/v0.3/conformance/runs/parallel-no-join.json"),
+    ),
+    (
+        "visit-limit",
+        include_str!("../../dev/agsdl/fixtures/v0.3/conformance/runs/visit-limit.json"),
+    ),
+    (
+        "fanout-empty",
+        include_str!("../../dev/agsdl/fixtures/v0.3/conformance/runs/fanout-empty.json"),
+    ),
+    (
+        "fanout-keep",
+        include_str!("../../dev/agsdl/fixtures/v0.3/conformance/runs/fanout-keep.json"),
+    ),
+    (
+        "fanout-limit",
+        include_str!("../../dev/agsdl/fixtures/v0.3/conformance/runs/fanout-limit.json"),
+    ),
+    (
+        "fanout-missions",
+        include_str!("../../dev/agsdl/fixtures/v0.3/conformance/runs/fanout-missions.json"),
+    ),
 ];
 
 #[derive(Deserialize)]
@@ -192,6 +224,36 @@ mod tests {
         assert_eq!(scenario.timeline.len(), 5);
         assert!(PinnedScenario030::from_capture(f.document.get(), "{}").is_err());
     }
+    #[test]
+    fn all_ten_vendor_scenarios_bind_exact_document_entry_and_timeline() {
+        assert_eq!(SCENARIOS.len(), 10);
+        for &(name, raw) in SCENARIOS {
+            let fixture: Fixture030 = serde_json::from_str(raw).unwrap();
+            assert!(PinnedScenario030::recognizes_document(fixture.document.get()).unwrap());
+            let scenario =
+                PinnedScenario030::from_capture(fixture.document.get(), fixture.entry.get())
+                    .unwrap();
+            assert_eq!(scenario.name, name);
+            assert_eq!(
+                scenario.fixture_sha256,
+                format!("{:x}", Sha256::digest(raw.as_bytes()))
+            );
+            assert_eq!(scenario.timeline.len(), fixture.timeline.len());
+            assert!(!scenario.timeline.is_empty());
+            assert!(PinnedScenario030::from_capture(fixture.document.get(), "null").is_err());
+        }
+    }
+    #[test]
+    fn unqualified_vendor_scenario_is_not_recognized_or_selected() {
+        let raw =
+            include_str!("../../dev/agsdl/fixtures/v0.3/conformance/runs/delivery-queue.json");
+        let fixture: Fixture030 = serde_json::from_str(raw).unwrap();
+        assert!(!PinnedScenario030::recognizes_document(fixture.document.get()).unwrap());
+        assert!(
+            PinnedScenario030::from_capture(fixture.document.get(), fixture.entry.get()).is_err()
+        );
+    }
+
     #[test]
     fn returned_submission_keeps_number_tokens_and_rejects_extra_keys() {
         let raw = RawValue::from_string(

@@ -7,13 +7,15 @@ import { observeRun030 } from './observe-run030';
 
 const object = (value: unknown): value is Record<string, unknown> => value !== null && typeof value === 'object' && !Array.isArray(value);
 
+const scenarioNames = new Set(['error-route', 'join-all', 'flow-error', 'mission-priority', 'parallel-no-join', 'visit-limit', 'fanout-empty', 'fanout-keep', 'fanout-limit', 'fanout-missions']);
+
 // Correlate a native QA result with its fixture. This is not an authority receipt.
 // Run only after the QA application and its database pool have exited.
 export async function compareObserved030(resultPath: string, database: string) {
   const envelope: unknown = JSON.parse(await readFile(resultPath, 'utf8'));
   if (!object(envelope) || envelope.ok !== true || !object(envelope.result)) throw new Error('Invalid native scenario result');
   const result = envelope.result, scenario = result.scenario, receipt = result.receipt;
-  if (!object(scenario) || (scenario.name !== 'error-route' && scenario.name !== 'join-all')
+  if (!object(scenario) || typeof scenario.name !== 'string' || !scenarioNames.has(scenario.name)
     || typeof scenario.fixtureSha256 !== 'string' || !/^[a-f0-9]{64}$/.test(scenario.fixtureSha256)
     || !object(receipt) || typeof receipt.systemStartId !== 'string' || !receipt.systemStartId
     || typeof receipt.flowInvocationId !== 'string' || !receipt.flowInvocationId) {
