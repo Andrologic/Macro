@@ -1132,5 +1132,20 @@
       "workContinues": "Work continuation"
     },
     "occurrenceCount_many": "Recorded occurrences: {{count}}"
+  },
+  "shell030": {
+    "project": "Project",
+    "chooseProject": "Choose a project",
+    "executions": "Executions",
+    "design": "Design",
+    "views": "System views",
+    "unavailable": "Execution history is not connected yet.",
+    "humanUnavailable": "Human responses are not connected yet.",
+    "exactUnavailable": "The requested execution is not available. No other execution was opened.",
+    "requestUnavailable": "The requested question is no longer available in this execution.",
+    "attention": "Your answer is needed",
+    "attentionBody": "An execution is waiting for your answer.",
+    "openRequest": "Open request",
+    "close": "Close"
   }
 }

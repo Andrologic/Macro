@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { useAgsdlTranslation } from "../agsdl/useAgsdlTranslation";
 import { useAppStore } from "../../stores/useAppStore";
 import {
@@ -7,9 +7,60 @@ import {
 } from "../../services/architectPlanService";
 import { AgsdlEditor } from "../agsdl/AgsdlEditor";
 import { Dialog } from "../ui/Dialog";
-import type { AgsdlTarget } from "../../stores/useAgsdlStore";
+import { agsdlSessionKey, useAgsdlStore, type AgsdlTarget } from "../../stores/useAgsdlStore";
+import { ExecutionMonitor030 } from "../agsdl/ExecutionMonitor030";
+import { HumanRequests030 } from "../agsdl/HumanRequests030";
+import { getWorkflowRunAccess030, subscribeWorkflowRunAccess030, workflowRunAccessSnapshot030, openWorkflowRun030,
+  type WorkflowRunAccess030, type WorkflowRunTarget030 } from "../../services/workflowAgentTasks";
+import { retainedRunValue030 } from "../../services/agsdl/runtimeProjection030";
+import { sameWorkflowSource030 as sameSource } from "../../services/workflowAgentTasks";
+import type { RunGraphBridge030 } from "../agsdl/RunInspector030";
+import { runCaptureKey030 } from "../../services/agsdl/runGraphProjection030";
+import { useChatStore } from "../../stores/useChatStore";
+import type { RunInspection030 } from "../../services/agsdl/runtimeProjection030";
+
+/** Shared dedicated view. An exact notification target never falls back to another run. */
+export function WorkflowRunView030({ bundle, currentSource, target }: {
+  bundle: WorkflowRunAccess030; currentSource?: string; target?: WorkflowRunTarget030;
+}) {
+  const { t } = useAgsdlTranslation();
+  const host = useRef<HTMLDivElement>(null);
+  const { access, humanClient } = bundle;
+  const bridge = useRef<RunGraphBridge030>(undefined);
+  const snapshot = useSyncExternalStore(access.subscribe.bind(access), access.getSnapshot.bind(access), access.getSnapshot.bind(access));
+  useEffect(() => {
+    if (target) { void access.refreshHistory().catch(() => {}); void access.refreshRun(target.scope.systemStartId).catch(() => {}); }
+  }, [access, target]);
+  const read = target && snapshot.runs[target.scope.systemStartId];
+  const inspection = read ? retainedRunValue030(read) : null;
+  const history = retainedRunValue030(snapshot.history);
+  const exact = !target || (inspection && inspection.capture.systemStartId === target.scope.systemStartId && sameSource(inspection.capture.source, target.scope.source) &&
+    history?.some(item => item.scope.systemStartId === target.scope.systemStartId && sameSource(item.capture.source, target.scope.source)));
+  useEffect(() => {
+    if (!exact || !target?.requestId) return;
+    const card = [...(host.current?.querySelectorAll<HTMLElement>('[data-human-request]') ?? [])].find(item => item.dataset.humanRequest === target.requestId);
+    const frame = window.requestAnimationFrame(() => { card?.focus(); card?.scrollIntoView?.({ block: 'nearest' }); });
+    return () => window.cancelAnimationFrame(frame);
+  }, [exact, target, snapshot]);
+  const humans = (run: RunInspection030) => humanClient
+    ? <HumanRequests030 requests={run.state.humans} client={humanClient} onOpenRequest={request => openWorkflowRun030({ ...request, conversationId: run.capture.associations.conversationId })}
+        onOpenOccurrence={activation => {
+          const current = bridge.current;
+          const occurrence = current?.occurrences.find(item => item.activationId === activation.activationId && runCaptureKey030(item.occurrence.scope) === runCaptureKey030(activation.scope));
+          if (occurrence) current?.selectOccurrence(occurrence.key);
+        }} />
+    : <p role="status">{t('agsdl.shell030.humanUnavailable')}</p>;
+  return <div ref={host} className="flex h-full min-h-0 min-w-0 flex-col">
+    {exact ? <ExecutionMonitor030 key={target ? JSON.stringify(target) : access.scopeKey} access={access}
+      initialRunId={target?.scope.systemStartId} currentSource={currentSource} renderHumans={humans} renderGraph={value => { bridge.current = value; return null; }} />
+      : <p role="status" className="p-3 text-xs">{t('agsdl.shell030.exactUnavailable')}</p>}
+    {target?.requestId && exact && inspection && !retainedRunValue030(inspection.state.humans)?.some(request => request.id === target.requestId && sameSource(request.scope.source, target.scope.source)) &&
+      <p role="status" className="p-3 text-xs">{t('agsdl.shell030.requestUnavailable')}</p>}
+  </div>;
+}
 
 export default function ArchitectStrategyPanel() {
+  const projectId = useAppStore(state => state.selectedProjectId);
   const planId = useAppStore((state) => state.activeArchitectPlanId);
   const targetBranch = useAppStore(
     (state) => state.activePlanContext?.targetBranch,
@@ -22,18 +73,43 @@ export default function ArchitectStrategyPanel() {
     }),
     [planId, targetBranch],
   );
-  return <ArchitectViewer key={JSON.stringify(target)} target={target} planStatus={planStatus} />;
+  return <ArchitectViewer key={JSON.stringify([target, projectId])} target={target} planStatus={planStatus} />;
 }
 
 function ArchitectViewer({ target, planStatus }: { target: AgsdlTarget; planStatus?: string }) {
   const { t } = useAgsdlTranslation();
   const [expanded, setExpanded] = useState(false);
+  const [runsOpen, setRunsOpen] = useState(false);
+  const selectedProjectId = useAppStore(state => state.selectedProjectId);
+  const standaloneProjects = useAppStore(state => state.standaloneProjects);
+  const projectGroups = useAppStore(state => state.projectGroups);
+  const projectBranches = useAppStore(state => state.activePlanContext?.targetBranchesByProjectId);
+  const projectIds = Object.keys(projectBranches ?? {});
+  const [chosenProject, setChosenProject] = useState('');
+  const projectId = selectedProjectId ?? (projectIds.includes(chosenProject) ? chosenProject : projectIds.length === 1 ? projectIds[0] : undefined);
+  const conversationId = useChatStore(state => state.conversations.find(item => item.id === state.selectedConversationId && item.scope_mode === "Architect")?.id);
+  const source = useAgsdlStore(state => state.sessions[agsdlSessionKey(target)]?.source);
+  const registrations = useSyncExternalStore(subscribeWorkflowRunAccess030, workflowRunAccessSnapshot030, workflowRunAccessSnapshot030);
+  const [bundle, setBundle] = useState<WorkflowRunAccess030>();
+  useEffect(() => {
+    if (!runsOpen || !projectId || !target.planId) { setBundle(undefined); return; }
+    try { setBundle(getWorkflowRunAccess030({ owner: { projectId, planId: target.planId, branch: projectBranches?.[projectId] ?? target.branchName }, conversationId: conversationId ?? undefined })); }
+    catch { setBundle(undefined); }
+  }, [runsOpen, projectId, projectBranches, target, conversationId, registrations]);
   return (
     <aside
       className="h-full min-h-0 min-w-0 flex flex-col bg-card border-l border-border"
       data-tour-id="architect-strategy-panel"
     >
+      {target.planId && <nav aria-label={t('agsdl.shell030.views')} className="flex shrink-0 gap-1 border-b border-border p-2 text-xs">
+        <button type="button" aria-pressed={!runsOpen} className="rounded px-2 py-1 hover:bg-accent" onClick={() => setRunsOpen(false)}>{t('agsdl.shell030.design')}</button>
+        <button type="button" aria-pressed={runsOpen} className="rounded px-2 py-1 hover:bg-accent" onClick={() => { setExpanded(false); setRunsOpen(true); }}>{t('agsdl.shell030.executions')}</button>
+        {!selectedProjectId && projectIds.length > 1 && <select aria-label={t('agsdl.shell030.project')} value={projectId ?? ''} onChange={event => { setBundle(undefined); setChosenProject(event.target.value); }} className="min-w-0 flex-1 rounded border border-border bg-card px-1 text-xs">
+          <option value="">{t('agsdl.shell030.chooseProject')}</option>{projectIds.map(id => <option key={id} value={id}>{[...standaloneProjects, ...projectGroups.flatMap(group => group.projects)].find(project => project.id === id)?.name ?? id}</option>)}
+        </select>}
+      </nav>}
       <div className="flex-1 min-h-0">
+        {runsOpen ? bundle ? <WorkflowRunView030 bundle={bundle} currentSource={source} /> : <p role="status" className="p-3 text-xs">{t('agsdl.shell030.unavailable')}</p> : <>
         {target.planId ? (
           <AgsdlEditor
             target={target}
@@ -43,6 +119,7 @@ function ArchitectViewer({ target, planStatus }: { target: AgsdlTarget; planStat
         ) : (
           <div className="agsdl-empty">{t("agsdl.choosePlan")}</div>
         )}
+        </>}
       </div>
       {target.planId && expanded && (
         <Dialog

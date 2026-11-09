@@ -96,3 +96,30 @@ it('opens the signalled pure activation in the exact captured run without attrib
   expect(graph?.taskPaths['/flow/steps/inspect']).toBeUndefined();
   expect(seen).not.toContain('execution_list_runs');
 });
+
+it('routes a captured 0.3 task to the injected monitor and binds its validation report to exact bytes', async () => {
+  const { configureWorkflowRunAccess030, projectWorkflowAgentTasks030 } = await import('./workflowAgentTasks');
+  const { inspectionFixture030, monitorFixture030 } = await import('./agsdl/runInspection030.testSupport');
+  const { sourceDigest } = await import('./agsdlExecution/compiler');
+  const { staticReportForSource030 } = await import('./agsdl/staticSemantics030');
+  const run = {...inspectionFixture030()};
+  const sha = await sourceDigest(run.capture.authoredSource);
+  run.capture = {...run.capture,source:{...run.capture.source,sourceSha256:sha}};
+  run.state = {...run.state,scope:{...run.state.scope,source:run.capture.source}};
+  const { plan } = await (await import('./workflowAgentTasks.fixtures')).workflowTaskFixture();
+  if (run.state.occurrences.kind === 'ready') run.state = {...run.state,occurrences:{...run.state.occurrences,value:run.state.occurrences.value.map(item=>({...item,scope:run.state.scope}))}};
+  const tasks = projectWorkflowAgentTasks030({...plan,id:'sample-plan',targetBranch:'develop',projectIds:['sample-project']},run);
+  if (run.state.occurrences.kind === 'ready') run.state = {...run.state,occurrences:{...run.state.occurrences,value:run.state.occurrences.value.map(item=>({...item,scope:run.state.scope}))}};
+  const access = monitorFixture030(run);
+  configureWorkflowRunAccess030(() => ({access}));
+  const seen: string[] = [];
+  installTauriRuntimeMock(mock(async command => { seen.push(command); if (command === 'execution_read_snapshot') return run.capture; throw new Error(command); }));
+  try {
+    const result = await loadTaskExecutionGraph(tasks[0],tasks);
+    expect(result?.access030?.access).toBe(access);
+    expect(seen).toEqual(['execution_read_snapshot']);
+    expect(staticReportForSource030(run.capture.authoredSource,result!.reports!)).toBeDefined();
+    expect(staticReportForSource030(run.capture.authoredSource+' ',result!.reports!)).toBeUndefined();
+    expect(result?.taskPaths).toEqual({});
+  } finally { configureWorkflowRunAccess030(undefined); }
+});

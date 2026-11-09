@@ -957,3 +957,24 @@ describe('workflow attention notification subscriptions', () => {
     unsubscribe();
   });
 });
+
+it('opens the exact 0.3 run and request from an attention action without conversation navigation', async () => {
+  const { emitRunAttentionNotification030, subscribeRunAttention030 } = await import('./WorkflowAttentionNotifications');
+  const { workflowRunTargetSnapshot030, openWorkflowRun030 } = await import('../../services/workflowAgentTasks');
+  const { inspectionFixture030, humanFixture030, monitorFixture030, ready } = await import('../../services/agsdl/runInspection030.testSupport');
+  const run = {...inspectionFixture030()}; const request = humanFixture030(run);
+  run.state = {...run.state,humans:ready([request])};
+  const access = monitorFixture030(run);
+  const stop = subscribeRunAttention030([{scope:{owner:run.capture.source.owner},access}],t);
+  const emitted = notifyActionRequired.mock.calls.length;
+  access.publish(access.snapshot);
+  expect(notifyActionRequired.mock.calls.length).toBe(emitted);
+  emitRunAttentionNotification030(request,t);
+  const options = notifyActionRequired.mock.calls.at(-1)![1];
+  expect(options.actions).toHaveLength(1);
+  await options.actions[0].onClick();
+  expect(workflowRunTargetSnapshot030()).toEqual({scope:request.scope,requestId:request.id});
+  expect(navigationCalls).toEqual([]);
+  expect(access.reads).toEqual([]);
+  stop(); openWorkflowRun030(null);
+});
