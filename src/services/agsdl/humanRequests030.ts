@@ -147,8 +147,12 @@ export function createHumanRequestClient030({ submit, read, storage }: {
   const key = (request: RunHumanRequest030, suffix: string) => `macro.human030.${suffix}.${humanRequestKey030(request)}`;
   const draftRecord = (request: RunHumanRequest030): Record<string, unknown> => {
     const raw = storage.getItem(key(request, 'draft'));
-    const value: unknown = raw ? JSON.parse(raw) : null;
-    return typeof value === 'object' && value !== null && !Array.isArray(value) ? value as Record<string, unknown> : {};
+    if (!raw) return {};
+    const value: unknown = JSON.parse(raw);
+    // A stored draft that is not an object may have held a revision floor.
+    // Refuse to treat it as empty: the caller keeps sending locked.
+    if (typeof value !== 'object' || value === null || Array.isArray(value)) throw new Error('Invalid retained draft');
+    return value as Record<string, unknown>;
   };
   const minimumRevision = (request: RunHumanRequest030): string | null => {
     const minimum = draftRecord(request).minimumRevision;

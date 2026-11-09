@@ -130,6 +130,28 @@ it('retains a received native answer when readback is older than its receipt', a
   await expect(client.refresh({ ...request, revision: '2' })).rejects.toThrow('REVISION_CONFLICT');
 });
 
+for (const corrupted of ['[]', 'null', '42', '"corrompu"']) {
+  it(`keeps a refused request locked when its stored draft becomes ${corrupted}`, async () => {
+    const request = humanFixture030();
+    const transport = humanTransportDouble030(request);
+    const storage = memoryDraftStorage030();
+    const submit = async (input: Parameters<typeof transport.submit>[0]) => {
+      transport.submissions.push(input);
+      return { kind: 'refused' as const, refusal: { code: 'REQUEST_CLOSED' as const, currentRevision: '2', message: 'Demande en révision 2.' } };
+    };
+    const answer = { kind: 'approval' as const, choice: 'réviser', comment: '' };
+    await createHumanRequestClient030({ submit, read: transport.read, storage }).send(request, answer);
+    const draftKey = `macro.human030.draft.${humanRequestKey030(request)}`;
+    expect(storage.getItem(draftKey)).not.toBeNull();
+    storage.setItem(draftKey, corrupted);
+    const reloaded = createHumanRequestClient030({ submit, read: transport.read, storage });
+    await expect(reloaded.refresh(request)).rejects.toThrow('Invalid retained draft');
+    expect(reloaded.blocked(request)).toBe(true);
+    await reloaded.send(request, answer);
+    expect(transport.submissions).toHaveLength(1);
+  });
+}
+
 for (const code of ['REQUEST_CLOSED', 'REVISION_CONFLICT'] as const) {
   it(`keeps the ${code} revision floor through stale reads, draft edits and a new client`, async () => {
     const request = humanFixture030();
