@@ -93,7 +93,7 @@ pub(crate) async fn reconcile(
                 {
                     if let Some(joined) = runtime.diagnostic_join(identity, &work.activation_id)? {
                         control
-                            .settle_joined_diagnostic(runtime, pool, &joined)
+                            .settle_joined_diagnostic(runtime, pool, &joined, None)
                             .await?;
                     }
                 }

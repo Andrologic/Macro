@@ -1075,6 +1075,17 @@ pub(crate) async fn inspect_work_commit(
     Ok(Some(()))
 }
 
+/// Exercise the production 04 validator from a synthetic native test fixture.
+#[cfg(test)]
+pub(crate) fn test_accepted_terminal030(
+    attempt: &crate::agsdl_host_flow030::FlowWorkAttempt030,
+    joined: &crate::agsdl_host_dispatch030::JoinedOwnedAgent030,
+    ticket: &FlowWorkTicket030,
+    decision: &ProtocolDecision030,
+) -> Result<Option<AcceptedWorkTerminal030>> {
+    accepted_terminal030(attempt, joined, ticket, decision)
+}
+
 #[cfg(test)]
 #[path = "flow_work_protocol030_tests.rs"]
 mod tests;
