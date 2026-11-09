@@ -273,7 +273,22 @@ pub(crate) fn validate_codex_document030(document: &serde_json::Value) -> Result
                 ));
             }
             for (key, child) in object {
-                if ["value", "results", "harnessSettings", "permissions"].contains(&key.as_str()) {
+                let segments: Vec<&str> = pointer.split('/').skip(1).collect();
+                let agent_definition = segments.len() == 2 && segments[0] == "agents";
+                let source_position = segments.len() >= 2
+                    && (matches!(segments[segments.len() - 2], "content" | "resources")
+                        || segments
+                            .last()
+                            .is_some_and(|part| part.parse::<usize>().is_ok()));
+                let inline_source = source_position
+                    && object.contains_key("value")
+                    && object
+                        .keys()
+                        .all(|name| matches!(name.as_str(), "value" | "mediaType"));
+                if (key == "value" && inline_source)
+                    || (agent_definition
+                        && ["results", "harnessSettings", "permissions"].contains(&key.as_str()))
+                {
                     continue;
                 }
                 let location = format!("{pointer}/{}", pointer_token030(key));
@@ -1189,6 +1204,27 @@ mod codex030_tests {
         let failure = validate_codex_document030(&doc).unwrap_err();
         assert_eq!(failure.code, "CONTENT_SOURCE_UNSUPPORTED");
         assert_eq!(failure.pointer, "/content/remote/uri");
+    }
+    #[test]
+    fn named_entries_do_not_hide_deadlines_or_external_sources() {
+        for name in ["value", "results"] {
+            let mut doc = document();
+            doc["flow"]["steps"] = json!({name: {"type":"agent", "agent":"worker", "timeoutMs":1}});
+            let error = validate_codex_document030(&doc).unwrap_err();
+            assert_eq!(error.pointer, format!("/flow/steps/{name}/timeoutMs"));
+            let mut doc = document();
+            doc["content"] = json!({name: {"uri":"https://example.invalid/source"}});
+            let error = validate_codex_document030(&doc).unwrap_err();
+            assert_eq!(error.pointer, format!("/content/{name}/uri"));
+            let mut doc = document();
+            doc["agents"]["worker"]["resources"] =
+                json!({name: {"uri":"https://example.invalid/source"}});
+            let error = validate_codex_document030(&doc).unwrap_err();
+            assert_eq!(
+                error.pointer,
+                format!("/agents/worker/resources/{name}/uri")
+            );
+        }
     }
     #[test]
     fn inline_payloads_and_other_harnesses_are_not_mistaken_for_executable_options() {
