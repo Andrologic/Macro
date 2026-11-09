@@ -84,6 +84,7 @@ pub(crate) struct RouteAttestor030 {
 // Derived inside the native transaction, never supplied by a caller or IPC.
 enum SourceKind030 {
     Error,
+    Call { error: bool },
     JoinError,
     FailedGroupError,
     AgentWork { work_event_id: String },
@@ -93,6 +94,8 @@ impl SourceKind030 {
     fn receipt_kind(&self) -> &'static str {
         match self {
             Self::Error | Self::JoinError | Self::FailedGroupError => "error",
+            Self::Call { error: true } => "error",
+            Self::Call { error: false } => "call",
             Self::AgentWork { .. } => "agentWork",
             Self::Join => "join",
         }
@@ -106,10 +109,19 @@ impl SourceKind030 {
     fn producer_kind(&self) -> &'static str {
         match self {
             Self::Error | Self::JoinError | Self::FailedGroupError => "error",
+            Self::Call { error: true } => "error",
+            Self::Call { error: false } => "call",
             Self::AgentWork { .. } => "agent",
             Self::Join => "join",
         }
     }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SourceOwnershipKind030 {
+    Agent,
+    Call,
+    Join,
 }
 
 /// The source is derived from native reducer state and an accepted 04 event.
@@ -150,6 +162,18 @@ impl RouteSourceCommitMarker030 {
 }
 impl AttestedRouteSource030 {
     /// A native group decision needs no invented agent join witness.
+    pub(crate) fn ownership_kind(&self) -> SourceOwnershipKind030 {
+        match self.kind {
+            SourceKind030::Call { .. } => SourceOwnershipKind030::Call,
+            SourceKind030::Join | SourceKind030::JoinError | SourceKind030::FailedGroupError => {
+                SourceOwnershipKind030::Join
+            }
+            _ => SourceOwnershipKind030::Agent,
+        }
+    }
+    pub(crate) fn producer(&self) -> &Producer030 {
+        &self.producer
+    }
     pub(crate) fn is_join_source(&self) -> bool {
         matches!(
             self.kind,
@@ -313,6 +337,14 @@ impl RouteAttestor030 {
         if reference.route.kind == "error" {
             return match producer.kind.as_str() {
                 "agent" => Ok(SourceKind030::Error),
+                "call" => {
+                    crate::agsdl_host_route_verifier030::verify_call_source_tx(
+                        db, capture, producer, owner, generation,
+                    )
+                    .await
+                    .map_err(verification_error)?;
+                    Ok(SourceKind030::Call { error: true })
+                }
                 "join" => {
                     verify_join_error_source_tx(
                         db, capture, reference, producer, owner, generation,
@@ -338,6 +370,14 @@ impl RouteAttestor030 {
         }
         require(reference.route.kind == "normal")?;
         match producer.kind.as_str() {
+            "call" => {
+                crate::agsdl_host_route_verifier030::verify_call_source_tx(
+                    db, capture, producer, owner, generation,
+                )
+                .await
+                .map_err(verification_error)?;
+                Ok(SourceKind030::Call { error: false })
+            }
             "agent" => Ok(SourceKind030::AgentWork {
                 work_event_id: unique_agent_work_event_tx(db, capture, producer)
                     .await

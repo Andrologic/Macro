@@ -87,7 +87,7 @@ async fn failed_group_requires_one_exact_accepted_join_failure() {
             step: Some(vec!["merge".into()]),
             kind: "join".into(),
             input_json: "{}".into(),
-            message_json: None,
+            message_json: Some("{}".into()),
             item_json: None,
             output_json: "{}".into(),
         };
@@ -238,20 +238,113 @@ fn only_local_error_handlers_exclude_branch_failure_candidates() {
     assert!(!has_local_error_handler(&plan, &Some(vec!["a".into()])));
 }
 
-#[test]
-fn call_failure_is_explicitly_refused_until_call_authority_is_integrated() {
-    let mut plan: FlowPlan030 = serde_json::from_str(include_str!(
-        "../tests/fixtures/agsdl030_compiled_plan.json"
-    ))
-    .unwrap();
-    let address = plan.steps[0].address.clone();
-    plan.steps[0].r#type = "call".into();
-    assert!(matches!(
-        reject_unintegrated_call(&plan, &Some(address.clone())),
-        Err(StoreError030::Authority)
-    ));
-    plan.steps[0].r#type = "agent".into();
-    assert!(reject_unintegrated_call(&plan, &Some(address)).is_ok());
+#[cfg(all(feature = "agsdl-engine-qa", debug_assertions))]
+#[tokio::test]
+async fn call_source_requires_exact_receipt_generation_visit_and_physical_end() {
+    use crate::agsdl_host_calls030::{tests as calls, CallDataBroker030};
+    for invalid in [false, true] {
+        let f = calls::Fixture::new(r#"{"type":"call","command":"never execute","parse":"json"}"#)
+            .await;
+        let broker = CallDataBroker030::default();
+        let witness = calls::joined(
+            &f,
+            &broker,
+            calls::command(
+                1,
+                if invalid {
+                    "invalid"
+                } else {
+                    r#"{"n":9007199254740993}"#
+                },
+            ),
+        )
+        .await;
+        let owner = EngineOwner {
+            system_start_id: f.id.system_start_id.clone(),
+            owner_epoch: "owner".into(),
+        };
+        let mut tx = f.pool.begin().await.unwrap();
+        let raw: String = sqlx::query_scalar("SELECT capture_json FROM engine_start030_requests")
+            .fetch_one(&mut *tx)
+            .await
+            .unwrap();
+        let capture: StartCapture030 = serde_json::from_str(&raw).unwrap();
+        let (message_json, item_json) = match &witness.attempt().effect().kind {
+            FlowEffectKind030::Start {
+                message_json,
+                item_json,
+                ..
+            } => (message_json.clone(), item_json.clone()),
+            _ => unreachable!(),
+        };
+        let mut producer = Producer030 {
+            activation_id: witness.attempt().work().activation_id.clone(),
+            step: Some(witness.attempt().address().to_vec()),
+            kind: "call".into(),
+            input_json: witness.attempt().input_json().into(),
+            message_json,
+            item_json,
+            output_json: "{}".into(),
+        };
+        assert!(
+            verify_call_source_tx(&mut tx, &capture, &producer, &owner, "generation")
+                .await
+                .is_err()
+        );
+        tx.rollback().await.unwrap();
+        let receipt = calls::finish(&f, &broker, &witness).await;
+        producer.output_json = match receipt.work_result().unwrap().unwrap() {
+            WorkResult030::Completed { output_json, .. } => output_json,
+            WorkResult030::Failed { error } => json!({"error":error}).to_string(),
+        };
+        let mut tx = f.pool.begin().await.unwrap();
+        assert!(
+            verify_call_source_tx(&mut tx, &capture, &producer, &owner, "generation")
+                .await
+                .is_ok()
+        );
+        assert!(
+            verify_call_source_tx(&mut tx, &capture, &producer, &owner, "old-generation")
+                .await
+                .is_err()
+        );
+        let mut forged = producer.clone();
+        forged.output_json = "{}".into();
+        assert!(
+            verify_call_source_tx(&mut tx, &capture, &forged, &owner, "generation")
+                .await
+                .is_err()
+        );
+        forged = producer.clone();
+        forged.activation_id = "other-visit".into();
+        assert!(
+            verify_call_source_tx(&mut tx, &capture, &forged, &owner, "generation")
+                .await
+                .is_err()
+        );
+        let raw: String = sqlx::query_scalar("SELECT state_json FROM engine_flow030_runs")
+            .fetch_one(&mut *tx)
+            .await
+            .unwrap();
+        let mut state: FlowState030 = serde_json::from_str(&raw).unwrap();
+        state
+            .activations
+            .iter_mut()
+            .find(|a| a.id == producer.activation_id)
+            .unwrap()
+            .physical = true;
+        sqlx::query("UPDATE engine_flow030_runs SET state_json=?")
+            .bind(serde_json::to_string(&state).unwrap())
+            .execute(&mut *tx)
+            .await
+            .unwrap();
+        assert!(
+            verify_call_source_tx(&mut tx, &capture, &producer, &owner, "generation")
+                .await
+                .is_err()
+        );
+        tx.rollback().await.unwrap();
+    }
 }
 
 #[path = "agsdl_host_path_failure030_tests.rs"]

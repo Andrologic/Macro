@@ -191,8 +191,11 @@ struct NormalizedData030(protocol::CallResult030);
 /// The outer RouteBroker failure channel is a transport failure, not a call
 /// failure. A lost worker never authorizes another physical launch.
 #[derive(Default)]
-pub(crate) struct CallDataBroker030(RouteBroker030);
+pub(crate) struct CallDataBroker030(Arc<RouteBroker030>);
 impl CallDataBroker030 {
+    pub(crate) fn from_native_route(broker: Arc<RouteBroker030>) -> Self {
+        Self(broker)
+    }
     pub(crate) async fn next(&self) -> Result<HostRouteJob030> {
         self.0.next().await
     }

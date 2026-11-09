@@ -37,7 +37,15 @@ pub(crate) async fn dispatch_joined_error_route030(
     joined: &JoinedOwnedAgent030,
     cancelled: &CancellationToken,
 ) -> Result<Apply030> {
-    dispatch_source_route030(host, pool, owner, reference, Some(joined), cancelled).await
+    dispatch_source_route030(
+        host,
+        pool,
+        owner,
+        reference,
+        SourceOwnership030::Agent(joined),
+        cancelled,
+    )
+    .await
 }
 
 /// Read back only; an absent source remains unresolved even for joins.
@@ -66,7 +74,7 @@ pub(crate) async fn dispatch_source_route030(
     pool: &SqlitePool,
     owner: &EngineOwner,
     reference: &PrepareRef030,
-    joined: Option<&JoinedOwnedAgent030>,
+    ownership: SourceOwnership030<'_>,
     cancelled: &CancellationToken,
 ) -> Result<Apply030> {
     source_route030(
@@ -74,15 +82,21 @@ pub(crate) async fn dispatch_source_route030(
         pool,
         owner,
         reference,
-        SourceRouteMode030::Dispatch(joined),
+        SourceRouteMode030::Dispatch(ownership),
         cancelled,
     )
     .await
 }
 
+#[derive(Clone, Copy)]
+pub(crate) enum SourceOwnership030<'a> {
+    Agent(&'a JoinedOwnedAgent030),
+    Call(&'a crate::agsdl_host_calls030::JoinedCall030),
+    Join,
+}
 enum SourceRouteMode030<'a> {
     InspectOnly,
-    Dispatch(Option<&'a JoinedOwnedAgent030>),
+    Dispatch(SourceOwnership030<'a>),
 }
 
 async fn source_route030(
@@ -95,7 +109,8 @@ async fn source_route030(
 ) -> Result<Apply030> {
     let joined = match &mode {
         SourceRouteMode030::InspectOnly => None,
-        SourceRouteMode030::Dispatch(joined) => *joined,
+        SourceRouteMode030::Dispatch(SourceOwnership030::Agent(joined)) => Some(*joined),
+        _ => None,
     };
     let attestor = RouteAttestor030::capture(host, owner).await?;
     let verifier = SqlRouteMaterialVerifier030::capture(host, owner).await?;
@@ -144,18 +159,54 @@ async fn source_route030(
             let source = attestor
                 .attest_source_tx(&mut tx, &lease, host.flow030(), &capture, reference)
                 .await?;
-            if joined.is_none() && !source.is_join_source() {
-                return Err(failure(
-                    "CORRELATION",
-                    "route",
-                    "Agent source requires joined ownership",
-                ));
-            }
-            pending = Some(host.flow030().begin_route_source_commit(&source)?);
             created = true;
             source
         }
     };
+    if matches!(mode, SourceRouteMode030::Dispatch(_)) {
+        use crate::agsdl_host_route_attestations030::SourceOwnershipKind030;
+        match (&mode, source.ownership_kind()) {
+            (
+                SourceRouteMode030::Dispatch(SourceOwnership030::Agent(_)),
+                SourceOwnershipKind030::Agent,
+            ) => {}
+            (
+                SourceRouteMode030::Dispatch(SourceOwnership030::Join),
+                SourceOwnershipKind030::Join,
+            ) => {}
+            (
+                SourceRouteMode030::Dispatch(SourceOwnership030::Call(joined)),
+                SourceOwnershipKind030::Call,
+            ) => {
+                let receipt = crate::agsdl_host_route_verifier030::verify_call_source_tx(
+                    &mut tx,
+                    &capture,
+                    source.producer(),
+                    owner,
+                    lease.generation(),
+                )
+                .await
+                .map_err(|_| failure("AUTHORITY", "route", "Call source receipt differs"))?;
+                if !receipt.matches_joined(joined)? {
+                    return Err(failure(
+                        "CORRELATION",
+                        "route",
+                        "Call source requires its exact joined owner",
+                    ));
+                }
+            }
+            _ => {
+                return Err(failure(
+                    "CORRELATION",
+                    "route",
+                    "Route source ownership kind differs",
+                ))
+            }
+        }
+    }
+    if created {
+        pending = Some(host.flow030().begin_route_source_commit(&source)?);
+    }
     let material = source.source_only_material();
     lease.ensure_live()?;
     #[cfg(all(feature = "agsdl-engine-qa", debug_assertions))]

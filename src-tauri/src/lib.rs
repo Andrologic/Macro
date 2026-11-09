@@ -99,6 +99,7 @@ pub async fn run_agsdl_engine_isolation_qa() {
     agsdl_host_example030::run_isolation_checks030().await;
 }
 mod agsdl_host;
+mod agsdl_host_call_authority030;
 mod agsdl_host_calls;
 mod agsdl_host_calls030;
 mod agsdl_host_capture;

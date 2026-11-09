@@ -151,6 +151,20 @@ impl Fixture {
         }];
         if serde_json::from_str::<serde_json::Value>(declaration)
             .unwrap()
+            .get("next")
+            .is_some()
+        {
+            plan.routes[0].declaration_json = "\"tests\"".into();
+            plan.routes[0].targets = vec![crate::db::agsdl_execution::flow030::Target030::Step {
+                address: vec!["tests".into()],
+                message_json: None,
+                each_path_json: None,
+                concurrency_json: None,
+                max_json: None,
+            }];
+        }
+        if serde_json::from_str::<serde_json::Value>(declaration)
+            .unwrap()
             .get("onError")
             .is_some()
         {
@@ -289,6 +303,18 @@ impl Fixture {
         Self::with_origin(declaration, false, input).await
     }
     async fn with_origin(declaration: &str, shared: bool, input: &str) -> Self {
+        Self::origin_fixture(declaration, shared, input, false).await
+    }
+    pub(crate) async fn branch_failure() -> Self {
+        Self::origin_fixture(
+            r#"{"type":"call","command":"never execute","parse":"json","next":"join"}"#,
+            false,
+            "{}",
+            true,
+        )
+        .await
+    }
+    async fn origin_fixture(declaration: &str, shared: bool, input: &str, branch: bool) -> Self {
         let (temp, pool, authority, id) = fixture_parts().await;
         let mut plan: FlowPlan030 = if shared {
             serde_json::from_str(include_str!(
@@ -324,6 +350,57 @@ impl Fixture {
                     .map(|k| if k == "one" { "passed" } else { "failed" }.into())
                     .collect();
             }
+        } else if branch {
+            let call = plan
+                .steps
+                .iter_mut()
+                .find(|s| s.address == ["left"])
+                .unwrap();
+            call.r#type = "call".into();
+            call.agent = None;
+            call.instance = None;
+            call.delivery = None;
+            call.submission_contract_json = None;
+            call.declaration_json = declaration.into();
+            let join = plan
+                .steps
+                .iter_mut()
+                .find(|s| s.address == ["join"])
+                .unwrap();
+            join.declaration_json =
+                r#"{"type":"join","remaining":"finish","onError":"rescue"}"#.into();
+            let mut rescue = plan
+                .steps
+                .iter()
+                .find(|s| s.address == ["right"])
+                .unwrap()
+                .clone();
+            rescue.address = vec!["rescue".into()];
+            rescue.declaration_json =
+                r#"{"type":"agent","agent":"worker","instance":"new"}"#.into();
+            plan.steps.push(rescue);
+            plan.routes.push(Route030 {
+                source: vec!["join".into()],
+                kind: "error".into(),
+                key: None,
+                declaration_json: "\"rescue\"".into(),
+                inherited: false,
+                targets: vec![flow030::Target030::Step {
+                    address: vec!["rescue".into()],
+                    message_json: None,
+                    each_path_json: None,
+                    concurrency_json: None,
+                    max_json: None,
+                }],
+            });
+            plan.routes.push(Route030 {
+                source: vec!["rescue".into()],
+                kind: "normal".into(),
+                key: None,
+                declaration_json: "[]".into(),
+                inherited: false,
+                targets: vec![],
+            });
         } else {
             let call = Step030 {
                 address: vec!["a".into()],
@@ -446,7 +523,7 @@ impl Fixture {
                 target: target.clone(),
                 items: (0..if shared { 2 } else { 1 })
                     .map(|index| flow030::PreparedItem030 {
-                        message_json: None,
+                        message_json: if branch && matches!(target, flow030::Target030::Step { address, .. } if address == &["right"]) { Some("{}".into()) } else { None },
                         item_json: shared
                             .then(|| if index == 0 { "\"x\"" } else { "\"y\"" }.into()),
                         occurrence: flow030::DeliveryOccurrence030 {

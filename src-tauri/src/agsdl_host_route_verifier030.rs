@@ -179,6 +179,7 @@ impl SqlRouteMaterialVerifier030 {
         } else {
             match producer.kind.as_str() {
                 "agent" => "agentWork",
+                "call" => "call",
                 "join" => "join",
                 _ => return Err(StoreError030::Authority),
             }
@@ -214,6 +215,8 @@ impl SqlRouteMaterialVerifier030 {
             )?;
             if kind == "join" {
                 verify_join_source(db, capture, producer).await?;
+            } else if producer.kind == "call" {
+                verify_call_source_tx(db, capture, producer, &self.owner, &self.generation).await?;
             } else if kind == "error" && producer.kind == "join" {
                 verify_join_error_source_tx(
                     db,
@@ -240,6 +243,97 @@ impl SqlRouteMaterialVerifier030 {
         )
         .await
     }
+}
+
+/// Re-read 039 through its sealed SQL reader. A transport payload, an agent
+/// work-event foreign key or a caller-supplied physical flag is never evidence.
+pub(crate) async fn verify_call_source_tx(
+    db: &mut SqliteConnection,
+    capture: &StartCapture030,
+    producer: &Producer030,
+    owner: &EngineOwner,
+    generation: &str,
+) -> Verified<crate::agsdl_host_calls030::CallReceipt030> {
+    require(producer.kind == "call")?;
+    let raw: String = sqlx::query_scalar(
+        "SELECT state_json FROM engine_flow030_runs WHERE system_id=? AND invocation_id=?",
+    )
+    .bind(&capture.identity.system_start_id)
+    .bind(&capture.identity.flow_invocation_id)
+    .fetch_one(&mut *db)
+    .await?;
+    let state: FlowState030 = serde_json::from_str(&raw)?;
+    let activations = state
+        .activations
+        .iter()
+        .filter(|a| a.id == producer.activation_id)
+        .collect::<Vec<_>>();
+    require(state.identity == capture.identity && activations.len() == 1)?;
+    let a = activations[0];
+    require(
+        !a.physical
+            && a.instance_id.is_none()
+            && a.agent.is_none()
+            && a.step == producer.step
+            && a.input_json == producer.input_json
+            && a.message_json == producer.message_json
+            && a.item_json == producer.item_json,
+    )?;
+    let work = crate::db::agsdl_execution::flow030::WorkRef030 {
+        activation_id: a.id.clone(),
+        start_effect_id: a.start_effect_id.clone().ok_or(StoreError030::Authority)?,
+        agent_instance_id: None,
+    };
+    let receipt = crate::db::agsdl_execution::call_protocol030::read_route_receipt_tx(
+        db, capture, owner, generation, &work,
+    )
+    .await
+    .map_err(|_| StoreError030::Authority)?
+    .ok_or(StoreError030::Authority)?;
+    let result = receipt
+        .work_result()
+        .map_err(|_| StoreError030::Authority)?
+        .ok_or(StoreError030::Authority)?;
+    match &result {
+        WorkResult030::Completed { output_json, .. } => {
+            require(exact(output_json, &producer.output_json)?)?
+        }
+        WorkResult030::Failed { error } => require(exact(
+            &json!({"error":error}).to_string(),
+            &producer.output_json,
+        )?)?,
+    }
+    use crate::db::agsdl_execution::flow030::WorkResultRecord030;
+    require(match (&a.result, &result) {
+        (
+            Some(WorkResultRecord030::Completed {
+                output_json: a,
+                route_key: ak,
+            }),
+            WorkResult030::Completed {
+                output_json: b,
+                route_key: bk,
+            },
+        ) => a == b && ak == bk,
+        (Some(WorkResultRecord030::Failed { error: a }), WorkResult030::Failed { error: b }) => {
+            a == b
+        }
+        _ => false,
+    })?;
+    let event = state
+        .events
+        .get(receipt.event_id())
+        .ok_or(StoreError030::Authority)?;
+    let expected: Value = serde_json::from_str(&event.event_json)?;
+    require(
+        expected["identity"] == serde_json::to_value(&capture.identity)?
+            && expected["eventId"] == receipt.event_id()
+            && value_equal(
+                &expected["kind"]["WorkResult"],
+                &json!({"work":work,"result":result,"physical":receipt.physical()}),
+            )?,
+    )?;
+    Ok(receipt)
 }
 impl RouteMaterialVerifier030 for SqlRouteMaterialVerifier030 {
     fn attest_tx<'a>(
@@ -659,17 +753,6 @@ fn has_local_error_handler(plan: &FlowPlan030, step: &Option<Vec<String>>) -> bo
     })
 }
 
-/// The call lifecycle's native authority and commit fence are not wired here.
-/// Until the calls wave supplies them, a call failure is refused as AUTHORITY.
-fn reject_unintegrated_call(plan: &FlowPlan030, step: &Option<Vec<String>>) -> Verified<()> {
-    let Some(address) = step else {
-        return Err(StoreError030::Authority);
-    };
-    let mut matches = plan.steps.iter().filter(|item| item.address == *address);
-    let item = matches.next().ok_or(StoreError030::Authority)?;
-    require(matches.next().is_none() && item.r#type != "call")
-}
-
 /// An already-opened join failure is anchored to its immutable group and to the
 /// accepted branch failure that crossed its configured threshold. The later
 /// release event may be a different physical-end event.
@@ -851,7 +934,6 @@ fn verify_failed_group_tx<'a>(
                 if acts.len() != 1 || serde_json::to_value(error)? != *path_error {
                     continue;
                 }
-                reject_unintegrated_call(plan, step)?;
                 let event: Value = serde_json::from_str(row.get("event_json"))?;
                 let receipt: crate::db::agsdl_execution::flow030::FlowReceipt030 =
                     serde_json::from_str(row.get("receipt_json"))?;
@@ -887,7 +969,32 @@ fn verify_failed_group_tx<'a>(
                     }) == Some(&path.id),
                 )?;
                 let origin = PathFailureOrigin030::derive(&event, acts[0], state, error)?;
+                let address = step.as_ref().ok_or(StoreError030::Authority)?;
+                let declarations = plan
+                    .steps
+                    .iter()
+                    .filter(|s| &s.address == address)
+                    .collect::<Vec<_>>();
+                require(
+                    declarations.len() == 1
+                        && (declarations[0].r#type != "call"
+                            || matches!(origin, PathFailureOrigin030::Call)),
+                )?;
                 match origin {
+                    PathFailureOrigin030::Call => {
+                        let producer = Producer030 {
+                            activation_id: activation_id.clone(),
+                            step: step.clone(),
+                            kind: "call".into(),
+                            input_json: acts[0].input_json.clone(),
+                            message_json: acts[0].message_json.clone(),
+                            item_json: acts[0].item_json.clone(),
+                            output_json: json!({"error":error}).to_string(),
+                        };
+                        let call = verify_call_source_tx(db, capture, &producer, owner, generation)
+                            .await?;
+                        require(call.event_id() == event_id)?;
+                    }
                     PathFailureOrigin030::AgentWork => {
                         require(
                             event.pointer("/kind/WorkResult/result/Failed/error")

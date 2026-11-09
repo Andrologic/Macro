@@ -41,6 +41,7 @@ use tokio::sync::OwnedMutexGuard;
 #[derive(Default)]
 pub(crate) struct FlowHost030 {
     committing: Mutex<BTreeMap<String, FlowIdentity030>>,
+    pub(crate) call_commits: crate::agsdl_host_calls030::CallCommitFence030,
     event_committing: Mutex<BTreeMap<(String, String), FlowEvent030>>,
     work_committing: Mutex<BTreeMap<(String, String), FlowWorkCommitMarker030>>,
     route_source_committing: Mutex<BTreeMap<(String, String), RouteSourceCommitMarker030>>,
@@ -349,6 +350,7 @@ impl FlowHost030 {
         identity: &FlowIdentity030,
         readback: Option<&PrepareRef030>,
     ) -> Result<()> {
+        self.call_commits.require_clear(identity)?;
         let pending = self.committing.lock().map_err(|_| unavailable())?;
         if pending
             .values()
@@ -690,10 +692,10 @@ async fn check_owner(
     Ok(owner)
 }
 
-struct Authority<'a> {
-    runtime: &'a FlowHost030,
-    lease: &'a HostStartLease,
-    owner: EngineOwner,
+pub(crate) struct Authority<'a> {
+    pub(crate) runtime: &'a FlowHost030,
+    pub(crate) lease: &'a HostStartLease,
+    pub(crate) owner: EngineOwner,
 }
 
 /// Resolve the occurrence against the committed native Prepared event, including

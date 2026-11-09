@@ -67,13 +67,125 @@ const SCENARIOS: &[(&str, &str)] = &[
         "fanout-max-failures",
         include_str!("../../dev/agsdl/fixtures/v0.3/conformance/runs/fanout-max-failures.json"),
     ),
+    (
+        "quorum-unreachable",
+        include_str!("../../dev/agsdl/fixtures/v0.3/conformance/runs/quorum-unreachable.json"),
+    ),
+    (
+        "sequence-loop",
+        include_str!("../../dev/agsdl/fixtures/v0.3/conformance/runs/sequence-loop.json"),
+    ),
+    (
+        "quorum-reached",
+        include_str!("../../dev/agsdl/fixtures/v0.3/conformance/runs/quorum-reached.json"),
+    ),
+    (
+        "quorum-wait",
+        include_str!("../../dev/agsdl/fixtures/v0.3/conformance/runs/quorum-wait.json"),
+    ),
+    (
+        "quorum-finish",
+        include_str!("../../dev/agsdl/fixtures/v0.3/conformance/runs/quorum-finish.json"),
+    ),
+    (
+        "finish-branch-goes-on",
+        include_str!("../../dev/agsdl/fixtures/v0.3/conformance/runs/finish-branch-goes-on.json"),
+    ),
+    (
+        "command-outcome",
+        include_str!("../../dev/agsdl/fixtures/v0.3/conformance/runs/command-outcome.json"),
+    ),
+    (
+        "command-json-invalid",
+        include_str!("../../dev/agsdl/fixtures/v0.3/conformance/runs/command-json-invalid.json"),
+    ),
+    (
+        "command-lines",
+        include_str!("../../dev/agsdl/fixtures/v0.3/conformance/runs/command-lines.json"),
+    ),
+    (
+        "fanout-operand",
+        include_str!("../../dev/agsdl/fixtures/v0.3/conformance/runs/fanout-operand.json"),
+    ),
+    (
+        "quorum-missed",
+        include_str!("../../dev/agsdl/fixtures/v0.3/conformance/runs/quorum-missed.json"),
+    ),
+    (
+        "composition",
+        include_str!("../../dev/agsdl/fixtures/v0.3/conformance/runs/composition.json"),
+    ),
 ];
+
+const CALLS_PINS: &[(&str, &str)] = &[
+    (
+        "quorum-unreachable",
+        "b01ed57ae25c2ebbbd1039ad45b682e47eecfa689bdb197dad4b9faf8c7c52fc",
+    ),
+    (
+        "sequence-loop",
+        "0be291e5e08a2c8014e7a79a3a61e94886473a99fec75f8d1708737c62853492",
+    ),
+    (
+        "quorum-reached",
+        "3ebf931fd00937d07ceb80d709f179bb07a8add1fa93a20e6b77a2c7fe402116",
+    ),
+    (
+        "quorum-wait",
+        "1da961c08147ec8bc62fe28f03971935943bfc0bad24b6acf3abf5a7fae681ab",
+    ),
+    (
+        "quorum-finish",
+        "49ae35767301569041700883370fc6ada49717200348103a5bd2025114e4f6eb",
+    ),
+    (
+        "finish-branch-goes-on",
+        "d09dbb6ba3e4eb7268a0d84fbe935c37ac2ea5d0faa236d99a7eb3cf487c8779",
+    ),
+    (
+        "command-outcome",
+        "ceab028542ef93ceed4c567eab27f72103b2568ab9568796917dd58a46878984",
+    ),
+    (
+        "command-json-invalid",
+        "c4b29ec6d9809bcae401b54748eb8482ca662186fd23bc15eb8db5c568cefb47",
+    ),
+    (
+        "command-lines",
+        "34433121b4940af3ed94355b0446514c9ad5bee61de7e2daac0669ab5ea541f7",
+    ),
+    (
+        "fanout-operand",
+        "4f897247c05dbe3372a87812d0689ab8e03ba37a0f7c2a704a1cd6d58abdbe9f",
+    ),
+    (
+        "quorum-missed",
+        "6c476d29ae9a21abe555c4c20aee29593fd31006174412dd3f8c81bb21272c82",
+    ),
+    (
+        "composition",
+        "92a9cf5728f38de3176426c833972fd2c6bf103e2f0a8a314d65d0b3d4cfad3d",
+    ),
+];
+fn verify_fixture_pin(name: &str, raw: &str) -> Result<()> {
+    if let Some((_, expected)) = CALLS_PINS.iter().find(|(n, _)| *n == name) {
+        if format!("{:x}", Sha256::digest(raw.as_bytes())) != *expected {
+            return Err(bad());
+        }
+    }
+    Ok(())
+}
+
+fn empty_entry() -> Box<RawValue> {
+    RawValue::from_string("{}".into()).expect("empty host message")
+}
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Fixture030 {
     description: String,
     document: Box<RawValue>,
+    #[serde(default = "empty_entry")]
     entry: Box<RawValue>,
     timeline: Vec<Box<RawValue>>,
     expect: Box<RawValue>,
@@ -92,6 +204,10 @@ pub(crate) enum TimelineEvent030 {
         outcome: ExampleResult030,
     },
     Running(Vec<WorkKey030>),
+    Command {
+        key: WorkKey030,
+        receipt: crate::agsdl_host_calls030::CallEvent030,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -159,8 +275,32 @@ fn parse_timeline(raw: &RawValue) -> Result<TimelineEvent030> {
     let k = key(&step, item.as_deref())?;
     let fails = fields.remove("fails");
     let returns = fields.remove("returns");
+    let command = fields.remove("command");
     if !fields.is_empty() {
         return Err(bad());
+    }
+    if let Some(raw) = command {
+        if fails.is_some() || returns.is_some() {
+            return Err(bad());
+        }
+        #[derive(Deserialize)]
+        #[serde(rename_all = "camelCase", deny_unknown_fields)]
+        struct Command {
+            exit_code: i32,
+            #[serde(default)]
+            stdout: String,
+            #[serde(default)]
+            stderr: String,
+        }
+        let command: Command = serde_json::from_str(raw.get())?;
+        return Ok(TimelineEvent030::Command {
+            key: k,
+            receipt: crate::agsdl_host_calls030::CallEvent030::CommandReceipt {
+                stdout: command.stdout,
+                stderr: command.stderr,
+                exit_code: command.exit_code,
+            },
+        });
     }
     let outcome = match (fails, returns) {
         (Some(code), None) => {
@@ -194,7 +334,8 @@ fn parse_timeline(raw: &RawValue) -> Result<TimelineEvent030> {
 
 impl PinnedScenario030 {
     pub(crate) fn recognizes_document(document_json: &str) -> Result<bool> {
-        for &(_, raw) in SCENARIOS {
+        for &(name, raw) in SCENARIOS {
+            verify_fixture_pin(name, raw)?;
             crate::db::agsdl_execution::validate_json(raw)?;
             let fixture: Fixture030 = serde_json::from_str(raw)?;
             if document_tokens_equal(document_json, fixture.document.get())? {
@@ -208,6 +349,7 @@ impl PinnedScenario030 {
     pub(crate) fn from_capture(document_json: &str, entry_json: &str) -> Result<Self> {
         let mut found = None;
         for &(name, raw) in SCENARIOS {
+            verify_fixture_pin(name, raw)?;
             crate::db::agsdl_execution::validate_json(raw)?;
             let fixture: Fixture030 = serde_json::from_str(raw)?;
             if document_tokens_equal(document_json, fixture.document.get())?
@@ -245,8 +387,8 @@ mod tests {
         assert!(PinnedScenario030::from_capture(f.document.get(), "{}").is_err());
     }
     #[test]
-    fn all_fifteen_vendor_scenarios_bind_exact_document_entry_and_timeline() {
-        assert_eq!(SCENARIOS.len(), 15);
+    fn all_twenty_seven_vendor_scenarios_bind_exact_document_entry_and_timeline() {
+        assert_eq!(SCENARIOS.len(), 27);
         for &(name, raw) in SCENARIOS {
             let fixture: Fixture030 = serde_json::from_str(raw).unwrap();
             assert!(PinnedScenario030::recognizes_document(fixture.document.get()).unwrap());
@@ -272,6 +414,34 @@ mod tests {
         assert!(
             PinnedScenario030::from_capture(fixture.document.get(), fixture.entry.get()).is_err()
         );
+    }
+
+    #[test]
+    fn command_receipt_is_typed_exact_and_exclusive() {
+        let raw =
+            RawValue::from_string(r#"{"work":"tests","command":{"exitCode":1}}"#.into()).unwrap();
+        assert!(
+            matches!(parse_timeline(&raw).unwrap(), TimelineEvent030::Command { receipt: crate::agsdl_host_calls030::CallEvent030::CommandReceipt { stdout, stderr, exit_code: 1 }, .. } if stdout.is_empty() && stderr.is_empty())
+        );
+        for value in [
+            r#"{"work":"tests","command":{"exitCode":0},"returns":{}}"#,
+            r#"{"work":"tests","command":{"exitCode":0},"fails":"CALL_FAILED"}"#,
+            r#"{"work":"tests","command":{"exitCode":0,"outcome":"passed"}}"#,
+            r#"{"work":"tests","command":{"exitCode":0.5}}"#,
+            r#"{"work":"tests","command":{"exitCode":2147483648}}"#,
+            r#"{"work":"tests","command":{}}"#,
+        ] {
+            assert!(
+                parse_timeline(&RawValue::from_string(value.into()).unwrap()).is_err(),
+                "{value}"
+            );
+        }
+        for &(name, raw) in SCENARIOS {
+            verify_fixture_pin(name, raw).unwrap();
+            if CALLS_PINS.iter().any(|(n, _)| *n == name) {
+                assert!(verify_fixture_pin(name, &format!("{raw} ")).is_err());
+            }
+        }
     }
 
     #[test]

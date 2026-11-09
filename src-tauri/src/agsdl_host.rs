@@ -14,7 +14,7 @@ struct Incarnation {
     generation: String,
     compiler: crate::agsdl_host_compiler::CompileBroker,
     work_protocol: crate::agsdl_host_work::WorkBroker030,
-    route030: crate::agsdl_host_route030::RouteBroker030,
+    route030: Arc<crate::agsdl_host_route030::RouteBroker030>,
     lifecycle: Arc<tokio::sync::RwLock<()>>,
     handoff: Mutex<()>,
     live: AtomicBool,
@@ -180,6 +180,14 @@ impl HostStartLease {
             .await?;
         self.ensure_live()?;
         Ok(result)
+    }
+    pub(crate) fn call_data030(&self) -> Result<crate::agsdl_host_calls030::CallDataBroker030> {
+        self.ensure_live()?;
+        Ok(
+            crate::agsdl_host_calls030::CallDataBroker030::from_native_route(
+                self.host.route030.clone(),
+            ),
+        )
     }
     /// Transfer an exact native effect to its cancellable owner while this
     /// lease keeps the incarnation attached. The caller must also hold the
