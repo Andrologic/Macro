@@ -1,4 +1,5 @@
 import { describe, expect, test } from 'bun:test';
+import { readFileSync } from 'node:fs';
 import { profileForClassification, stepsForProfile } from './check-profiles.mjs';
 
 const names = (profile: string, platform = 'linux') =>
@@ -32,6 +33,7 @@ describe('local CI profiles', () => {
       'Build AI runtime sidecar',
       'Check generated config contracts',
       'Check generated ipc contracts',
+      'Check locked AgSDL replay target',
       'Run locked Rust tests for all targets',
       'Run locked Rust doc tests',
       'Verify headless HTTP transport',
@@ -155,5 +157,27 @@ test('native profiles reuse the headless HTTP smoke once after native compilatio
   }
   for (const profile of ['frontend', 'documentation', 'sidecar']) {
     expect(stepsForProfile(profile).some(entry => entry.args.includes('test:e2e:headless'))).toBe(false);
+  }
+});
+
+
+test('native profiles check the standalone replay target with its locked dependencies', () => {
+  for (const profile of ['native', 'native-core', 'windows', 'windows-core', 'full']) {
+    const checks = stepsForProfile(profile).filter(step => step.name === 'Check locked AgSDL replay target');
+    expect(checks).toHaveLength(1);
+    expect(checks[0]).toMatchObject({ command: 'cargo', args: [
+      'check', '--manifest-path', 'src-tauri/tests/replay030/Cargo.toml',
+      '--locked', '--all-targets', '--profile', 'replay', '--jobs', '2',
+    ] });
+  }
+});
+
+test('standalone replay dependency versions and checksums match the main lock', () => {
+  type LockedPackage = { name: string; version: string; source?: string; checksum?: string };
+  const packages = (path: string) => (Bun.TOML.parse(readFileSync(new URL(path, import.meta.url), 'utf8')) as { package: LockedPackage[] }).package;
+  const identity = ({name, version, source, checksum}: LockedPackage) => JSON.stringify([name, version, source, checksum]);
+  const main = new Set(packages('../../src-tauri/Cargo.lock').map(identity));
+  for (const pkg of packages('../../src-tauri/tests/replay030/Cargo.lock')) {
+    if (pkg.name !== 'macro-agsdl-replay030') expect(main.has(identity(pkg))).toBe(true);
   }
 });
