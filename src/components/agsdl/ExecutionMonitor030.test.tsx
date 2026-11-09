@@ -58,7 +58,7 @@ it('keeps stop proof, physical work and final verdict independent and compares e
   const changed = { ...old, capture: { ...old.capture, authoredSource: old.capture.authoredSource.replace('echo synthetic', 'echo earlier') } };
   const access = monitorFixture030(run, changed);
   await mount(access);
-  expect(host.textContent).toContain('Run succeeded');
+  expect(host.textContent).toContain('No final verdict');
   expect(host.textContent).toContain('Stop uncertain');
   expect(host.textContent).toContain('Required agreement not reached');
   expect(host.textContent).toContain('Handled error');
@@ -67,8 +67,10 @@ it('keeps stop proof, physical work and final verdict independent and compares e
   await act(async () => { select.value = 'run-old'; select.dispatchEvent(new Event('change', { bubbles: true })); });
   expect(host.textContent).toContain('The captured sources differ.');
   expect(host.textContent).toContain('Date unknown');
-  await act(async () => access.publish({ ...access.snapshot, runs: { ...access.snapshot.runs, 'run-current': ready({ ...run, state: { ...run.state, verdict: 'failed', stop: available({ kind: 'stopped', requestId: 's', receiptId: 'receipt' }) } }) } }));
-  expect(host.textContent).toContain('Run failed');
+  await act(async () => access.publish({ ...access.snapshot, runs: { ...access.snapshot.runs, 'run-current': ready({ ...run, state: { ...run.state, verdict: 'cancelled', physicalPending: '0', occurrences: run.state.occurrences.kind === 'ready' ? ready(run.state.occurrences.value.map(item => ({ ...item, activation: { ...item.activation, phase: 'done', physical: false } }))) : run.state.occurrences,
+    paths: run.state.paths.map(path => path.phase === 'live' ? { ...path, phase: 'withdrawn', memberships: path.memberships.map(item => ({ ...item, phase: 'withdrawn' })) } : path),
+    stop: available({ kind: 'stopped', requestId: 's', receiptId: 'receipt' }) } }) } }));
+  expect(host.textContent).toContain('Run cancelled');
   expect(host.textContent).toContain('Stop confirmed');
 });
 it('never publishes a paginated occurrence subset as a complete fan-out', async () => {
@@ -152,10 +154,10 @@ it('passes availability, completeness, revision and staleness to the graph, incl
   expect(bridge!.occurrenceRead).toMatchObject({ availability: 'loading', complete: false, revision: '9', stale: true });
 });
 
-it('explains the coexistence of success, stopping work and a human wait', async () => {
+it('explains the coexistence of a pending verdict, stopping work and a human wait', async () => {
   const run = inspectionFixture030(); const human = humanFixture030(run);
   await mount(monitorFixture030({ ...run, state: { ...run.state, humans: ready([human]) } }));
-  expect(host.textContent).toContain('The flow succeeded. Some work is still stopping and its physical completion has not been confirmed. The stop remains uncertain. A person still needs to respond.');
+  expect(host.textContent).toContain('The flow has no final verdict yet. Some work is still stopping and its physical completion has not been confirmed. The stop remains uncertain. A person still needs to respond.');
   expect(host.querySelector('[title^="Physical completion"]')).not.toBeNull();
   expect(host.querySelector('[title^="The runtime host"]')).not.toBeNull();
   expect(host.querySelector('[title^="An occurrence"]')).not.toBeNull();
