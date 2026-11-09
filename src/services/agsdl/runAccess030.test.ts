@@ -1,46 +1,9 @@
+import type { PublicExecutionIntent } from '../../types/generated/ipc';
+import type { Fixture } from './runAccess030.testSupport';
+import { nativeRunFixture030 as fixture, nativeIntentFor030 as intentFor, nativeTransportFor030 as transportFor } from './runAccess030.testSupport';
 import { expect, it } from 'bun:test';
-import type { PublicExecutionIntent, PublicRunSummary030, RuntimeProjectionPage030 } from '../../types/generated/ipc';
-import { sourceDigest } from '../agsdlExecution/compiler';
 import { createRunInspectionAccess030 } from './runAccess030';
-import type { RunReadTransport030 } from './runAccess030';
-import { inspectionFixture030 } from './runInspection030.testSupport';
 import { initialRunSelection030, retainedRunValue030 } from './runtimeProjection030';
-
-async function fixture(id = 'run') {
-  const inspection = inspectionFixture030(id);
-  const capture = { ...structuredClone(inspection.capture), associations: {} };
-  capture.source.sourceSha256 = await sourceDigest(capture.authoredSource);
-  const scope = { ...inspection.state.scope, source: capture.source };
-  const summary: PublicRunSummary030 = { ...scope, flowInvocationId: 'flow', versions: capture.versions,
-    revision: '9007199254740993', stopping: true, verdict: 'succeeded', ownerStatus: 'live',
-    phaseCounts: [{ phase: 'done', count: '1' }, { phase: 'running', count: '1' }], physicalPending: '1' };
-  const runtime: RuntimeProjectionPage030 = { scope, flowInvocationId: 'flow', revision: summary.revision,
-    stopping: summary.stopping, verdict: summary.verdict, total: '2',
-    items: inspection.state.occurrences.kind === 'ready' ? inspection.state.occurrences.value.map(item => ({ kind: 'activation',
-      value: { ...item.activation, phase: item.activation.phase === 'completed' ? 'done' : item.activation.phase } })) : [], nextPage: null };
-  return { capture, scope, summary, runtime };
-}
-type Fixture = Awaited<ReturnType<typeof fixture>>;
-function intentFor(f: Fixture, scope = { owner: f.capture.source.owner, conversationId: 'sample-chat' }): PublicExecutionIntent {
-  const id = f.summary.systemStartId;
-  const entry = { deliveryId: `entry-${id}`, messageJson: '{"text":"Start the synthetic sample"}' };
-  return { formatVersion: '1', key: { scope: structuredClone(scope), intentId: `intent-${f.summary.systemStartId}` }, revision: '3',
-    payload: { kind: 'start', request: { source: f.capture.source, profile: 'macro-agsdl-030-v1', requestId: `request-${id}`, associations: {}, entry } },
-    state: { kind: 'admitted', admission: { kind: 'start030', receipt: { systemStartId: f.summary.systemStartId, flowInvocationId: f.summary.flowInvocationId,
-      source: f.capture.source, versions: f.capture.versions, entryDeliveryId: entry.deliveryId } } } };
-}
-function transportFor(...fixtures: Fixture[]) {
-  const calls: string[] = [];
-  const nativeScope = { owner: structuredClone(fixtures[0].capture.source.owner), conversationId: 'sample-chat' };
-  const transport: RunReadTransport030 = {
-    async listExecutionRuns030() { calls.push('list'); return { runs: fixtures.map(item => item.summary), nextCursor: null }; },
-    async readExecutionSnapshot030(id) { calls.push('snapshot'); return fixtures.find(item => item.capture.systemStartId === id)!.capture; },
-    async readExecutionRuntimeProjection030(scope) { calls.push('runtime'); return fixtures.find(item => item.scope.systemStartId === scope.systemStartId)!.runtime; },
-    async readExecutionHumans030(scope) { calls.push('humans'); return { scope, cursor: 'native-human-cursor', total: '0', requests: [], nextPage: null }; },
-    async readExecutionIntentsVersioned() { calls.push('intents'); return [intentFor(fixtures[0], nativeScope)]; },
-  };
-  return { transport, calls, scope: structuredClone(nativeScope) };
-}
 
 it('maps only attested facts, keeps exact revisions and exposes missing facts with gaps', async () => {
   const f = await fixture(), { transport, calls, scope } = transportFor(f);
@@ -51,8 +14,8 @@ it('maps only attested facts, keeps exact revisions and exposes missing facts wi
   const read = access.getSnapshot().runs.run;
   expect(read.kind).toBe('ready');
   const inspection = retainedRunValue030(read)!;
-  expect(inspection.state).toMatchObject({ revision: f.summary.revision, verdict: 'succeeded', ownerStatus: 'live',
-    stopping: true, physicalPending: '1', stop: { kind: 'unavailable', gap: 'stop-proof' },
+  expect(inspection.state).toMatchObject({ revision: f.summary.revision, verdict: null, ownerStatus: 'live',
+    stopping: false, physicalPending: '1', stop: { kind: 'unavailable', gap: 'stop-proof' },
     uncertainties: { kind: 'unavailable', gap: 'uncertainty' }, humans: { kind: 'unavailable', gap: 'human-flow-projection' },
     diagnostics: { kind: 'unavailable', gap: 'diagnostics' }, chronology: { kind: 'unavailable', gap: 'chronology' } });
   expect(retainedRunValue030(inspection.state.occurrences)?.[0].details).toEqual({ kind: 'unavailable', gap: 'occurrence-details' });
@@ -163,7 +126,7 @@ it('isolates project, plan, branch and conversation using native intent receipts
   expect(access.getSnapshot().excludedRuns.foreign.code).toBe('SCOPE_UNAVAILABLE');
   expect(access.getSnapshot().excludedRuns.foreign.message).toContain('No native start030');
   for (const key of ['projectId', 'planId', 'branch'] as const) {
-    const otherScope = { owner: { ...f.capture.source.owner, [key]: 'other' }, conversationId: 'sample-chat' };
+    const otherScope = { owner: { ...f.capture.source.owner, [key]: 'other' }, conversationId: 'design-conversation' };
     const other = createRunInspectionAccess030(otherScope, transport);
     await expect(other.refreshHistory()).rejects.toMatchObject({ kind: 'scope', code: 'SCOPE_INVALID' });
     expect(other.getSnapshot().history).not.toMatchObject({ kind: 'unavailable', gap: 'qualification' });
@@ -265,7 +228,7 @@ it('rejects a history revision regression and marks owner revocation stale even 
 it('admits native captures with empty associations only through a correlated start030 intent', async () => {
   const native = await fixture(), uncorrelated = await fixture('uncorrelated');
   // Even a synthetic conversation association cannot replace a native receipt.
-  uncorrelated.capture.associations = { conversationId: 'sample-chat' };
+  uncorrelated.capture.associations = { conversationId: 'design-conversation' };
   const { transport, scope } = transportFor(native, uncorrelated);
   const access = createRunInspectionAccess030(scope, transport);
   expect(native.capture.associations).toEqual({});
@@ -406,4 +369,50 @@ it('rejects first read failures with distinct conflict, scope, transport and unc
     await access.refreshHistory();
     expect(access.getSnapshot().history.kind).toBe('ready');
   }
+});
+
+it('publishes an explicit first-read error outside Tauri and can subsequently recover', async () => {
+  const f=await fixture();const {scope,transport}=transportFor(f);
+  const {removeTauriRuntimeMock}=await import('../../test-utils/tauriRuntime');removeTauriRuntimeMock();
+  const offline=createRunInspectionAccess030(scope);
+  await expect(offline.refreshHistory()).rejects.toMatchObject({kind:'transport'});
+  expect(offline.getSnapshot().history.kind).toBe('error');
+  const history=offline.getSnapshot().history;
+  if(history.kind!=='error')throw new Error('Expected an error state');
+  expect(history.error.message.length).toBeGreaterThan(0);
+  let fail=true;transport.listExecutionRuns030=async()=>{if(fail)throw new Error('Offline');return {runs:[f.summary],nextCursor:null};};
+  const access=createRunInspectionAccess030(scope,transport);
+  await expect(access.refreshHistory()).rejects.toBeDefined();
+  expect(access.getSnapshot().history.kind).toBe('error');
+  fail=false;await access.refreshHistory();expect(access.getSnapshot().history.kind).toBe('ready');
+});
+
+it('uses reducer-compatible selectors, path ancestry, terminal states and missing true-flow human rows in its shared fixtures', async () => {
+  const {nativeAgentRunFixture030}=await import('./runAccess030.testSupport');
+  const {validateDocumentBytes}=await import('./document');
+  const fixtures=[await fixture(),...await Promise.all(['done','running','stopping','queued','preparing'].map(phase=>nativeAgentRunFixture030(`agent-${phase}`,phase)))];
+  for(const f of fixtures){
+    const document=JSON.parse(f.capture.authoredSource);
+    expect(validateDocumentBytes(new TextEncoder().encode(f.capture.authoredSource)).valid).toBe(true);
+    const instances=new Map(f.runtime.items.flatMap(item=>item.kind==='instance'?[[item.value.id,item.value] as const]:[]));
+    const activations=f.runtime.items.flatMap(item=>item.kind==='activation'?[item.value]:[]);
+    for(const a of activations){
+      expect(a.pathIds).toEqual(a.context.flatMap(frame=>frame.kind==='path'?[frame.pathId]:[]));
+      expect(a.composeActivationIds).toEqual(a.context.flatMap(frame=>frame.kind==='compose'?[frame.activationId]:[]));
+      if(a.context.length===0)expect(a.nearestFanoutIndex).toBeNull();
+      const step=a.step?.length===1?document.flow.steps[a.step[0]]:undefined;
+      if(a.phase==='body')expect(step?.type).toBe('compose');
+      if(a.phase==='group')expect(step?.type).toBe('join');
+      if(step?.type==='agent'&&a.instanceId)expect(instances.get(a.instanceId)?.selectorKind).toBe(step.instance??'shared');
+    }
+    for(const i of instances.values()){
+      if(i.discarded){expect(i.selectorKind).toBe('new');expect(i.currentActivationId).toBeNull();expect(i.queueActivationIds).toEqual([]);}
+      if(i.queueActivationIds.length)expect(activations.find(a=>a.id===i.currentActivationId)?.physical).toBe(true);
+    }
+    if(f.summary.verdict!==null)expect(activations.every(a=>a.phase==='done'&&!a.physical)).toBe(true);
+    const {transport}=transportFor(f);
+    await expect(transport.readExecutionHumans030(f.scope)).rejects.toMatchObject({code:'NOT_FOUND'});
+  }
+  await expect(nativeAgentRunFixture030('invalid','body')).rejects.toThrow('Agent fixture phase');
+  await expect(nativeAgentRunFixture030('invalid','group')).rejects.toThrow('Agent fixture phase');
 });

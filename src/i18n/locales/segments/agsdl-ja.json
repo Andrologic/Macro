@@ -1132,5 +1132,20 @@
       "workContinues": "作業の継続"
     },
     "occurrenceCount_many": "{{count}} 件の実行箇所"
+  },
+  "shell030": {
+    "project": "プロジェクト",
+    "chooseProject": "プロジェクトを選択",
+    "executions": "実行",
+    "design": "設計",
+    "views": "システムの表示",
+    "unavailable": "実行履歴はまだ接続されていません。",
+    "humanUnavailable": "回答機能はまだ接続されていません。",
+    "exactUnavailable": "指定の実行は利用できません。他の実行は開いていません。",
+    "requestUnavailable": "この実行では指定の依頼を利用できません。",
+    "attention": "回答が必要です",
+    "attentionBody": "実行が回答を待っています。",
+    "openRequest": "依頼を開く",
+    "close": "閉じる"
   }
 }

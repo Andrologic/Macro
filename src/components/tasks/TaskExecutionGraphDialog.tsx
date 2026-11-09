@@ -2,6 +2,8 @@ import { useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import type { CatalogedImplementTask } from '../../services/implementTaskCatalog';
 import { loadTaskExecutionGraph, refreshTaskExecutionGraph, type TaskExecutionGraph } from '../../services/taskExecutionGraph';
+import { validateDocument } from '../../services/agsdl/document';
+import type { AgsdlReport } from '../../types/agsdl';
 import { projectViewer } from '../../services/agsdl/viewer';
 import { projectSystemOverview } from '../../services/agsdl/systemOverview';
 import { nativeCardActivations } from '../../services/agsdl/executionView';
@@ -15,6 +17,8 @@ import { useAppStore } from '../../stores/useAppStore';
 import { AgentDetails } from '../agsdl/AgentDetails';
 import { WorkflowBlockSummary } from '../agsdl/WorkflowBlockOverlay';
 import { WorkflowGraph } from '../agsdl/WorkflowGraph';
+import { WorkflowRunView030 } from '../architect/ArchitectStrategyPanel';
+import { useAgsdlTranslation } from '../agsdl/useAgsdlTranslation';
 import { Dialog } from '../ui/Dialog';
 import { Icon } from '../ui/Icon';
 import { SpinnerIcon } from '../ui/SpinnerIcon';
@@ -22,6 +26,7 @@ import '../agsdl/agsdl.css';
 
 export default function TaskExecutionGraphDialog({ task, onClose }: { task: CatalogedImplementTask; onClose: () => void }) {
   const { t } = useTranslation();
+  const { t: shellT } = useAgsdlTranslation();
   const tasks = useTaskStore(state => state.tasks);
   const mergeRuntime = useTaskStore(state => state.mergeWorkflowRuntimeByTaskId);
   const conversations = useChatStore(state => state.conversations);
@@ -46,7 +51,7 @@ export default function TaskExecutionGraphDialog({ task, onClose }: { task: Cata
     return () => { active = false; controller.abort(); };
   }, [task, attempt]);
   useEffect(() => {
-    if (!view?.snapshot) return;
+    if (!view?.snapshot || view.access030) return;
     let active = true;
     const timer = setTimeout(() => void refreshTaskExecutionGraph(view).then(next => {
       if (active) { setView(next); setError(false); }
@@ -56,11 +61,20 @@ export default function TaskExecutionGraphDialog({ task, onClose }: { task: Cata
   const source = view?.source;
   const display = view?.display;
   const migration = view?.migration;
+  const [validated, setValidated] = useState<{ source: string; reports: AgsdlReport[] }>();
+  useEffect(() => {
+    let active = true;
+    if (source && !view?.reports) void validateDocument(source).then(reports => {
+      if (active) setValidated({ source, reports });
+    }).catch(() => { if (active) setError(true); });
+    return () => { active = false; };
+  }, [source, view?.reports]);
+  const reports = view?.reports ?? (validated && validated.source === source ? validated.reports : undefined);
   const document = useMemo(() => {
     if (!source) return;
-    try { return projectViewer(source, { display, migration }); }
+    try { return projectViewer(source, { display, migration }, reports); }
     catch { return; }
-  }, [source, display, migration]);
+  }, [source, display, migration, reports]);
   const graphs = document?.graphs ?? [];
   const initialGraph = graphs.findIndex(graph => graph.cards.some(card => card.path === view?.selectedPath));
   const graph = graphs[Math.min(graphIndex ?? Math.max(initialGraph, 0), graphs.length - 1)];
@@ -82,6 +96,10 @@ export default function TaskExecutionGraphDialog({ task, onClose }: { task: Cata
   };
   const inspectedCard = system.cards.find(card => card.path === inspected);
   const title = t('implement.executionGraph', 'Workflow execution');
+  if (view?.access030 && view.snapshot) return <Dialog title={shellT('agsdl.shell030.executions')} onClose={onClose} closeOnBackdropClick panelClassName="flex h-[min(85vh,900px)] w-[min(94vw,1200px)] min-h-0 flex-col overflow-hidden rounded-xl border border-border bg-card shadow-2xl">
+    <header className="flex items-center justify-between border-b border-border p-3 text-sm"><h2>{view.title}</h2><button type="button" onClick={onClose}>{t('common.close', 'Close')}</button></header>
+    <WorkflowRunView030 bundle={view.access030} target={{ scope: { systemStartId: view.snapshot.systemStartId, source: view.snapshot.source } }} />
+  </Dialog>;
   return <Dialog title={title} onClose={onClose} closeOnBackdropClick panelClassName="flex h-[min(85vh,900px)] w-[min(94vw,1200px)] min-h-0 flex-col overflow-hidden rounded-xl border border-border bg-card shadow-2xl">
     <header className="flex shrink-0 items-center justify-between gap-3 border-b border-border px-5 py-4">
       <div className="min-w-0"><h2 className="truncate text-sm font-semibold">{view?.title || title}</h2><p className="truncate text-xs text-muted-foreground">{task.title}</p></div>

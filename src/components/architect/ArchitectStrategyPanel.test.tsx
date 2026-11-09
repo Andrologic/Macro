@@ -76,3 +76,59 @@ it("removes the expanded view and releases the background when the active plan i
   } as NonNullable<ReturnType<typeof useAppStore.getState>["activePlanContext"]> }));
   expect(document.querySelector('[role="dialog"]')).toBeNull();
 });
+
+it('opens captured executions without execution commands and keeps them after a blueprint replacement', async () => {
+  const { configureWorkflowRunAccess030 } = await import('../../services/workflowAgentTasks');
+  const { inspectionFixture030, monitorFixture030 } = await import('../../services/agsdl/runInspection030.testSupport');
+  const run = inspectionFixture030(); const access = monitorFixture030(run);
+  configureWorkflowRunAccess030(() => ({ access }));
+  try {
+    await mount();
+    act(() => useAppStore.setState({ selectedProjectId:'sample-project' }));
+    const clickView = async (text: string) => {
+      const button = [...container!.querySelectorAll('nav button')].find(item => item.textContent === text) as HTMLButtonElement;
+      await act(async () => button.click());
+    };
+    await clickView('Executions');
+    expect(container!.textContent).toContain('run-current');
+    expect(access.reads.every(item => item === 'history' || item === 'run-current')).toBe(true);
+    expect(container!.querySelector('.agsdl-viewer')).toBeNull();
+    const key = agsdlSessionKey({branchName:'develop', planId:'layout-test'});
+    act(() => useAgsdlStore.setState(state => ({sessions:{...state.sessions,[key]:{...state.sessions[key],source:'{"contract":"agsdl-0.3.0","id":"changed","agents":{}}'}}})));
+    expect(container!.textContent).toContain('run-current');
+    expect(container!.textContent).toContain('Captured source');
+    expect(container!.textContent).toContain('Current document');
+    await clickView('Design');
+    expect(container!.querySelector('.agsdl-viewer')).not.toBeNull();
+    expect(access.listeners.size).toBe(0);
+    await clickView('Executions');
+    expect(container!.textContent).toContain('run-current');
+  } finally { await act(async () => configureWorkflowRunAccess030(undefined)); }
+});
+
+it('never replaces a missing exact notification capture with the latest execution', async () => {
+  const { WorkflowRunView030 } = await import('./ArchitectStrategyPanel');
+  const { inspectionFixture030, monitorFixture030 } = await import('../../services/agsdl/runInspection030.testSupport');
+  const run = inspectionFixture030(); const access = monitorFixture030(run);
+  container = document.createElement('div'); document.body.appendChild(container); root = createRoot(container);
+  await act(async () => root!.render(<WorkflowRunView030 bundle={{access}} target={{scope:{systemStartId:'missing',source:run.capture.source},requestId:'specific'}} />));
+  expect(container.textContent).toContain('The requested execution is not available');
+  expect(container.querySelector('[aria-label="Execution history"]')).toBeNull();
+  expect(access.reads).toEqual(['history','missing']);
+});
+
+it('requires an explicit project for a system spanning multiple project owners', async () => {
+  const { configureWorkflowRunAccess030 } = await import('../../services/workflowAgentTasks');
+  const { monitorFixture030 } = await import('../../services/agsdl/runInspection030.testSupport');
+  const scopes: unknown[] = [];
+  configureWorkflowRunAccess030(scope => { scopes.push(scope); return {access:monitorFixture030()}; });
+  try {
+    await mount();
+    act(() => useAppStore.setState({selectedProjectId:null,activePlanContext:{...useAppStore.getState().activePlanContext!,targetBranchesByProjectId:{'project-a':'develop','project-b':'main'}}}));
+    await act(async () => (container!.querySelectorAll('nav button')[1] as HTMLButtonElement).click());
+    expect(scopes).toEqual([]);
+    const select = container!.querySelector('nav select') as HTMLSelectElement;
+    await act(async () => { select.value='project-b';select.dispatchEvent(new Event('change',{bubbles:true})); });
+    expect(scopes).toEqual([{owner:{projectId:'project-b',planId:'layout-test',branch:'main'},conversationId:undefined}]);
+  } finally { await act(async () => configureWorkflowRunAccess030(undefined)); }
+});

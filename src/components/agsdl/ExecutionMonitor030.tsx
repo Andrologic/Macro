@@ -85,7 +85,7 @@ function ScopedMonitor030({ access, initialRunId, currentSource, renderGraph, re
     <RunHistory030 history={snapshot.history} selected={selected} comparison={comparison} select={id => { setExplicit(id); if (comparison === id) setComparison(undefined); }} compare={setComparison} />
     {!selected && history.length > 0 && <p role="status">{tr('selectionPending')}</p>}
     {left && right && <RunCaptureComparison030 left={left} right={right} />}
-    {selected && !inspection && <p role="status">{tr(readState?.kind === 'unavailable' ? 'unavailable' : 'loading')}</p>}
+    {selected && !inspection && <p role="status">{tr(readState?.kind === 'error' ? 'readFailed' : readState?.kind === 'unavailable' ? 'unavailable' : 'loading')}</p>}
     {inspection && state && <>
       {stale && <p role="status" className="rounded border border-border p-2">{tr('stale')}</p>}
       <section className="space-y-1 rounded border border-border p-2" aria-label={tr('summary')}>

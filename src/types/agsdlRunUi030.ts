@@ -131,6 +131,7 @@ export interface RunDiagnostic030 {
 export type RunRead030<T> =
   | { readonly kind: 'unavailable'; readonly gap: NativeDtoGap030 }
   | { readonly kind: 'loading'; readonly retained: T | null }
+  | { readonly kind: 'error'; readonly error: { readonly code: string; readonly message: string } }
   | { readonly kind: 'ready'; readonly revision: string; readonly value: T }
   | { readonly kind: 'stale'; readonly revision: string; readonly retained: T; readonly refusal: RunRefusal030<'consult'> };
 

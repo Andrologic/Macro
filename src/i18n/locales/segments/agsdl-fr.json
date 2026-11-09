@@ -1132,5 +1132,20 @@
       "workContinues": "Poursuite du travail"
     },
     "occurrenceCount_many": "{{count}} occurrences"
+  },
+  "shell030": {
+    "project": "Projet",
+    "chooseProject": "Choisir un projet",
+    "executions": "Exécutions",
+    "design": "Conception",
+    "views": "Vues du système",
+    "unavailable": "L’historique des exécutions n’est pas encore raccordé.",
+    "humanUnavailable": "Les réponses humaines ne sont pas encore raccordées.",
+    "exactUnavailable": "L’exécution demandée n’est pas disponible. Aucune autre exécution n’a été ouverte.",
+    "requestUnavailable": "La demande recherchée n’est plus disponible dans cette exécution.",
+    "attention": "Votre réponse est attendue",
+    "attentionBody": "Une exécution attend votre réponse.",
+    "openRequest": "Ouvrir la demande",
+    "close": "Fermer"
   }
 }

@@ -10,10 +10,10 @@ export function inspectionFixture030(id = 'run-current'): RunInspection030 {
     prepare: { type: 'agent', agent: 'worker', instance: 'new', next: 'review' },
     review: { type: 'call', title: 'Review', command: 'echo synthetic', next: { passed: 'vote', failed: 'review' } },
     vote: { type: 'join', quorum: { count: 2, accept: ['accept'] }, remaining: 'finish', next: { reached: [], missed: [] } },
-  } } }), versions: { snapshot: '2', contract: 'agsdl-0.3.0', profile: 'macro-agsdl-030-v1', compiler: 'c', runtime: 'r', registry: 'v' }, associations: { conversationId: 'sample-chat' } };
+  } } }), versions: { snapshot: '2', contract: 'agsdl-0.3.0', profile: 'macro-agsdl-030-v1', compiler: 'c', runtime: 'r', registry: 'v' }, associations: {} };
   const scope = { systemStartId: id, snapshotId: `capture-${id}`, source };
   const occurrences: RunOccurrence030[] = ['activation-1', 'activation-2'].map((activationId, index) => ({ scope,
-    activation: { id: activationId, step: ['review'], agent: null, instanceId: null, phase: index === 0 ? 'completed' : 'running', physical: index === 1,
+    activation: { id: activationId, step: ['review'], agent: null, instanceId: null, phase: index === 0 ? 'done' : 'running', physical: index === 1,
       stopRequested: false, context: [], pathIds: [`path-${index}`], physicalWaitGroupIds: [], composeActivationIds: [], nearestFanoutIndex: String(index) },
     details: available({ sourcePointer: '/flow/steps/review', occurrenceId: `native-visit-${index}`, visit: String(index + 1), countsForFlow: index === 0,
       receivedMessageJson: '{"text":"Inspect the synthetic sample"}', senderJson: '{"step":"entry"}', outputJson: index === 0 ? '{"outcome":"failed","exitCode":1}' : null,
@@ -37,7 +37,7 @@ export function historyFixture030(inspection: RunInspection030): RunHistoryEntry
 
 /** Synthetic read transport, shared by component tests and the temporary browser harness. */
 export class RunInspectionDouble030 implements RunInspectionAccess030 {
-  readonly scopeKey = 'sample-project/sample-plan/develop/sample-chat';
+  readonly scopeKey = 'sample-project/sample-plan/develop/design-conversation';
   readonly listeners = new Set<() => void>();
   readonly reads: string[] = [];
   onHistory?: () => Promise<void>;

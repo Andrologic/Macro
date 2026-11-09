@@ -12,7 +12,8 @@ export function RunHistory030({ history, selected, comparison, select, compare }
   const date = (fact: RunHistoryEntry030['chronology']) => fact.kind === 'available' ? fact.value.startedAt : tr('unknownDate');
   return <section aria-label={tr('history')} className="min-w-0 space-y-2">
     <h3 className="font-medium">{tr('history')}</h3>
-    {history.kind !== 'ready' && <p role="status">{tr(history.kind === 'stale' ? 'stale' : history.kind === 'loading' ? 'loading' : 'unavailable')}</p>}
+    {history.kind === 'error' && <p role="alert">{tr('readFailed')}</p>}
+    {history.kind !== 'ready' && history.kind !== 'error' && <p role="status">{tr(history.kind === 'stale' ? 'stale' : history.kind === 'loading' ? 'loading' : 'unavailable')}</p>}
     {history.kind === 'ready' && runs.length === 0 && <p>{tr('noRuns')}</p>}
     <ul className="space-y-1">{runs.map(run => <li key={run.scope.systemStartId}>
       <button type="button" aria-pressed={selected === run.scope.systemStartId} onClick={() => select(run.scope.systemStartId)}

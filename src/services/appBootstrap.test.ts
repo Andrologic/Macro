@@ -498,3 +498,22 @@ describe('appBootstrap ownership', () => {
     }
   });
 });
+
+describe('production app initialization lifetime',()=>{
+  it('forwards the lifecycle to the real initializeCritical dependency, including revocation',async()=>{
+    const {getAppBootstrapDependencies}=await import('./appBootstrap');
+    const {useAppStore}=await import('../stores/useAppStore');
+    const {configureWorkflowRunAccess030}=await import('./workflowAgentTasks');
+    const scope=createLifecycleScope();
+    const initialize=spyOn(useAppStore.getState(),'initializeCritical').mockImplementation(async lifecycle=>{
+      expect(lifecycle).toBe(scope);lifecycle?.assertActive();
+    });
+    try{
+      const dependencies=getAppBootstrapDependencies();
+      await dependencies.initializeAppCritical(scope);
+      scope.stop();
+      await expect(dependencies.initializeAppCritical(scope)).rejects.toThrow('resource owner has stopped');
+      expect(initialize).toHaveBeenCalledTimes(2);
+    }finally{initialize.mockRestore();configureWorkflowRunAccess030(undefined);}
+  });
+});
