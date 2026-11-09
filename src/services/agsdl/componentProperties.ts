@@ -137,7 +137,20 @@ export function componentProperties(source: string, card: ViewerCard): Component
   return { fields, shared: Boolean(agent) || path.startsWith("/definitions/"), unsupported };
 }
 
+/** A reassignment and edits to the captured agent definition must be separate transactions. */
+export function agentPropertyLocks030(fields: ComponentProperty[], values: string[]) {
+  const changed = (field: ComponentProperty, index: number) => field.exactJson && (values[index] ?? field.value) !== field.value;
+  const referenceChanged = fields.some((field, index) => field.label === "agent" && !field.path.startsWith("/agents/") && changed(field, index));
+  const definitionChanged = fields.some((field, index) => field.path.startsWith("/agents/") && changed(field, index));
+  return {
+    referenceChanged, definitionChanged,
+    locked: (index: number) => referenceChanged && fields[index].path.startsWith("/agents/") || definitionChanged && fields[index].label === "agent" && !fields[index].path.startsWith("/agents/"),
+  };
+}
+
 export function propertyChanges(fields: ComponentProperty[], values: string[]): AgsdlChange[] {
+  const locks = agentPropertyLocks030(fields, values);
+  if (locks.referenceChanged && locks.definitionChanged) throw new Error("agsdl.authoring030.ownerChangeHint");
   if (fields.some(field => field.exactJson)) return fields.flatMap((field, index): AgsdlChange[] => {
     const value = values[index];
     if (field.readonly || value === undefined || value === field.value) return [];
@@ -188,6 +201,7 @@ const stepKeys030: Record<string, string[]> = {
 /** Full property access uses exact subtrees; blank optional fields remove, never null them. */
 function properties030(source: string, card: ViewerCard): ComponentProperties {
   const parsed = scanSource(source), fields: ComponentProperty[] = [];
+  const ownerPath = card.edition030?.ownerPath ?? card.path;
   const add = (path: string, keys: string[], required: string[] = []) => {
     const parentSpan = parsed.spans.get(path);
     if (!parentSpan) return;
@@ -200,19 +214,19 @@ function properties030(source: string, card: ViewerCard): ComponentProperties {
         exactJson: true, optional: !required.includes(key), ...(span ? { removePath: at } : {}), readonly: key === "contract" });
     }
   };
-  if ((card.edition030?.ownerPath ?? card.path) === "") add("", ["$schema", "title", "description", "id", "content", "skills", "mcpServers", "agents", "flow", "compositions"], ["contract", "id", "agents"]);
-  else if (card.kind === "Agent") add(card.path, agentKeys030, ["harness", "permissions"]);
+  if (ownerPath === "") add("", ["$schema", "title", "description", "id", "content", "skills", "mcpServers", "agents", "flow", "compositions"], ["contract", "id", "agents"]);
+  else if (card.kind === "Agent") add(ownerPath, agentKeys030, ["harness", "permissions"]);
   else if (["agent", "call", "approval", "compose", "join"].includes(card.kind)) {
-    add(card.path, ["type", "title", "description", "maxVisits", ...stepKeys030[card.kind], "next", "onError"], ["type", ...(card.kind === "agent" ? ["agent"] : card.kind === "compose" ? ["composition", "next"] : card.kind === "approval" ? ["next"] : [])]);
+    add(ownerPath, ["type", "title", "description", "maxVisits", ...stepKeys030[card.kind], "next", "onError"], ["type", ...(card.kind === "agent" ? ["agent"] : card.kind === "compose" ? ["composition", "next"] : card.kind === "approval" ? ["next"] : [])]);
     if (card.edition030?.agentPath) add(card.edition030.agentPath, agentKeys030, ["harness", "permissions"]);
-  } else if (card.kind === "Composition") add(card.path, ["title", "description", "parameters", "entry", "steps", "outputs"], ["entry", "steps", "outputs"]);
-  else if (card.kind === "Flow") add(card.path, ["entry", "steps", "onError"], ["entry", "steps"]);
-  else if (card.kind === "Skill") add(card.path, ["uri"], ["uri"]);
-  else if (card.kind === "McpServer") add(card.path, ["command", "url"]);
-  else if (card.kind === "Resource") add(card.path, ["value", "uri", "mediaType"]);
+  } else if (card.kind === "Composition") add(ownerPath, ["title", "description", "parameters", "entry", "steps", "outputs"], ["entry", "steps", "outputs"]);
+  else if (card.kind === "Flow") add(ownerPath, ["entry", "steps", "onError"], ["entry", "steps"]);
+  else if (card.kind === "Skill") add(ownerPath, ["uri"], ["uri"]);
+  else if (card.kind === "McpServer") add(ownerPath, ["command", "url"]);
+  else if (card.kind === "Resource") add(ownerPath, ["value", "uri", "mediaType"]);
   else if (card.kind === "Route") {
-    const span = parsed.spans.get(card.path);
-    if (span) fields.push({ path: card.path, label: "route", value: new TextDecoder().decode(parsed.bytes.subarray(span.start, span.end)), exactJson: true, optional: false });
+    const span = parsed.spans.get(ownerPath);
+    if (span) fields.push({ path: ownerPath, label: "route", value: new TextDecoder().decode(parsed.bytes.subarray(span.start, span.end)), exactJson: true, optional: false });
   }
-  return { fields, shared: !!card.edition030?.agentPath || ["Agent", "Resource", "Skill", "McpServer", "Composition"].includes(card.kind), unsupported: !fields.length };
+  return { fields, shared: ownerPath.startsWith("/compositions/") || !!card.edition030?.agentPath || ["Agent", "Resource", "Skill", "McpServer", "Composition"].includes(card.kind), unsupported: !fields.length };
 }

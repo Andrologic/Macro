@@ -34,8 +34,14 @@ export function localizeDiagnostics(source: string, reports: AgsdlReport[], card
       }));
     });
   }
-  const doc = readDocument(source);
-  const { spans } = scanSource(source);
+  let doc: ReturnType<typeof readDocument>, spans: ReturnType<typeof scanSource>["spans"];
+  try { doc = readDocument(source); spans = scanSource(source).spans; }
+  catch {
+    return reports.flatMap(report => report.results.flatMap(result => result.findings.map(finding => ({
+      rule: finding.rule, details: finding.details, severity: finding.severity, step: finding.step,
+      path: result.input === "primary" ? finding.location.pointer : undefined, targets: [],
+    }))));
+  }
   const definitions = list(doc.definitions).map(object);
   const uniqueDefinition = (key: unknown): string | undefined => {
     if (!text(object(key).id)) return;
@@ -102,4 +108,28 @@ export function localizeDiagnostics(source: string, reports: AgsdlReport[], card
     diagnostics.push({ rule: text(unresolved.rule) || "unresolved", details: text(unresolved.obligation) || text(unresolved.reason), path: `/unresolved/${index}`, targets: subject ? targetsFor(subject) : [] });
   });
   return diagnostics;
+}
+
+/** Resolve a correction owner even for missing properties, root issues and hidden scopes. */
+export function diagnosticOwner030(source: string, issue: LocalizedDiagnostic, cards: ViewerCard[]): ViewerCard {
+  const candidates = cards.filter(card => {
+    const path = card.edition030?.ownerPath ?? card.path;
+    return path && issue.path !== undefined && (issue.path === path || issue.path.startsWith(`${path}/`));
+  }).sort((left, right) => right.path.length - left.path.length);
+  return candidates[0] ?? cards.find(card => card.edition030?.ownerPath === "") ?? {
+    path: "agsdl:document", id: "document", title: "", kind: "System", mission: "", unresolved: false,
+    inputs: [], outputs: [], branches: [], details: { contract: "agsdl-0.3.0" },
+    edition030: { ownerPath: "", sourceJson: source, routes: [] },
+  };
+}
+
+/** The original rule and message remain alongside a short explanation of the affected contract. */
+export function diagnosticExplanation030(rule: string): string {
+  if (rule.startsWith("HARNESS_")) return "harness";
+  if (["PARSE", "SHAPE", "SCHEMA", "CONTRACT", "DUPLICATE", "SIZE"].includes(rule)) return "document";
+  if (["PROMPT", "MESSAGE_PATH"].includes(rule)) return "mission";
+  if (rule.includes("JOIN") || rule.includes("QUORUM")) return "join";
+  if (rule === "SHARED_INSTANCE_PARALLEL" || rule === "DELIVERY") return "instance";
+  if (rule.includes("COMPOS")) return "composition";
+  return "review";
 }
