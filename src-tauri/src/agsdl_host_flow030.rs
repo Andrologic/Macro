@@ -2049,6 +2049,19 @@ pub(crate) struct DispatchLease030<'a> {
     effect: FlowEffect030,
 }
 
+/// An exact StopWork claim. Dropping it never makes an uncertain claim pending.
+pub(crate) struct ClaimedStopWork030 {
+    control: Arc<FlowControl030>,
+    effect: FlowEffect030,
+    owner: EngineOwner,
+    generation: String,
+}
+impl ClaimedStopWork030 {
+    pub(crate) fn control(&self) -> &Arc<FlowControl030> {
+        &self.control
+    }
+}
+
 enum Handoff030 {
     Host,
     Agent {
@@ -2066,6 +2079,49 @@ impl DispatchLease030<'_> {
             self.effect.identity.system_start_id, self.effect.id
         )
     }
+    /// Retain the exact claimed cancellation while releasing admission before
+    /// waiting for the already-owned agent. SQL remains uncertain on drop.
+    pub(crate) fn into_stop_work(self, attempt: &FlowWorkAttempt030) -> Result<ClaimedStopWork030> {
+        self.runtime.available(&self.effect.identity)?;
+        self.lease.ensure_live()?;
+        let FlowEffectKind030::StopWork {
+            work,
+            include_descendants: true,
+        } = &self.effect.kind
+        else {
+            return Err(refused());
+        };
+        if attempt.identity() != &self.effect.identity
+            || attempt.owner() != &self.owner
+            || attempt.generation() != self.lease.generation()
+            || work.activation_id != attempt.work().activation_id
+            || work.start_effect_id != attempt.start_effect_id()
+            || work.agent_instance_id != attempt.work().agent_instance_id
+        {
+            return Err(refused());
+        }
+        let control = self
+            .runtime
+            .controls
+            .lock()
+            .map_err(|_| unavailable())?
+            .get(&self.effect.identity.system_start_id)
+            .cloned()
+            .ok_or_else(refused)?;
+        if control.identity != self.effect.identity
+            || control.owner != self.owner
+            || control.generation != self.lease.generation()
+        {
+            return Err(refused());
+        }
+        Ok(ClaimedStopWork030 {
+            control,
+            effect: self.effect.clone(),
+            owner: self.owner.clone(),
+            generation: self.lease.generation().into(),
+        })
+    }
+
     /// The future must perform no physical work until polled. A constructor
     /// which already spawned a process cannot use this admission boundary.
     pub(crate) async fn handoff_host<F>(
@@ -2229,7 +2285,7 @@ pub(crate) async fn claim_next<'a>(
     pool: &SqlitePool,
     id: &FlowIdentity030,
 ) -> Result<Option<DispatchLease030<'a>>> {
-    claim_selected(runtime, host, pool, id, None).await
+    claim_selected(runtime, host, pool, id, None, None).await
 }
 
 /// A prepared policy cannot choose a different effect when the queue changes.
@@ -2245,7 +2301,30 @@ pub(crate) async fn claim_expected<'a>(
     if expected_effect_id.is_empty() {
         return Err(refused());
     }
-    claim_selected(runtime, host, pool, id, Some(expected_effect_id)).await
+    claim_selected(runtime, host, pool, id, Some(expected_effect_id), None).await
+}
+
+/// Validate the exact stopped work and incarnation in the claim transaction,
+/// before changing the outbox status to uncertain.
+pub(crate) async fn claim_expected_stop_work<'a>(
+    runtime: &'a FlowHost030,
+    host: &HostState,
+    pool: &SqlitePool,
+    effect: &FlowEffect030,
+    attempt: &FlowWorkAttempt030,
+) -> Result<Option<DispatchLease030<'a>>> {
+    if effect.id.is_empty() {
+        return Err(refused());
+    }
+    claim_selected(
+        runtime,
+        host,
+        pool,
+        &effect.identity,
+        Some(&effect.id),
+        Some((effect, attempt)),
+    )
+    .await
 }
 
 async fn claim_selected<'a>(
@@ -2254,6 +2333,7 @@ async fn claim_selected<'a>(
     pool: &SqlitePool,
     id: &FlowIdentity030,
     expected_effect_id: Option<&str>,
+    expected_stop: Option<(&FlowEffect030, &FlowWorkAttempt030)>,
 ) -> Result<Option<DispatchLease030<'a>>> {
     let lease = host.start_lease().await?;
     let admission = host.admission_lock().lock_owned().await;
@@ -2299,6 +2379,72 @@ async fn claim_selected<'a>(
         if effect.id != expected || matches!(&effect.kind, FlowEffectKind030::PrepareRoute { .. }) {
             tx.rollback().await?;
             return Ok(None);
+        }
+        if let Some((expected_effect, attempt)) = expected_stop {
+            let matching_work = matches!(&effect.kind,
+                FlowEffectKind030::StopWork { work, include_descendants: true }
+                    if work.activation_id == attempt.work().activation_id
+                        && work.start_effect_id == attempt.start_effect_id()
+                        && work.agent_instance_id == attempt.work().agent_instance_id);
+            let matching_control = runtime
+                .controls
+                .lock()
+                .map_err(|_| unavailable())?
+                .get(&id.system_start_id)
+                .is_some_and(|control| {
+                    control.identity == *id
+                        && control.owner == owner
+                        && control.generation == lease.generation()
+                });
+            if &effect != expected_effect
+                || attempt.identity() != id
+                || attempt.owner() != &owner
+                || attempt.generation() != lease.generation()
+                || !matching_work
+                || !matching_control
+            {
+                tx.rollback().await?;
+                return Err(refused());
+            }
+            let matching_activation = view
+                .state
+                .activations
+                .iter()
+                .filter(|activation| {
+                    activation.id == attempt.work().activation_id
+                        && activation.step == attempt.work().step
+                        && activation.instance_id == attempt.work().agent_instance_id
+                        && activation.start_effect_id.as_deref() == Some(attempt.start_effect_id())
+                        && activation.agent.as_deref() == Some(attempt.agent())
+                })
+                .count()
+                == 1;
+            let raw: Option<String> = sqlx::query_scalar("SELECT receipt_json FROM engine_flow030_handoffs WHERE system_id=? AND invocation_id=? AND effect_id=? AND owner_epoch=? AND generation=?")
+                .bind(&id.system_start_id).bind(&id.flow_invocation_id).bind(attempt.start_effect_id())
+                .bind(&owner.owner_epoch).bind(lease.generation()).fetch_optional(&mut *tx).await?;
+            let handoff: Option<Value> = raw.as_deref().map(serde_json::from_str).transpose()?;
+            let request_id = format!(
+                "flow030:{}:{}",
+                id.system_start_id,
+                attempt.start_effect_id()
+            );
+            let expected_identity = serde_json::to_value(id)?;
+            let expected_attempt = serde_json::to_value(attempt)?;
+            let matching_handoff = handoff.as_ref().is_some_and(|value| {
+                value.get("kind").and_then(Value::as_str) == Some("nativeOwnedHandoff030")
+                    && value.get("identity") == Some(&expected_identity)
+                    && value.get("effectId").and_then(Value::as_str)
+                        == Some(attempt.start_effect_id())
+                    && value.get("ownerEpoch").and_then(Value::as_str)
+                        == Some(owner.owner_epoch.as_str())
+                    && value.get("generation").and_then(Value::as_str) == Some(lease.generation())
+                    && value.get("requestId").and_then(Value::as_str) == Some(request_id.as_str())
+                    && value.get("workAttempt") == Some(&expected_attempt)
+            });
+            if !matching_activation || !matching_handoff {
+                tx.rollback().await?;
+                return Err(refused());
+            }
         }
         // Never fall back to another effect after inspecting the expected one.
         effects = vec![effect.id];
@@ -2587,6 +2733,7 @@ impl FlowControl030 {
         runtime: &FlowHost030,
         pool: &SqlitePool,
         joined: &JoinedOwnedAgent030,
+        claim: Option<&ClaimedStopWork030>,
     ) -> Result<Apply030> {
         let attempt = joined.attempt();
         if attempt.identity() != &self.identity
@@ -2616,14 +2763,24 @@ impl FlowControl030 {
         let view = flow_store030::read_tx(&mut tx, self, &self.identity)
             .await
             .map_err(store_error)?;
+        // A revoked generation may record cleanup after the global Stop has
+        // fenced routing. Before that Stop, a group claim must not release a
+        // fresh continuation through the cleanup-only control authority.
+        if claim.is_some() && !view.state.stopping {
+            let live: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM engine_flow030_owners WHERE system_id=? AND invocation_id=? AND owner_epoch=? AND generation=? AND status='live')")
+                .bind(&self.identity.system_start_id).bind(&self.identity.flow_invocation_id)
+                .bind(&self.owner.owner_epoch).bind(&self.generation).fetch_one(&mut *tx).await?;
+            if !live {
+                return Err(refused());
+            }
+        }
         let activation = view
             .state
             .activations
             .iter()
             .find(|a| a.id == attempt.work().activation_id)
             .ok_or_else(refused)?;
-        if !view.state.stopping
-            || activation.step != attempt.work().step
+        if activation.step != attempt.work().step
             || activation.instance_id != attempt.work().agent_instance_id
             || activation.start_effect_id.as_deref() != Some(attempt.start_effect_id())
         {
@@ -2651,129 +2808,148 @@ impl FlowControl030 {
             return Err(refused());
         }
         let protocol_id = format!("physical:{}", attempt.provider_attempt_id());
-        let terminal_id = work_terminal_event_id030(&self.identity, &protocol_id)?;
-        let terminal = sqlx::query("SELECT event_json,diagnostic_json FROM engine_flow030_events WHERE system_id=? AND invocation_id=? AND event_id=? AND receipt_json IS NULL AND diagnostic_json IS NOT NULL")
+        if let Some(claim) = claim {
+            if !std::ptr::eq(claim.control.as_ref(), self)
+                || claim.owner != self.owner
+                || claim.generation != self.generation
+                || claim.effect.identity != self.identity
+                || claim.effect.id != *stop_effect_id
+                || !matches!(&claim.effect.kind, FlowEffectKind030::StopWork { work: w, include_descendants: true } if w == &work)
+            {
+                return Err(refused());
+            }
+        } else {
+            if !view.state.stopping {
+                return Err(refused());
+            }
+            let terminal_id = work_terminal_event_id030(&self.identity, &protocol_id)?;
+            let terminal = sqlx::query("SELECT event_json,diagnostic_json FROM engine_flow030_events WHERE system_id=? AND invocation_id=? AND event_id=? AND receipt_json IS NULL AND diagnostic_json IS NOT NULL")
             .bind(&self.identity.system_start_id).bind(&self.identity.flow_invocation_id).bind(&terminal_id).fetch_optional(&mut *tx).await?.ok_or_else(refused)?;
-        let terminal_event: Value = serde_json::from_str(terminal.get("event_json"))?;
-        if terminal_event.get("identity") != Some(&serde_json::to_value(&self.identity)?)
-            || terminal_event.get("eventId").and_then(Value::as_str) != Some(terminal_id.as_str())
-            || terminal_event.pointer("/kind/WorkResult/work")
-                != Some(&serde_json::to_value(&work)?)
-            || terminal_event
-                .pointer("/kind/WorkResult/physical/native_receipt_id")
-                .and_then(Value::as_str)
-                != Some(protocol_id.as_str())
-            || terminal_event
-                .pointer("/kind/WorkResult/physical/descendants_joined")
-                .and_then(Value::as_bool)
-                != Some(true)
-        {
-            return Err(refused());
-        }
-        let work_event = sqlx::query("SELECT ticket_json,decision_json FROM engine_flow030_work_events WHERE system_id=? AND invocation_id=? AND activation_id=? AND event_id=? AND decision_json IS NOT NULL")
-            .bind(&self.identity.system_start_id).bind(&self.identity.flow_invocation_id).bind(&work.activation_id).bind(&protocol_id).fetch_optional(&mut *tx).await?.ok_or_else(refused)?;
-        let ticket: Value = serde_json::from_str(work_event.get("ticket_json"))?;
-        let decision: Value = serde_json::from_str(work_event.get::<&str, _>("decision_json"))?;
-        let input: repository::work_protocol030::ProtocolEvent030 =
-            serde_json::from_value(ticket.get("input").cloned().ok_or_else(refused)?)?;
-        let authorization = sqlx::query("SELECT input_json,provider_attempt_id,native_call_id FROM engine_flow030_work_authorizations WHERE system_id=? AND invocation_id=? AND activation_id=? AND event_id=?")
-            .bind(&self.identity.system_start_id).bind(&self.identity.flow_invocation_id).bind(&work.activation_id).bind(&protocol_id).fetch_optional(&mut *tx).await?.ok_or_else(refused)?;
-        let authorized: repository::work_protocol030::ProtocolEvent030 =
-            serde_json::from_str(authorization.get("input_json"))?;
-        let physical_event: Value = serde_json::from_str(&input.event_json)?;
-        if input != authorized
-            || !input.control
-            || input.native_call.is_some()
-            || authorization
-                .get::<Option<&str>, _>("provider_attempt_id")
-                .is_some()
-            || authorization
-                .get::<Option<&str>, _>("native_call_id")
-                .is_some()
-            || physical_event.get("eventId").and_then(Value::as_str) != Some(protocol_id.as_str())
-            || physical_event
-                .pointer("/event/kind")
-                .and_then(Value::as_str)
-                != Some("physicalEnded")
-            || physical_event
-                .pointer("/event/providerEnded")
-                .and_then(Value::as_bool)
-                != Some(true)
-            || physical_event
-                .pointer("/event/effectsEnded")
-                .and_then(Value::as_bool)
-                != Some(true)
-        {
-            return Err(refused());
-        }
-        let context: repository::dto::EngineContext = serde_json::from_value(
-            ticket
-                .pointer("/input/context")
-                .cloned()
-                .ok_or_else(refused)?,
-        )?;
-        let receipt_raw = decision
-            .get("receiptJson")
-            .and_then(Value::as_str)
-            .ok_or_else(refused)?;
-        let receipt: Value = serde_json::from_str(receipt_raw)?;
-        if context.owner != self.owner
-            || context.work != *attempt.work()
-            || ticket.get("identity") != Some(&serde_json::to_value(&self.identity)?)
-            || ticket.get("generation").and_then(Value::as_str) != Some(self.generation.as_str())
-            || ticket.pointer("/input/eventId").and_then(Value::as_str)
-                != Some(protocol_id.as_str())
-            || physical_event.get("owner") != receipt.get("owner")
-            || receipt.pointer("/decision/kind").and_then(Value::as_str) != Some("finished")
-        {
-            return Err(refused());
-        }
-        crate::agsdl_host_work::reserved_check030(&context, receipt_raw)?;
-        let finished = receipt.get("decision").ok_or_else(refused)?;
-        let expected_result = match finished.get("outcome").and_then(Value::as_str) {
-            Some("success") => {
-                let output = finished.get("output").ok_or_else(refused)?;
-                let output_json = crate::agsdl_host_route_verifier030::accepted_output_json(output)
-                    .map_err(store_error)?;
-                let route_key = match output.get("choice") {
-                    None | Some(Value::Null) => None,
-                    Some(Value::String(choice)) => Some(choice.clone()),
-                    _ => return Err(refused()),
-                };
-                repository::flow030::WorkResult030::Completed {
-                    output_json,
-                    route_key,
-                }
-            }
-            Some("failure") => {
-                let code = finished
-                    .get("code")
+            let terminal_event: Value = serde_json::from_str(terminal.get("event_json"))?;
+            if terminal_event.get("identity") != Some(&serde_json::to_value(&self.identity)?)
+                || terminal_event.get("eventId").and_then(Value::as_str)
+                    != Some(terminal_id.as_str())
+                || terminal_event.pointer("/kind/WorkResult/work")
+                    != Some(&serde_json::to_value(&work)?)
+                || terminal_event
+                    .pointer("/kind/WorkResult/physical/native_receipt_id")
                     .and_then(Value::as_str)
-                    .filter(|code| {
-                        matches!(
-                            *code,
-                            "OUTPUT_INVALID"
-                                | "CHECK_FAILED"
-                                | "PLAN_REJECTED"
-                                | "TIMEOUT"
-                                | "STOPPED"
-                                | "REVOKED"
-                                | "AGENT_FAILED"
-                                | "HARNESS_REFUSED"
-                                | "INTERRUPTED"
-                        )
-                    })
-                    .ok_or_else(refused)?;
-                repository::flow030::WorkResult030::Failed {
-                    error: Failure030::new(code),
-                }
+                    != Some(protocol_id.as_str())
+                || terminal_event
+                    .pointer("/kind/WorkResult/physical/descendants_joined")
+                    .and_then(Value::as_bool)
+                    != Some(true)
+            {
+                return Err(refused());
             }
-            _ => return Err(refused()),
-        };
-        if terminal_event.pointer("/kind/WorkResult/result")
-            != Some(&serde_json::to_value(expected_result)?)
-        {
-            return Err(refused());
+            let work_event = sqlx::query("SELECT ticket_json,decision_json FROM engine_flow030_work_events WHERE system_id=? AND invocation_id=? AND activation_id=? AND event_id=? AND decision_json IS NOT NULL")
+            .bind(&self.identity.system_start_id).bind(&self.identity.flow_invocation_id).bind(&work.activation_id).bind(&protocol_id).fetch_optional(&mut *tx).await?.ok_or_else(refused)?;
+            let ticket: Value = serde_json::from_str(work_event.get("ticket_json"))?;
+            let decision: Value = serde_json::from_str(work_event.get::<&str, _>("decision_json"))?;
+            let input: repository::work_protocol030::ProtocolEvent030 =
+                serde_json::from_value(ticket.get("input").cloned().ok_or_else(refused)?)?;
+            let authorization = sqlx::query("SELECT input_json,provider_attempt_id,native_call_id FROM engine_flow030_work_authorizations WHERE system_id=? AND invocation_id=? AND activation_id=? AND event_id=?")
+            .bind(&self.identity.system_start_id).bind(&self.identity.flow_invocation_id).bind(&work.activation_id).bind(&protocol_id).fetch_optional(&mut *tx).await?.ok_or_else(refused)?;
+            let authorized: repository::work_protocol030::ProtocolEvent030 =
+                serde_json::from_str(authorization.get("input_json"))?;
+            let physical_event: Value = serde_json::from_str(&input.event_json)?;
+            if input != authorized
+                || !input.control
+                || input.native_call.is_some()
+                || authorization
+                    .get::<Option<&str>, _>("provider_attempt_id")
+                    .is_some()
+                || authorization
+                    .get::<Option<&str>, _>("native_call_id")
+                    .is_some()
+                || physical_event.get("eventId").and_then(Value::as_str)
+                    != Some(protocol_id.as_str())
+                || physical_event
+                    .pointer("/event/kind")
+                    .and_then(Value::as_str)
+                    != Some("physicalEnded")
+                || physical_event
+                    .pointer("/event/providerEnded")
+                    .and_then(Value::as_bool)
+                    != Some(true)
+                || physical_event
+                    .pointer("/event/effectsEnded")
+                    .and_then(Value::as_bool)
+                    != Some(true)
+            {
+                return Err(refused());
+            }
+            let context: repository::dto::EngineContext = serde_json::from_value(
+                ticket
+                    .pointer("/input/context")
+                    .cloned()
+                    .ok_or_else(refused)?,
+            )?;
+            let receipt_raw = decision
+                .get("receiptJson")
+                .and_then(Value::as_str)
+                .ok_or_else(refused)?;
+            let receipt: Value = serde_json::from_str(receipt_raw)?;
+            if context.owner != self.owner
+                || context.work != *attempt.work()
+                || ticket.get("identity") != Some(&serde_json::to_value(&self.identity)?)
+                || ticket.get("generation").and_then(Value::as_str)
+                    != Some(self.generation.as_str())
+                || ticket.pointer("/input/eventId").and_then(Value::as_str)
+                    != Some(protocol_id.as_str())
+                || physical_event.get("owner") != receipt.get("owner")
+                || receipt.pointer("/decision/kind").and_then(Value::as_str) != Some("finished")
+            {
+                return Err(refused());
+            }
+            crate::agsdl_host_work::reserved_check030(&context, receipt_raw)?;
+            let finished = receipt.get("decision").ok_or_else(refused)?;
+            let expected_result = match finished.get("outcome").and_then(Value::as_str) {
+                Some("success") => {
+                    let output = finished.get("output").ok_or_else(refused)?;
+                    let output_json =
+                        crate::agsdl_host_route_verifier030::accepted_output_json(output)
+                            .map_err(store_error)?;
+                    let route_key = match output.get("choice") {
+                        None | Some(Value::Null) => None,
+                        Some(Value::String(choice)) => Some(choice.clone()),
+                        _ => return Err(refused()),
+                    };
+                    repository::flow030::WorkResult030::Completed {
+                        output_json,
+                        route_key,
+                    }
+                }
+                Some("failure") => {
+                    let code = finished
+                        .get("code")
+                        .and_then(Value::as_str)
+                        .filter(|code| {
+                            matches!(
+                                *code,
+                                "OUTPUT_INVALID"
+                                    | "CHECK_FAILED"
+                                    | "PLAN_REJECTED"
+                                    | "TIMEOUT"
+                                    | "STOPPED"
+                                    | "REVOKED"
+                                    | "AGENT_FAILED"
+                                    | "HARNESS_REFUSED"
+                                    | "INTERRUPTED"
+                            )
+                        })
+                        .ok_or_else(refused)?;
+                    repository::flow030::WorkResult030::Failed {
+                        error: Failure030::new(code),
+                    }
+                }
+                _ => return Err(refused()),
+            };
+            if terminal_event.pointer("/kind/WorkResult/result")
+                != Some(&serde_json::to_value(expected_result)?)
+            {
+                return Err(refused());
+            }
         }
         let row = sqlx::query("SELECT effect_json,status,settlement_json,owner_epoch FROM engine_flow030_outbox WHERE system_id=? AND invocation_id=? AND effect_id=?")
             .bind(&self.identity.system_start_id).bind(&self.identity.flow_invocation_id).bind(stop_effect_id).fetch_optional(&mut *tx).await?.ok_or_else(refused)?;
@@ -2824,8 +3000,13 @@ impl FlowControl030 {
         {
             return Err(refused());
         }
+        let settlement_kind = if claim.is_some() {
+            "nativeJoinedGroupStop030"
+        } else {
+            "nativeJoinedDiagnosticStop030"
+        };
         let settlement = serde_json::to_string(
-            &json!({"kind":"nativeJoinedDiagnosticStop030", "eventId":event.event_id, "startEffectId":attempt.start_effect_id(),"stopEffectId":stop_effect_id,"requestId":joined.request_id(),"ownerEpoch":self.owner.owner_epoch,"generation":self.generation,"workAttempt":attempt}),
+            &json!({"kind":settlement_kind, "eventId":event.event_id, "startEffectId":attempt.start_effect_id(),"stopEffectId":stop_effect_id,"requestId":joined.request_id(),"ownerEpoch":self.owner.owner_epoch,"generation":self.generation,"workAttempt":attempt}),
         )?;
         if stored.is_some() {
             if row.get::<&str, _>("status") != "settled"
@@ -2844,7 +3025,12 @@ impl FlowControl030 {
             runtime.forget_diagnostic_join(joined);
             return Ok(result);
         }
-        if !activation.physical || row.get::<&str, _>("status") != "pending" {
+        let expected_status = if claim.is_some() {
+            "uncertain"
+        } else {
+            "pending"
+        };
+        if !activation.physical || row.get::<&str, _>("status") != expected_status {
             return Err(uncertain());
         }
         let result = flow_store030::apply_tx(&mut tx, self, &event)
@@ -2853,8 +3039,8 @@ impl FlowControl030 {
         if !matches!(result, Apply030::Applied(_)) {
             return Err(refused());
         }
-        let changed = sqlx::query("UPDATE engine_flow030_outbox SET status='settled',settlement_json=? WHERE system_id=? AND invocation_id=? AND effect_id=? AND owner_epoch=? AND status='pending'")
-            .bind(&settlement).bind(&self.identity.system_start_id).bind(&self.identity.flow_invocation_id).bind(stop_effect_id).bind(&self.owner.owner_epoch).execute(&mut *tx).await?.rows_affected();
+        let changed = sqlx::query("UPDATE engine_flow030_outbox SET status='settled',settlement_json=? WHERE system_id=? AND invocation_id=? AND effect_id=? AND owner_epoch=? AND status=?")
+            .bind(&settlement).bind(&self.identity.system_start_id).bind(&self.identity.flow_invocation_id).bind(stop_effect_id).bind(&self.owner.owner_epoch).bind(expected_status).execute(&mut *tx).await?.rows_affected();
         if changed != 1 {
             return Err(refused());
         }

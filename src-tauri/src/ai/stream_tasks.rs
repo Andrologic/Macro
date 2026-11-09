@@ -511,6 +511,24 @@ impl StreamTasks {
         })
     }
 
+    /// Attach a controlled cleanup to exercise the real registry join in tests.
+    #[cfg(test)]
+    pub(crate) fn attach_test_cleanup030(
+        &self,
+        request_id: &str,
+        cleanup: tokio::task::JoinHandle<Result<(), String>>,
+    ) -> Result<(), String> {
+        let mut entries = self
+            .entries
+            .lock()
+            .map_err(|_| "Stream registry poisoned")?;
+        let entry = entries
+            .get_mut(request_id)
+            .ok_or("Stream resource has no owner")?;
+        entry.cleanups.push(cleanup);
+        Ok(())
+    }
+
     /// A cancel received before admission leaves a tombstone. IDs remain
     /// single-use so delayed starts, duplicate cancels and late starts cannot
     /// replace a previous owner. The registry is cleared only on process exit.

@@ -805,6 +805,32 @@ async fn quiesce_scenario030(
                         .await?;
                 works.push(work);
             }
+            FlowEffectKind030::StopWork { work, .. } => {
+                let matching = works
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, w)| {
+                        w.attempt.work().activation_id == work.activation_id
+                            && w.attempt.start_effect_id() == work.start_effect_id
+                            && w.attempt.work().agent_instance_id == work.agent_instance_id
+                    })
+                    .map(|(i, _)| i)
+                    .collect::<Vec<_>>();
+                if matching.len() != 1 {
+                    return Err(failure("CORRELATION", "stop", "Stopped work is not unique"));
+                }
+                let index = matching[0];
+                crate::agsdl_host_dispatch030::dispatch_stop_work030(
+                    &host,
+                    pool,
+                    tasks,
+                    owner,
+                    &effect,
+                    &works[index].attempt,
+                )
+                .await?;
+                works.remove(index);
+            }
             FlowEffectKind030::PrepareRoute { reference, .. } => {
                 crate::agsdl_host_dispatch030::dispatch_source_route030(
                     &host,

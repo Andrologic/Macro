@@ -973,6 +973,71 @@ fn branch_exit_wait_and_stop_close_group_without_join_result() {
         assert_eq!(t.s.visits_at(&address("after")), "0");
     }
 }
+
+#[test]
+fn group_stop_rejects_late_result_without_new_route_or_cancelled_effect() {
+    let mut p = joined("all", "stop");
+    route(&mut p, "a", None, &["handler"]);
+    route(&mut p, "b", None, &["after"]);
+    let mut t = launch(p);
+    let cancelled = t.work("b");
+    t.finish("a", json!({"text":"branch exit"}), None);
+    let stop = t
+        .effects
+        .iter()
+        .filter(|effect| {
+            matches!(
+                &effect.kind, FlowEffectKind030::StopWork { work, include_descendants: true }
+                    if work == &cancelled
+            )
+        })
+        .count();
+    assert_eq!(stop, 1);
+    let late = FlowEvent030 {
+        identity: t.s.identity.clone(),
+        event_id: "late-result".into(),
+        expected_revision: t.s.revision.clone(),
+        kind: FlowEventKind030::WorkResult {
+            work: cancelled.clone(),
+            result: WorkResult030::Completed {
+                output_json: "{}".into(),
+                route_key: None,
+            },
+            physical: None,
+        },
+    };
+    assert_eq!(
+        reduce(&t.p, &t.s, &late).unwrap_err(),
+        FlowInputError030::StaleReference
+    );
+    t.physical_stops();
+    let after = FlowEvent030 {
+        expected_revision: t.s.revision.clone(),
+        ..late
+    };
+    assert_eq!(
+        reduce(&t.p, &t.s, &after).unwrap_err(),
+        FlowInputError030::StaleReference
+    );
+    assert_eq!(
+        t.effects
+            .iter()
+            .filter(|effect| matches!(
+                &effect.kind, FlowEffectKind030::StopWork { work, .. } if work == &cancelled
+            ))
+            .count(),
+        1
+    );
+    assert!(!t
+        .s
+        .preparations
+        .iter()
+        .any(|prep| prep.producer.step == Some(address("b"))));
+    t.prepare(None);
+    t.finish("handler", json!({}), None);
+    assert_eq!(t.s.verdict.as_deref(), Some("succeeded"));
+    assert_eq!(t.s.visits_at(&address("after")), "0");
+}
 #[test]
 fn local_error_route_closes_branch_and_flow_handler_cannot_loop() {
     let mut p = joined("all", "stop");
@@ -2526,4 +2591,87 @@ fn all_join_last_result_with_physical_proof_never_creates_stop() {
         .iter()
         .filter(|i| matches!(i.selector, Instance030::New))
         .all(|i| i.discarded));
+}
+
+#[test]
+fn handled_failure_then_handler_failure_with_same_code_fails_branch_once() {
+    let mut p = joined("all", "wait");
+    p.joins[0].branches[0].members.push(address("handler"));
+    error_route(&mut p, "a", "handler", false);
+    let mut t = launch(p);
+    t.fail("a");
+    assert!(t.s.groups[0].decision.is_none());
+    t.prepare(None);
+    t.fail("handler");
+    assert_eq!(t.s.groups[0].decision.as_deref(), Some("failed"));
+    let error = t.s.groups[0].error.as_ref().unwrap();
+    assert_eq!(error.code, "BRANCH_FAILED");
+    assert_eq!(error.details[0]["branch"], "a");
+    assert_eq!(error.details[0]["error"]["code"], "AGENT_FAILED");
+    assert_eq!(t.effects.iter().filter(|effect| matches!(&effect.kind,FlowEffectKind030::Failure {error,counted:true,..} if error.code=="AGENT_FAILED")).count(),2);
+}
+
+#[test]
+fn nested_join_failure_propagates_to_outer_error_handler() {
+    let mut p = joined("all", "stop");
+    for n in ["x", "y"] {
+        step(&mut p, n, "agent");
+    }
+    step(&mut p, "inner", "join");
+    route(&mut p, "a", None, &["x", "y"]);
+    route(&mut p, "x", None, &["inner"]);
+    route(&mut p, "y", None, &["inner"]);
+    route(&mut p, "inner", None, &["join"]);
+    p.joins[0].branches[0]
+        .members
+        .extend([address("x"), address("y"), address("inner")]);
+    p.joins.push(Join030 {
+        address: address("inner"),
+        scope: vec![],
+        origin: address("a"),
+        branches: ["x", "y"]
+            .iter()
+            .map(|n| Branch030 {
+                name: n.to_string(),
+                target: address(n),
+                members: vec![address(n)],
+                fanout: false,
+            })
+            .collect(),
+        mode: "all".into(),
+        failures: "fail".into(),
+        max_failures_json: None,
+        quorum_count_json: None,
+        accept: vec![],
+        remaining: "stop".into(),
+    });
+    error_route(&mut p, "join", "handler", false);
+    let mut t = launch(p);
+    t.finish("a", json!({}), None);
+    t.prepare(None);
+    t.fail("x");
+    t.physical_stops();
+    t.physical_stops();
+    assert_eq!(
+        t.s.groups
+            .iter()
+            .find(|g| g.join == address("inner"))
+            .unwrap()
+            .decision
+            .as_deref(),
+        Some("failed")
+    );
+    assert_eq!(
+        t.s.groups
+            .iter()
+            .find(|g| g.join == address("join"))
+            .unwrap()
+            .decision
+            .as_deref(),
+        Some("failed")
+    );
+    assert!(t.effects.iter().any(|effect| matches!(&effect.kind,FlowEffectKind030::Failure {step:Some(step),error,..} if step==&address("inner") && error.code=="BRANCH_FAILED")));
+    assert!(t.s.preparations.iter().any(|p| p.status == "pending"
+        && p.reference.route.source == address("join")
+        && p.reference.route.kind == "error"));
 }

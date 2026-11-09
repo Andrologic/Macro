@@ -47,6 +47,26 @@ const SCENARIOS: &[(&str, &str)] = &[
         "fanout-missions",
         include_str!("../../dev/agsdl/fixtures/v0.3/conformance/runs/fanout-missions.json"),
     ),
+    (
+        "wait-group-closes",
+        include_str!("../../dev/agsdl/fixtures/v0.3/conformance/runs/wait-group-closes.json"),
+    ),
+    (
+        "fanout-one-at-a-time",
+        include_str!("../../dev/agsdl/fixtures/v0.3/conformance/runs/fanout-one-at-a-time.json"),
+    ),
+    (
+        "join-group-closes",
+        include_str!("../../dev/agsdl/fixtures/v0.3/conformance/runs/join-group-closes.json"),
+    ),
+    (
+        "join-branch-failed",
+        include_str!("../../dev/agsdl/fixtures/v0.3/conformance/runs/join-branch-failed.json"),
+    ),
+    (
+        "fanout-max-failures",
+        include_str!("../../dev/agsdl/fixtures/v0.3/conformance/runs/fanout-max-failures.json"),
+    ),
 ];
 
 #[derive(Deserialize)]
@@ -225,8 +245,8 @@ mod tests {
         assert!(PinnedScenario030::from_capture(f.document.get(), "{}").is_err());
     }
     #[test]
-    fn all_ten_vendor_scenarios_bind_exact_document_entry_and_timeline() {
-        assert_eq!(SCENARIOS.len(), 10);
+    fn all_fifteen_vendor_scenarios_bind_exact_document_entry_and_timeline() {
+        assert_eq!(SCENARIOS.len(), 15);
         for &(name, raw) in SCENARIOS {
             let fixture: Fixture030 = serde_json::from_str(raw).unwrap();
             assert!(PinnedScenario030::recognizes_document(fixture.document.get()).unwrap());

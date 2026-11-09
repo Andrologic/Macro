@@ -9,8 +9,9 @@ use crate::agsdl_host_flow030::{
 use crate::db::agsdl_execution::{
     dto::{EngineContext, EngineOwner},
     flow030::{
-        Continuation030, FlowEffect030, FlowEffectKind030, FlowPlan030, FlowState030,
-        PhysicalEvidence030, PrepareRef030, Producer030, Target030,
+        Continuation030, FlowEffect030, FlowEffectKind030, FlowEvent030, FlowEventKind030,
+        FlowPlan030, FlowState030, PhysicalEvidence030, PrepareRef030, PreparedResult030,
+        Producer030, Target030, WorkResult030,
     },
     flow_store030::{CheckFuture, StoreError030},
     start030::StartCapture030,
@@ -22,6 +23,10 @@ use serde_json::{json, value::RawValue, Value};
 use sha2::{Digest, Sha256};
 use sqlx::{Row, SqliteConnection};
 use std::collections::BTreeSet;
+
+#[path = "agsdl_host_path_failure030.rs"]
+mod path_failure;
+use path_failure::{verify_preparation_origin_tx, verify_reduced_failure_tx, PathFailureOrigin030};
 
 type Verified<T> = std::result::Result<T, StoreError030>;
 fn require(value: bool) -> Verified<()> {
@@ -347,6 +352,16 @@ pub(crate) async fn verify_join_error_source_tx(
     require(state.identity == *id)?;
     let retained = state.plan_json.as_deref().ok_or(StoreError030::Authority)?;
     require(same_flow_plan030(retained, &capture.compiled_plan_json)?)?;
+    if state
+        .groups
+        .iter()
+        .any(|group| group.activation_id == producer.activation_id)
+    {
+        return verify_failed_group_source_tx(
+            db, capture, reference, producer, owner, generation, &state, &plan,
+        )
+        .await;
+    }
     let activations = state
         .activations
         .iter()
@@ -536,6 +551,405 @@ pub(crate) async fn verify_join_error_source_tx(
         }
     }
     require(failures == 1)
+}
+
+/// Read the join failure and its accepted receipt independently of the source writer.
+async fn verify_join_failure_effect_tx(
+    db: &mut SqliteConnection,
+    id: &crate::db::agsdl_execution::flow030::FlowIdentity030,
+    owner: &EngineOwner,
+    producer: &Producer030,
+    error: &crate::db::agsdl_execution::flow030::Failure030,
+    state: &FlowState030,
+) -> Verified<i64> {
+    // The join's own Failure is a distinct durable effect. It may precede
+    // the event that releases the group, but must have one accepted receipt.
+    let rows = sqlx::query("SELECT o.effect_id,o.effect_json,o.event_id,e.rowid AS event_rowid,e.event_json,e.receipt_json,e.diagnostic_json FROM engine_flow030_outbox o LEFT JOIN engine_flow030_events e ON e.system_id=o.system_id AND e.invocation_id=o.invocation_id AND e.event_id=o.event_id WHERE o.system_id=? AND o.invocation_id=? AND o.owner_epoch=?")
+        .bind(&id.system_start_id).bind(&id.flow_invocation_id).bind(&owner.owner_epoch).fetch_all(&mut *db).await?;
+    let mut join_failures = 0;
+    let mut join_failure_rowid = None;
+    for row in rows {
+        let effect: FlowEffect030 = serde_json::from_str(row.get("effect_json"))?;
+        if let FlowEffectKind030::Failure {
+            activation_id,
+            step,
+            error: effect_error,
+            counted,
+        } = &effect.kind
+        {
+            if activation_id == &producer.activation_id && step == &producer.step {
+                join_failures += 1;
+                let event_id: &str = row.get("event_id");
+                let event_json: &str = row
+                    .try_get::<Option<&str>, _>("event_json")?
+                    .ok_or(StoreError030::Authority)?;
+                let receipt_json: &str = row
+                    .try_get::<Option<&str>, _>("receipt_json")?
+                    .ok_or(StoreError030::Authority)?;
+                let receipt: crate::db::agsdl_execution::flow030::FlowReceipt030 =
+                    serde_json::from_str(receipt_json)?;
+                let event: Value = serde_json::from_str(event_json)?;
+                let record = state.events.get(event_id).ok_or(StoreError030::Authority)?;
+                require(
+                    *counted
+                        && effect.identity == *id
+                        && effect.id == row.get::<&str, _>("effect_id")
+                        && effect_error == error
+                        && row.try_get::<Option<&str>, _>("diagnostic_json")?.is_none()
+                        && event.get("identity") == Some(&serde_json::to_value(id)?)
+                        && event.get("eventId").and_then(Value::as_str) == Some(event_id)
+                        && receipt.event_id == event_id
+                        && receipt
+                            .effect_ids
+                            .iter()
+                            .filter(|v| *v == &effect.id)
+                            .count()
+                            == 1
+                        && record.event_json == event_json
+                        && record.receipt == receipt,
+                )?;
+                join_failure_rowid = row.try_get::<Option<i64>, _>("event_rowid")?;
+            }
+        }
+    }
+    require(join_failures == 1)?;
+    join_failure_rowid.ok_or(StoreError030::Authority)
+}
+
+fn failed_group_paths<'a>(
+    group: &'a crate::db::agsdl_execution::flow030::Group030,
+    state: &'a FlowState030,
+) -> Verified<
+    Vec<(
+        &'a crate::db::agsdl_execution::flow030::Path030,
+        &'a crate::db::agsdl_execution::flow030::Membership030,
+    )>,
+> {
+    let mut failed_paths = Vec::new();
+    let mut failed_path_ids = std::collections::HashSet::new();
+    for branch_state in &group.branches {
+        for path_id in &branch_state.path_ids {
+            let paths = state
+                .paths
+                .iter()
+                .filter(|p| p.id == *path_id)
+                .collect::<Vec<_>>();
+            require(paths.len() == 1)?;
+            let members = paths[0]
+                .memberships
+                .iter()
+                .filter(|m| m.group_id == group.id && m.branch == branch_state.name)
+                .collect::<Vec<_>>();
+            require(members.len() == 1)?;
+            if members[0].failed {
+                require(failed_path_ids.insert(path_id))?;
+                failed_paths.push((paths[0], members[0]));
+            }
+        }
+    }
+    Ok(failed_paths)
+}
+
+/// A local error route handles the failure before it can end a branch.
+fn has_local_error_handler(plan: &FlowPlan030, step: &Option<Vec<String>>) -> bool {
+    step.as_ref().is_some_and(|address| {
+        plan.routes
+            .iter()
+            .any(|route| route.source == *address && route.kind == "error" && !route.inherited)
+    })
+}
+
+/// The call lifecycle's native authority and commit fence are not wired here.
+/// Until the calls wave supplies them, a call failure is refused as AUTHORITY.
+fn reject_unintegrated_call(plan: &FlowPlan030, step: &Option<Vec<String>>) -> Verified<()> {
+    let Some(address) = step else {
+        return Err(StoreError030::Authority);
+    };
+    let mut matches = plan.steps.iter().filter(|item| item.address == *address);
+    let item = matches.next().ok_or(StoreError030::Authority)?;
+    require(matches.next().is_none() && item.r#type != "call")
+}
+
+/// An already-opened join failure is anchored to its immutable group and to the
+/// accepted branch failure that crossed its configured threshold. The later
+/// release event may be a different physical-end event.
+async fn verify_failed_group_source_tx(
+    db: &mut SqliteConnection,
+    capture: &StartCapture030,
+    reference: &PrepareRef030,
+    producer: &Producer030,
+    owner: &EngineOwner,
+    generation: &str,
+    state: &FlowState030,
+    plan: &FlowPlan030,
+) -> Verified<()> {
+    require(
+        state
+            .activations
+            .iter()
+            .filter(|a| {
+                a.id == producer.activation_id
+                    && a.phase == "preparing"
+                    && a.context == reference.context
+            })
+            .count()
+            == 1,
+    )?;
+    let id = &capture.identity;
+    let pending = sqlx::query("SELECT effect_id,event_id,effect_json FROM engine_flow030_outbox WHERE system_id=? AND invocation_id=? AND owner_epoch=? AND status='pending'")
+        .bind(&id.system_start_id).bind(&id.flow_invocation_id).bind(&owner.owner_epoch).fetch_all(&mut *db).await?;
+    let mut source_effects = Vec::new();
+    for row in pending {
+        let effect: FlowEffect030 = serde_json::from_str(row.get("effect_json"))?;
+        if effect.identity == *id
+            && matches!(&effect.kind, FlowEffectKind030::PrepareRoute {reference:r,producer:p} if r == reference && p == producer)
+        {
+            require(effect.id == row.get::<&str, _>("effect_id"))?;
+            source_effects.push((row.get::<String, _>("event_id"), effect.id));
+        }
+    }
+    require(source_effects.len() == 1)?;
+    let release = sqlx::query("SELECT rowid,event_json,receipt_json FROM engine_flow030_events WHERE system_id=? AND invocation_id=? AND event_id=? AND receipt_json IS NOT NULL AND diagnostic_json IS NULL")
+        .bind(&id.system_start_id).bind(&id.flow_invocation_id).bind(&source_effects[0].0).fetch_optional(&mut *db).await?.ok_or(StoreError030::Authority)?;
+    let release_event: Value = serde_json::from_str(release.get("event_json"))?;
+    let release_receipt: crate::db::agsdl_execution::flow030::FlowReceipt030 =
+        serde_json::from_str(release.get("receipt_json"))?;
+    require(
+        release_event.get("identity") == Some(&serde_json::to_value(id)?)
+            && release_receipt.event_id == source_effects[0].0
+            && release_receipt.revision == reference.revision
+            && release_receipt
+                .effect_ids
+                .iter()
+                .filter(|v| *v == &source_effects[0].1)
+                .count()
+                == 1,
+    )?;
+    let release_record = state
+        .events
+        .get(&source_effects[0].0)
+        .ok_or(StoreError030::Authority)?;
+    require(
+        release_record.event_json == release.get::<&str, _>("event_json")
+            && release_record.receipt == release_receipt,
+    )?;
+    let rowid =
+        verify_failed_group_tx(db, capture, producer, owner, generation, state, plan, 0).await?;
+    require(rowid == release.get::<i64, _>("rowid"))
+}
+
+// Bound native proof recursion independently of authored nesting and SQL data.
+const MAX_FAILURE_PROOF_DEPTH030: usize = 16;
+
+fn verify_failed_group_tx<'a>(
+    db: &'a mut SqliteConnection,
+    capture: &'a StartCapture030,
+    producer: &'a Producer030,
+    owner: &'a EngineOwner,
+    generation: &'a str,
+    state: &'a FlowState030,
+    plan: &'a FlowPlan030,
+    depth: usize,
+) -> std::pin::Pin<Box<dyn std::future::Future<Output = Verified<i64>> + Send + 'a>> {
+    Box::pin(async move {
+        require(depth < MAX_FAILURE_PROOF_DEPTH030)?;
+        let id = &capture.identity;
+        let groups = state
+            .groups
+            .iter()
+            .filter(|g| g.activation_id == producer.activation_id)
+            .collect::<Vec<_>>();
+        require(groups.len() == 1)?;
+        let group = groups[0];
+        let address = producer.step.as_ref().ok_or(StoreError030::Authority)?;
+        require(
+            group.join == *address
+                && group.released
+                && group.decision.as_deref() == Some("failed")
+                && matches!(group.continuation, Some(Continuation030::Join))
+                && group.output_json.is_none(),
+        )?;
+        let activations = state
+            .activations
+            .iter()
+            .filter(|a| a.id == group.activation_id)
+            .collect::<Vec<_>>();
+        require(
+            activations.len() == 1
+                && activations[0].step.as_ref() == Some(address)
+                && matches!(activations[0].phase.as_str(), "preparing" | "done")
+                && !activations[0].physical
+                && activations[0].context == group.context,
+        )?;
+        require(
+            plan.steps.iter().filter(|s| s.address == *address).count() == 1
+                && plan
+                    .steps
+                    .iter()
+                    .filter(|s| s.address == *address && s.r#type == "join")
+                    .count()
+                    == 1,
+        )?;
+        let joins = plan
+            .joins
+            .iter()
+            .filter(|j| j.address == *address)
+            .collect::<Vec<_>>();
+        require(joins.len() == 1 && joins[0].mode == "all")?;
+        let error = group.error.as_ref().ok_or(StoreError030::Authority)?;
+        require(error.code == "BRANCH_FAILED" && error.message == "BRANCH_FAILED")?;
+        let output = json!({"error":error});
+        require(exact(
+            &producer.output_json,
+            &serde_json::to_string(&output)?,
+        )?)?;
+        let details = error.details.as_array().ok_or(StoreError030::Authority)?;
+        require(details.len() == 1 && details[0].as_object().is_some_and(|m| m.len() == 2))?;
+        let branch = string(&details[0], "branch")?;
+        let cause = details[0].get("error").ok_or(StoreError030::Authority)?;
+        let failed_paths = failed_group_paths(group, state)?;
+        require(
+            !failed_paths.is_empty()
+                && (joins[0].failures == "fail"
+                    || joins[0].max_failures_json.as_ref().is_some_and(|raw| {
+                        crate::db::agsdl_execution::flow030::number::Limit::parse(raw).is_some()
+                            && crate::db::agsdl_execution::flow030::number::exceeds(
+                                &failed_paths.len().to_string(),
+                                &joins[0].max_failures_json,
+                            )
+                    })),
+        )?;
+        let join_failure_rowid =
+            verify_join_failure_effect_tx(db, id, owner, producer, error, state).await?;
+        let mut trigger: Option<(i64, usize, String, Value)> = None;
+        for (path, membership) in failed_paths {
+            let expected = membership
+                .result_json
+                .as_ref()
+                .ok_or(StoreError030::Authority)?;
+            let result: Value = serde_json::from_str(expected)?;
+            require(result.get("ended").and_then(Value::as_str) == Some("failed"))?;
+            let path_error = result.get("error").ok_or(StoreError030::Authority)?;
+            let rows = sqlx::query("SELECT o.effect_id,o.effect_json,e.rowid,e.event_json,e.receipt_json FROM engine_flow030_outbox o JOIN engine_flow030_events e ON e.system_id=o.system_id AND e.invocation_id=o.invocation_id AND e.event_id=o.event_id WHERE o.system_id=? AND o.invocation_id=? AND o.owner_epoch=? AND e.receipt_json IS NOT NULL AND e.diagnostic_json IS NULL")
+            .bind(&id.system_start_id).bind(&id.flow_invocation_id).bind(&owner.owner_epoch).fetch_all(&mut *db).await?;
+            let mut found = Vec::new();
+            for row in rows {
+                let effect: FlowEffect030 = serde_json::from_str(row.get("effect_json"))?;
+                let FlowEffectKind030::Failure {
+                    activation_id,
+                    step,
+                    error,
+                    counted: true,
+                } = &effect.kind
+                else {
+                    continue;
+                };
+                if has_local_error_handler(plan, step) {
+                    continue;
+                }
+                let acts = state.activations.iter().filter(|a| a.id == *activation_id && a.step == *step && a.context.iter().any(|f| matches!(f, crate::db::agsdl_execution::flow030::Frame030::Path {path_id,..} if path_id == &path.id))).collect::<Vec<_>>();
+                if acts.len() != 1 || serde_json::to_value(error)? != *path_error {
+                    continue;
+                }
+                reject_unintegrated_call(plan, step)?;
+                let event: Value = serde_json::from_str(row.get("event_json"))?;
+                let receipt: crate::db::agsdl_execution::flow030::FlowReceipt030 =
+                    serde_json::from_str(row.get("receipt_json"))?;
+                let event_id = event
+                    .get("eventId")
+                    .and_then(Value::as_str)
+                    .ok_or(StoreError030::Authority)?;
+                require(
+                    event.get("identity") == Some(&serde_json::to_value(id)?)
+                        && effect.identity == *id
+                        && effect.id == row.get::<&str, _>("effect_id")
+                        && receipt.event_id == event_id
+                        && receipt
+                            .effect_ids
+                            .iter()
+                            .filter(|v| *v == &effect.id)
+                            .count()
+                            == 1,
+                )?;
+                let record = state.events.get(event_id).ok_or(StoreError030::Authority)?;
+                require(
+                    record.event_json == row.get::<&str, _>("event_json")
+                        && record.receipt == receipt,
+                )?;
+                // Only the nearest path may consume this failure. A nested branch's
+                // failure must first be attested through its own join.
+                require(
+                    acts[0].context.iter().rev().find_map(|frame| match frame {
+                        crate::db::agsdl_execution::flow030::Frame030::Path { path_id, .. } => {
+                            Some(path_id)
+                        }
+                        _ => None,
+                    }) == Some(&path.id),
+                )?;
+                let origin = PathFailureOrigin030::derive(&event, acts[0], state, error)?;
+                match origin {
+                    PathFailureOrigin030::AgentWork => {
+                        require(
+                            event.pointer("/kind/WorkResult/result/Failed/error")
+                                == Some(path_error),
+                        )?;
+                        verify_preparation_origin_tx(db, capture, owner, generation, &event, state)
+                            .await?;
+                    }
+                    PathFailureOrigin030::FailedJoin => {
+                        let nested = Producer030 {
+                            activation_id: activation_id.clone(),
+                            step: step.clone(),
+                            kind: "join".into(),
+                            input_json: acts[0].input_json.clone(),
+                            message_json: acts[0].message_json.clone(),
+                            item_json: acts[0].item_json.clone(),
+                            output_json: json!({"error":error}).to_string(),
+                        };
+                        let nested_rowid = verify_failed_group_tx(
+                            db,
+                            capture,
+                            &nested,
+                            owner,
+                            generation,
+                            state,
+                            plan,
+                            depth + 1,
+                        )
+                        .await?;
+                        require(nested_rowid == row.get::<i64, _>("rowid"))?;
+                    }
+                    PathFailureOrigin030::PreparedFailure
+                    | PathFailureOrigin030::AdmissionLimit => {
+                        verify_preparation_origin_tx(db, capture, owner, generation, &event, state)
+                            .await?;
+                    }
+                }
+                verify_reduced_failure_tx(db, capture, state, &effect).await?;
+                found.push((
+                    row.get::<i64, _>("rowid"),
+                    receipt
+                        .effect_ids
+                        .iter()
+                        .position(|id| id == &effect.id)
+                        .ok_or(StoreError030::Authority)?,
+                    membership.branch.clone(),
+                    path_error.clone(),
+                ));
+            }
+            require(found.len() == 1)?;
+            let candidate = found.remove(0);
+            if trigger
+                .as_ref()
+                .is_none_or(|t| (candidate.0, candidate.1) > (t.0, t.1))
+            {
+                trigger = Some(candidate);
+            }
+        }
+        let trigger = trigger.ok_or(StoreError030::Authority)?;
+        require(trigger.0 <= join_failure_rowid && trigger.2 == branch && trigger.3 == *cause)?;
+        Ok(join_failure_rowid)
+    })
 }
 
 async fn verify_join_source(
