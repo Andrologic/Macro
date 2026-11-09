@@ -162,6 +162,34 @@ pub(crate) async fn apply_tx<A: Authority030>(
             .bind(&id.system_start_id).bind(&id.flow_invocation_id).bind(&effect.id).bind(&event.event_id)
             .bind(serde_json::to_string(effect)?).bind(authority.owner_epoch()).execute(&mut *db).await?;
     }
+    for delivery in &transition.state.steer_deliveries {
+        if delivery.resolved_event_id.as_deref() != Some(event.event_id.as_str())
+            || !matches!(delivery.status.as_str(), "fallback" | "withdrawn")
+        {
+            continue;
+        }
+        let receipt = json!({"kind":"nativeSteerSuperseded030", "effectId":delivery.effect_id,
+            "deliveryActivationId":delivery.delivery_activation_id, "work":delivery.work,
+            "eventId":event.event_id, "resolution":delivery.status, "reason":delivery.reason});
+        let changed = sqlx::query("UPDATE engine_flow030_outbox SET status='settled',settlement_json=? WHERE system_id=? AND invocation_id=? AND effect_id=? AND status='pending'")
+            .bind(receipt.to_string()).bind(&id.system_start_id).bind(&id.flow_invocation_id).bind(&delivery.effect_id)
+            .execute(&mut *db).await?.rows_affected();
+        if changed != 1 {
+            if delivery.status == "withdrawn" {
+                let status: String = sqlx::query_scalar("SELECT status FROM engine_flow030_outbox WHERE system_id=? AND invocation_id=? AND effect_id=?")
+                    .bind(&id.system_start_id).bind(&id.flow_invocation_id).bind(&delivery.effect_id).fetch_one(&mut *db).await?;
+                // Stop may withdraw a message with unknown physical consumption.
+                // Retain the uncertain receipt instead of obstructing cleanup or
+                // asserting that the message was never delivered.
+                if status == "uncertain" {
+                    continue;
+                }
+            }
+            // A lost consumption acknowledgment is not proof of non-delivery.
+            // Never replay that message as a fresh work after an uncertain claim.
+            return Err(StoreError030::Blocked);
+        }
+    }
     let changed = sqlx::query("UPDATE engine_flow030_runs SET state_json=? WHERE system_id=? AND invocation_id=? AND state_json=?")
         .bind(serde_json::to_string(&transition.state)?).bind(&id.system_start_id).bind(&id.flow_invocation_id).bind(serde_json::to_string(&state)?)
         .execute(&mut *db).await?.rows_affected();
@@ -186,24 +214,7 @@ pub(crate) fn eligible(state: &FlowState030, effect: &FlowEffect030) -> bool {
                         && a.stop_effect_id.is_none()
                 })
         }
-        FlowEffectKind030::Steer {
-            work,
-            delivery_activation_id,
-            ..
-        } => {
-            !state.stopping
-                && state.verdict.is_none()
-                && state.activations.iter().any(|a| {
-                    a.id == work.activation_id
-                        && a.phase == "running"
-                        && a.start_effect_id.as_deref() == Some(work.start_effect_id.as_str())
-                        && a.stop_effect_id.is_none()
-                })
-                && state
-                    .activations
-                    .iter()
-                    .any(|a| &a.id == delivery_activation_id)
-        }
+        FlowEffectKind030::Steer { .. } => super::flow030::steer_effect_eligible030(state, effect),
         FlowEffectKind030::PrepareRoute { reference, .. } => {
             !state.stopping
                 && state.verdict.is_none()

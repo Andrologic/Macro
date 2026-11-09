@@ -979,6 +979,11 @@ fn forensic_event_reader_covers_all_native_variants_and_rejects_unknown_fields()
                 error: Failure030::new("FAILED"),
             },
         },
+        FlowEventKind030::SteerConsumed {
+            effect_id: "effect".into(),
+            work: work.clone(),
+            delivery_activation_id: "delivery".into(),
+        },
         FlowEventKind030::PhysicalEnded {
             work,
             stop_effect_id: None,
@@ -1203,4 +1208,76 @@ async fn real_r6_final_runs_on_copies() {
             source.file_name().unwrap().to_string_lossy()
         );
     }
+}
+
+#[tokio::test]
+async fn steer_consumption_must_correlate_exact_delivery_work_message_and_checkpoint() {
+    let (_directory, path, event) = fixture().await;
+    let mut db = SqliteConnection::connect_with(&SqliteConnectOptions::new().filename(&path))
+        .await
+        .unwrap();
+    let raw: String = sqlx::query_scalar("SELECT plan_json FROM engine_flow030_runs")
+        .fetch_one(&mut db)
+        .await
+        .unwrap();
+    let plan: FlowPlan030 = parse("plan", &raw).unwrap();
+    let transition = reduce(&plan, &FlowState030::new(event.identity.clone()), &event).unwrap();
+    let mut effect = transition.effects[0].clone();
+    let FlowEffectKind030::Start { work, .. } = effect.kind else {
+        panic!("agent Start")
+    };
+    effect.kind = FlowEffectKind030::Steer {
+        work: work.clone(),
+        delivery_activation_id: "delivery".into(),
+        message_json: "{\"prompt\":\"Update.\"}".into(),
+        occurrence: None,
+        sender: None,
+    };
+    let consumed = FlowEvent030 {
+        identity: event.identity.clone(),
+        event_id: "consumed".into(),
+        expected_revision: transition.state.revision.clone(),
+        kind: FlowEventKind030::SteerConsumed {
+            effect_id: effect.id.clone(),
+            work: work.clone(),
+            delivery_activation_id: "delivery".into(),
+        },
+    };
+    let mut state = transition.state.clone();
+    state.steer_deliveries.push(SteerRecord030 {
+        effect_id: effect.id.clone(),
+        work: work.clone(),
+        delivery_activation_id: "delivery".into(),
+        status: "consumed".into(),
+        resolved_event_id: Some("consumed".into()),
+        reason: None,
+    });
+    state.events.insert(
+        "consumed".into(),
+        EventRecord030 {
+            event_json: json!(consumed).to_string(),
+            receipt: FlowReceipt030 {
+                event_id: "consumed".into(),
+                revision: "2".into(),
+                effect_ids: vec![],
+            },
+        },
+    );
+    let receipt = json!({"work":work,"deliveryActivationId":"delivery","messageJson":"{\"prompt\":\"Update.\"}","consumedAfterEventId":event.event_id,"consumedEventId":"consumed"});
+    assert!(verify_steer_settlement(&state, &effect, &receipt).is_ok());
+    for key in [
+        "work",
+        "deliveryActivationId",
+        "messageJson",
+        "consumedAfterEventId",
+        "consumedEventId",
+    ] {
+        let mut forged = receipt.clone();
+        forged[key] = json!("foreign");
+        assert!(
+            verify_steer_settlement(&state, &effect, &forged).is_err(),
+            "{key}"
+        );
+    }
+    db.close().await.unwrap();
 }

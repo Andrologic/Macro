@@ -4,10 +4,10 @@ use std::collections::BTreeMap;
 
 pub type Address030 = Vec<String>;
 macro_rules! record {
-    ($name:ident { $($field:ident : $ty:ty),* $(,)? }) => {
+    ($name:ident { $($(#[$attr:meta])* $field:ident : $ty:ty),* $(,)? }) => {
         #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
         #[serde(rename_all="camelCase", deny_unknown_fields)]
-        pub struct $name { $(pub $field: $ty),* }
+        pub struct $name { $($(#[$attr])* pub $field: $ty),* }
     };
 }
 record!(FlowPlan030 {format: String, versions: Versions030, source: Value, document_json: String,
@@ -162,6 +162,11 @@ pub enum FlowEventKind030 {
         native_receipt_id: String,
         result: PreparedResult030,
     },
+    SteerConsumed {
+        effect_id: String,
+        work: WorkRef030,
+        delivery_activation_id: String,
+    },
     PhysicalEnded {
         work: WorkRef030,
         stop_effect_id: Option<String>,
@@ -296,7 +301,8 @@ pub enum Continuation030 {
         producer: Producer030,
     },
 }
-record!(FlowState030 {identity:FlowIdentity030,revision:String,plan_json:Option<String>,entered:bool,stopping:bool,verdict:Option<String>,unhandled_failure:bool,activations:Vec<Activation030>,instances:Vec<InstanceState030>,preparations:Vec<Preparation030>,preparation_receipts:BTreeMap<String,String>,paths:Vec<Path030>,batches:Vec<Batch030>,groups:Vec<Group030>,route_barriers:Vec<RouteBarrier030>,visits:BTreeMap<String,String>,events:BTreeMap<String,EventRecord030>});
+record!(SteerRecord030 {effect_id:String,work:WorkRef030,delivery_activation_id:String,status:String,resolved_event_id:Option<String>,reason:Option<String>});
+record!(FlowState030 {identity:FlowIdentity030,revision:String,plan_json:Option<String>,entered:bool,stopping:bool,verdict:Option<String>,unhandled_failure:bool,activations:Vec<Activation030>,instances:Vec<InstanceState030>,preparations:Vec<Preparation030>,preparation_receipts:BTreeMap<String,String>,paths:Vec<Path030>,batches:Vec<Batch030>,groups:Vec<Group030>,route_barriers:Vec<RouteBarrier030>,visits:BTreeMap<String,String>,events:BTreeMap<String,EventRecord030>,#[serde(default, skip_serializing_if = "Vec::is_empty")] steer_deliveries:Vec<SteerRecord030>});
 impl FlowState030 {
     pub fn new(identity: FlowIdentity030) -> Self {
         Self {
@@ -308,6 +314,7 @@ impl FlowState030 {
             verdict: None,
             unhandled_failure: false,
             activations: vec![],
+            steer_deliveries: vec![],
             instances: vec![],
             preparations: vec![],
             preparation_receipts: BTreeMap::new(),

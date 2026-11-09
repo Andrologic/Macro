@@ -273,6 +273,12 @@ fn journal_event(raw: &str) -> Verified<FlowEvent030> {
                 Some(physical(&x["physical"])?)
             },
         }
+    } else if let Some(x) = kind.get("SteerConsumed") {
+        FlowEventKind030::SteerConsumed {
+            effect_id: field(x, "effect_id")?,
+            work: field(x, "work")?,
+            delivery_activation_id: field(x, "delivery_activation_id")?,
+        }
     } else if let Some(x) = kind.get("PhysicalEnded") {
         FlowEventKind030::PhysicalEnded {
             work: field(x, "work")?,

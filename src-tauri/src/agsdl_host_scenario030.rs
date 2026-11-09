@@ -115,9 +115,21 @@ const SCENARIOS: &[(&str, &str)] = &[
         "composition",
         include_str!("../../dev/agsdl/fixtures/v0.3/conformance/runs/composition.json"),
     ),
+    (
+        "delivery-queue",
+        include_str!("../../dev/agsdl/fixtures/v0.3/conformance/runs/delivery-queue.json"),
+    ),
+    (
+        "delivery-steer",
+        include_str!("../../dev/agsdl/fixtures/v0.3/conformance/runs/delivery-steer.json"),
+    ),
+    (
+        "join-branch-steer",
+        include_str!("../../dev/agsdl/fixtures/v0.3/conformance/runs/join-branch-steer.json"),
+    ),
 ];
 
-const CALLS_PINS: &[(&str, &str)] = &[
+const SCENARIO_PINS: &[(&str, &str)] = &[
     (
         "quorum-unreachable",
         "b01ed57ae25c2ebbbd1039ad45b682e47eecfa689bdb197dad4b9faf8c7c52fc",
@@ -166,9 +178,21 @@ const CALLS_PINS: &[(&str, &str)] = &[
         "composition",
         "92a9cf5728f38de3176426c833972fd2c6bf103e2f0a8a314d65d0b3d4cfad3d",
     ),
+    (
+        "delivery-queue",
+        "b562c8cdd9954ee183adc3e624ee3bbf292be8cfa18f327db506b2de221b1d2a",
+    ),
+    (
+        "delivery-steer",
+        "5b364684f9dea58a020b8801fa0534869afaeeb9b0a59d40b253072f9b2db2fe",
+    ),
+    (
+        "join-branch-steer",
+        "c66096b2d8a6a4b50bd6457827914f8b6aa2bbe67399aaba50b4f50c71261ca9",
+    ),
 ];
 fn verify_fixture_pin(name: &str, raw: &str) -> Result<()> {
-    if let Some((_, expected)) = CALLS_PINS.iter().find(|(n, _)| *n == name) {
+    if let Some((_, expected)) = SCENARIO_PINS.iter().find(|(n, _)| *n == name) {
         if format!("{:x}", Sha256::digest(raw.as_bytes())) != *expected {
             return Err(bad());
         }
@@ -387,8 +411,8 @@ mod tests {
         assert!(PinnedScenario030::from_capture(f.document.get(), "{}").is_err());
     }
     #[test]
-    fn all_twenty_seven_vendor_scenarios_bind_exact_document_entry_and_timeline() {
-        assert_eq!(SCENARIOS.len(), 27);
+    fn all_thirty_vendor_scenarios_bind_exact_document_entry_and_timeline() {
+        assert_eq!(SCENARIOS.len(), 30);
         for &(name, raw) in SCENARIOS {
             let fixture: Fixture030 = serde_json::from_str(raw).unwrap();
             assert!(PinnedScenario030::recognizes_document(fixture.document.get()).unwrap());
@@ -407,8 +431,7 @@ mod tests {
     }
     #[test]
     fn unqualified_vendor_scenario_is_not_recognized_or_selected() {
-        let raw =
-            include_str!("../../dev/agsdl/fixtures/v0.3/conformance/runs/delivery-queue.json");
+        let raw = include_str!("../../dev/agsdl/fixtures/v0.3/conformance/runs/approval.json");
         let fixture: Fixture030 = serde_json::from_str(raw).unwrap();
         assert!(!PinnedScenario030::recognizes_document(fixture.document.get()).unwrap());
         assert!(
@@ -438,7 +461,7 @@ mod tests {
         }
         for &(name, raw) in SCENARIOS {
             verify_fixture_pin(name, raw).unwrap();
-            if CALLS_PINS.iter().any(|(n, _)| *n == name) {
+            if SCENARIO_PINS.iter().any(|(n, _)| *n == name) {
                 assert!(verify_fixture_pin(name, &format!("{raw} ")).is_err());
             }
         }

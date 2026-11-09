@@ -27,10 +27,18 @@ function fixture() {
   return { db, state, plan, owner, mutable, observe: () => { close(); return observeRun030(path, run.system_id, run.invocation_id); } };
 }
 type Fixture = ReturnType<typeof fixture>;
+// Native snapshots can already contain the empty 039/040 schemas. Install
+// only missing schemas before the counterfactual adapter fixtures add rows.
+function ensureMigration(n: Fixture, table: string, filename: string) {
+  if (!n.db.query("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?").get(table)) {
+    n.db.exec(readFileSync(join(import.meta.dir, '../../src-tauri/src/db/migrations', filename), 'utf8'));
+  }
+}
+
 // Isolated 039 adapter unit fixture. This deliberately supplies a counterfactual
 // flow result to the host checker, and does not qualify a native call scenario.
 function callUnit(n: Fixture, form: 'command' | 'mcp' | 'invalid-json' | 'start-failed') {
-  n.db.exec(readFileSync(join(import.meta.dir, '../../src-tauri/src/db/migrations/039_execution_call_protocol030.sql'), 'utf8')); n.mutable();
+  ensureMigration(n, 'engine_flow030_calls', '039_execution_call_protocol030.sql'); n.mutable();
   const effects = n.db.query('SELECT * FROM engine_flow030_outbox ORDER BY rowid').all() as EffectRow030[], journal = n.db.query('SELECT * FROM engine_flow030_events ORDER BY rowid').all() as EventRow030[];
   const row = effects.find((row) => JSON.parse(row.effect_json).kind.kind === 'start')!, effect = JSON.parse(row.effect_json), a = n.state.activations.find((a: any) => a.id === effect.kind.work.activationId);
   const step = n.plan.steps.find((s: any) => JSON.stringify(s.address) === JSON.stringify(a.step));
@@ -79,7 +87,7 @@ function addContent(n: Fixture) {
   return { occurrence, transported, native, save };
 }
 function addClock(n: Fixture, human = false, options: { requestKind?: 'ask' | 'plan' | 'question'; emptyOpening?: boolean; associate?: boolean } = {}) {
-  n.db.exec(readFileSync(join(import.meta.dir, '../../src-tauri/src/db/migrations/040_execution_flow_human_clock030.sql'), 'utf8'));
+  ensureMigration(n, 'engine_flow030_clock', '040_execution_flow_human_clock030.sql');
   const a = n.state.activations.find((a: any) => a.startEffectId), effect = JSON.parse((n.db.query('SELECT effect_json FROM engine_flow030_outbox WHERE effect_id=?').get(a.startEffectId) as any).effect_json);
   const attempt = JSON.parse((n.db.query('SELECT receipt_json FROM engine_flow030_handoffs WHERE effect_id=?').get(a.startEffectId) as any).receipt_json).workAttempt;
   const owner = { systemStartId: n.state.identity.systemStartId, ownerEpoch: n.owner.owner_epoch }, ids = [owner.systemStartId, n.state.identity.flowInvocationId];
@@ -209,7 +217,7 @@ describe.skipIf(!referenceDir || !process.env.MACRO_AGSDL030_REPLAY_COMMAND)('ho
     expect(n.observe).toThrow('Host evidence');
   });
   test.each(['call', 'cause', 'diagnostic'])('refuses orphan 039 rows: %s', (kind) => {
-    const n = fixture(); n.db.exec(readFileSync(join(import.meta.dir, '../../src-tauri/src/db/migrations/039_execution_call_protocol030.sql'), 'utf8'));
+    const n = fixture(); ensureMigration(n, 'engine_flow030_calls', '039_execution_call_protocol030.sql');
     if (kind === 'call') n.db.query("INSERT INTO engine_flow030_calls VALUES (?,?,?,?,'orphan','{}','reserved',NULL,NULL,NULL)").run(n.state.identity.systemStartId, n.state.identity.flowInvocationId, 'orphan', 'orphan');
     if (kind === 'cause') n.db.exec("INSERT INTO engine_flow030_call_causes VALUES ('orphan','{}')");
     if (kind === 'diagnostic') n.db.query('INSERT INTO engine_flow030_call_diagnostics VALUES (?,?,?,?,?)').run('orphan', n.state.identity.systemStartId, n.state.identity.flowInvocationId, 'orphan', '{}');

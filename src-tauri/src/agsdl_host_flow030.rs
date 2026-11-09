@@ -851,6 +851,9 @@ impl Authority030 for Authority<'_> {
                         .find(|a| a.id == *delivery_activation_id)
                         .ok_or(StoreError030::Authority)?;
                     if active.start_effect_id.as_deref() != Some(&work.start_effect_id)
+                        || !crate::db::agsdl_execution::flow030::steer_effect_eligible030(
+                            &state, effect,
+                        )
                         || active.instance_id != work.agent_instance_id
                         || active.instance_id != delivery.instance_id
                         || active.agent != delivery.agent
@@ -946,6 +949,10 @@ impl Authority030 for Authority<'_> {
 #[cfg(test)]
 #[path = "agsdl_host_no_admission030_tests.rs"]
 mod no_admission_tests;
+
+#[cfg(test)]
+#[path = "agsdl_host_steer030_tests.rs"]
+mod steer_tests;
 
 struct StartGuard {
     _source: LockedExecutionSource,
@@ -1407,7 +1414,10 @@ pub(crate) async fn apply_native_event(
     event: &FlowEvent030,
 ) -> Result<Apply030> {
     // Prepared has a dedicated atomic path with its occurrence witnesses.
-    if matches!(&event.kind, FlowEventKind030::Prepared { .. }) {
+    if matches!(
+        &event.kind,
+        FlowEventKind030::Prepared { .. } | FlowEventKind030::SteerConsumed { .. }
+    ) {
         return Err(refused());
     }
     let lease = host.start_lease().await?;
@@ -2136,11 +2146,115 @@ impl DispatchLease030<'_> {
     {
         if matches!(
             &self.effect.kind,
-            FlowEffectKind030::Start { agent: Some(_), .. }
+            FlowEffectKind030::Start { agent: Some(_), .. } | FlowEffectKind030::Steer { .. }
         ) {
             return Err(refused());
         }
         self.handoff_inner(tasks, work, Handoff030::Host).await
+    }
+
+    /// Hold native admission through consumption and its durable acknowledgment.
+    /// A lost consumer or COMMIT leaves the claim uncertain, never redeliverable.
+    pub(crate) async fn deliver_steer030(
+        self,
+        attempt: &FlowWorkAttempt030,
+        sender: &crate::agsdl_host_steer030::SteerSender030,
+    ) -> Result<()> {
+        self.runtime.available(&self.effect.identity)?;
+        self.lease.ensure_live()?;
+        let FlowEffectKind030::Steer {
+            work,
+            delivery_activation_id,
+            message_json,
+            ..
+        } = &self.effect.kind
+        else {
+            return Err(refused());
+        };
+        if attempt.identity() != &self.effect.identity
+            || attempt.owner() != &self.owner
+            || attempt.generation() != self.lease.generation()
+        {
+            return Err(refused());
+        }
+        // The exact native Start handoff binds this mailbox to the admitted
+        // provider attempt, not merely to an instance name or a caller's ID.
+        let handoff: String = sqlx::query_scalar("SELECT receipt_json FROM engine_flow030_handoffs WHERE system_id=? AND invocation_id=? AND effect_id=? AND owner_epoch=? AND generation=?")
+            .bind(&self.effect.identity.system_start_id).bind(&self.effect.identity.flow_invocation_id)
+            .bind(&work.start_effect_id).bind(&self.owner.owner_epoch).bind(self.lease.generation())
+            .fetch_optional(&self.pool).await?.ok_or_else(refused)?;
+        let handoff: Value = serde_json::from_str(&handoff)?;
+        if handoff.get("workAttempt") != Some(&serde_json::to_value(attempt)?) {
+            return Err(refused());
+        }
+        let consumed = tokio::time::timeout(
+            std::time::Duration::from_secs(30),
+            sender.deliver(&self.effect, attempt),
+        )
+        .await
+        .map_err(|_| uncertain())??;
+        if !consumed.verifies(&self.effect, attempt) {
+            return Err(refused());
+        }
+        self.lease.ensure_live().map_err(|_| uncertain())?;
+        let authority = Authority {
+            runtime: self.runtime,
+            owner: self.owner.clone(),
+            lease: &self.lease,
+        };
+        let mut db = self.pool.acquire().await?;
+        sqlx::query("PRAGMA synchronous=FULL")
+            .execute(&mut *db)
+            .await?;
+        let mut tx = db.begin_with("BEGIN IMMEDIATE").await?;
+        authority
+            .effect(&mut tx, &self.effect)
+            .await
+            .map_err(store_error)?;
+        let head: String = sqlx::query_scalar("SELECT event_id FROM engine_flow030_events WHERE system_id=? AND invocation_id=? AND diagnostic_json IS NULL ORDER BY rowid DESC LIMIT 1")
+            .bind(&self.effect.identity.system_start_id).bind(&self.effect.identity.flow_invocation_id).fetch_one(&mut *tx).await?;
+        let revision: String = sqlx::query_scalar("SELECT state_json ->> '$.revision' FROM engine_flow030_runs WHERE system_id=? AND invocation_id=?")
+            .bind(&self.effect.identity.system_start_id).bind(&self.effect.identity.flow_invocation_id).fetch_one(&mut *tx).await?;
+        let event = FlowEvent030 {
+            identity: self.effect.identity.clone(),
+            event_id: format!(
+                "steer030:consumed:{:x}",
+                Sha256::digest(self.effect.id.as_bytes())
+            ),
+            expected_revision: revision,
+            kind: FlowEventKind030::SteerConsumed {
+                effect_id: self.effect.id.clone(),
+                work: work.clone(),
+                delivery_activation_id: delivery_activation_id.clone(),
+            },
+        };
+        let applied = flow_store030::apply_tx(&mut tx, &authority, &event)
+            .await
+            .map_err(store_error)?;
+        if !matches!(applied, Apply030::Applied(_)) {
+            return Err(uncertain());
+        }
+        let receipt = json!({"kind":"nativeSteerConsumed030", "effectId":self.effect.id,
+            "identity":self.effect.identity, "ownerEpoch":self.owner.owner_epoch, "generation":self.lease.generation(),
+            "work":work, "deliveryActivationId":delivery_activation_id, "messageJson":message_json,
+            "consumedAfterEventId":head, "consumedEventId":event.event_id});
+        sqlx::query("INSERT INTO engine_flow030_handoffs(system_id,invocation_id,effect_id,owner_epoch,generation,receipt_json) VALUES(?,?,?,?,?,?)")
+            .bind(&self.effect.identity.system_start_id).bind(&self.effect.identity.flow_invocation_id).bind(&self.effect.id)
+            .bind(&self.owner.owner_epoch).bind(self.lease.generation()).bind(receipt.to_string()).execute(&mut *tx).await?;
+        flow_store030::settle_tx(
+            &mut tx,
+            &authority,
+            &self.effect.identity,
+            &self.effect.id,
+            &receipt,
+        )
+        .await
+        .map_err(store_error)?;
+        self.runtime.begin_event_commit(&event)?;
+        tx.commit().await.map_err(|_| uncertain())?;
+        self.lease.ensure_live().map_err(|_| uncertain())?;
+        self.runtime.acknowledge_event_commit(&event);
+        Ok(())
     }
 
     /// The factory must only build a future; no IO or spawn may occur until it

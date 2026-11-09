@@ -35,6 +35,74 @@ fn prefix(context: &[Frame030], ancestor: &[Frame030]) -> bool {
         })
 }
 
+fn counted_context030(state: &FlowState030, context: &[Frame030]) -> bool {
+    !state.stopping
+        && context.iter().all(|frame| match frame {
+            Frame030::Compose { .. } => true,
+            Frame030::Path {
+                path_id,
+                departed_groups,
+            } => state
+                .paths
+                .iter()
+                .find(|p| p.id == *path_id)
+                .is_some_and(|path| {
+                    path.memberships.is_empty()
+                        || path.memberships.iter().any(|membership| {
+                            !departed_groups.contains(&membership.group_id)
+                                && state.groups.iter().any(|group| {
+                                    group.id == membership.group_id && group.decision.is_none()
+                                })
+                        })
+                }),
+        })
+}
+
+/// Shared by reduction, native dispatch and forensic checkpoint verification.
+/// It grants no authority and accepts only an exact, physically active work.
+pub fn accepts_steer030(state: &FlowState030, work: &WorkRef030) -> bool {
+    state.verdict.is_none()
+        && state.activations.iter().any(|activation| {
+            activation.id == work.activation_id
+                && activation.start_effect_id.as_deref() == Some(work.start_effect_id.as_str())
+                && activation.instance_id == work.agent_instance_id
+                && activation.phase == "running"
+                && activation.physical
+                && counted_context030(state, &activation.context)
+        })
+}
+
+/// A steer is dispatchable only while the exact delivery is pending. All native
+/// layers use this predicate; logical absorption happens after consumption.
+pub fn steer_effect_eligible030(state: &FlowState030, effect: &FlowEffect030) -> bool {
+    let FlowEffectKind030::Steer {
+        work,
+        delivery_activation_id,
+        message_json,
+        occurrence,
+        sender,
+    } = &effect.kind
+    else {
+        return false;
+    };
+    effect.identity == state.identity
+        && accepts_steer030(state, work)
+        && state.steer_deliveries.iter().any(|delivery| {
+            delivery.effect_id == effect.id
+                && delivery.work == *work
+                && delivery.delivery_activation_id == *delivery_activation_id
+                && delivery.status == "pending"
+        })
+        && state.activations.iter().any(|delivery| {
+            delivery.id == *delivery_activation_id
+                && delivery.phase == "steering"
+                && delivery.instance_id == work.agent_instance_id
+                && delivery.message_json.as_deref().unwrap_or("{}") == message_json
+                && delivery.occurrence == *occurrence
+                && delivery.producer == *sender
+        })
+}
+
 /// Replayed events return the original receipt and no new effects, with the current
 /// state unchanged. A new event must name the current revision exactly. The host
 /// authenticates every receipt before this call and rechecks its claim before IO.
@@ -304,23 +372,7 @@ impl Engine<'_> {
             .ok_or_else(|| invalid("Undeclared route"))
     }
     fn counted(&self, context: &[Frame030]) -> bool {
-        !self.state.stopping
-            && context.iter().all(|f| match f {
-                Frame030::Path {
-                    path_id,
-                    departed_groups,
-                } => {
-                    let memberships = &self.state.paths[self.pi(path_id)].memberships;
-                    memberships.is_empty()
-                        || memberships.iter().any(|membership| {
-                            !departed_groups.contains(&membership.group_id)
-                                && self.state.groups[self.gi(&membership.group_id)]
-                                    .decision
-                                    .is_none()
-                        })
-                }
-                Frame030::Compose { .. } => true,
-            })
+        counted_context030(&self.state, context)
     }
     fn membership(&self, path: usize, group: &str) -> &Membership030 {
         self.state.paths[path]
@@ -527,6 +579,39 @@ impl Engine<'_> {
                     }
                 }
             }
+            FlowEventKind030::SteerConsumed {
+                effect_id,
+                work,
+                delivery_activation_id,
+            } => {
+                let pending = self
+                    .state
+                    .steer_deliveries
+                    .iter()
+                    .position(|delivery| {
+                        delivery.effect_id == *effect_id
+                            && delivery.work == *work
+                            && delivery.delivery_activation_id == *delivery_activation_id
+                            && delivery.status == "pending"
+                    })
+                    .ok_or(FlowInputError030::StaleReference)?;
+                if !accepts_steer030(&self.state, work) {
+                    return Err(FlowInputError030::StaleReference);
+                }
+                let i = self.ai(delivery_activation_id)?;
+                if self.state.activations[i].phase != "steering" {
+                    return Err(FlowInputError030::StaleReference);
+                }
+                self.state.steer_deliveries[pending].status = "consumed".into();
+                self.state.steer_deliveries[pending].resolved_event_id = Some(self.event_id.into());
+                let c = self.checked_work(work)?;
+                let by = self.state.activations[c]
+                    .step
+                    .as_ref()
+                    .map(|step| step.join("/"))
+                    .unwrap_or_else(|| work.activation_id.clone());
+                self.end(i, Some(encoded(&json!({"ended":"absorbed","by":by}))))?;
+            }
             FlowEventKind030::PhysicalEnded {
                 work,
                 stop_effect_id,
@@ -618,6 +703,9 @@ impl Engine<'_> {
         true
     }
     fn admit(&mut self, i: usize) -> Result<()> {
+        self.admit_delivery(i, true)
+    }
+    fn admit_delivery(&mut self, i: usize, may_steer: bool) -> Result<()> {
         if let Some(agent) = self.state.activations[i].agent.clone() {
             let selector = self.state.activations[i]
                 .selector
@@ -645,13 +733,22 @@ impl Engine<'_> {
                 n
             });
             self.state.activations[i].instance_id = Some(self.state.instances[instance].id.clone());
+            if self.state.instances[instance].current.is_none()
+                && !self.state.instances[instance].queue.is_empty()
+            {
+                self.state.activations[i].phase = "queued".into();
+                self.state.instances[instance]
+                    .queue
+                    .push(self.state.activations[i].id.clone());
+                return Ok(());
+            }
             if let Some(current) = self.state.instances[instance].current.clone() {
                 let c = self.ai(&current)?;
-                if self.state.activations[i].delivery == "steer"
-                    && self.state.activations[c].phase == "running"
-                    && self.counted(&self.state.activations[c].context)
+                if may_steer
+                    && self.state.activations[i].delivery == "steer"
+                    && accepts_steer030(&self.state, &self.work_ref(c))
                 {
-                    self.effect(FlowEffectKind030::Steer {
+                    let effect_id = self.effect(FlowEffectKind030::Steer {
                         work: self.work_ref(c),
                         delivery_activation_id: self.state.activations[i].id.clone(),
                         message_json: self.state.activations[i]
@@ -661,12 +758,16 @@ impl Engine<'_> {
                         occurrence: self.state.activations[i].occurrence.clone(),
                         sender: self.state.activations[i].producer.clone(),
                     });
-                    let by = self.state.activations[c]
-                        .step
-                        .as_ref()
-                        .map(|s| s.join("/"))
-                        .unwrap_or(current);
-                    return self.end(i, Some(encoded(&json!({"ended":"absorbed","by":by}))));
+                    self.state.activations[i].phase = "steering".into();
+                    self.state.steer_deliveries.push(SteerRecord030 {
+                        effect_id,
+                        work: self.work_ref(c),
+                        delivery_activation_id: self.state.activations[i].id.clone(),
+                        status: "pending".into(),
+                        resolved_event_id: None,
+                        reason: None,
+                    });
+                    return Ok(());
                 }
                 self.state.activations[i].phase = "queued".into();
                 self.state.instances[instance]
@@ -1948,6 +2049,41 @@ impl Engine<'_> {
     fn settle(&mut self) -> Result<()> {
         loop {
             let mut changed = false;
+            // A mailbox offer is still a message waiting for delivery. Completion
+            // and group decisions may overtake it before the native claim. Keep
+            // its path alive and re-admit it FIFO instead of absorbing or losing it.
+            for n in 0..self.state.steer_deliveries.len() {
+                let pending = self.state.steer_deliveries[n].clone();
+                if pending.status != "pending" {
+                    continue;
+                }
+                let i = self.ai(&pending.delivery_activation_id)?;
+                if self.state.activations[i].phase != "steering" {
+                    self.state.steer_deliveries[n].status = "withdrawn".into();
+                    self.state.steer_deliveries[n].resolved_event_id = Some(self.event_id.into());
+                    self.state.steer_deliveries[n].reason = Some("delivery-cancelled".into());
+                    changed = true;
+                } else if !accepts_steer030(&self.state, &pending.work) {
+                    let still_running = self
+                        .state
+                        .activations
+                        .iter()
+                        .any(|a| a.id == pending.work.activation_id && a.phase == "running");
+                    self.state.steer_deliveries[n].status = "fallback".into();
+                    self.state.steer_deliveries[n].resolved_event_id = Some(self.event_id.into());
+                    self.state.steer_deliveries[n].reason = Some(
+                        if still_running {
+                            "recipient-not-counting"
+                        } else {
+                            "recipient-ended"
+                        }
+                        .into(),
+                    );
+                    self.state.activations[i].phase = "ready".into();
+                    self.admit_delivery(i, false)?;
+                    changed = true;
+                }
+            }
             for g in 0..self.state.groups.len() {
                 let old = (
                     self.state.groups[g].decision.clone(),
