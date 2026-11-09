@@ -720,7 +720,11 @@ export function verifyNativeCallsAndClock030(db: Database, state: Obj, plan: Obj
   for (const h of bodies) {
     if (['admit', 'approval', 'retire'].includes(string(h.body.kind))) require(clockWorks.has(string(h.body.workId)), 'orphan clock work event');
     if (h.body.kind === 'open' || h.body.kind === 'approval' || h.body.kind === 'associate' || h.body.kind === 'ack') require(requests.has(string(h.body.requestId)), 'orphan clock request event');
-    if (h.body.kind === 'open') require(h.body.reviewer === 'person', 'native human reviewer');
+    if (h.body.kind === 'open') {
+      require(h.body.reviewer === 'person', 'native human reviewer');
+      require(Array.isArray(h.body.workIds) && h.body.workIds.length === 1, 'human request initial work attribution');
+    }
+    if (h.body.kind === 'associate') require(requests.get(string(h.body.requestId))!.kind === 'question', 'native reassociation requires a question');
     if (h.body.kind === 'open' || h.body.kind === 'associate') for (const id of h.body.workIds as ExactValue[]) require(clockWorks.has(string(id)), 'request work association');
   }
   const answers: Obj[] = [], timeoutIds = new Set<string>();
@@ -731,7 +735,7 @@ export function verifyNativeCallsAndClock030(db: Database, state: Obj, plan: Obj
     const snapshot = snapshots[0], ids = json(row, 'work_ids_json');
     require(same(ids, snapshot.workIds) && row.kind === snapshot.kind && row.opened_ms === snapshot.openedAtMs
       && same(json(row, 'deadline_json'), { openedAtMs: snapshot.openedAtMs!, timeoutMs: snapshot.answerTimeoutMs! }), 'human request deadline/works');
-    require(Array.isArray(ids) && ids.every((workId) => clockWorks.has(string(workId))), 'human request work');
+    require(Array.isArray(ids) && (row.kind === 'question' || ids.length > 0) && ids.every((workId) => clockWorks.has(string(workId))), 'human request work');
     const payload = record(json(row, 'payload_json'));
     const initialIds = opening[0].body.kind === 'approval' ? [string(opening[0].body.workId)] : (opening[0].body.workIds as ExactValue[]).map(string);
     if (row.kind === 'plan') require(initialIds.length === 1 && work(initialIds[0]).step.type === 'agent' && typeof payload.planId === 'string' && payload.planId.length > 0 && typeof payload.text === 'string' && payload.text.trim().length > 0, 'native plan payload');
