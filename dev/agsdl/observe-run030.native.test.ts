@@ -67,10 +67,10 @@ function compositionDatabase() {
   stopped.activation.stopEffectId = 'stop-r2';
   n.effect('stop-r2', { kind: 'stopWork', work: stopped.work }, decision.id);
   n.event('r2-physical-end', { PhysicalEnded: {
-    work: stopped.work, stop_effect_id: 'stop-r2', evidence: { native_receipt_id: 'r2-joined', descendants_joined: true },
+    work: stopped.work, stop_effect_id: 'stop-r2', evidence: { native_receipt_id: `physical:test-${stopped.work.activationId}`, descendants_joined: true },
   } });
   const publish = n.start('publish', 'call', { declaration: { command: 'synthetic-publish' } }); n.call(publish.work);
-  n.group('review/vote', [{ name: 'r1', activation: first.activation, accepted: true }, { name: 'r2', activation: stopped.activation, excluded: true }, { name: 'r3', activation: last.activation, accepted: true }], 'reached', { eventId: decision.id });
+  n.group('review/vote', [{ name: 'r1', activation: first.activation, accepted: true }, { name: 'r2', activation: stopped.activation, excluded: true }, { name: 'r3', activation: last.activation, accepted: true }], 'reached');
   return { ...n, stopped, decision };
 }
 
@@ -78,7 +78,7 @@ function lateGroupDatabase(remaining: 'finish' | 'wait', failed = false) {
   const n = nativeDatabase(); n.start('spread');
   const early = n.start('r2', 'agent', { deferTerminal: true }), late = n.start('r3', 'agent', { deferTerminal: true });
   const decision = n.terminal(early.work, { kind: 'completed', outputJson: '{"choice":"approve"}', routeKey: 'approve' });
-  const group = n.group('vote', [{ name: 'r2', activation: early.activation, accepted: true }, { name: 'r3', activation: late.activation, excluded: true }], 'reached', { eventId: decision.id });
+  const group = n.group('vote', [{ name: 'r2', activation: early.activation, accepted: true }, { name: 'r3', activation: late.activation, excluded: true }], 'reached');
   n.plan.joins[0].remaining = remaining;
   if (failed) n.failure(late.activation, 'AGENT_FAILED', false);
   else n.terminal(late.work, { kind: 'completed', outputJson: '{"choice":"approve","text":"Late."}', routeKey: 'approve' });
@@ -153,13 +153,19 @@ describe('native call observation contract', () => {
 });
 
 describe('steer and human observation contracts', () => {
+  test('does not require hypothetical human tables for an unreached approval or MCP call', () => {
+    const n = nativeDatabase(); n.start('worker');
+    n.plan.steps.push({ address: ['unreached'], type: 'approval' }, { address: ['mcp'], type: 'call', declarationJson: '{"type":"call","mcp":{"server":"example","tool":"question"}}' });
+    n.db.exec('DROP TABLE engine_flow030_human_requests');
+    expect(() => n.observe()).not.toThrow(); n.close();
+  });
   function steerDatabase() {
     const n = nativeDatabase(); n.start('start');
     const physical = n.start('work', 'agent', { deferTerminal: true }), ping = n.start('ping');
     const messageJson = '{"prompt":"Also update the changelog."}';
     const activation = { id: 'delivery', step: ['nudge'], physical: false, phase: 'done', startEffectId: null, result: null, context: [], instanceId: physical.work.agentInstanceId, agent: 'synthetic-agent', messageJson, itemJson: '1e0', occurrence: { itemIndex: '2' } };
     n.state.activations.push(activation);
-    n.plan.steps.push({ address: ['nudge'], type: 'agent', declarationJson: '{"type":"agent","delivery":"steer"}' });
+    n.plan.steps.push({ address: ['nudge'], type: 'agent', agent: 'synthetic-agent', declarationJson: '{"type":"agent","delivery":"steer"}' });
     const kind = { kind: 'steer', work: physical.work, deliveryActivationId: 'delivery', messageJson };
     const receipt = { ...kind, kind: 'nativeSteerConsumed030', effectId: 'steer', consumedAfterEventId: `terminal-${ping.work.activationId}` };
     n.effect('steer', kind, receipt.consumedAfterEventId, receipt);
@@ -182,7 +188,7 @@ describe('steer and human observation contracts', () => {
     const work = n.state.activations.find((a: Record<string, any>) => a.step.join('/') === 'work');
     const ping = n.state.activations.find((a: Record<string, any>) => a.step.join('/') === 'ping');
     n.terminal({ activationId: ping.id, startEffectId: ping.startEffectId, agentInstanceId: ping.instanceId }, { kind: 'completed', outputJson: '{"choice":"approve"}', routeKey: 'approve' });
-    n.group('vote', [{ name: 'ping', activation: ping, accepted: true }, { name: 'work', activation: work, excluded: true }], 'reached', { eventId: `terminal-${ping.id}` });
+    n.group('vote', [{ name: 'ping', activation: ping, accepted: true }, { name: 'work', activation: work, excluded: true }], 'reached');
     expect(() => n.observe()).toThrow('Steer consumed after target stopped counting or ended'); n.close();
   });
   test.each([
@@ -206,7 +212,7 @@ describe('steer and human observation contracts', () => {
   });
   test('keeps automatic plan rejection separate from its reported failure', () => {
     const n = nativeDatabase(), work = n.start('migrate');
-    n.human(work.work, 'plan'); n.failure(work.activation, 'PLAN_REJECTED'); n.state.verdict = 'failed';
+    n.human(work.work, 'plan'); n.failure(work.activation, 'PLAN_REJECTED'); n.state.verdict = 'failed'; n.state.unhandledFailure = true;
     const fixture = JSON.parse(readFileSync(join(import.meta.dir, 'fixtures/v0.3/conformance/runs/answer-timeout-plan.json'), 'utf8'));
     expect(compareRun030(JSON.stringify(fixture.expect), n.observe())).toEqual([]); n.close();
   });
@@ -325,11 +331,7 @@ describe('steer and human observation contracts', () => {
 
 describe('failures, cancellation, joins and compose', () => {
   test('retains counted=false late failures without changing the frozen quorum or verdict', () => {
-    const n = nativeDatabase(), early = n.start('r2');
-    const decided = n.terminal(early.work, { kind: 'completed', outputJson: '{"choice":"approve"}', routeKey: 'approve' });
-    const late = n.start('r3', 'agent', { deferTerminal: true });
-    n.group('vote', [{ name: 'r2', activation: early.activation, accepted: true }, { name: 'r3', activation: late.activation, excluded: true }], 'reached', { eventId: decided.id });
-    n.failure(late.activation, 'AGENT_FAILED', false);
+    const n = lateGroupDatabase('finish', true);
     const observed = n.observe();
     expect(observed).toContain('"counted":false');
     expect(compareRun030('{"run":"succeeded","joins":[{"join":"vote","outcome":"reached","branches":{"r2":{"choice":"approve"}}}],"failures":[{"step":"r3","code":"AGENT_FAILED"}],"cancelled":[]}', observed)).toEqual([]);
@@ -337,11 +339,12 @@ describe('failures, cancellation, joins and compose', () => {
   });
   test('distinguishes joined machine timeouts from indexed branch cancellations', () => {
     const n = nativeDatabase(); n.start('origin');
-    const expired = n.start('release'), sibling = n.start('fix', 'agent', { index: '1', item: '"a.ts"' });
+    const expired = n.start('release'), sibling = n.start('fix', 'agent', { index: '1', item: '"a.ts"', deferTerminal: true });
     const end = n.terminal(expired.work, { kind: 'failed', error: { code: 'TIMEOUT' } });
     n.failure(expired.activation, 'TIMEOUT');
     sibling.activation.stopEffectId = 'stop-branch';
     n.effect('stop-branch', { kind: 'stopWork', work: sibling.work }, end.id);
+    n.event('branch-joined', { PhysicalEnded: { work: sibling.work, stop_effect_id: 'stop-branch', evidence: { native_receipt_id: `physical:test-${sibling.work.activationId}`, descendants_joined: true } } });
     expect(() => n.observe()).toThrow('Timeout receipt is absent');
     n.db.query('INSERT INTO engine_flow030_work_timeouts VALUES (?,?,?,?,?,?,?)').run('s', 'i', expired.work.activationId, expired.work.startEffectId, 'joined', end.id, end.physicalId);
     expect(compareRun030('{"run":"succeeded","failures":[{"step":"release","code":"TIMEOUT"}],"cancelled":[{"step":"fix","item":1}]}', n.observe())).toEqual([]);
@@ -361,11 +364,10 @@ describe('failures, cancellation, joins and compose', () => {
     n.failure(first.activation, 'AGENT_FAILED'); n.failure(third.activation, 'AGENT_FAILED');
     n.failure(join, 'BRANCH_FAILED');
     n.group('gather', [{ name: 'fix', activation: first.activation, fanout: true }, { name: 'fix', activation: third.activation, fanout: true }], 'failed', { owner: join });
-    n.group('closed', [], 'closed');
     expect(compareRun030('{"run":"succeeded","joins":[],"failures":[{"step":"fix","item":0,"code":"AGENT_FAILED"},{"step":"fix","item":2,"code":"AGENT_FAILED"},{"step":"gather","code":"BRANCH_FAILED"}]}', n.observe())).toEqual([]); n.close();
   });
   test('sorts arbitrarily large native join ordinals and retains reached/missed snapshots', () => {
-    const n = nativeDatabase();
+    const n = nativeDatabase(); n.start('origin');
     const accepted = n.start('try', 'agent', { item: '"b"', index: '1' });
     n.terminal(accepted.work, { kind: 'completed', outputJson: '{"choice":"fixed"}', routeKey: 'fixed' });
     n.group('first', [{ name: 'try', activation: accepted.activation, accepted: true, fanout: true }], 'reached', { ordinal: '9007199254740992' });
@@ -432,15 +434,15 @@ describe('failures, cancellation, joins and compose', () => {
 });
 
 describe('bidirectional durable evidence', () => {
-  test('requires a native decision anchor when quorum contributions cannot establish its instant', () => {
+  test('derives a quorum decision without requiring an invented native decision table', () => {
     const n = lateGroupDatabase('wait'); n.observe();
-    n.db.exec('DELETE FROM engine_flow030_group_decisions');
-    expect(() => n.observe()).toThrow('Join decision time requires native anchor'); n.close();
+    expect(n.db.query("SELECT 1 FROM sqlite_master WHERE name='engine_flow030_group_decisions'").get()).toBeNull();
+    expect(() => n.observe()).not.toThrow(); n.close();
   });
-  test('rejects an unattached native decision anchor', () => {
+  test('rejects a quorum decision whose threshold contradicts its contributions', () => {
     const n = lateGroupDatabase('finish'); n.observe();
-    n.db.exec("UPDATE engine_flow030_group_decisions SET event_id='unknown'");
-    expect(() => n.observe()).toThrow('Unattached group decision anchor'); n.close();
+    n.plan.joins[0].quorumCountJson = '3';
+    expect(() => n.observe()).toThrow('Join decision contradicts native contributions'); n.close();
   });
   test.each(['finish', 'wait'] as const)('preserves a frozen %s snapshot when another result arrives later', (remaining) => {
     const n = lateGroupDatabase(remaining);
@@ -469,7 +471,7 @@ describe('bidirectional durable evidence', () => {
     const n = lateGroupDatabase('wait'); n.observe();
     const m = n.state.paths[1].memberships[0];
     m.phase = 'ended'; m.accepted = true; m.resultJson = n.late.activation.result.outputJson;
-    m.producer = { activationId: n.late.activation.id, step: n.late.activation.step, kind: 'agent', outputJson: m.resultJson };
+    m.producer = { activationId: n.late.activation.id, step: n.late.activation.step, kind: 'agent', inputJson: n.late.activation.inputJson, messageJson: n.late.activation.messageJson, itemJson: n.late.activation.itemJson, outputJson: m.resultJson };
     n.snapshot.outputJson = JSON.stringify({ outcome: 'reached', branches: { r2: { choice: 'approve' }, r3: JSON.parse(m.resultJson) } });
     n.state.activations.find((a: Record<string, any>) => a.id === n.snapshot.activationId).result.outputJson = n.snapshot.outputJson;
     expect(() => n.observe()).toThrow('Join snapshot includes a late contribution'); n.close();
@@ -520,6 +522,7 @@ describe('bidirectional durable evidence', () => {
     n.state.events[eventId].eventJson = JSON.stringify(event);
     n.db.query('UPDATE engine_flow030_events SET event_json=? WHERE event_id=?').run(n.state.events[eventId].eventJson, eventId);
     n.db.query("UPDATE engine_flow030_outbox SET effect_json=json_set(effect_json,'$.kind.reference.activationId',?) WHERE effect_id=?").run(other.activation.id, `effect-${p.reference.prepareId}`);
+    n.db.query('UPDATE engine_flow030_preparations SET reference_json=? WHERE prepare_id=?').run(JSON.stringify(p.reference), p.reference.prepareId);
     expect(() => n.observe()).toThrow('Unattached or contradictory prepareRoute'); n.close();
   });
   test('rejects the audit mutation: activation instance differs from its Start', () => {
@@ -547,7 +550,7 @@ describe('bidirectional durable evidence', () => {
   });
   test('rejects an unattached handoff', () => {
     const n = nativeDatabase(); n.start('worker'); n.observe();
-    n.db.query('INSERT INTO engine_flow030_handoffs VALUES (?,?,?,?)').run('s', 'i', 'missing-effect', '{"kind":"nativeOwnedHandoff030","effectId":"missing-effect"}');
+    n.db.query('INSERT INTO engine_flow030_handoffs VALUES (?,?,?,?,?,?)').run('s', 'i', 'missing-effect', '0', 'generation', '{"kind":"nativeOwnedHandoff030","effectId":"missing-effect"}');
     expect(() => n.observe()).toThrow('Unattached or contradictory handoff'); n.close();
   });
   test('rejects an effect absent from its event receipt in either durable copy', () => {

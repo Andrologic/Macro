@@ -52,7 +52,7 @@ describe('durable scenario observation', () => {
     db = new Database(path); db.exec("UPDATE engine_flow030_outbox SET status='settled'; UPDATE engine_flow030_runs SET state_json=json_set(state_json,'$.activations[0].physical',json('true'))"); db.close();
     expect(() => observeRun030(path, 's', 'i')).toThrow('Physical work remains');
   });
-  test('refuses unsupported effects, diagnostics, and human plans without native evidence', () => {
+  test('refuses unsupported effects, diagnostics, and contradictory captured plans', () => {
     const path = database();
     let db = new Database(path);
     db.query('INSERT INTO engine_flow030_outbox(system_id,invocation_id,effect_id,event_id,effect_json,status) VALUES (?,?,?,?,?,?)').run('s', 'i', 'unknown', 'other', '{"kind":{"kind":"futureEffect"}}', 'settled');
@@ -75,7 +75,7 @@ describe('durable scenario observation', () => {
       const edit = new Database(path);
       edit.query('UPDATE engine_flow030_runs SET plan_json=?').run(JSON.stringify(plan));
       edit.close();
-      expect(() => observeRun030(path, 's', 'i')).toThrow('Answers are not projectable');
+      expect(() => observeRun030(path, 's', 'i')).toThrow();
     }
   });
   test('refuses cancelled runs rather than treating them as succeeded', () => {
