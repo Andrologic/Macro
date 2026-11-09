@@ -103,3 +103,227 @@ version 1 conserve aussi les annexes et les métadonnées ; son numéro ne suit
 pas celui du langage. Aucun importeur UI supplémentaire n’est introduit ici.
 Les URI relatives dépendent de l’origine de lecture du contenu, hors source ;
 la rédaction d’un document ne résout ni ne télécharge ces URI.
+
+## Contrat produit des runs 0.3
+
+Cette section fixe le contrat à raccorder, pas une qualification du produit.
+Les types sont dans [`agsdlRunUi030.ts`](../src/types/agsdlRunUi030.ts).
+Ils décrivent les entrées du service UI et ses vues publiques. Ce ne sont ni des
+DTO IPC générés ni des capacités natives. Les commandes existantes restent
+soumises à leurs validations Rust ; les extensions ci-dessous restent fermées
+jusqu'à leur intégration et leur qualification. Le lancement produit 0.3 reste
+fermé tant que le profil fournisseur exact n'est pas qualifié.
+
+L'autorisation exige ensemble `staticValid`, `runtimeSupported`, une
+qualification native correspondant à la source et au registre, aucune propriété
+requise non évaluée, `incomplete: false` et `productRuntimeAvailable: true`.
+Un profil qualifié peut encore rester fermé au produit. Une porte de
+qualification fermée impose `productRuntimeAvailable: false` dans les types.
+
+### Autorité, identités et navigation
+
+Le natif conserve source capturée, admission, intentions, décisions, horloges,
+travaux et preuves physiques. L'UI fournit une portée publique, des identifiants
+publics, la révision attendue et le contenu de sa réponse. Une clé client de
+Start, livraison ou Stop sert uniquement à dédupliquer. Elle n'atteste aucun
+travail. Les entrées humaines restent exactement
+`{scope, requestId, expectedRevision, answer}`, avec le `HumanScope030` existant.
+Les identités de propriétaire d'exécution, epoch, génération, tentative
+fournisseur, call interne,
+Start effect, ticket, preuve physique et instant de décision sont allouées ou
+retrouvées par le natif. Ses décodeurs refusent les champs supplémentaires.
+
+`RunStartInput030` et `RunDeliveryInput030` sont des intentions produit à adapter
+par le lot UI 6 au contrat natif qualifié. Elles ne doivent pas être passées
+telles quelles à `invoke`. Le service fixe le profil 0.3 ; les associations et
+identifiants de corrélation requis par les DTO actuels doivent être validés par
+le natif. La sélection d'une cible reste une déclaration publique d'agent et
+d'instance shared/named, jamais une tentative fournisseur. `new` n'est pas une
+cible de livraison externe. Les livraisons sans flow sont le premier périmètre
+normatif ; les routes internes au flow restent conduites par le natif.
+
+L'édition est explicite avant de choisir lecteur et commandes. Les captures
+0.2 portent `snapshot: "1"`, `contract: "agsdl-0.2.0"`, profil
+`macro-serial-inline-v1` ; les captures 0.3 portent `snapshot: "2"`,
+`contract: "agsdl-0.3.0"`, profil `macro-agsdl-030-v1`. Les admissions natives
+`start` et `start030` restent distinctes. `deliver` est historique ;
+`deliver030` est une extension demandée, pas une admission déjà disponible.
+
+L'ouverture d'Exécutions lit l'historique et les intentions retenues du même
+projet, plan, branche et conversation. Elle ne compile, ne préflight,
+n'acquitte et ne soumet rien. La vue montre
+« Document courant » et « Source capturée » séparément. Une édition du document
+ne remplace jamais la capture d'un run.
+
+La navigation détache l'observation, sans arrêter le résident. Un retour relit
+la même clé d'intention, les reçus et la capture. Un rafraîchissement conserve
+sélection et brouillons humains indexés par scope et demande. Ces brouillons
+doivent aussi être restaurables après rechargement de la page par le lot UI 8.
+Une perte du host est différente d'une navigation : ses anciennes continuations
+sont révoquées et les IO ambiguës restent incertaines.
+
+### Sélection initiale du run
+
+Cette section est la règle normative de sélection. Sans sélection explicite
+encore valide dans le scope, l'ouverture choisit dans cet ordre :
+
+1. Un run qui attend une personne, avec une demande ouverte attestée.
+2. Le run de l'admission retenue, si elle possède un reçu de run valide.
+3. Le dernier run du scope.
+
+S'il existe plusieurs runs en attente humaine, leur ordre dans l'historique
+natif, du plus récent au plus ancien, les départage. La lecture doit qualifier
+la présence d'attentes sur l'historique du scope avant d'appliquer un repli ;
+une page partielle ou un DTO humain indisponible ne prouve pas leur absence.
+Le rafraîchissement conserve une sélection explicite valide et ne détourne
+pas l'utilisateur de l'occurrence consultée.
+
+### Actions et commandes natives
+
+Les noms marqués « à créer » sont des propositions de contrat. Le propriétaire
+indiqué possède la sémantique native ; l'intégrateur runtime I/09 garde l'unique
+raccord des fichiers partagés et du registre IPC. Le lot UI 6 consomme les
+wrappers générés, sans modifier leurs fichiers à la main.
+
+| Action | Commande Rust existante ou proposée | Propriétaire runtime | Reçu et trou à combler |
+| --- | --- | --- | --- |
+| Consulter un run et ses occurrences | `execution_list_runs030`, `execution_read_snapshot`, `execution_read_runtime_projection030`, `execution_read_humans030`, `execution_read_intents`, `execution_read_intent` | N-OBS / projection et découverte ; humain U pour sa projection ; I/09 pour le raccord | Capture, révision, pages complètes et intentions existantes ; G3, G7, G8, G9 restent partiels. |
+| Préflight explicite | `execution_preflight` | Fournisseurs lot 2, capture/admission ; fournisseurs lot 7 pour l'exposition | Source, validité et couverture ; G1 manque pour une qualification fournisseur exploitable. |
+| Lancer | `execution_stage_intent`, `execution_submit_intent`, `execution_read_intent`, `execution_close_intent` ; dispatch existant `execution_start` | Fournisseurs lot 1 pour la pompe ; lot 2 pour l'admission ; lot 7 et I/09 pour les commandes | Intention durable et admission `start030` existantes ; G1 et raccord de production requis. |
+| Livrer en queue | Même cycle d'intention, dispatch `execution_deliver` à étendre à 0.3 | Livraison lot 1 et fournisseurs lot 7 ; I/09 | G2, reçu `deliver030`, admission FIFO, démarrage distinct ou retrait. |
+| Livrer en steer | Même cycle, `execution_deliver` à étendre ; dispatch natif spécialisé | Livraison lot 1, finalisation des travaux fournisseurs lot 5 ; I/09 | G2, cible physique exacte et preuve de consommation distincte du handoff. |
+| Choisir le flow, avec commentaire d'approval | `execution_submit_human030` à créer, lecture `execution_read_humans030` | Humain U, N-HUMAN H/B ; I/09 | G3 à G5, reçu de soumission puis décision et consommation ; aucun envoi du message approuvé par l'UI. |
+| Approuver ou refuser une action `ask`, avec commentaire | Même nouvelle commande humaine | Humain U, N-HUMAN H/B et fournisseur propriétaire de l'action ; I/09 | G4 distingue permission et choix de flow ; G5 corrèle la remise à l'exécuteur possédé. |
+| Accepter ou refuser un plan | Même nouvelle commande humaine | Humain U, N-HUMAN H/B ; fournisseurs lot 5 pour le verrou ; I/09 | G3 et G5, plan courant et verrou natifs, jamais un plan-id fourni par l'UI. |
+| Répondre à une question | Même nouvelle commande, seulement avec validateur attesté | Humain U / N-HUMAN ; N-CALLS pour l'identité MCP et son port ; I/09 | G3, G5, G6 ; `expectedResponse` seul ne qualifie pas la réponse. |
+| Stop système | `execution_stop` initial ; `execution_ensure_stop` pour reprendre un Stop conservé | Fournisseurs lot 5 / `agsdl_host_stop030.rs` ; I/09 | Reçu `requested` existant ; G7 pour attente physique et confirmation attestée. |
+| Inspecter une incertitude et ses diagnostics | Lectures d'intention/projection existantes ; `execution_read_diagnostic030` et `execution_read_uncertainty030` à créer | N-OBS pour les lectures ; fournisseurs lots 1/5 pour réconciliation native ; I/09 | G8 et G10, état et reçus relus, sans autorisation de rejouer. |
+
+### Entrées, refus et états en cours
+
+`RunActionInputs030`, `RunActionReceipts030`, `RunRefusal030` et
+`RunActionProgress030` décrivent chaque famille. Les codes produit supplémentaires
+sont des exigences de DTO, à mapper explicitement sur les codes natifs. Un
+message d'erreur libre n'est jamais parsé pour décider d'un état.
+
+| Action | Entrée publique | En cours, reçu ou refus | Après conflit, navigation ou perte d'acquittement |
+| --- | --- | --- | --- |
+| Consultation | Scope de capture et curseur natif lié à sa révision | Chargement, prêt ou données périmées ; `CORRELATION`, `CONFLICT`, `REVISION_CONFLICT`, `NOT_FOUND` | Conserver l'ancienne vue marquée périmée. Recharger toutes les pages de la série ; aucune fusion de révisions ni action implicite. |
+| Préflight | Scope du plan et source attendue, ou `null` pour la première évaluation | Évaluation en cours, puis validité statique, prise en charge native et porte de lancement séparées ; `SOURCE_CHANGED`, `HARNESS_REFUSED`, `POLICY_UNAVAILABLE` | Invalider l'évaluation si source, registre ou profil change. Refaire seulement sur demande explicite ; aucune inférence, installation ou connexion de compte. |
+| Start | Scope d'intention, id conservé, source attendue, message d'entrée exact ou absence | `prepared`, `submissionPending`, `admitted`, `refused`, `closed` natifs ; `SLOT_OCCUPIED`, `IDENTITY_CONFLICT`, `SOURCE_CHANGED`, `PROFILE_UNQUALIFIED` | Relire la même intention et son admission `start030`. Un conflit conserve la saisie et propose une nouvelle évaluation ; il ne crée pas de nouvelle clé. |
+| Queue | Scope du run, id conservé, révision, cible shared/named et message exact | Soumission puis reçu queued/started/withdrawn ; `TARGET_INVALID`, `TARGET_CLOSED`, `REVISION_CONFLICT`, `INPUT_CONSTRAINT` | Relire la même livraison. L'ordre FIFO vient des admissions natives. L'attente ne consomme ni visite ni temps machine. |
+| Steer | Même entrée que queue, action `steer` explicite | Steer en attente puis absorption prouvée ; `STEER_UNSUPPORTED` en plus des refus queue | Une instance idle démarre un travail ; un travail ne comptant plus impose queue. Après admission vers une tentative précise, une remise ambiguë reste incertaine et ne vise jamais la tentative suivante. |
+| Choix du flow | Scope humain, demande, révision, `{kind:"approval",choice,comment}` | Soumis, résolu, consommé, expiré ou annulé ; `INPUT_CONSTRAINT`, `REQUEST_CLOSED`, `ANSWER_EXPIRED`, conflit | Garder le brouillon, relire la demande et son reçu. Tout choix déclaré est normal. Le commentaire vide reste `""` ; le message et sa propagation sont reconstruits nativement. |
+| Action `ask` | Même enveloppe, `{kind:"decision",decision:"yes" ou "no",comment}` | Même cycle ; `HUMAN_PURPOSE_UNATTESTED` si la finalité n'est pas prouvée | Un refus laisse le même agent continuer. L'autorisation vise seulement l'action corrélée ; elle n'élargit pas ses permissions. |
+| Plan | Même enveloppe de décision et commentaire | Même cycle, révision du plan courant contrôlée nativement | Refus commenté : révision du plan avec verrou fermé. Refus vide : `PLAN_REJECTED` après fin physique. Acceptation : levée du seul verrou de plan. |
+| Question | Même enveloppe, `{kind:"question",answerJson}` exact | Même cycle ; `QUESTION_UNATTESTED` sans validateur et `INPUT_CONSTRAINT` si réponse invalide | Garder le brouillon exact. Pas de conversion yes/no ni d'auto-validation depuis une description. Le refus MCP est remis au serveur et ne termine pas à lui seul le call. |
+| Stop | Scope du run et id public conservé ; aucun Stop partiel promis | Demande d'arrêt, attente de fin physique, arrêté ou incertain ; `PARTIAL_STOP_UNAVAILABLE` pour une tentative partielle | Disponible pendant attente humaine ou intention en cours. Le natif arbitre sur l'état courant, sans exiger la révision du design. Relire le Stop conservé avant toute réconciliation. |
+| Incertitude | Scope de capture et id public du fait incertain | Lecture en cours puis unresolved/reconciled ; `DTO_UNAVAILABLE`, `CORRELATION`, `NOT_FOUND` | Afficher les derniers faits attestés. Une absence de reçu, EOF ou disparition de parent ne prouve ni rollback ni fin des descendants. Aucun bouton Reprendre ne renvoie un effet. |
+
+Les refus de portée ou de corrélation bloquent l'action. Les erreurs
+`STORAGE_UNCERTAIN`, `RUNTIME_UNAVAILABLE`, `UNCERTAIN` et `STOP_PENDING` après
+une soumission peuvent signifier que l'action a eu lieu. Elles déclenchent une
+relecture, jamais un nouvel envoi avec un autre id. Un doublon humain sur la
+même demande/révision ne crée aucune seconde résolution ; il retrouve le reçu
+identique ou reçoit un conflit avec relecture. Un contenu différent pour la
+même clé est refusé. Une requête HTTP/IPC répétée n'est pas une nouvelle action
+utilisateur. La désactivation du bouton seule ne prouve pas cette idempotence.
+
+`execution_ensure_stop` 0.3 ne crée actuellement aucun Stop : sans ligne durable,
+il retourne `UNCERTAIN`. Il ne remplace donc pas l'appel initial à
+`execution_stop`. Le reçu `requested` de ce dernier ne confirme pas l'arrêt.
+La réconciliation native peut poursuivre cancellation et joins ; l'inspection
+UI reste une lecture. Un Stop confirmé ne promet ni annulation d'effets déjà
+produits ni arrêt d'un travail distant non attesté.
+
+### États publics et inspection
+
+Le verdict natif est `null`, `succeeded`, `failed` ou `cancelled`. Il reste
+indépendant du Stop demandé, de l'activité physique, de l'attente humaine et des
+incertitudes. Une erreur traitée peut laisser réussir le run. `call.failed`,
+`join.incomplete` et `quorum.missed` sont des issues normales. Les travaux tardifs
+sous `remaining: finish` restent visibles avec leur appartenance au flow ;
+leur erreur ne devient pas un faux verdict global.
+
+Une étape sélectionnée donne ses occurrences, identifiées par activation native
+et capture, avec adresse développée, instance, groupe, chemins et indice de
+fan-out. Le pointeur source désigne le propriétaire éditable, pas la visite.
+Les détails disponibles montrent mission réellement reçue, émetteur, sortie,
+décision, cause, handler suivi et effets déjà produits. Pour steer, la destination
+déclarée et le travail physiquement rejoint restent deux identités distinctes.
+Un call n'invente aucune instance Agent. Un join n'invente aucun travail.
+
+Chaque série paginée est liée à son scope, sa capture et sa révision ou son
+curseur humain propre. Elle n'est publiée complète qu'après toutes ses pages.
+Une série partielle ne permet pas d'annoncer zéro demande ni zéro travail.
+Les séries humaines et runtime ne partagent pas nécessairement une révision ;
+leur cohérence croisée doit venir d'une lecture native attestée. Le type
+`NativeFact030` rend les données absentes explicitement indisponibles.
+Un contenu humain non classifié reste lisible, avec sa finalité non attestée ;
+il n'autorise aucune décision. Les budgets machine sont présentés par travail
+attribué, même lorsqu'une seule question en suspend plusieurs.
+
+Les délais affichés proviennent des faits natifs exacts. L'UI n'envoie ni
+`nowMs` ni événement d'expiration. `timeoutMs` machine commence à l'admission et
+exclut l'union des attentes humaines attribuées. Steer et correction ne le
+réinitialisent pas. `approval.timeoutMs` compte l'attente humaine propre à
+l'étape. `answerTimeoutMs` décline une demande et reprend le temps machine ;
+une réponse reçue exactement à l'échéance perd. La soumission, son arbitrage et
+sa remise à l'exécuteur sont trois faits distincts. Une remise réservée mais
+non acquittée reste incertaine, sans second envoi automatique.
+
+La demande relue et son reçu conservent la même réponse attestée dans leur
+état : choix ou décision et commentaire exacts, ou JSON de question, origine
+`person`, `syntheticPerson` ou `automaticTimeout`, et instant monotone natif
+`receivedAtMs`. Après résolution, ils portent aussi le reçu de résolution,
+`resolvedAtMs`, l'acceptation et le motif `person`, `answerTimeout`,
+`approvalTimeout`, `revocation`, `stop` ou `workEnded`. Cet historique reste
+immuable dans les états résolu, consommé, expiré, annulé et incertain après
+résolution. Une fermeture sans réponse native porte explicitement `null` ;
+une réponse personnelle ou un refus automatique `answerTimeout` ne le peut
+pas. Le brouillon UI ne remplace jamais cette réponse lors d'une relecture.
+Sans ces faits, le raccord reste indisponible, trou G5 à livrer par N-HUMAN.
+
+`RunHumanClock030.observedAtMs` est l'instant monotone d'observation de l'hôte,
+dans la même incarnation que `openedAtMs`. À cette observation, le délai humain
+restant vaut `max(0, openedAtMs + timeoutMs - observedAtMs)`, avec calcul entier
+exact ; `timeoutMs: null` signifie absence de délai. Le natif fournit aussi le
+budget machine restant de chaque travail dans `machineRemainingMs`, ou `null`
+sans limite. Lorsque `machinePaused` est vrai pendant l'attente humaine, ce
+budget ne décroît pas ; le délai humain, lui, continue de courir.
+
+La vue relit ces observations à l'ouverture, au retour de navigation, lors d'un
+changement de demande ou de pause, et à chaque rafraîchissement du run visible.
+Entre deux observations, elle affiche la dernière durée attestée sans la faire
+décroître avec l'horloge du navigateur. Une lecture échouée marque cette donnée
+périmée ; elle ne provoque aucune expiration. Les instants de deux incarnations
+ne sont jamais soustraits. N-HUMAN doit fournir ces données, trou G11.
+
+Les dates d'historique et la comparaison utilisent la source, son empreinte,
+les versions, le profil et la provenance capturés. Une date absente s'affiche
+inconnue. Le temps monotone perdu après crash n'est pas reconstitué ; la reprise
+transparente des échéances entre générations n'est pas qualifiée.
+
+### DTO natifs à compléter
+
+| Trou | Données ou frontière manquantes | Lot runtime propriétaire et condition de sortie |
+| --- | --- | --- |
+| G1, qualification | Identité de qualification, plateforme/versions exactes, propriétés admises, diagnostics par agent et liste `unassessed` publique ; lien au registre/source | Fournisseurs lot 2 pour capture/admission, lot 6 pour preuves physiques, lot 7 pour projection. Une compilation réussie ou un module ne suffit pas. |
+| G2, livraison | Cible shared/named, mode queue/steer, révision, intention/admission `deliver030`, reçu relisible, retrait et preuve de consommation | Livraison lot 1 et fournisseurs lot 7. L'actuel `ExecutionExternalDelivery` ne porte ni instance ni mode 0.3 et l'admission `deliver` reste historique. |
+| G3, humain du vrai flow | Projection publique sur `engine_flow030_human_*`, identité publique et révision natives, associations aux occurrences | Humain U avec N-HUMAN H/B ; I/09 raccorde migration/pump. `public030.rs` vise encore le stockage historique au commit de base. |
+| G4, finalité humaine | Discriminant choix de flow / permission d'action, message exact capturé et action réellement présentée | Humain U / N-HUMAN. Le `kind: approval` actuel ne justifie pas de choisir l'un des deux dans l'UI. |
+| G5, reçu et historique humains | Nouvelle commande publique, réponse attestée relisible sur demande et reçu, choix/commentaire ou JSON exact, origine et instant natifs ; motif et reçu de résolution conservés après consommation, expiration, annulation ou incertitude | N-HUMAN H/B avec humain U pour la projection ; I/09. Les états sans cet historique restent indisponibles. Ne pas reprendre la révision historique calculée par addition de deux booléens. |
+| G6, question | Schéma/protocole public attesté, disponibilité du validateur natif, refus typé sans validateur | Humain U / N-HUMAN, N-CALLS pour identité/port MCP. Le JSON public ne reconstitue pas le validateur natif. |
+| G7, arrêt | Reçu Stop public relisible, progression physique, confirmation attestée et incertitude | Fournisseurs lot 5 et N-OBS ; I/09. `stopping` et `physicalPending` ne suffisent pas à fabriquer un reçu `stopped`. |
+| G8, diagnostic | Lecture 0.3 paginée, code/message d'origine, occurrence, cause, handler, disposition et effets connus | N-OBS avec fournisseurs lot 5 et terminaux N-HUMAN/N-CALLS. Le lecteur historique `execution_read_diagnostic` ne prouve pas cette couverture. |
+| G9, occurrence et chronologie | Message/émetteur réellement reçus, output exact, visite, appartenance au flow, provenance et dates attestées | N-OBS ; N-CALLS et N-HUMAN fournissent leurs reçus, livraison lot 3 fournit ses identités. La projection actuelle fournit déjà activation, instance, groupe et chemins. |
+| G10, incertitude | Identité publique du fait ambigu, scope/révision, reçus corrélés et issue de réconciliation sans capacité de replay | Fournisseurs lots 1/5 et N-OBS ; I/09 expose la lecture proposée. L'absence de ligne ne débloque pas un claim ambigu. |
+| G11, observation d'horloge | `observedAtMs` monotone natif, budget machine restant par travail et état de pause, cohérents avec la demande et la même incarnation | N-HUMAN H/B avec humain U pour la projection ; I/09. Une navigation déclenche une nouvelle observation, sans reconstruire le temps depuis l'horloge du navigateur. |
+
+Pour intégrer une action, son propriétaire runtime fournit DTO Rust, refus
+fermés, relecture idempotente et tests de concurrence/perte d'acquittement. I/09
+enregistre la commande et régénère les types IPC. Les lots UI 6 à 9 raccordent
+alors transport, store et vue ; le lot UI 11 vérifie les parcours natifs et
+visuels du seul profil promis. Les preuves de N-HUMAN et N-CALLS synthétiques
+restent distinctes d'un fournisseur réel, d'un sandbox système et d'une vraie
+inférence. Cette livraison de contrat n'ouvre aucune commande produit.
