@@ -80,3 +80,31 @@ CREATE TRIGGER engine_flow030_clock_cause_immutable BEFORE UPDATE OF system_id,i
 BEGIN SELECT RAISE(ABORT,'immutable timeout cause'); END;
 CREATE TRIGGER engine_flow030_clock_cause_retained BEFORE DELETE ON engine_flow030_clock_controls
 BEGIN SELECT RAISE(ABORT,'retained timeout cause'); END;
+-- Captured inside the native handoff transaction, before settlement/release.
+-- Broker admission must never manufacture a new origin for a delivered Start.
+CREATE TABLE engine_flow030_handoff_clock (
+ system_id TEXT NOT NULL, invocation_id TEXT NOT NULL, start_effect_id TEXT NOT NULL,
+ owner_epoch TEXT NOT NULL, generation TEXT NOT NULL, started_ms TEXT NOT NULL,
+ PRIMARY KEY(system_id,invocation_id,start_effect_id),
+ FOREIGN KEY(system_id,invocation_id,start_effect_id)
+ REFERENCES engine_flow030_handoffs(system_id,invocation_id,effect_id)
+);
+CREATE TRIGGER engine_flow030_handoff_clock_immutable BEFORE UPDATE ON engine_flow030_handoff_clock
+BEGIN SELECT RAISE(ABORT,'immutable handoff clock origin'); END;
+CREATE TRIGGER engine_flow030_handoff_clock_retained BEFORE DELETE ON engine_flow030_handoff_clock
+BEGIN SELECT RAISE(ABORT,'retained handoff clock origin'); END;
+-- Written only after native semantic validation, atomically with the decision.
+-- A historical resident-produced row alone cannot mint a native capability.
+CREATE TABLE engine_flow030_human_resolution_proofs (
+ system_id TEXT NOT NULL, invocation_id TEXT NOT NULL, request_id TEXT NOT NULL,
+ event_id TEXT NOT NULL, resolution_json TEXT NOT NULL CHECK(json_valid(resolution_json)),
+ PRIMARY KEY(system_id,invocation_id,request_id),
+ FOREIGN KEY(system_id,invocation_id,request_id)
+ REFERENCES engine_flow030_human_requests(system_id,invocation_id,request_id),
+ FOREIGN KEY(system_id,invocation_id,event_id)
+ REFERENCES engine_flow030_clock_events(system_id,invocation_id,event_id)
+);
+CREATE TRIGGER engine_flow030_human_proof_immutable BEFORE UPDATE ON engine_flow030_human_resolution_proofs
+BEGIN SELECT RAISE(ABORT,'immutable native human resolution proof'); END;
+CREATE TRIGGER engine_flow030_human_proof_retained BEFORE DELETE ON engine_flow030_human_resolution_proofs
+BEGIN SELECT RAISE(ABORT,'retained native human resolution proof'); END;

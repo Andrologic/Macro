@@ -5,12 +5,12 @@ import { HumanWaitRegistry030, WorkClock030, type HumanAnswer030, type HumanRequ
 export interface HumanClockOwner030 { readonly systemStartId: string; readonly ownerEpoch: string }
 export interface HumanClockOptions030 { readonly maxSliceMs: number }
 export type HumanClockEventBody030 =
-  | { readonly kind: 'admit'; readonly workId: string; readonly timeoutMs: string | null; readonly answerTimeoutMs: string | null }
+  | { readonly kind: 'admit'; readonly workId: string; readonly timeoutMs: string | null; readonly answerTimeoutMs: string | null; readonly startedAtMs?: string }
   | { readonly kind: 'retire'; readonly workId: string }
   | { readonly kind: 'open'; readonly requestId: string; readonly requestKind: HumanRequestKind030; readonly reviewer: 'person' | 'model'; readonly workIds: readonly string[] }
   | { readonly kind: 'associate'; readonly requestId: string; readonly workIds: readonly string[] }
   | { readonly kind: 'answer'; readonly requestId: string; readonly nativeReceiptId: string; readonly answer: HumanAnswer030 | null }
-  | { readonly kind: 'approval'; readonly requestId: string; readonly workId: string; readonly choices: readonly string[]; readonly timeoutMs: string | null }
+  | { readonly kind: 'approval'; readonly requestId: string; readonly workId: string; readonly choices: readonly string[]; readonly timeoutMs: string | null; readonly startedAtMs?: string }
   | { readonly kind: 'approvalAnswer'; readonly requestId: string; readonly nativeReceiptId: string; readonly choice: string; readonly comment: string }
   | { readonly kind: 'tick' }
   | { readonly kind: 'ack'; readonly requestId: string };
@@ -98,8 +98,8 @@ function parseEvent030(eventJson: string, owner: HumanClockOwner030): HumanClock
   let event: HumanClockEventBody030;
   switch (kind) {
     case 'admit':
-      keys030(body, ['kind', 'workId', 'timeoutMs', 'answerTimeoutMs']);
-      event = { kind, workId: id030(body.workId), timeoutMs: nullableString030(body.timeoutMs), answerTimeoutMs: nullableString030(body.answerTimeoutMs) }; break;
+      keys030(body, ['kind', 'workId', 'timeoutMs', 'answerTimeoutMs', 'startedAtMs']);
+      event = { kind, workId: id030(body.workId), timeoutMs: nullableString030(body.timeoutMs), answerTimeoutMs: nullableString030(body.answerTimeoutMs), ...(body.startedAtMs === undefined ? {} : { startedAtMs: id030(body.startedAtMs) }) }; break;
     case 'retire':
       keys030(body, ['kind', 'workId']); event = { kind, workId: id030(body.workId) }; break;
     case 'open': {
@@ -120,12 +120,12 @@ function parseEvent030(eventJson: string, owner: HumanClockOwner030): HumanClock
       event = { kind, requestId: id030(body.requestId), nativeReceiptId: id030(body.nativeReceiptId), answer }; break;
     }
     case 'approval': {
-      keys030(body, ['kind', 'requestId', 'workId', 'choices', 'timeoutMs']);
+      keys030(body, ['kind', 'requestId', 'workId', 'choices', 'timeoutMs', 'startedAtMs']);
       const choices = ids030(body.choices);
       if (!choices.length || new Set(choices).size !== choices.length) throw new Error('CORRELATION: invalid approval choices.');
       const timeoutMs = nullableString030(body.timeoutMs);
       if (timeoutMs !== null) integer030(timeoutMs, true);
-      event = { kind, requestId: id030(body.requestId), workId: id030(body.workId), choices, timeoutMs }; break;
+      event = { kind, requestId: id030(body.requestId), workId: id030(body.workId), choices, timeoutMs, ...(body.startedAtMs === undefined ? {} : { startedAtMs: id030(body.startedAtMs) }) }; break;
     }
     case 'approvalAnswer':
       keys030(body, ['kind', 'requestId', 'nativeReceiptId', 'choice', 'comment']);
@@ -154,16 +154,12 @@ class HumanClockProjection030 {
     const now = monotoneMs030(nowMs);
     if (this.last !== null && now < this.last) throw new Error('CORRELATION: approval clock moved backwards.');
     this.last = now;
-    for (const [requestId, approval] of this.approvals) {
-      const elapsed = now - monotoneMs030(approval.openedAtMs);
-      if (!approval.resolution && approval.timeoutMs !== null && compareIntegers030(elapsed.toString(), approval.timeoutMs) >= 0) {
-        approval.resolution = { requestId, expired: true, resolvedAtMs: (monotoneMs030(approval.openedAtMs) + boundedInteger030(approval.timeoutMs, elapsed)).toString(), workActions: [], answer: { kind: 'expired' }, failure: 'APPROVAL_TIMEOUT' };
-      }
-    }
+    this.expireApprovals(nowMs);
     this.registry.tick(nowMs);
     switch (event.kind) {
       case 'admit': {
-        const clock = new WorkClock030(event.timeoutMs, nowMs);
+        if (monotoneMs030(event.startedAtMs ?? nowMs) > now) throw new Error('CORRELATION: handoff time exceeds admission.');
+        const clock = new WorkClock030(event.timeoutMs, event.startedAtMs ?? nowMs);
         this.registry.registerWork(event.workId, clock, event.answerTimeoutMs);
         this.clocks.set(event.workId, clock); break;
       }
@@ -194,7 +190,10 @@ class HumanClockProjection030 {
       }
       case 'approval':
         if (this.approvals.has(event.requestId) || this.requests.has(event.requestId)) throw new Error('CORRELATION: duplicate approval.');
-        this.approvals.set(event.requestId, { workId: event.workId, openedAtMs: nowMs, timeoutMs: event.timeoutMs, choices: event.choices, resolution: null, ack: false }); break;
+        if (monotoneMs030(event.startedAtMs ?? nowMs) > now) throw new Error('CORRELATION: handoff time exceeds admission.');
+        this.approvals.set(event.requestId, { workId: event.workId, openedAtMs: event.startedAtMs ?? nowMs, timeoutMs: event.timeoutMs, choices: event.choices, resolution: null, ack: false });
+        this.expireApprovals(nowMs);
+        break;
       case 'approvalAnswer': {
         const approval = this.approvals.get(event.requestId);
         if (!approval || !approval.choices.includes(event.choice)) throw new Error('CORRELATION: unknown approval or choice.');
@@ -229,6 +228,15 @@ class HumanClockProjection030 {
     const requests = [...this.requests].map(([requestId]) => this.registry.request(requestId));
     return { requests: [...requests, ...[...this.approvals].map(([requestId, a]) => ({ requestId, kind: 'approval', workIds: [a.workId], openedAtMs: a.openedAtMs, answerTimeoutMs: a.timeoutMs }))], retiredClocks: [...this.retiredClocks].map(([workId, snapshot]) => ({ workId, snapshot })), clocks, expiredWorkIds: clocks.filter(item => item.snapshot.expired).map(item => item.workId),
       pendingResolutions: [...this.registry.pendingResolutions().map(resolution => this.projectResolution(resolution)), ...[...this.approvals.values()].flatMap(a => a.resolution && !a.ack ? [a.resolution] : [])].sort((a, b) => monotoneMs030(a.resolvedAtMs) < monotoneMs030(b.resolvedAtMs) ? -1 : monotoneMs030(a.resolvedAtMs) > monotoneMs030(b.resolvedAtMs) ? 1 : 0), nativeAnswers: [...this.answers.values()].map(answer => ({ ...answer })), nextWakeMs };
+  }
+  private expireApprovals(nowMs: string): void {
+    const now = monotoneMs030(nowMs);
+    for (const [requestId, approval] of this.approvals) {
+      const elapsed = now - monotoneMs030(approval.openedAtMs);
+      if (!approval.resolution && approval.timeoutMs !== null && compareIntegers030(elapsed.toString(), approval.timeoutMs) >= 0) {
+        approval.resolution = { requestId, expired: true, resolvedAtMs: (monotoneMs030(approval.openedAtMs) + boundedInteger030(approval.timeoutMs, elapsed)).toString(), workActions: [], answer: { kind: 'expired' }, failure: 'APPROVAL_TIMEOUT' };
+      }
+    }
   }
   private projectResolution(resolution: HumanResolution030): HumanClockResolution030 {
     const { requestId, expired, resolvedAtMs, workActions } = resolution;

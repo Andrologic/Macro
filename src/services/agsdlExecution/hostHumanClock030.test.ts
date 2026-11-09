@@ -246,3 +246,16 @@ it('retains the final consumed budget when a terminal clock is retired', () => {
   expect(retired.clocks).toEqual([]);
   expect(retired.retiredClocks).toEqual([{ workId: 'w', snapshot: { elapsedMachineMs: '40', openHumanRequests: [], expired: false } }]);
 });
+
+it('charges a delayed broker admission from the delivered native Start', () => {
+  const h = makeHarness();
+  const admitted = h.send('5000', { kind: 'admit', workId: 'w', timeoutMs: '60000', answerTimeoutMs: null, startedAtMs: '0' }).value;
+  expect(admitted.clocks[0].snapshot.elapsedMachineMs).toBe('5000');
+  expect(h.send('59999', { kind: 'tick' }).value.expiredWorkIds).toEqual([]);
+  expect(h.send('60000', { kind: 'tick' }).value.expiredWorkIds).toEqual(['w']);
+});
+it('does not extend a delayed approval deadline beyond its native Start', () => {
+  const h = makeHarness();
+  const admitted = h.send('5000', { kind: 'approval', requestId: 'late-admission', workId: 'w', choices: ['publish'], timeoutMs: '1000', startedAtMs: '0' }).value;
+  expect(admitted.pendingResolutions[0]).toMatchObject({ failure: 'APPROVAL_TIMEOUT', resolvedAtMs: '1000' });
+});

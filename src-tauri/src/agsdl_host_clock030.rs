@@ -383,3 +383,61 @@ mod tests {
         assert!(clock.advance_to(86400000).is_err());
     }
 }
+
+/// Call from the handoff writer after inserting its owned receipt, BEFORE
+/// settling the outbox or committing/releasing the physical future. A delivered
+/// historical handoff cannot be backfilled with a new clock origin.
+pub(crate) async fn record_handoff_clock_tx(
+    db: &mut sqlx::SqliteConnection,
+    lease: &crate::agsdl_host::HostStartLease,
+    effect: &crate::db::agsdl_execution::flow030::FlowEffect030,
+    clock: &dyn Clock030,
+) -> Result<()> {
+    use crate::db::agsdl_execution::flow030::FlowEffectKind030;
+    use sqlx::Row;
+    if !matches!(effect.kind, FlowEffectKind030::Start { .. }) {
+        return Err(failure(
+            "CORRELATION",
+            "clock",
+            "Clock origin requires a Start",
+        ));
+    }
+    let id = &effect.identity;
+    lease.ensure_live()?;
+    let owner = lease.owner(&id.system_start_id)?;
+    let row = sqlx::query("SELECT o.owner_epoch,o.generation,o.snapshot_id,o.capture_epoch,o.status,e.effect_json,e.status AS effect_status,h.receipt_json FROM engine_flow030_owners o JOIN engine_flow030_outbox e ON e.system_id=o.system_id AND e.invocation_id=o.invocation_id JOIN engine_flow030_handoffs h ON h.system_id=e.system_id AND h.invocation_id=e.invocation_id AND h.effect_id=e.effect_id WHERE o.system_id=? AND o.invocation_id=? AND e.effect_id=? AND h.owner_epoch=o.owner_epoch AND h.generation=o.generation")
+        .bind(&id.system_start_id).bind(&id.flow_invocation_id).bind(&effect.id).fetch_one(&mut *db).await?;
+    let handoff: serde_json::Value = serde_json::from_str(row.get("receipt_json"))?;
+    if row.get::<&str, _>("status") != "live"
+        || row.get::<&str, _>("owner_epoch") != owner.owner_epoch
+        || row.get::<&str, _>("generation") != lease.generation()
+        || row.get::<&str, _>("snapshot_id") != id.snapshot_id
+        || row.get::<&str, _>("capture_epoch") != id.epoch
+        || row.get::<&str, _>("effect_status") != "uncertain"
+        || serde_json::from_str::<serde_json::Value>(row.get("effect_json"))?
+            != serde_json::to_value(effect)?
+        || handoff["kind"] != "nativeOwnedHandoff030"
+        || handoff["identity"] != serde_json::to_value(id)?
+        || handoff["effectId"] != effect.id
+        || handoff["ownerEpoch"] != owner.owner_epoch
+        || handoff["generation"] != lease.generation()
+    {
+        return Err(failure(
+            "CORRELATION",
+            "clock",
+            "Clock origin requires an unsettled owned handoff",
+        ));
+    }
+    sqlx::query(
+        "INSERT INTO engine_flow030_handoff_clock VALUES(?,?,?,?,?,?) ON CONFLICT DO NOTHING",
+    )
+    .bind(&id.system_start_id)
+    .bind(&id.flow_invocation_id)
+    .bind(&effect.id)
+    .bind(&owner.owner_epoch)
+    .bind(lease.generation())
+    .bind(clock.now_ms().to_string())
+    .execute(db)
+    .await?;
+    Ok(())
+}

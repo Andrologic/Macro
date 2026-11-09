@@ -29,6 +29,15 @@ async fn fixture(kind: &str, timeout: Option<u64>, answer_timeout: Option<u64>) 
     let pool = crate::db::create_pool(&tmp.path().join("human.db"))
         .await
         .unwrap();
+    if let Some(path) = std::env::var_os("MACRO_AGSDL030_CALL_MIGRATION_FIXTURE") {
+        let migration = std::fs::read_to_string(path).unwrap();
+        // Read-only repository DDL copied into the test context. No user
+        // values are interpolated and this pool belongs to a fresh TempDir.
+        sqlx::raw_sql(sqlx::AssertSqlSafe(migration))
+            .execute(&pool)
+            .await
+            .unwrap();
+    }
     sqlx::raw_sql(include_str!(
         "db/migrations/040_execution_flow_human_clock030.sql"
     ))
@@ -124,6 +133,9 @@ async fn fixture(kind: &str, timeout: Option<u64>, answer_timeout: Option<u64>) 
         },
     };
     let handoff = json!({"kind":"nativeOwnedHandoff030","requestId":format!("flow030:{}:{}",id.system_start_id,reference.start_effect_id),"identity":id,"effectId":reference.start_effect_id,"ownerEpoch":owner.owner_epoch,"generation":attempt.generation(),"workAttempt":if kind=="agent" {serde_json::to_value(&attempt).unwrap()} else {Value::Null}});
+    let clock = Arc::new(TestClock::default());
+    let host =
+        crate::agsdl_host::route_attestation_test_host030(owner.clone(), attempt.generation());
     let mut tx = pool.begin().await.unwrap();
     sqlx::query("INSERT INTO engine_flow030_runs VALUES(?,?,?,?,?,?,?)")
         .bind(&id.system_start_id)
@@ -177,8 +189,8 @@ async fn fixture(kind: &str, timeout: Option<u64>, answer_timeout: Option<u64>) 
         .bind("seed")
         .bind(serde_json::to_string(&effect).unwrap())
         .bind(&owner.owner_epoch)
-        .bind("settled")
-        .bind("{}")
+        .bind("uncertain")
+        .bind(None::<String>)
         .execute(&mut *tx)
         .await
         .unwrap();
@@ -189,6 +201,14 @@ async fn fixture(kind: &str, timeout: Option<u64>, answer_timeout: Option<u64>) 
         .bind(&owner.owner_epoch)
         .bind(attempt.generation())
         .bind(handoff.to_string())
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    let lease = host.start_lease().await.unwrap();
+    crate::agsdl_host_clock030::record_handoff_clock_tx(&mut tx, &lease, &effect, clock.as_ref())
+        .await
+        .unwrap();
+    sqlx::query("UPDATE engine_flow030_outbox SET status='settled',settlement_json='{}'")
         .execute(&mut *tx)
         .await
         .unwrap();
@@ -210,8 +230,6 @@ async fn fixture(kind: &str, timeout: Option<u64>, answer_timeout: Option<u64>) 
             .unwrap();
     }
     tx.commit().await.unwrap();
-    let clock = Arc::new(TestClock::default());
-    let host = crate::agsdl_host::route_attestation_test_host030(owner, attempt.generation());
     let broker = HumanBroker030::attach(&host, pool, id, clock.clone(), Arc::default())
         .await
         .unwrap();
@@ -843,4 +861,552 @@ async fn qa_submission_is_explicitly_synthetic_person_in_the_product_service() {
         .await
         .unwrap();
     assert_eq!(origin, "synthetic-person");
+}
+
+fn complete(job: &HostClockJob030, output: HostClockOutput030) -> HostClockCompletion030 {
+    HostClockCompletion030 {
+        ticket: job.ticket.clone(),
+        generation: job.generation.clone(),
+        input_digest: job.input_digest.clone(),
+        output,
+    }
+}
+fn replace_receipt(output: &mut HostClockOutput030, receipt: Value) {
+    output.receipt_json = receipt.to_string();
+    let mut state: Value = serde_json::from_str(&output.state_json).unwrap();
+    state["entries"].as_array_mut().unwrap().last_mut().unwrap()["receiptJson"] =
+        json!(output.receipt_json);
+    output.state_json = state.to_string();
+}
+async fn pump_result(f: &Fixture) -> Result<Option<HostClockOutput030>> {
+    let cancel = CancellationToken::new();
+    let (result, ()) = tokio::join!(f.broker.pump(&f.host, &cancel), async {
+        let job = f.broker.jobs.next().await.unwrap();
+        let output = evaluate(&job).await;
+        f.broker
+            .jobs
+            .complete(&job.generation, complete(&job, output))
+            .unwrap();
+    });
+    result
+}
+
+#[tokio::test]
+async fn rejects_correlated_but_semantically_forged_resident_authority() {
+    use crate::agsdl_host_work_admission030::NativePlanLock030;
+    for attack in [
+        "unsubmitted-yes",
+        "backdated-yes",
+        "backdated-late",
+        "missing-native-reference",
+        "changed-no",
+        "early-timeout",
+        "deadline-poison",
+        "machine-timeout",
+    ] {
+        let f = fixture("agent", Some(60000), Some(100)).await;
+        let work = f.broker.admit_agent(&f.host, &f.attempt).await.unwrap();
+        pump(&f).await;
+        let lock = NativePlanLock030::fixture030(&f.attempt);
+        lock.presented(&f.attempt, "plan").await.unwrap();
+        let request = f
+            .broker
+            .open(
+                &f.host,
+                &work,
+                "plan",
+                json!({"planId":"plan","text":"A native plan"}),
+            )
+            .await
+            .unwrap();
+        pump(&f).await;
+        f.clock
+            .at(if attack == "backdated-late" { 150 } else { 10 });
+        if [
+            "backdated-yes",
+            "backdated-late",
+            "missing-native-reference",
+            "changed-no",
+        ]
+        .contains(&attack)
+        {
+            let answer = if attack != "changed-no" {
+                yes()
+            } else {
+                HumanAnswer030::Decision {
+                    decision: "no".into(),
+                    comment: "".into(),
+                }
+            };
+            f.broker
+                .submit(
+                    &f.host,
+                    submission(&f, &request, "0", answer),
+                    HumanOrigin030::Person,
+                )
+                .await
+                .unwrap();
+        } else {
+            f.broker.tick(&f.host).await.unwrap();
+        }
+        let cancel = CancellationToken::new();
+        let (result, ()) = tokio::join!(f.broker.pump(&f.host, &cancel), async {
+            let job = f.broker.jobs.next().await.unwrap();
+            let mut output = evaluate(&job).await;
+            let mut receipt: Value = serde_json::from_str(&output.receipt_json).unwrap();
+            match attack {
+                "unsubmitted-yes" => {
+                    receipt["pendingResolutions"] = json!([{"requestId":request,"expired":false,"resolvedAtMs":"1","answer":{"kind":"decision","decision":"yes","comment":""},"workActions":[{"workId":work.work_id(),"action":"continue"}]}]);
+                    receipt["nativeAnswers"] = json!([]);
+                }
+                "backdated-yes" => receipt["pendingResolutions"][0]["resolvedAtMs"] = json!("1"),
+                "backdated-late" => {
+                    receipt["pendingResolutions"] = json!([{"requestId":request,"expired":false,"resolvedAtMs":"99","answer":{"kind":"decision","decision":"yes","comment":""},"workActions":[{"workId":work.work_id(),"action":"continue"}]}]);
+                    receipt["nativeAnswers"][0]["accepted"] = json!(true);
+                }
+                "missing-native-reference" => receipt["nativeAnswers"] = json!([]),
+                "changed-no" => {
+                    receipt["pendingResolutions"][0]["answer"]["decision"] = json!("yes");
+                    receipt["pendingResolutions"][0]["workActions"][0]["action"] =
+                        json!("continue");
+                }
+                "early-timeout" => {
+                    receipt["pendingResolutions"] = json!([{"requestId":request,"expired":true,"resolvedAtMs":"1","answer":{"kind":"decision","decision":"no"},"workActions":[{"workId":work.work_id(),"action":"PLAN_REJECTED"}]}])
+                }
+                "deadline-poison" => receipt["requests"][0]["answerTimeoutMs"] = json!("1"),
+                "machine-timeout" => {
+                    receipt["expiredWorkIds"] = json!([work.work_id()]);
+                    receipt["clocks"][0]["snapshot"]["expired"] = json!(true);
+                }
+                _ => unreachable!(),
+            }
+            replace_receipt(&mut output, receipt);
+            // Ticket, generation, digest and appended journal bytes all match.
+            f.broker
+                .jobs
+                .complete(&job.generation, complete(&job, output))
+                .unwrap();
+        });
+        assert!(result.is_err(), "accepted attack {attack}");
+        assert!(f.broker.take_resolution(&f.host, &request).await.is_err());
+        assert!(lock.authorize(&f.attempt, false).await.is_err());
+        let count: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM engine_flow030_human_requests WHERE resolution_json IS NOT NULL",
+        )
+        .fetch_one(&f.broker.pool)
+        .await
+        .unwrap();
+        assert_eq!(count, 0, "partial authority for {attack}");
+        assert!(f.broker.timeout_controls().await.unwrap().is_empty());
+        // Retry the same native ticket with an honest pure result, not a new
+        // answer or a fresh budget. Unsubmitted cases remain unresolved.
+        let honest = pump_result(&f).await.unwrap().unwrap();
+        if attack == "unsubmitted-yes" {
+            assert!(serde_json::from_str::<Value>(&honest.receipt_json).unwrap()
+                ["pendingResolutions"]
+                .as_array()
+                .unwrap()
+                .is_empty());
+        }
+    }
+}
+
+#[tokio::test]
+async fn delayed_broker_admission_keeps_the_delivered_start_origin() {
+    let f = fixture("agent", Some(60000), None).await;
+    f.clock.at(5000);
+    f.broker.admit_agent(&f.host, &f.attempt).await.unwrap();
+    assert_eq!(
+        pump(&f).await["clocks"][0]["snapshot"]["elapsedMachineMs"],
+        "5000"
+    );
+    f.clock.at(59999);
+    f.broker.tick(&f.host).await.unwrap();
+    assert!(pump(&f).await["expiredWorkIds"]
+        .as_array()
+        .unwrap()
+        .is_empty());
+    f.clock.at(60000);
+    f.broker.tick(&f.host).await.unwrap();
+    assert_eq!(
+        pump(&f).await["expiredWorkIds"],
+        json!([f.attempt.work().activation_id])
+    );
+    let origin: String = sqlx::query_scalar("SELECT admitted_ms FROM engine_flow030_clock_works")
+        .fetch_one(&f.broker.pool)
+        .await
+        .unwrap();
+    assert_eq!(origin, "0");
+}
+
+#[tokio::test]
+async fn delivered_handoff_without_a_native_origin_cannot_get_a_fresh_budget() {
+    let f = fixture("agent", Some(60000), None).await;
+    // Emulate an older delivered Start. The origin writer itself must refuse
+    // backfill after settlement; broker admission must also fail closed.
+    sqlx::query("DROP TRIGGER engine_flow030_handoff_clock_retained")
+        .execute(&f.broker.pool)
+        .await
+        .unwrap();
+    sqlx::query("DELETE FROM engine_flow030_handoff_clock")
+        .execute(&f.broker.pool)
+        .await
+        .unwrap();
+    f.clock.at(5000);
+    assert!(f.broker.admit_agent(&f.host, &f.attempt).await.is_err());
+    let lease = f.host.start_lease().await.unwrap();
+    let mut tx = f.broker.pool.begin().await.unwrap();
+    let raw: String = sqlx::query_scalar("SELECT effect_json FROM engine_flow030_outbox")
+        .fetch_one(&mut *tx)
+        .await
+        .unwrap();
+    let effect: FlowEffect030 = serde_json::from_str(&raw).unwrap();
+    assert!(crate::agsdl_host_clock030::record_handoff_clock_tx(
+        &mut tx,
+        &lease,
+        &effect,
+        f.clock.as_ref()
+    )
+    .await
+    .is_err());
+}
+
+#[tokio::test]
+async fn concurrent_answers_resolve_once_under_the_shared_native_fence() {
+    let f = fixture("approval", Some(100), None).await;
+    let work = f
+        .broker
+        .admit_host_work(&f.host, f.attempt.start_effect_id())
+        .await
+        .unwrap();
+    pump(&f).await;
+    let request = f.broker.oldest_open(&work).await.unwrap().unwrap();
+    let a = submission(
+        &f,
+        &request,
+        "0",
+        HumanAnswer030::Approval {
+            choice: "publish".into(),
+            comment: "First".into(),
+        },
+    );
+    let b = submission(
+        &f,
+        &request,
+        "0",
+        HumanAnswer030::Approval {
+            choice: "revise".into(),
+            comment: "Second".into(),
+        },
+    );
+    let (a, b) = tokio::join!(
+        f.broker.submit(&f.host, a, HumanOrigin030::Person),
+        f.broker.submit(&f.host, b, HumanOrigin030::Person)
+    );
+    assert_ne!(a.is_ok(), b.is_ok());
+    pump(&f).await;
+    let accepted: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM engine_flow030_human_submissions WHERE accepted=1",
+    )
+    .fetch_one(&f.broker.pool)
+    .await
+    .unwrap();
+    assert_eq!(accepted, 1);
+    f.broker.take_resolution(&f.host, &request).await.unwrap();
+    assert!(f.broker.take_resolution(&f.host, &request).await.is_err());
+}
+
+async fn stop_fence(f: &Fixture) {
+    // Exercise the same native admission exclusion and durable stopping fact
+    // read by the broker. Physical Stop/join remains the integrator's executor.
+    let lease = f.host.start_lease().await.unwrap();
+    let _gate = f.host.admission_lock().lock_owned().await;
+    let mut tx = f.broker.pool.begin_with("BEGIN IMMEDIATE").await.unwrap();
+    f.broker.guard(&mut tx, &lease).await.unwrap();
+    let raw: String = sqlx::query_scalar("SELECT state_json FROM engine_flow030_runs")
+        .fetch_one(&mut *tx)
+        .await
+        .unwrap();
+    let mut state: FlowState030 = serde_json::from_str(&raw).unwrap();
+    state.stopping = true;
+    sqlx::query("UPDATE engine_flow030_runs SET state_json=?")
+        .bind(serde_json::to_string(&state).unwrap())
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+}
+#[tokio::test]
+async fn answer_racing_stop_cannot_publish_a_post_stop_decision() {
+    let f = fixture("agent", None, None).await;
+    let work = f.broker.admit_agent(&f.host, &f.attempt).await.unwrap();
+    pump(&f).await;
+    let request = f
+        .broker
+        .open(&f.host, &work, "ask", json!({"action":"synthetic"}))
+        .await
+        .unwrap();
+    pump(&f).await;
+    let (answer, ()) = tokio::join!(
+        f.broker.submit(
+            &f.host,
+            submission(&f, &request, "0", yes()),
+            HumanOrigin030::Person
+        ),
+        stop_fence(&f)
+    );
+    // Whichever writer enters first, Stop is durable before a possible pump.
+    if answer.is_ok() {
+        assert!(f
+            .broker
+            .pump(&f.host, &CancellationToken::new())
+            .await
+            .is_err());
+    }
+    assert!(f.broker.take_resolution(&f.host, &request).await.is_err());
+    let count: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM engine_flow030_human_requests WHERE resolution_json IS NOT NULL",
+    )
+    .fetch_one(&f.broker.pool)
+    .await
+    .unwrap();
+    assert_eq!(count, 0);
+}
+#[tokio::test]
+async fn generation_revocation_while_resident_is_computing_rejects_its_completion() {
+    let f = fixture("agent", None, None).await;
+    let work = f.broker.admit_agent(&f.host, &f.attempt).await.unwrap();
+    pump(&f).await;
+    let request = f
+        .broker
+        .open(&f.host, &work, "ask", json!({"action":"synthetic"}))
+        .await
+        .unwrap();
+    pump(&f).await;
+    f.broker
+        .submit(
+            &f.host,
+            submission(&f, &request, "0", yes()),
+            HumanOrigin030::Person,
+        )
+        .await
+        .unwrap();
+    let cancelled = CancellationToken::new();
+    let (result, ()) = tokio::join!(f.broker.pump(&f.host, &cancelled), async {
+        let job = f.broker.jobs.next().await.unwrap();
+        crate::agsdl_host_flow030::revoke_generation(&f.broker.pool, f.attempt.generation())
+            .await
+            .unwrap();
+        let output = evaluate(&job).await;
+        f.broker
+            .jobs
+            .complete(&job.generation, complete(&job, output))
+            .unwrap();
+    });
+    assert!(result.is_err());
+    assert!(f.broker.take_resolution(&f.host, &request).await.is_err());
+    let count: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM engine_flow030_clock_events WHERE output_json IS NULL",
+    )
+    .fetch_one(&f.broker.pool)
+    .await
+    .unwrap();
+    assert_eq!(count, 1);
+    let new_host =
+        crate::agsdl_host::route_attestation_test_host030(f.broker.owner.clone(), "new-generation");
+    assert!(HumanBroker030::attach(
+        &new_host,
+        f.broker.pool.clone(),
+        f.broker.identity.clone(),
+        f.clock.clone(),
+        Arc::default()
+    )
+    .await
+    .is_err());
+}
+
+#[tokio::test]
+async fn real_commit_failure_rolls_back_resolution_and_allows_exact_ticket_readback() {
+    let f = fixture("agent", None, None).await;
+    let work = f.broker.admit_agent(&f.host, &f.attempt).await.unwrap();
+    pump(&f).await;
+    let request = f
+        .broker
+        .open(&f.host, &work, "ask", json!({"action":"synthetic"}))
+        .await
+        .unwrap();
+    pump(&f).await;
+    f.broker
+        .submit(
+            &f.host,
+            submission(&f, &request, "0", yes()),
+            HumanOrigin030::Person,
+        )
+        .await
+        .unwrap();
+    sqlx::raw_sql("CREATE TABLE commit_parent(id INTEGER PRIMARY KEY); CREATE TABLE commit_child(id INTEGER REFERENCES commit_parent(id) DEFERRABLE INITIALLY DEFERRED); CREATE TRIGGER fail_real_commit AFTER UPDATE OF output_json ON engine_flow030_clock_events BEGIN INSERT INTO commit_child VALUES(1); END;").execute(&f.broker.pool).await.unwrap();
+    let error = pump_result(&f).await.unwrap_err();
+    assert_eq!(error.code, "STORAGE");
+    let resolved: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM engine_flow030_human_requests WHERE resolution_json IS NOT NULL",
+    )
+    .fetch_one(&f.broker.pool)
+    .await
+    .unwrap();
+    assert_eq!(resolved, 0);
+    let accepted: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM engine_flow030_human_submissions WHERE accepted IS NOT NULL",
+    )
+    .fetch_one(&f.broker.pool)
+    .await
+    .unwrap();
+    assert_eq!(accepted, 0);
+    assert!(f.broker.take_resolution(&f.host, &request).await.is_err());
+    let proofs: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM engine_flow030_human_resolution_proofs")
+            .fetch_one(&f.broker.pool)
+            .await
+            .unwrap();
+    assert_eq!(
+        proofs, 0,
+        "A failed COMMIT must not leave a native authority proof"
+    );
+    sqlx::query("DROP TRIGGER fail_real_commit")
+        .execute(&f.broker.pool)
+        .await
+        .unwrap();
+    // Lose the successful commit acknowledgment, then inspect. No new event,
+    // answer or delivery may be created by this retry.
+    drop(pump_result(&f).await.unwrap());
+    assert!(f
+        .broker
+        .pump(&f.host, &CancellationToken::new())
+        .await
+        .unwrap()
+        .is_none());
+    let decision = f.broker.take_resolution(&f.host, &request).await.unwrap();
+    assert!(f.broker.take_resolution(&f.host, &request).await.is_err());
+    f.broker.acknowledge(&f.host, &decision).await.unwrap();
+    drop(pump_result(&f).await.unwrap());
+    assert!(f
+        .broker
+        .pump(&f.host, &CancellationToken::new())
+        .await
+        .unwrap()
+        .is_none());
+    let count: i64 = sqlx::query_scalar("SELECT count(*) FROM engine_flow030_human_submissions")
+        .fetch_one(&f.broker.pool)
+        .await
+        .unwrap();
+    assert_eq!(count, 1);
+}
+
+#[tokio::test]
+#[ignore = "requires a read-only external copy of the N-CALLS migration"]
+async fn combines_call_039_and_human_clock_040_without_schema_conflict() {
+    assert!(std::env::var_os("MACRO_AGSDL030_CALL_MIGRATION_FIXTURE").is_some());
+    let f = fixture("call", Some(60000), Some(100)).await;
+    let tables: i64 = sqlx::query_scalar("SELECT count(*) FROM sqlite_master WHERE type='table' AND name IN ('engine_flow030_calls','engine_flow030_clock','engine_flow030_handoff_clock')").fetch_one(&f.broker.pool).await.unwrap();
+    assert_eq!(tables, 3);
+    let work = f
+        .broker
+        .admit_host_work(&f.host, f.attempt.start_effect_id())
+        .await
+        .unwrap();
+    pump(&f).await;
+    sqlx::query("INSERT INTO engine_flow030_calls(system_id,invocation_id,activation_id,start_effect_id,call_id,attempt_json,status) VALUES(?,?,?,?,?,?,'reserved')")
+        .bind(&f.broker.identity.system_start_id).bind(&f.broker.identity.flow_invocation_id)
+        .bind(work.work_id()).bind(f.attempt.start_effect_id()).bind("combined-native-call")
+        .bind(serde_json::to_string(&work).unwrap()).execute(&f.broker.pool).await.unwrap();
+    f.broker
+        .open(
+            &f.host,
+            &work,
+            "question",
+            json!({"nativeCallId":"call","protocolReceiptId":"protocol"}),
+        )
+        .await
+        .unwrap();
+    pump(&f).await;
+    f.clock.at(101);
+    f.broker.tick(&f.host).await.unwrap();
+    assert_eq!(
+        pump(&f).await["pendingResolutions"][0]["answer"],
+        json!({"kind":"expired"})
+    );
+    let status: String = sqlx::query_scalar(
+        "SELECT status FROM engine_flow030_calls WHERE call_id='combined-native-call'",
+    )
+    .fetch_one(&f.broker.pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        status, "reserved",
+        "An expired question must not terminate the owned Call"
+    );
+    let violations = sqlx::query("PRAGMA foreign_key_check")
+        .fetch_all(&f.broker.pool)
+        .await
+        .unwrap();
+    assert!(violations.is_empty());
+}
+
+#[tokio::test]
+async fn historical_unproved_resolution_never_mints_a_native_plan_capability() {
+    let f = fixture("agent", None, Some(100)).await;
+    let work = f.broker.admit_agent(&f.host, &f.attempt).await.unwrap();
+    pump(&f).await;
+    let request = f
+        .broker
+        .open(
+            &f.host,
+            &work,
+            "plan",
+            json!({"planId":"old-plan","text":"A captured plan"}),
+        )
+        .await
+        .unwrap();
+    pump(&f).await;
+    // Recreate a row that the old vulnerable writer could have persisted.
+    let fake = json!({"requestId":request,"expired":false,"resolvedAtMs":"1","answer":{"kind":"decision","decision":"yes","comment":""},"workActions":[{"workId":work.work_id(),"action":"continue"}],"reason":"answer"});
+    sqlx::query("UPDATE engine_flow030_human_requests SET resolution_json=?,revision='1' WHERE request_id=?")
+        .bind(fake.to_string()).bind(&request).execute(&f.broker.pool).await.unwrap();
+    assert!(f.broker.take_resolution(&f.host, &request).await.is_err());
+    let delivery: String =
+        sqlx::query_scalar("SELECT delivery FROM engine_flow030_human_requests WHERE request_id=?")
+            .bind(&request)
+            .fetch_one(&f.broker.pool)
+            .await
+            .unwrap();
+    assert_eq!(delivery, "pending");
+}
+
+#[tokio::test]
+async fn delayed_approval_keeps_its_original_unsuspended_deadline() {
+    let f = fixture("approval", Some(1000), None).await;
+    f.clock.at(5000);
+    let work = f
+        .broker
+        .admit_host_work(&f.host, f.attempt.start_effect_id())
+        .await
+        .unwrap();
+    let receipt = pump(&f).await;
+    assert_eq!(receipt["pendingResolutions"][0]["resolvedAtMs"], "1000");
+    assert_eq!(
+        receipt["pendingResolutions"][0]["failure"],
+        "APPROVAL_TIMEOUT"
+    );
+    let request: String =
+        sqlx::query_scalar("SELECT request_id FROM engine_flow030_human_requests")
+            .fetch_one(&f.broker.pool)
+            .await
+            .unwrap();
+    assert!(f
+        .broker
+        .take_resolution(&f.host, &request)
+        .await
+        .unwrap()
+        .approval_output()
+        .is_err());
+    assert!(f.broker.oldest_open(&work).await.unwrap().is_none());
 }

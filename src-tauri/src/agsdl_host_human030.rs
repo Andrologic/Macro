@@ -33,6 +33,9 @@ fn require(ok: bool, message: &str) -> Result<()> {
         Err(failure("CORRELATION", "humanClock", message))
     }
 }
+#[path = "agsdl_host_human030_validation.rs"]
+mod validation;
+
 fn uuid() -> String {
     uuid::Uuid::new_v4().to_string()
 }
@@ -415,6 +418,14 @@ impl HumanBroker030 {
             declaration.get("answerTimeoutMs").map(Value::to_string)
         };
         let now = self.clock.now_ms().to_string();
+        let started: String = sqlx::query_scalar("SELECT started_ms FROM engine_flow030_handoff_clock WHERE system_id=? AND invocation_id=? AND start_effect_id=? AND owner_epoch=? AND generation=?")
+            .bind(&self.identity.system_start_id).bind(&self.identity.flow_invocation_id).bind(effect_id)
+            .bind(&self.owner.owner_epoch).bind(&self.generation).fetch_optional(&mut *tx).await?
+            .ok_or_else(|| failure("CORRELATION", "clock", "Native handoff clock origin is absent; no budget backfill"))?;
+        require(
+            validation::ms(&started)? <= validation::ms(&now)?,
+            "Handoff time exceeds admission",
+        )?;
         let raw_owned = serde_json::to_string(&owned)?;
         let previous: Option<String> = sqlx::query_scalar("SELECT work_json FROM engine_flow030_clock_works WHERE system_id=? AND invocation_id=? AND activation_id=?")
             .bind(&self.identity.system_start_id).bind(&self.identity.flow_invocation_id).bind(owned.work_id()).fetch_optional(&mut *tx).await?;
@@ -425,7 +436,7 @@ impl HumanBroker030 {
         }
         sqlx::query("INSERT INTO engine_flow030_clock_works(system_id,invocation_id,activation_id,start_effect_id,owner_epoch,generation,kind,work_json,admitted_ms,timeout_json,answer_timeout_json) VALUES(?,?,?,?,?,?,?,?,?,?,?)")
             .bind(&self.identity.system_start_id).bind(&self.identity.flow_invocation_id).bind(owned.work_id()).bind(effect_id)
-            .bind(&self.owner.owner_epoch).bind(&self.generation).bind(kind).bind(&raw_owned).bind(&now).bind(&timeout).bind(&answer_timeout).execute(&mut *tx).await?;
+            .bind(&self.owner.owner_epoch).bind(&self.generation).bind(kind).bind(&raw_owned).bind(&started).bind(&timeout).bind(&answer_timeout).execute(&mut *tx).await?;
         let event = if kind == "approval" {
             let choices = declaration
                 .get("next")
@@ -440,13 +451,13 @@ impl HumanBroker030 {
                     "approval",
                     &[owned.work_id().into()],
                     payload,
-                    json!({"openedAtMs":now,"timeoutMs":timeout}),
-                    &now,
+                    json!({"openedAtMs":started,"timeoutMs":timeout}),
+                    &started,
                 )
                 .await?;
-            json!({"kind":"approval","requestId":request,"workId":owned.work_id(),"choices":choices,"timeoutMs":timeout})
+            json!({"kind":"approval","requestId":request,"workId":owned.work_id(),"choices":choices,"timeoutMs":timeout,"startedAtMs":started})
         } else {
-            json!({"kind":"admit","workId":owned.work_id(),"timeoutMs":timeout,"answerTimeoutMs":answer_timeout})
+            json!({"kind":"admit","workId":owned.work_id(),"timeoutMs":timeout,"answerTimeoutMs":answer_timeout,"startedAtMs":started})
         };
         self.reserve(&mut tx, event, &now).await?;
         tx.commit().await?;
@@ -857,6 +868,7 @@ impl HumanBroker030 {
         )?;
         let event: Value = serde_json::from_str(&input.event_json)?;
         let receipt: Value = serde_json::from_str(&output.receipt_json)?;
+        validation::validate(self, db, &event, &receipt).await?;
         let revision = (previous.len() + 1).to_string();
         let changed = sqlx::query("UPDATE engine_flow030_clock SET revision=?,state_json=?,receipt_json=?,observed_ms=? WHERE system_id=? AND invocation_id=? AND revision=? AND owner_epoch=? AND generation=?")
             .bind(&revision).bind(&output.state_json).bind(&output.receipt_json).bind(event["nowMs"].as_str())
@@ -891,6 +903,9 @@ impl HumanBroker030 {
             });
             sqlx::query("UPDATE engine_flow030_human_requests SET resolution_json=?,revision='1' WHERE system_id=? AND invocation_id=? AND request_id=? AND resolution_json IS NULL")
                 .bind(durable_resolution.to_string()).bind(&self.identity.system_start_id).bind(&self.identity.flow_invocation_id).bind(request).execute(&mut *db).await?;
+            sqlx::query("INSERT INTO engine_flow030_human_resolution_proofs(system_id,invocation_id,request_id,event_id,resolution_json) VALUES(?,?,?,?,?) ON CONFLICT DO NOTHING")
+                .bind(&self.identity.system_start_id).bind(&self.identity.flow_invocation_id).bind(request)
+                .bind(&input.event_id).bind(durable_resolution.to_string()).execute(&mut *db).await?;
         }
         for answer in receipt["nativeAnswers"]
             .as_array()
@@ -1025,6 +1040,7 @@ impl HumanBroker030 {
             raw.is_some() && row.get::<&str, _>("delivery") == "pending",
             "Resolution absent or already reserved; inspect instead of replay",
         )?;
+        validation::validate_stored(self, &mut tx, request_id).await?;
         let decision = ResolvedHumanDecision030 {
             identity: self.identity.clone(),
             owner: self.owner.clone(),
