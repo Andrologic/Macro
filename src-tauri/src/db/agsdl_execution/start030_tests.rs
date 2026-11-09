@@ -713,3 +713,217 @@ async fn failed_intent_attachment_rolls_back_start_and_entry() {
     ));
     pool.close().await;
 }
+
+mod run_correlation030 {
+    use super::super::super::intents::{self, *};
+    use super::*;
+
+    async fn prepared(pool: &SqlitePool, request: &EngineStartRequest) -> PublicExecutionIntent {
+        intents::stage(
+            pool,
+            ExecutionStageIntentRequest {
+                scope: ExecutionIntentScope {
+                    owner: request.source.owner.clone(),
+                    conversation_id: "conversation".into(),
+                },
+                intent_id: "correlation-intent".into(),
+                payload: ExecutionIntentPayload::Start {
+                    request: request.clone(),
+                },
+            },
+            &request.source,
+        )
+        .await
+        .unwrap()
+    }
+
+    async fn database(path: &std::path::Path) -> SqlitePool {
+        let pool = crate::db::create_pool(path).await.unwrap();
+        sqlx::raw_sql("CREATE TABLE test_owner(system_id TEXT PRIMARY KEY,epoch TEXT NOT NULL,capture_epoch TEXT NOT NULL); INSERT INTO conversations(id,title,project_id,created_at,updated_at) VALUES('conversation','Synthetic','p','0','0'),('other-conversation','Synthetic','p','0','0'),('other-project-conversation','Synthetic','other-project','0','0');")
+            .execute(&pool).await.unwrap();
+        pool
+    }
+
+    async fn admitted(pool: &SqlitePool) -> PublicExecutionIntent {
+        let (request, capture) = fixture("call");
+        let intent = prepared(pool, &request).await;
+        let Submission::Dispatch(link) =
+            intents::begin_submission(pool, &intent.key, &request.source)
+                .await
+                .unwrap()
+        else {
+            panic!("expected Start reservation");
+        };
+        let owner = Authority {
+            capture: Some(capture),
+            ..authority()
+        };
+        start_linked(pool, &request, &owner, Some(&link))
+            .await
+            .unwrap();
+        intents::read(pool, &intent.key).await.unwrap().unwrap()
+    }
+
+    async fn readonly(path: &std::path::Path) -> SqlitePool {
+        sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(
+                sqlx::sqlite::SqliteConnectOptions::new()
+                    .filename(path)
+                    .read_only(true),
+            )
+            .await
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn open_and_closed_intent_attest_same_run_after_readonly_reopen() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("correlation.db");
+        let pool = database(&path).await;
+        let intent = admitted(&pool).await;
+        // Exercise the open case on a genuinely read-only connection too.
+        let reader = readonly(&path).await;
+        let open = intents::read_run_correlation030(&reader, &intent.key.scope, "system")
+            .await
+            .unwrap();
+        reader.close().await;
+        assert_eq!(open.key, intent.key);
+        let ExecutionIntentState::Admitted {
+            admission: ExecutionIntentAdmission::Start030 { receipt },
+        } = intent.state
+        else {
+            panic!("expected Start030 receipt");
+        };
+        assert_eq!(
+            serde_json::to_value(&open.receipt).unwrap(),
+            serde_json::to_value(receipt).unwrap()
+        );
+        intents::close(
+            &pool,
+            &ExecutionCloseIntentRequest {
+                key: intent.key.clone(),
+                expected_revision: intent.revision,
+                disposition: ExecutionIntentDisposition::Acknowledged,
+            },
+        )
+        .await
+        .unwrap();
+        assert!(intents::read_open(&pool, &intent.key.scope)
+            .await
+            .unwrap()
+            .is_empty());
+        pool.close().await;
+
+        let reader = readonly(&path).await;
+        let closed = intents::read_run_correlation030(&reader, &intent.key.scope, "system")
+            .await
+            .unwrap();
+        assert_eq!(
+            serde_json::to_value(&closed).unwrap(),
+            serde_json::to_value(&open).unwrap()
+        );
+        let json = serde_json::to_value(&closed).unwrap();
+        assert_eq!(json.as_object().unwrap().len(), 2);
+        assert_eq!(json["receipt"].as_object().unwrap().len(), 5);
+        assert_eq!(json["receipt"]["entryDeliveryId"], "delivery");
+        assert!(!json.to_string().contains("epoch"));
+        assert!(!json.to_string().contains("privateCapture"));
+        reader.close().await;
+    }
+
+    #[tokio::test]
+    async fn rejects_other_conversation_owner_plan_and_branch() {
+        let temp = tempfile::tempdir().unwrap();
+        let pool = database(&temp.path().join("scope.db")).await;
+        let intent = admitted(&pool).await;
+        let original = intent.key.scope;
+        let mut other_conversation = original.clone();
+        other_conversation.conversation_id = "other-conversation".into();
+        let mut other_project = original.clone();
+        other_project.owner.project_id = "other-project".into();
+        other_project.conversation_id = "other-project-conversation".into();
+        let mut other_plan = original.clone();
+        other_plan.owner.plan_id = "other-plan".into();
+        let mut other_branch = original.clone();
+        other_branch.owner.branch = "feature/other".into();
+        for scope in [other_conversation, other_project, other_plan, other_branch] {
+            assert_eq!(
+                intents::read_run_correlation030(&pool, &scope, "system")
+                    .await
+                    .unwrap_err()
+                    .code,
+                ExecutionIntentErrorCode::ScopeInvalid
+            );
+        }
+        assert_eq!(
+            intents::read_run_correlation030(&pool, &original, "missing-run")
+                .await
+                .unwrap_err()
+                .code,
+            ExecutionIntentErrorCode::NotFound
+        );
+        assert_eq!(
+            intents::read_run_correlation030(&pool, &original, "")
+                .await
+                .unwrap_err()
+                .code,
+            ExecutionIntentErrorCode::InvalidRequest
+        );
+        pool.close().await;
+    }
+
+    #[tokio::test]
+    async fn prepared_intent_and_matching_source_do_not_attest_unattached_run() {
+        let temp = tempfile::tempdir().unwrap();
+        let pool = database(&temp.path().join("unattached.db")).await;
+        let (mut request, capture) = fixture("call");
+        // A Start admitted outside the intent protocol has no conversation proof.
+        start_fixture(&pool, &request, &capture, &authority())
+            .await
+            .unwrap();
+        request.request_id = "prepared-request".into();
+        request.entry.as_mut().unwrap().delivery_id = "prepared-delivery".into();
+        let intent = prepared(&pool, &request).await;
+        assert_eq!(
+            intents::read_run_correlation030(&pool, &intent.key.scope, "system")
+                .await
+                .unwrap_err()
+                .code,
+            ExecutionIntentErrorCode::ScopeInvalid
+        );
+        assert!(matches!(
+            intents::read(&pool, &intent.key)
+                .await
+                .unwrap()
+                .unwrap()
+                .state,
+            ExecutionIntentState::Prepared
+        ));
+        pool.close().await;
+    }
+
+    #[tokio::test]
+    async fn rejects_corrupted_request_capture_receipt_and_intent_owner() {
+        for update in [
+            "UPDATE engine_start030_requests SET request_json=json_set(request_json,'$.entry.messageJson','null')",
+            "UPDATE engine_start030_requests SET capture_json=json_set(capture_json,'$.source.revision','2')",
+            "UPDATE engine_start030_requests SET receipt_json=json_set(receipt_json,'$.identity.systemStartId','different')",
+            "UPDATE engine_start030_requests SET capture_json=json_set(capture_json,'$.identity.snapshotId','different'), receipt_json=json_set(receipt_json,'$.identity.snapshotId','different')",
+            "UPDATE engine_start030_requests SET capture_json=json_set(capture_json,'$.identity.epoch','different'), receipt_json=json_set(receipt_json,'$.identity.epoch','different')",
+            "UPDATE engine_start030_requests SET capture_json=json_set(capture_json,'$.versions.contract','agsdl-0.2.0')",
+            "UPDATE engine_ui_intents SET payload_json=json_set(payload_json,'$.request.source.owner.branch','feature/other')",
+        ] {
+            let temp = tempfile::tempdir().unwrap();
+            let pool = database(&temp.path().join("integrity.db")).await;
+            let intent = admitted(&pool).await;
+            // Only this corruption fixture bypasses immutable storage guards.
+            sqlx::raw_sql("DROP TRIGGER engine_start030_immutable; DROP TRIGGER engine_ui_intent_identity_immutable;")
+                .execute(&pool).await.unwrap();
+            sqlx::query(update).execute(&pool).await.unwrap();
+            assert_eq!(intents::read_run_correlation030(&pool, &intent.key.scope, "system").await.unwrap_err().code,
+                ExecutionIntentErrorCode::StorageUncertain, "{update}");
+            pool.close().await;
+        }
+    }
+}

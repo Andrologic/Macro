@@ -187,7 +187,7 @@ wrappers générés, sans modifier leurs fichiers à la main.
 
 | Action | Commande Rust existante ou proposée | Propriétaire runtime | Reçu et trou à combler |
 | --- | --- | --- | --- |
-| Consulter un run et ses occurrences | `execution_list_runs030`, `execution_read_snapshot`, `execution_read_runtime_projection030`, `execution_read_humans030`, `execution_read_intents`, `execution_read_intent` | N-OBS / projection et découverte ; humain U pour sa projection ; I/09 pour le raccord | Capture, révision, pages complètes et intentions existantes ; G3, G7, G8, G9 restent partiels. |
+| Consulter un run et ses occurrences | `execution_list_runs030`, `execution_read_run_correlation030`, `execution_read_snapshot`, `execution_read_runtime_projection030`, `execution_read_humans030`, `execution_read_intents`, `execution_read_intent` | N-OBS / projection et découverte ; humain U pour sa projection ; I/09 pour le raccord | Capture, révision, pages complètes et intentions existantes ; G3, G7, G8, G9 restent partiels. |
 | Préflight explicite | `execution_preflight` | Fournisseurs lot 2, capture/admission ; fournisseurs lot 7 pour l'exposition | Source, validité et couverture ; G1 manque pour une qualification fournisseur exploitable. |
 | Lancer | `execution_stage_intent`, `execution_submit_intent`, `execution_read_intent`, `execution_close_intent` ; dispatch existant `execution_start` | Fournisseurs lot 1 pour la pompe ; lot 2 pour l'admission ; lot 7 et I/09 pour les commandes | Intention durable et admission `start030` existantes ; G1 et raccord de production requis. |
 | Livrer en queue | Même cycle d'intention, dispatch `execution_deliver` à étendre à 0.3 | Livraison lot 1 et fournisseurs lot 7 ; I/09 | G2, reçu `deliver030`, admission FIFO, démarrage distinct ou retrait. |
@@ -198,6 +198,58 @@ wrappers générés, sans modifier leurs fichiers à la main.
 | Répondre à une question | Même nouvelle commande, seulement avec validateur attesté | Humain U / N-HUMAN ; N-CALLS pour l'identité MCP et son port ; I/09 | G3, G5, G6 ; `expectedResponse` seul ne qualifie pas la réponse. |
 | Stop système | `execution_stop` initial ; `execution_ensure_stop` pour reprendre un Stop conservé | Fournisseurs lot 5 / `agsdl_host_stop030.rs` ; I/09 | Reçu `requested` existant ; G7 pour attente physique et confirmation attestée. |
 | Inspecter une incertitude et ses diagnostics | Lectures d'intention/projection existantes ; `execution_read_diagnostic030` et `execution_read_uncertainty030` à créer | N-OBS pour les lectures ; fournisseurs lots 1/5 pour réconciliation native ; I/09 | G8 et G10, état et reçus relus, sans autorisation de rejouer. |
+
+### Corrélation historique du run avec sa conversation
+
+`execution_read_run_correlation030({ scope, systemStartId })` est une lecture
+native sans admission, réconciliation ni modification d'intention. Son wrapper
+`readExecutionRunCorrelation030(scope, systemStartId)` est exporté par
+`src/services/tauriIpc.ts`. Les types proviennent du générateur IPC.
+
+L'entrée `scope: ExecutionIntentScope` contient `owner`, avec `projectId`,
+`planId` et `branch`, et `conversationId`. Le natif valide le scope canonique
+dans les métadonnées et l'appartenance de la conversation au projet en base.
+Il cherche l'attachement durable au run dans ce scope, sans filtrer les lignes
+clôturées. Une intention doit être `admitted` ou `closed` avec disposition
+`acknowledged`. La requête Start persistée doit être identique à celle de
+l'intention. Le natif vérifie le propriétaire, la source, le profil 0.3, les
+versions, l'identité capture/reçu et les identifiants stockés du Start.
+
+Le succès renvoie `ExecutionRunCorrelation030` :
+
+```ts
+{
+  key: ExecutionIntentKey; // { scope, intentId }
+  receipt: {
+    systemStartId: string;
+    flowInvocationId: string;
+    source: EngineSourceRevision;
+    versions: EngineVersions;
+    entryDeliveryId: string | null;
+  };
+}
+```
+
+Aucun epoch, capacité, contenu privé de capture ou état d'exécution courant
+n'est exposé. La preuve reste lisible après acquittement, clôture et redémarrage.
+Elle atteste le lancement retenu, sans autoriser un nouveau travail.
+
+Les rejets suivent `ExecutionIntentError`, avec `currentIntentKey: null` :
+
+| Code | Condition |
+| --- | --- |
+| `INVALID_REQUEST`, `INPUT_LIMIT` | Identifiant ou scope mal formé, ou limite dépassée. |
+| `SCOPE_INVALID` | Scope canonique invalide, conversation d'un autre projet, ou run 0.3 existant sans intention attachée dans ce scope. Cela inclut une autre conversation, un autre propriétaire, plan ou branche, et un run lancé hors du protocole d'intention. |
+| `NOT_FOUND` | Aucun Start 0.3 ne porte cet identifiant, dans un scope valide. |
+| `STORAGE_UNCERTAIN` | Lecture SQL/JSON impossible ou contradiction entre intention, requête, capture et reçu. |
+| `SCOPE_UNAVAILABLE`, `RUNTIME_UNAVAILABLE` | Métadonnées du scope ou service natif indisponibles. |
+
+Pour le lot UI 6a, attester chaque run découvert avec cette commande, puis
+comparer le reçu à son résumé et à sa capture avant de l'inclure dans
+l'historique. Traiter les refus par leur code typé. `execution_read_intents`
+reste réservé aux intentions ouvertes et ne suffit pas à attester l'historique.
+La commande de corrélation ne remplace pas les lectures de projection ou
+demandes humaines et ne garantit pas leur fraîcheur.
 
 ### Entrées, refus et états en cours
 

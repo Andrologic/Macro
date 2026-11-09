@@ -500,6 +500,15 @@ pub async fn execution_read_intents(
     intents::read_open(&intent_pool(&app).await?, &request.scope).await
 }
 #[tauri::command]
+pub async fn execution_read_run_correlation030(
+    app: tauri::AppHandle,
+    scope: ExecutionIntentScope,
+    system_start_id: String,
+) -> IntentResult<ExecutionRunCorrelation030> {
+    let _guard = intent_scope(&app, &scope).await?;
+    intents::read_run_correlation030(&intent_pool(&app).await?, &scope, &system_start_id).await
+}
+#[tauri::command]
 pub async fn execution_read_intent(
     app: tauri::AppHandle,
     key: ExecutionIntentKey,

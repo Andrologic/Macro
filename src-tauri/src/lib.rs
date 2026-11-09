@@ -957,6 +957,7 @@ pub fn run() {
             commands::agsdl_execution::execution_read_runtime_projection030,
             commands::agsdl_execution::execution_stage_intent,
             commands::agsdl_execution::execution_read_intents,
+            commands::agsdl_execution::execution_read_run_correlation030,
             commands::agsdl_execution::execution_read_intent,
             commands::agsdl_execution::execution_submit_intent,
             commands::agsdl_execution::execution_close_intent,
