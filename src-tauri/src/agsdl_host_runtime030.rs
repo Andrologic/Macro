@@ -324,7 +324,20 @@ pub(crate) async fn drain_effects030(
             return Ok(inspection.flow);
         };
         match &effect.kind {
-            FlowEffectKind030::Start { agent: Some(_), .. } => driver.start_agent(effect).await?,
+            FlowEffectKind030::Start { agent: Some(_), .. } => {
+                if let Err(error) = driver.start_agent(effect.clone()).await {
+                    // Stop can invalidate a pending Start between selection,
+                    // local preparation and claim. It did not start a provider.
+                    let fresh = flow::inspect_run(host.flow030(), host, pool, owner).await?;
+                    let unclaimed =
+                        fresh.flow.effects.iter().any(|row| {
+                            row["status"] == "pending" && row["effect"]["id"] == effect.id
+                        });
+                    if !fresh.flow.state.stopping || !unclaimed {
+                        return Err(error);
+                    }
+                }
+            }
             FlowEffectKind030::Start { agent: None, .. } => {
                 driver.start_host(inspection, effect).await?
             }
@@ -441,6 +454,7 @@ struct NativeDriver030<'a> {
     active: BTreeMap<String, LiveAgent030>,
     joining: FuturesUnordered<BoxFuture<'a, (String, Result<JoinedOwnedAgent030>)>>,
     joined: BTreeMap<String, JoinedOwnedAgent030>,
+    ready: BTreeMap<String, JoinedOwnedAgent030>,
     in_flight: BTreeSet<String>,
 }
 impl EffectDriver030 for NativeDriver030<'_> {
@@ -540,9 +554,30 @@ impl EffectDriver030 for NativeDriver030<'_> {
             let FlowEffectKind030::StopWork { work, .. } = &effect.kind else {
                 unreachable!()
             };
-            let live = self.active.get_mut(&work.activation_id).ok_or_else(|| {
-                failure("INTERRUPTED", "work", "Stopped work has no process owner")
-            })?;
+            let Some(live) = self.active.get_mut(&work.activation_id) else {
+                let lease = self.host.start_lease().await?;
+                let control = self
+                    .host
+                    .flow030()
+                    .retiring_controls(lease.generation())?
+                    .into_iter()
+                    .find(|control| control.identity() == &effect.identity)
+                    .ok_or_else(|| {
+                        failure("INTERRUPTED", "work", "Stopped run has no process owner")
+                    })?;
+                drop(lease);
+                return control
+                    .settle_unadmitted(self.host.flow030(), self.pool, work)
+                    .await?
+                    .map(|_| ())
+                    .ok_or_else(|| {
+                        failure(
+                            "INTERRUPTED",
+                            "work",
+                            "Stopped work has no known owner or unadmitted start",
+                        )
+                    });
+            };
             let claim = flow::claim_expected_stop_work(
                 self.host.flow030(),
                 self.host,
@@ -701,6 +736,7 @@ pub(crate) async fn supervise_with_emitter030(
         active: BTreeMap::new(),
         joining: FuturesUnordered::new(),
         joined: BTreeMap::new(),
+        ready: BTreeMap::new(),
         in_flight: BTreeSet::new(),
     };
     let outcome = async {
@@ -717,6 +753,33 @@ pub(crate) async fn supervise_with_emitter030(
             &CancellationToken::new(),
         )
         .await?;
+        let mut completed = false;
+        for key in driver.ready.keys().cloned().collect::<Vec<_>>() {
+            let joined = driver.ready.get(&key).unwrap().clone();
+            let live = driver.active.get(&key).ok_or_else(|| failure("CORRELATION", "work", "Completed owner is absent"))?;
+            if let Some((_, stop)) = &live.stop {
+                stop.control().settle_joined_diagnostic(host.flow030(), pool, &joined, Some(stop)).await?;
+            } else {
+                let result = flow_work_protocol030::finish_joined_agent030(host, pool, &joined, &CancellationToken::new()).await;
+                let fresh = flow::inspect_run(host.flow030(), host, pool, owner).await?;
+                let physical = fresh.flow.state.activations.iter().any(|a| a.id == key && a.physical);
+                if physical && fresh.flow.state.activations.iter().any(|a| a.id == key && a.stop_effect_id.is_some()) {
+                    // Keep the exact join and owner. The next pass claims and
+                    // settles StopWork even when Stop won during evaluation.
+                    completed = true;
+                    continue;
+                }
+                result?;
+                if physical { return Err(failure("UNCERTAIN", "work", "Joined work has no terminal controller result")); }
+            }
+            let live = driver.active.remove(&key).unwrap();
+            driver.in_flight.remove(live.attempt.start_effect_id());
+            if let Some((effect, _)) = live.stop { driver.in_flight.remove(&effect); }
+            driver.ready.remove(&key);
+            driver.joined.insert(key, joined);
+            completed = true;
+        }
+        if completed { continue; }
         if view.state.verdict.is_some() && driver.active.is_empty() {
             return Ok(());
         }
@@ -749,16 +812,7 @@ pub(crate) async fn supervise_with_emitter030(
             _ = cancel.cancelled() => (),
             changed = wake.changed() => { changed.map_err(|_| failure("INTERRUPTED", "runtime", "Supervisor wake channel closed"))?; },
             Some((key, joined)) = driver.joining.next(), if !driver.joining.is_empty() => {
-                let joined = joined?;
-                let live = driver.active.remove(&key).ok_or_else(|| failure("CORRELATION", "work", "Completed owner is absent"))?;
-                driver.in_flight.remove(live.attempt.start_effect_id());
-                if let Some((effect_id, stop)) = live.stop {
-                    stop.control().settle_joined_diagnostic(host.flow030(), pool, &joined, Some(&stop)).await?;
-                    driver.in_flight.remove(&effect_id);
-                } else {
-                    flow_work_protocol030::finish_joined_agent030(host, pool, &joined, &CancellationToken::new()).await?;
-                }
-                driver.joined.insert(key, joined);
+                driver.ready.insert(key, joined?);
             },
             _ = async { if let Some(duration) = deadline { tokio::time::sleep(duration).await; } else { std::future::pending::<()>().await; } } => {
                 if let Some(clock) = &executors.clock { clock.tick().await?; }

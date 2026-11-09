@@ -219,12 +219,24 @@ impl Fixture {
         })
     }
     fn pumps(&self) -> Vec<tokio::task::JoinHandle<()>> {
+        self.pumps_with_physical_hook(None)
+    }
+    fn pumps_with_physical_hook(
+        &self,
+        physical: Option<(Arc<Notify>, Arc<Notify>)>,
+    ) -> Vec<tokio::task::JoinHandle<()>> {
         let work = self.incarnation.clone();
         let route = self.incarnation.clone();
         vec![
             tokio::spawn(async move {
                 loop {
                     let job = work.work_protocol.next().await.unwrap();
+                    if job.input.event_json.contains("physicalEnded") {
+                        if let Some((reached, release)) = &physical {
+                            reached.notify_one();
+                            release.notified().await;
+                        }
+                    }
                     let output = bun("import {evaluateHostWork030} from './src/services/agsdlExecution/hostWorkTransition030';import {connectValueSchemaValidator030} from './src/services/agsdlExecution/valueSchemaPort030';import {NumberToken,parse} from './src/vendor/agsdl/v0.3/json.mjs';import {validate} from './src/vendor/agsdl/v0.3/valueschema.mjs';const {input:i}=JSON.parse(await Bun.stdin.text());process.stdout.write(JSON.stringify(evaluateHostWork030(i.context,i.eventId,i.expectedRevision,i.contractJson,i.stateJson,i.eventJson,i.optionsJson,connectValueSchemaValidator030({NumberToken,parse,validate}))));", &job).await;
                     work.work_protocol
                         .complete(
@@ -266,6 +278,7 @@ struct FakeExecutor {
     cleanup: Option<Arc<Notify>>,
     cancelled: Arc<Notify>,
     submitted: Option<Arc<Notify>>,
+    independent_finish: bool,
 }
 impl AgentExecutor030 for FakeExecutor {
     fn prepare(
@@ -282,6 +295,7 @@ impl AgentExecutor030 for FakeExecutor {
     ) -> futures::future::BoxFuture<'static, crate::db::agsdl_execution::Result<()>> {
         self.starts.fetch_add(1, Ordering::SeqCst);
         self.started.notify_one();
+        let independent = self.independent_finish;
         let (cleanup, cancelled, submitted) = (
             self.cleanup.clone(),
             self.cancelled.clone(),
@@ -298,8 +312,10 @@ impl AgentExecutor030 for FakeExecutor {
                 signal.notify_one();
             }
             if let Some(cleanup) = cleanup {
-                cancel.cancelled().await;
-                cancelled.notify_one();
+                if !independent {
+                    cancel.cancelled().await;
+                    cancelled.notify_one();
+                }
                 cleanup.notified().await;
             } else {
                 events
@@ -325,6 +341,7 @@ async fn distinct_executor_chains_two_works_without_double_dispatch() {
         cleanup: None,
         cancelled: Default::default(),
         submitted: None,
+        independent_finish: false,
     });
     let executors = Executors030 {
         agents: executor,
@@ -379,6 +396,7 @@ async fn stop_remains_responsive_and_waits_for_physical_end() {
             cleanup: Some(cleanup.clone()),
             cancelled: cancelled.clone(),
             submitted: None,
+            independent_finish: false,
         }),
         calls: None,
         humans: None,
@@ -458,6 +476,7 @@ async fn an_unowned_claim_is_interrupted_and_never_retried() {
             cleanup: None,
             cancelled: Default::default(),
             submitted: None,
+            independent_finish: false,
         }),
         calls: None,
         humans: None,
@@ -522,6 +541,7 @@ async fn accepted_completion_and_stop_do_not_route_or_double_send() {
             cleanup: Some(cleanup.clone()),
             cancelled: cancelled.clone(),
             submitted: Some(submitted.clone()),
+            independent_finish: true,
         }),
         calls: None,
         humans: None,
@@ -580,4 +600,214 @@ async fn accepted_completion_and_stop_do_not_route_or_double_send() {
         .unwrap();
     assert_eq!(view.flow.state.verdict.as_deref(), Some("cancelled"));
     assert!(view.flow.state.activations.iter().all(|a| !a.physical));
+}
+
+async fn stop_fixture(f: &Fixture, event: &str) {
+    let view = flow::inspect_run(f.host.flow030(), &f.host, &f.pool, &f.owner)
+        .await
+        .unwrap();
+    flow::apply_native_event(
+        f.host.flow030(),
+        &f.host,
+        &f.pool,
+        &FlowEvent030 {
+            identity: f.identity.clone(),
+            event_id: event.into(),
+            expected_revision: view.flow.state.revision,
+            kind: FlowEventKind030::Stop,
+        },
+    )
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
+async fn stop_during_physical_controller_evaluation_retains_the_join() {
+    let f = Fixture::new(true).await;
+    let reached = Arc::new(Notify::new());
+    let release = Arc::new(Notify::new());
+    let pumps = f.pumps_with_physical_hook(Some((reached.clone(), release.clone())));
+    let tasks = crate::ai::stream_tasks::StreamTasks::default();
+    let starts = Arc::new(AtomicUsize::new(0));
+    let executors = Executors030 {
+        agents: Arc::new(FakeExecutor {
+            starts: starts.clone(),
+            started: Default::default(),
+            cleanup: None,
+            cancelled: Default::default(),
+            submitted: None,
+            independent_finish: false,
+        }),
+        calls: None,
+        humans: None,
+        clock: None,
+    };
+    let (wake, receiver) = watch::channel(0);
+    let cancel = CancellationToken::new();
+    let supervisor = supervise_with_emitter030(
+        None,
+        &f.host,
+        &f.pool,
+        &f.config,
+        &tasks,
+        &f.owner,
+        &executors,
+        receiver,
+        &cancel,
+        f.emitter(&tasks),
+    );
+    tokio::pin!(supervisor);
+    let exercise = async {
+        reached.notified().await;
+        stop_fixture(&f, "stop-during-evaluation").await;
+        wake.send_modify(|v| *v += 1);
+        release.notify_one();
+    };
+    let (result, ()) = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        tokio::join!(&mut supervisor, exercise)
+    })
+    .await
+    .unwrap();
+    for pump in pumps {
+        pump.abort();
+    }
+    result.unwrap();
+    let view = flow::inspect_run(f.host.flow030(), &f.host, &f.pool, &f.owner)
+        .await
+        .unwrap();
+    assert_eq!(starts.load(Ordering::SeqCst), 1);
+    assert_eq!(view.flow.state.verdict.as_deref(), Some("cancelled"));
+    assert!(view.flow.state.activations.iter().all(|a| !a.physical));
+}
+
+#[tokio::test]
+async fn stop_before_the_first_handoff_settles_an_unadmitted_start() {
+    let f = Fixture::new(false).await;
+    stop_fixture(&f, "stop-before-handoff").await;
+    let tasks = crate::ai::stream_tasks::StreamTasks::default();
+    let starts = Arc::new(AtomicUsize::new(0));
+    let executors = Executors030 {
+        agents: Arc::new(FakeExecutor {
+            starts: starts.clone(),
+            started: Default::default(),
+            cleanup: None,
+            cancelled: Default::default(),
+            submitted: None,
+            independent_finish: false,
+        }),
+        calls: None,
+        humans: None,
+        clock: None,
+    };
+    let (_wake, receiver) = watch::channel(0);
+    tokio::time::timeout(
+        std::time::Duration::from_secs(10),
+        supervise_with_emitter030(
+            None,
+            &f.host,
+            &f.pool,
+            &f.config,
+            &tasks,
+            &f.owner,
+            &executors,
+            receiver,
+            &CancellationToken::new(),
+            f.emitter(&tasks),
+        ),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert_eq!(starts.load(Ordering::SeqCst), 0);
+    let view = flow::inspect_run(f.host.flow030(), &f.host, &f.pool, &f.owner)
+        .await
+        .unwrap();
+    assert_eq!(view.flow.state.verdict.as_deref(), Some("cancelled"));
+}
+
+struct StopBeforeClaimExecutor {
+    host: Arc<HostState>,
+    pool: sqlx::SqlitePool,
+    owner: EngineOwner,
+    identity: FlowIdentity030,
+    starts: Arc<AtomicUsize>,
+}
+impl AgentExecutor030 for StopBeforeClaimExecutor {
+    fn prepare(
+        &self,
+        prepared: PreparedEffectiveAgentWork030,
+    ) -> crate::db::agsdl_execution::Result<AttestedWorkPolicy030> {
+        tokio::task::block_in_place(|| {
+            tokio::runtime::Handle::current().block_on(async {
+                let view =
+                    flow::inspect_run(self.host.flow030(), &self.host, &self.pool, &self.owner)
+                        .await?;
+                flow::apply_native_event(
+                    self.host.flow030(),
+                    &self.host,
+                    &self.pool,
+                    &FlowEvent030 {
+                        identity: self.identity.clone(),
+                        event_id: "stop-in-prepare".into(),
+                        expected_revision: view.flow.state.revision,
+                        kind: FlowEventKind030::Stop,
+                    },
+                )
+                .await?;
+                Ok::<_, crate::db::agsdl_execution::dto::EngineFailure>(())
+            })
+        })?;
+        Ok(AttestedWorkPolicy030::from_runtime_fixture(prepared))
+    }
+    fn run(
+        &self,
+        _work: AgentWork030,
+        _events: WorkEventSink030,
+        _cancel: CancellationToken,
+    ) -> futures::future::BoxFuture<'static, crate::db::agsdl_execution::Result<()>> {
+        self.starts.fetch_add(1, Ordering::SeqCst);
+        Box::pin(async { panic!("Stop invalidated this start before its claim") })
+    }
+}
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn stop_between_preparation_and_claim_does_not_start_or_interrupt_the_supervisor() {
+    let f = Fixture::new(false).await;
+    let tasks = crate::ai::stream_tasks::StreamTasks::default();
+    let starts = Arc::new(AtomicUsize::new(0));
+    let executors = Executors030 {
+        agents: Arc::new(StopBeforeClaimExecutor {
+            host: f.host.clone(),
+            pool: f.pool.clone(),
+            owner: f.owner.clone(),
+            identity: f.identity.clone(),
+            starts: starts.clone(),
+        }),
+        calls: None,
+        humans: None,
+        clock: None,
+    };
+    let (_wake, receiver) = watch::channel(0);
+    tokio::time::timeout(
+        std::time::Duration::from_secs(10),
+        supervise_with_emitter030(
+            None,
+            &f.host,
+            &f.pool,
+            &f.config,
+            &tasks,
+            &f.owner,
+            &executors,
+            receiver,
+            &CancellationToken::new(),
+            f.emitter(&tasks),
+        ),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert_eq!(starts.load(Ordering::SeqCst), 0);
+    let view = flow::inspect_run(f.host.flow030(), &f.host, &f.pool, &f.owner)
+        .await
+        .unwrap();
+    assert_eq!(view.flow.state.verdict.as_deref(), Some("cancelled"));
 }
