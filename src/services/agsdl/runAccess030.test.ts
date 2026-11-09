@@ -12,18 +12,22 @@ async function fixture(id = 'run') {
   capture.source.sourceSha256 = await sourceDigest(capture.authoredSource);
   const scope = { ...inspection.state.scope, source: capture.source };
   const summary: PublicRunSummary030 = { ...scope, flowInvocationId: 'flow', versions: capture.versions,
-    revision: '9007199254740993', stopping: true, verdict: 'succeeded', ownerStatus: 'live', phaseCounts: [], physicalPending: '1' };
+    revision: '9007199254740993', stopping: true, verdict: 'succeeded', ownerStatus: 'live',
+    phaseCounts: [{ phase: 'done', count: '1' }, { phase: 'running', count: '1' }], physicalPending: '1' };
   const runtime: RuntimeProjectionPage030 = { scope, flowInvocationId: 'flow', revision: summary.revision,
     stopping: summary.stopping, verdict: summary.verdict, total: '2',
-    items: inspection.state.occurrences.kind === 'ready' ? inspection.state.occurrences.value.map(item => ({ kind: 'activation', value: item.activation })) : [], nextPage: null };
+    items: inspection.state.occurrences.kind === 'ready' ? inspection.state.occurrences.value.map(item => ({ kind: 'activation',
+      value: { ...item.activation, phase: item.activation.phase === 'completed' ? 'done' : item.activation.phase } })) : [], nextPage: null };
   return { capture, scope, summary, runtime };
 }
 type Fixture = Awaited<ReturnType<typeof fixture>>;
 function intentFor(f: Fixture, scope = { owner: f.capture.source.owner, conversationId: 'sample-chat' }): PublicExecutionIntent {
+  const id = f.summary.systemStartId;
+  const entry = { deliveryId: `entry-${id}`, messageJson: '{"text":"Start the synthetic sample"}' };
   return { formatVersion: '1', key: { scope: structuredClone(scope), intentId: `intent-${f.summary.systemStartId}` }, revision: '3',
-    payload: { kind: 'start', request: { source: f.capture.source, profile: 'macro-agsdl-030-v1', requestId: 'request', associations: {}, entry: null } },
+    payload: { kind: 'start', request: { source: f.capture.source, profile: 'macro-agsdl-030-v1', requestId: `request-${id}`, associations: {}, entry } },
     state: { kind: 'admitted', admission: { kind: 'start030', receipt: { systemStartId: f.summary.systemStartId, flowInvocationId: f.summary.flowInvocationId,
-      source: f.capture.source, versions: f.capture.versions, entryDeliveryId: null } } } };
+      source: f.capture.source, versions: f.capture.versions, entryDeliveryId: entry.deliveryId } } } };
 }
 function transportFor(...fixtures: Fixture[]) {
   const calls: string[] = [];
@@ -315,8 +319,65 @@ it('keeps fully read history ready on STORAGE_UNCERTAIN and permits manual inspe
   expect(access.getSnapshot().retainedAdmission.kind).toBe('unavailable');
   expect(initialRunSelection030(access.getSnapshot())).toBeUndefined();
   expect(initialRunSelection030(access.getSnapshot(), 'run')).toBe('run');
-  await access.refreshRun('run');
+  await expect(access.refreshRun('run')).rejects.toMatchObject({ kind: 'uncertain', code: 'STORAGE_UNCERTAIN' });
   expect(access.getSnapshot().runs.run.kind).toBe('ready');
+});
+
+it('invalidates retained admission and reports intent failure during run-only refresh without losing inspection', async () => {
+  const f = await fixture(), { transport, scope } = transportFor(f);
+  const access = createRunInspectionAccess030(scope, transport);
+  await access.refreshRun('run');
+  expect(access.getSnapshot().retainedAdmission).toEqual({ kind: 'available', value: 'run' });
+  const old = retainedRunValue030(access.getSnapshot().runs.run);
+  transport.readExecutionIntentsVersioned = async () => { throw { code: 'STORAGE_UNCERTAIN', currentIntentKey: null }; };
+  await expect(access.refreshRun('run')).rejects.toMatchObject({ kind: 'uncertain', code: 'STORAGE_UNCERTAIN' });
+  expect(access.getSnapshot().retainedAdmission.kind).toBe('unavailable');
+  expect(access.getSnapshot().runs.run).toMatchObject({ kind: 'ready', value: old });
+  // No history refresh is needed to recover the independently read admission.
+  transport.readExecutionIntentsVersioned = async () => [intentFor(f)];
+  await access.refreshRun('run');
+  expect(access.getSnapshot().retainedAdmission).toEqual({ kind: 'available', value: 'run' });
+});
+
+it('marks retained projections stale immediately after newer discovery even when capture read then fails', async () => {
+  for (const refresh of ['history', 'run'] as const) {
+    const f = await fixture(), { transport, scope } = transportFor(f);
+    const access = createRunInspectionAccess030(scope, transport);
+    await access.refreshRun('run');
+    const retained = retainedRunValue030(access.getSnapshot().runs.run);
+    f.summary.revision = '9007199254740994';
+    transport.readExecutionSnapshot030 = async () => {
+      // Invalidation precedes this awaited read, not merely its failure.
+      expect(access.getSnapshot().runs.run).toMatchObject({ kind: 'stale', revision: '9007199254740993', retained });
+      throw { code: 'STORAGE', message: 'Capture unavailable' };
+    };
+    const reading = refresh === 'history' ? access.refreshHistory() : access.refreshRun('run');
+    await expect(reading).rejects.toMatchObject({ kind: 'transport', code: 'STORAGE' });
+    expect(access.getSnapshot().runs.run).toMatchObject({ kind: 'stale', revision: '9007199254740993', retained });
+  }
+});
+
+it('uses native-compatible entries, phases, phase counts and distinct request ids for fixture admissions', async () => {
+  const requests = new Set<string>();
+  const phases = new Set(['ready', 'queued', 'running', 'body', 'group', 'done', 'preparing', 'barrier', 'stopping']);
+  for (const id of ['first', 'second']) {
+    const f = await fixture(id), intent = intentFor(f);
+    if (intent.payload.kind !== 'start' || intent.state.kind !== 'admitted' || intent.state.admission.kind !== 'start030')
+      throw new Error('Expected a start030 fixture admission');
+    const request = intent.payload.request;
+    const document = JSON.parse(f.capture.authoredSource);
+    expect(request.entry !== null).toBe(document.flow?.entry !== undefined);
+    expect(intent.state.admission.receipt.entryDeliveryId).toBe(request.entry?.deliveryId ?? null);
+    expect(JSON.parse(request.entry!.messageJson)).toEqual({ text: 'Start the synthetic sample' });
+    expect(requests.has(request.requestId)).toBe(false);
+    requests.add(request.requestId);
+    const counts = new Map<string, number>();
+    for (const item of f.runtime.items) if (item.kind === 'activation') {
+      expect(phases.has(item.value.phase)).toBe(true);
+      counts.set(item.value.phase, (counts.get(item.value.phase) ?? 0) + 1);
+    }
+    expect(f.summary.phaseCounts).toEqual([...counts].sort(([a], [b]) => a.localeCompare(b)).map(([phase, count]) => ({ phase, count: String(count) })));
+  }
 });
 
 it('never broadens a fresh scope when the intent store is unavailable', async () => {
