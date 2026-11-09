@@ -36,3 +36,15 @@ it('renders branch paths and an instance queue in their native order', async () 
   expect([...host.querySelectorAll('ol li')].map(item=>item.textContent)).toEqual(['2','1']);
   await act(async()=>root.unmount()); host.remove();
 });
+
+it('hides raw partial pages until every fan-out page has been assembled', async () => {
+  const source = {owner:{projectId:'p',planId:'plan',branch:'main'},revision:'1',sourceSha256:'a'.repeat(64)};
+  const scope = {systemStartId:'r',snapshotId:'s',source};
+  const page: RuntimeProjectionPage030 = {scope,flowInvocationId:'f',revision:'1',stopping:false,verdict:null,total:'101',nextPage:{scope,revision:'1',offset:100},items:[]};
+  const host = document.createElement('div'); document.body.append(host); const root = createRoot(host);
+  const labels = {instances:'Instances',activations:'Activations',groups:'Groups',paths:'Paths',queue:'Queue',physicalWait:'Wait',branchPaths:'Branch paths',physicalEvidenceRequired:'Physical proof required',unnamed:'Unnamed',phase:(value:string)=>value,selector:(value:string)=>value};
+  await act(async()=>root.render(<RuntimeProjectionView030 page={page} labels={labels} select={()=>{}} />));
+  expect(host.textContent).toContain('Partial pages do not describe all work.');
+  expect(host.querySelectorAll('button')).toHaveLength(0);
+  await act(async()=>root.unmount()); host.remove();
+});
