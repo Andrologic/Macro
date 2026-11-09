@@ -1,5 +1,6 @@
 import { expect, it, mock } from 'bun:test';
 import type { StartRequest030 } from './agsdlExecution030';
+import type { ExecutionRunCorrelation030 } from '../../types/generated/ipc';
 
 let response: unknown;
 const invoke = mock(async (_command: string, _args: unknown) => response);
@@ -58,4 +59,14 @@ it('lists 030 runs with the exact native owner and cursor', async () => {
   response = { runs: [], nextCursor: null };
   expect(await ipc.listExecutionRuns030(request)).toEqual({ runs: [], nextCursor: null });
   expect(invoke).toHaveBeenLastCalledWith('execution_list_runs030', { request });
+});
+
+it('reads durable run correlation using the exact intent scope and run id', async () => {
+  const scope = { owner: source.owner, conversationId: 'conversation' };
+  const correlation: ExecutionRunCorrelation030 = { key: { scope, intentId: 'retained-intent' }, receipt: {
+    systemStartId: 'run', flowInvocationId: 'flow', source, versions: snapshot.versions, entryDeliveryId: 'delivery',
+  } };
+  response = correlation;
+  expect(await ipc.readExecutionRunCorrelation030(scope, 'run')).toBe(correlation);
+  expect(invoke).toHaveBeenLastCalledWith('execution_read_run_correlation030', { scope, systemStartId: 'run' });
 });

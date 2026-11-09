@@ -1,7 +1,7 @@
 import type { NativeDtoGap030, NativeFact030, RunCapture030, RunRead030, RunRefusal030, RunVerdict030 } from '../../types/agsdlRunUi030';
-import type { EngineSourceOwner, ExecutionIntentScope, PublicRunSummary030 } from '../../types/generated/ipc';
+import type { EngineSourceOwner, ExecutionIntentScope, ExecutionRunCorrelation030, PublicRunSummary030 } from '../../types/generated/ipc';
 import { listExecutionRuns030, readExecutionSnapshot030, readExecutionRuntimeProjection030,
-  readExecutionHumans030, readExecutionIntentsVersioned } from '../tauriIpc';
+  readExecutionHumans030, readExecutionIntentsVersioned, readExecutionRunCorrelation030 } from '../tauriIpc';
 import { MacroServiceError, toServiceError } from '../contracts/errors';
 import { sourceDigest } from '../agsdlExecution/compiler';
 import { readDocument } from './document';
@@ -15,9 +15,10 @@ export interface RunReadTransport030 {
   readExecutionRuntimeProjection030: typeof readExecutionRuntimeProjection030;
   readExecutionHumans030: typeof readExecutionHumans030;
   readExecutionIntentsVersioned: typeof readExecutionIntentsVersioned;
+  readExecutionRunCorrelation030: typeof readExecutionRunCorrelation030;
 }
 const nativeTransport = { listExecutionRuns030, readExecutionSnapshot030, readExecutionRuntimeProjection030,
-  readExecutionHumans030, readExecutionIntentsVersioned };
+  readExecutionHumans030, readExecutionIntentsVersioned, readExecutionRunCorrelation030 };
 const sameOwner = (a: EngineSourceOwner, b: EngineSourceOwner) =>
   a.projectId === b.projectId && a.planId === b.planId && a.branch === b.branch;
 const sameVersions = (a: PublicRunSummary030['versions'], b: PublicRunSummary030['versions']) =>
@@ -28,7 +29,7 @@ const decimal = (value: string) => typeof value === 'string' && /^(0|[1-9][0-9]*
 /** Read failures are separate from missing native facts. Preserve native codes
  * on promise rejection, including uncertainty, which is not a scope refusal. */
 export class RunInspectionReadError030 extends MacroServiceError {
-  readonly kind: 'conflict' | 'scope' | 'transport' | 'uncertain';
+  readonly kind: 'conflict' | 'scope' | 'notFound' | 'transport' | 'uncertain';
   constructor(error: unknown) {
     const decoded = toServiceError(error);
     // ExecutionIntentError has code/currentIntentKey, but no message. The
@@ -38,7 +39,8 @@ export class RunInspectionReadError030 extends MacroServiceError {
     super(code, decoded.code === 'UNEXPECTED_ERROR' && code !== decoded.code ? code : decoded.message, decoded.details ?? error);
     this.name = 'RunInspectionReadError030';
     this.kind = ['CONFLICT', 'REVISION_CONFLICT'].includes(code) ? 'conflict'
-      : ['SCOPE_INVALID', 'SCOPE_UNAVAILABLE', 'CORRELATION', 'NOT_FOUND'].includes(code) ? 'scope'
+      : code === 'NOT_FOUND' ? 'notFound'
+      : ['SCOPE_INVALID', 'SCOPE_UNAVAILABLE', 'CORRELATION'].includes(code) ? 'scope'
       : ['STORAGE_UNCERTAIN', 'RUNTIME_UNAVAILABLE', 'UNCERTAIN', 'STOP_PENDING'].includes(code) ? 'uncertain' : 'transport';
   }
 }
@@ -96,9 +98,6 @@ export function createRunInspectionAccess030(scope: ExecutionIntentScope,
     retainedAdmission: unavailable('qualification'), runs: {}, excludedRuns: {} });
   const listeners = new Set<() => void>();
   const retainedSummaries = new Map<string, PublicRunSummary030>();
-  // A previously read native receipt remains evidence of conversation
-  // membership, independently of the availability of the current intent slot.
-  const attestations = new Map<string, PublicRunSummary030>();
   const publish = (next: RunAccessSnapshot030) => {
     snapshot = freeze(structuredClone(next));
     listeners.forEach(listener => listener());
@@ -131,9 +130,10 @@ export function createRunInspectionAccess030(scope: ExecutionIntentScope,
     } while (after !== null);
     return runs;
   }
-  async function captureFor(run: PublicRunSummary030): Promise<RunCapture030> {
+  async function captureFor(run: PublicRunSummary030, correlation: ExecutionRunCorrelation030): Promise<RunCapture030> {
     const capture = await transport.readExecutionSnapshot030(run.systemStartId);
-    requireFact(sameHumanScope030(capture, run) && sameVersions(capture.versions, run.versions));
+    requireFact(sameHumanScope030(capture, run) && sameVersions(capture.versions, run.versions) &&
+      sameHumanScope030(capture, correlation.receipt) && sameVersions(capture.versions, correlation.receipt.versions));
     requireFact(await sourceDigest(capture.authoredSource) === capture.source.sourceSha256 &&
       readDocument(capture.authoredSource).contract === 'agsdl-0.3.0');
     return structuredClone(capture);
@@ -166,7 +166,7 @@ export function createRunInspectionAccess030(scope: ExecutionIntentScope,
     if (!intent) return { kind: 'available', value: null };
     requireFact(sameOwner(intent.key.scope.owner, expected.owner) && intent.key.scope.conversationId === expected.conversationId, 'SCOPE_INVALID');
     const state = intent.state;
-    const admitted = state.kind === 'admitted' || state.kind === 'closed' ? state.admission : null;
+    const admitted = state.kind === 'admitted' ? state.admission : null;
     if (admitted?.kind !== 'start030') return { kind: 'available', value: null };
     const receipt = admitted.receipt;
     requireFact(intent.formatVersion === '1' && intent.payload.kind === 'start' && intent.payload.request.profile === 'macro-agsdl-030-v1');
@@ -177,15 +177,31 @@ export function createRunInspectionAccess030(scope: ExecutionIntentScope,
       sameHumanScope030({ systemStartId: receipt.systemStartId, source: request.source }, summary) &&
       receipt.entryDeliveryId === (request.entry?.deliveryId ?? null) &&
       request.associations.conversationId === undefined && request.associations.workspaceId === undefined);
-    attestations.set(receipt.systemStartId, structuredClone(summary));
     return { kind: 'available', value: receipt.systemStartId };
   }
-  function scopeRefusal(run: PublicRunSummary030): RunRefusal030<'consult'> | null {
-    const attested = attestations.get(run.systemStartId);
-    if (!attested) return { code: 'SCOPE_UNAVAILABLE', message: 'No native start030 intent and receipt attest this conversation for the run', currentRevision: null };
-    requireFact(sameHumanScope030(attested, run) && attested.snapshotId === run.snapshotId &&
-      attested.flowInvocationId === run.flowInvocationId && sameVersions(attested.versions, run.versions));
-    return null;
+  async function correlations(runs: readonly PublicRunSummary030[]) {
+    const attested = new Map<string, ExecutionRunCorrelation030>();
+    const excludedRuns: Record<string, RunRefusal030<'consult'>> = Object.create(null);
+    for (const run of runs) {
+      let correlation: ExecutionRunCorrelation030;
+      try {
+        correlation = await transport.readExecutionRunCorrelation030(structuredClone(expected), run.systemStartId);
+      } catch (error) {
+        const failure = new RunInspectionReadError030(error);
+        if (failure.code !== 'SCOPE_INVALID') throw failure;
+        excludedRuns[run.systemStartId] = refusal(failure);
+        continue;
+      }
+      const { key, receipt } = correlation;
+      requireFact(typeof key.intentId === 'string' && key.intentId.length > 0 && sameOwner(key.scope.owner, expected.owner) &&
+        key.scope.conversationId === expected.conversationId, 'CORRELATION', 'Native run correlation scope differs');
+      requireFact(sameHumanScope030(receipt, run) && receipt.flowInvocationId === run.flowInvocationId &&
+        sameVersions(receipt.versions, run.versions) && (receipt.entryDeliveryId === null ||
+        (typeof receipt.entryDeliveryId === 'string' && receipt.entryDeliveryId.length > 0)),
+      'CORRELATION', 'Native run correlation receipt differs');
+      attested.set(run.systemStartId, structuredClone(correlation));
+    }
+    return { attested, excludedRuns };
   }
   /** Discovery alone can disprove freshness. Publish that fact before any
    * later capture or intent read can fail, without publishing partial runs. */
@@ -221,11 +237,11 @@ export function createRunInspectionAccess030(scope: ExecutionIntentScope,
         let retainedAdmission: NativeFact030<string | null>;
         try { retainedAdmission = await admission(runs); }
         catch (error) { retainedAdmission = unavailable('qualification'); admissionError = new RunInspectionReadError030(error); }
-        const excludedRuns: Record<string, RunRefusal030<'consult'>> = {};
+        const { attested, excludedRuns } = await correlations(runs);
         for (const run of runs) {
-          const exclusion = scopeRefusal(run);
-          if (exclusion) { excludedRuns[run.systemStartId] = exclusion; continue; }
-          const capture = await captureFor(run);
+          const correlation = attested.get(run.systemStartId);
+          if (!correlation) continue;
+          const capture = await captureFor(run, correlation);
           history.push(await historyEntry(run, capture));
         }
         const retainedRuns = Object.fromEntries(Object.entries(snapshot.runs).filter(([id]) => history.some(item => item.scope.systemStartId === id)));
@@ -250,20 +266,23 @@ export function createRunInspectionAccess030(scope: ExecutionIntentScope,
       try {
         const runs = await summaries();
         invalidateRetained(runs);
-        // Cached native correlation permits manual readback when the intent
-        // store is temporarily unavailable; a new uncorrelated run never does.
+        // Open intents affect only retainedAdmission. Run membership is read
+        // independently from its durable native attachment, including closure.
         try { publish({ ...snapshot, retainedAdmission: await admission(runs) }); }
         catch (error) {
           const failure = new RunInspectionReadError030(error);
           publish({ ...snapshot, retainedAdmission: unavailable('qualification') });
-          if (!attestations.has(systemStartId) || (failure.kind !== 'transport' && failure.kind !== 'uncertain')) throw failure;
           admissionError = failure;
         }
+        const { attested, excludedRuns } = await correlations(runs);
+        publish({ ...snapshot, excludedRuns });
         const summary = runs.find(run => run.systemStartId === systemStartId);
         requireFact(summary, 'NOT_FOUND');
-        const exclusion = scopeRefusal(summary);
+        const exclusion = excludedRuns[systemStartId];
         requireFact(!exclusion, exclusion?.code, exclusion?.message);
-        const capture = await captureFor(summary);
+        const correlation = attested.get(systemStartId);
+        requireFact(correlation);
+        const capture = await captureFor(summary, correlation);
         verifyRetained(summary);
         const scope = { systemStartId, source: summary.source, snapshotId: summary.snapshotId };
         const runtime = await loadRuntimeProjection030(scope, summary.flowInvocationId, transport.readExecutionRuntimeProjection030, () => true);
@@ -286,7 +305,7 @@ export function createRunInspectionAccess030(scope: ExecutionIntentScope,
         publish({ ...snapshot, runs: { ...snapshot.runs, [systemStartId]: failed(previous, error) } });
         throw new RunInspectionReadError030(error);
       }
-      // The run remains inspectable through cached scope attestation, while
+      // The run remains inspectable through durable native attestation, while
       // the independent intent failure still reaches the caller as typed data.
       if (admissionError) throw admissionError;
     }),

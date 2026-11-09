@@ -1,5 +1,5 @@
 import { expect, it } from 'bun:test';
-import type { PublicExecutionIntent, PublicRunSummary030, RuntimeProjectionPage030 } from '../../types/generated/ipc';
+import type { ExecutionRunCorrelation030, PublicExecutionIntent, PublicRunSummary030, RuntimeProjectionPage030 } from '../../types/generated/ipc';
 import { sourceDigest } from '../agsdlExecution/compiler';
 import { createRunInspectionAccess030 } from './runAccess030';
 import type { RunReadTransport030 } from './runAccess030';
@@ -32,14 +32,36 @@ function intentFor(f: Fixture, scope = { owner: f.capture.source.owner, conversa
 function transportFor(...fixtures: Fixture[]) {
   const calls: string[] = [];
   const nativeScope = { owner: structuredClone(fixtures[0].capture.source.owner), conversationId: 'sample-chat' };
+  const retainedIntents = new Map(fixtures.map((f, index) => {
+    const intent = intentFor(f, nativeScope);
+    if (index > 0 && intent.state.kind === 'admitted')
+      intent.state = { kind: 'closed', disposition: 'acknowledged', admission: intent.state.admission };
+    return [f.summary.systemStartId, intent] as const;
+  }));
+  const sameScope = (scope: typeof nativeScope, other: typeof nativeScope) =>
+    scope.conversationId === other.conversationId && scope.owner.projectId === other.owner.projectId &&
+    scope.owner.planId === other.owner.planId && scope.owner.branch === other.owner.branch;
   const transport: RunReadTransport030 = {
     async listExecutionRuns030() { calls.push('list'); return { runs: fixtures.map(item => item.summary), nextCursor: null }; },
     async readExecutionSnapshot030(id) { calls.push('snapshot'); return fixtures.find(item => item.capture.systemStartId === id)!.capture; },
     async readExecutionRuntimeProjection030(scope) { calls.push('runtime'); return fixtures.find(item => item.scope.systemStartId === scope.systemStartId)!.runtime; },
     async readExecutionHumans030(scope) { calls.push('humans'); return { scope, cursor: 'native-human-cursor', total: '0', requests: [], nextPage: null }; },
-    async readExecutionIntentsVersioned() { calls.push('intents'); return [intentFor(fixtures[0], nativeScope)]; },
+    async readExecutionIntentsVersioned({ scope }) {
+      calls.push('intents');
+      return structuredClone([...retainedIntents.values()].filter(intent => intent.state.kind !== 'closed' && sameScope(intent.key.scope, scope)));
+    },
+    async readExecutionRunCorrelation030(scope, id) {
+      calls.push(`correlation:${id}`);
+      const intent = retainedIntents.get(id);
+      if (!fixtures.some(f => f.summary.systemStartId === id)) throw { code: 'NOT_FOUND', currentIntentKey: null };
+      if (!intent || !sameScope(intent.key.scope, scope)) throw { code: 'SCOPE_INVALID', currentIntentKey: null };
+      const state = intent.state;
+      const admission = state.kind === 'admitted' || (state.kind === 'closed' && state.disposition === 'acknowledged') ? state.admission : null;
+      if (admission?.kind !== 'start030') throw { code: 'STORAGE_UNCERTAIN', currentIntentKey: null };
+      return structuredClone({ key: intent.key, receipt: admission.receipt });
+    },
   };
-  return { transport, calls, scope: structuredClone(nativeScope) };
+  return { transport, calls, scope: structuredClone(nativeScope), retainedIntents };
 }
 
 it('maps only attested facts, keeps exact revisions and exposes missing facts with gaps', async () => {
@@ -58,15 +80,12 @@ it('maps only attested facts, keeps exact revisions and exposes missing facts wi
   expect(retainedRunValue030(inspection.state.occurrences)?.[0].details).toEqual({ kind: 'unavailable', gap: 'occurrence-details' });
   expect(inspection.capture.authoredSource).toBe(f.capture.authoredSource);
   expect(Object.isFrozen(inspection.state.scope.source.owner)).toBe(true);
-  expect(calls).toEqual(['list', 'intents', 'snapshot', 'runtime', 'humans']);
+  expect(calls).toEqual(['list', 'intents', 'correlation:run', 'snapshot', 'runtime', 'humans']);
 });
 
 it('reads all discovery pages before publishing history and never assumes no human waits', async () => {
-  const a = await fixture('a'), b = await fixture('b'), { transport, scope } = transportFor(a, b);
+  const a = await fixture('a'), b = await fixture('b'), { transport, scope, calls } = transportFor(a, b);
   const access = createRunInspectionAccess030(scope, transport);
-  transport.readExecutionIntentsVersioned = async () => [intentFor(b)];
-  await access.refreshHistory();
-  transport.readExecutionIntentsVersioned = async () => [intentFor(a)];
   const afters: (string | null)[] = [];
   transport.listExecutionRuns030 = async request => {
     afters.push(request.after);
@@ -80,12 +99,97 @@ it('reads all discovery pages before publishing history and never assumes no hum
   await access.refreshHistory();
   expect(afters).toEqual([null, 'opaque-next']);
   expect(publications).toEqual([2]);
+  expect(calls.filter(call => call.startsWith('correlation:'))).toEqual(['correlation:a', 'correlation:b']);
   expect(retainedRunValue030(access.getSnapshot().history)?.map(item => item.scope.systemStartId)).toEqual(['a', 'b']);
   expect(initialRunSelection030(access.getSnapshot())).toBeUndefined();
   expect(initialRunSelection030(access.getSnapshot(), 'b')).toBe('b');
   unsubscribe();
   await access.refreshHistory();
   expect(publications).toEqual([2]);
+});
+
+it('reads an acknowledged closed intent after restart without any in-memory attestation', async () => {
+  const f = await fixture(), { transport, scope, retainedIntents, calls } = transportFor(f);
+  const beforeRestart = createRunInspectionAccess030(scope, transport);
+  await beforeRestart.refreshHistory();
+  expect(beforeRestart.getSnapshot().retainedAdmission).toEqual({ kind: 'available', value: 'run' });
+  const intent = retainedIntents.get('run')!;
+  if (intent.state.kind !== 'admitted') throw new Error('Expected an open admitted intent');
+  intent.state = { kind: 'closed', disposition: 'acknowledged', admission: intent.state.admission };
+  // The database retains the attachment; the restarted adapter owns no cache.
+  const retainedRow = structuredClone(intent);
+  const afterRestart = createRunInspectionAccess030(scope, transport);
+  expect(afterRestart.getSnapshot().runs).toEqual({});
+  expect(await transport.readExecutionIntentsVersioned({ scope })).toEqual([]);
+  await afterRestart.refreshHistory();
+  expect(afterRestart.getSnapshot().history.kind).toBe('ready');
+  expect(retainedRunValue030(afterRestart.getSnapshot().history)?.map(item => item.scope.systemStartId)).toEqual(['run']);
+  expect(afterRestart.getSnapshot().retainedAdmission).toEqual({ kind: 'available', value: null });
+  await afterRestart.refreshRun('run');
+  expect(afterRestart.getSnapshot().runs.run.kind).toBe('ready');
+  expect(calls.filter(call => call === 'correlation:run')).toHaveLength(3);
+  expect(retainedIntents.get('run')).toEqual(retainedRow);
+});
+
+it('excludes a run from another conversation with SCOPE_INVALID and performs no capture or runtime read', async () => {
+  const f = await fixture(), { transport, scope, calls } = transportFor(f);
+  const foreignScope = { ...scope, conversationId: 'another-conversation' };
+  const access = createRunInspectionAccess030(foreignScope, transport);
+  await access.refreshHistory();
+  expect(access.getSnapshot().history).toMatchObject({ kind: 'ready', value: [] });
+  expect(access.getSnapshot().excludedRuns.run.code).toBe('SCOPE_INVALID');
+  expect(access.getSnapshot().retainedAdmission).toEqual({ kind: 'available', value: null });
+  await expect(access.refreshRun('run')).rejects.toMatchObject({ kind: 'scope', code: 'SCOPE_INVALID' });
+  expect(calls).not.toContain('snapshot');
+  expect(calls).not.toContain('runtime');
+  expect(calls).not.toContain('humans');
+});
+
+it('propagates NOT_FOUND and STORAGE_UNCERTAIN correlation failures without silently excluding or trusting cached runs', async () => {
+  for (const [code, kind] of [['NOT_FOUND', 'notFound'], ['STORAGE_UNCERTAIN', 'uncertain']] as const) {
+    const f = await fixture(), { transport, scope } = transportFor(f);
+    const readCorrelation = transport.readExecutionRunCorrelation030;
+    transport.readExecutionRunCorrelation030 = async () => { throw { code, currentIntentKey: null }; };
+    const access = createRunInspectionAccess030(scope, transport);
+    await expect(access.refreshHistory()).rejects.toMatchObject({ code, kind });
+    expect(access.getSnapshot().history.kind).not.toBe('ready');
+    expect(access.getSnapshot().excludedRuns).toEqual({});
+    await expect(access.refreshRun('run')).rejects.toMatchObject({ code, kind });
+    expect(access.getSnapshot().runs.run.kind).not.toBe('ready');
+    transport.readExecutionRunCorrelation030 = readCorrelation;
+    await access.refreshHistory();
+    await access.refreshRun('run');
+    const oldHistory = retainedRunValue030(access.getSnapshot().history);
+    const oldRun = retainedRunValue030(access.getSnapshot().runs.run);
+    transport.readExecutionRunCorrelation030 = async () => { throw { code, currentIntentKey: null }; };
+    await expect(access.refreshHistory()).rejects.toMatchObject({ code, kind });
+    expect(access.getSnapshot().history).toMatchObject({ kind: 'stale', retained: oldHistory });
+    await expect(access.refreshRun('run')).rejects.toMatchObject({ code, kind });
+    expect(access.getSnapshot().runs.run).toMatchObject({ kind: 'stale', retained: oldRun });
+    expect(access.getSnapshot().excludedRuns).toEqual({});
+  }
+});
+
+it('refuses foreign correlation keys or receipts even when the open intent remains valid', async () => {
+  const mutations: ((correlation: ExecutionRunCorrelation030) => void)[] = [
+    value => { value.key.scope.conversationId = 'foreign'; },
+    value => { value.key.scope.owner.branch = 'foreign'; },
+    value => { value.receipt.systemStartId = 'foreign'; },
+    value => { value.receipt.flowInvocationId = 'foreign'; },
+    value => { value.receipt.source.revision = '999'; },
+    value => { value.receipt.versions.runtime = 'foreign'; },
+  ];
+  for (const mutate of mutations) {
+    const f = await fixture(), { transport, scope } = transportFor(f);
+    const correlation = await transport.readExecutionRunCorrelation030(scope, 'run');
+    mutate(correlation);
+    transport.readExecutionRunCorrelation030 = async () => correlation;
+    const access = createRunInspectionAccess030(scope, transport);
+    await expect(access.refreshHistory()).rejects.toMatchObject({ kind: 'scope', code: 'CORRELATION' });
+    expect(access.getSnapshot().history.kind).not.toBe('ready');
+    await expect(access.refreshRun('run')).rejects.toMatchObject({ kind: 'scope', code: 'CORRELATION' });
+    expect(access.getSnapshot().runs.run.kind).not.toBe('ready');
+  }
 });
 
 it('publishes runtime only after a full native revision and retains it after a page conflict', async () => {
@@ -149,7 +253,9 @@ it('keeps history stale on repeated cursors, duplicate runs and foreign owner pa
 
 it('isolates project, plan, branch and conversation using native intent receipts', async () => {
   const f = await fixture(), foreign = await fixture('foreign'), missing = await fixture('missing');
-  const { transport, scope, calls } = transportFor(f, foreign, missing);
+  const { transport, scope, calls, retainedIntents } = transportFor(f, foreign, missing);
+  retainedIntents.get('foreign')!.key.scope.conversationId = 'other-chat';
+  retainedIntents.delete('missing');
   const access = createRunInspectionAccess030(scope, transport);
   const originalKey = access.scopeKey;
   scope.owner.branch = 'mutated'; scope.conversationId = 'mutated';
@@ -157,11 +263,10 @@ it('isolates project, plan, branch and conversation using native intent receipts
   expect(retainedRunValue030(access.getSnapshot().history)?.map(item => item.scope.systemStartId)).toEqual(['run']);
   expect(access.scopeKey).toBe(originalKey);
   const before = calls.filter(call => call === 'runtime').length;
-  await expect(access.refreshRun('foreign')).rejects.toMatchObject({ kind: 'scope', code: 'SCOPE_UNAVAILABLE' });
-  await expect(access.refreshRun('missing')).rejects.toMatchObject({ kind: 'scope', code: 'SCOPE_UNAVAILABLE' });
+  await expect(access.refreshRun('foreign')).rejects.toMatchObject({ kind: 'scope', code: 'SCOPE_INVALID' });
+  await expect(access.refreshRun('missing')).rejects.toMatchObject({ kind: 'scope', code: 'SCOPE_INVALID' });
   expect(calls.filter(call => call === 'runtime').length).toBe(before);
-  expect(access.getSnapshot().excludedRuns.foreign.code).toBe('SCOPE_UNAVAILABLE');
-  expect(access.getSnapshot().excludedRuns.foreign.message).toContain('No native start030');
+  expect(access.getSnapshot().excludedRuns.foreign.code).toBe('SCOPE_INVALID');
   for (const key of ['projectId', 'planId', 'branch'] as const) {
     const otherScope = { owner: { ...f.capture.source.owner, [key]: 'other' }, conversationId: 'sample-chat' };
     const other = createRunInspectionAccess030(otherScope, transport);
@@ -262,23 +367,22 @@ it('rejects a history revision regression and marks owner revocation stale even 
   expect(retainedRunValue030(access.getSnapshot().runs.run)?.state.ownerStatus).toBe('revoked');
 });
 
-it('admits native captures with empty associations only through a correlated start030 intent', async () => {
+it('admits native captures only through a durable correlation and excludes unattached runs', async () => {
   const native = await fixture(), uncorrelated = await fixture('uncorrelated');
   // Even a synthetic conversation association cannot replace a native receipt.
   uncorrelated.capture.associations = { conversationId: 'sample-chat' };
-  const { transport, scope } = transportFor(native, uncorrelated);
+  const { transport, scope, retainedIntents } = transportFor(native, uncorrelated);
+  retainedIntents.delete('uncorrelated');
   const access = createRunInspectionAccess030(scope, transport);
   expect(native.capture.associations).toEqual({});
   await access.refreshHistory();
   expect(retainedRunValue030(access.getSnapshot().history)?.map(item => item.scope.systemStartId)).toEqual(['run']);
   expect(access.getSnapshot().retainedAdmission).toEqual({ kind: 'available', value: 'run' });
-  expect(access.getSnapshot().excludedRuns.uncorrelated.code).toBe('SCOPE_UNAVAILABLE');
-  expect(access.getSnapshot().excludedRuns.uncorrelated.message).toContain('No native start030');
+  expect(access.getSnapshot().excludedRuns.uncorrelated.code).toBe('SCOPE_INVALID');
   await access.refreshRun('run');
   expect(access.getSnapshot().runs.run.kind).toBe('ready');
-  await expect(access.refreshRun('uncorrelated')).rejects.toMatchObject({ kind: 'scope', code: 'SCOPE_UNAVAILABLE' });
-  // The native scope reader drops closed intents. Previously attested scope
-  // membership remains valid without inferring it from the source owner.
+  await expect(access.refreshRun('uncorrelated')).rejects.toMatchObject({ kind: 'scope', code: 'SCOPE_INVALID' });
+  // The open slot may disappear without losing the durable attachment.
   transport.readExecutionIntentsVersioned = async () => [];
   await access.refreshHistory();
   expect(retainedRunValue030(access.getSnapshot().history)).toHaveLength(1);
@@ -286,7 +390,7 @@ it('admits native captures with empty associations only through a correlated sta
   expect(access.getSnapshot().runs.run.kind).toBe('ready');
 });
 
-it('does not admit a receipt with a foreign source, flow, version, entry or intent scope', async () => {
+it('rejects invalid open admissions without discarding independently correlated runs', async () => {
   const mutations: ((intent: PublicExecutionIntent) => void)[] = [
     intent => { intent.key.scope.conversationId = 'other-chat'; },
     intent => { intent.key.scope.owner.branch = 'other-branch'; },
@@ -302,9 +406,11 @@ it('does not admit a receipt with a foreign source, flow, version, entry or inte
     transport.readExecutionIntentsVersioned = async () => [intent];
     const access = createRunInspectionAccess030(scope, transport);
     await expect(access.refreshHistory()).rejects.toMatchObject({ kind: 'scope' });
-    expect(access.getSnapshot().history).toMatchObject({ kind: 'ready', value: [] });
-    expect(access.getSnapshot().excludedRuns.run.code).toBe('SCOPE_UNAVAILABLE');
+    expect(access.getSnapshot().history.kind).toBe('ready');
+    expect(retainedRunValue030(access.getSnapshot().history)).toHaveLength(1);
+    expect(access.getSnapshot().excludedRuns).toEqual({});
     await expect(access.refreshRun('run')).rejects.toMatchObject({ kind: 'scope' });
+    expect(access.getSnapshot().runs.run.kind).toBe('ready');
   }
 });
 
@@ -380,15 +486,17 @@ it('uses native-compatible entries, phases, phase counts and distinct request id
   }
 });
 
-it('never broadens a fresh scope when the intent store is unavailable', async () => {
+it('reads a fresh history through durable correlations when the open intent store is unavailable', async () => {
   const f = await fixture(), { transport, scope, calls } = transportFor(f);
   transport.readExecutionIntentsVersioned = async () => { throw { code: 'STORAGE_UNCERTAIN', currentIntentKey: null }; };
   const access = createRunInspectionAccess030(scope, transport);
   await expect(access.refreshHistory()).rejects.toMatchObject({ kind: 'uncertain' });
-  expect(access.getSnapshot().history).toMatchObject({ kind: 'ready', value: [] });
-  expect(access.getSnapshot().excludedRuns.run.code).toBe('SCOPE_UNAVAILABLE');
+  expect(access.getSnapshot().history.kind).toBe('ready');
+  expect(retainedRunValue030(access.getSnapshot().history)).toHaveLength(1);
+  expect(access.getSnapshot().excludedRuns).toEqual({});
   await expect(access.refreshRun('run')).rejects.toMatchObject({ kind: 'uncertain' });
-  expect(calls).not.toContain('runtime');
+  expect(access.getSnapshot().runs.run.kind).toBe('ready');
+  expect(calls).toContain('runtime');
 });
 
 it('rejects first read failures with distinct conflict, scope, transport and uncertainty categories', async () => {
