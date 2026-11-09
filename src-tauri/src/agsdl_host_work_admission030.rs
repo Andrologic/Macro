@@ -825,7 +825,7 @@ impl NativePlanLock030 {
             PlanGate030::Unlocked
         } else if answer["comment"]
             .as_str()
-            .is_some_and(|s| !s.trim().is_empty())
+            .is_some_and(|s| !crate::agsdl_host_human030::human_comment_is_empty030(s))
         {
             PlanGate030::AwaitingPlan
         } else {

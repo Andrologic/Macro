@@ -197,3 +197,18 @@ it('cannot complete or submit while a plan lock is still awaiting acceptance', (
   expect(send({ kind: 'turnEnded', turnId: 'before-plan' }).decision.kind).toBe('planRequired');
   expect(send({ kind: 'submit', callId: 'early', argumentsJson: '{}' }).decision.kind).toBe('planRequired');
 });
+
+it('uses ECMAScript comment emptiness for plan revision or terminal rejection', () => {
+  for (const [comment, empty] of [
+    ['\u0085', false], ['\uFEFF', true],
+    ['\u00A0\u1680\u2003\u202F\u205F\u3000', true],
+    ['\t\n\r\u000B\u000C\u2028\u2029', true],
+    ['\uFEFF\u0085\uFEFF', false], ['\u200B', false], ['\u180E', false],
+    ['\u2003Réviser.\uFEFF', false],
+  ] as const) {
+    const { send } = harness('{"planFirst":"ask"}');
+    send({ kind: 'planPresented', planId: 'plan', text: 'A captured plan' });
+    const result = send({ kind: 'planResolved', planId: 'plan', decision: 'reject', comment }).decision;
+    expect(result).toEqual(empty ? { kind: 'stopping', code: 'PLAN_REJECTED' } : { kind: 'planRevision', planId: 'plan', comment });
+  }
+});

@@ -1410,3 +1410,145 @@ async fn delayed_approval_keeps_its_original_unsuspended_deadline() {
         .is_err());
     assert!(f.broker.oldest_open(&work).await.unwrap().is_none());
 }
+
+#[tokio::test]
+async fn wake_delay_accounts_for_native_time_spent_in_the_pump() {
+    for kind in ["machine", "answer", "approval"] {
+        let f = fixture(
+            if kind == "approval" {
+                "approval"
+            } else {
+                "agent"
+            },
+            if kind == "answer" { None } else { Some(60000) },
+            if kind == "answer" { Some(60000) } else { None },
+        )
+        .await;
+        if kind == "approval" {
+            f.broker
+                .admit_host_work(&f.host, f.attempt.start_effect_id())
+                .await
+                .unwrap();
+        } else {
+            let work = f.broker.admit_agent(&f.host, &f.attempt).await.unwrap();
+            if kind == "answer" {
+                pump(&f).await;
+                f.broker
+                    .open(&f.host, &work, "ask", json!({"action":"synthetic"}))
+                    .await
+                    .unwrap();
+            }
+        }
+        let cancelled = CancellationToken::new();
+        let (result, ()) = tokio::join!(f.broker.pump(&f.host, &cancelled), async {
+            let job = f.broker.jobs.next().await.unwrap();
+            let output = evaluate(&job).await;
+            // The resident computed its delay at t=0, but finishes at t=30s.
+            f.clock.at(30000);
+            f.broker
+                .jobs
+                .complete(&job.generation, complete(&job, output))
+                .unwrap();
+        });
+        assert!(result.unwrap().is_some());
+        assert_eq!(
+            f.broker.next_wake_ms().await.unwrap(),
+            Some(30000),
+            "{kind}"
+        );
+        // Repeated reads subtract from the same persisted origin exactly once.
+        f.clock.at(45000);
+        assert_eq!(
+            f.broker.next_wake_ms().await.unwrap(),
+            Some(15000),
+            "{kind}"
+        );
+        f.clock.at(60000);
+        assert_eq!(f.broker.next_wake_ms().await.unwrap(), Some(0), "{kind}");
+        f.broker.tick(&f.host).await.unwrap();
+        let receipt = pump(&f).await;
+        if kind == "machine" {
+            assert_eq!(
+                receipt["expiredWorkIds"],
+                json!([f.attempt.work().activation_id])
+            );
+        } else {
+            assert_eq!(receipt["pendingResolutions"][0]["resolvedAtMs"], "60000");
+        }
+        f.clock.at(90000);
+        assert!(f
+            .broker
+            .next_wake_ms()
+            .await
+            .unwrap()
+            .is_none_or(|delay| delay == 0));
+    }
+}
+
+#[tokio::test]
+async fn unicode_comments_keep_the_native_plan_lock_and_ts_journal_consistent() {
+    use crate::agsdl_host_work_admission030::NativePlanLock030;
+    for (comment, empty) in [
+        ("\u{0085}", false),
+        ("\u{feff}", true),
+        ("\u{00a0}\u{1680}\u{2003}\u{202f}\u{205f}\u{3000}", true),
+        ("\t\n\r\u{000b}\u{000c}\u{2028}\u{2029}", true),
+        ("\u{feff}\u{0085}\u{feff}", false),
+        ("\u{200b}", false),
+        ("\u{180e}", false),
+        ("\u{2003}Réviser.\u{feff}", false),
+    ] {
+        assert_eq!(human_comment_is_empty030(comment), empty);
+        let f = fixture("agent", None, None).await;
+        let work = f.broker.admit_agent(&f.host, &f.attempt).await.unwrap();
+        pump(&f).await;
+        let lock = NativePlanLock030::fixture030(&f.attempt);
+        lock.presented(&f.attempt, "plan").await.unwrap();
+        let request = f
+            .broker
+            .open(
+                &f.host,
+                &work,
+                "plan",
+                json!({"planId":"plan","text":"A captured plan"}),
+            )
+            .await
+            .unwrap();
+        pump(&f).await;
+        f.broker
+            .submit(
+                &f.host,
+                submission(
+                    &f,
+                    &request,
+                    "0",
+                    HumanAnswer030::Decision {
+                        decision: "no".into(),
+                        comment: comment.into(),
+                    },
+                ),
+                HumanOrigin030::Person,
+            )
+            .await
+            .unwrap();
+        let receipt = pump(&f).await;
+        assert_eq!(
+            receipt["pendingResolutions"][0]["workActions"][0]["action"],
+            if empty { "PLAN_REJECTED" } else { "continue" },
+            "{comment:?}"
+        );
+        let decision = f.broker.take_resolution(&f.host, &request).await.unwrap();
+        lock.resolve(&f.attempt, &decision).await.unwrap();
+        assert!(lock.authorize(&f.attempt, false).await.is_err());
+        assert_eq!(
+            lock.authorize(&f.attempt, true).await.is_err(),
+            empty,
+            "{comment:?}"
+        );
+        assert_eq!(
+            lock.presented(&f.attempt, "revised-plan").await.is_err(),
+            empty,
+            "{comment:?}"
+        );
+    }
+}

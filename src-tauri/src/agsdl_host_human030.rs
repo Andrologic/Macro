@@ -36,6 +36,19 @@ fn require(ok: bool, message: &str) -> Result<()> {
 #[path = "agsdl_host_human030_validation.rs"]
 mod validation;
 
+/// ECMAScript WhiteSpace and LineTerminator, as used by String.prototype.trim.
+/// NEL (U+0085) is content; BOM (U+FEFF) is whitespace. Keep one native
+/// definition for both resolution validation and the enforced plan lock.
+pub(crate) fn human_comment_is_empty030(comment: &str) -> bool {
+    comment.chars().all(|c| {
+        matches!(c,
+            '\u{0009}'..='\u{000d}' | '\u{0020}' | '\u{00a0}' | '\u{1680}' |
+            '\u{2000}'..='\u{200a}' | '\u{2028}' | '\u{2029}' | '\u{202f}' |
+            '\u{205f}' | '\u{3000}' | '\u{feff}'
+        )
+    })
+}
+
 fn uuid() -> String {
     uuid::Uuid::new_v4().to_string()
 }
@@ -1003,7 +1016,14 @@ impl HumanBroker030 {
         let mut db = self.pool.acquire().await?;
         let row = self.clock_row(&mut db).await?;
         let receipt: Value = serde_json::from_str(row.get("receipt_json"))?;
-        Ok(receipt["nextWakeMs"].as_u64())
+        let observed = validation::ms(row.get("observed_ms"))?;
+        let now = self.clock.now_ms();
+        require(now >= observed, "Native wake time moved backwards")?;
+        // The pure delay is relative to its captured observation, not the
+        // later moment at which evaluation/commit/IO finishes.
+        Ok(receipt["nextWakeMs"]
+            .as_u64()
+            .map(|delay| delay.saturating_sub(now - observed)))
     }
     pub(crate) async fn oldest_open(&self, work: &OwnedHumanWork030) -> Result<Option<String>> {
         let rows = sqlx::query("SELECT request_id,work_ids_json FROM engine_flow030_human_requests WHERE system_id=? AND invocation_id=? AND resolution_json IS NULL ORDER BY rowid")

@@ -216,11 +216,7 @@ fn resolution(request: &Request, at: u64, submission: Option<&Submission>) -> Re
             ))
         }
     };
-    // ECMAScript trim includes BOM and excludes NEL.
-    let comment = answer["comment"].as_str().unwrap_or("");
-    let has_comment = comment
-        .chars()
-        .any(|c| !(c.is_whitespace() && c != '\u{85}' || c == '\u{feff}'));
+    let has_comment = !human_comment_is_empty030(answer["comment"].as_str().unwrap_or(""));
     let action = if request.kind == "plan" && answer["decision"] == "no" && !has_comment {
         "PLAN_REJECTED"
     } else {
