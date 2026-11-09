@@ -3,15 +3,26 @@ import { join } from 'node:path';
 import { createHash } from 'node:crypto';
 import { parse, stringify } from '../../src/vendor/agsdl/v0.3/json.mjs';
 import { compareRun030 } from './run-expect030';
-import { observeRun030 } from './observe-run030';
+import { observeRun030, type ObserveOptions030 } from './observe-run030';
 
 const object = (value: unknown): value is Record<string, unknown> => value !== null && typeof value === 'object' && !Array.isArray(value);
 
-const scenarioNames = new Set(['error-route', 'join-all', 'flow-error', 'mission-priority', 'parallel-no-join', 'visit-limit', 'fanout-empty', 'fanout-keep', 'fanout-limit', 'fanout-missions']);
+// Fixture correlation only. Admission/qualification remains a native decision.
+const scenarioNames = new Set([
+  'answer-timeout-ask', 'answer-timeout-plan', 'approval', 'approval-comments',
+  'call-answer-timeout', 'command-json-invalid', 'command-lines', 'command-outcome',
+  'compose-body-failure', 'composition', 'delivery-queue', 'delivery-steer',
+  'error-route', 'fanout-empty', 'fanout-keep', 'fanout-limit', 'fanout-max-failures',
+  'fanout-missions', 'fanout-one-at-a-time', 'fanout-operand', 'finish-branch-goes-on',
+  'flow-error', 'join-all', 'join-branch-failed', 'join-branch-steer', 'join-group-closes',
+  'mission-priority', 'parallel-no-join', 'quorum-finish', 'quorum-missed',
+  'quorum-reached', 'quorum-unreachable', 'quorum-wait', 'sequence-loop',
+  'timeout-pauses-for-person', 'visit-limit', 'wait-group-closes',
+]);
 
 // Correlate a native QA result with its fixture. This is not an authority receipt.
 // Run only after the QA application and its database pool have exited.
-export async function compareObserved030(resultPath: string, database: string) {
+export async function compareObserved030(resultPath: string, database: string, options: ObserveOptions030 = {}) {
   const envelope: unknown = JSON.parse(await readFile(resultPath, 'utf8'));
   if (!object(envelope) || envelope.ok !== true || !object(envelope.result)) throw new Error('Invalid native scenario result');
   const result = envelope.result, scenario = result.scenario, receipt = result.receipt;
@@ -28,7 +39,7 @@ export async function compareObserved030(resultPath: string, database: string) {
   if (fixture.error || !fixture.tree || typeof fixture.tree !== 'object' || Array.isArray(fixture.tree) || !('expect' in fixture.tree)) {
     throw new Error('Invalid pinned conformance fixture');
   }
-  const observed = observeRun030(database, receipt.systemStartId, receipt.flowInvocationId);
+  const observed = observeRun030(database, receipt.systemStartId, receipt.flowInvocationId, options);
   const diagnostics = compareRun030(stringify(fixture.tree.expect), observed);
   return { scenario: { name: scenario.name, fixtureSha256 }, fixtureSha256,
     observedSha256: createHash('sha256').update(observed).digest('hex'), observedJson: observed, diagnostics };

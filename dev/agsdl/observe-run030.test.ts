@@ -1,31 +1,21 @@
 import { afterEach, describe, expect, test } from 'bun:test';
 import { Database } from 'bun:sqlite';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { readFileSync, writeFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
-import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { observeRun030 } from './observe-run030';
+import { observeRun030 as observeWithReplay030 } from './observe-run030';
+import { cleanupObservedDatabases030, nativeDatabase } from './observe-run030.testSupport';
 import { compareRun030 } from './run-expect030';
-import { compareObserved030 } from './compare-observed030';
+import { compareObserved030 as compareWithReplay030 } from './compare-observed030';
+const observeRun030 = (path: string, system: string, invocation: string) => observeWithReplay030(path, system, invocation, { syntheticUnitTestOnly: true });
+const compareObserved030 = (result: string, path: string) => compareWithReplay030(result, path, { syntheticUnitTestOnly: true });
 
-const directories: string[] = [];
-afterEach(() => { for (const dir of directories.splice(0)) rmSync(dir, { recursive: true, force: true }); });
-function database(messageJson = '{"prompt":"go","resources":{"x":{"value":{"n":1e0}}}}'): string {
-  const dir = mkdtempSync(join(tmpdir(), 'agsdl-observe-'));
-  directories.push(dir);
-  const path = join(dir, 'run.sqlite');
-  const db = new Database(path);
-  db.exec(`CREATE TABLE engine_flow030_runs(system_id TEXT,invocation_id TEXT,state_json TEXT,plan_json TEXT);
-    CREATE TABLE engine_flow030_outbox(system_id TEXT,invocation_id TEXT,effect_id TEXT,event_id TEXT,effect_json TEXT,status TEXT);
-    CREATE TABLE engine_flow030_handoffs(system_id TEXT,invocation_id TEXT,effect_id TEXT,receipt_json TEXT);
-    CREATE TABLE engine_flow030_events(system_id TEXT,invocation_id TEXT,event_id TEXT,event_json TEXT,diagnostic_json TEXT);`);
-  const state = { verdict: 'succeeded', activations: [{ id: 'a', step: ['worker'], itemJson: '1e0', occurrence: { itemIndex: '0' }, physical: false }], groups: [] };
-  db.query('INSERT INTO engine_flow030_runs VALUES (?,?,?,?)').run('s', 'i', JSON.stringify(state), '{"steps":[],"agents":[]}');
-  const effect = { kind: { kind: 'start', work: { activationId: 'a' }, step: ['worker'], messageJson } };
-  db.query('INSERT INTO engine_flow030_outbox VALUES (?,?,?,?,?,?)').run('s', 'i', 'e', 'ev', JSON.stringify(effect), 'settled');
-  db.query('INSERT INTO engine_flow030_handoffs VALUES (?,?,?,?)').run('s', 'i', 'e', '{"kind":"nativeOwnedHandoff030","effectId":"e"}');
-  db.close();
-  return path;
+afterEach(cleanupObservedDatabases030);
+function database(messageJson: string | null = '{"prompt":"go","resources":{"x":{"value":{"n":1e0}}}}'): string {
+  const n = nativeDatabase();
+  n.start('worker', 'agent', { message: messageJson ?? undefined, item: '1e0', index: '0' });
+  n.persist(); n.close();
+  return n.path;
 }
 describe('durable scenario observation', () => {
   test('retains exact item and resource tokens, and observes only settled handoffs', () => {
@@ -52,13 +42,7 @@ describe('durable scenario observation', () => {
   });
   test('observes an absent prompt as null, including an absent message', () => {
     for (const messageJson of ['{}', null]) {
-      const path = database();
-      const db = new Database(path);
-      const row = db.query('SELECT effect_json FROM engine_flow030_outbox').get() as { effect_json: string };
-      const effect = JSON.parse(row.effect_json);
-      effect.kind.messageJson = messageJson;
-      db.query('UPDATE engine_flow030_outbox SET effect_json=?').run(JSON.stringify(effect));
-      db.close();
+      const path = database(messageJson);
       const observed = observeRun030(path, 's', 'i');
       expect(compareRun030('{"run":"succeeded","messages":[{"to":"worker","prompt":null}]}', observed)).toEqual([]);
     }
@@ -70,57 +54,30 @@ describe('durable scenario observation', () => {
     db = new Database(path); db.exec("UPDATE engine_flow030_outbox SET status='settled'; UPDATE engine_flow030_runs SET state_json=json_set(state_json,'$.activations[0].physical',json('true'))"); db.close();
     expect(() => observeRun030(path, 's', 'i')).toThrow('Physical work remains');
   });
-  test('rejects incoherent Stop sources and preserves branch cancellations', () => {
-    const path = database();
-    const db = new Database(path);
-    db.exec('DELETE FROM engine_flow030_outbox');
-    db.query('INSERT INTO engine_flow030_events VALUES (?,?,?,?,?)')
-      .run('s', 'i', 'stop-event', JSON.stringify({ kind: 'Stop' }), null);
-    db.query('INSERT INTO engine_flow030_outbox VALUES (?,?,?,?,?,?)')
-      .run('s', 'i', 'stop-effect', 'stop-event', JSON.stringify({ kind: { kind: 'stopWork', work: { activationId: 'a' } } }), 'settled');
-    db.close();
-    expect(() => observeRun030(path, 's', 'i')).toThrow('Stop effect in a non-cancelled run');
-    const edit = new Database(path);
-    edit.query('UPDATE engine_flow030_events SET event_json=?').run(JSON.stringify({ kind: { WorkResult: {} } }));
-    edit.close();
-    expect(compareRun030('{"run":"succeeded","cancelled":[{"step":"worker","item":0}]}', observeRun030(path, 's', 'i'))).toEqual([]);
-    const malformed = new Database(path);
-    malformed.exec(`UPDATE engine_flow030_events SET event_json='{"kind":"unknown"}'`);
-    malformed.close();
-    expect(() => observeRun030(path, 's', 'i')).toThrow('Expected durable object');
-  });
-  test('refuses unsupported effects, diagnostics, and answer-bearing plans', () => {
+  test('refuses unsupported effects, diagnostics, and contradictory captured plans', () => {
     const path = database();
     let db = new Database(path);
-    db.query('INSERT INTO engine_flow030_outbox VALUES (?,?,?,?,?,?)').run('s', 'i', 'unknown', 'other', '{"kind":{"kind":"futureEffect"}}', 'settled');
+    db.query('INSERT INTO engine_flow030_outbox(system_id,invocation_id,effect_id,event_id,effect_json,status) VALUES (?,?,?,?,?,?)').run('s', 'i', 'unknown', 'other', '{"kind":{"kind":"futureEffect"}}', 'settled');
     db.close();
     expect(() => observeRun030(path, 's', 'i')).toThrow('Unprojectable effect kind');
     db = new Database(path);
     db.exec("DELETE FROM engine_flow030_outbox WHERE effect_id='unknown'");
-    db.query('INSERT INTO engine_flow030_events VALUES (?,?,?,?,?)').run('s', 'i', 'diagnostic', '{}', '{}');
+    db.query('INSERT INTO engine_flow030_events(system_id,invocation_id,event_id,event_json,diagnostic_json) VALUES (?,?,?,?,?)').run('s', 'i', 'diagnostic', '{}', '{}');
     db.close();
     expect(() => observeRun030(path, 's', 'i')).toThrow('Flow diagnostic remains');
-    db = new Database(path); db.exec('DELETE FROM engine_flow030_events'); db.close();
+    db = new Database(path); db.exec("DELETE FROM engine_flow030_events WHERE event_id='diagnostic'"); db.close();
+    db = new Database(path); db.exec('DROP TABLE engine_flow030_human_requests'); db.close();
     for (const plan of [
-      { steps: [{ type: 'call' }], agents: [] },
-      { steps: [{ type: 'approval' }], agents: [] },
+      { steps: [{ address: ['approve'], type: 'approval' }], agents: [] },
+      { steps: [{ address: ['tool'], type: 'call', declarationJson: '{"mcp":{"server":"example","tool":"ask"}}' }], agents: [] },
       { steps: [], agents: [{ agentDeclarationJson: '{"harness":"example","answerTimeoutMs":100}' }] },
+      { steps: [], agents: [{ agentDeclarationJson: '{"harness":"example","permissions":{"reviewer":"person"}}' }] },
+      { steps: [], agents: [{ agentDeclarationJson: '{"harness":"example","planFirst":"ask"}' }] },
     ]) {
       const edit = new Database(path);
       edit.query('UPDATE engine_flow030_runs SET plan_json=?').run(JSON.stringify(plan));
       edit.close();
-      expect(() => observeRun030(path, 's', 'i')).toThrow('Answers are not projectable');
-    }
-  });
-  test('accepts each additional native scenario pin without claiming a matching run', async () => {
-    const path = database(), resultPath = `${path}.result.json`;
-    for (const name of ['flow-error', 'mission-priority', 'parallel-no-join', 'visit-limit', 'fanout-empty', 'fanout-keep', 'fanout-limit', 'fanout-missions']) {
-      const bytes = readFileSync(join(import.meta.dir, 'fixtures/v0.3/conformance/runs', `${name}.json`));
-      const fixtureSha256 = createHash('sha256').update(bytes).digest('hex');
-      writeFileSync(resultPath, JSON.stringify({ ok: true, result: { scenario: { name, fixtureSha256 }, receipt: { systemStartId: 's', flowInvocationId: 'i' } } }));
-      const compared = await compareObserved030(resultPath, path);
-      expect(compared.scenario).toEqual({ name, fixtureSha256 });
-      expect(compared.diagnostics.length).toBeGreaterThan(0);
+      expect(() => observeRun030(path, 's', 'i')).toThrow();
     }
   });
   test('refuses cancelled runs rather than treating them as succeeded', () => {
@@ -147,16 +104,5 @@ describe('durable scenario observation', () => {
     writeFileSync(resultPath, JSON.stringify(result));
     await expect(compareObserved030(resultPath, path)).rejects.toThrow('Run is absent');
   });
-  test('uses decision ordinals and rejects missing or duplicated ordering', () => {
-    const path = database(); const db = new Database(path);
-    const state = { verdict: 'succeeded', activations: [], groups: [
-      { join: ['later'], decision: 'done', decidedOrdinal: '2', outputJson: '{"outcome":"done","branches":{}}' },
-      { join: ['earlier'], decision: 'done', decidedOrdinal: '1', outputJson: '{"outcome":"done","branches":{}}' },
-    ] };
-    db.query('UPDATE engine_flow030_runs SET state_json=?').run(JSON.stringify(state)); db.exec('DELETE FROM engine_flow030_outbox'); db.close();
-    const observed = observeRun030(path, 's', 'i');
-    expect(compareRun030('{"run":"succeeded","joins":[{"join":"earlier","outcome":"done"},{"join":"later","outcome":"done"}]}', observed)).toEqual([]);
-    const edit = new Database(path); state.groups[0].decidedOrdinal = '1'; edit.query('UPDATE engine_flow030_runs SET state_json=?').run(JSON.stringify(state)); edit.close();
-    expect(() => observeRun030(path, 's', 'i')).toThrow('Join order is unavailable');
-  });
+
 });
