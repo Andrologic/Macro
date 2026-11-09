@@ -904,6 +904,47 @@ mod run_correlation030 {
     }
 
     #[tokio::test]
+    async fn intent_attached_to_one_run_does_not_attest_another() {
+        let temp = tempfile::tempdir().unwrap();
+        let pool = database(&temp.path().join("other-run.db")).await;
+        let intent = admitted(&pool).await;
+        let (mut request, mut capture) = fixture("call");
+        request.request_id = "other-request".into();
+        request.entry.as_mut().unwrap().delivery_id = "other-delivery".into();
+        capture.identity.system_start_id = "other-system".into();
+        capture.identity.flow_invocation_id = "other-flow".into();
+        capture.identity.snapshot_id = "other-snapshot".into();
+        start_fixture(&pool, &request, &capture, &authority())
+            .await
+            .unwrap();
+        assert_eq!(
+            intents::read_run_correlation030(&pool, &intent.key.scope, "system")
+                .await
+                .unwrap()
+                .key,
+            intent.key
+        );
+        assert_eq!(
+            intents::read_run_correlation030(&pool, &intent.key.scope, "other-system")
+                .await
+                .unwrap_err()
+                .code,
+            ExecutionIntentErrorCode::ScopeInvalid
+        );
+        // A corrupted attachment to that other run must fail its Start request check.
+        sqlx::raw_sql("DROP TRIGGER engine_ui_intent_start030_identity_update; UPDATE engine_ui_intents SET admission_system030_id='other-system';")
+            .execute(&pool).await.unwrap();
+        assert_eq!(
+            intents::read_run_correlation030(&pool, &intent.key.scope, "other-system")
+                .await
+                .unwrap_err()
+                .code,
+            ExecutionIntentErrorCode::StorageUncertain
+        );
+        pool.close().await;
+    }
+
+    #[tokio::test]
     async fn rejects_corrupted_request_capture_receipt_and_intent_owner() {
         for update in [
             "UPDATE engine_start030_requests SET request_json=json_set(request_json,'$.entry.messageJson','null')",
@@ -912,6 +953,11 @@ mod run_correlation030 {
             "UPDATE engine_start030_requests SET capture_json=json_set(capture_json,'$.identity.snapshotId','different'), receipt_json=json_set(receipt_json,'$.identity.snapshotId','different')",
             "UPDATE engine_start030_requests SET capture_json=json_set(capture_json,'$.identity.epoch','different'), receipt_json=json_set(receipt_json,'$.identity.epoch','different')",
             "UPDATE engine_start030_requests SET capture_json=json_set(capture_json,'$.versions.contract','agsdl-0.2.0')",
+            "UPDATE engine_start030_requests SET capture_json=json_set(capture_json,'$.versions.snapshot','1')",
+            "UPDATE engine_start030_requests SET capture_json=json_set(capture_json,'$.versions.profile','macro-serial-inline-v1')",
+            "UPDATE engine_start030_requests SET capture_json=json_set(capture_json,'$.versions.compiler','different-compiler')",
+            "UPDATE engine_start030_requests SET capture_json=json_set(capture_json,'$.versions.runtime','different-runtime')",
+            "UPDATE engine_start030_requests SET capture_json=json_set(capture_json,'$.versions.registry','different-registry')",
             "UPDATE engine_ui_intents SET payload_json=json_set(payload_json,'$.request.source.owner.branch','feature/other')",
         ] {
             let temp = tempfile::tempdir().unwrap();
