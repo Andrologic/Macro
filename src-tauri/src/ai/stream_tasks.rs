@@ -39,6 +39,29 @@ pub(crate) struct OwnedOperationPermit030 {
     registry: std::sync::Weak<Mutex<HashMap<String, Entry>>>,
     parent_request_id: String,
 }
+
+/// Issued only by this registry after the matching parent and its cleanups
+/// have completed. Its fields cannot be constructed by a caller.
+pub(crate) struct JoinedOwnedAgent030 {
+    attempt: crate::agsdl_host_flow030::FlowWorkAttempt030,
+    request_id: String,
+}
+impl JoinedOwnedAgent030 {
+    pub(crate) fn attempt(&self) -> &crate::agsdl_host_flow030::FlowWorkAttempt030 {
+        &self.attempt
+    }
+    pub(crate) fn request_id(&self) -> &str {
+        &self.request_id
+    }
+}
+
+fn agent_binding030(
+    attempt: &crate::agsdl_host_flow030::FlowWorkAttempt030,
+) -> Result<String, String> {
+    use sha2::{Digest, Sha256};
+    let raw = serde_json::to_vec(attempt).map_err(|_| "Cannot encode native agent binding")?;
+    Ok(format!("{:x}", Sha256::digest(raw)))
+}
 impl OwnedOperationPermit030 {
     pub(crate) fn digest(&self) -> &str {
         &self.digest
@@ -115,16 +138,62 @@ struct Entry {
         String,
         String,
     )>,
+    agent_binding030: Option<String>,
 }
 
 impl StreamTasks {
+    /// Establish that this caller is the currently running native parent. This
+    /// is attribution only and does not itself authorize an operation.
+    pub(crate) fn verify_agent_scope030(
+        &self,
+        request_id: &str,
+        attempt: &crate::agsdl_host_flow030::FlowWorkAttempt030,
+    ) -> Result<(), String> {
+        let in_parent = OWNED_STREAM_SCOPE
+            .try_with(|(registry, scoped_id)| {
+                scoped_id == request_id
+                    && registry
+                        .upgrade()
+                        .is_some_and(|entries| Arc::ptr_eq(&entries, &self.entries))
+            })
+            .unwrap_or(false);
+        if !in_parent {
+            return Err("Operation is outside the owned parent".into());
+        }
+        let entries = self
+            .entries
+            .lock()
+            .map_err(|_| "Stream registry poisoned")?;
+        let parent = entries.get(request_id).ok_or("Owned parent is absent")?;
+        if !parent.admitted
+            || parent.cancelled
+            || parent
+                .abort
+                .as_ref()
+                .is_none_or(tokio::task::AbortHandle::is_finished)
+            || parent.owner030.as_ref()
+                != Some(&(attempt.owner().clone(), attempt.generation().to_owned()))
+            || parent.work030.as_ref()
+                != Some(&(
+                    attempt.identity().clone(),
+                    attempt.work().clone(),
+                    attempt.agent().to_owned(),
+                    attempt.provider_attempt_id().to_owned(),
+                ))
+            || parent.agent_binding030.as_deref() != Some(agent_binding030(attempt)?.as_str())
+        {
+            return Err("Owned parent attribution differs".into());
+        }
+        Ok(())
+    }
+
     /// Registration and cancellation share this synchronous lock. No provider
     /// work can be polled until its owner is installed in the registry.
     pub fn start<F>(&self, request_id: String, work: F) -> Result<(), String>
     where
         F: Future<Output = ()> + Send + 'static,
     {
-        self.start_inner(request_id, None, None, work)
+        self.start_inner(request_id, None, None, None, work)
     }
 
     pub(crate) fn start_owned030<F>(
@@ -137,7 +206,7 @@ impl StreamTasks {
     where
         F: Future<Output = ()> + Send + 'static,
     {
-        self.start_inner(request_id, Some((owner, generation)), None, work)
+        self.start_inner(request_id, Some((owner, generation)), None, None, work)
     }
 
     /// The opaque attempt is minted from a claimed native Start. It binds the
@@ -160,6 +229,7 @@ impl StreamTasks {
                 attempt.agent().into(),
                 attempt.provider_attempt_id().into(),
             )),
+            Some(agent_binding030(attempt)?),
             work,
         )
     }
@@ -184,6 +254,7 @@ impl StreamTasks {
             request_id,
             Some((context.owner, generation)),
             Some((identity, context.work, agent, provider_attempt_id)),
+            None,
             work,
         )
     }
@@ -198,6 +269,7 @@ impl StreamTasks {
             String,
             String,
         )>,
+        agent_binding030: Option<String>,
         work: F,
     ) -> Result<(), String>
     where
@@ -230,6 +302,7 @@ impl StreamTasks {
                 operations030_bytes: 0,
                 owner030,
                 work030,
+                agent_binding030,
             },
         );
         let registry = self.clone();
@@ -442,6 +515,53 @@ impl StreamTasks {
     /// replace a previous owner. The registry is cleared only on process exit.
     /// A cancellation tombstone is not evidence that an earlier physical stream
     /// ended. Recovery must distinguish an owned task from an absent request.
+    /// Verify the complete native attribution before waiting or cancelling.
+    /// The digest survives cleanup, without retaining request bodies or context.
+    pub(crate) async fn join_agent030(
+        &self,
+        attempt: &crate::agsdl_host_flow030::FlowWorkAttempt030,
+        cancel: bool,
+    ) -> Result<JoinedOwnedAgent030, String> {
+        let request_id = format!(
+            "flow030:{}:{}",
+            attempt.identity().system_start_id,
+            attempt.start_effect_id()
+        );
+        let expected = agent_binding030(attempt)?;
+        let mut finished = {
+            let mut entries = self
+                .entries
+                .lock()
+                .map_err(|_| "Stream registry poisoned")?;
+            let entry = entries
+                .get_mut(&request_id)
+                .ok_or("Owned parent is absent")?;
+            if !entry.admitted || entry.agent_binding030.as_deref() != Some(expected.as_str()) {
+                return Err("Owned parent attribution differs".into());
+            }
+            if cancel {
+                entry.cancelled = true;
+                if let Some(abort) = &entry.abort {
+                    abort.abort();
+                }
+            }
+            entry.finished.clone()
+        };
+        loop {
+            if let Some(result) = finished.borrow_and_update().clone() {
+                result?;
+                return Ok(JoinedOwnedAgent030 {
+                    attempt: attempt.clone(),
+                    request_id,
+                });
+            }
+            finished
+                .changed()
+                .await
+                .map_err(|_| "Stream completion was not confirmed")?;
+        }
+    }
+
     pub async fn cancel_owned(&self, request_id: &str) -> Result<bool, String> {
         let admitted = self
             .entries
@@ -471,6 +591,7 @@ impl StreamTasks {
                     operations030_bytes: 0,
                     owner030: None,
                     work030: None,
+                    agent_binding030: None,
                 }
             });
             entry.cancelled = true;
@@ -518,6 +639,75 @@ mod tests {
             method: "turn/start".into(),
             request_json: r#"{"value":1e0}"#.into(),
         }
+    }
+
+    #[tokio::test]
+    async fn failed_cleanup_never_produces_an_agent_join_witness() {
+        use crate::agsdl_host_flow030::FlowWorkAttempt030;
+
+        let registry = StreamTasks::default();
+        // This test exercises registry evidence only, with no SQL admission.
+        let attempt = FlowWorkAttempt030::registry_fixture030("attempt");
+        let foreign = FlowWorkAttempt030::registry_fixture030("foreign-attempt");
+        let request_id = format!(
+            "flow030:{}:{}",
+            attempt.identity().system_start_id,
+            attempt.start_effect_id()
+        );
+        let (started, running) = oneshot::channel();
+        registry
+            .start_agent030(request_id.clone(), &attempt, async move {
+                started.send(()).unwrap();
+                std::future::pending::<()>().await;
+            })
+            .unwrap();
+        running.await.unwrap();
+        registry
+            .entries
+            .lock()
+            .unwrap()
+            .get_mut(&request_id)
+            .unwrap()
+            .cleanups
+            .push(tokio::spawn(async {
+                Err("synthetic cleanup failure".to_string())
+            }));
+
+        let foreign_error = tokio::time::timeout(
+            Duration::from_secs(2),
+            registry.join_agent030(&foreign, true),
+        )
+        .await
+        .expect("foreign attribution must be rejected without waiting")
+        .err()
+        .expect("foreign attribution cannot produce a witness");
+        assert_eq!(foreign_error, "Owned parent attribution differs");
+        assert!(!registry.entries.lock().unwrap()[&request_id].cancelled);
+
+        for _ in 0..2 {
+            let cleanup_error = tokio::time::timeout(
+                Duration::from_secs(2),
+                registry.join_agent030(&attempt, true),
+            )
+            .await
+            .expect("the cancelled parent and cleanup must finish")
+            .err()
+            .expect("failed cleanup cannot produce a witness, including on retry");
+            assert_eq!(cleanup_error, "synthetic cleanup failure");
+        }
+        let entries = registry.entries.lock().unwrap();
+        assert_eq!(entries.len(), 1);
+        let tombstone = &entries[&request_id];
+        assert!(tombstone.admitted && tombstone.cancelled && tombstone.abort.is_none());
+        assert!(tombstone.cleanups.is_empty());
+        assert!(tombstone.operations030.is_empty());
+        assert!(tombstone.owner030.is_none() && tombstone.work030.is_none());
+        assert_eq!(
+            tombstone.finished.borrow().as_ref(),
+            Some(&Err("synthetic cleanup failure".to_string()))
+        );
+        drop(entries);
+        assert!(registry.start(request_id, async {}).is_err());
     }
 
     #[tokio::test]

@@ -35,6 +35,20 @@ pub async fn execution_start(
         let git = app.state::<crate::git::GitState>();
         let workspace_state = app.state::<crate::WorkspaceMetadataRoot>();
         let workspace = workspace_state.0.read().await.clone();
+        if request.profile == "macro-agsdl-030-v1" {
+            let retained = crate::agsdl_host_flow030::start_linked(
+                host.flow030(),
+                &host,
+                &manager,
+                &pool(&state).await?,
+                &workspace,
+                &git,
+                &request,
+                None,
+            )
+            .await?;
+            return Ok(public_start030(&request, &retained));
+        }
         crate::agsdl_host_capture::start(
             &host,
             &manager,
@@ -54,6 +68,24 @@ pub async fn execution_start(
             "Native Start task did not acknowledge",
         )
     })?
+}
+
+pub(crate) fn public_start030(
+    request: &EngineStartRequest,
+    retained: &repository::start030::RetainedStart030,
+) -> PublicStartReceipt {
+    let identity = &retained.receipt.identity;
+    PublicStartReceipt {
+        system_start_id: identity.system_start_id.clone(),
+        flow_invocation_id: identity.flow_invocation_id.clone(),
+        snapshot: PublicSnapshot {
+            system_start_id: identity.system_start_id.clone(),
+            source: retained.capture.source.clone(),
+            authored_source: retained.capture.authored_source.clone(),
+            versions: retained.capture.versions.clone(),
+            associations: request.associations.clone(),
+        },
+    }
 }
 
 #[tauri::command]
@@ -514,17 +546,32 @@ async fn submit_retained(
         ExecutionIntentPayload::Start { request } => {
             let manager = app.state::<crate::config::ConfigManager>();
             let git = app.state::<crate::git::GitState>();
-            crate::agsdl_host_capture::start_linked(
-                &host,
-                &manager,
-                &pool,
-                &workspace,
-                request.clone(),
-                &git,
-                Some(&link),
-            )
-            .await
-            .map(|_| ())
+            if request.profile == "macro-agsdl-030-v1" {
+                crate::agsdl_host_flow030::start_linked(
+                    host.flow030(),
+                    &host,
+                    &manager,
+                    &pool,
+                    &workspace,
+                    &git,
+                    request,
+                    Some(&link),
+                )
+                .await
+                .map(|_| ())
+            } else {
+                crate::agsdl_host_capture::start_linked(
+                    &host,
+                    &manager,
+                    &pool,
+                    &workspace,
+                    request.clone(),
+                    &git,
+                    Some(&link),
+                )
+                .await
+                .map(|_| ())
+            }
         }
         ExecutionIntentPayload::Deliver { request, .. } => {
             crate::agsdl_host_capture::deliver_linked(
