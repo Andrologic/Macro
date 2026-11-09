@@ -1538,9 +1538,10 @@ mod tests {
                     // Healthy native callbacks legitimately clear their transient
                     // errors. Keep this permanent injected fault independent of
                     // those callbacks while testing the maintenance backoff.
-                    locked.global_backend_errors = Arc::new(Mutex::new(BTreeMap::from([
-                        (root.clone(), "permanent global failure".into()),
-                    ])));
+                    locked.global_backend_errors = Arc::new(Mutex::new(BTreeMap::from([(
+                        root.clone(),
+                        "permanent global failure".into(),
+                    )])));
                     locked
                         .backend_errors
                         .lock()

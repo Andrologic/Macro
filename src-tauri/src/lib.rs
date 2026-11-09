@@ -107,8 +107,6 @@ mod agsdl_host_confinement;
 mod agsdl_host_dispatch030;
 #[cfg(all(feature = "agsdl-engine-qa", debug_assertions))]
 mod agsdl_host_example030;
-#[cfg(all(feature = "agsdl-engine-qa", debug_assertions))]
-mod agsdl_host_scenario030;
 mod agsdl_host_flow030;
 mod agsdl_host_harness030;
 mod agsdl_host_projection030;
@@ -116,6 +114,8 @@ mod agsdl_host_provider;
 mod agsdl_host_route030;
 mod agsdl_host_route_attestations030;
 mod agsdl_host_route_verifier030;
+#[cfg(all(feature = "agsdl-engine-qa", debug_assertions))]
+mod agsdl_host_scenario030;
 mod agsdl_host_stop030;
 mod agsdl_host_tasks;
 mod agsdl_host_tools;
