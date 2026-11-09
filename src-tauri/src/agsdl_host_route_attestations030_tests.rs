@@ -1241,6 +1241,8 @@ async fn failed_join_fixture(
             )
         });
     }
+    let mut native_receipt: crate::db::agsdl_execution::flow030::FlowReceipt030 =
+        serde_json::from_str(data["event"]["receipt_json"].as_str().unwrap()).unwrap();
     if fault == Some("failure-duplicate") {
         let mut duplicate = effects
             .iter()
@@ -1260,6 +1262,12 @@ async fn failed_join_fixture(
         duplicate["effect_id"] = json!(effect.id);
         duplicate["effect_json"] = json!(serde_json::to_string(&effect).unwrap());
         effects.push(duplicate);
+        native_receipt.effect_ids.push("duplicated-failure".into());
+        state
+            .events
+            .get_mut(data["event"]["event_id"].as_str().unwrap())
+            .unwrap()
+            .receipt = native_receipt.clone();
     }
     let temp = tempfile::tempdir().unwrap();
     let pool = crate::db::create_pool(&temp.path().join("join-error.db"))
@@ -1316,7 +1324,10 @@ async fn failed_join_fixture(
         .bind(&id.flow_invocation_id)
         .bind(e["event_id"].as_str().unwrap())
         .bind(e["event_json"].as_str().unwrap())
-        .bind((fault != Some("not-accepted")).then(|| e["receipt_json"].as_str().unwrap()))
+        .bind(
+            (fault != Some("not-accepted"))
+                .then(|| serde_json::to_string(&native_receipt).unwrap()),
+        )
         .bind((fault == Some("not-accepted")).then_some("{}"))
         .execute(&mut *tx)
         .await

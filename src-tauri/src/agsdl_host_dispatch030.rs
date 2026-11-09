@@ -219,3 +219,32 @@ pub(crate) async fn join_owned_agent030(
         .await
         .map_err(|_| failure("STOP_PENDING", "work", "Owned work did not finish cleanly"))
 }
+
+/// Claim one exact StopWork before signalling the already-owned parent. The
+/// claim remains uncertain if joining or its physical commit cannot complete.
+pub(crate) async fn dispatch_stop_work030(
+    host: &HostState,
+    pool: &SqlitePool,
+    tasks: &StreamTasks,
+    owner: &EngineOwner,
+    effect: &crate::db::agsdl_execution::flow030::FlowEffect030,
+    attempt: &FlowWorkAttempt030,
+) -> Result<Apply030> {
+    if attempt.owner() != owner || attempt.identity() != &effect.identity {
+        return Err(failure("CORRELATION", "stop", "Stop owner differs"));
+    }
+    let claim =
+        agsdl_host_flow030::claim_expected_stop_work(host.flow030(), host, pool, effect, attempt)
+            .await?
+            .ok_or_else(|| failure("STALE_REFERENCE", "stop", "Stop effect changed"))?;
+    if claim.effect() != effect {
+        return Err(failure("CORRELATION", "stop", "Stop effect differs"));
+    }
+    let claim = claim.into_stop_work(attempt)?;
+    // No admission lock or SQLite transaction is held while joining.
+    let joined = cancel_and_join_owned_agent030(tasks, attempt).await?;
+    claim
+        .control()
+        .settle_joined_diagnostic(host.flow030(), pool, &joined, Some(&claim))
+        .await
+}

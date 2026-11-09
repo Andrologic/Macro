@@ -85,13 +85,14 @@ pub(crate) struct RouteAttestor030 {
 enum SourceKind030 {
     Error,
     JoinError,
+    FailedGroupError,
     AgentWork { work_event_id: String },
     Join,
 }
 impl SourceKind030 {
     fn receipt_kind(&self) -> &'static str {
         match self {
-            Self::Error | Self::JoinError => "error",
+            Self::Error | Self::JoinError | Self::FailedGroupError => "error",
             Self::AgentWork { .. } => "agentWork",
             Self::Join => "join",
         }
@@ -104,7 +105,7 @@ impl SourceKind030 {
     }
     fn producer_kind(&self) -> &'static str {
         match self {
-            Self::Error | Self::JoinError => "error",
+            Self::Error | Self::JoinError | Self::FailedGroupError => "error",
             Self::AgentWork { .. } => "agent",
             Self::Join => "join",
         }
@@ -150,7 +151,10 @@ impl RouteSourceCommitMarker030 {
 impl AttestedRouteSource030 {
     /// A native group decision needs no invented agent join witness.
     pub(crate) fn is_join_source(&self) -> bool {
-        matches!(self.kind, SourceKind030::Join | SourceKind030::JoinError)
+        matches!(
+            self.kind,
+            SourceKind030::Join | SourceKind030::JoinError | SourceKind030::FailedGroupError
+        )
     }
     pub(crate) fn commit_marker(&self) -> Result<RouteSourceCommitMarker030> {
         require(!self.native_receipt_id.is_empty())?;
@@ -315,7 +319,15 @@ impl RouteAttestor030 {
                     )
                     .await
                     .map_err(verification_error)?;
-                    Ok(SourceKind030::JoinError)
+                    if state
+                        .groups
+                        .iter()
+                        .any(|g| g.activation_id == producer.activation_id)
+                    {
+                        Ok(SourceKind030::FailedGroupError)
+                    } else {
+                        Ok(SourceKind030::JoinError)
+                    }
                 }
                 _ => Err(failure(
                     "AUTHORITY",

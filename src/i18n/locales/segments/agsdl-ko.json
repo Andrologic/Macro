@@ -1140,5 +1140,20 @@
       "workContinues": "작업 계속 여부"
     },
     "occurrenceCount_many": "실행 항목 {{count}}개"
+  },
+  "shell030": {
+    "project": "프로젝트",
+    "chooseProject": "프로젝트 선택",
+    "executions": "실행",
+    "design": "설계",
+    "views": "시스템 보기",
+    "unavailable": "실행 기록이 아직 연결되지 않았습니다.",
+    "humanUnavailable": "응답 기능이 아직 연결되지 않았습니다.",
+    "exactUnavailable": "요청한 실행을 사용할 수 없습니다. 다른 실행은 열지 않았습니다.",
+    "requestUnavailable": "이 실행에서 요청을 더 이상 사용할 수 없습니다.",
+    "attention": "응답이 필요합니다",
+    "attentionBody": "실행이 응답을 기다리고 있습니다.",
+    "openRequest": "요청 열기",
+    "close": "닫기"
   }
 }

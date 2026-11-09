@@ -2,7 +2,7 @@
 //! event identity, physical-effect claims and atomic persistence of this transition.
 //! This module never executes an effect or accepts a model-selected destination.
 #[path = "flow_number.rs"]
-mod number;
+pub(crate) mod number;
 #[path = "flow_types.rs"]
 mod types;
 use serde_json::{json, Value};

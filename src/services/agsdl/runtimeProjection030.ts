@@ -100,6 +100,8 @@ export interface RunReadFailure030 {
 export interface RunMonitorSnapshot030 {
   /** Native history order, newest first. Ready means the whole scope was read. */
   readonly history: RunRead030<readonly RunHistoryEntry030[]>;
+  /** Discovery order includes failed reads, but never excluded scopes. */
+  readonly historyOrder: readonly string[];
   /** Only an admission with a valid native start030 run receipt supplies an id. */
   readonly retainedAdmission: NativeFact030<string | null>;
   readonly runs: Readonly<Record<string, RunRead030<RunInspection030>>>;

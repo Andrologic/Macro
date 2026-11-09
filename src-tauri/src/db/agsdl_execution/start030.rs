@@ -79,7 +79,7 @@ fn store_error(error: StoreError030) -> super::dto::EngineFailure {
     }
 }
 
-fn validate_capture(
+pub(super) fn validate_capture(
     request: &EngineStartRequest,
     capture: &StartCapture030,
 ) -> Result<FlowPlan030> {

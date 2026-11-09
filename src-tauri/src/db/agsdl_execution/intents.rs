@@ -375,61 +375,28 @@ async fn public(db: &mut SqliteConnection, row: Retained) -> IntentResult<Public
         if request_json != serde_json::to_string(request)? {
             return Err(error(ExecutionIntentErrorCode::StorageUncertain));
         }
-        let capture: serde_json::Value = serde_json::from_str(retained.get("capture_json"))?;
-        let receipt: serde_json::Value = serde_json::from_str(retained.get("receipt_json"))?;
-        let identity = capture
-            .get("identity")
-            .ok_or_else(|| error(ExecutionIntentErrorCode::StorageUncertain))?;
-        if receipt.get("identity") != Some(identity)
-            || identity
-                .get("flowInvocationId")
-                .and_then(serde_json::Value::as_str)
-                != Some(retained.get::<&str, _>("invocation_id"))
-            || identity
-                .get("snapshotId")
-                .and_then(serde_json::Value::as_str)
-                != Some(retained.get::<&str, _>("snapshot_id"))
-            || identity.get("epoch").and_then(serde_json::Value::as_str)
-                != Some(retained.get::<&str, _>("capture_epoch"))
-            || identity
-                .get("systemStartId")
-                .and_then(serde_json::Value::as_str)
-                != Some(system.as_str())
-            || request.profile != "macro-agsdl-030-v1"
+        let capture: super::start030::StartCapture030 =
+            serde_json::from_str(retained.get("capture_json"))?;
+        let receipt: super::start030::StartReceipt030 =
+            serde_json::from_str(retained.get("receipt_json"))?;
+        let identity = &capture.identity;
+        if receipt.identity != *identity
+            || identity.flow_invocation_id != retained.get::<&str, _>("invocation_id")
+            || identity.snapshot_id != retained.get::<&str, _>("snapshot_id")
+            || identity.epoch != retained.get::<&str, _>("capture_epoch")
+            || identity.system_start_id != *system
         {
             return Err(error(ExecutionIntentErrorCode::StorageUncertain));
         }
-        let source: EngineSourceRevision = serde_json::from_value(
-            capture
-                .get("source")
-                .cloned()
-                .ok_or_else(|| error(ExecutionIntentErrorCode::StorageUncertain))?,
-        )?;
-        let versions: EngineVersions = serde_json::from_value(
-            capture
-                .get("versions")
-                .cloned()
-                .ok_or_else(|| error(ExecutionIntentErrorCode::StorageUncertain))?,
-        )?;
-        if source != request.source
-            || versions.profile != request.profile
-            || versions.contract != "agsdl-0.3.0"
-            || versions.snapshot != "2"
-        {
-            return Err(error(ExecutionIntentErrorCode::StorageUncertain));
-        }
-        let flow_invocation_id = identity
-            .get("flowInvocationId")
-            .and_then(serde_json::Value::as_str)
-            .filter(|v| !v.is_empty())
-            .ok_or_else(|| error(ExecutionIntentErrorCode::StorageUncertain))?
-            .to_owned();
+        // Reuse Start's complete capture validation, including every version
+        // against the compiled plan, before returning any retained public fact.
+        super::start030::validate_capture(request, &capture).map_err(storage)?;
         Some(ExecutionIntentAdmission::Start030 {
             receipt: PublicStartReceipt030 {
                 system_start_id: system.clone(),
-                flow_invocation_id,
-                source,
-                versions,
+                flow_invocation_id: capture.identity.flow_invocation_id,
+                source: capture.source,
+                versions: capture.versions,
                 entry_delivery_id: request
                     .entry
                     .as_ref()

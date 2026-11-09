@@ -81,9 +81,8 @@ function failed<T>(previous: RunRead030<T>, error: unknown): RunRead030<T> {
   const retained = retainedRunValue030(previous);
   if (retained !== null && (previous.kind === 'ready' || previous.kind === 'stale'))
     return { kind: 'stale', revision: previous.revision, retained, refusal: refusal(error) };
-  // RunRead has no first-error variant. Keep the prior state and reject the
-  // refresh with RunInspectionReadError030 instead of inventing a DTO gap.
-  return previous;
+  const failure = new RunInspectionReadError030(error);
+  return { kind: 'error', error: { code: failure.code, message: failure.message } };
 }
 function readFailure(error: unknown, revision: string | null): RunReadFailure030 {
   const decoded = new RunInspectionReadError030(error);
@@ -114,7 +113,7 @@ export function createRunInspectionAccess030(scope: ExecutionIntentScope,
     typeof expected.conversationId === 'string' && expected.conversationId.length > 0, 'SCOPE_INVALID');
   const scopeKey = JSON.stringify([expected.owner.projectId, expected.owner.planId, expected.owner.branch, expected.conversationId]);
   let snapshot: RunAccessSnapshot030 = freeze({ history: { kind: 'loading', retained: null },
-    retainedAdmission: unavailable('qualification'), runs: {}, excludedRuns: {}, runFailures: {} });
+    historyOrder: [], retainedAdmission: unavailable('qualification'), runs: {}, excludedRuns: {}, runFailures: {} });
   const listeners = new Set<() => void>();
   const retainedSummaries = new Map<string, PublicRunSummary030>();
   // This adapter owns exactly one scopeKey. Successful immutable proofs are
@@ -295,7 +294,8 @@ export function createRunInspectionAccess030(scope: ExecutionIntentScope,
         publish({ history: { kind: 'ready', revision: JSON.stringify(history.map(item => {
           const run = runs.find(run => run.systemStartId === item.scope.systemStartId)!;
           return [run.systemStartId, run.snapshotId, run.revision];
-        })), value: history }, retainedAdmission, runs: retainedRuns, excludedRuns, runFailures });
+        })), value: history }, historyOrder: runs.filter(run => !Object.hasOwn(excludedRuns, run.systemStartId)).map(run => run.systemStartId),
+        retainedAdmission, runs: retainedRuns, excludedRuns, runFailures });
       } catch (error) {
         publish({ ...snapshot, history: failed(previous, error), retainedAdmission: unavailable('qualification') });
         throw new RunInspectionReadError030(error);
@@ -327,7 +327,10 @@ export function createRunInspectionAccess030(scope: ExecutionIntentScope,
         const excludedRuns = { ...snapshot.excludedRuns }, runFailures = { ...snapshot.runFailures };
         delete excludedRuns[systemStartId]; delete runFailures[systemStartId];
         if (result.kind === 'excluded') excludedRuns[systemStartId] = result.refusal;
-        publish({ ...snapshot, excludedRuns, runFailures });
+        const known = new Set([...snapshot.historyOrder, systemStartId]);
+        const historyOrder = runs.filter(run => known.has(run.systemStartId) && !Object.hasOwn(excludedRuns, run.systemStartId))
+          .map(run => run.systemStartId);
+        publish({ ...snapshot, historyOrder, excludedRuns, runFailures });
         if (result.kind === 'failed') throw result.error;
         if (result.kind === 'excluded') throw new MacroServiceError(result.refusal.code, result.refusal.message);
         const capture = await captureFor(summary, result.value);

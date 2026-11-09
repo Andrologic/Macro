@@ -10,19 +10,19 @@ export function inspectionFixture030(id = 'run-current'): RunInspection030 {
     prepare: { type: 'agent', agent: 'worker', instance: 'new', next: 'review' },
     review: { type: 'call', title: 'Review', command: 'echo synthetic', next: { passed: 'vote', failed: 'review' } },
     vote: { type: 'join', quorum: { count: 2, accept: ['accept'] }, remaining: 'finish', next: { reached: [], missed: [] } },
-  } } }), versions: { snapshot: '2', contract: 'agsdl-0.3.0', profile: 'macro-agsdl-030-v1', compiler: 'c', runtime: 'r', registry: 'v' }, associations: { conversationId: 'sample-chat' } };
+  } } }), versions: { snapshot: '2', contract: 'agsdl-0.3.0', profile: 'macro-agsdl-030-v1', compiler: 'c', runtime: 'r', registry: 'v' }, associations: {} };
   const scope = { systemStartId: id, snapshotId: `capture-${id}`, source };
   const occurrences: RunOccurrence030[] = ['activation-1', 'activation-2'].map((activationId, index) => ({ scope,
-    activation: { id: activationId, step: ['review'], agent: null, instanceId: null, phase: index === 0 ? 'completed' : 'running', physical: index === 1,
-      stopRequested: false, context: [], pathIds: [`path-${index}`], physicalWaitGroupIds: [], composeActivationIds: [], nearestFanoutIndex: String(index) },
+    activation: { id: activationId, step: ['review'], agent: null, instanceId: null, phase: index === 0 ? 'done' : 'stopping', physical: index === 1,
+      stopRequested: index === 1, context: [{ kind: 'path', pathId: `path-${index}`, departedGroups: [] }], pathIds: [`path-${index}`], physicalWaitGroupIds: [], composeActivationIds: [], nearestFanoutIndex: String(index) },
     details: available({ sourcePointer: '/flow/steps/review', occurrenceId: `native-visit-${index}`, visit: String(index + 1), countsForFlow: index === 0,
       receivedMessageJson: '{"text":"Inspect the synthetic sample"}', senderJson: '{"step":"entry"}', outputJson: index === 0 ? '{"outcome":"failed","exitCode":1}' : null,
       diagnosticIds: [], deliveryActivationId: null, targetActivationId: null }) }));
-  const state: RunStateUi030 = { scope, flowInvocationId: 'flow', revision: '9', verdict: 'succeeded', ownerStatus: 'live', stopping: true, physicalPending: '1',
+  const state: RunStateUi030 = { scope, flowInvocationId: 'flow', revision: '9', verdict: null, ownerStatus: 'live', stopping: true, physicalPending: '1',
     stop: available({ kind: 'uncertain', requestId: 'stop-request', diagnosticIds: [] }), uncertainties: available([{ id: 'uncertainty', subject: 'stop', receiptId: null, diagnosticIds: [], state: 'unresolved' }]),
-    humans: ready([]), occurrences: ready(occurrences), instances: [{ id: 'conversation', agent: 'Reviewer', selectorKind: 'named', selectorName: 'Review', currentActivationId: null, queueActivationIds: [], discarded: false }],
+    humans: ready([]), occurrences: ready(occurrences), instances: [{ id: 'conversation', agent: 'worker', selectorKind: 'new', selectorName: null, currentActivationId: null, queueActivationIds: [], discarded: true }],
     groups: [{ id: 'native-group', join: ['vote'], originActivationId: 'origin', activationId: 'join-activation', decision: 'missed', released: true, context: [], parentPathIds: [], branches: [{ name: 'review', fanout: true, pathIds: ['path-0', 'path-1'] }] }],
-    paths: [0, 1].map(index => ({ id: `path-${index}`, batchId: 'batch', phase: index === 0 ? 'ended' : 'live', context: [], nearestFanoutIndex: String(index), memberships: [{ groupId: 'native-group', branch: 'review', phase: 'live', accepted: false, failed: false }] })),
+    paths: [0, 1].map(index => ({ id: `path-${index}`, batchId: 'batch', phase: index === 0 ? 'ended' : 'live', context: [], nearestFanoutIndex: null, memberships: [{ groupId: 'native-group', branch: 'review', phase: index === 0 ? 'ended' : 'live', accepted: false, failed: false }] })),
     diagnostics: ready([{ id: 'diagnostic-handled', code: 'BRANCH_FAILED', message: 'A synthetic branch error was retained.', severity: 'error', activationId: 'activation-1', sourcePointer: '/flow/steps/review', step: ['review'], disposition: 'handled', causeId: null, handlerStep: ['vote'], effectsJson: available('{"filesWritten":[]}') }]),
     chronology: { kind: 'unavailable', gap: 'chronology' } };
   return { capture, state };
@@ -37,7 +37,7 @@ export function historyFixture030(inspection: RunInspection030): RunHistoryEntry
 
 /** Synthetic read transport, shared by component tests and the temporary browser harness. */
 export class RunInspectionDouble030 implements RunInspectionAccess030 {
-  readonly scopeKey = 'sample-project/sample-plan/develop/sample-chat';
+  readonly scopeKey = 'sample-project/sample-plan/develop/design-conversation';
   readonly listeners = new Set<() => void>();
   readonly reads: string[] = [];
   onHistory?: () => Promise<void>;
@@ -51,6 +51,6 @@ export class RunInspectionDouble030 implements RunInspectionAccess030 {
 }
 export function monitorFixture030(...inspections: RunInspection030[]): RunInspectionDouble030 {
   const runs = inspections.length ? inspections : [inspectionFixture030()];
-  return new RunInspectionDouble030({ history: ready(runs.map(historyFixture030)), retainedAdmission: available(null), runFailures: {},
+  return new RunInspectionDouble030({ history: ready(runs.map(historyFixture030)), historyOrder: runs.map(run => run.capture.systemStartId), retainedAdmission: available(null), runFailures: {},
     runs: Object.fromEntries(runs.map(run => [run.capture.systemStartId, ready(run)])) });
 }

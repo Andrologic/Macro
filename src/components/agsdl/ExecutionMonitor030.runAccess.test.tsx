@@ -38,7 +38,7 @@ it('shows a translated middle-run failure through the real adapter, monitor and 
   const history = () => host!.querySelector('section[aria-label="Historique des exécutions"]')!;
   const rows = () => [...history().querySelectorAll('li[data-run-id]')];
   expect(rows()).toHaveLength(3);
-  expect(rows().map(row => row.getAttribute('data-run-id')).sort()).toEqual(['a', 'b', 'c']);
+  expect(rows().map(row => row.getAttribute('data-run-id'))).toEqual(['a', 'b', 'c']);
   expect(history().querySelector('[data-run-id="b"]')?.textContent).toContain('Exécution introuvable');
   expect(history().querySelector('[data-run-id="a"] button')).not.toBeNull();
   const healthyButton = history().querySelector('[data-run-id="c"] button') as HTMLButtonElement;
@@ -50,10 +50,17 @@ it('shows a translated middle-run failure through the real adapter, monitor and 
   expect(history().textContent).not.toContain('Aucune exécution dans ce périmètre');
   expect(history().textContent).not.toContain('NOT_FOUND');
 
+  // Native discovery can also order ids differently from lexical ordering.
+  transport.listExecutionRuns030 = async () => ({ runs: [...fixtures].reverse().map(f => f.summary), nextCursor: null });
+  await act(async () => { await access.refreshHistory(); });
+  expect(rows().map(row => row.getAttribute('data-run-id'))).toEqual(['c', 'b', 'a']);
+  transport.listExecutionRuns030 = async () => ({ runs: fixtures.map(f => f.summary), nextCursor: null });
+
   failures.set('a', 'NOT_FOUND'); failures.set('b', 'STORAGE_UNCERTAIN'); failures.set('c', 'STORAGE_UNCERTAIN');
   for (const f of fixtures) { f.summary.revision = '9007199254740994'; f.runtime.revision = f.summary.revision; }
   await act(async () => { await access.refreshHistory(); });
   expect(rows()).toHaveLength(3);
+  expect(rows().map(row => row.getAttribute('data-run-id'))).toEqual(['a', 'b', 'c']);
   expect(history().querySelectorAll('[data-run-read-state="failed"]')).toHaveLength(3);
   expect(history().querySelector('[data-run-id="a"]')?.textContent).toContain('Exécution introuvable');
   for (const id of ['b', 'c']) expect(history().querySelector(`[data-run-id="${id}"]`)?.textContent).toContain("L'état du stockage est incertain.");
@@ -78,7 +85,7 @@ it('renders each real history failure row in all six languages and restores the 
   };
   for (const [locale, [notFound, uncertain]] of Object.entries(labels)) {
     await act(async () => { await i18n.changeLanguage(locale); });
-    await render(<RunHistory030 history={ready([])} runFailures={runFailures} select={() => {}} compare={() => {}} />);
+    await render(<RunHistory030 history={ready([])} historyOrder={['a', 'b', 'c']} runFailures={runFailures} select={() => {}} compare={() => {}} />);
     expect(host!.querySelectorAll('li[data-run-id]')).toHaveLength(3);
     expect(host!.querySelector('[data-run-id="a"]')?.textContent).toContain(notFound);
     expect(host!.querySelector('[data-run-id="b"]')?.textContent).toContain(uncertain);
@@ -87,7 +94,7 @@ it('renders each real history failure row in all six languages and restores the 
     expect(host!.textContent).not.toContain('NOT_FOUND');
     expect(host!.textContent).not.toContain('STORAGE_UNCERTAIN');
   }
-  await render(<RunHistory030 history={ready([])} runFailures={{}} select={() => {}} compare={() => {}} />);
+  await render(<RunHistory030 history={ready([])} historyOrder={[]} runFailures={{}} select={() => {}} compare={() => {}} />);
   expect(host!.querySelectorAll('li[data-run-id]')).toHaveLength(0);
   expect(host!.textContent).toContain(i18n.t('agsdl.run030.noRuns', { ns: 'agsdl' }));
 });

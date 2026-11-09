@@ -20,6 +20,8 @@ pub(crate) mod prepared;
 pub(crate) mod process_recovery;
 pub(crate) mod public;
 pub(crate) mod public030;
+#[path = "v030/replay_verify030.rs"]
+pub(crate) mod replay_verify030;
 pub(crate) mod responses;
 #[path = "v030/runtime_projection.rs"]
 pub(crate) mod runtime_projection030;

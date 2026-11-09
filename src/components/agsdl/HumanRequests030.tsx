@@ -4,6 +4,7 @@ import {
   humanDuration030, humanRemainingMs030, humanRequestKey030, runHumanView030,
   type HumanFormDraft030, type HumanRequestClient030, type HumanSendOutcome030, type ReadHuman030,
 } from '../../services/agsdl/humanRequests030';
+import { claimHumanAttention030 } from '../../services/agsdl/humanAttention030';
 import { notify } from '../ui/toastService';
 import { ExecutionHumanRequest, type ExecutionHumanAnswer } from './ExecutionHumanRequest';
 import { useAgsdlTranslation } from './useAgsdlTranslation';
@@ -38,7 +39,6 @@ function HumanRequestCard030({ request: observed, client, fresh, onOpenRequest, 
   const { t } = useAgsdlTranslation();
   const headingId = useId();
   const card = useRef<HTMLElement>(null);
-  const notified = useRef(false);
   const [readback, setReadback] = useState<{ basis: RunHumanRequest030; current: RunHumanRequest030 }>();
   const request = readback && (readback.basis === observed || BigInt(readback.current.revision) > BigInt(observed.revision)) ? readback.current : observed;
   const [draft, setDraft] = useState<HumanFormDraft030>(() => {
@@ -60,8 +60,8 @@ function HumanRequestCard030({ request: observed, client, fresh, onOpenRequest, 
   const view = runHumanView030(request, { plan: t('agsdl.human030.plan'), question: t('agsdl.human030.question'), unknown: t('agsdl.human030.unknown') });
 
   useEffect(() => {
-    if (!fresh || request.state.kind !== 'open' || !qualified || notified.current) return;
-    notified.current = true;
+    if (!fresh || request.state.kind !== 'open' || !qualified) return;
+    if (!claimHumanAttention030(request)) return;
     notify.actionRequired(t('agsdl.human030.notification'), {
       description: view.title,
       notificationKey: `human030:${humanRequestKey030(request)}`,
@@ -159,9 +159,10 @@ function HumanRequestCard030({ request: observed, client, fresh, onOpenRequest, 
  * but cannot be answered. The execution store and IPC stay outside this view. */
 export function HumanRequests030({ requests, client, onOpenRequest, onOpenOccurrence }: HumanRequests030Props) {
   const { t } = useAgsdlTranslation();
-  const items = requests.kind === 'ready' ? requests.value : requests.kind === 'unavailable' ? null : requests.retained;
+  const items = requests.kind === 'ready' ? requests.value : requests.kind === 'loading' || requests.kind === 'stale' ? requests.retained : null;
   return <section className="min-w-0 space-y-2 text-xs" aria-label={t('agsdl.human030.title')}>
     <h2 className="font-medium">{t('agsdl.human030.title')}</h2>
+    {requests.kind === 'error' && <p role="alert">{t('agsdl.run030.readFailed')}</p>}
     {requests.kind === 'unavailable' && <p>{t('agsdl.human030.unavailable')}</p>}
     {requests.kind === 'loading' && <p role="status">{t('agsdl.human030.loading')}</p>}
     {requests.kind === 'stale' && <p role="alert">{t('agsdl.human030.stale')}</p>}
