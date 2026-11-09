@@ -149,6 +149,13 @@ describe.skipIf(!referenceDir || !process.env.MACRO_AGSDL030_REPLAY_COMMAND)('ho
     n.db.query('UPDATE engine_flow030_occurrence_provenance SET provenance_json=? WHERE native_receipt_id=? AND target_ordinal=? AND item_index=?').run(JSON.stringify(proof), row.native_receipt_id, proof.occurrence.targetOrdinal, proof.occurrence.itemIndex);
     expect(n.observe).toThrow('prepared message/provenance');
   });
+  test('requires the terminal ticket flowRevision to equal its causal flow prefix, even if the forged revision exists', () => {
+    const n = fixture(); n.mutable();
+    const row = n.db.query("SELECT event_id,ticket_json FROM engine_flow030_work_events WHERE json_extract(ticket_json,'$.input.control')=1 ORDER BY rowid LIMIT 1").get() as any;
+    const ticket = JSON.parse(row.ticket_json); ticket.flowRevision = String(BigInt(ticket.flowRevision) + 1n);
+    n.db.query('UPDATE engine_flow030_work_events SET ticket_json=? WHERE event_id=?').run(JSON.stringify(ticket), row.event_id);
+    expect(n.observe).toThrow('work terminal ticket flow revision');
+  });
   test.each([false, true])('accepts native 040 journal and projections, human=%s', (human) => {
     const n = fixture(); addClock(n, human); expect(n.observe).not.toThrow();
   });

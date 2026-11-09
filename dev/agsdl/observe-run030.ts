@@ -27,37 +27,84 @@ export interface ReplayVerdict030 {
   divergence?: { eventId?: string; field: string; expected: unknown; stored: unknown };
   outsideReplay?: string[];
 }
-// A separate process keeps the synchronous reader's deadline enforceable even
-// when the executable ignores SIGTERM. All children inherit this process group.
+// The synchronous caller starts an asynchronous supervisor. Only spawn(), not
+// spawnSync(), creates the detached verifier group on Bun/macOS. The supervisor
+// stays outside that group, signals it and proves ESRCH before returning.
 const replaySupervisor030 = String.raw`
 const { spawn } = await import('node:child_process');
-const { argv, deadline, grace } = JSON.parse(process.argv.at(-1));
-process.on('SIGTERM', () => {});
-let expired = false, stdout = [], stderr = [], size = 0;
-const expire = () => {
-  if (expired) return;
-  expired = true;
-  process.kill(-process.pid, 'SIGTERM');
-  setTimeout(() => process.kill(-process.pid, 'SIGKILL'), grace);
-};
-if (Date.now() >= deadline) process.exit(124);
-const timer = setTimeout(expire, Math.max(1, deadline - Date.now()));
-const child = spawn(argv[0], argv.slice(1), { stdio: ['ignore', 'pipe', 'pipe'] });
-for (const [stream, chunks] of [[child.stdout, stdout], [child.stderr, stderr]]) stream.on('data', chunk => {
-  size += chunk.length;
-  if (size > 8 * 1024 * 1024) expire();
-  if (!expired) chunks.push(chunk);
-});
-child.on('error', error => { stderr.push(Buffer.from(String(error))); });
-child.on('close', (code, signal) => {
-  if (expired) return;
-  if (Date.now() >= deadline) { expire(); return; }
+const { argv, deadline, grace, joinLimit } = JSON.parse(process.argv.at(-1));
+const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
+let stdout = [], stderr = [], size = 0, timedOut = false, failure = null;
+let closed = false, status = null, signal = null, cleanup = null;
+const child = Date.now() < deadline ? spawn(argv[0], argv.slice(1), {
+  detached: true, stdio: ['ignore', 'pipe', 'pipe'],
+}) : null;
+const groupPid = child?.pid ?? null;
+process.stdout.write(JSON.stringify({ phase: 'started', groupPid }) + '\n');
+function groupExists() {
+  if (!groupPid) return false;
+  try { process.kill(-groupPid, 0); return true; }
+  catch (error) { if (error.code === 'ESRCH') return false; if (error.code === 'EPERM') return true; throw error; }
+}
+function send(signal) {
+  if (!groupPid) return;
+  try { process.kill(-groupPid, signal); }
+  catch (error) { if (error.code !== 'ESRCH' && error.code !== 'EPERM') throw error; }
+}
+async function finish() {
   clearTimeout(timer);
-  process.stdout.write(Buffer.concat(stdout));
-  process.stderr.write(Buffer.concat(stderr));
-  process.exitCode = signal ? 1 : code ?? 1;
-});
+  let groupJoined = false;
+  try {
+    send('SIGTERM');
+    const until = performance.now() + grace;
+    while (groupExists() && performance.now() < until) await sleep(5);
+    if (groupExists()) send('SIGKILL');
+    const joinedBy = performance.now() + joinLimit;
+    while ((groupExists() || !closed) && performance.now() < joinedBy) await sleep(5);
+    groupJoined = !groupExists() && closed;
+    if (!groupJoined) failure = failure ?? 'Verifier process group did not terminate';
+  } catch (error) { failure = String(error); }
+  process.stdout.write(JSON.stringify({ phase: 'finished', groupPid, groupJoined,
+    timedOut, failure, status, signal, stdout: Buffer.concat(stdout).toString('utf8'),
+    stderr: Buffer.concat(stderr).toString('utf8') }) + '\n');
+}
+function stop(error) {
+  if (error) failure = failure ?? error;
+  if (!cleanup) cleanup = finish();
+}
+const timer = setTimeout(() => { timedOut = true; stop(); }, Math.max(1, deadline - Date.now()));
+if (!child) { timedOut = true; closed = true; stop(); }
+else {
+  for (const [stream, chunks] of [[child.stdout, stdout], [child.stderr, stderr]]) stream.on('data', chunk => {
+    size += chunk.length;
+    if (size > 8 * 1024 * 1024) stop('Verifier output exceeded its limit');
+    if (!timedOut && size <= 8 * 1024 * 1024) chunks.push(chunk);
+  });
+  child.on('error', error => { closed = true; stop(String(error)); });
+  child.on('exit', (code, endedBy) => {
+    status = code; signal = endedBy;
+    if (Date.now() >= deadline) timedOut = true;
+    stop();
+  });
+  child.on('close', () => { closed = true; });
+}
 `;
+function replayGroupExists030(pid: number): boolean {
+  try { process.kill(-pid, 0); return true; }
+  catch (error) { if ((error as NodeJS.ErrnoException).code === 'ESRCH') return false; if ((error as NodeJS.ErrnoException).code === 'EPERM') return true; throw error; }
+}
+// This fallback also runs if the supervisor crashes or reaches its hard limit.
+function joinReplayGroup030(pid: number, grace: number, joinLimit: number): void {
+  const send = (signal: NodeJS.Signals) => { try { process.kill(-pid, signal); } catch (error) { if (!['ESRCH', 'EPERM'].includes((error as NodeJS.ErrnoException).code ?? '')) throw error; } };
+  const sleep = () => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 5);
+  send('SIGTERM');
+  const until = performance.now() + grace;
+  while (replayGroupExists030(pid) && performance.now() < until) sleep();
+  if (replayGroupExists030(pid)) send('SIGKILL');
+  const joinedBy = performance.now() + joinLimit;
+  while (replayGroupExists030(pid) && performance.now() < joinedBy) sleep();
+  if (replayGroupExists030(pid)) throw new Error('Verifier process group did not terminate');
+}
 export function verifyNativeReplay030(database: string, system: string, invocation: string, options: ObserveOptions030 = {}): ReplayVerdict030 {
   let command = options.replayCommand;
   if (!command && process.env.MACRO_AGSDL030_REPLAY_COMMAND) {
@@ -68,18 +115,27 @@ export function verifyNativeReplay030(database: string, system: string, invocati
   const timeout = options.replayTimeoutMs ?? 30_000;
   if (!Number.isSafeInteger(timeout) || timeout <= 0) throw new Error('Invalid native replay timeout');
   let result: ReturnType<typeof spawnSync>;
-  const started = performance.now(), grace = 100;
+  const grace = 100, joinLimit = 1000;
   try {
-    const processOptions = { detached: true, stdio: 'pipe' as const, timeout: timeout + grace + 1000, killSignal: 'SIGKILL' as const, maxBuffer: 8 * 1024 * 1024 };
-    result = spawnSync(process.execPath, ['--eval', replaySupervisor030, '--', JSON.stringify({ argv: [...command, database, system, invocation], deadline: Date.now() + timeout, grace })], processOptions);
-    // The direct child may have exited while a descendant closed its stdio and
-    // kept running. Reap the remaining group after either success or failure.
-    try { if (result.pid) process.kill(-result.pid, 'SIGKILL'); } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ESRCH') throw error; }
-  }
-  catch (error) { throw new Error(`Native replay execution failed: ${String(error)}`); }
-  if (performance.now() - started >= timeout || result.status === 124) throw new Error('Native replay timeout: deadline exceeded; process group killed');
-  if (result.error || result.signal || result.status !== 0) throw new Error(`Native replay refused: ${result.error ?? result.signal ?? `exit ${result.status}`} ${Buffer.from(result.stdout ?? new Uint8Array()).toString('utf8').trim().slice(0, 8192)} ${Buffer.from(result.stderr ?? new Uint8Array()).toString('utf8').trim().slice(0, 4096)}`);
-  const output = Buffer.from(result.stdout ?? new Uint8Array()).toString('utf8').trim();
+    result = spawnSync(process.execPath, ['--eval', replaySupervisor030, '--', JSON.stringify({ argv: [...command, database, system, invocation], deadline: Date.now() + timeout, grace, joinLimit })], {
+      stdio: 'pipe', timeout: timeout + grace + joinLimit + 1000, killSignal: 'SIGKILL', maxBuffer: 10 * 1024 * 1024,
+    });
+  } catch (error) { throw new Error(`Native replay execution failed: ${String(error)}`); }
+  let started: { phase: string; groupPid: number | null }, ended: Record<string, unknown> | undefined;
+  const control = Buffer.from(result.stdout ?? new Uint8Array()).toString('utf8').trim().split(/\r?\n/);
+  try {
+    started = JSON.parse(control[0]);
+    if (started.phase !== 'started' || started.groupPid !== null && (!Number.isSafeInteger(started.groupPid) || started.groupPid <= 0)) throw new Error('Invalid verifier process group');
+    // EPERM means present/unverifiable, never absent. Retry within the bounded
+    // join and refuse unless ESRCH proves the exact group no longer exists.
+    if (started.groupPid !== null) joinReplayGroup030(started.groupPid, grace, joinLimit);
+    if (control.length === 2) ended = JSON.parse(control[1]);
+  } catch (error) { throw new Error(`Native replay supervision failed: ${String(error)}`); }
+  if (result.error || result.signal || result.status !== 0 || !ended || ended.phase !== 'finished' || ended.groupPid !== started.groupPid || ended.groupJoined !== true) throw new Error(`Native replay supervision refused: ${result.error ?? result.signal ?? JSON.stringify(ended)} ${Buffer.from(result.stderr ?? new Uint8Array()).toString('utf8').slice(0, 4096)}`);
+  if (ended.timedOut === true) throw new Error('Native replay timeout: deadline exceeded; process group joined');
+  if (ended.failure || ended.signal || ended.status !== 0) throw new Error(`Native replay refused: ${ended.failure ?? ended.signal ?? `exit ${ended.status}`} ${String(ended.stdout).slice(0, 8192)} ${String(ended.stderr).slice(0, 4096)}`);
+  if (typeof ended.stdout !== 'string') throw new Error('Invalid native replay stdout');
+  const output = ended.stdout.trim();
   if (output.split(/\r?\n/).length !== 1) throw new Error('Native replay must return one JSON line');
   let verdict: unknown;
   try { verdict = JSON.parse(output); }
@@ -448,6 +504,10 @@ function verifyHostTables030(db: Database, state: Obj, plan: Obj, effects: Effec
   const nativePlans = rows('engine_flow030_human_requests').filter((r) => r.kind === 'plan');
   const validateSchema = connectValueSchemaValidator030({ NumberToken, parse, validate: validateValueSchema030 });
   const workDecisions = new Map<string, Obj>();
+  const ticketIds = new Set<string>();
+  const opaque = (value: ExactValue | undefined): value is string => typeof value === 'string' && value.trim().length > 0 && Buffer.byteLength(value) <= 512 && !/\p{Cc}/u.test(value);
+  const flowRevisions = new Set(journal.map((r) => string(record(raw(r.receipt_json)).revision)));
+  const runRevision = BigInt(string(state.revision));
   for (const [id, row] of admissions) {
     metadata(row); const { a, start, work, step } = binding(id); require(step.type === 'agent' && row.start_effect_id === work.startEffectId, 'work admission Start');
     const context = record(json(row, 'context_json'));
@@ -460,20 +520,28 @@ function verifyHostTables030(db: Database, state: Obj, plan: Obj, effects: Effec
     const contract = record(json(row, 'contract_json'));
     require(row.contract_json === step.submissionContractJson && same(raw(string(contract.agentJson)), raw(string(agent.agentDeclarationJson))), 'work admission captured submission contract');
     let previous = '{"format":"macro-agsdl-work-journal/1","events":[]}', revision = '0';
+    let previousFlowRevision = BigInt(string(record(raw(journal.find((r) => r.event_id === start.row.event_id)!.receipt_json)).revision));
     const records = [...workEvents.values()].filter((event) => event.activation_id === id);
     for (const recordRow of records) {
       const eventId = text(recordRow, 'event_id'), ticket = record(json(recordRow, 'ticket_json')), input = record(ticket.input), auth = authorizations.get(eventId);
       require(auth && auth.activation_id === id && same(json(auth, 'input_json'), input), 'work authorization/ticket');
       require(same(ticket.identity, identity) && ticket.generation === owner.generation && same(input.context, context) && input.eventId === eventId
         && input.expectedRevision === revision && ticket.stateJson === previous && ticket.contractJson === row.contract_json && ticket.optionsJson === row.options_json, 'work ticket binding');
+      require(opaque(ticket.ticketId) && !ticketIds.has(ticket.ticketId) && opaque(input.eventId), 'work ticket identity'); ticketIds.add(ticket.ticketId);
+      require(typeof ticket.flowRevision === 'string' && /^(0|[1-9][0-9]*)$/.test(ticket.flowRevision) && flowRevisions.has(ticket.flowRevision), 'work ticket flow revision');
+      const flowRevision = BigInt(ticket.flowRevision);
+      require(flowRevision >= previousFlowRevision && flowRevision <= runRevision, 'work ticket flow revision bounds'); previousFlowRevision = flowRevision;
+      const event = record(raw(string(input.eventJson))), body = record(event.event);
       const call = input.nativeCall;
+      if (body.kind === 'physicalEnded') require(input.control === true && call === null, 'native joined control attribution');
+      else require(['visibleText', 'submit', 'turnEnded', 'planPresented', 'planResolved', 'checkEnded', 'stop'].includes(string(body.kind)) && input.control === false && object(call), 'native owned operation attribution');
+      if (object(call)) require(Object.keys(call).length === 2 && opaque(call.providerAttemptId) && opaque(call.nativeCallId), 'native operation identity');
       require(object(call) ? auth.provider_attempt_id === call.providerAttemptId && auth.native_call_id === call.nativeCallId : auth.provider_attempt_id === null && auth.native_call_id === null, 'work native call authorization');
       if (object(call)) require(call.providerAttemptId === record(record(raw(start.row.settlement_json)).workAttempt).providerAttemptId, 'work provider attempt');
       const decision = record(json(recordRow, 'decision_json'));
       const evaluated = evaluateHostWork030(JSON.parse(text(row, 'context_json')), eventId, revision, text(row, 'contract_json'), previous, string(input.eventJson), text(row, 'options_json'), validateSchema);
       require(same(raw(evaluated.stateJson), raw(string(decision.stateJson))) && same(raw(evaluated.receiptJson), raw(string(decision.receiptJson))), 'work controller decision');
-      const receipt = record(raw(string(decision.receiptJson))), action = record(receipt.decision), event = record(raw(string(input.eventJson)));
-      const body = record(event.event);
+      const receipt = record(raw(string(decision.receiptJson))), action = record(receipt.decision);
       if (action.kind === 'planWaiting' || body.kind === 'planResolved') {
         const plans = nativePlans.filter((r) => same(json(r, 'work_ids_json'), [id]) && record(json(r, 'payload_json')).planId === body.planId);
         require(plans.length === 1, 'work plan has no unique native human request');
@@ -490,6 +558,7 @@ function verifyHostTables030(db: Database, state: Obj, plan: Obj, effects: Effec
       } else require(decision.check === null, 'unexpected work check');
       if (action.kind === 'finished') {
         const flow = terminal(work, eventId); workDecisions.set(id, action);
+        require(ticket.flowRevision === events.get(flow.row.event_id)!.expectedRevision, 'work terminal ticket flow revision');
         if (action.outcome === 'success') {
           const output = record(action.output), expected: Obj = { text: output.text!, results: raw(string(output.resultsJson)) };
           if (output.choice !== null) expected.choice = output.choice!; if (output.instructions !== null) expected.instructions = output.instructions!;

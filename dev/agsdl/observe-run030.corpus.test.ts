@@ -60,3 +60,9 @@ describe.skipIf(!hostReviewDir || !process.env.MACRO_AGSDL030_REPLAY_COMMAND)('s
 describe.skipIf(!previousAuditDir || !process.env.MACRO_AGSDL030_REPLAY_COMMAND)('previous independent corpus', () => {
   test.each(previous)('checks $name on a copy', (probe) => copiedObservation(probe, probe.name === 'forged-internal-failure.sqlite'));
 });
+const authorityReviewDir = process.env.MACRO_AGSDL030_AUTHORITY_REVIEW_DIR;
+const authorityProbes: Probe[] = authorityReviewDir ? JSON.parse(readFileSync(join(authorityReviewDir, 'semantic-results.json'), 'utf8')) : [];
+describe.skipIf(!authorityReviewDir || !process.env.MACRO_AGSDL030_REPLAY_COMMAND)('native operation provenance and ticket revisions', () => {
+  test('retains all nine independent authority probes', () => expect(authorityProbes).toHaveLength(9));
+  test.each(authorityProbes)('checks $name after successful replay on a copy', (probe) => copiedObservation(probe, probe.name === '036-positive-original', true));
+});

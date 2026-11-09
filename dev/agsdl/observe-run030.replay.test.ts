@@ -2,7 +2,6 @@ import { afterEach, expect, test } from 'bun:test';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { spawnSync } from 'node:child_process';
 import { observeRun030, verifyNativeReplay030 } from './observe-run030';
 import { cleanupObservedDatabases030, nativeDatabase } from './observe-run030.testSupport';
 
@@ -12,6 +11,27 @@ function verifier(body: string) {
   const directory = mkdtempSync(join(tmpdir(), 'agsdl-replay-protocol-')); directories.push(directory);
   const path = join(directory, 'verifier.ts'); writeFileSync(path, body);
   return { directory, command: [process.execPath, path] };
+}
+function expectAbsent(pid: number) {
+  try { process.kill(pid, 0); }
+  catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ESRCH') return;
+    throw new Error(`Cannot verify absence of owned process ${pid}: ${String(error)}`);
+  }
+  throw new Error(`Owned verifier process ${pid} survived`);
+}
+function expectAllAbsent(pids: number[]) {
+  const errors: unknown[] = [];
+  for (const pid of pids) {
+    try { expectAbsent(pid); }
+    catch (error) {
+      errors.push(error);
+      // Clean only PIDs recorded by this test, while preserving the failure.
+      try { process.kill(pid, 'SIGKILL'); }
+      catch (cleanupError) { if ((cleanupError as NodeJS.ErrnoException).code !== 'ESRCH') errors.push(cleanupError); }
+    }
+  }
+  if (errors.length) throw new AggregateError(errors, 'Owned verifier processes are not proven absent');
 }
 test('passes positional arguments literally without a shell and returns the native verdict', () => {
   const stub = verifier('await Bun.write(process.argv[2],JSON.stringify(process.argv.slice(3)));process.stdout.write(JSON.stringify({ok:true,outsideReplay:["host"]}));');
@@ -59,12 +79,32 @@ test('kills the process group after a bounded grace when a wrapper ignores SIGTE
   expect(() => verifyNativeReplay030('db', 's', 'i', { replayCommand: [...stub.command, log], replayTimeoutMs: 300 })).toThrow(/timeout/);
   expect(performance.now() - started).toBeLessThan(1300);
   const pids: number[] = JSON.parse(readFileSync(log, 'utf8'));
-  for (const pid of pids) {
-    const status = spawnSync('ps', ['-o', 'stat=', '-p', String(pid)], { encoding: 'utf8' });
-    expect(status.status !== 0 || status.stdout.trim().startsWith('Z')).toBe(true);
-  }
+  expectAllAbsent(pids);
 });
 test('ignores an ok:true printed before the deadline when its process stays alive beyond it', () => {
   const stub = verifier('process.on("SIGTERM",()=>{});process.stdout.write(JSON.stringify({ok:true}));await Bun.sleep(1500);');
   expect(() => verifyNativeReplay030('db', 's', 'i', { replayCommand: stub.command, replayTimeoutMs: 150 })).toThrow(/timeout/);
+});
+test('joins descendants with closed stdio after a successful verifier exits', () => {
+  const stub = verifier(`
+    import { spawn } from 'node:child_process';
+    import { writeFileSync } from 'node:fs';
+    const child=spawn(process.execPath,['--eval','process.on("SIGTERM",()=>{});setInterval(()=>{},1000);'],{stdio:'ignore'});
+    writeFileSync(process.argv[2],JSON.stringify([process.pid,child.pid]));
+    child.unref();process.stdout.write(JSON.stringify({ok:true}));
+  `);
+  const log = join(stub.directory, 'pids.json');
+  expect(verifyNativeReplay030('db', 's', 'i', { replayCommand: [...stub.command, log] })).toEqual({ ok: true });
+  expectAllAbsent(JSON.parse(readFileSync(log, 'utf8')));
+});
+test('joins an output-overflow emitter that ignores SIGTERM', () => {
+  const stub = verifier(`
+    import { writeFileSync } from 'node:fs';
+    process.on('SIGTERM',()=>{});writeFileSync(process.argv[2],JSON.stringify([process.pid]));
+    for(let i=0;i<100;i++)process.stdout.write('x'.repeat(100000));
+    await Bun.sleep(1500);
+  `);
+  const log = join(stub.directory, 'pids.json');
+  expect(() => verifyNativeReplay030('db', 's', 'i', { replayCommand: [...stub.command, log] })).toThrow('output exceeded');
+  expectAllAbsent(JSON.parse(readFileSync(log, 'utf8')));
 });
