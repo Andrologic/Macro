@@ -396,6 +396,17 @@ it('uses reducer-compatible selectors, path ancestry, terminal states and missin
     expect(validateDocumentBytes(new TextEncoder().encode(f.capture.authoredSource)).valid).toBe(true);
     const instances=new Map(f.runtime.items.flatMap(item=>item.kind==='instance'?[[item.value.id,item.value] as const]:[]));
     const activations=f.runtime.items.flatMap(item=>item.kind==='activation'?[item.value]:[]);
+    for(const queued of activations.filter(item=>item.phase==='queued')){
+      expect(queued.step).not.toBeNull();
+      const step=document.flow.steps[queued.step![0]];
+      expect(step).toMatchObject({type:'agent',agent:queued.agent,instance:'shared'});
+      const owner=instances.get(queued.instanceId!);
+      const current=activations.find(item=>item.id===owner?.currentActivationId)!;
+      const dispatch=document.flow.steps[document.flow.entry];
+      expect(dispatch.next).toContain(current.step![0]);
+      expect(dispatch.next).toContain(queued.step![0]);
+      expect(activations.some(item=>item.step?.[0]===document.flow.entry&&item.phase==='done')).toBe(true);
+    }
     for(const a of activations){
       expect(a.pathIds).toEqual(a.context.flatMap(frame=>frame.kind==='path'?[frame.pathId]:[]));
       expect(a.composeActivationIds).toEqual(a.context.flatMap(frame=>frame.kind==='compose'?[frame.activationId]:[]));

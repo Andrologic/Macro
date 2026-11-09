@@ -19,7 +19,7 @@ it('keeps native activation and occurrence identities separate from source owner
   expect(projectRunGraph030(state.scope, semantics, [otherCapture])).toEqual([]);
   expect(runOccurrenceKey030(otherCapture)).not.toBe(graph[0].key);
   expect(normalRunOutcome030(occurrences[0])).toBe('failed');
-  expect(state.verdict).toBe('succeeded');
+  expect(state.verdict).toBeNull();
 });
 it('matches expanded composition addresses instead of merging a shared source pointer', () => {
   const run = inspectionFixture030();
@@ -45,4 +45,30 @@ it('preserves unmapped external work and unavailable details without inventing a
   expect(graph[0].nativeOccurrenceId).toBeNull();
   expect(graph[0].occurrence.activation.agent).toBeNull();
   expect(normalRunOutcome030(external)).toBeNull();
+});
+
+it('keeps the inspection double consistent with context-derived paths and an unfinished physical stop', () => {
+  const { capture, state } = inspectionFixture030();
+  const document = JSON.parse(capture.authoredSource);
+  const occurrences = state.occurrences.kind === 'ready' ? state.occurrences.value : [];
+  expect(state.verdict).toBeNull();
+  expect(state.stopping).toBe(true);
+  expect(state.physicalPending).toBe(String(occurrences.filter(item => item.activation.physical).length));
+  for (const { activation } of occurrences) {
+    const pathIds = activation.context.flatMap(frame => frame.kind === 'path' ? [frame.pathId] : []);
+    expect(activation.pathIds).toEqual(pathIds);
+    const fanout = state.groups.flatMap(group => group.branches).find(branch => branch.fanout && branch.pathIds.includes(pathIds[0]));
+    expect(activation.nearestFanoutIndex).toBe(fanout ? String(fanout.pathIds.indexOf(pathIds[0])) : null);
+    if (activation.physical) expect(activation).toMatchObject({ phase: 'stopping', stopRequested: true });
+  }
+  for (const path of state.paths) {
+    if (path.context.length === 0) expect(path.nearestFanoutIndex).toBeNull();
+  }
+  for (const instance of state.instances) {
+    expect(Object.hasOwn(document.agents, instance.agent)).toBe(true);
+    expect(instance.selectorKind).toBe(document.flow.steps.prepare.instance);
+    expect(instance.selectorName).toBeNull();
+    expect(instance.discarded).toBe(true);
+    expect(instance.currentActivationId).toBeNull();
+  }
 });

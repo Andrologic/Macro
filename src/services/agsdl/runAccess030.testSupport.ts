@@ -64,23 +64,32 @@ export async function nativeAgentRunFixture030(id = 'agent-run', phase = 'done')
   const queued = phase === 'queued';
   const selector = queued ? 'shared' : 'new';
   f.capture.authoredSource = JSON.stringify({ contract: 'agsdl-0.3.0', id: 'agent-work', agents: { worker: { harness: 'example', permissions: 'read-only' } },
-    flow: { entry: 'prepare', steps: { prepare: { type: 'agent', agent: 'worker', instance: selector,
-      ...(phase === 'preparing' ? { next: 'after' } : {}) }, ...(phase === 'preparing' ? { after: { type: 'call', command: 'echo after' } } : {}) } } });
+    flow: { entry: queued ? 'dispatch' : 'prepare', steps: { prepare: { type: 'agent', agent: 'worker', instance: selector,
+      ...(phase === 'preparing' ? { next: 'after' } : {}) },
+      ...(queued ? { dispatch: { type: 'call', command: 'echo dispatch', next: ['prepare', 'followup'] }, followup: { type: 'agent', agent: 'worker', instance: 'shared' } } : {}), ...(phase === 'preparing' ? { after: { type: 'call', command: 'echo after' } } : {}) } } });
   f.capture.source.sourceSha256 = await sourceDigest(f.capture.authoredSource);
   const physical = phase === 'running' || phase === 'stopping' || queued;
   const current = { ...activation('activation-1', ['prepare'], queued ? 'running' : phase, physical), agent: 'worker', instanceId: 'native-instance' };
-  const activations = [current, ...(queued ? [{ ...activation('activation-2', [], 'queued', false), step: null, agent: 'worker', instanceId: 'native-instance' }] : [])];
+  // Both deliveries come from graph targets, never Deliver on an entered flow.
+  const pathContext = (index: number) => [{ kind: 'path' as const, pathId: `path-${index}`, departedGroups: [] }];
+  const activations = queued ? [activation('activation-0', ['dispatch'], 'done', false),
+    { ...current, context: pathContext(0), pathIds: ['path-0'] },
+    { ...activation('activation-2', ['followup'], 'queued', false), agent: 'worker', instanceId: 'native-instance', context: pathContext(1), pathIds: ['path-1'] },
+  ] : [current];
+  const paths: RuntimeProjectionPage030['items'] = queued ? [0, 1].map(index => ({ kind: 'path', value: {
+    id: `path-${index}`, batchId: 'batch', phase: 'live', context: [], nearestFanoutIndex: null, memberships: [],
+  } })) : [];
   const counts = new Map<string, number>();
   activations.forEach(item => counts.set(item.phase, (counts.get(item.phase) ?? 0) + 1));
   f.summary = { ...f.summary, stopping: phase === 'stopping', physicalPending: physical ? '1' : '0',
     verdict: phase === 'done' ? 'succeeded' : null,
     phaseCounts: [...counts].sort(([a], [b]) => a.localeCompare(b)).map(([phase, count]) => ({ phase, count: String(count) })) };
-  f.runtime = { ...f.runtime, stopping: f.summary.stopping, verdict: f.summary.verdict, total: String(1 + activations.length), items: [
+  f.runtime = { ...f.runtime, stopping: f.summary.stopping, verdict: f.summary.verdict, total: String(1 + activations.length + paths.length), items: [
     { kind: 'instance', value: { id: 'native-instance', agent: 'worker', selectorKind: selector, selectorName: null,
       currentActivationId: physical ? current.id : null, queueActivationIds: queued ? ['activation-2'] : [],
       // physical_end retires a new instance after success as well as failure.
       discarded: selector === 'new' && !physical } },
-    ...activations.map(value => ({ kind: 'activation' as const, value })),
+    ...activations.map(value => ({ kind: 'activation' as const, value })), ...paths,
   ] };
   return f;
 }
