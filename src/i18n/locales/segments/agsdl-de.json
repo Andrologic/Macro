@@ -704,5 +704,108 @@
       "exchange": "Bei einem Datenaustausch",
       "dependency": "Nach dem vorherigen Block"
     }
+  },
+  "authoring030": {
+    "advanced": "Erweiterte Eigenschaften",
+    "exactJson": "Exakte JSON-Quelle",
+    "draftHint": "Änderungen werden als Entwurf gespeichert. Statische Prüfungen erlauben keine Ausführung.",
+    "saveDraft": "Entwurf speichern",
+    "invalidDraft": "Entwurf korrigieren · Ausführung nicht erlaubt",
+    "checked": "Statische Prüfung abgeschlossen · Ausführung nicht geprüft",
+    "unchecked": "Entwurf · statische Prüfung ausstehend",
+    "document": "Systemdokument",
+    "undo": "Rückgängig",
+    "redo": "Wiederholen",
+    "default": "Nicht angegeben",
+    "groups": {
+      "general": "Arbeit",
+      "instructions": "Dauerhafte Anweisungen",
+      "mission": "Auftrag",
+      "information": "Bereitgestellte Informationen",
+      "choices": "Auswahl und Ziele",
+      "instance": "Unterhaltung und Zustellung",
+      "join": "Regel für parallele Arbeiten"
+    },
+    "hints": {
+      "instructions": "Diese Anweisungen gelten während der gesamten Unterhaltung des Agenten.",
+      "mission": "Der Auftrag gilt für eine Arbeit. Eine vorherige Nachricht kann den Standardauftrag ersetzen.",
+      "information": "Ressourcen sind Informationen zum Lesen, keine Anweisungen.",
+      "instance": "Eine leere Instanz teilt die Unterhaltung. new beginnt eine neue, ein Name verwendet eine benannte erneut. Die Zustellung gilt bei laufender Arbeit.",
+      "join": "Ohne Schwelle auf alle Zweige warten. Mit Schwelle nach genügend akzeptierten Ergebnissen fortfahren. Späte Ergebnisse zählen nicht für die Folgearbeit."
+    },
+    "fields": {
+      "title": "Arbeitstitel",
+      "description": "Beschreibung",
+      "agent": "Verantwortlicher Agent",
+      "composition": "Wiederverwendbarer Ablauf",
+      "workType": "Art der Arbeit",
+      "instructions": "Dauerhafte Anweisungen",
+      "mission": "Auftragstext",
+      "information": "Informationen zum Lesen",
+      "uri": "Quelladresse",
+      "ref": "Name des gemeinsamen Inhalts",
+      "selection": "Datenpfad, ein Name pro Zeile",
+      "instance": "Unterhaltungsinstanz",
+      "delivery": "Bei laufender Arbeit",
+      "remaining": "Unfertige Zweige",
+      "failures": "Wenn ein Zweig fehlschlägt",
+      "maxFailures": "Maximal tolerierte Fehler",
+      "count": "Benötigte akzeptierte Ergebnisse",
+      "accept": "Akzeptierte Antworten, eine pro Zeile",
+      "destination": "Fortfahren bei",
+      "joinMode": "Zusammenführungsregel",
+      "agentDescription": "Aufgabe des Agenten"
+    },
+    "options": {
+      "agent": "Agentenauftrag",
+      "call": "Automatische Aktion",
+      "approval": "Menschliche Entscheidung",
+      "compose": "Wiederverwendbarer Ablauf",
+      "join": "Auf parallele Arbeiten warten",
+      "queue": "Warten, dann eine eigene Arbeit starten",
+      "steer": "Wenn möglich zur laufenden Arbeit hinzufügen",
+      "stop": "Übrige Arbeiten vor dem Fortfahren stoppen",
+      "finish": "Fortfahren, während die anderen fertig werden",
+      "wait": "Andere fertig werden lassen, dann fortfahren",
+      "fail": "Gruppe fehlschlagen lassen",
+      "keep": "Fehler behalten und auf andere warten",
+      "all": "Alle Zweige",
+      "quorum": "Genügend akzeptierte Ergebnisse"
+    },
+    "add": {
+      "resource": "Information hinzufügen",
+      "choice": "Antwort hinzufügen",
+      "confirm": "Hinzufügen"
+    },
+    "name": {
+      "resource": "Informationsname",
+      "choice": "Antwortname"
+    },
+    "sourceKind": "Informationsquelle",
+    "sources": {
+      "value": "Text zum Lesen",
+      "ref": "Gemeinsamer Inhalt",
+      "uri": "Datei oder Webadresse"
+    },
+    "diagnostics": {
+      "title": "Entwurfsdiagnose",
+      "count": "Zu prüfende Probleme · {{count}}",
+      "filter": "Probleme filtern",
+      "search": "Probleme suchen",
+      "all": "Alle Probleme",
+      "error": "Fehler",
+      "warning": "Warnung",
+      "empty": "Keine Probleme für diesen Filter.",
+      "explanation": {
+        "harness": "Deklarierte Fähigkeiten des Agenten prüfen.",
+        "document": "Dokumentstruktur korrigieren.",
+        "mission": "Auftrag und empfangene Informationen prüfen.",
+        "join": "Zusammenführung paralleler Arbeiten prüfen.",
+        "instance": "Gemeinsame Unterhaltung der Arbeiten prüfen.",
+        "composition": "Wiederverwendbaren Ablauf und seine Verwendungen prüfen.",
+        "review": "Betroffenen Teil des Entwurfs prüfen."
+      }
+    },
+    "exactHint": "Weitere Werte bleiben im Reiter für exaktes JSON verfügbar."
   }
 }

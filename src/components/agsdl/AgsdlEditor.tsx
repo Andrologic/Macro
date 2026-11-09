@@ -1,10 +1,11 @@
 import { SaveSystemDialog } from "./SaveSystemDialog";
 import { DisclosureSummary } from "./DisclosureSummary";
 import React, { useEffect, useMemo, useState } from "react";
-import { Download, Save, Maximize2, X } from "lucide-react";
+import { Download, Save, Maximize2, X, Undo2, Redo2 } from "lucide-react";
 import { DesignLibraryDialog, DesignStart } from "./DesignLibraryDialog";
 import { DesignChangesDialog } from "./DesignChangesDialog";
 import { reviewDesignChanges } from "../../services/agsdl/designReview";
+import { Diagnostics030 } from "./Diagnostics030";
 import { AgentDetails } from "./AgentDetails";
 import { ComponentDetailsDialog } from "./ComponentDetailsDialog";
 import { WorkflowEdgeSummary } from "./WorkflowEdge";
@@ -21,7 +22,7 @@ import {
   type ViewerPort,
   type ViewerReference,
 } from "../../services/agsdl/viewer";
-import { localizeDiagnostics, type LocalizedDiagnostic } from "../../services/agsdl/diagnostics";
+import { diagnosticOwner030, localizeDiagnostics, type LocalizedDiagnostic } from "../../services/agsdl/diagnostics";
 import { projectSystemOverview } from "../../services/agsdl/systemOverview";
 import "./agsdl.css";
 import { prepareAgsdlChatContext } from "../../stores/agsdl/chatContext";
@@ -98,7 +99,27 @@ export const AgsdlEditor: React.FC<{
   const selected = selection?.key === key ? selection.path : "";
   const system = useMemo(() => projectSystemOverview(graph, document?.legacyCards.length
     ? document.legacyCards : document?.declarations.filter(item => edition030 || ["Agent", "System"].includes(item.kind)) ?? []), [graph, document, edition030]);
-  const diagnostics = useMemo(() => source && document ? localizeDiagnostics(source, session?.reports ?? [], [...document.graphs.flatMap(graph => graph.cards), ...document.declarations, ...document.legacyCards]) : [], [source, document, session?.reports]);
+  const diagnostics = useMemo(() => source ? localizeDiagnostics(source, session?.reports ?? [], document ? [...document.graphs.flatMap(graph => graph.cards), ...document.declarations, ...document.legacyCards] : []) : [], [source, document, session?.reports]);
+  const allCards = document ? [...document.graphs.flatMap(graph => graph.cards), ...document.declarations, ...document.legacyCards] : [];
+  const openDiagnostic = (issue: LocalizedDiagnostic) => {
+    if (!source) return;
+    const card = diagnosticOwner030(source, issue, allCards);
+    const index = document?.graphs.findIndex(graph => graph.cards.some(item => item.path === card.path)) ?? -1;
+    if (index >= 0) { setGraphIndex(index); setDefinitions030(false); setGraphChosen030(true); }
+    setSelection({ key, path: card.path, card });
+    setDiagnosticError("");
+  };
+  const attachDiagnostic = async (issue: LocalizedDiagnostic) => {
+    if (!source || attaching) return;
+    const card = diagnosticOwner030(source, issue, allCards);
+    setAttaching(true); setDiagnosticError("");
+    try {
+      await attachContext({ path: card.edition030?.ownerPath ?? card.path,
+        title: card.title || t("agsdl.authoring030.document"),
+        diagnostic: `${issue.rule}: ${issue.details}${issue.path === undefined ? "" : `\n${issue.path}`}${issue.step ? `\n${issue.step.join("/")}` : ""}` });
+    } catch (error) { setDiagnosticError(agsdlErrorText(error, t)); }
+    finally { setAttaching(false); }
+  };
   const cards = useMemo(() => system.cards.map(card => ({ ...card, issueCount: diagnostics.filter(issue => issue.targets.includes(card.path)).length })), [system.cards, diagnostics]);
   const selectedEdge = system.edges.find(edge => edge.id === selected);
   const currentCard = cards.find(item => item.path === selected) ?? graph?.cards.find(item => item.path === selected) ?? document?.declarations.find(item => item.path === selected);
@@ -217,12 +238,12 @@ export const AgsdlEditor: React.FC<{
   );
   const inspect = (item: ViewerCard) => (
     <>
-      {item.edition030 && <><p>{t("agsdl.edition030.authorityHint")}</p><pre className="agsdl-source-value">{item.edition030.sourceJson}</pre>{item.edition030.definitionJson && item.path !== item.edition030.agentPath && <details><summary>{t("agsdl.edition030.definition")}</summary><pre className="agsdl-source-value">{item.edition030.definitionJson}</pre></details>}</>}
+      {item.edition030 && <Diagnostics030 issues={diagnostics.filter(issue => issue.targets.includes(item.path) || diagnosticOwner030(source!, issue, allCards).path === item.path)} onSelect={openDiagnostic} onAttach={attachDiagnostic} busy={attaching} error={diagnosticError} />}
       {!item.edition030 && ["Agent", "invoke", "agent"].includes(item.kind)
         ? <AgentDetails card={item} cards={[...(document?.graphs.flatMap(graph => graph.cards) ?? []), ...(document?.declarations ?? []), ...(document?.legacyCards ?? [])]} source={source!} onSelect={select} />
-        : item.mission && <p className="agsdl-mission">{item.mission}</p>}
+        : !item.edition030 && item.mission && <p className="agsdl-mission">{item.mission}</p>}
       {item.composition && <p>{reference(item.composition)}</p>}
-      {diagnosticAction(diagnostics.filter(issue => issue.targets.includes(item.path)), item.path, nodeTitle(item))}
+      {!item.edition030 && diagnosticAction(diagnostics.filter(issue => issue.targets.includes(item.path)), item.path, nodeTitle(item))}
       {item.unresolved && <p className="agsdl-unresolved">{t("agsdl.viewer.unresolvedAgent")}</p>}
       {!item.edition030 && !["Agent", "invoke", "agent"].includes(item.kind) && <>
         {item.interfaces?.length ? <section className="agsdl-ports"><h4>{t("agsdl.viewer.property.interfaces")}</h4>{item.interfaces.map((ref, index) => <div key={index}>{reference(ref)}</div>)}</section> : null}
@@ -269,6 +290,10 @@ export const AgsdlEditor: React.FC<{
       <header className="agsdl-viewer-header">
         <strong title={document?.title}>{document?.title || t("agsdl.editor")}</strong>
         <div className="agsdl-header-actions">
+          {source && <>
+            <button className="agsdl-icon-button" aria-label={t("agsdl.authoring030.undo")} title={t("agsdl.authoring030.undo")} disabled={session?.status !== "draft" || !!session?.saving || !session?.history.length || (!!planStatus && planStatus !== "draft")} onClick={() => void changeHistory()}><Undo2 size={14} /></button>
+            <button className="agsdl-icon-button" aria-label={t("agsdl.authoring030.redo")} title={t("agsdl.authoring030.redo")} disabled={session?.status !== "draft" || !!session?.saving || !session?.future.length || (!!planStatus && planStatus !== "draft")} onClick={() => void changeHistory(true)}><Redo2 size={14} /></button>
+          </>}
           {source && <button className="agsdl-icon-button" title={persistenceTitle} aria-label={persistenceTitle} onClick={() => setSaveOpen(true)}>{demoJourney ? <Download size={14} /> : <Save size={14} />}</button>}
           {onExpand && <button className="agsdl-icon-button" onClick={onExpand}
             aria-label={t(expanded ? "agsdl.shrink" : "agsdl.expand")}
@@ -302,6 +327,10 @@ export const AgsdlEditor: React.FC<{
           </select>
         )}
       </header>
+      {source && (edition030 || !document) && <div className="agsdl-status" role="status">
+        {t(diagnostics.some(issue => issue.severity !== "warning") || parsed.error ? "agsdl.authoring030.invalidDraft" : session?.reports.length ? "agsdl.authoring030.checked" : "agsdl.authoring030.unchecked")}
+        {session?.dirty && session.status === "draft" && (!planStatus || planStatus === "draft") && <button className="agsdl-link ml-2" disabled={session.saving} onClick={() => { void useAgsdlStore.getState().save(target).catch(error => setError(agsdlErrorText(error, t))); }}>{t("agsdl.authoring030.saveDraft")}</button>}
+      </div>}
       {(error || session?.error || parsed.error) && (
         <div role="alert" className="agsdl-error">
           {error || (session?.error && t("agsdl.actionFailed")) || (
@@ -370,6 +399,10 @@ export const AgsdlEditor: React.FC<{
             </section>
           </ComponentDetailsDialog>}
         </>}
+      {source && (edition030 || !document) && <Diagnostics030 issues={diagnostics} onSelect={openDiagnostic} onAttach={attachDiagnostic} busy={attaching} error={diagnosticError} />}
+      {!document && selectedCard && <ComponentDetailsDialog title={t("agsdl.authoring030.document")} target={target} card={selectedCard} canEdit={false} onClose={() => setSelection(undefined)}>
+        <Diagnostics030 issues={diagnostics} onSelect={openDiagnostic} onAttach={attachDiagnostic} busy={attaching} error={diagnosticError} />
+      </ComponentDetailsDialog>}
       {saveOpen && session && <SaveSystemDialog target={target} title={document?.title || ""} onClose={() => setSaveOpen(false)} />}
       {library && session && <DesignLibraryDialog key={`${key}:${library}`} target={target} mode={library} onClose={() => setLibrary(undefined)} />}
       {changesOpen && review && <DesignChangesDialog review={review} onClose={() => setChangesOpen(false)} onSelect={path => {

@@ -47,7 +47,7 @@ it("navigates both endpoints and returns to the route, then guards a draft on cl
   const endpoint = Array.from(document.body.querySelectorAll<HTMLButtonElement>('.agsdl-edge-endpoints button')).find(button => button.textContent === label)!;
   act(() => endpoint.click());
   expect(document.body.querySelector('[role="dialog"] header strong')?.textContent).toBe(label);
-  expect(document.body.querySelector('.agsdl-inspector')?.textContent).toContain(label === 'a' ? 'echo source' : 'echo target');
+  expect(document.body.querySelector('[role=dialog] .agsdl-source-value')?.textContent).toContain(label === 'a' ? 'echo source' : 'echo target');
   act(() => Array.from(document.body.querySelectorAll<HTMLButtonElement>('button')).find(button => button.textContent === 'Back to previous details')!.click());
   expect(document.body.querySelectorAll('.agsdl-edge-endpoints button')).toHaveLength(2);
  }

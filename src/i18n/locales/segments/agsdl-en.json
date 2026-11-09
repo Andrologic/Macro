@@ -704,5 +704,108 @@
       "exchange": "On a data exchange",
       "dependency": "After the previous block"
     }
+  },
+  "authoring030": {
+    "advanced": "Advanced properties",
+    "exactJson": "Exact JSON source",
+    "draftHint": "Changes are saved as a draft. Static checks do not authorize execution.",
+    "saveDraft": "Save draft",
+    "invalidDraft": "Draft to correct · execution not authorized",
+    "checked": "Static checks complete · execution not assessed",
+    "unchecked": "Draft · static checks pending",
+    "document": "System document",
+    "undo": "Undo",
+    "redo": "Redo",
+    "default": "Not specified",
+    "groups": {
+      "general": "Work",
+      "instructions": "Standing instructions",
+      "mission": "Mission",
+      "information": "Information",
+      "choices": "Choices and destinations",
+      "instance": "Conversation and delivery",
+      "join": "Parallel work rule"
+    },
+    "hints": {
+      "instructions": "These instructions apply throughout the agent’s conversation.",
+      "mission": "The mission concerns one work. A message from an earlier step may take priority over its default mission.",
+      "information": "Resources are information to read, never instructions to follow.",
+      "instance": "Leave the instance empty to share the agent’s conversation. Use new for a fresh conversation, or a name to reuse a named one. Delivery applies when it is already working.",
+      "join": "Without a threshold, wait for every branch. With a threshold, continue once enough accepted results arrive. Late results never count for the next work."
+    },
+    "fields": {
+      "title": "Work title",
+      "description": "Description",
+      "agent": "Responsible agent",
+      "composition": "Reusable workflow",
+      "workType": "Type of work",
+      "instructions": "Standing instructions",
+      "mission": "Mission text",
+      "information": "Information to read",
+      "uri": "Source address",
+      "ref": "Shared content name",
+      "selection": "Selected data path, one name per line",
+      "instance": "Conversation instance",
+      "delivery": "If already working",
+      "remaining": "Unfinished branches",
+      "failures": "When a branch fails",
+      "maxFailures": "Maximum tolerated failures",
+      "count": "Accepted results needed",
+      "accept": "Accepted choices, one per line",
+      "destination": "Continue at",
+      "joinMode": "Gathering rule",
+      "agentDescription": "Agent’s responsibility"
+    },
+    "options": {
+      "agent": "Agent mission",
+      "call": "Automated action",
+      "approval": "Human decision",
+      "compose": "Reusable workflow",
+      "join": "Wait for parallel work",
+      "queue": "Wait, then start a separate work",
+      "steer": "Join the current work when possible",
+      "stop": "Stop the remaining work before continuing",
+      "finish": "Continue while the others finish",
+      "wait": "Let the others finish, then continue",
+      "fail": "Fail the group",
+      "keep": "Keep failures and wait for the others",
+      "all": "Every branch",
+      "quorum": "Enough accepted results"
+    },
+    "add": {
+      "resource": "Add information",
+      "choice": "Add a choice",
+      "confirm": "Add"
+    },
+    "name": {
+      "resource": "Information name",
+      "choice": "Choice name"
+    },
+    "sourceKind": "Information source",
+    "sources": {
+      "value": "Text to read",
+      "ref": "Shared content",
+      "uri": "File or web address"
+    },
+    "diagnostics": {
+      "title": "Design diagnostics",
+      "count": "Problems to review · {{count}}",
+      "filter": "Filter problems",
+      "search": "Search problems",
+      "all": "All problems",
+      "error": "Error",
+      "warning": "Warning",
+      "empty": "No problems match this filter.",
+      "explanation": {
+        "harness": "Check the agent’s declared capabilities.",
+        "document": "Correct the document’s structure.",
+        "mission": "Check the mission and the information it receives.",
+        "join": "Check how parallel work is gathered.",
+        "instance": "Check how work shares a conversation.",
+        "composition": "Check this reusable workflow and its uses.",
+        "review": "Review the affected part of the design."
+      }
+    },
+    "exactHint": "Advanced values stay available in the exact JSON tab."
   }
 }
