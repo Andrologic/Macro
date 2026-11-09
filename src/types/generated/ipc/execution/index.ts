@@ -52,6 +52,7 @@ export type { ExecutionIntentState } from '../ExecutionIntentState';
 export type { ExecutionPreflight } from '../ExecutionPreflight';
 export type { ExecutionPreflightRequest } from '../ExecutionPreflightRequest';
 export type { ExecutionReadIntentsRequest } from '../ExecutionReadIntentsRequest';
+export type { ExecutionRunCorrelation030 } from '../ExecutionRunCorrelation030';
 export type { ExecutionStageIntentRequest } from '../ExecutionStageIntentRequest';
 export type { HostAdmission } from '../HostAdmission';
 export type { HostAgentState } from '../HostAgentState';
