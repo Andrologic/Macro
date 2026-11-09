@@ -25,7 +25,7 @@ export function nativeDatabase() {
   type ObjectRow = Record<string, any>;
   const identity = { systemStartId: 's', flowInvocationId: 'i', snapshotId: 'snapshot', epoch: 'epoch' };
   const state: ObjectRow = { identity, revision: '0', verdict: 'succeeded', stopping: false, unhandledFailure: false, entered: true, activations: [], instances: [], groups: [], paths: [], batches: [], preparations: [], preparationReceipts: {}, events: {}, visits: {} };
-  const plan: ObjectRow = { steps: [], agents: [], joins: [], routes: [] };
+  const plan: ObjectRow = { format: 'macro-agsdl-observer-synthetic-unit/1', steps: [], agents: [], joins: [], routes: [] };
   let lastEventId = 'enter', autoEnd = false;
   const removeEnd = () => {
     if (!autoEnd) return;
@@ -189,6 +189,6 @@ export function nativeDatabase() {
     db.exec('DELETE FROM engine_flow030_runs');
     db.query('INSERT INTO engine_flow030_runs VALUES (?,?,?,?,?,?)').run('s', 'i', JSON.stringify(state), JSON.stringify(plan), identity.snapshotId, identity.epoch);
   };
-  const observe = () => { persist(); return observeRun030(path, 's', 'i'); };
+  const observe = () => { persist(); return observeRun030(path, 's', 'i', { syntheticUnitTestOnly: true }); };
   return { path, db, state, plan, start, effect, event, terminal, call, failure, human, internal, group, persist, observe, close: () => db.close() };
 }

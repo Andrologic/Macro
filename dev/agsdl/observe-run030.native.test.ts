@@ -4,7 +4,8 @@ import { readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { cleanupObservedDatabases030, nativeDatabase } from './observe-run030.testSupport';
 import { compareRun030 } from './run-expect030';
-import { compareObserved030 } from './compare-observed030';
+import { compareObserved030 as compareWithReplay030 } from './compare-observed030';
+const compareObserved030 = (result: string, path: string) => compareWithReplay030(result, path, { syntheticUnitTestOnly: true });
 
 // Use the corrected upstream runs until their separately owned vendor import.
 const correctedRunsDir = process.env.MACRO_AGSDL030_CORRECTED_RUNS_DIR;

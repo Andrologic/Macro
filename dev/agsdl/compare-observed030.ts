@@ -3,7 +3,7 @@ import { join } from 'node:path';
 import { createHash } from 'node:crypto';
 import { parse, stringify } from '../../src/vendor/agsdl/v0.3/json.mjs';
 import { compareRun030 } from './run-expect030';
-import { observeRun030 } from './observe-run030';
+import { observeRun030, type ObserveOptions030 } from './observe-run030';
 
 const object = (value: unknown): value is Record<string, unknown> => value !== null && typeof value === 'object' && !Array.isArray(value);
 
@@ -22,7 +22,7 @@ const scenarioNames = new Set([
 
 // Correlate a native QA result with its fixture. This is not an authority receipt.
 // Run only after the QA application and its database pool have exited.
-export async function compareObserved030(resultPath: string, database: string) {
+export async function compareObserved030(resultPath: string, database: string, options: ObserveOptions030 = {}) {
   const envelope: unknown = JSON.parse(await readFile(resultPath, 'utf8'));
   if (!object(envelope) || envelope.ok !== true || !object(envelope.result)) throw new Error('Invalid native scenario result');
   const result = envelope.result, scenario = result.scenario, receipt = result.receipt;
@@ -39,7 +39,7 @@ export async function compareObserved030(resultPath: string, database: string) {
   if (fixture.error || !fixture.tree || typeof fixture.tree !== 'object' || Array.isArray(fixture.tree) || !('expect' in fixture.tree)) {
     throw new Error('Invalid pinned conformance fixture');
   }
-  const observed = observeRun030(database, receipt.systemStartId, receipt.flowInvocationId);
+  const observed = observeRun030(database, receipt.systemStartId, receipt.flowInvocationId, options);
   const diagnostics = compareRun030(stringify(fixture.tree.expect), observed);
   return { scenario: { name: scenario.name, fixtureSha256 }, fixtureSha256,
     observedSha256: createHash('sha256').update(observed).digest('hex'), observedJson: observed, diagnostics };

@@ -1,17 +1,59 @@
 import { Database } from 'bun:sqlite';
+import { createHash } from 'node:crypto';
+import { evaluateHostWork030 } from '../../src/services/agsdlExecution/hostWorkTransition030';
+import { evaluateHostHumanClock030 } from '../../src/services/agsdlExecution/hostHumanClock030';
+import { connectValueSchemaValidator030 } from '../../src/services/agsdlExecution/valueSchemaPort030';
+import { validate as validateValueSchema030 } from '../../src/vendor/agsdl/v0.3/valueschema.mjs';
+import { commandOutput030, mcpOutput030, prepareCall030 } from '../../src/services/agsdlExecution/calls030';
+import { ConformanceError } from '../../src/services/agsdlExecution/exact';
 import { SchemaChecker } from '../../src/vendor/agsdl/v0.3/schemacheck.mjs';
 import schema030 from '../../src/vendor/agsdl/v0.3/schema/agsdl.schema.json';
 import { NumberToken, parse, stringify, type ExactValue } from '../../src/vendor/agsdl/v0.3/json.mjs';
 import { compareNumbers, isInteger } from '../../src/vendor/agsdl/v0.3/values.mjs';
 
+export interface ObserveOptions030 {
+  /** Executable and optional prefix arguments, never a shell command. */
+  replayCommand?: readonly string[];
+  replayTimeoutMs?: number;
+  /** Only accepted by bun:test for explicitly marked synthetic unit fixtures. */
+  syntheticUnitTestOnly?: true;
+}
+export interface ReplayVerdict030 {
+  ok: boolean;
+  divergence?: { eventId?: string; field: string; expected: unknown; stored: unknown };
+  outsideReplay?: string[];
+}
+export function verifyNativeReplay030(database: string, system: string, invocation: string, options: ObserveOptions030 = {}): ReplayVerdict030 {
+  let command = options.replayCommand;
+  if (!command && process.env.MACRO_AGSDL030_REPLAY_COMMAND) {
+    try { command = JSON.parse(process.env.MACRO_AGSDL030_REPLAY_COMMAND); }
+    catch { throw new Error('Native replay command is not a JSON argv array'); }
+  }
+  if (!Array.isArray(command) || !command.length || !command.every((arg) => typeof arg === 'string' && arg.length)) throw new Error('Native replay verifier is required');
+  const timeout = options.replayTimeoutMs ?? 30_000;
+  if (!Number.isSafeInteger(timeout) || timeout <= 0) throw new Error('Invalid native replay timeout');
+  let result: ReturnType<typeof Bun.spawnSync>;
+  try { result = Bun.spawnSync([...command, database, system, invocation], { stdout: 'pipe', stderr: 'pipe', timeout }); }
+  catch (error) { throw new Error(`Native replay execution failed: ${String(error)}`); }
+  if (!result.success || result.signalCode || result.exitCode !== 0) throw new Error(`Native replay refused: ${result.signalCode ?? `exit ${result.exitCode}`} ${Buffer.from(result.stdout ?? new Uint8Array()).toString('utf8').trim().slice(0, 8192)} ${Buffer.from(result.stderr ?? new Uint8Array()).toString('utf8').trim().slice(0, 4096)}`);
+  const output = Buffer.from(result.stdout ?? new Uint8Array()).toString('utf8').trim();
+  if (output.split(/\r?\n/).length !== 1) throw new Error('Native replay must return one JSON line');
+  let verdict: unknown;
+  try { verdict = JSON.parse(output); }
+  catch { throw new Error('Native replay returned invalid or missing JSON'); }
+  if (verdict === null || typeof verdict !== 'object' || Array.isArray(verdict) || !('ok' in verdict) || typeof verdict.ok !== 'boolean') throw new Error('Invalid native replay verdict');
+  if (!verdict.ok) throw new Error(`Native replay refused: ${JSON.stringify(verdict)}`);
+  if ('divergence' in verdict && verdict.divergence !== undefined) throw new Error('Native replay reported a divergence with ok:true');
+  if ('outsideReplay' in verdict && (!Array.isArray(verdict.outsideReplay) || !verdict.outsideReplay.every((field) => typeof field === 'string'))) throw new Error('Invalid native replay outsideReplay list');
+  return verdict as ReplayVerdict030;
+}
+
 // The caller closes the native application and its pool before opening this reader.
 // This observer accepts durable rows only and never controls the run.
 type Obj = Record<string, ExactValue>;
 
-// Provisional adapters for the not-yet-admitted call/human/clock capabilities.
-// The native 06c3cfeb + R6 writers do not produce these extension tables. Missing
-// evidence refuses only a reached capability that needs it, never an unrelated
-// run. Align these adapters with the actual writers when those lots integrate.
+// Legacy adapters retained solely for marked synthetic unit fixtures. Production
+// reads native migrations 039/040 below and refuses these obsolete extensions.
 // All queries filter system_id AND invocation_id; nothing is inferred from expect.
 // engine_flow030_call_receipts:
 export type CallReceiptRow030 = {
@@ -182,10 +224,452 @@ function verifyApprovalResolution(activation: Obj, start: Obj, step: Obj, resolu
   if (resolution.reason === 'approvalTimeout' ? !expired : expired) throw new Error('Approval resolution contradicts deadline');
 }
 
-// Validate the complete durable graph before exposing any projection. In
-// particular, checking an effect's referenced activation is not sufficient:
-// the activation, accepted event, event receipt and retained state must agree.
-function verifyDurableGraph(state: Obj, plan: Obj, rows: EffectRow030[], events: EventRow030[], handoffs: HandoffRow030[], native: NativeRoutes030): void {
+type HostRow030 = Record<string, string | number | null>;
+interface HostProjection030 { answers: Obj[]; timeoutIds: Set<string> }
+const sha030 = (value: string | Uint8Array) => createHash('sha256').update(value).digest('hex');
+// EffectivePolicy::fingerprint hashes struct serialization, not serde_json::Value
+// key order. Keep the native field order from agsdl_permissions/{mod,paths}.rs.
+function nativePolicyDigest030(value: ExactValue): string {
+  const ordered = (value: ExactValue | undefined, fields: string[]): Obj => {
+    const source = record(value);
+    if (Object.keys(source).length !== fields.length || fields.some((field) => !Object.hasOwn(source, field))) throw new Error('Host evidence differs: native policy shape');
+    return Object.fromEntries(fields.map((field) => [field, source[field]]));
+  };
+  const policy = (value: ExactValue): Obj => {
+    const p = ordered(value, ['context', 'preset', 'directories', 'outside', 'rules', 'reviewer']);
+    p.context = ordered(p.context, ['workspace', 'home']);
+    if (!Array.isArray(p.directories) || !Array.isArray(p.rules)) throw new Error('Host evidence differs: native policy lists');
+    p.directories = p.directories.map((d) => ordered(d, ['canonical', 'access']));
+    p.rules = p.rules.map((r) => ordered(r, ['action', 'effect', 'pattern', 'logical', 'physical']));
+    return p;
+  };
+  const effective = ordered(value, ['ceilings', 'current']);
+  if (!Array.isArray(effective.ceilings) || effective.ceilings.length < 3) throw new Error('Host evidence differs: native policy ceilings');
+  effective.ceilings = effective.ceilings.map(policy); effective.current = policy(effective.current);
+  return sha030(stringify(effective));
+}
+// serde_json::Value object keys are ordered. Preserve exact numeric tokens.
+const canonical030 = (value: ExactValue): string => Array.isArray(value) ? `[${value.map(canonical030).join(',')}]`
+  : object(value) ? `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${canonical030(value[key])}`).join(',')}}` : stringify(value);
+function terminalNoAdmission030(journal: EventRow030[], proof: Obj): boolean {
+  return journal.some((row) => {
+    const kind = record(record(raw(row.event_json)).kind), ended = kind.PhysicalEnded;
+    return object(ended) && same(ended.work, proof.work) && object(ended.evidence) && ended.evidence.native_receipt_id === proof.nativeReceiptId && ended.evidence.descendants_joined === true;
+  });
+}
+
+// Host evidence is outside reduce(). Never infer a missing native receipt from
+// expect or reproduce flow scheduling here. The flow state has passed N-REPLAY.
+function verifyHostTables030(db: Database, state: Obj, plan: Obj, effects: EffectRow030[], journal: EventRow030[]): HostProjection030 {
+  const identity = record(state.identity), system = string(identity.systemStartId), invocation = string(identity.flowInvocationId);
+  const require: (ok: unknown, field: string) => asserts ok = (ok, field) => { if (!ok) throw new Error(`Host evidence differs: ${field}`); };
+  const list = (value: ExactValue | undefined): Obj[] => { require(Array.isArray(value), 'array'); return value.map(record); };
+  const has = (table: string) => !!db.query("SELECT 1 FROM sqlite_master WHERE name=? AND type IN ('table','view')").get(table);
+  const rows = (table: string): HostRow030[] => has(table) ? db.query(`SELECT * FROM ${table} WHERE system_id=? AND invocation_id=? ORDER BY rowid`).all(system, invocation) as HostRow030[] : [];
+  const text = (row: HostRow030, key: string): string => { require(typeof row[key] === 'string', key); return row[key] as string; };
+  const json = (row: HostRow030, key: string) => raw(text(row, key));
+  const map = (values: HostRow030[], key: string) => { const result = new Map(values.map((r) => [text(r, key), r])); require(result.size === values.length, `duplicate ${key}`); return result; };
+  const acts = new Map(list(state.activations).map((a) => [string(a.id), a])), steps = new Map(list(plan.steps).map((s) => [address(s.address), s]));
+  const fx = new Map(effects.map((e) => [e.effect_id, { row: e, value: record(raw(e.effect_json)), kind: record(record(raw(e.effect_json)).kind) }]));
+  const events = new Map(journal.map((e) => [e.event_id, record(raw(e.event_json))]));
+  const starts = new Map(effects.flatMap((e) => { const kind = fx.get(e.effect_id)!.kind; return kind.kind === 'start' ? [[string(record(kind.work).activationId), { row: e, kind }] as const] : []; }));
+  const owners = rows('engine_flow030_owners'); require(owners.length === 1, 'owner'); const owner = owners[0];
+  const ownerValue = { systemStartId: system, ownerEpoch: text(owner, 'owner_epoch') };
+  require(owner.snapshot_id === identity.snapshotId && owner.capture_epoch === identity.epoch, 'owner capture identity');
+  const captures = rows('engine_start030_requests'); require(captures.length === 1 && sha030(text(captures[0], 'capture_json')) === owner.capture_sha256, 'owner capture digest');
+  const capture = record(json(captures[0], 'capture_json')), privateCapture = record(raw(string(capture.privateCaptureJson)));
+  require(owner.status === 'live' && privateCapture.generation === owner.generation, 'owner generation lifecycle');
+  for (const obsolete of ['engine_flow030_call_receipts', 'engine_flow030_work_timeouts']) require(rows(obsolete).length === 0, 'unsupported legacy adapter rows');
+  const request = record(json(captures[0], 'request_json')), startReceipt = record(json(captures[0], 'receipt_json'));
+  require(request.requestId === captures[0].request_id && same(startReceipt.identity, identity), 'Start request/receipt');
+  const entries = has('engine_start030_entries') ? db.query('SELECT delivery_id FROM engine_start030_entries WHERE system_id=?').all(system) as Array<{ delivery_id: string }> : [];
+  require(request.entry === null ? entries.length === 0 : entries.length === 1 && entries[0].delivery_id === record(request.entry).deliveryId, 'Start delivery registry');
+  if (has('engine_ui_intents')) {
+    const intents = db.query('SELECT request_id,delivery_id,admission_system030_id,kind,payload_json FROM engine_ui_intents WHERE admission_system030_id=? OR request_id=?').all(system, text(captures[0], 'request_id')) as HostRow030[];
+    for (const intent of intents) { require(intent.admission_system030_id === system && intent.request_id === request.requestId && intent.kind === 'start' && intent.delivery_id === (object(request.entry) ? request.entry.deliveryId : null), 'Start UI intent'); json(intent, 'payload_json'); }
+  }
+  const metadata = (row: HostRow030) => require(row.owner_epoch === owner.owner_epoch && row.generation === owner.generation
+    && (row.capture_sha256 === undefined || row.capture_sha256 === owner.capture_sha256), 'owner/generation/capture');
+  const binding = (id: string) => { const a = acts.get(id), start = starts.get(id); require(a && start, `activation/Start ${id}`); return { a, start, work: record(start.kind.work), step: steps.get(address(a.step))! }; };
+  const handoffs = map(rows('engine_flow030_handoffs'), 'effect_id');
+  const unadmitted = map(rows('engine_flow030_no_admissions'), 'start_effect_id');
+  for (const [id, row] of unadmitted) {
+    metadata(row); const effect = fx.get(id), proof = record(json(row, 'proof_json'));
+    require(effect?.kind.kind === 'start' && !handoffs.has(id) && same(proof.identity, identity) && proof.ownerEpoch === owner.owner_epoch && proof.generation === owner.generation
+      && same(proof.work, effect.kind.work) && ['unclaimed', 'unreleasedNativeClaim'].includes(string(proof.reason)), 'non-admission proof');
+    const a = acts.get(string(record(proof.work).activationId)); require(a && a.stopEffectId !== null && terminalNoAdmission030(journal, proof), 'non-admission terminal');
+  }
+  for (const [id, row] of handoffs) {
+    metadata(row); const effect = fx.get(id), receipt = record(json(row, 'receipt_json'));
+    require(effect && same(receipt, raw(effect.row.settlement_json)) && receipt.kind === 'nativeOwnedHandoff030'
+      && same(receipt.identity, identity) && receipt.effectId === id && receipt.ownerEpoch === owner.owner_epoch && receipt.generation === owner.generation && receipt.requestId === `flow030:${system}:${id}`, 'handoff/effect');
+    if (effect.kind.agent !== null && effect.kind.kind === 'start') {
+      const attempt = record(receipt.workAttempt), reference = record(effect.kind.work);
+      require(same(attempt.identity, identity) && same(attempt.owner, ownerValue) && attempt.generation === owner.generation && attempt.startEffectId === id && attempt.agent === effect.kind.agent
+        && same(attempt.work, { systemStartId: system, flowInvocationId: invocation, activationId: reference.activationId!, step: effect.kind.step!, agentInstanceId: reference.agentInstanceId! }) && typeof attempt.providerAttemptId === 'string' && attempt.providerAttemptId.length > 0, 'handoff work attempt');
+    } else if (effect.kind.kind === 'start') require(receipt.workAttempt === undefined, 'unexpected agent attempt');
+  }
+  for (const { row } of starts.values()) require(handoffs.has(row.effect_id) || unadmitted.has(row.effect_id), 'missing handed-off Start');
+  // The observed format counts delivered works. A proven never-delivered work
+  // remains explicitly unprojectable, rather than being invented as a start.
+  require(unadmitted.size === 0, 'unprojectable never-delivered work');
+  for (const row of rows('engine_flow030_system_stop_requests')) {
+    metadata(row); const request = record(json(row, 'request_json')), receipt = record(json(row, 'receipt_json'));
+    require(request.requestId === row.request_id && request.systemStartId === system && request.activationId === null && receipt.requestId === row.request_id && same(receipt.identity, identity)
+      && receipt.ownerEpoch === owner.owner_epoch && receipt.generation === owner.generation && receipt.flowEventId === row.event_id, 'system Stop request');
+    if (row.event_id !== null) { const event = events.get(text(row, 'event_id')); require(event && event.kind === 'Stop' && event.expectedRevision === receipt.beforeRevision, 'system Stop event'); }
+    else require(receipt.revision === receipt.beforeRevision && receipt.verdict === state.verdict && receipt.stopping === state.stopping, 'terminal Stop alias');
+  }
+  const terminal = (work: Obj, receiptId?: string) => {
+    const matches = journal.flatMap((row) => { const kind = record(events.get(row.event_id)!.kind), body = kind.WorkResult ?? kind.PhysicalEnded;
+      if (!object(body) || !same(body.work, work)) return [];
+      const proof = body.physical ?? body.evidence;
+      return object(proof) && proof.descendants_joined === true && (receiptId === undefined || proof.native_receipt_id === receiptId) ? [{ kind, body, row }] : [];
+    });
+    require(matches.length === 1, 'native terminal/physical receipt'); return matches[0];
+  };
+  const producerOutput = (producer: Obj) => {
+    const a = acts.get(string(producer.activationId)); require(a && same(a.step, producer.step), 'producer activation');
+    const result = a.result;
+    const error = record(raw(string(producer.outputJson))).error;
+    require(object(result) && result.kind === 'completed' && result.outputJson === producer.outputJson
+      || error !== undefined && [...fx.values()].some((f) => f.kind.kind === 'failure' && f.kind.activationId === a.id && f.kind.counted === true && same(f.kind.error, error)), 'producer output');
+  };
+  // 034: immutable preparation and occurrence copies of the accepted Prepared.
+  const preparations = map(rows('engine_flow030_preparations'), 'prepare_id');
+  const retained = list(state.preparations), preparedEvents = journal.flatMap((row) => {
+    const body = record(events.get(row.event_id)!.kind).Prepared; return object(body) ? [{ row, body }] : [];
+  });
+  const occurrences = new Map<string, { row: HostRow030; item: Obj; batch: Obj; proof: Obj }>();
+  const occurrenceKey = (receipt: string, ordinal: ExactValue, index: string) => JSON.stringify([receipt, stringify(ordinal), index]);
+  for (const [id, row] of preparations) {
+    metadata(row); const reference = record(json(row, 'reference_json')), producer = record(json(row, 'producer_json'));
+    const saved = retained.find((p) => record(p.reference).prepareId === id), accepted = preparedEvents.filter((p) => record(p.body.reference).prepareId === id);
+    require(saved && accepted.length === 1 && saved.status === 'consumed' && same(saved.reference, reference) && same(saved.producer, producer), 'preparation/state');
+    const body = accepted[0].body;
+    require(reference.prepareId === id && same(reference.identity, identity) && same(body.reference, reference) && body.native_receipt_id === row.native_receipt_id, 'preparation/Prepared');
+    require(effects.filter((e) => { const k = fx.get(e.effect_id)!.kind; return k.kind === 'prepareRoute' && same(k.reference, reference) && same(k.producer, producer); }).length === 1, 'preparation/effect');
+    producerOutput(producer);
+    const source = record(json(row, 'source_json'));
+    require(source.terminalId === producer.activationId && same(source.producerStep, producer.step) && source.outputJson === producer.outputJson, 'preparation source');
+    const output = record(json(row, 'result_json')), ready = record(body.result).Ready;
+    if (object(ready)) {
+      require(output.kind === 'ready' && same(output.batches, ready.batches), 'preparation result');
+      const proofs = list(output.provenance), items = list(ready.batches).flatMap((batch) => list(batch.items));
+      require(proofs.length === items.length, 'preparation provenance count');
+      for (const proof of proofs) {
+        const occurrence = record(proof.occurrence), batches = list(ready.batches).filter((batch) => list(batch.items).some((item) => same(item.occurrence, occurrence)));
+        require(batches.length === 1 && same(proof.source, source) && same(proof.producer, producer), 'preparation provenance');
+        const item = list(batches[0].items).find((i) => same(i.occurrence, occurrence))!;
+        const key = occurrenceKey(text(row, 'native_receipt_id'), occurrence.targetOrdinal!, string(occurrence.itemIndex));
+        require(occurrence.nativeReceiptId === row.native_receipt_id && !occurrences.has(key), 'duplicate/foreign occurrence'); occurrences.set(key, { row, item, batch: batches[0], proof });
+      }
+    } else {
+      const failed = record(record(body.result).Failed);
+      require(output.kind === 'failed' && same(output.error, failed.error) && same(output.targetOrdinal, failed.target_ordinal), 'failed preparation');
+    }
+  }
+  require(preparedEvents.length === preparations.size, 'missing native preparation');
+  const provenance = rows('engine_flow030_occurrence_provenance'), seenOccurrences = new Set<string>();
+  for (const row of provenance) {
+    require(typeof row.target_ordinal === 'number', 'occurrence ordinal');
+    const key = occurrenceKey(text(row, 'native_receipt_id'), new NumberToken(String(row.target_ordinal)), text(row, 'item_index')), expected = occurrences.get(key);
+    require(expected && !seenOccurrences.has(key) && same(json(row, 'provenance_json'), expected.proof), 'occurrence provenance'); seenOccurrences.add(key);
+  }
+  require(seenOccurrences.size === occurrences.size, 'missing occurrence provenance');
+  // 036: use the shipped pure work controller, not another hand-written reducer.
+  const admissions = map(rows('engine_flow030_work_admissions'), 'activation_id'), states = map(rows('engine_flow030_work_state'), 'activation_id');
+  const authorizations = map(rows('engine_flow030_work_authorizations'), 'event_id'), workEvents = map(rows('engine_flow030_work_events'), 'event_id');
+  const checks = map(rows('engine_flow030_work_checks'), 'check_id'), expectedChecks = new Set<string>();
+  const validateSchema = connectValueSchemaValidator030({ NumberToken, parse, validate: validateValueSchema030 });
+  const workDecisions = new Map<string, Obj>();
+  for (const [id, row] of admissions) {
+    metadata(row); const { a, start, work, step } = binding(id); require(step.type === 'agent' && row.start_effect_id === work.startEffectId, 'work admission Start');
+    const context = record(json(row, 'context_json'));
+    require(same(context.owner, ownerValue) && same(context.work, { systemStartId: system, flowInvocationId: invocation, activationId: id, step: a.step, agentInstanceId: a.instanceId }), 'work admission context');
+    const agent = list(plan.agents).find((agent) => agent.agentName === a.agent); require(agent, 'work admission captured agent');
+    const policy = record(json(row, 'policy_evidence_json')); require(object(policy.effectivePolicy) && typeof policy.policyDigest === 'string' && /^[a-f0-9]{64}$/.test(policy.policyDigest)
+      && typeof policy.hostCeilingDigest === 'string' && /^sha256:[a-f0-9]{64}$/.test(policy.hostCeilingDigest), 'work admission policy');
+    require(policy.policyDigest === nativePolicyDigest030(policy.effectivePolicy), 'work policy fingerprint');
+    require(context.permissionsJson === privateCapture.callPermissionsJson && context.scopeJson === privateCapture.callScopeJson && context.registryVersion === record(capture.versions).registry, 'work admission captured context');
+    const contract = record(json(row, 'contract_json')); require(same(raw(string(contract.agentJson)), raw(string(agent.agentDeclarationJson))), 'work admission contract');
+    let previous = '{"format":"macro-agsdl-work-journal/1","events":[]}', revision = '0';
+    const records = [...workEvents.values()].filter((event) => event.activation_id === id);
+    for (const recordRow of records) {
+      const eventId = text(recordRow, 'event_id'), ticket = record(json(recordRow, 'ticket_json')), input = record(ticket.input), auth = authorizations.get(eventId);
+      require(auth && auth.activation_id === id && same(json(auth, 'input_json'), input), 'work authorization/ticket');
+      require(same(ticket.identity, identity) && ticket.generation === owner.generation && same(input.context, context) && input.eventId === eventId
+        && input.expectedRevision === revision && ticket.stateJson === previous && ticket.contractJson === row.contract_json && ticket.optionsJson === row.options_json, 'work ticket binding');
+      const call = input.nativeCall;
+      require(object(call) ? auth.provider_attempt_id === call.providerAttemptId && auth.native_call_id === call.nativeCallId : auth.provider_attempt_id === null && auth.native_call_id === null, 'work native call authorization');
+      if (object(call)) require(call.providerAttemptId === record(record(raw(start.row.settlement_json)).workAttempt).providerAttemptId, 'work provider attempt');
+      const decision = record(json(recordRow, 'decision_json'));
+      const evaluated = evaluateHostWork030(JSON.parse(text(row, 'context_json')), eventId, revision, text(row, 'contract_json'), previous, string(input.eventJson), text(row, 'options_json'), validateSchema);
+      require(same(raw(evaluated.stateJson), raw(string(decision.stateJson))) && same(raw(evaluated.receiptJson), raw(string(decision.receiptJson))), 'work controller decision');
+      const receipt = record(raw(string(decision.receiptJson))), action = record(receipt.decision), event = record(raw(string(input.eventJson)));
+      if (action.kind === 'checkRequested') {
+        const check = record(action.check), rowCheck = checks.get(string(check.checkId)), reservation = record(decision.check);
+        require(rowCheck && rowCheck.activation_id === id && rowCheck.event_id === eventId && rowCheck.status === 'ended' && reservation.checkId === check.checkId
+          && same(json(rowCheck, 'request_json'), check) && same(raw(string(reservation.invocationJson)), check), 'work check'); expectedChecks.add(string(check.checkId));
+      } else require(decision.check === null, 'unexpected work check');
+      if (action.kind === 'finished') {
+        const flow = terminal(work, eventId); workDecisions.set(id, action);
+        if (action.outcome === 'success') {
+          const output = record(action.output), expected: Obj = { text: output.text!, results: raw(string(output.resultsJson)) };
+          if (output.choice !== null) expected.choice = output.choice!; if (output.instructions !== null) expected.instructions = output.instructions!;
+          const completed = record(record(flow.body.result).Completed);
+          require(flow.kind.WorkResult !== undefined && same(raw(string(completed.output_json)), expected) && completed.route_key === output.choice, 'work terminal output');
+        } else if (action.outcome === 'cancelled' && action.code === 'JOIN_CANCELLED') require(flow.kind.PhysicalEnded !== undefined && a.stopEffectId !== null, 'work cancelled terminal');
+        else require(flow.kind.WorkResult !== undefined && record(record(record(flow.body.result).Failed).error).code === action.code, 'work failure terminal');
+      }
+      // Keep event attribution anchored even for controller events with no flow effect.
+      require(event.eventId === eventId, 'work event identity');
+      previous = string(decision.stateJson); revision = (BigInt(revision) + 1n).toString();
+    }
+    const saved = states.get(id);
+    if (!records.length) require(!saved && a.result === null && a.stopEffectId !== null && terminal(work, `physical:${record(record(raw(start.row.settlement_json)).workAttempt).providerAttemptId}`).kind.PhysicalEnded !== undefined, 'unobserved stopped work');
+    else require(saved && saved.revision === revision && saved.state_json === previous && workDecisions.has(id), 'work final journal');
+    require(start.kind.agent === a.agent, 'work agent');
+  }
+  require([...states.keys()].every((id) => admissions.has(id)) && authorizations.size === workEvents.size && [...authorizations.values()].every((r) => workEvents.has(text(r, 'event_id')) && admissions.has(text(r, 'activation_id')))
+    && [...workEvents.values()].every((r) => admissions.has(text(r, 'activation_id'))) && expectedChecks.size === checks.size, 'orphan work protocol row');
+  for (const [id] of starts) if (binding(id).step.type === 'agent') require(admissions.has(id), 'missing work admission');
+  // 037: attestations, contexts and receipts refer to actual replayed occurrences.
+  const sources = map(rows('engine_flow030_route_source_attestations'), 'prepare_id');
+  for (const [id, row] of sources) {
+    metadata(row); const saved = retained.find((p) => record(p.reference).prepareId === id), effect = fx.get(text(row, 'preparation_effect_id'));
+    require(saved && effect?.kind.kind === 'prepareRoute' && same(effect.kind.reference, saved.reference) && same(json(row, 'producer_json'), saved.producer), 'route source/state');
+    const producer = record(saved.producer), reference = record(saved.reference); producerOutput(producer);
+    const prepared = preparations.get(id);
+    if (prepared) require(typeof row.native_receipt_id === 'string' && row.native_receipt_id.length > 0 && same(json(row, 'source_json'), json(prepared, 'source_json')), 'route source/preparation');
+    const sourceKind = record(reference.route).kind === 'error' ? 'error' : producer.kind;
+    require(['agent', 'join', 'error'].includes(string(sourceKind)), 'unsupported native source producer kind');
+    const kind = sourceKind === 'agent' ? 'agentWork' : sourceKind;
+    require(row.receipt_kind === kind, 'source receipt kind');
+    let producerAgent: ExactValue = null, instructions: Obj[] = [];
+    if (kind === 'agentWork') {
+      const eventId = text(row, 'work_event_id'), protocol = workEvents.get(eventId), decision = workDecisions.get(string(producer.activationId));
+      require(protocol?.activation_id === producer.activationId && decision?.outcome === 'success', 'source work receipt');
+      terminal(binding(string(producer.activationId)).work, eventId);
+      producerAgent = acts.get(string(producer.activationId))!.agent!;
+      if (record(decision.output).instructions !== null) instructions = [{ pathJson: '["instructions"]', producerAgent, terminalId: producer.activationId! }];
+    } else require(row.work_event_id === null, 'unexpected source work event');
+    require(same(json(row, 'source_json'), { terminalId: producer.activationId!, producerStep: producer.step!, producerAgent, kind: sourceKind, outputJson: producer.outputJson!, provenance: { instructions } }), 'source native constructor');
+  }
+  for (const id of preparations.keys()) require(sources.has(id), 'missing route source attestation');
+  const contexts = map(rows('engine_flow030_route_content_contexts'), 'context_id'), contentRows = rows('engine_flow030_route_content_receipts'), usedContexts = new Set<string>(), usedContent = new Set<HostRow030>();
+  for (const row of preparations.values()) {
+    const content = record(json(row, 'content_receipts_json')); require(content.format === 'macro-agsdl-route-content/1', 'content format');
+    for (const occurrence of list(content.occurrences)) {
+      const context = contexts.get(string(occurrence.contextId)); require(context, 'content context'); metadata(context);
+      const expected = occurrences.get(occurrenceKey(text(row, 'native_receipt_id'), occurrence.targetOrdinal!, string(occurrence.itemIndex)));
+      require(expected && expected.row.prepare_id === row.prepare_id && context.prepare_id === row.prepare_id && !usedContexts.has(text(context, 'context_id'))
+        && same(new NumberToken(String(context.target_ordinal)), occurrence.targetOrdinal) && context.item_index === occurrence.itemIndex, 'content occurrence does not exist');
+      const target = record(expected.batch.target), step = steps.get(address(target.address))!, contentIdentity = record(json(context, 'identity_json'));
+      require(context.status === 'live' && ['agent', 'approval', 'compose'].includes(string(step.type)) && same(json(context, 'target_address_json'), target.address) && context.recipient_kind === step.type && context.recipient_agent === (step.agent ?? null), 'content recipient');
+      require(Object.keys(contentIdentity).length === 4 && same(contentIdentity, occurrence.identity) && contentIdentity.captureId === identity.snapshotId && contentIdentity.sourceDigest === sha030(string(plan.documentJson))
+        && contentIdentity.agent === context.recipient_agent && contentIdentity.policyDigest === sha030(text(context, 'policy_evidence_json')), 'content foreign identity');
+      const expectedReceipts = Array.isArray(occurrence.receipts) ? [...occurrence.receipts] : undefined; require(expectedReceipts, 'content receipts');
+      for (const receiptRow of contentRows.filter((r) => r.context_id === context.context_id)) {
+        const transported = record(json(receiptRow, 'transport_receipt_json')), at = expectedReceipts.findIndex((r) => same(r, transported));
+        require(at >= 0 && receiptRow.receipt_sha256 === sha030(canonical030(transported)), 'content receipt fingerprint'); expectedReceipts.splice(at, 1);
+        const native = record(json(receiptRow, 'native_receipt_json')), provenance = record(native.provenance), original = record(json(receiptRow, 'source_json'));
+        const document = record(raw(string(plan.documentJson))), expanded = original.ref === undefined ? original : record(record(document.content)[string(original.ref)]);
+        require(original.ref === undefined || Object.keys(original).length === 1, 'content ref source');
+        require(same(raw(string(transported.sourceJson)), expanded) && same(native.payload, transported.payload), 'content payload/source');
+        const expectedProvenance: Obj = { captureId: provenance.captureId!, sourceDigest: provenance.sourceDigest!, agent: provenance.agent!, usage: provenance.usage!, pointer: provenance.pointer!, requestedUri: expanded.uri ?? null, mediaType: provenance.mediaType!, sha256: provenance.sha256!, policyDigest: provenance.policyDigest! };
+        require(same(transported.provenance, expectedProvenance) && provenance.captureId === contentIdentity.captureId && provenance.sourceDigest === contentIdentity.sourceDigest && provenance.agent === contentIdentity.agent && provenance.policyDigest === contentIdentity.policyDigest
+          && provenance.sourceJsonDigest === sha030(text(receiptRow, 'source_json')), 'native content provenance');
+        const payload = record(native.payload), bytes = payload.kind === 'text' ? Buffer.from(string(payload.text)) : payload.kind === 'json' ? Buffer.from(string(payload.json)) : payload.kind === 'media' ? Buffer.from(string(payload.base64), 'base64') : undefined;
+        require(provenance.requestedUri === (expanded.uri ?? null) && provenance.declaredMediaType === (expanded.mediaType ?? null)
+          && ['instructions', 'prompt', 'resource', 'skillDiscovery', 'skillActivation', 'skillResource', 'result'].includes(string(provenance.usage)) && string(provenance.pointer).length > 0, 'native content use/source');
+        if (Object.hasOwn(expanded, 'value')) {
+          require(provenance.finalUri === null && provenance.fileParentIdentity === null && provenance.observedMediaType === null && provenance.requestedUri === null
+            && provenance.mediaType === (expanded.mediaType ?? (typeof expanded.value === 'string' ? 'text/plain' : 'application/json'))
+            && (typeof expanded.value === 'string' ? payload.kind === 'text' && payload.text === expanded.value : payload.kind === 'json' && same(raw(string(payload.json)), expanded.value)), 'native inline content');
+        } else require(typeof provenance.finalUri === 'string' && provenance.finalUri.length > 0, 'native content final URI');
+        if (payload.kind === 'json') raw(string(payload.json));
+        if (payload.kind === 'media') require(bytes?.toString('base64') === payload.base64, 'native content base64');
+        require(bytes && provenance.sha256 === sha030(bytes) && provenance.sizeBytes === String(bytes.length), 'native content digest'); usedContent.add(receiptRow);
+      }
+      require(expectedReceipts.length === 0, 'missing native content receipt'); usedContexts.add(text(context, 'context_id'));
+    }
+  }
+  require(usedContexts.size === contexts.size && usedContent.size === contentRows.length, 'orphan content proof');
+  // 039/040 are verified below against the same replayed activations and effects.
+  return verifyNativeCallsAndClock030(db, state, plan, effects, journal, owner);
+}
+
+// Exported for isolated adapter tests; observeRun030 always replays first.
+export function verifyNativeCallsAndClock030(db: Database, state: Obj, plan: Obj, effects: EffectRow030[], journal: EventRow030[], owner: HostRow030): HostProjection030 {
+  const require: (ok: unknown, field: string) => asserts ok = (ok, field) => { if (!ok) throw new Error(`Host evidence differs: ${field}`); };
+  const list = (v: ExactValue | undefined): Obj[] => { require(Array.isArray(v), 'array'); return v.map(record); };
+  const identity = record(state.identity), system = string(identity.systemStartId), invocation = string(identity.flowInvocationId), ownerValue = { systemStartId: system, ownerEpoch: string(owner.owner_epoch as string) };
+  const has = (name: string) => !!db.query("SELECT 1 FROM sqlite_master WHERE name=? AND type='table'").get(name);
+  const rows = (name: string): HostRow030[] => has(name) ? db.query(`SELECT * FROM ${name} WHERE system_id=? AND invocation_id=? ORDER BY rowid`).all(system, invocation) as HostRow030[] : [];
+  const text = (row: HostRow030, key: string): string => { require(typeof row[key] === 'string', key); return row[key] as string; };
+  const json = (row: HostRow030, key: string) => raw(text(row, key));
+  const map = (values: HostRow030[], key: string) => { const m = new Map(values.map((r) => [text(r, key), r])); require(m.size === values.length, `duplicate ${key}`); return m; };
+  const metadata = (row: HostRow030) => require(row.owner_epoch === owner.owner_epoch && row.generation === owner.generation, 'clock/call owner');
+  const acts = new Map(list(state.activations).map((a) => [string(a.id), a])), steps = new Map(list(plan.steps).map((s) => [address(s.address), s]));
+  const starts = new Map(effects.flatMap((row) => { const value = record(raw(row.effect_json)), kind = record(value.kind); return kind.kind === 'start' ? [[string(record(kind.work).activationId), { row, value, kind }] as const] : []; }));
+  const events = new Map(journal.map((row) => [row.event_id, record(raw(row.event_json))]));
+  const work = (id: string) => { const a = acts.get(id), start = starts.get(id); require(a && start, 'host activation/Start'); return { a, start, reference: record(start.kind.work), step: steps.get(address(a.step))! }; };
+  const ms = (v: string) => { require(/^(0|[1-9][0-9]*)$/.test(v) && BigInt(v) <= 18446744073709551615n, 'native milliseconds'); return BigInt(v); };
+  const handoffClocks = map(rows('engine_flow030_handoff_clock'), 'start_effect_id');
+  for (const [id, row] of handoffClocks) { metadata(row); ms(text(row, 'started_ms')); require([...starts.values()].some((s) => s.row.effect_id === id), 'handoff clock Start'); }
+  const clocks = rows('engine_flow030_clock'), clockEvents = map(rows('engine_flow030_clock_events'), 'event_id'), clockWorks = map(rows('engine_flow030_clock_works'), 'activation_id');
+  const requests = map(rows('engine_flow030_human_requests'), 'request_id'), submissions = map(rows('engine_flow030_human_submissions'), 'receipt_id'), proofs = map(rows('engine_flow030_human_resolution_proofs'), 'request_id'), controls = map(rows('engine_flow030_clock_controls'), 'activation_id');
+  require(clocks.length <= 1 && (clocks.length === 1 || !clockEvents.size && !clockWorks.size && !requests.size && !submissions.size && !proofs.size && !controls.size), 'clock parent');
+  const history: Array<{ id: string; event: Obj; receipt: Obj }> = [];
+  if (clocks.length) {
+    const clock = clocks[0]; metadata(clock); let previous = '', revision = '0', receipt: Obj = {}, observed: string | undefined;
+    for (const [id, row] of clockEvents) {
+      const input = record(json(row, 'ticket_json'));
+      require(same(input.identity, identity) && same(input.owner, ownerValue) && input.eventId === id && input.expectedRevision === revision && input.stateJson === previous, 'clock ticket');
+      const event = record(raw(string(input.eventJson))); require(event.eventId === id && same(event.owner, ownerValue), 'clock event identity');
+      const now = string(event.nowMs); require(observed === undefined || ms(now) >= ms(observed), 'clock monotonicity');
+      const evaluated = evaluateHostHumanClock030(ownerValue, id, revision, previous, string(input.eventJson), JSON.parse(string(input.optionsJson)));
+      const output = record(json(row, 'output_json'));
+      require(same(raw(evaluated.stateJson), raw(string(output.stateJson))) && same(raw(evaluated.receiptJson), raw(string(output.receiptJson))), 'clock output');
+      previous = string(output.stateJson); receipt = record(raw(string(output.receiptJson))); observed = now; revision = (BigInt(revision) + 1n).toString();
+      history.push({ id, event, receipt });
+    }
+    require(clock.revision === revision && clock.state_json === previous && same(json(clock, 'receipt_json'), receipt), 'clock final journal');
+    ms(text(clock, 'observed_ms')); if (observed !== undefined) require(clock.observed_ms === observed, 'clock final observation');
+  }
+  const bodies = history.map((h) => ({ ...h, body: record(h.event.event) }));
+  const latest = history.at(-1)?.receipt;
+  for (const [id, row] of clockWorks) {
+    metadata(row); const bound = work(id), binding = record(json(row, 'work_json')), origin = handoffClocks.get(text(row, 'start_effect_id'));
+    require(origin && row.start_effect_id === bound.reference.startEffectId && row.admitted_ms === origin.started_ms && row.kind === bound.step.type, 'clock work admission');
+    require(same(binding.identity, identity) && same(binding.owner, ownerValue) && binding.generation === owner.generation && same(binding.reference, bound.reference) && binding.kind === row.kind, 'clock work binding');
+    const attempt = record(raw(bound.start.row.settlement_json)).workAttempt;
+    require(binding.providerAttemptId === (row.kind === 'agent' ? record(attempt).providerAttemptId : null), 'clock provider attempt');
+    const agent = list(plan.agents).find((a) => a.agentName === bound.a.agent), declaration = record(raw(string(bound.step.declarationJson)));
+    const answerTimeout = row.kind === 'agent' && agent ? record(raw(string(agent.agentDeclarationJson))).answerTimeoutMs : declaration.answerTimeoutMs;
+    require(row.timeout_json === null ? bound.step.timeoutMsJson === null : same(json(row, 'timeout_json'), raw(string(bound.step.timeoutMsJson))), 'clock authored timeout');
+    require(row.answer_timeout_json === null ? answerTimeout === undefined : answerTimeout !== undefined && same(json(row, 'answer_timeout_json'), answerTimeout), 'clock authored answer timeout');
+    const admission = bodies.filter((h) => (h.body.kind === 'admit' || h.body.kind === 'approval') && h.body.workId === id);
+    require(admission.length === 1 && admission[0].body.startedAtMs === row.admitted_ms && admission[0].body.timeoutMs === row.timeout_json, 'clock admit event');
+    if (row.kind !== 'approval') require(admission[0].body.answerTimeoutMs === row.answer_timeout_json, 'clock answer duration');
+    require(row.retired === Number(bodies.some((h) => h.body.kind === 'retire' && h.body.workId === id)), 'clock retirement');
+    const snapshots = latest ? [...list(latest.clocks), ...list(latest.retiredClocks)].filter((c) => c.workId === id) : [];
+    require(row.kind === 'approval' ? same(json(row, 'snapshot_json'), {}) : snapshots.length === 1 && same(json(row, 'snapshot_json'), snapshots[0].snapshot), 'clock work snapshot');
+  }
+  for (const h of bodies) {
+    if (['admit', 'approval', 'retire'].includes(string(h.body.kind))) require(clockWorks.has(string(h.body.workId)), 'orphan clock work event');
+    if (h.body.kind === 'open' || h.body.kind === 'approval' || h.body.kind === 'associate' || h.body.kind === 'ack') require(requests.has(string(h.body.requestId)), 'orphan clock request event');
+    if (h.body.kind === 'open' || h.body.kind === 'associate') for (const id of h.body.workIds as ExactValue[]) require(clockWorks.has(string(id)), 'request work association');
+  }
+  const answers: Obj[] = [], timeoutIds = new Set<string>();
+  for (const [id, row] of requests) {
+    const opening = bodies.filter((h) => (h.body.kind === 'open' || h.body.kind === 'approval') && h.body.requestId === id);
+    require(opening.length === 1 && (opening[0].body.kind === 'approval' ? row.kind === 'approval' : opening[0].body.requestKind === row.kind), 'human request opening');
+    const snapshots = latest ? list(latest.requests).filter((r) => r.requestId === id) : []; require(snapshots.length === 1, 'human request snapshot');
+    const snapshot = snapshots[0], ids = json(row, 'work_ids_json');
+    require(same(ids, snapshot.workIds) && row.kind === snapshot.kind && row.opened_ms === snapshot.openedAtMs
+      && same(json(row, 'deadline_json'), { openedAtMs: snapshot.openedAtMs!, timeoutMs: snapshot.answerTimeoutMs! }), 'human request deadline/works');
+    require(Array.isArray(ids) && ids.every((workId) => clockWorks.has(string(workId))), 'human request work');
+    const payload = record(json(row, 'payload_json'));
+    const initialIds = opening[0].body.kind === 'approval' ? [string(opening[0].body.workId)] : (opening[0].body.workIds as ExactValue[]).map(string);
+    if (row.kind === 'approval') {
+      require(initialIds.length === 1, 'approval work'); const bound = work(initialIds[0]), declaration = record(raw(string(bound.step.declarationJson)));
+      require(bound.step.type === 'approval' && same(payload.work, bound.reference) && same(payload.step, bound.a.step)
+        && same(payload.message, bound.start.kind.messageJson === null ? {} : raw(string(bound.start.kind.messageJson)))
+        && same(payload.choices, Object.keys(record(declaration.next)).sort()) && same(payload.choices, opening[0].body.choices), 'approval payload');
+    }
+    if (row.resolution_json === null) {
+      require(row.revision === '0' && !proofs.has(id) && row.delivery === 'pending'
+        && !history.some((h) => list(h.receipt.pendingResolutions).some((r) => r.requestId === id)) && !bodies.some((h) => h.body.kind === 'ack' && h.body.requestId === id)
+        && initialIds.every((workId) => work(workId).a.result === null && work(workId).a.stopEffectId !== null), 'unresolved human request');
+      continue;
+    }
+    const resolution = record(json(row, 'resolution_json')), proof = proofs.get(id), proofEvent = proof && history.find((h) => h.id === proof.event_id);
+    require(proof && proofEvent && row.revision === '1' && same(json(proof, 'resolution_json'), resolution), 'human resolution proof');
+    const candidates = list(proofEvent.receipt.pendingResolutions).filter((r) => r.requestId === id);
+    require(candidates.length === 1, 'human resolution event'); const candidate = candidates[0];
+    const reason = candidate.expired !== true ? 'answer' : candidate.failure === 'APPROVAL_TIMEOUT' ? 'approvalTimeout' : 'answerTimeout';
+    require(same(resolution, { ...candidate, reason }) && row.delivery === 'acknowledged' && bodies.some((h) => h.body.kind === 'ack' && h.body.requestId === id), 'human resolution/delivery');
+    for (const action of list(resolution.workActions)) require(clockWorks.has(string(action.workId)), 'human work action');
+    if (row.kind === 'approval') {
+      const bound = work(initialIds[0]), result = record(bound.a.result);
+      if (reason === 'approvalTimeout') require(result.kind === 'failed' && record(result.error).code === 'APPROVAL_TIMEOUT', 'approval timeout terminal');
+      else { const answer = record(resolution.answer); require(result.kind === 'completed' && result.routeKey === answer.choice && same(raw(string(result.outputJson)), { choice: answer.choice!, comment: answer.comment!, message: payload.message! }), 'approval answer terminal'); }
+    } else if (reason === 'answerTimeout') for (const action of list(resolution.workActions)) { const bound = work(string(action.workId)), item = optionalItem(bound.a); answers.push({ work: address(bound.a.step), ...(item.item === undefined ? {} : { item: item.item }), answer: 'no' }); }
+  }
+  require([...proofs.keys()].every((id) => requests.has(id)), 'orphan human proof');
+  const nativeAnswers = latest ? list(latest.nativeAnswers) : [];
+  for (const [id, row] of submissions) {
+    const projected = nativeAnswers.filter((a) => a.nativeReceiptId === id && a.requestId === row.request_id), request = requests.get(text(row, 'request_id'));
+    const submitted = bodies.filter((h) => (h.body.kind === 'answer' || h.body.kind === 'approvalAnswer') && h.body.nativeReceiptId === id && h.body.requestId === row.request_id);
+    require(request && projected.length === 1 && submitted.length === 1 && ['person', 'synthetic-person'].includes(text(row, 'origin')) && row.received_ms === submitted[0].event.nowMs
+      && row.accepted === Number(projected[0].accepted), 'human submission arbitration');
+    const answer = record(json(row, 'answer_json')), body = submitted[0].body;
+    if (request.kind === 'approval') require(answer.kind === 'approval' && answer.choice === body.choice && answer.comment === body.comment, 'approval submission');
+    else if (request.kind === 'question') { require(answer.kind === 'question' && body.answer === null, 'question submission'); raw(string(answer.answerJson)); }
+    else require(answer.kind === 'decision' && same(body.answer, { decision: answer.decision!, comment: answer.comment! }), 'decision submission');
+  }
+  require(nativeAnswers.length === submissions.size, 'missing human submission');
+  for (const [id, row] of controls) {
+    const bound = work(id), clock = clockWorks.get(id); require(clock && row.reason === 'TIMEOUT' && row.joined === 1 && typeof row.receipt_id === 'string' && row.receipt_id.length > 0, 'timeout control');
+    require(bodies.some((h) => h.event.nowMs === row.observed_ms && (h.receipt.expiredWorkIds as ExactValue[]).includes(id)), 'timeout clock decision');
+    require(object(bound.a.result) && bound.a.result.kind === 'failed' && record(bound.a.result.error).code === 'TIMEOUT', 'timeout terminal'); timeoutIds.add(id);
+  }
+  // Call rows are retained even when normalization fails or work is cancelled.
+  const calls = map(rows('engine_flow030_calls'), 'call_id'), seenCallActivations = new Set<string>();
+  const callCauses: HostRow030[] = has('engine_flow030_call_causes') ? db.query('SELECT x.* FROM engine_flow030_call_causes x LEFT JOIN engine_flow030_calls c USING(call_id) WHERE (c.system_id=? AND c.invocation_id=?) OR c.call_id IS NULL').all(system, invocation) as HostRow030[] : [];
+  const causes = map(callCauses, 'call_id'); require(rows('engine_flow030_call_diagnostics').length === 0, 'durable call diagnostic');
+  for (const [id, row] of calls) {
+    const bound = work(text(row, 'activation_id')), attempt = record(json(row, 'attempt_json')), receipt = record(json(row, 'receipt_json')), received = record(json(row, 'received_json'));
+    require(bound.step.type === 'call' && !seenCallActivations.has(text(row, 'activation_id')) && row.start_effect_id === bound.reference.startEffectId && row.status === 'terminal', 'call Start/status'); seenCallActivations.add(text(row, 'activation_id'));
+    require(same(attempt.identity, identity) && attempt.ownerEpoch === owner.owner_epoch && attempt.generation === owner.generation && attempt.captureSha256 === owner.capture_sha256 && attempt.callId === id
+      && same(attempt.effect, bound.start.value) && attempt.declarationJson === bound.step.declarationJson && same(receipt.attempt, attempt) && same(receipt.received, received), 'call attempt/receipt');
+    const eventId = string(receipt.eventId), flow = events.get(eventId); require(eventId === `call:${id}:terminal` && flow, 'call flow event');
+    const end = record(received.end), physical = record(received.physical), result = record(receipt.result), kind = record(flow.kind), body = record(kind.WorkResult ?? kind.PhysicalEnded);
+    require(same(body.work, bound.reference) && ['notStarted', 'syntheticJoined'].includes(string(physical.kind)) && same(body.physical ?? body.evidence, { native_receipt_id: physical.receiptId!, descendants_joined: true }), 'call physical receipt');
+    if (result.kind === 'stopped') require(bound.a.stopEffectId !== null && kind.PhysicalEnded !== undefined && body.stop_effect_id === bound.a.stopEffectId, 'call stop receipt');
+    else {
+      require(kind.WorkResult !== undefined, 'call result event'); const wire = record(body.result);
+      if (result.kind === 'completed') require(same(record(wire.Completed), { output_json: result.outputJson!, route_key: record(raw(string(result.outputJson))).outcome! }), 'call completed result');
+      else require(result.kind === 'failed' && record(record(wire.Failed).error).code === result.code, 'call failure result');
+    }
+    const controlled = result.kind === 'stopped' || result.kind === 'failed' && result.code === 'TIMEOUT';
+    if (end.kind === 'returned' && !controlled) {
+      require(row.prepared_json !== null, 'call prepared request'); const prepared = record(json(row, 'prepared_json')), declaration = record(raw(string(bound.step.declarationJson)));
+      const computed = prepareCall030(string(bound.step.declarationJson) as Parameters<typeof prepareCall030>[0], { outputJson: string(bound.start.kind.inputJson) } as Parameters<typeof prepareCall030>[1]);
+      const expected = { ...computed, ...(computed.kind === 'command' ? { parse: computed.parse ?? null } : {}) }; require(same(raw(JSON.stringify(expected)), prepared), 'call prepared operand');
+      const event = record(end.event); let normalized: string | undefined, failed = false;
+      if (event.kind === 'startFailed') require(result.kind === 'failed' && result.code === 'CALL_FAILED', 'call start failure');
+      else {
+      try {
+        if (prepared.kind === 'command') { require(event.kind === 'commandReceipt', 'call command return'); normalized = commandOutput030(computed as Parameters<typeof commandOutput030>[0], { stdout: string(event.stdout), stderr: string(event.stderr), output: string(event.stdout) + string(event.stderr), exitCodeJson: stringify(event.exitCode!) as Parameters<typeof commandOutput030>[1]['exitCodeJson'], complete: true }); }
+        else { require(event.kind === 'toolReturned', 'call MCP return'); normalized = mcpOutput030({ isError: event.isError === true, text: string(event.text), ...(event.structuredContentJson === null ? {} : { structuredContentJson: string(event.structuredContentJson) as Parameters<typeof mcpOutput030>[0]['structuredContentJson'] }) }); }
+      } catch (error) { if (error instanceof ConformanceError && error.code === 'OUTPUT_INVALID') failed = true; else throw error; }
+      if (result.kind === 'completed') require(normalized !== undefined && same(raw(normalized), raw(string(result.outputJson))), 'call raw normalization');
+      else require(result.kind === 'failed' && result.code === 'OUTPUT_INVALID' && failed, 'call normalization failure');
+      }
+      require(declaration.type === 'call', 'call declaration');
+    } else require(['returned', 'stopped', 'timedOut', 'preparationFailed'].includes(string(end.kind)) && (controlled || end.kind === 'preparationFailed'), 'call end kind');
+    if (result.kind === 'failed' && result.code === 'TIMEOUT') require(causes.has(id) && timeoutIds.has(text(row, 'activation_id')), 'call timeout cause');
+    if (end.kind === 'preparationFailed') require(physical.kind === 'notStarted' && row.prepared_json === null && result.kind === 'failed' && result.code === 'OPERAND', 'call preparation failure');
+    const causeRow = causes.get(id);
+    if (causeRow) { const cause = record(json(causeRow, 'cause_json')), clockCause = controls.get(text(row, 'activation_id')), budget = clockWorks.get(text(row, 'activation_id')); require(clockCause && budget && same(cause.attempt, attempt) && typeof cause.causeId === 'string' && same(cause.cause, { clockReceiptId: text(clockCause, 'receipt_id'), observedMs: text(clockCause, 'observed_ms'), timeoutJson: text(budget, 'timeout_json') }), 'call clock cause'); }
+  }
+  require([...causes.keys()].every((id) => calls.has(id)), 'orphan call cause');
+  for (const [id] of starts) {
+    const bound = work(id); if (bound.step.type === 'call') require(seenCallActivations.has(id), 'missing call receipt');
+    const agent = list(plan.agents).find((a) => a.agentName === bound.a.agent), declaration = record(raw(string(bound.step.declarationJson)));
+    if (bound.step.type === 'approval' || bound.step.timeoutMsJson !== null && bound.step.timeoutMsJson !== undefined || declaration.answerTimeoutMs !== undefined || agent && record(raw(string(agent.agentDeclarationJson))).answerTimeoutMs !== undefined) require(clockWorks.has(id), 'missing native work clock');
+    if (bound.step.type === 'approval') require([...requests.values()].some((r) => r.kind === 'approval' && Array.isArray(json(r, 'work_ids_json')) && (json(r, 'work_ids_json') as ExactValue[]).includes(id)), 'missing approval request');
+    if (object(bound.a.result) && bound.a.result.kind === 'failed' && record(bound.a.result.error).code === 'TIMEOUT') require(timeoutIds.has(id), 'missing timeout control');
+  }
+  return { answers, timeoutIds };
+}
+
+// Historical secondary checks for explicitly synthetic unit fixtures only.
+// Production relies on native reduce replay, not on this partial TS model.
+function verifySecondaryReducerEvidence030(state: Obj, plan: Obj, rows: EffectRow030[], events: EventRow030[], handoffs: HandoffRow030[], native: NativeRoutes030): void {
   const list = (v: ExactValue | undefined): Obj[] => { if (!Array.isArray(v)) throw new Error('Missing durable graph array'); return v.map(record); };
   const unique = (values: Obj[], key: string) => {
     const map = new Map(values.map((v) => [string(v[key]), v]));
@@ -666,13 +1150,18 @@ function verifyDurableGraph(state: Obj, plan: Obj, rows: EffectRow030[], events:
   }
 }
 
-export function observeRun030(databasePath: string, systemId: string, invocationId: string): string {
+export function observeRun030(databasePath: string, systemId: string, invocationId: string, options: ObserveOptions030 = {}): string {
+  if (!options.syntheticUnitTestOnly) verifyNativeReplay030(databasePath, systemId, invocationId, options);
   const db = new Database(databasePath, { readonly: true });
   try {
     db.exec('BEGIN');
     const run = db.query('SELECT state_json,plan_json,snapshot_id,epoch FROM engine_flow030_runs WHERE system_id=? AND invocation_id=?').get(systemId, invocationId) as { state_json: string; plan_json: string; snapshot_id: string; epoch: string } | null;
     if (!run) throw new Error('Run is absent');
     const plan = record(raw(run.plan_json));
+    const synthetic = options.syntheticUnitTestOnly === true;
+    if (synthetic) {
+      if (process.env.NODE_ENV !== 'test' || plan.format !== 'macro-agsdl-observer-synthetic-unit/1') throw new Error('Replay bypass is restricted to synthetic unit tests');
+    }
     if (!Array.isArray(plan.steps) || !Array.isArray(plan.agents)) throw new Error('Invalid durable plan');
     const steps = new Map(plan.steps.map(record).map((step) => [address(step.address), step]));
     const diagnostic = db.query('SELECT 1 FROM engine_flow030_events WHERE system_id=? AND invocation_id=? AND diagnostic_json IS NOT NULL LIMIT 1').get(systemId, invocationId);
@@ -692,6 +1181,8 @@ export function observeRun030(databasePath: string, systemId: string, invocation
     const byId = new Map(activations.map((a) => [string(a.id), a]));
     if (byId.size !== activations.length) throw new Error('Duplicate activation');
     const rows = db.query('SELECT effect_id,event_id,effect_json,owner_epoch,status,settlement_json FROM engine_flow030_outbox WHERE system_id=? AND invocation_id=? ORDER BY rowid').all(systemId, invocationId) as EffectRow030[];
+    const journal = db.query('SELECT event_id,event_json,receipt_json FROM engine_flow030_events WHERE system_id=? AND invocation_id=? ORDER BY rowid').all(systemId, invocationId) as EventRow030[];
+    const host = synthetic ? null : verifyHostTables030(db, state, plan, rows, journal);
     const starts: Record<string, number> = Object.create(null);
     const messages: Obj[] = [], failures: Obj[] = [], cancelled: Obj[] = [], answers: Obj[] = [];
     const startsByActivation = new Map<string, Obj>();
@@ -713,9 +1204,10 @@ export function observeRun030(databasePath: string, systemId: string, invocation
       }
       return { kind: 'failed', error: record(record(result.Failed).error) };
     };
-    const timeoutRows = hasTable('engine_flow030_work_timeouts')
+    const timeoutRows = synthetic && hasTable('engine_flow030_work_timeouts')
       ? db.query('SELECT activation_id,start_effect_id,status,terminal_event_id,physical_receipt_id FROM engine_flow030_work_timeouts WHERE system_id=? AND invocation_id=?').all(systemId, invocationId) as TimeoutReceiptRow030[] : [];
     const timeouts = new Map(timeoutRows.map((row) => [row.activation_id, row]));
+    const timeoutIds = host?.timeoutIds ?? new Set(timeouts.keys());
     if (timeouts.size !== timeoutRows.length) throw new Error('Duplicate timeout receipt');
     for (const row of rows) {
       if (row.status !== 'settled') throw new Error('Pending or uncertain effect remains');
@@ -759,7 +1251,7 @@ export function observeRun030(databasePath: string, systemId: string, invocation
         const item = optionalItem(activation);
         if (typeof kind.counted !== 'boolean') throw new Error('Failure contribution is absent');
         failures.push({ step: address(kind.step), ...(item.item === undefined ? {} : { item: item.item }), code: string(record(kind.error).code), ...(kind.counted === false ? { counted: false } : {}) });
-        if (record(kind.error).code === 'TIMEOUT' && !timeouts.has(string(kind.activationId))) throw new Error('Timeout receipt is absent');
+        if (record(kind.error).code === 'TIMEOUT' && !timeoutIds.has(string(kind.activationId))) throw new Error('Timeout receipt is absent');
       } else if (kind.kind === 'stopWork') {
         const source = event(row.event_id).kind;
         if (source === 'Stop') throw new Error('Stop effect in a non-cancelled run');
@@ -805,101 +1297,105 @@ export function observeRun030(databasePath: string, systemId: string, invocation
           }
         }
         const item = optionalItem(activation);
-        if (!timeouts.has(string(activation.id))) cancelled.push({ step: address(activation.step), ...(item.item === undefined ? {} : { item: item.item }) });
+        if (!timeoutIds.has(string(activation.id))) cancelled.push({ step: address(activation.step), ...(item.item === undefined ? {} : { item: item.item }) });
       } else if (kind.kind !== 'prepareRoute' && kind.kind !== 'return' && kind.kind !== 'runEnded') {
         throw new Error('Unprojectable effect kind');
       }
     }
-    const callRows = hasTable('engine_flow030_call_receipts')
-      ? db.query('SELECT activation_id,start_effect_id,call_kind,status,terminal_event_id,result_json,physical_receipt_id FROM engine_flow030_call_receipts WHERE system_id=? AND invocation_id=?').all(systemId, invocationId) as CallReceiptRow030[] : [];
-    const calls = new Map(callRows.map((row) => [row.activation_id, row]));
-    if (calls.size !== callRows.length) throw new Error('Duplicate call receipt');
-    for (const row of callRows) {
-      const activation = byId.get(row.activation_id), start = startsByActivation.get(row.activation_id);
-      if (!activation || !start || steps.get(address(activation.step))?.type !== 'call'
-        || row.start_effect_id !== record(start.work).startEffectId) throw new Error('Call receipt binding differs');
-      if (row.status !== 'ended') throw new Error('Pending or uncertain call remains');
-      const declaration = record(raw(string(steps.get(address(activation.step))!.declarationJson)));
-      if (row.call_kind !== (declaration.command !== undefined ? 'command' : declaration.mcp !== undefined ? 'mcp' : null)) throw new Error('Call receipt kind differs');
-      const result = terminal(row.terminal_event_id, start, row.physical_receipt_id);
-      if (!same(result, raw(row.result_json)) || !same(result, activation.result)) throw new Error('Call terminal result differs');
-    }
-    for (const [id] of startsByActivation) {
-      if (steps.get(address(byId.get(id)!.step))?.type === 'call' && !calls.has(id)) throw new Error('Call receipt is absent');
-    }
-    for (const row of timeoutRows) {
-      const start = startsByActivation.get(row.activation_id), activation = byId.get(row.activation_id);
-      if (!activation || !start || row.start_effect_id !== record(start.work).startEffectId) throw new Error('Timeout receipt binding differs');
-      if (row.status !== 'joined') throw new Error('Pending or uncertain timeout remains');
-      const result = terminal(row.terminal_event_id, start, row.physical_receipt_id);
-      if (result.kind !== 'failed' || record(result.error).code !== 'TIMEOUT' || !same(result, activation.result)
-        || !rows.some((r) => { const k = record(record(raw(r.effect_json)).kind); return k.kind === 'failure' && k.activationId === row.activation_id && record(k.error).code === 'TIMEOUT'; })) throw new Error('Timeout terminal result differs');
-    }
-    const humanSchema = hasTable('engine_flow030_human_requests');
-    const startedSteps = [...startsByActivation.keys()].map((id) => steps.get(address(byId.get(id)!.step))).filter((step): step is Obj => step !== undefined);
-    const startedAgents = new Set([...startsByActivation.keys()].map((id) => byId.get(id)!.agent));
-    const needsHumans = startedSteps.some((s) => s.type === 'approval' || (s.type === 'call' && record(raw(string(s.declarationJson))).mcp !== undefined))
-      || plan.agents.map(record).filter((a) => startedAgents.has(a.agentName)).some((a) => {
-        const declaration = record(raw(string(a.agentDeclarationJson)));
-        return Object.hasOwn(declaration, 'answerTimeoutMs') || declaration.planFirst === 'ask'
-          || (object(declaration.permissions) && declaration.permissions.reviewer === 'person');
-      });
-    if (needsHumans && !humanSchema) throw new Error('Answers are not projectable: native human schema is absent');
-    const humans = humanSchema ? db.query('SELECT request_id,request_kind,work_refs_json,status,resolution_json,delivery_status FROM engine_flow030_human_requests WHERE system_id=? AND invocation_id=? ORDER BY request_id').all(systemId, invocationId) as HumanRequestRow030[] : [];
-    const requestIds = new Set<string>(), approvals = new Set<string>();
-    for (const row of humans) {
-      if (!row.request_id || requestIds.has(row.request_id)) throw new Error('Duplicate human request');
-      requestIds.add(row.request_id);
-      if (!['ask', 'plan', 'question', 'approval'].includes(row.request_kind)) throw new Error('Unprojectable human request');
-      const refs = raw(row.work_refs_json);
-      if (!Array.isArray(refs)) throw new Error('Invalid human work references');
-      const attributed = new Set<string>();
-      for (const ref of refs) {
-        const id = string(record(ref).activationId), start = startsByActivation.get(id);
-        if (!start || !same(start.work, ref) || attributed.has(id)) throw new Error('Human work binding differs');
-        attributed.add(id);
-        const type = steps.get(address(byId.get(id)!.step))?.type;
-        if ((row.request_kind === 'ask' || row.request_kind === 'plan') && type !== 'agent'
-          || row.request_kind === 'question' && type !== 'agent' && type !== 'call') throw new Error('Human request kind differs');
+    if (host) answers.push(...host.answers);
+    else {
+      // Legacy adapter fixtures are confined to the synthetic unit-test path.
+      const callRows = hasTable('engine_flow030_call_receipts')
+        ? db.query('SELECT activation_id,start_effect_id,call_kind,status,terminal_event_id,result_json,physical_receipt_id FROM engine_flow030_call_receipts WHERE system_id=? AND invocation_id=?').all(systemId, invocationId) as CallReceiptRow030[] : [];
+      const calls = new Map(callRows.map((row) => [row.activation_id, row]));
+      if (calls.size !== callRows.length) throw new Error('Duplicate call receipt');
+      for (const row of callRows) {
+        const activation = byId.get(row.activation_id), start = startsByActivation.get(row.activation_id);
+        if (!activation || !start || steps.get(address(activation.step))?.type !== 'call'
+          || row.start_effect_id !== record(start.work).startEffectId) throw new Error('Call receipt binding differs');
+        if (row.status !== 'ended') throw new Error('Pending or uncertain call remains');
+        const declaration = record(raw(string(steps.get(address(activation.step))!.declarationJson)));
+        if (row.call_kind !== (declaration.command !== undefined ? 'command' : declaration.mcp !== undefined ? 'mcp' : null)) throw new Error('Call receipt kind differs');
+        const result = terminal(row.terminal_event_id, start, row.physical_receipt_id);
+        if (!same(result, raw(row.result_json)) || !same(result, activation.result)) throw new Error('Call terminal result differs');
+      }
+      for (const [id] of startsByActivation) {
+        if (steps.get(address(byId.get(id)!.step))?.type === 'call' && !calls.has(id)) throw new Error('Call receipt is absent');
+      }
+      for (const row of timeoutRows) {
+        const start = startsByActivation.get(row.activation_id), activation = byId.get(row.activation_id);
+        if (!activation || !start || row.start_effect_id !== record(start.work).startEffectId) throw new Error('Timeout receipt binding differs');
+        if (row.status !== 'joined') throw new Error('Pending or uncertain timeout remains');
+        const result = terminal(row.terminal_event_id, start, row.physical_receipt_id);
+        if (result.kind !== 'failed' || record(result.error).code !== 'TIMEOUT' || !same(result, activation.result)
+          || !rows.some((r) => { const k = record(record(raw(r.effect_json)).kind); return k.kind === 'failure' && k.activationId === row.activation_id && record(k.error).code === 'TIMEOUT'; })) throw new Error('Timeout terminal result differs');
+      }
+      const humanSchema = hasTable('engine_flow030_human_requests');
+      const startedSteps = [...startsByActivation.keys()].map((id) => steps.get(address(byId.get(id)!.step))).filter((step): step is Obj => step !== undefined);
+      const startedAgents = new Set([...startsByActivation.keys()].map((id) => byId.get(id)!.agent));
+      const needsHumans = startedSteps.some((s) => s.type === 'approval' || (s.type === 'call' && record(raw(string(s.declarationJson))).mcp !== undefined))
+        || plan.agents.map(record).filter((a) => startedAgents.has(a.agentName)).some((a) => {
+          const declaration = record(raw(string(a.agentDeclarationJson)));
+          return Object.hasOwn(declaration, 'answerTimeoutMs') || declaration.planFirst === 'ask'
+            || (object(declaration.permissions) && declaration.permissions.reviewer === 'person');
+        });
+      if (needsHumans && !humanSchema) throw new Error('Answers are not projectable: native human schema is absent');
+      const humans = humanSchema ? db.query('SELECT request_id,request_kind,work_refs_json,status,resolution_json,delivery_status FROM engine_flow030_human_requests WHERE system_id=? AND invocation_id=? ORDER BY request_id').all(systemId, invocationId) as HumanRequestRow030[] : [];
+      const requestIds = new Set<string>(), approvals = new Set<string>();
+      for (const row of humans) {
+        if (!row.request_id || requestIds.has(row.request_id)) throw new Error('Duplicate human request');
+        requestIds.add(row.request_id);
+        if (!['ask', 'plan', 'question', 'approval'].includes(row.request_kind)) throw new Error('Unprojectable human request');
+        const refs = raw(row.work_refs_json);
+        if (!Array.isArray(refs)) throw new Error('Invalid human work references');
+        const attributed = new Set<string>();
+        for (const ref of refs) {
+          const id = string(record(ref).activationId), start = startsByActivation.get(id);
+          if (!start || !same(start.work, ref) || attributed.has(id)) throw new Error('Human work binding differs');
+          attributed.add(id);
+          const type = steps.get(address(byId.get(id)!.step))?.type;
+          if ((row.request_kind === 'ask' || row.request_kind === 'plan') && type !== 'agent'
+            || row.request_kind === 'question' && type !== 'agent' && type !== 'call') throw new Error('Human request kind differs');
+          if (row.request_kind === 'approval') {
+            if (steps.get(address(byId.get(id)!.step))?.type !== 'approval' || approvals.has(id)) throw new Error('Approval binding differs');
+            approvals.add(id);
+          }
+        }
+        if (row.request_kind === 'approval' && attributed.size !== 1) throw new Error('Approval binding differs');
+        if (row.status === 'revoked' && row.delivery_status === 'revoked' && row.resolution_json === null) {
+          if (row.request_kind === 'approval') {
+            const a = byId.get([...attributed][0])!;
+            if (a.result !== null || typeof a.stopEffectId !== 'string') throw new Error('Revoked approval contradicts terminal or cancellation');
+          }
+          continue;
+        }
+        if (row.status !== 'resolved' || row.delivery_status !== 'delivered' || row.resolution_json === null) throw new Error('Pending or uncertain human request remains');
+        const resolution = record(raw(row.resolution_json));
+        if (!['person', 'answerTimeout', 'approvalTimeout'].includes(string(resolution.reason))) throw new Error('Unprojectable human resolution');
+        if (resolution.reason === 'approvalTimeout' && (row.request_kind !== 'approval' || resolution.answerJson !== null)) throw new Error('Approval timeout binding differs');
+        if (resolution.reason === 'person') {
+          const answer = raw(string(resolution.answerJson));
+          if ((row.request_kind === 'ask' || row.request_kind === 'plan') && answer !== 'yes' && answer !== 'no') throw new Error('Unprojectable human answer');
+          if (row.request_kind === 'approval' && (typeof record(answer).choice !== 'string' || typeof record(answer).comment !== 'string')) throw new Error('Unprojectable approval answer');
+        }
         if (row.request_kind === 'approval') {
-          if (steps.get(address(byId.get(id)!.step))?.type !== 'approval' || approvals.has(id)) throw new Error('Approval binding differs');
-          approvals.add(id);
+          const id = [...attributed][0], activation = byId.get(id)!;
+          verifyApprovalResolution(activation, startsByActivation.get(id)!, steps.get(address(activation.step))!, resolution);
+        }
+        if (resolution.reason === 'answerTimeout') {
+          if (row.request_kind === 'approval' || raw(string(resolution.answerJson)) !== 'no' || !attributed.size) throw new Error('Automatic refusal differs');
+          for (const id of attributed) {
+            const activation = byId.get(id)!, item = optionalItem(activation);
+            answers.push({ work: address(activation.step), ...(item.item === undefined ? {} : { item: item.item }), answer: 'no' });
+          }
         }
       }
-      if (row.request_kind === 'approval' && attributed.size !== 1) throw new Error('Approval binding differs');
-      if (row.status === 'revoked' && row.delivery_status === 'revoked' && row.resolution_json === null) {
-        if (row.request_kind === 'approval') {
-          const a = byId.get([...attributed][0])!;
-          if (a.result !== null || typeof a.stopEffectId !== 'string') throw new Error('Revoked approval contradicts terminal or cancellation');
-        }
-        continue;
+      for (const [id] of startsByActivation) {
+        if (steps.get(address(byId.get(id)!.step))?.type === 'approval' && !approvals.has(id)) throw new Error('Approval request is absent');
       }
-      if (row.status !== 'resolved' || row.delivery_status !== 'delivered' || row.resolution_json === null) throw new Error('Pending or uncertain human request remains');
-      const resolution = record(raw(row.resolution_json));
-      if (!['person', 'answerTimeout', 'approvalTimeout'].includes(string(resolution.reason))) throw new Error('Unprojectable human resolution');
-      if (resolution.reason === 'approvalTimeout' && (row.request_kind !== 'approval' || resolution.answerJson !== null)) throw new Error('Approval timeout binding differs');
-      if (resolution.reason === 'person') {
-        const answer = raw(string(resolution.answerJson));
-        if ((row.request_kind === 'ask' || row.request_kind === 'plan') && answer !== 'yes' && answer !== 'no') throw new Error('Unprojectable human answer');
-        if (row.request_kind === 'approval' && (typeof record(answer).choice !== 'string' || typeof record(answer).comment !== 'string')) throw new Error('Unprojectable approval answer');
-      }
-      if (row.request_kind === 'approval') {
-        const id = [...attributed][0], activation = byId.get(id)!;
-        verifyApprovalResolution(activation, startsByActivation.get(id)!, steps.get(address(activation.step))!, resolution);
-      }
-      if (resolution.reason === 'answerTimeout') {
-        if (row.request_kind === 'approval' || raw(string(resolution.answerJson)) !== 'no' || !attributed.size) throw new Error('Automatic refusal differs');
-        for (const id of attributed) {
-          const activation = byId.get(id)!, item = optionalItem(activation);
-          answers.push({ work: address(activation.step), ...(item.item === undefined ? {} : { item: item.item }), answer: 'no' });
-        }
-      }
+      // A compose visit starts one work (its body), without a physical Start
+      // effect or handoff for the wrapper. Use the native admitted visit count.
     }
-    for (const [id] of startsByActivation) {
-      if (steps.get(address(byId.get(id)!.step))?.type === 'approval' && !approvals.has(id)) throw new Error('Approval request is absent');
-    }
-    // A compose visit starts one work (its body), without a physical Start
-    // effect or handoff for the wrapper. Use the native admitted visit count.
     const composeVisits: Obj = {};
     for (const [target, step] of steps) if (step.type === 'compose') {
       const n = record(state.visits)[stringify(step.address)];
@@ -921,7 +1417,6 @@ export function observeRun030(databasePath: string, systemId: string, invocation
       if (output.outcome !== group.decision) throw new Error('Join output differs');
       return { join: address(group.join), outcome: string(group.decision), branches: record(output.branches) };
     });
-    const journal = db.query('SELECT event_id,event_json,receipt_json FROM engine_flow030_events WHERE system_id=? AND invocation_id=? ORDER BY rowid').all(systemId, invocationId) as EventRow030[];
     const allHandoffs = db.query('SELECT effect_id,owner_epoch,generation,receipt_json FROM engine_flow030_handoffs WHERE system_id=? AND invocation_id=?').all(systemId, invocationId) as HandoffRow030[];
     const native: NativeRoutes030 = {
       preparations: hasTable('engine_flow030_preparations') ? db.query('SELECT prepare_id,native_receipt_id,owner_epoch,generation,reference_json,producer_json,source_json,content_receipts_json,result_json FROM engine_flow030_preparations WHERE system_id=? AND invocation_id=?').all(systemId, invocationId) as PreparationRow030[] : [],
@@ -930,7 +1425,7 @@ export function observeRun030(databasePath: string, systemId: string, invocation
       contentContexts: hasTable('engine_flow030_route_content_contexts') ? db.query('SELECT prepare_id,target_ordinal,item_index,context_id,owner_epoch,generation,identity_json FROM engine_flow030_route_content_contexts WHERE system_id=? AND invocation_id=?').all(systemId, invocationId) as NativeRoutes030['contentContexts'] : [],
       contentReceipts: hasTable('engine_flow030_route_content_receipts') ? db.query('SELECT context_id,transport_receipt_json FROM engine_flow030_route_content_receipts WHERE system_id=? AND invocation_id=?').all(systemId, invocationId) as NativeRoutes030['contentReceipts'] : [],
     };
-    verifyDurableGraph(state, plan, rows, journal, allHandoffs, native);
+    if (synthetic) verifySecondaryReducerEvidence030(state, plan, rows, journal, allHandoffs, native);
     db.exec('COMMIT');
     const counts: Obj = { ...Object.fromEntries(Object.entries(starts).map(([key, value]) => [key, new NumberToken(String(value))])), ...composeVisits };
     return stringify({ run: state.verdict, starts: counts, messages, joins, failures, cancelled, answers, ...(Object.keys(composeVisits).length ? { composeVisits } : {}) });

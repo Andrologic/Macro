@@ -3,10 +3,12 @@ import { Database } from 'bun:sqlite';
 import { readFileSync, writeFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { join } from 'node:path';
-import { observeRun030 } from './observe-run030';
+import { observeRun030 as observeWithReplay030 } from './observe-run030';
 import { cleanupObservedDatabases030, nativeDatabase } from './observe-run030.testSupport';
 import { compareRun030 } from './run-expect030';
-import { compareObserved030 } from './compare-observed030';
+import { compareObserved030 as compareWithReplay030 } from './compare-observed030';
+const observeRun030 = (path: string, system: string, invocation: string) => observeWithReplay030(path, system, invocation, { syntheticUnitTestOnly: true });
+const compareObserved030 = (result: string, path: string) => compareWithReplay030(result, path, { syntheticUnitTestOnly: true });
 
 afterEach(cleanupObservedDatabases030);
 function database(messageJson: string | null = '{"prompt":"go","resources":{"x":{"value":{"n":1e0}}}}'): string {
