@@ -187,6 +187,26 @@ export function createRunInspectionAccess030(scope: ExecutionIntentScope,
       attested.flowInvocationId === run.flowInvocationId && sameVersions(attested.versions, run.versions));
     return null;
   }
+  /** Discovery alone can disprove freshness. Publish that fact before any
+   * later capture or intent read can fail, without publishing partial runs. */
+  function invalidateRetained(runs: readonly PublicRunSummary030[]) {
+    const retainedRuns = { ...snapshot.runs };
+    let changed = false;
+    for (const run of runs) {
+      const read = Object.hasOwn(retainedRuns, run.systemStartId) ? retainedRuns[run.systemStartId] : undefined;
+      const retained = read && retainedRunValue030(read);
+      if (retained && (run.revision !== retained.state.revision || run.ownerStatus !== retained.state.ownerStatus ||
+        run.stopping !== retained.state.stopping || run.physicalPending !== retained.state.physicalPending ||
+        run.verdict !== retained.state.verdict || run.snapshotId !== retained.state.scope.snapshotId ||
+        run.flowInvocationId !== retained.state.flowInvocationId || !sameHumanScope030(run, retained.state.scope) ||
+        !sameVersions(run.versions, retained.capture.versions))) {
+        retainedRuns[run.systemStartId] = { kind: 'stale', revision: retained.state.revision, retained,
+          refusal: { code: 'REVISION_CONFLICT', message: 'Run changed; refresh its projection', currentRevision: run.revision } };
+        changed = true;
+      }
+    }
+    if (changed) publish({ ...snapshot, runs: retainedRuns });
+  }
   return {
     scopeKey,
     getSnapshot: () => snapshot,
@@ -197,6 +217,7 @@ export function createRunInspectionAccess030(scope: ExecutionIntentScope,
       publish({ ...snapshot, history: { kind: 'loading', retained: retainedRunValue030(previous) } });
       try {
         const runs = await summaries(), history: RunHistoryEntry030[] = [];
+        invalidateRetained(runs);
         let retainedAdmission: NativeFact030<string | null>;
         try { retainedAdmission = await admission(runs); }
         catch (error) { retainedAdmission = unavailable('qualification'); admissionError = new RunInspectionReadError030(error); }
@@ -208,15 +229,6 @@ export function createRunInspectionAccess030(scope: ExecutionIntentScope,
           history.push(await historyEntry(run, capture));
         }
         const retainedRuns = Object.fromEntries(Object.entries(snapshot.runs).filter(([id]) => history.some(item => item.scope.systemStartId === id)));
-        // A changed summary never leaves the selected runtime looking fresh.
-        for (const run of runs) {
-          const read = retainedRuns[run.systemStartId];
-          const retained = read && retainedRunValue030(read);
-          if (retained && (run.revision !== retained.state.revision || run.ownerStatus !== retained.state.ownerStatus ||
-            run.stopping !== retained.state.stopping || run.physicalPending !== retained.state.physicalPending ||
-            run.verdict !== retained.state.verdict)) retainedRuns[run.systemStartId] = failed(read,
-            new MacroServiceError('REVISION_CONFLICT', 'Run changed; refresh its projection'));
-        }
         for (const entry of history) retainedSummaries.set(entry.scope.systemStartId,
           structuredClone(runs.find(run => run.systemStartId === entry.scope.systemStartId)!));
         publish({ history: { kind: 'ready', revision: JSON.stringify(history.map(item => {
@@ -233,15 +245,19 @@ export function createRunInspectionAccess030(scope: ExecutionIntentScope,
     }),
     refreshRun: systemStartId => enqueue(async () => {
       const previous = Object.hasOwn(snapshot.runs, systemStartId) ? snapshot.runs[systemStartId] : { kind: 'loading' as const, retained: null };
+      let admissionError: RunInspectionReadError030 | undefined;
       publish({ ...snapshot, runs: { ...snapshot.runs, [systemStartId]: { kind: 'loading', retained: retainedRunValue030(previous) } } });
       try {
         const runs = await summaries();
+        invalidateRetained(runs);
         // Cached native correlation permits manual readback when the intent
         // store is temporarily unavailable; a new uncorrelated run never does.
-        try { await admission(runs); }
+        try { publish({ ...snapshot, retainedAdmission: await admission(runs) }); }
         catch (error) {
           const failure = new RunInspectionReadError030(error);
+          publish({ ...snapshot, retainedAdmission: unavailable('qualification') });
           if (!attestations.has(systemStartId) || (failure.kind !== 'transport' && failure.kind !== 'uncertain')) throw failure;
+          admissionError = failure;
         }
         const summary = runs.find(run => run.systemStartId === systemStartId);
         requireFact(summary, 'NOT_FOUND');
@@ -270,6 +286,9 @@ export function createRunInspectionAccess030(scope: ExecutionIntentScope,
         publish({ ...snapshot, runs: { ...snapshot.runs, [systemStartId]: failed(previous, error) } });
         throw new RunInspectionReadError030(error);
       }
+      // The run remains inspectable through cached scope attestation, while
+      // the independent intent failure still reaches the caller as typed data.
+      if (admissionError) throw admissionError;
     }),
   };
 }
