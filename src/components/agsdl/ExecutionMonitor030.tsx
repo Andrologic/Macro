@@ -1,69 +1,124 @@
-import { useState } from 'react';
-import type { AgsdlTarget } from '../../stores/useAgsdlStore';
-import { useAgsdlExecutionStore } from '../../stores/useAgsdlExecutionStore';
-import { useChatStore } from '../../stores/useChatStore';
-import { humanRequestView030 } from '../../services/agsdl/humanRequests030';
-import { ExecutionHumanRequest } from './ExecutionHumanRequest';
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore, type ReactNode } from 'react';
+import type { RunInspection030, RunInspectionAccess030 } from '../../services/agsdl/runtimeProjection030';
+import { initialRunSelection030, retainedRunValue030 } from '../../services/agsdl/runtimeProjection030';
+import { runOccurrenceKey030, runCaptureKey030 } from '../../services/agsdl/runGraphProjection030';
+import { RunHistory030, RunCaptureComparison030 } from './RunHistory030';
+import { RunInspector030, ExactContent, knownPhase, type RunGraphBridge030 } from './RunInspector030';
 import { RuntimeProjectionView030, type RuntimeSelection030 } from './RuntimeProjectionView030';
 import { useAgsdlTranslation } from './useAgsdlTranslation';
 
-/** Read-only until native admission and human decisions are connected. */
-export function ExecutionMonitor030({ target }: { target: AgsdlTarget }) {
+export interface ExecutionMonitorProps030 {
+  readonly access: RunInspectionAccess030;
+  readonly initialRunId?: string;
+  readonly currentSource?: string;
+  readonly renderGraph?: (bridge: RunGraphBridge030) => ReactNode;
+  /** Observation only, never a scheduler. Zero disables periodic readback. */
+  readonly refreshIntervalMs?: number;
+  readonly renderHumans?: (inspection: RunInspection030) => ReactNode;
+}
+function retainedInspection(read: ReturnType<RunInspectionAccess030['getSnapshot']>['runs'][string]) { return retainedRunValue030(read); }
+
+/** Scope changes detach all local selections. Opening only performs readback. */
+export function ExecutionMonitor030(props: ExecutionMonitorProps030) {
+  return <ScopedMonitor030 key={props.access.scopeKey} {...props} />;
+}
+function ScopedMonitor030({ access, initialRunId, currentSource, renderGraph, refreshIntervalMs = 5000, renderHumans }: ExecutionMonitorProps030) {
   const { t } = useAgsdlTranslation();
-  const [expanded, setExpanded] = useState(false);
-  const [selection, setSelection] = useState<{ capture: string; value: RuntimeSelection030 }>();
-  const conversation = useChatStore(state => state.selectedConversationId);
-  const view = useAgsdlExecutionStore();
-  const inScope = view.owner?.planId === target.planId && view.owner.branch === target.branchName && view.conversationId === conversation;
-  const runs = inScope ? view.runs030 : [];
-  const labels = { choice: t('agsdl.execution.humanChoice'), comment: t('agsdl.execution.humanComment'), answer: t('agsdl.execution.humanAnswer'),
-    submit: t('agsdl.execution.humanSend'), approve: t('agsdl.execution.approve'), reject: t('agsdl.execution.reject'), failed: t('agsdl.execution.error') };
-  const runtime = inScope ? view.runtime030 : undefined;
-  const capture = runtime ? JSON.stringify([runtime.scope.systemStartId, runtime.scope.snapshotId, runtime.revision]) : '';
-  const runtimeLabels = { instances: t('agsdl.execution.runtimeInstances'), activations: t('agsdl.execution.runtimeActivations'),
-    groups: t('agsdl.execution.runtimeGroups'), paths: t('agsdl.execution.runtimePaths'), physicalEvidenceRequired: t('agsdl.execution.runtimePhysical'),
-    queue: t('agsdl.execution.runtimeQueue'), physicalWait: t('agsdl.execution.runtimePhysicalWait'), branchPaths: t('agsdl.execution.runtimeBranchPaths'),
-    unnamed: t('agsdl.execution.runtimeUnnamed'), phase: (value: string) => t(`agsdl.execution.runtimePhase.${value}`, { defaultValue: t('agsdl.execution.runtimeUnknown') }),
-    selector: (value: string) => t(value === 'shared' ? 'agsdl.execution.runtimeShared' : value === 'named' ? 'agsdl.execution.runtimeNamed' : value === 'new' ? 'agsdl.execution.runtimeNew' : 'agsdl.execution.runtimeUnknown') };
-  return <section className="shrink-0 border-t border-border px-3 py-2 text-xs">
-    <button type="button" aria-expanded={expanded} onClick={() => { const next = !expanded; setExpanded(next); if (next && conversation) void view.open030(target, conversation); }}>
-      {t('agsdl.execution.monitor')}
-    </button>
-    {expanded && <div className="mt-2 max-h-64 overflow-auto">
-      {!conversation ? <p>{t('agsdl.execution.firstMessageRequired')}</p> : <>
-        {view.error && inScope && <p role="alert">{t(view.error)}</p>}
-        {inScope && view.runs030Error && <p role="alert">{t('agsdl.execution.runsStale')}</p>}
-        {inScope && view.intent030 && <p>{t('agsdl.execution.unavailable')}</p>}
-        <label className="flex flex-col gap-1">{t('agsdl.execution.chooseRun')}
-          <select className="rounded border border-border bg-card px-2 py-1 text-foreground" value={inScope ? view.snapshot030?.systemStartId ?? '' : ''} disabled={!inScope || view.busy} onChange={event => { if (event.target.value) void view.select030(event.target.value); }}>
-            <option value="">{t('agsdl.execution.chooseRun')}</option>
-            {inScope && view.snapshot030 && !runs.some(run => run.systemStartId === view.snapshot030!.systemStartId) && <option value={view.snapshot030.systemStartId}>{t('agsdl.journey.captured')}</option>}
-            {runs.map((run, index) => <option value={run.systemStartId} key={run.systemStartId}>{t('agsdl.execution.runNumber', { number: index + 1 })}</option>)}
-          </select>
-        </label>
-        {inScope && <button type="button" onClick={() => void view.refreshRuns030()} disabled={view.busy}>{t('agsdl.execution.runtimeRefresh')}</button>}
-        {inScope && view.nextRuns030 && <button type="button" onClick={() => void view.moreRuns030()} disabled={view.busy}>{t('agsdl.execution.moreRuns')}</button>}
-        {inScope && view.snapshot030 && <section>
-          <button type="button" onClick={() => void view.refreshRuntime030()} disabled={view.busy}>{t('agsdl.execution.runtimeRefresh')}</button>
-          {view.runtime030Stale && <p role="alert">{t('agsdl.execution.runtimeStale')}</p>}
-          {runtime && <RuntimeProjectionView030 page={runtime} labels={runtimeLabels} selected={selection?.capture === capture ? selection.value : undefined}
-            select={value => setSelection({ capture, value })} />}
-          <h3>{t('agsdl.execution.humanRequests')}</h3>
-          <p>{t('agsdl.execution.humanIncomplete')}</p>
-          <p>{t('agsdl.execution.humanUnavailable')}</p>
-          {view.humans030Stale && <p role="alert">{t('agsdl.execution.humanStale')}</p>}
-          <button type="button" onClick={() => void view.refreshHumans030()} disabled={view.busy}>{t('agsdl.execution.refreshHumans')}</button>
-          {view.humans030?.requests.map(request => <div key={`${view.snapshot030!.systemStartId}:${request.id}`}>
-            {['open', 'submitted', 'resolved'].includes(request.status) && <p className="text-muted-foreground">{t(request.status === 'open' ? 'agsdl.execution.humanOpen' : request.status === 'submitted' ? 'agsdl.execution.humanSubmitted' : 'agsdl.execution.humanResolved')}</p>}
-            {request.content.kind === 'question' ? <div className="my-2 rounded border border-border p-2">
-              <h3 className="font-medium">{t('agsdl.execution.humanQuestion')}</h3>
-              <p className="whitespace-pre-wrap break-words">{request.content.question}</p>
-              <p className="whitespace-pre-wrap break-words text-muted-foreground">{request.content.expectedResponse}</p>
-            </div> : <ExecutionHumanRequest request={humanRequestView030(request, { plan: t('agsdl.execution.humanPlan'), question: t('agsdl.execution.humanQuestion') })}
-              labels={labels} open={false} onAnswer={async () => { throw new Error('Decision unavailable'); }} />}
-          </div>)}
-        </section>}
-      </>}
-    </div>}
+  const tr = (key: string) => t(`agsdl.run030.${key}`);
+  const subscribe = useCallback((listener: () => void) => access.subscribe(listener), [access]);
+  const getSnapshot = useCallback(() => access.getSnapshot(), [access]);
+  const snapshot = useSyncExternalStore(subscribe, getSnapshot, getSnapshot);
+  const [explicit, setExplicit] = useState(initialRunId);
+  const [automatic, setAutomatic] = useState<string>();
+  const preferred = explicit ?? automatic;
+  const selected = snapshot.history.kind === 'ready' ? initialRunSelection030(snapshot, preferred)
+    : preferred ?? initialRunSelection030(snapshot);
+  const [comparison, setComparison] = useState<string>();
+  const [selections, setSelections] = useState<Record<string, { step?: string; occurrence?: string; runtime?: RuntimeSelection030 }>>({});
+  const [readErrors, setReadErrors] = useState<ReadonlySet<string>>(new Set());
+  const readFailed = readErrors.has('history') || (selected !== undefined && readErrors.has(selected));
+  const pending = useRef(new Set<string>());
+  const mounted = useRef(false);
+  const read = useCallback(async (key: string, operation: () => Promise<void>) => {
+    if (pending.current.has(key)) return;
+    pending.current.add(key);
+    try { await operation(); if (mounted.current) setReadErrors(previous => { const next = new Set(previous); next.delete(key); return next; }); }
+    catch { if (mounted.current) setReadErrors(previous => new Set(previous).add(key)); }
+    finally { pending.current.delete(key); }
+  }, []);
+  const refresh = useCallback(() => {
+    void read('history', () => access.refreshHistory());
+    if (selected) void read(selected, () => access.refreshRun(selected));
+    if (comparison && comparison !== selected) void read(comparison, () => access.refreshRun(comparison));
+  }, [access, read, selected, comparison]);
+  useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
+  useEffect(() => { void read('history', () => access.refreshHistory()); }, [access, read]);
+  useEffect(() => {
+    if (selected) { setAutomatic(selected); void read(selected, () => access.refreshRun(selected)); }
+  }, [selected, access, read]);
+  useEffect(() => {
+    if (comparison) void read(comparison, () => access.refreshRun(comparison));
+  }, [comparison, access, read]);
+  useEffect(() => {
+    const interval = refreshIntervalMs > 0 ? window.setInterval(refresh, refreshIntervalMs) : undefined;
+    window.addEventListener('focus', refresh);
+    return () => { if (interval !== undefined) window.clearInterval(interval); window.removeEventListener('focus', refresh); };
+  }, [refresh, refreshIntervalMs]);
+  const history = retainedRunValue030(snapshot.history) ?? [];
+  const readState = selected ? snapshot.runs[selected] : undefined;
+  const inspection = readState ? retainedInspection(readState) : null;
+  const identity = inspection ? runCaptureKey030(inspection.state.scope) : '';
+  const selection = selections[identity] ?? {};
+  const choose = (value: Partial<typeof selection>) => setSelections(previous => ({ ...previous, [identity]: { ...previous[identity], ...value } }));
+  const left = history.find(run => run.scope.systemStartId === selected);
+  const right = history.find(run => run.scope.systemStartId === comparison);
+  const stale = readFailed || readState?.kind === 'stale' || (readState?.kind === 'loading' && readState.retained !== null);
+  const state = inspection?.state;
+  const occurrences = state ? retainedRunValue030(state.occurrences) : null;
+  const runtimeLabels = { instances: tr('instances'), activations: tr('occurrences'), groups: tr('groups'), paths: tr('paths'), queue: tr('queue'),
+    physicalWait: tr('physicalWait'), branchPaths: tr('branchPaths'), physicalEvidenceRequired: tr('physicalActive'), unnamed: tr('unknown'),
+    phase: (value: string) => tr(`phase.${knownPhase(value)}`), selector: (value: string) => tr(`selector.${['shared', 'named', 'new'].includes(value) ? value : 'unknown'}`) };
+  return <section aria-label={tr('monitor')} className="min-h-0 min-w-0 flex-1 space-y-3 overflow-auto p-3 text-xs text-foreground">
+    <div className="flex flex-wrap items-center justify-between gap-2"><h2 className="font-medium">{tr('monitor')}</h2>
+      <button type="button" className="rounded border border-border px-2 py-1 hover:bg-accent" onClick={refresh}>{tr('refresh')}</button></div>
+    {readFailed && <p role="alert">{tr('readFailed')}</p>}
+    <RunHistory030 history={snapshot.history} selected={selected} comparison={comparison} select={id => { setExplicit(id); if (comparison === id) setComparison(undefined); }} compare={setComparison} />
+    {!selected && history.length > 0 && <p role="status">{tr('selectionPending')}</p>}
+    {left && right && <RunCaptureComparison030 left={left} right={right} />}
+    {selected && !inspection && <p role="status">{tr(readState?.kind === 'unavailable' ? 'unavailable' : 'loading')}</p>}
+    {inspection && state && <>
+      {stale && <p role="status" className="rounded border border-border p-2">{tr('stale')}</p>}
+      <section className="space-y-1 rounded border border-border p-2" aria-label={tr('summary')}>
+        <h3 className="font-medium">{tr(`verdict.${state.verdict ?? 'pending'}`)}</h3>
+        <p>{[tr(`summarySentence.${state.verdict ?? 'pending'}`),
+          ...(/^[1-9][0-9]*$/.test(state.physicalPending) ? [tr(state.stopping ? 'summarySentence.stopping' : 'summarySentence.active')] : []),
+          ...(state.stop.kind === 'available' && state.stop.value.kind === 'uncertain' ? [tr('summarySentence.uncertain')] : []),
+          ...(state.humans.kind === 'ready' && state.humans.value.some(request => request.state.kind === 'open') ? [tr('summarySentence.human')] : []),
+        ].join(' ')}</p>
+        <p>{tr('stopLabel')}: {state.stop.kind === 'available' ? tr(`stop.${state.stop.value.kind}`) : tr('unavailable')}</p>
+        <p title={tr('physicalHelp')}>{tr('physicalPending')}: {state.physicalPending}</p>
+        <p title={tr('ownerHelp')}>{tr('owner')}: {tr(`ownerState.${state.ownerStatus}`)}</p>
+        <details><summary>{tr('termsHelp')}</summary><p>{tr('physicalHelp')}</p><p>{tr('ownerHelp')}</p><p>{tr('occurrenceHelp')}</p></details>
+        {state.humans.kind === 'ready' ? state.humans.value.some(request => request.state.kind === 'open') && <p>{tr('waitingHuman')}</p> : <p>{tr('humanUnknown')}</p>}
+        {renderHumans?.(inspection)}
+        {state.uncertainties.kind === 'available' ? state.uncertainties.value.map(item => <details key={item.id}><summary>{tr(`uncertainty.${item.state}`)}</summary><pre className="whitespace-pre-wrap break-all">{JSON.stringify(item, null, 2)}</pre></details>) : <p>{tr('uncertaintyUnavailable')}</p>}
+        <details><summary>{tr('captureDetails')}</summary><pre className="whitespace-pre-wrap break-all">{JSON.stringify({ source: inspection.capture.source, versions: inspection.capture.versions, chronology: state.chronology, stop: state.stop }, null, 2)}</pre></details>
+        <ExactContent label={tr('capturedSource')} value={inspection.capture.authoredSource} />
+        {currentSource !== undefined && <ExactContent label={tr('currentDocument')} value={currentSource} />}
+      </section>
+      <RunInspector030 inspection={inspection} stale={stale} refreshing={readState?.kind === 'loading'} selectedStepId={selection.step} selectedOccurrenceKey={selection.occurrence}
+        selectStep={step => choose({ step, occurrence: undefined })} selectOccurrence={occurrence => choose({ occurrence })} renderGraph={renderGraph} />
+      <details><summary>{tr('runtimeDetails')}</summary>
+        {occurrences === null || state.occurrences.kind !== 'ready' || state.occurrences.revision !== state.revision ? <p>{tr('incomplete')}</p> : <RuntimeProjectionView030
+          page={{ scope: state.scope, revision: state.revision, flowInvocationId: state.flowInvocationId, stopping: state.stopping, verdict: state.verdict,
+            total: String(state.instances.length + occurrences.length + state.groups.length + state.paths.length), nextPage: null,
+            items: [...state.instances.map(value => ({ kind: 'instance' as const, value })), ...occurrences.map(item => ({ kind: 'activation' as const, value: item.activation })),
+              ...state.groups.map(value => ({ kind: 'group' as const, value })), ...state.paths.map(value => ({ kind: 'path' as const, value }))] }}
+          labels={runtimeLabels} selected={selection.runtime} select={runtime => {
+            const occurrence = runtime.kind === 'activation' ? occurrences.find(item => item.activation.id === runtime.id) : undefined;
+            choose({ runtime, ...(occurrence ? { occurrence: runOccurrenceKey030(occurrence), step: undefined } : {}) });
+          }} />}
+      </details>
+    </>}
   </section>;
 }

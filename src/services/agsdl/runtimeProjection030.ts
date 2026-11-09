@@ -1,3 +1,4 @@
+import type { NativeFact030, RunCapture030, RunRead030, RunStateUi030 } from '../../types/agsdlRunUi030';
 import type { RuntimeProjectionScope030 } from '../../types/generated/ipc/RuntimeProjectionScope030';
 import type { RuntimeProjectionQuery030 } from '../../types/generated/ipc/RuntimeProjectionQuery030';
 import type { RuntimeProjectionContinuation030 } from '../../types/generated/ipc/RuntimeProjectionContinuation030';
@@ -69,4 +70,51 @@ export function runtimeSections030(page: RuntimeProjectionPage030) {
     groups: page.items.filter((item): item is Extract<RuntimeProjectionItem030, {kind:'group'}> => item.kind === 'group').map(item => item.value),
     paths: page.items.filter((item): item is Extract<RuntimeProjectionItem030, {kind:'path'}> => item.kind === 'path').map(item => item.value),
   };
+}
+
+/** Read-only product adapter for lot 6. No method admits or acknowledges work.
+ * Snapshots are immutable and referentially stable until subscribe notifies.
+ * Each series is assembled atomically before ready; conflicts retain old data.
+ * scopeKey includes project, plan, branch and conversation. */
+export interface RunInspectionAccess030 {
+  readonly scopeKey: string;
+  getSnapshot(): RunMonitorSnapshot030;
+  subscribe(listener: () => void): () => void;
+  refreshHistory(): Promise<void>;
+  refreshRun(systemStartId: string): Promise<void>;
+}
+
+export interface RunInspection030 {
+  readonly capture: RunCapture030;
+  readonly state: RunStateUi030;
+}
+export type RunHistoryEntry030 = Pick<RunInspection030['state'], 'scope' | 'verdict' | 'physicalPending' | 'humans' | 'chronology'> & {
+  readonly capture: RunInspection030['capture'];
+};
+export interface RunMonitorSnapshot030 {
+  /** Native history order, newest first. Ready means the whole scope was read. */
+  readonly history: RunRead030<readonly RunHistoryEntry030[]>;
+  /** Only an admission with a valid native start030 run receipt supplies an id. */
+  readonly retainedAdmission: NativeFact030<string | null>;
+  readonly runs: Readonly<Record<string, RunRead030<RunInspection030>>>;
+}
+
+export function retainedRunValue030<T>(read: RunRead030<T>): T | null {
+  return read.kind === 'ready' ? read.value : read.kind === 'stale' || read.kind === 'loading' ? read.retained : null;
+}
+
+/** A partial history or unavailable human DTO cannot prove no human is waiting. */
+export function initialRunSelection030(snapshot: RunMonitorSnapshot030, explicit?: string): string | undefined {
+  const history = retainedRunValue030(snapshot.history);
+  if (explicit && history?.some(run => run.scope.systemStartId === explicit)) return explicit;
+  if (snapshot.history.kind !== 'ready') return undefined;
+  const runs = snapshot.history.value;
+  // Choose the newest attested wait even when another run's waits are unknown.
+  const waiting = runs.find(run => run.humans.kind === 'ready' && run.humans.value.some(request => request.state.kind === 'open'));
+  if (waiting) return waiting.scope.systemStartId;
+  // Unknown waits only prevent falling back to an admission or the newest run.
+  if (runs.some(run => run.humans.kind !== 'ready')) return undefined;
+  if (snapshot.retainedAdmission.kind !== 'available') return undefined;
+  const admission = snapshot.retainedAdmission.value;
+  return runs.find(run => run.scope.systemStartId === admission)?.scope.systemStartId ?? runs[0]?.scope.systemStartId;
 }
