@@ -76,6 +76,7 @@ export const AgsdlEditor: React.FC<{
   const source = session?.source;
   const displayMetadata = session?.display;
   const migrationMetadata = session?.migration;
+  const reports = session?.reports;
   const review = useMemo(() => session?.history.length ? reviewDesignChanges(session.history.at(-1)!.source, session.source, session.history.at(-1), session) : undefined, [session]);
   const showChanges = !!review && (review.changes.length > 0 || review.design || review.configuration || review.other) && session?.version !== dismissedVersion;
   useEffect(() => {
@@ -86,11 +87,11 @@ export const AgsdlEditor: React.FC<{
   const parsed = useMemo(() => {
     if (!source) return {};
     try {
-      return { document: projectViewer(source, { display: displayMetadata, migration: migrationMetadata }) };
+      return { document: projectViewer(source, { display: displayMetadata, migration: migrationMetadata }, reports) };
     } catch (error) {
       return { error: String(error) };
     }
-  }, [source, displayMetadata, migrationMetadata]);
+  }, [source, displayMetadata, migrationMetadata, reports]);
   const document = parsed.document;
   const visibleGraphIndex = Math.max(0, Math.min(graphIndex, Math.max(0, (document?.graphs.length ?? 0) - 1)));
   const edition030 = document?.contract === "agsdl-0.3.0";
