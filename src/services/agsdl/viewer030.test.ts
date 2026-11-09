@@ -58,3 +58,42 @@ describe("AgSDL 0.3 source projection", () => {
     expect(card.outputs.map(port => port.name)).toEqual(["text", "summary"]);
   });
 });
+
+it("projects probe 1's global handler from the covered call only", () => {
+  const raw = JSON.stringify({ contract: "agsdl-0.3.0", id: "global-handler", agents: {}, flow: {
+    entry: "a", onError: "recover", steps: { a: { type: "call", command: "echo a" }, recover: { type: "call", command: "echo recover" } },
+  } });
+  const graph = projectViewer030(raw).graphs[0];
+  expect(graph.static030!.report.valid).toBe(true);
+  expect(projectSystemOverview(graph, []).edges).toMatchObject([{
+    source: "/flow/steps/a", target: "/flow/steps/recover", label: "onError",
+    route030: { path: "/flow/onError", sourcePath: "/flow/steps/a", inherited: true, role: "error" },
+  }]);
+});
+
+it("excludes join branches, local overrides and handler-only paths from inherited error links", () => {
+  const call = (next?: unknown) => ({ type: "call", command: "echo synthetic", ...(next === undefined ? {} : { next }) });
+  const raw = JSON.stringify({ contract: "agsdl-0.3.0", id: "error-scope", agents: {}, flow: {
+    entry: "start", onError: "recover", steps: {
+      start: call(["left", "right"]), left: { ...call("merge"), onError: "local" }, local: call("merge"), right: call("merge"),
+      merge: { type: "join", next: "after" }, after: { ...call(), onError: [] }, recover: call("tail"), tail: call(),
+    },
+  } });
+  const graph = projectViewer030(raw).graphs[0];
+  expect(graph.static030!.report.valid).toBe(true);
+  const edges = projectSystemOverview(graph, []).edges;
+  expect(edges.filter(edge => edge.route030?.inherited).map(edge => edge.source)).toEqual(["/flow/steps/start", "/flow/steps/merge"]);
+  expect(edges.find(edge => edge.source === "/flow/steps/left" && edge.label === "onError")?.target).toBe("/flow/steps/local");
+});
+
+it("excludes the handler target itself but covers a handler successor also reached normally", () => {
+  const raw = JSON.stringify({ contract: "agsdl-0.3.0", id: "shared-handler-path", agents: {}, flow: {
+    entry: "a", onError: "recover", steps: {
+      a: { type: "call", command: "echo a", next: "recover" },
+      recover: { type: "call", command: "echo recover", next: "tail" }, tail: { type: "call", command: "echo tail" },
+    },
+  } });
+  const graph = projectViewer030(raw).graphs[0];
+  expect(graph.static030!.report.valid).toBe(true);
+  expect(projectSystemOverview(graph, []).edges.filter(edge => edge.route030?.inherited).map(edge => edge.source)).toEqual(["/flow/steps/a", "/flow/steps/tail"]);
+});

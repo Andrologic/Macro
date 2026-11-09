@@ -32,6 +32,14 @@ export function projectSystemOverview(graph: ViewerGraph | undefined, declaratio
       add(card.path, branch.reference.target, branch.label, branch.path, branch.transfers);
       if (branch.route030 && branch.reference.target && byPath.has(branch.reference.target)) edges[edges.length - 1].route030 = branch.route030;
     }
+    if (card.static030?.error.kind === "flow") {
+      for (const route of graph.errorRoutes030 ?? []) {
+        if (!route.target || !byPath.has(route.target)) continue;
+        edges.push({ id: `${card.path}/inherited${route.path}`, source: card.path, target: route.target,
+          label: "onError", dependency: false, transfers: [route.messageJson === undefined ? "resources.error" : "message"],
+          route030: { ...route, sourcePath: card.static030.sourcePath, sourceOccurrenceId: card.path, targetOccurrenceId: route.target, inherited: true } });
+      }
+    }
   }
   for (const card of cards) {
     const ports = card.inputs;

@@ -3,6 +3,7 @@ import { successors } from "./projection";
 import type { AgsdlEnvelopeMetadata } from "./design";
 import { projectViewer030, type ViewerRoute030 } from "./viewer030";
 import { projectViewer020 } from "./viewer020";
+import type { StaticOccurrence030, StaticSemantics030 } from "./staticSemantics030";
 
 type Value = Record<string, unknown>;
 export interface ViewerReference {
@@ -33,6 +34,7 @@ export interface ViewerFlowInput {
   projection: string;
 }
 export interface ViewerCard {
+  static030?: StaticOccurrence030;
   edition030?: { maxVisitsJson?: string; ownerPath?: string; sourceJson: string; definitionJson?: string; agentPath?: string; routes: ViewerRoute030[] };
   path: string;
   id: string;
@@ -60,6 +62,7 @@ export interface ViewerCard {
   details: Value;
 }
 export interface ViewerGraph {
+  static030?: StaticSemantics030;
   errorRoutes030?: ViewerRoute030[];
   contract?: string;
   path: string;
