@@ -177,7 +177,7 @@ export function projectStaticSemantics030(source: string, report?: Report030): S
     const step = declarations.get(card.occurrenceId)!.step;
     const joins = memberships.get(card.occurrenceId);
     const size = (id: string) => byId.get(id)!.join!.branches.find(branch => branch.memberOccurrenceIds.includes(card.occurrenceId))!.memberOccurrenceIds.length;
-    joins?.sort((left, right) => size(left) - size(right) || left.localeCompare(right, "en"));
+    joins?.sort((left, right) => size(left) - size(right) || (left < right ? -1 : left > right ? 1 : 0));
     card.error = Object.hasOwn(step, "onError") ? { kind: "local", ownerPath: `${card.sourcePath}/onError`, ownerOccurrenceId: card.occurrenceId }
       : unreportedScopes.has(card.scopeId) ? { kind: "unreported" }
       : memberships.has(card.occurrenceId) ? { kind: "join", joinOccurrenceIds: memberships.get(card.occurrenceId)! }

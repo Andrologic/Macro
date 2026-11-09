@@ -78,11 +78,11 @@ describe("static semantics 0.3", () => {
   it("does not inherit flow errors inside either level of nested joins", () => {
     const result = project(source({ entry: "split", onError: "recover", steps: {
       split: call(["nested", "right"]), nested: call(["one", "two"]), one: call("inner"), two: call("inner"),
-      inner: { type: "join", next: "outer" }, right: call("outer"), outer: { type: "join" }, recover: call(),
+      outer: { type: "join" }, inner: { type: "join", next: "outer" }, right: call("outer"), recover: call(),
     } }));
     expect(result.flowErrorCovered).toEqual(["/flow/steps/split", "/flow/steps/outer"]);
     expect(result.occurrences.find(item => item.occurrenceId === "/flow/steps/inner")!.error).toEqual({ kind: "join", joinOccurrenceIds: ["/flow/steps/outer"] });
-    expect(result.occurrences.find(item => item.occurrenceId === "/flow/steps/one")!.error.kind).toBe("join");
+    expect(result.occurrences.find(item => item.occurrenceId === "/flow/steps/one")!.error).toEqual({ kind: "join", joinOccurrenceIds: ["/flow/steps/inner", "/flow/steps/outer"] });
   });
 });
 
