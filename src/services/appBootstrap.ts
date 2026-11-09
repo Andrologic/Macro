@@ -1,3 +1,4 @@
+import { configureProductionWorkflowRunAccess030 } from './workflowAgentTasks';
 import { createLifecycleScope, type LifecycleContext, type LifecycleScope } from './lifecycleScope';
 import { preloadModePanels } from '../components/layout/modePanelLoaders';
 import type { AppMode } from '../types';
@@ -442,7 +443,10 @@ const getAppBootstrapDependencies = (): AppBootstrapDependencies => ({
     ]);
   },
   initializeDatabaseCritical: waitForDatabaseInitialization,
-  initializeAppCritical: useAppStore.getState().initializeCritical,
+  initializeAppCritical: async () => {
+    configureProductionWorkflowRunAccess030();
+    await useAppStore.getState().initializeCritical();
+  },
   resumeAppAfterInitialize: useAppStore.getState().resumeAfterInitialize,
   initializeChatCritical: useChatStore.getState().initializeCritical,
   initializeTasksCritical: useTaskStore.getState().initializeCritical,

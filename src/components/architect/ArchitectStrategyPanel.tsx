@@ -25,7 +25,8 @@ export function WorkflowRunView030({ bundle, currentSource, target }: {
 }) {
   const { t } = useAgsdlTranslation();
   const host = useRef<HTMLDivElement>(null);
-  const { access, humanClient } = bundle;
+  const { access } = bundle;
+  const focusedTarget = useRef<string>(undefined);
   const bridge = useRef<RunGraphBridge030>(undefined);
   const snapshot = useSyncExternalStore(access.subscribe.bind(access), access.getSnapshot.bind(access), access.getSnapshot.bind(access));
   useEffect(() => {
@@ -36,20 +37,33 @@ export function WorkflowRunView030({ bundle, currentSource, target }: {
   const history = retainedRunValue030(snapshot.history);
   const exact = !target || (inspection && inspection.capture.systemStartId === target.scope.systemStartId && sameSource(inspection.capture.source, target.scope.source) &&
     history?.some(item => item.scope.systemStartId === target.scope.systemStartId && sameSource(item.capture.source, target.scope.source)));
+  const focusKey = target?.requestId ? JSON.stringify([target.scope, target.requestId]) : undefined;
+  const requestVisible = !!target && !!inspection && retainedRunValue030(inspection.state.humans)?.some(request => request.id === target.requestId);
   useEffect(() => {
-    if (!exact || !target?.requestId) return;
-    const card = [...(host.current?.querySelectorAll<HTMLElement>('[data-human-request]') ?? [])].find(item => item.dataset.humanRequest === target.requestId);
-    const frame = window.requestAnimationFrame(() => { card?.focus(); card?.scrollIntoView?.({ block: 'nearest' }); });
+    if (!exact || !focusKey || !requestVisible || focusedTarget.current === focusKey) return;
+    const card = [...(host.current?.querySelectorAll<HTMLElement>('[data-human-request]') ?? [])].find(item => item.dataset.humanRequest === target?.requestId);
+    if (!card) return;
+    const frame = window.requestAnimationFrame(() => { focusedTarget.current = focusKey; card.focus(); card?.scrollIntoView?.({ block: 'nearest' }); });
     return () => window.cancelAnimationFrame(frame);
-  }, [exact, target, snapshot]);
-  const humans = (run: RunInspection030) => humanClient
-    ? <HumanRequests030 requests={run.state.humans} client={humanClient} onOpenRequest={request => openWorkflowRun030({ ...request, conversationId: run.capture.associations.conversationId })}
-        onOpenOccurrence={activation => {
-          const current = bridge.current;
-          const occurrence = current?.occurrences.find(item => item.activationId === activation.activationId && runCaptureKey030(item.occurrence.scope) === runCaptureKey030(activation.scope));
-          if (occurrence) current?.selectOccurrence(occurrence.key);
-        }} />
-    : <p role="status">{t('agsdl.shell030.humanUnavailable')}</p>;
+  }, [exact, focusKey, requestVisible, target?.requestId]);
+  const humans = (run: RunInspection030) => {
+    const humanClient = bundle.humanClient ?? bundle.humanClientForRun?.(run);
+    const enclosing = snapshot.runs[run.capture.systemStartId];
+    const stale = enclosing?.kind === 'stale' ? enclosing : snapshot.history.kind === 'stale' ? snapshot.history : undefined;
+    const pending = enclosing?.kind === 'loading' || snapshot.history.kind === 'loading';
+    const requests = stale ? { kind: 'stale' as const, revision: run.state.revision,
+      retained: retainedRunValue030(run.state.humans) ?? [], refusal: stale.refusal }
+      : pending ? { kind: 'loading' as const, retained: retainedRunValue030(run.state.humans) } : run.state.humans;
+    const registration = workflowRunAccessSnapshot030().find(item => item.access === access);
+    return humanClient
+      ? <HumanRequests030 requests={requests} client={humanClient} onOpenRequest={request => openWorkflowRun030({ ...request, conversationId: registration?.scope.conversationId })}
+          onOpenOccurrence={activation => {
+            const current = bridge.current;
+            const occurrence = current?.occurrences.find(item => item.activationId === activation.activationId && runCaptureKey030(item.occurrence.scope) === runCaptureKey030(activation.scope));
+            if (occurrence) current?.selectOccurrence(occurrence.key);
+          }} />
+      : <p role="status">{t('agsdl.shell030.humanUnavailable')}</p>;
+  };
   return <div ref={host} className="flex h-full min-h-0 min-w-0 flex-col">
     {exact ? <ExecutionMonitor030 key={target ? JSON.stringify(target) : access.scopeKey} access={access}
       initialRunId={target?.scope.systemStartId} currentSource={currentSource} renderHumans={humans} renderGraph={value => { bridge.current = value; return null; }} />

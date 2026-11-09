@@ -1,46 +1,9 @@
+import type { PublicExecutionIntent } from '../../types/generated/ipc';
+import type { Fixture } from './runAccess030.testSupport';
+import { nativeRunFixture030 as fixture, nativeIntentFor030 as intentFor, nativeTransportFor030 as transportFor } from './runAccess030.testSupport';
 import { expect, it } from 'bun:test';
-import type { PublicExecutionIntent, PublicRunSummary030, RuntimeProjectionPage030 } from '../../types/generated/ipc';
-import { sourceDigest } from '../agsdlExecution/compiler';
 import { createRunInspectionAccess030 } from './runAccess030';
-import type { RunReadTransport030 } from './runAccess030';
-import { inspectionFixture030 } from './runInspection030.testSupport';
 import { initialRunSelection030, retainedRunValue030 } from './runtimeProjection030';
-
-async function fixture(id = 'run') {
-  const inspection = inspectionFixture030(id);
-  const capture = { ...structuredClone(inspection.capture), associations: {} };
-  capture.source.sourceSha256 = await sourceDigest(capture.authoredSource);
-  const scope = { ...inspection.state.scope, source: capture.source };
-  const summary: PublicRunSummary030 = { ...scope, flowInvocationId: 'flow', versions: capture.versions,
-    revision: '9007199254740993', stopping: true, verdict: 'succeeded', ownerStatus: 'live',
-    phaseCounts: [{ phase: 'done', count: '1' }, { phase: 'running', count: '1' }], physicalPending: '1' };
-  const runtime: RuntimeProjectionPage030 = { scope, flowInvocationId: 'flow', revision: summary.revision,
-    stopping: summary.stopping, verdict: summary.verdict, total: '2',
-    items: inspection.state.occurrences.kind === 'ready' ? inspection.state.occurrences.value.map(item => ({ kind: 'activation',
-      value: { ...item.activation, phase: item.activation.phase === 'completed' ? 'done' : item.activation.phase } })) : [], nextPage: null };
-  return { capture, scope, summary, runtime };
-}
-type Fixture = Awaited<ReturnType<typeof fixture>>;
-function intentFor(f: Fixture, scope = { owner: f.capture.source.owner, conversationId: 'sample-chat' }): PublicExecutionIntent {
-  const id = f.summary.systemStartId;
-  const entry = { deliveryId: `entry-${id}`, messageJson: '{"text":"Start the synthetic sample"}' };
-  return { formatVersion: '1', key: { scope: structuredClone(scope), intentId: `intent-${f.summary.systemStartId}` }, revision: '3',
-    payload: { kind: 'start', request: { source: f.capture.source, profile: 'macro-agsdl-030-v1', requestId: `request-${id}`, associations: {}, entry } },
-    state: { kind: 'admitted', admission: { kind: 'start030', receipt: { systemStartId: f.summary.systemStartId, flowInvocationId: f.summary.flowInvocationId,
-      source: f.capture.source, versions: f.capture.versions, entryDeliveryId: entry.deliveryId } } } };
-}
-function transportFor(...fixtures: Fixture[]) {
-  const calls: string[] = [];
-  const nativeScope = { owner: structuredClone(fixtures[0].capture.source.owner), conversationId: 'sample-chat' };
-  const transport: RunReadTransport030 = {
-    async listExecutionRuns030() { calls.push('list'); return { runs: fixtures.map(item => item.summary), nextCursor: null }; },
-    async readExecutionSnapshot030(id) { calls.push('snapshot'); return fixtures.find(item => item.capture.systemStartId === id)!.capture; },
-    async readExecutionRuntimeProjection030(scope) { calls.push('runtime'); return fixtures.find(item => item.scope.systemStartId === scope.systemStartId)!.runtime; },
-    async readExecutionHumans030(scope) { calls.push('humans'); return { scope, cursor: 'native-human-cursor', total: '0', requests: [], nextPage: null }; },
-    async readExecutionIntentsVersioned() { calls.push('intents'); return [intentFor(fixtures[0], nativeScope)]; },
-  };
-  return { transport, calls, scope: structuredClone(nativeScope) };
-}
 
 it('maps only attested facts, keeps exact revisions and exposes missing facts with gaps', async () => {
   const f = await fixture(), { transport, calls, scope } = transportFor(f);
@@ -163,7 +126,7 @@ it('isolates project, plan, branch and conversation using native intent receipts
   expect(access.getSnapshot().excludedRuns.foreign.code).toBe('SCOPE_UNAVAILABLE');
   expect(access.getSnapshot().excludedRuns.foreign.message).toContain('No native start030');
   for (const key of ['projectId', 'planId', 'branch'] as const) {
-    const otherScope = { owner: { ...f.capture.source.owner, [key]: 'other' }, conversationId: 'sample-chat' };
+    const otherScope = { owner: { ...f.capture.source.owner, [key]: 'other' }, conversationId: 'design-conversation' };
     const other = createRunInspectionAccess030(otherScope, transport);
     await expect(other.refreshHistory()).rejects.toMatchObject({ kind: 'scope', code: 'SCOPE_INVALID' });
     expect(other.getSnapshot().history).not.toMatchObject({ kind: 'unavailable', gap: 'qualification' });
@@ -265,7 +228,7 @@ it('rejects a history revision regression and marks owner revocation stale even 
 it('admits native captures with empty associations only through a correlated start030 intent', async () => {
   const native = await fixture(), uncorrelated = await fixture('uncorrelated');
   // Even a synthetic conversation association cannot replace a native receipt.
-  uncorrelated.capture.associations = { conversationId: 'sample-chat' };
+  uncorrelated.capture.associations = { conversationId: 'design-conversation' };
   const { transport, scope } = transportFor(native, uncorrelated);
   const access = createRunInspectionAccess030(scope, transport);
   expect(native.capture.associations).toEqual({});

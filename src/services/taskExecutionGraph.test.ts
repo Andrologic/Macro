@@ -97,29 +97,33 @@ it('opens the signalled pure activation in the exact captured run without attrib
   expect(seen).not.toContain('execution_list_runs');
 });
 
-it('routes a captured 0.3 task to the injected monitor and binds its validation report to exact bytes', async () => {
-  const { configureWorkflowRunAccess030, projectWorkflowAgentTasks030 } = await import('./workflowAgentTasks');
-  const { inspectionFixture030, monitorFixture030 } = await import('./agsdl/runInspection030.testSupport');
-  const { sourceDigest } = await import('./agsdlExecution/compiler');
+it('opens the native 0.3 capture through receipt-attested scope without Start associations', async () => {
+  const { configureWorkflowRunAccess030, configureProductionWorkflowRunAccess030, readWorkflowRun030, projectWorkflowAgentTasks030 } = await import('./workflowAgentTasks');
+  const { nativeAgentRunFixture030, nativeIntentFor030 } = await import('./agsdl/runAccess030.testSupport');
   const { staticReportForSource030 } = await import('./agsdl/staticSemantics030');
-  const run = {...inspectionFixture030()};
-  const sha = await sourceDigest(run.capture.authoredSource);
-  run.capture = {...run.capture,source:{...run.capture.source,sourceSha256:sha}};
-  run.state = {...run.state,scope:{...run.state.scope,source:run.capture.source}};
-  const { plan } = await (await import('./workflowAgentTasks.fixtures')).workflowTaskFixture();
-  if (run.state.occurrences.kind === 'ready') run.state = {...run.state,occurrences:{...run.state.occurrences,value:run.state.occurrences.value.map(item=>({...item,scope:run.state.scope}))}};
-  const tasks = projectWorkflowAgentTasks030({...plan,id:'sample-plan',targetBranch:'develop',projectIds:['sample-project']},run);
-  if (run.state.occurrences.kind === 'ready') run.state = {...run.state,occurrences:{...run.state.occurrences,value:run.state.occurrences.value.map(item=>({...item,scope:run.state.scope}))}};
-  const access = monitorFixture030(run);
-  configureWorkflowRunAccess030(() => ({access}));
+  const f = await nativeAgentRunFixture030();
   const seen: string[] = [];
-  installTauriRuntimeMock(mock(async command => { seen.push(command); if (command === 'execution_read_snapshot') return run.capture; throw new Error(command); }));
+  installTauriRuntimeMock(mock(async command => {
+    seen.push(command);
+    if(command === 'execution_read_snapshot') return f.capture;
+    if(command === 'execution_list_runs030') return {runs:[f.summary],nextCursor:null};
+    if(command === 'execution_read_intents') return [nativeIntentFor030(f)];
+    if(command === 'execution_read_runtime_projection030') return f.runtime;
+    if(command === 'execution_read_humans030') throw {code:'NOT_FOUND',message:'No legacy human row'};
+    throw new Error(command);
+  }));
+  configureProductionWorkflowRunAccess030();
   try {
+    const run = await readWorkflowRun030(f.capture,'design-conversation');
+    const { plan } = await (await import('./workflowAgentTasks.fixtures')).workflowTaskFixture();
+    const tasks = projectWorkflowAgentTasks030({...plan,id:'sample-plan',targetBranch:'develop',projectIds:['sample-project']},run);
     const result = await loadTaskExecutionGraph(tasks[0],tasks);
-    expect(result?.access030?.access).toBe(access);
-    expect(seen).toEqual(['execution_read_snapshot']);
-    expect(staticReportForSource030(run.capture.authoredSource,result!.reports!)).toBeDefined();
-    expect(staticReportForSource030(run.capture.authoredSource+' ',result!.reports!)).toBeUndefined();
-    expect(result?.taskPaths).toEqual({});
+    expect(result?.access030).toBeDefined();
+    expect(f.capture.associations).toEqual({});
+    expect(seen).toContain('execution_read_intents');
+    expect(seen).not.toContain('execution_read_projection');
+    expect(seen).not.toContain('execution_pending_approvals');
+    expect(staticReportForSource030(f.capture.authoredSource,result!.reports!)).toBeDefined();
+    expect(staticReportForSource030(f.capture.authoredSource+' ',result!.reports!)).toBeUndefined();
   } finally { configureWorkflowRunAccess030(undefined); }
 });

@@ -1,4 +1,5 @@
-import { useEffect, useRef, useSyncExternalStore } from 'react';
+import { claimHumanAttention030 } from '../../services/agsdl/humanAttention030';
+import { useEffect, useSyncExternalStore } from 'react';
 import { useTranslation } from 'react-i18next';
 import type { TFunction } from 'i18next';
 import { useAppStore } from '../../stores/useAppStore';
@@ -29,6 +30,8 @@ import type { RunHumanRequest030 } from '../../types/agsdlRunUi030';
 import { sameWorkflowSource030 as sameSource } from '../../services/workflowAgentTasks';
 
 export function emitRunAttentionNotification030(request: RunHumanRequest030, t: TFunction, conversationId?: string): void {
+  if (request.state.kind !== 'open' || request.content.kind === 'unclassified' ||
+      request.content.kind === 'question' && request.content.answerContract.kind !== 'available' || !claimHumanAttention030(request)) return;
   const target = { scope: request.scope, requestId: request.id, ...(conversationId ? { conversationId } : {}) };
   notify.actionRequired(t('agsdl.shell030.attention', { ns: 'agsdl' }), {
     description: t('agsdl.shell030.attentionBody', { ns: 'agsdl' }),
@@ -37,10 +40,12 @@ export function emitRunAttentionNotification030(request: RunHumanRequest030, t: 
     actions: [{ label: t('agsdl.shell030.openRequest', { ns: 'agsdl' }), onClick: () => { useNotificationCenterStore.getState().setCenterOpen(false); openWorkflowRun030(target); } }],
   });
 }
-export function subscribeRunAttention030(registrations: readonly WorkflowRunRegistration030[], t: TFunction, notified = new Set<string>()) {
+export function subscribeRunAttention030(registrations: readonly WorkflowRunRegistration030[], t: TFunction) {
   const subscriptions = registrations.map(({ access, scope }) => {
     const check = () => {
-      for (const read of Object.values(access.getSnapshot().runs)) {
+      const snapshot = access.getSnapshot();
+      if (snapshot.history.kind === 'stale' || snapshot.history.kind === 'loading') return;
+      for (const read of Object.values(snapshot.runs)) {
         if (read.kind !== 'ready' || read.value.state.humans.kind !== 'ready') continue;
         const { capture } = read.value;
         const humans = read.value.state.humans;
@@ -58,7 +63,7 @@ export function subscribeRunAttention030(registrations: readonly WorkflowRunRegi
             continue;
           }
           if (request.content.kind === 'unclassified') continue;
-          if (!notified.has(key)) { notified.add(key); emitRunAttentionNotification030(request, t, capture.associations.conversationId); }
+          emitRunAttentionNotification030(request, t, scope.conversationId);
         }
       }
     };
@@ -256,10 +261,9 @@ export const WorkflowAttentionNotifications = () => {
   const { t } = useTranslation();
   const { t: runT } = useAgsdlTranslation();
   const registrations = useSyncExternalStore(subscribeWorkflowRunAccess030, workflowRunAccessSnapshot030, workflowRunAccessSnapshot030);
-  const notified = useRef(new Set<string>());
   const target = useSyncExternalStore(subscribeWorkflowRunTarget030, workflowRunTargetSnapshot030, workflowRunTargetSnapshot030);
   useEffect(() => subscribeToWorkflowAttentionNotifications(t), [t]);
-  useEffect(() => subscribeRunAttention030(registrations, runT, notified.current), [registrations, runT]);
+  useEffect(() => subscribeRunAttention030(registrations, runT), [registrations, runT]);
   const bundle = target ? (registrations.find(item => Object.values(item.access.getSnapshot().runs).some(read =>
     read.kind === 'ready' && read.value.capture.systemStartId === target.scope.systemStartId && sameSource(read.value.capture.source, target.scope.source)))
     ?? registrations.find(item => item.scope.owner.projectId === target?.scope.source.owner.projectId && item.scope.owner.planId === target.scope.source.owner.planId &&

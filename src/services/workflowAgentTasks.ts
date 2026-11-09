@@ -12,6 +12,9 @@ import { assertProjection, appendProjection } from './agsdl/executionView';
 import { sourceDigest } from './agsdlExecution/compiler';
 import { compareSequence, sameWork } from './agsdlExecution/invariants';
 import { runCaptureKey030 } from './agsdl/runGraphProjection030';
+import { retainedRunValue030 } from './agsdl/runtimeProjection030';
+import { createRunInspectionAccess030 } from './agsdl/runAccess030';
+import { createReadOnlyHumanRequestClient030 } from './agsdl/humanReadAccess030';
 import { object, readDocument } from './agsdl/document';
 
 export function sameWorkflowSource030(a: { owner: WorkflowRunScope030['owner']; revision: string; sourceSha256: string }, b: { owner: WorkflowRunScope030['owner']; revision: string; sourceSha256: string }): boolean {
@@ -27,6 +30,7 @@ export interface WorkflowRunScope030 {
 export interface WorkflowRunAccess030 {
   access: RunInspectionAccess030;
   humanClient?: HumanRequestClient030;
+  humanClientForRun?: (run: RunInspection030) => HumanRequestClient030 | undefined;
 }
 export interface WorkflowRunRegistration030 extends WorkflowRunAccess030 { scope: WorkflowRunScope030 }
 let runFactory030: ((scope: WorkflowRunScope030) => WorkflowRunAccess030) | undefined;
@@ -38,9 +42,27 @@ export const subscribeWorkflowRunAccess030 = (listener: () => void) => {
 };
 export const workflowRunAccessSnapshot030 = () => runAccesses030;
 export function configureWorkflowRunAccess030(factory: typeof runFactory030): void {
+  if (runFactory030 === factory) return;
   runFactory030 = factory;
-  runAccesses030 = [];
+  if (!factory) runAccesses030 = [];
   runAccessListeners030.forEach(listener => listener());
+}
+const nativeWorkflowRunFactory030 = (scope: WorkflowRunScope030): WorkflowRunAccess030 => {
+  if (!scope.conversationId) throw new Error('Native run inspection requires an intent conversation scope');
+  const access = createRunInspectionAccess030({ owner: scope.owner, conversationId: scope.conversationId });
+  const clients = new Map<string, HumanRequestClient030>();
+  return { access, humanClientForRun: run => {
+    const key = runCaptureKey030(run.state.scope);
+    if (!clients.has(key)) {
+      try { clients.set(key, createReadOnlyHumanRequestClient030(run.state.scope, window.sessionStorage)); }
+      catch { return undefined; }
+    }
+    return clients.get(key);
+  } };
+};
+/** Called before task discovery during production bootstrap. */
+export function configureProductionWorkflowRunAccess030(): void {
+  configureWorkflowRunAccess030(nativeWorkflowRunFactory030);
 }
 export function getWorkflowRunAccess030(scope: WorkflowRunScope030): WorkflowRunAccess030 | undefined {
   const key = JSON.stringify([scope.owner.projectId, scope.owner.planId, scope.owner.branch, scope.conversationId ?? null]);
@@ -66,19 +88,40 @@ export function openWorkflowRun030(target: WorkflowRunTarget030 | null): void {
 }
 export type WorkflowCapture = PublicSnapshot | RunCapture030;
 export const isCapture030 = (snapshot: WorkflowCapture): snapshot is RunCapture030 => snapshot.versions.contract === 'agsdl-0.3.0';
-export async function readWorkflowRun030(snapshot: RunCapture030): Promise<RunInspection030> {
-  if (!isCapture030(snapshot) || snapshot.versions.snapshot !== '2' || snapshot.versions.profile !== 'macro-agsdl-030-v1') throw new Error('Unsupported workflow capture');
-  const bundle = getWorkflowRunAccess030({ owner: snapshot.source.owner, conversationId: snapshot.associations.conversationId ?? undefined });
-  if (!bundle) throw new Error('Run inspection access unavailable');
-  await bundle.access.refreshRun(snapshot.systemStartId);
-  const read = bundle.access.getSnapshot().runs[snapshot.systemStartId];
+export async function workflowAccessForCapture030(snapshot: RunCapture030, conversationId?: string): Promise<WorkflowRunAccess030> {
+  if (snapshot.versions.snapshot !== '2' || snapshot.versions.profile !== 'macro-agsdl-030-v1') throw new Error('Unsupported workflow capture');
+  // Metadata and registry scopes are candidates only. Lot 6a alone verifies the
+  // conversation through the versioned intent and native start030 receipt.
+  const candidates = runAccesses030.filter(item => sameWorkflowOwner030(item.scope.owner, snapshot.source.owner) &&
+    (!conversationId || item.scope.conversationId === conversationId));
+  const candidate = conversationId ? getWorkflowRunAccess030({ owner: snapshot.source.owner, conversationId }) :
+    candidates.find(item => {
+      const read = item.access.getSnapshot().runs[snapshot.systemStartId];
+      const retained = read && retainedRunValue030(read);
+      return retained && sameWorkflowSource030(retained.capture.source, snapshot.source);
+    }) ?? (candidates.length === 1 ? candidates[0] : undefined);
+  if (!candidate) throw new Error('Run inspection access unavailable');
+  await candidate.access.refreshRun(snapshot.systemStartId);
+  const read = candidate.access.getSnapshot().runs[snapshot.systemStartId];
   if (!read || read.kind !== 'ready') throw new Error('Incomplete workflow projection');
   const inspection = read.value;
   if (inspection.capture.systemStartId !== snapshot.systemStartId || !sameWorkflowSource030(inspection.capture.source, snapshot.source) ||
       inspection.capture.authoredSource !== snapshot.authoredSource || inspection.state.scope.systemStartId !== snapshot.systemStartId ||
       !sameWorkflowSource030(inspection.state.scope.source, snapshot.source)) throw new Error('Workflow capture differs');
-  return inspection;
+  return candidate;
 }
+const sameWorkflowOwner030 = (a: WorkflowRunScope030['owner'], b: WorkflowRunScope030['owner']) =>
+  a.projectId === b.projectId && a.planId === b.planId && a.branch === b.branch;
+export async function readWorkflowRun030(snapshot: RunCapture030, conversationId?: string): Promise<RunInspection030> {
+  const bundle = await workflowAccessForCapture030(snapshot, conversationId);
+  return retainedRunValue030(bundle.access.getSnapshot().runs[snapshot.systemStartId])!;
+}
+
+/** Exact activation vocabulary published by Rust discovery030 and runtime_projection. */
+export const workflowPhaseStates030 = {
+  ready: 'active', queued: 'queued', running: 'active', body: 'active', group: 'active',
+  done: 'completed', preparing: 'active', barrier: 'active', stopping: 'stopRequested',
+} as const satisfies Record<string, WorkflowAgentTaskState>;
 
 export const workflowAgentTaskId = (system: string, agent: string): string =>
   `task:agsdl:v1:${encodeURIComponent(system)}:${encodeURIComponent(agent)}`;
@@ -190,9 +233,9 @@ export function projectWorkflowAgentTasks030(plan: ArchitectPlanRecord, inspecti
   if (owner.planId !== plan.id || owner.branch !== plan.targetBranch ||
       !(plan.projectIds ?? (plan.projectId ? [plan.projectId] : [])).includes(owner.projectId) ||
       state.scope.systemStartId !== capture.systemStartId || !sameWorkflowSource030(state.scope.source, capture.source)) throw new Error('Workflow project scope differs');
-  if (state.occurrences.kind !== 'ready' || state.occurrences.revision !== state.revision || state.humans.kind !== 'ready') throw new Error('Incomplete workflow projection');
+  if (state.occurrences.kind !== 'ready' || state.occurrences.revision !== state.revision) throw new Error('Incomplete workflow projection');
   const occurrences = state.occurrences.value;
-  const humans = state.humans.value;
+  const humans = state.humans.kind === 'ready' ? state.humans.value : []; // Unavailable does not attest an empty queue.
   const activationIds = new Set<string>();
   for (const item of occurrences) {
     if (runCaptureKey030(item.scope) !== runCaptureKey030(state.scope) || activationIds.has(item.activation.id)) throw new Error('Workflow occurrence scope differs');
@@ -206,18 +249,18 @@ export function projectWorkflowAgentTasks030(plan: ArchitectPlanRecord, inspecti
     const attention = humans.some(request => request.state.kind === 'open' && request.occurrences.some(item =>
       item.activation.kind === 'available' && runCaptureKey030(item.activation.scope) === runCaptureKey030(state.scope) && items.some(visit => item.activation.kind === 'available' && visit.activation.id === item.activation.activationId)));
     const physical = items.some(item => item.activation.physical);
-    const active = instance.currentActivationId !== null || instance.queueActivationIds.length > 0 || physical;
-    const terminal = new Set(['completed', 'succeeded', 'failed', 'cancelled', 'excluded', 'withdrawn', 'escaped']);
+    const active = instance.currentActivationId !== null || physical;
+    const phaseStates: Readonly<Record<string, WorkflowAgentTaskState>> = workflowPhaseStates030;
+    const phases = items.map(item => phaseStates[item.activation.phase] ?? 'uncertain');
     const taskState: WorkflowAgentTaskState = attention ? 'approval' : active ? state.stopping ? 'stopRequested' : 'active'
-      : items.some(item => !terminal.has(item.activation.phase)) ? 'uncertain'
-      : instance.discarded || items.some(item => item.activation.phase === 'cancelled') ? 'stopped'
-      : items.some(item => item.activation.phase === 'failed') ? 'failed'
-      : items.length ? 'completed' : 'idle';
+      : phases.includes('uncertain') ? 'uncertain' : phases.includes('stopRequested') ? 'stopRequested'
+      : instance.discarded ? 'stopped' : phases.includes('active') ? 'active' : instance.queueActivationIds.length > 0 || phases.includes('queued') ? 'queued'
+      : phases.length ? 'completed' : 'idle';
     const reference: WorkflowAgentTaskReference = {
       systemStartId: capture.systemStartId as SystemStartId, source: capture.source as SourceRevision,
       agentInstanceId: instance.id as AgentInstanceId, agentName: instance.agent, cursor: state.revision as WorkflowAgentTaskReference['cursor'],
       state: taskState, activationIds: items.map(item => item.activation.id as WorkflowAgentTaskReference['activationIds'][number]),
-      interactionRequired: attention || taskState === 'failed',
+      interactionRequired: attention || taskState === 'uncertain',
     };
     return { id: workflowAgentTaskId(capture.systemStartId, instance.id), plan_id: plan.id, project_id: owner.projectId,
       project_ids: [owner.projectId], context_project_ids: [], title: instance.agent, description: '', status: statuses[taskState],
@@ -233,7 +276,7 @@ export function projectWorkflowAgentTasks030(plan: ArchitectPlanRecord, inspecti
 
 async function tasksForCapture(plan: ArchitectPlanRecord, snapshot: WorkflowCapture, ports: WorkflowAgentTaskPorts) {
   if (await sourceDigest(snapshot.authoredSource) !== snapshot.source.sourceSha256) throw new Error('Workflow capture differs');
-  if (isCapture030(snapshot)) return projectWorkflowAgentTasks030(plan, await readWorkflowRun030(snapshot));
+  if (isCapture030(snapshot)) return projectWorkflowAgentTasks030(plan, await readWorkflowRun030(snapshot, plan.conversationId));
   let projection = await ports.projection(snapshot.systemStartId);
   assertProjection(projection, snapshot);
   while (projection.nextPage) projection = appendProjection(projection, await ports.projection(snapshot.systemStartId, projection.nextPage), snapshot);
@@ -309,6 +352,17 @@ export async function loadWorkflowAgentTasks(plans: ArchitectPlanRecord[], proje
         if (after && cursors.has(after)) throw new Error('Repeated workflow cursor');
         if (after) cursors.add(after);
       } while (after);
+      if (plan.conversationId) {
+        const bundle = getWorkflowRunAccess030({ owner, conversationId: plan.conversationId });
+        if (!bundle) throw new Error('Run inspection access unavailable');
+        await bundle.access.refreshHistory();
+        const history = bundle.access.getSnapshot().history;
+        if (history.kind !== 'ready') throw new Error('Incomplete workflow history');
+        for (const run of history.value) {
+          const inspection = await readWorkflowRun030(run.capture, plan.conversationId);
+          for (const task of projectWorkflowAgentTasks030(plan, inspection)) tasks.set(task.id, task);
+        }
+      }
     }
   }
   return [...tasks.values()];

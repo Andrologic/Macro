@@ -2,6 +2,7 @@ import { afterEach, beforeEach, expect, it, spyOn } from 'bun:test';
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import i18n from '../../i18n';
+import { notifiedHumanRequests030 } from '../../services/agsdl/humanAttention030';
 import { notify } from '../ui/toastService';
 import { HumanRequests030, type HumanRequests030Props } from './HumanRequests030';
 import { createHumanRequestClient030 } from '../../services/agsdl/humanRequests030';
@@ -15,6 +16,7 @@ let transport: ReturnType<typeof humanTransportDouble030>;
 let props: HumanRequests030Props;
 const opened: unknown[] = [];
 beforeEach(async () => {
+  notifiedHumanRequests030.clear();
   await i18n.changeLanguage('fr');
   notification = spyOn(notify, 'actionRequired').mockReturnValue('test');
   transport = humanTransportDouble030(); opened.length = 0;

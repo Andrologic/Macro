@@ -10,7 +10,7 @@ import * as ipc from './tauriIpc';
 import { isWorkflowAgentTask, workflowAgentTaskId, workflowTaskAgentPaths } from './workflowAgentTasks';
 import { sourceDigest } from './agsdlExecution/compiler';
 import { validateDocument } from './agsdl/document';
-import { getWorkflowRunAccess030, isCapture030, type WorkflowRunAccess030 } from './workflowAgentTasks';
+import { workflowAccessForCapture030, isCapture030, type WorkflowRunAccess030 } from './workflowAgentTasks';
 import { pointerPart } from './agsdl/document';
 
 export interface TaskExecutionGraph {
@@ -57,7 +57,7 @@ export async function loadTaskExecutionGraph(task: CatalogedImplementTask, tasks
     const reports = await validateDocument(snapshot.authoredSource);
     signal?.throwIfAborted();
     if (isCapture030(snapshot)) {
-      const access030 = getWorkflowRunAccess030({ owner: snapshot.source.owner, conversationId: snapshot.associations.conversationId });
+      const access030 = await workflowAccessForCapture030(snapshot);
       if (!access030) throw new Error('Run inspection access unavailable');
       return { reports, title: task.plan_title || task.title, source: snapshot.authoredSource, snapshot, access030, taskPaths: {}, selectedPath: '' };
     }
