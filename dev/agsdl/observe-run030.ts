@@ -2,6 +2,7 @@ import { Database } from 'bun:sqlite';
 import { SchemaChecker } from '../../src/vendor/agsdl/v0.3/schemacheck.mjs';
 import schema030 from '../../src/vendor/agsdl/v0.3/schema/agsdl.schema.json';
 import { NumberToken, parse, stringify, type ExactValue } from '../../src/vendor/agsdl/v0.3/json.mjs';
+import { compareNumbers, isInteger } from '../../src/vendor/agsdl/v0.3/values.mjs';
 
 // The caller closes the native application and its pool before opening this reader.
 // This observer accepts durable rows only and never controls the run.
@@ -38,8 +39,15 @@ export interface HumanRequestRow030 {
 }
 export type HumanResolution030 =
   | { reason: 'answerTimeout'; answerJson: '"no"' }
-  | { reason: 'person'; answerJson: string }
-  | { reason: 'approvalTimeout'; answerJson: null };
+  | { reason: 'person'; answerJson: string; approvalTiming?: ApprovalTiming030 }
+  | { reason: 'approvalTimeout'; answerJson: null; approvalTiming: ApprovalTiming030 };
+// Required for resolved approvals. Native monotone instants and the captured
+// timeout duration are canonical decimal strings, not JavaScript numbers.
+export interface ApprovalTiming030 {
+  openedAtMs: string;
+  resolvedAtMs: string;
+  timeoutMs: string | null;
+}
 // engine_flow030_work_timeouts. A timeout is not a branch cancellation.
 export type TimeoutReceiptRow030 = {
   activation_id: string;
@@ -115,6 +123,41 @@ function comments(value: ExactValue): ExactValue[] {
       || Object.keys(comment).some((k) => k !== 'step' && k !== 'comment')) throw new Error('Unresolved message comments');
   }
   return value;
+}
+
+function verifyApprovalResolution(activation: Obj, start: Obj, step: Obj, resolution: Obj): void {
+  const result = record(activation.result);
+  if (resolution.reason === 'person') {
+    if (result.kind !== 'completed') throw new Error('Approval resolution contradicts terminal result');
+    const answer = record(raw(string(resolution.answerJson))), output = record(raw(string(result.outputJson)));
+    if (output.choice !== answer.choice || output.comment !== answer.comment || result.routeKey !== answer.choice) throw new Error('Approval decision differs from terminal output');
+    const message = start.messageJson === null ? {} : record(raw(string(start.messageJson)));
+    if (!same(output.message, message)) throw new Error('Approval terminal message differs');
+  } else if (resolution.reason !== 'approvalTimeout' || result.kind !== 'failed' || record(result.error).code !== 'APPROVAL_TIMEOUT') {
+    throw new Error('Approval resolution contradicts terminal result');
+  }
+  const declaration = record(raw(string(step.declarationJson)));
+  if (resolution.reason === 'person') {
+    const answer = record(raw(string(resolution.answerJson)));
+    if (!Object.hasOwn(record(declaration.next), string(answer.choice))) throw new Error('Approval choice is not declared');
+  }
+  if (!object(resolution.approvalTiming)) throw new Error('Approval timing is absent');
+  const timing = resolution.approvalTiming;
+  const milliseconds = (value: ExactValue | undefined): bigint => {
+    if (typeof value !== 'string' || !/^(0|[1-9][0-9]*)$/.test(value)) throw new Error('Invalid approval timing');
+    return BigInt(value);
+  };
+  const opened = milliseconds(timing.openedAtMs), resolved = milliseconds(timing.resolvedAtMs);
+  if (resolved < opened) throw new Error('Approval resolution precedes request');
+  const timeout = timing.timeoutMs === null ? null : milliseconds(timing.timeoutMs);
+  if (declaration.timeoutMs === undefined) {
+    if (timeout !== null) throw new Error('Approval deadline differs from captured timeout');
+  } else if (!(declaration.timeoutMs instanceof NumberToken) || !isInteger(declaration.timeoutMs)
+    || timeout === null || timeout === 0n || compareNumbers(declaration.timeoutMs, new NumberToken(timeout.toString())) !== 0) {
+    throw new Error('Approval deadline differs from captured timeout');
+  }
+  const expired = timeout !== null && resolved >= opened + timeout;
+  if (resolution.reason === 'approvalTimeout' ? !expired : expired) throw new Error('Approval resolution contradicts deadline');
 }
 
 export function observeRun030(databasePath: string, systemId: string, invocationId: string): string {
@@ -215,6 +258,42 @@ export function observeRun030(databasePath: string, systemId: string, invocation
         const activation = byId.get(string(record(kind.work).activationId));
         if (!activation) throw new Error('Stopped activation is absent');
         if (!same(startsByActivation.get(string(activation.id))?.work, kind.work)) throw new Error('Stopped work binding differs');
+        if (activation.stopEffectId !== row.effect_id) throw new Error('Stopped activation stopEffectId differs');
+        const body = record(cause.WorkResult ?? cause.PhysicalEnded ?? cause.Prepared);
+        if (cause.Prepared !== undefined) {
+          if (!byId.has(string(record(body.reference).activationId))) throw new Error('Stop preparation activation is absent');
+          if (!string(body.native_receipt_id)) throw new Error('Stop preparation receipt is absent');
+          record(body.result);
+        } else {
+          const sourceWork = record(body.work);
+          if (!same(startsByActivation.get(string(sourceWork.activationId))?.work, sourceWork)) throw new Error('Stop cause work binding differs');
+          if (cause.WorkResult !== undefined) {
+            const result = record(body.result);
+            if (Object.keys(result).length !== 1 || (result.Completed === undefined && result.Failed === undefined)) throw new Error('Invalid stop cause result');
+            if (result.Completed !== undefined) raw(string(record(result.Completed).output_json));
+            else string(record(record(result.Failed).error).code);
+          }
+          if (cause.PhysicalEnded !== undefined || body.physical !== null) {
+            const proof = cause.PhysicalEnded !== undefined ? body.evidence : body.physical;
+            if (!object(proof) || proof.descendants_joined !== true || typeof proof.native_receipt_id !== 'string' || !proof.native_receipt_id) throw new Error('Invalid physical stop cause');
+          }
+        }
+        // The causal event precedes the StopWork. A proof in that event, or an
+        // earlier event, cannot say that the cancelled work had already ended.
+        const preceding = db.query('SELECT event_json FROM engine_flow030_events WHERE system_id=? AND invocation_id=? AND rowid <= (SELECT rowid FROM engine_flow030_events WHERE system_id=? AND invocation_id=? AND event_id=?)').all(systemId, invocationId, systemId, invocationId, row.event_id) as Array<{ event_json: string }>;
+        for (const prior of preceding) {
+          const priorKind = record(raw(prior.event_json)).kind;
+          if (!object(priorKind)) continue;
+          const ended = priorKind.WorkResult ?? priorKind.PhysicalEnded;
+          if (!object(ended) || !object(ended.work) || ended.work.activationId !== activation.id) continue;
+          if (!same(ended.work, kind.work)) throw new Error('Physical cancellation work binding differs');
+          const evidence = priorKind.WorkResult !== undefined ? ended.physical : ended.evidence;
+          if (evidence !== undefined && evidence !== null) {
+            const physical = record(evidence);
+            if (physical.descendants_joined !== true || !string(physical.native_receipt_id)) throw new Error('Invalid physical cancellation evidence');
+            throw new Error('Physical end precedes work cancellation');
+          }
+        }
         const item = optionalItem(activation);
         if (!timeouts.has(string(activation.id))) cancelled.push({ step: address(activation.step), ...(item.item === undefined ? {} : { item: item.item }) });
       } else if (kind.kind !== 'prepareRoute' && kind.kind !== 'return' && kind.kind !== 'runEnded') {
@@ -285,6 +364,10 @@ export function observeRun030(databasePath: string, systemId: string, invocation
         const answer = raw(string(resolution.answerJson));
         if ((row.request_kind === 'ask' || row.request_kind === 'plan') && answer !== 'yes' && answer !== 'no') throw new Error('Unprojectable human answer');
         if (row.request_kind === 'approval' && (typeof record(answer).choice !== 'string' || typeof record(answer).comment !== 'string')) throw new Error('Unprojectable approval answer');
+      }
+      if (row.request_kind === 'approval') {
+        const id = [...attributed][0], activation = byId.get(id)!;
+        verifyApprovalResolution(activation, startsByActivation.get(id)!, steps.get(address(activation.step))!, resolution);
       }
       if (resolution.reason === 'answerTimeout') {
         if (row.request_kind === 'approval' || raw(string(resolution.answerJson)) !== 'no' || !attributed.size) throw new Error('Automatic refusal differs');

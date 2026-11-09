@@ -36,11 +36,13 @@ function nativeDatabase() {
     const id = `a${state.activations.length}`, startEffectId = `start-${id}`;
     const step = target.split('/'), work = { activationId: id, startEffectId, agentInstanceId: type === 'agent' ? `instance-${id}` : null };
     const activation: ObjectRow = { id, step, physical: false, phase: 'done', startEffectId,
+      messageJson: options.message ?? null,
       itemJson: options.item ?? null, occurrence: options.index === undefined ? null : { itemIndex: options.index },
       result: { kind: 'completed', outputJson: '{"text":"Done."}', routeKey: null } };
     state.activations.push(activation);
     if (!plan.steps.some((s: ObjectRow) => s.address.join('/') === target)) {
-      plan.steps.push({ address: step, type, declarationJson: JSON.stringify({ type, ...options.declaration }) });
+      plan.steps.push({ address: step, type, declarationJson: JSON.stringify({ type,
+        ...(type === 'approval' ? { next: { ok: [], revise: [], publish: [] } } : {}), ...options.declaration }) });
     }
     effect(startEffectId, { kind: 'start', work, step, messageJson: options.message ?? null });
     db.query('INSERT INTO engine_flow030_handoffs VALUES (?,?,?,?)').run('s', 'i', startEffectId, JSON.stringify({ kind: 'nativeOwnedHandoff030', effectId: startEffectId }));
@@ -63,7 +65,18 @@ function nativeDatabase() {
     effect(`failure-${activation.id}`, { kind: 'failure', activationId: activation.id, step: activation.step, error: { code }, counted });
   };
   const human = (work: ObjectRow, kind = 'ask', reason = 'answerTimeout', answerJson: string | null = '"no"') => {
-    db.query('INSERT INTO engine_flow030_human_requests VALUES (?,?,?,?,?,?,?,?)').run('s', 'i', `request-${work.activationId}`, kind, JSON.stringify([work]), 'resolved', JSON.stringify({ reason, answerJson }), 'delivered');
+    const resolution: ObjectRow = { reason, answerJson };
+    if (kind === 'approval') {
+      const activation = state.activations.find((a: ObjectRow) => a.id === work.activationId);
+      const declaration = JSON.parse(plan.steps.find((s: ObjectRow) => s.address.join('/') === activation.step.join('/')).declarationJson);
+      const timeout = declaration.timeoutMs === undefined ? null : String(declaration.timeoutMs);
+      resolution.approvalTiming = { openedAtMs: '0', resolvedAtMs: reason === 'approvalTimeout' ? timeout : '0', timeoutMs: timeout };
+      if (reason === 'person') {
+        const answer = JSON.parse(answerJson!);
+        terminal(work, { kind: 'completed', outputJson: JSON.stringify({ ...answer, message: JSON.parse(activation.messageJson ?? '{}') }), routeKey: answer.choice });
+      } else if (reason === 'approvalTimeout') terminal(work, { kind: 'failed', error: { code: 'APPROVAL_TIMEOUT' } });
+    }
+    db.query('INSERT INTO engine_flow030_human_requests VALUES (?,?,?,?,?,?,?,?)').run('s', 'i', `request-${work.activationId}`, kind, JSON.stringify([work]), 'resolved', JSON.stringify(resolution), 'delivered');
   };
   const observe = () => {
     db.exec('DELETE FROM engine_flow030_runs');
@@ -78,9 +91,8 @@ function composeBodyFailureDatabase() {
   n.plan.steps.push({ address: ['review'], type: 'compose' }); n.state.visits['["review"]'] = '1';
   const wrapper = { id: 'wrapper', step: ['review'], physical: false, phase: 'done' };
   n.state.activations.push(wrapper);
-  const approval = n.start('review/check', 'approval');
+  const approval = n.start('review/check', 'approval', { declaration: { timeoutMs: 3600000 } });
   n.human(approval.work, 'approval', 'approvalTimeout', null);
-  n.terminal(approval.work, { kind: 'failed', error: { code: 'APPROVAL_TIMEOUT' } });
   n.failure(approval.activation, 'APPROVAL_TIMEOUT'); n.failure(wrapper, 'APPROVAL_TIMEOUT');
   n.start('triage', 'agent', { message: '{"resources":{"error":{"value":{"code":"APPROVAL_TIMEOUT"}}}}' });
   return n;
@@ -100,6 +112,35 @@ function approvalCommentsDatabase() {
     const next = n.start(target, 'approval'); n.human(next.work, 'approval', 'person', JSON.stringify({ choice: target === 'release' ? 'publish' : 'ok', comment: '' }));
   }
   return n;
+}
+
+function approvalDecisionDatabase() {
+  const n = nativeDatabase(), approval = n.start('approve', 'approval', {
+    message: '{"prompt":"Approve this.","resources":{"text":{"value":"Draft."}}}',
+    declaration: { timeoutMs: 10 },
+  });
+  n.human(approval.work, 'approval', 'person', '{"choice":"ok","comment":"Checked."}');
+  return { ...n, approval };
+}
+
+function compositionDatabase() {
+  const n = nativeDatabase(); n.start('write');
+  n.plan.steps.push({ address: ['review'], type: 'compose' }); n.state.visits['["review"]'] = '1';
+  n.start('review/spread', 'agent', { message: '{"prompt":"Review the change."}' });
+  const first = n.start('review/r1'), stopped = n.start('review/r2'), last = n.start('review/r3');
+  n.terminal(first.work, { kind: 'completed', outputJson: '{"choice":"approve"}', routeKey: 'approve' });
+  // r3 reaches the quorum. r2 has no result and is still physical at this event.
+  const decision = n.terminal(last.work, { kind: 'completed', outputJson: '{"choice":"approve"}', routeKey: 'approve' });
+  stopped.activation.result = null;
+  stopped.activation.stopEffectId = 'stop-r2';
+  n.effect('stop-r2', { kind: 'stopWork', work: stopped.work }, decision.id);
+  n.db.query('INSERT INTO engine_flow030_events VALUES (?,?,?,?,?)').run('s', 'i', 'r2-physical-end', JSON.stringify({ kind: { PhysicalEnded: {
+    work: stopped.work, stop_effect_id: 'stop-r2', evidence: { native_receipt_id: 'r2-joined', descendants_joined: true },
+  } } }), null);
+  const publish = n.start('publish', 'call', { declaration: { command: 'synthetic-publish' } }); n.call(publish.work);
+  n.state.groups = [{ join: ['review', 'vote'], decision: 'reached', decidedOrdinal: '1', released: true,
+    outputJson: '{"outcome":"reached","branches":{"r1":{"choice":"approve"},"r3":{"choice":"approve"}}}' }];
+  return { ...n, stopped, decision };
 }
 
 describe('native call observation contract', () => {
@@ -235,6 +276,55 @@ describe('steer and human observation contracts', () => {
     expect(JSON.parse(observed).composeVisits).toEqual({ review: 1 });
     expect(JSON.parse(observed).answers).toEqual([]); n.close();
   });
+  test('rejects a personal approval decision contradicting its APPROVAL_TIMEOUT terminal', () => {
+    const n = composeBodyFailureDatabase();
+    n.db.query('UPDATE engine_flow030_human_requests SET resolution_json=?').run(JSON.stringify({ reason: 'person', answerJson: '{"choice":"ok","comment":""}' }));
+    expect(() => n.observe()).toThrow('Approval resolution contradicts terminal result');
+    n.close();
+  });
+  test.each([
+    ['choice', '{"choice":"revise","comment":"Checked."}'],
+    ['comment', '{"choice":"ok","comment":"Forged."}'],
+  ])('rejects an approval %s differing from the terminal output', (_field, answerJson) => {
+    const n = approvalDecisionDatabase();
+    n.db.query("UPDATE engine_flow030_human_requests SET resolution_json=json_set(resolution_json,'$.answerJson',?)").run(answerJson);
+    expect(() => n.observe()).toThrow('Approval decision differs from terminal output'); n.close();
+  });
+  test.each([
+    ["json_remove(resolution_json,'$.approvalTiming')", 'Approval timing is absent'],
+    ["json_set(resolution_json,'$.approvalTiming.timeoutMs','11')", 'Approval deadline differs from captured timeout'],
+    ["json_set(resolution_json,'$.approvalTiming.resolvedAtMs','10')", 'Approval resolution contradicts deadline'],
+    ["json_set(resolution_json,'$.approvalTiming.openedAtMs','1')", 'Approval resolution precedes request'],
+  ])('rejects inconsistent approval timing: %s', (expression, diagnostic) => {
+    const n = approvalDecisionDatabase();
+    n.db.exec(`UPDATE engine_flow030_human_requests SET resolution_json=${expression}`);
+    expect(() => n.observe()).toThrow(diagnostic); n.close();
+  });
+  test('rejects an approval timeout before its captured deadline', () => {
+    const n = composeBodyFailureDatabase();
+    n.db.exec("UPDATE engine_flow030_human_requests SET resolution_json=json_set(resolution_json,'$.approvalTiming.resolvedAtMs','3599999')");
+    expect(() => n.observe()).toThrow('Approval resolution contradicts deadline'); n.close();
+  });
+  test('rejects approval expiry without a captured timeout', () => {
+    const n = composeBodyFailureDatabase();
+    const step = n.plan.steps.find((s: Record<string, any>) => s.type === 'approval');
+    step.declarationJson = '{"type":"approval","next":{"ok":[]}}';
+    n.db.exec("UPDATE engine_flow030_human_requests SET resolution_json=json_set(resolution_json,'$.approvalTiming.timeoutMs',NULL)");
+    expect(() => n.observe()).toThrow('Approval resolution contradicts deadline'); n.close();
+  });
+  test('rejects a terminal approval message substituted for the delivered message', () => {
+    const n = approvalDecisionDatabase(), output = JSON.parse(n.approval.activation.result.outputJson);
+    output.message.prompt = 'Substituted.';
+    n.approval.activation.result.outputJson = JSON.stringify(output);
+    expect(() => n.observe()).toThrow('Approval terminal message differs'); n.close();
+  });
+  test('checks an exact approval deadline beyond Number.MAX_SAFE_INTEGER', () => {
+    const n = approvalDecisionDatabase();
+    n.db.exec("UPDATE engine_flow030_human_requests SET resolution_json=json_set(resolution_json,'$.approvalTiming.openedAtMs','9007199254740992','$.approvalTiming.resolvedAtMs','9007199254741001')");
+    expect(compareRun030('{"run":"succeeded","starts":{"approve":1}}', n.observe())).toEqual([]);
+    n.db.exec("UPDATE engine_flow030_human_requests SET resolution_json=json_set(resolution_json,'$.approvalTiming.resolvedAtMs','9007199254741002')");
+    expect(() => n.observe()).toThrow('Approval resolution contradicts deadline'); n.close();
+  });
   test('counts repeated compose visits alongside their approval body works', () => {
     const n = approvalCommentsDatabase();
     const observed = n.observe();
@@ -270,7 +360,7 @@ describe('failures, cancellation, joins and compose', () => {
     const n = nativeDatabase(), expired = n.start('release'), sibling = n.start('fix', 'agent', { index: '1', item: '"a.ts"' });
     const end = n.terminal(expired.work, { kind: 'failed', error: { code: 'TIMEOUT' } });
     n.failure(expired.activation, 'TIMEOUT');
-    n.effect('stop-timeout', { kind: 'stopWork', work: expired.work }, end.id);
+    sibling.activation.stopEffectId = 'stop-branch';
     n.effect('stop-branch', { kind: 'stopWork', work: sibling.work }, end.id);
     expect(() => n.observe()).toThrow('Timeout receipt is absent');
     n.db.query('INSERT INTO engine_flow030_work_timeouts VALUES (?,?,?,?,?,?,?)').run('s', 'i', expired.work.activationId, expired.work.startEffectId, 'joined', end.id, end.physicalId);
@@ -315,17 +405,38 @@ describe('failures, cancellation, joins and compose', () => {
     n.state.visits['["review"]'] = '02'; expect(() => n.observe()).toThrow('Invalid compose visit count'); n.close();
   });
   test('matches the composition fixture including its review wrapper work', () => {
-    const n = nativeDatabase(); n.start('write');
-    n.plan.steps.push({ address: ['review'], type: 'compose' }); n.state.visits['["review"]'] = '1';
-    n.start('review/spread', 'agent', { message: '{"prompt":"Review the change."}' });
-    n.start('review/r1'); const stopped = n.start('review/r2'); n.start('review/r3');
-    const end = n.terminal(stopped.work, { kind: 'completed', outputJson: '{}', routeKey: null });
-    n.effect('stop-r2', { kind: 'stopWork', work: stopped.work }, end.id);
-    const publish = n.start('publish', 'call', { declaration: { command: 'synthetic-publish' } }); n.call(publish.work);
-    n.state.groups = [{ join: ['review', 'vote'], decision: 'reached', decidedOrdinal: '1', outputJson: '{"outcome":"reached","branches":{}}' }];
+    const n = compositionDatabase();
     const fixture = JSON.parse(readFileSync(join(import.meta.dir, 'fixtures/v0.3/conformance/runs/composition.json'), 'utf8'));
     const diagnostics = compareRun030(JSON.stringify(fixture.expect), n.observe());
     expect(diagnostics).toEqual([]); n.close();
+  });
+  test.each(['WorkResult', 'PhysicalEnded'])('rejects a %s physical end as the cause of its own cancellation', (cause) => {
+    const n = nativeDatabase(), stopped = n.start('review/r2');
+    const end = n.terminal(stopped.work, { kind: 'completed', outputJson: '{}', routeKey: null });
+    stopped.activation.stopEffectId = 'stop-r2';
+    if (cause === 'PhysicalEnded') n.db.query('UPDATE engine_flow030_events SET event_json=?').run(JSON.stringify({ kind: { PhysicalEnded: {
+      work: stopped.work, stop_effect_id: 'stop-r2', evidence: { native_receipt_id: end.physicalId, descendants_joined: true },
+    } } }));
+    n.effect('stop-r2', { kind: 'stopWork', work: stopped.work }, end.id);
+    expect(() => n.observe()).toThrow('Physical end precedes work cancellation');
+    n.close();
+  });
+  test.each([null, 'foreign-stop'])('rejects a cancellation with stopEffectId=%s', (stopEffectId) => {
+    const n = compositionDatabase(); n.stopped.activation.stopEffectId = stopEffectId;
+    expect(() => n.observe()).toThrow('Stopped activation stopEffectId differs'); n.close();
+  });
+  test('rejects a work already physically ended before another work decides its group', () => {
+    const n = compositionDatabase();
+    n.db.exec("UPDATE engine_flow030_events SET rowid=0 WHERE event_id='r2-physical-end'");
+    expect(() => n.observe()).toThrow('Physical end precedes work cancellation'); n.close();
+  });
+  test.each([
+    "json_remove(event_json,'$.kind.WorkResult.physical')",
+    "json_set(event_json,'$.kind.WorkResult.physical.descendants_joined',json('false'))",
+  ])('rejects an incomplete physical cause for a sibling cancellation: %s', (expression) => {
+    const n = compositionDatabase();
+    n.db.query(`UPDATE engine_flow030_events SET event_json=${expression} WHERE event_id=?`).run(n.decision.id);
+    expect(() => n.observe()).toThrow('Invalid physical stop cause'); n.close();
   });
   test('preserves physical and pending guards even with a terminal verdict', () => {
     const n = nativeDatabase(), work = n.start('release');

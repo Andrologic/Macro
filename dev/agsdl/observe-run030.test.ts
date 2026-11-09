@@ -73,6 +73,11 @@ describe('durable scenario observation', () => {
   test('rejects incoherent Stop sources and preserves branch cancellations', () => {
     const path = database();
     const db = new Database(path);
+    db.exec("UPDATE engine_flow030_runs SET state_json=json_set(state_json,'$.activations[0].stopEffectId','stop-effect')");
+    db.exec(`UPDATE engine_flow030_runs SET state_json=json_insert(state_json,'$.activations[#]',json('{"id":"peer","step":["peer"],"physical":false}'))`);
+    const peerWork = { activationId: 'peer', startEffectId: 'peer-start', agentInstanceId: 'peer-instance' };
+    db.query('INSERT INTO engine_flow030_outbox VALUES (?,?,?,?,?,?)').run('s', 'i', 'peer-start', 'enter', JSON.stringify({ kind: { kind: 'start', step: ['peer'], work: peerWork, messageJson: null } }), 'settled');
+    db.query('INSERT INTO engine_flow030_handoffs VALUES (?,?,?,?)').run('s', 'i', 'peer-start', '{"kind":"nativeOwnedHandoff030","effectId":"peer-start"}');
     db.query('INSERT INTO engine_flow030_events VALUES (?,?,?,?,?)')
       .run('s', 'i', 'stop-event', JSON.stringify({ kind: 'Stop' }), null);
     db.query('INSERT INTO engine_flow030_outbox VALUES (?,?,?,?,?,?)')
@@ -80,7 +85,10 @@ describe('durable scenario observation', () => {
     db.close();
     expect(() => observeRun030(path, 's', 'i')).toThrow('Stop effect in a non-cancelled run');
     const edit = new Database(path);
-    edit.query('UPDATE engine_flow030_events SET event_json=?').run(JSON.stringify({ kind: { WorkResult: {} } }));
+    edit.query('UPDATE engine_flow030_events SET event_json=?').run(JSON.stringify({ kind: { WorkResult: {
+      work: peerWork, result: { Completed: { output_json: '{}', route_key: null } },
+      physical: { native_receipt_id: 'peer-joined', descendants_joined: true },
+    } } }));
     edit.close();
     expect(compareRun030('{"run":"succeeded","cancelled":[{"step":"worker","item":0}]}', observeRun030(path, 's', 'i'))).toEqual([]);
     const malformed = new Database(path);
