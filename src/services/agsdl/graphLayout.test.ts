@@ -262,3 +262,15 @@ describe("AgSDL connection paths", () => {
     expect(graph.edges).toEqual(folded.edges);
   });
 });
+
+it('keeps nested frame headings and borders inside the fitted area', () => {
+  const cards = ['before', 'inside', 'after'].map(id=>card(id));
+  const edges = [edge('before','inside'),edge('inside','after')];
+  const one = layoutViewer(cards,edges,{},[[cards[1].path]]);
+  const nested = layoutViewer(cards,edges,{},[[cards[1].path],[cards[1].path]]);
+  const inside=at(nested,'inside');
+  expect(inside.position.y-at(one,'inside').position.y).toBeGreaterThanOrEqual(48);
+  const bounds=viewerLayoutBounds(nested);
+  expect(bounds.y).toBeLessThanOrEqual(inside.position.y-78);
+  expect(bounds.y+bounds.height).toBeGreaterThan(inside.position.y+inside.height+28);
+});

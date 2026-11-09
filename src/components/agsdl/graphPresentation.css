@@ -92,3 +92,15 @@
 .agsdl-composition-heading svg { flex: none; }
 .agsdl-composition-heading:hover, .agsdl-composition-heading:focus-visible { background: rgb(var(--accent)); color: rgb(var(--foreground)); outline: none; }
 .agsdl-composition-heading strong { font-weight: 600; color: rgb(var(--foreground)); }
+
+.agsdl-preview-advanced { margin-top: 10px; padding-top: 8px; border-top: 1px solid rgb(var(--border)); }
+.agsdl-preview-advanced summary { cursor: pointer; color: rgb(var(--muted-foreground)); font-size: 11px; }
+.agsdl-preview-advanced summary:focus-visible { outline: 2px solid rgb(var(--primary)); outline-offset: 2px; }
+.agsdl-preview-advanced[open] > .agsdl-preview-list { margin-top: 8px; }
+.agsdl-preview030:focus { outline: none; }
+.agsdl-preview030 .agsdl-source-value { max-height: 180px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 11px; }
+.agsdl-node-occurrences { display: inline-flex; align-items: center; justify-content: center; min-width: 17px; height: 17px; padding: 0 3px; border-radius: 4px; background: rgb(var(--muted)); font-size: 10px; font-variant-numeric: tabular-nums; }
+.agsdl-occurrence-list { display: grid; gap: 6px; margin-top: 10px; padding-top: 8px; border-top: 1px solid rgb(var(--border)); }
+.agsdl-occurrence-list li { display: flex; align-items: center; gap: 8px; overflow-wrap: anywhere; }
+/* Expanding source details keeps the whole scrollable inspector inside the viewport. */
+.agsdl-block-preview:has(.agsdl-preview030 .agsdl-preview-advanced[open]) { top: 8px !important; }

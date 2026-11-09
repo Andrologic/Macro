@@ -110,3 +110,22 @@ it("rejects duplicate references selected within the same atomic draft", () => {
   const values = fields.map(field => field.removePath?.includes("/resources/") ? field.options!.find(option => option.value && JSON.parse(option.value).id === "third")!.value : field.value);
   expect(() => propertyChanges(fields, values)).toThrow("duplicateReference");
 });
+
+it("rejects a mixed agent reassignment and captured-definition edit at the patch boundary", () => {
+ const source = '{"contract":"agsdl-0.3.0","id":"owners","agents":{"a":{"harness":"codex","permissions":"read-only","instructions":"A"},"b":{"harness":"codex","permissions":"read-only","instructions":"B"}},"flow":{"entry":"one","steps":{"one":{"type":"agent","agent":"a"},"other":{"type":"agent","agent":"a"}}}}';
+ const fields = componentProperties(source, projectViewer(source).graphs[0].cards[0]).fields;
+ const values = fields.map(field => field.path === "/flow/steps/one/agent" ? '"b"' : field.path === "/agents/a/instructions" ? '"Wrong owner"' : field.value);
+ expect(() => propertyChanges(fields, values)).toThrow("authoring030.ownerChangeHint");
+});
+for (const type of ["agent", "call", "approval", "compose", "join"]) {
+ it(`marks a ${type} body step as shared when its composition has two uses`, () => {
+  const source = JSON.stringify({ contract: "agsdl-0.3.0", id: "shared", agents: { a: { harness: "codex", permissions: "read-only" } },
+   flow: { entry: "first", steps: { first: { type: "compose", composition: "common", next: { done: "second" } }, second: { type: "compose", composition: "common", next: { done: [] } } } },
+   compositions: { common: { entry: "work", steps: { work: { type, ...(type === "agent" ? { agent: "a" } : type === "call" ? { command: "echo" } : type === "compose" ? { composition: "leaf" } : {}), next: { done: { output: "done" } } } }, outputs: ["done"] } },
+  });
+  const card = projectViewer(source).graphs.find(graph => graph.path === "/compositions/common")!.cards[0];
+  const properties = componentProperties(source, card);
+  expect(properties.shared).toBe(true);
+  expect(properties.fields.some(field => field.path === "/compositions/common/steps/work/type")).toBe(true);
+ });
+}

@@ -10,8 +10,8 @@ const source='{"contract":"agsdl-0.3.0","id":"x","agents":{},"flow":{"entry":"a"
 let root:Root|undefined, host:HTMLDivElement;
 const original={load:useAgsdlStore.getState().load,validate:useAgsdlStore.getState().validate,edit:useAgsdlStore.getState().edit,save:useAgsdlStore.getState().save};
 afterEach(()=>{act(()=>root?.unmount());host?.remove();mock.restore();useAgsdlStore.setState({...original,sessions:{}});});
-async function mount(edit = true){
- const session={source,annexes:{},version:"initial",persistedRevision:1,dirty:false,saving:false,status:"draft" as const,history:[],future:[],reports:[],error:null};
+async function mount(edit = true, documentSource = source){
+ const session={source:documentSource,annexes:{},version:"initial",persistedRevision:1,dirty:false,saving:false,status:"draft" as const,history:[],future:[],reports:[],error:null};
  useAgsdlStore.setState({sessions:{[key]:session},load:async()=>session,validate:async()=>{}});
  host=document.createElement("div");document.body.appendChild(host);root=createRoot(host);
  await act(async()=>root!.render(<AgsdlEditor target={target}/>));
@@ -47,7 +47,7 @@ it("navigates both endpoints and returns to the route, then guards a draft on cl
   const endpoint = Array.from(document.body.querySelectorAll<HTMLButtonElement>('.agsdl-edge-endpoints button')).find(button => button.textContent === label)!;
   act(() => endpoint.click());
   expect(document.body.querySelector('[role="dialog"] header strong')?.textContent).toBe(label);
-  expect(document.body.querySelector('.agsdl-inspector')?.textContent).toContain(label === 'a' ? 'echo source' : 'echo target');
+  expect(document.body.querySelector('[role=dialog] .agsdl-source-value')?.textContent).toContain(label === 'a' ? 'echo source' : 'echo target');
   act(() => Array.from(document.body.querySelectorAll<HTMLButtonElement>('button')).find(button => button.textContent === 'Back to previous details')!.click());
   expect(document.body.querySelectorAll('.agsdl-edge-endpoints button')).toHaveLength(2);
  }
@@ -56,4 +56,16 @@ it("navigates both endpoints and returns to the route, then guards a draft on cl
  act(()=>Array.from(document.body.querySelectorAll<HTMLButtonElement>('button')).find(button=>button.textContent==='Close')!.click());
  expect(document.body.querySelectorAll('[role="dialog"]')).toHaveLength(2);
  expect(document.body.querySelector('textarea')?.value).toBe('"private-target"');
+});
+
+it("selects a scalar relation destination and patches only the source route", async () => {
+ const documentSource = source.replace('"command":"echo source"', '"command":"echo source","future":9007199254740993');
+ await mount(true, documentSource);
+ useAgsdlStore.setState({ save: async () => {} });
+ const destination = Array.from(document.body.querySelectorAll("label")).find(label => label.querySelector("span")?.textContent === "Continue at")!.querySelector("select")!;
+ expect(destination.value).toBe("b");
+ expect(Array.from(destination.options).map(option => option.value)).toEqual(["a", "b"]);
+ act(() => { destination.value = "a"; destination.dispatchEvent(new Event("change", { bubbles: true })); });
+ await act(async () => document.body.querySelector("form")!.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true })));
+ expect(useAgsdlStore.getState().sessions[key].source).toBe(documentSource.replace('"next":"b"', '"next":"a"'));
 });

@@ -704,5 +704,165 @@
       "exchange": "On a data exchange",
       "dependency": "After the previous block"
     }
+  },
+  "authoring030": {
+    "advanced": "Advanced properties",
+    "exactJson": "Exact JSON source",
+    "draftHint": "Changes are saved as a draft. Static checks do not authorize execution.",
+    "saveDraft": "Save draft",
+    "invalidDraft": "Draft to correct · execution not authorized",
+    "checked": "Static checks complete · execution not assessed",
+    "unchecked": "Draft · static checks pending",
+    "document": "System document",
+    "undo": "Undo",
+    "redo": "Redo",
+    "default": "Not specified",
+    "groups": {
+      "general": "Work",
+      "instructions": "Standing instructions",
+      "mission": "Mission",
+      "information": "Information",
+      "choices": "Choices and destinations",
+      "instance": "Conversation and delivery",
+      "join": "Parallel work rule"
+    },
+    "hints": {
+      "instructions": "These instructions apply throughout the agent’s conversation.",
+      "mission": "The mission concerns one work. A message from an earlier step may take priority over its default mission.",
+      "information": "Resources are information to read, never instructions to follow.",
+      "instance": "Leave the instance empty to share the agent’s conversation. Use new for a fresh conversation, or a name to reuse a named one. Delivery applies when it is already working.",
+      "join": "Without a threshold, wait for every branch. With a threshold, continue once enough accepted results arrive. Late results never count for the next work."
+    },
+    "fields": {
+      "title": "Work title",
+      "description": "Description",
+      "agent": "Responsible agent",
+      "composition": "Reusable workflow",
+      "workType": "Type of work",
+      "instructions": "Standing instructions",
+      "mission": "Mission text",
+      "information": "Information to read",
+      "uri": "Source address",
+      "ref": "Shared content name",
+      "selection": "Selected data path, one name per line",
+      "instance": "Conversation instance",
+      "delivery": "If already working",
+      "remaining": "Unfinished branches",
+      "failures": "When a branch fails",
+      "maxFailures": "Maximum tolerated failures",
+      "count": "Accepted results needed",
+      "accept": "Accepted choices, one per line",
+      "destination": "Continue at",
+      "joinMode": "Gathering rule",
+      "agentDescription": "Agent’s responsibility",
+      "dataPath": "Selected data path, one name per line"
+    },
+    "options": {
+      "agent": "Agent mission",
+      "call": "Automated action",
+      "approval": "Human decision",
+      "compose": "Reusable workflow",
+      "join": "Wait for parallel work",
+      "queue": "Wait, then start a separate work",
+      "steer": "Join the current work when possible",
+      "stop": "Stop the remaining work before continuing",
+      "finish": "Continue while the others finish",
+      "wait": "Let the others finish, then continue",
+      "fail": "Fail the group",
+      "keep": "Keep failures and wait for the others",
+      "all": "Every branch",
+      "quorum": "Enough accepted results"
+    },
+    "add": {
+      "resource": "Add information",
+      "choice": "Add a choice",
+      "confirm": "Add"
+    },
+    "name": {
+      "resource": "Information name",
+      "choice": "Choice name"
+    },
+    "sourceKind": "Information source",
+    "sources": {
+      "value": "Text to read",
+      "ref": "Shared content",
+      "uri": "File or web address"
+    },
+    "diagnostics": {
+      "title": "Design diagnostics",
+      "count": "Problems to review · {{count}}",
+      "filter": "Filter problems",
+      "search": "Search problems",
+      "all": "All problems",
+      "error": "Error",
+      "warning": "Warning",
+      "empty": "No problems match this filter.",
+      "explanation": {
+        "harness": "Check the agent’s declared capabilities.",
+        "document": "Correct the document’s structure.",
+        "mission": "Check the mission and the information it receives.",
+        "join": "Check how parallel work is gathered.",
+        "instance": "Check how work shares a conversation.",
+        "composition": "Check this reusable workflow and its uses.",
+        "review": "Review the affected part of the design."
+      }
+    },
+    "exactHint": "Advanced values stay available in the exact JSON tab.",
+    "ownerChangeHint": "The responsible agent has changed. Its definition fields are locked. Save, then reopen this panel to edit the new agent.",
+    "definitionChangeHint": "The agent definition has pending changes. Save, then reopen this panel before changing the responsible agent."
+  },
+  "graph030": {
+    "keyboardHint": "Press Right Arrow for the preview and advanced details, or Shift+F10 for actions.",
+    "advanced": "Advanced details",
+    "declaredOnly": "Declared configuration. Availability and activity require run observations.",
+    "occurrences": "{{count}} visits",
+    "fanout": "For each item",
+    "repetition": "Repetition",
+    "provenance": "Origin",
+    "errorVia": "The error propagates to a recovery route in the enclosing process or subprocess.",
+    "routeVia": "This route follows a declared subprocess output.",
+    "labels": {
+      "conversation": "Conversation",
+      "delivery": "Delivery rule",
+      "quorum": "Decision",
+      "join": "Gathering",
+      "remaining": "Other branches",
+      "error": "If something fails"
+    },
+    "conversation": {
+      "shared": "Same conversation throughout the process.",
+      "named": "Conversation \"{{name}}\", reused throughout the process.",
+      "new": "A separate conversation for each visit."
+    },
+    "delivery": {
+      "queue": "Messages wait their turn. This is a delivery rule, not an observed queue.",
+      "steer": "A message can join work already in progress. This rule does not prove that any work is running.",
+      "legend": "Messages take turns, declared rule"
+    },
+    "quorum": {
+      "one": "Decide as soon as one favourable response arrives.",
+      "rule": "Decide as soon as {{threshold}} favourable responses arrive."
+    },
+    "join": {
+      "all": "Wait for every branch that was started.",
+      "origin": "The group starts at \"{{name}}\". Only branches actually started count.",
+      "unreported": "The group origin is not available from a matching validation report.",
+      "keepLimited": "Failure limit: {{limit}}. Any failure beyond it fails the group immediately.",
+      "keep": "Keep failures and wait for the other branches."
+    },
+    "remaining": {
+      "stop": "After the decision, stop the other branches. Continue once they have actually stopped.",
+      "finish": "After the decision, continue immediately. The others finish; their later results do not count toward the decision.",
+      "wait": "After the decision, let the others finish, then continue. Their later results do not count toward the decision."
+    },
+    "error": {
+      "local": "Use this step’s own recovery route.",
+      "flow": "Use the process-wide recovery route.",
+      "join": "The failure reaches the enclosing gathering \"{{name}}\" first.",
+      "compose": "The failure reaches the enclosing subprocess \"{{name}}\" first.",
+      "unreported": "Recovery scope has not yet been established by validation.",
+      "unhandled": "No recovery is declared here.",
+      "inheritedRoute": "Use an inherited recovery route from the process or its enclosing subprocess."
+    }
   }
 }

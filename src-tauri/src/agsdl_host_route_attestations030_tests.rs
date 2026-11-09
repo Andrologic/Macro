@@ -1206,7 +1206,14 @@ async fn failed_join_fixture(
         Some("step") => producer.step = Some(vec!["foreign".into()]),
         Some("group") => state.groups.push(serde_json::from_value(json!({"id":"forged", "join":producer.step, "originActivationId":"source", "activationId":producer.activation_id, "context":[], "branches":[], "decision":"done", "outputJson":"{}", "error":null, "continuation":{"kind":"join"}, "released":true})).unwrap()),
         Some("agent") => producer.kind = "agent".into(),
-        Some("ordinal" | "duplicate" | "reordered" | "different-plan") => (),
+        Some("activation-duplicate") => {
+            let activation = state.activations.iter().find(|a| a.id == producer.activation_id).unwrap().clone();
+            state.activations.push(activation);
+        }
+        Some("activation-physical") => {
+            state.activations.iter_mut().find(|a| a.id == producer.activation_id).unwrap().physical = true;
+        }
+        Some("ordinal" | "duplicate" | "reordered" | "different-plan" | "not-accepted" | "receipt-absent" | "receipt-foreign" | "failure-absent" | "failure-duplicate") => (),
         _ => panic!("unknown fixture fault"),
     }
     state.preparations[index].producer = producer.clone();
@@ -1223,6 +1230,36 @@ async fn failed_join_fixture(
             *p = producer.clone();
             row["effect_json"] = json!(serde_json::to_string(&effect).unwrap());
         }
+    }
+    if fault == Some("failure-absent") {
+        effects.retain(|row| {
+            !matches!(
+                serde_json::from_str::<FlowEffect030>(row["effect_json"].as_str().unwrap())
+                    .unwrap()
+                    .kind,
+                FlowEffectKind030::Failure { .. }
+            )
+        });
+    }
+    if fault == Some("failure-duplicate") {
+        let mut duplicate = effects
+            .iter()
+            .find(|row| {
+                matches!(
+                    serde_json::from_str::<FlowEffect030>(row["effect_json"].as_str().unwrap())
+                        .unwrap()
+                        .kind,
+                    FlowEffectKind030::Failure { .. }
+                )
+            })
+            .unwrap()
+            .clone();
+        let mut effect: FlowEffect030 =
+            serde_json::from_str(duplicate["effect_json"].as_str().unwrap()).unwrap();
+        effect.id = "duplicated-failure".into();
+        duplicate["effect_id"] = json!(effect.id);
+        duplicate["effect_json"] = json!(serde_json::to_string(&effect).unwrap());
+        effects.push(duplicate);
     }
     let temp = tempfile::tempdir().unwrap();
     let pool = crate::db::create_pool(&temp.path().join("join-error.db"))
@@ -1274,12 +1311,13 @@ async fn failed_join_fixture(
         .await
         .unwrap();
     let e = &data["event"];
-    sqlx::query("INSERT INTO engine_flow030_events VALUES (?,?,?,?,?,NULL)")
+    sqlx::query("INSERT INTO engine_flow030_events VALUES (?,?,?,?,?,?)")
         .bind(&id.system_start_id)
         .bind(&id.flow_invocation_id)
         .bind(e["event_id"].as_str().unwrap())
         .bind(e["event_json"].as_str().unwrap())
-        .bind(e["receipt_json"].as_str().unwrap())
+        .bind((fault != Some("not-accepted")).then(|| e["receipt_json"].as_str().unwrap()))
+        .bind((fault == Some("not-accepted")).then_some("{}"))
         .execute(&mut *tx)
         .await
         .unwrap();
@@ -1315,21 +1353,27 @@ async fn failed_join_fixture(
             .await
             .unwrap();
     }
-    sqlx::query("INSERT INTO engine_flow030_preparations VALUES (?,?,?,?,?,?,?,?,?,?,?)")
-        .bind(&id.system_start_id)
-        .bind(&id.flow_invocation_id)
-        .bind(row["prepare_id"].as_str().unwrap())
-        .bind(row["native_receipt_id"].as_str().unwrap())
-        .bind(&owner.owner_epoch)
-        .bind(&generation)
-        .bind(row["reference_json"].as_str().unwrap())
-        .bind(row["producer_json"].as_str().unwrap())
-        .bind(row["source_json"].as_str().unwrap())
-        .bind(row["content_receipts_json"].as_str().unwrap())
-        .bind(&result_json)
-        .execute(&mut *tx)
-        .await
-        .unwrap();
+    if fault != Some("receipt-absent") {
+        sqlx::query("INSERT INTO engine_flow030_preparations VALUES (?,?,?,?,?,?,?,?,?,?,?)")
+            .bind(&id.system_start_id)
+            .bind(&id.flow_invocation_id)
+            .bind(row["prepare_id"].as_str().unwrap())
+            .bind(if fault == Some("receipt-foreign") {
+                "foreign-receipt"
+            } else {
+                row["native_receipt_id"].as_str().unwrap()
+            })
+            .bind(&owner.owner_epoch)
+            .bind(&generation)
+            .bind(row["reference_json"].as_str().unwrap())
+            .bind(row["producer_json"].as_str().unwrap())
+            .bind(row["source_json"].as_str().unwrap())
+            .bind(row["content_receipts_json"].as_str().unwrap())
+            .bind(&result_json)
+            .execute(&mut *tx)
+            .await
+            .unwrap();
+    }
     tx.commit().await.unwrap();
     let host = crate::agsdl_host::route_attestation_test_host030(owner.clone(), &generation);
     (temp, pool, host, capture, reference, owner, generation)
@@ -1453,4 +1497,199 @@ async fn agent_error_without_joined_witness_is_rejected_before_commit() {
             .unwrap();
     assert_eq!(count, 0);
     assert_eq!(capture.identity, reference.identity);
+}
+
+async fn rejected_join_error_fixture(fault: &str) {
+    let (_tmp, pool, host, capture, reference, owner, _) = failed_join_fixture(Some(fault)).await;
+    let writer = RouteAttestor030::capture(&host, &owner).await.unwrap();
+    let lease = host.start_lease().await.unwrap();
+    let _gate = host.admission_lock().lock_owned().await;
+    let mut tx = pool.begin().await.unwrap();
+    assert!(
+        writer
+            .attest_source_tx(&mut tx, &lease, host.flow030(), &capture, &reference)
+            .await
+            .is_err(),
+        "fault {fault} was accepted"
+    );
+    let count: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM engine_flow030_route_source_attestations")
+            .fetch_one(&mut *tx)
+            .await
+            .unwrap();
+    assert_eq!(count, 0);
+    tx.rollback().await.unwrap();
+}
+macro_rules! rejected_join_error_test {
+    ($name:ident, $fault:literal) => {
+        #[tokio::test]
+        async fn $name() {
+            rejected_join_error_fixture($fault).await;
+        }
+    };
+}
+rejected_join_error_test!(join_error_rejects_unaccepted_event, "not-accepted");
+rejected_join_error_test!(join_error_rejects_absent_native_receipt, "receipt-absent");
+rejected_join_error_test!(join_error_rejects_foreign_native_receipt, "receipt-foreign");
+rejected_join_error_test!(
+    join_error_rejects_duplicated_activation,
+    "activation-duplicate"
+);
+rejected_join_error_test!(
+    join_error_rejects_physical_activation,
+    "activation-physical"
+);
+rejected_join_error_test!(join_error_rejects_absent_failure_effect, "failure-absent");
+rejected_join_error_test!(
+    join_error_rejects_duplicated_failure_effect,
+    "failure-duplicate"
+);
+
+#[tokio::test]
+async fn join_error_independent_sql_verifier_rejects_falsified_state() {
+    let (_tmp, pool, host, capture, reference, owner, _) = failed_join_fixture(None).await;
+    let writer = RouteAttestor030::capture(&host, &owner).await.unwrap();
+    let lease = host.start_lease().await.unwrap();
+    let _gate = host.admission_lock().lock_owned().await;
+    let mut tx = pool.begin().await.unwrap();
+    let source = writer
+        .attest_source_tx(&mut tx, &lease, host.flow030(), &capture, &reference)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    let raw: String = sqlx::query_scalar("SELECT state_json FROM engine_flow030_runs")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    let mut state: FlowState030 = serde_json::from_str(&raw).unwrap();
+    state
+        .activations
+        .iter_mut()
+        .find(|a| a.id == source.producer.activation_id)
+        .unwrap()
+        .physical = true;
+    sqlx::query("UPDATE engine_flow030_runs SET state_json=?")
+        .bind(serde_json::to_string(&state).unwrap())
+        .execute(&pool)
+        .await
+        .unwrap();
+    let verifier = SqlRouteMaterialVerifier030::capture(&host, &owner)
+        .await
+        .unwrap();
+    let mut tx = pool.begin().await.unwrap();
+    assert!(verifier
+        .attest_tx(
+            &mut tx,
+            &capture,
+            &reference,
+            &source.producer,
+            &source.source_only_material()
+        )
+        .await
+        .is_err());
+    tx.rollback().await.unwrap();
+}
+
+#[tokio::test]
+async fn source_readback_is_fenced_after_generation_retirement_for_all_kinds() {
+    for kind in ["agent", "join", "join-error"] {
+        let (_tmp, pool, host, capture, reference, owner, generation) = match kind {
+            "agent" => {
+                let (t, p, h, c, r) = sql_fixture("ok").await;
+                (
+                    t,
+                    p,
+                    h,
+                    c,
+                    r,
+                    EngineOwner {
+                        system_start_id: "system".into(),
+                        owner_epoch: "owner".into(),
+                    },
+                    "generation".to_owned(),
+                )
+            }
+            "join" => {
+                let (t, p, h, c, r) = sql_join_fixture().await;
+                (
+                    t,
+                    p,
+                    h,
+                    c,
+                    r,
+                    EngineOwner {
+                        system_start_id: "system".into(),
+                        owner_epoch: "owner".into(),
+                    },
+                    "generation".to_owned(),
+                )
+            }
+            _ => failed_join_fixture(None).await,
+        };
+        let writer = RouteAttestor030::capture(&host, &owner).await.unwrap();
+        let lease = host.start_lease().await.unwrap();
+        let gate = host.admission_lock().lock_owned().await;
+        let mut tx = pool.begin().await.unwrap();
+        let source = writer
+            .attest_source_tx(&mut tx, &lease, host.flow030(), &capture, &reference)
+            .await
+            .unwrap();
+        let marker = source.commit_marker().unwrap();
+        tx.commit().await.unwrap();
+        drop(gate);
+        crate::agsdl_host_flow030::revoke_generation(&pool, &generation)
+            .await
+            .unwrap();
+        let mut tx = pool.begin().await.unwrap();
+        assert!(
+            writer
+                .inspect_source_tx(&mut tx, &lease, host.flow030(), &capture, &reference)
+                .await
+                .is_err(),
+            "old {kind} authority survived retirement"
+        );
+        tx.rollback().await.unwrap();
+        let new_host = crate::agsdl_host::route_attestation_test_host030(
+            owner.clone(),
+            "replacement-generation",
+        );
+        let new_writer = RouteAttestor030::capture(&new_host, &owner).await.unwrap();
+        let new_lease = new_host.start_lease().await.unwrap();
+        let _new_gate = new_host.admission_lock().lock_owned().await;
+        let mut tx = pool.begin().await.unwrap();
+        assert!(
+            new_writer
+                .inspect_source_tx(
+                    &mut tx,
+                    &new_lease,
+                    new_host.flow030(),
+                    &capture,
+                    &reference
+                )
+                .await
+                .is_err(),
+            "new {kind} authority read an old generation"
+        );
+        assert!(
+            new_writer
+                .attest_source_tx(
+                    &mut tx,
+                    &new_lease,
+                    new_host.flow030(),
+                    &capture,
+                    &reference
+                )
+                .await
+                .is_err(),
+            "new {kind} authority recreated a source"
+        );
+        let count: i64 =
+            sqlx::query_scalar("SELECT count(*) FROM engine_flow030_route_source_attestations")
+                .fetch_one(&mut *tx)
+                .await
+                .unwrap();
+        assert_eq!(count, 1);
+        assert_eq!(source.commit_marker().unwrap(), marker);
+        tx.rollback().await.unwrap();
+    }
 }

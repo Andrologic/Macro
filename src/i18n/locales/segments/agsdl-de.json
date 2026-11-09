@@ -704,5 +704,165 @@
       "exchange": "Bei einem Datenaustausch",
       "dependency": "Nach dem vorherigen Block"
     }
+  },
+  "authoring030": {
+    "advanced": "Erweiterte Eigenschaften",
+    "exactJson": "Exakte JSON-Quelle",
+    "draftHint": "Änderungen werden als Entwurf gespeichert. Statische Prüfungen erlauben keine Ausführung.",
+    "saveDraft": "Entwurf speichern",
+    "invalidDraft": "Entwurf korrigieren · Ausführung nicht erlaubt",
+    "checked": "Statische Prüfung abgeschlossen · Ausführung nicht geprüft",
+    "unchecked": "Entwurf · statische Prüfung ausstehend",
+    "document": "Systemdokument",
+    "undo": "Rückgängig",
+    "redo": "Wiederholen",
+    "default": "Nicht angegeben",
+    "groups": {
+      "general": "Arbeit",
+      "instructions": "Dauerhafte Anweisungen",
+      "mission": "Auftrag",
+      "information": "Bereitgestellte Informationen",
+      "choices": "Auswahl und Ziele",
+      "instance": "Unterhaltung und Zustellung",
+      "join": "Regel für parallele Arbeiten"
+    },
+    "hints": {
+      "instructions": "Diese Anweisungen gelten während der gesamten Unterhaltung des Agenten.",
+      "mission": "Der Auftrag gilt für eine Arbeit. Eine vorherige Nachricht kann den Standardauftrag ersetzen.",
+      "information": "Ressourcen sind Informationen zum Lesen, keine Anweisungen.",
+      "instance": "Eine leere Instanz teilt die Unterhaltung. new beginnt eine neue, ein Name verwendet eine benannte erneut. Die Zustellung gilt bei laufender Arbeit.",
+      "join": "Ohne Schwelle auf alle Zweige warten. Mit Schwelle nach genügend akzeptierten Ergebnissen fortfahren. Späte Ergebnisse zählen nicht für die Folgearbeit."
+    },
+    "fields": {
+      "title": "Arbeitstitel",
+      "description": "Beschreibung",
+      "agent": "Verantwortlicher Agent",
+      "composition": "Wiederverwendbarer Ablauf",
+      "workType": "Art der Arbeit",
+      "instructions": "Dauerhafte Anweisungen",
+      "mission": "Auftragstext",
+      "information": "Informationen zum Lesen",
+      "uri": "Quelladresse",
+      "ref": "Name des gemeinsamen Inhalts",
+      "selection": "Datenpfad, ein Name pro Zeile",
+      "instance": "Unterhaltungsinstanz",
+      "delivery": "Bei laufender Arbeit",
+      "remaining": "Unfertige Zweige",
+      "failures": "Wenn ein Zweig fehlschlägt",
+      "maxFailures": "Maximal tolerierte Fehler",
+      "count": "Benötigte akzeptierte Ergebnisse",
+      "accept": "Akzeptierte Antworten, eine pro Zeile",
+      "destination": "Fortfahren bei",
+      "joinMode": "Zusammenführungsregel",
+      "agentDescription": "Aufgabe des Agenten",
+      "dataPath": "Datenpfad, ein Name pro Zeile"
+    },
+    "options": {
+      "agent": "Agentenauftrag",
+      "call": "Automatische Aktion",
+      "approval": "Menschliche Entscheidung",
+      "compose": "Wiederverwendbarer Ablauf",
+      "join": "Auf parallele Arbeiten warten",
+      "queue": "Warten, dann eine eigene Arbeit starten",
+      "steer": "Wenn möglich zur laufenden Arbeit hinzufügen",
+      "stop": "Übrige Arbeiten vor dem Fortfahren stoppen",
+      "finish": "Fortfahren, während die anderen fertig werden",
+      "wait": "Andere fertig werden lassen, dann fortfahren",
+      "fail": "Gruppe fehlschlagen lassen",
+      "keep": "Fehler behalten und auf andere warten",
+      "all": "Alle Zweige",
+      "quorum": "Genügend akzeptierte Ergebnisse"
+    },
+    "add": {
+      "resource": "Information hinzufügen",
+      "choice": "Antwort hinzufügen",
+      "confirm": "Hinzufügen"
+    },
+    "name": {
+      "resource": "Informationsname",
+      "choice": "Antwortname"
+    },
+    "sourceKind": "Informationsquelle",
+    "sources": {
+      "value": "Text zum Lesen",
+      "ref": "Gemeinsamer Inhalt",
+      "uri": "Datei oder Webadresse"
+    },
+    "diagnostics": {
+      "title": "Entwurfsdiagnose",
+      "count": "Zu prüfende Probleme · {{count}}",
+      "filter": "Probleme filtern",
+      "search": "Probleme suchen",
+      "all": "Alle Probleme",
+      "error": "Fehler",
+      "warning": "Warnung",
+      "empty": "Keine Probleme für diesen Filter.",
+      "explanation": {
+        "harness": "Deklarierte Fähigkeiten des Agenten prüfen.",
+        "document": "Dokumentstruktur korrigieren.",
+        "mission": "Auftrag und empfangene Informationen prüfen.",
+        "join": "Zusammenführung paralleler Arbeiten prüfen.",
+        "instance": "Gemeinsame Unterhaltung der Arbeiten prüfen.",
+        "composition": "Wiederverwendbaren Ablauf und seine Verwendungen prüfen.",
+        "review": "Betroffenen Teil des Entwurfs prüfen."
+      }
+    },
+    "exactHint": "Weitere Werte bleiben im Reiter für exaktes JSON verfügbar.",
+    "ownerChangeHint": "Der verantwortliche Agent wurde geändert. Seine Definition ist gesperrt. Speichern und öffnen Sie diese Ansicht erneut, um den neuen Agenten zu bearbeiten.",
+    "definitionChangeHint": "Die Agentendefinition enthält ungespeicherte Änderungen. Speichern und öffnen Sie diese Ansicht erneut, bevor Sie den verantwortlichen Agenten ändern."
+  },
+  "graph030": {
+    "keyboardHint": "Pfeil rechts öffnet Vorschau und erweiterte Details. Umschalt+F10 öffnet die Aktionen.",
+    "advanced": "Erweiterte Details",
+    "declaredOnly": "Deklarierte Konfiguration. Verfügbarkeit und Aktivität erfordern Beobachtungen eines Laufs.",
+    "occurrences": "{{count}} Durchläufe",
+    "fanout": "Für jedes Element",
+    "repetition": "Wiederholung",
+    "provenance": "Ursprung",
+    "errorVia": "Das Problem wird an einen Fehlerpfad des umgebenden Prozesses oder Teilprozesses weitergegeben.",
+    "routeVia": "Dieser Pfad folgt einem deklarierten Ausgang eines Teilprozesses.",
+    "labels": {
+      "conversation": "Unterhaltung",
+      "delivery": "Zustellregel",
+      "quorum": "Entscheidung",
+      "join": "Zusammenführung",
+      "remaining": "Andere Zweige",
+      "error": "Bei einem Problem"
+    },
+    "conversation": {
+      "shared": "Dieselbe Unterhaltung im gesamten Prozess.",
+      "named": "Unterhaltung „{{name}}“, im gesamten Prozess wiederverwendet.",
+      "new": "Eine eigene Unterhaltung bei jedem Durchlauf."
+    },
+    "delivery": {
+      "queue": "Nachrichten warten, bis sie an der Reihe sind. Dies ist eine Zustellregel, keine beobachtete Warteschlange.",
+      "steer": "Eine Nachricht kann sich laufender Arbeit anschließen. Diese Regel belegt keine aktive Arbeit.",
+      "legend": "Nachrichten nacheinander, geplante Regel"
+    },
+    "quorum": {
+      "one": "Entscheiden, sobald eine zustimmende Antwort eingegangen ist.",
+      "rule": "Entscheiden, sobald {{threshold}} zustimmende Antworten eingegangen sind."
+    },
+    "join": {
+      "all": "Auf alle gestarteten Zweige warten.",
+      "origin": "Die Gruppe beginnt bei „{{name}}“. Nur tatsächlich gestartete Zweige zählen.",
+      "unreported": "Der Gruppenursprung liegt aus keinem passenden Validierungsbericht vor.",
+      "keepLimited": "Grenze tolerierter Fehler: {{limit}}. Jeder weitere Fehler lässt die Gruppe sofort fehlschlagen.",
+      "keep": "Fehler bewahren und auf die anderen Zweige warten."
+    },
+    "remaining": {
+      "stop": "Nach der Entscheidung die anderen Zweige stoppen. Erst fortfahren, wenn sie tatsächlich gestoppt sind.",
+      "finish": "Nach der Entscheidung sofort fortfahren. Die anderen enden regulär; spätere Ergebnisse zählen nicht für die Entscheidung.",
+      "wait": "Nach der Entscheidung die anderen regulär beenden lassen und dann fortfahren. Spätere Ergebnisse zählen nicht für die Entscheidung."
+    },
+    "error": {
+      "local": "Dem eigenen Fehlerpfad dieses Schritts folgen.",
+      "flow": "Dem globalen Fehlerpfad des Prozesses folgen.",
+      "join": "Das Problem erreicht zuerst die Zusammenführung „{{name}}“.",
+      "compose": "Das Problem erreicht zuerst den Teilprozess „{{name}}“.",
+      "unreported": "Die Validierung hat den Geltungsbereich des Fehlerpfads noch nicht bestimmt.",
+      "unhandled": "Hier ist kein Fehlerpfad deklariert.",
+      "inheritedRoute": "Einem geerbten Fehlerpfad des Prozesses oder des umgebenden Teilprozesses folgen."
+    }
   }
 }

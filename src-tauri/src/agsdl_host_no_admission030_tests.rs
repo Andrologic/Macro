@@ -43,6 +43,16 @@ async fn opaque_control_can_clean_up_while_work_commit_is_frozen() {
     exercise(7).await;
 }
 
+#[tokio::test]
+async fn retained_join_witness_settles_diagnostic_stop_atomically_and_replays() {
+    exercise(8).await;
+}
+
+#[tokio::test]
+async fn diagnostic_stop_keeps_physical_and_pending_when_commit_marker_is_unresolved() {
+    exercise(9).await;
+}
+
 async fn exercise(mode: u8) {
     let temp = tempfile::TempDir::new().unwrap();
     let pool = crate::db::create_pool(&temp.path().join("unadmitted.db"))
@@ -54,8 +64,19 @@ async fn exercise(mode: u8) {
         snapshot_id: "snapshot".into(),
         epoch: "capture".into(),
     };
-    let plan_json = include_str!("../tests/fixtures/agsdl030_compiled_plan.json");
-    let plan: FlowPlan030 = serde_json::from_str(plan_json).unwrap();
+    let original_plan = include_str!("../tests/fixtures/agsdl030_compiled_plan.json");
+    let mut plan: FlowPlan030 = serde_json::from_str(original_plan).unwrap();
+    let plan_json = if mode == 8 || mode == 9 {
+        plan.entry = Some(vec!["left".into()]);
+        plan.scopes
+            .iter_mut()
+            .find(|scope| scope.address.is_empty())
+            .unwrap()
+            .entry = vec!["left".into()];
+        serde_json::to_string(&plan).unwrap()
+    } else {
+        original_plan.to_owned()
+    };
     let enter = FlowEvent030 {
         identity: identity.clone(),
         event_id: "enter".into(),
@@ -80,7 +101,7 @@ async fn exercise(mode: u8) {
         .bind("snapshot")
         .bind("capture")
         .bind(plan.source.to_string())
-        .bind(plan_json)
+        .bind(&plan_json)
         .bind(serde_json::to_string(&transition.state).unwrap())
         .execute(&mut *tx)
         .await
@@ -110,7 +131,7 @@ async fn exercise(mode: u8) {
         let status = if effect.id == start.start_effect_id {
             match mode {
                 1 | 3 => "uncertain",
-                2 => "settled",
+                2 | 8 | 9 => "settled",
                 _ => "pending",
             }
         } else {
@@ -130,6 +151,138 @@ async fn exercise(mode: u8) {
             .await
             .unwrap();
     }
+    let attempt = if mode == 8 || mode == 9 {
+        let effect = transition
+            .effects
+            .iter()
+            .find(|e| e.id == start.start_effect_id)
+            .unwrap();
+        let (step, agent) = match &effect.kind {
+            FlowEffectKind030::Start {
+                step,
+                agent: Some(agent),
+                ..
+            } => (step.clone(), agent.clone()),
+            _ => panic!("agent fixture required"),
+        };
+        let attempt = FlowWorkAttempt030 {
+            identity: identity.clone(),
+            owner: EngineOwner {
+                system_start_id: "system".into(),
+                owner_epoch: "owner".into(),
+            },
+            generation: "generation".into(),
+            work: crate::db::agsdl_execution::dto::EngineWork {
+                system_start_id: "system".into(),
+                flow_invocation_id: "flow".into(),
+                activation_id: start.activation_id.clone(),
+                step,
+                agent_instance_id: start.agent_instance_id.clone(),
+            },
+            start_effect_id: start.start_effect_id.clone(),
+            agent,
+            provider_attempt_id: "joined-fixture-attempt".into(),
+        };
+        let request_id = format!(
+            "flow030:{}:{}",
+            identity.system_start_id,
+            attempt.start_effect_id()
+        );
+        let handoff = json!({"kind":"nativeOwnedHandoff030","identity":identity,"effectId":attempt.start_effect_id(),"ownerEpoch":"owner","generation":"generation","requestId":request_id,"workAttempt":attempt});
+        sqlx::query("INSERT INTO engine_flow030_handoffs VALUES (?,?,?,?,?,?)")
+            .bind("system")
+            .bind("flow")
+            .bind(attempt.start_effect_id())
+            .bind("owner")
+            .bind("generation")
+            .bind(handoff.to_string())
+            .execute(&mut *tx)
+            .await
+            .unwrap();
+        let context = crate::db::agsdl_execution::dto::EngineContext {
+            owner: attempt.owner().clone(),
+            work: attempt.work().clone(),
+            permissions_json: "[]".into(),
+            scope_json: "{}".into(),
+            registry_version: "fixture".into(),
+        };
+        let physical_id = format!("physical:{}", attempt.provider_attempt_id());
+        sqlx::query("INSERT INTO engine_flow030_work_admissions VALUES (?,?,?,?,?,?,?,?,?,?,?)")
+            .bind("system")
+            .bind("flow")
+            .bind(&start.activation_id)
+            .bind(attempt.start_effect_id())
+            .bind("owner")
+            .bind("generation")
+            .bind("a".repeat(64))
+            .bind(serde_json::to_string(&context).unwrap())
+            .bind("{}")
+            .bind("{}")
+            .bind("{}")
+            .execute(&mut *tx)
+            .await
+            .unwrap();
+        let physical_event = json!({"eventId":physical_id,"owner":{"systemStartId":"system","activationId":start.activation_id,"agentInstanceId":start.agent_instance_id,"ownerEpoch":"owner"},"event":{"kind":"physicalEnded","providerEnded":true,"effectsEnded":true}});
+        let input = crate::db::agsdl_execution::work_protocol030::ProtocolEvent030 {
+            context: context.clone(),
+            event_id: physical_id.clone(),
+            expected_revision: "0".into(),
+            event_json: physical_event.to_string(),
+            native_call: None,
+            control: true,
+        };
+        sqlx::query("INSERT INTO engine_flow030_work_authorizations VALUES (?,?,?,?,?,?,?)")
+            .bind("system")
+            .bind("flow")
+            .bind(&physical_id)
+            .bind(&start.activation_id)
+            .bind(serde_json::to_string(&input).unwrap())
+            .bind(None::<String>)
+            .bind(None::<String>)
+            .execute(&mut *tx)
+            .await
+            .unwrap();
+        let ticket = json!({"identity":identity,"generation":"generation","input":input});
+        let receipt = json!({"receiptId":format!("{}:1",start.activation_id),"revision":"1","owner":{"systemStartId":"system","activationId":start.activation_id,"agentInstanceId":start.agent_instance_id,"ownerEpoch":"owner"},"decision":{"kind":"finished","outcome":"failure","code":"AGENT_FAILED"}});
+        let decision = json!({"receiptJson":receipt.to_string()});
+        sqlx::query("INSERT INTO engine_flow030_work_events VALUES (?,?,?,?,?,?)")
+            .bind("system")
+            .bind("flow")
+            .bind(&physical_id)
+            .bind(&start.activation_id)
+            .bind(ticket.to_string())
+            .bind(decision.to_string())
+            .execute(&mut *tx)
+            .await
+            .unwrap();
+        let event = FlowEvent030 {
+            identity: identity.clone(),
+            event_id: work_terminal_event_id030(&identity, &physical_id).unwrap(),
+            expected_revision: transition.state.revision.clone(),
+            kind: FlowEventKind030::WorkResult {
+                work: start.clone(),
+                result: crate::db::agsdl_execution::flow030::WorkResult030::Failed {
+                    error: Failure030::new("AGENT_FAILED"),
+                },
+                physical: Some(PhysicalEvidence030 {
+                    native_receipt_id: physical_id,
+                    descendants_joined: true,
+                }),
+            },
+        };
+        sqlx::query("INSERT INTO engine_flow030_events VALUES (?,?,?,?,NULL,?)")
+            .bind("system")
+            .bind("flow")
+            .bind(&event.event_id)
+            .bind(serde_json::to_string(&event).unwrap())
+            .bind(r#"{"code":"UNSPECIFIED_SHARED_CANCELLATION"}"#)
+            .execute(&mut *tx)
+            .await
+            .unwrap();
+        Some(attempt)
+    } else {
+        None
+    };
     if mode == 2 {
         sqlx::query("INSERT INTO engine_flow030_handoffs VALUES (?,?,?,?,?,?)")
             .bind("system")
@@ -158,6 +311,179 @@ async fn exercise(mode: u8) {
         .lock()
         .unwrap()
         .insert("system".into(), control.clone());
+    if let Some(attempt) = attempt {
+        // The SQL rows above are explicit fixtures; the witness below is
+        // produced by the real registry only after its owned future joins.
+        let tasks = crate::ai::stream_tasks::StreamTasks::default();
+        let request_id = format!(
+            "flow030:{}:{}",
+            identity.system_start_id,
+            attempt.start_effect_id()
+        );
+        tasks
+            .start_agent030(request_id, &attempt, async {})
+            .unwrap();
+        let joined = tasks.join_agent030(&attempt, false).await.unwrap();
+        runtime.retain_diagnostic_join(&joined).unwrap();
+        let stop = FlowEvent030 {
+            identity: identity.clone(),
+            event_id: "fixture-stop".into(),
+            expected_revision: transition.state.revision.clone(),
+            kind: FlowEventKind030::Stop,
+        };
+        control.apply(&pool, &stop).await.unwrap();
+        let stopped = control.read(&pool).await.unwrap();
+        let activation = stopped
+            .state
+            .activations
+            .iter()
+            .find(|a| a.id == start.activation_id)
+            .unwrap();
+        let stop_id = activation.stop_effect_id.clone().unwrap();
+        assert!(activation.physical);
+        let mut foreign_attempt = attempt.clone();
+        foreign_attempt.provider_attempt_id = "foreign-attempt".into();
+        let foreign_tasks = crate::ai::stream_tasks::StreamTasks::default();
+        foreign_tasks
+            .start_agent030(
+                format!(
+                    "flow030:{}:{}",
+                    identity.system_start_id,
+                    foreign_attempt.start_effect_id()
+                ),
+                &foreign_attempt,
+                async {},
+            )
+            .unwrap();
+        let foreign = foreign_tasks
+            .join_agent030(&foreign_attempt, false)
+            .await
+            .unwrap();
+        assert!(control
+            .settle_joined_diagnostic(&runtime, &pool, &foreign)
+            .await
+            .is_err());
+        let unchanged: String =
+            sqlx::query_scalar("SELECT status FROM engine_flow030_outbox WHERE effect_id=?")
+                .bind(&stop_id)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(unchanged, "pending");
+        assert!(control
+            .read(&pool)
+            .await
+            .unwrap()
+            .state
+            .activations
+            .iter()
+            .any(|a| a.id == start.activation_id && a.physical));
+        if mode == 9 {
+            let event = FlowEvent030 {
+                identity: identity.clone(),
+                event_id: work_terminal_event_id030(
+                    &identity,
+                    &format!("joined-stop:{}", attempt.provider_attempt_id()),
+                )
+                .unwrap(),
+                expected_revision: stopped.state.revision.clone(),
+                kind: FlowEventKind030::PhysicalEnded {
+                    work: start.clone(),
+                    stop_effect_id: Some(stop_id.clone()),
+                    evidence: PhysicalEvidence030 {
+                        native_receipt_id: format!("physical:{}", attempt.provider_attempt_id()),
+                        descendants_joined: true,
+                    },
+                },
+            };
+            runtime.begin_event_commit(&event).unwrap();
+            assert_eq!(
+                control
+                    .settle_joined_diagnostic(&runtime, &pool, &joined)
+                    .await
+                    .unwrap_err()
+                    .code,
+                "UNCERTAIN"
+            );
+            assert!(runtime.available(&identity).is_err());
+            let pending: String =
+                sqlx::query_scalar("SELECT status FROM engine_flow030_outbox WHERE effect_id=?")
+                    .bind(&stop_id)
+                    .fetch_one(&pool)
+                    .await
+                    .unwrap();
+            assert_eq!(pending, "pending");
+            assert!(control
+                .read(&pool)
+                .await
+                .unwrap()
+                .state
+                .activations
+                .iter()
+                .any(|a| a.id == start.activation_id && a.physical));
+            return;
+        }
+        assert!(
+            !crate::agsdl_host_stop030::reconcile(&runtime, &pool, &tasks, &control)
+                .await
+                .unwrap()
+        );
+        let after = control.read(&pool).await.unwrap();
+        assert!(after
+            .state
+            .activations
+            .iter()
+            .any(|a| a.id == start.activation_id && !a.physical));
+        let status: String =
+            sqlx::query_scalar("SELECT status FROM engine_flow030_outbox WHERE effect_id=?")
+                .bind(&stop_id)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(status, "settled");
+        let diagnostics: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM engine_flow030_events WHERE diagnostic_json IS NOT NULL",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(diagnostics, 1);
+        assert!(matches!(
+            control
+                .settle_joined_diagnostic(&runtime, &pool, &joined)
+                .await
+                .unwrap(),
+            Apply030::Replayed(_)
+        ));
+        assert!(runtime
+            .diagnostic_join(&identity, &start.activation_id)
+            .unwrap()
+            .is_none());
+        let contradictory = FlowEvent030 {
+            identity: identity.clone(),
+            event_id: work_terminal_event_id030(
+                &identity,
+                &format!("joined-stop:{}", attempt.provider_attempt_id()),
+            )
+            .unwrap(),
+            expected_revision: "999".into(),
+            kind: FlowEventKind030::PhysicalEnded {
+                work: start.clone(),
+                stop_effect_id: Some(stop_id.clone()),
+                evidence: PhysicalEvidence030 {
+                    native_receipt_id: format!("physical:{}", attempt.provider_attempt_id()),
+                    descendants_joined: true,
+                },
+            },
+        };
+        runtime.begin_event_commit(&contradictory).unwrap();
+        assert!(control
+            .settle_joined_diagnostic(&runtime, &pool, &joined)
+            .await
+            .is_err());
+        assert!(runtime.available(&identity).is_err());
+        return;
+    }
     let frozen_work = if mode == 7 {
         Some(
             runtime

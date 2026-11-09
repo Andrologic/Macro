@@ -55,7 +55,7 @@ it('unfolds a composition step in place and folds it back from the frame heading
   expect(crisis.querySelector('.agsdl-composition-frame')).toBeNull();
 });
 
-it('retains the visit limit and runtime status on a 0.3 node', async () => {
+it('keeps observed runtime status but removes technical hints from a 0.3 node', async () => {
   const source = '{"contract":"agsdl-0.3.0","id":"runtime","agents":{"a":{"harness":"codex"}},"flow":{"entry":"a","steps":{"a":{"type":"agent","agent":"a","title":"Review","maxVisits":9007199254740993}}}}';
   const projected = projectViewer(source);
   const graph = projected.graphs[0];
@@ -64,6 +64,26 @@ it('retains the visit limit and runtime status on a 0.3 node', async () => {
     nativeActivations={{ '/flow/steps/a': { state: 'active', activations: [] } }} />));
   const node = host.querySelector<HTMLButtonElement>('.agsdl-graph-node')!;
   expect(node.querySelector('[role="img"]')?.getAttribute('aria-label')).toBeTruthy();
-  expect(node.querySelector('[title="Visit limit: 9007199254740993"]')?.getAttribute('aria-label')).toBe('Visit limit: 9007199254740993');
-  expect(node.textContent).toContain('9007199254740993');
+  expect(node.querySelector('.agsdl-node-capabilities')).toBeNull();
+  expect(node.textContent).not.toContain('9007199254740993');
+  expect(node.getAttribute('aria-label') ?? '').not.toContain('9007199254740993');
+});
+
+it('renders nested composition frames and edits the source of the focused occurrence', async () => {
+  const projected = projectViewer(JSON.stringify({ contract:'agsdl-0.3.0', id:'nested', agents:{a:{harness:'example'}},
+    flow:{entry:'first',steps:{first:{type:'compose',composition:'parent',next:{done:'second'}},second:{type:'compose',composition:'parent',next:{done:[]}}}},
+    compositions:{parent:{entry:'child',outputs:['done'],steps:{child:{type:'compose',composition:'leaf',next:{done:{output:'done'}}}}},
+      leaf:{entry:'work',outputs:['done'],steps:{work:{type:'agent',agent:'a',next:{output:'done'}}}}} }));
+  const graph=projectSystemOverview(projected.graphs[0],[]);
+  let edited='';
+  host=document.createElement('div');document.body.append(host);root=createRoot(host);
+  await act(async()=>root!.render(<WorkflowGraph cards={graph.cards} edges={graph.edges} entry={graph.entry} compositions={projected.graphs}
+    declarations={projected.declarations} selected="" select={path=>{edited=path}} title={card=>card.title}/>));
+  await act(async()=>host!.querySelector<HTMLButtonElement>('.is-subprocess')!.click());
+  await act(async()=>host!.querySelector<HTMLButtonElement>('.is-subprocess')!.click());
+  expect(host.querySelectorAll('.agsdl-composition-frame')).toHaveLength(2);
+  const work=[...host.querySelectorAll<HTMLButtonElement>('.agsdl-graph-node')].find(button=>button.querySelector('.agsdl-node-subtitle')?.textContent==='work')!;
+  await act(async()=>work.dispatchEvent(new MouseEvent('dblclick',{bubbles:true})));
+  expect(edited).toBe('/compositions/leaf/steps/work');
+  expect(host.querySelector('[role="img"]')).toBeNull();
 });

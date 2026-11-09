@@ -704,5 +704,165 @@
       "exchange": "Lors d’un échange de données",
       "dependency": "Après le bloc précédent"
     }
+  },
+  "authoring030": {
+    "advanced": "Propriétés avancées",
+    "exactJson": "Source JSON exacte",
+    "draftHint": "Les modifications sont enregistrées comme brouillon. Les contrôles statiques n’autorisent pas l’exécution.",
+    "saveDraft": "Enregistrer le brouillon",
+    "invalidDraft": "Brouillon à corriger · exécution non autorisée",
+    "checked": "Contrôles statiques terminés · exécution non évaluée",
+    "unchecked": "Brouillon · contrôles statiques en attente",
+    "document": "Document du système",
+    "undo": "Annuler",
+    "redo": "Rétablir",
+    "default": "Non précisé",
+    "groups": {
+      "general": "Travail",
+      "instructions": "Instructions permanentes",
+      "mission": "Mission confiée",
+      "information": "Informations fournies",
+      "choices": "Choix et destinations",
+      "instance": "Conversation et livraison",
+      "join": "Règle des travaux parallèles"
+    },
+    "hints": {
+      "instructions": "Ces instructions s’appliquent pendant toute la conversation de l’agent.",
+      "mission": "La mission concerne un travail. Le message d’une étape précédente peut remplacer la mission par défaut.",
+      "information": "Les ressources sont des informations à lire, jamais des ordres à suivre.",
+      "instance": "Laissez l’instance vide pour partager la conversation de l’agent. Utilisez new pour une nouvelle conversation, ou un nom pour en réutiliser une. La livraison s’applique si elle travaille déjà.",
+      "join": "Sans seuil, attendre toutes les branches. Avec un seuil, continuer dès que les résultats acceptés sont assez nombreux. Les résultats tardifs ne comptent pas pour la suite."
+    },
+    "fields": {
+      "title": "Titre du travail",
+      "description": "Présentation",
+      "agent": "Agent responsable",
+      "composition": "Parcours réutilisable",
+      "workType": "Type de travail",
+      "instructions": "Instructions permanentes",
+      "mission": "Texte de la mission",
+      "information": "Information à lire",
+      "uri": "Adresse de la source",
+      "ref": "Nom du contenu partagé",
+      "selection": "Données sélectionnées, un nom par ligne",
+      "instance": "Instance de conversation",
+      "delivery": "Si le travail est déjà en cours",
+      "remaining": "Branches encore actives",
+      "failures": "Si une branche échoue",
+      "maxFailures": "Nombre maximal d’échecs tolérés",
+      "count": "Nombre de résultats acceptés nécessaires",
+      "accept": "Choix acceptés, un par ligne",
+      "destination": "Continuer vers",
+      "joinMode": "Règle de regroupement",
+      "agentDescription": "Rôle de l’agent",
+      "dataPath": "Données sélectionnées, un nom par ligne"
+    },
+    "options": {
+      "agent": "Mission d’un agent",
+      "call": "Action automatique",
+      "approval": "Décision humaine",
+      "compose": "Parcours réutilisable",
+      "join": "Attendre les travaux parallèles",
+      "queue": "Attendre puis démarrer un travail distinct",
+      "steer": "Rejoindre le travail en cours si possible",
+      "stop": "Arrêter les autres travaux avant de continuer",
+      "finish": "Continuer pendant que les autres terminent",
+      "wait": "Laisser les autres terminer puis continuer",
+      "fail": "Faire échouer le groupe",
+      "keep": "Conserver les échecs et attendre les autres",
+      "all": "Toutes les branches",
+      "quorum": "Assez de résultats acceptés"
+    },
+    "add": {
+      "resource": "Ajouter une information",
+      "choice": "Ajouter un choix",
+      "confirm": "Ajouter"
+    },
+    "name": {
+      "resource": "Nom de l’information",
+      "choice": "Nom du choix"
+    },
+    "sourceKind": "Source de l’information",
+    "sources": {
+      "value": "Texte à lire",
+      "ref": "Contenu partagé",
+      "uri": "Fichier ou adresse web"
+    },
+    "diagnostics": {
+      "title": "Diagnostics de conception",
+      "count": "Problèmes à examiner · {{count}}",
+      "filter": "Filtrer les problèmes",
+      "search": "Rechercher un problème",
+      "all": "Tous les problèmes",
+      "error": "Erreur",
+      "warning": "Avertissement",
+      "empty": "Aucun problème ne correspond à ce filtre.",
+      "explanation": {
+        "harness": "Vérifier les capacités déclarées de l’agent.",
+        "document": "Corriger la structure du document.",
+        "mission": "Vérifier la mission et les informations reçues.",
+        "join": "Vérifier le regroupement des travaux parallèles.",
+        "instance": "Vérifier le partage de conversation entre travaux.",
+        "composition": "Vérifier ce parcours réutilisable et ses usages.",
+        "review": "Examiner la partie concernée du système."
+      }
+    },
+    "exactHint": "Les autres valeurs restent accessibles dans l’onglet JSON exact.",
+    "ownerChangeHint": "L’agent responsable a changé. Ses propriétés de définition sont bloquées. Enregistrez puis rouvrez cette fiche pour modifier le nouvel agent.",
+    "definitionChangeHint": "La définition de l’agent a des modifications en attente. Enregistrez puis rouvrez cette fiche avant de changer l’agent responsable."
+  },
+  "graph030": {
+    "keyboardHint": "Flèche droite ouvre l’aperçu et les détails avancés. Maj+F10 ouvre les actions.",
+    "advanced": "Détails avancés",
+    "declaredOnly": "Configuration déclarée. La disponibilité et l’activité nécessitent des observations d’exécution.",
+    "occurrences": "{{count}} passages",
+    "fanout": "Pour chaque élément",
+    "repetition": "Répétition",
+    "provenance": "Origine",
+    "errorVia": "Le problème remonte vers un recours du processus ou du sous-processus englobant.",
+    "routeVia": "Cette route emprunte une sortie déclarée d’un sous-processus.",
+    "labels": {
+      "conversation": "Conversation de travail",
+      "delivery": "Règle de livraison",
+      "quorum": "Décision",
+      "join": "Regroupement",
+      "remaining": "Autres branches",
+      "error": "En cas de problème"
+    },
+    "conversation": {
+      "shared": "Même conversation tout au long du processus.",
+      "named": "Conversation « {{name}} », réutilisée dans tout le processus.",
+      "new": "Une conversation distincte à chaque passage."
+    },
+    "delivery": {
+      "queue": "Les messages attendent leur tour. C’est une règle de livraison, pas une file observée.",
+      "steer": "Un message peut rejoindre un travail en cours. Cette règle ne prouve pas qu’un travail est actif.",
+      "legend": "Messages à tour de rôle, règle prévue"
+    },
+    "quorum": {
+      "one": "Décider dès qu’un avis favorable est arrivé.",
+      "rule": "Décider dès que {{threshold}} avis favorables sont arrivés."
+    },
+    "join": {
+      "all": "Attendre toutes les branches démarrées.",
+      "origin": "Le groupe commence à « {{name}} ». Seules les branches réellement démarrées comptent.",
+      "unreported": "L’origine du groupe n’est pas disponible dans un rapport de validation correspondant.",
+      "keepLimited": "Limite d’échecs tolérés : {{limit}}. Tout échec supplémentaire fait échouer le groupe immédiatement.",
+      "keep": "Conserver les échecs et attendre les autres branches."
+    },
+    "remaining": {
+      "stop": "Après la décision, arrêter les autres branches. Poursuivre une fois leur arrêt effectif.",
+      "finish": "Après la décision, poursuivre immédiatement. Les autres terminent ; leurs résultats tardifs ne comptent plus dans la décision.",
+      "wait": "Après la décision, laisser les autres terminer, puis poursuivre. Leurs résultats tardifs ne comptent plus dans la décision."
+    },
+    "error": {
+      "local": "Suivre le recours propre à cette étape.",
+      "flow": "Suivre le recours global du processus.",
+      "join": "Le problème remonte d’abord au regroupement « {{name}} ».",
+      "compose": "Le problème remonte d’abord au sous-processus « {{name}} ».",
+      "unreported": "La validation n’a pas encore établi la portée du recours.",
+      "unhandled": "Aucun recours n’est déclaré ici.",
+      "inheritedRoute": "Suivre un recours hérité du processus ou du sous-processus englobant."
+    }
   }
 }
