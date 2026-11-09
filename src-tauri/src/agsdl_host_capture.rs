@@ -453,7 +453,7 @@ pub(crate) async fn observation(
                 &source.revision.source_sha256,
                 &scope,
             )?;
-            for field in ["modules", "harnesses", "agents"] {
+            for field in ["modules", "harnesses", "agents", "hostCapabilities"] {
                 let entries = observed
                     .get(field)
                     .and_then(Value::as_array)

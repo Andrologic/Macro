@@ -93,3 +93,20 @@ it('prepares the selected captured route and transports exact values without inv
   const wrong = { ...input, source: { ...source, terminalId: 'other' } };
   expect(await port.evaluate({ ...job, inputJson: JSON.stringify(wrong) })).toMatchObject({ kind: 'failed', code: 'CORRELATION' });
 });
+
+it('normalizes native command tickets before routes and keeps normal failed distinct from parsing failure', async () => {
+  const port = createHostRoutePort030('generation');
+  const job = (input: unknown): HostRouteJob030 => ({ ticket: 'call-ticket', generation: 'generation', inputDigest: 'digest', inputJson: JSON.stringify(input) });
+  const source = { kind: 'entry', terminalId: 'call-visit', producerStep: ['tests'], outputJson: '{}', provenance: { instructions: [] } };
+  const prepared = await port.evaluate(job({ operation: 'prepare', stepJson: '{"type":"call","command":"never execute","parse":"json"}', source }));
+  if (prepared.kind !== 'ready') throw new Error('Call preparation failed');
+  const input = { operation: 'normalize', prepared: JSON.parse(prepared.resultJson).prepared,
+    receipt: { exitCodeJson: '1', stdout: '{"failed":9007199254740993}', stderr: 'stderr', output: '{"failed":9007199254740993}stderr', complete: true } };
+  const normalized = await port.evaluate(job(input));
+  if (normalized.kind !== 'ready') throw new Error('Call normalization failed');
+  expect(JSON.parse(normalized.resultJson)).toEqual({ kind: 'completed', outputJson: '{"outcome":"failed","data":{"exitCode":1,"output":"{\\"failed\\":9007199254740993}stderr","value":{"failed":9007199254740993}}}' });
+  const invalid = await port.evaluate(job({ ...input, receipt: { ...input.receipt, stdout: 'not json' } }));
+  if (invalid.kind !== 'ready') throw new Error('Data failure escaped native ticket');
+  expect(JSON.parse(invalid.resultJson)).toEqual({ kind: 'failed', code: 'OUTPUT_INVALID' });
+  await expect(port.evaluate({ ...job(input), generation: 'retired' })).rejects.toThrow('generation changed');
+});

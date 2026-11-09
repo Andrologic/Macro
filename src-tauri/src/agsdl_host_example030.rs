@@ -569,6 +569,99 @@ struct ScriptedWork030 {
     result: tokio::sync::oneshot::Receiver<Result<()>>,
 }
 
+struct ScriptedCall030 {
+    key: crate::agsdl_host_scenario030::WorkKey030,
+    request_id: String,
+    driver: crate::agsdl_host_calls030::SyntheticCallDriver030,
+    result: tokio::sync::oneshot::Receiver<Result<crate::agsdl_host_calls030::JoinedCall030>>,
+}
+
+async fn start_scripted_call030(
+    app: &tauri::AppHandle,
+    pool: &SqlitePool,
+    tasks: &StreamTasks,
+    owner: &crate::db::agsdl_execution::dto::EngineOwner,
+    effect: &FlowEffect030,
+    cancelled: &CancellationToken,
+) -> Result<ScriptedCall030> {
+    use crate::agsdl_host_call_authority030::NativeCallAuthority030;
+    use crate::agsdl_host_calls030 as calls;
+    let host = app.state::<HostState>();
+    let lease = host.start_lease().await?;
+    let broker = lease.call_data030()?;
+    drop(lease);
+    let authority = NativeCallAuthority030::capture(&host, owner).await?;
+    let attempt = calls::reserve_call030(pool, &authority, effect).await?;
+    match calls::prepare_call030(pool, &authority, &broker, &attempt, cancelled).await? {
+        calls::CallPreparation030::Ready => {}
+        _ => {
+            return Err(failure(
+                "CORRELATION",
+                "example",
+                "Pinned command preparation failed",
+            ))
+        }
+    }
+    drop(authority);
+    let key = scripted_work_key030(effect)?;
+    let claim = crate::agsdl_host_flow030::claim_expected(
+        host.flow030(),
+        &host,
+        pool,
+        &effect.identity,
+        &effect.id,
+    )
+    .await?
+    .ok_or_else(|| failure("STALE_REFERENCE", "call", "Pinned call Start changed"))?;
+    if claim.effect() != effect {
+        return Err(failure("CORRELATION", "call", "Pinned call claim differs"));
+    }
+    let request_id = claim.request_id();
+    let (driver_send, driver_recv) = tokio::sync::oneshot::channel();
+    let (result_send, result) = tokio::sync::oneshot::channel();
+    let (app, pool, owner, cancelled) =
+        (app.clone(), pool.clone(), owner.clone(), cancelled.clone());
+    claim
+        .handoff_host(tasks, async move {
+            let host = app.state::<HostState>();
+            let result = async {
+                let authority = NativeCallAuthority030::capture(&host, &owner).await?;
+                let control = crate::agsdl_host_calls::Control {
+                    stop: CancellationToken::new(),
+                    machine_timeout: CancellationToken::new(),
+                };
+                let (driver, owned) =
+                    calls::launch_synthetic030(&pool, &authority, &attempt, control).await?;
+                drop(authority);
+                driver_send
+                    .send(driver)
+                    .map_err(|_| failure("UNCERTAIN", "call", "Call timeline closed"))?;
+                let joined = owned.join().await?;
+                let authority = NativeCallAuthority030::capture(&host, &owner).await?;
+                match calls::finish_joined_call030(&pool, &authority, &broker, &joined, &cancelled)
+                    .await?
+                {
+                    calls::CallSettlement030::Terminal { .. } => Ok(joined),
+                    calls::CallSettlement030::Diagnostic { .. } => {
+                        Err(failure("UNCERTAIN", "call", "Pinned call has a diagnostic"))
+                    }
+                }
+            }
+            .await;
+            let _ = result_send.send(result);
+        })
+        .await?;
+    let driver = driver_recv
+        .await
+        .map_err(|_| failure("UNCERTAIN", "call", "Call launch did not acknowledge"))?;
+    Ok(ScriptedCall030 {
+        key,
+        request_id,
+        driver,
+        result,
+    })
+}
+
 fn scripted_work_key030(
     effect: &FlowEffect030,
 ) -> Result<crate::agsdl_host_scenario030::WorkKey030> {
@@ -758,6 +851,8 @@ async fn quiesce_scenario030(
     tasks: &StreamTasks,
     owner: &crate::db::agsdl_execution::dto::EngineOwner,
     works: &mut Vec<ScriptedWork030>,
+    calls: &mut Vec<ScriptedCall030>,
+    joined_calls: &std::collections::BTreeMap<String, crate::agsdl_host_calls030::JoinedCall030>,
     joined: &std::collections::BTreeMap<String, crate::agsdl_host_dispatch030::JoinedOwnedAgent030>,
     cancelled: &CancellationToken,
 ) -> Result<crate::db::agsdl_execution::flow_store030::FlowView030> {
@@ -805,6 +900,19 @@ async fn quiesce_scenario030(
                         .await?;
                 works.push(work);
             }
+            FlowEffectKind030::Start { agent: None, .. } => {
+                let key = scripted_work_key030(&effect)?;
+                if calls.iter().any(|c| c.key == key) || works.iter().any(|w| w.key == key) {
+                    return Err(failure(
+                        "CORRELATION",
+                        "call",
+                        "Pinned call key is ambiguous",
+                    ));
+                }
+                calls.push(
+                    start_scripted_call030(app, pool, tasks, owner, &effect, cancelled).await?,
+                );
+            }
             FlowEffectKind030::StopWork { work, .. } => {
                 let matching = works
                     .iter()
@@ -837,10 +945,14 @@ async fn quiesce_scenario030(
                     pool,
                     owner,
                     reference,
-                    joined.get(&reference.activation_id).map_or(
-                        crate::agsdl_host_dispatch030::SourceOwnership030::Join,
-                        crate::agsdl_host_dispatch030::SourceOwnership030::Agent,
-                    ),
+                    if let Some(call) = joined_calls.get(&reference.activation_id) {
+                        crate::agsdl_host_dispatch030::SourceOwnership030::Call(call)
+                    } else {
+                        joined.get(&reference.activation_id).map_or(
+                            crate::agsdl_host_dispatch030::SourceOwnership030::Join,
+                            crate::agsdl_host_dispatch030::SourceOwnership030::Agent,
+                        )
+                    },
                     cancelled,
                 )
                 .await?;
@@ -902,10 +1014,21 @@ async fn drive_scenario030(
 ) -> Result<crate::db::agsdl_execution::flow_store030::FlowView030> {
     use crate::agsdl_host_scenario030::TimelineEvent030;
     let mut works: Vec<ScriptedWork030> = Vec::new();
+    let mut calls: Vec<ScriptedCall030> = Vec::new();
+    let mut joined_calls = std::collections::BTreeMap::new();
     let mut joined = std::collections::BTreeMap::new();
     for event in scenario.timeline {
         let view = quiesce_scenario030(
-            app, pool, config, tasks, owner, &mut works, &joined, cancelled,
+            app,
+            pool,
+            config,
+            tasks,
+            owner,
+            &mut works,
+            &mut calls,
+            &joined_calls,
+            &joined,
+            cancelled,
         )
         .await?;
         match event {
@@ -913,6 +1036,11 @@ async fn drive_scenario030(
                 let mut actual = works
                     .iter()
                     .map(|w| (w.key.step.clone(), w.key.item.clone()))
+                    .chain(
+                        calls
+                            .iter()
+                            .map(|c| (c.key.step.clone(), c.key.item.clone())),
+                    )
                     .collect::<Vec<_>>();
                 let mut expected = expected
                     .into_iter()
@@ -922,7 +1050,7 @@ async fn drive_scenario030(
                 expected.sort();
                 let physical = view.state.activations.iter().filter(|a| a.physical).count();
                 if actual != expected
-                    || physical != works.len()
+                    || physical != works.len() + calls.len()
                     || works.iter().any(|work| {
                         !view
                             .state
@@ -937,6 +1065,35 @@ async fn drive_scenario030(
                         "Running work differs from pinned timeline",
                     ));
                 }
+            }
+            TimelineEvent030::Command { key, receipt } => {
+                let matching = calls
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, c)| c.key == key)
+                    .map(|(i, _)| i)
+                    .collect::<Vec<_>>();
+                if matching.len() != 1 || works.iter().any(|w| w.key == key) {
+                    return Err(failure(
+                        "CORRELATION",
+                        "call",
+                        "Command timeline work is not unique",
+                    ));
+                }
+                let call = calls.remove(matching[0]);
+                call.driver.send(receipt)?;
+                let witness = call
+                    .result
+                    .await
+                    .map_err(|_| failure("UNCERTAIN", "call", "Owned call result unavailable"))??;
+                if !tasks
+                    .cancel_owned(&call.request_id)
+                    .await
+                    .map_err(|_| failure("UNCERTAIN", "call", "Call parent did not join"))?
+                {
+                    return Err(failure("CORRELATION", "call", "Call parent is absent"));
+                }
+                joined_calls.insert(witness.attempt().work().activation_id.clone(), witness);
             }
             TimelineEvent030::Work { key, outcome } => {
                 let matches = works
@@ -976,10 +1133,20 @@ async fn drive_scenario030(
         }
     }
     let view = quiesce_scenario030(
-        app, pool, config, tasks, owner, &mut works, &joined, cancelled,
+        app,
+        pool,
+        config,
+        tasks,
+        owner,
+        &mut works,
+        &mut calls,
+        &joined_calls,
+        &joined,
+        cancelled,
     )
     .await?;
     if !works.is_empty()
+        || !calls.is_empty()
         || view.state.verdict.is_none()
         || view.state.activations.iter().any(|a| a.physical)
         || view.effects.iter().any(|row| {
@@ -1980,7 +2147,7 @@ impl ExampleObservation030 {
             "harnesses":[{"harness":"example","version":VERSION,"installation":"available","adapterId":ADAPTER,
                 "qualified":true,"capabilities":capabilities,
                 "models":[{"name":"in-process-example","efforts":[],"defaultEffort":null}],"defaultModel":"in-process-example"}],
-            "agents":observed}),
+            "agents":observed, "hostCapabilities":[{"name":"call.command","support":"native","evidenceJson":evidence}]}),
         )
     }
 }
