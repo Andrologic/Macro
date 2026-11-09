@@ -810,5 +810,59 @@
     "exactHint": "Weitere Werte bleiben im Reiter für exaktes JSON verfügbar.",
     "ownerChangeHint": "Der verantwortliche Agent wurde geändert. Seine Definition ist gesperrt. Speichern und öffnen Sie diese Ansicht erneut, um den neuen Agenten zu bearbeiten.",
     "definitionChangeHint": "Die Agentendefinition enthält ungespeicherte Änderungen. Speichern und öffnen Sie diese Ansicht erneut, bevor Sie den verantwortlichen Agenten ändern."
+  },
+  "graph030": {
+    "keyboardHint": "Pfeil rechts öffnet Vorschau und erweiterte Details. Umschalt+F10 öffnet die Aktionen.",
+    "advanced": "Erweiterte Details",
+    "declaredOnly": "Deklarierte Konfiguration. Verfügbarkeit und Aktivität erfordern Beobachtungen eines Laufs.",
+    "occurrences": "{{count}} Durchläufe",
+    "fanout": "Für jedes Element",
+    "repetition": "Wiederholung",
+    "provenance": "Ursprung",
+    "errorVia": "Das Problem wird an einen Fehlerpfad des umgebenden Prozesses oder Teilprozesses weitergegeben.",
+    "routeVia": "Dieser Pfad folgt einem deklarierten Ausgang eines Teilprozesses.",
+    "labels": {
+      "conversation": "Unterhaltung",
+      "delivery": "Zustellregel",
+      "quorum": "Entscheidung",
+      "join": "Zusammenführung",
+      "remaining": "Andere Zweige",
+      "error": "Bei einem Problem"
+    },
+    "conversation": {
+      "shared": "Dieselbe Unterhaltung im gesamten Prozess.",
+      "named": "Unterhaltung „{{name}}“, im gesamten Prozess wiederverwendet.",
+      "new": "Eine eigene Unterhaltung bei jedem Durchlauf."
+    },
+    "delivery": {
+      "queue": "Nachrichten warten, bis sie an der Reihe sind. Dies ist eine Zustellregel, keine beobachtete Warteschlange.",
+      "steer": "Eine Nachricht kann sich laufender Arbeit anschließen. Diese Regel belegt keine aktive Arbeit.",
+      "legend": "Nachrichten nacheinander, geplante Regel"
+    },
+    "quorum": {
+      "one": "Entscheiden, sobald eine zustimmende Antwort eingegangen ist.",
+      "rule": "Entscheiden, sobald {{threshold}} zustimmende Antworten eingegangen sind."
+    },
+    "join": {
+      "all": "Auf alle gestarteten Zweige warten.",
+      "origin": "Die Gruppe beginnt bei „{{name}}“. Nur tatsächlich gestartete Zweige zählen.",
+      "unreported": "Der Gruppenursprung liegt aus keinem passenden Validierungsbericht vor.",
+      "keepLimited": "Grenze tolerierter Fehler: {{limit}}. Jeder weitere Fehler lässt die Gruppe sofort fehlschlagen.",
+      "keep": "Fehler bewahren und auf die anderen Zweige warten."
+    },
+    "remaining": {
+      "stop": "Nach der Entscheidung die anderen Zweige stoppen. Erst fortfahren, wenn sie tatsächlich gestoppt sind.",
+      "finish": "Nach der Entscheidung sofort fortfahren. Die anderen enden regulär; spätere Ergebnisse zählen nicht für die Entscheidung.",
+      "wait": "Nach der Entscheidung die anderen regulär beenden lassen und dann fortfahren. Spätere Ergebnisse zählen nicht für die Entscheidung."
+    },
+    "error": {
+      "local": "Dem eigenen Fehlerpfad dieses Schritts folgen.",
+      "flow": "Dem globalen Fehlerpfad des Prozesses folgen.",
+      "join": "Das Problem erreicht zuerst die Zusammenführung „{{name}}“.",
+      "compose": "Das Problem erreicht zuerst den Teilprozess „{{name}}“.",
+      "unreported": "Die Validierung hat den Geltungsbereich des Fehlerpfads noch nicht bestimmt.",
+      "unhandled": "Hier ist kein Fehlerpfad deklariert.",
+      "inheritedRoute": "Einem geerbten Fehlerpfad des Prozesses oder des umgebenden Teilprozesses folgen."
+    }
   }
 }

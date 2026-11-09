@@ -810,5 +810,59 @@
     "exactHint": "Advanced values stay available in the exact JSON tab.",
     "ownerChangeHint": "The responsible agent has changed. Its definition fields are locked. Save, then reopen this panel to edit the new agent.",
     "definitionChangeHint": "The agent definition has pending changes. Save, then reopen this panel before changing the responsible agent."
+  },
+  "graph030": {
+    "keyboardHint": "Press Right Arrow for the preview and advanced details, or Shift+F10 for actions.",
+    "advanced": "Advanced details",
+    "declaredOnly": "Declared configuration. Availability and activity require run observations.",
+    "occurrences": "{{count}} visits",
+    "fanout": "For each item",
+    "repetition": "Repetition",
+    "provenance": "Origin",
+    "errorVia": "The error propagates to a recovery route in the enclosing process or subprocess.",
+    "routeVia": "This route follows a declared subprocess output.",
+    "labels": {
+      "conversation": "Conversation",
+      "delivery": "Delivery rule",
+      "quorum": "Decision",
+      "join": "Gathering",
+      "remaining": "Other branches",
+      "error": "If something fails"
+    },
+    "conversation": {
+      "shared": "Same conversation throughout the process.",
+      "named": "Conversation \"{{name}}\", reused throughout the process.",
+      "new": "A separate conversation for each visit."
+    },
+    "delivery": {
+      "queue": "Messages wait their turn. This is a delivery rule, not an observed queue.",
+      "steer": "A message can join work already in progress. This rule does not prove that any work is running.",
+      "legend": "Messages take turns, declared rule"
+    },
+    "quorum": {
+      "one": "Decide as soon as one favourable response arrives.",
+      "rule": "Decide as soon as {{threshold}} favourable responses arrive."
+    },
+    "join": {
+      "all": "Wait for every branch that was started.",
+      "origin": "The group starts at \"{{name}}\". Only branches actually started count.",
+      "unreported": "The group origin is not available from a matching validation report.",
+      "keepLimited": "Failure limit: {{limit}}. Any failure beyond it fails the group immediately.",
+      "keep": "Keep failures and wait for the other branches."
+    },
+    "remaining": {
+      "stop": "After the decision, stop the other branches. Continue once they have actually stopped.",
+      "finish": "After the decision, continue immediately. The others finish; their later results do not count toward the decision.",
+      "wait": "After the decision, let the others finish, then continue. Their later results do not count toward the decision."
+    },
+    "error": {
+      "local": "Use this step’s own recovery route.",
+      "flow": "Use the process-wide recovery route.",
+      "join": "The failure reaches the enclosing gathering \"{{name}}\" first.",
+      "compose": "The failure reaches the enclosing subprocess \"{{name}}\" first.",
+      "unreported": "Recovery scope has not yet been established by validation.",
+      "unhandled": "No recovery is declared here.",
+      "inheritedRoute": "Use an inherited recovery route from the process or its enclosing subprocess."
+    }
   }
 }

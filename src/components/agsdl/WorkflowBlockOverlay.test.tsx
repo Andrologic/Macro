@@ -176,3 +176,28 @@ it('keeps the descriptions of an agent definition and its step distinct', async 
   expect(host.textContent).toContain('Definition description');
   expect(host.textContent).toContain('Shared agent definition');
 });
+
+it('opens the 0.3 business preview and advanced details by keyboard without losing focus', async () => {
+  await mount();
+  const source = JSON.stringify({ contract: 'agsdl-0.3.0', id:'preview', agents:{a:{harness:'example',permissions:'read-only',skills:['policy']}},
+    flow:{entry:'review',steps:{review:{type:'agent',agent:'a',maxVisits:3}}}});
+  const step = projectViewer(source).graphs[0].cards[0];
+  await act(async () => root!.render(<WorkflowBlockOverlay card={step} title="Review" kindLabel="Agent" incoming={[]} outgoing={[]}
+    details={blockDetails(step,[])} actions={actions()} occurrences={[{activationId:'first',state:'completed'},{activationId:'second',state:'active'}]}><button>Review</button></WorkflowBlockOverlay>));
+  const button = host.querySelector('button')!;
+  await act(async () => button.focus());
+  await key('ArrowRight');
+  await act(async () => new Promise(resolve=>requestAnimationFrame(() => resolve(undefined))));
+  const preview = document.querySelector('[role="tooltip"]')!;
+  expect(preview.textContent).toContain('Same conversation');
+  const summary = preview.querySelector('summary')!;
+  expect(document.activeElement).toBe(summary);
+  await act(async () => summary.click());
+  expect(document.querySelector('[role="tooltip"]')).toBe(preview);
+  expect(preview.querySelector('details')?.open).toBe(true);
+  expect(preview.querySelectorAll('.agsdl-occurrence-list li')).toHaveLength(2);
+  await key('Escape');
+  expect(document.activeElement).toBe(button);
+  await act(async () => new Promise(resolve => setTimeout(resolve, 480)));
+  expect(document.querySelector('[role="tooltip"]')).toBeNull();
+});

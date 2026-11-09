@@ -810,5 +810,59 @@
     "exactHint": "Les autres valeurs restent accessibles dans l’onglet JSON exact.",
     "ownerChangeHint": "L’agent responsable a changé. Ses propriétés de définition sont bloquées. Enregistrez puis rouvrez cette fiche pour modifier le nouvel agent.",
     "definitionChangeHint": "La définition de l’agent a des modifications en attente. Enregistrez puis rouvrez cette fiche avant de changer l’agent responsable."
+  },
+  "graph030": {
+    "keyboardHint": "Flèche droite ouvre l’aperçu et les détails avancés. Maj+F10 ouvre les actions.",
+    "advanced": "Détails avancés",
+    "declaredOnly": "Configuration déclarée. La disponibilité et l’activité nécessitent des observations d’exécution.",
+    "occurrences": "{{count}} passages",
+    "fanout": "Pour chaque élément",
+    "repetition": "Répétition",
+    "provenance": "Origine",
+    "errorVia": "Le problème remonte vers un recours du processus ou du sous-processus englobant.",
+    "routeVia": "Cette route emprunte une sortie déclarée d’un sous-processus.",
+    "labels": {
+      "conversation": "Conversation de travail",
+      "delivery": "Règle de livraison",
+      "quorum": "Décision",
+      "join": "Regroupement",
+      "remaining": "Autres branches",
+      "error": "En cas de problème"
+    },
+    "conversation": {
+      "shared": "Même conversation tout au long du processus.",
+      "named": "Conversation « {{name}} », réutilisée dans tout le processus.",
+      "new": "Une conversation distincte à chaque passage."
+    },
+    "delivery": {
+      "queue": "Les messages attendent leur tour. C’est une règle de livraison, pas une file observée.",
+      "steer": "Un message peut rejoindre un travail en cours. Cette règle ne prouve pas qu’un travail est actif.",
+      "legend": "Messages à tour de rôle, règle prévue"
+    },
+    "quorum": {
+      "one": "Décider dès qu’un avis favorable est arrivé.",
+      "rule": "Décider dès que {{threshold}} avis favorables sont arrivés."
+    },
+    "join": {
+      "all": "Attendre toutes les branches démarrées.",
+      "origin": "Le groupe commence à « {{name}} ». Seules les branches réellement démarrées comptent.",
+      "unreported": "L’origine du groupe n’est pas disponible dans un rapport de validation correspondant.",
+      "keepLimited": "Limite d’échecs tolérés : {{limit}}. Tout échec supplémentaire fait échouer le groupe immédiatement.",
+      "keep": "Conserver les échecs et attendre les autres branches."
+    },
+    "remaining": {
+      "stop": "Après la décision, arrêter les autres branches. Poursuivre une fois leur arrêt effectif.",
+      "finish": "Après la décision, poursuivre immédiatement. Les autres terminent ; leurs résultats tardifs ne comptent plus dans la décision.",
+      "wait": "Après la décision, laisser les autres terminer, puis poursuivre. Leurs résultats tardifs ne comptent plus dans la décision."
+    },
+    "error": {
+      "local": "Suivre le recours propre à cette étape.",
+      "flow": "Suivre le recours global du processus.",
+      "join": "Le problème remonte d’abord au regroupement « {{name}} ».",
+      "compose": "Le problème remonte d’abord au sous-processus « {{name}} ».",
+      "unreported": "La validation n’a pas encore établi la portée du recours.",
+      "unhandled": "Aucun recours n’est déclaré ici.",
+      "inheritedRoute": "Suivre un recours hérité du processus ou du sous-processus englobant."
+    }
   }
 }

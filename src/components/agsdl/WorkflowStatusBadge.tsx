@@ -9,8 +9,22 @@ const nativeTaskStates: Partial<Record<NativeCardState, TaskStatusIndicatorState
   queued: 'idle_prompt', active: 'running', completed: 'completed', failed: 'failed', approval: 'awaiting_response',
 };
 
-export function WorkflowStatusBadge({ task, native }: { task?: TrackedTask; native?: NativeCardActivation }) {
+/** One observed activation. Repeated visits retain separate identities and states. */
+export interface WorkflowOccurrenceBadge030 {
+  activationId: string;
+  state: NativeCardState;
+  title?: string;
+  partial?: boolean;
+}
+
+export function WorkflowStatusBadge({ task, native, occurrences }: { task?: TrackedTask; native?: NativeCardActivation; occurrences?: readonly WorkflowOccurrenceBadge030[] }) {
   const { t } = useAgsdlTranslation();
+  if (occurrences?.length === 1) return <WorkflowStatusBadge native={{
+    state: occurrences[0].state, partial: occurrences[0].partial, activations: [],
+  }} />;
+  if (occurrences?.length) return <span className="agsdl-node-occurrences" role="img"
+    aria-label={t('agsdl.graph030.occurrences', { count: occurrences.length })}
+    title={t('agsdl.graph030.occurrences', { count: occurrences.length })}>{occurrences.length}</span>;
   if (!task && !native) return null;
   // A linked task carries user-facing states such as review or a pending reply.
   // Retain native uncertainty and Stop states even if its task has not caught up.

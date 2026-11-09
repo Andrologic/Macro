@@ -810,5 +810,59 @@
     "exactHint": "Los demás valores siguen disponibles en la pestaña JSON exacto.",
     "ownerChangeHint": "El agente responsable ha cambiado. Sus propiedades están bloqueadas. Guarde y vuelva a abrir esta ficha para editar el nuevo agente.",
     "definitionChangeHint": "La definición del agente tiene cambios pendientes. Guarde y vuelva a abrir esta ficha antes de cambiar el agente responsable."
+  },
+  "graph030": {
+    "keyboardHint": "Flecha derecha abre la vista previa y los detalles avanzados. Mayús+F10 abre las acciones.",
+    "advanced": "Detalles avanzados",
+    "declaredOnly": "Configuración declarada. La disponibilidad y la actividad requieren observaciones de ejecución.",
+    "occurrences": "{{count}} visitas",
+    "fanout": "Para cada elemento",
+    "repetition": "Repetición",
+    "provenance": "Origen",
+    "errorVia": "El problema se propaga hacia una ruta de recuperación del proceso o subproceso contenedor.",
+    "routeVia": "Esta ruta sigue una salida declarada de un subproceso.",
+    "labels": {
+      "conversation": "Conversación",
+      "delivery": "Regla de entrega",
+      "quorum": "Decisión",
+      "join": "Agrupación",
+      "remaining": "Otras ramas",
+      "error": "Si hay un problema"
+    },
+    "conversation": {
+      "shared": "La misma conversación durante todo el proceso.",
+      "named": "Conversación «{{name}}», reutilizada en todo el proceso.",
+      "new": "Una conversación distinta en cada visita."
+    },
+    "delivery": {
+      "queue": "Los mensajes esperan su turno. Es una regla de entrega, no una cola observada.",
+      "steer": "Un mensaje puede unirse a un trabajo en curso. Esta regla no demuestra que haya trabajo activo.",
+      "legend": "Mensajes por turnos, regla prevista"
+    },
+    "quorum": {
+      "one": "Decidir en cuanto llegue una respuesta favorable.",
+      "rule": "Decidir en cuanto lleguen {{threshold}} respuestas favorables."
+    },
+    "join": {
+      "all": "Esperar a todas las ramas iniciadas.",
+      "origin": "El grupo comienza en «{{name}}». Solo cuentan las ramas realmente iniciadas.",
+      "unreported": "El origen del grupo no está disponible en un informe de validación correspondiente.",
+      "keepLimited": "Límite de fallos tolerados: {{limit}}. Cualquier fallo adicional hace fallar el grupo de inmediato.",
+      "keep": "Conservar los fallos y esperar a las otras ramas."
+    },
+    "remaining": {
+      "stop": "Tras la decisión, detener las otras ramas. Continuar cuando se hayan detenido efectivamente.",
+      "finish": "Tras la decisión, continuar de inmediato. Las otras terminan; sus resultados tardíos no cuentan para la decisión.",
+      "wait": "Tras la decisión, dejar que las otras terminen y después continuar. Sus resultados tardíos no cuentan para la decisión."
+    },
+    "error": {
+      "local": "Seguir la ruta de recuperación de esta etapa.",
+      "flow": "Seguir la recuperación global del proceso.",
+      "join": "El problema llega primero a la agrupación «{{name}}».",
+      "compose": "El problema llega primero al subproceso «{{name}}».",
+      "unreported": "La validación aún no ha establecido el alcance de la recuperación.",
+      "unhandled": "No se declara recuperación aquí.",
+      "inheritedRoute": "Seguir una recuperación heredada del proceso o del subproceso contenedor."
+    }
   }
 }
