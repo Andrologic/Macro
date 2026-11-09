@@ -1,11 +1,15 @@
 import { Database } from 'bun:sqlite';
 import { createHash } from 'node:crypto';
+import { spawnSync } from 'node:child_process';
 import { evaluateHostWork030 } from '../../src/services/agsdlExecution/hostWorkTransition030';
 import { evaluateHostHumanClock030 } from '../../src/services/agsdlExecution/hostHumanClock030';
 import { connectValueSchemaValidator030 } from '../../src/services/agsdlExecution/valueSchemaPort030';
 import { validate as validateValueSchema030 } from '../../src/vendor/agsdl/v0.3/valueschema.mjs';
 import { commandOutput030, mcpOutput030, prepareCall030 } from '../../src/services/agsdlExecution/calls030';
 import { ConformanceError } from '../../src/services/agsdlExecution/exact';
+import { resolveRouteMessage030 } from '../../src/services/agsdlExecution/messages030';
+import { preflightExpansion030, type ItemContext030, type RouteSource030, type RouteTarget030 } from '../../src/services/agsdlExecution/routes030';
+import type { ExactJsonText, StepAddress } from '../../src/services/agsdlExecution/contracts';
 import { SchemaChecker } from '../../src/vendor/agsdl/v0.3/schemacheck.mjs';
 import schema030 from '../../src/vendor/agsdl/v0.3/schema/agsdl.schema.json';
 import { NumberToken, parse, stringify, type ExactValue } from '../../src/vendor/agsdl/v0.3/json.mjs';
@@ -23,6 +27,37 @@ export interface ReplayVerdict030 {
   divergence?: { eventId?: string; field: string; expected: unknown; stored: unknown };
   outsideReplay?: string[];
 }
+// A separate process keeps the synchronous reader's deadline enforceable even
+// when the executable ignores SIGTERM. All children inherit this process group.
+const replaySupervisor030 = String.raw`
+const { spawn } = await import('node:child_process');
+const { argv, deadline, grace } = JSON.parse(process.argv.at(-1));
+process.on('SIGTERM', () => {});
+let expired = false, stdout = [], stderr = [], size = 0;
+const expire = () => {
+  if (expired) return;
+  expired = true;
+  process.kill(-process.pid, 'SIGTERM');
+  setTimeout(() => process.kill(-process.pid, 'SIGKILL'), grace);
+};
+if (Date.now() >= deadline) process.exit(124);
+const timer = setTimeout(expire, Math.max(1, deadline - Date.now()));
+const child = spawn(argv[0], argv.slice(1), { stdio: ['ignore', 'pipe', 'pipe'] });
+for (const [stream, chunks] of [[child.stdout, stdout], [child.stderr, stderr]]) stream.on('data', chunk => {
+  size += chunk.length;
+  if (size > 8 * 1024 * 1024) expire();
+  if (!expired) chunks.push(chunk);
+});
+child.on('error', error => { stderr.push(Buffer.from(String(error))); });
+child.on('close', (code, signal) => {
+  if (expired) return;
+  if (Date.now() >= deadline) { expire(); return; }
+  clearTimeout(timer);
+  process.stdout.write(Buffer.concat(stdout));
+  process.stderr.write(Buffer.concat(stderr));
+  process.exitCode = signal ? 1 : code ?? 1;
+});
+`;
 export function verifyNativeReplay030(database: string, system: string, invocation: string, options: ObserveOptions030 = {}): ReplayVerdict030 {
   let command = options.replayCommand;
   if (!command && process.env.MACRO_AGSDL030_REPLAY_COMMAND) {
@@ -32,10 +67,18 @@ export function verifyNativeReplay030(database: string, system: string, invocati
   if (!Array.isArray(command) || !command.length || !command.every((arg) => typeof arg === 'string' && arg.length)) throw new Error('Native replay verifier is required');
   const timeout = options.replayTimeoutMs ?? 30_000;
   if (!Number.isSafeInteger(timeout) || timeout <= 0) throw new Error('Invalid native replay timeout');
-  let result: ReturnType<typeof Bun.spawnSync>;
-  try { result = Bun.spawnSync([...command, database, system, invocation], { stdout: 'pipe', stderr: 'pipe', timeout }); }
+  let result: ReturnType<typeof spawnSync>;
+  const started = performance.now(), grace = 100;
+  try {
+    const processOptions = { detached: true, stdio: 'pipe' as const, timeout: timeout + grace + 1000, killSignal: 'SIGKILL' as const, maxBuffer: 8 * 1024 * 1024 };
+    result = spawnSync(process.execPath, ['--eval', replaySupervisor030, '--', JSON.stringify({ argv: [...command, database, system, invocation], deadline: Date.now() + timeout, grace })], processOptions);
+    // The direct child may have exited while a descendant closed its stdio and
+    // kept running. Reap the remaining group after either success or failure.
+    try { if (result.pid) process.kill(-result.pid, 'SIGKILL'); } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ESRCH') throw error; }
+  }
   catch (error) { throw new Error(`Native replay execution failed: ${String(error)}`); }
-  if (!result.success || result.signalCode || result.exitCode !== 0) throw new Error(`Native replay refused: ${result.signalCode ?? `exit ${result.exitCode}`} ${Buffer.from(result.stdout ?? new Uint8Array()).toString('utf8').trim().slice(0, 8192)} ${Buffer.from(result.stderr ?? new Uint8Array()).toString('utf8').trim().slice(0, 4096)}`);
+  if (performance.now() - started >= timeout || result.status === 124) throw new Error('Native replay timeout: deadline exceeded; process group killed');
+  if (result.error || result.signal || result.status !== 0) throw new Error(`Native replay refused: ${result.error ?? result.signal ?? `exit ${result.status}`} ${Buffer.from(result.stdout ?? new Uint8Array()).toString('utf8').trim().slice(0, 8192)} ${Buffer.from(result.stderr ?? new Uint8Array()).toString('utf8').trim().slice(0, 4096)}`);
   const output = Buffer.from(result.stdout ?? new Uint8Array()).toString('utf8').trim();
   if (output.split(/\r?\n/).length !== 1) throw new Error('Native replay must return one JSON line');
   let verdict: unknown;
@@ -361,6 +404,27 @@ function verifyHostTables030(db: Database, state: Obj, plan: Obj, effects: Effec
         const occurrence = record(proof.occurrence), batches = list(ready.batches).filter((batch) => list(batch.items).some((item) => same(item.occurrence, occurrence)));
         require(batches.length === 1 && same(proof.source, source) && same(proof.producer, producer), 'preparation provenance');
         const item = list(batches[0].items).find((i) => same(i.occurrence, occurrence))!;
+        const target = record(batches[0].target);
+        if (target.kind === 'step') {
+          const step = steps.get(address(target.address)); require(step, 'prepared captured step');
+          if (['agent', 'approval', 'compose'].includes(string(step.type))) {
+            const capturedRoute = list(plan.routes).find((r) => same(r.source, record(reference.route).source) && r.kind === record(reference.route).kind && r.key === record(reference.route).key);
+            require(capturedRoute, 'prepared captured route');
+            require(Array.isArray(target.address), 'prepared target address');
+            const targetAddress: StepAddress = [string(target.address[0]), ...target.address.slice(1).map(string)];
+            const routeTarget: RouteTarget030 = {
+              kind: 'step', address: targetAddress, stepJson: string(step.declarationJson) as ExactJsonText,
+              declarationJson: string(capturedRoute.declarationJson) as ExactJsonText,
+              ...Object.fromEntries(['messageJson', 'eachPathJson', 'concurrencyJson', 'maxJson'].flatMap((key) => target[key] === null || target[key] === undefined ? [] : [[key, string(target[key])]])),
+            };
+            const routeSource = JSON.parse(stringify(source)) as RouteSource030, expansion = preflightExpansion030([routeTarget], routeSource);
+            require(expansion.kind === 'ready', 'prepared operand differs from captured source');
+            const batch = expansion.batches[0];
+            const itemContext: ItemContext030 = item.itemJson === null ? { kind: 'absent' } : { kind: 'element', index: string(occurrence.itemIndex), valueJson: string(item.itemJson) as ExactJsonText, mission: batch.kind === 'fanout' && batch.mission, ...(batch.kind === 'fanout' && batch.instructionAuthority ? { instructionAuthority: batch.instructionAuthority } : {}) };
+            const resolved = resolveRouteMessage030(string(plan.documentJson) as Parameters<typeof resolveRouteMessage030>[0], routeTarget, routeSource, itemContext);
+            require(same(raw(resolved.messageJson), raw(string(item.messageJson))) && same(raw(JSON.stringify(resolved.promptProvenance)), proof.prompt), 'prepared message/provenance differs from captured source');
+          }
+        }
         const key = occurrenceKey(text(row, 'native_receipt_id'), occurrence.targetOrdinal!, string(occurrence.itemIndex));
         require(occurrence.nativeReceiptId === row.native_receipt_id && !occurrences.has(key), 'duplicate/foreign occurrence'); occurrences.set(key, { row, item, batch: batches[0], proof });
       }
@@ -381,6 +445,7 @@ function verifyHostTables030(db: Database, state: Obj, plan: Obj, effects: Effec
   const admissions = map(rows('engine_flow030_work_admissions'), 'activation_id'), states = map(rows('engine_flow030_work_state'), 'activation_id');
   const authorizations = map(rows('engine_flow030_work_authorizations'), 'event_id'), workEvents = map(rows('engine_flow030_work_events'), 'event_id');
   const checks = map(rows('engine_flow030_work_checks'), 'check_id'), expectedChecks = new Set<string>();
+  const nativePlans = rows('engine_flow030_human_requests').filter((r) => r.kind === 'plan');
   const validateSchema = connectValueSchemaValidator030({ NumberToken, parse, validate: validateValueSchema030 });
   const workDecisions = new Map<string, Obj>();
   for (const [id, row] of admissions) {
@@ -392,7 +457,8 @@ function verifyHostTables030(db: Database, state: Obj, plan: Obj, effects: Effec
       && typeof policy.hostCeilingDigest === 'string' && /^sha256:[a-f0-9]{64}$/.test(policy.hostCeilingDigest), 'work admission policy');
     require(policy.policyDigest === nativePolicyDigest030(policy.effectivePolicy), 'work policy fingerprint');
     require(context.permissionsJson === privateCapture.callPermissionsJson && context.scopeJson === privateCapture.callScopeJson && context.registryVersion === record(capture.versions).registry, 'work admission captured context');
-    const contract = record(json(row, 'contract_json')); require(same(raw(string(contract.agentJson)), raw(string(agent.agentDeclarationJson))), 'work admission contract');
+    const contract = record(json(row, 'contract_json'));
+    require(row.contract_json === step.submissionContractJson && same(raw(string(contract.agentJson)), raw(string(agent.agentDeclarationJson))), 'work admission captured submission contract');
     let previous = '{"format":"macro-agsdl-work-journal/1","events":[]}', revision = '0';
     const records = [...workEvents.values()].filter((event) => event.activation_id === id);
     for (const recordRow of records) {
@@ -407,6 +473,16 @@ function verifyHostTables030(db: Database, state: Obj, plan: Obj, effects: Effec
       const evaluated = evaluateHostWork030(JSON.parse(text(row, 'context_json')), eventId, revision, text(row, 'contract_json'), previous, string(input.eventJson), text(row, 'options_json'), validateSchema);
       require(same(raw(evaluated.stateJson), raw(string(decision.stateJson))) && same(raw(evaluated.receiptJson), raw(string(decision.receiptJson))), 'work controller decision');
       const receipt = record(raw(string(decision.receiptJson))), action = record(receipt.decision), event = record(raw(string(input.eventJson)));
+      const body = record(event.event);
+      if (action.kind === 'planWaiting' || body.kind === 'planResolved') {
+        const plans = nativePlans.filter((r) => same(json(r, 'work_ids_json'), [id]) && record(json(r, 'payload_json')).planId === body.planId);
+        require(plans.length === 1, 'work plan has no unique native human request');
+        if (action.kind === 'planWaiting') require(record(json(plans[0], 'payload_json')).text === body.text, 'work plan presented text');
+        else {
+          const answer = record(record(json(plans[0], 'resolution_json')).answer);
+          require(body.decision === (answer.decision === 'yes' ? 'accept' : 'reject') && (body.comment ?? '') === (answer.comment ?? ''), 'work plan decision differs from native human resolution');
+        }
+      }
       if (action.kind === 'checkRequested') {
         const check = record(action.check), rowCheck = checks.get(string(check.checkId)), reservation = record(decision.check);
         require(rowCheck && rowCheck.activation_id === id && rowCheck.event_id === eventId && rowCheck.status === 'ended' && reservation.checkId === check.checkId
@@ -420,7 +496,7 @@ function verifyHostTables030(db: Database, state: Obj, plan: Obj, effects: Effec
           const completed = record(record(flow.body.result).Completed);
           require(flow.kind.WorkResult !== undefined && same(raw(string(completed.output_json)), expected) && completed.route_key === output.choice, 'work terminal output');
         } else if (action.outcome === 'cancelled' && action.code === 'JOIN_CANCELLED') require(flow.kind.PhysicalEnded !== undefined && a.stopEffectId !== null, 'work cancelled terminal');
-        else require(flow.kind.WorkResult !== undefined && record(record(record(flow.body.result).Failed).error).code === action.code, 'work failure terminal');
+        else require(flow.kind.WorkResult !== undefined && same(record(record(flow.body.result).Failed).error, { code: action.code!, message: action.code!, details: [] }), 'work failure terminal');
       }
       // Keep event attribution anchored even for controller events with no flow effect.
       require(event.eventId === eventId, 'work event identity');
@@ -476,6 +552,20 @@ function verifyHostTables030(db: Database, state: Obj, plan: Obj, effects: Effec
         const native = record(json(receiptRow, 'native_receipt_json')), provenance = record(native.provenance), original = record(json(receiptRow, 'source_json'));
         const document = record(raw(string(plan.documentJson))), expanded = original.ref === undefined ? original : record(record(document.content)[string(original.ref)]);
         require(original.ref === undefined || Object.keys(original).length === 1, 'content ref source');
+        // A receipt's own copies and hashes cannot authorize a foreign use. Its
+        // source is the resource at the attested location in the replayed item.
+        const pointer = string(provenance.pointer), message = record(raw(string(expected.item.messageJson)));
+        let replayedSource: ExactValue | undefined, usage: string | undefined;
+        if (pointer.startsWith('/message/resources/')) {
+          const name = pointer.slice('/message/resources/'.length), values = record(message.resources);
+          const key = Object.hasOwn(values, name) ? name : name.replaceAll('~1', '/').replaceAll('~0', '~');
+          if (Object.hasOwn(values, key)) { replayedSource = values[key]; usage = 'resource'; }
+        } else if (/^\/message\/prompt\/(0|[1-9][0-9]*)$/.test(pointer) && Array.isArray(message.prompt)) {
+          const index = BigInt(pointer.slice('/message/prompt/'.length));
+          if (index < BigInt(message.prompt.length)) { replayedSource = message.prompt[Number(index)]; usage = 'prompt'; }
+        }
+        require(replayedSource !== undefined && provenance.usage === usage && same(replayedSource, expanded), 'content use differs from replayed message');
+        require(Object.hasOwn(expanded, 'value'), 'unprojectable content payload absent from replayed message');
         require(same(raw(string(transported.sourceJson)), expanded) && same(native.payload, transported.payload), 'content payload/source');
         const expectedProvenance: Obj = { captureId: provenance.captureId!, sourceDigest: provenance.sourceDigest!, agent: provenance.agent!, usage: provenance.usage!, pointer: provenance.pointer!, requestedUri: expanded.uri ?? null, mediaType: provenance.mediaType!, sha256: provenance.sha256!, policyDigest: provenance.policyDigest! };
         require(same(transported.provenance, expectedProvenance) && provenance.captureId === contentIdentity.captureId && provenance.sourceDigest === contentIdentity.sourceDigest && provenance.agent === contentIdentity.agent && provenance.policyDigest === contentIdentity.policyDigest
@@ -554,12 +644,14 @@ export function verifyNativeCallsAndClock030(db: Database, state: Obj, plan: Obj
     require(admission.length === 1 && admission[0].body.startedAtMs === row.admitted_ms && admission[0].body.timeoutMs === row.timeout_json, 'clock admit event');
     if (row.kind !== 'approval') require(admission[0].body.answerTimeoutMs === row.answer_timeout_json, 'clock answer duration');
     require(row.retired === Number(bodies.some((h) => h.body.kind === 'retire' && h.body.workId === id)), 'clock retirement');
+    if (row.kind !== 'approval' && (bound.a.phase === 'done' || bound.a.physical === false || bound.a.result !== null || bound.a.stopEffectId !== null)) require(row.retired === 1, 'terminal replayed work has a live clock');
     const snapshots = latest ? [...list(latest.clocks), ...list(latest.retiredClocks)].filter((c) => c.workId === id) : [];
     require(row.kind === 'approval' ? same(json(row, 'snapshot_json'), {}) : snapshots.length === 1 && same(json(row, 'snapshot_json'), snapshots[0].snapshot), 'clock work snapshot');
   }
   for (const h of bodies) {
     if (['admit', 'approval', 'retire'].includes(string(h.body.kind))) require(clockWorks.has(string(h.body.workId)), 'orphan clock work event');
     if (h.body.kind === 'open' || h.body.kind === 'approval' || h.body.kind === 'associate' || h.body.kind === 'ack') require(requests.has(string(h.body.requestId)), 'orphan clock request event');
+    if (h.body.kind === 'open') require(h.body.reviewer === 'person', 'native human reviewer');
     if (h.body.kind === 'open' || h.body.kind === 'associate') for (const id of h.body.workIds as ExactValue[]) require(clockWorks.has(string(id)), 'request work association');
   }
   const answers: Obj[] = [], timeoutIds = new Set<string>();
@@ -573,6 +665,7 @@ export function verifyNativeCallsAndClock030(db: Database, state: Obj, plan: Obj
     require(Array.isArray(ids) && ids.every((workId) => clockWorks.has(string(workId))), 'human request work');
     const payload = record(json(row, 'payload_json'));
     const initialIds = opening[0].body.kind === 'approval' ? [string(opening[0].body.workId)] : (opening[0].body.workIds as ExactValue[]).map(string);
+    if (row.kind === 'plan') require(initialIds.length === 1 && work(initialIds[0]).step.type === 'agent' && typeof payload.planId === 'string' && payload.planId.length > 0 && typeof payload.text === 'string' && payload.text.trim().length > 0, 'native plan payload');
     if (row.kind === 'approval') {
       require(initialIds.length === 1, 'approval work'); const bound = work(initialIds[0]), declaration = record(raw(string(bound.step.declarationJson)));
       require(bound.step.type === 'approval' && same(payload.work, bound.reference) && same(payload.step, bound.a.step)
@@ -591,7 +684,23 @@ export function verifyNativeCallsAndClock030(db: Database, state: Obj, plan: Obj
     require(candidates.length === 1, 'human resolution event'); const candidate = candidates[0];
     const reason = candidate.expired !== true ? 'answer' : candidate.failure === 'APPROVAL_TIMEOUT' ? 'approvalTimeout' : 'answerTimeout';
     require(same(resolution, { ...candidate, reason }) && row.delivery === 'acknowledged' && bodies.some((h) => h.body.kind === 'ack' && h.body.requestId === id), 'human resolution/delivery');
-    for (const action of list(resolution.workActions)) require(clockWorks.has(string(action.workId)), 'human work action');
+    for (const action of list(resolution.workActions)) {
+      require(clockWorks.has(string(action.workId)), 'human work action');
+      if (action.action === 'PLAN_REJECTED') {
+        const a = work(string(action.workId)).a;
+        require(row.kind === 'plan' && (object(a.result) && a.result.kind === 'failed' && record(a.result.error).code === 'PLAN_REJECTED'
+          || a.result === null && a.stopEffectId !== null), 'plan resolution contradicts replayed terminal');
+      }
+    }
+    if (row.kind === 'plan') {
+      const protocol = rows('engine_flow030_work_events').filter((r) => r.activation_id === initialIds[0]).map((r) => {
+        const ticket = record(json(r, 'ticket_json')), input = record(ticket.input);
+        return { event: record(record(raw(string(input.eventJson))).event), decision: record(record(raw(string(record(json(r, 'decision_json')).receiptJson))).decision) };
+      });
+      require(protocol.some((p) => p.event.kind === 'planPresented' && p.event.planId === payload.planId && p.event.text === payload.text && p.decision.kind === 'planWaiting'), 'plan payload differs from native work protocol');
+      const answer = record(resolution.answer);
+      require(protocol.some((p) => p.event.kind === 'planResolved' && p.event.planId === payload.planId && p.event.decision === (answer.decision === 'yes' ? 'accept' : 'reject') && (p.event.comment ?? '') === (answer.comment ?? '')), 'plan delivery differs from native work protocol');
+    }
     if (row.kind === 'approval') {
       const bound = work(initialIds[0]), result = record(bound.a.result);
       if (reason === 'approvalTimeout') require(result.kind === 'failed' && record(result.error).code === 'APPROVAL_TIMEOUT', 'approval timeout terminal');
@@ -632,13 +741,19 @@ export function verifyNativeCallsAndClock030(db: Database, state: Obj, plan: Obj
     else {
       require(kind.WorkResult !== undefined, 'call result event'); const wire = record(body.result);
       if (result.kind === 'completed') require(same(record(wire.Completed), { output_json: result.outputJson!, route_key: record(raw(string(result.outputJson))).outcome! }), 'call completed result');
-      else require(result.kind === 'failed' && record(record(wire.Failed).error).code === result.code, 'call failure result');
+      else require(result.kind === 'failed' && same(record(wire.Failed).error, { code: result.code!, message: result.code!, details: [] }), 'call failure result');
+    }
+    let computed: ReturnType<typeof prepareCall030> | undefined, operandFailed = false;
+    try { computed = prepareCall030(string(bound.step.declarationJson) as Parameters<typeof prepareCall030>[0], { outputJson: string(bound.start.kind.inputJson) } as Parameters<typeof prepareCall030>[1]); }
+    catch (error) { if (error instanceof ConformanceError && error.code === 'OPERAND') operandFailed = true; else throw error; }
+    if (row.prepared_json !== null) {
+      require(computed, 'call prepared operand');
+      const expected = { ...computed, ...(computed.kind === 'command' ? { parse: computed.parse ?? null } : {}) };
+      require(same(raw(JSON.stringify(expected)), json(row, 'prepared_json')), 'call prepared operand');
     }
     const controlled = result.kind === 'stopped' || result.kind === 'failed' && result.code === 'TIMEOUT';
     if (end.kind === 'returned' && !controlled) {
-      require(row.prepared_json !== null, 'call prepared request'); const prepared = record(json(row, 'prepared_json')), declaration = record(raw(string(bound.step.declarationJson)));
-      const computed = prepareCall030(string(bound.step.declarationJson) as Parameters<typeof prepareCall030>[0], { outputJson: string(bound.start.kind.inputJson) } as Parameters<typeof prepareCall030>[1]);
-      const expected = { ...computed, ...(computed.kind === 'command' ? { parse: computed.parse ?? null } : {}) }; require(same(raw(JSON.stringify(expected)), prepared), 'call prepared operand');
+      require(row.prepared_json !== null && computed, 'call prepared request'); const prepared = record(json(row, 'prepared_json')), declaration = record(raw(string(bound.step.declarationJson)));
       const event = record(end.event); let normalized: string | undefined, failed = false;
       if (event.kind === 'startFailed') require(result.kind === 'failed' && result.code === 'CALL_FAILED', 'call start failure');
       else {
@@ -652,7 +767,7 @@ export function verifyNativeCallsAndClock030(db: Database, state: Obj, plan: Obj
       require(declaration.type === 'call', 'call declaration');
     } else require(['returned', 'stopped', 'timedOut', 'preparationFailed'].includes(string(end.kind)) && (controlled || end.kind === 'preparationFailed'), 'call end kind');
     if (result.kind === 'failed' && result.code === 'TIMEOUT') require(causes.has(id) && timeoutIds.has(text(row, 'activation_id')), 'call timeout cause');
-    if (end.kind === 'preparationFailed') require(physical.kind === 'notStarted' && row.prepared_json === null && result.kind === 'failed' && result.code === 'OPERAND', 'call preparation failure');
+    if (end.kind === 'preparationFailed') require(operandFailed && physical.kind === 'notStarted' && row.prepared_json === null && result.kind === 'failed' && result.code === 'OPERAND', 'call preparation failure');
     const causeRow = causes.get(id);
     if (causeRow) { const cause = record(json(causeRow, 'cause_json')), clockCause = controls.get(text(row, 'activation_id')), budget = clockWorks.get(text(row, 'activation_id')); require(clockCause && budget && same(cause.attempt, attempt) && typeof cause.causeId === 'string' && same(cause.cause, { clockReceiptId: text(clockCause, 'receipt_id'), observedMs: text(clockCause, 'observed_ms'), timeoutJson: text(budget, 'timeout_json') }), 'call clock cause'); }
   }
@@ -663,6 +778,7 @@ export function verifyNativeCallsAndClock030(db: Database, state: Obj, plan: Obj
     if (bound.step.type === 'approval' || bound.step.timeoutMsJson !== null && bound.step.timeoutMsJson !== undefined || declaration.answerTimeoutMs !== undefined || agent && record(raw(string(agent.agentDeclarationJson))).answerTimeoutMs !== undefined) require(clockWorks.has(id), 'missing native work clock');
     if (bound.step.type === 'approval') require([...requests.values()].some((r) => r.kind === 'approval' && Array.isArray(json(r, 'work_ids_json')) && (json(r, 'work_ids_json') as ExactValue[]).includes(id)), 'missing approval request');
     if (object(bound.a.result) && bound.a.result.kind === 'failed' && record(bound.a.result.error).code === 'TIMEOUT') require(timeoutIds.has(id), 'missing timeout control');
+    if (object(bound.a.result) && bound.a.result.kind === 'failed' && record(bound.a.result.error).code === 'PLAN_REJECTED') require([...requests.values()].some((r) => r.kind === 'plan' && r.resolution_json !== null && list(record(json(r, 'resolution_json')).workActions).some((a) => a.workId === id && a.action === 'PLAN_REJECTED')), 'missing native plan rejection');
   }
   return { answers, timeoutIds };
 }

@@ -42,7 +42,7 @@ function callUnit(n: Fixture, form: 'command' | 'mcp' | 'invalid-json' | 'start-
   const event = form === 'mcp' ? { kind: 'toolReturned', isError: false, text: 'Value.', structuredContentJson: null } : form === 'start-failed' ? { kind: 'startFailed' } : { kind: 'commandReceipt', exitCode: 0, stdout: form === 'invalid-json' ? 'invalid{' : 'Value.', stderr: '' };
   const outputJson = JSON.stringify({ outcome: 'passed', data: form === 'mcp' ? 'Value.' : { exitCode: 0, output: 'Value.' } });
   const result = form === 'invalid-json' || form === 'start-failed' ? { kind: 'failed', code: form === 'invalid-json' ? 'OUTPUT_INVALID' : 'CALL_FAILED' } : { kind: 'completed', outputJson };
-  const wire = 'code' in result ? { Failed: { error: { code: result.code } } } : { Completed: { output_json: outputJson, route_key: 'passed' } };
+  const wire = 'code' in result ? { Failed: { error: { code: result.code, message: result.code, details: [] } } } : { Completed: { output_json: outputJson, route_key: 'passed' } };
   const terminal = journal.find((row) => JSON.parse(row.event_json).kind.WorkResult?.work.activationId === a.id)!;
   terminal.event_id = eventId; terminal.event_json = JSON.stringify({ identity: n.state.identity, kind: { WorkResult: { work: effect.kind.work, physical: { native_receipt_id: nativeId, descendants_joined: true }, result: wire } } });
   a.result = 'code' in result ? { kind: 'failed', error: { code: result.code } } : { kind: 'completed', outputJson, routeKey: 'passed' };
@@ -51,7 +51,7 @@ function callUnit(n: Fixture, form: 'command' | 'mcp' | 'invalid-json' | 'start-
   const save = () => n.db.query("INSERT OR REPLACE INTO engine_flow030_calls VALUES (?,?,?,?,?,?,'terminal',?,?,?)").run(n.state.identity.systemStartId, n.state.identity.flowInvocationId, a.id, a.startEffectId, id, JSON.stringify(attempt), JSON.stringify(prepared), JSON.stringify(received), JSON.stringify(receipt));
   save();
   const exact = (value: any) => { const result = parse(new TextEncoder().encode(JSON.stringify(value))); if (result.error) throw Error('Invalid unit value'); return result.tree as Parameters<typeof verifyNativeCallsAndClock030>[1]; };
-  return { attempt, received, receipt, prepared, save, verify: () => verifyNativeCallsAndClock030(n.db, exact(n.state), exact(n.plan), effects, journal, n.owner) };
+  return { a, terminal, attempt, received, receipt, prepared, save, verify: () => verifyNativeCallsAndClock030(n.db, exact(n.state), exact(n.plan), effects, journal, n.owner) };
 }
 function addContent(n: Fixture) {
   const p = n.db.query('SELECT * FROM engine_flow030_preparations ORDER BY rowid LIMIT 1').get() as any;
@@ -141,6 +141,14 @@ describe.skipIf(!referenceDir || !process.env.MACRO_AGSDL030_REPLAY_COMMAND)('ho
     if (mutation === 'work-event') n.db.exec("UPDATE engine_flow030_route_source_attestations SET work_event_id=(SELECT event_id FROM engine_flow030_work_events e WHERE e.activation_id=json_extract(engine_flow030_route_source_attestations.producer_json,'$.activationId') ORDER BY rowid LIMIT 1) WHERE receipt_kind='agentWork'");
     expect(n.observe).toThrow('Host evidence');
   });
+  test('derives 034 prompt provenance from the captured route instead of accepting matching host copies', () => {
+    const n = fixture(); n.mutable();
+    const row = n.db.query('SELECT prepare_id,native_receipt_id,result_json FROM engine_flow030_preparations ORDER BY rowid LIMIT 1').get() as any;
+    const result = JSON.parse(row.result_json), proof = result.provenance[0]; proof.prompt = { kind: 'author', pointer: '/foreign' };
+    n.db.query('UPDATE engine_flow030_preparations SET result_json=? WHERE prepare_id=?').run(JSON.stringify(result), row.prepare_id);
+    n.db.query('UPDATE engine_flow030_occurrence_provenance SET provenance_json=? WHERE native_receipt_id=? AND target_ordinal=? AND item_index=?').run(JSON.stringify(proof), row.native_receipt_id, proof.occurrence.targetOrdinal, proof.occurrence.itemIndex);
+    expect(n.observe).toThrow('prepared message/provenance');
+  });
   test.each([false, true])('accepts native 040 journal and projections, human=%s', (human) => {
     const n = fixture(); addClock(n, human); expect(n.observe).not.toThrow();
   });
@@ -198,5 +206,13 @@ describe.skipIf(!referenceDir || !process.env.MACRO_AGSDL030_REPLAY_COMMAND)('ho
     if (mutation === 'event') c.receipt.eventId = 'foreign';
     if (mutation === 'result') c.receipt.result = { kind: 'failed', code: 'TIMEOUT' };
     c.save(); expect(c.verify).toThrow();
+  });
+  test('derives an already prepared call operand from its Start even after a branch stop', () => {
+    const n = fixture(), c = callUnit(n, 'command');
+    c.a.result = null; c.a.stopEffectId = 'host-stop';
+    (c.receipt as any).result = { kind: 'stopped' }; (c.received as any).end = { kind: 'stopped' };
+    c.terminal.event_json = JSON.stringify({ identity: n.state.identity, kind: { PhysicalEnded: { work: c.attempt.effect.kind.work, stop_effect_id: c.a.stopEffectId, evidence: { native_receipt_id: c.received.physical.receiptId, descendants_joined: true } } } });
+    c.save(); expect(c.verify).not.toThrow();
+    c.prepared.command = 'foreign'; c.save(); expect(c.verify).toThrow('call prepared operand');
   });
 });

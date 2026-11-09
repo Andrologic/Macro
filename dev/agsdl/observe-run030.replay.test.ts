@@ -2,6 +2,7 @@ import { afterEach, expect, test } from 'bun:test';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { spawnSync } from 'node:child_process';
 import { observeRun030, verifyNativeReplay030 } from './observe-run030';
 import { cleanupObservedDatabases030, nativeDatabase } from './observe-run030.testSupport';
 
@@ -43,4 +44,27 @@ test('restricts replay bypass to explicitly marked synthetic unit databases', ()
   const n = nativeDatabase(); n.start('worker'); expect(() => n.observe()).not.toThrow();
   n.plan.format = 'macro-agsdl-compiled-plan/2';
   expect(() => n.observe()).toThrow('restricted'); n.close();
+});
+test('kills the process group after a bounded grace when a wrapper ignores SIGTERM', () => {
+  const stub = verifier(`
+    import { spawn } from 'node:child_process';
+    import { writeFileSync } from 'node:fs';
+    process.on('SIGTERM',()=>{});
+    const child=spawn(process.execPath,['--eval','process.on("SIGTERM",()=>{});setInterval(()=>{},1000);'],{stdio:'ignore'});
+    writeFileSync(process.argv[2],JSON.stringify([process.pid,child.pid]));
+    await Bun.sleep(1500);
+    process.stdout.write(JSON.stringify({ok:true}));
+  `);
+  const log = join(stub.directory, 'pids.json'), started = performance.now();
+  expect(() => verifyNativeReplay030('db', 's', 'i', { replayCommand: [...stub.command, log], replayTimeoutMs: 300 })).toThrow(/timeout/);
+  expect(performance.now() - started).toBeLessThan(1300);
+  const pids: number[] = JSON.parse(readFileSync(log, 'utf8'));
+  for (const pid of pids) {
+    const status = spawnSync('ps', ['-o', 'stat=', '-p', String(pid)], { encoding: 'utf8' });
+    expect(status.status !== 0 || status.stdout.trim().startsWith('Z')).toBe(true);
+  }
+});
+test('ignores an ok:true printed before the deadline when its process stays alive beyond it', () => {
+  const stub = verifier('process.on("SIGTERM",()=>{});process.stdout.write(JSON.stringify({ok:true}));await Bun.sleep(1500);');
+  expect(() => verifyNativeReplay030('db', 's', 'i', { replayCommand: stub.command, replayTimeoutMs: 150 })).toThrow(/timeout/);
 });
