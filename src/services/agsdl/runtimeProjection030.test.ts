@@ -89,3 +89,12 @@ it('selects an attested human wait across complete history and blocks only uncer
   expect(initialRunSelection030({ ...base, history: ready([olderUnknown, recentWaiting, historyFixture030(inspectionFixture030('oldest'))]) })).toBe('recent');
   expect(initialRunSelection030({ ...base, history: ready([historyFixture030(recent), olderUnknown]) })).toBeUndefined();
 });
+
+it('preserves explicit selection and known human waits while failures block automatic fallbacks', () => {
+  const a = inspectionFixture030('a'), b = inspectionFixture030('b');
+  const base = monitorFixture030(a, b).snapshot;
+  const snapshot = { ...base, runFailures: { missing: { kind: 'notFound' as const, code: 'NOT_FOUND', message: 'Missing', revision: '1' } } };
+  expect(initialRunSelection030(snapshot)).toBeUndefined();
+  expect(initialRunSelection030(snapshot, 'b')).toBe('b');
+  expect(initialRunSelection030({ ...snapshot, history: ready([{ ...historyFixture030(a), humans: ready([humanFixture030(a)]) }]) })).toBe('a');
+});

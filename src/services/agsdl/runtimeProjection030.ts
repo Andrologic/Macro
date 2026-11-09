@@ -91,12 +91,20 @@ export interface RunInspection030 {
 export type RunHistoryEntry030 = Pick<RunInspection030['state'], 'scope' | 'verdict' | 'physicalPending' | 'humans' | 'chronology'> & {
   readonly capture: RunInspection030['capture'];
 };
+export interface RunReadFailure030 {
+  readonly kind: 'conflict' | 'scope' | 'notFound' | 'transport' | 'uncertain';
+  readonly code: string;
+  readonly message: string;
+  readonly revision: string | null;
+}
 export interface RunMonitorSnapshot030 {
   /** Native history order, newest first. Ready means the whole scope was read. */
   readonly history: RunRead030<readonly RunHistoryEntry030[]>;
   /** Only an admission with a valid native start030 run receipt supplies an id. */
   readonly retainedAdmission: NativeFact030<string | null>;
   readonly runs: Readonly<Record<string, RunRead030<RunInspection030>>>;
+  /** Every failed run stays visible independently of successful history rows. */
+  readonly runFailures: Readonly<Record<string, RunReadFailure030>>;
 }
 
 export function retainedRunValue030<T>(read: RunRead030<T>): T | null {
@@ -112,6 +120,7 @@ export function initialRunSelection030(snapshot: RunMonitorSnapshot030, explicit
   // Choose the newest attested wait even when another run's waits are unknown.
   const waiting = runs.find(run => run.humans.kind === 'ready' && run.humans.value.some(request => request.state.kind === 'open'));
   if (waiting) return waiting.scope.systemStartId;
+  if (Object.keys(snapshot.runFailures).length > 0) return undefined;
   // Unknown waits only prevent falling back to an admission or the newest run.
   if (runs.some(run => run.humans.kind !== 'ready')) return undefined;
   if (snapshot.retainedAdmission.kind !== 'available') return undefined;

@@ -962,6 +962,14 @@
     "incomplete": "Leyendo la serie completa. Las páginas parciales no describen todo el trabajo.",
     "unknownDate": "Fecha desconocida",
     "noRuns": "No hay ejecuciones en este ámbito",
+    "readFailure": {
+      "notFound": "Ejecución no encontrada",
+      "storageUncertain": "El estado del almacenamiento es incierto. Actualiza para volver a comprobarlo.",
+      "uncertain": "El estado de la ejecución es incierto. Actualiza para volver a comprobarlo.",
+      "scope": "Esta ejecución no está disponible en este ámbito.",
+      "conflict": "La ejecución ha cambiado. Actualiza para leer su estado actual.",
+      "unavailable": "No se pudo leer la ejecución. Actualiza para volver a intentarlo."
+    },
     "physicalPending": "Trabajos pendientes de finalización física",
     "waitingHuman": "Esperando a una persona",
     "humanUnknown": "Las esperas humanas no se conocen por completo",

@@ -1,68 +1,9 @@
 import { expect, it } from 'bun:test';
-import type { ExecutionRunCorrelation030, PublicExecutionIntent, PublicRunSummary030, RuntimeProjectionPage030 } from '../../types/generated/ipc';
-import { sourceDigest } from '../agsdlExecution/compiler';
+import type { ExecutionRunCorrelation030, PublicExecutionIntent, PublicRunSummary030 } from '../../types/generated/ipc';
 import { createRunInspectionAccess030 } from './runAccess030';
-import type { RunReadTransport030 } from './runAccess030';
-import { inspectionFixture030 } from './runInspection030.testSupport';
 import { initialRunSelection030, retainedRunValue030 } from './runtimeProjection030';
+import { fixture, intentFor, transportFor, type Fixture } from './runAccess030.testSupport';
 
-async function fixture(id = 'run') {
-  const inspection = inspectionFixture030(id);
-  const capture = { ...structuredClone(inspection.capture), associations: {} };
-  capture.source.sourceSha256 = await sourceDigest(capture.authoredSource);
-  const scope = { ...inspection.state.scope, source: capture.source };
-  const summary: PublicRunSummary030 = { ...scope, flowInvocationId: 'flow', versions: capture.versions,
-    revision: '9007199254740993', stopping: true, verdict: 'succeeded', ownerStatus: 'live',
-    phaseCounts: [{ phase: 'done', count: '1' }, { phase: 'running', count: '1' }], physicalPending: '1' };
-  const runtime: RuntimeProjectionPage030 = { scope, flowInvocationId: 'flow', revision: summary.revision,
-    stopping: summary.stopping, verdict: summary.verdict, total: '2',
-    items: inspection.state.occurrences.kind === 'ready' ? inspection.state.occurrences.value.map(item => ({ kind: 'activation',
-      value: { ...item.activation, phase: item.activation.phase === 'completed' ? 'done' : item.activation.phase } })) : [], nextPage: null };
-  return { capture, scope, summary, runtime };
-}
-type Fixture = Awaited<ReturnType<typeof fixture>>;
-function intentFor(f: Fixture, scope = { owner: f.capture.source.owner, conversationId: 'sample-chat' }): PublicExecutionIntent {
-  const id = f.summary.systemStartId;
-  const entry = { deliveryId: `entry-${id}`, messageJson: '{"text":"Start the synthetic sample"}' };
-  return { formatVersion: '1', key: { scope: structuredClone(scope), intentId: `intent-${f.summary.systemStartId}` }, revision: '3',
-    payload: { kind: 'start', request: { source: f.capture.source, profile: 'macro-agsdl-030-v1', requestId: `request-${id}`, associations: {}, entry } },
-    state: { kind: 'admitted', admission: { kind: 'start030', receipt: { systemStartId: f.summary.systemStartId, flowInvocationId: f.summary.flowInvocationId,
-      source: f.capture.source, versions: f.capture.versions, entryDeliveryId: entry.deliveryId } } } };
-}
-function transportFor(...fixtures: Fixture[]) {
-  const calls: string[] = [];
-  const nativeScope = { owner: structuredClone(fixtures[0].capture.source.owner), conversationId: 'sample-chat' };
-  const retainedIntents = new Map(fixtures.map((f, index) => {
-    const intent = intentFor(f, nativeScope);
-    if (index > 0 && intent.state.kind === 'admitted')
-      intent.state = { kind: 'closed', disposition: 'acknowledged', admission: intent.state.admission };
-    return [f.summary.systemStartId, intent] as const;
-  }));
-  const sameScope = (scope: typeof nativeScope, other: typeof nativeScope) =>
-    scope.conversationId === other.conversationId && scope.owner.projectId === other.owner.projectId &&
-    scope.owner.planId === other.owner.planId && scope.owner.branch === other.owner.branch;
-  const transport: RunReadTransport030 = {
-    async listExecutionRuns030() { calls.push('list'); return { runs: fixtures.map(item => item.summary), nextCursor: null }; },
-    async readExecutionSnapshot030(id) { calls.push('snapshot'); return fixtures.find(item => item.capture.systemStartId === id)!.capture; },
-    async readExecutionRuntimeProjection030(scope) { calls.push('runtime'); return fixtures.find(item => item.scope.systemStartId === scope.systemStartId)!.runtime; },
-    async readExecutionHumans030(scope) { calls.push('humans'); return { scope, cursor: 'native-human-cursor', total: '0', requests: [], nextPage: null }; },
-    async readExecutionIntentsVersioned({ scope }) {
-      calls.push('intents');
-      return structuredClone([...retainedIntents.values()].filter(intent => intent.state.kind !== 'closed' && sameScope(intent.key.scope, scope)));
-    },
-    async readExecutionRunCorrelation030(scope, id) {
-      calls.push(`correlation:${id}`);
-      const intent = retainedIntents.get(id);
-      if (!fixtures.some(f => f.summary.systemStartId === id)) throw { code: 'NOT_FOUND', currentIntentKey: null };
-      if (!intent || !sameScope(intent.key.scope, scope)) throw { code: 'SCOPE_INVALID', currentIntentKey: null };
-      const state = intent.state;
-      const admission = state.kind === 'admitted' || (state.kind === 'closed' && state.disposition === 'acknowledged') ? state.admission : null;
-      if (admission?.kind !== 'start030') throw { code: 'STORAGE_UNCERTAIN', currentIntentKey: null };
-      return structuredClone({ key: intent.key, receipt: admission.receipt });
-    },
-  };
-  return { transport, calls, scope: structuredClone(nativeScope), retainedIntents };
-}
 
 it('maps only attested facts, keeps exact revisions and exposes missing facts with gaps', async () => {
   const f = await fixture(), { transport, calls, scope } = transportFor(f);
@@ -646,4 +587,32 @@ it('bounds concurrent cold correlation reads to four and keeps native history or
   expect(maximum).toBe(4);
   expect(active).toBe(0);
   expect(retainedRunValue030(access.getSnapshot().history)?.map(item => item.scope.systemStartId)).toEqual(['a', 'b', 'c', 'd', 'e', 'f']);
+});
+
+it('forgets summaries absent from complete discoveries a,b,c then d,e,f then no runs', async () => {
+  const fixtures = await Promise.all(['a', 'b', 'c', 'd', 'e', 'f'].map(id => fixture(id)));
+  const { transport, scope, retainedIntents } = transportFor(...fixtures);
+  for (const intent of retainedIntents.values()) if (intent.state.kind === 'admitted')
+    intent.state = { kind: 'closed', disposition: 'acknowledged', admission: intent.state.admission };
+  let discovered = fixtures.slice(0, 3);
+  transport.listExecutionRuns030 = async () => ({ runs: discovered.map(f => f.summary), nextCursor: null });
+  const access = createRunInspectionAccess030(scope, transport);
+  await access.refreshHistory();
+  await access.refreshRun('a');
+  expect(retainedRunValue030(access.getSnapshot().history)?.map(run => run.scope.systemStartId)).toEqual(['a', 'b', 'c']);
+  discovered = fixtures.slice(3);
+  await access.refreshHistory();
+  expect(retainedRunValue030(access.getSnapshot().history)?.map(run => run.scope.systemStartId)).toEqual(['d', 'e', 'f']);
+  expect(access.getSnapshot().runs).toEqual({});
+  discovered = [];
+  await access.refreshHistory();
+  expect(access.getSnapshot().history).toMatchObject({ kind: 'ready', value: [] });
+  expect(access.getSnapshot().runFailures).toEqual({});
+  // Rediscovery must not compare against obsolete summaries from either set.
+  // Without eviction, all six lower revisions trigger REVISION_CONFLICT.
+  for (const f of fixtures) { f.summary.revision = '1'; f.runtime.revision = '1'; }
+  discovered = fixtures;
+  await access.refreshHistory();
+  expect(retainedRunValue030(access.getSnapshot().history)).toHaveLength(6);
+  expect(access.getSnapshot().runFailures).toEqual({});
 });

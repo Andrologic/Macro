@@ -7,7 +7,8 @@ import { sourceDigest } from '../agsdlExecution/compiler';
 import { readDocument } from './document';
 import { readHumanFacts030, sameHumanScope030 } from './humanReadAccess030';
 import { loadRuntimeProjection030, retainedRunValue030, runtimeSections030 } from './runtimeProjection030';
-import type { RunHistoryEntry030, RunInspection030, RunInspectionAccess030, RunMonitorSnapshot030 } from './runtimeProjection030';
+import type { RunHistoryEntry030, RunInspection030, RunInspectionAccess030, RunMonitorSnapshot030, RunReadFailure030 } from './runtimeProjection030';
+export type { RunReadFailure030 } from './runtimeProjection030';
 
 export interface RunReadTransport030 {
   listExecutionRuns030: typeof listExecutionRuns030;
@@ -29,7 +30,7 @@ const decimal = (value: string) => typeof value === 'string' && /^(0|[1-9][0-9]*
 /** Read failures are separate from missing native facts. Preserve native codes
  * on promise rejection, including uncertainty, which is not a scope refusal. */
 export class RunInspectionReadError030 extends MacroServiceError {
-  readonly kind: 'conflict' | 'scope' | 'notFound' | 'transport' | 'uncertain';
+  readonly kind: RunReadFailure030['kind'];
   constructor(error: unknown) {
     const decoded = toServiceError(error);
     // ExecutionIntentError has code/currentIntentKey, but no message. The
@@ -47,14 +48,6 @@ export class RunInspectionReadError030 extends MacroServiceError {
 export interface RunAccessSnapshot030 extends RunMonitorSnapshot030 {
   /** Discovery is owner-scoped. Omitted runs retain an explicit scope reason. */
   readonly excludedRuns: Readonly<Record<string, RunRefusal030<'consult'>>>;
-  /** Per-run read failures never stand in for scope exclusions or missing facts. */
-  readonly runFailures: Readonly<Record<string, RunReadFailure030>>;
-}
-export interface RunReadFailure030 {
-  readonly kind: RunInspectionReadError030['kind'];
-  readonly code: string;
-  readonly message: string;
-  readonly revision: string | null;
 }
 type CorrelationRead030 =
   | { readonly kind: 'attested'; readonly value: ExecutionRunCorrelation030 }
@@ -160,6 +153,8 @@ export function createRunInspectionAccess030(scope: ExecutionIntentScope,
     const discoveries = new Map(runs.map(run => [run.systemStartId, discoveryKey(run)]));
     for (const [id, cached] of correlationCache)
       if (discoveries.get(id) !== cached.discovery) correlationCache.delete(id);
+    for (const id of retainedSummaries.keys())
+      if (!discoveries.has(id)) retainedSummaries.delete(id);
     return runs;
   }
   async function captureFor(run: PublicRunSummary030, correlation: ExecutionRunCorrelation030): Promise<RunCapture030> {

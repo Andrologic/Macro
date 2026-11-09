@@ -962,6 +962,14 @@
     "incomplete": "Reading the complete series. Partial pages do not describe all work.",
     "unknownDate": "Date unknown",
     "noRuns": "No runs in this scope",
+    "readFailure": {
+      "notFound": "Run not found",
+      "storageUncertain": "The storage state is uncertain. Refresh to check again.",
+      "uncertain": "The run state is uncertain. Refresh to check again.",
+      "scope": "This run is unavailable in this scope.",
+      "conflict": "The run changed. Refresh to read its current state.",
+      "unavailable": "The run could not be read. Refresh to try again."
+    },
     "physicalPending": "Work awaiting physical completion",
     "waitingHuman": "Waiting for a person",
     "humanUnknown": "Human waits are not fully known",

@@ -51,6 +51,6 @@ export class RunInspectionDouble030 implements RunInspectionAccess030 {
 }
 export function monitorFixture030(...inspections: RunInspection030[]): RunInspectionDouble030 {
   const runs = inspections.length ? inspections : [inspectionFixture030()];
-  return new RunInspectionDouble030({ history: ready(runs.map(historyFixture030)), retainedAdmission: available(null),
+  return new RunInspectionDouble030({ history: ready(runs.map(historyFixture030)), retainedAdmission: available(null), runFailures: {},
     runs: Object.fromEntries(runs.map(run => [run.capture.systemStartId, ready(run)])) });
 }
