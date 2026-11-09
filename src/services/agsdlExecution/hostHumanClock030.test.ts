@@ -207,3 +207,42 @@ it('replays answered-question no-ops and retains the native receipt through a la
   expect(later.value.nativeAnswers).toEqual([{ requestId: 'q', nativeReceiptId: 'native-json-receipt-42', accepted: true }]);
   expect(later.value.nextWakeMs).toBe(960);
 });
+
+it('gives approval its own unsuspended deadline and preserves arbitrary choices and comments', () => {
+  const h = makeHarness();
+  h.send('0', admit('w', '60000'));
+  h.send('0', open('ask', ['w']));
+  h.send('0', { kind: 'approval', requestId: 'approval', workId: 'host-work', choices: ['publish', 'revise'], timeoutMs: '86400000' });
+  const waiting = h.send('3600000', { kind: 'tick' }).value;
+  expect(waiting.expiredWorkIds).toEqual([]);
+  expect(waiting.clocks[0].snapshot.elapsedMachineMs).toBe('0');
+  const answered = h.send('3600000', { kind: 'approvalAnswer', requestId: 'approval', nativeReceiptId: 'human', choice: 'revise', comment: 'Corriger le titre.' }).value;
+  expect(answered.pendingResolutions[0].answer).toEqual({ kind: 'approval', choice: 'revise', comment: 'Corriger le titre.' });
+  expect(() => h.send('3600000', { kind: 'approvalAnswer', requestId: 'approval', nativeReceiptId: 'bad', choice: 'yes', comment: '' })).toThrow('choice');
+});
+it('expires approval exactly, rejects late replies and replays without another effect', () => {
+  const h = makeHarness();
+  h.send('0', { kind: 'approval', requestId: 'approval', workId: 'host-work', choices: ['publish', 'revise'], timeoutMs: '86400000' });
+  const result = h.send('86400001', { kind: 'approvalAnswer', requestId: 'approval', nativeReceiptId: 'late', choice: 'publish', comment: '' });
+  expect(result.value.pendingResolutions[0]).toMatchObject({ expired: true, resolvedAtMs: '86400000', failure: 'APPROVAL_TIMEOUT' });
+  expect(result.value.nativeAnswers[0].accepted).toBe(false);
+  expect(h.replay(result.raw, result.id).receiptJson).toBe(result.receiptJson);
+});
+it('resumes after an hour and expires at the remaining budget, with the union of waits', () => {
+  const h = makeHarness();
+  h.send('0', admit('w', '60000'));
+  h.send('30000', open('a', ['w']));
+  h.send('30000', open('b', ['w']));
+  h.send('3630000', answer('a', 'first', 'yes'));
+  expect(h.send('3630000', { kind: 'tick' }).value.clocks[0].snapshot).toMatchObject({ elapsedMachineMs: '30000', openHumanRequests: ['b'], expired: false });
+  h.send('3630000', answer('b', 'second', 'yes'));
+  expect(h.send('3659999', { kind: 'tick' }).value.expiredWorkIds).toEqual([]);
+  expect(h.send('3660000', { kind: 'tick' }).value.expiredWorkIds).toEqual(['w']);
+});
+
+it('retains the final consumed budget when a terminal clock is retired', () => {
+  const h = makeHarness(); h.send('0', admit('w', '100'));
+  const retired = h.send('40', { kind: 'retire', workId: 'w' }).value;
+  expect(retired.clocks).toEqual([]);
+  expect(retired.retiredClocks).toEqual([{ workId: 'w', snapshot: { elapsedMachineMs: '40', openHumanRequests: [], expired: false } }]);
+});

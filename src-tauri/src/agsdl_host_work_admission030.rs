@@ -58,12 +58,13 @@ pub(crate) struct PreparedEffectiveAgentWork030 {
 pub(crate) struct AttestedWorkPolicy030 {
     prepared: PreparedEffectiveAgentWork030,
     options_json: String,
+    plan_lock: Option<std::sync::Arc<NativePlanLock030>>,
 }
 
 #[cfg(all(feature = "agsdl-engine-qa", debug_assertions))]
 impl AttestedWorkPolicy030 {
-    /// The QA adapter executes in-process and has no check or plan executor.
-    /// Those requirements therefore fail closed rather than being advertised.
+    /// The QA executor must retain plan_lock() and guard every change, including
+    /// shell, MCP, checks and delegation. Completion checks remain unsupported.
     pub(crate) fn from_example(
         prepared: PreparedEffectiveAgentWork030,
         observation: &crate::agsdl_host_example030::ExampleObservation030,
@@ -92,7 +93,11 @@ impl AttestedWorkPolicy030 {
         if work.agent_harness != "example"
             || matches != 1
             || contract.get("completionCheck") != Some(&serde_json::Value::Null)
-            || contract.get("planFirst") != Some(&serde_json::Value::Null)
+            || !matches!(contract.get("planFirst"), Some(serde_json::Value::Null))
+                && contract
+                    .get("planFirst")
+                    .and_then(serde_json::Value::as_str)
+                    != Some("ask")
         {
             return Err(failure(
                 "HARNESS_REFUSED",
@@ -100,7 +105,13 @@ impl AttestedWorkPolicy030 {
                 "Example adapter observation or contract differs",
             ));
         }
-        Ok(Self { prepared, options_json: serde_json::json!({"checkTimeoutMs":"1000","maxCheckOutputBytes":1024,"enforcedPlanLock":false}).to_string() })
+        let plan_lock = (contract
+            .get("planFirst")
+            .and_then(serde_json::Value::as_str)
+            == Some("ask"))
+        .then(|| std::sync::Arc::new(NativePlanLock030::new(&prepared.work)));
+        let enforced = plan_lock.is_some();
+        Ok(Self { prepared, plan_lock, options_json: serde_json::json!({"checkTimeoutMs":"1000","maxCheckOutputBytes":1024,"enforcedPlanLock":enforced}).to_string() })
     }
 }
 
@@ -705,4 +716,126 @@ pub(crate) async fn prepare_effective_agent_work030(
         return Err(failure("CORRELATION", "agent", "Agent permissions changed"));
     }
     Ok(PreparedEffectiveAgentWork030 { work, policy })
+}
+
+/// Admission evidence is derived from an actual gate, never supplied as a bool.
+impl AttestedWorkPolicy030 {
+    pub(crate) fn plan_lock(&self) -> Option<std::sync::Arc<NativePlanLock030>> {
+        self.plan_lock.clone()
+    }
+}
+#[derive(Debug)]
+enum PlanGate030 {
+    AwaitingPlan,
+    Waiting(String),
+    Unlocked,
+    Rejected,
+}
+/// The owned executor retains this gate across its entire work lifetime. Every
+/// non-read operation must hold a permit until physical completion, including
+/// nested tools. Unknown operations are changes. Policy checks still apply.
+pub(crate) struct NativePlanLock030 {
+    identity: FlowIdentity030,
+    owner: EngineOwner,
+    activation_id: String,
+    start_effect_id: String,
+    state: std::sync::Arc<tokio::sync::RwLock<PlanGate030>>,
+}
+pub(crate) struct PlanEffectPermit030 {
+    _guard: tokio::sync::OwnedRwLockReadGuard<PlanGate030>,
+}
+impl NativePlanLock030 {
+    fn new(work: &PreparedAgentWork030) -> Self {
+        Self {
+            identity: work.identity.clone(),
+            owner: work.owner.clone(),
+            activation_id: work.work.activation_id.clone(),
+            start_effect_id: work.effect_id.clone(),
+            state: std::sync::Arc::new(tokio::sync::RwLock::new(PlanGate030::AwaitingPlan)),
+        }
+    }
+    fn verify(&self, work: &FlowWorkAttempt030) -> Result<()> {
+        if self.identity != *work.identity()
+            || self.owner != *work.owner()
+            || self.activation_id != work.work().activation_id
+            || self.start_effect_id != work.start_effect_id()
+        {
+            return Err(failure("CORRELATION", "plan", "Plan lock work differs"));
+        }
+        Ok(())
+    }
+    pub(crate) async fn authorize(
+        &self,
+        work: &FlowWorkAttempt030,
+        read_only: bool,
+    ) -> Result<PlanEffectPermit030> {
+        self.verify(work)?;
+        let guard = self.state.clone().read_owned().await;
+        if matches!(*guard, PlanGate030::Rejected)
+            || !read_only && !matches!(*guard, PlanGate030::Unlocked)
+        {
+            return Err(failure(
+                "PERMISSION",
+                "plan",
+                "Plan lock blocks this effect",
+            ));
+        }
+        Ok(PlanEffectPermit030 { _guard: guard })
+    }
+    pub(crate) async fn presented(&self, work: &FlowWorkAttempt030, plan_id: &str) -> Result<()> {
+        self.verify(work)?;
+        let mut state = self.state.write().await;
+        if plan_id.is_empty() || !matches!(*state, PlanGate030::AwaitingPlan) {
+            return Err(failure("CORRELATION", "plan", "Plan presentation differs"));
+        }
+        *state = PlanGate030::Waiting(plan_id.into());
+        Ok(())
+    }
+    pub(crate) async fn resolve(
+        &self,
+        work: &FlowWorkAttempt030,
+        decision: &crate::agsdl_host_human030::ResolvedHumanDecision030,
+    ) -> Result<()> {
+        self.verify(work)?;
+        let mut state = self.state.write().await;
+        let PlanGate030::Waiting(plan_id) = &*state else {
+            return Err(failure(
+                "CORRELATION",
+                "plan",
+                "No plan is awaiting a decision",
+            ));
+        };
+        if !decision.verifies_plan(work, plan_id) {
+            return Err(failure(
+                "CORRELATION",
+                "plan",
+                "Foreign or stale plan decision",
+            ));
+        }
+        let answer = &decision.resolution()["answer"];
+        *state = if answer["decision"] == "yes" {
+            PlanGate030::Unlocked
+        } else if answer["comment"]
+            .as_str()
+            .is_some_and(|s| !s.trim().is_empty())
+        {
+            PlanGate030::AwaitingPlan
+        } else {
+            PlanGate030::Rejected
+        };
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+impl NativePlanLock030 {
+    pub(crate) fn fixture030(work: &FlowWorkAttempt030) -> Self {
+        Self {
+            identity: work.identity().clone(),
+            owner: work.owner().clone(),
+            activation_id: work.work().activation_id.clone(),
+            start_effect_id: work.start_effect_id().into(),
+            state: std::sync::Arc::new(tokio::sync::RwLock::new(PlanGate030::AwaitingPlan)),
+        }
+    }
 }

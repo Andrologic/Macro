@@ -191,3 +191,9 @@ it('honors a zero check budget and preserves native failure codes', () => {
   const native = harness(); native.send({ kind: 'stop', reason: 'AGENT_FAILED' });
   expect(native.send({ kind: 'physicalEnded', providerEnded: true, effectsEnded: true }).decision).toMatchObject({ code: 'AGENT_FAILED' });
 });
+
+it('cannot complete or submit while a plan lock is still awaiting acceptance', () => {
+  const { send } = harness('{"planFirst":"ask"}');
+  expect(send({ kind: 'turnEnded', turnId: 'before-plan' }).decision.kind).toBe('planRequired');
+  expect(send({ kind: 'submit', callId: 'early', argumentsJson: '{}' }).decision.kind).toBe('planRequired');
+});
