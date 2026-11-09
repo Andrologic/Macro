@@ -165,3 +165,18 @@ it("warns that a call in a reused composition changes both uses", async () => {
  await mount(documentSource, "/compositions/common/steps/work");
  expect(document.body.querySelector("form")?.textContent).toContain("Changes to shared definitions also affect other components");
 });
+
+it("selects a scalar next destination from the same scope and preserves exact siblings", async () => {
+ const documentSource = '{"contract":"agsdl-0.3.0","id":"scalar","future":9007199254740993,"agents":{},"flow":{"entry":"one","steps":{"one":{"type":"call","command":"echo","next":"vote","future":123456789012345678901234567890},"vote":{"type":"call","command":"echo"},"done":{"type":"call","command":"echo"}}},"compositions":{"other":{"entry":"outside","steps":{"outside":{"type":"call","command":"echo"}},"outputs":[]}}}';
+ await mount(documentSource, "/flow/steps/one");
+ spyOn(useAgsdlStore.getState(), "save").mockResolvedValue(undefined);
+ const destination = Array.from(document.body.querySelectorAll("label")).find(label => label.querySelector("span")?.textContent === "Continue at")!.querySelector("select")!;
+ expect(destination.value).toBe("vote");
+ expect(Array.from(destination.options).map(option => option.value)).toEqual(["one", "vote", "done"]);
+ act(() => { destination.value = "done"; destination.dispatchEvent(new Event("change", { bubbles: true })); });
+ await act(async () => document.body.querySelector("form")!.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true })));
+ const result = useAgsdlStore.getState().sessions[key].source;
+ expect(result).toContain('"next":"done"');
+ expect(result).toContain('"future":9007199254740993');
+ expect(result).toContain('"future":123456789012345678901234567890');
+});

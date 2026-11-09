@@ -128,10 +128,11 @@ function BusinessFields030({ fields, values = fields.map(field => field.value), 
       {["instructions", "mission", "information", "instance", "join"].includes(group) && <p className="agsdl-muted">{t(`agsdl.authoring030.hints.${group}`)}</p>}
       {members.map(field => <label className="agsdl-edit-field" style={{ marginTop: 8, gap: 4 }} key={`${field.index}:${field.path}`}>
         <span>{t(`agsdl.authoring030.fields.${field.label}`)}{field.name ? ` · ${field.name}` : ""}</span>
-        {!onChange ? <span style={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}>{field.kind === "select" ? t(`agsdl.authoring030.options.${field.value}`, { defaultValue: field.value }) : field.value}</span>
+        {!onChange ? <span style={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}>{field.kind === "select" ? field.optionLabels ? field.optionLabels[field.value] ?? field.value : t(`agsdl.authoring030.options.${field.value}`, { defaultValue: field.value }) : field.value}</span>
           : field.kind === "select" ? <select value={field.value} disabled={disabled || locked?.(field.index)} onChange={event => onChange(updateAuthoringField030(values, field, event.target.value))}>
-            {!["workType", "joinMode"].includes(field.label) && <option value="">{t("agsdl.authoring030.default")}</option>}
-            {field.options?.map(value => <option key={value} value={value}>{t(`agsdl.authoring030.options.${value}`)}</option>)}
+            {!["workType", "joinMode", "destination"].includes(field.label) && <option value="">{t("agsdl.authoring030.default")}</option>}
+            {field.label === "destination" && !field.options?.includes(field.value) && <option value={field.value} disabled>{field.value || t("agsdl.authoring030.default")}</option>}
+            {field.options?.map(value => <option key={value} value={value}>{field.optionLabels ? field.optionLabels[value] : t(`agsdl.authoring030.options.${value}`)}</option>)}
           </select> : ["multiline", "lines"].includes(field.kind) ? <textarea rows={3} value={field.value} disabled={disabled || locked?.(field.index)} onChange={event => field.kind === "lines" ? onLinesChange?.(field, event.target.value) : onChange(updateAuthoringField030(values, field, event.target.value))} />
             : <input value={field.value} inputMode={field.kind === "integer" ? "numeric" : undefined} disabled={disabled || locked?.(field.index)} onChange={event => onChange(updateAuthoringField030(values, field, event.target.value))} />}
       </label>)}

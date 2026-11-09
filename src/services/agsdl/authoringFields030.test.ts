@@ -95,3 +95,58 @@ it("keeps raw line drafts until save and preserves exact JSON edits without norm
  // The JSON tab is exact, even when an authored list contains an empty value.
  expect(authoringValues030(fields, raw, {}, true)).toEqual(raw);
 });
+
+const scalarSource = '{"contract":"agsdl-0.3.0","id":"scalar","future":9007199254740993,"agents":{},"flow":{"entry":"one","steps":{"one":{"type":"call","command":"echo","next":"vote","future":123456789012345678901234567890},"vote":{"type":"call","command":"echo"},"flow_only":{"type":"call","command":"echo"}}},"compositions":{"common":{"entry":"work","steps":{"work":{"type":"call","command":"echo","next":"vote"},"vote":{"type":"call","title":"Gather reviews","command":"echo"},"body_only":{"type":"call","command":"echo"}},"outputs":[]}}}';
+function scalarProperties(path: string, route = false) {
+ const view = projectViewer030(scalarSource);
+ const card = view.graphs.flatMap(graph => graph.cards).find(card => card.path === path)!;
+ return componentProperties(scalarSource, route ? { ...card, path: `${path}/next`, kind: "Route", edition030: { sourceJson: '"vote"', routes: [] } } : card);
+}
+it("offers scalar next destinations only from the source owner's scope and preserves opaque data", () => {
+ const { fields } = scalarProperties("/flow/steps/one");
+ const destination = authoringFields030(fields).find(field => field.label === "destination")!;
+ expect(destination.kind).toBe("select");
+ expect(destination.path).toBe("");
+ expect(destination.value).toBe("vote");
+ expect(destination.options).toEqual(["one", "vote", "flow_only"]);
+ const values = fields.map(field => field.value);
+ expect(updateAuthoringField030(values, destination, "body_only")).toBe(values);
+ const changed = updateAuthoringField030(values, destination, "flow_only");
+ expect(propertyChanges(fields, changed)).toEqual([{ op: "set", path: "/flow/steps/one/next", valueJson: '"flow_only"' }]);
+ const result = applyChanges(scalarSource, propertyChanges(fields, changed));
+ expect(result).toContain('"future":9007199254740993');
+ expect(result).toContain('"future":123456789012345678901234567890');
+});
+it("offers scalar relation destinations within the same composition, including authored labels", () => {
+ for (const route of [false, true]) {
+  const { fields } = scalarProperties("/compositions/common/steps/work", route);
+  const destination = authoringFields030(fields).find(field => field.label === "destination")!;
+  expect(destination.kind).toBe("select");
+  expect(destination.options).toEqual(["work", "vote", "body_only"]);
+  expect(destination.optionLabels?.vote).toBe("Gather reviews");
+  const changed = updateAuthoringField030(fields.map(field => field.value), destination, "body_only");
+  expect(propertyChanges(fields, changed)).toEqual([{ op: "set", path: "/compositions/common/steps/work/next", valueJson: '"body_only"' }]);
+ }
+});
+it("leaves scalar, list and object conversions to exact JSON without touching siblings", () => {
+ let currentSource = scalarSource;
+ for (const valueJson of ['["vote","flow_only"]', '{"step":"vote","future":9007199254740993}', '"vote"']) {
+  const { fields } = componentProperties(currentSource, projectViewer030(currentSource).graphs[0].cards[0]);
+  const next = fields.findIndex(field => field.label === "next");
+  const values = fields.map(field => field.value); values[next] = valueJson;
+  const result = applyChanges(currentSource, propertyChanges(fields, values));
+  currentSource = result;
+  expect(result).toContain(`"next":${valueJson}`);
+  expect(result).toContain('"future":123456789012345678901234567890');
+ }
+ const controls = authoringFields030(scalarProperties("/flow/steps/one").fields);
+ expect(controls.find(field => field.label === "destination")!.options).not.toContain('["vote"]');
+});
+
+it("resolves a scalar flow error relation against the flow steps", () => {
+ const source = scalarSource.replace('"entry":"one"', '"entry":"one","onError":"vote"');
+ const card = { ...projectViewer030(source).graphs[0].cards[0], path: "/flow/onError", kind: "Route", edition030: { sourceJson: '"vote"', routes: [] } };
+ const { fields } = componentProperties(source, card);
+ const destination = authoringFields030(fields).find(field => field.label === "destination")!;
+ expect(destination.options).toEqual(["one", "vote", "flow_only"]);
+});

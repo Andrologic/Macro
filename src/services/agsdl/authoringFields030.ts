@@ -8,6 +8,7 @@ export interface AuthoringField030 {
   kind: "text" | "multiline" | "select" | "integer" | "lines";
   value: string;
   options?: string[];
+  optionLabels?: Record<string, string>;
   group: "general" | "instructions" | "mission" | "information" | "choices" | "instance" | "join";
   name?: string;
 }
@@ -35,6 +36,11 @@ export function authoringFields030(fields: ComponentProperty[], values = fields.
       const span = path ? parsed?.spans.get(path) : undefined;
       const exact = span ? new TextDecoder().decode(parsed!.bytes.subarray(span.start, span.end)) : path ? "" : raw;
       result.push({ index, path, label, group, kind, value: kind === "lines" ? (item as string[] | undefined)?.join("\n") ?? "" : kind === "integer" ? exact || "" : typeof item === "string" ? item : "", options, name });
+    };
+    const scalarDestination = (group: AuthoringField030["group"]) => {
+      const destinations = property.destinations030 ?? [];
+      add("destination", group, "select", "", value, destinations.map(option => option.value));
+      result.at(-1)!.optionLabels = Object.fromEntries(destinations.map(option => [option.value, option.label]));
     };
     const content = (item: unknown, path: string, label: string, group: AuthoringField030["group"], name?: string) => {
       if (typeof item === "string" || item === undefined) add(label, group, "multiline", path, item, undefined, name);
@@ -69,6 +75,7 @@ export function authoringFields030(fields: ComponentProperty[], values = fields.
           add("accept", "join", "lines", "/accept", object(value).accept);
         } break;
       case "next":
+        if (typeof value === "string") scalarDestination("choices");
         if (typeof object(value).step === "string") {
           add("destination", "choices", "text", "/step", object(value).step);
           const message = object(object(value).message);
@@ -88,6 +95,7 @@ export function authoringFields030(fields: ComponentProperty[], values = fields.
           });
         } break;
       case "route": {
+        if (typeof value === "string") scalarDestination("choices");
         const route = object(value), message = object(route.message);
         if (typeof route.step === "string") add("destination", "general", "text", "/step", route.step);
         if (message.prompt !== undefined) content(message.prompt, "/message/prompt", "mission", "mission");
@@ -100,6 +108,7 @@ export function authoringFields030(fields: ComponentProperty[], values = fields.
 }
 
 export function updateAuthoringField030(values: string[], field: AuthoringField030, input: string): string[] {
+  if (field.label === "destination" && field.kind === "select" && !field.options?.includes(input)) return values;
   if (field.label === "joinMode") return values.map((value, index) => index === field.index ? input === "all" ? "" : value || '{"count":1,"accept":[]}' : value);
   if (field.kind === "integer" && input && !/^(0|[1-9]\d*)$/.test(input)) return values;
   const valueJson = input === "" && (!field.path || field.kind === "integer") ? undefined
