@@ -223,6 +223,17 @@ struct StartReceiptRead {
     enter: Option<FlowReceipt030>,
 }
 
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct NoAdmissionRead {
+    identity: FlowIdentity030,
+    work: WorkRef030,
+    owner_epoch: String,
+    generation: String,
+    native_receipt_id: String,
+    reason: String,
+}
+
 fn companion(path: &Path, suffix: &str) -> PathBuf {
     let mut name = path.as_os_str().to_os_string();
     name.push(suffix);
@@ -495,7 +506,9 @@ async fn verify(db: &mut SqliteConnection, system: &str, invocation: &str) -> Re
                 FlowEventKind030::WorkResult { work, .. } => {
                     work_results.insert(work.start_effect_id.clone());
                 }
-                FlowEventKind030::PhysicalEnded { .. } => physical_ends.push(event.clone()),
+                FlowEventKind030::PhysicalEnded { .. } => {
+                    physical_ends.push((event.clone(), state.stopping))
+                }
                 _ => {}
             }
             equal("event.receipt", &transition.receipt, &receipt)?;
@@ -559,16 +572,22 @@ async fn verify(db: &mut SqliteConnection, system: &str, invocation: &str) -> Re
                 error
             })?;
     }
-    for event in &physical_ends {
-        verify_physical_end(db, event).await.map_err(|mut error| {
-            error.event_id = Some(event.event_id.clone());
-            error
-        })?;
+    for (event, stopping) in &physical_ends {
+        verify_physical_end(db, event, *stopping)
+            .await
+            .map_err(|mut error| {
+                error.event_id = Some(event.event_id.clone());
+                error
+            })?;
     }
     Ok(())
 }
 
-async fn verify_physical_end(db: &mut SqliteConnection, event: &FlowEvent030) -> Result<()> {
+async fn verify_physical_end(
+    db: &mut SqliteConnection,
+    event: &FlowEvent030,
+    stopping: bool,
+) -> Result<()> {
     let FlowEventKind030::PhysicalEnded {
         work,
         stop_effect_id,
@@ -585,46 +604,48 @@ async fn verify_physical_end(db: &mut SqliteConnection, event: &FlowEvent030) ->
     let handoff: i64 = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM engine_flow030_handoffs WHERE system_id=? AND invocation_id=? AND effect_id=?)")
         .bind(&id.system_start_id).bind(&id.flow_invocation_id).bind(&work.start_effect_id).fetch_one(&mut *db).await.map_err(storage)?;
     if handoff == 0 {
+        equal("physicalEnded.noAdmission.stopping", &true, &stopping)?;
+        equal(
+            "physicalEnded.noAdmission.eventId",
+            &format!("no-admission:{}", work.start_effect_id),
+            &event.event_id,
+        )?;
+        if stop_effect_id.is_none() {
+            return Err(mismatch(
+                "physicalEnded.noAdmission.stopEffectId",
+                "StopWork from the native Stop",
+                Value::Null,
+            ));
+        }
         let row = sqlx::query("SELECT owner_epoch,generation,proof_json FROM engine_flow030_no_admissions WHERE system_id=? AND invocation_id=? AND start_effect_id=?")
             .bind(&id.system_start_id).bind(&id.flow_invocation_id).bind(&work.start_effect_id).fetch_optional(&mut *db).await.map_err(storage)?
             .ok_or_else(|| mismatch("physicalEnded.start.proof", "Start handoff or native no-admission proof", Value::Null))?;
-        let proof: Value = parse(
+        let proof: NoAdmissionRead = parse(
             "physicalEnded.noAdmission",
             row.try_get("proof_json").map_err(storage)?,
         )?;
-        equal(
-            "physicalEnded.noAdmission.identity",
-            &json!(id),
-            &proof["identity"],
-        )?;
-        equal(
-            "physicalEnded.noAdmission.work",
-            &json!(work),
-            &proof["work"],
-        )?;
+        equal("physicalEnded.noAdmission.identity", id, &proof.identity)?;
+        equal("physicalEnded.noAdmission.work", work, &proof.work)?;
         equal(
             "physicalEnded.noAdmission.nativeReceiptId",
-            &json!(evidence.native_receipt_id),
-            &proof["nativeReceiptId"],
+            &evidence.native_receipt_id,
+            &proof.native_receipt_id,
         )?;
         equal(
             "physicalEnded.noAdmission.ownerEpoch",
-            &json!(row.try_get::<String, _>("owner_epoch").map_err(storage)?),
-            &proof["ownerEpoch"],
+            &row.try_get::<String, _>("owner_epoch").map_err(storage)?,
+            &proof.owner_epoch,
         )?;
         equal(
             "physicalEnded.noAdmission.generation",
-            &json!(row.try_get::<String, _>("generation").map_err(storage)?),
-            &proof["generation"],
+            &row.try_get::<String, _>("generation").map_err(storage)?,
+            &proof.generation,
         )?;
-        if !matches!(
-            proof["reason"].as_str(),
-            Some("unclaimed" | "unreleasedNativeClaim")
-        ) {
+        if !matches!(proof.reason.as_str(), "unclaimed" | "unreleasedNativeClaim") {
             return Err(mismatch(
                 "physicalEnded.noAdmission.reason",
                 "native non-admission reason",
-                &proof["reason"],
+                &proof.reason,
             ));
         }
     }
@@ -632,7 +653,6 @@ async fn verify_physical_end(db: &mut SqliteConnection, event: &FlowEvent030) ->
         let row = sqlx::query("SELECT status,effect_json,settlement_json FROM engine_flow030_outbox WHERE system_id=? AND invocation_id=? AND effect_id=?")
             .bind(&id.system_start_id).bind(&id.flow_invocation_id).bind(stop).fetch_one(&mut *db).await.map_err(storage)?;
         let status: String = row.try_get("status").map_err(storage)?;
-        equal("physicalEnded.stop.status", &"settled", &status.as_str())?;
         let effect: FlowEffect030 = parse(
             "physicalEnded.stop.effect",
             row.try_get("effect_json").map_err(storage)?,
@@ -646,6 +666,17 @@ async fn verify_physical_end(db: &mut SqliteConnection, event: &FlowEvent030) ->
             &json!(effect.kind),
         )?;
         let raw: Option<String> = row.try_get("settlement_json").map_err(storage)?;
+        if handoff == 0 && matches!(status.as_str(), "pending" | "uncertain") {
+            // settle_unadmitted atomically settles only Start and records this
+            // PhysicalEnded. It does not claim, hand off or settle StopWork.
+            // Its unchanged dispatch status is not missing physical evidence.
+            equal("physicalEnded.stop.settlement", &None::<String>, &raw)?;
+            // verify_settlement already rejects any handoff or settlement for
+            // pending/uncertain effects. The validated native proof above is
+            // mandatory; admitted work never enters this exception.
+            return Ok(());
+        }
+        equal("physicalEnded.stop.status", &"settled", &status.as_str())?;
         let receipt: Value = parse(
             "physicalEnded.stop.settlement",
             raw.as_deref().ok_or_else(|| {

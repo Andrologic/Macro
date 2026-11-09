@@ -35,9 +35,13 @@ with consumed preparations, handoffs, retained joined-stop events or no-admissio
 proofs. They cannot prove physical execution or reconstruct a claim history that
 was never journaled. An agent Start handoff requires its native work attempt.
 Recorded work evidence or a WorkResult requires a settled Start with a retained
-handoff. PhysicalEnded requires a settled Start with either its handoff or a
-correlated native no-admission proof, plus a settled, correlated StopWork when
-the event names one. The initial Enter event keeps its native `start:enter` identity.
+handoff. For admitted work, PhysicalEnded requires a settled Start with its
+handoff, plus a settled, correlated StopWork when the event names one. Native
+non-admission is a separate path: its exact proof and physical-end receipt must
+correlate, but `settle_unadmitted` settles only Start and leaves StopWork's
+dispatch status unchanged. Pending or uncertain StopWork is then allowed
+without a handoff or settlement. The initial Enter event keeps its native
+`start:enter` identity.
 Unexpected SQLite storage types and residual verifier panics yield a negative
 JSON verdict and exit status 1.
 
@@ -64,6 +68,8 @@ cargo test --locked --manifest-path src-tauri/tests/replay030/Cargo.toml --profi
 
 The ignored `real_r6_physical_only_pending_and_uncertain_are_rejected` test uses
 `AGSDL_REPLAY_R6_DIR` to reproduce the four physical-only audit mutations.
+`real_r6_final_runs_on_copies` uses `AGSDL_REPLAY_R6_FINAL_DIR` to verify the
+fifteen final QA databases on copies as well.
 
 The corpus test requires every baseline to pass and every semantic mutation to
 the run, journal or outbox to fail. Host-only mutations may pass replay; the

@@ -282,9 +282,20 @@ async fn physical_end_requires_its_settled_stop_even_with_a_valid_start() {
     );
 }
 
-#[tokio::test]
-async fn physical_end_can_use_a_correlated_native_no_admission_proof() {
-    let (_directory, path, entered) = fixture().await;
+async fn native_no_admission_fixture(reason: &str) -> (tempfile::TempDir, PathBuf) {
+    let (directory, path, entered) = fixture().await;
+    let original_status = match reason {
+        "unclaimed" => "pending",
+        "unreleasedNativeClaim" => {
+            mutate(
+                &path,
+                "UPDATE engine_flow030_outbox SET status='uncertain' WHERE event_id='start:enter'",
+            )
+            .await;
+            "uncertain"
+        }
+        _ => panic!("native reason"),
+    };
     let stopped = append_event(&path, "stop", FlowEventKind030::Stop).await;
     let stop = stopped
         .effects
@@ -294,44 +305,93 @@ async fn physical_end_can_use_a_correlated_native_no_admission_proof() {
     let FlowEffectKind030::StopWork { work, .. } = &stop.kind else {
         unreachable!()
     };
-    settle_host_effect(&path, stop).await;
-    let proof = json!({"identity":entered.identity,"work":work,"ownerEpoch":"owner","generation":"generation","nativeReceiptId":"never-admitted","reason":"unclaimed"}).to_string();
+    let native_receipt_id = format!("no-admission:synthetic-{reason}");
+    let proof = json!({"identity":entered.identity,"work":work,"ownerEpoch":"owner","generation":"generation","nativeReceiptId":native_receipt_id,"reason":reason}).to_string();
     let mut db = SqliteConnection::connect_with(&SqliteConnectOptions::new().filename(&path))
         .await
         .unwrap();
-    sqlx::query("INSERT INTO engine_flow030_no_admissions VALUES('system','invocation',?,'owner','generation',?)").bind(&work.start_effect_id).bind(&proof).execute(&mut db).await.unwrap();
-    sqlx::query(
-        "UPDATE engine_flow030_outbox SET status='settled',settlement_json=? WHERE effect_id=?",
-    )
-    .bind(proof)
-    .bind(&work.start_effect_id)
-    .execute(&mut db)
-    .await
-    .unwrap();
-    db.close().await.unwrap();
-    append_event(
-        &path,
-        "never-admitted",
-        FlowEventKind030::PhysicalEnded {
+    let mut tx = db.begin_with("BEGIN IMMEDIATE").await.unwrap();
+    // Exactly the durable no-admission transaction: settle Start, persist the
+    // physical end, and leave StopWork pending without manufacturing a handoff.
+    sqlx::query("INSERT INTO engine_flow030_no_admissions VALUES('system','invocation',?,'owner','generation',?)").bind(&work.start_effect_id).bind(&proof).execute(&mut *tx).await.unwrap();
+    let changed = sqlx::query("UPDATE engine_flow030_outbox SET status='settled',settlement_json=? WHERE effect_id=? AND status=? AND owner_epoch='owner'").bind(proof).bind(&work.start_effect_id).bind(original_status).execute(&mut *tx).await.unwrap().rows_affected();
+    assert_eq!(changed, 1);
+    let event = FlowEvent030 {
+        identity: entered.identity,
+        event_id: format!("no-admission:{}", work.start_effect_id),
+        expected_revision: stopped.state.revision.clone(),
+        kind: FlowEventKind030::PhysicalEnded {
             work: work.clone(),
             stop_effect_id: Some(stop.id.clone()),
             evidence: PhysicalEvidence030 {
-                native_receipt_id: "never-admitted".into(),
+                native_receipt_id,
                 descendants_joined: true,
             },
         },
-    )
-    .await;
-    assert!(verify_path030(&path, "system", "invocation").await.ok);
-    mutate(&path,"DROP TRIGGER engine_flow030_no_admission_immutable; UPDATE engine_flow030_no_admissions SET proof_json=json_set(proof_json,'$.nativeReceiptId','forged'); UPDATE engine_flow030_outbox SET settlement_json=json_set(settlement_json,'$.nativeReceiptId','forged') WHERE event_id='start:enter'").await;
-    assert_eq!(
-        verify_path030(&path, "system", "invocation")
+    };
+    let plan: FlowPlan030 = parse("plan", stopped.state.plan_json.as_deref().unwrap()).unwrap();
+    let transition = reduce(&plan, &stopped.state, &event).unwrap();
+    persist_transition(&mut tx, &event, &transition).await;
+    tx.commit().await.unwrap();
+    let stop_row =
+        sqlx::query("SELECT status,settlement_json FROM engine_flow030_outbox WHERE effect_id=?")
+            .bind(&stop.id)
+            .fetch_one(&mut db)
             .await
-            .divergence
-            .unwrap()
-            .field,
-        "physicalEnded.noAdmission.nativeReceiptId"
+            .unwrap();
+    assert_eq!(stop_row.try_get::<String, _>("status").unwrap(), "pending");
+    assert_eq!(
+        stop_row
+            .try_get::<Option<String>, _>("settlement_json")
+            .unwrap(),
+        None
     );
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT count(*) FROM engine_flow030_handoffs")
+            .fetch_one(&mut db)
+            .await
+            .unwrap(),
+        0
+    );
+    db.close().await.unwrap();
+    (directory, path)
+}
+
+#[tokio::test]
+async fn native_unclaimed_non_admission_accepts_physical_end_with_pending_stop() {
+    let (_directory, path) = native_no_admission_fixture("unclaimed").await;
+    let verdict = verify_path030(&path, "system", "invocation").await;
+    assert!(verdict.ok, "{verdict:?}");
+}
+
+#[tokio::test]
+async fn native_unreleased_claim_non_admission_accepts_physical_end_with_pending_stop() {
+    let (_directory, path) = native_no_admission_fixture("unreleasedNativeClaim").await;
+    let verdict = verify_path030(&path, "system", "invocation").await;
+    assert!(verdict.ok, "{verdict:?}");
+}
+
+#[tokio::test]
+async fn no_admission_exception_rejects_missing_contradictory_and_forged_native_proofs() {
+    for reason in ["unclaimed", "unreleasedNativeClaim"] {
+        let (_directory, source) = native_no_admission_fixture(reason).await;
+        let copies = tempfile::tempdir().unwrap();
+        for (index,mutation) in [
+            "DROP TRIGGER engine_flow030_no_admission_retained; DELETE FROM engine_flow030_no_admissions",
+            "DROP TRIGGER engine_flow030_no_admission_immutable; UPDATE engine_flow030_no_admissions SET proof_json=json_set(proof_json,'$.nativeReceiptId','forged'); UPDATE engine_flow030_outbox SET settlement_json=(SELECT proof_json FROM engine_flow030_no_admissions) WHERE event_id='start:enter'",
+            "DROP TRIGGER engine_flow030_no_admission_immutable; UPDATE engine_flow030_no_admissions SET proof_json=json_set(proof_json,'$.reason','forged'); UPDATE engine_flow030_outbox SET settlement_json=(SELECT proof_json FROM engine_flow030_no_admissions) WHERE event_id='start:enter'",
+            "DROP TRIGGER engine_flow030_no_admission_immutable; UPDATE engine_flow030_no_admissions SET proof_json=json_set(proof_json,'$.generation','foreign'); UPDATE engine_flow030_outbox SET settlement_json=(SELECT proof_json FROM engine_flow030_no_admissions) WHERE event_id='start:enter'",
+            "DROP TRIGGER engine_flow030_no_admission_immutable; UPDATE engine_flow030_no_admissions SET proof_json=json_set(proof_json,'$.work.activationId','foreign'); UPDATE engine_flow030_outbox SET settlement_json=(SELECT proof_json FROM engine_flow030_no_admissions) WHERE event_id='start:enter'",
+            "UPDATE engine_flow030_outbox SET status='pending',settlement_json=NULL WHERE event_id='start:enter'",
+            "INSERT INTO engine_flow030_work_authorizations SELECT 'system','invocation','forged-auth',json_extract(proof_json,'$.work.activationId'),'{}',NULL,NULL FROM engine_flow030_no_admissions",
+        ].into_iter().enumerate() {
+            let path = copies.path().join(format!("negative-{index}.sqlite"));
+            copy_sqlite(&source,&path);
+            mutate(&path,mutation).await;
+            let verdict = verify_path030(&path,"system","invocation").await;
+            assert!(!verdict.ok,"{reason}: {mutation}");
+        }
+    }
 }
 
 async fn diagnostic_fixture() -> (tempfile::TempDir, PathBuf) {
@@ -1111,4 +1171,36 @@ async fn real_r6_and_audit_mutations_on_copies() {
         "unexpected replay verdicts: {failures:?}; report: {}",
         output.display()
     );
+}
+
+#[tokio::test]
+#[ignore = "requires the external final R6 corpus"]
+async fn real_r6_final_runs_on_copies() {
+    let source = PathBuf::from(
+        std::env::var_os("AGSDL_REPLAY_R6_FINAL_DIR").expect("AGSDL_REPLAY_R6_FINAL_DIR"),
+    );
+    let directory = tempfile::tempdir().unwrap();
+    let mut files: Vec<_> = std::fs::read_dir(&source)
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .filter(|path| {
+            path.file_name()
+                .unwrap()
+                .to_string_lossy()
+                .ends_with("-scenario-delete.sqlite")
+        })
+        .collect();
+    files.sort();
+    assert_eq!(files.len(), 15);
+    for source in files {
+        let copy = directory.path().join(source.file_name().unwrap());
+        copy_sqlite(&source, &copy);
+        let ids = read_ids(&copy).await;
+        let verdict = verify_path030(&copy, &ids.0, &ids.1).await;
+        assert!(
+            verdict.ok,
+            "{}: {verdict:?}",
+            source.file_name().unwrap().to_string_lossy()
+        );
+    }
 }
