@@ -229,12 +229,44 @@ pub(crate) async fn observation(
     source: &LockedExecutionSource,
     catalogue: &ModelCapture,
     tools: &Value,
+    host_permissions: &crate::agsdl_permissions::RequestedPermissions,
     task: Option<(&str, &crate::git::GitState)>,
 ) -> Result<(Value, Option<String>, Option<String>)> {
     let scope = execution_scope(workspace, source, task)?;
     let project = &source.project;
     let document = exact_json::value(&source.source).unwrap_or(Value::Null);
     let is_030 = document.get("contract").and_then(Value::as_str) == Some("agsdl-0.3.0");
+    let uses_codex030 = is_030
+        && document
+            .get("agents")
+            .and_then(Value::as_object)
+            .is_some_and(|agents| agents.values().any(|agent| agent["harness"] == "codex"));
+    let codex030 = if uses_codex030 {
+        crate::agsdl_host_work_admission030::validate_codex_document030(&document)?;
+        // The caller already owns the project configuration read lease.
+        // Use that snapshot rather than acquiring a configuration lock again.
+        crate::agsdl_host_work_admission030::codex_permissions030(
+            &serde_json::to_value(host_permissions)?,
+            "/agsdlHostPermissions",
+        )?;
+        let observed = crate::agsdl_host_codex::observe_catalogue030(
+            manager,
+            &scope,
+            project.user_read_only || project.is_read_only,
+        )
+        .await?;
+        if observed.is_none() {
+            let status = crate::agsdl_host_codex::profile_status(manager).await;
+            return Err(failure(
+                &status.code,
+                "/agents",
+                "Codex is not available in Macro's private profile",
+            ));
+        }
+        observed
+    } else {
+        None
+    };
     let has_codex = !is_030
         && document
             .get("bindings")
@@ -377,7 +409,13 @@ pub(crate) async fn observation(
     }
     let mut observation = json!({"format":"macro-native-registry-observation/1","models":models,"tools":crate::agsdl_host_tools::observations(),"configurations":configurations,
         "callPermissions":crate::agsdl_host_tools::permissions("Implement", project.user_read_only || project.is_read_only, tools)?,"callScope":scope});
-    let account = codex.as_ref().map(|(_, _, account)| account.clone());
+    let account = codex030
+        .as_ref()
+        .map(|observed| observed.account_digest.clone())
+        .or_else(|| codex.as_ref().map(|(_, _, account)| account.clone()));
+    if let Some(observed) = &codex030 {
+        observation["codexProfileJson"] = json!(observed.profile.identity());
+    }
     if let Some((profile, _, _)) = codex {
         observation["codexProfileJson"] = json!(profile.identity())
     }
@@ -398,25 +436,14 @@ pub(crate) async fn observation(
     let version = format!("sha256:{:x}", Sha256::digest(version_bytes));
     observation["version"] = Value::String(version);
     if is_030 {
-        let uses_codex = document
-            .get("agents")
-            .and_then(Value::as_object)
-            .is_some_and(|agents| {
-                agents
-                    .values()
-                    .any(|agent| agent.get("harness").and_then(Value::as_str) == Some("codex"))
-            });
-        let codex_version = if uses_codex {
-            crate::agsdl_host_codex::profile_status(manager)
-                .await
-                .version
-        } else {
-            None
+        let (mut harnesses, agents) = match &codex030 {
+            Some(observed) => {
+                let (harness, agents) =
+                    codex_registry030(&document, &source.revision.source_sha256, &scope, observed)?;
+                (vec![harness], agents)
+            }
+            None => (Vec::new(), Vec::new()),
         };
-        let mut harnesses: Vec<Value> = codex_version.into_iter().map(|version| json!({
-            "harness":"codex", "version":version, "installation":"available",
-            "adapterId":null, "qualified":false, "capabilities":[], "models":[], "defaultModel":null
-        })).collect();
         for name in ["opencode", "pi"] {
             let used = document
                 .get("agents")
@@ -432,9 +459,8 @@ pub(crate) async fn observation(
                 }
             }
         }
-        // Bundled modules describe the language; they do not qualify an adapter.
-        // Retain the native observation hash, but publish no agent or capability
-        // evidence until the 0.3 native authorities can provide it.
+        // Modules describe the language; the native Codex observation supplies
+        // the separate installed version, model catalogue and qualified slice.
         let mut registry = json!({
             "format":"macro-agsdl-registry/030",
             "modules":[
@@ -443,7 +469,7 @@ pub(crate) async fn observation(
                 {"harness":"opencode", "moduleJson":include_str!("../../src/vendor/agsdl/v0.3/harnesses/opencode/module.json")},
                 {"harness":"pi", "moduleJson":include_str!("../../src/vendor/agsdl/v0.3/harnesses/pi/module.json")}
             ],
-            "harnesses":harnesses, "agents":[], "hostCapabilities":[]
+            "harnesses":harnesses, "agents":agents, "hostCapabilities":[]
         });
         #[cfg(all(feature = "agsdl-engine-qa", debug_assertions))]
         if crate::agsdl_host_example030::ExampleAdapter030::qa_capture_enabled() {
@@ -479,6 +505,45 @@ pub(crate) async fn observation(
         return Ok((registry, account, claude_account));
     }
     Ok((observation, account, claude_account))
+}
+
+/// Transport of a native app-server observation. It adds no provider work and
+/// uses the same private profile qualification as the existing native adapter.
+pub(crate) fn codex_registry030(
+    document: &Value,
+    source_sha256: &str,
+    scope: &Value,
+    observed: &crate::agsdl_host_codex::CodexObservation030,
+) -> Result<(Value, Vec<Value>)> {
+    crate::agsdl_host_work_admission030::validate_codex_document030(document)?;
+    if !crate::agsdl_host_codex::qualified_version030(&observed.version)
+        || observed.models.is_empty()
+    {
+        return Err(failure(
+            "CODEX_VERSION_UNQUALIFIED",
+            "/agents",
+            "Codex observation is outside the qualified version or catalogue",
+        ));
+    }
+    let adapter = crate::agsdl_host_codex::ADAPTER;
+    let evidence = json!({"adapterId":adapter,"version":observed.version,"profileDigest":observed.profile.digest,"kind":"native-codex"}).to_string();
+    let capabilities = ["result-submission", "continuity", "permission-enforcement", "contained-stop", "response-attribution", "instructions", "resources", "model.name", "model.effort", "instance.new", "delivery.queue"]
+        .into_iter().map(|name| json!({"name":name,"support":if name == "resources" {"approximate"} else {"native"},"evidenceJson":evidence})).collect::<Vec<_>>();
+    let default = observed
+        .models
+        .iter()
+        .find(|model| model["isDefault"] == true)
+        .and_then(|model| model["name"].as_str());
+    let models = observed.models.iter().map(|model| json!({"name":model["name"],"efforts":model["efforts"],"defaultEffort":model["defaultEffort"]})).collect::<Vec<_>>();
+    let agents = document["agents"].as_object().into_iter().flatten().filter(|(_, agent)| agent["harness"] == "codex").map(|(name, agent)| {
+        json!({"agentName":name,"agentDeclarationJson":agent.to_string(),"settingsJson":"{}",
+            "permissionsJson":json!({"requested":agent["permissions"],"authority":"native-03-at-handoff"}).to_string(),
+            "scopeJson":scope.to_string(),"evidenceJson":evidence,"provenanceJson":json!({"sourceSha256":source_sha256,"agent":name}).to_string()})
+    }).collect();
+    Ok((
+        json!({"harness":"codex","version":observed.version,"installation":"available","adapterId":adapter,"qualified":true,"capabilities":capabilities,"models":models,"defaultModel":default}),
+        agents,
+    ))
 }
 
 pub(crate) async fn compile(
@@ -519,6 +584,7 @@ pub(crate) async fn compile_input(
         &locked,
         &native_catalogue,
         &policy.tools,
+        &policy.agsdl_host_permissions,
         task,
     )
     .await?;
@@ -1161,6 +1227,7 @@ impl crate::db::agsdl_execution::CaptureAuthority for StartAuthority<'_> {
             &locked,
             &current_catalogue,
             &policy.tools,
+            &policy.agsdl_host_permissions,
             request
                 .associations
                 .task_id
@@ -1596,6 +1663,9 @@ mod exact_capture_tests {
                 &locked,
                 &catalogue,
                 &json!({"riskLevel":"balanced"}),
+                &crate::agsdl_permissions::RequestedPermissions::Preset(
+                    crate::agsdl_permissions::Preset::ReadOnly,
+                ),
                 None,
             )
             .await

@@ -55,6 +55,11 @@ struct Fixture {
 }
 impl Fixture {
     async fn new(chained: bool) -> Self {
+        let document = json!({"contract":"agsdl-0.3.0","id":"runtime-fixture","agents":{"worker":{"harness":"codex","permissions":"workspace"}},
+            "flow":{"entry":"first","steps": if chained { json!({"first":{"type":"agent","agent":"worker","next":"second"},"second":{"type":"agent","agent":"worker"}}) } else { json!({"first":{"type":"agent","agent":"worker"}}) }}});
+        Self::with_document(document).await
+    }
+    async fn with_document(document: Value) -> Self {
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path().canonicalize().unwrap();
         let workspace = root.join("workspace");
@@ -68,26 +73,31 @@ impl Fixture {
             .register_project_root("project", metadata)
             .await
             .unwrap();
-        let document = json!({"contract":"agsdl-0.3.0","id":"runtime-fixture","agents":{"worker":{"harness":"codex","permissions":"workspace"}},
-            "flow":{"entry":"first","steps": if chained { json!({"first":{"type":"agent","agent":"worker","next":"second"},"second":{"type":"agent","agent":"worker"}}) } else { json!({"first":{"type":"agent","agent":"worker"}}) }}});
         let authored = document.to_string();
         let source = json!({"owner":{"projectId":"project","planId":"source","branch":"develop"},"revision":"1","sourceSha256":format!("{:x}",Sha256::digest(authored.as_bytes()))});
         let scope = json!({"projectId":"project","root":workspace,"rootIdentity":crate::fs::operations::workspace_root_identity(&workspace).unwrap().observation_key().unwrap(),"sourceOwner":source["owner"]});
-        let capabilities = [
-            "result-submission",
-            "continuity",
-            "permission-enforcement",
-            "contained-stop",
-            "response-attribution",
-            "delivery.queue",
-            "resources",
-        ]
-        .into_iter()
-        .map(|name| json!({"name":name,"support":"native","evidenceJson":"{\"fixture\":true}"}))
-        .collect::<Vec<_>>();
-        let registry = json!({"format":"macro-agsdl-registry/030","version":"fixture","modules":[{"harness":"codex","moduleJson":include_str!("../../src/vendor/agsdl/v0.3/harnesses/codex/module.json")}],
-            "harnesses":[{"harness":"codex","version":"0.167.0","installation":"available","adapterId":"distinct-fake-executor","qualified":true,"capabilities":capabilities,"models":[{"name":"fixture","efforts":[],"defaultEffort":null}],"defaultModel":"fixture"}],
-            "agents":[{"agentName":"worker","agentDeclarationJson":document["agents"]["worker"].to_string(),"settingsJson":"{}","permissionsJson":"{\"fixture\":true}","scopeJson":scope.to_string(),"evidenceJson":"{\"fixture\":true}","provenanceJson":"{\"fixture\":true}"}],"hostCapabilities":[]});
+        let observed = crate::agsdl_host_codex::CodexObservation030 {
+            profile: crate::agsdl_host_codex::Profile {
+                executable: root.join("synthetic-codex"),
+                directory: root.join("profile"),
+                home: root.join("profile/home"),
+                bootstrap: root.join("bootstrap"),
+                digest: "synthetic-profile".into(),
+            },
+            version: "0.167.0".into(),
+            models: vec![
+                json!({"name":"fixture","efforts":["medium","high"],"defaultEffort":"medium","isDefault":true}),
+            ],
+            account_digest: "synthetic-account".into(),
+        };
+        let (harness, agents) = crate::agsdl_host_capture::codex_registry030(
+            &document,
+            source["sourceSha256"].as_str().unwrap(),
+            &scope,
+            &observed,
+        )
+        .unwrap();
+        let registry = json!({"format":"macro-agsdl-registry/030","version":"fixture","modules":[{"harness":"codex","moduleJson":include_str!("../../src/vendor/agsdl/v0.3/harnesses/codex/module.json")}],"harnesses":[harness],"agents":agents,"hostCapabilities":[]});
         let compiled = bun("import {compileHost030} from './src/services/agsdlExecution/hostCompilation';const j=JSON.parse(await Bun.stdin.text());process.stdout.write(await compileHost030(j.authored,j.source,j.registry));", &json!({"authored":authored,"source":source,"registry":registry})).await;
         let plan = compiled["compiledPlanJson"]
             .as_str()
@@ -285,16 +295,22 @@ impl AgentExecutor030 for FakeExecutor {
         &self,
         prepared: PreparedEffectiveAgentWork030,
     ) -> crate::db::agsdl_execution::Result<AttestedWorkPolicy030> {
-        Ok(AttestedWorkPolicy030::from_runtime_fixture(prepared))
+        AttestedWorkPolicy030::from_codex(prepared)
     }
     fn run(
         &self,
-        _work: AgentWork030,
+        work: AgentWork030,
         events: WorkEventSink030,
         cancel: CancellationToken,
     ) -> futures::future::BoxFuture<'static, crate::db::agsdl_execution::Result<()>> {
         self.starts.fetch_add(1, Ordering::SeqCst);
         self.started.notify_one();
+        let submission = if work.attempt.agent() == "reviewer" {
+            "{\"choice\":\"approve\"}"
+        } else {
+            "{}"
+        };
+        let writer = work.attempt.agent() == "writer";
         let independent = self.independent_finish;
         let (cleanup, cancelled, submitted) = (
             self.cleanup.clone(),
@@ -302,10 +318,13 @@ impl AgentExecutor030 for FakeExecutor {
             self.submitted.clone(),
         );
         Box::pin(async move {
+            if writer {
+                events.emit(json!({"kind":"visibleText","messageId":"draft","textParts":["Synthetic draft"]}), &cancel).await?;
+            }
             if let Some(signal) = submitted {
                 events
                     .emit(
-                        json!({"kind":"submit","callId":"fake","argumentsJson":"{}"}),
+                        json!({"kind":"submit","callId":"fake","argumentsJson":submission}),
                         &cancel,
                     )
                     .await?;
@@ -320,7 +339,7 @@ impl AgentExecutor030 for FakeExecutor {
             } else {
                 events
                     .emit(
-                        json!({"kind":"submit","callId":"fake","argumentsJson":"{}"}),
+                        json!({"kind":"submit","callId":"fake","argumentsJson":submission}),
                         &cancel,
                     )
                     .await?;
@@ -757,7 +776,7 @@ impl AgentExecutor030 for StopBeforeClaimExecutor {
                 Ok::<_, crate::db::agsdl_execution::dto::EngineFailure>(())
             })
         })?;
-        Ok(AttestedWorkPolicy030::from_runtime_fixture(prepared))
+        AttestedWorkPolicy030::from_codex(prepared)
     }
     fn run(
         &self,
@@ -810,4 +829,75 @@ async fn stop_between_preparation_and_claim_does_not_start_or_interrupt_the_supe
         .await
         .unwrap();
     assert_eq!(view.flow.state.verdict.as_deref(), Some("cancelled"));
+}
+
+#[tokio::test]
+async fn qualified_codex_registry_and_policy_run_the_write_review_demo() {
+    let document = json!({"contract":"agsdl-0.3.0","id":"codex-demo","agents":{
+        "writer":{"harness":"codex","permissions":"workspace","model":{"name":"fixture","effort":"high"}},
+        "reviewer":{"harness":"codex","permissions":"read-only"}},
+        "flow":{"entry":"write","steps":{
+            "write":{"type":"agent","agent":"writer","maxVisits":3,"next":"review"},
+            "review":{"type":"agent","agent":"reviewer","maxVisits":3,"next":{"approve":[],"revise":"write"}}}}});
+    let f = Fixture::with_document(document).await;
+    let pumps = f.pumps();
+    let tasks = crate::ai::stream_tasks::StreamTasks::default();
+    let starts = Arc::new(AtomicUsize::new(0));
+    let executors = Executors030 {
+        agents: Arc::new(FakeExecutor {
+            starts: starts.clone(),
+            started: Default::default(),
+            cleanup: None,
+            cancelled: Default::default(),
+            submitted: None,
+            independent_finish: false,
+        }),
+        calls: None,
+        humans: None,
+        clock: None,
+    };
+    let (_wake, receiver) = watch::channel(0);
+    let inspection = flow::inspect_run(f.host.flow030(), &f.host, &f.pool, &f.owner)
+        .await
+        .unwrap();
+    let registry: Value = serde_json::from_str(&inspection.capture.registry_json).unwrap();
+    assert_eq!(registry["harnesses"][0]["qualified"], true);
+    assert_eq!(registry["agents"].as_array().unwrap().len(), 2);
+    assert_eq!(registry["harnesses"][0]["models"][0]["name"], "fixture");
+    let result = tokio::time::timeout(
+        std::time::Duration::from_secs(15),
+        supervise_with_emitter030(
+            None,
+            &f.host,
+            &f.pool,
+            &f.config,
+            &tasks,
+            &f.owner,
+            &executors,
+            receiver,
+            &CancellationToken::new(),
+            f.emitter(&tasks),
+        ),
+    )
+    .await
+    .unwrap();
+    for pump in pumps {
+        pump.abort();
+    }
+    result.unwrap();
+    let inspection = flow::inspect_run(f.host.flow030(), &f.host, &f.pool, &f.owner)
+        .await
+        .unwrap();
+    assert_eq!(inspection.flow.state.verdict.as_deref(), Some("succeeded"));
+    assert_eq!(starts.load(Ordering::SeqCst), 2);
+    assert!(inspection
+        .flow
+        .state
+        .activations
+        .iter()
+        .any(|activation| activation.agent.as_deref() == Some("reviewer")
+            && activation
+                .message_json
+                .as_deref()
+                .is_some_and(|message| message.contains("Synthetic draft"))));
 }

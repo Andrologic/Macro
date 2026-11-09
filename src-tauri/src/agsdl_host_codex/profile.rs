@@ -9,7 +9,7 @@ use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
 
 pub(crate) const ADAPTER: &str = "codex-app-server-v1";
-pub(crate) const VERSION: &str = "0.167.0";
+pub(crate) const VERSION: &str = crate::db::agsdl_execution::native_operations::CODEX_VERSION;
 pub(crate) const PROVIDER: &str = "codex-native";
 #[derive(Debug, Clone, Serialize, Deserialize, ts_rs::TS)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -309,8 +309,8 @@ impl Profile {
         let mut tool_files = serde_json::Map::new();
         tool_files.insert(":minimal".into(), json!("read"));
         // Named profiles otherwise inherit writable temporary directories.
-        tool_files.insert(":tmpdir".into(), json!("read"));
-        tool_files.insert(":slash_tmp".into(), json!("read"));
+        tool_files.insert(":tmpdir".into(), json!("deny"));
+        tool_files.insert(":slash_tmp".into(), json!("deny"));
         tool_files.insert(self.bootstrap.to_string_lossy().into_owned(), json!("read"));
         tool_files.insert(
             root.to_string_lossy().into_owned(),
@@ -387,7 +387,7 @@ impl Profile {
             "policyDigest":format!("sha256:{:x}",Sha256::digest(serde_json::to_vec(&self.settings(Path::new(scope["root"].as_str().ok_or_else(|| failure("CORRELATION","scope","Scope root absent"))?),read_only)?)?))}).to_string())
     }
 }
-fn qualified_version(version: &str) -> bool {
+pub(super) fn qualified_version(version: &str) -> bool {
     version
         .strip_prefix("0.167.")
         .is_some_and(|patch| !patch.is_empty() && patch.bytes().all(|byte| byte.is_ascii_digit()))
@@ -526,6 +526,41 @@ mod tests {
         for version in ["0.163.0", "0.168.0", "0.167.", "0.167.0-beta", "0.167.0.1"] {
             assert!(!qualified_version(version));
         }
+    }
+    #[test]
+    fn effective_layers_must_keep_temporary_roots_denied_and_network_disabled() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().canonicalize().unwrap();
+        let profile = Profile {
+            executable: root.join("bin/codex"),
+            directory: root.join("profile"),
+            home: root.join("profile/home"),
+            bootstrap: root.join("bootstrap"),
+            digest: "fixture".into(),
+        };
+        let workspace = root.join("workspace");
+        let settings = profile.settings(&workspace, false).unwrap();
+        assert_eq!(
+            settings["permissions"]["macro-agsdl"]["filesystem"][":tmpdir"],
+            "deny"
+        );
+        assert_eq!(
+            settings["permissions"]["macro-agsdl"]["filesystem"][":slash_tmp"],
+            "deny"
+        );
+        let config = json!({"layers":[{"name":{"type":"sessionFlags"},"config":settings}],"config":settings});
+        verify_layers(&config, &profile, &workspace, false).unwrap();
+        for pointer in [
+            "/config/permissions/macro-agsdl/filesystem/:tmpdir",
+            "/config/permissions/macro-agsdl/filesystem/:slash_tmp",
+        ] {
+            let mut changed = config.clone();
+            *changed.pointer_mut(pointer).unwrap() = json!("write");
+            assert!(verify_layers(&changed, &profile, &workspace, false).is_err());
+        }
+        let mut network = config;
+        network["config"]["permissions"]["macro-agsdl"]["network"]["enabled"] = json!(true);
+        assert!(verify_layers(&network, &profile, &workspace, false).is_err());
     }
     #[test]
     fn bootstrap_is_stable_and_changes_are_refused_without_deleting_data() {

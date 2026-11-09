@@ -178,6 +178,21 @@ impl Client {
         cwd: &str,
         read_only: bool,
     ) -> Result<(Vec<String>, String)> {
+        let (models, account) = self.qualify_catalogue030(profile, cwd, read_only).await?;
+        Ok((
+            models
+                .iter()
+                .filter_map(|model| model["name"].as_str().map(str::to_owned))
+                .collect(),
+            account,
+        ))
+    }
+    pub async fn qualify_catalogue030(
+        &mut self,
+        profile: &Profile,
+        cwd: &str,
+        read_only: bool,
+    ) -> Result<(Vec<Value>, String)> {
         self.preflight(profile, cwd, read_only).await?;
         let account = self
             .request("account/read", json!({"refreshToken":false}))
@@ -206,33 +221,7 @@ impl Client {
             ))?)
         );
         let models = self.request("model/list", json!({"limit":100})).await?;
-        if !models.get("nextCursor").is_none_or(Value::is_null) {
-            return Err(failure(
-                "CODEX_MODEL_UNQUALIFIED",
-                "engine",
-                "Codex model catalogue requires pagination",
-            ));
-        }
-        Ok((
-            models["data"]
-                .as_array()
-                .ok_or_else(|| {
-                    failure(
-                        "CODEX_MODEL_UNQUALIFIED",
-                        "engine",
-                        "Codex model catalogue is unavailable",
-                    )
-                })?
-                .iter()
-                .filter_map(|model| {
-                    model
-                        .get("model")
-                        .and_then(Value::as_str)
-                        .map(str::to_owned)
-                })
-                .collect(),
-            account_digest,
-        ))
+        Ok((model_observations030(&models)?, account_digest))
     }
     pub async fn operation(
         &mut self,
@@ -441,5 +430,64 @@ mod tests {
                 "CODEX_CONTEXT_UNQUALIFIED"
             );
         }
+    }
+}
+
+/// Preserve only model settings advertised by model/list. No effort or default
+/// model is inferred from a module or a hard-coded model catalogue.
+pub(crate) fn model_observations030(response: &Value) -> Result<Vec<Value>> {
+    let refused = || {
+        failure(
+            "CODEX_MODEL_UNQUALIFIED",
+            "/models",
+            "Codex model catalogue is incomplete or inconsistent",
+        )
+    };
+    if !response.get("nextCursor").is_none_or(Value::is_null) {
+        return Err(refused());
+    }
+    let mut names = std::collections::BTreeSet::new();
+    let mut defaults = 0;
+    let models = response["data"].as_array().ok_or_else(refused)?.iter().map(|model| {
+        let name = model["model"].as_str().filter(|s| !s.is_empty()).ok_or_else(refused)?;
+        if !names.insert(name) { return Err(refused()); }
+        let efforts = model["supportedReasoningEfforts"].as_array().ok_or_else(refused)?.iter().map(|entry| {
+            entry["reasoningEffort"].as_str().filter(|s| !s.is_empty()).map(str::to_owned).ok_or_else(refused)
+        }).collect::<Result<Vec<_>>>()?;
+        let default = model["defaultReasoningEffort"].as_str().ok_or_else(refused)?;
+        if !efforts.iter().any(|effort| effort == default) || efforts.iter().collect::<std::collections::BTreeSet<_>>().len() != efforts.len() { return Err(refused()); }
+        let is_default = model["isDefault"].as_bool().ok_or_else(refused)?;
+        defaults += usize::from(is_default);
+        Ok(json!({"name":name,"efforts":efforts,"defaultEffort":default,"isDefault":is_default}))
+    }).collect::<Result<Vec<_>>>()?;
+    if models.is_empty() || defaults > 1 {
+        return Err(refused());
+    }
+    Ok(models)
+}
+
+#[cfg(test)]
+mod catalogue030_tests {
+    use super::*;
+    #[test]
+    fn model_catalogue_keeps_observed_efforts_and_refuses_incomplete_pages() {
+        let response = json!({"data":[{"model":"synthetic-model","supportedReasoningEfforts":[{"reasoningEffort":"medium"},{"reasoningEffort":"high"}],"defaultReasoningEffort":"medium","isDefault":true}],"nextCursor":null});
+        let models = model_observations030(&response).unwrap();
+        assert_eq!(
+            models[0],
+            json!({"name":"synthetic-model","efforts":["medium","high"],"defaultEffort":"medium","isDefault":true})
+        );
+        let mut incomplete = response.clone();
+        incomplete["nextCursor"] = json!("next");
+        assert!(model_observations030(&incomplete).is_err());
+        let mut invalid = response.clone();
+        invalid["data"][0]["defaultReasoningEffort"] = json!("invented");
+        assert!(model_observations030(&invalid).is_err());
+        let mut duplicate = response.clone();
+        duplicate["data"]
+            .as_array_mut()
+            .unwrap()
+            .push(response["data"][0].clone());
+        assert!(model_observations030(&duplicate).is_err());
     }
 }

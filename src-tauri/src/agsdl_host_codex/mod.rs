@@ -15,8 +15,8 @@ use crate::db::agsdl_execution::{
 };
 
 pub use profile::CodexStatus;
-pub(crate) use profile::Profile;
-use profile::{ADAPTER, PROVIDER, VERSION};
+pub(crate) use profile::{Profile, ADAPTER};
+use profile::{PROVIDER, VERSION};
 use protocol::{required, Client};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, value::RawValue, Value};
@@ -138,6 +138,17 @@ pub(crate) async fn profile_status(manager: &ConfigManager) -> CodexStatus {
     status
 }
 
+pub(crate) fn qualified_version030(version: &str) -> bool {
+    profile::qualified_version(version)
+}
+
+pub(crate) struct CodexObservation030 {
+    pub profile: Profile,
+    pub version: String,
+    pub models: Vec<Value>,
+    pub account_digest: String,
+}
+
 /// Preflight never reads credentials. Until a dedicated test login and native
 /// qualification exist, no Codex attestation or executable model is published.
 pub(crate) async fn observe(
@@ -145,10 +156,37 @@ pub(crate) async fn observe(
     scope: &Value,
     read_only: bool,
 ) -> Result<Option<(Profile, Vec<String>, String)>> {
+    Ok(observe_catalogue030(manager, scope, read_only)
+        .await?
+        .map(|observed| {
+            (
+                observed.profile,
+                observed
+                    .models
+                    .iter()
+                    .filter_map(|model| model["name"].as_str().map(str::to_owned))
+                    .collect(),
+                observed.account_digest,
+            )
+        }))
+}
+
+pub(crate) async fn observe_catalogue030(
+    manager: &ConfigManager,
+    scope: &Value,
+    read_only: bool,
+) -> Result<Option<CodexObservation030>> {
     let status = profile::status(manager).await;
     if !status.available {
         return Ok(None);
     }
+    let version = status.version.ok_or_else(|| {
+        failure(
+            "CODEX_VERSION_UNQUALIFIED",
+            "engine",
+            "Codex version is absent",
+        )
+    })?;
     let profile = profile::prepare(manager)?;
     let root = std::path::PathBuf::from(
         scope
@@ -185,9 +223,14 @@ pub(crate) async fn observe(
             );
             client.initialize().await?;
             let (models, account) = client
-                .qualify(&profile, &root.to_string_lossy(), read_only)
+                .qualify_catalogue030(&profile, &root.to_string_lossy(), read_only)
                 .await?;
-            Ok((profile.clone(), models, account))
+            Ok(CodexObservation030 {
+                profile: profile.clone(),
+                version,
+                models,
+                account_digest: account,
+            })
         };
         let result = tokio::time::timeout(std::time::Duration::from_secs(15), result)
             .await
@@ -995,7 +1038,7 @@ print(json.dumps(rows))
             let observed:Value=serde_json::from_str(command["stdout"].as_str().unwrap()).unwrap();
             assert_eq!(observed["workspaceWrite"],true);
             eprintln!("NATIVE_PHYSICAL_OBSERVATION={observed}");
-            for field in ["privateRead", "outsideWrite", "gitWrite", "codexWrite", "agentsWrite", "bootstrapWrite", "networkConnect"] {
+            for field in ["privateRead", "outsideRead", "outsideWrite", "gitWrite", "codexWrite", "agentsWrite", "bootstrapWrite", "networkConnect"] {
                 assert!(observed[field].as_i64().is_some_and(|errno| errno != 0), "{field}: {observed}");
             }
             assert_eq!(std::fs::read_to_string(root.join("outside-guard")).unwrap(), "synthetic");

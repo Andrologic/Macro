@@ -1150,6 +1150,7 @@ impl StartAuthority030 for Start<'_> {
             &source,
             &catalogue,
             &policy.tools,
+            &policy.agsdl_host_permissions,
             request
                 .associations
                 .task_id

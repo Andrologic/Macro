@@ -61,6 +61,252 @@ pub(crate) struct AttestedWorkPolicy030 {
     plan_lock: Option<std::sync::Arc<NativePlanLock030>>,
 }
 
+impl AttestedWorkPolicy030 {
+    pub(crate) fn from_codex(prepared: PreparedEffectiveAgentWork030) -> Result<Self> {
+        let work = &prepared.work;
+        let registry: serde_json::Value = serde_json::from_str(&work.registry_json)?;
+        validate_codex_registry030(&registry, &work.agent, &work.agent_harness)?;
+        codex_read_only030(&prepared.policy)?;
+        let contract: serde_json::Value = serde_json::from_str(&work.inputs.contract_json)?;
+        for key in ["planFirst", "completionCheck"] {
+            if !contract.get(key).is_none_or(serde_json::Value::is_null) {
+                return Err(failure(
+                    "HARNESS_CAPABILITY",
+                    &format!("/agents/{}/{key}", pointer_token030(&work.agent)),
+                    "This Codex option is not connected",
+                ));
+            }
+        }
+        Ok(Self { prepared, plan_lock: None, options_json: serde_json::json!({"checkTimeoutMs":"1000","maxCheckOutputBytes":1024,"enforcedPlanLock":false}).to_string() })
+    }
+}
+
+fn pointer_token030(value: &str) -> String {
+    value.replace('~', "~0").replace('/', "~1")
+}
+
+pub(crate) fn validate_codex_registry030(
+    registry: &serde_json::Value,
+    agent: &str,
+    harness: &str,
+) -> Result<()> {
+    let pointer = format!("/agents/{}/harness", pointer_token030(agent));
+    let entries = registry["harnesses"]
+        .as_array()
+        .ok_or_else(|| failure("HARNESS_REFUSED", &pointer, "Codex observation is absent"))?;
+    let matches = entries
+        .iter()
+        .filter(|entry| entry["harness"] == "codex")
+        .collect::<Vec<_>>();
+    let observed = matches
+        .first()
+        .copied()
+        .ok_or_else(|| failure("HARNESS_REFUSED", &pointer, "Codex observation is absent"))?;
+    if harness != "codex"
+        || matches.len() != 1
+        || observed["adapterId"] != crate::agsdl_host_codex::ADAPTER
+        || observed["installation"] != "available"
+        || observed["qualified"] != true
+        || !observed["version"]
+            .as_str()
+            .is_some_and(crate::agsdl_host_codex::qualified_version030)
+        || observed["models"].as_array().is_none_or(Vec::is_empty)
+        || registry["agents"].as_array().is_none_or(|entries| {
+            entries
+                .iter()
+                .filter(|entry| entry["agentName"] == agent)
+                .count()
+                != 1
+        })
+    {
+        return Err(failure(
+            "HARNESS_REFUSED",
+            &pointer,
+            "The captured Codex adapter is not qualified",
+        ));
+    }
+    Ok(())
+}
+
+pub(crate) fn codex_permissions030(value: &serde_json::Value, pointer: &str) -> Result<()> {
+    if let Some(rules) = value.get("rules").and_then(serde_json::Value::as_array) {
+        for (index, rule) in rules.iter().enumerate() {
+            if rule["effect"] == "ask" {
+                return Err(failure(
+                    "HARNESS_CAPABILITY",
+                    &format!("{pointer}/rules/{index}/effect"),
+                    "Codex approval permissions are not connected",
+                ));
+            }
+        }
+    }
+    if !matches!(value.as_str(), Some("read-only" | "workspace")) {
+        return Err(failure(
+            "HARNESS_CAPABILITY",
+            pointer,
+            "This Codex slice supports read-only and workspace permissions",
+        ));
+    }
+    Ok(())
+}
+
+/// All ceilings must be expressible by the qualified named native profiles.
+/// A restrictive custom rule is refused rather than silently dropped.
+pub(crate) fn codex_read_only030(
+    policy: &crate::agsdl_permissions::EffectivePolicy,
+) -> Result<bool> {
+    use crate::agsdl_permissions::{Outside, Preset};
+    let mut read_only = false;
+    for ceiling in policy.policies() {
+        if !matches!(ceiling.preset(), Some(Preset::ReadOnly | Preset::Workspace))
+            || !ceiling.rules().is_empty()
+            || !ceiling.directories().is_empty()
+            || ceiling.reviewer().is_some()
+            || ceiling.outside() != Outside::Deny
+        {
+            return Err(failure(
+                "HARNESS_CAPABILITY",
+                "/permissions",
+                "The effective Codex permission ceiling cannot be represented by this slice",
+            ));
+        }
+        read_only |= ceiling.preset() == Some(Preset::ReadOnly);
+    }
+    Ok(read_only)
+}
+
+/// Shared native preflight/admission restriction. Inline values are payloads,
+/// so data containing keys such as uri or timeoutMs is never treated as code.
+pub(crate) fn validate_codex_document030(document: &serde_json::Value) -> Result<()> {
+    use serde_json::Value;
+    let agents = document.get("agents").and_then(Value::as_object);
+    if !agents.is_some_and(|agents| agents.values().any(|agent| agent["harness"] == "codex")) {
+        return Ok(());
+    }
+    if let Some(agents) = agents {
+        for (name, agent) in agents
+            .iter()
+            .filter(|(_, agent)| agent["harness"] == "codex")
+        {
+            let pointer = format!("/agents/{}", pointer_token030(name));
+            codex_permissions030(&agent["permissions"], &format!("{pointer}/permissions"))?;
+            for key in ["planFirst", "completionCheck", "answerTimeoutMs"] {
+                if agent.get(key).is_some() {
+                    return Err(failure(
+                        "HARNESS_CAPABILITY",
+                        &format!("{pointer}/{key}"),
+                        "This Codex option is not connected",
+                    ));
+                }
+            }
+            for key in ["skills", "mcpServers", "harnessSettings"] {
+                if agent.get(key).is_some_and(|value| {
+                    value.as_array().is_some_and(|v| !v.is_empty())
+                        || value.as_object().is_some_and(|v| !v.is_empty())
+                }) {
+                    return Err(failure(
+                        "HARNESS_CAPABILITY",
+                        &format!("{pointer}/{key}"),
+                        "This Codex option is not connected",
+                    ));
+                }
+            }
+            if agent["plan"] == true {
+                return Err(failure(
+                    "HARNESS_CAPABILITY",
+                    &format!("{pointer}/plan"),
+                    "Codex plans are not connected",
+                ));
+            }
+        }
+    }
+    fn route(value: &Value, pointer: &str) -> Result<()> {
+        if let Some(values) = value.as_array() {
+            if values.len() > 1 {
+                return Err(failure(
+                    "HOST_CAPABILITY",
+                    pointer,
+                    "Parallel routes are not connected in this slice",
+                ));
+            }
+            for (i, value) in values.iter().enumerate() {
+                route(value, &format!("{pointer}/{i}"))?;
+            }
+        } else if let Some(object) = value.as_object() {
+            if object.contains_key("step") {
+                for key in ["each", "concurrency", "max"] {
+                    if object.contains_key(key) {
+                        return Err(failure(
+                            "HOST_CAPABILITY",
+                            &format!("{pointer}/{key}"),
+                            "Fan-out is not connected in this slice",
+                        ));
+                    }
+                }
+            } else if !object.contains_key("output") {
+                for (key, value) in object {
+                    route(value, &format!("{pointer}/{}", pointer_token030(key)))?;
+                }
+            }
+        }
+        Ok(())
+    }
+    fn visit(value: &Value, pointer: &str) -> Result<()> {
+        if let Some(object) = value.as_object() {
+            if object.get("uri").is_some_and(Value::is_string)
+                && object
+                    .keys()
+                    .all(|key| matches!(key.as_str(), "uri" | "mediaType"))
+            {
+                return Err(failure(
+                    "CONTENT_SOURCE_UNSUPPORTED",
+                    &format!("{pointer}/uri"),
+                    "External content is not connected in this slice",
+                ));
+            }
+            let step = object.get("type").and_then(Value::as_str);
+            if matches!(step, Some("call" | "approval" | "compose" | "join")) {
+                return Err(failure(
+                    "HOST_CAPABILITY",
+                    &format!("{pointer}/type"),
+                    "This flow step is not connected in this slice",
+                ));
+            }
+            for (key, child) in object {
+                if ["value", "results", "harnessSettings", "permissions"].contains(&key.as_str()) {
+                    continue;
+                }
+                let location = format!("{pointer}/{}", pointer_token030(key));
+                if step == Some("agent") && ["timeoutMs", "answerTimeoutMs"].contains(&key.as_str())
+                {
+                    return Err(failure(
+                        "HOST_CAPABILITY",
+                        &location,
+                        "The production clock is not connected",
+                    ));
+                }
+                if key == "delivery" && child == "steer" {
+                    return Err(failure(
+                        "HARNESS_CAPABILITY",
+                        &location,
+                        "Steer is not connected in this slice",
+                    ));
+                }
+                if step == Some("agent") && ["next", "onError"].contains(&key.as_str()) {
+                    route(child, &location)?;
+                }
+                visit(child, &location)?;
+            }
+        } else if let Some(array) = value.as_array() {
+            for (index, child) in array.iter().enumerate() {
+                visit(child, &format!("{pointer}/{index}"))?;
+            }
+        }
+        Ok(())
+    }
+    visit(document, "")
+}
+
 #[cfg(all(feature = "agsdl-engine-qa", debug_assertions))]
 impl AttestedWorkPolicy030 {
     /// The QA executor must retain plan_lock() and guard every change, including
@@ -115,13 +361,6 @@ impl AttestedWorkPolicy030 {
     }
 }
 
-#[cfg(test)]
-impl AttestedWorkPolicy030 {
-    pub(crate) fn from_runtime_fixture(prepared: PreparedEffectiveAgentWork030) -> Self {
-        Self { prepared, options_json: serde_json::json!({"checkTimeoutMs":"1000","maxCheckOutputBytes":1024,"enforcedPlanLock":false}).to_string(), plan_lock: None }
-    }
-}
-
 /// Reauthenticate a prepared agent against the same SQL transaction which
 /// records the owned handoff. No operation is dispatched by this writer.
 pub(crate) async fn admit_agent_work_tx(
@@ -165,6 +404,16 @@ pub(crate) async fn admit_agent_work_tx(
         || format!("{:x}", Sha256::digest(serde_json::to_vec(&capture)?)) != prepared.capture_sha256
     {
         return Err(failure("CORRELATION", "capture", "Native capture changed"));
+    }
+    if prepared.agent_harness == "codex" {
+        let document: serde_json::Value = serde_json::from_str(&capture.authored_source)?;
+        validate_codex_document030(&document)?;
+        validate_codex_registry030(
+            &serde_json::from_str(&capture.registry_json)?,
+            &prepared.agent,
+            &prepared.agent_harness,
+        )?;
+        codex_read_only030(&policy.prepared.policy)?;
     }
     let current = prepared.leases.captured_agent_inputs(&capture, attempt)?;
     if current.contract_json != prepared.inputs.contract_json
@@ -554,6 +803,9 @@ fn agent_inputs(
     }
     validate_json(&capture.authored_source)?;
     let document: serde_json::Value = serde_json::from_str(&capture.authored_source)?;
+    if document["agents"][agent]["harness"] == "codex" {
+        validate_codex_document030(&document)?;
+    }
     let value = document
         .get("agents")
         .and_then(serde_json::Value::as_object)
@@ -852,5 +1104,145 @@ impl NativePlanLock030 {
             start_effect_id: work.start_effect_id().into(),
             state: std::sync::Arc::new(tokio::sync::RwLock::new(PlanGate030::AwaitingPlan)),
         }
+    }
+}
+
+#[cfg(test)]
+mod codex030_tests {
+    use super::*;
+    use serde_json::{json, Value};
+    fn document() -> Value {
+        json!({"agents":{"worker":{"harness":"codex","permissions":"workspace"}},"flow":{"entry":"work","steps":{"work":{"type":"agent","agent":"worker","next":[]}}}})
+    }
+    #[test]
+    fn preflight_and_admission_share_precise_slice_refusals() {
+        let cases = [
+            (
+                "/agents/worker/planFirst",
+                json!("ask"),
+                "HARNESS_CAPABILITY",
+                "/agents/worker/planFirst",
+            ),
+            (
+                "/agents/worker/completionCheck",
+                json!({"command":"true"}),
+                "HARNESS_CAPABILITY",
+                "/agents/worker/completionCheck",
+            ),
+            (
+                "/agents/worker/answerTimeoutMs",
+                json!(1),
+                "HARNESS_CAPABILITY",
+                "/agents/worker/answerTimeoutMs",
+            ),
+            (
+                "/agents/worker/permissions",
+                json!({"rules":[{"action":"write","effect":"ask"}]}),
+                "HARNESS_CAPABILITY",
+                "/agents/worker/permissions/rules/0/effect",
+            ),
+            (
+                "/flow/steps/work/timeoutMs",
+                json!(1),
+                "HOST_CAPABILITY",
+                "/flow/steps/work/timeoutMs",
+            ),
+            (
+                "/flow/steps/work/delivery",
+                json!("steer"),
+                "HARNESS_CAPABILITY",
+                "/flow/steps/work/delivery",
+            ),
+            (
+                "/flow/steps/work/next",
+                json!(["a", "b"]),
+                "HOST_CAPABILITY",
+                "/flow/steps/work/next",
+            ),
+            (
+                "/flow/steps/work/next",
+                json!({"step":"a","each":["items"]}),
+                "HOST_CAPABILITY",
+                "/flow/steps/work/next/each",
+            ),
+            (
+                "/flow/steps/work/type",
+                json!("call"),
+                "HOST_CAPABILITY",
+                "/flow/steps/work/type",
+            ),
+        ];
+        for (pointer, value, code, location) in cases {
+            let mut doc = document();
+            let (parent, key) = pointer.rsplit_once('/').unwrap();
+            doc.pointer_mut(parent)
+                .unwrap()
+                .as_object_mut()
+                .unwrap()
+                .insert(key.into(), value);
+            let failure = validate_codex_document030(&doc).unwrap_err();
+            assert_eq!(failure.code, code, "{pointer}");
+            assert_eq!(failure.pointer, location, "{pointer}");
+        }
+        let mut doc = document();
+        doc["content"] = json!({"remote":{"uri":"https://example.invalid/source"}});
+        let failure = validate_codex_document030(&doc).unwrap_err();
+        assert_eq!(failure.code, "CONTENT_SOURCE_UNSUPPORTED");
+        assert_eq!(failure.pointer, "/content/remote/uri");
+    }
+    #[test]
+    fn inline_payloads_and_other_harnesses_are_not_mistaken_for_executable_options() {
+        let mut doc = document();
+        doc["content"] = json!({"inline":{"value":{"uri":"data","timeoutMs":1,"type":"call"}}});
+        doc["content"]["timeoutMs"] = json!({"value":"Ordinary named content"});
+        doc["agents"]["worker"]["resources"] = json!({"sample":{"ref":"inline"}});
+        assert!(validate_codex_document030(&doc).is_ok());
+        doc["agents"]["worker"]["harness"] = json!("example");
+        doc["agents"]["worker"]["planFirst"] = json!("ask");
+        assert!(validate_codex_document030(&doc).is_ok());
+    }
+    #[test]
+    fn native_profile_respects_the_most_restrictive_supported_ceiling() {
+        use crate::agsdl_permissions::{normalize_requested, EffectivePolicy, PathContext};
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().canonicalize().unwrap();
+        let context = PathContext {
+            workspace: root.clone(),
+            home: root,
+        };
+        let normalize = |value| {
+            normalize_requested(serde_json::from_value(value).unwrap(), context.clone()).unwrap()
+        };
+        let workspace = normalize(json!("workspace"));
+        let readonly = normalize(json!("read-only"));
+        assert!(!codex_read_only030(&EffectivePolicy::new(
+            workspace.clone(),
+            workspace.clone(),
+            workspace.clone()
+        ))
+        .unwrap());
+        assert!(codex_read_only030(&EffectivePolicy::new(
+            workspace.clone(),
+            readonly.clone(),
+            readonly
+        ))
+        .unwrap());
+        let custom =
+            normalize(json!({"preset":"workspace","rules":[{"action":"shell","effect":"deny"}]}));
+        assert_eq!(
+            codex_read_only030(&EffectivePolicy::new(
+                workspace.clone(),
+                custom.clone(),
+                custom
+            ))
+            .unwrap_err()
+            .code,
+            "HARNESS_CAPABILITY"
+        );
+        assert!(codex_permissions030(
+            &json!({"preset":"workspace","rules":[{"action":"network","effect":"ask"}]}),
+            "/agsdlHostPermissions"
+        )
+        .is_err());
     }
 }

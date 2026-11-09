@@ -167,6 +167,8 @@ impl Drop for McpConfigurationMutationGuard {
 /// Its projection contains tool policy only, never providers or secret references.
 pub(crate) struct ExecutionToolsLease {
     pub tools: Value,
+    // Preflight snapshot only. Admission reacquires AgsdlHostPermissionsLease.
+    pub agsdl_host_permissions: crate::agsdl_permissions::RequestedPermissions,
     _state: tokio::sync::OwnedRwLockReadGuard<ConfigState>,
 }
 
@@ -1533,10 +1535,18 @@ impl ConfigManager {
         let tools = effective.get("tools").ok_or_else(|| {
             ConfigApiError::new("TOOLS_UNAVAILABLE", "Execution tool policy is unavailable")
         })?;
+        let agsdl_host_permissions =
+            serde_json::from_value(tools.get("agsdlHostPermissions").cloned().ok_or_else(
+                || ConfigApiError::new("PERMISSION", "AgSDL host permission ceiling is absent"),
+            )?)
+            .map_err(|_| {
+                ConfigApiError::new("PERMISSION", "AgSDL host permission ceiling is invalid")
+            })?;
         let tools = serde_json::json!({"riskLevel":tools.get("riskLevel"),"builtIn":tools.get("builtIn"),"modes":tools.get("modes")});
         drop(registration);
         Ok(ExecutionToolsLease {
             tools,
+            agsdl_host_permissions,
             _state: state,
         })
     }
@@ -3884,6 +3894,10 @@ mod tests {
         .expect("project discovery must not wait on the ceiling's state read lock")
         .unwrap();
         assert!(project_tools.tools["builtIn"]["read"].is_null());
+        assert_eq!(
+            serde_json::to_value(&project_tools.agsdl_host_permissions).unwrap(),
+            json!("read-only")
+        );
         assert_eq!(
             serde_json::to_value(lease.permissions()).unwrap(),
             json!("read-only")

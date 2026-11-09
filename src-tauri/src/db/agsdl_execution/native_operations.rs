@@ -15,12 +15,14 @@ pub(crate) struct NativeOperation {
     pub request_json: String,
 }
 
+pub(crate) const CODEX_VERSION: &str = "0.167.0";
+
 pub(crate) async fn admit(pool: &SqlitePool, operation: &NativeOperation) -> Result<()> {
     opaque(&operation.operation_id)?;
     opaque(&operation.profile_digest)?;
     validate_json(&operation.request_json)?;
     require(
-        (operation.adapter == "codex-app-server-v1" && operation.version == "0.163.0")
+        (operation.adapter == "codex-app-server-v1" && operation.version == CODEX_VERSION)
             || (operation.adapter == "claude-sdk-v1" && operation.version == "0.3.308"),
         "Native adapter version is unavailable",
     )?;

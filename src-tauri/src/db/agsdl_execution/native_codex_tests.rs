@@ -81,7 +81,7 @@ for line in sys.stdin:
  elif method=='skills/list':result={'data':[{'cwd':p['cwds'][0],'skills':[],'errors':[]}]}
  elif method=='command/exec':result={'exitCode':0}
  elif method=='account/read':result={'account':{'type':'chatgpt'},'workspaceRouting':{'chatgptAccountId':'synthetic-account','backendOrigin':'https://synthetic.invalid','accountRoutingOverride':'NO_CONSTRAINT'}}
- elif method=='model/list':result={'data':[{'model':'synthetic-model'}],'nextCursor':None}
+ elif method=='model/list':result={'data':[{'model':'synthetic-model','supportedReasoningEfforts':[{'reasoningEffort':'medium'}],'defaultReasoningEffort':'medium','isDefault':True}],'nextCursor':None}
  elif method in ['thread/start','thread/resume']:
   if method=='thread/start':
    count=len(list(root.glob('thread-*')))+1;thread='thread-'+str(count);(root/thread).write_text('')
@@ -380,7 +380,7 @@ async fn native_stop_receipt_requires_correlated_stop_and_join_and_preserves_pri
                 effect: effect.effect.clone(),
                 operation_id: format!("{stage}:thread"),
                 adapter: "codex-app-server-v1".into(),
-                version: "0.163.0".into(),
+                version: "0.167.0".into(),
                 profile_digest: "synthetic".into(),
                 method: "thread/start".into(),
                 request_json: "{}".into(),

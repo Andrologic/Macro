@@ -3857,7 +3857,7 @@ async fn native_operation_receipts_survive_reopen_and_never_authorize_replay() {
     for (adapter, version, method, refs, delayed_method) in [
         (
             "codex-app-server-v1",
-            "0.163.0",
+            "0.167.0",
             "thread/start",
             r#"{"threadId":"synthetic-thread","turnId":null}"#,
             "turn/start",
