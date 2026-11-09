@@ -91,30 +91,39 @@ pub(crate) struct Fixture {
     pub id: FlowIdentity030,
     pub effect: FlowEffect030,
 }
-impl Fixture {
-    pub async fn new(declaration: &str) -> Self {
-        let temp = tempfile::TempDir::new().unwrap();
-        let pool = crate::db::create_pool(&temp.path().join("calls.db"))
-            .await
-            .unwrap();
-        // Registration belongs to the integrator's DB migration registry.
-        sqlx::raw_sql(include_str!(
-            "db/migrations/039_execution_call_protocol030.sql"
-        ))
-        .execute(&pool)
+async fn fixture_parts() -> (
+    tempfile::TempDir,
+    SqlitePool,
+    TestAuthority,
+    FlowIdentity030,
+) {
+    let temp = tempfile::TempDir::new().unwrap();
+    let pool = crate::db::create_pool(&temp.path().join("calls.db"))
         .await
         .unwrap();
-        let id = FlowIdentity030 {
-            system_start_id: "system".into(),
-            flow_invocation_id: "flow".into(),
-            snapshot_id: "snapshot".into(),
-            epoch: "capture".into(),
-        };
-        let authority = TestAuthority {
-            gate: Arc::new(Mutex::new(())),
-            qualified: true,
-            commits: CallCommitFence030::default(),
-        };
+    // Registration belongs to the integrator's DB migration registry.
+    sqlx::raw_sql(include_str!(
+        "db/migrations/039_execution_call_protocol030.sql"
+    ))
+    .execute(&pool)
+    .await
+    .unwrap();
+    let id = FlowIdentity030 {
+        system_start_id: "system".into(),
+        flow_invocation_id: "flow".into(),
+        snapshot_id: "snapshot".into(),
+        epoch: "capture".into(),
+    };
+    let authority = TestAuthority {
+        gate: Arc::new(Mutex::new(())),
+        qualified: true,
+        commits: CallCommitFence030::default(),
+    };
+    (temp, pool, authority, id)
+}
+impl Fixture {
+    pub async fn new(declaration: &str) -> Self {
+        let (temp, pool, authority, id) = fixture_parts().await;
         let mut plan: FlowPlan030 = serde_json::from_str(include_str!(
             "../tests/fixtures/agsdl030_compiled_plan.json"
         ))
@@ -164,6 +173,25 @@ impl Fixture {
                 }],
             });
         }
+        let event = FlowEvent030 {
+            identity: id.clone(),
+            event_id: "enter".into(),
+            expected_revision: "0".into(),
+            kind: FlowEventKind030::Enter {
+                message_json: "{}".into(),
+            },
+        };
+        let transition = flow030::reduce(&plan, &FlowState030::new(id.clone()), &event).unwrap();
+        Self::seed(temp, pool, authority, id, plan, vec![(event, transition)]).await
+    }
+    async fn seed(
+        temp: tempfile::TempDir,
+        pool: SqlitePool,
+        authority: TestAuthority,
+        id: FlowIdentity030,
+        plan: FlowPlan030,
+        history: Vec<(FlowEvent030, flow030::FlowTransition030)>,
+    ) -> Self {
         let plan_json = serde_json::to_string(&plan).unwrap();
         let capture = StartCapture030 {
             identity: id.clone(),
@@ -176,27 +204,22 @@ impl Fixture {
             private_capture_json: "{}".into(),
         };
         let raw = serde_json::to_string(&capture).unwrap();
-        let transition = flow030::reduce(
-            &plan,
-            &FlowState030::new(id.clone()),
-            &FlowEvent030 {
-                identity: id.clone(),
-                event_id: "enter".into(),
-                expected_revision: "0".into(),
-                kind: FlowEventKind030::Enter {
-                    message_json: "{}".into(),
-                },
-            },
-        )
-        .unwrap();
-        let effect = transition
-            .effects
+        let state = &history.last().unwrap().1.state;
+        let effect = history
             .iter()
+            .flat_map(|(_, t)| &t.effects)
             .find(|e| {
-                matches!(
-                    e.kind,
-                    crate::db::agsdl_execution::flow030::FlowEffectKind030::Start { .. }
-                )
+                if let flow030::FlowEffectKind030::Start {
+                    work, agent: None, ..
+                } = &e.kind
+                {
+                    state
+                        .activations
+                        .iter()
+                        .any(|a| a.id == work.activation_id && a.phase == "running")
+                } else {
+                    false
+                }
             })
             .unwrap()
             .clone();
@@ -208,7 +231,7 @@ impl Fixture {
             .bind("capture")
             .bind(plan.source.to_string())
             .bind(plan_json)
-            .bind(serde_json::to_string(&transition.state).unwrap())
+            .bind(serde_json::to_string(state).unwrap())
             .execute(&mut *tx)
             .await
             .unwrap();
@@ -226,26 +249,28 @@ impl Fixture {
             .execute(&mut *tx)
             .await
             .unwrap();
-        sqlx::query("INSERT INTO engine_flow030_events VALUES(?,?,?,?,?,NULL)")
-            .bind("system")
-            .bind("flow")
-            .bind("enter")
-            .bind("{}")
-            .bind(serde_json::to_string(&transition.receipt).unwrap())
-            .execute(&mut *tx)
-            .await
-            .unwrap();
-        for e in &transition.effects {
-            sqlx::query("INSERT INTO engine_flow030_outbox VALUES(?,?,?,?,?,?,'pending',NULL)")
+        for (event, transition) in &history {
+            sqlx::query("INSERT INTO engine_flow030_events VALUES(?,?,?,?,?,NULL)")
                 .bind("system")
                 .bind("flow")
-                .bind(&e.id)
-                .bind("enter")
-                .bind(serde_json::to_string(e).unwrap())
-                .bind("owner")
+                .bind(&event.event_id)
+                .bind(serde_json::to_string(event).unwrap())
+                .bind(serde_json::to_string(&transition.receipt).unwrap())
                 .execute(&mut *tx)
                 .await
                 .unwrap();
+            for e in &transition.effects {
+                sqlx::query("INSERT INTO engine_flow030_outbox VALUES(?,?,?,?,?,?,'pending',NULL)")
+                    .bind("system")
+                    .bind("flow")
+                    .bind(&e.id)
+                    .bind(&event.event_id)
+                    .bind(serde_json::to_string(e).unwrap())
+                    .bind("owner")
+                    .execute(&mut *tx)
+                    .await
+                    .unwrap();
+            }
         }
         tx.commit().await.unwrap();
         Self {
@@ -255,6 +280,201 @@ impl Fixture {
             id,
             effect,
         }
+    }
+    async fn shared_call() -> Self {
+        Self::with_origin(
+            r#"{"type":"call","command":"never execute","next":{"passed":"j1","failed":"j2"}}"#,
+            true,
+            r#"{"choice":"approve","results":{"items":["x","y"]}}"#,
+        )
+        .await
+    }
+    async fn input_call(declaration: &str, input: &str) -> Self {
+        Self::with_origin(declaration, false, input).await
+    }
+    async fn with_origin(declaration: &str, shared: bool, input: &str) -> Self {
+        let (temp, pool, authority, id) = fixture_parts().await;
+        let mut plan: FlowPlan030 = if shared {
+            serde_json::from_str(include_str!(
+                "../tests/fixtures/agsdl030_shared_stop_active_compiled_plan.json"
+            ))
+            .unwrap()
+        } else {
+            serde_json::from_str(include_str!(
+                "../tests/fixtures/agsdl030_compiled_plan.json"
+            ))
+            .unwrap()
+        };
+        if shared {
+            let call = plan.steps.iter_mut().find(|s| s.address == ["a"]).unwrap();
+            call.r#type = "call".into();
+            call.agent = None;
+            call.instance = None;
+            call.delivery = None;
+            call.submission_contract_json = None;
+            call.declaration_json = declaration.into();
+            for route in &mut plan.routes {
+                if route.source == ["a"] {
+                    route.key = route
+                        .key
+                        .as_deref()
+                        .map(|k| if k == "one" { "passed" } else { "failed" }.into());
+                }
+            }
+            for join in &mut plan.joins {
+                join.accept = join
+                    .accept
+                    .iter()
+                    .map(|k| if k == "one" { "passed" } else { "failed" }.into())
+                    .collect();
+            }
+        } else {
+            let call = Step030 {
+                address: vec!["a".into()],
+                scope: vec![],
+                r#type: "call".into(),
+                declaration_json: declaration.into(),
+                agent: None,
+                instance: None,
+                delivery: None,
+                max_visits_json: None,
+                timeout_ms_json: None,
+                submission_contract_json: None,
+            };
+            let mut origin = plan
+                .steps
+                .iter()
+                .find(|s| s.r#type == "agent")
+                .unwrap()
+                .clone();
+            origin.address = vec!["o".into()];
+            origin.scope = vec![];
+            origin.declaration_json = r#"{"type":"agent","agent":"worker","next":"a"}"#.into();
+            plan.entry = Some(vec!["o".into()]);
+            plan.steps = vec![origin, call];
+            plan.joins.clear();
+            plan.handlers.clear();
+            plan.scopes.clear();
+            plan.routes = vec![
+                Route030 {
+                    source: vec!["o".into()],
+                    kind: "normal".into(),
+                    key: None,
+                    declaration_json: "\"a\"".into(),
+                    inherited: false,
+                    targets: vec![flow030::Target030::Step {
+                        address: vec!["a".into()],
+                        message_json: None,
+                        each_path_json: None,
+                        concurrency_json: None,
+                        max_json: None,
+                    }],
+                },
+                Route030 {
+                    source: vec!["a".into()],
+                    kind: "normal".into(),
+                    key: None,
+                    declaration_json: "[]".into(),
+                    inherited: false,
+                    targets: vec![],
+                },
+            ];
+        }
+        let mut state = FlowState030::new(id.clone());
+        let mut history = vec![];
+        let mut send = |kind: FlowEventKind030| {
+            let event = FlowEvent030 {
+                identity: id.clone(),
+                event_id: format!("fixture:{}", history.len()),
+                expected_revision: state.revision.clone(),
+                kind,
+            };
+            let t = flow030::reduce(&plan, &state, &event).unwrap();
+            state = t.state.clone();
+            history.push((event, t));
+        };
+        send(FlowEventKind030::Enter {
+            message_json: "{}".into(),
+        });
+        // Native synthetic origin receipt only seeds this unit fixture; no
+        // provider/agent execution or authority is qualified by these tests.
+        drop(send);
+        let origin = state
+            .activations
+            .iter()
+            .find(|a| a.phase == "running")
+            .unwrap();
+        let event = FlowEvent030 {
+            identity: id.clone(),
+            event_id: "fixture:origin-result".into(),
+            expected_revision: state.revision.clone(),
+            kind: FlowEventKind030::WorkResult {
+                work: WorkRef030 {
+                    activation_id: origin.id.clone(),
+                    start_effect_id: origin.start_effect_id.clone().unwrap(),
+                    agent_instance_id: origin.instance_id.clone(),
+                },
+                result: flow030::WorkResult030::Completed {
+                    output_json: input.into(),
+                    route_key: shared.then(|| "approve".into()),
+                },
+                physical: Some(flow030::PhysicalEvidence030 {
+                    native_receipt_id: "fixture-origin-joined".into(),
+                    descendants_joined: true,
+                }),
+            },
+        };
+        let t = flow030::reduce(&plan, &state, &event).unwrap();
+        state = t.state.clone();
+        history.push((event, t));
+        let preparation = state
+            .preparations
+            .iter()
+            .find(|p| p.status == "pending")
+            .unwrap();
+        let route = plan
+            .routes
+            .iter()
+            .find(|r| {
+                r.source == preparation.reference.route.source
+                    && r.kind == preparation.reference.route.kind
+                    && r.key == preparation.reference.route.key
+            })
+            .unwrap();
+        let batches = route
+            .targets
+            .iter()
+            .enumerate()
+            .map(|(ordinal, target)| flow030::PreparedBatch030 {
+                target_ordinal: ordinal,
+                target: target.clone(),
+                items: (0..if shared { 2 } else { 1 })
+                    .map(|index| flow030::PreparedItem030 {
+                        message_json: None,
+                        item_json: shared
+                            .then(|| if index == 0 { "\"x\"" } else { "\"y\"" }.into()),
+                        occurrence: flow030::DeliveryOccurrence030 {
+                            native_receipt_id: "fixture-prepare".into(),
+                            target_ordinal: ordinal,
+                            item_index: index.to_string(),
+                        },
+                    })
+                    .collect(),
+            })
+            .collect();
+        let event = FlowEvent030 {
+            identity: id.clone(),
+            event_id: "fixture:prepared".into(),
+            expected_revision: state.revision.clone(),
+            kind: FlowEventKind030::Prepared {
+                reference: preparation.reference.clone(),
+                native_receipt_id: "fixture-prepare".into(),
+                result: flow030::PreparedResult030::Ready { batches },
+            },
+        };
+        let t = flow030::reduce(&plan, &state, &event).unwrap();
+        history.push((event, t));
+        Self::seed(temp, pool, authority, id, plan, history).await
     }
     pub async fn reserve(&self) -> CallAttempt030 {
         reserve_call030(&self.pool, &self.authority, &self.effect)
@@ -316,6 +536,33 @@ impl Fixture {
         .await
         .unwrap();
         tx.commit().await.unwrap();
+    }
+}
+
+pub(crate) async fn finish_terminal(
+    pool: &SqlitePool,
+    authority: &TestAuthority,
+    broker: &CallDataBroker030,
+    joined: &JoinedCall030,
+    cancel: &CancellationToken,
+) -> Result<CallReceipt030> {
+    match super::finish_joined_call030(pool, authority, broker, joined, cancel).await? {
+        CallSettlement030::Terminal { receipt } => Ok(receipt),
+        CallSettlement030::Diagnostic { diagnostic } => {
+            panic!("Unexpected diagnostic: {:?}", diagnostic.value())
+        }
+    }
+}
+async fn stop_before_launch_receipt(
+    pool: &SqlitePool,
+    authority: &TestAuthority,
+    attempt: &CallAttempt030,
+) -> Result<CallReceipt030> {
+    match super::stop_before_launch030(pool, authority, attempt).await? {
+        CallSettlement030::Terminal { receipt } => Ok(receipt),
+        CallSettlement030::Diagnostic { diagnostic } => {
+            panic!("Unexpected diagnostic: {:?}", diagnostic.value())
+        }
     }
 }
 
@@ -412,7 +659,7 @@ pub(crate) async fn finish(
 ) -> CallReceipt030 {
     let cancel = CancellationToken::new();
     let (result, ()) = tokio::join!(
-        finish_joined_call030(&f.pool, &f.authority, broker, joined, &cancel),
+        finish_terminal(&f.pool, &f.authority, broker, joined, &cancel),
         worker_once(broker)
     );
     result.unwrap()
@@ -439,7 +686,7 @@ async fn command_normalizer_and_native_terminal_are_durable_and_idempotent() {
         json!(["src/a.ts", "src/b.ts", "last\r"])
     );
     assert_eq!(
-        finish_joined_call030(
+        finish_terminal(
             &f.pool,
             &f.authority,
             &broker,
@@ -549,7 +796,7 @@ async fn startup_failure_is_call_failed_and_not_a_normal_outcome() {
     let f = Fixture::new(r#"{"type":"call","command":"never execute"}"#).await;
     let broker = CallDataBroker030::default();
     let joined = joined(&f, &broker, CallEvent030::StartFailed).await;
-    let receipt = finish_joined_call030(
+    let receipt = finish_terminal(
         &f.pool,
         &f.authority,
         &broker,
@@ -571,11 +818,11 @@ async fn startup_failure_is_call_failed_and_not_a_normal_outcome() {
 async fn stop_before_launch_proves_not_started_and_takes_no_error_route() {
     let f = Fixture::new(r#"{"type":"call","command":"never execute"}"#).await;
     let attempt = f.reserve().await;
-    assert!(stop_before_launch030(&f.pool, &f.authority, &attempt)
+    assert!(stop_before_launch_receipt(&f.pool, &f.authority, &attempt)
         .await
         .is_err());
     f.stop().await;
-    let receipt = stop_before_launch030(&f.pool, &f.authority, &attempt)
+    let receipt = stop_before_launch_receipt(&f.pool, &f.authority, &attempt)
         .await
         .unwrap();
     assert_eq!(receipt.status(), "stopped");
@@ -587,7 +834,7 @@ async fn stop_before_launch_proves_not_started_and_takes_no_error_route() {
             .is_err()
     );
     assert_eq!(
-        stop_before_launch030(&f.pool, &f.authority, &attempt)
+        stop_before_launch_receipt(&f.pool, &f.authority, &attempt)
             .await
             .unwrap(),
         receipt
@@ -636,6 +883,9 @@ async fn machine_timeout_requires_native_join_before_publishing_failure() {
     let (_driver, owned) = launch_synthetic030(&f.pool, &f.authority, &attempt, control)
         .await
         .unwrap();
+    record_call_cause030(&f.pool, &f.authority, &attempt, CallStopCause030::Timeout)
+        .await
+        .unwrap();
     timeout.cancel();
     assert!(f.state().await.activations[0].physical);
     assert!(
@@ -645,7 +895,7 @@ async fn machine_timeout_requires_native_join_before_publishing_failure() {
             .is_none()
     );
     let joined = owned.join().await.unwrap();
-    let receipt = finish_joined_call030(
+    let receipt = finish_terminal(
         &f.pool,
         &f.authority,
         &broker,
@@ -697,7 +947,7 @@ async fn stop_uses_joined_physical_end_when_normalizer_is_unavailable() {
         let joined = joined(&f, &broker, command(0, "late output")).await;
         let cancel = CancellationToken::new();
         let receipt = if stop_after_raw_commit {
-            let finish = finish_joined_call030(&f.pool, &f.authority, &broker, &joined, &cancel);
+            let finish = finish_terminal(&f.pool, &f.authority, &broker, &joined, &cancel);
             let stop_and_close = async {
                 let _ = broker.next().await.unwrap();
                 assert_eq!(
@@ -717,7 +967,7 @@ async fn stop_uses_joined_physical_end_when_normalizer_is_unavailable() {
             f.stop().await;
             broker.close();
             cancel.cancel();
-            finish_joined_call030(&f.pool, &f.authority, &broker, &joined, &cancel)
+            finish_terminal(&f.pool, &f.authority, &broker, &joined, &cancel)
                 .await
                 .unwrap()
         };
@@ -747,7 +997,7 @@ async fn terminal_commit_sets_full_on_its_own_connection_after_normalization() {
         .await
         .unwrap();
     let cancel = CancellationToken::new();
-    let finish = finish_joined_call030(&pool, &f.authority, &broker, &joined, &cancel);
+    let finish = finish_terminal(&pool, &f.authority, &broker, &joined, &cancel);
     let worker = async {
         let completion = worker_completion(&broker).await;
         sqlx::query("PRAGMA synchronous=NORMAL")
@@ -842,7 +1092,7 @@ fn joined_witness_struct_literal_is_rejected_by_the_rust_compiler() {
     let actual = &source[start..end];
     let prefix = "#![allow(dead_code)]\n#[derive(Debug)] struct CallAttempt030;\n#[derive(Debug)] struct CancellationToken; impl CancellationToken { async fn cancelled(&self){} }\nmod protocol { #[derive(Debug)] pub enum CallEnd030 { Stopped } }\nmod owner { use super::{CallAttempt030,protocol,CancellationToken};\n";
     let control = "}\nfn inspect(w: &owner::JoinedCall030) { let _=(w.attempt(),w.end(),w.receipt_id()); }\nfn main(){}\n";
-    let attack = "}\nfn main(){ let _=owner::JoinedCall030 { attempt:CallAttempt030,end:protocol::CallEnd030::Stopped,receipt_id:String::from(\"forged\"),stop:CancellationToken }; }\n";
+    let attack = "}\nfn main(){ let _=owner::JoinedCall030 { attempt:CallAttempt030,end:protocol::CallEnd030::Stopped,receipt_id:String::from(\"forged\"),stop:CancellationToken,timeout:CancellationToken }; }\n";
     let tmp = tempfile::TempDir::new().unwrap();
     let compile = |tail: &str| {
         let file = tmp.path().join("proof.rs");
@@ -869,7 +1119,7 @@ fn joined_witness_struct_literal_is_rejected_by_the_rust_compiler() {
     let error = String::from_utf8_lossy(&negative.stderr);
     assert!(!negative.status.success());
     assert!(error.contains("E0451"), "{error}");
-    for field in ["attempt", "end", "receipt_id", "stop"] {
+    for field in ["attempt", "end", "receipt_id", "stop", "timeout"] {
         assert!(error.contains(field), "{error}");
     }
 }
@@ -883,7 +1133,7 @@ async fn genuine_deferred_foreign_key_commit_failure_keeps_the_call_fenced() {
         .execute(&f.pool).await.unwrap();
     let cancel = CancellationToken::new();
     let (result, ()) = tokio::join!(
-        finish_joined_call030(&f.pool, &f.authority, &broker, &joined, &cancel),
+        finish_terminal(&f.pool, &f.authority, &broker, &joined, &cancel),
         worker_once(&broker)
     );
     assert_eq!(result.unwrap_err().code, "COMMIT_UNCERTAIN");
@@ -932,7 +1182,7 @@ async fn native_stop_signal_interrupts_a_normalizer_that_never_answers() {
     driver.send(command(0, "returned before stop")).unwrap();
     let joined = owned.join().await.unwrap();
     let cancel = CancellationToken::new();
-    let finish = finish_joined_call030(&f.pool, &f.authority, &broker, &joined, &cancel);
+    let finish = finish_terminal(&f.pool, &f.authority, &broker, &joined, &cancel);
     let stop_without_worker_answer = async {
         let _unanswered_job = broker.next().await.unwrap();
         f.stop().await;
@@ -945,4 +1195,260 @@ async fn native_stop_signal_interrupts_a_normalizer_that_never_answers() {
     .expect("Physical Stop must not wait for a normalizer response");
     assert_eq!(result.unwrap().status(), "stopped");
     assert!(!f.state().await.activations[0].physical);
+}
+
+#[tokio::test]
+async fn persisted_timeout_wins_over_returned_before_machine_notification() {
+    let f = Fixture::new(r#"{"type":"call","command":"never execute"}"#).await;
+    let broker = CallDataBroker030::default();
+    let attempt = f.reserve().await;
+    prepare(&f, &broker, &attempt).await;
+    f.handoff(&attempt).await;
+    let control = control();
+    let notification = control.machine_timeout.clone();
+    let (driver, owned) = launch_synthetic030(&f.pool, &f.authority, &attempt, control)
+        .await
+        .unwrap();
+    let cause = record_call_cause030(&f.pool, &f.authority, &attempt, CallStopCause030::Timeout)
+        .await
+        .unwrap();
+    assert_eq!(
+        record_call_cause030(&f.pool, &f.authority, &attempt, CallStopCause030::Timeout)
+            .await
+            .unwrap(),
+        cause
+    );
+    assert!(!notification.is_cancelled());
+    driver.send(command(0, "late success preserved")).unwrap();
+    let joined = owned.join().await.unwrap();
+    assert!(matches!(
+        joined.end(),
+        protocol::CallEnd030::Returned { .. }
+    ));
+    broker.close();
+    let receipt = finish_terminal(
+        &f.pool,
+        &f.authority,
+        &broker,
+        &joined,
+        &CancellationToken::new(),
+    )
+    .await
+    .unwrap();
+    let Some(flow030::WorkResult030::Failed { error }) = receipt.work_result().unwrap() else {
+        panic!("Late return won against durable timeout")
+    };
+    assert_eq!(error.code, "TIMEOUT");
+    let raw: serde_json::Value = serde_json::from_str(
+        &sqlx::query_scalar::<_, String>("SELECT received_json FROM engine_flow030_calls")
+            .fetch_one(&f.pool)
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(raw["end"]["kind"], "returned");
+    assert_eq!(raw["end"]["event"]["stdout"], "late success preserved");
+    assert!(!f.state().await.activations[0].physical);
+    assert_eq!(
+        read_call_receipt030(&f.pool, &f.authority, &f.id, attempt.work())
+            .await
+            .unwrap(),
+        Some(receipt)
+    );
+}
+
+#[tokio::test]
+async fn durable_timeout_interrupts_pending_normalization_after_raw_commit() {
+    let f = Fixture::new(r#"{"type":"call","command":"never execute"}"#).await;
+    let broker = CallDataBroker030::default();
+    let attempt = f.reserve().await;
+    prepare(&f, &broker, &attempt).await;
+    f.handoff(&attempt).await;
+    let control = control();
+    let notification = control.machine_timeout.clone();
+    let (driver, owned) = launch_synthetic030(&f.pool, &f.authority, &attempt, control)
+        .await
+        .unwrap();
+    driver.send(command(0, "already returned")).unwrap();
+    let joined = owned.join().await.unwrap();
+    let cancel = CancellationToken::new();
+    let finish = finish_terminal(&f.pool, &f.authority, &broker, &joined, &cancel);
+    let expire = async {
+        let _unanswered = broker.next().await.unwrap();
+        record_call_cause030(&f.pool, &f.authority, &attempt, CallStopCause030::Timeout)
+            .await
+            .unwrap();
+        notification.cancel();
+    };
+    let (result, ()) = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        tokio::join!(finish, expire)
+    })
+    .await
+    .unwrap();
+    let Some(flow030::WorkResult030::Failed { error }) = result.unwrap().work_result().unwrap()
+    else {
+        panic!()
+    };
+    assert_eq!(error.code, "TIMEOUT");
+}
+
+#[tokio::test]
+async fn machine_notification_without_durable_cause_cannot_mint_timeout() {
+    let f = Fixture::new(r#"{"type":"call","command":"never execute"}"#).await;
+    let broker = CallDataBroker030::default();
+    let attempt = f.reserve().await;
+    prepare(&f, &broker, &attempt).await;
+    f.handoff(&attempt).await;
+    let control = control();
+    let notification = control.machine_timeout.clone();
+    let (_driver, owned) = launch_synthetic030(&f.pool, &f.authority, &attempt, control)
+        .await
+        .unwrap();
+    notification.cancel();
+    let joined = owned.join().await.unwrap();
+    assert!(finish_terminal(
+        &f.pool,
+        &f.authority,
+        &broker,
+        &joined,
+        &CancellationToken::new()
+    )
+    .await
+    .is_err());
+    assert!(
+        read_call_receipt030(&f.pool, &f.authority, &f.id, attempt.work())
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert!(f.state().await.activations[0].physical);
+}
+
+#[tokio::test]
+async fn shared_call_diagnostic_commits_once_without_normalizer_or_reducer_replay() {
+    let f = Fixture::shared_call().await;
+    let broker = CallDataBroker030::default();
+    let joined = joined(&f, &broker, command(0, "shared result")).await;
+    let before = f.state().await;
+    let effects: i64 = sqlx::query_scalar("SELECT count(*) FROM engine_flow030_outbox")
+        .fetch_one(&f.pool)
+        .await
+        .unwrap();
+    let cancel = CancellationToken::new();
+    let (result, ()) = tokio::join!(
+        super::finish_joined_call030(&f.pool, &f.authority, &broker, &joined, &cancel),
+        worker_once(&broker)
+    );
+    let CallSettlement030::Diagnostic { diagnostic } = result.unwrap() else {
+        panic!("Expected shared cancellation diagnostic")
+    };
+    assert_eq!(
+        diagnostic.value()["code"],
+        "UNSPECIFIED_SHARED_CANCELLATION"
+    );
+    assert_eq!(f.state().await, before);
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT count(*) FROM engine_flow030_outbox")
+            .fetch_one(&f.pool)
+            .await
+            .unwrap(),
+        effects
+    );
+    assert_eq!(
+        sqlx::query_scalar::<_, String>("SELECT status FROM engine_flow030_calls")
+            .fetch_one(&f.pool)
+            .await
+            .unwrap(),
+        "received"
+    );
+    let row = sqlx::query(
+        "SELECT receipt_json,diagnostic_json FROM engine_flow030_events WHERE event_id=?",
+    )
+    .bind(diagnostic.event_id())
+    .fetch_one(&f.pool)
+    .await
+    .unwrap();
+    assert!(row.get::<Option<&str>, _>("receipt_json").is_none());
+    assert!(row
+        .get::<Option<&str>, _>("diagnostic_json")
+        .unwrap()
+        .contains("UNSPECIFIED_SHARED_CANCELLATION"));
+    assert!(
+        read_call_receipt030(&f.pool, &f.authority, &f.id, joined.attempt().work())
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        launch_synthetic030(&f.pool, &f.authority, joined.attempt(), control())
+            .await
+            .is_err()
+    );
+    broker.close();
+    cancel.cancel();
+    let CallPreparation030::Diagnostic {
+        diagnostic: prepared_diagnostic,
+    } = prepare_call030(&f.pool, &f.authority, &broker, joined.attempt(), &cancel)
+        .await
+        .unwrap()
+    else {
+        panic!("Preparation replayed a diagnosed call")
+    };
+    assert_eq!(prepared_diagnostic, diagnostic);
+    let CallSettlement030::Diagnostic {
+        diagnostic: stopped_diagnostic,
+    } = super::stop_before_launch030(&f.pool, &f.authority, joined.attempt())
+        .await
+        .unwrap()
+    else {
+        panic!("Stop invented a terminal for a diagnosed call")
+    };
+    assert_eq!(stopped_diagnostic, diagnostic);
+    for _ in 0..2 {
+        let CallSettlement030::Diagnostic {
+            diagnostic: repeated,
+        } = super::finish_joined_call030(&f.pool, &f.authority, &broker, &joined, &cancel)
+            .await
+            .unwrap()
+        else {
+            panic!()
+        };
+        assert_eq!(repeated, diagnostic);
+    }
+    assert_eq!(
+        read_call_diagnostic030(&f.pool, &f.authority, &f.id, joined.attempt().work())
+            .await
+            .unwrap(),
+        Some(diagnostic)
+    );
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT count(*) FROM engine_flow030_call_diagnostics")
+            .fetch_one(&f.pool)
+            .await
+            .unwrap(),
+        1
+    );
+    assert_eq!(f.state().await, before);
+}
+
+#[tokio::test]
+async fn mcp_negative_zero_index_agrees_between_typescript_preparation_and_native_verifier() {
+    let f=Fixture::input_call(r#"{"type":"call","mcp":{"server":"server","tool":"tool"},"arguments":{"item":{"path":["xs",-0]}}}"#,
+        r#"{"xs":[{"n":9007199254740993}]}"#).await;
+    let broker = CallDataBroker030::default();
+    let attempt = f.reserve().await;
+    prepare(&f, &broker, &attempt).await;
+    let prepared: PreparedCall030 = serde_json::from_str(
+        &sqlx::query_scalar::<_, String>("SELECT prepared_json FROM engine_flow030_calls")
+            .fetch_one(&f.pool)
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    let PreparedCall030::Mcp { arguments_json, .. } = &prepared else {
+        panic!()
+    };
+    assert!(arguments_json.contains("9007199254740993"));
+    protocol::validate_prepared(&attempt, &prepared).unwrap();
+    assert!(protocol::require_operand_failure(&attempt).is_err());
 }

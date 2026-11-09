@@ -32,3 +32,26 @@ WHEN NOT ((OLD.status='reserved' AND NEW.status IN ('prepared','terminal'))
 BEGIN SELECT RAISE(ABORT,'native call cannot replay or change its receipt'); END;
 CREATE TRIGGER engine_flow030_call_retained BEFORE DELETE ON engine_flow030_calls
 BEGIN SELECT RAISE(ABORT,'retained native call receipt'); END;
+-- Native clock decisions precede cancellation/join. They cannot be supplied by
+-- a raw command/MCP receipt or overwritten by a later normal return.
+CREATE TABLE engine_flow030_call_causes (
+ call_id TEXT NOT NULL PRIMARY KEY REFERENCES engine_flow030_calls(call_id),
+ cause_json TEXT NOT NULL CHECK(json_valid(cause_json))
+);
+CREATE TRIGGER engine_flow030_call_cause_immutable BEFORE UPDATE ON engine_flow030_call_causes
+BEGIN SELECT RAISE(ABORT,'immutable native call cause'); END;
+CREATE TRIGGER engine_flow030_call_cause_retained BEFORE DELETE ON engine_flow030_call_causes
+BEGIN SELECT RAISE(ABORT,'retained native call cause'); END;
+-- A reducer diagnostic is durable without a successful work transition. Keep
+-- the exact proposed result so retry/readback never reruns pure normalization.
+CREATE TABLE engine_flow030_call_diagnostics (
+ call_id TEXT NOT NULL PRIMARY KEY REFERENCES engine_flow030_calls(call_id),
+ system_id TEXT NOT NULL, invocation_id TEXT NOT NULL, event_id TEXT NOT NULL,
+ record_json TEXT NOT NULL CHECK(json_valid(record_json)),
+ FOREIGN KEY(system_id,invocation_id,event_id)
+ REFERENCES engine_flow030_events(system_id,invocation_id,event_id)
+);
+CREATE TRIGGER engine_flow030_call_diagnostic_immutable BEFORE UPDATE ON engine_flow030_call_diagnostics
+BEGIN SELECT RAISE(ABORT,'immutable native call diagnostic'); END;
+CREATE TRIGGER engine_flow030_call_diagnostic_retained BEFORE DELETE ON engine_flow030_call_diagnostics
+BEGIN SELECT RAISE(ABORT,'retained native call diagnostic'); END;

@@ -14,7 +14,7 @@ async fn duplicate_raw_receipt_is_idempotent_but_contradictory_receipt_is_refuse
     // The host sibling has private fields, so obtain an original received row
     // by cancelling the pure worker after the raw commit.
     let cancel = CancellationToken::new();
-    let finish = calls::finish_joined_call030(&f.pool, &f.authority, &broker, &joined, &cancel);
+    let finish = fixtures::finish_terminal(&f.pool, &f.authority, &broker, &joined, &cancel);
     let task = async {
         let _job = broker.next().await.unwrap();
         cancel.cancel();
@@ -165,7 +165,7 @@ async fn terminal_readback_after_lost_ack_never_replays_worker_or_transport() {
     // A disconnected worker makes accidental normalization replay fail.
     broker.close();
     assert_eq!(
-        calls::finish_joined_call030(
+        fixtures::finish_terminal(
             &f.pool,
             &f.authority,
             &broker,
@@ -212,7 +212,7 @@ async fn stop_race_retains_raw_receipt_but_only_publishes_physical_end() {
     let joined = fixtures::joined(&f, &broker, fixtures::command(0, "late success")).await;
     f.stop().await;
     broker.close();
-    let receipt = calls::finish_joined_call030(
+    let receipt = fixtures::finish_terminal(
         &f.pool,
         &f.authority,
         &broker,

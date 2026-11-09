@@ -17,7 +17,10 @@ use std::sync::Arc;
 use tokio::sync::{oneshot, Mutex};
 use tokio_util::sync::CancellationToken;
 
-pub(crate) use protocol::{CallAttempt030, CallReceipt030};
+pub(crate) use protocol::{
+    CallAttempt030, CallCauseReceipt030, CallDiagnostic030, CallReceipt030, CallSettlement030,
+    CallStopCause030,
+};
 
 /// Implemented by the native flow/policy owner. The same admission exclusion
 /// must guard Stop, launch, receipt commits and generation retirement. Neither
@@ -174,6 +177,7 @@ enum PreparedData030 {
 pub(crate) enum CallPreparation030 {
     Ready,
     Failed { receipt: CallReceipt030 },
+    Diagnostic { diagnostic: CallDiagnostic030 },
 }
 struct NormalizedData030(protocol::CallResult030);
 
@@ -336,6 +340,19 @@ pub(crate) async fn prepare_call030<A: CallAuthority030>(
     attempt: &CallAttempt030,
     cancel: &CancellationToken,
 ) -> Result<CallPreparation030> {
+    {
+        let _gate = authority.admission_lock().lock_owned().await;
+        authority.call_commits().require_clear(attempt.identity())?;
+        let mut tx = pool.begin().await?;
+        if let Some(diagnostic) =
+            protocol::read_diagnostic_tx(&mut tx, authority, attempt.identity(), attempt.work())
+                .await?
+        {
+            tx.commit().await?;
+            return Ok(CallPreparation030::Diagnostic { diagnostic });
+        }
+        tx.commit().await?;
+    }
     let prepared = broker.prepare(attempt, cancel).await?;
     let _gate = authority.admission_lock().lock_owned().await;
     authority.call_commits().require_clear(attempt.identity())?;
@@ -349,9 +366,14 @@ pub(crate) async fn prepare_call030<A: CallAuthority030>(
             protocol::prepare_tx(&mut tx, authority, attempt, &prepared).await?;
             CallPreparation030::Ready
         }
-        PreparedData030::OperandFailed => CallPreparation030::Failed {
-            receipt: protocol::fail_preparation_tx(&mut tx, authority, attempt).await?,
-        },
+        PreparedData030::OperandFailed => {
+            match protocol::fail_preparation_tx(&mut tx, authority, attempt).await? {
+                CallSettlement030::Terminal { receipt } => CallPreparation030::Failed { receipt },
+                CallSettlement030::Diagnostic { diagnostic } => {
+                    CallPreparation030::Diagnostic { diagnostic }
+                }
+            }
+        }
     };
     commit_call_tx(tx, authority, attempt).await?;
     Ok(decision)
@@ -384,6 +406,7 @@ mod joined {
         end: protocol::CallEnd030,
         receipt_id: String,
         stop: CancellationToken,
+        timeout: CancellationToken,
     }
     impl JoinedCall030 {
         pub(crate) fn attempt(&self) -> &CallAttempt030 {
@@ -398,6 +421,9 @@ mod joined {
         /// A wake-up only. SQL must still attest Stop before physical cleanup.
         pub(crate) async fn stopped(&self) {
             self.stop.cancelled().await;
+        }
+        pub(crate) async fn timed_out(&self) {
+            self.timeout.cancelled().await;
         }
     }
     #[cfg(all(feature = "agsdl-engine-qa", debug_assertions))]
@@ -416,6 +442,7 @@ mod joined {
                 end,
                 receipt_id: uuid::Uuid::new_v4().to_string(),
                 stop: self.control.stop.clone(),
+                timeout: self.control.machine_timeout.clone(),
             })
         }
     }
@@ -503,7 +530,7 @@ pub(crate) async fn finish_joined_call030<A: CallAuthority030>(
     broker: &CallDataBroker030,
     joined: &JoinedCall030,
     cancel: &CancellationToken,
-) -> Result<CallReceipt030> {
+) -> Result<CallSettlement030> {
     let prepared = {
         let _gate = authority.admission_lock().lock_owned().await;
         authority
@@ -514,6 +541,21 @@ pub(crate) async fn finish_joined_call030<A: CallAuthority030>(
             .execute(&mut *db)
             .await?;
         let mut tx = db.begin_with("BEGIN IMMEDIATE").await?;
+        if let Some(diagnostic) = protocol::read_diagnostic_tx(
+            &mut tx,
+            authority,
+            joined.attempt().identity(),
+            joined.attempt().work(),
+        )
+        .await?
+        {
+            protocol::require(
+                diagnostic.matches_joined(joined)?,
+                "Diagnostic belongs to another joined call",
+            )?;
+            tx.commit().await?;
+            return Ok(CallSettlement030::Diagnostic { diagnostic });
+        }
         if let Some(receipt) = protocol::read_receipt_tx(
             &mut tx,
             authority,
@@ -527,12 +569,12 @@ pub(crate) async fn finish_joined_call030<A: CallAuthority030>(
                 "Joined call conflicts with its terminal receipt",
             )?;
             tx.commit().await?;
-            return Ok(receipt);
+            return Ok(CallSettlement030::Terminal { receipt });
         }
         let prepared = protocol::receive_tx(&mut tx, authority, joined).await?;
         // Stop is a native decision. Its already joined physical end needs
         // no resident worker, including when that worker has been closed.
-        if let Some(receipt) = protocol::finish_stopped_tx(&mut tx, authority, joined).await? {
+        if let Some(receipt) = protocol::finish_controlled_tx(&mut tx, authority, joined).await? {
             commit_call_tx(tx, authority, joined.attempt()).await?;
             return Ok(receipt);
         }
@@ -542,6 +584,7 @@ pub(crate) async fn finish_joined_call030<A: CallAuthority030>(
     let result = match joined.end() {
         protocol::CallEnd030::Returned { event } => tokio::select! { biased;
             _ = joined.stopped() => Err(protocol::denied("Native call stop signalled")),
+            _ = joined.timed_out() => Err(protocol::denied("Native call timeout signalled")),
             result = broker.normalize(joined.attempt(), &prepared, event, cancel) => result.map(|result| result.0),
         },
         protocol::CallEnd030::Stopped => Ok(protocol::CallResult030::Stopped),
@@ -560,7 +603,7 @@ pub(crate) async fn finish_joined_call030<A: CallAuthority030>(
         .await?;
     let mut tx = db.begin_with("BEGIN IMMEDIATE").await?;
     let receipt =
-        if let Some(receipt) = protocol::finish_stopped_tx(&mut tx, authority, joined).await? {
+        if let Some(receipt) = protocol::finish_controlled_tx(&mut tx, authority, joined).await? {
             receipt
         } else {
             protocol::finish_tx(&mut tx, authority, joined, result?).await?
@@ -575,7 +618,7 @@ pub(crate) async fn stop_before_launch030<A: CallAuthority030>(
     pool: &SqlitePool,
     authority: &A,
     attempt: &CallAttempt030,
-) -> Result<CallReceipt030> {
+) -> Result<CallSettlement030> {
     let _gate = authority.admission_lock().lock_owned().await;
     authority.call_commits().require_clear(attempt.identity())?;
     let mut db = pool.acquire().await?;
@@ -586,6 +629,39 @@ pub(crate) async fn stop_before_launch030<A: CallAuthority030>(
     let receipt = protocol::stop_before_launch_tx(&mut tx, authority, attempt).await?;
     commit_call_tx(tx, authority, attempt).await?;
     Ok(receipt)
+}
+
+/// Persist the clock broker's native decision BEFORE cancelling machine work.
+/// This API does not implement a clock or accept client/model timestamps. Its
+/// transaction includes the exact cause in the ordinary unknown-commit fence.
+pub(crate) async fn record_call_cause030<A: CallAuthority030>(
+    pool: &SqlitePool,
+    authority: &A,
+    attempt: &CallAttempt030,
+    cause: CallStopCause030,
+) -> Result<CallCauseReceipt030> {
+    let _gate = authority.admission_lock().lock_owned().await;
+    authority.call_commits().require_clear(attempt.identity())?;
+    let mut db = pool.acquire().await?;
+    sqlx::query("PRAGMA synchronous=FULL")
+        .execute(&mut *db)
+        .await?;
+    let mut tx = db.begin_with("BEGIN IMMEDIATE").await?;
+    let receipt = protocol::record_cause_tx(&mut tx, authority, attempt, cause).await?;
+    commit_call_tx(tx, authority, attempt).await?;
+    Ok(receipt)
+}
+pub(crate) async fn read_call_diagnostic030<A: CallAuthority030>(
+    pool: &SqlitePool,
+    authority: &A,
+    identity: &FlowIdentity030,
+    work: &WorkRef030,
+) -> Result<Option<CallDiagnostic030>> {
+    let mut tx = pool.begin().await?;
+    let diagnostic = protocol::read_diagnostic_tx(&mut tx, authority, identity, work).await?;
+    tx.commit().await?;
+    authority.ensure_live()?;
+    Ok(diagnostic)
 }
 
 /// Readback grants no launch capability and never calls the pure worker.
