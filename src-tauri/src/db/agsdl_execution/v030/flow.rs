@@ -35,6 +35,43 @@ fn prefix(context: &[Frame030], ancestor: &[Frame030]) -> bool {
         })
 }
 
+fn counted_context030(state: &FlowState030, context: &[Frame030]) -> bool {
+    !state.stopping
+        && context.iter().all(|frame| match frame {
+            Frame030::Compose { .. } => true,
+            Frame030::Path {
+                path_id,
+                departed_groups,
+            } => state
+                .paths
+                .iter()
+                .find(|p| p.id == *path_id)
+                .is_some_and(|path| {
+                    path.memberships.is_empty()
+                        || path.memberships.iter().any(|membership| {
+                            !departed_groups.contains(&membership.group_id)
+                                && state.groups.iter().any(|group| {
+                                    group.id == membership.group_id && group.decision.is_none()
+                                })
+                        })
+                }),
+        })
+}
+
+/// Shared by reduction, native dispatch and forensic checkpoint verification.
+/// It grants no authority and accepts only an exact, physically active work.
+pub fn accepts_steer030(state: &FlowState030, work: &WorkRef030) -> bool {
+    state.verdict.is_none()
+        && state.activations.iter().any(|activation| {
+            activation.id == work.activation_id
+                && activation.start_effect_id.as_deref() == Some(work.start_effect_id.as_str())
+                && activation.instance_id == work.agent_instance_id
+                && activation.phase == "running"
+                && activation.physical
+                && counted_context030(state, &activation.context)
+        })
+}
+
 /// Replayed events return the original receipt and no new effects, with the current
 /// state unchanged. A new event must name the current revision exactly. The host
 /// authenticates every receipt before this call and rechecks its claim before IO.
@@ -304,23 +341,7 @@ impl Engine<'_> {
             .ok_or_else(|| invalid("Undeclared route"))
     }
     fn counted(&self, context: &[Frame030]) -> bool {
-        !self.state.stopping
-            && context.iter().all(|f| match f {
-                Frame030::Path {
-                    path_id,
-                    departed_groups,
-                } => {
-                    let memberships = &self.state.paths[self.pi(path_id)].memberships;
-                    memberships.is_empty()
-                        || memberships.iter().any(|membership| {
-                            !departed_groups.contains(&membership.group_id)
-                                && self.state.groups[self.gi(&membership.group_id)]
-                                    .decision
-                                    .is_none()
-                        })
-                }
-                Frame030::Compose { .. } => true,
-            })
+        counted_context030(&self.state, context)
     }
     fn membership(&self, path: usize, group: &str) -> &Membership030 {
         self.state.paths[path]
@@ -648,8 +669,7 @@ impl Engine<'_> {
             if let Some(current) = self.state.instances[instance].current.clone() {
                 let c = self.ai(&current)?;
                 if self.state.activations[i].delivery == "steer"
-                    && self.state.activations[c].phase == "running"
-                    && self.counted(&self.state.activations[c].context)
+                    && accepts_steer030(&self.state, &self.work_ref(c))
                 {
                     self.effect(FlowEffectKind030::Steer {
                         work: self.work_ref(c),

@@ -1204,3 +1204,44 @@ async fn real_r6_final_runs_on_copies() {
         );
     }
 }
+
+#[tokio::test]
+async fn steer_consumption_must_correlate_exact_delivery_work_message_and_checkpoint() {
+    let (_directory, path, event) = fixture().await;
+    let mut db = SqliteConnection::connect_with(&SqliteConnectOptions::new().filename(&path))
+        .await
+        .unwrap();
+    let raw: String = sqlx::query_scalar("SELECT plan_json FROM engine_flow030_runs")
+        .fetch_one(&mut db)
+        .await
+        .unwrap();
+    let plan: FlowPlan030 = parse("plan", &raw).unwrap();
+    let transition = reduce(&plan, &FlowState030::new(event.identity.clone()), &event).unwrap();
+    let mut effect = transition.effects[0].clone();
+    let FlowEffectKind030::Start { work, .. } = effect.kind else {
+        panic!("agent Start")
+    };
+    effect.kind = FlowEffectKind030::Steer {
+        work: work.clone(),
+        delivery_activation_id: "delivery".into(),
+        message_json: "{\"prompt\":\"Update.\"}".into(),
+        occurrence: None,
+        sender: None,
+    };
+    let receipt = json!({"work":work,"deliveryActivationId":"delivery","messageJson":"{\"prompt\":\"Update.\"}","consumedAfterEventId":event.event_id});
+    assert!(verify_steer_settlement(&transition.state, &effect, &receipt).is_ok());
+    for key in [
+        "work",
+        "deliveryActivationId",
+        "messageJson",
+        "consumedAfterEventId",
+    ] {
+        let mut forged = receipt.clone();
+        forged[key] = json!("foreign");
+        assert!(
+            verify_steer_settlement(&transition.state, &effect, &forged).is_err(),
+            "{key}"
+        );
+    }
+    db.close().await.unwrap();
+}

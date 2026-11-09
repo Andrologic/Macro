@@ -168,6 +168,8 @@ describe.skipIf(!referenceDir || !process.env.MACRO_AGSDL030_REPLAY_COMMAND)('re
     const step = n.plan.steps.find((s: any) => s.address.join('/') === 'security');
     step.type = 'approval'; step.declarationJson = '{"type":"approval","next":{"ok":[]}}';
     const work = { activationId: a.id, startEffectId: a.startEffectId, agentInstanceId: a.instanceId };
+    // Replace the empty native schema only in this deliberately forged copy.
+    n.db.exec('DROP TABLE IF EXISTS engine_flow030_human_requests');
     n.db.exec('CREATE TABLE engine_flow030_human_requests(system_id TEXT,invocation_id TEXT,request_id TEXT,request_kind TEXT,work_refs_json TEXT,status TEXT,resolution_json TEXT,delivery_status TEXT)');
     const answer = { choice: 'ok', comment: 'Checked.' };
     a.result = { kind: 'completed', outputJson: JSON.stringify({ ...answer, message: JSON.parse(a.messageJson) }), routeKey: 'ok' };

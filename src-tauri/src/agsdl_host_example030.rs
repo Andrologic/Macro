@@ -567,6 +567,7 @@ struct ScriptedWork030 {
     attempt: FlowWorkAttempt030,
     send: tokio::sync::oneshot::Sender<crate::agsdl_host_scenario030::ExampleResult030>,
     result: tokio::sync::oneshot::Receiver<Result<()>>,
+    steer: crate::agsdl_host_steer030::SteerSender030,
 }
 
 struct ScriptedCall030 {
@@ -735,7 +736,8 @@ async fn start_scripted_work030(
     }
     let (attempt_send, attempt_recv) = tokio::sync::oneshot::channel();
     let (result_send, result_recv) = tokio::sync::oneshot::channel();
-    let (outcome_send, outcome_recv) = tokio::sync::oneshot::channel();
+    let (outcome_send, mut outcome_recv) = tokio::sync::oneshot::channel();
+    let (steer, mut inbox) = crate::agsdl_host_steer030::channel030();
     let (app, pool, config, tasks_owned, effect, cancelled) = (
         app.clone(),
         pool.clone(),
@@ -749,9 +751,24 @@ async fn start_scripted_work030(
             if attempt_send.send(attempt.clone()).is_err() {
                 return;
             }
-            let outcome = match outcome_recv.await {
-                Ok(value) => value,
-                Err(_) => return,
+            let mut deliveries = Vec::new();
+            let outcome = loop {
+                tokio::select! {
+                    value = &mut outcome_recv => match value {
+                        Ok(value) => break value,
+                        Err(_) => return,
+                    },
+                    delivery = inbox.receive() => {
+                        let Some(delivery) = delivery else { return; };
+                        // This adapter consumes the full message and sender in the
+                        // active owned future before acknowledging native delivery.
+                        deliveries.push(delivery.effect().clone());
+                        if let Err(error) = delivery.acknowledge(&tasks_owned, &attempt) {
+                            let _ = result_send.send(Err(error));
+                            return;
+                        }
+                    }
+                }
             };
             let host = app.state::<HostState>();
             let result = run_scripted_owned030(
@@ -781,6 +798,7 @@ async fn start_scripted_work030(
         attempt,
         send: outcome_send,
         result: result_recv,
+        steer,
     })
 }
 
@@ -913,6 +931,31 @@ async fn quiesce_scenario030(
                     start_scripted_call030(app, pool, tasks, owner, &effect, cancelled).await?,
                 );
             }
+            FlowEffectKind030::Steer { work, .. } => {
+                let matching = works
+                    .iter()
+                    .filter(|w| {
+                        w.attempt.work().activation_id == work.activation_id
+                            && w.attempt.start_effect_id() == work.start_effect_id
+                            && w.attempt.work().agent_instance_id == work.agent_instance_id
+                    })
+                    .collect::<Vec<_>>();
+                if matching.len() != 1 {
+                    return Err(failure("CORRELATION", "steer", "Steer work is not unique"));
+                }
+                let claim = crate::agsdl_host_flow030::claim_expected(
+                    host.flow030(),
+                    &host,
+                    pool,
+                    &effect.identity,
+                    &effect.id,
+                )
+                .await?
+                .ok_or_else(|| failure("STALE_REFERENCE", "steer", "Steer claim changed"))?;
+                claim
+                    .deliver_steer030(&matching[0].attempt, &matching[0].steer)
+                    .await?;
+            }
             FlowEffectKind030::StopWork { work, .. } => {
                 let matching = works
                     .iter()
@@ -986,13 +1029,6 @@ async fn quiesce_scenario030(
                         "Notification owner is absent",
                     ));
                 }
-            }
-            _ => {
-                return Err(failure(
-                    "HARNESS_REFUSED",
-                    "example",
-                    "Effect is outside the pinned scenario",
-                ))
             }
         }
     }
@@ -2116,6 +2152,7 @@ impl ExampleObservation030 {
             "response-attribution",
             "resources",
             "delivery.queue",
+            "delivery.steer",
             "instance.new",
         ]
         .iter()

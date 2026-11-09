@@ -6,7 +6,7 @@ use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use serde_json::{json, Value};
 use sqlx::{sqlite::SqliteConnectOptions, Connection, Row, SqliteConnection};
 use std::{
-    collections::BTreeSet,
+    collections::{BTreeMap, BTreeSet},
     path::{Path, PathBuf},
 };
 
@@ -401,6 +401,26 @@ async fn verify(db: &mut SqliteConnection, system: &str, invocation: &str) -> Re
         .bind(system).bind(invocation).fetch_all(&mut *db).await.map_err(storage)?;
     let outbox = sqlx::query("SELECT effect_id,event_id,effect_json,owner_epoch,status,settlement_json FROM engine_flow030_outbox WHERE system_id=? AND invocation_id=? ORDER BY rowid")
         .bind(system).bind(invocation).fetch_all(&mut *db).await.map_err(storage)?;
+    let mut steer_checkpoints: BTreeMap<String, Vec<(FlowEffect030, Value)>> = BTreeMap::new();
+    for row in &outbox {
+        let raw: Option<String> = row.try_get("settlement_json").map_err(storage)?;
+        let Some(raw) = raw else {
+            continue;
+        };
+        let receipt: Value = parse("outbox.settlement", &raw)?;
+        if receipt["kind"] == "nativeSteerConsumed030" {
+            if let Some(head) = receipt["consumedAfterEventId"].as_str() {
+                let effect = parse(
+                    "outbox.effect",
+                    row.try_get("effect_json").map_err(storage)?,
+                )?;
+                steer_checkpoints
+                    .entry(head.to_owned())
+                    .or_default()
+                    .push((effect, receipt));
+            }
+        }
+    }
     let mut state = FlowState030::new(identity);
     let mut produced = Vec::new();
     let mut work_results = BTreeSet::new();
@@ -551,6 +571,32 @@ async fn verify(db: &mut SqliteConnection, system: &str, invocation: &str) -> Re
                 produced.push(effect.clone());
             }
             state = transition.state;
+            // Validate consumption at the actual reduce() prefix, rather than
+            // inferring liveness from the final state or another scheduler.
+            if let Some(deliveries) = steer_checkpoints.get(&event_id) {
+                for (effect, receipt) in deliveries {
+                    let FlowEffectKind030::Steer {
+                        work,
+                        delivery_activation_id,
+                        ..
+                    } = &effect.kind
+                    else {
+                        return Err(mismatch("steer.effect", "Steer effect", &effect.kind));
+                    };
+                    if !accepts_steer030(&state, work)
+                        || !state
+                            .activations
+                            .iter()
+                            .any(|a| a.id == *delivery_activation_id)
+                    {
+                        return Err(mismatch(
+                            "steer.checkpoint",
+                            "delivery to a physically active work that still counts",
+                            receipt,
+                        ));
+                    }
+                }
+            }
             Ok(())
         })();
         result.map_err(|mut error: Divergence030| {
@@ -703,6 +749,44 @@ async fn verify_physical_end(
     Ok(())
 }
 
+// Receipt correlation complements the liveness check at the replayed prefix.
+fn verify_steer_settlement(
+    state: &FlowState030,
+    effect: &FlowEffect030,
+    receipt: &Value,
+) -> Result<()> {
+    if let FlowEffectKind030::Steer {
+        work,
+        delivery_activation_id,
+        message_json,
+        ..
+    } = &effect.kind
+    {
+        equal("steer.work", &json!(work), &receipt["work"])?;
+        equal(
+            "steer.deliveryActivationId",
+            &json!(delivery_activation_id),
+            &receipt["deliveryActivationId"],
+        )?;
+        equal(
+            "steer.messageJson",
+            &json!(message_json),
+            &receipt["messageJson"],
+        )?;
+        let checkpoint = receipt["consumedAfterEventId"]
+            .as_str()
+            .and_then(|id| state.events.get(id));
+        if checkpoint.is_none() {
+            return Err(mismatch(
+                "steer.consumedAfterEventId",
+                "accepted journal checkpoint",
+                &receipt["consumedAfterEventId"],
+            ));
+        }
+    }
+    Ok(())
+}
+
 async fn verify_settlement(
     db: &mut SqliteConnection,
     state: &FlowState030,
@@ -787,7 +871,11 @@ async fn verify_settlement(
         )?;
         equal(
             "handoff.kind",
-            &json!("nativeOwnedHandoff030"),
+            &json!(if matches!(&effect.kind, FlowEffectKind030::Steer { .. }) {
+                "nativeSteerConsumed030"
+            } else {
+                "nativeOwnedHandoff030"
+            }),
             &receipt["kind"],
         )?;
         equal("handoff.identity", &json!(id), &receipt["identity"])?;
@@ -813,9 +901,14 @@ async fn verify_settlement(
         )?;
         equal(
             "handoff.requestId",
-            &json!(format!("flow030:{}:{}", id.system_start_id, effect.id)),
+            &if matches!(&effect.kind, FlowEffectKind030::Steer { .. }) {
+                Value::Null
+            } else {
+                json!(format!("flow030:{}:{}", id.system_start_id, effect.id))
+            },
             &receipt["requestId"],
         )?;
+        verify_steer_settlement(state, effect, &receipt)?;
         let agent_start = matches!(
             &effect.kind,
             FlowEffectKind030::Start { agent: Some(_), .. }

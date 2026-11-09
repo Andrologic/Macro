@@ -400,8 +400,16 @@ function verifyHostTables030(db: Database, state: Obj, plan: Obj, effects: Effec
   }
   for (const [id, row] of handoffs) {
     metadata(row); const effect = fx.get(id), receipt = record(json(row, 'receipt_json'));
-    require(effect && same(receipt, raw(effect.row.settlement_json)) && receipt.kind === 'nativeOwnedHandoff030'
-      && same(receipt.identity, identity) && receipt.effectId === id && receipt.ownerEpoch === owner.owner_epoch && receipt.generation === owner.generation && receipt.requestId === `flow030:${system}:${id}`, 'handoff/effect');
+    require(effect && same(receipt, raw(effect.row.settlement_json))
+      && same(receipt.identity, identity) && receipt.effectId === id && receipt.ownerEpoch === owner.owner_epoch && receipt.generation === owner.generation, 'handoff/effect');
+    if (effect.kind.kind === 'steer') {
+      require(receipt.kind === 'nativeSteerConsumed030' && same(receipt.work, effect.kind.work)
+        && receipt.deliveryActivationId === effect.kind.deliveryActivationId && receipt.messageJson === effect.kind.messageJson
+        && typeof receipt.consumedAfterEventId === 'string' && events.has(receipt.consumedAfterEventId)
+        && receipt.workAttempt === undefined && receipt.requestId === undefined, 'steer consumption handoff');
+      continue;
+    }
+    require(receipt.kind === 'nativeOwnedHandoff030' && receipt.requestId === `flow030:${system}:${id}`, 'owned handoff');
     if (effect.kind.agent !== null && effect.kind.kind === 'start') {
       const attempt = record(receipt.workAttempt), reference = record(effect.kind.work);
       require(same(attempt.identity, identity) && same(attempt.owner, ownerValue) && attempt.generation === owner.generation && attempt.startEffectId === id && attempt.agent === effect.kind.agent
@@ -588,7 +596,7 @@ function verifyHostTables030(db: Database, state: Obj, plan: Obj, effects: Effec
     const prepared = preparations.get(id);
     if (prepared) require(typeof row.native_receipt_id === 'string' && row.native_receipt_id.length > 0 && same(json(row, 'source_json'), json(prepared, 'source_json')), 'route source/preparation');
     const sourceKind = record(reference.route).kind === 'error' ? 'error' : producer.kind;
-    require(['agent', 'join', 'error'].includes(string(sourceKind)), 'unsupported native source producer kind');
+    require(['agent', 'join', 'call', 'error'].includes(string(sourceKind)), 'unsupported native source producer kind');
     const kind = sourceKind === 'agent' ? 'agentWork' : sourceKind;
     require(row.receipt_kind === kind, 'source receipt kind');
     let producerAgent: ExactValue = null, instructions: Obj[] = [];
@@ -599,6 +607,17 @@ function verifyHostTables030(db: Database, state: Obj, plan: Obj, effects: Effec
       producerAgent = acts.get(string(producer.activationId))!.agent!;
       if (record(decision.output).instructions !== null) instructions = [{ pathJson: '["instructions"]', producerAgent, terminalId: producer.activationId! }];
     } else require(row.work_event_id === null, 'unexpected source work event');
+    if (producer.kind === 'call') {
+      const calls = rows('engine_flow030_calls').filter((r) => r.activation_id === producer.activationId);
+      require(calls.length === 1 && calls[0].status === 'terminal', 'source call receipt');
+      const call = calls[0], receipt = record(json(call, 'receipt_json')), result = record(receipt.result);
+      const end = terminal(binding(string(producer.activationId)).work);
+      require(end.row.event_id === receipt.eventId && calls[0].start_effect_id === binding(string(producer.activationId)).work.startEffectId
+        && (sourceKind === 'call' ? result.kind === 'completed' && result.outputJson === producer.outputJson
+          : result.kind === 'failed' && record(raw(string(producer.outputJson))).error !== undefined), 'source call terminal');
+      // The complete 039 attempt, raw receipt and normalization are verified
+      // below by verifyNativeCallsAndClock030 against this same journal.
+    }
     require(same(json(row, 'source_json'), { terminalId: producer.activationId!, producerStep: producer.step!, producerAgent, kind: sourceKind, outputJson: producer.outputJson!, provenance: { instructions } }), 'source native constructor');
   }
   for (const id of preparations.keys()) require(sources.has(id), 'missing route source attestation');
