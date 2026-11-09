@@ -40,6 +40,7 @@ use tokio::sync::OwnedMutexGuard;
 /// A missing response never authorizes a second physical effect.
 #[derive(Default)]
 pub(crate) struct FlowHost030 {
+    pub(crate) supervisors: crate::agsdl_host_runtime030::RuntimeRegistry030,
     pub(crate) humans: crate::agsdl_host_human030::HumanRuntime030,
     committing: Mutex<BTreeMap<String, FlowIdentity030>>,
     pub(crate) call_commits: crate::agsdl_host_calls030::CallCommitFence030,
@@ -78,6 +79,26 @@ impl FlowWorkCommitMarker030 {
     }
     pub(crate) fn decision_sha256(&self) -> &str {
         &self.decision_sha256
+    }
+}
+
+#[cfg(test)]
+impl FlowHost030 {
+    pub(crate) fn install_runtime_fixture_control(
+        &self,
+        host: &HostState,
+        owner: EngineOwner,
+        identity: FlowIdentity030,
+    ) {
+        self.controls.lock().unwrap().insert(
+            identity.system_start_id.clone(),
+            Arc::new(FlowControl030 {
+                owner,
+                identity,
+                generation: "generation".into(),
+                admission: host.admission_lock(),
+            }),
+        );
     }
 }
 
@@ -448,6 +469,7 @@ impl FlowHost030 {
             Some(stored) if stored != marker => Err(refused()),
             _ => {
                 pending.remove(&key);
+                self.supervisors.wake(&marker.identity().system_start_id);
                 Ok(())
             }
         }
@@ -515,6 +537,7 @@ impl FlowHost030 {
             Some(stored) if stored != marker => Err(refused()),
             _ => {
                 pending.remove(&key);
+                self.supervisors.wake(&marker.identity.system_start_id);
                 Ok(())
             }
         }
@@ -539,6 +562,7 @@ impl FlowHost030 {
             );
             if pending.get(&key) == Some(event) {
                 pending.remove(&key);
+                self.supervisors.wake(&event.identity.system_start_id);
             }
         }
     }

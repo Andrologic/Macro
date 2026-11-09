@@ -118,6 +118,7 @@ mod agsdl_host_provider;
 mod agsdl_host_route030;
 mod agsdl_host_route_attestations030;
 mod agsdl_host_route_verifier030;
+mod agsdl_host_runtime030;
 #[cfg(all(feature = "agsdl-engine-qa", debug_assertions))]
 mod agsdl_host_scenario030;
 mod agsdl_host_steer030;

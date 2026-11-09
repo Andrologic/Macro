@@ -1154,6 +1154,10 @@ mod recovery_tests;
 mod flow030_tests;
 
 #[cfg(test)]
+#[path = "agsdl_host_runtime030_tests.rs"]
+mod runtime030_tests;
+
+#[cfg(test)]
 #[path = "agsdl_host_flow_work030_tests.rs"]
 mod flow_work030_tests;
 

@@ -1,5 +1,6 @@
 //! In-process example adapter for the native 0.3 QA scenario. It never invokes
 //! a provider, tool, process, or network endpoint.
+use crate::agsdl_host_runtime030::emit_work_event030 as emit;
 use crate::db::agsdl_execution::{
     failure,
     flow030::{FlowEffect030, FlowEffectKind030},
@@ -8,16 +9,11 @@ use crate::db::agsdl_execution::{
 use crate::{
     agsdl_host::HostState,
     agsdl_host_flow030::FlowWorkAttempt030,
-    agsdl_host_work_admission030::PolicyLeases030,
-    ai::stream_tasks::{OwnedOperation030, StreamTasks},
+    ai::stream_tasks::StreamTasks,
     config::ConfigManager,
-    db::agsdl_execution::{
-        dto::EngineContext,
-        flow_work_protocol030,
-        work_protocol030::{NativeCall030, ProtocolDecision030, ProtocolEvent030},
-    },
+    db::agsdl_execution::{flow_work_protocol030, work_protocol030::ProtocolDecision030},
 };
-use sqlx::{Connection, SqlitePool};
+use sqlx::SqlitePool;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::OnceLock;
 use tauri::Manager;
@@ -709,6 +705,80 @@ fn scripted_work_key030(
     })
 }
 
+struct ScriptedExecutor030 {
+    channels: std::sync::Mutex<Option<ScriptedChannels030>>,
+    plan_lock: std::sync::Mutex<
+        Option<std::sync::Arc<crate::agsdl_host_work_admission030::NativePlanLock030>>,
+    >,
+}
+struct ScriptedChannels030 {
+    outcome: tokio::sync::oneshot::Receiver<crate::agsdl_host_scenario030::ExampleResult030>,
+    protocol: tokio::sync::mpsc::Receiver<ScriptedAgentEvent030>,
+    steer: crate::agsdl_host_steer030::SteerInbox030,
+    result: tokio::sync::oneshot::Sender<Result<()>>,
+}
+impl crate::agsdl_host_runtime030::AgentExecutor030 for ScriptedExecutor030 {
+    fn prepare(
+        &self,
+        work: crate::agsdl_host_work_admission030::PreparedEffectiveAgentWork030,
+    ) -> Result<crate::agsdl_host_work_admission030::AttestedWorkPolicy030> {
+        let policy = crate::agsdl_host_work_admission030::AttestedWorkPolicy030::from_example(
+            work,
+            &ExampleAdapter030::observe(),
+        )?;
+        *self
+            .plan_lock
+            .lock()
+            .map_err(|_| failure("INTERRUPTED", "work", "Scripted plan lock unavailable"))? =
+            policy.plan_lock();
+        Ok(policy)
+    }
+    fn run(
+        &self,
+        work: crate::agsdl_host_runtime030::AgentWork030,
+        events: crate::agsdl_host_runtime030::WorkEventSink030,
+        cancel: CancellationToken,
+    ) -> futures::future::BoxFuture<'static, Result<()>> {
+        let channels = self.channels.lock().unwrap().take();
+        Box::pin(async move {
+            let mut channels = channels
+                .ok_or_else(|| failure("CORRELATION", "work", "Scripted executor already ran"))?;
+            let result = async {
+                let mut deliveries = Vec::new();
+                let outcome = loop {
+                    tokio::select! {
+                        _ = cancel.cancelled() => return Ok(()),
+                        value = &mut channels.outcome => break value.map_err(|_| failure("INTERRUPTED", "work", "Scripted outcome closed"))?,
+                        delivery = channels.steer.receive() => {
+                            let Some(delivery) = delivery else { return Ok(()); };
+                            deliveries.push(delivery.effect().clone());
+                            delivery.acknowledge(&work.tasks, &work.attempt)?;
+                        }
+                        Some(event) = channels.protocol.recv() => {
+                            let result = events.emit(event.body, &cancel).await;
+                            let _ = event.reply.send(result);
+                        }
+                    }
+                };
+                match outcome {
+                    crate::agsdl_host_scenario030::ExampleResult030::Failed(code) => {
+                        expect_kind(&events.emit(serde_json::json!({"kind":"stop","reason":code}), &cancel).await?, "stopping")?;
+                    }
+                    crate::agsdl_host_scenario030::ExampleResult030::Returned { text, submit_json } => {
+                        if let Some(text) = text {
+                            expect_kind(&events.emit(serde_json::json!({"kind":"visibleText","messageId":"example","textParts":[text]}), &cancel).await?, "waiting")?;
+                        }
+                        expect_kind(&events.emit(serde_json::json!({"kind":"submit","callId":"example","argumentsJson":submit_json}), &cancel).await?, "accepted")?;
+                    }
+                }
+                Ok(())
+            }.await;
+            let _ = channels.result.send(result.clone());
+            result
+        })
+    }
+}
+
 async fn start_scripted_work030(
     app: &tauri::AppHandle,
     pool: &SqlitePool,
@@ -718,175 +788,60 @@ async fn start_scripted_work030(
     effect: &FlowEffect030,
     cancelled: &CancellationToken,
 ) -> Result<ScriptedWork030> {
+    use crate::agsdl_host_runtime030::{native_event_emitter030, start_agent_work030};
     let host = app.state::<HostState>();
     let inspection =
         crate::agsdl_host_flow030::inspect_run(host.flow030(), &host, pool, owner).await?;
-    let prepared = crate::agsdl_host_work_admission030::prepare_effective_agent_work030(
-        config,
-        &inspection,
-        effect,
-    )
-    .await?;
-    let policy = crate::agsdl_host_work_admission030::AttestedWorkPolicy030::from_example(
-        prepared,
-        &ExampleAdapter030::observe(),
-    )?;
-    let plan_lock = policy.plan_lock();
     let broker = host
         .flow030()
         .humans
-        .broker(&host, &pool, &effect.identity)
+        .broker(&host, pool, &effect.identity)
         .await?;
-    let project = inspection.capture.source.owner.project_id.clone();
-    let key = scripted_work_key030(effect)?;
-    let claim = crate::agsdl_host_flow030::claim_expected(
-        host.flow030(),
-        &host,
-        pool,
-        &effect.identity,
-        &effect.id,
-    )
-    .await?
-    .ok_or_else(|| {
-        failure(
-            "STALE_REFERENCE",
-            "example",
-            "Expected start is no longer first",
-        )
-    })?;
-    if claim.effect() != effect {
-        return Err(failure("CORRELATION", "example", "Claimed start differs"));
-    }
-    let (attempt_send, attempt_recv) = tokio::sync::oneshot::channel();
-    let (result_send, result_recv) = tokio::sync::oneshot::channel();
-    let (outcome_send, mut outcome_recv) = tokio::sync::oneshot::channel();
-    let (steer, mut inbox) = crate::agsdl_host_steer030::channel030();
-    let (protocol_send, mut protocol_recv) = tokio::sync::mpsc::channel::<ScriptedAgentEvent030>(1);
-    let (app, pool, config, tasks_owned, effect, cancelled) = (
+    let (result_send, result) = tokio::sync::oneshot::channel();
+    let (send, outcome) = tokio::sync::oneshot::channel();
+    let (steer, inbox) = crate::agsdl_host_steer030::channel030();
+    let (protocol, protocol_recv) = tokio::sync::mpsc::channel(1);
+    let executor = std::sync::Arc::new(ScriptedExecutor030 {
+        channels: std::sync::Mutex::new(Some(ScriptedChannels030 {
+            outcome,
+            protocol: protocol_recv,
+            steer: inbox,
+            result: result_send,
+        })),
+        plan_lock: Default::default(),
+    });
+    let emitter = native_event_emitter030(
         app.clone(),
         pool.clone(),
         config.clone(),
         tasks.clone(),
-        effect.clone(),
-        cancelled.clone(),
+        inspection.capture.source.owner.project_id,
     );
-    claim
-        .handoff_agent(tasks, policy, move |attempt| async move {
-            if attempt_send.send(attempt.clone()).is_err() {
-                return;
-            }
-            let host = app.state::<HostState>();
-            let mut deliveries = Vec::new();
-            let outcome = loop {
-                tokio::select! {
-                    value = &mut outcome_recv => match value { Ok(value)=>break value, Err(_)=>return },
-                    delivery = inbox.receive() => {
-                        let Some(delivery) = delivery else { return; };
-                        // Consume in the owned future before acknowledging delivery.
-                        deliveries.push(delivery.effect().clone());
-                        if let Err(error) = delivery.acknowledge(&tasks_owned, &attempt) {
-                            let _ = result_send.send(Err(error));
-                            return;
-                        }
-                    }
-                    Some(event) = protocol_recv.recv() => {
-                        let result = emit(&host,&pool,&config,&tasks_owned,&attempt,&project,event.label,event.body,&cancelled).await;
-                        let _ = event.reply.send(result);
-                    }
-                }
-            };
-            let result = run_scripted_owned030(
-                &host,
-                &pool,
-                &config,
-                &tasks_owned,
-                &attempt,
-                &project,
-                &effect,
-                outcome,
-                &cancelled,
-            )
-            .await;
-            let _ = result_send.send(result);
-        })
-        .await?;
-    let attempt = attempt_recv.await.map_err(|_| {
-        failure(
-            "UNCERTAIN",
-            "example",
-            "Owned example attempt is unavailable",
-        )
-    })?;
-    let human = broker.admit_agent(&host, &attempt).await?;
+    let started = start_agent_work030(
+        &host,
+        pool,
+        config,
+        tasks,
+        owner,
+        effect,
+        executor.clone(),
+        emitter,
+        cancelled.child_token(),
+    )
+    .await?;
+    let plan_lock = executor.plan_lock.lock().unwrap().clone();
+    let human = broker.admit_agent(&host, &started.attempt).await?;
     broker.pump(&host, &CancellationToken::new()).await?;
     Ok(ScriptedWork030 {
-        key,
-        attempt,
+        key: scripted_work_key030(effect)?,
+        attempt: started.attempt,
         human,
         plan_lock,
-        send: outcome_send,
-        protocol: protocol_send,
-        result: result_recv,
+        send,
+        protocol,
+        result,
         steer,
     })
-}
-
-#[allow(clippy::too_many_arguments)]
-async fn run_scripted_owned030(
-    host: &HostState,
-    pool: &SqlitePool,
-    config: &ConfigManager,
-    tasks: &StreamTasks,
-    attempt: &FlowWorkAttempt030,
-    project_id: &str,
-    effect: &FlowEffect030,
-    outcome: crate::agsdl_host_scenario030::ExampleResult030,
-    cancelled: &CancellationToken,
-) -> Result<()> {
-    let correlated = matches!(&effect.kind, FlowEffectKind030::Start {work, step, agent:Some(agent), ..}
-        if effect.identity == *attempt.identity() && effect.id == attempt.start_effect_id()
-            && work.start_effect_id == attempt.start_effect_id() && work.activation_id == attempt.work().activation_id
-            && work.agent_instance_id == attempt.work().agent_instance_id && step == &attempt.work().step && agent == attempt.agent());
-    if !correlated || cancelled.is_cancelled() {
-        return Err(failure("CORRELATION", "example", "Scripted work differs"));
-    }
-    match outcome {
-        crate::agsdl_host_scenario030::ExampleResult030::Failed(code) => {
-            let decision = emit(
-                host,
-                pool,
-                config,
-                tasks,
-                attempt,
-                project_id,
-                "failure",
-                serde_json::json!({"kind":"stop","reason":code}),
-                cancelled,
-            )
-            .await?;
-            expect_kind(&decision, "stopping")?;
-        }
-        crate::agsdl_host_scenario030::ExampleResult030::Returned { text, submit_json } => {
-            if let Some(text) = text {
-                let decision = emit(host, pool, config, tasks, attempt, project_id, "text", serde_json::json!({"kind":"visibleText","messageId":"example","textParts":[text]}), cancelled).await?;
-                expect_kind(&decision, "waiting")?;
-            }
-            let decision = emit(
-                host,
-                pool,
-                config,
-                tasks,
-                attempt,
-                project_id,
-                "submit",
-                serde_json::json!({"kind":"submit","callId":"example","argumentsJson":submit_json}),
-                cancelled,
-            )
-            .await?;
-            expect_kind(&decision, "accepted")?;
-        }
-    }
-    Ok(())
 }
 
 /// Drain eligible effects before the next timeline event. Agent starts are
@@ -905,203 +860,252 @@ async fn quiesce_scenario030(
     cancelled: &CancellationToken,
 ) -> Result<crate::db::agsdl_execution::flow_store030::FlowView030> {
     let host = app.state::<HostState>();
-    for _ in 0..256 {
-        if cancelled.is_cancelled() {
-            return Err(failure("INTERRUPTED", "example", "Scenario was cancelled"));
-        }
-        settle_humans030(app, pool, tasks, humans, works, cancelled).await?;
-        let inspection =
-            crate::agsdl_host_flow030::inspect_run(host.flow030(), &host, pool, owner).await?;
-        let mut next = None;
-        for row in &inspection.flow.effects {
-            let status = row.get("status").and_then(serde_json::Value::as_str);
-            if status == Some("uncertain") {
-                return Err(failure("UNCERTAIN", "example", "Effect is unresolved"));
+    let mut driver = ScenarioDriver030 {
+        app,
+        pool,
+        config,
+        tasks,
+        owner,
+        humans,
+        works,
+        calls,
+        joined_calls,
+        joined,
+        cancelled,
+    };
+    crate::agsdl_host_runtime030::drain_effects030(
+        &host,
+        pool,
+        tasks,
+        owner,
+        &mut driver,
+        cancelled,
+    )
+    .await
+}
+
+struct ScenarioDriver030<'a> {
+    app: &'a tauri::AppHandle,
+    pool: &'a SqlitePool,
+    config: &'a ConfigManager,
+    tasks: &'a StreamTasks,
+    owner: &'a crate::db::agsdl_execution::dto::EngineOwner,
+    humans: &'a mut ScenarioHumans030,
+    works: &'a mut Vec<ScriptedWork030>,
+    calls: &'a mut Vec<ScriptedCall030>,
+    joined_calls: &'a std::collections::BTreeMap<String, crate::agsdl_host_calls030::JoinedCall030>,
+    joined:
+        &'a std::collections::BTreeMap<String, crate::agsdl_host_dispatch030::JoinedOwnedAgent030>,
+    cancelled: &'a CancellationToken,
+}
+impl crate::agsdl_host_runtime030::EffectDriver030 for ScenarioDriver030<'_> {
+    fn owns_effect(&self, id: &str) -> bool {
+        self.works.iter().any(|w| w.attempt.start_effect_id() == id)
+            || self
+                .calls
+                .iter()
+                .any(|c| c.human.reference().start_effect_id == id)
+            || self
+                .humans
+                .approvals
+                .iter()
+                .any(|a| a.work.reference().start_effect_id == id)
+    }
+    fn before_pass(&mut self) -> futures::future::BoxFuture<'_, Result<()>> {
+        Box::pin(async move {
+            settle_humans030(
+                self.app,
+                self.pool,
+                self.tasks,
+                self.humans,
+                self.works,
+                self.cancelled,
+            )
+            .await
+        })
+    }
+    fn start_agent(&mut self, effect: FlowEffect030) -> futures::future::BoxFuture<'_, Result<()>> {
+        Box::pin(async move {
+            let (app, pool, config, tasks, owner, cancelled, works) = (
+                self.app,
+                self.pool,
+                self.config,
+                self.tasks,
+                self.owner,
+                self.cancelled,
+                &mut *self.works,
+            );
+
+            let key = scripted_work_key030(&effect)?;
+            if works.iter().any(|existing| existing.key == key) {
+                return Err(failure(
+                    "CORRELATION",
+                    "example",
+                    "Scripted work key is ambiguous",
+                ));
             }
-            if status != Some("pending") {
-                continue;
-            }
-            let effect: FlowEffect030 =
-                serde_json::from_value(row.get("effect").cloned().ok_or_else(|| {
-                    failure("CORRELATION", "example", "Effect payload is absent")
-                })?)?;
-            if crate::db::agsdl_execution::flow_store030::eligible(&inspection.flow.state, &effect)
-            {
-                next = Some(effect);
-                break;
-            }
-        }
-        let Some(effect) = next else {
-            return Ok(inspection.flow);
-        };
-        match &effect.kind {
-            FlowEffectKind030::Start { agent: Some(_), .. } => {
-                let key = scripted_work_key030(&effect)?;
-                if works.iter().any(|existing| existing.key == key) {
-                    return Err(failure(
-                        "CORRELATION",
-                        "example",
-                        "Scripted work key is ambiguous",
-                    ));
-                }
-                let work =
-                    start_scripted_work030(app, pool, config, tasks, owner, &effect, cancelled)
-                        .await?;
-                works.push(work);
-            }
-            FlowEffectKind030::Start {
-                agent: None,
-                step: Some(step),
-                ..
-            } if serde_json::from_str::<crate::db::agsdl_execution::flow030::FlowPlan030>(
-                &inspection.capture.compiled_plan_json,
-            )?
-            .steps
-            .iter()
-            .any(|s| s.address == *step && s.r#type == "approval") =>
-            {
-                let key = scripted_work_key030(&effect)?;
-                let claim = crate::agsdl_host_flow030::claim_expected(
-                    host.flow030(),
-                    &host,
-                    pool,
-                    &effect.identity,
-                    &effect.id,
-                )
-                .await?
-                .ok_or_else(|| failure("STALE_REFERENCE", "approval", "Approval Start changed"))?;
-                claim.handoff_host(tasks, std::future::pending()).await?;
-                let work = humans.broker.admit_host_work(&host, &effect.id).await?;
-                humans.broker.pump(&host, cancelled).await?;
-                humans.approvals.push(ScriptedApproval030 { key, work });
-            }
-            FlowEffectKind030::Start { agent: None, .. } => {
-                let key = scripted_work_key030(&effect)?;
-                if calls.iter().any(|c| c.key == key) || works.iter().any(|w| w.key == key) {
-                    return Err(failure(
-                        "CORRELATION",
-                        "call",
-                        "Pinned call key is ambiguous",
-                    ));
-                }
-                calls.push(
-                    start_scripted_call030(app, pool, tasks, owner, &effect, cancelled).await?,
-                );
-            }
-            FlowEffectKind030::Steer { work, .. } => {
-                let matching = works
-                    .iter()
-                    .filter(|w| {
-                        w.attempt.work().activation_id == work.activation_id
-                            && w.attempt.start_effect_id() == work.start_effect_id
-                            && w.attempt.work().agent_instance_id == work.agent_instance_id
-                    })
-                    .collect::<Vec<_>>();
-                if matching.len() != 1 {
-                    return Err(failure("CORRELATION", "steer", "Steer work is not unique"));
-                }
-                let claim = crate::agsdl_host_flow030::claim_expected(
-                    host.flow030(),
-                    &host,
-                    pool,
-                    &effect.identity,
-                    &effect.id,
-                )
-                .await?
-                .ok_or_else(|| failure("STALE_REFERENCE", "steer", "Steer claim changed"))?;
-                claim
-                    .deliver_steer030(&matching[0].attempt, &matching[0].steer)
-                    .await?;
-            }
-            FlowEffectKind030::StopWork { work, .. } => {
-                let matching = works
-                    .iter()
-                    .enumerate()
-                    .filter(|(_, w)| {
-                        w.attempt.work().activation_id == work.activation_id
-                            && w.attempt.start_effect_id() == work.start_effect_id
-                            && w.attempt.work().agent_instance_id == work.agent_instance_id
-                    })
-                    .map(|(i, _)| i)
-                    .collect::<Vec<_>>();
-                if matching.len() != 1 {
-                    return Err(failure("CORRELATION", "stop", "Stopped work is not unique"));
-                }
-                let index = matching[0];
-                crate::agsdl_host_dispatch030::dispatch_stop_work030(
-                    &host,
-                    pool,
-                    tasks,
-                    owner,
-                    &effect,
-                    &works[index].attempt,
-                )
-                .await?;
-                works.remove(index);
-            }
-            FlowEffectKind030::PrepareRoute {
-                reference,
-                producer,
-            } => {
-                crate::agsdl_host_dispatch030::dispatch_source_route030(
-                    &host,
-                    pool,
-                    owner,
-                    reference,
-                    if ["approval", "compose"].contains(&producer.kind.as_str()) {
-                        crate::agsdl_host_dispatch030::SourceOwnership030::Host
-                    } else if let Some(call) = joined_calls.get(&reference.activation_id) {
-                        crate::agsdl_host_dispatch030::SourceOwnership030::Call(call)
-                    } else {
-                        joined
-                            .get(&reference.activation_id)
-                            .or_else(|| humans.joined.get(&reference.activation_id))
-                            .map_or(
-                                crate::agsdl_host_dispatch030::SourceOwnership030::Join,
-                                crate::agsdl_host_dispatch030::SourceOwnership030::Agent,
-                            )
-                    },
-                    cancelled,
-                )
-                .await?;
-            }
-            FlowEffectKind030::Failure { .. }
-            | FlowEffectKind030::Return { .. }
-            | FlowEffectKind030::RunEnded { .. } => {
-                let claim = crate::agsdl_host_flow030::claim_expected(
-                    host.flow030(),
-                    &host,
-                    pool,
-                    &effect.identity,
-                    &effect.id,
-                )
-                .await?
-                .ok_or_else(|| {
-                    failure(
-                        "STALE_REFERENCE",
-                        "example",
-                        "Expected notification changed",
+            let work =
+                start_scripted_work030(app, pool, config, tasks, owner, &effect, cancelled).await?;
+            works.push(work);
+            Ok(())
+        })
+    }
+    fn start_host(
+        &mut self,
+        inspection: crate::agsdl_host_flow030::NativeFlowInspection030,
+        effect: FlowEffect030,
+    ) -> futures::future::BoxFuture<'_, Result<()>> {
+        Box::pin(async move {
+            let (app, pool, tasks, owner, cancelled, humans, works, calls) = (
+                self.app,
+                self.pool,
+                self.tasks,
+                self.owner,
+                self.cancelled,
+                &mut *self.humans,
+                &mut *self.works,
+                &mut *self.calls,
+            );
+            let host = app.state::<HostState>();
+            match &effect.kind {
+                FlowEffectKind030::Start {
+                    agent: None,
+                    step: Some(step),
+                    ..
+                } if serde_json::from_str::<crate::db::agsdl_execution::flow030::FlowPlan030>(
+                    &inspection.capture.compiled_plan_json,
+                )?
+                .steps
+                .iter()
+                .any(|s| s.address == *step && s.r#type == "approval") =>
+                {
+                    let key = scripted_work_key030(&effect)?;
+                    let claim = crate::agsdl_host_flow030::claim_expected(
+                        host.flow030(),
+                        &host,
+                        pool,
+                        &effect.identity,
+                        &effect.id,
                     )
-                })?;
-                let request_id = claim.request_id();
-                claim.handoff_host(tasks, async {}).await?;
-                if !tasks.cancel_owned(&request_id).await.map_err(|_| {
-                    failure("UNCERTAIN", "example", "Notification cleanup is unresolved")
-                })? {
-                    return Err(failure(
-                        "CORRELATION",
-                        "example",
-                        "Notification owner is absent",
-                    ));
+                    .await?
+                    .ok_or_else(|| {
+                        failure("STALE_REFERENCE", "approval", "Approval Start changed")
+                    })?;
+                    claim.handoff_host(tasks, std::future::pending()).await?;
+                    let work = humans.broker.admit_host_work(&host, &effect.id).await?;
+                    humans.broker.pump(&host, cancelled).await?;
+                    humans.approvals.push(ScriptedApproval030 { key, work });
                 }
+                FlowEffectKind030::Start { agent: None, .. } => {
+                    let key = scripted_work_key030(&effect)?;
+                    if calls.iter().any(|c| c.key == key) || works.iter().any(|w| w.key == key) {
+                        return Err(failure(
+                            "CORRELATION",
+                            "call",
+                            "Pinned call key is ambiguous",
+                        ));
+                    }
+                    calls.push(
+                        start_scripted_call030(app, pool, tasks, owner, &effect, cancelled).await?,
+                    );
+                }
+                _ => return Err(failure("CORRELATION", "work", "Expected host start")),
             }
+            Ok(())
+        })
+    }
+    fn steer(&mut self, effect: FlowEffect030) -> futures::future::BoxFuture<'_, Result<()>> {
+        Box::pin(async move {
+            let (app, pool, tasks, works) = (self.app, self.pool, self.tasks, &mut *self.works);
+            let host = app.state::<HostState>();
+            let FlowEffectKind030::Steer { work, .. } = &effect.kind else {
+                unreachable!()
+            };
+
+            let matching = works
+                .iter()
+                .filter(|w| {
+                    w.attempt.work().activation_id == work.activation_id
+                        && w.attempt.start_effect_id() == work.start_effect_id
+                        && w.attempt.work().agent_instance_id == work.agent_instance_id
+                })
+                .collect::<Vec<_>>();
+            if matching.len() != 1 {
+                return Err(failure("CORRELATION", "steer", "Steer work is not unique"));
+            }
+            let claim = crate::agsdl_host_flow030::claim_expected(
+                host.flow030(),
+                &host,
+                pool,
+                &effect.identity,
+                &effect.id,
+            )
+            .await?
+            .ok_or_else(|| failure("STALE_REFERENCE", "steer", "Steer claim changed"))?;
+            claim
+                .deliver_steer030(&matching[0].attempt, &matching[0].steer)
+                .await?;
+            Ok(())
+        })
+    }
+    fn stop(&mut self, effect: FlowEffect030) -> futures::future::BoxFuture<'_, Result<()>> {
+        Box::pin(async move {
+            let (app, pool, tasks, owner, works) = (
+                self.app,
+                self.pool,
+                self.tasks,
+                self.owner,
+                &mut *self.works,
+            );
+            let host = app.state::<HostState>();
+            let FlowEffectKind030::StopWork { work, .. } = &effect.kind else {
+                unreachable!()
+            };
+
+            let matching = works
+                .iter()
+                .enumerate()
+                .filter(|(_, w)| {
+                    w.attempt.work().activation_id == work.activation_id
+                        && w.attempt.start_effect_id() == work.start_effect_id
+                        && w.attempt.work().agent_instance_id == work.agent_instance_id
+                })
+                .map(|(i, _)| i)
+                .collect::<Vec<_>>();
+            if matching.len() != 1 {
+                return Err(failure("CORRELATION", "stop", "Stopped work is not unique"));
+            }
+            let index = matching[0];
+            crate::agsdl_host_dispatch030::dispatch_stop_work030(
+                &host,
+                pool,
+                tasks,
+                owner,
+                &effect,
+                &works[index].attempt,
+            )
+            .await?;
+            works.remove(index);
+            Ok(())
+        })
+    }
+    fn source_owner<'a>(
+        &'a self,
+        reference: &crate::db::agsdl_execution::flow030::PrepareRef030,
+        producer: &crate::db::agsdl_execution::flow030::Producer030,
+    ) -> crate::agsdl_host_dispatch030::SourceOwnership030<'a> {
+        use crate::agsdl_host_dispatch030::SourceOwnership030;
+        if ["approval", "compose"].contains(&producer.kind.as_str()) {
+            SourceOwnership030::Host
+        } else if let Some(call) = self.joined_calls.get(&reference.activation_id) {
+            SourceOwnership030::Call(call)
+        } else {
+            self.joined
+                .get(&reference.activation_id)
+                .or_else(|| self.humans.joined.get(&reference.activation_id))
+                .map_or(SourceOwnership030::Join, SourceOwnership030::Agent)
         }
     }
-    Err(failure(
-        "CORRELATION",
-        "example",
-        "Scenario dispatch exceeded its bound",
-    ))
 }
 
 async fn drive_scenario030(
@@ -1344,9 +1348,14 @@ async fn drive_scenario030(
                 work.send
                     .send(outcome)
                     .map_err(|_| failure("UNCERTAIN", "example", "Owned work mailbox closed"))?;
-                let witness =
-                    crate::agsdl_host_dispatch030::join_owned_agent030(tasks, &work.attempt)
-                        .await?;
+                let witness = crate::agsdl_host_runtime030::finish_agent_work030(
+                    &host,
+                    pool,
+                    tasks,
+                    &work.attempt,
+                    cancelled,
+                )
+                .await?;
                 work.result.await.map_err(|_| {
                     failure(
                         "UNCERTAIN",
@@ -1355,10 +1364,6 @@ async fn drive_scenario030(
                     )
                 })??;
                 let host = app.state::<HostState>();
-                let decision =
-                    flow_work_protocol030::finish_joined_agent030(&host, pool, &witness, cancelled)
-                        .await?;
-                expect_kind(&decision, "finished")?;
                 humans.broker.retire(&host, &work.human).await?;
                 humans.broker.pump(&host, cancelled).await?;
                 joined.insert(witness.attempt().work().activation_id.clone(), witness);
@@ -2212,78 +2217,6 @@ fn expect_kind(decision: &ProtocolDecision030, expected: &str) -> Result<()> {
 }
 
 #[allow(clippy::too_many_arguments)]
-async fn emit(
-    host: &HostState,
-    pool: &SqlitePool,
-    config: &ConfigManager,
-    tasks: &StreamTasks,
-    attempt: &FlowWorkAttempt030,
-    project_id: &str,
-    label: &str,
-    body: serde_json::Value,
-    cancelled: &CancellationToken,
-) -> Result<ProtocolDecision030> {
-    let policies = PolicyLeases030::acquire(config, project_id).await?;
-    let lease = host.start_lease().await?;
-    let gate = host.admission_lock().lock_owned().await;
-    host.flow030().available(attempt.identity())?;
-    let parent = format!(
-        "flow030:{}:{}",
-        attempt.identity().system_start_id,
-        attempt.start_effect_id()
-    );
-    tasks.verify_agent_scope030(&parent, attempt).map_err(|_| {
-        failure(
-            "AUTHORITY",
-            "example",
-            "Owned example parent is unavailable",
-        )
-    })?;
-    let mut db = pool.acquire().await?;
-    let mut tx = db.begin_with("BEGIN IMMEDIATE").await?;
-    let raw_context: String = sqlx::query_scalar("SELECT context_json FROM engine_flow030_work_admissions WHERE system_id=? AND invocation_id=? AND activation_id=?")
-        .bind(&attempt.identity().system_start_id).bind(&attempt.identity().flow_invocation_id)
-        .bind(&attempt.work().activation_id).fetch_one(&mut *tx).await?;
-    let context: EngineContext = serde_json::from_str(&raw_context)?;
-    let revision: Option<String> = sqlx::query_scalar("SELECT revision FROM engine_flow030_work_state WHERE system_id=? AND invocation_id=? AND activation_id=?")
-        .bind(&attempt.identity().system_start_id).bind(&attempt.identity().flow_invocation_id)
-        .bind(&attempt.work().activation_id).fetch_optional(&mut *tx).await?;
-    let event_id = format!("example:{}:{}", attempt.provider_attempt_id(), label);
-    let event_json = serde_json::json!({"eventId":event_id,"owner":{
-        "systemStartId":attempt.work().system_start_id,"activationId":attempt.work().activation_id,
-        "agentInstanceId":attempt.work().agent_instance_id,"ownerEpoch":attempt.owner().owner_epoch},"event":body}).to_string();
-    let input = ProtocolEvent030 {
-        context: context.clone(),
-        event_id: event_id.clone(),
-        expected_revision: revision.unwrap_or_else(|| "0".into()),
-        event_json: event_json.clone(),
-        native_call: Some(NativeCall030 {
-            provider_attempt_id: attempt.provider_attempt_id().into(),
-            native_call_id: event_id.clone(),
-        }),
-        control: false,
-    };
-    let operation = OwnedOperation030 {
-        identity: attempt.identity().clone(),
-        context,
-        generation: attempt.generation().into(),
-        agent: attempt.agent().into(),
-        provider_attempt_id: attempt.provider_attempt_id().into(),
-        operation_id: event_id,
-        method: "example/event".into(),
-        request_json: event_json,
-    };
-    lease.ensure_live()?;
-    tx.rollback().await?;
-    let permit = lease.attach_owned_operation030(tasks, &parent, operation)?;
-    drop(db);
-    drop(gate);
-    drop(lease);
-    flow_work_protocol030::transition_owned_agent030(
-        host, pool, attempt, &input, permit, policies, cancelled,
-    )
-    .await
-}
 
 impl ExampleObservation030 {
     pub(crate) fn adapter_id(&self) -> &'static str {

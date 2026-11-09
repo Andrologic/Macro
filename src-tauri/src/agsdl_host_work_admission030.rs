@@ -115,6 +115,13 @@ impl AttestedWorkPolicy030 {
     }
 }
 
+#[cfg(test)]
+impl AttestedWorkPolicy030 {
+    pub(crate) fn from_runtime_fixture(prepared: PreparedEffectiveAgentWork030) -> Self {
+        Self { prepared, options_json: serde_json::json!({"checkTimeoutMs":"1000","maxCheckOutputBytes":1024,"enforcedPlanLock":false}).to_string(), plan_lock: None }
+    }
+}
+
 /// Reauthenticate a prepared agent against the same SQL transaction which
 /// records the owned handoff. No operation is dispatched by this writer.
 pub(crate) async fn admit_agent_work_tx(
