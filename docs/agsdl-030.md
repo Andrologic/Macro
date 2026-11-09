@@ -253,6 +253,18 @@ décision, cause, handler suivi et effets déjà produits. Pour steer, la destin
 déclarée et le travail physiquement rejoint restent deux identités distinctes.
 Un call n'invente aucune instance Agent. Un join n'invente aucun travail.
 
+Les `workIds` d'une demande humaine sont des UUID publics distincts des
+`RunOccurrence030.activation.id` ; ils ne peuvent pas servir à les retrouver
+directement. `RunHumanRequest030.occurrences` contient exactement une entrée
+par `workId`. Sa propriété `activation` est soit `available`, avec scope de
+capture et `activationId`, soit explicitement `unavailable`, avec le trou
+`human-occurrence-mapping`. Seule une conversion native attestée peut publier
+le lien disponible, en vérifiant le scope humain, la capture et l'activation
+correspondante dans une lecture cohérente. N-HUMAN et I/09 doivent fournir ce
+DTO, trou G12. En son absence, les lots UI 7 et 8 conservent le lien indisponible
+et la demande lisible. Ils ne rapprochent les identités ni par égalité des UUID,
+ni par nom d'étape, pointeur source ou ordre des tableaux.
+
 Chaque série paginée est liée à son scope, sa capture et sa révision ou son
 curseur humain propre. Elle n'est publiée complète qu'après toutes ses pages.
 Une série partielle ne permet pas d'annoncer zéro demande ni zéro travail.
@@ -319,6 +331,7 @@ transparente des échéances entre générations n'est pas qualifiée.
 | G9, occurrence et chronologie | Message/émetteur réellement reçus, output exact, visite, appartenance au flow, provenance et dates attestées | N-OBS ; N-CALLS et N-HUMAN fournissent leurs reçus, livraison lot 3 fournit ses identités. La projection actuelle fournit déjà activation, instance, groupe et chemins. |
 | G10, incertitude | Identité publique du fait ambigu, scope/révision, reçus corrélés et issue de réconciliation sans capacité de replay | Fournisseurs lots 1/5 et N-OBS ; I/09 expose la lecture proposée. L'absence de ligne ne débloque pas un claim ambigu. |
 | G11, observation d'horloge | `observedAtMs` monotone natif, budget machine restant par travail et état de pause, cohérents avec la demande et la même incarnation | N-HUMAN H/B avec humain U pour la projection ; I/09. Une navigation déclenche une nouvelle observation, sans reconstruire le temps depuis l'horloge du navigateur. |
+| G12, demande humaine et occurrence | Conversion native attestée de chaque UUID public `workId` vers le scope de capture et `activationId` runtime ; état `unavailable` explicite si ce lien manque | N-HUMAN pour la projection, I/09 pour le raccord commun. Les lots UI 7/8 consomment ce DTO sans déduire la correspondance depuis les identifiants existants. |
 
 Pour intégrer une action, son propriétaire runtime fournit DTO Rust, refus
 fermés, relecture idempotente et tests de concurrence/perte d'acquittement. I/09

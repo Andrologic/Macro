@@ -53,7 +53,8 @@ export type NativeFact030<T> =
   | { readonly kind: 'unavailable'; readonly gap: NativeDtoGap030 };
 export type NativeDtoGap030 =
   | 'qualification' | 'delivery' | 'human-flow-projection' | 'human-purpose'
-  | 'human-receipt' | 'human-resolution' | 'human-clock-observation' | 'question-validator' | 'stop-proof' | 'diagnostics'
+  | 'human-receipt' | 'human-resolution' | 'human-clock-observation' | 'human-occurrence-mapping'
+  | 'question-validator' | 'stop-proof' | 'diagnostics'
   | 'occurrence-details' | 'chronology' | 'uncertainty';
 
 export type RunVerdict030 = 'succeeded' | 'failed' | 'cancelled' | null;
@@ -202,11 +203,21 @@ export interface RunHumanClock030 {
     readonly machinePaused: boolean;
   }[];
 }
+/** Native conversion of a public human work UUID, never a UI identity join. */
+export interface RunHumanOccurrence030 {
+  readonly workId: string;
+  readonly activation:
+    | { readonly kind: 'available'; readonly scope: RunScope030; readonly activationId: RunOccurrence030['activation']['id'] }
+    | { readonly kind: 'unavailable'; readonly gap: 'human-occurrence-mapping' };
+}
 export interface RunHumanRequest030 {
   readonly scope: Readonly<HumanScope030>;
   readonly id: string;
   readonly revision: RunRevision030;
+  /** Public human work UUIDs are distinct from runtime activation ids. */
   readonly workIds: readonly string[];
+  /** Exactly one entry per workId, with explicit unavailable until attested. */
+  readonly occurrences: readonly RunHumanOccurrence030[];
   readonly content: RunHumanContent030;
   readonly state: RunHumanState030;
   /** Refresh native observations; paused machine budgets never decrease. */
