@@ -212,3 +212,10 @@ it('uses ECMAScript comment emptiness for plan revision or terminal rejection', 
     expect(result).toEqual(empty ? { kind: 'stopping', code: 'PLAN_REJECTED' } : { kind: 'planRevision', planId: 'plan', comment });
   }
 });
+
+it('validates plan text using ECMAScript emptiness for BOM and NEL', () => {
+  const bom = harness('{"planFirst":"ask"}');
+  expect(() => bom.send({ kind: 'planPresented', planId: 'bom', text: '\uFEFF' })).toThrow('A presented plan must contain text');
+  const nel = harness('{"planFirst":"ask"}');
+  expect(nel.send({ kind: 'planPresented', planId: 'nel', text: '\u0085' }).decision).toEqual({ kind: 'planWaiting', planId: 'nel', text: '\u0085' });
+});
